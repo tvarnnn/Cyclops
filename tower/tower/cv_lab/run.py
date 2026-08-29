@@ -345,6 +345,7 @@ class LabRun:
                     unit=metadata.headline_unit,
                     metadata=metadata,
                     headline=True,
+                    observed=self.headline,
                 )
             )
 
@@ -362,6 +363,11 @@ class LabRun:
                     metadata=metadata,
                     headline=False,
                     varied=accumulator.varied,
+                    observed=(
+                        accumulator.running
+                        if accumulator.kind is MetricKind.RATE
+                        else None
+                    ),
                 )
             )
 
@@ -379,7 +385,29 @@ class LabRun:
         metadata,
         headline: bool,
         varied: bool = False,
+        observed=None,
     ) -> dict:
+        # The three figures below are what makes a raw scalar readable
+        # without inventing a threshold for it.
+        #
+        # `sharpness_laplacian_var: 483.068` says nothing to anybody. The
+        # same number beside "this run has seen 79 to 1309" says the frame
+        # is middling, and it says it from THIS camera in THIS room rather
+        # than from a constant somebody picked once. The standard
+        # reference for variance-of-Laplacian is explicit that its
+        # threshold has to be tuned per dataset, and this Lab has one
+        # physical run to tune against, which is none -- so the honest
+        # move is to publish the distribution and let the reader place the
+        # value in it.
+        #
+        # RATE metrics only. A COUNT's running total has no "range this
+        # run", a CONSTANT has no range by definition, and an
+        # UNAGGREGATED one has no meaningful anything -- reporting a
+        # min/max for those would be three more numbers that mean nothing,
+        # which is the problem rather than the fix.
+        latest = observed.last if observed is not None and observed.count else None
+        lowest = observed.minimum if observed is not None and observed.count else None
+        highest = observed.maximum if observed is not None and observed.count else None
         return {
             # The Tower's word, displayed verbatim. iOS matches on no
             # metric name, ever.
@@ -416,6 +444,15 @@ class LabRun:
             # rather than leaving a consumer to wonder.
             "baseline": None,
             "higher_is_better": None,
+            # The most recent frame's value, and the range this RUN has
+            # observed. All three are `null` for a metric that is not a
+            # RATE. See the note at the top of this method for why they
+            # exist and for what a consumer may and may not conclude from
+            # them: they place a number inside THIS run and say nothing
+            # whatever about whether it is good.
+            "latest": latest,
+            "observed_min": lowest,
+            "observed_max": highest,
         }
 
     def metric_total(self, name: str) -> float | None:

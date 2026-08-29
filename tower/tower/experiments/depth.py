@@ -4,7 +4,12 @@ import time
 import cv2
 import numpy as np
 
-from tower.experiments import ExperimentResult, ExperimentSettings, decode_color
+from tower.experiments import (
+    ExperimentPreview,
+    ExperimentResult,
+    ExperimentSettings,
+    decode_color,
+)
 from tower.instrumentation import StageTimer
 from tower.loading import LoadInvalidation
 from tower.modules.base import FrameProcessingError
@@ -62,6 +67,15 @@ class DepthEstimation:
         # a growing list, so enabling it cannot grow without bound.
         self.capture_depth_array = capture_depth_array
         self.last_depth_array = None
+        # The live preview's slot, and deliberately NOT the same one.
+        # `capture_depth_array` is an offline-research hook that a corpus
+        # harness turns on for the length of an analysis; this is turned
+        # on and off by the Lab as a person starts and stops watching. If
+        # they shared a flag, a phone opening the viewer would silently
+        # switch on a research capture, and closing it would switch off
+        # somebody's analysis. They share the array itself -- one object,
+        # two references -- which is the part worth sharing.
+        self._preview = ExperimentPreview()
         # Guards the handover from a load that may have been abandoned.
         # See tower/loading.py for the ordering bug this exists for.
         self._invalidation = LoadInvalidation()
@@ -163,6 +177,7 @@ class DepthEstimation:
         self._transform = None
         self._device = None
         self.last_depth_array = None
+        self._preview.set_preview_capture(False)
 
     def release(self) -> None:
         # `self._device` is read INSIDE the teardown, so the same lock
@@ -226,6 +241,23 @@ class DepthEstimation:
             "output": "relative inverse depth, not metric distance",
         }
 
+    def set_preview_capture(self, enabled: bool) -> None:
+        """Whether to keep this frame's depth array for the live viewer.
+
+        Off until the Lab says otherwise. See `ExperimentPreview`.
+        """
+        self._preview.set_preview_capture(enabled)
+
+    def take_preview(self):
+        """The newest depth array, if one was kept. Relative, not metric.
+
+        Whatever renders this is responsible for saying so. The array
+        carries no unit and cannot be given one: MiDaS-small produces
+        inverse depth on an arbitrary per-frame scale, so even the same
+        wall photographed twice does not produce the same numbers.
+        """
+        return self._preview.take_preview()
+
     def run(self, raw_bytes: bytes) -> ExperimentResult:
         timer = StageTimer()
 
@@ -259,6 +291,15 @@ class DepthEstimation:
             mean_relative_depth = float(depth.mean())
             if self.capture_depth_array:
                 self.last_depth_array = depth
+        # Outside the timed stages, like `edge_detection`'s. `stage_ms`
+        # is what the depth model costs, and a physical baseline of
+        # `inference: 9.399 ms` must keep meaning the same thing after
+        # this file learned to hand the array on.
+        #
+        # `depth` is handed over by reference and nothing downstream
+        # mutates it. The renderer resizes, which allocates; it never
+        # writes into what it was given.
+        self._preview.offer(depth)
 
         return ExperimentResult(
             result_value=mean_relative_depth,

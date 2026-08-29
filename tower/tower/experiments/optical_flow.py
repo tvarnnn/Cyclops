@@ -34,10 +34,14 @@ import cv2
 import numpy as np
 
 from tower.experiments import (
+    ExperimentPreview,
     ExperimentResult,
     ExperimentSettings,
+    FlowPreview,
     MetricKind,
+    ScenePreview,
     decode_gray,
+    scene_structure,
 )
 from tower.instrumentation import StageTimer
 
@@ -91,6 +95,7 @@ class OpticalFlowExperiment:
     def __init__(self, clock=time.monotonic) -> None:
         self._previous = None
         self._previous_at = None
+        self._preview = ExperimentPreview()
         # Monotonic, not wall clock: this measures the gap between two
         # calls, and an NTP correction must not be able to make a live
         # reference look stale or a stale one look fresh.
@@ -99,18 +104,55 @@ class OpticalFlowExperiment:
     def load(self, settings: ExperimentSettings | None = None) -> None:
         return None
 
+    def set_preview_capture(self, enabled: bool) -> None:
+        self._preview.set_preview_capture(enabled)
+
+    def take_preview(self):
+        return self._preview.take_preview()
+
     def release(self) -> None:
         # Holds one grayscale frame, not a model. Dropping it is the whole
         # of teardown -- but it must still happen, or a stopped experiment
         # keeps a frame of wearer imagery alive in memory.
         self._previous = None
         self._previous_at = None
+        self._preview.set_preview_capture(False)
 
     def run(self, raw_bytes: bytes) -> ExperimentResult:
         timer = StageTimer()
 
         with timer.stage("decode"):
             gray = decode_gray(raw_bytes)
+
+        # Offered here, empty, and offered AGAIN at the bottom with the
+            # tracks on it. This method has four exits -- no reference, a
+            # stale reference, no seeds, nothing tracked -- and each of
+            # them is a real thing to look at: a picture of the room with
+            # "no reference frame" on it says something a blank panel does
+            # not. Offering twice costs one overwritten slot and covers
+            # every exit; adding an offer to each of the four would be
+            # four places for the next person to forget one.
+        scene = None
+        if self._preview.wanted:
+            with timer.stage("preview"):
+                # The structure is the whole measured cost. Assembling the
+                # overlay below is numpy views over arrays that already
+                # exist, in microseconds, and `StageTimer` overwrites a
+                # stage by name rather than accumulating -- so timing it
+                # separately would replace this number with a smaller and
+                # far less interesting one.
+                scene = ScenePreview(structure=scene_structure(gray))
+            self._preview.offer(
+                FlowPreview(
+                    scene=scene,
+                    origins=np.empty((0, 2), np.float32),
+                    displacements=np.empty((0, 2), np.float32),
+                    rejected=np.empty((0, 2), np.float32),
+                    tracked_count=0,
+                    seeded_count=0,
+                    median_flow_px=0.0,
+                )
+            )
 
         now = self._clock()
         previous = self._previous
@@ -228,6 +270,26 @@ class OpticalFlowExperiment:
             dominant_direction_deg = float(
                 np.degrees(
                     np.arctan2(np.mean(np.sin(angles)), np.mean(np.cos(angles)))
+                )
+            )
+
+        if scene is not None:
+            # In `scene` pixels, not frame pixels. The scale is applied
+            # once, here, so no renderer is ever handed a second one --
+            # `IOS-to-Tower.md` 2.5 refuses annotation geometry precisely
+            # because "a wrong convention renders confidently in the wrong
+            # place", and one conversion in one place is how that stays
+            # true of a picture the Tower draws itself.
+            flow_scale = scene.size[0] / float(gray.shape[1] or 1)
+            self._preview.offer(
+                FlowPreview(
+                    scene=scene,
+                    origins=(seeded[kept] * flow_scale).astype(np.float32),
+                    displacements=(displacement * flow_scale).astype(np.float32),
+                    rejected=(seeded[~kept] * flow_scale).astype(np.float32),
+                    tracked_count=tracked_count,
+                    seeded_count=seeded_count,
+                    median_flow_px=median_magnitude,
                 )
             )
 

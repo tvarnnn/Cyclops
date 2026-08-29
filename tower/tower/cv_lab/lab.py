@@ -91,6 +91,7 @@ from tower.cv_lab.contracts import (
     STREAM_IDLE_AFTER_S,
     TIME_BASIS,
 )
+from tower.cv_lab.preview import LivePreview, PreviewPolicy
 from tower.cv_lab.run import LabRun
 from tower.experiments import EXPERIMENTS, ExperimentSettings, experiment_metadata
 from tower.loading import run_abandonable
@@ -222,6 +223,7 @@ class CVLab:
         clock=time.time,
         connection_count=None,
         instance_id: str | None = None,
+        preview: PreviewPolicy | None = None,
     ) -> None:
         self._initial_experiment_id = initial_experiment_id
         self._settings = settings or ExperimentSettings()
@@ -275,6 +277,21 @@ class CVLab:
         self._last_frame_at: float | None = None
 
         self._last_frame_provenance: dict | None = None
+
+        # The live preview. One slot, one encoding, no queue and no file.
+        # Constructed here rather than injected, for the same reason the
+        # Lab itself is constructed inside the module: one Lab, one
+        # preview, and no way for two of them to disagree about which run
+        # a picture belongs to. What IS injected is the policy, because
+        # whether this Tower draws anything at all is an operator's
+        # decision and not this class's.
+        #
+        # It is driven entirely from `_set_state_locked`, which is the one
+        # choke point every state change passes through. Hooking pause,
+        # resume, stop, fail and release individually would have been five
+        # places to forget, and the one that got forgotten would be the
+        # one that left a stopped run's last frame on somebody's screen.
+        self._preview = LivePreview(preview or PreviewPolicy(), clock=clock)
 
     # -- module-facing lifecycle ---------------------------------------
 
@@ -407,6 +424,12 @@ class CVLab:
                 self._run.ended_at = self._clock()
             experiment, self._experiment = self._experiment, None
             self._last_frame_provenance = None
+            # Unconditional, and not only through `_set_state_locked`:
+            # releasing an already-`unavailable` Lab is not a state
+            # CHANGE, so the transition hook would not fire, and the one
+            # thing a release must guarantee is that nothing is left
+            # holding a picture.
+            self._preview.end()
         if experiment is not None:
             experiment.release()
 
@@ -435,6 +458,7 @@ class CVLab:
                 reason=FRAME_REFUSAL_REASONS.get(state, "cv_lab_unavailable"),
             )
 
+        self._arm_preview_for_frame(now)
         try:
             result = experiment.run(raw_bytes)
         except BaseException:
@@ -460,7 +484,92 @@ class CVLab:
                 "frame is answered without provenance",
                 self._selected_id,
             )
+        self._offer_preview(run, result_seq, now)
         return result
+
+    def _arm_preview_for_frame(self, now: float) -> None:
+        """Tell the experiment whether to build a picture for THIS frame.
+
+        Called BEFORE `run()`, which is the only place it can be called
+        from. Four of the seven visual experiments derive something to
+        draw -- a line drawing of the room, a thinned keypoint set, the
+        boxes pulled off a tensor -- and that derivation has to happen
+        while the frame's intermediates are still in scope. Deciding
+        afterwards would mean either keeping the intermediates alive
+        between frames, which is imagery this module has always declared
+        it does not hold, or recomputing them, which is the redundant CV
+        work this whole design exists to avoid.
+
+        So the throttle is asked here, one frame early, and its answer is
+        one boolean assignment on the experiment. A frame the throttle
+        turns down costs exactly that assignment: no line drawing, no
+        keypoints, no boxes, and nothing retained.
+
+        Never raises, for the usual reason -- `ModuleContainer` turns
+        anything that is not a `FrameProcessingError` into a TERMINAL
+        module failure, and a picture must not be able to end a run.
+        """
+        preview = self._preview
+        if not preview.is_live:
+            return
+        setter = getattr(self._experiment, "set_preview_capture", None)
+        if setter is None:
+            return
+        try:
+            setter(preview.wants_capture(now))
+        except Exception:
+            logger.exception(
+                "[Tower][CVLab] %s refused a per-frame preview arm; the "
+                "frame is processed without one",
+                self._selected_id,
+            )
+
+    def _offer_preview(self, run: LabRun | None, result_seq: int, now: float) -> None:
+        """Hand this frame's derived array to the preview. Never raises.
+
+        The whole of the visualisation cost on the measured path, and it
+        is deliberately almost nothing: three attribute reads to find out
+        nobody is watching, or a clock comparison and two assignments to
+        keep an array the experiment had already built. No resize, no
+        colour conversion, no encode, no copy and no lock. The expensive
+        half runs in `LivePreview.render`, on a worker thread, when a
+        client actually asks -- which is the whole reason a viewer cannot
+        backpressure this pipeline.
+
+        Placed AFTER the result and after provenance, so a preview that
+        went wrong cannot affect either. And wrapped, because
+        `ModuleContainer` turns anything that is not a
+        `FrameProcessingError` into a TERMINAL module failure: a bug in a
+        picture would otherwise end CV processing for the life of the
+        process, which is the exact trade this feature must never make.
+        """
+        preview = self._preview
+        try:
+            if not preview.is_live:
+                return
+            if not preview.wants_capture(now):
+                preview.note_throttled()
+                return
+            take = getattr(self._experiment, "take_preview", None)
+            if take is None:
+                preview.note_empty()
+                return
+            array = take()
+            if array is None:
+                preview.note_empty()
+                return
+            preview.capture(
+                array,
+                run_id=run.run_id if run is not None else None,
+                result_seq=result_seq,
+                now=now,
+            )
+        except Exception:
+            logger.exception(
+                "[Tower][CVLab] capturing a preview from %s failed; the "
+                "result is unaffected and telemetry continues",
+                self._selected_id,
+            )
 
     def note_frame_rejected_before_processing(self, now: float | None = None) -> None:
         """A frame arrived and the transport refused it. Never raises.
@@ -474,6 +583,27 @@ class CVLab:
         """
         self._frames_rejected_before_lab += 1
         self._last_frame_at = self._clock() if now is None else now
+
+    # -- the live preview, from a worker thread ------------------------
+    #
+    # Three thin passes through to `LivePreview`, and thin on purpose:
+    # `routes/cv_lab_preview.py` holds `app.state.cv_lab`, not the
+    # preview inside it, for the same reason `GET /cv-lab` holds the Lab
+    # rather than the run -- a route that reached into an object's
+    # internals would be a second place that has to know how the Lab is
+    # put together.
+
+    def render_preview(self, *, run_id: str | None = None, if_none_match=None):
+        """The newest preview, encoded. Never raises. See `LivePreview`."""
+        return self._preview.render(run_id=run_id, if_none_match=if_none_match)
+
+    def preview_descriptor(self) -> dict | None:
+        """What a preview would be, without fetching one."""
+        return self._preview.descriptor()
+
+    def preview_unavailable_reason(self) -> str | None:
+        """Why there is no descriptor, in a sentence, when there is none."""
+        return self._preview.why_none()
 
     def frame_provenance(self) -> dict | None:
         """Who produced the frame result `process()` just returned.
@@ -839,9 +969,86 @@ class CVLab:
             self._set_state_locked(state, reason=reason)
 
     def _set_state_locked(self, state: str, *, reason: str | None = None) -> None:
+        previous = self._state
         self._state = state
         self._state_reason = reason
         self._state_since = self._clock()
+        if state != previous:
+            self._sync_preview_locked(state)
+
+    def _sync_preview_locked(self, state: str) -> None:
+        """The live preview follows RUNNING and nothing else. Never raises.
+
+        Every lifecycle question the preview has -- start, pause, resume,
+        stop, a failed arm, a released module -- is the same question:
+        is the Lab running right now. Answering it here, at the one place
+        every state change passes through, is what makes "a paused run
+        shows no picture" and "a stopped run's last frame is gone"
+        properties of the state machine rather than five separate
+        promises that each had to be remembered.
+
+        Two things happen together and neither is optional. The slot is
+        begun or emptied, and the EXPERIMENT is told whether to keep its
+        array at all -- so a Tower that is not running, or has previews
+        off, holds no derived imagery anywhere, which is what
+        `ExperimentalCVModule`'s `retains_raw_imagery=False` has always
+        claimed and must go on being true.
+        """
+        try:
+            if state == STATE_RUNNING:
+                run = self._run
+                watching = self._preview.begin(
+                    run.run_id if run is not None else None,
+                    self._preview_kind_locked(),
+                )
+            else:
+                self._preview.suspend()
+                watching = False
+            self._set_capture_locked(watching)
+        except Exception:
+            # Diagnostics-shaped failure on a state transition. Raising
+            # here would propagate out of `stop()` or, worse, out of
+            # `release()` -- which runs on the FAILED transition, where
+            # there is nothing left to fail into.
+            logger.exception(
+                "[Tower][CVLab] could not follow the %s transition with the "
+                "live preview; the run is unaffected",
+                state,
+            )
+
+    def _preview_kind_locked(self) -> str | None:
+        """What the current experiment would draw, or None for nothing.
+
+        Read from the DECLARATION rather than from the loaded object.
+        An experiment that implements `take_preview` without declaring a
+        `preview_kind` has not said how its array should be read, and a
+        renderer that guessed would be inventing the contract this whole
+        change exists to write down.
+        """
+        run = self._run
+        if run is None or not catalog.is_registered(run.experiment_id):
+            return None
+        return experiment_metadata(run.experiment_id).preview_kind
+
+    def _set_capture_locked(self, enabled: bool) -> None:
+        """Tell the experiment whether anybody is watching. Never raises.
+
+        Optional on the protocol, exactly like `describe()`: six of the
+        eight registered experiments have no picture and implement
+        neither, and the Lab treats their absence as "nothing to keep"
+        rather than as an error.
+        """
+        setter = getattr(self._experiment, "set_preview_capture", None)
+        if setter is None:
+            return
+        try:
+            setter(enabled)
+        except Exception:
+            logger.exception(
+                "[Tower][CVLab] an experiment refused set_preview_capture(%r); "
+                "the run is unaffected and no preview will be served",
+                enabled,
+            )
 
     @staticmethod
     def _release_quietly(experiment) -> None:
@@ -1063,6 +1270,14 @@ class CVLab:
             # ever reaches production anyway.
             "unclassified_metrics": run.unclassified_metrics,
             "annotation": self._annotation(run, metadata),
+            # How the picture is doing, kept apart from how the
+            # EXPERIMENT is doing. `timings.processing_ms` beside this is
+            # the model's cost and must stay comparable against every
+            # figure recorded before previews existed; `preview.render_ms`
+            # is what a picture costs, on a different thread, at a
+            # different rate, and mixing the two would destroy the one
+            # measurement that answers "how much did the viewer cost us".
+            "preview": self._preview.stats(),
             "timings": {
                 "processing_ms": (
                     round(run.processing_ms.average, 4)
@@ -1125,15 +1340,36 @@ class CVLab:
         NUMBER when it does, including zero. `0` is a real result meaning
         "found nothing" and must not merge with "did not say".
 
-        `artifact` is always `null` in this contract, and the reason is
-        not that it was forgotten. `IOS-to-Tower.md` 5 withholds any image
-        whose treatment is unstated, and states that artifact fetching
-        itself is UNKNOWN -- iOS "holds no URL, no id format, and no
-        bytes, because inventing a fetch scheme would be exactly the
-        fabricated contract this work refuses to produce". Serving an
-        inline image here would be the Tower inventing that scheme
-        unilaterally. The field exists so that a later contract adds a
-        payload where a `null` is, rather than adding a field.
+        `artifact` is no longer always `null`, and the sentence that used
+        to be here is worth keeping in view because it is the standard
+        this had to meet. It said: `IOS-to-Tower.md` 5 withholds any
+        image whose treatment is unstated, and artifact fetching itself
+        is UNKNOWN -- iOS "holds no URL, no id format, and no bytes,
+        because inventing a fetch scheme would be exactly the fabricated
+        contract this work refuses to produce", so "serving an inline
+        image here would be the Tower inventing that scheme
+        unilaterally". It ended: "The field exists so that a later
+        contract adds a payload where a `null` is, rather than adding a
+        field."
+
+        This is that contract, and it is the payload going where the
+        `null` was. What makes it not the fabrication that sentence
+        refused:
+
+        - it landed on BOTH sides in one change, with
+          `docs/contracts/EXPERIMENTAL-CV-PREVIEW.md` written down,
+          rather than one side guessing what the other would accept;
+        - the treatment is STATED, in iOS's own vocabulary, and it is
+          the strict value: `raw_ephemeral`, live view only, never
+          persisted and never re-served;
+        - no image goes INLINE. What is here is a path, a media type and
+          a treatment -- the bytes are a separate fetch a client makes
+          only if it wants one, which is what `IOS-to-Tower.md`'s own
+          `notFetched`/`fetching`/`available` state machine was written
+          around;
+        - it is `null` again, with a reason, the moment there is nothing
+          honest to put here -- previews off, or an experiment with
+          nothing to draw.
         """
         count = None
         if metadata is not None and metadata.annotation_metric:
@@ -1148,6 +1384,7 @@ class CVLab:
             # resets.
             if total is not None and math.isfinite(total):
                 count = int(round(total))
+        artifact = self._preview.descriptor()
         return {
             "count": count,
             "count_unavailable_reason": (
@@ -1155,10 +1392,11 @@ class CVLab:
                 if count is not None
                 else "this experiment reports no annotation count"
             ),
-            "artifact": None,
+            "artifact": artifact,
+            # Mutually exclusive with `artifact`, and never both null. A
+            # client that finds neither has met a Tower that is broken
+            # rather than one that is being quiet.
             "artifact_unavailable_reason": (
-                "this Tower serves no imagery for CV Lab results. Every image "
-                "must arrive stating its redaction treatment, and no artifact "
-                "fetch contract exists on either side yet"
+                None if artifact is not None else self._preview.why_none()
             ),
         }

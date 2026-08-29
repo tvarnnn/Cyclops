@@ -59,6 +59,23 @@ enum RedactionState: String, Equatable, Sendable, CaseIterable {
     /// The single decision this type exists to make, so no view re-derives it.
     var isDisplayableWhenPersisted: Bool { self == .redacted }
 
+    /// Whether an artifact may be shown on a surface that draws it **live and
+    /// keeps nothing** — a viewfinder, a running experiment's preview panel.
+    ///
+    /// Two of the three cases qualify, and that is not a relaxation: it is
+    /// what `rawEphemeral` was defined for. Its own documentation says
+    /// *"Permitted only for the live, in-memory view of what the wearer
+    /// currently sees"*, and until there was such a view nothing had cause to
+    /// ask. `unknown` does not qualify, here as everywhere, because an
+    /// unstated treatment is not a treatment.
+    ///
+    /// The obligation this carries is on the CALLER and cannot be checked
+    /// here: a surface that asks this question must not persist, cache or
+    /// re-serve what it draws. `ExperimentalCVPreview.swift` is the one that
+    /// does, and its file comment lists the four things it does to keep the
+    /// promise structural rather than intentional.
+    var isDisplayableLive: Bool { self != .unknown }
+
     /// What a person needs to know about how this image was treated.
     ///
     /// ## Why `redacted` describes the claim rather than the result

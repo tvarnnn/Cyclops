@@ -265,8 +265,8 @@ Nothing else, and nothing is parsed.
 | Need | Status | Detail |
 |---|---|---|
 | Annotation count | **MISSING — TOWER NEEDED** | `0` is a real result ("found nothing") and must not merge with "did not say". |
-| Rendered annotated frame | **MISSING — TOWER NEEDED** | As an artifact with a redaction state (§5). **An experiment gets no privacy exemption for being a debug surface.** |
-| Annotation geometry | **NOT REQUESTED** | Boxes, masks, keypoints and flow fields each need a schema and a coordinate convention. A wrong convention renders confidently in the wrong place. Send a rendered frame or send a schema, not a guess. |
+| Rendered annotated frame | **LANDED — `experimental_cv.preview/2026-08-29`** | `run.annotation.artifact` carries a descriptor, `GET /cv-lab/preview` carries the bytes, and every one of them states `treatment: raw_ephemeral`. See `docs/contracts/EXPERIMENTAL-CV-LAB.md` §5 and §5.3. **The experiment still gets no privacy exemption for being a debug surface; it got a picture that does not need one** — nothing photographic is served, and every overlay is drawn over an edge map derived from the frame rather than over the frame. |
+| Annotation geometry | **NOT REQUESTED, and now moot** | This asked for "a rendered frame or a schema, not a guess", and the answer is the rendered frame: boxes, keypoints, flow vectors and the redaction rectangle are drawn **Tower-side**, in the picture's own pixel space, so no coordinate convention crosses and there is nothing for iOS to render confidently in the wrong place. |
 
 ### 2.6 Cancellation
 
@@ -545,12 +545,27 @@ There is deliberately no `.probablySafe` and no lenient default.
 `06-PRIVACY-DATA.md` is explicit that a crop is not inherently safe: "a cropped
 image can still contain a bystander's face, a private room, or a document".
 
-**Artifact fetching itself is UNKNOWN.** iOS models the *state machine* around a
-fetch (`absent` / `notFetched` / `fetching` / `available` / `failed`) but holds
-**no URL, no id format, and no bytes**, because inventing a fetch scheme would be
-exactly the fabricated contract this work refuses to produce. When a real fetch
-contract lands, one case gains a payload and every other call site is already
-written.
+**Artifact fetching WAS unknown, and now is not — for the CV Lab only.** iOS
+modelled the state machine around a fetch (`absent` / `notFetched` / `fetching`
+/ `available` / `failed`) while holding no URL, no id format and no bytes,
+*"because inventing a fetch scheme would be exactly the fabricated contract this
+work refuses to produce"*. `experimental_cv.preview/2026-08-29` is that contract,
+landed on both sides in one change with a document behind it, and it went exactly
+where this paragraph said it would: one case gained a payload and every other
+call site was already written.
+
+What it did NOT do is relax anything above. The treatment is stated on every
+picture and it is `rawEphemeral` — the strict value, not a new lenient one — and
+`RedactionState` gained `isDisplayableLive` to express the permission
+`rawEphemeral`'s own definition already granted ("permitted only for the live,
+in-memory view"). There is still no `.probablySafe`, still no default, and an
+unstated treatment is still withheld.
+
+**Every other cartridge is unchanged.** World Builder, Scene and Document Memory
+still send no imagery and still have no fetch contract. Object Memory's is its
+own, older, and different in kind: it serves a filtered *photograph* out of a
+store and fails closed when the filter is missing, where this serves a derived
+line drawing that no filter could be missing from.
 
 **iOS ships no privacy toggle backed by any of this**, because a switch the Tower
 cannot honour converts a limitation into a false assurance.

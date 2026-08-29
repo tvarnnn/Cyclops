@@ -88,6 +88,18 @@ struct CVExperiment: Equatable, Identifiable, Sendable {
     /// The Tower's own words for why not. Shown verbatim — only the Tower knows
     /// which module is missing.
     var unavailableReason: String?
+    /// What kind of live picture this experiment can draw, or `nil` for one
+    /// that draws none. Declared in the catalog so the picker can say "this
+    /// one has a live view" **before** anybody commits to a two-minute model
+    /// load to find out.
+    ///
+    /// `nil` is a real answer and not a gap: `baseline` will never have a
+    /// picture, deliberately, because it is the control every other
+    /// experiment's cost is read against and drawing one would roughly double
+    /// what it costs.
+    ///
+    /// Displayed, never switched on. The Tower's vocabulary is open.
+    var previewKind: String?
 
     init(
         id: String,
@@ -100,7 +112,8 @@ struct CVExperiment: Equatable, Identifiable, Sendable {
         requiresModel: Bool = false,
         backend: String? = nil,
         isAvailable: Bool = true,
-        unavailableReason: String? = nil
+        unavailableReason: String? = nil,
+        previewKind: String? = nil
     ) {
         self.id = id
         self.name = name
@@ -113,6 +126,7 @@ struct CVExperiment: Equatable, Identifiable, Sendable {
         self.backend = backend
         self.isAvailable = isAvailable
         self.unavailableReason = unavailableReason
+        self.previewKind = previewKind
     }
 
     /// One catalog entry, or `nil` when the Tower sent something that is not
@@ -138,12 +152,20 @@ struct CVExperiment: Equatable, Identifiable, Sendable {
             // withholding one it can is a person seeing a reason and picking
             // something else. The second is recoverable from the screen.
             isAvailable: json["available"] as? Bool ?? false,
-            unavailableReason: json["unavailable_reason"] as? String
+            unavailableReason: json["unavailable_reason"] as? String,
+            previewKind: json["preview_kind"] as? String
         )
     }
 
     /// Whether a start for this experiment would be refused before it began.
     var isStartable: Bool { isAvailable }
+
+    /// Whether starting this would put a live picture on screen.
+    ///
+    /// A promise about what a preview would BE, not that one exists: whether
+    /// one exists right now is `run.annotation.artifact`, which is `nil` with
+    /// a reason until a frame has actually been through.
+    var hasLiveView: Bool { previewKind != nil }
 }
 
 /// Reads `provenance` off any of the three places the Tower states it — a
@@ -246,6 +268,26 @@ struct CVMetric: Equatable, Identifiable, Sendable {
     /// A `constant` that was not constant. Its `value` is `nil` and this is
     /// why — so a null is not read as "never observed".
     var varied: Bool
+    /// The most recent frame's value, and the range **this run** has observed.
+    /// All three are `nil` for anything that is not a `rate`.
+    ///
+    /// ## What these are for, and the one thing they are not
+    ///
+    /// `sharpness_laplacian_var: 483.068` says nothing to anybody. The same
+    /// number beside *"this run has seen 79 to 1309"* says the frame is
+    /// middling — from **this** camera in **this** room, rather than from a
+    /// constant somebody picked once. That is the whole of what they buy.
+    ///
+    /// **They are not a verdict and must never be rendered as one.** The
+    /// standard reference for variance-of-Laplacian is explicit that its
+    /// threshold has to be tuned per dataset; the Tower has one physical run
+    /// to tune against, which is none; and a row reading "Sharpness: Good"
+    /// derived from these would be this app inventing the calibration both
+    /// sides refuse to invent. A run four frames long has a range four frames
+    /// wide, and the copy has to survive that case as well as a long one.
+    var latest: Double?
+    var observedMin: Double?
+    var observedMax: Double?
 
     var id: String { label }
 
@@ -257,7 +299,10 @@ struct CVMetric: Equatable, Identifiable, Sendable {
         aggregation: String? = nil,
         frames: Int? = nil,
         isHeadline: Bool = false,
-        varied: Bool = false
+        varied: Bool = false,
+        latest: Double? = nil,
+        observedMin: Double? = nil,
+        observedMax: Double? = nil
     ) {
         self.label = label
         self.value = value
@@ -267,6 +312,9 @@ struct CVMetric: Equatable, Identifiable, Sendable {
         self.frames = frames
         self.isHeadline = isHeadline
         self.varied = varied
+        self.latest = latest
+        self.observedMin = observedMin
+        self.observedMax = observedMax
     }
 
     init?(json: [String: Any]) {
@@ -283,8 +331,37 @@ struct CVMetric: Equatable, Identifiable, Sendable {
             aggregation: json["aggregation"] as? String,
             frames: json["frames"] as? Int,
             isHeadline: json["headline"] as? Bool ?? false,
-            varied: json["varied"] as? Bool ?? false
+            varied: json["varied"] as? Bool ?? false,
+            latest: json["latest"] as? Double,
+            observedMin: json["observed_min"] as? Double,
+            observedMax: json["observed_max"] as? Double
         )
+    }
+
+    /// Where the newest frame sits inside the range this run has seen, as a
+    /// sentence. `nil` unless there is a range with width to it.
+    ///
+    /// Deliberately says *"in this run's range"* every time, in those words.
+    /// Drop the qualifier and the sentence becomes a claim about the world:
+    /// this is a comparison against four frames of the wearer's own living
+    /// room, not against anything calibrated.
+    var rangeNote: String? {
+        guard let latest, let low = observedMin, let high = observedMax,
+            high > low, let frames, frames > 1
+        else { return nil }
+        let position = (latest - low) / (high - low)
+        let placement: String
+        switch position {
+        case ..<0.2: placement = "near the low end of"
+        case ..<0.4: placement = "below the middle of"
+        case ..<0.6: placement = "around the middle of"
+        case ..<0.8: placement = "above the middle of"
+        default: placement = "near the high end of"
+        }
+        return """
+            Latest \(Self.format(latest)) — \(placement) this run's range so far \
+            (\(Self.format(low)) to \(Self.format(high)) over \(frames) frames).
+            """
     }
 
     /// Formatted for a row, or `nil` when there is no number to show.
@@ -333,13 +410,19 @@ struct CVMetric: Equatable, Identifiable, Sendable {
 /// is the count the Tower reports and the state of the rendered image it
 /// produced, which is enough for the workspace to be honest about both.
 ///
-/// **`artifact` is `null` in this contract, always, and the Tower states why
-/// rather than leaving it to be discovered**: no redaction-state vocabulary is
-/// shared between the two sides, and no artifact fetch contract exists on
-/// either. Serving an inline image would be the Tower inventing that scheme
-/// unilaterally, and an experiment gets no privacy exemption for being a debug
-/// surface. `artifactUnavailableReason` carries the Tower's own sentence, which
-/// is why the field is read rather than assumed.
+/// `artifact` used to be `null` in this contract, always, because no
+/// redaction-state vocabulary was shared between the two sides and no artifact
+/// fetch contract existed on either. Both now do — landed together, in one
+/// change, with `EXPERIMENTAL-CV-LAB.md` §5 written down — so this carries a
+/// real descriptor whenever the running experiment has a picture and the Tower
+/// is serving one.
+///
+/// **What did not change is the strictness.** The descriptor names a path, not
+/// an image: no bytes ride the result channel, and the treatment is stated on
+/// every one of them. An experiment still gets no privacy exemption for being a
+/// debug surface, `artifactUnavailableReason` still carries the Tower's own
+/// sentence when there is nothing, and the two are mutually exclusive — a
+/// document with neither is a Tower this build cannot read.
 struct CVAnnotationReport: Equatable, Sendable {
     /// How many things the experiment marked. `nil` when not reported; `0` is a
     /// real result meaning "found nothing", and the two must not merge.
@@ -348,40 +431,141 @@ struct CVAnnotationReport: Equatable, Sendable {
     /// experiment reports no annotation count", which is a different statement
     /// from "it found none".
     var countUnavailableReason: String?
-    /// The rendered annotated frame, if the Tower produced one. `.absent` on
-    /// this contract, always.
+    /// The state machine around fetching the live view. `.absent` when this
+    /// experiment has no picture, `.notFetched(treatment)` when it does —
+    /// `CVLivePreviewLoader` owns the fetch itself and the bytes never live
+    /// here, because this type is copied into every status update and an image
+    /// on it would be an image copied at the status channel's rate.
     var artifact: VisualArtifactState
-    /// The Tower's own explanation for the absence above.
+    /// The live preview's descriptor, when there is one. `nil` when the Tower
+    /// offered none, or offered one this build could not read.
+    var preview: CVLivePreview?
+    /// The Tower's own explanation for the absence above. Mutually exclusive
+    /// with `preview`.
     var artifactUnavailableReason: String?
 
     init(
         count: Int? = nil,
         countUnavailableReason: String? = nil,
         artifact: VisualArtifactState = .absent,
+        preview: CVLivePreview? = nil,
         artifactUnavailableReason: String? = nil
     ) {
         self.count = count
         self.countUnavailableReason = countUnavailableReason
         self.artifact = artifact
+        self.preview = preview
         self.artifactUnavailableReason = artifactUnavailableReason
     }
 
     init(json: [String: Any]) {
+        // Read once, so the descriptor and the state machine cannot disagree
+        // about whether there is a picture.
+        let preview = (json["artifact"] as? [String: Any]).flatMap(CVLivePreview.init)
         self.init(
             count: json["count"] as? Int,
             countUnavailableReason: json["count_unavailable_reason"] as? String,
-            // Not read as an image, and not from a URL. The field is `null` on
-            // this contract and there is no fetch scheme on either side to
-            // resolve it with, so this app holds no url, no id format and no
-            // bytes — inventing one would be exactly the fabricated contract
-            // this cartridge refuses to produce.
-            artifact: .absent,
+            // `.notFetched`, never `.available`: this type carries no bytes and
+            // never will. It is copied into every status update, and an image
+            // on it would be an image copied at the status channel's rate for
+            // as long as a run lasted. `CVLivePreviewLoader` holds exactly one,
+            // and drops it the moment its view goes away.
+            artifact: preview.map { .notFetched($0.redaction) } ?? .absent,
+            preview: preview,
             artifactUnavailableReason: json["artifact_unavailable_reason"] as? String
         )
     }
 
     var hasReport: Bool {
         count != nil || artifact != .absent
+    }
+
+    /// The descriptor, if there is one this build may actually draw.
+    ///
+    /// Fails closed at the last step rather than at the first: a preview whose
+    /// treatment is `.unknown` is still decoded and still reported, so the
+    /// panel can say why it is not drawing rather than behaving as though the
+    /// Tower had offered nothing.
+    var drawablePreview: CVLivePreview? {
+        guard let preview, preview.isDrawable else { return nil }
+        return preview
+    }
+}
+
+/// What the live view cost, kept apart from what the EXPERIMENT cost.
+///
+/// The whole reason this block exists is one question a physical test has to
+/// be able to answer with evidence rather than opinion: **did adding a picture
+/// slow the CV pipeline down?**
+///
+/// Two figures are deliberately not mixed. `CVTimings.processingMs` is what the
+/// experiment costs and stays comparable against every number recorded before
+/// previews existed; `renderMs` here is what a picture costs, on a worker
+/// thread, at a different rate. Averaging them together would destroy the one
+/// measurement that answers the question.
+///
+/// Nothing here is switched on. It is a diagnostics panel, and every field is
+/// `nil` on a Tower that does not report it rather than defaulted to a zero
+/// that would read as a measurement.
+struct CVPreviewDiagnostics: Equatable, Sendable {
+    /// Frames the Lab told the preview about.
+    var framesOffered: Int?
+    /// …of which this many became the newest picture.
+    var captured: Int?
+    /// …and this many were never even asked for, because the throttle said the
+    /// last capture was too recent. **This is the figure that says
+    /// visualisation runs at its own rate**, independent of the experiment's.
+    var skippedByThrottle: Int?
+    /// Captures overwritten before anything drew them. The intended behaviour,
+    /// counted rather than hidden: `captured - replacedUnread` is roughly what
+    /// the phone actually saw.
+    var replacedUnread: Int?
+    /// Encodes actually performed — far fewer than `captured`, and the gap is
+    /// the design: nothing is encoded until somebody asks for it.
+    var encoded: Int?
+    /// Renders that raised. The run is unaffected by construction.
+    var encodeFailures: Int?
+    var served: Int?
+    /// Fetches answered `304`. A high figure means the phone is polling faster
+    /// than the Tower produces, which costs a round trip and no encode.
+    var notModified: Int?
+    var refused: Int?
+    var renderMs: Double?
+    var renderMsMax: Double?
+    var payloadBytes: Int?
+    var payloadBytesMax: Int?
+
+    init(json: [String: Any]) {
+        framesOffered = json["frames_offered"] as? Int
+        captured = json["captured"] as? Int
+        skippedByThrottle = json["skipped_by_throttle"] as? Int
+        replacedUnread = json["replaced_unread"] as? Int
+        encoded = json["encoded"] as? Int
+        encodeFailures = json["encode_failures"] as? Int
+        served = json["served"] as? Int
+        notModified = json["not_modified"] as? Int
+        refused = json["refused"] as? Int
+        renderMs = json["render_ms"] as? Double
+        renderMsMax = json["render_ms_max"] as? Double
+        payloadBytes = json["payload_bytes"] as? Int
+        payloadBytesMax = json["payload_bytes_max"] as? Int
+    }
+
+    /// Roughly how many of the Tower's captures reached a screen, as a
+    /// sentence. `nil` when nothing has been captured yet.
+    ///
+    /// "Roughly" is load-bearing and stays in the copy: the Tower counts a
+    /// capture as read when it was rendered, and a render that was fetched but
+    /// never drawn — a dropped packet, a view that went away mid-flight — is
+    /// counted here as seen. The figure is an upper bound on what a person
+    /// looked at, and the copy must not imply otherwise.
+    var deliveryNote: String? {
+        guard let captured, captured > 0 else { return nil }
+        let dropped = replacedUnread ?? 0
+        return """
+            \(captured - dropped) of \(captured) captured previews were drawn; \
+            \(dropped) were replaced by a newer one first.
+            """
     }
 }
 
@@ -508,6 +692,9 @@ struct CVExperimentRun: Equatable, Sendable {
     /// this is what the wire says if one ever reaches production anyway.
     var unclassifiedMetrics: [String]
     var annotation: CVAnnotationReport
+    /// What the live view cost, as the Tower measured it. `nil` on a Tower
+    /// that does not report one.
+    var preview: CVPreviewDiagnostics?
     var timings: CVTimings
     var throughput: CVThroughput
     /// Frames the Lab measured.
@@ -536,6 +723,7 @@ struct CVExperimentRun: Equatable, Sendable {
         metricsOmitted: Int = 0,
         unclassifiedMetrics: [String] = [],
         annotation: CVAnnotationReport = CVAnnotationReport(),
+        preview: CVPreviewDiagnostics? = nil,
         timings: CVTimings = CVTimings(),
         throughput: CVThroughput = CVThroughput(),
         framesProcessed: Int? = nil,
@@ -554,6 +742,7 @@ struct CVExperimentRun: Equatable, Sendable {
         self.metricsOmitted = metricsOmitted
         self.unclassifiedMetrics = unclassifiedMetrics
         self.annotation = annotation
+        self.preview = preview
         self.timings = timings
         self.throughput = throughput
         self.framesProcessed = framesProcessed
@@ -597,6 +786,7 @@ struct CVExperimentRun: Equatable, Sendable {
             metricsOmitted: json["metrics_omitted"] as? Int ?? 0,
             unclassifiedMetrics: json["unclassified_metrics"] as? [String] ?? [],
             annotation: CVAnnotationReport(json: json["annotation"] as? [String: Any] ?? [:]),
+            preview: (json["preview"] as? [String: Any]).map(CVPreviewDiagnostics.init),
             timings: CVTimings(
                 json: json["timings"] as? [String: Any] ?? [:],
                 receivedAt: receivedAt

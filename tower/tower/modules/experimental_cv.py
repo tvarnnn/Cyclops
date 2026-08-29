@@ -37,6 +37,17 @@ class ExperimentalCVModule(Module):
     and that must stay true: an experiment that wanted to persist would
     make this descriptor a lie, and the descriptor is what the privacy
     policy is enforced against.
+
+    **The live preview does not make it a lie, and the reasoning is worth
+    writing down rather than assuming.** `persists_data` is unchanged
+    because nothing reaches a disk: one image lives in memory, is replaced
+    by the next, and is gone when the run stops.
+    `retains_raw_imagery` is unchanged because nothing retained is raw --
+    an experiment holds a Canny edge map, a depth array or a set of
+    boxes, never the frame, and `experiments.scene_structure` is where
+    that guarantee is actually implemented. Neither field would survive a
+    design that served a filtered photograph, which is one of the reasons
+    this one does not.
     """
 
     descriptor = DESCRIPTOR
@@ -48,6 +59,7 @@ class ExperimentalCVModule(Module):
         experiment=None,
         *,
         connection_count=None,
+        preview=None,
     ) -> None:
         super().__init__()
         # Constructed here rather than injected so that every caller which
@@ -60,6 +72,11 @@ class ExperimentalCVModule(Module):
             settings or ExperimentSettings(),
             experiment=experiment,
             connection_count=connection_count,
+            # Passed straight through. This class holds the Lab and does
+            # not hold policy: `main.py` reads `Settings`, and every
+            # existing caller that built a module without one still gets a
+            # working Lab with previews on.
+            preview=preview,
         )
 
     async def _do_load(self) -> None:

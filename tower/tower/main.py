@@ -12,6 +12,7 @@ from tower.capture_workers import CaptureWorkerSupervisor, WorkerSpec
 from tower.cartridge_runtime import build_live_cartridges
 from tower.cartridge_session import CartridgeSession
 from tower.config import KNOWN_VERIFIERS, TOWER_ROOT, Settings, get_settings
+from tower.cv_lab.preview import PreviewPolicy
 from tower.experiments import ExperimentSettings
 from tower.logging_config import configure_logging
 from tower.modules.base import Module
@@ -27,6 +28,7 @@ from tower.results.object_memory import (
 from tower.routes import (
     cartridges,
     cv_lab,
+    cv_lab_preview,
     documents,
     geometry,
     health,
@@ -83,6 +85,10 @@ def _build_cv_module(settings: Settings, connection_count=None) -> Module:
         settings.cv_experiment,
         ExperimentSettings(device=settings.cv_device),
         connection_count=connection_count,
+        # Whether this Tower draws anything at all is an operator's
+        # decision, so it arrives from `Settings` rather than being a
+        # default the Lab picked for itself. See `Settings.cv_preview`.
+        preview=PreviewPolicy.from_settings(settings),
     )
 
 
@@ -623,6 +629,11 @@ def create_app() -> FastAPI:
     app.include_router(health.router)
     app.include_router(cartridges.router)
     app.include_router(cv_lab.router)
+    # Its own module rather than more routes on `cv_lab.router`: that one
+    # serves one JSON document and this one serves image bytes with an
+    # ETag, a conditional GET and a no-store header, and the two have
+    # nothing in common but a path prefix.
+    app.include_router(cv_lab_preview.router)
     app.include_router(geometry.router)
     app.include_router(observations.router)
     app.include_router(sessions.router)

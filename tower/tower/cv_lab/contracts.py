@@ -239,3 +239,160 @@ MAX_TRACKED_STAGES = 16
 # happens if one reaches production anyway, and it must not become an
 # unbounded list of names a remote producer chose.
 MAX_UNCLASSIFIED_REPORTED = 8
+
+
+# -- the live preview --------------------------------------------------
+#
+# What follows is the contract `_annotation`'s `artifact` field was
+# reserved for. `IOS-to-Tower.md` 5 said artifact fetching was UNKNOWN
+# because iOS "holds no URL, no id format, and no bytes, because
+# inventing a fetch scheme would be exactly the fabricated contract this
+# work refuses to produce" -- and the Tower agreed, because a scheme
+# invented on one side is the same fabrication seen from the other. This
+# lands on BOTH sides at once, in one change, with a document under
+# `docs/contracts/`, which is the only way that objection is answered
+# rather than ignored.
+#
+# What it does NOT do is relax anything. The image this serves is
+# derived, never raw; it is held one at a time, never queued; it is
+# written to no file; and it arrives stating a treatment iOS already has
+# an enum value for, whose documented meaning is the strict one.
+
+# The preview descriptor, inside `run.annotation.artifact`, and the
+# headers on the bytes. Dated separately from the status document because
+# a preview can gain a field without the document meaning anything new,
+# and because a client may implement the status half and never fetch an
+# image -- which is exactly what a Release iOS build with no camera does.
+PREVIEW_CONTRACT = "experimental_cv.preview/2026-08-29"
+
+# The one HTTP surface. A path, not a URL: the Tower does not know what
+# address a phone reached it on, and a client that already resolved a
+# base URL to ask for the status document can resolve this against the
+# same one. `GET /cv-lab` beside it is the precedent.
+PREVIEW_PATH = "/cv-lab/preview"
+
+# What the artifact IS, so that a later kind (an annotated frame, a
+# segmentation overlay) is a new value here rather than a client
+# guessing from the media type.
+ARTIFACT_KIND_LIVE_PREVIEW = "live_preview"
+
+# -- treatment ---------------------------------------------------------
+#
+# The vocabulary is iOS's `RedactionState`, spelled the way this wire
+# spells things. There are three values and this Tower emits exactly one
+# of them, because there is exactly one honest answer:
+#
+#   redacted        a redaction step ran. NOT TRUE HERE. No face
+#                   detector runs on the preview path, and pretending
+#                   otherwise is the "switch the Tower cannot honour"
+#                   that `VisualArtifact.swift` says is worse than no
+#                   switch at all.
+#   raw_ephemeral   untreated, live view only, never persisted and never
+#                   re-served. TRUE HERE, in every clause.
+#   unknown         the producer did not say. Withheld by iOS, correctly.
+#
+# A fourth, gentler value was considered and rejected. `IOS-to-Tower.md`
+# 5 says "There is deliberately no `.probablySafe` and no lenient
+# default", and "this image is only a Canny edge map" is precisely the
+# argument a `.probablySafe` would encode. It is also wrong: an edge map
+# of a face keeps the jawline, the glasses and the hairline, and a depth
+# map keeps the silhouette. Derived is not the same as unrecognisable.
+TREATMENT_RAW_EPHEMERAL = "raw_ephemeral"
+
+# The process claim beside the treatment, in the naming discipline
+# `world_builder/redaction.py` and `object_memory/imagery.py` both use:
+# it says what was DONE, never what the result is safe for. "none" here
+# is the whole sentence -- no detector ran, so nothing was found and
+# nothing was filled.
+PREVIEW_FACE_FILTER_NONE = "none"
+
+# What a client is promised about where these bytes live. Nothing is
+# written to disk on this path and nothing older than the newest frame
+# survives, which is what makes `raw_ephemeral`'s "never for anything
+# stored or re-served" a property of the Tower and not only a request to
+# the phone.
+PREVIEW_PERSISTENCE_NONE = "none"
+
+# -- why there is no preview -------------------------------------------
+#
+# A closed set, on the body of every refusal and in
+# `artifact_unavailable_reason`'s place in the status document. A client
+# switches on these; the prose beside them is for a person.
+
+# This Tower has previews turned off.
+PREVIEW_DISABLED = "preview_disabled"
+# The running experiment produces no visual output. `frame_quality` has
+# nothing to draw and says so rather than drawing something.
+PREVIEW_NOT_VISUAL = "experiment_has_no_visual_output"
+# Previews are on, the experiment has one, and no frame has arrived yet.
+PREVIEW_NONE_YET = "no_preview_yet"
+# The newest preview is older than `PREVIEW_MAX_AGE_S`. A phone showing a
+# four-second-old edge map while its wearer turns their head is showing
+# a lie about where they are looking.
+PREVIEW_STALE = "preview_stale"
+# The caller named a run that is not the current one. THE staleness
+# guard: experiment A stopped, B started, and a preview of A must never
+# be drawn under B's name.
+PREVIEW_RUN_CHANGED = "preview_run_changed"
+# Rendering the newest preview raised. The experiment is unaffected --
+# see `LivePreview.render`.
+PREVIEW_RENDER_FAILED = "preview_render_failed"
+
+PREVIEW_REASONS = (
+    PREVIEW_DISABLED,
+    PREVIEW_NOT_VISUAL,
+    PREVIEW_NONE_YET,
+    PREVIEW_STALE,
+    PREVIEW_RUN_CHANGED,
+    PREVIEW_RENDER_FAILED,
+)
+
+
+# -- preview bounds ----------------------------------------------------
+
+# The longest side of a served preview, in pixels. Chosen from
+# measurement rather than taste: at 320 an edge map encodes to roughly
+# 1-15 KB of PNG in 0.3-1.5 ms and a colourised depth map to roughly
+# 20-50 KB of JPEG in 2-4 ms, all of it on a worker thread. 384 costs
+# about half as much again for detail nobody reading a phone-sized panel
+# will see. Nothing is ever UPSCALED to reach it: MiDaS-small's own
+# transform already caps its output near 256x192, and stretching that to
+# 320 would spend bytes inventing pixels the phone can invent for free.
+PREVIEW_MAX_EDGE_PX = 320
+
+# The floor on the gap between two captures, which is the whole of the
+# "visualisation is throttled independently of processing" requirement.
+# 20 Hz, so a phone polling at 10 Hz always finds something no more than
+# one capture old.
+#
+# It is a bound rather than a saving. A capture costs two attribute
+# assignments -- the array the experiment already computed is handed over
+# by reference and never touched on the frame path -- so raising this to
+# every frame would cost nothing measurable. It exists because a bound
+# that is never reached is still the thing that makes the guarantee.
+PREVIEW_MIN_INTERVAL_S = 0.05
+
+# How old the newest preview may be and still be served. Two seconds is
+# about twenty missed captures at the throttle ceiling, and about two
+# missed frames at the ~1-in-30 rate the current iOS sender actually
+# forwards -- long enough to survive a stutter, short enough that a
+# stopped stream stops the picture instead of freezing it.
+PREVIEW_MAX_AGE_S = 2.0
+
+# What the Tower suggests a client poll at. Advisory: the Tower cannot
+# make a phone poll at any rate and does not try. It is here so that the
+# rate is one number in one place rather than a constant hardcoded on
+# the phone that nobody can change from the machine serving the frames.
+PREVIEW_POLL_INTERVAL_S = 0.1
+
+# JPEG quality for the colourised depth map. The same figure
+# `object_memory/imagery.py` serves frames at. A depth map is smooth, so
+# JPEG's block transform has nothing to ring against; an edge map is
+# not, which is why it is PNG instead.
+PREVIEW_JPEG_QUALITY = 80
+
+# PNG effort for the edge map. Level 3, not the zlib default of 6 or
+# OpenCV's 1: measured on real Canny output the three are within a
+# kilobyte of each other, and 3 is the cheapest that is not simply
+# storing the image.
+PREVIEW_PNG_COMPRESSION = 3

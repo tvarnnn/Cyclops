@@ -32,10 +32,14 @@ import SwiftUI
 ///    `confidence` are `null` on every metric, always, because the Lab holds no
 ///    reference run to compare against. The machinery that would have rendered
 ///    a verdict is deleted rather than left dormant — see `CVMetric`.
-/// 2. **No annotated frame.** `artifact` is `null` in this contract with a
-///    stated reason: no redaction-state vocabulary is shared between the two
-///    sides and no artifact fetch contract exists on either. An experiment gets
-///    no privacy exemption for being a debug surface.
+/// 2. **No photographic frame, ever.** There *is* a live view now — see
+///    `CVLivePreviewPanel` — and it is the first thing on the screen. What it
+///    draws is derived: an edge map, a colourised depth map, or an overlay
+///    over a line drawing of the room. The Tower serves no photograph on this
+///    path, every picture states its treatment, and this app draws none whose
+///    treatment it could not read. An experiment still gets no privacy
+///    exemption for being a debug surface; it got a picture that does not need
+///    one.
 ///
 /// ## Debug and Release are genuinely different products here
 ///
@@ -95,9 +99,24 @@ struct ExperimentalCVWorkspaceView: View {
         VStack(spacing: 16) {
             header
 
-            // Above the experiment list, deliberately. This is the answer the
-            // Tower is actually producing; everything below it is about
-            // choosing what produces the next one.
+            // FIRST, above everything, because it is the answer to the
+            // question a person wearing the glasses is actually asking. This
+            // screen used to open with eleven numbers at equal weight, every
+            // one of them true and none of them saying whether the algorithm
+            // could see the doorway. The numbers did not go away; they stopped
+            // being the first thing.
+            if let live = livePreview {
+                CVLivePreviewPanel(
+                    preview: live.preview,
+                    runID: live.runID,
+                    isRunning: live.isRunning,
+                    experimentName: live.name
+                )
+            }
+
+            // The latest per-frame reading, under the picture. This is the
+            // answer the Tower is producing right now; everything below it is
+            // about choosing what produces the next one.
             CVFrameReadingPanel(tower: tower, isTowerReachable: isTowerReachable)
 
             if let forcedPhase = lab.availability(isTowerReachable: isTowerReachable).forcedPhase {
@@ -127,6 +146,36 @@ struct ExperimentalCVWorkspaceView: View {
             if let refusal = lab.lastRefusal {
                 CVRefusalBanner(refusal: refusal)
             }
+        }
+    }
+
+    // MARK: The live view
+
+    /// The descriptor to draw, if there is one this build may draw.
+    ///
+    /// Only `running` and `paused`. A `completed` run keeps its FIGURES — the
+    /// Tower freezes them and says so — but its picture is gone by design: the
+    /// Tower empties the slot on the way out of `running`, because
+    /// `raw_ephemeral` means live-view-only in both directions and a frozen
+    /// last frame under a "stopped" label reads as live to anybody not reading
+    /// the label.
+    ///
+    /// `paused` still draws the panel, with the loop stopped. That is
+    /// deliberate: the panel says "the live view runs while the experiment
+    /// does" in the space the picture was in, which is a better answer than
+    /// the whole panel vanishing and the layout jumping.
+    private var livePreview:
+        (preview: CVLivePreview, runID: String?, isRunning: Bool, name: String)?
+    {
+        switch lab.state {
+        case .running(let run):
+            guard let preview = run.annotation.drawablePreview else { return nil }
+            return (preview, run.runID, true, run.experiment.name)
+        case .paused(let run):
+            guard let preview = run.annotation.drawablePreview else { return nil }
+            return (preview, run.runID, false, run.experiment.name)
+        case .unsupported, .idle, .starting, .completed, .failed:
+            return nil
         }
     }
 
@@ -865,7 +914,7 @@ private struct CVFrameReadingPanel: View {
 /// Shared by the two result panels in this file so a live reading and a
 /// completed run read identically. Not an abstraction over cartridges — it is
 /// eight points of layout that were about to exist twice in one file.
-private struct CVFigureRow: View {
+struct CVFigureRow: View {
     let caption: String
     let value: String
 
@@ -883,7 +932,10 @@ private struct CVFigureRow: View {
 }
 
 /// A small capsule label. Two points of layout, three call sites.
-private struct CVTag: View {
+/// Internal rather than file-private since `CVLivePreviewPanel` gained a LIVE
+/// badge: two capsules that looked almost the same would be worse than one
+/// that is shared.
+struct CVTag: View {
     let text: String
 
     var body: some View {
@@ -918,6 +970,122 @@ struct CVRunSummaryView: View {
     let isFinal: Bool
 
     var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            // PRIMARY: the one number the experiment says matters, and where
+            // it sits in what this run has actually seen.
+            headline
+            // SECONDARY: is it healthy. Three figures, not eleven.
+            health
+
+            if !isFinal {
+                Text("Running. These figures may still change.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            // DIAGNOSTICS: everything else, collapsed.
+            //
+            // Collapsed, not deleted, and the distinction is the whole design.
+            // Every figure below was on the screen before this change and every
+            // one of them earns its place while somebody is debugging: the
+            // stage timings, the resolved device beside the requested one, the
+            // frame counters whose invariant is the diagnostic. What they did
+            // not earn is being the FIRST thing, at the same weight as the
+            // headline, on a screen whose purpose is to show what the algorithm
+            // sees.
+            DisclosureGroup {
+                diagnostics
+                    .padding(.top, 8)
+            } label: {
+                // `SectionLabel` rather than a bare string, so the one
+                // collapsed section on this screen looks like every other
+                // section heading in the app rather than like a control.
+                SectionLabel("Diagnostics")
+            }
+        }
+    }
+
+    /// The experiment's own most important number, drawn large.
+    ///
+    /// The Tower puts it first in the list and marks it; this reads the mark
+    /// rather than re-deciding, because "an experiment that cannot name its
+    /// single most important number has not decided what it is measuring" is
+    /// the Tower's discipline and not this app's to second-guess.
+    @ViewBuilder
+    private var headline: some View {
+        if let metric = run.metrics.first(where: { $0.isHeadline }) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(metric.label)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Text(metric.displayValue ?? "—")
+                        .font(.title2.weight(.semibold))
+                        .monospacedDigit()
+                    if metric.provenance.isInference {
+                        CVTag(text: "Estimate")
+                    }
+                }
+                // Where this frame sits in the range this run has seen. NOT a
+                // verdict: see `CVMetric.rangeNote`, and see the Tower's own
+                // refusal to publish a calibrated threshold for any of these.
+                if let note = metric.rangeNote {
+                    Text(note)
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                if let reason = metric.unavailableReason {
+                    Text(reason)
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        }
+    }
+
+    /// Three figures that say whether the run is healthy, and no more.
+    ///
+    /// Chosen because each answers a different question a person actually
+    /// asks: how hard is the Tower working, how much is getting through, and
+    /// is anything arriving at all.
+    @ViewBuilder
+    private var health: some View {
+        HStack(alignment: .top, spacing: 16) {
+            if let processing = run.timings.processingMs {
+                healthFigure("Processing", "\(CVMetric.format(processing)) ms")
+            }
+            if let processed = run.throughput.processedFps {
+                healthFigure("Result rate", "\(CVMetric.format(processed)) fps")
+            }
+            if let frames = run.framesProcessed {
+                healthFigure("Frames", "\(frames)")
+            }
+            Spacer(minLength: 0)
+        }
+        if !run.hasMeasuredAnything {
+            Text(Self.notMeasuredNote)
+                .font(.caption)
+                .foregroundStyle(.tertiary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private func healthFigure(_ caption: String, _ value: String) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(caption)
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+            Text(value)
+                .font(.subheadline.weight(.medium))
+                .monospacedDigit()
+        }
+        .accessibilityElement(children: .combine)
+    }
+
+    @ViewBuilder
+    private var diagnostics: some View {
         VStack(alignment: .leading, spacing: 10) {
             ForEach(run.metrics) { metric in
                 metricRow(metric)
@@ -947,19 +1115,58 @@ struct CVRunSummaryView: View {
             frameCounters
             timingRows
             annotationRows
+            previewRows
             runtimeRows
-
-            if !isFinal {
-                Text("Running. These figures may still change.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
 
             if run.containsInference {
                 // Stated once for the run rather than repeated per row, so it
                 // reads as a property of the results instead of as noise.
                 Text("Values marked as estimates are model output, not measurements.")
                     .font(.caption)
+                    .foregroundStyle(.tertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    /// What the live view cost, beside what the experiment cost and never
+    /// mixed into it.
+    ///
+    /// This is the block that answers "did the picture slow the pipeline
+    /// down?" after a physical test, with numbers instead of impressions.
+    /// `renderMs` is worker-thread time and is deliberately NOT added to
+    /// `timings.processing_ms`, which has to stay comparable against every
+    /// figure recorded before previews existed.
+    @ViewBuilder
+    private var previewRows: some View {
+        if let preview = run.preview {
+            if let captured = preview.captured {
+                row("Previews captured", "\(captured)")
+            }
+            if let skipped = preview.skippedByThrottle {
+                row("Previews skipped by the throttle", "\(skipped)")
+            }
+            if let encoded = preview.encoded {
+                row("Previews encoded", "\(encoded)")
+            }
+            if let unchanged = preview.notModified, unchanged > 0 {
+                row("Fetches answered unchanged", "\(unchanged)")
+            }
+            if let failures = preview.encodeFailures, failures > 0 {
+                row("Previews that failed to render", "\(failures)")
+            }
+            if let render = preview.renderMs {
+                row("Preview render, mean", "\(CVMetric.format(render)) ms")
+            }
+            if let worst = preview.renderMsMax {
+                row("Preview render, worst", "\(CVMetric.format(worst)) ms")
+            }
+            if let bytes = preview.payloadBytes {
+                row("Preview size, mean", "\(bytes / 1024) KB")
+            }
+            if let note = preview.deliveryNote {
+                Text(note)
+                    .font(.caption2)
                     .foregroundStyle(.tertiary)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -994,6 +1201,16 @@ struct CVRunSummaryView: View {
                         .font(.caption2)
                         .foregroundStyle(.tertiary)
                 }
+            }
+            // Where the newest frame sits in what this run has seen. A
+            // placement inside one run's own range, and never a verdict --
+            // "Sharpness: Good" would be this app inventing the calibration
+            // both sides refuse to invent. See `CVMetric.rangeNote`.
+            if let note = metric.rangeNote {
+                Text(note)
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
             if let reason = metric.unavailableReason {
                 Text(reason)
@@ -1058,12 +1275,6 @@ struct CVRunSummaryView: View {
             // measured rate is normally bounded by what arrives.
             row("The Lab could manage", "\(CVMetric.format(capacity)) fps")
         }
-        if !run.hasMeasuredAnything {
-            Text(Self.notMeasuredNote)
-                .font(.caption)
-                .foregroundStyle(.tertiary)
-                .fixedSize(horizontal: false, vertical: true)
-        }
     }
 
     private static let notMeasuredNote = """
@@ -1086,9 +1297,12 @@ struct CVRunSummaryView: View {
                 .foregroundStyle(.tertiary)
                 .fixedSize(horizontal: false, vertical: true)
         }
-        // Always null on this contract, with a stated reason. Drawn verbatim
-        // rather than paraphrased: it is the Tower explaining a privacy
-        // decision in its own words, and a paraphrase here would rot.
+        // The Tower's own sentence for why there is no live view, when there
+        // is none -- previews switched off, or an experiment with nothing to
+        // draw. Drawn verbatim rather than paraphrased: it is the Tower
+        // explaining a decision in its own words, and a paraphrase would rot.
+        // When there IS one, this is nil and `CVLivePreviewPanel` has the
+        // picture.
         if let reason = run.annotation.artifactUnavailableReason {
             Text(reason)
                 .font(.caption2)

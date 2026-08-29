@@ -975,6 +975,18 @@ wrong product.
    is on the response for a reason.
 10. **Read `recorded_classes` and `snippet_max_chars` off the payload.**
     Both are configuration-dependent.
+11. **Never persist, cache or re-serve a CV Lab preview.** It arrives
+    `raw_ephemeral`, which permits a live view and nothing else. The Tower
+    sends `Cache-Control: no-store`, writes nothing to disk and keeps only
+    the newest frame; a client that saved one would have created the
+    persistence that treatment says does not exist.
+12. **Never call a CV Lab preview redacted, anonymised or privacy-safe.**
+    No face detector runs on that path and the contract says so
+    (`face_filter: "none"`). An edge map keeps a jawline and a depth map
+    keeps a silhouette — derived is not unrecognisable.
+13. **Never render a CV Lab depth preview as distance.** It is relative
+    inverse depth on a scale that differs per frame. Same rule as item 1,
+    and the same reason.
 
 ---
 

@@ -409,41 +409,242 @@ knows — whether this build is streaming at all — and read
   measurement" that `EXPERIMENTAL-CV.md` rules out. Offline corpus
   comparison is `scripts/cv_lab_benchmark.py`, and it is not this channel.
 
+### 4.1 `latest`, `observed_min`, `observed_max` — placing a number without inventing a threshold
+
+Three fields on every metric row. Non-`null` only for `rate` metrics: a
+`count`'s running total has no "range this run", a `constant` has no range
+by definition, and an `unaggregated` one has no meaningful anything.
+
+`value` is the run's aggregate. `latest` is the most recent frame's value,
+and `observed_min` / `observed_max` are the range **this run** has seen.
+
+They exist because `sharpness_laplacian_var: 483.068` says nothing to
+anybody, and the same number beside *"this run has seen 79 to 1309"* says
+the frame is middling — from **this** camera in **this** room, rather than
+from a constant somebody picked once. The standard reference for
+variance-of-Laplacian is explicit that its threshold must be tuned per
+dataset, and this Lab has one physical run to tune against, which is none.
+
+**What a client may conclude from them:** where a value sits inside this
+run. **What it may not:** anything about whether that is good. There is no
+calibration behind these numbers and a UI that renders "Sharpness: Good"
+from them has invented the threshold this contract refuses to invent. A
+run that has seen four frames has a range of four frames.
+
 ---
 
 ## 5. Annotations and imagery
 
 ```json
 {"count": 3, "count_unavailable_reason": null,
- "artifact": null,
- "artifact_unavailable_reason": "this Tower serves no imagery for CV Lab results. ..."}
+ "artifact": {"contract": "experimental_cv.preview/2026-08-29",
+              "kind": "live_preview", "visual_kind": "detections",
+              "description": "Every box the detector produced, ...",
+              "treatment": "raw_ephemeral", "face_filter": "none",
+              "persistence": "none",
+              "derived_from": "one frame, transiently, in memory",
+              "path": "/cv-lab/preview", "media_type": "image/png",
+              "run_id": "a1b2c3d4e5f6-3", "max_age_s": 2.0,
+              "poll_interval_s": 0.1, "max_edge_px": 320},
+ "artifact_unavailable_reason": null}
 ```
 
 `count` is `null` when the experiment produces no annotation count and a
 **number** when it does, **including zero**. `0` is a real result meaning
 "found nothing" and must not merge with "did not say".
 
-`artifact` is **always `null` in this contract**, and the reason is not
-that it was forgotten:
+### 5.1 `artifact` used to be `null`, always. Here is what changed.
 
-- `IOS-to-Tower.md` §5 withholds any image whose treatment was not stated,
-  with no lenient default: *"An unstated treatment is not a treatment."*
-- The same section states that artifact fetching itself is **UNKNOWN** —
-  iOS *"holds no URL, no id format, and no bytes, because inventing a
-  fetch scheme would be exactly the fabricated contract this work refuses
-  to produce."*
+The previous version of this section said `artifact` is *"always `null` in
+this contract"*, and gave three conditions that would have to be met
+first:
 
-Serving an inline image here would be the Tower inventing that scheme
-unilaterally, and an experiment gets no privacy exemption for being a
-debug surface. The field exists so that a later contract adds a payload
-where a `null` is, rather than adding a field.
+1. a redaction-state vocabulary shared with §5 of `IOS-to-Tower.md`;
+2. an artifact fetch contract;
+3. per-experiment declaration of whether the visual output contains source
+   pixels — *"an edge map or a depth map is derived, a detection overlay is
+   the original frame with boxes on it, and those are not the same privacy
+   object."*
 
-**To enable it later**, in this order: (1) a redaction-state vocabulary
-shared with §5 of `IOS-to-Tower.md`; (2) an artifact fetch contract; (3)
-per-experiment declaration of whether its visual output contains source
-pixels — an edge map or a depth map is derived, a detection overlay is the
-original frame with boxes on it, and those are not the same privacy
-object. None of the three exist today.
+All three are met, and the third is met by removing the case rather than
+by declaring it: **no CV Lab preview contains source pixels.** A detection
+overlay is not the original frame with boxes on it; it is boxes drawn over
+a Canny line drawing. See §5.3.
+
+### 5.2 The artifact block
+
+Present when the running experiment declares a `preview_kind` and this
+Tower has previews on. `null` otherwise, with
+`artifact_unavailable_reason` carrying the sentence — the two are mutually
+exclusive and never both `null`.
+
+| Field | Meaning |
+|---|---|
+| `contract` | `experimental_cv.preview/2026-08-29`. Versioned separately from the status document: a client may read the whole document and never fetch an image, which is exactly what a Release iOS build with no camera does. |
+| `kind` | `live_preview`. What the artifact *is*, so a later kind is a new value rather than a client guessing from the media type. |
+| `visual_kind` | How to READ the picture, never what it means: `edge_map`, `relative_depth`, `keypoints`, `detections`, `flow_tracks`, `redaction_regions`, `frame_quality`. A client must not infer semantics from it — a `relative_depth` preview is **not** metres, and §4's rules about provenance and units are unchanged by there being a picture. |
+| `description` | The Tower's own sentence about what is drawn. Displayed verbatim. It is also where a client that renders nothing else learns the one thing it must not get wrong — the depth preview's says the values are not metres. |
+| `treatment` | `raw_ephemeral`, always, on every preview. See §5.3. |
+| `face_filter` | `none`, always. A **process** claim: no face detector runs on this path. It never says the result is safe. |
+| `persistence` | `none`. Nothing reaches a disk and only the newest frame exists. |
+| `derived_from` | `one frame, transiently, in memory`. |
+| `path` | `/cv-lab/preview`. A path, not a URL — the Tower does not know what address it was reached on, and a client that resolved a base URL for this document can resolve this against the same one. |
+| `media_type` | `image/png` for every kind except `relative_depth`, which is `image/jpeg`. |
+| `run_id` | The run these previews belong to. Send it back; see §5.4. |
+| `max_age_s` | Past this age the Tower refuses rather than serving. `2.0`. |
+| `poll_interval_s` | What the Tower suggests. Advisory: it cannot make a phone poll at any rate and does not try. |
+| `max_edge_px` | Longest side of the served image. |
+
+`available[].preview_kind` carries the same vocabulary in the **catalog**,
+so a client can say "this one has a live view" in the picker without
+starting a run to find out. `null` there is a real answer — `baseline`
+will never have a picture, deliberately, because it is the control every
+other experiment's cost is measured against and drawing one would roughly
+double what it costs.
+
+### 5.3 Privacy — `raw_ephemeral`, and why that is the strict answer
+
+`IOS-to-Tower.md` §5 defines three treatments and this Tower emits exactly
+one of them:
+
+- **`redacted`** — a redaction step ran. **Not true here.** No face
+  detector runs on the preview path, and claiming otherwise would be the
+  *"switch the Tower cannot honour"* that `VisualArtifact.swift` says is
+  worse than no switch at all.
+- **`raw_ephemeral`** — *"Untreated imagery. Permitted only for the live,
+  in-memory view of what the wearer currently sees — never for anything
+  persisted, and never for anything a cartridge stored and re-served
+  later."* **Every clause is true here**, and it is the strict answer
+  rather than a lenient one.
+- **`unknown`** — the producer did not say. Withheld by iOS, correctly.
+
+A fourth, gentler value was considered and rejected. `IOS-to-Tower.md` §5
+says *"There is deliberately no `.probablySafe` and no lenient default"*,
+and "it is only a Canny map" is precisely the argument a `.probablySafe`
+would encode. It is also wrong: **an edge map of a face keeps the jawline,
+the hairline and the frames of a pair of glasses, and a depth map keeps
+the silhouette.** Derived is not unrecognisable.
+
+**No preview is photographic.** Every overlay — keypoints, boxes, flow
+arrows, the redaction rectangle — is drawn over an edge map derived from
+the frame, never over the frame. The alternative was the real frame with
+the display filter from `object_memory/imagery.py` applied and failing
+closed; it was rejected because it needs vendored YuNet weights (so a
+Tower without them shows a blank debug viewer), because a display filter
+is not a redaction, and because an edge map is enough to tell a chair from
+a doorway, which is all a box needs to be placed against. The
+implementation is `tower/experiments/scene_structure`, and its docstring
+carries the full argument.
+
+**Obligations on a client**, all of which follow from `raw_ephemeral`:
+
+- draw it live and nowhere else;
+- never write it to disk, a URL cache, a photo library or a log;
+- drop the bytes when the view goes away, when the run changes, and when
+  the run pauses or stops;
+- never re-serve it.
+
+The Tower does its half structurally: `Cache-Control: no-store` on every
+response, nothing written to disk, one image in memory at a time, and the
+slot emptied the moment a run leaves `running`.
+
+### 5.4 Fetching one
+
+```
+GET /cv-lab/preview?run_id=<the run you are watching>
+    If-None-Match: <the ETag you last received>
+```
+
+**HTTP, not the socket, and that is load-bearing.** `ws.py` gives the
+frame path and the result sender one shared lock, and every bulky thing in
+this Tower is an HTTP route for that reason — `geometry.py` says so about
+a megabyte of points and `observations.py` about a JPEG. A 5–40 KB image
+several times a second on the frame socket would queue against
+`frame_result`. It is also the shape that cannot build a backlog: a GET is
+a pull, so a client that falls behind asks again and gets the **newest**
+picture, and the ones it missed were dropped when they were replaced
+rather than queued against its return. There is no per-client state on the
+Tower at all.
+
+Responses:
+
+| Status | Meaning |
+|---|---|
+| `200` | The image. Headers carry `ETag`, `X-CV-Preview-Run`, `X-CV-Preview-Seq`, `X-CV-Preview-Kind`, `X-CV-Preview-Age` (seconds), `X-CV-Preview-Treatment` and `X-CV-Preview-Contract`, plus `Cache-Control: no-store`. |
+| `304` | You already have this frame. No body, no encode on the Tower. |
+| `404` | `experiment_has_no_visual_output`. Asking again will not help. |
+| `409` | `preview_run_changed`. You named a run that is not current; `current_run_id` on the body says which one is. |
+| `503` | `preview_disabled`, `no_preview_yet`, `preview_stale` or `preview_render_failed`. The Tower is willing and has nothing right now. |
+
+The **reason value is on the body in every case** and a client should
+switch on that rather than on the status code — the same rule
+`observations.py` states for its own imagery routes.
+
+`GET /cv-lab/preview/status` returns the artifact block without the bytes,
+for a client that wants to know whether to draw a viewer at all. Same
+split as `/object-memory/.../imagery` beside `/frame`.
+
+**Staleness is answered three ways**, and the point of three is that no
+one of them is trusted alone:
+
+1. **Run identity.** Send `run_id`. Stop Edge Detection, start Depth, and
+   a request still naming Edge's run is refused at the Tower rather than
+   answered with a picture the phone would draw under Depth's name.
+2. **An epoch.** Every stop, pause, failure and release bumps a counter,
+   and a render that began before one and finished after it is discarded.
+3. **Age.** Past `max_age_s` the Tower refuses. A phone showing a
+   four-second-old edge map while its wearer turns their head is showing a
+   lie about where they are looking.
+
+The **descriptor** rides the status document and the **identity** rides
+the bytes, deliberately. `result_seq` changes every frame; putting it in
+the status document would make `revision_changed` — which the result
+channel defines as *"news, not a heartbeat"* — fire on every poll of a Lab
+that had merely gone on running.
+
+### 5.5 `run.preview` — what the picture cost
+
+A diagnostics block on the run document. It exists to answer one question
+with evidence rather than opinion: **did adding a live view slow the CV
+pipeline down?**
+
+| Field | Meaning |
+|---|---|
+| `enabled` | Whether this Tower serves previews at all. |
+| `live` | Whether a capture right now would be kept: previews on, the experiment has a picture, and the run is `running`. |
+| `visual_kind` | The kind being captured, or `null`. |
+| `frames_offered` | Frames the Lab told the preview about. |
+| `captured` | …of which this many became the newest preview. |
+| `skipped_by_throttle` | …and this many were never asked for, because the last capture was too recent. **This is the figure that says visualisation runs at its own rate.** |
+| `empty_takes` | The experiment had nothing to hand over. Normally zero. |
+| `replaced_unread` | Captures overwritten before anything rendered them. The intended behaviour, counted rather than hidden: `captured - replaced_unread` is roughly what the phone actually saw. |
+| `encoded` | Encodes actually performed — far fewer than `captured`, and the gap **is** the design: nothing is encoded until somebody asks. |
+| `encode_failures` | Renders that raised. The run is unaffected; see §5.6. |
+| `served` | Responses carrying bytes. |
+| `not_modified` | Answered `304`. A high figure means the phone is polling faster than the Tower produces, which costs a round trip and no encode. |
+| `refused` | Responses carrying a reason instead of a picture. |
+| `render_ms`, `render_ms_max` | Mean and worst encode, **on a worker thread**. Not part of `timings.processing_ms`. |
+| `payload_bytes`, `payload_bytes_max`, `payload_bytes_last` | What a preview weighs. |
+| `max_edge_px`, `min_interval_s`, `max_age_s` | The policy in force. |
+
+Two numbers are deliberately kept apart. `timings.processing_ms` is what
+the **experiment** costs and stays comparable against every figure
+recorded before previews existed; `preview.render_ms` is what a
+**picture** costs, on a different thread, at a different rate. Where an
+experiment does pay something on the frame path to derive what will be
+drawn, it appears as a **`preview` stage inside `timings.stage_ms`** —
+visible, subtractable, and only on the frames the throttle allowed.
+
+### 5.6 The picture may fail; the run may not
+
+Rendering never raises. A failed encode produces a `503` with
+`preview_render_failed`, increments `encode_failures`, and leaves the
+experiment untouched — it has already returned its result and its numbers
+are already on the wire. Capturing is wrapped for the same reason:
+`ModuleContainer` treats anything that is not a `FrameProcessingError` as
+a **terminal** module failure, so a bug in a picture would otherwise end
+CV processing for the life of the process. A preview is a convenience, and
+no convenience gets to end a run.
 
 ---
 

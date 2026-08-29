@@ -16,7 +16,16 @@ the others offer.
 import cv2
 import numpy as np
 
-from tower.experiments import ExperimentResult, MetricKind, decode_color
+from tower.experiments import (
+    ExperimentPreview,
+    ExperimentResult,
+    ExperimentSettings,
+    MetricKind,
+    QualityPreview,
+    ScenePreview,
+    decode_color,
+    scene_structure,
+)
 from tower.instrumentation import StageTimer
 
 # What each number means when many frames are combined. Seven of these
@@ -43,6 +52,12 @@ UNDEREXPOSED_LEVEL = 5
 
 
 def run(raw_bytes: bytes) -> ExperimentResult:
+    """One frame, measured. See `FrameQuality` for the registered form."""
+    result, _preview = _measure(raw_bytes, preview=False)
+    return result
+
+
+def _measure(raw_bytes: bytes, *, preview: bool):
     timer = StageTimer()
 
     with timer.stage("decode"):
@@ -120,6 +135,26 @@ def run(raw_bytes: bytes) -> ExperimentResult:
         edges = cv2.Canny(gray, 100, 200)
         edge_density = float(np.count_nonzero(edges)) / edges.size
 
+    payload = None
+    if preview:
+        with timer.stage("preview"):
+            # `scene_structure` rather than the `edges` array two lines
+            # up, even though that array is free. Those thresholds are
+            # tuned for the FULL decode resolution and this picture is
+            # 320 px wide: downscaling a 100/200 edge map produces a
+            # sparse dotted room, and the structure helper re-runs Canny
+            # at the size it will actually be looked at. The saving would
+            # have been half a millisecond and the cost would have been
+            # the picture.
+            payload = QualityPreview(
+                scene=ScenePreview(structure=scene_structure(gray)),
+                histogram=histogram,
+                overexposed_level=OVEREXPOSED_LEVEL,
+                underexposed_level=UNDEREXPOSED_LEVEL,
+                overexposed_fraction=overexposed,
+                underexposed_fraction=underexposed,
+            )
+
     return ExperimentResult(
         result_value=sharpness,
         result_label="sharpness_laplacian_var",
@@ -137,4 +172,35 @@ def run(raw_bytes: bytes) -> ExperimentResult:
             "width": float(gray.shape[1]),
             "height": float(gray.shape[0]),
         },
-    )
+    ), payload
+
+
+class FrameQuality:
+    """`_measure`, plus somewhere to put the histogram down.
+
+    Still `stateful=False`: nothing it reports depends on a previous
+    frame, and the preview slot holds one frame's derived picture rather
+    than any part of the measurement.
+    """
+
+    name = "frame_quality"
+
+    def __init__(self) -> None:
+        self._preview = ExperimentPreview()
+
+    def load(self, settings: ExperimentSettings | None = None) -> None:
+        return None
+
+    def run(self, raw_bytes: bytes) -> ExperimentResult:
+        result, payload = _measure(raw_bytes, preview=self._preview.wanted)
+        self._preview.offer(payload)
+        return result
+
+    def set_preview_capture(self, enabled: bool) -> None:
+        self._preview.set_preview_capture(enabled)
+
+    def take_preview(self):
+        return self._preview.take_preview()
+
+    def release(self) -> None:
+        self._preview.set_preview_capture(False)

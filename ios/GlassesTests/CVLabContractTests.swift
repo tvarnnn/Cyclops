@@ -181,8 +181,23 @@ final class CVLabContractTests: XCTestCase {
             "annotation": {
               "count": null,
               "count_unavailable_reason": "this experiment reports no annotation count",
-              "artifact": null,
-              "artifact_unavailable_reason": "this Tower serves no imagery for CV Lab results. Every image must arrive stating its redaction treatment, and no artifact fetch contract exists on either side yet"
+              "artifact": {
+                "contract": "experimental_cv.preview/2026-08-29",
+                "kind": "live_preview",
+                "visual_kind": "flow_tracks",
+                "description": "One arrow per tracked point, coloured by direction, over a line drawing of the frame. Red dots are seeds the forward-backward check rejected.",
+                "treatment": "raw_ephemeral",
+                "face_filter": "none",
+                "persistence": "none",
+                "derived_from": "one frame, transiently, in memory",
+                "path": "/cv-lab/preview",
+                "media_type": "image/png",
+                "run_id": "5a4a5f01ac52-2",
+                "max_age_s": 2.0,
+                "poll_interval_s": 0.1,
+                "max_edge_px": 320
+              },
+              "artifact_unavailable_reason": null
             },
             "timings": {
               "processing_ms": 18.4667,
@@ -490,21 +505,195 @@ final class CVLabContractTests: XCTestCase {
     }
 
     /// `0` annotations is "found nothing" and must not merge with "did not
-    /// say" — and the artifact is null on this contract *with a stated reason*,
-    /// which is why the reason is read rather than the absence assumed.
+    /// say" — and the artifact carries a descriptor whose treatment is stated,
+    /// which is why the treatment is read rather than the presence assumed.
     func testTheAnnotationBlockKeepsSilenceAndZeroApart() throws {
         let annotation = try XCTUnwrap(liveStatus().run?.annotation)
         XCTAssertNil(annotation.count)
         XCTAssertEqual(
             annotation.countUnavailableReason, "this experiment reports no annotation count"
         )
-        XCTAssertEqual(annotation.artifact, .absent)
-        XCTAssertNotNil(
-            annotation.artifactUnavailableReason,
-            "the Tower's reason for serving no imagery was dropped"
-        )
+        // A descriptor, and therefore no reason: the two are mutually
+        // exclusive and a document with both would be a Tower disagreeing with
+        // itself.
+        XCTAssertEqual(annotation.artifact, .notFetched(.rawEphemeral))
+        XCTAssertNil(annotation.artifactUnavailableReason)
         XCTAssertTrue(CVAnnotationReport(count: 0).hasReport)
         XCTAssertFalse(CVAnnotationReport().hasReport)
+    }
+
+    // MARK: - 4a. The live preview
+
+    /// The descriptor is read, and the treatment governs whether it is drawn.
+    func testThePreviewDescriptorIsReadOffTheArtifactBlock() throws {
+        let preview = try XCTUnwrap(liveStatus().run?.annotation.preview)
+        XCTAssertEqual(preview.contract, ExperimentalCVContract.preview)
+        XCTAssertEqual(preview.visualKind, "flow_tracks")
+        XCTAssertEqual(preview.redaction, .rawEphemeral)
+        XCTAssertEqual(preview.faceFilter, "none")
+        XCTAssertEqual(preview.path, "/cv-lab/preview")
+        XCTAssertEqual(preview.runID, "5a4a5f01ac52-2")
+        XCTAssertEqual(preview.maxAgeSeconds, 2.0)
+        XCTAssertEqual(preview.pollIntervalSeconds, 0.1)
+        XCTAssertTrue(preview.isDrawable)
+        XCTAssertNil(preview.withheldReason)
+        XCTAssertNotNil(liveStatus().run?.annotation.drawablePreview)
+    }
+
+    /// **The privacy gate, from the strict side.** An unstated treatment is
+    /// not a treatment, and the picture is not drawn.
+    func testAPreviewWithNoStatedTreatmentIsNotDrawn() throws {
+        let preview = try XCTUnwrap(
+            CVLivePreview(json: [
+                "contract": ExperimentalCVContract.preview,
+                "visual_kind": "edge_map",
+                "path": "/cv-lab/preview",
+            ])
+        )
+        XCTAssertEqual(preview.redaction, .unknown)
+        XCTAssertFalse(preview.isDrawable)
+        XCTAssertNotNil(preview.withheldReason)
+    }
+
+    /// A treatment word this build has never heard of is `.unknown`, not a
+    /// reason to guess. Same rule as `CVWireProvenance`.
+    func testAnUnrecognisedTreatmentIsHandledAsStrictlyAsRaw() {
+        XCTAssertEqual(CVWireRedaction.read("probably_safe"), .unknown)
+        XCTAssertEqual(CVWireRedaction.read(nil), .unknown)
+        XCTAssertEqual(CVWireRedaction.read("raw_ephemeral"), .rawEphemeral)
+        XCTAssertEqual(CVWireRedaction.read("redacted"), .redacted)
+        // `rawEphemeral` is live-displayable and NOT persisted-displayable.
+        // Both halves matter: the first is what makes this feature possible
+        // and the second is what keeps it from leaking onto a stored surface.
+        XCTAssertTrue(RedactionState.rawEphemeral.isDisplayableLive)
+        XCTAssertFalse(RedactionState.rawEphemeral.isDisplayableWhenPersisted)
+        XCTAssertFalse(RedactionState.unknown.isDisplayableLive)
+    }
+
+    /// A preview offered under a contract this build does not implement is
+    /// refused with a sentence, not drawn hopefully.
+    func testAPreviewFromAFutureContractIsNotDrawn() throws {
+        let preview = try XCTUnwrap(
+            CVLivePreview(json: [
+                "contract": "experimental_cv.preview/2099-01-01",
+                "visual_kind": "hologram",
+                "path": "/cv-lab/preview",
+                "treatment": "raw_ephemeral",
+            ])
+        )
+        XCTAssertFalse(preview.isDrawable)
+        XCTAssertTrue(try XCTUnwrap(preview.withheldReason).contains("Update the app"))
+    }
+
+    /// A block with no path cannot be fetched, so it is not a descriptor.
+    func testAnArtifactBlockWithNothingToFetchIsNotDecoded() {
+        XCTAssertNil(
+            CVLivePreview(json: [
+                "contract": ExperimentalCVContract.preview, "visual_kind": "edge_map",
+            ])
+        )
+        XCTAssertNil(CVLivePreview(json: [:]))
+    }
+
+    /// A run with no artifact at all reports the absence and its reason,
+    /// exactly as it did before this contract existed.
+    func testAnExperimentWithNoPictureStillSaysWhy() throws {
+        let annotation = CVAnnotationReport(json: [
+            "count": NSNull(),
+            "artifact": NSNull(),
+            "artifact_unavailable_reason":
+                "this experiment produces no visual output, so there is no picture to serve",
+        ])
+        XCTAssertEqual(annotation.artifact, .absent)
+        XCTAssertNil(annotation.preview)
+        XCTAssertNil(annotation.drawablePreview)
+        XCTAssertNotNil(annotation.artifactUnavailableReason)
+    }
+
+    /// The catalog says which experiments have one, before anything is armed.
+    func testTheCatalogSaysWhichExperimentsHaveALiveView() throws {
+        let available = liveStatus().available
+        XCTAssertFalse(available.isEmpty)
+        // Not asserted per id: the Tower owns the registry and this app holds
+        // no list. What is asserted is that the field is READ rather than
+        // dropped, and that `nil` survives as `nil`.
+        let decoded = try XCTUnwrap(
+            CVExperiment(json: [
+                "id": "edge_detection", "name": "Edge detection",
+                "available": true, "preview_kind": "edge_map",
+            ])
+        )
+        XCTAssertEqual(decoded.previewKind, "edge_map")
+        XCTAssertTrue(decoded.hasLiveView)
+
+        let blind = try XCTUnwrap(
+            CVExperiment(json: ["id": "baseline", "name": "Baseline", "available": true])
+        )
+        XCTAssertNil(blind.previewKind)
+        XCTAssertFalse(blind.hasLiveView)
+    }
+
+    /// Where a number sits in this run's range, and never a verdict.
+    func testAMetricPlacesItselfInThisRunsRangeWithoutJudgingIt() throws {
+        let metric = try XCTUnwrap(
+            CVMetric(json: [
+                "label": "sharpness_laplacian_var", "value": 402.0,
+                "provenance": "measured", "aggregation": "rate", "frames": 767,
+                "latest": 1240.0, "observed_min": 79.0, "observed_max": 1309.0,
+            ])
+        )
+        let note = try XCTUnwrap(metric.rangeNote)
+        XCTAssertTrue(note.contains("this run's range"))
+        XCTAssertTrue(note.contains("near the high end of"))
+        // The words this app must never produce from an uncalibrated metric.
+        for verdict in ["Good", "Blurry", "Poor", "Sharp", "Bad"] {
+            XCTAssertFalse(note.contains(verdict), "\(verdict) is a verdict")
+        }
+    }
+
+    /// One frame is not a range, and a range of one value is not a placement.
+    func testAMetricWithNoRangeYetSaysNothingRatherThanSayingMiddle() throws {
+        let single = try XCTUnwrap(
+            CVMetric(json: [
+                "label": "x", "value": 1.0, "provenance": "measured",
+                "aggregation": "rate", "frames": 1,
+                "latest": 1.0, "observed_min": 1.0, "observed_max": 1.0,
+            ])
+        )
+        XCTAssertNil(single.rangeNote)
+
+        let counted = try XCTUnwrap(
+            CVMetric(json: [
+                "label": "y", "value": 5.0, "provenance": "measured",
+                "aggregation": "count", "frames": 9,
+            ])
+        )
+        XCTAssertNil(counted.latest)
+        XCTAssertNil(counted.rangeNote)
+    }
+
+    /// The preview's own cost is read, and kept apart from the experiment's.
+    func testThePreviewDiagnosticsAreReadAndKeptApartFromTheExperimentsTimings()
+        throws
+    {
+        let run = try XCTUnwrap(liveStatus().run)
+        // Absent on this fixture, which is itself the assertion worth making:
+        // a Tower that reports no preview block leaves this `nil` rather than
+        // producing zeros that would read as measurements.
+        XCTAssertNil(run.preview)
+
+        let stats = CVPreviewDiagnostics(json: [
+            "captured": 120, "skipped_by_throttle": 640, "replaced_unread": 108,
+            "encoded": 12, "encode_failures": 0, "served": 14, "not_modified": 2,
+            "render_ms": 1.8, "render_ms_max": 6.4, "payload_bytes": 9216,
+        ])
+        XCTAssertEqual(stats.captured, 120)
+        XCTAssertEqual(stats.skippedByThrottle, 640)
+        XCTAssertEqual(stats.renderMs, 1.8)
+        // The experiment's own timings are untouched by any of it.
+        XCTAssertEqual(run.timings.processingMs, 18.4667)
+        XCTAssertNotNil(stats.deliveryNote)
+        XCTAssertNil(CVPreviewDiagnostics(json: [:]).deliveryNote)
     }
 
     // MARK: - 5. Projection onto this app's state machine

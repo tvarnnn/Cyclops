@@ -65,6 +65,16 @@ def descriptor(experiment_id: str) -> dict:
         # experiment produces one. iOS renders it as an annotation count,
         # where 0 means "found nothing" and absent means "did not say".
         "annotation_metric": metadata.annotation_metric,
+        # What KIND of picture this experiment can draw, or `null` for one
+        # that draws none. Here rather than only on the running run so
+        # that a phone can say "this one has a live view" in the picker,
+        # before anybody commits to a two-minute model load to find out.
+        #
+        # `null` is a real answer and is not the same as "the preview is
+        # unavailable": `baseline` will never have a picture, by design,
+        # because it is the control every other experiment's cost is
+        # measured against and a picture would double what it costs.
+        "preview_kind": metadata.preview_kind,
     }
 
 

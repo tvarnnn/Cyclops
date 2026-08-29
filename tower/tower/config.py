@@ -34,6 +34,34 @@ class Settings:
     dev_mode: bool
     cv_experiment: str
     cv_device: str
+    # Whether the CV Lab derives a live picture of what the running
+    # experiment sees, and serves it over `GET /cv-lab/preview`.
+    #
+    # ON by default, which is a deliberate choice and not an oversight.
+    # The Lab existed for months as a screen of numbers that a person
+    # could read for a minute without learning whether the algorithm
+    # could see the doorway they were standing in; the picture is most of
+    # what makes it a laboratory rather than a telemetry dump. Nothing it
+    # serves is photographic (`experiments.scene_structure` explains why),
+    # nothing is written to disk, and exactly one frame exists at a time.
+    #
+    # The switch is real and worth keeping. An operator running the Tower
+    # for a measured benchmark can turn every picture off and get the
+    # frame path back to exactly what it was, byte for byte -- which is
+    # also how anybody re-measuring the physical baselines should run it.
+    cv_preview: bool = True
+    # The longest side of a served preview. See
+    # `cv_lab.contracts.PREVIEW_MAX_EDGE_PX` for where the number comes
+    # from. Exposed because a Tower on a slow link may want less and a
+    # bench Tower on a desk may want more, and neither should have to
+    # edit a constant.
+    cv_preview_max_edge_px: int = 320
+    # The floor on the gap between two captures, in seconds. This is the
+    # whole of "visualisation runs at its own rate": 0.05 is a 20 Hz
+    # ceiling on the picture regardless of how fast the experiment runs,
+    # and raising it is how a Tower whose link cannot carry 20 previews a
+    # second says so.
+    cv_preview_min_interval_s: float = 0.05
     # None means the dataset recorder is not armed at all. A path arms
     # it -- which still records nothing until a stream_start arrives.
     # Defaulted, unlike its neighbours: "off" is the only safe value for a
@@ -413,6 +441,14 @@ def get_settings() -> Settings:
         dev_mode=os.environ.get("TOWER_DEV_MODE", "true").lower() in ("1", "true", "yes"),
         cv_experiment=os.environ.get("TOWER_CV_EXPERIMENT", "baseline"),
         cv_device=os.environ.get("TOWER_CV_DEVICE", "auto"),
+        cv_preview=_flag("TOWER_CV_PREVIEW", default=True),
+        cv_preview_max_edge_px=_non_negative_int(
+            os.environ.get("TOWER_CV_PREVIEW_MAX_EDGE_PX"), default=320
+        )
+        or 320,
+        cv_preview_min_interval_s=_non_negative_float(
+            os.environ.get("TOWER_CV_PREVIEW_MIN_INTERVAL_S"), default=0.05
+        ),
         capture_root=_optional_path(os.environ.get("TOWER_CAPTURE_ROOT")),
         world_root=_optional_path(os.environ.get("TOWER_WORLD_ROOT")),
         observation_root=_observation_root(observation_enabled),

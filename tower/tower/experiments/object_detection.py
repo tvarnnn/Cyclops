@@ -21,7 +21,15 @@ import logging
 import cv2
 import numpy as np
 
-from tower.experiments import ExperimentResult, ExperimentSettings, MetricKind
+from tower.experiments import (
+    DetectionPreview,
+    ExperimentPreview,
+    ExperimentResult,
+    ExperimentSettings,
+    MetricKind,
+    ScenePreview,
+    scene_structure,
+)
 from tower.instrumentation import StageTimer
 from tower.loading import LoadInvalidation
 from tower.modules.base import FrameProcessingError
@@ -37,6 +45,25 @@ SCORE_THRESHOLD = 0.4
 # Reported individually because a Scene Understanding cartridge asks about
 # them by name. Everything else is folded into `detections`.
 TRACKED_CLASSES = ("person", "chair", "couch", "dining table", "tv", "laptop")
+
+# The most boxes one preview draws. Every detection at or above the
+# threshold is drawn; the remaining slots go to the highest-scoring
+# detections BELOW it, faded, because those are the ones somebody
+# investigating a wrong answer is looking for. SSD returns up to 300 raw
+# boxes and a 320-pixel panel with 300 rectangles on it is a hatch
+# pattern.
+PREVIEW_MAX_BOXES = 24
+
+# How far below the threshold a detection may be and still be drawn.
+#
+# Half of it, which is a principled line rather than a taste: a
+# NEAR-MISS is something that got at least halfway to being believed,
+# and everything under that is the detector saying no. Measured on a
+# synthetic desk scene: without this floor the picture drew one accepted
+# box and twenty-three refusals scoring 0.02 to 0.03, whose label chips
+# covered the room and buried the one detection that mattered. That is
+# not showing somebody the near-misses; it is showing them the tail.
+PREVIEW_LOW_SCORE_FLOOR = SCORE_THRESHOLD / 2.0
 
 # `score_threshold` is SCORE_THRESHOLD echoed back on every frame: a
 # constant, and the old harness AVERAGED it, which happened to give the
@@ -73,6 +100,7 @@ class ObjectDetectionExperiment:
         # Guards the handover from a load that may have been abandoned by
         # the module's load timeout. See tower/loading.py.
         self._invalidation = LoadInvalidation()
+        self._preview = ExperimentPreview()
 
     def _install(self, model, transform, categories, device) -> None:
         """Hand the loaded model to `self`. Runs under the token's lock."""
@@ -94,46 +122,55 @@ class ObjectDetectionExperiment:
 
         requested = "auto" if settings is None else settings.device
         self._requested_device = requested
-        # "auto" resolves to CPU for THIS experiment, and only this one.
+        # "auto" prefers CUDA here, the same as everywhere else. It did
+        # not until 2026-08-29, and the pin that made it CPU is worth
+        # understanding rather than deleting, because it was RIGHT about
+        # what it measured.
         #
-        # `resolve_device("auto")` prefers CUDA whenever it exists, which
-        # is right for `depth` and wrong here. Measured at the delivered
-        # 360x640, same-process interleaved A/B, 480 timed frames per
-        # device, 30 warm-up frames each so CUDA context creation is
-        # excluded, block order alternated:
+        # What it measured (2026-08-27, this file's previous comment):
+        # an idle developer machine, same-process interleaved A/B, 480
+        # timed frames per device, CUDA warmed up first --
         #
         #     object_detection   cpu 29.41 ms   cuda 38.17 ms   CPU faster
         #     depth              cpu 20.03 ms   cuda 10.41 ms   CUDA faster
         #
-        # CUDA lost every one of eight blocks for object_detection and won
-        # every one for depth, so flipping `auto` globally would fix one
-        # experiment by making the other roughly twice as slow. The choice
-        # belongs per experiment. Confirmed in separate processes at 1,000
-        # frames per cell (cpu 26.91 vs cuda 34.78), and an independent
-        # audit measured the same direction and magnitude (28.39 vs
-        # 35.85).
+        # CUDA lost all eight blocks, and the explanation was sound:
+        # MobileNetV3 at an internal 320 px is bound by kernel-launch
+        # overhead rather than arithmetic, so a GPU has nothing to win.
         #
-        # It also returns VRAM: this model reserved 196 MB of peak GPU
-        # memory to be slower.
+        # What a real Tower measured. Physical testing on the glasses ->
+        # phone -> Tower path, 2026-08-29, reported a mean of 199 ms per
+        # frame with a worst frame of 4,483 ms -- seven times the figure
+        # above, and a stall long enough that the event loop this runs
+        # synchronously on stopped answering every socket for four and a
+        # half seconds. Reproduced here under CPU contention: elevated
+        # latency persisted for THIRTY consecutive frames and then
+        # decayed, which is not the shape of a warm-up (paid once) and is
+        # exactly the shape of a shared thread pool losing cores. Under
+        # the SAME contention CUDA held 40-50 ms per frame, every frame.
         #
-        # WHY: `config.py`'s `scene_device` comment explains it for the
-        # same model -- MobileNetV3 at an internal 320 px is bound by
-        # kernel-launch overhead, not arithmetic -- and it is worth more
-        # here than there, because the CV Lab's `process()` runs
-        # SYNCHRONOUSLY ON THE EVENT LOOP.
+        # The two measurements do not contradict each other. The first
+        # was taken with nothing else running; a Tower ships with
+        # `scene_autostart` on and `scene_device` = "cpu", so the machine
+        # this experiment actually runs on always has another CPU-resident
+        # detector on it, and `config.py`'s own `scene_torch_threads`
+        # comment already says the torch thread pool is process-global and
+        # shared. The idle case is the one that does not happen.
         #
-        # AND IT CONTRADICTS THAT COMMENT'S NUMBERS, which say ssdlite320
-        # is 30.4 ms on CUDA against 32.9 ms on CPU -- CUDA faster by 8%.
-        # Two independent measurements now disagree with it in the same
-        # direction and by a larger margin. That older figure is left
-        # standing rather than edited, because it was taken on a different
-        # harness and this lane did not re-run ITS harness; a successor
-        # re-measuring `scene_device` should know both exist.
+        # So the trade is: give up about 9 ms in a condition that does not
+        # occur, to avoid losing 150 ms and multi-second event-loop stalls
+        # in the one that does. The outputs are equivalent -- same labels,
+        # boxes agreeing to 0.018 px and scores to 0.0004 -- so nothing is
+        # bought with correctness.
         #
-        # An explicit `TOWER_CV_DEVICE=cuda` still forces CUDA. This
-        # changes what "auto" means, not what is reachable.
-        if requested == "auto":
-            requested = "cpu"
+        # `config.py`'s `scene_device` comment still says CUDA is 30.4 ms
+        # against CPU's 32.9 ms for this model. Left standing rather than
+        # edited: a THIRD figure, on a different harness, that nothing
+        # here re-ran. A successor re-measuring `scene_device` should know
+        # all three exist, and should measure under load.
+        #
+        # `TOWER_CV_DEVICE=cpu` still forces CPU. This changes what
+        # "auto" means, not what is reachable.
         device = resolve_device(requested)
         weights = SSDLite320_MobileNet_V3_Large_Weights.COCO_V1
         model = ssdlite320_mobilenet_v3_large(weights=weights)
@@ -156,6 +193,32 @@ class ObjectDetectionExperiment:
             # the build, so the build guards itself.
             transform = weights.transforms()
             categories = list(weights.meta["categories"])
+            if torch_device.type == "cuda":
+                # One throwaway inference, here, on the worker thread the
+                # module's load timeout already bounds -- rather than on
+                # the wearer's first frame, on the event loop.
+                #
+                # Measured 2026-08-29: the first CUDA inference costs
+                # ~500 ms (context creation plus cuDNN algorithm
+                # selection) and every one after it costs 40-50 ms. Half a
+                # second added to an arm that already downloads weights is
+                # invisible; half a second added to the first frame is a
+                # stall a person feels and a figure that poisons the run's
+                # `processing_ms_max` for as long as the run lasts.
+                #
+                # CPU shows no comparable one-time cost, so it pays
+                # nothing here. Inside the existing `try`, so a warm-up
+                # that raises is freed by the same `del model` /
+                # `empty_cache()` the rest of this block already does.
+                with torch.inference_mode():
+                    model(
+                        [
+                            transform(
+                                torch.zeros(3, 360, 640, dtype=torch.uint8)
+                            ).to(torch_device)
+                        ]
+                    )
+                torch.cuda.synchronize()
         except BaseException:
             # This frame owns the model and nothing installed it, so this
             # frame frees it -- before the traceback that would otherwise
@@ -184,6 +247,7 @@ class ObjectDetectionExperiment:
         self._device = None
 
     def release(self) -> None:
+        self._preview.set_preview_capture(False)
         # The device is read INSIDE the teardown so that one lock covers
         # both the question and the answer. Reading it before invalidating
         # -- as this used to -- is a TOCTOU: an abandoned loader that
@@ -235,6 +299,70 @@ class ObjectDetectionExperiment:
             "score_threshold": SCORE_THRESHOLD,
         }
 
+    def set_preview_capture(self, enabled: bool) -> None:
+        self._preview.set_preview_capture(enabled)
+
+    def take_preview(self):
+        return self._preview.take_preview()
+
+    def _preview_payload(self, image, prediction, scores, labels):
+        """Boxes, names and scores, in the line drawing's coordinates.
+
+        The one view that turns a wrong answer into a bug report. Physical
+        testing produced 160 `person` detections in a room the wearer
+        described as empty, and the numbers alone could not say whether
+        that was a broken class map, a broken colour order, or the model
+        doing exactly what a COCO detector does when a head-mounted camera
+        points at the wearer's own hands. Investigation found the third --
+        87% of those boxes touch the bottom edge and sit dead centre --
+        and no amount of staring at `count_person: 160` would have shown
+        it. A box drawn round a forearm shows it immediately.
+
+        Below-threshold detections are kept, not dropped. They are the
+        near-misses, and a viewer that hid them would be answering a
+        different question than the one somebody debugging is asking.
+
+        What IS dropped is everything past the highest-scoring
+        `PREVIEW_MAX_BOXES`, and the payload carries the true totals so the
+        caption can say so. SSD returns up to 300 boxes and a 320-pixel
+        panel with 300 rectangles on it is a hatch pattern -- but a picture
+        that quietly drew a quarter of them and captioned itself as
+        complete would be worse than the hatch pattern.
+
+        `prediction["boxes"]` is in the ORIGINAL frame's coordinates:
+        torchvision's `GeneralizedRCNNTransform` records the input size
+        and maps its boxes back before returning them, so the 320x320 the
+        model resized to internally never leaks out here.
+        """
+        boxes = prediction["boxes"].detach().cpu().numpy()
+        structure = scene_structure(cv2.cvtColor(image, cv2.COLOR_BGR2GRAY))
+        scale = structure.shape[1] / float(image.shape[1] or 1)
+
+        # Everything worth looking at, best first: accepted, plus the
+        # refusals that came close. `argsort` on the whole array rather
+        # than a partition -- SSD returns at most 300 boxes, so this is a
+        # sort of 300 floats and the clarity is worth more than the
+        # microsecond.
+        drawable = np.flatnonzero(scores >= PREVIEW_LOW_SCORE_FLOOR)
+        order = drawable[np.argsort(-scores[drawable])][:PREVIEW_MAX_BOXES]
+        chosen_boxes = (boxes[order] * scale).astype(np.float32)
+        chosen_scores = scores[order].astype(np.float32)
+        names = tuple(
+            self._categories[int(index)]
+            if 0 <= int(index) < len(self._categories)
+            else str(int(index))
+            for index in labels[order]
+        )
+        return DetectionPreview(
+            scene=ScenePreview(structure=structure),
+            boxes=chosen_boxes,
+            labels=names,
+            scores=chosen_scores,
+            threshold=SCORE_THRESHOLD,
+            accepted_total=int((scores >= SCORE_THRESHOLD).sum()),
+            raw_total=int(len(scores)),
+        )
+
     def run(self, raw_bytes: bytes) -> ExperimentResult:
         timer = StageTimer()
 
@@ -275,6 +403,12 @@ class ObjectDetectionExperiment:
                 index = self._categories.index(name)
                 metrics[f"count_{name.replace(' ', '_')}"] = float(
                     (kept_labels == index).sum()
+                )
+
+        if self._preview.wanted:
+            with timer.stage("preview"):
+                self._preview.offer(
+                    self._preview_payload(image, prediction, scores, labels)
                 )
 
         return ExperimentResult(

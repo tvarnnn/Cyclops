@@ -29,6 +29,8 @@ from tests.cv_lab_fixtures import (  # noqa: F401
 from tower.cv_lab.contracts import (
     MAX_REPORTED_METRICS,
     MAX_UNCLASSIFIED_REPORTED,
+    PREVIEW_PATH,
+    TREATMENT_RAW_EPHEMERAL,
 )
 from tower.cv_lab.run import LabRun
 from tower.experiments import ExperimentResult, MetricKind
@@ -336,21 +338,62 @@ def test_every_metric_row_carries_provenance_and_no_invented_confidence():
 
 
 def test_no_result_channel_payload_ever_carries_an_image(monkeypatch):
-    """An experiment gets no privacy exemption for being a debug surface,
-    and `IOS-to-Tower.md` 5 withholds any image whose treatment was not
-    stated. The slot is declared and empty, with the reason on the wire."""
+    """The document says where a picture IS, and never contains one.
+
+    This test used to assert `artifact is None`, because the Tower served
+    no imagery at all. It now serves a derived preview, and the invariant
+    that actually mattered is unchanged and is the one asserted here:
+    **no image bytes ride the result channel.** The descriptor names a
+    path, a media type and a treatment; the bytes are a separate fetch a
+    client makes only if it wants one. That is the split
+    `IOS-to-Tower.md` 5's own `notFetched`/`fetching`/`available` state
+    machine was written around, and it is what keeps a 40 KB image off
+    the socket the frame path shares a lock with.
+    """
     client = make_client(monkeypatch, "feature_detection")
     lab = client.app.state.cv_lab
     lab.process(jpeg_bytes(320, 240, textured=True))
 
     annotation = lab.status()["run"]["annotation"]
-    assert annotation["artifact"] is None
-    assert "redaction" in annotation["artifact_unavailable_reason"]
-    assert "no artifact fetch contract" in annotation["artifact_unavailable_reason"]
-    # And nothing anywhere in the payload is base64-shaped.
+    artifact = annotation["artifact"]
+    assert artifact is not None
+    # Present means the reason is absent. Never both, never neither.
+    assert annotation["artifact_unavailable_reason"] is None
+    # The treatment is STATED, and it is the strict value.
+    assert artifact["treatment"] == TREATMENT_RAW_EPHEMERAL
+    assert artifact["persistence"] == "none"
+    # A process claim, never an outcome claim.
+    assert artifact["face_filter"] == "none"
+    # A path to fetch, not an inline payload.
+    assert artifact["path"] == PREVIEW_PATH
+    assert "image_bytes" not in artifact
+    assert "data" not in artifact
+
+    # And nothing anywhere in the payload is image-shaped.
     encoded = json.dumps(lab.status())
     assert "data:image" not in encoded
     assert "/9j/" not in encoded  # a JPEG in base64 always starts here
+    assert "iVBORw0KGgo" not in encoded  # nor a PNG
+
+
+def test_an_experiment_with_no_picture_says_so_rather_than_going_quiet(monkeypatch):
+    """`baseline` is the control and will never have a preview.
+
+    Not because nobody got round to it: a line drawing costs about as
+    much as this entire experiment, so giving the cheapest one a picture
+    would destroy the figure every other experiment's cost is read
+    against. The document says which of the two situations this is,
+    because "there is nothing to draw" and "a picture was withheld" are
+    different facts about a Tower.
+    """
+    client = make_client(monkeypatch, "baseline")
+    lab = client.app.state.cv_lab
+    lab.process(jpeg_bytes(320, 240))
+
+    annotation = lab.status()["run"]["annotation"]
+    assert annotation["artifact"] is None
+    assert "no visual output" in annotation["artifact_unavailable_reason"]
+    assert "withheld" in annotation["artifact_unavailable_reason"]
 
 
 def test_an_annotation_count_of_zero_is_not_the_same_as_no_count():

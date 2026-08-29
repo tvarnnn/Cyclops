@@ -32,9 +32,14 @@ import numpy as np
 
 from tower.experiments import (
     ORB_MIN_DIMENSION,
+    ExperimentPreview,
     ExperimentResult,
+    ExperimentSettings,
     MetricKind,
+    RedactionPreview,
+    ScenePreview,
     decode_gray,
+    scene_structure,
 )
 from tower.instrumentation import StageTimer
 
@@ -85,6 +90,12 @@ def _keypoints(gray: np.ndarray):
 
 
 def run(raw_bytes: bytes) -> ExperimentResult:
+    """One frame, measured. See `RedactionImpact` for the registered form."""
+    result, _preview = _measure(raw_bytes, preview=False)
+    return result
+
+
+def _measure(raw_bytes: bytes, *, preview: bool):
     timer = StageTimer()
 
     with timer.stage("decode"):
@@ -149,6 +160,13 @@ def run(raw_bytes: bytes) -> ExperimentResult:
         )
         region_area_fraction = ((x1 - x0) * (y1 - y0)) / float(gray.size)
 
+    payload = None
+    if preview:
+        with timer.stage("preview"):
+            payload = _preview_payload(
+                redacted, original, survivors, (x0, y0, x1, y1), inside, on_boundary
+            )
+
     return ExperimentResult(
         result_value=region_retention,
         result_label="region_keypoint_retention",
@@ -168,4 +186,75 @@ def run(raw_bytes: bytes) -> ExperimentResult:
             "region_area_fraction": region_area_fraction,
             "blur_kernel": float(BLUR_KERNEL),
         },
+    ), payload
+
+
+def _preview_payload(redacted, original, survivors, region, inside, on_boundary):
+    """The blurred rectangle, and what ORB could still see through it.
+
+    Drawn over the REDACTED copy, not the original. Two reasons and both
+    matter: the blur is then visible as an absence of lines rather than
+    something a person has to take on trust, and no picture this
+    experiment serves has ever been of the unblurred frame -- which is the
+    right posture for the one experiment whose whole subject is what
+    redaction costs.
+
+    `original` and `survivors` come from two INDEPENDENT ORB passes and
+    are never matched, so nothing here may say "this point was lost". The
+    pre-redaction keypoints go down as a dim base layer meaning "there was
+    texture here", and a base point with no survivor drawn on it reads as
+    lost without anybody having claimed a correspondence.
+    """
+    structure = scene_structure(redacted)
+    scale = structure.shape[1] / float(redacted.shape[1] or 1)
+
+    def _points(keypoints):
+        return np.asarray(
+            [(kp.pt[0] * scale, kp.pt[1] * scale) for kp in keypoints],
+            dtype=np.float32,
+        ).reshape(-1, 2)
+
+    inside_kp, boundary_kp, outside_kp = [], [], []
+    for keypoint in survivors:
+        if inside(keypoint.pt):
+            inside_kp.append(keypoint)
+        elif on_boundary(keypoint.pt):
+            boundary_kp.append(keypoint)
+        else:
+            outside_kp.append(keypoint)
+
+    return RedactionPreview(
+        scene=ScenePreview(structure=structure),
+        region=tuple(value * scale for value in region),
+        boundary_margin_px=BOUNDARY_MARGIN_PX * scale,
+        before=_points(original),
+        survived_inside=_points(inside_kp),
+        survived_on_boundary=_points(boundary_kp),
+        survived_outside=_points(outside_kp),
     )
+
+
+class RedactionImpact:
+    """`_measure`, plus somewhere to put the redacted frame's picture down."""
+
+    name = "redaction_impact"
+
+    def __init__(self) -> None:
+        self._preview = ExperimentPreview()
+
+    def load(self, settings: ExperimentSettings | None = None) -> None:
+        return None
+
+    def run(self, raw_bytes: bytes) -> ExperimentResult:
+        result, payload = _measure(raw_bytes, preview=self._preview.wanted)
+        self._preview.offer(payload)
+        return result
+
+    def set_preview_capture(self, enabled: bool) -> None:
+        self._preview.set_preview_capture(enabled)
+
+    def take_preview(self):
+        return self._preview.take_preview()
+
+    def release(self) -> None:
+        self._preview.set_preview_capture(False)

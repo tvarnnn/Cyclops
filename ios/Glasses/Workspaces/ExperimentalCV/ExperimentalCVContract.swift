@@ -66,6 +66,22 @@ nonisolated enum ExperimentalCVContract {
     /// The provenance block on every `frame_result`.
     static let frameResult = "experimental_cv.frame_result/2026-08-27"
 
+    /// The live preview: the descriptor inside `run.annotation.artifact`, and
+    /// the headers on the bytes `GET /cv-lab/preview` serves.
+    ///
+    /// Versioned separately from the status document, and the reason is the
+    /// same one that separates the other three: a client may implement the
+    /// read-only half and never fetch an image, which is exactly what a
+    /// Release build with no camera does. A preview may gain a field without
+    /// the status document meaning anything new, and the reverse.
+    ///
+    /// `artifact` was `null` on every earlier version of this contract, with a
+    /// stated reason — `IOS-to-Tower.md` §5 withheld any image whose treatment
+    /// was unstated, and said artifact fetching itself was UNKNOWN. This is
+    /// that contract, landed on both sides at once with a document behind it,
+    /// and the treatment is stated on every picture.
+    static let preview = "experimental_cv.preview/2026-08-29"
+
     // MARK: Bounds the Tower states and this client must respect
 
     /// The most characters a `request_id` may carry.
