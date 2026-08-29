@@ -51,6 +51,7 @@ nothing of its own that could weaken it.
 from fastapi import APIRouter, HTTPException, Query, Request, Response
 
 from tower.results.object_memory import (
+    frame_is_available,
     FILTER_UNAVAILABLE,
     IMAGERY_EXPIRED,
     NO_CAPTURE_ROOT,
@@ -182,12 +183,28 @@ def _capture_root(request: Request):
     return getattr(request.app.state, "capture_root", None)
 
 
+def _keyframes(request: Request):
+    """The crops this cartridge owns, or None on a Tower that has none.
+
+    Read off `app.state` for the same reason the store root and the face
+    filter are: this file is a route and may not construct a cartridge's
+    objects. `main.py` builds it through the adapter from the same
+    `observation_root` the store comes from, so the two cannot point at
+    different directories.
+
+    None is not a failure. It means "look in the capture tree", which is
+    what every request did before keyframes existed.
+    """
+    return getattr(request.app.state, "object_memory_keyframes", None)
+
+
 def _imagery(request: Request, observation_id: str, *, crop: bool):
     return render_imagery(
         _store(request, None),
         observation_id,
         capture_root=_capture_root(request),
         face_filter=_face_filter(request),
+        keyframes=_keyframes(request),
         crop=crop,
     )
 
@@ -213,13 +230,29 @@ def imagery_view(observation_id: str, request: Request) -> dict:
     way, and a 404 here would read as "no such memory". A handle that
     matched nothing is the exception, and is a real 404.
     """
-    observation, image = _imagery(request, observation_id, crop=False)
+    # A CROP render, not a frame one, and the difference is the whole
+    # reason keyframes are reachable at all. See `build_imagery_view`:
+    # describing a `/frame` render here reported `available: false` for
+    # every record whose recording had been deleted, including the ones
+    # holding an owned crop -- and the shipped iOS loader gates on that
+    # boolean and would never have asked for the crop.
+    observation, image = _imagery(request, observation_id, crop=True)
     if observation is None:
         raise HTTPException(
             status_code=404,
             detail=build_imagery_view(None, image, observation_id=observation_id),
         )
-    return build_imagery_view(observation, image, observation_id=observation_id)
+    return build_imagery_view(
+        observation,
+        image,
+        observation_id=observation_id,
+        # An existence check, not a second render. Answers "is there also
+        # a context view", which is a different question from "is there a
+        # picture" now that the two have different lifetimes.
+        frame_available=frame_is_available(
+            _capture_root(request), _face_filter(request), observation
+        ),
+    )
 
 
 @router.get("/object-memory/observations/{observation_id}/frame")
@@ -246,6 +279,14 @@ def crop(observation_id: str, request: Request):
     Padded rather than tight: a 3%-of-frame box cropped exactly is
     unreadable, and the surroundings are most of what tells a person
     whether the label is right.
+
+    THE ONE ROUTE WITH TWO SOURCES. It prefers the crop this cartridge
+    OWNS -- filtered before it was written, kept under the observation
+    root, and deleted when the record expires -- and falls back to
+    cropping the capture frame when there is no owned one. So this route
+    keeps answering after the whole capture tree is gone, which `/frame`
+    cannot and should not: the full-frame context view belongs to the
+    recording, and when the recording is deleted it is honestly 410.
     """
     observation, image = _imagery(request, observation_id, crop=True)
     if not image.available:

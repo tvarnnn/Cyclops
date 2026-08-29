@@ -46,7 +46,17 @@ param(
 
     [switch]$Reload,
 
-    [switch]$Force
+    [switch]$Force,
+
+    # Print the effective configuration and exit, binding nothing.
+    #
+    # Added because the configuration block above got long enough to be
+    # worth reading on its own, and because the only way to read it used
+    # to be to start a server. Before a physical run this answers "what
+    # will this Tower actually record, and can it show me a picture of
+    # it" without taking the port, without touching data/, and without
+    # having to stop anything afterwards.
+    [switch]$CheckOnly
 )
 
 $ErrorActionPreference = 'Stop'
@@ -232,6 +242,13 @@ $worldRoot   = Resolve-Setting 'TOWER_WORLD_ROOT'
 $devMode     = Resolve-Setting 'TOWER_DEV_MODE'
 $cvExp       = Resolve-Setting 'TOWER_CV_EXPERIMENT'
 $cvDevice    = Resolve-Setting 'TOWER_CV_DEVICE'
+$obsEnabled  = Resolve-Setting 'TOWER_OBSERVATION_ENABLED'
+$obsRoot     = Resolve-Setting 'TOWER_OBSERVATION_ROOT'
+$obsDevice   = Resolve-Setting 'TOWER_OBSERVATION_DEVICE'
+$obsVerifier = Resolve-Setting 'TOWER_OBSERVATION_VERIFIER'
+$obsVerDev   = Resolve-Setting 'TOWER_OBSERVATION_VERIFIER_DEVICE'
+$obsKeepImg  = Resolve-Setting 'TOWER_OBSERVATION_KEEP_IMAGERY'
+$obsRetain   = Resolve-Setting 'TOWER_OBSERVATION_RETENTION_DAYS'
 
 Write-Host ''
 Write-Host 'Effective configuration' -ForegroundColor Cyan
@@ -278,6 +295,86 @@ if ($cvDevice.Value) {
     Write-Line 'TOWER_CV_DEVICE     <unset, defaults to auto>'
 }
 
+
+# --- Object Memory --------------------------------------------------------
+# Printed because this cartridge's configuration decides WHAT IS REMEMBERED
+# and whether a memory can be shown with its picture, and because the whole
+# of it used to be invisible here. A physical run on 2026-08-29 needed
+# TOWER_OBSERVATION_VERIFIER and TOWER_OBSERVATION_VERIFIER_DEVICE typed into
+# the shell before launch; the defaults now carry both, and this block is
+# what makes the resolved values something a person can read rather than
+# something they have to ask an agent about.
+Write-Host ''
+Write-Host 'Object Memory' -ForegroundColor Cyan
+if ($obsEnabled.Value -and $obsEnabled.Value.ToLower() -eq 'false') {
+    Write-Problem 'TOWER_OBSERVATION_ENABLED  false'
+    Write-Line   '                    The cartridge is OFF. /object-memory/* answers 404'
+    Write-Line   '                    and Start on the phone has nothing to start.'
+} else {
+    if ($obsRoot.Value) {
+        Write-Line "TOWER_OBSERVATION_ROOT     $($obsRoot.Value)   [$($obsRoot.Source)]"
+    } else {
+        Write-Line 'TOWER_OBSERVATION_ROOT     <unset, defaults to data\object_memory>'
+    }
+    if ($obsVerifier.Value) {
+        Write-Line "TOWER_OBSERVATION_VERIFIER $($obsVerifier.Value)   [$($obsVerifier.Source)]"
+    } else {
+        Write-Line 'TOWER_OBSERVATION_VERIFIER <unset, defaults to owlv2>'
+        Write-Line '                    Fourteen classes are recordable. Set it to none for'
+        Write-Line '                    the two the detector alone is trusted on. A host that'
+        Write-Line '                    cannot load the weights records those two and says so.'
+    }
+    if ($obsVerDev.Value) {
+        Write-Line "  ...VERIFIER_DEVICE       $($obsVerDev.Value)   [$($obsVerDev.Source)]"
+    } else {
+        Write-Line '  ...VERIFIER_DEVICE       <unset, defaults to auto>'
+    }
+    if ($obsDevice.Value) {
+        Write-Line "TOWER_OBSERVATION_DEVICE   $($obsDevice.Value)   [$($obsDevice.Source)]"
+    } else {
+        Write-Line 'TOWER_OBSERVATION_DEVICE   <unset, defaults to auto>'
+    }
+    if ($obsRetain.Value) {
+        Write-Line "TOWER_OBSERVATION_RETENTION_DAYS $($obsRetain.Value)   [$($obsRetain.Source)]"
+    } else {
+        Write-Line 'TOWER_OBSERVATION_RETENTION_DAYS <unset, defaults to 30>'
+    }
+    # Only `1`, `true`, `yes` and `on` mean true to tower/config.py's shared
+    # `_flag`, and a blank means "unset". Anything else -- including a typo --
+    # reads as FALSE and silently stops this cartridge keeping pictures, so
+    # this block reports the value it will actually be read as rather than
+    # echoing what was typed.
+    $keepsImagery = $true
+    if ($obsKeepImg.Value) {
+        $keepsImagery = @('1', 'true', 'yes', 'on') -contains $obsKeepImg.Value.Trim().ToLower()
+    }
+    if ($obsKeepImg.Value) {
+        Write-Line "  ...KEEP_IMAGERY          $($obsKeepImg.Value) -> $keepsImagery   [$($obsKeepImg.Source)]"
+    } else {
+        Write-Line '  ...KEEP_IMAGERY          <unset, defaults to true>'
+    }
+    if ($keepsImagery) {
+        Write-Line '                    Each record keeps one small filtered crop of its'
+        Write-Line '                    own, deleted when the record expires or is purged.'
+    } else {
+        Write-Problem '                    No NEW crop is written. A memory then keeps its'
+        Write-Problem '                    picture only while capture-side retention keeps the'
+        Write-Problem '                    frame. Crops already on disk are still served.'
+    }
+    Write-Line 'auto is resolved by the PRODUCER, not here. It prints the device it'
+    Write-Line 'actually got on its first line when a session starts, into this window.'
+    if (-not $captureRoot.Value) {
+        Write-Problem 'With no TOWER_CAPTURE_ROOT, Object Memory imagery answers 503:'
+        Write-Problem 'memories can be written and none of them can be shown.'
+    }
+    if (-not (Test-Path -LiteralPath (Join-Path $root 'models\face_detection_yunet_2023mar.onnx'))) {
+        Write-Problem 'With no YuNet weights, Object Memory serves NO picture at all --'
+        Write-Problem 'it refuses rather than serving an unfiltered first-person frame.'
+    }
+    Write-Line 'Nothing is remembered until a person presses Start in the cartridge.'
+}
+
+Write-Host ''
 Write-Line 'TOWER_HOST / TOWER_PORT are read into Settings by tower/config.py but'
 Write-Line 'nothing reads them back, so setting them binds nothing. -BindHost and'
 Write-Line '-Port are the only things that decide where the server listens.'
@@ -290,6 +387,13 @@ if (-not (Test-Path -LiteralPath (Join-Path $root 'models\face_detection_yunet_2
 if ($BindHost -eq '127.0.0.1' -or $BindHost -eq 'localhost') {
     Write-Problem "Bound to $BindHost -- reachable from this machine only. The phone"
     Write-Problem 'cannot connect. Use the default 0.0.0.0 for a physical run.'
+}
+
+if ($CheckOnly) {
+    Write-Host ''
+    Write-Host 'CheckOnly: nothing was started and no port was bound.' -ForegroundColor Cyan
+    Write-Line 'Run again without -CheckOnly to launch.'
+    exit 0
 }
 
 # ---------------------------------------------------------------------------

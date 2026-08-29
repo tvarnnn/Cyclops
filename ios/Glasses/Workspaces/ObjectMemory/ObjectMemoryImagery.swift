@@ -63,13 +63,36 @@ nonisolated enum ObjectMemoryImageryContract {
     /// restated on the pixels because the pixels are more persuasive.
     static let frameFromTheRecording = "frame-from-the-recording-this-record-was-derived-from"
 
-    /// `filter_means`. Checked rather than carried: a payload that stopped
-    /// saying the stored frame is unchanged would be describing a different
-    /// system, and this app's wording about the filter would become false.
+    /// `filter_means`, when the bytes came out of the recording. Checked
+    /// rather than carried: a payload that stopped saying the stored frame is
+    /// unchanged would be describing a different system, and this app's wording
+    /// about the filter would become false.
     static let appliedOnRead = "applied-on-read-the-stored-frame-is-unchanged"
 
-    /// `imagery_retention`. The pointer resolves into the Tower's capture
-    /// store, whose lifetime this cartridge neither sets nor enforces.
+    /// `filter_means`, when the bytes came out of Object Memory's **own**
+    /// keyframe.
+    ///
+    /// The filter ran once, before that file was written, so there is no
+    /// unfiltered copy of it anywhere — a stronger statement than the one
+    /// above, not a weaker one. Both are true statements about different
+    /// stores, which is why this is a second accepted value rather than a
+    /// replacement.
+    static let appliedBeforePersistence = "applied-before-this-file-was-written"
+
+    /// Every `filter_means` this build knows how to word a sentence about.
+    ///
+    /// **A payload carrying anything else is refused, and that is deliberate.**
+    /// This value is the licence for every sentence `ObjectMemoryCopy` writes
+    /// about the filter; a meaning this build has never heard of would be
+    /// rendered under the old sentences, which is the one failure worse than
+    /// showing nothing. The list grew by one when Object Memory started owning
+    /// its own crops — the identifier is unchanged
+    /// (`object_memory.imagery/2026-08-27`), because the shape did not change
+    /// and neither did the meaning of any existing field.
+    static let everyFilterMeaning = [appliedOnRead, appliedBeforePersistence]
+
+    /// `imagery_retention`. Carried rather than checked — see
+    /// `ObjectMemoryImageryDescription.imageryRetention`.
     static let captureSideRetention = "capture-side"
 
     /// The token the Tower leaves in its URL templates.
@@ -155,6 +178,37 @@ nonisolated struct ObjectMemoryImageryRoutes: Equatable, Sendable {
         guard let path = self.path(for: kind, observationID: observationID) else { return nil }
         return URL(string: path, relativeTo: baseURL)?.absoluteURL
     }
+}
+
+/// Which store the bytes came out of.
+///
+/// ## Why a client has to know, when it never had to before
+///
+/// `/crop` and `/frame` used to be two renders of the same file, so a record's
+/// object picture and its context picture lived and died together. Object
+/// Memory now owns a small filtered crop per record, under its **own**
+/// retention, so `/crop` keeps answering after the recording behind it has been
+/// deleted while `/frame` honestly 410s. The two pictures have different
+/// lifetimes, and every sentence about where a picture is kept and how long it
+/// lasts is now a sentence about one of them rather than about both.
+///
+/// A `RawRepresentable` struct rather than an `enum`, for the reason
+/// `ObjectMemoryImageryReason` is one: a source this build has never heard of
+/// must survive the decode and reach the screen described as unrecognised,
+/// rather than failing a parse and rendering as a broken Tower.
+nonisolated struct ObjectMemoryImagerySource: RawRepresentable, Equatable, Sendable {
+    let rawValue: String
+    init(rawValue: String) { self.rawValue = rawValue }
+
+    /// A frame out of the recording, filtered on the way out. Governed by
+    /// capture-side retention, which this cartridge neither sets nor enforces.
+    static let captureFrame = ObjectMemoryImagerySource(rawValue: "capture-frame")
+
+    /// Object Memory's own keyframe, filtered before it was written. Governed
+    /// by **this cartridge's** retention: it goes when the record expires or is
+    /// purged, and it survives the recording it came from.
+    static let objectMemoryKeyframe =
+        ObjectMemoryImagerySource(rawValue: "object-memory-keyframe")
 }
 
 /// Which of the three imagery routes.
@@ -262,7 +316,39 @@ nonisolated struct ObjectMemoryImageryDescription: Equatable, Sendable {
     let claim: String
 
     /// Whether bytes can be served.
+    ///
+    /// **This is now a claim about the picture this cartridge can serve**, not
+    /// about a `/frame` render. It used to be the second, and that was a
+    /// blocker: a record with an owned keyframe reported `available: false`
+    /// whenever the recording behind it was gone, and
+    /// `ObjectMemoryPictureLoader.fetch` gates every byte request on this
+    /// field — so the crop being held for that record could never be asked
+    /// for. Fixed on the Tower; recorded here because this field's meaning is
+    /// what the gate depends on.
     let available: Bool
+
+    /// Whether `/frame` — the wider context view — could be served.
+    ///
+    /// **`Bool?`, and `nil` is not `false`.** `nil` means the Tower did not
+    /// compute it: it is null on the refusal details the binary routes raise,
+    /// and on every Tower older than this field. `false` is a positive claim
+    /// that the recording behind this record is gone, which is a normal,
+    /// expected outcome now that the crop outlives it.
+    ///
+    /// The same three-valued discipline `following_this_session` gets in
+    /// `CartridgeSessionSnapshot`, and for the same reason: folding "it said
+    /// no" together with "it did not say" would make an older Tower behave as
+    /// though every context frame had expired.
+    let frameAvailable: Bool?
+
+    /// Which store served the bytes. `nil` on a Tower that does not say.
+    ///
+    /// Read rather than inferred from `kind`: `/crop` prefers the owned
+    /// keyframe and falls back to a capture frame, so the route asked for does
+    /// not determine the store answered from, and the retention sentence is
+    /// written from the store.
+    let imagerySource: ObjectMemoryImagerySource?
+
     /// `nil` when available. A value, never a sentence.
     let reason: ObjectMemoryImageryReason?
     /// **The field this shape exists for.** `true` with `available: false`
@@ -298,7 +384,15 @@ nonisolated struct ObjectMemoryImageryDescription: Equatable, Sendable {
     /// Where in the **picture**, in fractions of the frame. Same caveat as
     /// `FrameReference.boundingBoxNormalized`: never a world position.
     let boundingBoxNormalized: [Double]?
-    /// `capture-side`.
+    /// What the Tower calls the retention governing these bytes.
+    ///
+    /// Carried verbatim and **not** checked against a constant, unlike
+    /// `filterMeans`: no sentence in this app is licensed by this string's
+    /// value. The retention sentence a reader sees is written from
+    /// `imagerySource` instead, because the source is the thing that actually
+    /// determines the lifetime — an owned keyframe goes when the record does,
+    /// a capture frame goes when capture-side retention says so — and a client
+    /// that branched on this label would be branching on wording.
     let imageryRetention: String
 
     /// The HTTP status this arrived under.
@@ -315,6 +409,11 @@ nonisolated struct ObjectMemoryImageryDescription: Equatable, Sendable {
         objectClass: String?,
         claim: String,
         available: Bool,
+        // Defaulted so every construction written before these fields existed
+        // still compiles and still means what it meant: `nil` is "the Tower did
+        // not say", which is exactly what an older payload conveys.
+        frameAvailable: Bool? = nil,
+        imagerySource: ObjectMemoryImagerySource? = nil,
         reason: ObjectMemoryImageryReason?,
         memoryRetained: Bool,
         filter: String?,
@@ -330,6 +429,8 @@ nonisolated struct ObjectMemoryImageryDescription: Equatable, Sendable {
         self.objectClass = objectClass
         self.claim = claim
         self.available = available
+        self.frameAvailable = frameAvailable
+        self.imagerySource = imagerySource
         self.reason = reason
         self.memoryRetained = memoryRetained
         self.filter = filter
@@ -367,15 +468,37 @@ nonisolated struct ObjectMemoryImageryDescription: Equatable, Sendable {
     /// show the context frame instead of the crop.
     var subjectIsBehindAFill: Bool { subjectObscured > 0 }
 
-    /// Which route to fetch for this record, given what the filter did to it.
+    /// Whether the wider context view can be asked for at all.
+    ///
+    /// `true` when the Tower said so **and** when it said nothing: `nil` is
+    /// "not computed", and an unknown answer is a reason to offer the request
+    /// and let the Tower answer it, not a reason to withhold a picture that is
+    /// probably there. Only an explicit `false` closes the door, and it closes
+    /// it on a claim the Tower actually made.
+    var frameCanBeAskedFor: Bool { frameAvailable != false }
+
+    /// Which route to fetch for this record, given what the filter did to it
+    /// and what is left to fetch.
     ///
     /// The crop is the better picture of an object and the worse one when a
     /// fill is sitting on that object — the contract's instruction is "say the
     /// subject is behind a fill, **or fall back to `/frame`**", and doing both
     /// is strictly better than either. So the fallback is automatic and the
     /// sentence is shown as well.
+    ///
+    /// **The fallback is now conditional on the frame existing.** It was not,
+    /// and once `/crop` started outliving the recording behind it that was a
+    /// fallback *away from* a picture that is being held and *towards* one that
+    /// is gone: a wearer with an obscured subject would have been shown "the
+    /// memory is kept and the picture is gone" over a crop the Tower was
+    /// keeping for them. `subjectObscuredLine` still says the subject is partly
+    /// behind a fill, which is the half of the contract's instruction that
+    /// always applies.
+    ///
+    /// An older Tower sends no `frame_available`, `frameCanBeAskedFor` is
+    /// `true`, and this is exactly the expression it always was.
     var preferredKind: ObjectMemoryImageryKind {
-        subjectIsBehindAFill ? .frame : .crop
+        subjectIsBehindAFill && frameCanBeAskedFor ? .frame : .crop
     }
 }
 
@@ -427,11 +550,18 @@ nonisolated enum ObjectMemoryImageryDecoder {
 
     /// The `imagery` block on an observations envelope.
     ///
-    /// Refuses on a changed `claim` or `filter_means` for the reason the
-    /// observation decoder refuses a changed `claim`: those two values are what
-    /// this app's entire wording about pictures and about the filter is
+    /// Refuses on a changed `claim` or an unknown `filter_means` for the reason
+    /// the observation decoder refuses a changed `claim`: those two values are
+    /// what this app's entire wording about pictures and about the filter is
     /// licensed by, and rendering new meanings under the old sentences is worse
     /// than showing nothing.
+    ///
+    /// `filter_means` is checked against `everyFilterMeaning` rather than
+    /// against one constant, because there are now two true statements to make
+    /// — the filter ran on read for a capture frame, and before persistence for
+    /// an owned keyframe — and this app has a sentence for each. Widening a
+    /// *membership* test is not the same as dropping it: a third meaning still
+    /// refuses.
     static func routes(from json: [String: Any]) -> ObjectMemoryImageryRoutes? {
         guard
             let contract = json["contract"] as? String,
@@ -439,7 +569,7 @@ nonisolated enum ObjectMemoryImageryDecoder {
             let claim = json["claim"] as? String,
             claim == ObjectMemoryImageryContract.frameFromTheRecording,
             let filterMeans = json["filter_means"] as? String,
-            filterMeans == ObjectMemoryImageryContract.appliedOnRead,
+            ObjectMemoryImageryContract.everyFilterMeaning.contains(filterMeans),
             let view = json["view"] as? String,
             let frame = json["frame"] as? String,
             let crop = json["crop"] as? String
@@ -472,7 +602,11 @@ nonisolated enum ObjectMemoryImageryDecoder {
             let available = json["available"] as? Bool,
             let memoryRetained = json["memory_retained"] as? Bool,
             let filterMeans = json["filter_means"] as? String,
-            filterMeans == ObjectMemoryImageryContract.appliedOnRead,
+            // Two accepted meanings, one per store — see `everyFilterMeaning`.
+            // A payload whose filter meaning this build has never heard of is
+            // still refused, because the sentence beside the picture would be
+            // describing a transformation nobody here has read about.
+            ObjectMemoryImageryContract.everyFilterMeaning.contains(filterMeans),
             let regionsFilled = json["regions_filled"] as? Int,
             let subjectObscured = json["subject_obscured"] as? Double,
             let imageryRetention = json["imagery_retention"] as? String
@@ -492,6 +626,18 @@ nonisolated enum ObjectMemoryImageryDecoder {
             objectClass: json["object_class"] as? String,
             claim: claim,
             available: available,
+            // **`as? Bool` on a missing key and on an explicit null both give
+            // `nil`, and that is the wanted behaviour here** — both mean the
+            // Tower did not state whether the context frame is there. What must
+            // not happen is `?? false`: an older Tower would then report every
+            // record's context view as expired, and the "Show the whole frame"
+            // control would disappear from a screen where it works.
+            frameAvailable: json["frame_available"] as? Bool,
+            // Unrecognised values survive rather than failing the parse — see
+            // `ObjectMemoryImagerySource`. A `nil` here is an older Tower, and
+            // the retention sentence says only what such a Tower supports.
+            imagerySource: (json["imagery_source"] as? String)
+                .map(ObjectMemoryImagerySource.init(rawValue:)),
             // `nil` when a picture was served, and an Optional rather than ""
             // — the two mean different things.
             reason: (json["reason"] as? String).map(ObjectMemoryImageryReason.init(rawValue:)),

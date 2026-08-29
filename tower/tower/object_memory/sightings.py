@@ -141,9 +141,25 @@ class Sighting:
     # Held here rather than re-cropped at verification time because the
     # best frame is usually NOT the current one: cropping the current
     # frame with the best frame's box would hand a model a picture of
-    # something else entirely. It is the only imagery this cartridge ever
-    # holds, it never reaches disk, and it is dropped when the sighting
-    # closes.
+    # something else entirely.
+    #
+    # It is the only imagery this cartridge holds IN MEMORY, and it is
+    # dropped when the sighting closes. It used to be true that it never
+    # reached disk, and since `keyframes.py` it is not: when a keyframe
+    # store is configured, `ObjectMemoryEngine._settle` hands this crop
+    # to it -- once, at the end of the sighting, through a face filter
+    # that must have run -- and the resulting JPEG becomes the one piece
+    # of imagery Object Memory's own retention governs. The crop itself
+    # still dies with the sighting; what outlives it is a filtered,
+    # downscaled copy under the observation root.
+    #
+    # It is also made for MORE sightings than it used to be. It was built
+    # only for `verify`-tier classes with a verifier attached, which
+    # meant `laptop` and `cell phone` -- the two classes this Tower
+    # actually records without one -- never held a crop at all, and so
+    # could never have had a keyframe. It is now made for every sighting
+    # of a persistable class. The bound is unchanged: one crop per open
+    # sighting, replaced only by a stronger look.
     best_crop: object = field(default=None, repr=False)
 
     @property

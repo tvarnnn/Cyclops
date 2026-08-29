@@ -28,6 +28,29 @@ final class ProjectManager: ObservableObject {
     /// vs. replied) comparable within one session.
     let senderMetrics: SenderMetrics
 
+    /// Object Memory's composed recording lifecycle: the Tower's producer
+    /// and the glasses camera, driven by one Start button.
+    ///
+    /// **Owned here for the reason `CartridgeClients` exists**, and it is the
+    /// first thing in this app for which that reason is not a precaution. The
+    /// coordinator holds two pieces of state a cartridge switch must not
+    /// destroy:
+    ///
+    /// - **whether this app started the capture that is running.** A workspace
+    ///   `@StateObject` is destroyed the moment a person opens Home to look at
+    ///   something. Rebuilt on their return it would believe it had started
+    ///   nothing, and its Stop would then leave the glasses recording — the
+    ///   exact failure of the one control a wearer has over being remembered.
+    /// - **an action in flight.** Start is a POST, then a camera call, then a
+    ///   bounded convergence; navigating away in the middle of that would
+    ///   cancel it and leave the two halves disagreeing.
+    ///
+    /// The Product Shell V2 handoff §11 states the rule and even names this
+    /// case: *"Anything that must outlive the workspace (accumulated geometry,
+    /// an object-memory buffer) belongs on `ProjectManager`, not in a view's
+    /// `@StateObject`."*
+    let objectMemoryRecording: ObjectMemoryRecordingCoordinator
+
     /// The four cartridge clients.
     ///
     /// Owned here rather than in the workspace views because a workspace's
@@ -128,6 +151,24 @@ final class ProjectManager: ObservableObject {
                 documentMemory: TowerDocumentMemoryClient(tower: tower),
                 sceneUnderstanding: TowerSceneUnderstandingClient(tower: tower)
             )
+
+        // After the clients, and from the same connection every other screen
+        // uses. There is no second `GlassesConnection` to hand it: a capture
+        // this coordinator starts is the capture Home and World Builder can
+        // see, and the one they can stop.
+        #if DEBUG
+        let cameraOwner: (any ObjectMemoryCaptureOwner)? = self.glassesConnection
+        #else
+        // `GlassesConnection`'s whole capture surface is DEBUG-only, exactly as
+        // Home's and World Builder's controls are, so in Release there is no
+        // camera to hand over. The Tower half still works and the copy says the
+        // camera half cannot be reached.
+        let cameraOwner: (any ObjectMemoryCaptureOwner)? = nil
+        #endif
+        self.objectMemoryRecording = ObjectMemoryRecordingCoordinator(
+            camera: cameraOwner,
+            client: self.cartridgeClients.objectMemory
+        )
 
         let health = DeviceHealth()
         self.deviceHealth = health

@@ -26,14 +26,32 @@ later bug, a backup or a forensic recovery can still reach them. That
 module runs BEFORE persistence, at the one choke point every persisted
 pixel passes through, and it earns the name privacy transformation.
 
-Object Memory has no such choke point, because it persists no pixels at
-all. It serves frames out of `data/captures/`, which it does not own,
-did not write, and must not modify -- the manifests there record
-`redaction: "none"` and rewriting them would destroy the corpus every
-measurement in this repository is made against. So what happens here is
-a filter applied on READ, the raw frame stays exactly where it was, and
-the label says `display-filter/...` rather than anything that could be
-read as "this image is safe".
+Object Memory has no such choke point over the CAPTURE. It serves frames
+out of `data/captures/`, which it does not own, did not write, and must
+not modify -- the manifests there record `redaction: "none"` and
+rewriting them would destroy the corpus every measurement in this
+repository is made against. So what happens here is a filter applied on
+READ, the raw frame stays exactly where it was, and the label says
+`display-filter/...` rather than anything that could be read as "this
+image is safe".
+
+WHERE THAT IS NO LONGER THE WHOLE STORY.
+
+Since `keyframes.py`, this cartridge does own one small picture per
+record: a filtered crop written under the OBSERVATION root, so a 30-day
+memory stops depending on a capture directory nobody promised to keep.
+That store DOES have a choke point -- `KeyframeStore.write` is the only
+way a pixel gets in, and it is arranged so that the bytes written are
+always the filter's output -- and it is still not called a privacy
+transformation, for the same reason as everything else here: YuNet's
+blind spots do not close because a file was written instead of served.
+
+The consequence for this module is one asymmetry, in `render`. A CROP
+prefers the owned keyframe and is served from it WITHOUT being filtered
+again, because it was filtered before it reached disk, which is the
+stronger of the two guarantees. A whole FRAME still comes from the
+capture and is still filtered on read -- a keyframe is a crop, and there
+is nothing to build a context view out of.
 
 WHY THE CODE IS DUPLICATED RATHER THAN SHARED.
 
@@ -70,6 +88,7 @@ first-person frame with an apologetic header on it.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import threading
@@ -120,6 +139,15 @@ FILTER_PREFIX = "display-filter"
 # surroundings are most of what makes it recognisable.
 CROP_PADDING = 0.35
 
+# Which store the served bytes came out of, and therefore whose
+# retention governs them. A value on the result rather than something a
+# caller infers from the route it called, because the answer depends on
+# what is on disk: the same `/crop` request is answered from the owned
+# keyframe when there is one and from the capture frame when there is
+# not.
+SOURCE_CAPTURE = "capture-frame"
+SOURCE_KEYFRAME = "object-memory-keyframe"
+
 # Why a picture could not be served. Values a client switches on, not
 # sentences it displays -- the wording belongs to whoever is speaking to
 # the wearer.
@@ -162,6 +190,17 @@ class Imagery:
     # and a client that knows the subject was covered can say so, or show
     # the context frame instead of the crop.
     subject_obscured: float = 0.0
+    # Which store these bytes came out of, or None when there are none.
+    #
+    # It exists so the payload can report `imagery_retention` truthfully
+    # instead of asserting one answer for every response. A crop served
+    # from the owned keyframe is governed by THIS cartridge's retention
+    # -- it expires with the record and `purge()` deletes it -- while a
+    # frame served out of `data/captures/` is governed by capture-side
+    # retention this cartridge neither sets nor enforces. Those are
+    # different promises, and a client caching or captioning a picture
+    # deserves to know which one it is holding.
+    source: str | None = None
 
     @property
     def available(self) -> bool:
@@ -349,8 +388,124 @@ class FaceFilter:
         return boxes
 
 
-def frame_path(capture_root, observation) -> Path | None:
-    """Where the picture behind a record is, or None if it is not there.
+# A capture is not a walk.
+#
+# iOS reconnects about half a second after a WiFi hiccup and re-sends
+# `stream_start`; `CaptureRecorder` mints a NEW capture directory and its
+# manifest names the old one in `continues_capture`; and
+# `CaptureFollower` walks the producer straight into it without missing a
+# frame. The producer's `session_id`, though, was fixed once at spawn --
+# it is `--follow-capture <dir>`'s basename and nothing updates it -- so a
+# sighting that opened before the hiccup and had its STRONGEST look after
+# it carries the OLD capture's id beside the NEW capture's frame.
+#
+# Measured against this host's own store on 2026-08-29, over 116 records
+# and 71 capture directories: 90 resolve inside their own capture and
+# **26 do not** -- 22.4% of every memory in the store. Every one of those
+# 26 frames is on disk, further along the same walk. Nothing had expired;
+# this repository has no capture pruner at all, so nothing CAN expire.
+# The route was answering 410 "the memory is kept, the picture is gone"
+# about pictures that were sitting right there.
+#
+# (An earlier note here said 74 records, 70 and 4. That was the store as
+# it stood a few hours before, and it was left stale for long enough for
+# a reviewer to catch it -- so the numbers above are the ones the shipped
+# code was re-run against, not the ones first written down.)
+#
+# So resolution follows the lineage, not the single directory.
+#
+# HOW LONG A LINEAGE ACTUALLY IS, BECAUSE THE FIRST GUESS WAS WRONG.
+#
+# This started with a fixed `MAX_LINEAGE_STEPS = 8`, on the strength of
+# "reconnect chains of five are in this corpus". Then the constant was
+# checked against the corpus instead of remembered: of 32 lineage roots on
+# this host, one walk is **eighteen captures long** -- 05320786 -> 664f2867
+# -> ... -> 2fd9da90, covering source frames 1 to 8,690 with seventeen
+# reconnects in a single sitting. A bound of eight silently truncated it,
+# and four records in that walk were still answering 410 about frames that
+# were on disk, which is the exact defect this whole function exists to
+# remove.
+#
+# A fixed constant was the wrong SHAPE, not merely the wrong number. What
+# actually terminates this walk is the `seen` set: `_successors` builds a
+# map over directories that exist, each step consumes one edge, and an
+# edge cannot be consumed twice. A manifest that names itself -- from a
+# restore, a merge, or a future writer -- is one edge to a node already
+# seen, and stops on the first step. A cycle of any length stops likewise.
+# Cost is one dict lookup and at most two `exists()` calls per step, and
+# even the eighteen-long walk is under a millisecond.
+#
+# So there is no constant here any more, and the thing that used to need
+# one is asserted directly in `test_object_memory_imagery.py`.
+
+
+def _successors(root: Path) -> dict[str, str]:
+    """`{predecessor_id: successor_id}` for every capture under `root`.
+
+    One directory listing and one small manifest read per capture,
+    computed ONLY when a frame was not found where the record says it is.
+    The ordinary case -- a record whose capture never got interrupted --
+    never reaches this function, which is why it is not cached: a cache
+    here would have to be invalidated by a capture that opens while the
+    Tower is running, which is exactly when it would be wrong.
+    """
+    index: dict[str, str] = {}
+    try:
+        entries = sorted(root.iterdir())
+    except OSError:
+        return index
+    for entry in entries:
+        try:
+            if not entry.is_dir():
+                continue
+            manifest = json.loads(
+                (entry / "capture.json").read_text(encoding="utf-8")
+            )
+        except (OSError, ValueError):
+            continue
+        if not isinstance(manifest, dict):
+            continue
+        predecessor = manifest.get("continues_capture")
+        # First writer wins. Two captures claiming one predecessor is not
+        # a shape the recorder can produce, and picking arbitrarily
+        # between them would make this function's answer depend on
+        # filesystem ordering.
+        if isinstance(predecessor, str) and predecessor not in index:
+            index[predecessor] = entry.name
+    return index
+
+
+def _lineage(root: Path, session_id: str) -> list[str]:
+    """The capture ids one walk was recorded into, oldest reference first.
+
+    Always starts with `session_id` itself, so a record whose capture was
+    never interrupted costs nothing beyond the `exists()` it already paid.
+    Only SUCCESSORS are followed: a producer's `session_id` is the capture
+    it was spawned on, and a follower only ever moves forward.
+
+    Measured on this host: 32 lineage roots, and the longest walk is
+    eighteen captures.
+    """
+    chain = [session_id]
+    index = _successors(root)
+    seen = {session_id}
+    current = session_id
+    # Bounded by `seen`, and by nothing else. See the comment above
+    # `_successors` for why a fixed step count was the wrong shape: this
+    # loop cannot run longer than there are captures on disk, because each
+    # iteration consumes one edge of a finite map and no node is entered
+    # twice.
+    while True:
+        nxt = index.get(current)
+        if nxt is None or nxt in seen:
+            return chain
+        chain.append(nxt)
+        seen.add(nxt)
+        current = nxt
+
+
+def _frame_in(root: Path, capture_id: str, observation) -> Path | None:
+    """The picture inside ONE capture directory, or None.
 
     Two ways to find it, in order of how much they trust:
 
@@ -361,18 +516,8 @@ def frame_path(capture_root, observation) -> Path | None:
        records written before that field existed. Coupled to
        `tower/capture.py`, and that coupling is the reason it is second
        rather than first.
-
-    Returns None for a record with no frame reference at all, and for a
-    capture directory that is no longer on disk -- which is the ordinary
-    case once capture-side retention has run, and is not an error.
     """
-    if capture_root is None:
-        return None
-    session_id = observation.session_id
-    if session_id is None:
-        return None
-    root = Path(capture_root) / "captures"
-    directory = root / session_id
+    directory = root / capture_id
 
     relpath = observation.best_relpath
     if relpath:
@@ -389,6 +534,82 @@ def frame_path(capture_root, observation) -> Path | None:
         return None
     candidate = _contained(root, directory / "frames" / f"{int(frame_seq):08d}.jpg")
     return candidate if candidate is not None and candidate.exists() else None
+
+
+def frame_path(capture_root, observation) -> Path | None:
+    """Where the picture behind a record is, or None if it is not there.
+
+    Searches the record's own capture first and then the reconnect
+    lineage after it -- see `_successors` for the measurement that made the
+    second half necessary, and for why it carries no step limit.
+
+    Returns None for a record with no frame reference at all, and for a
+    walk whose directories are no longer on disk. The caller turns that
+    into `IMAGERY_EXPIRED`, and `capture_lineage_present` is what lets it
+    tell "the recording was deleted" apart from "the recording is here and
+    this frame is not" in the log without changing what a client is told.
+    """
+    if capture_root is None:
+        return None
+    session_id = observation.session_id
+    if session_id is None:
+        return None
+    root = Path(capture_root) / "captures"
+
+    # The overwhelmingly common case, and it must stay free of the
+    # directory scan `_lineage` pays for.
+    found = _frame_in(root, session_id, observation)
+    if found is not None:
+        return found
+
+    for capture_id in _lineage(root, session_id)[1:]:
+        found = _frame_in(root, capture_id, observation)
+        if found is not None:
+            logger.info(
+                "[Tower][ObjectMemory] frame for a %s record resolved in %s, "
+                "the capture that continues %s",
+                observation.object_class,
+                capture_id,
+                session_id,
+            )
+            return found
+    return None
+
+
+def capture_lineage_present(capture_root, observation) -> bool:
+    """Whether any directory of this record's walk is still on disk.
+
+    Not on the wire, and deliberately: a client is told the same thing
+    either way -- the memory is kept and the picture is gone -- because
+    there is nothing a wearer can do differently about the two. It exists
+    so the LOG can distinguish a recording that was deleted from a pointer
+    that does not resolve into a recording that is still there, which is
+    the defect this module shipped with and could not see.
+    """
+    if capture_root is None:
+        return False
+    session_id = observation.session_id
+    if session_id is None:
+        return False
+    root = Path(capture_root) / "captures"
+    # Contained, like every other path this module builds out of a
+    # record. `session_id` comes off a JSONL file and is used to BUILD A
+    # PATH; `_frame_in` runs it through `_contained` and this did not,
+    # which is an inconsistency a reviewer was right to call out even
+    # though the value here only steers a log line.
+    own = _contained(root, root / session_id)
+    if own is None:
+        return False
+    # The record's own directory first, and it answers on its own in the
+    # overwhelmingly common case. This runs immediately after a
+    # `frame_path` that already paid for one directory scan, and asking
+    # `_lineage` again would pay for a second one to answer a question
+    # the first `is_dir` has usually already settled.
+    if own.is_dir():
+        return True
+    return any(
+        (root / capture_id).is_dir() for capture_id in _lineage(root, session_id)
+    )
 
 
 def _contained(root: Path, candidate: Path) -> Path | None:
@@ -432,15 +653,108 @@ def _bounding_box(observation):
     return observation.bounding_box
 
 
-def render(capture_root, observation, face_filter, *, crop: bool) -> Imagery:
+def _from_keyframe(keyframes, observation) -> Imagery | None:
+    """The crop this cartridge owns, or None if it does not own one.
+
+    NOT RE-FILTERED, and that is the point rather than an optimisation.
+    These bytes were filtered BEFORE they were written -- `KeyframeStore.
+    write` has no path that puts an unfiltered crop on disk, and `read`
+    refuses an image whose sidecar is missing, so the sidecar's presence
+    is what makes the claim checkable. Filtering again at read time would
+    be strictly weaker: it would run the detector on an image whose faces
+    have already been filled, find nothing, and report a fresh label that
+    describes this read rather than what actually protected the file.
+
+    So the label, the region count and the obscured fraction all come out
+    of the sidecar. They describe the run that produced the file, which
+    is the honest thing for them to describe.
+
+    Returns None -- not a refusal -- when there is no keyframe, because
+    "no keyframe" is not a failure. It is the ordinary state of every
+    record written before this existed, and the caller's answer is to
+    fall back to the capture frame.
+    """
+    if keyframes is None:
+        return None
+    try:
+        found = keyframes.read(observation.observation_id)
+    except Exception:  # noqa: BLE001
+        # A keyframe store that misbehaves must not take the capture-side
+        # path down with it. The fallback here is another FILTERED
+        # picture, not a raw one, so degrading to it costs nothing but
+        # the ownership.
+        logger.exception(
+            "[Tower][ObjectMemory] the keyframe store failed for a %s "
+            "record; falling back to the capture frame",
+            observation.object_class,
+        )
+        return None
+    if found is None:
+        return None
+    image_bytes, sidecar = found
+    return Imagery(
+        image_bytes=image_bytes,
+        reason=None,
+        filter_label=sidecar.get("filter_label"),
+        regions_filled=_as_int(sidecar.get("regions_filled")),
+        # The frame this crop was taken from, named for the same reason
+        # the capture-side path names one: a diagnostic can say which
+        # picture without a client learning a path on the Tower. It
+        # survives the frame itself, which is the whole point.
+        relpath=sidecar.get("source_relpath"),
+        subject_obscured=_as_float(sidecar.get("subject_obscured")),
+        source=SOURCE_KEYFRAME,
+    )
+
+
+def _as_int(value) -> int:
+    """A sidecar field, as a number, or 0. A sidecar is a file on disk."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return 0
+    return int(value)
+
+
+def _as_float(value) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return 0.0
+    return float(value)
+
+
+def render(
+    capture_root, observation, face_filter, *, crop: bool, keyframes=None
+) -> Imagery:
     """The picture behind a record, filtered, or the reason there is none.
 
     Never raises, and never returns an unfiltered frame. The refusal
     reasons are values rather than sentences so a client can render them
     in its own words, and so a test can assert on which one happened
     rather than on how it was phrased.
+
+    TWO SOURCES, AND ONLY THE CROP HAS TWO.
+
+    A crop prefers the keyframe this cartridge owns and falls back to the
+    capture. A whole frame has only ever one source -- the capture --
+    because a keyframe IS a crop and there is nothing to synthesise a
+    context view out of. That asymmetry is the product shape: the owned
+    picture is the durable one, and the capture frame remains the source
+    of the wider view for as long as capture-side retention keeps it.
     """
     import cv2
+
+    # BEFORE the filter and capture-root checks, deliberately.
+    #
+    # An owned keyframe needs neither. It does not need a capture root
+    # because it is not in the capture tree -- which is the entire reason
+    # it exists, and what lets a memory keep its picture after the whole
+    # recording has been deleted. And it does not need a working face
+    # filter because it was filtered before it was written; refusing to
+    # serve it on a Tower whose ONNX weights went missing would be
+    # withholding a picture on the strength of a check that has already
+    # been passed, more thoroughly, at write time.
+    if crop:
+        owned = _from_keyframe(keyframes, observation)
+        if owned is not None:
+            return owned
 
     if not face_filter.available:
         return Imagery(None, FILTER_UNAVAILABLE)
@@ -451,9 +765,32 @@ def render(capture_root, observation, face_filter, *, crop: bool) -> Imagery:
     if path is None:
         if observation.session_id is None and observation.frame_seq is None:
             return Imagery(None, NO_FRAME_REFERENCE)
-        # The pointer is intact and the picture is not. This is the case
-        # the whole shape exists for: capture-side retention has removed
-        # the imagery, and the MEMORY is still here.
+        # The pointer is intact and the picture is not, and the wearer is
+        # told the one thing that is true either way: the memory is here
+        # and the picture is not.
+        #
+        # The LOG says which, because the two have opposite fixes and this
+        # module shipped unable to tell them apart. A walk whose
+        # directories are gone is retention (or a human with rm) doing its
+        # job. A walk that is STILL ON DISK and does not contain the frame
+        # a record names is a defect in whoever wrote the pointer, and it
+        # spent two days being reported as expiry.
+        if capture_lineage_present(capture_root, observation):
+            logger.warning(
+                "[Tower][ObjectMemory] a %s record points at %s in capture %s "
+                "and the recording is still on disk without it; reporting the "
+                "memory kept and the picture gone, but this is a POINTER "
+                "defect rather than retention",
+                observation.object_class,
+                observation.best_relpath or observation.best_frame_seq,
+                observation.session_id,
+            )
+        else:
+            logger.info(
+                "[Tower][ObjectMemory] the recording behind a %s record is no "
+                "longer on disk; the memory is kept and the picture is gone",
+                observation.object_class,
+            )
         return Imagery(None, IMAGERY_EXPIRED)
 
     try:
@@ -503,6 +840,7 @@ def render(capture_root, observation, face_filter, *, crop: bool) -> Imagery:
         # frame without a client learning an absolute path on the Tower.
         relpath=path.name,
         subject_obscured=obscured,
+        source=SOURCE_CAPTURE,
     )
 
 

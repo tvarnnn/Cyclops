@@ -46,9 +46,20 @@ class FakeSupervisor:
         self.attach_result = attach_result
         self._names = names
         self._following = []
+        # A clock, because `following(since=...)` is answered against the
+        # SUPERVISOR's, never the session's -- the real ones default to
+        # `time.monotonic` and `time.time` respectively, and comparing
+        # across them compares an uptime with a Unix epoch. Frozen here:
+        # nothing in this file is about ordering, and a frozen mark makes
+        # every worker "started at or after" every activation, which is
+        # what these cases mean by "the session's".
+        self.now = 0.0
 
     def worker_names(self):
         return tuple(self._names)
+
+    def mark(self):
+        return self.now
 
     def attach(self, name, capture_id, capture_dir):
         self.attached.append((name, capture_id, str(capture_dir)))
@@ -62,7 +73,7 @@ class FakeSupervisor:
         self._following = []
         return count
 
-    def following(self, name):
+    def following(self, name, *, since=None):
         return list(self._following)
 
 

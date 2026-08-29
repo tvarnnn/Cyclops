@@ -568,12 +568,29 @@ class CaptureFollower:
             # the session on a transient read.
             return False
 
-    def follow(self, *, max_idle_polls: int | None = None):
+    def follow(self, *, max_idle_polls: int | None = None, should_stop=None):
+        """Frames, until the capture ends, the idle bound expires, or a
+        caller says stop.
+
+        `should_stop` is asked once per poll, and the poll loop is the
+        only place it CAN be asked. A driver that wrapped this generator
+        and checked between yields would only get control back when a
+        frame arrived -- so a producer asked to stop during a quiet
+        stretch, which is most of a walk and all of a walk that has just
+        been put down, would not notice until the next thing moved. It
+        was written that way first and it did not stop.
+
+        Asked before the journal read rather than after, so a stop that
+        arrived while this generator was sleeping does not first pull in
+        another frame the person had already asked not to be remembered.
+        """
         journal = self._directory / FRAMES_FILENAME
         tail = _JournalTail(journal, start_at_end=self._start_at_end)
         idle_polls = 0
 
         while True:
+            if should_stop is not None and should_stop():
+                return
             fresh = tail.read_new()
 
             for record in fresh:

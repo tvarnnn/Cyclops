@@ -547,13 +547,37 @@ enum ObjectMemoryCopy {
     ///
     /// It also states the blind spots, because a filter described only by what
     /// it catches reads as a guarantee.
+    ///
+    /// ## The "when" clause follows `filter_means`, because there are now two
+    ///
+    /// A capture frame is filtered **on read** and the stored frame is
+    /// unchanged. Object Memory's own keyframe is filtered **before it is
+    /// written**, so there is no unfiltered copy of that file at all — a
+    /// stronger statement, and one this app may only make when the payload
+    /// makes it. Neither wording is chosen by this app: `filterMeans` is on the
+    /// wire, `ObjectMemoryImageryContract.everyFilterMeaning` is the list of
+    /// meanings this build has a sentence for, and a payload carrying anything
+    /// else is refused by the decoder rather than worded from the nearest
+    /// guess.
+    ///
+    /// The blind-spot clause is unconditional under both, because a filter
+    /// described only by what it catches reads as a guarantee whichever store
+    /// it ran over.
     static func filterLine(_ description: ObjectMemoryImageryDescription) -> String {
         let named = description.filter.map { " The filter that ran is \($0)." } ?? ""
+        let when: String
+        if description.filterMeans == ObjectMemoryImageryContract.appliedBeforePersistence {
+            when = """
+                 It ran before this picture was written, so no unfiltered copy \
+                of this picture was kept.
+                """
+        } else {
+            when = " It runs when a picture is read; the stored frame is unchanged."
+        }
         return """
             Faces this Tower's display filter detected have been filled in on \
-            the way out.\(named) It runs when a picture is read; the stored \
-            frame is unchanged. Bodies, clothing, room contents, screens, and \
-            any face it did not detect are all still in the picture.
+            the way out.\(named)\(when) Bodies, clothing, room contents, \
+            screens, and any face it did not detect are all in the picture.
             """
     }
 
@@ -707,12 +731,81 @@ enum ObjectMemoryCopy {
         }
     }
 
-    /// What a record's picture is kept under, and what this cartridge's own
-    /// retention does not reach.
-    static let pictureRetentionLine = """
-        The picture is kept with the recordings, under a retention this \
-        cartridge neither sets nor enforces. It is not held on this phone \
-        after this row leaves the screen.
+    /// What a record's picture is kept under.
+    ///
+    /// ## One sentence became three, because there are now two stores
+    ///
+    /// A picture used to be one thing: a render of a frame in the capture
+    /// store, under a retention this cartridge neither sets nor enforces. That
+    /// is no longer the only case. Object Memory now owns a small filtered crop
+    /// per record, under **its own** retention, which means the crop survives
+    /// the recording it came from and goes when the record does — the exact
+    /// opposite lifetime, said in the same slot on the same screen.
+    ///
+    /// So the sentence is chosen from `imagery_source`, which is the field that
+    /// knows. Not from the route asked for: `/crop` prefers the owned keyframe
+    /// and falls back to a capture frame, so the route does not determine the
+    /// store. Not from `imagery_retention` either, which is a label rather than
+    /// a lifetime and would have this app branching on wording.
+    ///
+    /// The third sentence is for a Tower that names no source. It says only the
+    /// part that is true of every picture this app draws — that the phone does
+    /// not keep it — rather than picking one of the two retentions and being
+    /// wrong half the time.
+    static func pictureRetentionLine(
+        _ description: ObjectMemoryImageryDescription
+    ) -> String {
+        // Written as comparisons rather than as a `switch` over the optional:
+        // `ObjectMemoryImagerySource` is a `RawRepresentable` struct, not an
+        // enum, precisely so an unknown source survives the decode — so there
+        // is no exhaustive set to switch over, and `==` is what the type
+        // actually offers.
+        guard let source = description.imagerySource else {
+            return unnamedSourceRetentionLine
+        }
+        if source == .objectMemoryKeyframe { return keyframeRetentionLine }
+        if source == .captureFrame { return captureFrameRetentionLine }
+        // A source this build has never heard of. A sentence about *which*
+        // retention would be a guess, exactly as it is for a Tower that says
+        // nothing.
+        return unnamedSourceRetentionLine
+    }
+
+    /// This cartridge's own copy: it goes when the record goes.
+    static let keyframeRetentionLine = """
+        This picture is kept by this memory itself, for as long as the record \
+        is. It goes when the record expires or is purged, and it outlasts the \
+        recording it was taken from. It is not held on this phone after this \
+        row leaves the screen.
+        """
+
+    /// A render out of the capture store, whose lifetime this cartridge does
+    /// not set.
+    static let captureFrameRetentionLine = """
+        This picture is kept with the recordings, under a retention this \
+        cartridge neither sets nor enforces, so it can go while the record \
+        stays. It is not held on this phone after this row leaves the screen.
+        """
+
+    /// A Tower that does not say which store served the bytes.
+    static let unnamedSourceRetentionLine = """
+        This Tower did not say which store this picture came from, so nothing \
+        is claimed here about how long it is kept. It is not held on this \
+        phone after this row leaves the screen.
+        """
+
+    /// The context view is gone and the object picture is not.
+    ///
+    /// Shown in place of the "Show the whole frame" control when the Tower has
+    /// said `frame_available: false`. Offering the control there would send a
+    /// tap to a route that answers 410, and the wearer would read "the memory
+    /// is kept and the picture is gone" over a picture that is on their screen.
+    ///
+    /// `nil` from `frame_available` never reaches this: an unknown answer keeps
+    /// the control, because the Tower is the thing that gets to answer it.
+    static let wholeFrameIsGoneLine = """
+        The wider view around this is gone: it lived with the recording, which \
+        has been deleted. This picture is kept by the memory itself.
         """
 
     /// This Tower offered no imagery routes at all.
@@ -728,7 +821,15 @@ enum ObjectMemoryCopy {
 
     // MARK: - The session
 
-    static let sessionHeading = "Remembering"
+    /// The heading over the panel that reports what the Tower says.
+    ///
+    /// It used to be "Remembering", which is now the heading over the *control*
+    /// — the one composed lifecycle that starts the producer and the camera
+    /// together. Two panels both titled "Remembering" would have read as one
+    /// repeated thing rather than as a control and the reading it produced, and
+    /// this one has never been a control: it is what the Tower reports, drawn
+    /// from `following` for liveness and from `state` only as intent.
+    static let sessionHeading = "What the Tower reports"
 
     /// What was asked for. **Intent, never liveness** — the Tower says so
     /// itself in `state_means: "intent-not-liveness"`, and this sentence is
@@ -775,12 +876,64 @@ enum ObjectMemoryCopy {
                 written into this memory.
                 """
         }
-        let count = snapshot.following.count
+        // The SCOPED list, to agree with the guard above it. Counting
+        // `following` here while branching on `followingThisSession` would
+        // let a leftover producer inflate a number describing this session.
+        let count = (snapshot.followingThisSession ?? snapshot.following).count
         let captures = count == 1 ? "a recording" : "\(count) recordings"
         return """
             A producer is alive on \(captures) and is writing into this \
             memory. This is read from the Tower's list of what is actually \
             being followed, not from what was asked for.
+            """
+    }
+
+    /// A producer the control on this screen did not start, and does not reach.
+    ///
+    /// `nil` on every ordinary reading, and `nil` on a Tower that cannot scope
+    /// the question at all — see `recordingsThisControlDidNotStart`, where an
+    /// absent `following_this_session` and an empty one mean two different
+    /// things and must never be folded together.
+    ///
+    /// ## Three separate corrections live in this one sentence
+    ///
+    /// **It no longer says "a producer this session did not start".** The Tower
+    /// scopes `following_this_session` by *started at or after this session
+    /// last went active*, and that mark is re-taken on every Resume. So after a
+    /// Pause whose producer survived, the survivor genuinely belongs to this
+    /// session — it was started before the pause — and is correctly outside the
+    /// scoped list anyway. Session ownership is not what this list knows, so
+    /// the sentence may not claim it.
+    ///
+    /// **It no longer says "is still alive".** `"is still"` is on the
+    /// forbidden-phrase lists in `ObjectMemoryTests`, and this line walked past
+    /// both of them: the session fixture omits `following_this_session` by
+    /// default, so the line returned `nil` in every case the copy test
+    /// generated and was never once inspected. The fix was two things, and the
+    /// second matters more than the wording — a case that sets
+    /// `followingThisSession: []` beside a non-empty `following` now runs in
+    /// `testEverySessionSentenceMakesNoClaimItCannotSupport`, so the sentence
+    /// is actually exercised.
+    ///
+    /// **It no longer says what would stop it.** It used to end "Restarting the
+    /// Tower will", about a process that has already ignored `terminate()`.
+    /// Nothing establishes that a restart reaches it either.
+    ///
+    /// What is left is what is true in every case that reaches here: something
+    /// is recording, the control on this screen did not start it, and a Stop
+    /// here does not reach it. A person has to be told that even though nothing
+    /// on this screen can fix it.
+    static func leftoverProducerLine(
+        _ snapshot: CartridgeSessionSnapshot
+    ) -> String? {
+        let leftovers = snapshot.recordingsThisControlDidNotStart
+        guard !leftovers.isEmpty else { return nil }
+        let count = leftovers.count
+        let recordings = count == 1 ? "a recording" : "\(count) recordings"
+        return """
+            Separately: a producer that the control on this screen did not \
+            start is writing into \(recordings). It is not writing into what \
+            you just asked for, and stopping here does not reach it.
             """
     }
 
@@ -987,6 +1140,265 @@ enum ObjectMemoryCopy {
         """
     }
 
+    // MARK: - Remembering, as one composed lifecycle
+
+    /// The heading over the control that starts both halves.
+    static let recordingHeading = "Remembering"
+
+    /// The primary control's label.
+    ///
+    /// "Stop remembering" rather than a bare "Stop", because this button does
+    /// more than the verb: it stops the Tower's producer and, when this screen
+    /// is the one that started it, the glasses camera as well. Start keeps the
+    /// session vocabulary's wording, which was already the composed sentence.
+    static let stopRememberingButton = "Stop remembering"
+
+    /// Why the session panel below carries no Start and no Stop.
+    ///
+    /// The panel used to render the Tower's whole `actions` vocabulary, which
+    /// put a **second prominent Start** and a **second, differently-labelled
+    /// Stop** directly under the composed control — four primary-looking
+    /// buttons on one screen, two of them saying the same verb in two words
+    /// and one of them not mentioning the camera it also stops.
+    ///
+    /// Not resolved by disabling anything. `ObjectMemorySessionPanel`'s own
+    /// documentation argues, correctly, that hiding or disabling a verb on this
+    /// app's guess about what the Tower would accept makes this app's model
+    /// authoritative over the Tower's. **Not drawing a second copy of a control
+    /// that is already on the screen is a different thing**: the verb is still
+    /// offered, still sends, still reads its vocabulary off `actions`, and the
+    /// panel still names any verb it has no button for. What is removed is the
+    /// duplicate, not the capability.
+    static let sessionPrimaryVerbsLiveAbove = """
+        Start and Stop for this cartridge are the one control above, which \
+        also starts and stops the glasses camera. The verbs here are the rest \
+        of what this Tower offers.
+        """
+
+    /// Which label the primary control carries. `.stop` gets the composed
+    /// wording above; everything else reuses the session vocabulary, so the two
+    /// panels cannot come to call the same verb two different things.
+    static func recordingPrimaryButton(_ action: CartridgeSessionAction) -> String {
+        action == .stop ? stopRememberingButton : actionButton(action)
+    }
+
+    /// What one run of remembering has actually got to.
+    ///
+    /// **Four separate sentences cover what a single "recording" badge would
+    /// collapse.** `starting` is a request in flight. `waitingToBeFollowed` is
+    /// a request the Tower accepted with nothing attached yet. `notObserved` is
+    /// the same payload after the wait ran out. Only `remembering` says a
+    /// producer is alive on a recording, and only it is drawn from `following`.
+    static func recordingHeadline(_ reading: ObjectMemoryRecordingReading) -> String {
+        switch reading.phase {
+        case .idle:
+            return """
+                Nothing has been asked for on this screen yet. Starting asks \
+                the Tower to remember and starts the glasses camera.
+                """
+        case .starting:
+            return """
+                Asking the Tower to remember, then starting the glasses \
+                camera. Neither has answered yet.
+                """
+        case .waitingToBeFollowed:
+            return """
+                The Tower accepted. Waiting for a producer to attach to a \
+                recording — until one does, nothing is being written into this \
+                memory.
+                """
+        case .notObserved:
+            return """
+                Asked to remember, and not observed. The Tower reports no \
+                producer attached to a recording, so nothing is being written \
+                into this memory. The session was accepted; a producer has not \
+                been seen following anything.
+                """
+        case .remembering:
+            return """
+                A producer is alive on a recording and writing into this \
+                memory. That is read from the Tower's list of what is actually \
+                being followed, not from what was asked for.
+                """
+        case .pausing:
+            return "Asking the Tower to stop remembering, for now."
+        case .paused:
+            return """
+                Paused. The Tower reports no producer attached to a recording, \
+                so nothing is being written into this memory.
+                """
+        case .resuming:
+            return "Asking the Tower to carry on remembering."
+        case .stopping:
+            return "Asking the Tower to stop remembering."
+        case .stopped:
+            return """
+                Stopped. The Tower reports no producer attached to a recording, \
+                so nothing is being written into this memory.
+                """
+        case .stillFollowing(let action):
+            return """
+                The Tower reported the \(actionButton(action).lowercased()) as \
+                honoured and also reports a producer alive on a recording. The \
+                writing has not ended. Treat this memory as being written into \
+                until that list is empty.
+                """
+        case .cannotTell(let failure):
+            return """
+                The session could not be read, so this app cannot say whether \
+                anything is being written into this memory. \(failure.message)
+                """
+        case .refused(let refusal):
+            return refusalLine(refusal)
+        case .cameraRefused(let refusal):
+            return cameraRefusalLine(refusal)
+        case .unsupported:
+            return sessionUnsupported
+        case .failed(let failure):
+            return failure.message
+        }
+    }
+
+    /// What the glasses camera is doing, said beside the Tower's half rather
+    /// than folded into it.
+    ///
+    /// **The two halves can disagree, and the disagreement is the point.**
+    /// Pause detaches a producer on the Tower; nothing in this app pauses a DAT
+    /// stream, because `GlassesConnection` has no such call. So "paused" can be
+    /// true at the same moment as "the camera is open", and a screen that
+    /// printed only the first would be read as saying the camera stopped.
+    ///
+    /// ## `.running` does not mean a frame has arrived
+    ///
+    /// These two sentences used to say the camera "is sending frames to the
+    /// Tower", and they were printed from the instant of the tap.
+    /// `GlassesConnection.captureClaim` maps `DeviceSessionState.starting` to
+    /// `.running`, and `startCameraSession()` sets `.starting` synchronously —
+    /// so the claim was made over a session that had not connected to anything
+    /// and had certainly delivered nothing. `CaptureClaim.running`'s own
+    /// documentation says delivery is *expected*, which is the weaker word and
+    /// the correct one.
+    ///
+    /// So these say the camera is **open**, which is what the claim knows.
+    /// Making a frames claim honest would need a `.streaming` signal on
+    /// `ObjectMemoryCaptureOwner` — `GlassesConnection.cameraStreamState` has
+    /// it — and that member is deliberately not added: the sentence a wearer
+    /// needs here is "is the camera on and does Stop end it", and neither half
+    /// of that gets better for knowing whether a particular frame landed.
+    static func recordingCameraLine(_ reading: ObjectMemoryRecordingReading) -> String {
+        guard reading.cameraIsReachable else { return recordingCameraNotInThisBuild }
+        switch reading.camera {
+        case .devicePaused:
+            return """
+                The glasses have paused the capture themselves — a press on the \
+                temple, or heat. The connection is held and delivery comes back \
+                on its own; this app has no way to override that and does not \
+                offer one.
+                """
+        case .running:
+            if reading.cameraStartedHere {
+                return """
+                    The glasses camera this screen started is open, and frames \
+                    are expected to reach the Tower. This screen does not see \
+                    individual frames and does not claim any have arrived. \
+                    Stopping here ends the camera as well as the session.
+                    """
+            }
+            return """
+                The glasses camera was started elsewhere in this app and is \
+                open, so frames are expected to reach the Tower. Stopping here \
+                ends this memory's session and leaves that capture alone.
+                """
+        case .ending:
+            return """
+                The glasses camera is shutting down. A capture can be started \
+                again once it has.
+                """
+        case .unclaimed:
+            return """
+                No capture is running from this phone. Starting asks the Tower \
+                first, so its gate is open, and then starts the camera.
+                """
+        }
+    }
+
+    /// The Tower agreed to remember and the camera did not start.
+    ///
+    /// Every one of these says the Tower's half **stands**, because it does:
+    /// the session is a gate rather than a recording, and the next capture to
+    /// open — from here, from Home, or from World Builder — finds it open.
+    /// Tearing it down because the other half was refused would throw away
+    /// correct work and leave a person with nothing to resume.
+    static func cameraRefusalLine(_ refusal: CaptureStartRefusal) -> String {
+        switch refusal {
+        case .alreadyRunning:
+            return """
+                The Tower was asked to remember. A capture was already under \
+                way, so this screen left it alone rather than starting a second \
+                one.
+                """
+        case .deviceHasPausedCapture:
+            return """
+                The Tower was asked to remember. The glasses have paused the \
+                capture themselves — a press on the temple, or heat — and \
+                delivery comes back on its own. This app cannot override that, \
+                so remembering waits for the glasses.
+                """
+        case .captureIsShuttingDown:
+            // Deliberately not worded as "a capture is already under way",
+            // which is what `.alreadyRunning` says and what this screen used
+            // to imply by treating a teardown as somebody else's stream. A
+            // capture that is shutting down belongs to nobody, and telling a
+            // wearer it is running sends them looking for a stream that is on
+            // its way out.
+            return """
+                The Tower was asked to remember. The glasses camera is shutting \
+                down and a new capture cannot open until it has finished, so \
+                none was started. The session stays open on the Tower; starting \
+                again in a moment opens a real capture into it.
+                """
+        case .noActiveDevice:
+            return """
+                The Tower was asked to remember, and no glasses are active yet, \
+                so no capture could be started. The session stays open on the \
+                Tower and the next capture to open finds it ready.
+                """
+        case .cameraPermissionNotGranted:
+            return """
+                The Tower was asked to remember, and camera access is not \
+                granted, so no capture could be started. Allow it under \
+                Connections, then start again.
+                """
+        case .datRefused(let reason):
+            return """
+                The Tower was asked to remember, and the glasses refused to \
+                start a capture: \(reason). The session stays open on the Tower \
+                and the next capture to open finds it ready.
+                """
+        }
+    }
+
+    /// What the one button does, said where the button is.
+    static let recordingWhatStartDoes = """
+        One tap does both halves: the Tower is asked to remember first, so its \
+        gate is open, and then the glasses camera is started unless something \
+        else in this app has already started it.
+        """
+
+    /// What Pause does, and the half it cannot touch.
+    static let recordingPauseMeaning = """
+        Pause detaches the producer on the Tower. It does not pause the glasses \
+        camera, because nothing in this app can: a capture that is running \
+        keeps running and keeps sending frames, and they are simply no longer \
+        read into this memory.
+        """
+
+    /// A build with no capture surface at all — Release, and every preview.
+    static let recordingCameraNotInThisBuild = """
+        This build cannot start the glasses camera, so this control asks the \
+        Tower only. A capture has to come from somewhere else.
+        """
+
     // MARK: - The test seam
 
     /// Every string this cartridge would put on screen for one answer.
@@ -1067,6 +1479,7 @@ enum ObjectMemoryCopy {
         // liveness from intent would walk past a test that only read rows.
         sessionHeading,
         startMeaningLine,
+        sessionPrimaryVerbsLiveAbove,
         sessionNotPersistedLine,
         noSessionControl,
         sessionUnsupported,
@@ -1076,12 +1489,23 @@ enum ObjectMemoryCopy {
         showTheWholeFrameButton,
         showTheDetectionButton,
         showThePictureButton,
-        pictureRetentionLine,
+        // All three retention sentences, not whichever one a fixture happens to
+        // produce. The two stores have opposite lifetimes and the third case is
+        // a Tower that names neither, so a test that saw only one of them would
+        // be checking a third of this slot.
+        keyframeRetentionLine,
+        captureFrameRetentionLine,
+        unnamedSourceRetentionLine,
+        wholeFrameIsGoneLine,
         noPicturesOffered,
         unreadableImageryAnswer,
     ]
         + CartridgeSessionAction.allCases.map(actionButton)
         + CartridgeSessionAction.allCases.map(idempotentNoOpLine)
+        // The composed lifecycle. Folded in here rather than given a test of
+        // its own, so that the sentences written beside a Start button are held
+        // to exactly the same claims as the sentences written beside a record.
+        + everyRecordingString
 
     /// Every string shown for one record.
     static func everyString(for observation: ObjectObservation) -> [String] {
@@ -1121,12 +1545,19 @@ enum ObjectMemoryCopy {
             pictureCaption(objectClass: description.objectClass, kind: kind),
             filterLine(description),
             regionsFilledLine(description),
-            pictureRetentionLine,
+            pictureRetentionLine(description),
             noPictureHeadline(description),
             noPictureExplanation(description),
         ]
         if let obscured = subjectObscuredLine(description, kind: kind) {
             strings.append(obscured)
+        }
+        // Shown in place of the frame control when the recording behind this
+        // record is gone. Generated here rather than only when a fixture
+        // happens to set the field, because it is a sentence beside a
+        // photograph and that is the class of sentence this test exists for.
+        if !description.frameCanBeAskedFor {
+            strings.append(wholeFrameIsGoneLine)
         }
         return strings
     }
@@ -1138,10 +1569,14 @@ enum ObjectMemoryCopy {
             livenessLine(snapshot),
             sessionProvenanceLine(snapshot),
             startMeaningLine,
+            sessionPrimaryVerbsLiveAbove,
             sessionNotPersistedLine,
         ]
         if let contradiction = livenessContradictsIntentLine(snapshot) {
             strings.append(contradiction)
+        }
+        if let leftover = leftoverProducerLine(snapshot) {
+            strings.append(leftover)
         }
         if let captures = capturesLine(snapshot) { strings.append(captures) }
         return strings
@@ -1152,6 +1587,102 @@ enum ObjectMemoryCopy {
         [refusalLine(refusal), refusalProvenanceLine(refusal)]
             + everyString(for: refusal.snapshot)
     }
+
+    /// Every string shown for one reading of the composed lifecycle.
+    static func everyString(for reading: ObjectMemoryRecordingReading) -> [String] {
+        [
+            recordingHeadline(reading),
+            recordingCameraLine(reading),
+            recordingWhatStartDoes,
+            recordingPauseMeaning,
+            recordingPrimaryButton(.start),
+            recordingPrimaryButton(.stop),
+        ]
+    }
+
+    /// Every sentence the composed lifecycle can produce, across every phase
+    /// and every camera claim.
+    ///
+    /// **Enumerated rather than sampled.** The phase and the camera claim are
+    /// independent — a paused session beside a running camera is the pairing
+    /// this cartridge most needs to word correctly — so the product of the two
+    /// is generated instead of a handful of plausible combinations, and the
+    /// ownership flag is varied under both because it changes which of two
+    /// sentences about Stop is true.
+    ///
+    /// `.refused` is deliberately absent: its sentence is `refusalLine`, which
+    /// `everyString(for: CartridgeSessionRefusal)` already runs through the same
+    /// test with a real refusal behind it. Generating one here would need a
+    /// fabricated snapshot in production code.
+    static let everyRecordingString: [String] = {
+        let unreachableTower = CartridgeFailure(
+            kind: .transport, message: "The Tower did not answer."
+        )
+        let phases: [ObjectMemoryRecordingPhase] = [
+            .idle,
+            .starting,
+            .waitingToBeFollowed,
+            .notObserved,
+            .remembering,
+            .pausing,
+            .paused,
+            .resuming,
+            .stopping,
+            .stopped,
+            .stillFollowing(after: .pause),
+            .stillFollowing(after: .stop),
+            .cannotTell(unreachableTower),
+            .cameraRefused(.alreadyRunning),
+            .cameraRefused(.deviceHasPausedCapture),
+            .cameraRefused(.captureIsShuttingDown),
+            .cameraRefused(.noActiveDevice),
+            // Reachable only through the convergence loop's re-read — see
+            // `ObjectMemoryRecordingCoordinator.converge`. It was in this list
+            // before it was reachable at all, which is how a written sentence
+            // spent months unable to appear on a screen.
+            .cameraRefused(.cameraPermissionNotGranted),
+            .cameraRefused(.datRefused("the device session could not be created")),
+            .unsupported,
+            .failed(unreachableTower),
+        ]
+        let claims: [CaptureClaim] = [.unclaimed, .running, .devicePaused, .ending]
+
+        var strings: [String] = [
+            recordingHeading,
+            stopRememberingButton,
+            recordingWhatStartDoes,
+            recordingPauseMeaning,
+            recordingCameraNotInThisBuild,
+        ]
+        for phase in phases {
+            for claim in claims {
+                for startedHere in [true, false] {
+                    strings.append(
+                        contentsOf: everyString(
+                            for: ObjectMemoryRecordingReading(
+                                phase: phase,
+                                camera: claim,
+                                cameraStartedHere: startedHere,
+                                cameraIsReachable: true
+                            )
+                        )
+                    )
+                }
+            }
+            // The Release shape, where there is no camera to describe at all.
+            strings.append(
+                contentsOf: everyString(
+                    for: ObjectMemoryRecordingReading(
+                        phase: phase,
+                        camera: .unclaimed,
+                        cameraStartedHere: false,
+                        cameraIsReachable: false
+                    )
+                )
+            )
+        }
+        return strings
+    }()
 
     /// An unfiltered listing narrows to no class, so there is no class whose
     /// recordability could be in question — `true` keeps the wording on "this

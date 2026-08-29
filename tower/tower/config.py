@@ -124,7 +124,12 @@ class Settings:
     # capture has no latency requirement at all -- it may fall behind and
     # catch up -- so it is the one stage that should stay off the
     # contended device.
-    observation_device: str = "cpu"
+    #
+    # "auto" rather than "cpu" since 2026-08-29, resolved in the producer.
+    # The measurement above still holds and auto will pick the GPU on a
+    # host that has one; what changed is that the value is no longer a
+    # constant a second machine has to override by hand.
+    observation_device: str = "auto"
     # The retention window the producer WRITES UNDER, recorded in the
     # store manifest at first append. Every later read clamps to
     # min(persisted, requested), so this is the promise and a reader can
@@ -133,18 +138,56 @@ class Settings:
     # What, if anything, may second-guess a detector label before a class
     # the detector cannot be trusted to name is written.
     #
-    # "none" is the default and is a measurement rather than caution.
-    # Reading the crops the shipped detector produced over the real
-    # corpus found a ceiling fan detected as `airplane` at 0.99 and a
-    # laptop keyboard as `remote` at 0.87, so a Tower with nothing to
-    # check those labels records neither -- which is exactly the
-    # behaviour that was physically validated.
+    # `owlv2` IS THE DEFAULT, AND IT WAS "none" UNTIL 2026-08-29.
+    #
+    # The old default was a measurement, not caution. Reading the crops
+    # the shipped detector produced over the real corpus found a ceiling
+    # fan detected as `airplane` at 0.99 and a laptop keyboard as
+    # `remote` at 0.87, so a Tower with nothing to check those labels
+    # recorded neither -- and `docs/agent-handoffs/OBJECT-MEMORY-HANDOFF`
+    # section 7.4 recorded turning it on as an OPEN DECISION FOR A HUMAN,
+    # explicitly not one an agent should close: "the default stays `none`
+    # because 94 crops from one home justify building it and not
+    # switching it on for everybody."
+    #
+    # A human closed it. The 2026-08-29 product pass was instructed that
+    # OWLv2 is this project's intended standard configuration and that
+    # setting `TOWER_OBSERVATION_VERIFIER` by hand before every launch is
+    # not acceptable for ordinary use. That is the ruling section 7.4 was
+    # waiting for, and it is recorded here rather than in a shell script
+    # so that every way of starting this Tower agrees.
+    #
+    # WHAT IT COSTS, AND WHY IT IS STILL SAFE TO DEFAULT.
+    #
+    # ~600 MB of weights, fetched once, and ~620 MB of VRAM while the
+    # producer runs. A host that cannot get the weights is NOT broken by
+    # this: `_build_verifier` reports the failure and runs with no
+    # verifier, which narrows what is recorded to the two classes the
+    # detector is trusted on. The narrowing direction is the only one
+    # this setting is allowed to fail in.
+    #
+    # It changes what this Tower RECORDS, from two classes to fourteen.
+    #
+    # `recorded_classes` on the read routes is derived from this value --
+    # and that means it reports what was ASKED FOR, not what loaded. The
+    # web process cannot know the difference: the weights are loaded in
+    # the producer, in another process, minutes later, and there is no
+    # channel back. So on a host where the download fails, the routes
+    # advertise fourteen classes while the producer records two, and the
+    # only place that says so is the producer's own report
+    # (`verifier` beside `verifier_requested`) and the loud line it
+    # prints on stderr into the Tower console.
+    #
+    # Documented rather than papered over. Inventing a channel for it
+    # would put cartridge state on the web process for a case that is
+    # loud and one-off, and a client that needs certainty should read the
+    # report.
     #
     # A NAME rather than a boolean, because the answer will eventually be
     # a model identifier and a boolean cannot become one. It is handed to
     # the producer's argv AND used by the read routes to say which
     # classes this Tower records, so the two cannot disagree about it.
-    observation_verifier: str = "none"
+    observation_verifier: str = "owlv2"
     # Where the verifier runs, when there is one.
     #
     # CUDA by default even though the DETECTOR defaults to CPU, and the
@@ -156,8 +199,52 @@ class Settings:
     # and it costs 620 MB of VRAM on a card that has twelve.
     #
     # A host with no CUDA does not need this set: the verifier reports
-    # the downgrade and runs on CPU rather than failing.
-    observation_verifier_device: str = "cuda"
+    # the downgrade and runs on CPU rather than failing. Since 2026-08-29
+    # the default says so explicitly -- "auto" rather than "cuda" -- so
+    # the log line at startup names a device this host actually has
+    # instead of one it was assumed to have.
+    observation_verifier_device: str = "auto"
+    # Whether each record gets a small filtered picture of its OWN.
+    #
+    # ON by default, and the default is the whole point of the setting
+    # rather than a convenience.
+    #
+    # WHAT IT FIXES. A record has 30-day retention. The picture it points
+    # at lives in `data/captures/<session_id>/frames/`, which this
+    # cartridge does not own and whose lifetime it does not set -- which
+    # is why every record carries `frame-referenced` and every imagery
+    # payload said `imagery_retention: "capture-side"`. Today nothing
+    # prunes captures at all (`CaptureRecorder.purge()` has no production
+    # caller), so nothing has gone wrong yet. The first thing that prunes
+    # them -- a capture pruner, or a human reclaiming the ~2.1 GB an hour
+    # a recording costs -- takes the picture out of EVERY memory at once,
+    # and a memory aid whose measured product value is the image becomes
+    # a label and a timestamp. With this on, the record keeps a crop this
+    # cartridge owns and this cartridge's retention deletes.
+    #
+    # WHAT IT COSTS. MEASURED over all 116 of this host's records: mean 11.7 KB
+    # a keyframe (median 12.3, max 22.1) at a 384 px long side and JPEG
+    # quality 80, so about 4.3 MB an hour of walking at the corpus's
+    # measured rate of ~380 records an hour -- roughly 1/400th of what
+    # the recording itself costs. On the frame path it costs one padded
+    # numpy copy per admitted detection; the write itself happens once
+    # per sighting, at its end, off the frame path.
+    #
+    # WHAT IT REQUIRES, AND WHAT HAPPENS WITHOUT IT. A face-detection
+    # model. `KeyframeStore.write` FAILS CLOSED: with no weights, or a
+    # filter that raises, it writes nothing at all rather than writing an
+    # unfiltered crop with an honest label on it -- a label is not a
+    # control and a file outlives every label that travelled with it. So
+    # a Tower with no model keeps behaving exactly as it did, serves
+    # crops out of the capture as before, and says so once, loudly, at
+    # producer start rather than refusing silently a few hundred times.
+    #
+    # OFF is a real configuration and not a degraded one: it reproduces
+    # the behaviour that shipped, where this cartridge persisted no
+    # pixels whatsoever. A deployment that would rather have no
+    # first-person imagery under the observation root at all sets
+    # `TOWER_OBSERVATION_KEEP_IMAGERY=false` and gets exactly that.
+    observation_keep_imagery: bool = True
     # Whether Scene Understanding may run at all on this Tower.
     #
     # OFF by default, and the default is a resource decision rather than
@@ -331,7 +418,7 @@ def get_settings() -> Settings:
         observation_root=_observation_root(observation_enabled),
         observation_enabled=observation_enabled,
         observation_device=_device(
-            os.environ.get("TOWER_OBSERVATION_DEVICE"), default="cpu"
+            os.environ.get("TOWER_OBSERVATION_DEVICE"), default="auto"
         ),
         observation_retention_days=_non_negative_float(
             os.environ.get("TOWER_OBSERVATION_RETENTION_DAYS"), default=30.0
@@ -340,7 +427,10 @@ def get_settings() -> Settings:
             os.environ.get("TOWER_OBSERVATION_VERIFIER")
         ),
         observation_verifier_device=_device(
-            os.environ.get("TOWER_OBSERVATION_VERIFIER_DEVICE"), default="cuda"
+            os.environ.get("TOWER_OBSERVATION_VERIFIER_DEVICE"), default="auto"
+        ),
+        observation_keep_imagery=_flag(
+            "TOWER_OBSERVATION_KEEP_IMAGERY", default=True
         ),
         world_autobuild=os.environ.get("TOWER_WORLD_AUTOBUILD", "true").lower()
         in ("1", "true", "yes"),
@@ -397,6 +487,11 @@ def _observation_root(enabled: bool) -> str | None:
 # `test_the_settings_and_the_producer_agree_about_verifier_names`.
 KNOWN_VERIFIERS = ("none", "owlv2")
 
+# What an unset TOWER_OBSERVATION_VERIFIER means. Named rather than
+# inlined so `Settings`, `_verifier` and the tests all read the same
+# constant; the reasoning for the value is on `Settings`.
+DEFAULT_OBSERVATION_VERIFIER = "owlv2"
+
 
 def _verifier(value: str | None) -> str:
     """Which verifier to run, or "none". An unknown name falls back.
@@ -408,24 +503,47 @@ def _verifier(value: str | None) -> str:
     the fallback is the SAFE direction, because "none" narrows what the
     routes claim rather than widening it.
     """
-    if value is None or not value.strip():
+    if value is None:
+        return DEFAULT_OBSERVATION_VERIFIER
+    if not value.strip():
+        # An explicitly EMPTY variable is a person switching it off, and
+        # falling back to the default there would ignore them.
         return "none"
     name = value.strip().lower()
     return name if name in KNOWN_VERIFIERS else "none"
 
 
-def _device(value: str | None, *, default: str = "cpu") -> str:
-    """"cpu" or "cuda". Anything else falls back rather than failing late.
+# What this Tower will accept as a device for the Object Memory
+# producer. `auto` is the same word `TOWER_CV_DEVICE` uses and resolves
+# the same way -- see `cartridge_runtime._resolve_device`: auto
+# downgrades, cuda does not.
+KNOWN_DEVICES = ("auto", "cpu", "cuda")
+
+
+def _device(value: str | None, *, default: str = "auto") -> str:
+    """"auto", "cpu" or "cuda". Anything else falls back rather than
+    failing late.
 
     A typo here would otherwise reach a child process as an argv, be
     rejected by `torch.device`, and surface as a producer that exits
     immediately -- visible only as a warning in the Tower log, hours into
-    a walk that remembered nothing. The fallback is the measured default.
+    a walk that remembered nothing. The fallback is the default.
+
+    `auto` was added because the alternative is a machine-specific
+    constant in a shared repository. `cuda` was this cartridge's default
+    for the verifier and is correct on the host it was measured on; on a
+    host without a GPU it is a value that has to be un-set by hand before
+    anything works, which is the same "edit the environment before every
+    run" problem the whole session surface exists to remove. It is
+    RESOLVED IN THE PRODUCER, not here: this process deliberately does
+    not import torch, and a resolution that needed it would put a ~2 s
+    import on the web process's startup for a decision a child is about
+    to make anyway.
     """
     if value is None:
         return default
     normalised = value.strip().lower()
-    if normalised in ("cpu", "cuda"):
+    if normalised in KNOWN_DEVICES:
         return normalised
     return default
 

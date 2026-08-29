@@ -195,9 +195,31 @@ nonisolated struct CartridgeSessionSnapshot: Equatable, Sendable {
     let startedAt: Date?
     let changedAt: Date?
 
-    /// **Fact.** Capture ids a producer is *alive* on, right now. The only
-    /// field in this type from which a liveness claim may be drawn.
+    /// **Fact.** Capture ids a producer is *alive* on, right now — every one
+    /// of them, including a producer left over from a session that could not
+    /// kill it.
+    ///
+    /// That breadth is deliberate and is why this is no longer the field a
+    /// liveness claim is drawn from. An un-killable producer is what "the Stop
+    /// button failed open" looks like, and it must stay visible somewhere;
+    /// `intentContradictsLiveness` is drawn from here and stays drawn from
+    /// here.
     let following: [String]
+
+    /// **Fact, scoped to this session.** The subset of `following` that *this*
+    /// session started. `nil` from a Tower that does not send the field.
+    ///
+    /// The Tower's own contract carried this defect as a warning before it was
+    /// fixed: `following` is supervisor-scoped, so a session that started
+    /// nothing reports a previous session's capture under a new `session_id`
+    /// and renders as recording. Pressing Stop against a producer that will not
+    /// die and then pressing Start is the whole reproduction.
+    ///
+    /// `nil` is not `[]`. A Tower that never sends the field has not said this
+    /// session is following nothing; it has said nothing at all, and
+    /// `isFollowingACapture` falls back to `following` there rather than
+    /// silently reporting a Tower with a producer as one without.
+    let followingThisSession: [String]?
     /// Every capture this session's producer has been seen following, in the
     /// order first seen. History, not liveness — a capture in here and not in
     /// `following` is one the producer has finished with.
@@ -227,6 +249,7 @@ nonisolated struct CartridgeSessionSnapshot: Equatable, Sendable {
         startedAt: Date?,
         changedAt: Date?,
         following: [String],
+        followingThisSession: [String]? = nil,
         captures: [String],
         accepted: Bool? = nil,
         changed: Bool? = nil,
@@ -244,6 +267,7 @@ nonisolated struct CartridgeSessionSnapshot: Equatable, Sendable {
         self.startedAt = startedAt
         self.changedAt = changedAt
         self.following = following
+        self.followingThisSession = followingThisSession
         self.captures = captures
         self.accepted = accepted
         self.changed = changed
@@ -254,11 +278,50 @@ nonisolated struct CartridgeSessionSnapshot: Equatable, Sendable {
 
     /// **The liveness fact, and the only one.**
     ///
-    /// Whether a producer is alive on a capture right now. Derived from
-    /// `following` and from nothing else — deliberately not from `state`,
-    /// deliberately not from `sessionID`, and deliberately not from `captures`,
-    /// which is a history and stays populated after a producer has finished.
-    var isFollowingACapture: Bool { !following.isEmpty }
+    /// Whether a producer *this session started* is alive on a capture right
+    /// now. Deliberately not from `state`, deliberately not from `sessionID`,
+    /// and deliberately not from `captures`, which is a history and stays
+    /// populated after a producer has finished.
+    ///
+    /// Read from `followingThisSession` when the Tower sends it, and from
+    /// `following` when it does not. The fallback is not caution about a field
+    /// that might be missing — it is the only honest answer available from a
+    /// Tower that cannot scope it, and it errs towards reporting a producer
+    /// that exists rather than towards silence about one that does.
+    var isFollowingACapture: Bool { !(followingThisSession ?? following).isEmpty }
+
+    /// Recordings being written into that **the control on this screen did not
+    /// start**.
+    ///
+    /// Empty on every ordinary reading. Non-empty means a producer is writing
+    /// that a Stop from here does not reach — which is a sentence a wearer
+    /// needs, and is not the same sentence as "you are remembering".
+    ///
+    /// ## Named for what it knows, which is narrower than session ownership
+    ///
+    /// It was `producersThisSessionDidNotStart`, and that name was a claim the
+    /// field cannot support. The Tower scopes `following_this_session` by
+    /// *started at or after this session last went active*, and **re-takes that
+    /// mark on every Resume** — so a producer that survived a Pause is this
+    /// session's, from before the pause, and is still correctly outside the
+    /// scoped list. Calling it "this session did not start it" would be false
+    /// in exactly the case a wearer is most likely to hit.
+    ///
+    /// Renamed to match `ObjectMemoryCopy.leftoverProducerLine`, which is
+    /// worded from the same narrower fact, so the property name and the
+    /// sentence cannot drift apart again.
+    ///
+    /// **`nil` is not `[]`.** The three-valued field is the whole point:
+    /// a list scopes, `[]` is a positive claim that nothing this control
+    /// started is running, and `nil` (or an omitted key) means the Tower cannot
+    /// scope the question. The `guard` returns `[]` for `nil` because *nothing
+    /// can be called unreached when nothing is scoped* — an unscoped Tower must
+    /// draw no warning at all, rather than a warning about every capture it is
+    /// following.
+    var recordingsThisControlDidNotStart: [String] {
+        guard let mine = followingThisSession else { return [] }
+        return following.filter { !mine.contains($0) }
+    }
 
     /// Whether the Tower's own two fields contradict each other in the
     /// direction that harms a person.
@@ -274,7 +337,12 @@ nonisolated struct CartridgeSessionSnapshot: Equatable, Sendable {
     /// tell those apart from one payload and must not guess; it says what it
     /// knows, which is that nothing is being followed.
     var intentContradictsLiveness: Bool {
-        guard isFollowingACapture else { return false }
+        // From `following`, the WIDE field, and not from
+        // `isFollowingACapture`, which is now scoped to this session. A
+        // producer left over from an earlier session is still a producer
+        // recording a person who asked to stop being recorded, and scoping
+        // this alarm would be the one narrowing that makes it useless.
+        guard !following.isEmpty else { return false }
         return state == .paused || state == .stopped
     }
 
@@ -408,6 +476,11 @@ nonisolated enum CartridgeSessionDecoder {
             startedAt: date(json["started_at"]),
             changedAt: date(json["changed_at"]),
             following: following,
+            // Absent from a Tower older than 2026-08-29. Left `nil` rather
+            // than defaulted to `[]`, so `isFollowingACapture` can tell
+            // "this session is following nothing" from "this Tower does not
+            // answer that question".
+            followingThisSession: json["following_this_session"] as? [String],
             captures: captures,
             accepted: json["accepted"] as? Bool,
             changed: json["changed"] as? Bool,

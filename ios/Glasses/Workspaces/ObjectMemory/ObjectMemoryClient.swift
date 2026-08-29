@@ -821,6 +821,28 @@ final class ObjectMemoryViewModel: ObservableObject {
         ask(.lastSeen(objectClass: objectClass))
     }
 
+    /// Re-asks whatever question is standing, without changing it.
+    ///
+    /// **The refresh a Stop triggers, and the reason it is not
+    /// `askForEverything()`.** That call builds `.listing(objectClass:)`, so it
+    /// preserved the reader's *category* and silently replaced the *shape* of
+    /// their question: somebody who had asked "when was a laptop last in view"
+    /// pressed Stop and got a listing back. Two of the three things a reader
+    /// chose — the shape and the class — have to survive a refresh, or the
+    /// refresh is a different question wearing the old one's answer.
+    ///
+    /// `state.question` carries both, for `.asking` and `.answered` alike.
+    /// `askForEverything()` is the fallback for `.idle`, `.noObjectMemory` and
+    /// `.failed`, where there is no standing question to preserve and a listing
+    /// is the widest honest thing to show.
+    func askAgain() {
+        guard let standing = state.question else {
+            askForEverything()
+            return
+        }
+        ask(standing)
+    }
+
     func ask(_ question: ObjectMemoryQuestion) {
         Task { await client.ask(question) }
     }
@@ -869,6 +891,17 @@ final class ObjectMemoryViewModel: ObservableObject {
         Task { await client.readSession() }
     }
 
+    /// Sends one verb straight at the Tower.
+    ///
+    /// **The workspace does not call this any more, and new callers should
+    /// think before they do.** It moves the Tower's producer and nothing else,
+    /// so a `stop` sent through here ends the session and leaves the glasses
+    /// camera streaming, and a `start` opens the gate with no capture behind
+    /// it — which is precisely the half-finished product
+    /// `ObjectMemoryRecordingCoordinator` was written to replace. It is kept
+    /// because the Tower half is genuinely separable and a future caller with
+    /// no camera at all is a real possibility; it is documented because the
+    /// obvious call site is the wrong one.
     func apply(_ action: CartridgeSessionAction) {
         Task { await client.apply(action) }
     }

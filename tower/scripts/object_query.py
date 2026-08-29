@@ -34,10 +34,17 @@ store written under the 30-day default still gets you 30 days.
 
 ON WHAT DELETION REACHES
 
-`--purge-all` deletes every observation this cartridge holds. It does not
+`--purge-all` deletes every observation this cartridge holds, AND the
+small filtered crop each one owns under `<root>/keyframes/`. It does not
 touch `data/captures/`, and a record's session_id + frame_seq points
-straight into it. The imagery is governed by capture-side retention,
+straight into it. That frame is governed by capture-side retention,
 which is not Object Memory's to give away or to promise.
+
+It also REPORTS what it could not delete, and exits non-zero when
+anything survived. A purge that prints a count while a directory of
+crops is still on disk is the false claim of deletion
+`CARTRIDGE-GROUNDWORK.md` calls worse than an honest failure, and this
+is the command a wearer's erasure request actually runs.
 
     .venv\Scripts\python.exe scripts/object_query.py --last-seen laptop
 """
@@ -124,11 +131,49 @@ def main(argv=None) -> int:
 
     if args.purge_all:
         removed = store.purge()
+        # THE PICTURES ARE PART OF THE ANSWER, and so is any the
+        # filesystem refused to delete.
+        #
+        # Since `keyframes.py` a record may own a small crop under
+        # `<root>/keyframes/`, and `purge()` deletes those with the
+        # records. Printing only the observation count would let a run
+        # that left a directory of crops behind -- a Windows sharing
+        # violation is enough to cause one -- look identical to a run
+        # that removed everything.
+        keyframes_removed, retained = store.last_keyframe_purge
+        # The store's own artifacts as well as the crops. Both halves
+        # report, because "everything was deleted except the file with
+        # every observation in it" is the answer a person asking for
+        # erasure most needs and least expects.
+        store_retained = store.last_purge_retained
+        report = {
+            "observations_removed": removed,
+            "keyframes_removed": keyframes_removed,
+            "keyframes_not_removed": list(retained),
+            "store_files_not_removed": list(store_retained),
+        }
         if args.format == "json":
-            print(json.dumps({"observations_removed": removed}, indent=2))
+            print(json.dumps(report, indent=2))
         else:
             print(f"observations removed  {removed}")
-        return 0
+            print(f"keyframes removed     {keyframes_removed}")
+            if store_retained:
+                print(
+                    f"store files NOT removed {len(store_retained)}: "
+                    + ", ".join(store_retained)
+                )
+            if retained:
+                print(
+                    f"keyframes NOT removed {len(retained)}: "
+                    + ", ".join(retained)
+                )
+                print(
+                    "Those files are still on disk. This command has NOT "
+                    "deleted everything it was asked to."
+                )
+        # Non-zero when something survived, so a caller acting on a
+        # wearer's behalf cannot read a complete deletion out of exit 0.
+        return 1 if (retained or store_retained) else 0
 
     observation = store.last_seen(args.last_seen)
 

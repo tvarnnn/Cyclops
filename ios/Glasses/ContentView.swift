@@ -147,20 +147,40 @@ struct ContentView: View {
                     tower: project.towerClient,
                     client: project.cartridgeClients.worldBuilder
                 )
-            // The four workspaces below receive no `glasses`, and that omission
-            // is load-bearing rather than incidental. World Builder shows the
-            // live viewfinder and owns one of the app's two capture buttons, so
-            // it needs the connection. These four show what the Tower knows;
-            // none has a session control, and none is handed the object that
-            // could start one. The set of places that can reach
-            // `startCameraSession()` is therefore still exactly two, and it
-            // stayed two while the number of screens went from two to five.
+            // Three of the four workspaces below receive no `glasses`, and
+            // that omission is load-bearing rather than incidental. World
+            // Builder shows the live viewfinder and owns a capture button, so
+            // it needs the connection. Experimental CV Lab, Document Memory and
+            // Scene Understanding show what the Tower knows; none has a session
+            // control, and none is handed the object that could start one.
+            //
+            // Object Memory is the exception, and it was made one deliberately.
+            // It is the only cartridge with a Start button that *means*
+            // something on the Tower — a producer that reads a recording and
+            // writes observations — and until this change that button started
+            // the producer and nothing else. Pressing it with no capture running
+            // gave a session that was honestly `active` with
+            // `attached_capture_id: null`: it worked, and it remembered nothing,
+            // and the only way to make it do anything was to leave for Home and
+            // press a differently-named button there first. A cartridge whose
+            // primary control cannot complete its own job is not a product, so
+            // Object Memory now composes both halves in one tap. See
+            // `ObjectMemoryRecordingCoordinator`.
+            //
+            // So the count is **three**, not two: Home, World Builder, and
+            // Object Memory. The invariant that actually matters is unchanged
+            // and is the one worth restating — there is still exactly one camera
+            // pipeline and one owner of it, `GlassesConnection`, and every one
+            // of those three reaches it through `startCameraSession()` and
+            // `stopCameraSession()` and touches DAT no other way. Object Memory
+            // additionally refuses to start a capture that Home or World Builder
+            // already started, and refuses to stop one it did not start itself.
             //
             // The client comes from `project.cartridgeClients` so it outlives
             // the workspace's `@StateObject`, which a cartridge switch
             // destroys.
             //
-            // Experimental CV Lab is the one of the four that also takes
+            // Experimental CV Lab is the one of these that also takes
             // `tower`, and it takes it as a plain value rather than as
             // something to observe. The Tower's per-frame reply carries the
             // running experiment's own result, and that workspace is where
@@ -195,16 +215,25 @@ struct ContentView: View {
                         client: project.cartridgeClients.sceneUnderstanding
                     )
                 }
-            // Object Memory joins the two above rather than World Builder: it
-            // shows what the Tower already recorded, has no session control,
-            // and is handed no `GlassesConnection`. Its data arrives over HTTP
-            // when a person asks for it, so the one fact it needs from the
-            // socket is still just "is the Tower reachable".
+            // Object Memory takes both: `glasses`, because its Start button
+            // starts a capture, and the reachability *fact* rather than the
+            // `TowerClient` itself, because its records arrive over HTTP and
+            // observing the socket would invalidate this subtree at the Tower's
+            // reply rate for a value that changes almost never.
+            //
+            // The coordinator is passed, not the connection. It is built on
+            // `ProjectManager` from the same single `GlassesConnection` every
+            // other screen uses — there is no second one — and it is owned
+            // there rather than by this view because whether this app started
+            // the running capture must survive a person opening Home and
+            // coming back. A view-owned one would be rebuilt believing it had
+            // started nothing, and its Stop would leave the glasses recording.
             case .objectMemory:
                 TowerReachabilityReader(tower: project.towerClient) { isTowerReachable in
                     ObjectMemoryWorkspaceView(
                         isTowerReachable: isTowerReachable,
-                        client: project.cartridgeClients.objectMemory
+                        client: project.cartridgeClients.objectMemory,
+                        recording: project.objectMemoryRecording
                     )
                 }
             }

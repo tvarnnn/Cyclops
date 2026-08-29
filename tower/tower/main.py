@@ -19,7 +19,11 @@ from tower.modules.container import ModuleContainer
 from tower.modules.experimental_cv import ExperimentalCVModule
 from tower.results import build_hub
 from tower.results.contracts import CARTRIDGE_OBJECT_MEMORY
-from tower.results.object_memory import build_face_filter, recorded_classes_for
+from tower.results.object_memory import (
+    build_face_filter,
+    keyframe_store_from_root,
+    recorded_classes_for,
+)
 from tower.routes import (
     cartridges,
     cv_lab,
@@ -189,15 +193,36 @@ def _observation_spec(settings: Settings, gate) -> WorkerSpec | None:
             settings.observation_verifier,
             "--verifier-device",
             settings.observation_verifier_device,
+            # Whether each record gets a small filtered crop of its own.
+            # Passed explicitly in both directions rather than relying on
+            # the script's default, for the same reason every other value
+            # here is: the read routes serve those keyframes from the
+            # same root, and a Tower that serves what it did not ask to
+            # be written is a Tower with two answers to one question.
+            (
+                "--keep-imagery"
+                if settings.observation_keep_imagery
+                else "--no-keep-imagery"
+            ),
             # Same bound, same reason as the builder's. This producer
             # additionally writes an observation store, so an orphan that
             # polls forever is holding a root a later session will reuse.
             "--max-idle-polls",
             str(DEFAULT_MAX_IDLE_POLLS),
+            # The half of the stop agreement that lives in the child. The
+            # other half is `stop_via_stdin` below, and the two are here
+            # together so neither can be set without the other.
+            "--stop-on-stdin-close",
         ),
         cwd=str(TOWER_ROOT),
         name=OBJECT_MEMORY_WORKER,
         gate=gate,
+        # Pause and Stop must let this producer finish writing what it
+        # saw: `engine.release()` is what closes the sightings still
+        # open, and the sighting still open when a wearer presses Stop is
+        # the object they had been looking at longest. See
+        # `capture_workers._ask_to_stop`.
+        stop_via_stdin=True,
     )
 
 
@@ -341,6 +366,49 @@ def _log_effective_configuration(
             settings.observation_verifier_device,
             ", ".join(_recorded_classes(settings)),
         )
+        # Said at startup rather than only in the producer's report,
+        # because it is the difference between a memory that keeps its
+        # picture for thirty days and one whose picture belongs to a
+        # capture directory nobody promised to keep.
+        logger.info(
+            "[Tower][Config] owned keyframes %s (TOWER_OBSERVATION_KEEP_"
+            "IMAGERY). On, each record keeps a small filtered crop under "
+            "the observation root, deleted when the record expires. Off, "
+            "no NEW crop is written -- crops already on disk are still "
+            "served and still pruned with their records, because deleting "
+            "them on a config change would be a deletion nobody asked "
+            "for; scripts/object_query.py --purge-all removes them.",
+            "on" if settings.observation_keep_imagery else "off",
+        )
+        # `auto` is a request, not an answer, and this process cannot
+        # answer it: resolving it needs torch, which the web process
+        # deliberately does not import. The producer resolves it and
+        # prints the concrete device on its first line, which lands in
+        # this console because workers inherit stdio -- so say where to
+        # look rather than logging a word that is not a device.
+        if "auto" in (
+            settings.observation_device,
+            settings.observation_verifier_device,
+        ):
+            logger.info(
+                "[Tower][Config] a device above reads 'auto': it is resolved "
+                "by the producer, which prints the device it actually got as "
+                "its first line when a session starts."
+            )
+        # The verifier decides whether this Tower records two classes or
+        # fourteen, so where the value came from is worth one line. It is
+        # a default now rather than something an operator typed, and a
+        # default that changed what a Tower remembers should not be
+        # silent about being a default.
+        if not os.environ.get("TOWER_OBSERVATION_VERIFIER", "").strip():
+            logger.info(
+                "[Tower][Config] TOWER_OBSERVATION_VERIFIER is unset, so the "
+                "built-in default %r is in force. Set it to 'none' to record "
+                "only the classes the detector is trusted on. A host that "
+                "cannot load the weights records those two anyway -- the "
+                "producer says so and does not stop.",
+                settings.observation_verifier,
+            )
         raw_verifier = os.environ.get("TOWER_OBSERVATION_VERIFIER", "")
         if raw_verifier.strip() and raw_verifier.strip().lower() != (
             settings.observation_verifier
@@ -471,6 +539,16 @@ def create_app() -> FastAPI:
     # filter that reports itself unavailable, and the imagery routes
     # then refuse -- they never fall back to an unfiltered frame.
     app.state.object_memory_face_filter = build_face_filter()
+    # The crops this cartridge OWNS, under the same root as the records.
+    #
+    # Read-only from here, exactly like the store: the web process never
+    # writes a keyframe (the producer does, in its own process) and never
+    # deletes one (retention does, through `ObservationStore`). This is
+    # only where to look. None when object memory is switched off, which
+    # is the same condition that makes the routes answer 404.
+    app.state.object_memory_keyframes = keyframe_store_from_root(
+        settings.observation_root
+    )
     # Mutually referential, resolved by a lookup rather than by an
     # ordering trick: the worker spec's gate asks a session whether it is
     # active, and the session needs the supervisor the spec is registered

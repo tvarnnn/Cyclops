@@ -53,13 +53,30 @@ one. None of the scores is a calibrated probability.
 and every later read clamps to min(persisted, requested). A reader can
 narrow that window; nothing a reader passes can widen it.
 
+AND EACH RECORD KEEPS A PICTURE THIS CARTRIDGE OWNS.
+
+`--keep-imagery`, on by default, writes one small filtered crop per
+record under `<root>/keyframes/`. Without it a record's only picture is
+a frame in `data/captures/`, which this cartridge does not own and whose
+lifetime it does not set -- so the first thing that prunes captures
+takes the picture out of every memory at once, which is a race rather
+than a retention policy. The owned crop is pruned when the record
+expires and deleted by `object_query.py --purge-all`.
+
+It needs a face-detection model and FAILS CLOSED without one: no model
+means no keyframes at all, never an unfiltered crop on disk, and this
+script says so once at start rather than refusing quietly all walk.
+Measured at ~11.7 KB a record, about 4.3 MB an hour of walking.
+
     .venv\Scripts\python.exe scripts/object_memory_session.py --frames data/captures/<id>
     .venv\Scripts\python.exe scripts/object_memory_session.py --follow-capture data/captures/<id>
 """
 
 import argparse
 import json
+import signal
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -78,6 +95,8 @@ from tower.object_memory.detector import (  # noqa: E402
     TorchvisionDetector,
 )
 from tower.object_memory.engine import ObjectMemoryEngine  # noqa: E402
+from tower.object_memory.imagery import FaceFilter  # noqa: E402
+from tower.object_memory.keyframes import KeyframeStore  # noqa: E402
 from tower.object_memory.relevance import (  # noqa: E402
     RelevancePolicy,
     recordable_classes,
@@ -139,6 +158,42 @@ def loose_frames(directory: Path):
 VERIFIERS = ("none", "owlv2")
 
 
+def _resolve_device(requested: str) -> str:
+    """A requested device, as one this host actually has.
+
+    Same word and same rule as `TOWER_CV_DEVICE` and
+    `cartridge_runtime._resolve_device`: **auto downgrades, cuda does
+    not** -- an unnoticed downgrade turns a GPU deployment into a CPU one
+    with a GPU label on it, which is worse than a failure.
+
+    With one deliberate difference, and it is about what this process is.
+    The Lab's version RAISES when `cuda` is unavailable, and raising
+    there costs an experiment. Raising here costs a walk: this is a
+    producer a person started from their phone, mid-session, and a Tower
+    whose GPU disappeared under a driver update would answer their Start
+    by remembering nothing at all. So an explicit `cuda` that cannot be
+    honoured downgrades too -- and says so at WARNING, which is what
+    `OwlV2Verifier` already did for the same reason. `auto` is silent
+    about it because `auto` asked for whatever was there.
+    """
+    if requested == "cpu":
+        return "cpu"
+
+    import torch
+
+    available = torch.cuda.is_available()
+    if available:
+        return "cuda"
+    if requested == "cuda":
+        print(
+            "[Tower][ObjectMemory] cuda was asked for and torch reports none "
+            "on this host; running on cpu",
+            file=sys.stderr,
+            flush=True,
+        )
+    return "cpu"
+
+
 def _build_verifier(name: str, device: str):
     """Whatever may second-guess a detector label, or None.
 
@@ -160,17 +215,228 @@ def _build_verifier(name: str, device: str):
     if name == "none":
         return None
     if name == "owlv2":
-        from tower.object_memory.classes import prompt_for, verifier_vocabulary
-        from tower.object_memory.verification import OwlV2Verifier
+        try:
+            from tower.object_memory.classes import prompt_for, verifier_vocabulary
+            from tower.object_memory.verification import OwlV2Verifier
 
-        return OwlV2Verifier(
-            device=device,
-            vocabulary=verifier_vocabulary(),
-            prompt_for=prompt_for,
-        )
+            return OwlV2Verifier(
+                device=device,
+                vocabulary=verifier_vocabulary(),
+                prompt_for=prompt_for,
+            )
+        except Exception as exc:  # noqa: BLE001
+            # SOFT, and only in the narrowing direction.
+            #
+            # `owlv2` became the default on 2026-08-29, which means a
+            # host that has never fetched the weights, or has no
+            # `transformers`, is now a host where the DEFAULT
+            # configuration can fail. A producer that died here would
+            # answer a wearer's Start with a walk that remembered
+            # nothing and a warning in a log they are not reading.
+            #
+            # Running without it records two classes instead of
+            # fourteen. `recordable_classes` in the report says which,
+            # and `verifier` in the report says `none`, so the run
+            # cannot claim a verification tier it did not have.
+            print(
+                "[Tower][ObjectMemory] the owlv2 verifier could not be "
+                f"loaded ({exc.__class__.__name__}: {exc}); continuing with "
+                "no verifier, which records only the classes the detector "
+                "is trusted on",
+                file=sys.stderr,
+                flush=True,
+            )
+            return None
     raise SystemExit(
         f"unknown verifier {name!r}; this build offers {', '.join(VERIFIERS)}"
     )
+
+
+def _build_keyframe_store(root, keep_imagery: bool):
+    """`(KeyframeStore, FaceFilter)`, or `(None, None)`, and one loud line.
+
+    Both or neither. A keyframe store with no usable filter would write
+    nothing and count a refusal per sighting, which is the correct
+    behaviour and a terrible thing to discover at the end of a walk -- so
+    this reports the condition ONCE, before the first frame, next to the
+    device and verifier lines an operator is already reading.
+
+    The filter is still handed to the engine even when it is
+    unavailable, rather than being replaced with None. `KeyframeStore.
+    write` refuses an unavailable filter by the same branch it refuses a
+    missing one, and the counter says `display-filter-unavailable` either
+    way -- a report that said "no keyframe store" when the truth is "no
+    model on this host" would send an operator to the wrong setting.
+    """
+    if not keep_imagery:
+        # Not a degraded configuration. It reproduces exactly the
+        # behaviour that shipped, where this cartridge persisted no
+        # pixels at all, and the report says `keep_imagery: false` so a
+        # run cannot be mistaken for one that tried and failed.
+        return None, None
+
+    face_filter = FaceFilter()
+    if not face_filter.available:
+        print(
+            "[Tower][ObjectMemory] KEEPING NO IMAGERY THIS RUN: "
+            f"{face_filter.unavailable_reason}. Every record will still be "
+            "written and will still point at its capture frame, but none "
+            "will get a picture of its own -- so when the capture is "
+            "pruned or deleted, those memories lose their pictures. "
+            "Nothing unfiltered is ever written instead.",
+            file=sys.stderr,
+            flush=True,
+        )
+    return KeyframeStore(root), face_filter
+
+
+class _StopRequest:
+    """A stop asked for from outside this process, and whether it arrived.
+
+    THE PROBLEM THIS SOLVES, AND IT WAS COSTING REAL MEMORIES.
+
+    Pressing Stop (or Pause) in the app reaches
+    `CartridgeSession._detach` -> `CaptureWorkerSupervisor.detach` ->
+    `Popen.terminate()`. On Windows that is `TerminateProcess`: no
+    unwinding, no `finally`, no `atexit`. So `engine.release()` -- which
+    is the ONLY thing that calls `finish()` on the open sightings, writes
+    the ones that matured, and refreshes the duration, `frame_count` and
+    `best_*` of the ones already on disk -- never ran.
+
+    What a wearer lost by pressing the button they were told to press:
+    every sighting still open at that instant. A laptop that had been in
+    view for the whole walk and was still in view when they stopped is
+    exactly the sighting that is open, so this was biased towards losing
+    the MOST-seen objects rather than the least.
+
+    The old detach grace was zero, and its comment said why: "nothing
+    SIGNALS the producer: it is a follower tailing a journal that is
+    still being written, so it has no reason to stop and never does. The
+    wait measured 5.01 seconds every single time." That was true, and it
+    was true because of this file, not because of the supervisor. Now
+    something does signal it, the wait ends when the work is done, and
+    the grace is worth having again.
+
+    WHY A FLAG AND NOT WORK IN THE HANDLER.
+
+    A signal handler runs between bytecodes on whatever thread the
+    interpreter chooses. `engine.release()` takes the store's writer lock
+    and joins the verification queue's worker; doing that from a handler
+    is how a shutdown deadlocks. So the handler sets a bool and returns,
+    the frame loop notices within one frame, and the ordinary
+    `finally: engine.release()` does the work on the main thread exactly
+    as it does when a capture closes by itself.
+
+    WHICH SIGNALS.
+
+    `SIGTERM` and `SIGINT` on POSIX. On Windows `SIGTERM` is not
+    deliverable between processes at all -- `Popen.terminate()` is
+    `TerminateProcess` and never becomes a Python signal -- so the
+    supervisor sends `CTRL_BREAK_EVENT` to the process group it
+    deliberately created for each worker, and that arrives here as
+    `SIGBREAK`. Registering all four is cheap and means neither side has
+    to be right about the platform.
+    """
+
+    def __init__(self) -> None:
+        self.requested = False
+        self.signal_name: str | None = None
+
+    def install(self, *, watch_stdin: bool = False) -> None:
+        if watch_stdin:
+            self._watch_stdin()
+        for name in ("SIGTERM", "SIGINT", "SIGBREAK"):
+            handler_signal = getattr(signal, name, None)
+            if handler_signal is None:
+                continue
+            try:
+                signal.signal(handler_signal, self._handle)
+            except (ValueError, OSError):
+                # Not the main thread, or a signal this platform will not
+                # let a process take. A producer that cannot be asked
+                # nicely still gets terminated; it just loses the flush,
+                # which is where this started.
+                continue
+
+    def asked_for(self) -> bool:
+        """A callable, so a generator deep in `tower.capture` can ask
+        without importing anything from this script."""
+        return self.requested
+
+    def _handle(self, signum, _frame) -> None:
+        self.requested = True
+        self.signal_name = signal.Signals(signum).name
+
+    def _watch_stdin(self) -> None:
+        """Stop when the parent closes the pipe it is holding.
+
+        THIS IS THE CHANNEL THAT ACTUALLY WORKS ON WINDOWS.
+
+        A console control event needs a console, and the Tower does not
+        reliably have one: under a pseudoconsole -- an editor's integrated
+        terminal, a CI runner, a service --
+        `GenerateConsoleCtrlEvent` reports success and nothing arrives. A
+        pipe needs nothing. `CaptureWorkerSupervisor` keeps the write end
+        for any spec that set `stop_via_stdin`, and closing it is an EOF
+        this thread cannot miss.
+
+        A DAEMON thread, and it must be: the read blocks until the parent
+        closes, and a non-daemon thread blocked on that would keep this
+        process alive after the frame loop had finished by itself, which
+        is the ordinary ending.
+
+        The read is one byte, not a line. Nothing is ever WRITTEN to this
+        pipe -- the request is the close -- so waiting for a newline would
+        wait for something that is never coming, and a parent that did
+        write something has still said the only thing this pipe can mean.
+        """
+
+        def wait_for_close() -> None:
+            try:
+                stream = sys.stdin.buffer if sys.stdin is not None else None
+            except (AttributeError, ValueError):
+                return
+            if stream is None:
+                return
+            try:
+                stream.read(1)
+            except Exception:
+                # A closed or unreadable pipe is itself the request. The
+                # alternative -- treating an unreadable stdin as "keep
+                # going" -- is a producer nobody can stop.
+                pass
+            self.requested = True
+            if self.signal_name is None:
+                self.signal_name = "stdin-closed"
+
+        threading.Thread(
+            target=wait_for_close, name="object-memory-stop-watch", daemon=True
+        ).start()
+
+    def bounded(self, frames):
+        """`frames`, ending at the next frame after a stop was asked for.
+
+        THE SECOND OF TWO CHECKS, AND THE ONLY ONE ON A REPLAY.
+
+        The primary check is inside `CaptureFollower.follow`'s poll loop,
+        which is where a live producer spends a quiet walk. This one is
+        the only check a `--frames` replay has: a replay reads a
+        directory, never polls, and would otherwise run to the end of the
+        corpus after being asked to stop.
+
+        It is also the reason a stop during a LIVE run cannot be missed
+        by one frame -- the follower may already have yielded before the
+        flag was set.
+
+        Wrapping the generator rather than checking inside the loop body
+        keeps the check on ONE path: the loop already has a `--limit`
+        break and a `finally`, and a second `break` in the body is a
+        second place for a future edit to return early past the flush.
+        """
+        for frame in frames:
+            if self.requested:
+                return
+            yield frame
 
 
 def main(argv=None) -> int:
@@ -192,7 +458,9 @@ def main(argv=None) -> int:
             "honestly remembers nothing."
         ),
     )
-    parser.add_argument("--device", choices=("cpu", "cuda"), default="cpu")
+    parser.add_argument(
+        "--device", choices=("auto", "cpu", "cuda"), default="auto"
+    )
     parser.add_argument(
         "--verifier",
         default="none",
@@ -206,7 +474,7 @@ def main(argv=None) -> int:
     )
     parser.add_argument(
         "--verifier-device",
-        choices=("cpu", "cuda"),
+        choices=("auto", "cpu", "cuda"),
         default="cuda",
         help=(
             "Where the verifier runs. CUDA by default even though the "
@@ -253,6 +521,22 @@ def main(argv=None) -> int:
         ),
     )
     parser.add_argument(
+        "--keep-imagery",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "Give each record a small filtered crop of its OWN, under the "
+            "observation root, deleted when the record expires. On by "
+            "default. Without it a record's only picture is a frame in "
+            "data/captures/, which this cartridge does not own and whose "
+            "lifetime it does not set -- so the first thing that prunes "
+            "captures takes the picture out of every memory at once. "
+            "Measured at ~11.7 KB a record, about 4.3 MB an hour of "
+            "walking. Needs a face-detection model; without one nothing "
+            "is written and this says so at start."
+        ),
+    )
+    parser.add_argument(
         "--attach-mode",
         choices=(ATTACH_MODE_FROM_START, ATTACH_MODE_FROM_NOW),
         default=ATTACH_MODE_FROM_START,
@@ -269,6 +553,15 @@ def main(argv=None) -> int:
     parser.add_argument("--poll-seconds", type=float, default=0.25)
     parser.add_argument("--max-idle-polls", type=int, default=None)
     parser.add_argument("--limit", type=int, default=None, help="Stop after N frames.")
+    parser.add_argument(
+        "--stop-on-stdin-close",
+        action="store_true",
+        help=(
+            "Finish the run when the parent closes this process's stdin. "
+            "How CaptureWorkerSupervisor asks for a clean stop on a host "
+            "with no console, where a signal cannot be delivered."
+        ),
+    )
     parser.add_argument("--format", choices=("text", "json"), default="text")
     args = parser.parse_args(argv)
 
@@ -283,6 +576,11 @@ def main(argv=None) -> int:
     if len(chosen) != 1:
         parser.error("exactly one of --frames or --follow-capture is required")
 
+    # Installed before the follower is built and before the first frame
+    # is read, because the poll loop it arms is the thing being armed.
+    stop_request = _StopRequest()
+    stop_request.install(watch_stdin=args.stop_on_stdin_close)
+
     if args.follow_capture:
         if not args.follow_capture.exists():
             raise SystemExit(f"no capture directory at {args.follow_capture}")
@@ -293,7 +591,12 @@ def main(argv=None) -> int:
         )
         frames = (
             (frame.raw_bytes, frame.source_seq, frame.received_at, frame.relpath)
-            for frame in follower.follow(max_idle_polls=args.max_idle_polls)
+            for frame in follower.follow(
+                max_idle_polls=args.max_idle_polls,
+                # Asked inside the poll loop, which is where this process
+                # spends a quiet walk. See `_StopRequest`.
+                should_stop=stop_request.asked_for,
+            )
         )
         session_id = args.follow_capture.name
         source = "live-capture"
@@ -316,16 +619,34 @@ def main(argv=None) -> int:
         # like a decision.
         attach_mode = None
 
+    # Resolved HERE rather than in the web process, which deliberately
+    # imports no torch. Printed before anything is loaded so a person
+    # reading the Tower console sees what this run is actually using,
+    # rather than the word "auto" and a guess.
+    device = (
+        _resolve_device(args.device) if args.detector == "ssdlite320" else args.device
+    )
+    verifier_device = (
+        _resolve_device(args.verifier_device) if args.verifier != "none" else args.verifier_device
+    )
+    print(
+        f"[Tower][ObjectMemory] detector={args.detector} device={device} "
+        f"verifier={args.verifier} verifier_device={verifier_device} "
+        f"root={args.root}",
+        file=sys.stderr,
+        flush=True,
+    )
+
     detector = (
         TorchvisionDetector(
-            score_threshold=args.score_threshold, device=args.device
+            score_threshold=args.score_threshold, device=device
         )
         if args.detector == "ssdlite320"
         else FixedDetector()
     )
     retention = None if args.retention_days <= 0 else args.retention_days * 86400.0
     store = ObservationStore(args.root, retention_seconds=retention)
-    verifier = _build_verifier(args.verifier, args.verifier_device)
+    verifier = _build_verifier(args.verifier, verifier_device)
     # Synchronous for a replay, threaded for a live follow. A replay has
     # no reason to be asynchronous and every reason to be deterministic;
     # a live session must not stall the frame path on a model.
@@ -340,11 +661,23 @@ def main(argv=None) -> int:
         min_frames=args.min_frames,
         verification_available=verifier is not None,
     )
+    # ONE LINE, AT START, RATHER THAN A REFUSAL PER SIGHTING.
+    #
+    # A Tower with no face-detection weights writes no keyframes at all,
+    # by design -- `KeyframeStore.write` fails closed. The failure mode
+    # that matters is not the refusal, it is the SILENCE: a whole walk of
+    # them, counted in `keyframes_refused` at the end and visible to
+    # nobody in between, on a run whose operator believes their memories
+    # are keeping their pictures. So the condition is stated once, before
+    # the first frame, in the same place the device and verifier are.
+    keyframes, face_filter = _build_keyframe_store(args.root, args.keep_imagery)
     engine = ObjectMemoryEngine(
         store,
         detector,
         policy=policy,
         verification=verification,
+        keyframes=keyframes,
+        face_filter=face_filter,
         # The capture id, which is a FRAME identity owned by shared
         # transport -- not a World Builder session. This cartridge cannot
         # see a world and must not imply it can.
@@ -355,7 +688,7 @@ def main(argv=None) -> int:
     started = time.perf_counter()
     engine.load()
     try:
-        for index, frame in enumerate(frames):
+        for index, frame in enumerate(stop_request.bounded(frames)):
             if args.limit is not None and index >= args.limit:
                 break
             payload, source_seq, received_at, relpath = frame
@@ -376,11 +709,31 @@ def main(argv=None) -> int:
         "frame_source": source,
         "session_id": session_id,
         "detector": detector.name,
-        "device": args.device if detector.name != "fixed" else None,
-        "verifier": args.verifier,
-        "verifier_device": args.verifier_device if verifier is not None else None,
+        "device": device if detector.name != "fixed" else None,
+        # What RAN. `args.verifier` is what was asked for, and the two
+        # differ exactly when the weights could not be loaded -- which is
+        # the case a report must not paper over, because it is the
+        # difference between fourteen recordable classes and two.
+        "verifier": args.verifier if verifier is not None else "none",
+        "verifier_requested": args.verifier,
+        "verifier_device": verifier_device if verifier is not None else None,
         "timing_source": timing,
         "attach_mode": attach_mode,
+        # Whether records got pictures of their own, and what actually
+        # filtered them. `keep_imagery` is what was ASKED FOR;
+        # `keyframe_filter` is what RAN, and is null exactly when this
+        # host has no face-detection model -- which is the case a report
+        # must not paper over, because it is the difference between a
+        # memory that keeps its picture for thirty days and one whose
+        # picture belongs to a capture directory. The per-outcome
+        # counters are `keyframes_written` and `keyframes_refused`, which
+        # arrive with the engine's counters below.
+        "keep_imagery": bool(args.keep_imagery),
+        "keyframe_filter": (
+            face_filter.label
+            if face_filter is not None and face_filter.available
+            else None
+        ),
         # What this run could have written, which is narrower than what
         # the store would have accepted: the verify tier is only in reach
         # when something can second-guess the detector.
@@ -393,9 +746,45 @@ def main(argv=None) -> int:
         "stored_observations": len(store.all_observations()),
         "pruned_expired": pruned,
         "retention_days": args.retention_days,
+        # Why the run ended. "asked" is a Pause or a Stop reaching the
+        # producer as a signal; "frames-ended" is the capture closing or
+        # the idle bound expiring. A report that does not say which turns
+        # "the walk ended" and "a person stopped it" into the same line.
+        "stopped_because": (
+            stop_request.signal_name if stop_request.requested else "frames-ended"
+        ),
         "seconds": round(elapsed, 3),
         "ms_per_frame": round(elapsed * 1000 / max(engine.frames_observed, 1), 3),
     }
+
+    # A RUN THAT DID NOTHING AND WAS ASKED TO DO NOTHING SAYS SO.
+    #
+    # `--stop-on-stdin-close` means "the parent is holding my stdin, and
+    # closing it is a stop request". `CaptureWorkerSupervisor` honours
+    # that by spawning with `stdin=subprocess.PIPE` and keeping the write
+    # end, so the flag and the pipe are set together in `main.py` and a
+    # Tower cannot get this wrong.
+    #
+    # A HUMAN CAN. Run this by hand from anything that hands a child a
+    # null or already-closed stdin -- a scheduler, a service, a script
+    # using `subprocess.run(capture_output=True)` -- and the watcher sees
+    # EOF before the first frame, the run ends immediately, and the
+    # report is a wall of zeroes with `stopped_because: stdin-closed`
+    # buried in it. That happened while writing this, cost twenty
+    # minutes, and the fix is not to guess at the cause in code -- a
+    # supervisor closing the pipe promptly is a legitimate stop that
+    # looks identical -- but to NAME the likely reason once, here, where
+    # somebody is already reading.
+    if report["stopped_because"] == "stdin-closed" and engine.frames_observed == 0:
+        print(
+            "[Tower][ObjectMemory] this run ended before it read a single "
+            "frame, because stdin reached EOF and --stop-on-stdin-close was "
+            "passed. If you started this by hand, that flag expects a parent "
+            "holding the other end of a pipe; drop it, or spawn with "
+            "stdin=PIPE and keep it open.",
+            file=sys.stderr,
+            flush=True,
+        )
 
     if args.format == "json":
         print(json.dumps(report, indent=2))
@@ -418,6 +807,22 @@ def main(argv=None) -> int:
             "That imagery is governed by capture retention, not by this "
             "store's."
         )
+        if report["keyframe_filter"]:
+            print(
+                f"{report['keyframes_written']} record(s) also kept a small "
+                f"crop of their own under {args.root}\\keyframes, filtered by "
+                f"{report['keyframe_filter']} before being written. Those ARE "
+                "governed by this store's retention: they are pruned when the "
+                "record expires and deleted by --purge-all. The filter names "
+                "what ran; it is not a claim that faces were removed."
+            )
+        elif args.keep_imagery:
+            print(
+                "NO record kept a crop of its own: this host has no "
+                "face-detection model, and nothing unfiltered is ever "
+                "written. Every picture here belongs to data/captures/ and "
+                "disappears with it."
+            )
     return 0
 
 

@@ -48,8 +48,10 @@ from tower.object_memory.imagery import (  # noqa: F401
     NO_CAPTURE_ROOT,
     NO_FRAME_REFERENCE,
     NOT_FOUND,
+    SOURCE_KEYFRAME,
     UNREADABLE,
 )
+from tower.object_memory.keyframes import KeyframeStore
 from tower.object_memory.relevance import recordable_classes
 from tower.object_memory.store import ObservationStore
 
@@ -352,11 +354,31 @@ IMAGERY_CONTRACT = "object_memory.imagery/2026-08-27"
 # where in a room -- the same claim `where` already makes.
 IMAGERY_CLAIM = "frame-from-the-recording-this-record-was-derived-from"
 
-# And what the filter is NOT. `tower/world_builder/redaction.py` runs
-# before persistence and earns the name privacy transformation; this runs
-# on read, the raw frame stays exactly where it was, and saying so in the
-# payload is what stops a client calling the result anonymised.
-FILTER_MEANS = "applied-on-read-the-stored-frame-is-unchanged"
+# And WHEN the filter ran, which stopped being one answer on 2026-08-29.
+#
+# `tower/world_builder/redaction.py` runs before persistence and earns
+# the name privacy transformation. A capture frame is the other case: the
+# filter runs on READ, the raw frame stays exactly where it was, and
+# saying so in the payload is what stops a client calling the result
+# anonymised.
+#
+# An owned keyframe is the first case, not the second. `KeyframeStore.
+# write` has no path by which the input crop reaches disk -- everything
+# written derives from the filter's output -- so the file on disk IS the
+# filtered image and there is no unfiltered original of it anywhere.
+# Reporting that as "applied on read, the stored frame is unchanged"
+# would be false in both halves of the sentence, and false in the
+# direction that UNDERSTATES what protected the file. Neither direction
+# is acceptable in a field whose whole job is to stop a client
+# overclaiming, so the value follows the source.
+FILTER_MEANS_ON_READ = "applied-on-read-the-stored-frame-is-unchanged"
+FILTER_MEANS_BEFORE_WRITE = "applied-before-this-file-was-written"
+
+# What `IMAGERY_ROUTES` advertises, before any particular picture has been
+# asked for. The read-time answer, because it is the one that describes
+# the capture tree this cartridge does not own, and because a route
+# listing cannot know which source a future request will be served from.
+FILTER_MEANS = FILTER_MEANS_ON_READ
 
 # Templates rather than built URLs. The Tower does not know what host a
 # phone reached it on, and a client that already holds a base URL should
@@ -369,6 +391,40 @@ IMAGERY_ROUTES = {
     "frame": "/object-memory/observations/{observation_id}/frame",
     "crop": "/object-memory/observations/{observation_id}/crop",
 }
+
+
+# Which store served a picture, and what that means for how long it will
+# be there. Additive fields -- `IMAGERY_CONTRACT` does NOT move, because
+# a shipped iOS build compares that identifier for equality and refuses a
+# payload that does not carry it. A decoder that has never heard of a
+# keyframe reads `imagery_retention` exactly as it always did.
+RETENTION_CAPTURE_SIDE = "capture-side"
+RETENTION_OBJECT_MEMORY = "object-memory"
+
+# The prose, as values a decoder switches on rather than sentences it
+# displays -- the same rule every other claim in this file follows.
+CAPTURE_RETENTION_MEANS = (
+    "this-picture-is-a-frame-in-data-captures-and-may-be-deleted-on-a-"
+    "schedule-object-memory-does-not-set"
+)
+OBJECT_MEMORY_RETENTION_MEANS = (
+    "this-picture-is-owned-by-object-memory-and-is-deleted-when-the-"
+    "record-expires-or-is-purged"
+)
+
+
+def keyframe_store_from_root(root):
+    """The owned-keyframe store for a configured observation root, or None.
+
+    Built at the wiring point and held on `app.state`, like the face
+    filter, rather than per request -- and built THROUGH THIS ADAPTER
+    rather than imported in `main.py`, because the wiring point does not
+    import a cartridge. `None` when this Tower serves no object memory at
+    all, which is the same condition that makes the routes answer 404.
+    """
+    if root is None:
+        return None
+    return KeyframeStore(root)
 
 
 def build_face_filter(path=None):
@@ -401,7 +457,32 @@ def find_observation(store: ObservationStore, observation_id: str):
     return None
 
 
-def build_imagery_view(observation, image, *, observation_id: str) -> dict:
+def frame_is_available(capture_root, face_filter, observation) -> bool:
+    """Whether `/frame` could serve this record's context view.
+
+    An EXISTENCE check, not a render: it resolves the path and asks
+    whether the filter could run, and decodes nothing. The view route is
+    asked once per row on a screen, and paying a YuNet pass per row to
+    answer a boolean would make a metadata route cost more than the
+    picture it describes.
+    """
+    if observation is None or capture_root is None:
+        return False
+    if face_filter is None or not getattr(face_filter, "available", False):
+        return False
+    try:
+        return imagery.frame_path(capture_root, observation) is not None
+    except Exception:  # noqa: BLE001
+        # Contained, and contained as "no". A metadata route must not
+        # 500 because a manifest on disk is malformed, and reporting a
+        # context view that cannot be fetched is the direction that puts
+        # a broken image in front of a person.
+        return False
+
+
+def build_imagery_view(
+    observation, image, *, observation_id: str, frame_available=None
+) -> dict:
     """What a client needs to decide whether to show a picture, and what to say.
 
     Deliberately answerable WITHOUT fetching the bytes. A phone deciding
@@ -409,10 +490,33 @@ def build_imagery_view(observation, image, *, observation_id: str) -> dict:
     picture is not" should not have to download an image to find out
     which -- and the third of those is a sentence a wearer needs to hear,
     not an empty box.
+
+    `available` DESCRIBES WHAT CAN BE SERVED, NOT WHAT `/frame` HOLDS.
+
+    That distinction did not exist until keyframes did, and getting it
+    wrong made the whole feature invisible in the one case it was built
+    for. The view route used to describe a `/frame` render. A record
+    whose recording had been deleted but whose owned crop was sitting on
+    disk therefore answered `available: false`, and the shipped iOS
+    loader gates on exactly that -- `guard description.available else {
+    .noPicture }` -- so it would never have asked `/crop` and the wearer
+    would have been told the picture was gone while it was being held for
+    them.
+
+    So the view is built from a CROP render, which consults the owned
+    keyframe and falls back to the capture frame. `frame_available` is
+    additive and says separately whether the wider context view exists,
+    for a client choosing between the two.
     """
     box = None
     if observation is not None:
         box = observation.best_bounding_box or observation.bounding_box
+    # Read off the result rather than inferred from the route, because
+    # the same `/crop` request is answered from the owned keyframe when
+    # there is one and from the capture frame when there is not. None on
+    # a refusal: nothing served the bytes, because there are none.
+    served_by = image.source
+    owned = served_by == SOURCE_KEYFRAME
     return {
         "contract": IMAGERY_CONTRACT,
         "observation_id": observation_id,
@@ -427,7 +531,13 @@ def build_imagery_view(observation, image, *, observation_id: str) -> dict:
         # stopped having a picture.
         "memory_retained": observation is not None,
         "filter": image.filter_label,
-        "filter_means": FILTER_MEANS,
+        # Follows the source. See the constants: a keyframe was filtered
+        # before it was written and there is no unfiltered original of it,
+        # which is a stronger statement than the read-time one and must
+        # not be reported as the weaker.
+        "filter_means": (
+            FILTER_MEANS_BEFORE_WRITE if owned else FILTER_MEANS_ON_READ
+        ),
         # How many regions the filter actually filled in what was served.
         # Zero means the detector found none, NOT that there were none --
         # it has measured blind spots, and a reader must be able to tell
@@ -445,9 +555,38 @@ def build_imagery_view(observation, image, *, observation_id: str) -> dict:
         # `where.bounding_box_normalized` carries, with the same caveat:
         # it is where in a picture, never where in a room.
         "bounding_box_normalized": list(box) if box is not None else None,
-        # This resolves into `data/captures/`, whose lifetime this
-        # cartridge neither sets nor enforces.
-        "imagery_retention": "capture-side",
+        # WHICH STORE ACTUALLY SERVED THESE BYTES, and therefore whose
+        # retention governs them. Not a constant any more, and it must
+        # not be: a crop served from this cartridge's own keyframe
+        # expires with the record and is deleted by `purge()`, while a
+        # frame served out of `data/captures/` may vanish on a schedule
+        # nothing here sets. Asserting one answer for both would be
+        # telling a client the wrong thing half the time.
+        #
+        # `capture-side` remains the answer for every whole frame and for
+        # every record with no keyframe, which is every record written
+        # before keyframes existed -- so a decoder that only knows that
+        # value keeps working.
+        "imagery_retention": (
+            RETENTION_OBJECT_MEMORY if owned else RETENTION_CAPTURE_SIDE
+        ),
+        # The same thing in words, so a payload read on its own says what
+        # it means rather than requiring the contract document.
+        "imagery_retention_means": (
+            OBJECT_MEMORY_RETENTION_MEANS if owned else CAPTURE_RETENTION_MEANS
+        ),
+        # Which store, named. Additive, and the one a diagnostic wants:
+        # "capture-frame" or "object-memory-keyframe".
+        "imagery_source": served_by,
+        # Whether the WIDER view exists, separately from `available`.
+        #
+        # A client picks between the object and its context, and after
+        # keyframes those two no longer stand or fall together: an owned
+        # crop outlives the recording, and the context frame does not.
+        # `null` where it was not computed -- on a refusal detail from a
+        # binary route, where the client already knows which one it
+        # asked for.
+        "frame_available": frame_available,
     }
 
 
@@ -458,16 +597,24 @@ def render_imagery(
     capture_root,
     face_filter,
     crop: bool,
+    keyframes=None,
 ):
     """The observation and its picture, or the observation and the reason.
 
     Returns `(observation, Imagery)`. `observation` is None only when the
     handle matched nothing within retention, which is the one case a
     caller answers differently from every other.
+
+    `keyframes` is optional and only ever consulted for a CROP. It is
+    checked AFTER retention -- `find_observation` has already refused an
+    expired handle -- so knowing an id is not a back door to an owned
+    picture any more than it is to a capture frame. `prune_expired`
+    deletes the keyframe as well, so the two agree even if a caller
+    reaches this with a stale handle in the window between them.
     """
     observation = find_observation(store, observation_id)
     if observation is None:
         return None, imagery.Imagery(None, NOT_FOUND)
     return observation, imagery.render(
-        capture_root, observation, face_filter, crop=crop
+        capture_root, observation, face_filter, crop=crop, keyframes=keyframes
     )

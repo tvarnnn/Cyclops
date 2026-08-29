@@ -79,6 +79,14 @@ def tower(monkeypatch, tmp_path):
 
     monkeypatch.setenv("TOWER_CAPTURE_ROOT", str(tmp_path / "capture"))
     monkeypatch.setenv("TOWER_OBSERVATION_ROOT", str(tmp_path / "memory"))
+    # Pinned, not inherited. `owlv2` became the built-in default on
+    # 2026-08-29, and this test spawns the REAL producer -- inheriting
+    # that default would make an end-to-end lifecycle test fetch ~600 MB
+    # of weights and load them on every run, to verify a lifecycle that
+    # has nothing to do with semantic verification. The verifier's own
+    # behaviour is covered by `test_object_memory_verification.py`.
+    monkeypatch.setenv("TOWER_OBSERVATION_VERIFIER", "none")
+    monkeypatch.setenv("TOWER_OBSERVATION_DEVICE", "cpu")
     monkeypatch.delenv("TOWER_OBSERVATION_ENABLED", raising=False)
     # No world builder in this test: it would spawn a second real
     # subprocess and build a real world, which is another test's job and

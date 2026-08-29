@@ -223,12 +223,17 @@ enum ObjectMemoryFixtures {
         sessionID: Any = NSNull(),
         startedAt: Any = NSNull(),
         following: Any = [String](),
+        // `nil` OMITS the key, which is what a Tower older than 2026-08-29
+        // sends and is a different thing from sending `[]`. Omission is the
+        // default so that every case written before the field existed keeps
+        // exercising the fallback path, which is what those cases are about.
+        followingThisSession: [String]? = nil,
         captures: Any = [String](),
         contract: Any = "cartridge_session.control/2026-08-27",
         stateMeans: Any = "intent-not-liveness",
         actions: Any = ["start", "pause", "resume", "stop"]
     ) -> [String: Any] {
-        [
+        var payload: [String: Any] = [
             "cartridge": "object_memory",
             "worker": "object-memory-session",
             "supported": supported,
@@ -243,6 +248,10 @@ enum ObjectMemoryFixtures {
             "states": ["stopped", "active", "paused"],
             "actions": actions,
         ]
+        if let followingThisSession {
+            payload["following_this_session"] = followingThisSession
+        }
+        return payload
     }
 
     /// The same, with the three fields a `POST` adds.
@@ -296,9 +305,18 @@ enum ObjectMemoryFixtures {
         box: Any = [0.1120081901550293, 0.6517109870910645, 0.44075003729926215, 0.9019964218139649],
         contract: Any = "object_memory.imagery/2026-08-27",
         claim: Any = "frame-from-the-recording-this-record-was-derived-from",
-        filterMeans: Any = "applied-on-read-the-stored-frame-is-unchanged"
+        filterMeans: Any = "applied-on-read-the-stored-frame-is-unchanged",
+        // `nil` OMITS the key, exactly as `followingThisSession` does on the
+        // session fixture and for the same reason: a Tower older than these
+        // two fields sends neither, and "it did not say" is a different thing
+        // from "it said no". Omission is the default so that every case
+        // written before the fields existed keeps exercising the older-Tower
+        // path, which is what those cases are about.
+        frameAvailable: Bool? = nil,
+        imagerySource: String? = nil,
+        imageryRetention: Any = "capture-side"
     ) -> [String: Any] {
-        [
+        var payload: [String: Any] = [
             "contract": contract,
             "observation_id": observationID,
             "object_class": objectClass,
@@ -311,8 +329,11 @@ enum ObjectMemoryFixtures {
             "regions_filled": regionsFilled,
             "subject_obscured": subjectObscured,
             "bounding_box_normalized": box,
-            "imagery_retention": "capture-side",
+            "imagery_retention": imageryRetention,
         ]
+        if let frameAvailable { payload["frame_available"] = frameAvailable }
+        if let imagerySource { payload["imagery_source"] = imagerySource }
+        return payload
     }
 
     /// **The 410.** The pointer is intact and the picture is gone.
@@ -957,6 +978,20 @@ final class StubObjectMemoryClient: ObjectMemoryClient {
     /// read-back that still names the capture.
     var sessionAfterRead: ObjectMemorySessionState?
 
+    /// Successive readings, consumed in order by `readSession` and `apply`.
+    ///
+    /// `sessionAfterRead` answers the same reading every time, which cannot
+    /// model a *sequence* — a Start that answers `active` with nothing
+    /// following, then a read a moment later that names a capture. Empty by
+    /// default, and when it is empty `sessionAfterRead` behaves exactly as it
+    /// did, so no existing test changes meaning.
+    var sessionScript: [ObjectMemorySessionState] = []
+
+    /// A shared ordering log. `nil` unless a test is asserting the *order* two
+    /// collaborators were called in — which, for the composed lifecycle, is the
+    /// single most important thing about it.
+    var journal: RecordingJournal?
+
     /// The imagery half, and what was asked for.
     var stubbedImagery: ObjectMemoryImageryAnswer = .routesUnknown
     var stubbedPicture: ObjectMemoryPictureAnswer = .routesUnknown
@@ -997,12 +1032,23 @@ final class StubObjectMemoryClient: ObjectMemoryClient {
 
     func readSession() async {
         sessionReads += 1
-        if let next = sessionAfterRead { publish(next) }
+        journal?.record("tower:read")
+        answerFromTheScript()
     }
 
     func apply(_ action: CartridgeSessionAction) async {
         applied.append(action)
-        if let next = sessionAfterRead { publish(next) }
+        journal?.record("tower:\(action.rawValue)")
+        answerFromTheScript()
+    }
+
+    /// The scripted reading if there is one, otherwise the standing one.
+    private func answerFromTheScript() {
+        if !sessionScript.isEmpty {
+            publish(sessionScript.removeFirst())
+        } else if let next = sessionAfterRead {
+            publish(next)
+        }
     }
 
     func imageryDescription(for observationID: String) async -> ObjectMemoryImageryAnswer {
@@ -2730,8 +2776,13 @@ final class ObjectMemorySessionAndPictureCopyTests: XCTestCase {
         }
     }
 
+    /// `followingThisSession` defaults to `nil`, which **omits** the key. That
+    /// default is also how the leftover-producer sentence went unread — see
+    /// `testEverySessionSentenceMakesNoClaimItCannotSupport`.
     private func snapshot(
-        state: String = "active", following: [String] = []
+        state: String = "active",
+        following: [String] = [],
+        followingThisSession: [String]? = nil
     ) throws -> CartridgeSessionSnapshot {
         try XCTUnwrap(
             CartridgeSessionDecoder.snapshot(
@@ -2740,15 +2791,23 @@ final class ObjectMemorySessionAndPictureCopyTests: XCTestCase {
                     sessionID: "61a78a9b32284cd2a89583d9a8cc8702",
                     startedAt: 1787833925.6521091,
                     following: following,
+                    followingThisSession: followingThisSession,
                     captures: following
                 )
             )
         )
     }
 
+    /// `frameAvailable` and `imagerySource` default to `nil`, which omits the
+    /// keys — the older-Tower shape, and the shape every case written before
+    /// the two stores existed is about.
     private func description(
         available: Bool = true, reason: Any = NSNull(), subjectObscured: Any = 0.0,
-        regionsFilled: Any = 0
+        regionsFilled: Any = 0,
+        frameAvailable: Bool? = nil,
+        imagerySource: String? = nil,
+        filterMeans: Any = "applied-on-read-the-stored-frame-is-unchanged",
+        imageryRetention: Any = "capture-side"
     ) throws -> ObjectMemoryImageryDescription {
         try XCTUnwrap(
             ObjectMemoryImageryDecoder.description(
@@ -2756,14 +2815,42 @@ final class ObjectMemorySessionAndPictureCopyTests: XCTestCase {
                     available: available,
                     reason: reason,
                     regionsFilled: regionsFilled,
-                    subjectObscured: subjectObscured
+                    subjectObscured: subjectObscured,
+                    filterMeans: filterMeans,
+                    frameAvailable: frameAvailable,
+                    imagerySource: imagerySource,
+                    imageryRetention: imageryRetention
                 ),
                 statusCode: 200
             )
         )
     }
 
+    /// **A sentence this test could not see for months.**
+    ///
+    /// `ObjectMemoryCopy.leftoverProducerLine` contained the substring
+    /// `"is still"`, which is on the forbidden list at the top of this file and
+    /// on the identical list in `ObjectMemoryCopyTests` — and it passed both.
+    /// The reason is the loop below: `snapshot(...)` leaves
+    /// `following_this_session` **omitted**, `recordingsThisControlDidNotStart`
+    /// returns `[]` for an unscoped Tower, and the line therefore returned
+    /// `nil` in every case this test generated. The forbidden-phrase check ran
+    /// over a sentence that was never produced.
+    ///
+    /// So the third loop is the fix that matters, and the reworded sentence is
+    /// only the fix that was visible. It sets `followingThisSession: []` beside
+    /// a **non-empty** `following` — the one combination that produces the
+    /// line, and the one the default could never reach.
+    ///
+    /// The two are kept apart deliberately. `nil` and `[]` are different
+    /// claims: an omitted field means the Tower cannot scope the question and
+    /// must draw no warning, an empty list means it scoped it and this control
+    /// started nothing that is running. The first loop covers the first, the
+    /// third loop covers the second, and folding them together would lose the
+    /// distinction the field exists for.
     func testEverySessionSentenceMakesNoClaimItCannotSupport() throws {
+        // An older Tower: the key is absent, liveness falls back to
+        // `following`, and no leftover warning is drawn at all.
         for state in ["stopped", "active", "paused", "draining"] {
             for following in [[], ["22e9d4289cb440fb"]] {
                 assertNoOverclaim(
@@ -2773,6 +2860,85 @@ final class ObjectMemorySessionAndPictureCopyTests: XCTestCase {
                 )
             }
         }
+
+        // A scoping Tower that says this control started what is running.
+        for state in ["stopped", "active", "paused", "draining"] {
+            assertNoOverclaim(
+                ObjectMemoryCopy.everyString(
+                    for: try snapshot(
+                        state: state,
+                        following: ["22e9d4289cb440fb"],
+                        followingThisSession: ["22e9d4289cb440fb"]
+                    )
+                )
+            )
+        }
+
+        // **The case the leftover sentence lives in**, and the one nothing here
+        // used to generate: something is recording and this control did not
+        // start it.
+        for state in ["stopped", "active", "paused", "draining"] {
+            for following in [["22e9d4289cb440fb"], ["22e9d4289cb440fb", "8c1f0a7b44de9021"]] {
+                let scoped = try snapshot(
+                    state: state, following: following, followingThisSession: []
+                )
+                XCTAssertNotNil(
+                    ObjectMemoryCopy.leftoverProducerLine(scoped),
+                    """
+                    if this is ever nil again, the forbidden-phrase check below \
+                    is running over a sentence nobody produced
+                    """
+                )
+                assertNoOverclaim(ObjectMemoryCopy.everyString(for: scoped))
+            }
+        }
+    }
+
+    /// The leftover sentence claims only what the field knows.
+    ///
+    /// It does **not** claim session ownership, and it must not: the Tower
+    /// scopes `following_this_session` by "started at or after this session
+    /// last went active" and re-takes that mark on every Resume, so a producer
+    /// that survived a Pause is genuinely this session's and is still correctly
+    /// outside the scoped list. It also makes no claim about what would stop
+    /// it, having previously ended "Restarting the Tower will" about a process
+    /// that had already ignored `terminate()`.
+    func testTheLeftoverSentenceClaimsNeitherOwnershipNorARemedy() throws {
+        let line = try XCTUnwrap(
+            ObjectMemoryCopy.leftoverProducerLine(
+                try snapshot(
+                    state: "active",
+                    following: ["22e9d4289cb440fb"],
+                    followingThisSession: []
+                )
+            )
+        )
+        let lowered = line.lowercased()
+        XCTAssertFalse(
+            lowered.contains("this session did not start"),
+            "a producer that survived a Pause is this session's, and this list cannot tell"
+        )
+        XCTAssertFalse(
+            lowered.contains("restart"),
+            "nothing establishes that a restart reaches a producer that ignored terminate()"
+        )
+        XCTAssertTrue(
+            lowered.contains("stopping here does not reach it"),
+            "the one thing a wearer needs from this sentence is that Stop will not reach it"
+        )
+    }
+
+    /// A Tower that does not scope the question draws no warning at all.
+    ///
+    /// `nil` is not `[]`. An unscoped Tower has said nothing about who started
+    /// what, and turning that into "something is recording that this control
+    /// did not start" would put a warning over every ordinary recording.
+    func testAnUnscopedTowerDrawsNoLeftoverWarning() throws {
+        XCTAssertNil(
+            ObjectMemoryCopy.leftoverProducerLine(
+                try snapshot(state: "active", following: ["22e9d4289cb440fb"])
+            )
+        )
     }
 
     func testEveryRefusalSentenceMakesNoClaimEither() throws {
@@ -3307,4 +3473,1796 @@ final class CartridgeSessionRealTowerTests: XCTestCase {
     private static let imageryNotFoundFromTower = """
         {"detail":{"contract":"object_memory.imagery/2026-08-27","observation_id":"0123456789abcdef","object_class":null,"claim":"frame-from-the-recording-this-record-was-derived-from","available":false,"reason":"no-such-observation","memory_retained":false,"filter":null,"filter_means":"applied-on-read-the-stored-frame-is-unchanged","regions_filled":0,"subject_obscured":0.0,"bounding_box_normalized":null,"imagery_retention":"capture-side"}}
         """
+}
+
+
+// MARK: - The composed lifecycle
+
+/// A shared ordering log for the two collaborators a Start sequences.
+///
+/// The sequencing *is* the behaviour here: "the Tower is asked before the
+/// camera is" and "the camera is asked before the Tower is" produce identical
+/// call counts and completely different products. Counting calls cannot tell
+/// them apart, so both fakes append to one list instead.
+@MainActor
+final class RecordingJournal {
+    private(set) var steps: [String] = []
+    func record(_ step: String) { steps.append(step) }
+}
+
+/// A counter that `refreshRecords` can move.
+///
+/// **A reference type rather than a captured local `var`, and that is a
+/// compiler requirement rather than a preference.**
+/// `ObjectMemoryRecordingCoordinator.refreshRecords` is
+/// `(@MainActor () -> Void)?`, and a global-actor-isolated function type is
+/// implicitly `@Sendable` under this project's concurrency settings — so
+/// `var n = 0; recording.refreshRecords = { n += 1 }` mutates captured state
+/// from a `@Sendable` closure, which is a concurrency diagnostic. A
+/// main-actor-isolated class is `Sendable` by its isolation, and what the
+/// closure captures is the reference; the mutation happens on the actor the
+/// closure is already isolated to.
+@MainActor
+final class RefreshCounter {
+    private(set) var count = 0
+    func bump() { count += 1 }
+}
+
+/// A camera owner with no DAT, no device and no permission.
+///
+/// `GlassesConnection`'s capture surface cannot be driven from a test at all —
+/// `createSession` throws without an eligible device, `deviceSessionState` is
+/// `private(set)` and moved only by DAT callbacks, and the whole thing is
+/// `#if DEBUG`. That is exactly why `ObjectMemoryCaptureOwner` exists, and this
+/// is the other implementation of it.
+@MainActor
+final class FakeCaptureOwner: ObjectMemoryCaptureOwner {
+    /// What this app's claim on the camera currently is.
+    var claim: CaptureClaim = .unclaimed
+    /// What a start moves the claim to. `.running` unless a test says otherwise.
+    var claimAfterStart: CaptureClaim = .running
+    /// What `startCameraSession()` reports afterwards. `nil` means it proceeded.
+    var refusal: CaptureStartRefusal?
+
+    private(set) var starts = 0
+    private(set) var stops = 0
+    var journal: RecordingJournal?
+
+    private let subject = PassthroughSubject<CaptureClaim, Never>()
+
+    var captureClaim: CaptureClaim { claim }
+    var captureClaimUpdates: AnyPublisher<CaptureClaim, Never> { subject.eraseToAnyPublisher() }
+    var lastCaptureStartRefusal: CaptureStartRefusal? { refusal }
+
+    func startCameraSession() {
+        starts += 1
+        journal?.record("camera:start")
+        if refusal == nil { claim = claimAfterStart }
+    }
+
+    func stopCameraSession() {
+        stops += 1
+        journal?.record("camera:stop")
+        claim = .unclaimed
+    }
+
+    /// A claim that changed for a reason nobody on the Object Memory screen
+    /// asked for: glasses folded, Bluetooth dropped, Stop pressed on Home, a
+    /// cap-touch pause. Published the way `GlassesConnection` publishes it.
+    func publish(_ claim: CaptureClaim) {
+        self.claim = claim
+        subject.send(claim)
+    }
+}
+
+/// **What the one Start button actually does, in what order, and what it
+/// refuses to do.**
+///
+/// Every test here is about behaviour rather than layout: which collaborator
+/// was called, in which order, what the phase became, and — the case this whole
+/// cartridge exists for — whether a phase that merely *asked* for something is
+/// ever rendered as one that observed it.
+@MainActor
+final class ObjectMemoryRecordingTests: XCTestCase {
+
+    // MARK: Building the pieces
+
+    private func snapshot(
+        state: String = "active", following: [String] = [], supported: Bool = true
+    ) throws -> CartridgeSessionSnapshot {
+        try XCTUnwrap(
+            CartridgeSessionDecoder.snapshot(
+                from: ObjectMemoryFixtures.session(
+                    state: state, supported: supported, following: following
+                )
+            )
+        )
+    }
+
+    private func refusal(
+        action: CartridgeSessionAction = .resume, reason: String = "not-paused"
+    ) throws -> CartridgeSessionRefusal {
+        let body = try XCTUnwrap(
+            ObjectMemoryFixtures.sessionRefusal(reason: reason)["detail"] as? [String: Any]
+        )
+        return try XCTUnwrap(CartridgeSessionDecoder.refusal(from: body, action: action))
+    }
+
+    /// A coordinator whose waits are measured in milliseconds.
+    ///
+    /// The production cadence is three seconds with a twelve-second budget, and
+    /// a suite that waited those out would take a minute per convergence test.
+    /// The *shape* of the wait is what is under test — a bounded poll with a
+    /// deadline — and that is identical at either scale.
+    private func makeCoordinator(
+        camera: FakeCaptureOwner?, client: StubObjectMemoryClient
+    ) -> ObjectMemoryRecordingCoordinator {
+        ObjectMemoryRecordingCoordinator(
+            camera: camera,
+            client: client,
+            interval: .milliseconds(1),
+            budget: .milliseconds(30)
+        )
+    }
+
+    /// A coordinator whose convergence is long enough to do something *during*.
+    ///
+    /// The one above settles in about thirty milliseconds, which is what makes
+    /// the outcome tests fast and what makes them useless for the window this
+    /// screen's worst defect lived in: the twelve seconds after a Start, while
+    /// the poll is running. A test that wants to press Stop mid-convergence, or
+    /// to let a camera refusal arrive late, needs the wait to still be there
+    /// when it looks. Five seconds is a ceiling rather than a duration — every
+    /// test using it ends the wait itself and none of them runs it out.
+    private func makeConvergingCoordinator(
+        camera: FakeCaptureOwner?, client: StubObjectMemoryClient
+    ) -> ObjectMemoryRecordingCoordinator {
+        ObjectMemoryRecordingCoordinator(
+            camera: camera,
+            client: client,
+            interval: .milliseconds(10),
+            budget: .seconds(5)
+        )
+    }
+
+    /// Waits for the in-flight sequence to finish, and for the main-queue hop
+    /// the two Combine subscriptions take.
+    ///
+    /// `isSequenceRunning` and **not** `isActing`. The two used to be one flag
+    /// and are now deliberately not: `isActing` covers the `POST` and the
+    /// camera call, and goes false the moment convergence begins, because that
+    /// is the flag both `.disabled` gates read and leaving it up through a
+    /// twelve-second poll disabled every control on the screen including Stop.
+    /// Waiting on it here would return before a Start had converged and would
+    /// assert against a phase that was still moving. Same semantics as before,
+    /// read off the flag that still has them.
+    private func settle(_ recording: ObjectMemoryRecordingCoordinator) async {
+        var turns = 0
+        while recording.isSequenceRunning && turns < 500 {
+            try? await Task.sleep(nanoseconds: 2_000_000)
+            turns += 1
+        }
+        // One more turn, so a reading published during the sequence has been
+        // delivered before anything is asserted.
+        try? await Task.sleep(nanoseconds: 20_000_000)
+    }
+
+    /// Waits until a Start has got as far as its convergence poll.
+    ///
+    /// The point in the sequence where the `POST` and the camera call are done,
+    /// the gate is down, and the screen is sitting on "the Tower accepted,
+    /// waiting for a producer" — which is where a wearer presses Stop.
+    private func waitUntilConverging(_ recording: ObjectMemoryRecordingCoordinator) async {
+        var turns = 0
+        while recording.phase != .waitingToBeFollowed && turns < 500 {
+            try? await Task.sleep(nanoseconds: 2_000_000)
+            turns += 1
+        }
+    }
+
+    // MARK: The order
+
+    /// **The Tower first.** Starting the camera first would open a capture
+    /// against a gate that is not open yet, and a producer that attaches
+    /// afterwards runs `--attach-mode from-now` and never reads back the frames
+    /// that were lost in between.
+    func testStartAsksTheTowerBeforeItAsksForACapture() async throws {
+        let journal = RecordingJournal()
+        let client = StubObjectMemoryClient()
+        client.journal = journal
+        client.sessionScript = [.known(try snapshot(following: ["22e9d4289cb440fb"]))]
+        let camera = FakeCaptureOwner()
+        camera.journal = journal
+
+        let recording = makeCoordinator(camera: camera, client: client)
+        recording.start()
+        await settle(recording)
+
+        XCTAssertEqual(
+            Array(journal.steps.prefix(2)), ["tower:start", "camera:start"],
+            "the camera must not open a capture before the Tower's gate is open"
+        )
+        XCTAssertEqual(client.applied, [.start])
+        XCTAssertEqual(camera.starts, 1)
+    }
+
+    /// A capture Home or World Builder started is left exactly as it is.
+    /// `startCameraSession()` refuses when a session exists, so calling it would
+    /// be asking for a refusal and then having to explain one.
+    func testStartDoesNotOpenASecondCaptureOverOneAlreadyRunning() async throws {
+        let client = StubObjectMemoryClient()
+        client.sessionScript = [.known(try snapshot(following: ["22e9d4289cb440fb"]))]
+        let camera = FakeCaptureOwner()
+        camera.claim = .running
+
+        let recording = makeCoordinator(camera: camera, client: client)
+        recording.start()
+        await settle(recording)
+
+        XCTAssertEqual(camera.starts, 0, "a capture was already running")
+        XCTAssertEqual(client.applied, [.start], "the Tower half must still happen")
+        XCTAssertFalse(
+            recording.reading.cameraStartedHere,
+            "a capture this screen did not start must not be claimed as its own"
+        )
+    }
+
+    /// **The Tower first on the way out too.** `stop` is never refused and it is
+    /// what detaches the producer so it can finalise the record it is holding;
+    /// killing the frames first would leave the producer to notice the stream
+    /// ending on its own.
+    func testStopAsksTheTowerBeforeItEndsTheCapture() async throws {
+        let journal = RecordingJournal()
+        let client = StubObjectMemoryClient()
+        client.journal = journal
+        client.sessionScript = [.known(try snapshot(following: ["22e9d4289cb440fb"]))]
+        let camera = FakeCaptureOwner()
+        camera.journal = journal
+
+        let recording = makeCoordinator(camera: camera, client: client)
+        recording.start()
+        await settle(recording)
+
+        client.sessionScript = [.known(try snapshot(state: "stopped"))]
+        recording.stop()
+        await settle(recording)
+
+        let stopSteps = journal.steps.drop { $0 != "tower:stop" }
+        XCTAssertEqual(
+            Array(stopSteps.prefix(2)), ["tower:stop", "camera:stop"],
+            "the producer must be detached before its frames stop arriving"
+        )
+        XCTAssertEqual(camera.stops, 1)
+    }
+
+    /// Ownership, in the direction that matters: Stop ends a capture this screen
+    /// started, and leaves one it did not.
+    func testStopOnlyEndsACaptureThisScreenStarted() async throws {
+        let client = StubObjectMemoryClient()
+        client.sessionScript = [.known(try snapshot(following: ["22e9d4289cb440fb"]))]
+        let camera = FakeCaptureOwner()
+        camera.claim = .running
+
+        let recording = makeCoordinator(camera: camera, client: client)
+        recording.start()
+        await settle(recording)
+
+        client.sessionScript = [.known(try snapshot(state: "stopped"))]
+        recording.stop()
+        await settle(recording)
+
+        XCTAssertEqual(client.applied, [.start, .stop], "the session must still end")
+        XCTAssertEqual(
+            camera.stops, 0,
+            "ending a capture Home started would reach across two other screens"
+        )
+        XCTAssertEqual(camera.claim, .running)
+    }
+
+    /// A capture that ends underneath this screen is no longer this screen's to
+    /// end. Otherwise a later Stop would call `stopCameraSession()` against
+    /// whatever session exists by then — possibly one it never started.
+    func testACaptureThatEndsElsewhereIsNoLongerOwnedHere() async throws {
+        let client = StubObjectMemoryClient()
+        client.sessionScript = [.known(try snapshot(following: ["22e9d4289cb440fb"]))]
+        let camera = FakeCaptureOwner()
+
+        let recording = makeCoordinator(camera: camera, client: client)
+        recording.start()
+        await settle(recording)
+        XCTAssertTrue(recording.reading.cameraStartedHere)
+
+        // Glasses folded, or Stop pressed on Home.
+        camera.publish(.unclaimed)
+        try? await Task.sleep(nanoseconds: 20_000_000)
+        XCTAssertFalse(recording.reading.cameraStartedHere)
+
+        client.sessionScript = [.known(try snapshot(state: "stopped"))]
+        recording.stop()
+        await settle(recording)
+        XCTAssertEqual(camera.stops, 0)
+    }
+
+    // MARK: Double taps
+
+    /// A second tap while a sequence is in flight is dropped entirely, so two
+    /// overlapping sequences cannot race over who owns the capture.
+    func testASecondTapWhileASequenceIsInFlightIsDropped() async throws {
+        let client = StubObjectMemoryClient()
+        client.sessionScript = [.known(try snapshot(following: ["22e9d4289cb440fb"]))]
+        let camera = FakeCaptureOwner()
+
+        let recording = makeCoordinator(camera: camera, client: client)
+        recording.start()
+        recording.start()
+        recording.start()
+        await settle(recording)
+
+        XCTAssertEqual(client.applied, [.start])
+        XCTAssertEqual(camera.starts, 1)
+    }
+
+    /// **A repeated verb is not an error.** The Tower answers a second `start`,
+    /// a second `pause` and a `stop` from stopped with 200 and
+    /// `changed: false` — "you already have what you asked for" — and every one
+    /// of those must land in an ordinary reading rather than a failure.
+    func testARepeatedVerbConvergesAndIsNotShownAsAnError() async throws {
+        let following = ObjectMemorySessionState.known(
+            try snapshot(following: ["22e9d4289cb440fb"])
+        )
+        let paused = ObjectMemorySessionState.known(try snapshot(state: "paused"))
+        let stopped = ObjectMemorySessionState.known(try snapshot(state: "stopped"))
+
+        let client = StubObjectMemoryClient()
+        let camera = FakeCaptureOwner()
+        let recording = makeCoordinator(camera: camera, client: client)
+
+        client.sessionAfterRead = following
+        recording.start()
+        await settle(recording)
+        recording.start()
+        await settle(recording)
+        XCTAssertEqual(recording.phase, .remembering)
+
+        client.sessionAfterRead = paused
+        recording.pause()
+        await settle(recording)
+        recording.pause()
+        await settle(recording)
+        XCTAssertEqual(recording.phase, .paused)
+
+        client.sessionAfterRead = following
+        recording.resume()
+        await settle(recording)
+        recording.resume()
+        await settle(recording)
+        XCTAssertEqual(recording.phase, .remembering)
+
+        client.sessionAfterRead = stopped
+        recording.stop()
+        await settle(recording)
+        recording.stop()
+        await settle(recording)
+        XCTAssertEqual(recording.phase, .stopped)
+
+        XCTAssertEqual(
+            client.applied,
+            [.start, .start, .pause, .pause, .resume, .resume, .stop, .stop],
+            "a repeated verb is sent; it is the Tower's job to answer changed:false"
+        )
+    }
+
+    // MARK: Asked for, and not observed
+
+    /// **The case this whole type exists for.**
+    ///
+    /// A Start answers 200 `active` with `attached_capture_id: null`, which is
+    /// documented, honest and successful — and means nothing is being recorded.
+    /// Past the deadline that has to read as *asked for, and not observed*, and
+    /// it must not be drawn as recording.
+    func testAnActiveSessionFollowingNothingIsNotRenderedAsRemembering() async throws {
+        let client = StubObjectMemoryClient()
+        client.sessionAfterRead = .known(try snapshot(state: "active", following: []))
+        let camera = FakeCaptureOwner()
+
+        let recording = makeCoordinator(camera: camera, client: client)
+        recording.start()
+        await settle(recording)
+
+        XCTAssertEqual(recording.phase, .notObserved)
+        XCTAssertNotEqual(recording.phase, .remembering)
+        XCTAssertFalse(
+            recording.phase.isFollowingACapture,
+            "a successful Start is not a recording"
+        )
+        XCTAssertGreaterThan(
+            client.sessionReads, 0, "the wait must actually re-read `following`"
+        )
+        XCTAssertNotEqual(
+            ObjectMemoryCopy.recordingHeadline(recording.reading),
+            ObjectMemoryCopy.recordingHeadline(
+                ObjectMemoryRecordingReading(
+                    phase: .remembering,
+                    camera: recording.reading.camera,
+                    cameraStartedHere: recording.reading.cameraStartedHere,
+                    cameraIsReachable: true
+                )
+            ),
+            "asked-for and observed must not read as the same sentence"
+        )
+    }
+
+    /// A producer that attaches during the wait settles the phase, and settles
+    /// it from `following` rather than from `state`.
+    func testAProducerThatAttachesDuringTheWaitSettlesTheClaim() async throws {
+        let client = StubObjectMemoryClient()
+        // The Start's own read-back: accepted, nothing attached yet.
+        client.sessionScript = [
+            .known(try snapshot(state: "active", following: [])),
+            .known(try snapshot(state: "active", following: [])),
+            .known(try snapshot(state: "active", following: ["22e9d4289cb440fb"])),
+        ]
+        client.sessionAfterRead = .known(try snapshot(following: ["22e9d4289cb440fb"]))
+        let camera = FakeCaptureOwner()
+
+        let recording = makeCoordinator(camera: camera, client: client)
+        recording.start()
+        await settle(recording)
+
+        XCTAssertEqual(recording.phase, .remembering)
+    }
+
+    // MARK: Losing the ability to tell
+
+    /// **A read that fails clears the liveness claim.** A screen that keeps
+    /// saying "remembering" after it stopped being able to check is asserting
+    /// something it no longer knows, and this is the exact shape a Tower going
+    /// away mid-session takes.
+    func testATransportFailureDuringTheWatchLoopClearsTheLivenessClaim() async throws {
+        let client = StubObjectMemoryClient()
+        client.sessionAfterRead = .known(try snapshot(following: ["22e9d4289cb440fb"]))
+        let camera = FakeCaptureOwner()
+
+        let recording = makeCoordinator(camera: camera, client: client)
+        recording.start()
+        await settle(recording)
+        XCTAssertEqual(recording.phase, .remembering)
+
+        // The workspace's own watch loop reads again and the Tower is gone.
+        let failure = CartridgeFailure(
+            kind: .transport, message: "The Tower did not answer: connection lost"
+        )
+        client.publish(ObjectMemorySessionState.failed(failure))
+        try? await Task.sleep(nanoseconds: 50_000_000)
+
+        XCTAssertEqual(recording.phase, .cannotTell(failure))
+        XCTAssertFalse(
+            recording.phase.isFollowingACapture,
+            "a stale 'remembering' after the reading stopped arriving is a false claim"
+        )
+    }
+
+    /// A producer that dies with the Tower still answering empties `following`,
+    /// and the phase must follow it down rather than staying where the last
+    /// action put it.
+    func testAProducerThatDiesStopsTheRememberingClaim() async throws {
+        let client = StubObjectMemoryClient()
+        client.sessionAfterRead = .known(try snapshot(following: ["22e9d4289cb440fb"]))
+        let camera = FakeCaptureOwner()
+
+        let recording = makeCoordinator(camera: camera, client: client)
+        recording.start()
+        await settle(recording)
+        XCTAssertEqual(recording.phase, .remembering)
+
+        client.publish(ObjectMemorySessionState.known(try snapshot(state: "active", following: [])))
+        try? await Task.sleep(nanoseconds: 50_000_000)
+
+        XCTAssertEqual(recording.phase, .notObserved)
+    }
+
+    // MARK: Refusals, from both halves
+
+    /// **A 409 is an answer, not a failure.** `resume` from `stopped` says which
+    /// control would have worked, and that sentence is exactly what a person
+    /// needs.
+    func testResumeFromStoppedIsReportedAsAnAnswer() async throws {
+        let refused = try refusal(action: .resume, reason: "not-paused")
+        let client = StubObjectMemoryClient()
+        client.sessionAfterRead = .refused(refused)
+        let camera = FakeCaptureOwner()
+
+        let recording = makeCoordinator(camera: camera, client: client)
+        recording.resume()
+        await settle(recording)
+
+        XCTAssertEqual(recording.phase, .refused(refused))
+        XCTAssertEqual(
+            ObjectMemoryCopy.recordingHeadline(recording.reading),
+            ObjectMemoryCopy.refusalLine(refused),
+            "a refusal must be worded as the answer it is"
+        )
+        XCTAssertEqual(camera.starts, 0)
+        XCTAssertEqual(camera.stops, 0)
+    }
+
+    /// A Tower with no producer disables the control and says why — and the
+    /// camera is never asked, because a capture running for a memory that
+    /// cannot be written into is a camera running for nothing.
+    func testAnUnsupportedSessionDisablesTheControlAndSaysWhy() async throws {
+        let client = StubObjectMemoryClient()
+        client.sessionAfterRead = .known(try snapshot(state: "stopped", supported: false))
+        let camera = FakeCaptureOwner()
+
+        let recording = makeCoordinator(camera: camera, client: client)
+        recording.start()
+        await settle(recording)
+
+        XCTAssertEqual(recording.phase, .unsupported)
+        XCTAssertEqual(camera.starts, 0)
+        XCTAssertEqual(
+            ObjectMemoryCopy.recordingHeadline(recording.reading),
+            ObjectMemoryCopy.sessionUnsupported
+        )
+    }
+
+    /// A Tower that offers no controllable session at all is the same
+    /// configuration answer, reached by a 404 rather than by `supported: false`.
+    func testNoControllableSessionIsAlsoUnsupported() async {
+        let client = StubObjectMemoryClient()
+        client.sessionAfterRead = .noSessionControl
+        let camera = FakeCaptureOwner()
+
+        let recording = makeCoordinator(camera: camera, client: client)
+        recording.start()
+        await settle(recording)
+
+        XCTAssertEqual(recording.phase, .unsupported)
+        XCTAssertEqual(camera.starts, 0)
+    }
+
+    /// An unreachable Tower stops the sequence before it opens a capture.
+    func testAnUnreachableTowerNeverOpensACapture() async {
+        let client = StubObjectMemoryClient()
+        client.sessionAfterRead = .failed(
+            CartridgeFailure(kind: .transport, message: "The Tower did not answer.")
+        )
+        let camera = FakeCaptureOwner()
+
+        let recording = makeCoordinator(camera: camera, client: client)
+        recording.start()
+        await settle(recording)
+
+        XCTAssertEqual(camera.starts, 0, "a camera running for a gate that is shut records nothing")
+        if case .failed = recording.phase {} else {
+            XCTFail("an unreachable Tower became something else: \(recording.phase)")
+        }
+    }
+
+    /// **A hardware pause is reported, not overridden.** The glasses paused
+    /// delivery themselves and resume on their own; nothing in this app can
+    /// force it, and the Tower's half is deliberately left standing so the next
+    /// capture to open finds the gate ready.
+    func testADevicePausedCaptureIsReportedRatherThanRestarted() async throws {
+        let client = StubObjectMemoryClient()
+        client.sessionAfterRead = .known(try snapshot(state: "active", following: []))
+        let camera = FakeCaptureOwner()
+        camera.claim = .devicePaused
+
+        let recording = makeCoordinator(camera: camera, client: client)
+        recording.start()
+        await settle(recording)
+
+        XCTAssertEqual(camera.starts, 0, "there is no way to restart a device-paused session")
+        XCTAssertEqual(recording.phase, .cameraRefused(.deviceHasPausedCapture))
+        XCTAssertEqual(client.applied, [.start], "the Tower's gate stays open")
+    }
+
+    /// A camera that refuses for its own reason carries that reason through to
+    /// the sentence, instead of arriving as a generic failure.
+    func testACameraRefusalCarriesItsReason() async throws {
+        let client = StubObjectMemoryClient()
+        client.sessionAfterRead = .known(try snapshot(state: "active", following: []))
+        let camera = FakeCaptureOwner()
+        camera.refusal = .noActiveDevice
+
+        let recording = makeCoordinator(camera: camera, client: client)
+        recording.start()
+        await settle(recording)
+
+        XCTAssertEqual(recording.phase, .cameraRefused(.noActiveDevice))
+        XCTAssertFalse(
+            recording.reading.cameraStartedHere,
+            "a refused start must not be recorded as ownership"
+        )
+        XCTAssertEqual(
+            ObjectMemoryCopy.recordingHeadline(recording.reading),
+            ObjectMemoryCopy.cameraRefusalLine(.noActiveDevice)
+        )
+    }
+
+    /// **A capture that is shutting down belongs to nobody.**
+    ///
+    /// `.ending` used to share a branch with `.running` and be recorded as
+    /// "somebody else owns it", which was false in both halves: the previous
+    /// owner has already let go, and `startCameraSession()` refuses in this
+    /// window anyway. The wearer got no camera, no refusal and no sentence —
+    /// a Start that reported nothing at all.
+    func testStartWhileACaptureIsShuttingDownIsRefusedRatherThanSilent() async throws {
+        let client = StubObjectMemoryClient()
+        client.sessionAfterRead = .known(try snapshot(state: "active", following: []))
+        let camera = FakeCaptureOwner()
+        camera.claim = .ending
+
+        let recording = makeCoordinator(camera: camera, client: client)
+        recording.start()
+        await settle(recording)
+
+        XCTAssertEqual(
+            camera.starts, 0, "startCameraSession() refuses while a session is being torn down"
+        )
+        XCTAssertEqual(recording.phase, .cameraRefused(.captureIsShuttingDown))
+        XCTAssertFalse(
+            recording.reading.cameraStartedHere,
+            "nobody owns a capture that is dying, least of all the screen that did not start it"
+        )
+        XCTAssertEqual(client.applied, [.start], "the Tower's gate stays open")
+        XCTAssertNotEqual(
+            ObjectMemoryCopy.recordingHeadline(recording.reading),
+            ObjectMemoryCopy.cameraRefusalLine(.alreadyRunning),
+            """
+            "a capture was already under way, so this screen left it alone" \
+            sends a wearer to look for a stream that is on its way out
+            """
+        )
+    }
+
+    /// A teardown running underneath this screen does **not** give away a
+    /// capture this screen started. Ownership is dropped when the claim reaches
+    /// `.unclaimed` and not before — a capture that is stopping is still ours
+    /// to stop, and `stopCameraSession()` on an already-stopping session is the
+    /// same idempotent no-op it always was.
+    func testACaptureThatIsShuttingDownIsStillThisScreensToStop() async throws {
+        let client = StubObjectMemoryClient()
+        client.sessionAfterRead = .known(try snapshot(following: ["22e9d4289cb440fb"]))
+        let camera = FakeCaptureOwner()
+
+        let recording = makeCoordinator(camera: camera, client: client)
+        recording.start()
+        await settle(recording)
+        XCTAssertTrue(recording.reading.cameraStartedHere)
+
+        camera.publish(.ending)
+        try? await Task.sleep(nanoseconds: 20_000_000)
+        XCTAssertEqual(recording.reading.camera, .ending)
+        XCTAssertTrue(
+            recording.reading.cameraStartedHere,
+            "a capture that is stopping has not yet ended, and is still this screen's"
+        )
+
+        client.sessionAfterRead = .known(try snapshot(state: "stopped"))
+        recording.stop()
+        await settle(recording)
+
+        XCTAssertEqual(camera.stops, 1)
+        XCTAssertFalse(recording.reading.cameraStartedHere)
+    }
+
+    /// **A device pause that arrives mid-run reaches the reading.**
+    ///
+    /// The glasses can pause themselves at any moment — a temple press, or
+    /// heat — including while a Start is converging. The subscription is what
+    /// carries that, and it is deliberately **not** gated on a sequence being
+    /// in flight: a screen that swallowed a camera claim because it was busy
+    /// would keep saying the camera is open while the glasses had stopped
+    /// delivering.
+    func testADevicePauseArrivingDuringAStartReachesTheReading() async throws {
+        let client = StubObjectMemoryClient()
+        client.sessionAfterRead = .known(try snapshot(state: "active", following: []))
+        let camera = FakeCaptureOwner()
+
+        let recording = makeConvergingCoordinator(camera: camera, client: client)
+        recording.start()
+        await waitUntilConverging(recording)
+        XCTAssertTrue(recording.reading.cameraStartedHere)
+
+        camera.publish(.devicePaused)
+        try? await Task.sleep(nanoseconds: 30_000_000)
+
+        XCTAssertEqual(recording.reading.camera, .devicePaused)
+        XCTAssertTrue(
+            recording.reading.cameraStartedHere,
+            "a device pause holds the session open; it is not the capture ending"
+        )
+        XCTAssertEqual(
+            ObjectMemoryCopy.recordingCameraLine(recording.reading),
+            ObjectMemoryCopy.recordingCameraLine(
+                ObjectMemoryRecordingReading(
+                    phase: recording.phase,
+                    camera: .devicePaused,
+                    cameraStartedHere: true,
+                    cameraIsReachable: true
+                )
+            )
+        )
+
+        // Leave nothing polling behind the test.
+        client.sessionAfterRead = .known(try snapshot(state: "stopped"))
+        recording.stop()
+        await settle(recording)
+    }
+
+    /// **The refusal that could never be shown.**
+    ///
+    /// `startCameraSession()` sets `lastCaptureStartRefusal` synchronously for
+    /// four of its five reasons. Camera permission is the fifth and arrives
+    /// later: the device session starts, DAT's state observer fires,
+    /// `beginCameraStream` finds the permission ungranted, and
+    /// `abandonSessionAfterFailedStart` writes the refusal — all after the call
+    /// this sequence made had already returned `nil`. So this screen claimed
+    /// ownership, converged, and reported `notObserved` twelve seconds later
+    /// while the true answer was known, specific, actionable, and had a written
+    /// sentence that could never reach a person.
+    func testACameraPermissionRefusalThatArrivesLateIsSurfaced() async throws {
+        let client = StubObjectMemoryClient()
+        client.sessionAfterRead = .known(try snapshot(state: "active", following: []))
+        let camera = FakeCaptureOwner()
+
+        let recording = makeConvergingCoordinator(camera: camera, client: client)
+        recording.start()
+        await waitUntilConverging(recording)
+        XCTAssertTrue(
+            recording.reading.cameraStartedHere,
+            "the synchronous read said the start proceeded, which is what it knew"
+        )
+
+        // The teardown reaches the publisher first and clears ownership. The
+        // convergence loop must still make the check, which is why it captured
+        // "this run started a camera" rather than re-reading the flag.
+        camera.publish(.unclaimed)
+        try? await Task.sleep(nanoseconds: 30_000_000)
+        XCTAssertFalse(recording.reading.cameraStartedHere)
+
+        camera.refusal = .cameraPermissionNotGranted
+        await settle(recording)
+
+        XCTAssertEqual(recording.phase, .cameraRefused(.cameraPermissionNotGranted))
+        XCTAssertNotEqual(
+            recording.phase, .notObserved,
+            "\"asked for, and not observed\" is not the answer when the answer is known"
+        )
+        XCTAssertEqual(
+            ObjectMemoryCopy.recordingHeadline(recording.reading),
+            ObjectMemoryCopy.cameraRefusalLine(.cameraPermissionNotGranted)
+        )
+        XCTAssertEqual(client.applied, [.start], "the Tower's gate stays open")
+    }
+
+    /// A refusal left over from somebody else's Start is not this run's answer.
+    ///
+    /// `lastCaptureStartRefusal` is cleared at the top of every
+    /// `startCameraSession()` and survives until the next one, so on a run that
+    /// started no camera it may still hold Home's answer to Home's question.
+    /// The convergence re-check is scoped to a capture this run started for
+    /// exactly that reason.
+    func testACameraRefusalLeftOverFromAnotherScreenIsNotAdopted() async throws {
+        let client = StubObjectMemoryClient()
+        client.sessionAfterRead = .known(try snapshot(state: "active", following: []))
+        let camera = FakeCaptureOwner()
+        // Home started a capture, and before that Home's own start was refused
+        // once. Both facts are still readable here.
+        camera.claim = .running
+        camera.refusal = .noActiveDevice
+
+        let recording = makeCoordinator(camera: camera, client: client)
+        recording.start()
+        await settle(recording)
+
+        XCTAssertEqual(camera.starts, 0)
+        XCTAssertEqual(
+            recording.phase, .notObserved,
+            "a stale refusal from another screen must not become this run's verdict"
+        )
+    }
+
+    /// **A 409 on Start**, which until now only `resume` was covered for. Start
+    /// is normally idempotent, so a refusal here means a Tower that has said
+    /// something this app must report rather than reinterpret — and the camera
+    /// is never asked, because a capture running for a gate that will not open
+    /// records nothing.
+    func testARefusedStartIsReportedAndNeverOpensACapture() async throws {
+        let refused = try refusal(action: .start, reason: "not-active")
+        let client = StubObjectMemoryClient()
+        client.sessionAfterRead = .refused(refused)
+        let camera = FakeCaptureOwner()
+
+        let recording = makeCoordinator(camera: camera, client: client)
+        recording.start()
+        await settle(recording)
+
+        XCTAssertEqual(recording.phase, .refused(refused))
+        XCTAssertEqual(camera.starts, 0)
+        XCTAssertEqual(
+            ObjectMemoryCopy.recordingHeadline(recording.reading),
+            ObjectMemoryCopy.refusalLine(refused),
+            "a refusal must be worded as the answer it is, on start as on resume"
+        )
+        XCTAssertEqual(
+            recording.primaryAction, .start,
+            "a Start the Tower refused opened no session, so Stop has nothing to close"
+        )
+    }
+
+    // MARK: Stop must never be out of reach
+
+    /// **The blocker this whole flag was re-cut for.**
+    ///
+    /// `isActing` used to cover the entire Start sequence, which ends with a
+    /// convergence poll that runs to twelve seconds. Both `.disabled` gates in
+    /// `ObjectMemoryWorkspaceView` read it, so for those twelve seconds every
+    /// control on the screen — the primary Stop included — was dead, while the
+    /// Tower session was open and the glasses camera this screen had just
+    /// started was streaming. The only way to stop being recorded was to leave
+    /// the screen.
+    ///
+    /// This asserts the two expressions those gates are written from, rather
+    /// than rendering a view: `reading.phase == .unsupported || isActing` for
+    /// the primary control, and `!snapshot.supported || isActing` for the
+    /// session panel's row.
+    func testTheControlsAreNotDisabledWhileConverging() async throws {
+        let client = StubObjectMemoryClient()
+        client.sessionAfterRead = .known(try snapshot(state: "active", following: []))
+        let camera = FakeCaptureOwner()
+
+        let recording = makeConvergingCoordinator(camera: camera, client: client)
+        recording.start()
+        await waitUntilConverging(recording)
+
+        XCTAssertEqual(recording.phase, .waitingToBeFollowed)
+        XCTAssertTrue(recording.isSequenceRunning, "the poll really is still running")
+        XCTAssertFalse(
+            recording.isActing,
+            "nothing is being mutated during a convergence poll, and Stop must be reachable"
+        )
+        XCTAssertFalse(
+            recording.reading.phase == .unsupported || recording.isActing,
+            "the primary control is what a wearer presses to stop being recorded"
+        )
+        XCTAssertEqual(
+            recording.primaryAction, .stop,
+            "and the verb it carries while converging is Stop"
+        )
+
+        // Leave nothing running behind the test.
+        client.sessionAfterRead = .known(try snapshot(state: "stopped"))
+        recording.stop()
+        await settle(recording)
+    }
+
+    /// A Stop that lands during convergence is accepted, cancels the poll, and
+    /// ends the run.
+    ///
+    /// The cancelled Start does not simply stop where it was told to —
+    /// cancellation in Swift is cooperative, so it unwinds through the main
+    /// actor and reaches its completion block afterwards. If it were allowed to
+    /// clear the flags there it would open the double-tap gate in the middle of
+    /// the Stop that replaced it, which is what `run` prevents.
+    func testStopDuringConvergenceIsAcceptedAndEndsTheRun() async throws {
+        let client = StubObjectMemoryClient()
+        client.sessionAfterRead = .known(try snapshot(state: "active", following: []))
+        let camera = FakeCaptureOwner()
+
+        let recording = makeConvergingCoordinator(camera: camera, client: client)
+        recording.start()
+        await waitUntilConverging(recording)
+        XCTAssertTrue(recording.reading.cameraStartedHere)
+
+        client.sessionAfterRead = .known(try snapshot(state: "stopped"))
+        recording.stop()
+        await settle(recording)
+
+        XCTAssertEqual(client.applied, [.start, .stop], "the Stop was sent, not dropped")
+        XCTAssertEqual(
+            camera.stops, 1,
+            "the camera this screen started must end with the run that started it"
+        )
+        XCTAssertEqual(recording.phase, .stopped)
+        XCTAssertFalse(recording.phase.isFollowingACapture)
+        XCTAssertFalse(recording.isActing)
+        XCTAssertFalse(
+            recording.isSequenceRunning,
+            "the superseded poll must not be left running behind the Stop"
+        )
+        XCTAssertEqual(recording.primaryAction, .start)
+    }
+
+    /// A reading pushed by the workspace's own watch loop is ignored while a
+    /// sequence is running — convergence included.
+    ///
+    /// This is not a corner case. The watch loop polls the same session at
+    /// `livenessRefreshInterval`, which is the same three seconds the
+    /// convergence poll uses, so a reading lands on that publisher two or three
+    /// times during every Start. `resting` turns an `active` session with
+    /// nothing following into `notObserved` — the legal, documented shape of
+    /// the first seconds after a Start — so an ungated push would print "asked
+    /// for, and not observed" while the wait it describes was still running.
+    func testAPushedReadingIsIgnoredWhileASequenceIsRunning() async throws {
+        let client = StubObjectMemoryClient()
+        client.sessionAfterRead = .known(try snapshot(state: "active", following: []))
+        let camera = FakeCaptureOwner()
+
+        let recording = makeConvergingCoordinator(camera: camera, client: client)
+        recording.start()
+        await waitUntilConverging(recording)
+
+        client.publish(ObjectMemorySessionState.known(try snapshot(state: "active", following: [])))
+        try? await Task.sleep(nanoseconds: 50_000_000)
+
+        XCTAssertEqual(
+            recording.phase, .waitingToBeFollowed,
+            "the deadline owns this verdict, not a reading that arrived from elsewhere"
+        )
+
+        client.sessionAfterRead = .known(try snapshot(state: "stopped"))
+        recording.stop()
+        await settle(recording)
+    }
+
+    /// A reading that says a request is in flight leaves the last known phase
+    /// alone, and a reading that says nothing has been read at all is `idle`
+    /// rather than `stopped` — silence is not an answer.
+    func testAnInFlightReadingHoldsAndAnUnreadOneIsIdle() async throws {
+        let client = StubObjectMemoryClient()
+        client.sessionAfterRead = .known(try snapshot(following: ["22e9d4289cb440fb"]))
+        let camera = FakeCaptureOwner()
+
+        let recording = makeCoordinator(camera: camera, client: client)
+        recording.start()
+        await settle(recording)
+        XCTAssertEqual(recording.phase, .remembering)
+
+        client.publish(ObjectMemorySessionState.working)
+        try? await Task.sleep(nanoseconds: 50_000_000)
+        XCTAssertEqual(
+            recording.phase, .remembering,
+            "whatever was last true is still the best thing known; a flash of nothing is worse"
+        )
+
+        client.publish(ObjectMemorySessionState.unread)
+        try? await Task.sleep(nanoseconds: 50_000_000)
+        XCTAssertEqual(
+            recording.phase, .idle,
+            "never read is not the same as stopped, and must not be drawn as it"
+        )
+    }
+
+    // MARK: Pause is a Tower verb only
+
+    /// Pause detaches a producer. It cannot pause a DAT stream, because no such
+    /// call exists — so a running capture keeps running, and the reading has to
+    /// say both things at once.
+    func testPauseLeavesTheCameraRunningAndSaysSo() async throws {
+        let client = StubObjectMemoryClient()
+        client.sessionAfterRead = .known(try snapshot(following: ["22e9d4289cb440fb"]))
+        let camera = FakeCaptureOwner()
+
+        let recording = makeCoordinator(camera: camera, client: client)
+        recording.start()
+        await settle(recording)
+
+        client.sessionAfterRead = .known(try snapshot(state: "paused"))
+        recording.pause()
+        await settle(recording)
+
+        XCTAssertEqual(recording.phase, .paused)
+        XCTAssertEqual(camera.stops, 0, "nothing in this app can pause a DAT stream")
+        XCTAssertEqual(camera.claim, .running)
+        XCTAssertNotEqual(
+            ObjectMemoryCopy.recordingCameraLine(recording.reading),
+            ObjectMemoryCopy.recordingCameraLine(
+                ObjectMemoryRecordingReading(
+                    phase: .paused,
+                    camera: .unclaimed,
+                    cameraStartedHere: false,
+                    cameraIsReachable: true
+                )
+            ),
+            "a paused session beside a live camera must not read like one beside no camera"
+        )
+    }
+
+    /// The reproduced `SIGTERM` failure: the Tower reports the pause as
+    /// honoured and still names a capture in `following`. Liveness is read from
+    /// `following`, so the phase must keep claiming the writing has not ended.
+    func testAPauseThatDidNotStopTheProducerKeepsClaimingLiveness() async throws {
+        let client = StubObjectMemoryClient()
+        client.sessionAfterRead = .known(
+            try snapshot(state: "paused", following: ["22e9d4289cb440fb"])
+        )
+        let camera = FakeCaptureOwner()
+
+        let recording = makeCoordinator(camera: camera, client: client)
+        recording.pause()
+        await settle(recording)
+
+        XCTAssertEqual(recording.phase, .stillFollowing(after: .pause))
+        XCTAssertTrue(recording.phase.isFollowingACapture)
+    }
+
+    // MARK: Finishing
+
+    /// Stopping is usually the moment somebody wants to see what was written.
+    func testStopRefreshesTheRecords() async throws {
+        let client = StubObjectMemoryClient()
+        client.sessionAfterRead = .known(try snapshot(state: "stopped"))
+        let camera = FakeCaptureOwner()
+
+        let recording = makeCoordinator(camera: camera, client: client)
+        let refreshes = RefreshCounter()
+        recording.refreshRecords = { refreshes.bump() }
+        recording.stop()
+        await settle(recording)
+
+        XCTAssertEqual(refreshes.count, 1)
+    }
+
+    /// **Only Stop refreshes.** Pause and Resume leave the session where a
+    /// person can still add to it, so re-asking a question in the middle of a
+    /// run would replace the reader's answer with a partial one and scroll
+    /// their list out from under them. Stop is the moment the run is over and
+    /// looking at what was written is the reason for pressing it.
+    func testPauseAndResumeDoNotRefreshTheRecords() async throws {
+        let client = StubObjectMemoryClient()
+        client.sessionAfterRead = .known(try snapshot(state: "paused"))
+        let camera = FakeCaptureOwner()
+
+        let recording = makeCoordinator(camera: camera, client: client)
+        let refreshes = RefreshCounter()
+        recording.refreshRecords = { refreshes.bump() }
+
+        recording.pause()
+        await settle(recording)
+        client.sessionAfterRead = .known(try snapshot(following: ["22e9d4289cb440fb"]))
+        recording.resume()
+        await settle(recording)
+
+        XCTAssertEqual(refreshes.count, 0)
+        XCTAssertEqual(client.applied, [.pause, .resume])
+    }
+
+    /// **A Stop the Tower did not confirm still ends the capture, and still
+    /// refreshes.**
+    ///
+    /// Three things are pinned here, and the first is the one that matters. The
+    /// `POST` has already gone; leaving the glasses streaming because the
+    /// answer did not come back is the worst of the four available outcomes,
+    /// and it is the one a "only stop the camera if the Tower said yes" guard
+    /// would produce.
+    ///
+    /// The phase drops the liveness claim rather than reporting a stop, because
+    /// this app genuinely cannot tell whether the producer detached. And the
+    /// refresh is unconditional: it re-asks a question over HTTP, the records
+    /// route is not the session route, and whatever was written before the
+    /// Tower went quiet is exactly what somebody pressing Stop wants to see.
+    func testAStopThatCouldNotBeConfirmedStillEndsTheCapture() async throws {
+        let client = StubObjectMemoryClient()
+        client.sessionAfterRead = .known(try snapshot(following: ["22e9d4289cb440fb"]))
+        let camera = FakeCaptureOwner()
+
+        let recording = makeCoordinator(camera: camera, client: client)
+        recording.start()
+        await settle(recording)
+        XCTAssertTrue(recording.reading.cameraStartedHere)
+
+        let failure = CartridgeFailure(
+            kind: .transport, message: "The Tower did not answer: connection lost"
+        )
+        client.sessionAfterRead = .failed(failure)
+        let refreshes = RefreshCounter()
+        recording.refreshRecords = { refreshes.bump() }
+        recording.stop()
+        await settle(recording)
+
+        XCTAssertEqual(
+            camera.stops, 1,
+            "a Stop that could not be confirmed must not leave the glasses streaming"
+        )
+        XCTAssertFalse(recording.reading.cameraStartedHere)
+        XCTAssertEqual(recording.phase, .cannotTell(failure))
+        XCTAssertFalse(
+            recording.phase.isFollowingACapture,
+            "a stop that could not be read is not a claim that anything is recording"
+        )
+        XCTAssertEqual(refreshes.count, 1)
+    }
+
+    // MARK: A build with no camera
+
+    /// Release, and every preview. The Tower half works and the camera half
+    /// reports that it cannot be reached rather than pretending it can.
+    func testWithNoCameraTheTowerHalfStillWorksAndSaysSo() async throws {
+        let client = StubObjectMemoryClient()
+        client.sessionAfterRead = .known(try snapshot(state: "active", following: []))
+
+        let recording = makeCoordinator(camera: nil, client: client)
+        recording.start()
+        await settle(recording)
+
+        XCTAssertEqual(client.applied, [.start])
+        XCTAssertFalse(recording.reading.cameraIsReachable)
+        XCTAssertEqual(
+            ObjectMemoryCopy.recordingCameraLine(recording.reading),
+            ObjectMemoryCopy.recordingCameraNotInThisBuild
+        )
+    }
+
+    // MARK: The two cadences
+
+    /// The convergence poll and the workspace's liveness watch must stay the
+    /// same interval. They are written out separately because one of them is
+    /// isolated to the main actor and the other is a default argument; this is
+    /// what keeps them from drifting into a screen that polls at one rate and
+    /// converges at another.
+    func testTheConvergenceCadenceMatchesTheWatchLoop() {
+        XCTAssertEqual(
+            ObjectMemoryRecordingCoordinator.convergenceInterval,
+            ObjectMemoryViewModel.livenessRefreshInterval
+        )
+    }
+
+    /// The primary control says Stop for every phase in which a session exists
+    /// on the Tower — including `notObserved`, where offering Start would leave
+    /// no way to clear a session that is open and doing nothing.
+    ///
+    /// **`cameraRefused` is that same shape and used to offer Start.** Every
+    /// branch that produces it leaves the Tower session `active` on purpose,
+    /// because the session is a gate rather than a recording and tearing it
+    /// down for a refused camera would throw away correct work. So the wearer
+    /// was offered the one verb that changes nothing, and the open session had
+    /// no control that could close it.
+    func testTheStopControlIsOfferedWheneverASessionExists() async throws {
+        let client = StubObjectMemoryClient()
+        client.sessionAfterRead = .known(try snapshot(state: "active", following: []))
+        let camera = FakeCaptureOwner()
+
+        let recording = makeCoordinator(camera: camera, client: client)
+        XCTAssertEqual(recording.primaryAction, .start)
+
+        recording.start()
+        await settle(recording)
+        XCTAssertEqual(recording.phase, .notObserved)
+        XCTAssertEqual(recording.primaryAction, .stop)
+
+        client.sessionAfterRead = .known(try snapshot(state: "stopped"))
+        recording.stop()
+        await settle(recording)
+        XCTAssertEqual(recording.primaryAction, .start)
+    }
+
+    /// Every one of the five camera refusals leaves a session open on the
+    /// Tower, so every one of them offers Stop.
+    ///
+    /// Driven through the coordinator rather than asserted against a phase
+    /// built by hand, because the claim being made is about a real Start whose
+    /// Tower half stood while its camera half did not.
+    func testACameraRefusalStillOffersTheControlThatClosesTheSession() async throws {
+        // Named `refused` rather than `refusal`, which is the name of this
+        // suite's 409 helper one scope up.
+        for refused: CaptureStartRefusal in [
+            .alreadyRunning, .deviceHasPausedCapture, .captureIsShuttingDown,
+            .noActiveDevice, .cameraPermissionNotGranted,
+            .datRefused("the device session could not be created"),
+        ] {
+            let client = StubObjectMemoryClient()
+            client.sessionAfterRead = .known(try snapshot(state: "active", following: []))
+            let camera = FakeCaptureOwner()
+            camera.refusal = refused
+
+            let recording = makeCoordinator(camera: camera, client: client)
+            recording.start()
+            await settle(recording)
+
+            XCTAssertEqual(recording.phase, .cameraRefused(refused))
+            XCTAssertEqual(client.applied, [.start], "the Tower's half stands")
+            XCTAssertEqual(
+                recording.primaryAction, .stop,
+                """
+                the session is open on the Tower and nothing is following it; \
+                Start would change nothing and would leave no way to close it
+                """
+            )
+        }
+    }
+}
+
+// MARK: - Liveness belongs to the session claiming it
+
+/// **A leftover producer must not light up a session that started nothing.**
+///
+/// The Tower's own contract carried this as a warning from 2026-08-27 until it
+/// was fixed on 2026-08-29: `following` is supervisor-scoped, so a producer
+/// that ignored `terminate()` on an earlier Stop stays registered and is
+/// reported under the *next* session's id. Against this app's own rule — draw
+/// liveness from `following`, never from `state` — that produced a false
+/// positive: a brand-new session that attached nothing rendered as
+/// "remembering".
+///
+/// The fix is additive on both sides. `following` keeps its full breadth,
+/// because an un-killable producer is what a Stop failing open looks like and
+/// it must stay visible; `following_this_session` is the scoped subset, and it
+/// is what a "you are being recorded" claim is drawn from.
+/// `@MainActor` for the same reason `ObjectMemoryRecordingTests` is: the last
+/// case here builds a coordinator, and that type is main-actor isolated.
+@MainActor
+final class ObjectMemoryScopedLivenessTests: XCTestCase {
+
+    private func snapshot(
+        state: String,
+        following: [String],
+        followingThisSession: [String]? = nil
+    ) throws -> CartridgeSessionSnapshot {
+        try XCTUnwrap(
+            CartridgeSessionDecoder.snapshot(
+                from: ObjectMemoryFixtures.session(
+                    state: state,
+                    following: following,
+                    followingThisSession: followingThisSession
+                )
+            )
+        )
+    }
+
+    /// **The reproduced false positive.**
+    func testASessionThatStartedNothingIsNotRenderedAsRemembering() throws {
+        let reading = try snapshot(
+            state: "active",
+            following: ["a-leftover-producer"],
+            followingThisSession: []
+        )
+
+        XCTAssertFalse(
+            reading.isFollowingACapture,
+            """
+            this session attached nothing; the capture in `following` belongs \
+            to an earlier session whose Stop did not reach its producer
+            """
+        )
+        XCTAssertEqual(reading.recordingsThisControlDidNotStart, ["a-leftover-producer"])
+    }
+
+    /// And the leftover is still reported, because the alternative is silence
+    /// about a camera that is recording.
+    func testALeftoverProducerIsStillSaidOutLoud() throws {
+        let reading = try snapshot(
+            state: "active",
+            following: ["a-leftover-producer"],
+            followingThisSession: []
+        )
+
+        let line = try XCTUnwrap(ObjectMemoryCopy.leftoverProducerLine(reading))
+        XCTAssertFalse(line.isEmpty)
+        XCTAssertFalse(
+            ObjectMemoryCopy.livenessLine(reading).contains("is writing into this"),
+            "the liveness sentence must not claim a producer this session did not start"
+        )
+    }
+
+    func testAProducerThisSessionStartedIsRememberingNormally() throws {
+        let reading = try snapshot(
+            state: "active",
+            following: ["cap-1"],
+            followingThisSession: ["cap-1"]
+        )
+
+        XCTAssertTrue(reading.isFollowingACapture)
+        XCTAssertNil(
+            ObjectMemoryCopy.leftoverProducerLine(reading),
+            "there is nothing left over when the only producer is this session's"
+        )
+    }
+
+    /// The count in the sentence must come from the same list the sentence
+    /// branched on. Counting `following` while branching on the scoped list
+    /// would let a leftover inflate a number describing this session.
+    func testTheLivenessSentenceCountsOnlyThisSessionsCaptures() throws {
+        let reading = try snapshot(
+            state: "active",
+            following: ["cap-1", "a-leftover-producer"],
+            followingThisSession: ["cap-1"]
+        )
+
+        XCTAssertTrue(ObjectMemoryCopy.livenessLine(reading).contains("a recording"))
+        XCTAssertFalse(ObjectMemoryCopy.livenessLine(reading).contains("2 recordings"))
+    }
+
+    /// **The alarm stays wide.** A Stop that did not stop is still a Stop that
+    /// did not stop, whichever session started the producer.
+    func testTheContradictionAlarmReadsTheWideField() throws {
+        let stoppedWithALeftover = try snapshot(
+            state: "stopped",
+            following: ["a-leftover-producer"],
+            followingThisSession: []
+        )
+
+        XCTAssertFalse(stoppedWithALeftover.isFollowingACapture)
+        XCTAssertTrue(
+            stoppedWithALeftover.intentContradictsLiveness,
+            """
+            scoping this alarm is the one narrowing that would make it useless: \
+            something is recording, a person asked for it to stop, and this \
+            screen is the only place that will say so
+            """
+        )
+        XCTAssertNotNil(
+            ObjectMemoryCopy.livenessContradictsIntentLine(stoppedWithALeftover)
+        )
+    }
+
+    /// **`nil` is not `[]`.** A Tower that never sends the field has not said
+    /// this session is following nothing; it has said nothing at all. Reporting
+    /// a Tower with a live producer as one without would be the same class of
+    /// error in the more dangerous direction.
+    func testATowerThatDoesNotSendTheFieldFallsBackRatherThanGoingQuiet() throws {
+        let older = try snapshot(state: "active", following: ["cap-1"])
+
+        XCTAssertNil(older.followingThisSession)
+        XCTAssertTrue(older.isFollowingACapture)
+        XCTAssertEqual(
+            older.recordingsThisControlDidNotStart,
+            [],
+            "nothing can be called a leftover when nothing is scoped"
+        )
+    }
+
+    func testAnEmptyScopedListIsNotTheSameAsAnAbsentOne() throws {
+        let absent = try snapshot(state: "active", following: ["cap-1"])
+        let empty = try snapshot(
+            state: "active", following: ["cap-1"], followingThisSession: []
+        )
+
+        XCTAssertTrue(absent.isFollowingACapture)
+        XCTAssertFalse(empty.isFollowingACapture)
+    }
+
+    /// The composed lifecycle must inherit the distinction rather than
+    /// re-deriving it: `ObjectMemoryRecordingCoordinator` reads
+    /// `snapshot.isFollowingACapture`, so scoping it once scopes the phase too.
+    func testTheComposedPhaseDoesNotRememberOnALeftover() async throws {
+        let client = StubObjectMemoryClient()
+        client.sessionAfterRead = .known(
+            try snapshot(
+                state: "active",
+                following: ["a-leftover-producer"],
+                followingThisSession: []
+            )
+        )
+        let camera = FakeCaptureOwner()
+        let coordinator = ObjectMemoryRecordingCoordinator(
+            camera: camera, client: client,
+            interval: .milliseconds(1), budget: .milliseconds(30)
+        )
+
+        coordinator.start()
+        var turns = 0
+        // `isSequenceRunning` and not `isActing`: the second now covers only
+        // the mutating step and goes false when the convergence poll begins,
+        // so waiting on it here would assert against a phase still in motion.
+        while coordinator.isSequenceRunning && turns < 500 {
+            try? await Task.sleep(nanoseconds: 2_000_000)
+            turns += 1
+        }
+        try? await Task.sleep(nanoseconds: 20_000_000)
+
+        XCTAssertFalse(
+            coordinator.phase.isFollowingACapture,
+            "a leftover producer must not become this screen's remembering claim"
+        )
+    }
+}
+
+// MARK: - Two stores, two lifetimes
+
+/// **A record's object picture and its context picture no longer live and die
+/// together.**
+///
+/// `/crop` and `/frame` used to be two renders of one file in the capture
+/// store. Object Memory now owns a small privacy-filtered crop per record,
+/// under its own retention, so `/crop` keeps answering after the recording
+/// behind it has been deleted while `/frame` honestly 410s. Two additive
+/// fields carry that — `frame_available` and `imagery_source` — and the
+/// contract identifier is deliberately unchanged, because no existing field
+/// changed shape or meaning.
+///
+/// Three things have to hold at once, and each of them was a way to mislead a
+/// wearer:
+///
+/// 1. An **older Tower**, which sends neither field, behaves exactly as it did.
+/// 2. The automatic fallback to `/frame` must not walk away from a picture that
+///    is being kept, towards one that is gone.
+/// 3. The retention sentence must follow the store, because the two lifetimes
+///    are opposites and they are said in the same slot on the same screen.
+@MainActor
+final class ObjectMemoryTwoStoreImageryTests: XCTestCase {
+
+    private let onRead = "applied-on-read-the-stored-frame-is-unchanged"
+    private let beforeWritten = "applied-before-this-file-was-written"
+
+    private func description(
+        subjectObscured: Any = 0.0,
+        frameAvailable: Bool? = nil,
+        imagerySource: String? = nil,
+        filterMeans: Any = "applied-on-read-the-stored-frame-is-unchanged",
+        imageryRetention: Any = "capture-side"
+    ) throws -> ObjectMemoryImageryDescription {
+        try XCTUnwrap(
+            ObjectMemoryImageryDecoder.description(
+                from: ObjectMemoryFixtures.imagery(
+                    subjectObscured: subjectObscured,
+                    filterMeans: filterMeans,
+                    frameAvailable: frameAvailable,
+                    imagerySource: imagerySource,
+                    imageryRetention: imageryRetention
+                ),
+                statusCode: 200
+            )
+        )
+    }
+
+    private func settle() async throws {
+        try await Task.sleep(nanoseconds: 50_000_000)
+    }
+
+    // MARK: An older Tower is unchanged
+
+    /// **The compatibility floor.** Neither field on the wire, and every
+    /// derived answer is the one this build gave before the fields existed.
+    func testAnOlderTowerThatSendsNeitherFieldBehavesAsItAlwaysDid() throws {
+        let older = try description(subjectObscured: 0.42)
+
+        XCTAssertNil(
+            older.frameAvailable,
+            "an absent field means the Tower did not say, which is not the same as no"
+        )
+        XCTAssertNil(older.imagerySource)
+        XCTAssertTrue(
+            older.frameCanBeAskedFor,
+            "an unknown answer is a reason to ask the Tower, not to withhold a picture"
+        )
+        XCTAssertEqual(
+            older.preferredKind, .frame,
+            "the obscured-subject fallback is exactly the expression it always was"
+        )
+        XCTAssertEqual(
+            ObjectMemoryCopy.pictureRetentionLine(older),
+            ObjectMemoryCopy.unnamedSourceRetentionLine,
+            "a Tower that names no store gets no claim about which retention holds this"
+        )
+    }
+
+    /// **`nil` is not `false`.** Reading a missing field as "the frame is gone"
+    /// would have made every older Tower report every context view as expired
+    /// and would have taken a working control off the screen.
+    func testAnAbsentFrameAvailabilityIsNotAnAbsentFrame() throws {
+        let unknown = try description(subjectObscured: 0.42)
+        let gone = try description(subjectObscured: 0.42, frameAvailable: false)
+        let there = try description(subjectObscured: 0.42, frameAvailable: true)
+
+        XCTAssertNil(unknown.frameAvailable)
+        XCTAssertEqual(gone.frameAvailable, false)
+        XCTAssertEqual(there.frameAvailable, true)
+        XCTAssertTrue(unknown.frameCanBeAskedFor)
+        XCTAssertFalse(gone.frameCanBeAskedFor)
+        XCTAssertTrue(there.frameCanBeAskedFor)
+    }
+
+    // MARK: The fallback
+
+    /// **The fallback must not walk away from the picture that is kept.**
+    ///
+    /// `preferredKind` returned `.frame` for any obscured subject. Once `/crop`
+    /// started outliving the recording behind it, that sent a wearer with a
+    /// partly-filled subject to a route that answers 410 — so they read "the
+    /// memory is kept and the picture is gone" while the Tower was holding a
+    /// crop for them.
+    func testAFrameTheTowerSaysIsGoneIsNotPreferredOverAKeptCrop() throws {
+        let obscuredAndGone = try description(
+            subjectObscured: 0.42,
+            frameAvailable: false,
+            imagerySource: "object-memory-keyframe",
+            filterMeans: beforeWritten
+        )
+
+        XCTAssertTrue(obscuredAndGone.subjectIsBehindAFill)
+        XCTAssertEqual(
+            obscuredAndGone.preferredKind, .crop,
+            "falling back to a frame that is gone is worse than the crop it left"
+        )
+        XCTAssertNotNil(
+            ObjectMemoryCopy.subjectObscuredLine(obscuredAndGone, kind: .crop),
+            """
+            the other half of the contract's instruction still applies: say the \
+            subject is behind a fill
+            """
+        )
+    }
+
+    /// The fallback is intact wherever the frame can still be asked for —
+    /// stated, and unknown.
+    func testTheFallbackSurvivesWhereverTheFrameCanBeAskedFor() throws {
+        XCTAssertEqual(
+            try description(subjectObscured: 0.42, frameAvailable: true).preferredKind, .frame
+        )
+        XCTAssertEqual(try description(subjectObscured: 0.42).preferredKind, .frame)
+        XCTAssertEqual(
+            try description(subjectObscured: 0.0, frameAvailable: false).preferredKind, .crop,
+            "nothing is obscured, so the crop was always the answer"
+        )
+    }
+
+    /// End to end through the loader: no `/frame` request is ever made for a
+    /// record whose frame the Tower has said is gone.
+    func testTheLoaderNeverAsksForAFrameTheTowerSaysIsGone() async throws {
+        let client = StubObjectMemoryClient()
+        client.stubbedImagery = .described(
+            try description(
+                subjectObscured: 0.42,
+                frameAvailable: false,
+                imagerySource: "object-memory-keyframe",
+                filterMeans: beforeWritten
+            )
+        )
+        client.stubbedPicture = .picture(Data([0xFF, 0xD8, 0xFF]))
+
+        let loader = ObjectMemoryPictureLoader(client: client, observationID: "9f2c41b7ad0e6538")
+        loader.load()
+        try await settle()
+
+        XCTAssertEqual(loader.kind, .crop)
+        XCTAssertEqual(client.picturesAsked.count, 1)
+        XCTAssertEqual(client.picturesAsked.first?.1, ObjectMemoryImageryKind.crop)
+        XCTAssertFalse(
+            client.picturesAsked.contains { $0.1 == .frame },
+            "a request that can only 410 is not worth making on a wearer's behalf"
+        )
+    }
+
+    /// The gate that made the Tower-side fix necessary: the loader asks for no
+    /// bytes at all unless `available` is true, so `available` describing a
+    /// `/frame` render meant a kept crop could never be fetched. Pinned here so
+    /// the coupling is written down rather than rediscovered.
+    func testNoBytesAreAskedForWhenTheDescriptionSaysThereAreNone() async throws {
+        let client = StubObjectMemoryClient()
+        client.stubbedImagery = .described(
+            try XCTUnwrap(
+                ObjectMemoryImageryDecoder.description(
+                    from: ObjectMemoryFixtures.imagery(
+                        available: false,
+                        reason: "imagery-no-longer-available",
+                        filter: NSNull(),
+                        frameAvailable: false
+                    ),
+                    statusCode: 410
+                )
+            )
+        )
+
+        let loader = ObjectMemoryPictureLoader(client: client, observationID: "9f2c41b7ad0e6538")
+        loader.load()
+        try await settle()
+
+        XCTAssertTrue(client.picturesAsked.isEmpty)
+        if case .noPicture = loader.phase {} else {
+            XCTFail("a described absence is a sentence, not a failure: \(loader.phase)")
+        }
+    }
+
+    // MARK: The two filter meanings
+
+    /// A keyframe payload decodes. It could not before: `filter_means` was
+    /// checked against one constant, so the store whose filter runs *before*
+    /// persistence would have failed the parse and rendered as an unreadable
+    /// answer.
+    func testAKeyframePayloadDecodesUnderTheSameContract() throws {
+        let keyframe = try description(
+            imagerySource: "object-memory-keyframe",
+            filterMeans: beforeWritten,
+            imageryRetention: "object-memory"
+        )
+
+        XCTAssertEqual(keyframe.contract, ObjectMemoryImageryContract.identifier)
+        XCTAssertEqual(keyframe.imagerySource, ObjectMemoryImagerySource.objectMemoryKeyframe)
+        XCTAssertEqual(keyframe.filterMeans, beforeWritten)
+    }
+
+    /// Widening a membership test is not dropping it. A third meaning is still
+    /// refused, because the sentence beside the picture would be describing a
+    /// transformation nobody here has read about.
+    func testAFilterMeaningThisBuildHasNeverHeardOfIsStillRefused() {
+        XCTAssertNil(
+            ObjectMemoryImageryDecoder.description(
+                from: ObjectMemoryFixtures.imagery(filterMeans: "applied-sometimes"),
+                statusCode: 200
+            )
+        )
+        XCTAssertNil(
+            ObjectMemoryImageryDecoder.routes(
+                from: ObjectMemoryFixtures.imageryRoutes(filterMeans: "applied-sometimes")
+            )
+        )
+    }
+
+    /// The envelope's route block accepts either meaning, so a Tower serving
+    /// keyframes does not lose its imagery routes on decode.
+    func testTheRouteBlockAcceptsEitherFilterMeaning() throws {
+        for means in [onRead, beforeWritten] {
+            XCTAssertNotNil(
+                ObjectMemoryImageryDecoder.routes(
+                    from: ObjectMemoryFixtures.imageryRoutes(filterMeans: means)
+                ),
+                "a Tower that filters before persistence still has routes"
+            )
+        }
+    }
+
+    /// The "when" clause follows `filter_means`, and the stronger claim is only
+    /// made when the payload makes it.
+    func testTheFilterSentenceFollowsWhatTheFilterMeaningSays() throws {
+        let read = ObjectMemoryCopy.filterLine(try description(filterMeans: onRead))
+        let written = ObjectMemoryCopy.filterLine(
+            try description(imagerySource: "object-memory-keyframe", filterMeans: beforeWritten)
+        )
+
+        XCTAssertNotEqual(read, written)
+        XCTAssertTrue(read.lowercased().contains("the stored frame is unchanged"))
+        XCTAssertTrue(written.lowercased().contains("no unfiltered copy"))
+        XCTAssertFalse(
+            read.lowercased().contains("no unfiltered copy"),
+            "a capture frame's unfiltered original is on disk; this app may not say otherwise"
+        )
+        for sentence in [read, written] {
+            XCTAssertTrue(
+                sentence.contains("display filter"),
+                "the filter keeps its name under both meanings"
+            )
+            for word in [
+                "redact", "anonymis", "anonymiz", "privacy-safe", "privacy safe",
+                "de-identif", "deidentif", "scrubbed", "sanitis", "sanitiz",
+            ] {
+                XCTAssertFalse(sentence.lowercased().contains(word))
+            }
+        }
+    }
+
+    // MARK: Retention, per store
+
+    /// **Three sentences, because there are three answers.** An owned keyframe
+    /// goes when the record does and outlives the recording; a capture frame
+    /// goes when capture-side retention says so and can vanish while the record
+    /// stays; a Tower that names neither gets no claim about either.
+    func testTheRetentionSentenceFollowsTheStoreThatServedTheBytes() throws {
+        let keyframe = ObjectMemoryCopy.pictureRetentionLine(
+            try description(
+                imagerySource: "object-memory-keyframe",
+                filterMeans: beforeWritten,
+                imageryRetention: "object-memory"
+            )
+        )
+        let captureFrame = ObjectMemoryCopy.pictureRetentionLine(
+            try description(imagerySource: "capture-frame")
+        )
+        let unnamed = ObjectMemoryCopy.pictureRetentionLine(try description())
+
+        XCTAssertEqual(Set([keyframe, captureFrame, unnamed]).count, 3)
+        XCTAssertEqual(keyframe, ObjectMemoryCopy.keyframeRetentionLine)
+        XCTAssertEqual(captureFrame, ObjectMemoryCopy.captureFrameRetentionLine)
+        XCTAssertEqual(unnamed, ObjectMemoryCopy.unnamedSourceRetentionLine)
+
+        XCTAssertTrue(keyframe.lowercased().contains("kept by this memory itself"))
+        XCTAssertTrue(
+            captureFrame.lowercased().contains("neither sets nor enforces"),
+            "this cartridge does not own capture-side retention and must not imply it does"
+        )
+        XCTAssertTrue(unnamed.lowercased().contains("did not say"))
+
+        // The one thing true of all three.
+        for sentence in [keyframe, captureFrame, unnamed] {
+            XCTAssertTrue(sentence.contains("not held on this phone"))
+        }
+    }
+
+    /// The sentence is written from `imagery_source` rather than from
+    /// `imagery_retention`, which is a label rather than a lifetime. A Tower
+    /// that renames the label must not change what a wearer is told.
+    func testTheRetentionSentenceIgnoresTheRetentionLabel() throws {
+        XCTAssertEqual(
+            ObjectMemoryCopy.pictureRetentionLine(
+                try description(imagerySource: "capture-frame", imageryRetention: "something-else")
+            ),
+            ObjectMemoryCopy.captureFrameRetentionLine
+        )
+    }
+
+    /// A store this build has never heard of gets the sentence that claims
+    /// nothing, rather than the nearest one that does.
+    func testAnUnrecognisedSourceClaimsNothingAboutRetention() throws {
+        XCTAssertEqual(
+            ObjectMemoryCopy.pictureRetentionLine(
+                try description(imagerySource: "some-third-store")
+            ),
+            ObjectMemoryCopy.unnamedSourceRetentionLine
+        )
+        XCTAssertEqual(
+            try description(imagerySource: "some-third-store").imagerySource,
+            ObjectMemoryImagerySource(rawValue: "some-third-store"),
+            "an unknown source survives the decode rather than failing the parse"
+        )
+    }
+
+    // MARK: The sentences beside the picture
+
+    /// Every sentence these two stores can produce, through the same
+    /// forbidden-phrase discipline the rest of the picture copy gets. A
+    /// sentence next to a first-person photograph is the most dangerous
+    /// sentence this app writes, and that does not change because it is about
+    /// retention.
+    func testEveryTwoStoreSentenceMakesNoClaimItCannotSupport() throws {
+        let classes = ["laptop", "cell phone"]
+        var forbidden = [
+            "still there", "is still", "right now", "at the moment", "on the map",
+            "last known location", "location of", "we know where", "you left",
+            "where you left", "go and get", "does not exist", "there is no ",
+            "you have no ", "you do not have", "found your", "no results",
+            "last seen in session", "seen in session",
+        ]
+        for objectClass in classes {
+            forbidden.append(contentsOf: [
+                "your \(objectClass)", "my \(objectClass)", "the \(objectClass) is",
+                "\(objectClass) is in", "\(objectClass) is at", "\(objectClass) is on",
+                "\(objectClass) is still", "\(objectClass) exists",
+            ])
+        }
+        forbidden.append(contentsOf: [
+            "redact", "anonymis", "anonymiz", "privacy-safe", "privacy safe",
+            "de-identif", "deidentif", "scrubbed", "sanitis", "sanitiz",
+        ])
+
+        var sentences: [String] = []
+        for source in [nil, "capture-frame", "object-memory-keyframe", "some-third-store"] {
+            for frameAvailable in [nil, true, false] as [Bool?] {
+                for obscured in [0.0, 0.42] {
+                    let means = source == "object-memory-keyframe" ? beforeWritten : onRead
+                    let described = try description(
+                        subjectObscured: obscured,
+                        frameAvailable: frameAvailable,
+                        imagerySource: source,
+                        filterMeans: means
+                    )
+                    for kind in ObjectMemoryImageryKind.allCases {
+                        sentences.append(
+                            contentsOf: ObjectMemoryCopy.everyString(for: described, kind: kind)
+                        )
+                    }
+                }
+            }
+        }
+
+        XCTAssertTrue(
+            sentences.contains(ObjectMemoryCopy.wholeFrameIsGoneLine),
+            "the gone-frame sentence must actually be generated, not merely written"
+        )
+        XCTAssertTrue(sentences.contains(ObjectMemoryCopy.keyframeRetentionLine))
+        XCTAssertTrue(sentences.contains(ObjectMemoryCopy.captureFrameRetentionLine))
+        XCTAssertTrue(sentences.contains(ObjectMemoryCopy.unnamedSourceRetentionLine))
+
+        for sentence in sentences {
+            let lowered = sentence.lowercased()
+            XCTAssertFalse(lowered.isEmpty, "an empty string reached the screen")
+            for phrase in forbidden {
+                XCTAssertFalse(
+                    lowered.contains(phrase),
+                    "copy claims more than the sensor supports (\"\(phrase)\") in: \(sentence)"
+                )
+            }
+        }
+    }
 }

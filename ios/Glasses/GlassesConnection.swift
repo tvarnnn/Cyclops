@@ -128,6 +128,114 @@ enum CaptureResolutionPreference: String, CaseIterable, Identifiable, Sendable {
 }
 #endif
 
+/// What claim this app currently holds on the glasses camera.
+///
+/// ## Why this exists beside `isCaptureEngaged` and `isCaptureSessionClaimed`
+///
+/// Those two are `Bool`s, and a `Bool` cannot tell the two "not running" cases
+/// apart — which is the defect this type was added to fix.
+/// `isCaptureEngaged` excludes `.paused`, so during a **device-initiated
+/// pause** both Home and World Builder flip their primary control back to
+/// "Start capture", and a tap on it hits `startCameraSession()`'s
+/// `guard deviceSession == nil` and does nothing observable at all: a silent
+/// no-op offered as the primary action.
+///
+/// `.devicePaused` is not a state **this app** can leave, and the difference
+/// between that and "the SDK has no such call" is one this comment used to
+/// blur. Two separate facts, kept separate on purpose:
+///
+/// 1. **What is documented.** `docs/05-DAT-INTEGRATION.md` §104-107 and
+///    `07-PLATFORM-CONSTRAINTS.md` §146 record the pause as *device-initiated*
+///    — a temple or cap-touch press, or a thermal pause — and as **keeping the
+///    connection alive, stopping delivery, and resuming to `.started` on its
+///    own**. That is the device's behaviour, from the vendor's own docs.
+///
+/// 2. **What this app calls.** `GlassesConnection` calls exactly four things on
+///    DAT for capture — `session.start()`, `session.stop()`, `stream.start()`
+///    and `camera.stop()` — and none of them resumes a paused device.
+///
+/// Together those support exactly one claim: **this app has no resume to
+/// offer**, which is what every screen here is written from. They do not
+/// support "DAT exposes none". The previous wording — "there is no override to
+/// write" — argued that from the list of calls this app happens to make, and a
+/// list of one's own calls proves nothing about somebody else's SDK. If a
+/// resume is ever found in DAT, what changes is this comment and the four calls
+/// above; the documented device behaviour and the sentences on screen today
+/// stay as they are. Until then a screen that finds `.devicePaused` says what
+/// it is and waits.
+///
+/// Deliberately not an `Optional<Bool>` or a pair of flags: a caller that has
+/// to spell `.devicePaused` cannot fall into the `default` clause that
+/// swallowed this case the first time.
+nonisolated enum CaptureClaim: Equatable, Sendable {
+    /// No session and no stream. A Start here is a real start.
+    case unclaimed
+    /// A session is up, or coming up, and delivery is expected.
+    case running
+    /// A session is held and **the device stopped delivering**. Not "off", not
+    /// "startable", and not something this app can end or override.
+    case devicePaused
+    /// A session is being torn down. `startCameraSession()` refuses in this
+    /// window, so a Start offered here would be a refusal in waiting.
+    case ending
+}
+
+/// Why a `startCameraSession()` did not proceed.
+///
+/// ## Why this is a value and not just a `print`
+///
+/// Every refusal below already logged to the console, and three of them also
+/// wrote `errorMessage`. But the first one — a session already existing —
+/// logged and **returned silently**, so a caller had no way to tell "already
+/// running" from "the device is paused" from "it started", and a composed
+/// caller such as `ObjectMemoryRecordingCoordinator` could not word a truthful
+/// sentence about what had just happened. A machine-readable answer is the
+/// difference between a screen that explains and one that shrugs.
+///
+/// The console logging is unchanged and still happens. This is carried
+/// alongside it, in `GlassesConnection.lastCaptureStartRefusal`.
+///
+/// ## Two of these are also written by a caller, not only by this file
+///
+/// `startCameraSession()` is not the only producer of these values.
+/// `ObjectMemoryRecordingCoordinator` reads `captureClaim` *before* it calls,
+/// and for two claims it can answer the question without calling at all —
+/// `.devicePaused` and `.ending`. That is deliberate: calling into a refusal
+/// and then translating the refusal back is a round trip that can only lose
+/// information, and for `.ending` it loses the one thing a person needs (see
+/// `captureIsShuttingDown`). So a case here means "why a capture did not
+/// start", **not** "what `startCameraSession()` returned".
+nonisolated enum CaptureStartRefusal: Equatable, Sendable {
+    /// A device session already exists. Home or World Builder started one.
+    case alreadyRunning
+    /// A session exists and the **device** paused it. See `CaptureClaim`:
+    /// there is no way to override this and none is offered.
+    case deviceHasPausedCapture
+    /// A capture is being torn down, and a new one cannot be created until the
+    /// teardown finishes.
+    ///
+    /// **`startCameraSession()` never returns this**, and that is the reason
+    /// the case exists. Its `guard deviceSession == nil` reports
+    /// `.alreadyRunning` in this window, which is true of the `DeviceSession`
+    /// object and false of the situation a person is in: nobody owns a capture
+    /// that is dying, and "a capture was already under way, so this screen left
+    /// it alone" sends a wearer to look for a stream that is on its way out.
+    ///
+    /// A caller that reads `CaptureClaim.ending` before it calls can tell the
+    /// two apart, which is why this is synthesised there rather than returned
+    /// from here. `ObjectMemoryRecordingCoordinator` used to fold `.ending` in
+    /// with `.running` and record "somebody else owns it" — the wearer got no
+    /// camera, no refusal, and a Start that reported nothing at all.
+    case captureIsShuttingDown
+    /// `AutoDeviceSelector` has not yielded an eligible device yet.
+    case noActiveDevice
+    /// The session started and the stream could not, because camera permission
+    /// is not granted.
+    case cameraPermissionNotGranted
+    /// DAT refused, with its own description carried verbatim.
+    case datRefused(String)
+}
+
 @MainActor
 final class GlassesConnection: ObservableObject {
     @Published private(set) var registrationState: RegistrationState
@@ -152,6 +260,17 @@ final class GlassesConnection: ObservableObject {
     // (Glasses/StreamManager.swift, unrelated to DAT) which would otherwise
     // shadow MWDATCamera's type of the same name.
     @Published private(set) var cameraStreamState: MWDATCamera.StreamState = .stopped
+
+    /// Why the last `startCameraSession()` did not proceed, or `nil` if it did.
+    ///
+    /// Cleared at the top of every `startCameraSession()`, beside
+    /// `errorMessage` and for the same reason: a refusal from a previous
+    /// attempt must not be misread as the answer to whatever the person did
+    /// next. `nil` therefore means "the most recent start reached
+    /// `session.start()`" — which is not the same as "a stream is running",
+    /// because everything after `session.start()` is asynchronous. Liveness is
+    /// still `captureClaim`.
+    @Published private(set) var lastCaptureStartRefusal: CaptureStartRefusal?
 
     /// The rung the **next** capture session will request.
     ///
@@ -665,6 +784,67 @@ final class GlassesConnection: ObservableObject {
         }
     }
 
+    /// The camera claim, in the four-way form a caller can word a sentence
+    /// from. See `CaptureClaim` for why the two `Bool`s above are not enough.
+    var captureClaim: CaptureClaim {
+        Self.captureClaim(session: deviceSessionState, stream: cameraStreamState)
+    }
+
+    /// Every later value of `captureClaim`, for a caller that must react to a
+    /// capture ending for a reason it did not ask for.
+    ///
+    /// Built from the two `@Published` properties rather than from
+    /// `objectWillChange`, which fires *before* the change and would therefore
+    /// publish the previous claim under the new one's name. `removeDuplicates`
+    /// because the two states move independently and most of their transitions
+    /// leave the claim exactly where it was — a subscriber redrawing on
+    /// `.starting` → `.started` is redrawing for nothing.
+    var captureClaimUpdates: AnyPublisher<CaptureClaim, Never> {
+        $deviceSessionState
+            .combineLatest($cameraStreamState)
+            .map { pair in Self.captureClaim(session: pair.0, stream: pair.1) }
+            .removeDuplicates()
+            .eraseToAnyPublisher()
+    }
+
+    /// The decision, lifted off the instance so it is testable — for the reason
+    /// `isCaptureSessionClaimed` gives: `deviceSessionState` and
+    /// `cameraStreamState` are `private(set)` and driven by DAT callbacks, so
+    /// no test can put a real `GlassesConnection` into `.paused`, and `.paused`
+    /// is precisely the case this exists to get right.
+    ///
+    /// The device's own pause is checked **first and in both enums**, because
+    /// it is the reading that must never be lost: a session that is `.started`
+    /// while its stream is `.paused` is a device that has stopped delivering,
+    /// and reporting that as `.running` would put a live-capture indicator over
+    /// a camera sending nothing.
+    ///
+    /// Both switches are exhaustive rather than `default`-terminated, for the
+    /// reason written out at `isCaptureSessionClaimed`: a `default` is how
+    /// `.paused` got swallowed in the first place.
+    nonisolated static func captureClaim(
+        session: DeviceSessionState,
+        stream: MWDATCamera.StreamState
+    ) -> CaptureClaim {
+        switch session {
+        case .paused:
+            return .devicePaused
+        case .starting, .started:
+            if case .paused = stream { return .devicePaused }
+            return .running
+        case .stopping:
+            return .ending
+        case .idle, .stopped:
+            break
+        }
+        switch stream {
+        case .paused: return .devicePaused
+        case .starting, .streaming, .waitingForDevice: return .running
+        case .stopping: return .ending
+        case .stopped: return .unclaimed
+        }
+    }
+
     /// Creates and starts a `DeviceSession` via `AutoDeviceSelector`. Once the
     /// session reaches `.started`, the state observer starts the camera
     /// stream automatically — this is the only entry point the UI needs.
@@ -673,18 +853,43 @@ final class GlassesConnection: ObservableObject {
     /// `activeDeviceStream()` has yielded a device). Calling `createSession`
     /// before that is confirmed to throw `DeviceSessionError.noEligibleDevice`
     /// per Meta's documented AutoDeviceSelector guidance.
+    ///
+    /// ## It records why it refused
+    ///
+    /// Every `return` below now also sets `lastCaptureStartRefusal`. Nothing
+    /// else about the behaviour of the Home and World Builder call sites
+    /// changes — the `print`s are the same, `errorMessage` is written in
+    /// exactly the same places, and the method still returns `Void`, so both
+    /// compile untouched and neither has to read the new value. What changes is that the **first** guard is no longer silent
+    /// to code: a session already existing and a session the *device* has
+    /// paused used to be one indistinguishable no-op, and the second of those
+    /// is the case a person most needs explained.
     func startCameraSession() {
         // Scope out any stale error from a prior attempt so it can't be
-        // misattributed to whatever the user does next.
+        // misattributed to whatever the user does next. The refusal goes with
+        // it, for the same reason.
         errorMessage = nil
+        lastCaptureStartRefusal = nil
         print("[Glasses][Camera] startCameraSession called (hasActiveDevice=\(hasActiveDevice))")
 
         guard deviceSession == nil else {
             print("[Glasses][Camera] startCameraSession called while a session already exists")
+            // A device-initiated pause holds a session open while delivering
+            // nothing, and there is no way to override it — see `CaptureClaim`.
+            // Told apart here rather than left as one refusal, because "a
+            // capture is already running" and "the glasses paused themselves"
+            // send a person to two completely different places.
+            if deviceSessionState == .paused {
+                print("[Glasses][Camera] the existing session is device-paused; delivery resumes on its own")
+                lastCaptureStartRefusal = .deviceHasPausedCapture
+            } else {
+                lastCaptureStartRefusal = .alreadyRunning
+            }
             return
         }
         guard hasActiveDevice, let deviceSelector else {
             print("[Glasses][Camera] startCameraSession refused: no active eligible device yet")
+            lastCaptureStartRefusal = .noActiveDevice
             errorMessage = "No eligible glasses device yet. Make sure Mock Device Kit is enabled, paired, powered on, and donned, then wait a moment for the device to become active."
             return
         }
@@ -716,6 +921,7 @@ final class GlassesConnection: ObservableObject {
             // exhaustive — this function does not rethrow — so dropping the
             // pattern changes nothing but the warning.
             print("[Glasses][Camera] session creation/start failed: \(error.localizedDescription)")
+            lastCaptureStartRefusal = .datRefused(error.localizedDescription)
             errorMessage = error.localizedDescription
             deviceSession = nil
             deviceSessionState = .idle
@@ -777,6 +983,7 @@ final class GlassesConnection: ObservableObject {
         guard cameraPermissionStatus == .granted else {
             print("[Glasses][Camera] camera permission not granted (\(String(describing: cameraPermissionStatus))); not starting stream")
             abandonSessionAfterFailedStart(
+                refusal: .cameraPermissionNotGranted,
                 reason: "Camera permission is not granted. Open Connections, allow camera access for the glasses, then start capture again."
             )
             return
@@ -801,7 +1008,10 @@ final class GlassesConnection: ObservableObject {
         do {
             guard let newCamera = try session.addCamera(config: config) else {
                 print("[Glasses][Camera] addCamera returned nil")
-                abandonSessionAfterFailedStart(reason: "Could not create camera")
+                abandonSessionAfterFailedStart(
+                    refusal: .datRefused("Could not create camera"),
+                    reason: "Could not create camera"
+                )
                 return
             }
             camera = newCamera
@@ -812,7 +1022,10 @@ final class GlassesConnection: ObservableObject {
             print("[Glasses][Camera] stream.start() called")
         } catch {
             print("[Glasses][Camera] addCamera failed: \(error.localizedDescription)")
-            abandonSessionAfterFailedStart(reason: error.localizedDescription)
+            abandonSessionAfterFailedStart(
+                refusal: .datRefused(error.localizedDescription),
+                reason: error.localizedDescription
+            )
         }
     }
 
@@ -839,8 +1052,17 @@ final class GlassesConnection: ObservableObject {
     /// arrive for a session that never got going — and waiting for it is
     /// what left the invariant broken. `session.stop()` is still called, on
     /// a captured reference, so DAT releases the session too.
-    private func abandonSessionAfterFailedStart(reason: String) {
+    ///
+    /// `refusal` is carried beside `reason` rather than derived from it: the
+    /// reason is a sentence written for a person and the refusal is a value
+    /// written for a caller, and parsing one out of the other is how a screen
+    /// ends up branching on English. Every failure that reaches here happens
+    /// **after** `startCameraSession()` returned, so this is the second of the
+    /// two places `lastCaptureStartRefusal` is set, and the only one that can
+    /// report a permission that was not granted.
+    private func abandonSessionAfterFailedStart(refusal: CaptureStartRefusal, reason: String) {
         print("[Glasses][Camera] start failed; abandoning the device session")
+        lastCaptureStartRefusal = refusal
         errorMessage = reason
         let session = deviceSession
         // Clears deviceSession, camera, both token bags, and resets the

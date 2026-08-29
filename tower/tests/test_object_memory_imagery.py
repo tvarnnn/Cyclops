@@ -587,3 +587,260 @@ class TestTheFilterIsBounded:
         # extra regions in this image -- which is the filter erring
         # towards covering more, the direction it should err in.
         assert len(filled) >= 1
+
+
+# -- the reconnect lineage ---------------------------------------------
+
+
+def _capture_manifest(directory, capture_id, *, continues=None, end_reason=None):
+    """The half of a capture manifest this resolution actually reads."""
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / "capture.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "capture_id": capture_id,
+                "started_at": 1000.0,
+                "ended_at": 1100.0,
+                "end_reason": end_reason,
+                "continues_capture": continues,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
+class TestTheReconnectLineage:
+    """A record's frame may be in the capture AFTER the one it names.
+
+    This is not hypothetical and it is not rare. iOS reconnects about half
+    a second after a WiFi hiccup, the recorder mints a new capture
+    directory naming the old one in `continues_capture`, and
+    `CaptureFollower` walks the producer into it. The producer's
+    `session_id` was fixed at spawn and does not move, so a sighting that
+    opened before the hiccup and peaked after it names the OLD capture and
+    the NEW capture's frame.
+
+    Measured on the development host's own store on 2026-08-29: 74
+    records, 70 resolved, 4 did not -- and all 4 of those frames were on
+    disk in the successor directory. Nothing had expired; this repository
+    has no capture pruner at all. The route was answering "the memory is
+    kept, the picture is gone" about pictures that were one directory
+    away.
+    """
+
+    def _split_walk(self, world):
+        """Move the frame into a successor capture, as a reconnect does."""
+        captures, store_root, observation_id = world
+        root = captures / "captures"
+        _capture_manifest(root / CAPTURE_ID, CAPTURE_ID, end_reason="disconnect")
+
+        successor = root / "cap-2"
+        (successor / "frames").mkdir(parents=True)
+        (root / CAPTURE_ID / "frames" / "00000042.jpg").rename(
+            successor / "frames" / "00000042.jpg"
+        )
+        _capture_manifest(successor, "cap-2", continues=CAPTURE_ID)
+        return observation_id
+
+    def test_a_frame_in_the_successor_capture_is_still_served(
+        self, world, monkeypatch
+    ):
+        observation_id = self._split_walk(world)
+        client = _client(world, monkeypatch)
+
+        response = client.get(
+            f"/object-memory/observations/{observation_id}/frame"
+        )
+
+        assert response.status_code == 200, response.text
+        assert response.headers["content-type"] == "image/jpeg"
+        assert len(response.content) > 0
+
+    def test_the_crop_route_follows_the_lineage_too(self, world, monkeypatch):
+        observation_id = self._split_walk(world)
+        client = _client(world, monkeypatch)
+
+        response = client.get(
+            f"/object-memory/observations/{observation_id}/crop"
+        )
+
+        assert response.status_code == 200, response.text
+
+    def test_a_chain_of_reconnects_is_followed_to_the_end(
+        self, world, monkeypatch
+    ):
+        """TWENTY-FIVE, and the number is not arbitrary.
+
+        This case first used five, and the implementation carried a
+        matching `MAX_LINEAGE_STEPS = 8` justified as "chains of five are
+        in this corpus". Both were guesses. Measured against the
+        development host on 2026-08-29: 32 lineage roots, and one walk
+        **eighteen captures long** -- one sitting, seventeen reconnects,
+        source frames 1 to 8,690. Four records in that walk were still
+        answering 410 about frames sitting on disk, truncated by the
+        bound that was supposed to protect the walk.
+
+        The fix was to delete the constant rather than raise it: `seen`
+        is what terminates the walk, and it cannot run longer than there
+        are captures. Twenty-five is comfortably past the longest thing
+        anyone has recorded and still finishes instantly.
+        """
+        captures, _, observation_id = world
+        root = captures / "captures"
+        _capture_manifest(root / CAPTURE_ID, CAPTURE_ID, end_reason="disconnect")
+
+        previous = CAPTURE_ID
+        for index in range(2, 26):
+            name = f"cap-{index}"
+            _capture_manifest(root / name, name, continues=previous)
+            (root / name / "frames").mkdir(parents=True)
+            previous = name
+
+        (root / CAPTURE_ID / "frames" / "00000042.jpg").rename(
+            root / previous / "frames" / "00000042.jpg"
+        )
+        client = _client(world, monkeypatch)
+
+        response = client.get(
+            f"/object-memory/observations/{observation_id}/frame"
+        )
+
+        assert response.status_code == 200, response.text
+
+    def test_a_manifest_that_names_itself_does_not_hang(
+        self, world, monkeypatch
+    ):
+        """A `continues_capture` pointing at its own capture is not a shape
+        the recorder can produce. It is a shape a restore, a merge or a
+        future writer can, and an unbounded walk over it would be an
+        infinite loop inside an HTTP handler."""
+        captures, _, observation_id = world
+        root = captures / "captures"
+        (root / CAPTURE_ID / "frames" / "00000042.jpg").unlink()
+        _capture_manifest(root / CAPTURE_ID, CAPTURE_ID, continues=CAPTURE_ID)
+        client = _client(world, monkeypatch)
+
+        response = client.get(
+            f"/object-memory/observations/{observation_id}/frame"
+        )
+
+        assert response.status_code == 410
+
+    def test_two_captures_naming_one_predecessor_do_not_hang(
+        self, world, monkeypatch
+    ):
+        captures, _, observation_id = world
+        root = captures / "captures"
+        (root / CAPTURE_ID / "frames" / "00000042.jpg").unlink()
+        _capture_manifest(root / CAPTURE_ID, CAPTURE_ID, end_reason="disconnect")
+        for name in ("cap-2", "cap-3"):
+            _capture_manifest(root / name, name, continues=CAPTURE_ID)
+            (root / name / "frames").mkdir(parents=True)
+        client = _client(world, monkeypatch)
+
+        response = client.get(
+            f"/object-memory/observations/{observation_id}/frame"
+        )
+
+        assert response.status_code == 410
+
+    def test_the_lineage_cannot_be_used_to_leave_the_capture_root(
+        self, world, monkeypatch
+    ):
+        """`continues_capture` is read off a file on disk and is used to
+        BUILD A PATH. `_contained` is what stops it, and it is asserted
+        here rather than assumed because this is a second, newer way for
+        an attacker-controlled string to reach path construction."""
+        captures, store_root, _ = world
+        root = captures / "captures"
+        (root / CAPTURE_ID / "frames" / "00000042.jpg").unlink()
+        _capture_manifest(root / CAPTURE_ID, CAPTURE_ID, end_reason="disconnect")
+
+        outside = captures.parent / "secret.jpg"
+        cv2.imwrite(str(outside), _image())
+        escaping = root / "cap-escape"
+        _capture_manifest(escaping, "cap-escape", continues=CAPTURE_ID)
+
+        store = ObservationStore(store_root, retention_seconds=None)
+        record = _observation(best_relpath="../../secret.jpg", best_frame_seq=None)
+        store.append(record)
+        client = _client(world, monkeypatch)
+
+        response = client.get(
+            f"/object-memory/observations/{record.observation_id}/frame"
+        )
+
+        assert response.status_code == 410
+
+    def test_a_walk_whose_directories_are_all_gone_still_reports_expiry(
+        self, world, monkeypatch
+    ):
+        """The honest 410. The reason a client sees does not change --
+        there is nothing a wearer can do differently about the two -- but
+        `capture_lineage_present` must say which one happened."""
+        from tower.object_memory.imagery import capture_lineage_present
+
+        captures, store_root, observation_id = world
+        root = captures / "captures"
+        record = _observation()
+        assert capture_lineage_present(captures, record) is True
+
+        for path in sorted(
+            (root / CAPTURE_ID).rglob("*"), key=lambda p: len(p.parts), reverse=True
+        ):
+            path.rmdir() if path.is_dir() else path.unlink()
+        (root / CAPTURE_ID).rmdir()
+
+        assert capture_lineage_present(captures, record) is False
+
+        client = _client(world, monkeypatch)
+        response = client.get(
+            f"/object-memory/observations/{observation_id}/frame"
+        )
+        assert response.status_code == 410
+        assert response.json()["detail"]["reason"] == IMAGERY_EXPIRED
+
+    def test_an_intact_capture_missing_one_frame_is_a_pointer_defect(
+        self, world, monkeypatch
+    ):
+        """The shape that was misreported: the recording is right there
+        and the frame it names is not."""
+        from tower.object_memory.imagery import capture_lineage_present
+
+        captures, _, observation_id = world
+        (captures / "captures" / CAPTURE_ID / "frames" / "00000042.jpg").unlink()
+
+        assert capture_lineage_present(captures, _observation()) is True
+
+        client = _client(world, monkeypatch)
+        response = client.get(
+            f"/object-memory/observations/{observation_id}/frame"
+        )
+        assert response.status_code == 410
+
+    def test_an_uninterrupted_capture_never_scans_the_captures_root(
+        self, world, monkeypatch
+    ):
+        """The ordinary case must not pay for the rare one. `data/captures`
+        is never pruned in this repository, so a directory listing per
+        picture would grow without bound for the life of the host."""
+        from tower.object_memory import imagery as imagery_module
+
+        calls = []
+        original = imagery_module._successors
+
+        def counting(root):
+            calls.append(root)
+            return original(root)
+
+        monkeypatch.setattr(imagery_module, "_successors", counting)
+        _, _, observation_id = world
+        client = _client(world, monkeypatch)
+
+        response = client.get(
+            f"/object-memory/observations/{observation_id}/frame"
+        )
+
+        assert response.status_code == 200
+        assert calls == []

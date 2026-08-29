@@ -2958,5 +2958,78 @@ final class CaptureSessionClaimTests: XCTestCase {
             "the two predicates agree everywhere, which means the paused/stopping gap is back"
         )
     }
+
+    // MARK: The four-way reading
+
+    /// **A device-initiated pause is its own answer, not "not running".**
+    ///
+    /// This is the half of the defect above that a `Bool` could not express.
+    /// `isCaptureEngaged` is false during `.paused`, so Home and World Builder
+    /// flip their primary control back to "Start capture" — and a tap on it
+    /// hits `startCameraSession()`'s `guard deviceSession == nil` and does
+    /// nothing observable at all. `CaptureClaim` exists so a caller can tell
+    /// "nothing is running, start one" apart from "a session is held and the
+    /// glasses stopped delivering, and nothing in this app can change that".
+    func testADevicePausedSessionIsItsOwnClaimRatherThanNoSession() {
+        XCTAssertEqual(
+            GlassesConnection.captureClaim(session: .paused, stream: .paused), .devicePaused
+        )
+        XCTAssertEqual(
+            GlassesConnection.captureClaim(session: .started, stream: .paused),
+            .devicePaused,
+            "the stream pausing alone is still the device having stopped delivery"
+        )
+        XCTAssertEqual(
+            GlassesConnection.captureClaim(session: .paused, stream: .streaming),
+            .devicePaused,
+            "the session's own pause outranks a stream state that has not caught up"
+        )
+    }
+
+    /// Only a fully torn-down pair is startable, and the claim says so for every
+    /// combination rather than for the few anybody thought to check.
+    func testOnlyAFullyTornDownPairIsUnclaimed() {
+        for session in allSessionStates {
+            for stream in allStreamStates {
+                let claim = GlassesConnection.captureClaim(session: session, stream: stream)
+                let tornDown = (session == .idle || session == .stopped) && stream == .stopped
+                XCTAssertEqual(
+                    claim == .unclaimed, tornDown,
+                    "session=\(session) stream=\(stream) decided wrongly"
+                )
+            }
+        }
+    }
+
+    /// The two readings must agree about the one thing they both answer: a
+    /// claim of `.unclaimed` is exactly the case `isCaptureSessionClaimed`
+    /// calls unclaimed. If they ever disagree, one of them is lying about
+    /// whether a `DeviceSession` is held.
+    func testTheClaimAndTheBooleanAgreeAboutWhatIsHeld() {
+        for session in allSessionStates {
+            for stream in allStreamStates {
+                let claim = GlassesConnection.captureClaim(session: session, stream: stream)
+                let held = GlassesConnection.isCaptureSessionClaimed(
+                    session: session, stream: stream
+                )
+                XCTAssertEqual(
+                    held, claim != .unclaimed,
+                    "session=\(session) stream=\(stream): the two readings disagree"
+                )
+            }
+        }
+    }
+
+    /// A teardown in progress is neither running nor startable. Reporting it as
+    /// `.unclaimed` would offer a Start that `startCameraSession()` refuses in
+    /// exactly that window.
+    func testATeardownInProgressIsNeitherRunningNorStartable() {
+        XCTAssertEqual(
+            GlassesConnection.captureClaim(session: .stopping, stream: .stopping), .ending
+        )
+        XCTAssertEqual(
+            GlassesConnection.captureClaim(session: .stopped, stream: .stopping), .ending
+        )
+    }
 }
 #endif

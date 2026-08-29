@@ -67,24 +67,34 @@ ACTIONS = (START, PAUSE, RESUME, STOP)
 # How long a producer gets to exit on its own before Pause or Stop
 # terminates it.
 #
-# ZERO, and the five seconds it used to be were worse than useless.
-# Nothing SIGNALS the producer: it is a follower tailing a journal that
-# is still being written, so it has no reason to stop and never does.
-# The wait measured 5.01 seconds every single time, and then the process
-# was terminated anyway -- so the grace bought exactly nothing and cost a
-# wearer five seconds of a control whose whole purpose is to stop
-# recording NOW. Worse, a Start arriving inside that window used to
-# return 200 `active` and then find itself paused.
+# THIS WAS ZERO, AND ZERO WAS RIGHT AT THE TIME.
 #
-# What the grace was supposed to protect is a half-written JSONL line.
-# The store already tolerates one: `_read_raw_records` skips a line that
-# is not valid JSON, and `prune_expired` rewrites it out. Losing at most
-# the record being appended at the instant of a Pause is the right trade
-# against a Pause that takes five seconds to be obeyed.
+# The five seconds before that were worse than useless: nothing SIGNALLED
+# the producer -- it is a follower tailing a journal that is still being
+# written, so it had no reason to stop and never did -- and the wait
+# measured 5.01 seconds every single time before the process was
+# terminated anyway. The grace bought nothing and cost a wearer five
+# seconds of a control whose whole purpose is to stop recording NOW.
 #
-# `shutdown` keeps its own, longer grace, because there the capture has
-# CLOSED and the follower really will finish and exit by itself.
-DETACH_GRACE_SECONDS = 0.0
+# What changed is the producer. `scripts/object_memory_session.py` now
+# installs `_StopRequest`, `CaptureWorkerSupervisor._ask_to_stop` sends
+# the signal that sets it (a `CTRL_BREAK_EVENT` to the process group on
+# Windows, where `terminate()` is `TerminateProcess` and cannot be
+# caught), and the frame loop ends at the next frame so its
+# `finally: engine.release()` runs. That call is the ONLY thing that
+# closes the sightings still open at the instant of a Stop -- and the
+# sighting still open when a wearer stops walking is, by construction,
+# the object they were looking at most. Zero seconds threw those away.
+#
+# THREE, and not more, because this blocks an HTTP handler.
+#
+# The measured flush is a `wait_idle()` on the verification queue plus a
+# `_settle()` per open sighting; the queue is bounded at 8 pending and a
+# verdict measured 126 ms on the GPU, so the worst case is well inside
+# this. The route is a sync `def` and the iOS client's timeout is ten
+# seconds, so three leaves both room. A producer that overruns is still
+# terminated, and the log says so and says what was lost.
+DETACH_GRACE_SECONDS = 3.0
 
 
 class SessionRefused(Exception):
@@ -128,6 +138,20 @@ class CartridgeSession:
         self._supervisor = supervisor
         self._open_capture = open_capture
         self._clock = clock
+        # A reading of the SUPERVISOR's clock, taken when this session
+        # last went active. See `_go_active` and `mark`.
+        self._attached_since: float | None = None
+        # Whether this session has EVER been activated.
+        #
+        # Kept beside `_attached_since` because the two `None`s that
+        # variable can hold mean opposite things to a client, and
+        # collapsing them was a defect a reviewer found: "this session has
+        # started nothing" is an empty list, and "this session cannot tell
+        # you what it started" is a null. Without this flag both came out
+        # as the empty list, and a client would then draw the loud "a
+        # producer you did not start is recording" alarm over a producer
+        # the session had started itself.
+        self._activated = False
         self._detach_grace_seconds = detach_grace_seconds
 
         # Held for the whole of every action, attach and detach
@@ -182,7 +206,53 @@ class CartridgeSession:
     # -- actions -------------------------------------------------------
 
     def apply(self, action: str) -> dict:
-        """Run a named action. The one entry point a transport needs."""
+        """Run a named action, and say in the log that somebody did.
+
+        THE LOGGING IS NOT DECORATION.
+
+        Until 2026-08-29 this module logged only exceptions, so a person
+        pressing Start on their phone left no trace at all in the Tower
+        console. Physically testing this cartridge therefore meant a human
+        reading values off a screen and reciting them to whoever was
+        debugging -- which is exactly the workflow this whole product pass
+        exists to delete.
+
+        One line per action and one per refusal. That is not noisy: these
+        are human button presses, four of them exist, and the frame path
+        does not come through here. Everything per-frame stays where it
+        was, in the producer's own process, and reaches this console once
+        as a report when the run ends.
+
+        The line carries `following` deliberately. `state` alone would say
+        what was asked for; the pair is what makes "the button worked and
+        nothing is recording" legible from a log after the fact.
+        """
+        try:
+            result = self._dispatch(action)
+        except SessionRefused as refusal:
+            logger.info(
+                "[Tower][Session] %s %s REFUSED (%s): %s",
+                self._cartridge,
+                action,
+                refusal.reason,
+                refusal.message,
+            )
+            raise
+        logger.info(
+            "[Tower][Session] %s %s -> state=%s changed=%s session=%s "
+            "attached=%s following=%s",
+            self._cartridge,
+            action,
+            result.get("state"),
+            result.get("changed"),
+            result.get("session_id"),
+            result.get("attached_capture_id"),
+            result.get("following"),
+        )
+        return result
+
+    def _dispatch(self, action: str) -> dict:
+        """The one entry point a transport needs, without the logging."""
         if action == START:
             return self.start()
         if action == PAUSE:
@@ -289,6 +359,12 @@ class CartridgeSession:
             self._state = STOPPED
             self._session_id = None
             self._started_at = None
+            # `_attached_since` is deliberately NOT cleared. A producer
+            # this session started and could not kill is still this
+            # session's producer, and it is still recording; saying so
+            # after a Stop is the whole point. Clearing the mark would
+            # widen the filter to every worker on the Tower, which is the
+            # opposite of what it is for.
             if already_stopped:
                 return self._result(changed=False)
             self._changed_at = self._clock()
@@ -307,7 +383,11 @@ class CartridgeSession:
         exactly when somebody is looking.
         """
         following = self._following()
-        for capture_id in following:
+        mine = self._following_this_session()
+        # `mine` is None when this session cannot scope the question. The
+        # history then accumulates from the WIDE list, which is what it
+        # did before scoping existed and is the only answer available.
+        for capture_id in following if mine is None else mine:
             if capture_id not in self._captures:
                 self._captures.append(capture_id)
         return {
@@ -322,7 +402,35 @@ class CartridgeSession:
             # happening is this. An ACTIVE session with an empty
             # `following` while a capture is recording is a producer that
             # died, and the phone should be able to say so.
+            #
+            # EVERY live producer for this worker, including one left
+            # over from a session that could not kill it. That breadth is
+            # deliberate and must not be narrowed: a worker nobody can
+            # stop is the one thing a Stop button failing open looks
+            # like, and hiding it here would make the failure silent.
             "following": following,
+            # The subset THIS session actually started -- the field a
+            # liveness claim should be drawn from -- or **null** when this
+            # session cannot scope the question at all, which a client
+            # must read as "fall back to `following`" and never as
+            # "nothing".
+            #
+            # `following` alone produced a documented false positive:
+            # press Stop against an un-killable producer, press Start
+            # again, and the new session reports the old session's
+            # capture under a new `session_id` having attached nothing.
+            # A client keying "remembering" off that tells a person their
+            # memory is being written when this session wrote none of it.
+            #
+            # Scoped by START TIME rather than by a list of ids this
+            # object keeps, because the interesting attachments are the
+            # ones nothing here decided: a capture that opens while the
+            # gate is open is spawned by the supervisor without asking
+            # the session, and a session that only counted its own
+            # `_attach` returns would miss every one of them -- which is
+            # most of them, since Start before the camera is the normal
+            # order.
+            "following_this_session": mine,
             "captures": list(self._captures),
         }
 
@@ -339,6 +447,14 @@ class CartridgeSession:
     def _go_active(self) -> dict:
         self._state = ACTIVE
         self._changed_at = self._clock()
+        # BEFORE the attach, and on the supervisor's own clock. A mark
+        # taken afterwards could be later than the `started_at` of the
+        # worker this very call spawns, and the session would then report
+        # that it had attached nothing. Re-taken on every activation, so
+        # a producer that survived a Pause it was supposed to be killed
+        # by is not counted as this session's after the Resume.
+        self._attached_since = self._supervisor_mark()
+        self._activated = True
         attached = self._attach()
         result = self._result(changed=True)
         result["attached_capture_id"] = attached
@@ -400,8 +516,127 @@ class CartridgeSession:
                 self._worker,
             )
 
-    def _following(self) -> list[str]:
+    def _supervisor_mark(self) -> float | None:
         try:
+            return self._supervisor.mark()
+        except Exception:
+            # A supervisor from before `mark` existed, or one that raised.
+            # `following_this_session` then stays EMPTY rather than
+            # falling back to the unscoped list, and the direction is
+            # chosen deliberately.
+            #
+            # This field is what a client draws "remembering" from. An
+            # unscoped fallback would let a leftover producer light that
+            # up for a session that started nothing, which is the exact
+            # false positive this whole change exists to remove -- a
+            # false success is the one outcome worse than no answer.
+            # `following` is unaffected and still carries every live
+            # producer, so nothing becomes invisible; the claim just
+            # stops being made.
+            logger.debug(
+                "[Tower][Session] supervisor has no usable clock mark; "
+                "%s will not scope `following_this_session`",
+                self._cartridge,
+                exc_info=True,
+            )
+            return None
+
+    def _scoped_following(self, since: float) -> list[str] | None:
+        """The scoped list, or None when this supervisor cannot scope.
+
+        SEPARATE FROM `_following` ON PURPOSE, and a reviewer found the
+        defect that made it necessary.
+
+        `_following` WIDENS on a `TypeError`: it retries without `since`,
+        because a supervisor from before that keyword existed should
+        still be able to answer the public `following` field, and
+        over-reporting what is running is the safe direction there.
+
+        It is the unsafe direction here. Handing that widened list back
+        as `following_this_session` tells a client "these are the
+        producers YOU started" when the answer is "every producer on this
+        Tower" -- which is exactly the false positive this field was
+        added to remove, and it would raise the loud "something you did
+        not start is recording, and Stop will not reach it" warning about
+        a recording the person started themselves. `_supervisor_mark`
+        already refuses to guess for that reason; this refuses for it
+        too.
+
+        The `TypeError` catch is narrow and deliberate. One raised INSIDE
+        a modern `following()` is a bug in the supervisor rather than an
+        old signature, and swallowing it as "cannot scope" would hide it
+        -- so it is logged at exception level in the general branch below
+        rather than folded into the quiet one.
+        """
+        try:
+            return list(self._supervisor.following(self._worker, since=since))
+        except TypeError:
+            logger.debug(
+                "[Tower][Session] this supervisor cannot answer a scoped "
+                "`following`; %s reports null rather than a list it cannot "
+                "stand behind",
+                self._cartridge,
+                exc_info=True,
+            )
+            return None
+        except Exception:
+            logger.exception(
+                "[Tower][Session] could not ask the supervisor what worker %r "
+                "is following for this session",
+                self._worker,
+            )
+            return None
+
+    def _following_this_session(self) -> list[str] | None:
+        """Live producers THIS session started, or None if it cannot say.
+
+        THREE ANSWERS, NOT TWO, AND THE THIRD IS WHY THIS IS NOT A LIST.
+
+        - a **list** -- these captures, and no others, have a producer
+          this session started still alive on them;
+        - the **empty list** -- this session has started nothing that is
+          still running. A positive claim;
+        - **None** -- this session cannot scope the question at all,
+          because the supervisor has no clock mark to offer or cannot
+          answer a scoped question. See `_scoped_following`.
+
+        The third is not pedantry. A client draws "you are being
+        recorded" from this field and draws a loud "a producer you did
+        NOT start is recording, and Stop will not reach it" from the
+        difference between it and `following`. Answering "I cannot tell"
+        with the empty list turns every producer into somebody else's,
+        including this session's own, and prints an alarm about a
+        recording the person started themselves. A reviewer found exactly
+        that, and the fix is to say null and let the client fall back to
+        `following`.
+
+        Not gated on the state. An earlier draft returned the empty list
+        whenever the session was `stopped`, and that was wrong in the one
+        direction that matters: a producer a Stop failed to kill is still
+        this session's and is still recording. The honest answer to "what
+        did I start that is running" is its capture, not nothing. The
+        same holds for `paused`.
+        """
+        if not self._activated:
+            # A positive claim, and the one case in which the empty list
+            # is unambiguous: nothing has ever been asked for here, so
+            # nothing here started anything.
+            return []
+        if self._attached_since is None:
+            # Activated, and no clock mark to scope by -- a supervisor
+            # from before `mark()` existed, or one that raised. The claim
+            # is unavailable, which is not the same as false.
+            return None
+        return self._scoped_following(self._attached_since)
+
+    def _following(self, *, since: float | None = None) -> list[str]:
+        try:
+            return list(self._supervisor.following(self._worker, since=since))
+        except TypeError:
+            # A supervisor from before `since` existed. Answering the
+            # narrower question with the broader one is the direction that
+            # OVER-reports what is running, which is the safe direction
+            # for a field a wearer reads as "you are being recorded".
             return list(self._supervisor.following(self._worker))
         except Exception:
             logger.exception(

@@ -48,6 +48,17 @@ is interrupted, which on this hardware is often.
 Updates are deliberately rare: a stronger look, a slow tick, and the end
 of the sighting. `ObservationStore.update_sighting` rewrites the file, so
 updating per frame would make the store O(n) per frame for no gain.
+
+WHERE THE ONE PERSISTED PICTURE IS MADE.
+
+This engine used to persist no pixels. It now writes, per recorded
+sighting and only when a keyframe store is configured, a single small
+filtered crop under the OBSERVATION root -- so a 30-day record stops
+depending on a capture directory nobody promised to keep. That happens
+at exactly one point, `_settle`, between the final `_refresh` and
+`forget_imagery`, which is the one moment the record names the strongest
+look AND the pixels of that look are still in hand. See `keyframes.py`
+for what may be written and what may not.
 """
 
 import logging
@@ -59,6 +70,7 @@ import numpy as np
 from tower.object_memory.records import (
     Confidence,
     ObjectObservation,
+    observation_id_for,
     privacy_tags_for,
 )
 from tower.object_memory.relevance import (
@@ -106,6 +118,20 @@ class ObjectMemoryEngine:
     not a degraded one: with no verifier the `verify` tier is never
     written, which reproduces exactly the behaviour that shipped and was
     physically validated.
+
+    `keyframes` and `face_filter` are optional in exactly the same sense,
+    and default to today's behaviour: with no keyframe store this engine
+    persists no pixels at all, which is what every test written before
+    `keyframes.py` existed asserts and what the shipped Tower did. With
+    one, each recorded sighting leaves behind a small filtered crop under
+    the OBSERVATION root, governed by the observation store's retention
+    rather than by the capture's -- see `keyframes.py` for why a durable
+    record pointing into an ephemeral store had to stop being the whole
+    answer.
+
+    Both are needed together. A keyframe store with no usable filter
+    writes nothing and counts the refusal; there is no configuration in
+    which an unfiltered crop reaches disk.
     """
 
     def __init__(
@@ -115,6 +141,8 @@ class ObjectMemoryEngine:
         *,
         policy: RelevancePolicy | None = None,
         verification=None,
+        keyframes=None,
+        face_filter=None,
         source: str = "glasses-camera",
         session_id: str | None = None,
         clock=time.time,
@@ -124,6 +152,8 @@ class ObjectMemoryEngine:
         self._policy = policy or RelevancePolicy()
         self._relevance = RelevanceFilter(self._policy)
         self._verification = verification
+        self._keyframes = keyframes
+        self._face_filter = face_filter
         self._source = source
         self._session_id = session_id
         self._clock = clock
@@ -166,6 +196,20 @@ class ObjectMemoryEngine:
         self.sighting_updates = 0
         self.update_failures = 0
         self.verification_requested = 0
+        # How many records got a picture of their own, and why the rest
+        # did not.
+        #
+        # A dict keyed by reason rather than a single failure count, for
+        # the same reason `dropped` is: "wrote 9 keyframes" means nothing
+        # without "and refused 2 because this host has no face-detection
+        # weights", which is an operator-fixable configuration problem
+        # and not the same event as a full disk. The keys are
+        # `keyframes.REFUSAL_REASONS`; it starts empty rather than
+        # zero-filled because a run with no keyframe store configured
+        # should report nothing rather than a table of zeroes implying it
+        # tried.
+        self.keyframes_written = 0
+        self.keyframes_refused: dict[str, int] = {}
         # Why detections did NOT become observations. Reported rather
         # than discarded: "the producer wrote 11 records" means nothing
         # without "and declined 4,000, mostly for classes it has no
@@ -285,15 +329,38 @@ class ObjectMemoryEngine:
             )
             # The crop is made HERE, on the frame the look came from,
             # and kept only if this look turns out to be the best one.
-            # Cropping later, at verification time, would use whatever
-            # frame happened to be current and hand a model a picture of
+            # Cropping later -- at verification time, or at the end of
+            # the sighting -- would use whatever frame happened to be
+            # current and hand a model, or a wearer, a picture of
             # something else.
-            crop = (
-                self._crop(frame, look.box)
-                if self._verification is not None
-                and self._relevance.needs_verification(detection.label)
-                else None
-            )
+            #
+            # MADE FOR EVERY SIGHTING NOW, not only verify-tier ones.
+            #
+            # This used to read `if self._verification is not None and
+            # self._relevance.needs_verification(...)`, which was right
+            # while a crop's only consumer was a verifier. Its effect was
+            # that `laptop` and `cell phone` -- the two REMEMBERED-tier
+            # classes, the only two a Tower with no verifier writes, and
+            # the two the physical walk actually produced -- never held a
+            # crop at all. A keyframe store hung off that condition would
+            # have had nothing to write for exactly the records that
+            # exist.
+            #
+            # Every detection that reaches this line has already passed
+            # `RelevanceFilter.decide` with RECORD, so its class is one
+            # this cartridge may persist; there is no widening here of
+            # what may be remembered, only of which admitted sightings
+            # hold their pixels. The per-sighting bound is unchanged --
+            # one crop per OPEN sighting, replaced only by a stronger
+            # look, released at `_settle` -- so the memory ceiling is
+            # still "one crop per class currently in view".
+            #
+            # It costs one padded `numpy` copy per admitted detection.
+            # The frame path already pays 40-47 ms for decode and
+            # detection; a sub-frame copy is not visible against that,
+            # and the corpus admits ~1.3 detections per frame after the
+            # gates rather than the 4,287 it saw.
+            crop = self._crop(frame, look.box)
             sighting, opened = self._tracker.observe(detection.label, look, crop)
             if opened:
                 self.sightings_opened += 1
@@ -467,10 +534,78 @@ class ObjectMemoryEngine:
             self._write(sighting)
         if sighting.recorded:
             self._refresh(sighting, force=True)
+            # HERE, and only here, because this is the one moment both
+            # halves are true at once: the record on disk now names the
+            # strongest look (that is what the forced `_refresh` above
+            # just did), and the pixels of that look are still in hand
+            # (the `forget_imagery` below is what ends that). Writing
+            # earlier would pin a picture a later frame improves on;
+            # writing later would have nothing to write.
+            self._write_keyframe(sighting)
         self._last_written.pop(id(sighting), None)
-        # The only pixels this cartridge ever holds, released as soon as
-        # the sighting they belong to can no longer use them.
+        # The pixels this cartridge holds in memory, released as soon as
+        # the sighting they belong to can no longer use them. What
+        # survives, when a keyframe store is configured, is the filtered
+        # copy `_write_keyframe` just made -- never this array.
         sighting.forget_imagery()
+
+    def _write_keyframe(self, sighting) -> None:
+        """Give this record a picture of its own, or count why it has none.
+
+        Never raises and never blocks the caller on a failure: a keyframe
+        is an improvement to a record that is already safely on disk, and
+        a walk must not end because a JPEG could not be written. Every
+        outcome lands in a counter, so a run that wrote 11 records and no
+        pictures says so in its report rather than looking identical to
+        one that wrote 11 of each.
+
+        The observation id is DERIVED from the same three values
+        `_observation` stamps the record with -- session, class, and the
+        first look's time -- which is the same derivation
+        `records.observation_id_for` and the HTTP handle use. That is
+        what makes the file findable by a reader that has only the
+        record: there is no second identifier to keep in step.
+        """
+        if self._keyframes is None:
+            return
+        observation_id = observation_id_for(
+            self._session_id, sighting.object_class, sighting.first.at
+        )
+        # CONTAINED, because the docstring above promises it and because
+        # the cost of being wrong is not a missing thumbnail. This runs
+        # inside `_settle`, which runs inside the frame loop: an escape
+        # here ends the producer and takes `engine.release()` with it, so
+        # one unwritable keyframe would cost every sighting still open --
+        # which is the failure the whole graceful-stop change exists to
+        # prevent, arriving by a different door.
+        #
+        # `KeyframeStore.write` is itself exception-tight now. This is
+        # the second wall, and a reviewer found the first one had gaps:
+        # a filter returning an unexpected shape raised straight through.
+        try:
+            result = self._keyframes.write(
+                observation_id,
+                sighting.best_crop,
+                self._face_filter,
+                source_capture=self._session_id,
+                source_relpath=sighting.best.relpath,
+                written_at=self._clock(),
+            )
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "[Tower][ObjectMemory] the keyframe store raised for a %s "
+                "record; the record itself is written and this walk goes on",
+                sighting.object_class,
+            )
+            self.keyframes_refused["store-raised"] = (
+                self.keyframes_refused.get("store-raised", 0) + 1
+            )
+            return
+        if result.written:
+            self.keyframes_written += 1
+            return
+        reason = result.reason or "unknown"
+        self.keyframes_refused[reason] = self.keyframes_refused.get(reason, 0) + 1
 
     def _observation(self, sighting) -> ObjectObservation:
         first = sighting.first
@@ -586,6 +721,12 @@ class ObjectMemoryEngine:
             "write_failures": self.write_failures,
             "update_failures": self.update_failures,
         }
+        if self._keyframes is not None:
+            # Only when a keyframe store is configured. A run that was
+            # not asked to keep imagery should not report a zero that
+            # reads as a failure to keep it.
+            report["keyframes_written"] = self.keyframes_written
+            report["keyframes_refused"] = dict(self.keyframes_refused)
         if self._verification is not None:
             report["verification"] = self._verification.counters()
         return report

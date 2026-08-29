@@ -6,6 +6,7 @@ import time
 from pathlib import Path  # noqa: F401  (used by _replace_locked's annotation)
 
 from tower.confidence import Confidence
+from tower.object_memory.keyframes import KeyframeStore
 from tower.object_memory.records import (
     ObjectObservation,
     object_observation_from_json_dict,
@@ -61,6 +62,26 @@ class ObservationStore:
     min(persisted, requested). A caller may narrow the window; nothing a
     caller passes can widen it.
 
+    RETENTION NOW GOVERNS PICTURES AS WELL AS RECORDS.
+
+    Since `keyframes.py`, a record may have a small filtered crop of its
+    own at `<root>/keyframes/<observation_id>.jpg`. That file is only
+    honestly "governed by Object Memory's retention" if the two things
+    that enforce retention -- `prune_expired` and `purge` -- reach it, so
+    both do.
+
+    The store BUILDS ITS OWN `KeyframeStore` rather than being handed
+    one, and that is the answer to "what if the store cannot reach a
+    keyframe store": it always can. The keyframe directory is derived
+    from the same root this store was constructed with, so there is no
+    second path to configure, no caller who can forget to pass it, and no
+    configuration in which records are pruned while their pictures are
+    not. A store constructed against a root with no `keyframes/`
+    directory -- every store written before this existed, and every test
+    that never writes one -- finds nothing to prune and does nothing,
+    which is why the constructor parameter exists only for a test that
+    wants to observe the calls.
+
     Rewrites (prune, purge's cleanup) operate on raw JSON dicts, not on
     parsed ObjectObservation instances. That is deliberate: round-tripping
     through the current dataclass schema would silently drop any key the
@@ -77,6 +98,7 @@ class ObservationStore:
         *,
         clock=time.time,
         allowed_classes: tuple[str, ...] = PERSISTED_CLASSES,
+        keyframes=None,
     ) -> None:
         if retention_seconds is not None and retention_seconds < 0:
             raise ValueError(
@@ -100,6 +122,28 @@ class ObservationStore:
         # explicit `now`, so the deterministic tests it was written for
         # read exactly as before; this only supplies a default.
         self._clock = clock
+        # Derived from this store's own root rather than injected. See
+        # the class docstring: the one way to leave orphaned pictures
+        # behind is to make the link something a caller can forget, so
+        # there is no caller. The parameter exists for tests that want to
+        # watch the calls, and for nothing else.
+        self._keyframes = (
+            KeyframeStore(self._directory) if keyframes is None else keyframes
+        )
+        # What the last `purge()` did to the owned keyframes, as
+        # `(removed, retained)`. Kept on the instance because `purge()`
+        # returns an observation count and a shipped CLI reads it, while
+        # "the pictures could not all be deleted" is a thing a human
+        # asking for erasure has to be told -- `scripts/object_query.py`
+        # prints this beside the count. Never None: a purge that could
+        # not run at all still reports zero of each rather than silence.
+        self.last_keyframe_purge: tuple[int, tuple[str, ...]] = (0, ())
+        # The store's OWN artifacts that a purge could not delete. Same
+        # reason as `last_keyframe_purge`: a purge that prints a count
+        # while `observations.jsonl` is still on disk is the false claim
+        # of deletion `CARTRIDGE-GROUNDWORK.md` calls worse than an
+        # honest failure. Never None; reset at the top of every purge.
+        self.last_purge_retained: tuple[str, ...] = ()
         self._path = self._directory / OBSERVATIONS_FILENAME
         self._temp_path = self._path.with_suffix(TEMP_SUFFIX)
         self._manifest_path = self._directory / MANIFEST_FILENAME
@@ -565,23 +609,59 @@ class ObservationStore:
         fewer than the number of lines the file contained if there are
         unparseable lines. Both the main file and a stale rewrite temp
         file (left behind by a crash mid-_rewrite) are removed regardless.
+
+        THE PICTURES GO TOO, and so does everything else, and what could
+        not go is reported rather than swallowed. `last_purge_retained`
+        holds the store's own artifacts that survived and
+        `last_keyframe_purge` holds `(removed, retained)` for the crops.
+        Either is non-empty only when the filesystem refused, which on
+        Windows means a reader had the file open. A caller that prints
+        only the observation count while a directory of crops survives is
+        making the false claim of deletion `CARTRIDGE-GROUNDWORK.md`
+        names as worse than an honest failure, so
+        `scripts/object_query.py` prints both and exits non-zero when
+        anything is left.
         """
         with self._lock:
             # Counted WITHOUT the retention cutoff: purge deletes the
             # files outright, so it must report what it actually removed
             # rather than only the part a read was still willing to serve.
             count = len(self._all_observations_locked(None))
+            self.last_purge_retained = ()
+            self.last_keyframe_purge = self._keyframes.purge()
             # The manifest goes too: it describes observations that no
             # longer exist, and a store that is asked to keep forever
             # after a purge must not still be bound by a window the
             # deleted records were written under.
+            # THE RECORDS' HALF REPORTS ITS FAILURES TOO, and it did not.
+            #
+            # The keyframe half returned `(removed, retained)` while this
+            # one was a bare `unlink(missing_ok=True)`. On Windows a
+            # reader holding `observations.jsonl` open makes that raise
+            # `PermissionError` straight out of `purge()` -- so the one
+            # command a wearer's erasure request actually runs answered a
+            # traceback rather than the structured "here is what I could
+            # not delete" this docstring promises. A reviewer found it.
+            #
+            # Each artifact is attempted independently: one locked file
+            # must not stop the others being removed, because a partial
+            # deletion that continues is strictly better than a partial
+            # deletion that stops.
             for artifact in (
                 self._path,
                 self._temp_path,
                 self._manifest_path,
                 self._manifest_path.with_suffix(".json.tmp"),
             ):
-                artifact.unlink(missing_ok=True)
+                try:
+                    artifact.unlink(missing_ok=True)
+                except OSError:
+                    logger.warning(
+                        "[Tower][ObjectMemory] could not delete %s during a "
+                        "purge; it is still on disk",
+                        artifact.name,
+                    )
+                    self.last_purge_retained += (artifact.name,)
             return count
 
     def prune_expired(self, now: float | None = None) -> int:
@@ -594,6 +674,14 @@ class ObservationStore:
 
         Prunes on the CLAMPED window, exactly as reads filter on it, so
         the two can never disagree about what retention means.
+
+        AND IT PRUNES THE PICTURES. A record's owned keyframe is deleted
+        with the record, which is what makes `imagery_retention:
+        "object-memory"` a promise rather than a label. `retention is
+        None` still short-circuits, keyframes included: an unbounded
+        store expires nothing, so there is nothing for either half to do,
+        and the byte-for-byte "leaves everything untouched" behaviour
+        this method has always had is unchanged.
         """
         if now is None:
             now = self._clock()
@@ -610,6 +698,24 @@ class ObservationStore:
                     kept.append(raw)
                 else:
                     removed += 1
+            # A KEEP list, computed from the records that SURVIVED,
+            # rather than a delete list computed from the ones that did
+            # not. Everything on disk that is not one of these is either
+            # expired, orphaned by a failed write, or left by something
+            # this cartridge does not model -- and all three should go.
+            #
+            # The ids are derived by the same `_parse_observations` the
+            # read path uses, not read out of the raw dicts, so a
+            # keyframe survives exactly when a reader could still be
+            # served the record it belongs to. A record this version's
+            # schema cannot parse cannot be served, so its picture is not
+            # kept for a reader that will never see it.
+            self._keyframes.prune(
+                {
+                    observation.observation_id
+                    for observation in self._parse_observations(kept)
+                }
+            )
             # Rewrite if valid records expired OR if corrupt lines exist.
             # A corrupt line cannot be shown to be within retention, so
             # letting it survive would mean retention silently fails to
