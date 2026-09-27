@@ -512,6 +512,7 @@ def apply_gate(model: SolveModel, links: dict, metric_log: dict, *, link_rotatio
     rounds = []
     group_decisions: dict = {}  # group min camera -> decision, for the reasons
     group_members: list = []    # every decided group: its cameras and round label (the consensus's identity)
+    todays_label: dict = {}     # the rider hook only: unattached rider -> the label today's rest rule gives it
     next_label = 0
     comps = [int(v) for v, _ in sorted(zip(*np.unique(model.component, return_counts=True)),
                                        key=lambda vc: (-vc[1], vc[0]))]
@@ -668,14 +669,25 @@ def apply_gate(model: SolveModel, links: dict, metric_log: dict, *, link_rotatio
                 labels[i] = labels[labelled[int(np.argmax(row))]]
             else:
                 unattached.append(int(i))
+                # Where today's rest rule puts it: the label order (and so the room) is decided with it there.
+                todays_label[int(i)] = labels[labelled[int(np.argmax(row))]] if row.max() > 0 else first
         if unattached:
             labels[np.asarray(unattached, dtype=np.int64)] = next_label
             rounds.append({"source_component": comp, "label": next_label, "reference_group": None,
                            "kept_groups": 0, "kept_cameras": 0, "decisions": [],
                            "quarantined": REASON_NO_VERIFIED_LINK, "riders": len(unattached)})
             next_label += 1
+    order_labels = None
+    if todays_label:
+        # REVIEW V17, LOW-2: the room choice breaks a tie in supported cameras by the TOTAL count, riders included,
+        # so unplacing riders could flip which label is the room. The order is decided with every unattached rider
+        # counted where today's rule puts it: every label keeps today's rank (the room included), and the riders'
+        # own unplaced labels rank last.
+        order_labels = labels.copy()
+        for i, lab in todays_label.items():
+            order_labels[i] = lab
     return _finish(model, labels, supported, rounds, group_decisions, masks_applied, metric_available, params,
-                   evidence, group_members)
+                   evidence, group_members, order_labels=order_labels)
 
 
 def _reasons(round_: dict, room_component: int, group_decisions: dict, masks_applied: bool,
@@ -717,9 +729,12 @@ def _reasons(round_: dict, room_component: int, group_decisions: dict, masks_app
 
 
 def _finish(model, labels, supported, rounds, group_decisions, masks_applied, metric_available, params,
-            evidence, group_members=()) -> dict:
+            evidence, group_members=(), order_labels=None) -> dict:
+    """`order_labels` (the rider hook only; None = `labels`, today): the labels the tie-break in supported cameras
+    counts TOTAL cameras by."""
     counts = {int(lab): int(((labels == lab) & supported).sum()) for lab in np.unique(labels)}
-    order = sorted(counts, key=lambda lab: (-counts[lab], -int((labels == lab).sum()), lab))
+    tally = labels if order_labels is None else order_labels
+    order = sorted(counts, key=lambda lab: (-counts[lab], -int((tally == lab).sum()), lab))
     remap = {old: new for new, old in enumerate(order)}
     final = np.array([remap[int(v)] for v in labels], dtype=np.int64)
     for rd in rounds:

@@ -344,10 +344,11 @@ def _room_poses(solution):
 
 
 def _pose_quarantine_on() -> bool:
-    """`TOWER_WORLD_POSE_QUARANTINE` (`config.world_pose_quarantine_setting`); off = today's camera path."""
+    """Whether `TOWER_WORLD_POSE_QUARANTINE` (`config.world_pose_quarantine_setting`) turns on its `path` part;
+    off = today's camera path."""
     from tower.config import world_pose_quarantine_setting  # noqa: PLC0415
 
-    return world_pose_quarantine_setting()
+    return "path" in world_pose_quarantine_setting()
 
 
 def viewable_poses(poses: dict) -> dict:

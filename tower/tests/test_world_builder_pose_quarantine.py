@@ -1,6 +1,8 @@
-"""The pose quarantine (`TOWER_WORLD_POSE_QUARANTINE`; RUN P5-PQ RULE.md; manager 095 §2 as corrected by 096 §2).
+"""The pose quarantine (`TOWER_WORLD_POSE_QUARANTINE`; RUN P5-PQ RULE.md; manager 095 §2 as corrected by 096 §2, made
+granular by 098: parts `path` (a), `riders` (b), `seal` (c'), or `on`; parsed exactly as TOWER_WORLD_ANCHOR_VERIFY).
 
 Pinned here:
+  THE SWITCH: its parser is ANCHOR_VERIFY's, shape for shape; each part alone changes only its own output.
   THE GOLDEN: with the switch unset, blank, `off` or `0`, the gate's, the publish step's, the anchor verification's and
       the camera path's outputs are what the product wrote BEFORE P5-PQ (6db75f3, `golden/world_builder_pose_
       quarantine_off.json`, recorded by RUN/experiments/P5-PQ/golden_record.py).
@@ -9,9 +11,10 @@ Pinned here:
       distances, are out; every published room pose inside the gate stays.
   (b) the gate's rider rule: a rider never defaults to the room label; it takes a label only through >= 3 shared
       points with one supported camera; nothing published changes.
-  (c) the anchor verification: an impossible-speed motion flag seals an image-unverifiable group (walk 4's bed
-      stretch), `link-contradicted`; a flag between two unverifiable groups, a head-turn flag, or a confirmed group
-      seals nothing.
+  (c') the anchor verification (RULE.md (c') v3, manager 100): an impossible-speed motion flag seals an
+      image-unverifiable group whose flag partner is in a DIFFERENT, image-CONFIRMED group (walk 4's bed stretch,
+      through 2056 -> 2061), `link-contradicted`; a flag inside one group (v2's withdrawn clause: walk 3's desk), a
+      flag between two unverifiable groups, a head-turn flag, or a confirmed group seals nothing.
 """
 
 from __future__ import annotations
@@ -51,26 +54,66 @@ def _round_floats(obj, nd=9):
 # the switch
 
 
-@pytest.mark.parametrize("value", [None, "", "  ", "off", "OFF", "0", "false", "no"])
-def test_the_switch_is_off_unless_it_says_on(monkeypatch, value):
+@pytest.mark.parametrize("value", [None, "", "   ", "off", "OFF", " off "])
+def test_unset_blank_and_off_are_off(monkeypatch, value):
     if value is None:
         monkeypatch.delenv(ENV, raising=False)
     else:
         monkeypatch.setenv(ENV, value)
-    assert world_pose_quarantine_setting() is False
+    assert world_pose_quarantine_setting() == frozenset()
 
 
-@pytest.mark.parametrize("value", ["1", "true", "yes", "on", " ON "])
-def test_the_switch_is_on_for_flag_spellings_of_true(monkeypatch, value):
+@pytest.mark.parametrize("value, parts", [
+    ("on", {"path", "riders", "seal"}),
+    ("ON", {"path", "riders", "seal"}),
+    ("path", {"path"}),
+    ("riders", {"riders"}),
+    ("seal", {"seal"}),                              # no part implies another
+    ("path,riders", {"path", "riders"}),
+    (" Path , SEAL ", {"path", "seal"}),
+    ("path,riders,seal", {"path", "riders", "seal"}),
+    ("seal,seal", {"seal"}),
+])
+def test_on_and_comma_lists_turn_on_their_parts(monkeypatch, value, parts):
     monkeypatch.setenv(ENV, value)
-    assert world_pose_quarantine_setting() is True
+    assert world_pose_quarantine_setting() == frozenset(parts)
 
 
-def test_a_typo_is_off_and_logged(monkeypatch, caplog):
-    monkeypatch.setenv(ENV, "onn")
+@pytest.mark.parametrize("value", ["yes", "1", "true", "0", "false", "no", "path,foo", "off,path", "on,path", "pth",
+                                   ",", "onn"])
+def test_garbage_is_off_and_logged(monkeypatch, caplog, value):
+    monkeypatch.setenv(ENV, value)
     with caplog.at_level(logging.WARNING, logger="tower.config"):
-        assert world_pose_quarantine_setting() is False
+        assert world_pose_quarantine_setting() == frozenset()
     assert ENV in caplog.text
+
+
+@pytest.mark.parametrize("template", [None, "", "  ", "off", " OFF ", "on", "On", "{a}", "{a},{b}", " {A} , {b} ",
+                                      "{a},{a}", "on,{a}", "off,{a}", "{a},foo", "foo", ",", "1", "true", "yes", "0",
+                                      "{a};{b}", "{a} {b}"])
+def test_the_parser_is_anchor_verifys_word_for_word(monkeypatch, caplog, template):
+    """Manager 098 / the lead: TOWER_WORLD_POSE_QUARANTINE parses exactly as TOWER_WORLD_ANCHOR_VERIFY does -- the
+    same value SHAPE (a part standing for a part) is off, all, or a list, and logged, alike."""
+    from tower import config
+
+    def run(env, parts, alias):
+        if template is None:
+            monkeypatch.delenv(env, raising=False)
+        else:
+            monkeypatch.setenv(env, template.format(a=parts[0], b=parts[1], A=parts[0].upper()))
+        caplog.clear()
+        with caplog.at_level(logging.WARNING, logger="tower.config"):
+            got = alias()
+        return ("all" if got == frozenset(parts_all(env)) else len(got)), bool(caplog.records)
+
+    def parts_all(env):
+        return (config.WORLD_POSE_QUARANTINE_PARTS if env == ENV
+                else config.WORLD_ANCHOR_VERIFY_PARTS)
+
+    ours = run(ENV, ("path", "seal"), config.world_pose_quarantine_setting)
+    # `scale` and `motion`: two anchor-verify parts that imply nothing, like every pose-quarantine part
+    theirs = run(config.WORLD_ANCHOR_VERIFY_ENV, ("scale", "motion"), config.world_anchor_verify_setting)
+    assert ours == theirs
 
 
 # ---------------------------------------------------------------------------------------------------------------
@@ -247,9 +290,20 @@ GROUPS = [np.arange(0, 10), np.arange(10, 18), np.arange(18, 30), np.arange(30, 
 U, C, X = AV.VERDICT_UNVERIFIABLE, AV.VERDICT_CONFIRMED, AV.VERDICT_CONTRADICTED
 
 
-def test_c_a_flag_inside_an_unverifiable_group_seals_it():
-    hit = AV.motion_sealed_groups(GROUPS, [C, U, C, C], [_flag(11, 12, 5e4)], MP)
-    assert list(hit) == [1]
+def test_c_v3_a_flag_inside_one_group_seals_nothing_whatever_its_verdict():
+    """RULE.md (c') v3 (manager 100): v2's internal-flag clause is withdrawn. A flag with both ends in one group -- the
+    merge of small runs joined it across the flag -- says one of its two poses is wrong, not that the group is. On walk
+    3 the clause sealed nine probably-correct desk keyframes (group 62-73, flag 70->72, 2.92 m in 0.53 s)."""
+    for verdicts in ([C, U, C, C], [U, U, U, U], [C, C, C, C]):
+        assert AV.motion_sealed_groups(GROUPS, verdicts, [_flag(11, 12, 5e4)], MP) == {}
+
+
+def test_c_v3_walk_3s_desk_group_is_not_sealed():
+    """Walk 3's replay, reduced: group 62-73 (unverifiable) holds the internal flag 70->72; its neighbours 54-61
+    (unverifiable) and 91-110 (confirmed) share no flag with it except 61->62 (unverifiable on both sides)."""
+    groups = [np.arange(54, 62), np.array([62, 63, 64, 65, 66, 67, 68, 69, 70, 72, 73]), np.arange(91, 111)]
+    flags = [_flag(61, 62, 1.81, dt=0.474), _flag(70, 72, 2.921, dt=0.526), _flag(88, 91, 2.66, dt=1.089)]
+    assert AV.motion_sealed_groups(groups, [U, U, C], flags, MP) == {}
 
 
 def test_c_a_flag_from_a_confirmed_group_into_an_unverifiable_one_seals_the_unverifiable_side():
@@ -287,7 +341,9 @@ def test_c_end_to_end_walk_4s_bed_stretch_is_sealed_link_contradicted(tmp_path, 
     assert av["state"] == AV.STATE_APPLIED and av["sealed_kf"] == 8 and av["room_after"] == 88
     assert sorted(av["sealed"][CG.REASON_LINK_CONTRADICTED]["keyframe_ids"]) == bed
     (sg,) = av["sealed_groups"]
-    assert sg["source"] == AV.SOURCE_MOTION and sg["reason"] == CG.REASON_LINK_CONTRADICTED and sg["flags"] == 8
+    # v3: sealed by its ONE boundary flag into the confirmed run after it (77 -> 78), not by the 7 inside it
+    assert sg["source"] == AV.SOURCE_MOTION and sg["reason"] == CG.REASON_LINK_CONTRADICTED and sg["flags"] == 1
+    assert sg["flag_keyframes"] == [f"{F.SID}:{77:08d}", f"{F.SID}:{78:08d}"]
     assert av["motion_seal"]["speed_flags"] == 8 and av["motion_seal"]["groups"] == 1
     assert av["collateral"]["keyframes"] == 0
     comps = out["components.json"]["components"]
@@ -299,11 +355,14 @@ def test_c_end_to_end_walk_4s_bed_stretch_is_sealed_link_contradicted(tmp_path, 
     assert "anchor-motion" not in json.dumps(out["components.json"])      # the source never reaches the wire
 
 
-def test_c_an_internal_flag_seals_even_when_the_run_after_is_unverifiable(tmp_path, monkeypatch):
+def test_c_v3_internal_flags_alone_seal_nothing_when_the_run_after_is_unverifiable(tmp_path, monkeypatch):
+    """The v2 rule sealed the stretch here through its 7 internal flags; v3 needs a confirmed partner, and the run
+    after the stretch is unverifiable -- so the stretch stays (the rule's stated cost, RULE.md (c'))."""
     monkeypatch.setenv(ENV, "on")
     out = Q.publish_bed(tmp_path, confirm_after=False)
     av = out["record"]["anchor_verify"]
-    assert av["sealed_kf"] == 8 and av["motion_seal"]["groups"] == 1
+    assert av["sealed_kf"] == 0 and av["motion_seal"]["groups"] == 0 and av["motion_seal"]["speed_flags"] == 8
+    assert av["motion_seal_rule"]["rule"].startswith("c' v3")
 
 
 @pytest.mark.parametrize("parts", ["scale,images", "images", "motion"])
@@ -453,3 +512,157 @@ def test_b_a_genuine_under_floor_room_view_with_its_own_attachment_keeps_the_roo
 def test_the_gate_params_and_their_digest_are_unchanged():
     assert CG.GateParams().digest() == "6ce602286efb999f"
     assert "rider" not in json.dumps(CG.GateParams().to_json())
+
+
+# ---------------------------------------------------------------------------------------------------------------
+# manager 098: each part on its own changes only its own output; the others stay today's, value for value
+
+
+GOVERNS = {"path": "camera_path_w4", "riders": "publish_riders", "seal": "publish_bed_av_on"}
+
+
+def _outputs(tmp_path):
+    return {"camera_path_w4": Q.camera_path_of(tmp_path / "c", Q.walk_like_solution(
+                Q.W4_ROOM, Q.W4_MEDIAN_RADIUS, {**Q.W4_BED, **Q.W4_RIDERS})),
+            "publish_riders": Q.publish_riders(tmp_path / "r"),
+            "publish_bed_av_on": Q.publish_bed(tmp_path / "b")}
+
+
+# The Tower-internal audit keys each part adds wherever it runs, even when it changes nothing (additive, §2.5-like).
+AUDIT_KEYS = {"path": (), "riders": ("pose_quarantine",), "seal": ("motion_seal", "motion_seal_rule")}
+
+
+def _without(obj, keys):
+    if isinstance(obj, dict):
+        return {k: _without(v, keys) for k, v in obj.items() if k not in keys}
+    if isinstance(obj, list):
+        return [_without(v, keys) for v in obj]
+    return obj
+
+
+@pytest.mark.parametrize("part", ["path", "riders", "seal"])
+def test_each_part_alone_changes_only_its_own_output(tmp_path, monkeypatch, part):
+    """Every output a part does not govern is today's, value for value, but for the part's own audit keys; the output
+    it governs is not."""
+    monkeypatch.delenv("TOWER_WORLD_ANCHOR_VERIFY", raising=False)
+    monkeypatch.setenv(ENV, part)
+    golden = json.loads(GOLDEN.read_text(encoding="utf-8"))
+    exact = (golden["cv2"], golden["numpy"]) == (cv2.__version__, np.__version__)
+    now = json.loads(json.dumps(_outputs(tmp_path), sort_keys=True, default=str))
+    for key, value in now.items():
+        want = golden["outputs"][key]
+        got = _without(value, AUDIT_KEYS[part])
+        same = got == want if exact else _round_floats(got) == _round_floats(want)
+        assert same == (key != GOVERNS[part]), (part, key)
+
+
+def test_part_path_alone_filters_the_list(tmp_path, monkeypatch):
+    monkeypatch.setenv(ENV, "path")
+    path = _outputs(tmp_path)["camera_path_w4"]
+    assert len(path) == 177 and not any(np.linalg.norm(c[:3]) > 100 for c in path)
+
+
+def test_part_riders_alone_unplaces_the_unattached_riders(tmp_path, monkeypatch):
+    monkeypatch.setenv(ENV, "riders")
+    out = Q.publish_riders(tmp_path)
+    riders = [f"{F.SID}:{Q.RIDER_N + k:08d}" for k in range(len(Q.RIDERS))]
+    assert [out["poses"][k] == 0 for k in riders] == [False, False, True, False]
+    assert out["record"]["pose_quarantine"] == {"rider_min_shared": 3, "riders_unplaced": 3}
+
+
+def test_part_seal_alone_seals_the_bed_stretch(tmp_path, monkeypatch):
+    monkeypatch.setenv(ENV, "seal")
+    av = Q.publish_bed(tmp_path)["record"]["anchor_verify"]
+    assert av["sealed_kf"] == 8 and av["motion_seal"]["groups"] == 1
+
+
+# ---------------------------------------------------------------------------------------------------------------
+# review V17, LOW-2: with `riders` on, the room must not flip on a tie. The tie-break in supported cameras counts
+# TOTAL cameras, riders included; unplacing riders used to change that count.
+
+
+def _tie_model(sizes, riders, seed=0):
+    """Solver components of `sizes` supported cameras each (a chain: gaps 1 and 2 share 12 points; 40 points of
+    their own), then RIDERS [(component, points shared with that component's first camera)], each with 1 own point.
+    Every link honoured, every level 0. Returns (model, links, rotations, levels)."""
+    obs_i, obs_p, comp_of, p = [], [], [], 0
+    firsts, idx = [], 0
+    for c, n in enumerate(sizes):
+        firsts.append(idx)
+        for j in range(n):
+            comp_of.append(c)
+            for _ in range(40):
+                obs_i.append(idx + j)
+                obs_p.append(p)
+                p += 1
+            for d in (1, 2):
+                if j + d < n:
+                    for _ in range(12):
+                        obs_i += [idx + j, idx + j + d]
+                        obs_p += [p, p]
+                        p += 1
+        idx += n
+    shared_pool = {c: [pt for i, pt in zip(obs_i, obs_p) if i == firsts[c]] for c in range(len(sizes))}
+    for c, k in riders:
+        r = len(comp_of)
+        comp_of.append(c)
+        for pt in shared_pool[c][:k]:
+            obs_i.append(r)
+            obs_p.append(pt)
+        obs_i.append(r)
+        obs_p.append(p)
+        p += 1
+    n = len(comp_of)
+    names = [F.name(i) for i in range(n)]
+    n_obs = np.bincount(np.asarray(obs_i), minlength=n)
+    model = CG.SolveModel(names=names, component=np.asarray(comp_of, np.int64),
+                          R_cw=np.stack([F.rz(3.0 * i) for i in range(n)]), n_obs=n_obs,
+                          obs_image=np.asarray(obs_i, np.int64), obs_point=np.asarray(obs_p, np.int64), n_points=p)
+    links = {}
+    idx = 0
+    for n_c in sizes:
+        for j in range(n_c):
+            for d in (1, 2):
+                if j + d < n_c:
+                    links[(F.name(idx + j), F.name(idx + j + d))] = 100
+        idx += n_c
+    rots = {(a, b): F.rz(3.0 * int(b[:8])) @ F.rz(3.0 * int(a[:8])).T for a, b in links}
+    levels = {F.name(i): 0.0 for i in range(sum(sizes))}
+    return model, links, rots, levels
+
+
+def _room(res, model):
+    return sorted(nm for i, nm in enumerate(model.names) if model.n_obs[i] >= 30 and res["labels"][nm] == 0)
+
+
+def test_b_v17_low2_a_tie_in_supported_cameras_does_not_flip_the_room():
+    """V17's scenario: labels A and B hold 12 supported cameras each; A has 3 unattached riders, B 2 attached ones.
+    Today A is the room (15 cameras against 14); with the rider hook it still is."""
+    model, links, rots, levels = _tie_model((12, 12), [(0, 0), (0, 0), (0, 1), (1, 5), (1, 8)])
+    assert model.n_obs[24:].tolist() == [1, 1, 2, 6, 9]                   # riders, all under 30
+    off = CG.apply_gate(model, links, levels, link_rotations=rots, masks_applied=True)
+    on = CG.apply_gate(model, links, levels, link_rotations=rots, masks_applied=True,
+                       rider_min_shared=CP.RIDER_MIN_SHARED)
+    assert _room(off, model) == [F.name(i) for i in range(12)]            # A
+    assert _room(on, model) == _room(off, model)
+    assert [on["labels"][F.name(i)] for i in (24, 25, 26)] != [0, 0, 0]  # A's riders are unplaced ...
+    assert all(on["labels"][F.name(i)] == off["labels"][F.name(i)] for i in (27, 28))  # ... B's stay attached
+
+
+def test_b_v17_low2_every_supported_label_is_todays_on_random_small_solves():
+    """V17 saw the room flip in 25 of 120 random small cases. With the fix, every supported camera keeps TODAY'S
+    label -- the room and the label numbers of every other piece -- whatever the riders do."""
+    rng = np.random.default_rng(17)
+    flips = 0
+    for _ in range(120):
+        sizes = tuple(int(x) for x in rng.integers(5, 8, size=int(rng.integers(2, 4))))
+        riders = [(int(rng.integers(0, len(sizes))), int(rng.choice([0, 0, 1, 2, 3, 5, 9])))
+                  for _ in range(int(rng.integers(0, 6)))]
+        model, links, rots, levels = _tie_model(sizes, riders)
+        off = CG.apply_gate(model, links, levels, link_rotations=rots, masks_applied=True)
+        on = CG.apply_gate(model, links, levels, link_rotations=rots, masks_applied=True,
+                           rider_min_shared=CP.RIDER_MIN_SHARED)
+        sup = [nm for i, nm in enumerate(model.names) if model.n_obs[i] >= 30]
+        flips += _room(on, model) != _room(off, model)
+        assert all(on["labels"][nm] == off["labels"][nm] for nm in sup), (sizes, riders)
+    assert flips == 0

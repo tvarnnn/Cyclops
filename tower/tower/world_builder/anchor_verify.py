@@ -77,9 +77,9 @@ IMAGE_SEAL_REASON = CG.REASON_LINK_CONTRADICTED
 SCALE_SEAL_REASON = CG.REASON_SCALE_MISMATCH
 SOURCE_IMAGES = "anchor-image-verification"
 SOURCE_SCALE = "anchor-scale-segmentation"
-# THE POSE QUARANTINE's part (c) (`TOWER_WORLD_POSE_QUARANTINE`; RUN P5-PQ RULE.md (c); manager 096 §2 (c)): an
-# impossible-speed motion flag seals an image-unverifiable group. Its reason is the images' (no new reason string);
-# the source is recorded Tower-side only.
+# THE POSE QUARANTINE's part `seal` (`TOWER_WORLD_POSE_QUARANTINE`; RUN P5-PQ RULE.md (c'), v3; manager 096 §2 (c),
+# 100): an impossible-speed motion flag seals an image-unverifiable group whose flag partner is in an image-confirmed
+# group. Its reason is the images' (no new reason string); the source is recorded Tower-side only.
 MOTION_SEAL_REASON = CG.REASON_LINK_CONTRADICTED
 SOURCE_MOTION = "anchor-motion-unverifiable"
 
@@ -920,22 +920,25 @@ def impossible_speed(flag: dict, mp: MotionParams) -> bool:
 
 
 def motion_sealed_groups(groups: list, verdicts: list, flags: list, mp: MotionParams) -> dict:
-    """RUN P5-PQ RULE.md (c): {group index: [the flags that seal it]}. A group is sealed when the images found it
-    UNVERIFIABLE and it holds an endpoint of an impossible-speed flag whose other endpoint is in the group itself (a
-    flag the merge of small runs joined across) or in a group the images CONFIRMED -- the images placed the other side,
-    and no human moved between the two poses, so the unverified side is what the solve misplaced. A flag between two
-    unverifiable groups seals neither (it does not say which side is wrong); a flag into a contradicted group is left to
-    that group's own seal."""
+    """RUN P5-PQ RULE.md (c') (v3; manager 100): {group index: [the flags that seal it]}. A group is sealed when the
+    images found it UNVERIFIABLE and it holds an endpoint of an impossible-speed flag whose OTHER endpoint is in a
+    DIFFERENT group the images CONFIRMED -- the images placed the other side, and no human moved between the two poses,
+    so the unverified side is what the solve misplaced.
+
+    Nothing else seals: a flag with both ends in one group (the merge of small runs joined it across the flag) says
+    only that ONE of its two poses is wrong, not that the group is -- v2's clause for it sealed nine probably-correct
+    walk-3 desk keyframes, and is withdrawn; a flag between two unverifiable groups does not say which side is wrong;
+    a flag into a contradicted group is left to that group's own seal."""
     group_of = {int(c): gi for gi, g in enumerate(groups) for c in g}
     out: dict = {}
     for f in flags:
         if not impossible_speed(f, mp):
             continue
         ga, gb = group_of.get(int(f["a"])), group_of.get(int(f["b"]))
+        if ga is None or gb is None or ga == gb:
+            continue
         for mine, other in ((ga, gb), (gb, ga)):
-            if mine is None or verdicts[mine] != VERDICT_UNVERIFIABLE:
-                continue
-            if other == mine or (other is not None and verdicts[other] == VERDICT_CONFIRMED):
+            if verdicts[mine] == VERDICT_UNVERIFIABLE and verdicts[other] == VERDICT_CONFIRMED:
                 if f not in out.setdefault(mine, []):
                     out[mine].append(f)
     return out
@@ -945,8 +948,8 @@ def analyse(result, x: Inputs, pairs: Pairs | None, parts, vp: VerifyParams, mp:
             gp: CG.GateParams, motion_seal: bool = False) -> tuple[dict, dict]:
     """(c), (a) and (b) on the room of one gated result. Returns ({world index: reason} to seal, the round's audit).
 
-    `motion_seal` (the pose quarantine's part (c); False = today): with `motion` and `images` both on, an
-    impossible-speed flag seals an image-unverifiable group (`motion_sealed_groups`)."""
+    `motion_seal` (the pose quarantine's part `seal`, RULE.md (c'); False = today): with `motion` and `images` both
+    on, an impossible-speed flag seals an image-unverifiable group (`motion_sealed_groups`)."""
     kept_w = _room_w(result, x)
     gg, anchor_first = {}, None
     for g in (result.gated or {}).get("groups") or []:
@@ -1147,7 +1150,7 @@ def verify_published(result, *, keyframes, parts, regate: Callable, workspace_ro
     """RULE.md section 1 step 3 on a gated result (a `coherence_publish.GateResult`, the chosen draw as the
     consensus publishes it). Never raises: a failure publishes `result` as it was gated, and says so.
 
-    `motion_seal`: the pose quarantine's part (c) (`analyse`); False, the default, is today's verification exactly.
+    `motion_seal`: the pose quarantine's part `seal` (`analyse`); False, the default, is today's verification exactly.
 
     `regate(seal={name: reason}, room=[names]) -> GateResult`: the seal re-gate (the caller's
     `gate_final_solution` with the same candidate, depth and scale, and the consensus's withhold). Returns the
@@ -1161,10 +1164,11 @@ def verify_published(result, *, keyframes, parts, regate: Callable, workspace_ro
                    "params_digest": vp.digest(), "motion_params": mp.to_json(),
                    "image_seal_reason": IMAGE_SEAL_REASON}
     if motion_seal:
-        # The pose quarantine's part (c) is on (Tower-internal, additive; absent when off).
+        # The pose quarantine's part `seal` is on (Tower-internal, additive; absent when off).
         audit["motion_seal_rule"] = {"source": SOURCE_MOTION, "reason": MOTION_SEAL_REASON,
                                      "needs": [PART_MOTION, PART_IMAGES],
-                                     "speed": "metres > v_max_mps * dt + margin_m"}
+                                     "speed": "metres > v_max_mps * dt + margin_m",
+                                     "rule": "c' v3: unverifiable group, flag partner in a different CONFIRMED group"}
     if PART_SCALE in parts:
         audit["a2"] = {"spec": A2_SPEC, "digest": a2_digest(vp)}
 

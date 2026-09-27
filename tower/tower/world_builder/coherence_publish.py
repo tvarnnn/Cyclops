@@ -650,7 +650,7 @@ def _gate(store, world_id, session_id, solution, *, database_path, keyframes, sh
             link_units, import_units = AV.import_link_units(store, world_id, session_id, database_path, name_of)
     if link_units:
         hooks["link_units"] = link_units
-    quarantine = _pose_quarantine_on()
+    quarantine = _pose_quarantine_on(PQ_RIDERS)
     if quarantine:
         # The pose quarantine's rider rule (RUN P5-PQ RULE.md (b)): a rider never defaults to the room label.
         hooks["rider_min_shared"] = RIDER_MIN_SHARED
@@ -746,19 +746,20 @@ def anchor_verified(store, world_id: str, session_id: str, result: GateResult, *
             depth_runner=lambda *a, **kw: (depth.get("align"), depth.get("work"), depth.get("dparams")),
             metric_fn=lambda *a, **kw: result.scale, withhold=result.withheld or None, room=room, seal=seal)
 
-    extra = {"motion_seal": True} if _pose_quarantine_on() else {}
+    extra = {"motion_seal": True} if _pose_quarantine_on(PQ_SEAL) else {}
     return AV.verify_published(result, keyframes=keyframes, parts=parts, regate=regate,
                                workspace_root=workspace_root, min_obs=params.min_obs, gp=params, **extra)
 
 
 # THE POSE QUARANTINE (`TOWER_WORLD_POSE_QUARANTINE`; RUN P5-PQ RULE.md; manager 095 §2 as corrected by 096 §2).
 # Off: today's gate, anchor verification and camera path, byte for byte. On:
-#   (b) here, in every gate (`_gate`): a rider (< min_obs observations) takes a label only through at least
-#       RIDER_MIN_SHARED 3-D points shared with one supported camera of its solver component -- never the room's
-#       label by default;
-#   (c) in the anchor verification (`anchor_verified` -> `anchor_verify.verify_published(motion_seal=True)`): an
-#       impossible-speed motion flag seals an image-unverifiable group;
-#   (a) at render time (`surface_render.viewable_poses`).
+#   (b) part `riders`, here, in every gate (`_gate`): a rider (< min_obs observations) takes a label only through
+#       at least RIDER_MIN_SHARED 3-D points shared with one supported camera of its solver component -- never the
+#       room's label by default;
+#   (c') part `seal`, in the anchor verification (`anchor_verified` -> `anchor_verify.verify_published(
+#       motion_seal=True)`): an impossible-speed motion flag seals an image-unverifiable group whose flag partner is
+#       in an image-confirmed group;
+#   (a) part `path`, at render time (`surface_render.viewable_poses`).
 # RIDER_MIN_SHARED = 3: a 6-DoF pose is fixed by its observations of known points only from 3 points up (P3P, the
 # minimal problem). The control b2a75ab4 agrees over its 7 acc2 runs: every rider sharing >= 3 points lies inside
 # the room's own envelope (<= 7.19 x its median radius; published max 7.55), while riders sharing none reach 256.8 x
@@ -766,11 +767,17 @@ def anchor_verified(store, world_id: str, session_id: str, result: GateResult, *
 RIDER_MIN_SHARED = 3
 
 
-def _pose_quarantine_on() -> bool:
-    """`TOWER_WORLD_POSE_QUARANTINE` (`config.world_pose_quarantine_setting`); off = today's publish."""
+# The switch's parts this module reads (`config.WORLD_POSE_QUARANTINE_PARTS`; manager 098).
+PQ_RIDERS = "riders"
+PQ_SEAL = "seal"
+
+
+def _pose_quarantine_on(part: str) -> bool:
+    """Whether `TOWER_WORLD_POSE_QUARANTINE` (`config.world_pose_quarantine_setting`) turns `part` on;
+    off = today's publish."""
     from tower.config import world_pose_quarantine_setting  # noqa: PLC0415
 
-    return world_pose_quarantine_setting()
+    return part in world_pose_quarantine_setting()
 
 
 def _anchor_verify_parts() -> frozenset:
