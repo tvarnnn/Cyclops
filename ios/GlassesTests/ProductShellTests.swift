@@ -3467,6 +3467,46 @@ final class DATStartWarningWatchdogTests: XCTestCase {
         await stop(connection)
     }
 
+    /// Session A is abandoned by the watchdog and session B streams. Then A's
+    /// callbacks arrive late -- its `.stopped`, its `.started`, an error, a
+    /// stream state -- as DAT's already-queued main-actor hops would deliver
+    /// them. Every one is dropped: B keeps its session, its stream and its
+    /// frames, and no alert appears. Unbound, A's `.stopped` would have run
+    /// the cleanup on B.
+    func testLateCallbacksFromAnAbandonedSessionCannotTouchTheNextOne() async throws {
+        let connection = await readyConnection(watchdog: .milliseconds(800), startsAnyway: false)
+        connection.startCameraSession()
+        let sessionA = try XCTUnwrap(connection.deviceSessionForTesting)
+        let abandoned = await waitUntil(timeout: 5) { connection.captureClaim == .unclaimed }
+        XCTAssertTrue(abandoned)
+
+        connection.sessionStartFaultForTesting = nil
+        connection.startCameraSession()
+        let started = await waitUntil(timeout: 15) { self.isStreaming(connection) }
+        XCTAssertTrue(started, "session B did not stream (\(connection.deviceSessionState), \(connection.cameraStreamState))")
+        let sessionB = try XCTUnwrap(connection.deviceSessionForTesting)
+        XCTAssertFalse(sessionA === sessionB)
+        connection.errorMessage = nil
+        let droppedBefore = connection.staleSessionCallbacksDropped
+
+        connection.handleSessionState(.stopped, from: sessionA)
+        connection.handleSessionState(.started, from: sessionA)
+        connection.handleSessionError(.thermalCritical, from: sessionA)
+        connection.handleStreamState(.stopped, from: sessionA)
+
+        XCTAssertEqual(connection.staleSessionCallbacksDropped, droppedBefore + 4)
+        XCTAssertTrue(connection.deviceSessionForTesting === sessionB, "a late callback from A replaced or cleared B")
+        XCTAssertTrue(isStreaming(connection), "a late callback from A stopped B (\(connection.deviceSessionState), \(connection.cameraStreamState))")
+        XCTAssertNil(connection.errorMessage, "A's late error reached B's screen")
+        let frames = connection.frameCount
+        let delivering = await waitUntil(timeout: 5) { connection.frameCount >= frames + 5 }
+        XCTAssertTrue(delivering, "B stopped delivering frames")
+
+        // B's own callbacks are still acted on: its stop ends it.
+        await stop(connection)
+        XCTAssertNil(connection.deviceSessionForTesting)
+    }
+
     /// Thrown, and the session starts anyway -- the case DAT's "not blocking"
     /// describes: kept, streaming, and the watchdog stands down.
     func testASessionThatStartsDespiteAThrownWarningIsKeptAndTheWatchdogStandsDown() async throws {
@@ -3769,9 +3809,141 @@ final class IMURecorderFileTests: XCTestCase {
         print("[IMURecTest] protection reported here: file \(protection?.rawValue ?? "none"), folder \(folderProtection?.rawValue ?? "none")")
         if let protection { XCTAssertEqual(protection, .completeUnlessOpen) }
         if let folderProtection { XCTAssertEqual(folderProtection, .completeUnlessOpen, "new files would not inherit the class") }
-        let open = try XCTUnwrap(try IMULogTestSupport.lines(url).first { $0["ev"] as? String == "file_open" })
+        let lines = try IMULogTestSupport.lines(url)
+        let open = try XCTUnwrap(lines.first { $0["ev"] as? String == "file_open" })
         XCTAssertEqual(open["protection"] as? String, protection?.rawValue, "the log must say what the file reports")
         XCTAssertEqual(open["protected_data_available"] as? Bool, true)
+        if protection == nil {
+            XCTAssertNotNil(lines.first { $0["ev"] as? String == "protection_unverified" },
+                            "a class nobody could read must be logged as unverified")
+        }
+    }
+
+    /// The verdict itself: on a phone only `completeUnlessOpen` records; no
+    /// class is unverified on the Simulator and refused on a phone; a failure
+    /// to set it is in the reason.
+    func testTheProtectionVerdict() {
+        XCTAssertEqual(IMUProtectionVerdict(file: .completeUnlessOpen, setErrors: [], onSimulator: false), .verified)
+        XCTAssertEqual(IMUProtectionVerdict(file: .completeUnlessOpen, setErrors: ["folder: x"], onSimulator: false), .verified,
+                       "the file's own class decides")
+        guard case .unverified = IMUProtectionVerdict(file: nil, setErrors: [], onSimulator: true) else {
+            return XCTFail("no class on the Simulator is unverified, not refused")
+        }
+        for (file, simulator) in [(nil, false), (FileProtectionType.complete, false), (.completeUntilFirstUserAuthentication, false), (FileProtectionType.none, false), (.complete, true)] as [(FileProtectionType?, Bool)] {
+            guard case .refused(let reason) = IMUProtectionVerdict(file: file, setErrors: ["file: denied"], onSimulator: simulator) else {
+                XCTFail("\(file?.rawValue ?? "no class") on \(simulator ? "the Simulator" : "a phone") was not refused")
+                continue
+            }
+            XCTAssertTrue(reason.contains("file: denied"), reason)
+        }
+    }
+
+    /// On a phone, a log file whose class is not `completeUnlessOpen` -- here
+    /// `.complete`, which would stop being writable at the first lock -- is
+    /// refused: nothing recorded, before or after the open; the file holds its
+    /// header, `file_open` and `protection_refused`; the status says refused
+    /// and the badge "protection". Never a log that looks recorded and is not.
+    func testAWrongProtectionClassOnAPhoneRefusesToRecord() throws {
+        try assertRefused(readProtection: { _ in .complete }, expectedClass: FileProtectionType.complete.rawValue)
+    }
+
+    /// No class at all, on a phone: it cannot be verified, so it is refused.
+    func testNoProtectionClassOnAPhoneRefusesToRecord() throws {
+        try assertRefused(readProtection: { _ in nil }, expectedClass: nil)
+    }
+
+    private func assertRefused(readProtection: @escaping @Sendable (URL) -> FileProtectionType?, expectedClass: String?) throws {
+        let statuses = OSAllocatedUnfairLock<[IMURecorderStatus]>(initialState: [])
+        let recorder = IMURecorder(baseDirectory: base, readProtection: readProtection, onSimulator: false, onStatus: { status in
+            statuses.withLock { $0.append(status) }
+        })
+        for i in 0..<5 { recorder.recordMotion(IMULogTestSupport.reading(i), rxMonoNs: UInt64(i)) }
+        recorder.noteCameraStart(reason: "stream.start()")
+        recorder.open(header: IMULogTestSupport.header(recorder: recorder))
+        for i in 5..<50 {
+            recorder.recordMotion(IMULogTestSupport.reading(i), rxMonoNs: UInt64(i))
+            recorder.recordFrame(recorder.stampFrame(ptsUs: Int64(i) * 41_667, rxMonoNs: UInt64(i)), seq: i, sent: true)
+        }
+        recorder.waitUntilIdle()
+        let status = try XCTUnwrap(statuses.withLock { $0.last })
+        guard case .refused(let reason) = status.phase else { return XCTFail("not refused: \(status.phase)") }
+        XCTAssertEqual(IMURecordingIndicator(status), .stopped("protection"))
+        XCTAssertTrue(reason.contains("NSFileProtectionCompleteUnlessOpen") || reason.contains("no protection class"), reason)
+        let summary = IMULogTestSupport.close(recorder)
+        XCTAssertNotNil(summary.failure)
+        XCTAssertEqual(summary.bytesHeld, 0)
+        XCTAssertEqual(summary.counts.motionGlasses, 0)
+        XCTAssertEqual(summary.counts.frames, 0)
+        let lines = try IMULogTestSupport.lines(try XCTUnwrap(summary.fileURL))
+        XCTAssertEqual(lines.compactMap { ($0["t"] as? String) == "ev" ? $0["ev"] as? String : $0["t"] as? String },
+                       ["header", "file_open", "protection_refused"], "a refused log holds anything but its header and the refusal")
+        XCTAssertEqual(lines[1]["protection"] as? String, expectedClass)
+        XCTAssertEqual(lines[1]["on_simulator"] as? Bool, false)
+        XCTAssertNotNil(lines[2]["reason"] as? String)
+    }
+
+    /// The seam's other side: `completeUnlessOpen` reported on a "phone"
+    /// records normally, with no unverified or refused line.
+    func testTheRightProtectionClassOnAPhoneRecords() throws {
+        let recorder = IMURecorder(baseDirectory: base, readProtection: { _ in .completeUnlessOpen }, onSimulator: false)
+        recorder.open(header: IMULogTestSupport.header(recorder: recorder))
+        for i in 0..<10 { recorder.recordMotion(IMULogTestSupport.reading(i), rxMonoNs: UInt64(i)) }
+        let summary = IMULogTestSupport.close(recorder)
+        XCTAssertNil(summary.failure)
+        let lines = try IMULogTestSupport.lines(try XCTUnwrap(summary.fileURL))
+        XCTAssertEqual(lines.filter { $0["t"] as? String == "m" }.count, 10)
+        XCTAssertEqual(lines.first { $0["ev"] as? String == "file_open" }?["protection"] as? String, FileProtectionType.completeUnlessOpen.rawValue)
+        XCTAssertNil(lines.first { ["protection_unverified", "protection_refused"].contains($0["ev"] as? String) })
+    }
+
+    /// No class on the Simulator: recorded, and said to be unverified.
+    func testNoProtectionClassOnTheSimulatorRecordsAsUnverified() throws {
+        let recorder = IMURecorder(baseDirectory: base, readProtection: { _ in nil }, onSimulator: true)
+        recorder.open(header: IMULogTestSupport.header(recorder: recorder))
+        for i in 0..<10 { recorder.recordMotion(IMULogTestSupport.reading(i), rxMonoNs: UInt64(i)) }
+        let summary = IMULogTestSupport.close(recorder)
+        XCTAssertNil(summary.failure)
+        let lines = try IMULogTestSupport.lines(try XCTUnwrap(summary.fileURL))
+        XCTAssertEqual(lines.filter { $0["t"] as? String == "m" }.count, 10)
+        XCTAssertNotNil(lines.first { $0["ev"] as? String == "protection_unverified" })
+    }
+
+    /// A lock between the recorder's creation and its queued open used to be
+    /// missed: the observers went in with the open. They go in first now, and
+    /// the lock state is sampled after them; both are logged.
+    func testALockBeforeTheOpenIsCaughtByTheObserversInstalledFirst() throws {
+        let recorder = IMURecorder(baseDirectory: base)
+        recorder.installObservers()
+        NotificationCenter.default.post(name: IMURecorder.protectedDataWillBecomeUnavailable, object: nil)
+        recorder.open(header: IMULogTestSupport.header(recorder: recorder))
+        recorder.recordMotion(IMULogTestSupport.reading(0), rxMonoNs: 1)
+        let summary = IMULogTestSupport.close(recorder)
+        let lines = try IMULogTestSupport.lines(try XCTUnwrap(summary.fileURL))
+        let names = lines.compactMap { $0["ev"] as? String }
+        let installed = try XCTUnwrap(names.firstIndex(of: "lock_observers_installed"))
+        let locked = try XCTUnwrap(names.firstIndex(of: "protected_data_unavailable"), "the lock before the open was missed")
+        let opened = try XCTUnwrap(names.firstIndex(of: "file_open"))
+        XCTAssertLessThan(installed, locked)
+        XCTAssertLessThan(locked, opened)
+        XCTAssertEqual(lines.first { $0["ev"] as? String == "file_open" }?["protected_data_available"] as? Bool, false)
+        XCTAssertEqual(lines.filter { $0["t"] as? String == "m" }.count, 1, "a lock stops nothing")
+    }
+
+    /// The sample after the observers: a phone already locked when the
+    /// recorder is made is logged as locked from the start.
+    func testALockSampledAfterTheObserversIsLogged() throws {
+        let statuses = OSAllocatedUnfairLock<[IMURecorderStatus]>(initialState: [])
+        let recorder = IMURecorder(baseDirectory: base, onStatus: { status in statuses.withLock { $0.append(status) } })
+        recorder.installObservers()
+        recorder.noteProtectedDataSampled(false)
+        recorder.open(header: IMULogTestSupport.header(recorder: recorder))
+        recorder.waitUntilIdle()
+        XCTAssertEqual(statuses.withLock { $0.last?.phoneLocked }, true)
+        let summary = IMULogTestSupport.close(recorder)
+        let lines = try IMULogTestSupport.lines(try XCTUnwrap(summary.fileURL))
+        let sampled = try XCTUnwrap(lines.first { $0["ev"] as? String == "protected_data_sampled" })
+        XCTAssertEqual(sampled["available"] as? Bool, false)
+        XCTAssertEqual(lines.first { $0["ev"] as? String == "file_open" }?["protected_data_available"] as? Bool, false)
     }
 
     func testSamplesFromAnotherSourceAreCountedNotWritten() throws {
@@ -4047,6 +4219,131 @@ final class IMURecorderFileTests: XCTestCase {
         XCTAssertEqual(frameEpochs, [epochs[0], epochs[0], epochs[0], epochs[0], epochs[1], epochs[1], epochs[2], epochs[2], epochs[2]])
     }
 
+    /// DAT's stream states and frames come from two publishers, each on its
+    /// own queue here, and either may run first after a pause: the resumed
+    /// frame ahead of `.streaming` (even ahead of `starting`), or behind it.
+    /// Whichever runs first opens the next epoch, the other joins it, and a
+    /// frame carries the epoch it was stamped in. The PTS froze across the
+    /// pause, which is flagged as `pts_frozen`.
+    func testAfterAPauseWhicheverOfTheFrameAndTheStreamingRunsFirstOpensTheEpoch() throws {
+        enum Order: String, CaseIterable { case stateFirst, frameFirst, frameBeforeStarting }
+        for order in Order.allCases {
+            let recorder = IMURecorder(baseDirectory: base)
+            recorder.open(header: IMULogTestSupport.header(recorder: recorder))
+            let states = DispatchQueue(label: "test.dat-stream-states")
+            let frameQueue = DispatchQueue(label: "test.dat-frames")
+            let t0: UInt64 = 1_000_000_000_000
+            let frameNs: UInt64 = 41_666_667
+            var stamps: [IMUFrameStamp] = []
+            func frame(_ seq: Int, rx: UInt64, ptsUs: Int64) {
+                frameQueue.sync { stamps.append(recorder.stampFrame(ptsUs: ptsUs, rxMonoNs: rx)) }
+            }
+            func state(_ name: String, at monoNs: UInt64) {
+                states.sync { recorder.noteStreamState(name, monoNs: monoNs) }
+            }
+            recorder.noteCameraStart(reason: "stream.start()", monoNs: t0)
+            state("starting", at: t0)
+            state("streaming", at: t0 + 1)
+            for seq in 1...3 { frame(seq, rx: t0 + UInt64(seq) * frameNs, ptsUs: Int64(seq) * 41_667) }
+            let pausedAt = t0 + 4 * frameNs
+            state("paused", at: pausedAt)
+            // Five seconds later the camera resumes, its PTS just above where it froze.
+            let resumeAt = pausedAt + 5_000_000_000
+            switch order {
+            case .stateFirst:
+                state("starting", at: resumeAt)
+                state("streaming", at: resumeAt + 1)
+                frame(4, rx: resumeAt + frameNs, ptsUs: 4 * 41_667)
+            case .frameFirst:
+                state("starting", at: resumeAt)
+                frame(4, rx: resumeAt + frameNs, ptsUs: 4 * 41_667)
+                state("streaming", at: resumeAt + 1)
+            case .frameBeforeStarting:
+                frame(4, rx: resumeAt + frameNs, ptsUs: 4 * 41_667)
+                state("starting", at: resumeAt)
+                state("streaming", at: resumeAt + 1)
+            }
+            for seq in 5...6 { frame(seq, rx: resumeAt + UInt64(seq - 3) * frameNs, ptsUs: Int64(seq) * 41_667) }
+            // The lines themselves arrive in order here (out-of-order lines are
+            // `testAFramesEpochIsTheOneItWasStampedInWhateverOrderItsLineArrives`),
+            // so the frozen PTS is seen between consecutive frames.
+            for (index, stamp) in stamps.enumerated() { recorder.recordFrame(stamp, seq: index + 1, sent: false) }
+
+            let summary = IMULogTestSupport.close(recorder)
+            XCTAssertEqual(summary.epochs, 2, "\(order)")
+            let lines = try IMULogTestSupport.lines(try XCTUnwrap(summary.fileURL))
+            let starts = lines.filter { $0["ev"] as? String == "camera_start" }
+            XCTAssertEqual(starts.count, 2, "\(order): \(starts.compactMap { $0["reason"] as? String })")
+            let epochs = starts.compactMap { $0["epoch"] as? String }
+            var epochBySeq: [Int: String] = [:]
+            for line in lines where line["t"] as? String == "f" {
+                if let seq = line["seq"] as? Int { epochBySeq[seq] = line["epoch"] as? String }
+            }
+            XCTAssertEqual((1...6).map { epochBySeq[$0] }, [epochs.first, epochs.first, epochs.first, epochs.last, epochs.last, epochs.last],
+                           "\(order): a frame is in the wrong epoch")
+            let reason = starts.last?["reason"] as? String ?? ""
+            let joined = lines.contains { $0["ev"] as? String == "stream_state" && $0["state"] as? String == "streaming" && $0["epoch"] != nil }
+            switch order {
+            case .stateFirst:
+                XCTAssertEqual(reason, "resume from paused > starting")
+                XCTAssertFalse(joined)
+            case .frameFirst:
+                XCTAssertEqual(reason, "frame after paused > starting, ahead of its streaming")
+                XCTAssertTrue(joined, "the streaming did not join the epoch its frame opened")
+            case .frameBeforeStarting:
+                XCTAssertEqual(reason, "frame after paused, ahead of its streaming")
+                XCTAssertTrue(joined)
+            }
+            let frozen = lines.filter { $0["ev"] as? String == "pts_frozen" }
+            XCTAssertEqual(frozen.count, 1, "\(order)")
+            XCTAssertEqual(frozen.first?["seq"] as? Int, 4)
+            XCTAssertEqual(frozen.first?["same_epoch"] as? Bool, false)
+            XCTAssertEqual(summary.counts.ptsFrozen, 1)
+        }
+    }
+
+    /// A frame whose callback runs just after the pause marker (within the
+    /// straggler window) was delivered before the pause: it stays in the old
+    /// epoch, and only the real resume opens the next.
+    func testALateFrameFromBeforeThePauseStaysInItsEpoch() throws {
+        let recorder = IMURecorder(baseDirectory: base)
+        recorder.open(header: IMULogTestSupport.header(recorder: recorder))
+        let t0: UInt64 = 1_000_000_000_000
+        recorder.noteCameraStart(reason: "stream.start()", monoNs: t0)
+        recorder.noteStreamState("streaming", monoNs: t0)
+        var stamps = [recorder.stampFrame(ptsUs: 41_667, rxMonoNs: t0 + 41_666_667)]
+        recorder.noteStreamState("paused", monoNs: t0 + 80_000_000)
+        stamps.append(recorder.stampFrame(ptsUs: 83_333, rxMonoNs: t0 + 90_000_000))     // a straggler
+        stamps.append(recorder.stampFrame(ptsUs: 125_000, rxMonoNs: t0 + 3_000_000_000))  // the resume
+        recorder.noteStreamState("streaming", monoNs: t0 + 3_000_000_001)
+        for (index, stamp) in stamps.enumerated() { recorder.recordFrame(stamp, seq: index + 1, sent: false) }
+        let summary = IMULogTestSupport.close(recorder)
+        XCTAssertEqual(summary.epochs, 2)
+        XCTAssertEqual(stamps[0].epoch, stamps[1].epoch, "the straggler opened an epoch")
+        XCTAssertNotEqual(stamps[1].epoch, stamps[2].epoch)
+    }
+
+    /// A pause the epochs never saw -- no stream state at all -- still shows:
+    /// half a second of receipt with no PTS advance is `pts_frozen`, in the
+    /// same epoch.
+    func testAFrozenPTSInsideOneEpochIsFlagged() throws {
+        let recorder = IMURecorder(baseDirectory: base)
+        recorder.open(header: IMULogTestSupport.header(recorder: recorder))
+        recorder.noteCameraStart(reason: "stream.start()")
+        let t0: UInt64 = 1_000_000_000_000
+        let frames: [(pts: Int64, rx: UInt64)] = [(41_667, t0), (83_333, t0 + 41_666_667), (125_000, t0 + 4_000_000_000), (166_667, t0 + 4_041_666_667)]
+        for (index, f) in frames.enumerated() {
+            recorder.recordFrame(recorder.stampFrame(ptsUs: f.pts, rxMonoNs: f.rx), seq: index + 1, sent: false)
+        }
+        let summary = IMULogTestSupport.close(recorder)
+        XCTAssertEqual(summary.counts.ptsFrozen, 1)
+        XCTAssertEqual(summary.counts.ptsDiscontinuities, 0, "a frozen PTS runs forwards, which is why it needs its own flag")
+        let lines = try IMULogTestSupport.lines(try XCTUnwrap(summary.fileURL))
+        let frozen = try XCTUnwrap(lines.first { $0["ev"] as? String == "pts_frozen" })
+        XCTAssertEqual(frozen["seq"] as? Int, 3)
+        XCTAssertEqual(frozen["same_epoch"] as? Bool, true)
+    }
+
     func testAPTSThatRunsBackwardsIsLoggedAsADiscontinuity() throws {
         let recorder = IMURecorder(baseDirectory: base)
         recorder.open(header: IMULogTestSupport.header(recorder: recorder))
@@ -4125,7 +4422,7 @@ final class IMURecorderFileTests: XCTestCase {
     /// while it is.
     func testALockAndUnlockMidLogAreEventsAndTheHandleIsKept() throws {
         let statuses = OSAllocatedUnfairLock<[IMURecorderStatus]>(initialState: [])
-        let recorder = IMURecorder(baseDirectory: base) { status in statuses.withLock { $0.append(status) } }
+        let recorder = IMURecorder(baseDirectory: base, onStatus: { status in statuses.withLock { $0.append(status) } })
         recorder.open(header: IMULogTestSupport.header(recorder: recorder))
         recorder.recordMotion(IMULogTestSupport.reading(0), rxMonoNs: 1)
         recorder.protectedDataWillBecomeUnavailable()
@@ -4542,6 +4839,37 @@ final class IMURecorderMockDeviceTests: XCTestCase {
         let arrivalHz = try XCTUnwrap(Self.rateHz(after))
         XCTAssertEqual(arrivalHz, 30, accuracy: 6, "after the fallback, received at \(arrivalHz)")
         print("[IMURecTest] runtime fallback: \(after.count) samples after the retry at \(arrivalHz) Hz")
+    }
+
+    /// When a cap stops the log, Motion stops too -- its samples would only
+    /// be refused line by line -- with an event saying why, and the camera
+    /// goes on. A 1.5 s duration cap here; 30 minutes in the app.
+    func testWhenACapStopsTheLogMotionStopsAndTheCameraGoesOn() async throws {
+        let (connection, feed) = try await streamingConnection()
+        defer { try? FileManager.default.removeItem(at: feed) }
+        connection.imuRecorderEnabled = true
+        var limits = IMURecorder.Limits()
+        limits.maxDuration = 1.5
+        connection.imuRecorderLimits = limits
+        try await startCapture(connection)
+        let recorder = try XCTUnwrap(connection.imuRecorder)
+        XCTAssertTrue(connection.isMotionAttached)
+        let stopped = await waitUntil(timeout: 10) { !connection.isMotionAttached }
+        XCTAssertTrue(stopped, "Motion still attached after the cap (\(recorder.summary().capReason ?? "no cap"))")
+        XCTAssertEqual(recorder.summary().capReason, "duration")
+        XCTAssertEqual(connection.cameraStreamState, .streaming, "the camera stopped with the log")
+        let frames = connection.frameCount
+        let delivering = await waitUntil(timeout: 5) { connection.frameCount >= frames + 5 }
+        XCTAssertTrue(delivering, "frames stopped with Motion")
+        let closed = await stopCapture(connection, recorder: recorder)
+        let summary = try XCTUnwrap(closed)
+        let lines = try IMULogTestSupport.lines(try XCTUnwrap(summary.fileURL))
+        let names = lines.compactMap { $0["ev"] as? String }
+        let cap = try XCTUnwrap(names.firstIndex(of: "cap_reached"))
+        let why = try XCTUnwrap(names.firstIndex(of: "motion_stop_for_recorder"), "no event says why Motion stopped")
+        XCTAssertLessThan(cap, why)
+        XCTAssertEqual(lines.first { $0["ev"] as? String == "motion_stop_for_recorder" }?["reason"] as? String, "duration cap reached")
+        XCTAssertTrue(names.contains("motion_stop"))
     }
 
     /// The decision itself: only with the recorder on, only before any sample,

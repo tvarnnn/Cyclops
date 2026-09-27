@@ -448,6 +448,14 @@ final class GlassesConnection: ObservableObject {
     /// Kit's real session. `nil` in the app.
     var sessionStartFaultForTesting: (error: DeviceSessionError, startsAnyway: Bool)?
 
+    /// Session, stream and Motion callbacks dropped because their session was
+    /// no longer this connection's; see `observeSession`.
+    private(set) var staleSessionCallbacksDropped = 0
+
+    /// The session this connection holds, for a test that must deliver a
+    /// callback from it after it has been replaced.
+    var deviceSessionForTesting: DeviceSession? { deviceSession }
+
     /// Fires once when the camera stream is confirmed live (`StreamState
     /// .streaming`) — the earliest point it's true that a session "has
     /// successfully started and is about to begin forwarding frames".
@@ -1142,28 +1150,65 @@ final class GlassesConnection: ObservableObject {
         }
     }
 
+    /// Every session callback carries the session it came from, and is acted
+    /// on only if that session is still this connection's.
+    ///
+    /// ## Why
+    ///
+    /// Each callback reaches the main actor in its own `Task`, and clearing
+    /// the token bags stops *future* callbacks, not ones already queued. So a
+    /// session that was abandoned -- by the start watchdog, or after a failed
+    /// start -- can still deliver: its late `.stopped` would run
+    /// `cleanupCameraSession()` on the **next** session, tearing down a
+    /// capture that is working, and its late `.started` would begin a camera
+    /// stream on a session nobody holds. The same holds for its errors and its
+    /// stream's callbacks. Bound to their session, they are dropped instead.
     private func observeSession(_ session: DeviceSession) {
         session.statePublisher.listen { [weak self] state in
             Task { @MainActor [weak self] in
-                guard let self else { return }
-                self.deviceSessionState = state
-                // Pause and resume reach the IMU log here, before a `.stopped`
-                // below closes it.
-                self.imuRecorder?.noteSessionState(state.description)
-                print("[Glasses][Camera] DeviceSessionState changed: \(state)")
-                if state == .started {
-                    self.beginCameraStream(on: session)
-                } else if state == .stopped {
-                    self.cleanupCameraSession()
-                }
+                self?.handleSessionState(state, from: session)
             }
         }.store(in: sessionTokenBag)
 
         session.errorPublisher.listen { [weak self] error in
             Task { @MainActor [weak self] in
-                self?.handleSessionError(error)
+                self?.handleSessionError(error, from: session)
             }
         }.store(in: sessionTokenBag)
+    }
+
+    /// Whether `session` is still this connection's. A callback from any
+    /// other is counted and dropped.
+    private func isCurrentSession(_ session: DeviceSession, callback: @autoclosure () -> String) -> Bool {
+        guard deviceSession === session else {
+            staleSessionCallbacksDropped += 1
+            print("[Glasses][Camera] dropped a late \(callback()) from a session that is no longer current")
+            return false
+        }
+        return true
+    }
+
+    /// A `DeviceSessionState` from `session`. Internal so a test can deliver
+    /// one late, from a session that has since been replaced: DAT's own
+    /// session cannot be made to publish on cue.
+    func handleSessionState(_ state: DeviceSessionState, from session: DeviceSession) {
+        guard isCurrentSession(session, callback: "session state \(state)") else { return }
+        deviceSessionState = state
+        // Pause and resume reach the IMU log here, before a `.stopped`
+        // below closes it.
+        imuRecorder?.noteSessionState(state.description)
+        print("[Glasses][Camera] DeviceSessionState changed: \(state)")
+        if state == .started {
+            beginCameraStream(on: session)
+        } else if state == .stopped {
+            cleanupCameraSession()
+        }
+    }
+
+    /// A session error from `session`; see `handleSessionState(_:from:)`.
+    func handleSessionError(_ error: DeviceSessionError, from session: DeviceSession) {
+        guard isCurrentSession(session, callback: "session error \(error)") else { return }
+        handleSessionError(error)
     }
 
     /// Whether DAT documents this session error as nonblocking: the session
@@ -1254,7 +1299,7 @@ final class GlassesConnection: ObservableObject {
             // Created before the stream listeners, which stamp every frame for
             // it on DAT's thread; `nil` unless the developer switch is on.
             let recorder = makeIMURecorderIfEnabled()
-            setupStreamListeners(for: newCamera.stream, recorder: recorder)
+            setupStreamListeners(for: newCamera.stream, of: session, recorder: recorder)
             cameraStreamState = .starting
             recorder?.noteCameraStart(reason: "stream.start()")
             newCamera.stream.start()
@@ -1335,7 +1380,9 @@ final class GlassesConnection: ObservableObject {
         session?.stop()
     }
 
-    private func setupStreamListeners(for stream: MWDATCamera.Stream, recorder: IMURecorder?) {
+    /// The stream's callbacks are bound to `session` like the session's own;
+    /// see `observeSession`.
+    private func setupStreamListeners(for stream: MWDATCamera.Stream, of session: DeviceSession, recorder: IMURecorder?) {
         stream.statePublisher.listen { [weak self] state in
             // HERE, on DAT's thread, before the hop below, with the time read
             // here: the recorder decides now whether this state opens a camera
@@ -1345,11 +1392,7 @@ final class GlassesConnection: ObservableObject {
             // could be logged under the old epoch. One lock and one enqueue.
             recorder?.noteStreamState(Self.name(of: state), monoNs: DispatchTime.now().uptimeNanoseconds)
             Task { @MainActor [weak self] in
-                self?.cameraStreamState = state
-                print("[Glasses][Camera] StreamState changed: \(state)")
-                if case .streaming = state {
-                    self?.cameraStreamDidStart.send(())
-                }
+                self?.handleStreamState(state, from: session)
             }
         }.store(in: streamTokenBag)
 
@@ -1373,7 +1416,7 @@ final class GlassesConnection: ObservableObject {
             }
 
             Task { @MainActor [weak self] in
-                guard let self else { return }
+                guard let self, self.isCurrentSession(session, callback: "camera frame") else { return }
                 // One clock read serves both the gate and the log budgets.
                 let now = MonotonicClock.now
 
@@ -1448,10 +1491,23 @@ final class GlassesConnection: ObservableObject {
 
         stream.errorPublisher.listen { [weak self] error in
             Task { @MainActor [weak self] in
+                guard let self, self.isCurrentSession(session, callback: "stream error") else { return }
                 print("[Glasses][Camera] stream error: \(error.localizedDescription)")
-                self?.errorMessage = error.localizedDescription
+                self.errorMessage = error.localizedDescription
             }
         }.store(in: streamTokenBag)
+    }
+
+    /// A camera `StreamState` from `session`'s stream; see
+    /// `handleSessionState(_:from:)`. The IMU recorder has already seen it,
+    /// on DAT's thread.
+    func handleStreamState(_ state: MWDATCamera.StreamState, from session: DeviceSession) {
+        guard isCurrentSession(session, callback: "stream state \(state)") else { return }
+        cameraStreamState = state
+        print("[Glasses][Camera] StreamState changed: \(state)")
+        if case .streaming = state {
+            cameraStreamDidStart.send(())
+        }
     }
 
     /// Attaches DAT 1.0.0's experimental Motion capability to a started
@@ -1505,8 +1561,13 @@ final class GlassesConnection: ObservableObject {
             motionAttempts.append(IMUMotionAttempt(hz: rate.hertz, error: nil))
             motionSampleCount.withLock { $0 = 0 }
             let probe = motionProbe
-            newMotion.statePublisher.listen { state in
-                Task { @MainActor in
+            newMotion.statePublisher.listen { [weak self] state in
+                Task { @MainActor [weak self] in
+                    // Bound to this session and this attach: a late state from
+                    // an abandoned session, or from the Motion a fallback
+                    // replaced, is not this one's.
+                    guard let self, self.isCurrentSession(session, callback: "motion state \(state)"),
+                          self.motion === newMotion else { return }
                     probe.noteState(state.description)
                     recorder?.noteEvent("motion_state", fields: [("state", .string(state.description))])
                     print("[Glasses][Motion] MotionState changed: \(state)")
@@ -1514,7 +1575,9 @@ final class GlassesConnection: ObservableObject {
             }.store(in: motionTokenBag)
             newMotion.errorPublisher.listen { [weak self] error in
                 Task { @MainActor [weak self] in
-                    self?.handleMotionError(error, rate: rate, on: session)
+                    guard let self, self.isCurrentSession(session, callback: "motion error \(error)"),
+                          self.motion === newMotion else { return }
+                    self.handleMotionError(error, rate: rate, on: session)
                 }
             }.store(in: motionTokenBag)
             // Detached so the receipt time is read as the sample leaves DAT's
@@ -1662,19 +1725,55 @@ final class GlassesConnection: ObservableObject {
     private func makeIMURecorderIfEnabled() -> IMURecorder? {
         guard imuRecorderEnabled else { return nil }
         let readout = imuRecorderReadout
-        let recorder = IMURecorder(
-            baseDirectory: imuLogBaseDirectory,
-            limits: imuRecorderLimits,
-            protectedDataAvailable: UIApplication.shared.isProtectedDataAvailable
-        ) { status in
-            Task { @MainActor in readout.update(status) }
-        }
+        let recorder = IMURecorder(baseDirectory: imuLogBaseDirectory, limits: imuRecorderLimits, onStatus: { [weak self] status in
+            Task { @MainActor [weak self] in
+                readout.update(status)
+                self?.recorderStatusChanged(status)
+            }
+        })
+        // The lock observers first, then the lock state read after them, both
+        // now and on this thread (where UIKit posts the notifications): a lock
+        // before, between or after the two is caught by one of them, and the
+        // log has both.
+        recorder.installObservers()
+        recorder.noteProtectedDataSampled(UIApplication.shared.isProtectedDataAvailable)
         imuRecorder = recorder
         if let lastDeviceState {
             recorder.noteDeviceState(lastDeviceState)
         }
         print("[Glasses][IMURec] armed for this capture session: \(recorder.relativePath)")
         return recorder
+    }
+
+    /// Once the recorder takes no more data -- a cap reached, the file failed,
+    /// or its protection refused -- Motion only costs the link: its samples
+    /// would be refused line by line. So it is stopped, with an event saying
+    /// why, unless the Motion probe's own readout still wants it. The camera
+    /// is untouched.
+    private func recorderStatusChanged(_ status: IMURecorderStatus) {
+        // This session's recorder only: a closed one can still report late.
+        guard let recorder = imuRecorder, status.fileName == recorder.relativePath,
+              motion != nil, !motionProbeEnabled else { return }
+        let reason: String
+        switch status.phase {
+        case .failed(let why): reason = "recorder failed: \(why)"
+        case .refused(let why): reason = "recorder refused: \(why)"
+        case .recording:
+            guard let cap = status.capReason else { return }
+            reason = "\(cap) cap reached"
+        case .idle, .closed:
+            return
+        }
+        print("[Glasses][Motion] stopping Motion: the IMU log takes no more data (\(reason)); the camera continues")
+        imuRecorder?.noteEvent("motion_stop_for_recorder", fields: [("reason", .string(reason))])
+        stopMotion()
+        if let session = deviceSession {
+            do {
+                try session.removeMotion()
+            } catch {
+                print("[Glasses][Motion] removeMotion after the recorder stopped failed: \(error.description)")
+            }
+        }
     }
 
     /// Ends this session's log. Frames still queued for the main actor reach

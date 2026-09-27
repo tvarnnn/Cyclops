@@ -420,6 +420,9 @@ nonisolated struct IMURecorderCounts: Equatable, Sendable {
     var framesSent = 0
     var framesWithoutPTS = 0
     var ptsDiscontinuities = 0
+    /// Consecutive frames 0.5 s or more apart by receipt whose PTS advanced
+    /// by less than half that: a stop or pause the PTS froze across.
+    var ptsFrozen = 0
     /// Lines refused after a cap, after close, or after the file failed (a
     /// failed recorder holds nothing: there is no file to write it to).
     var droppedAfterCap = 0
@@ -444,6 +447,7 @@ nonisolated struct IMURecorderCounts: Equatable, Sendable {
             ("f_sent", .int(framesSent)),
             ("f_no_pts", .int(framesWithoutPTS)),
             ("f_pts_discontinuities", .int(ptsDiscontinuities)),
+            ("f_pts_frozen", .int(ptsFrozen)),
             ("dropped_after_cap", .int(droppedAfterCap)),
             ("dropped_after_close", .int(droppedAfterClose)),
             ("f_after_close", .int(framesAfterClose)),
@@ -460,6 +464,10 @@ nonisolated struct IMURecorderStatus: Equatable, Sendable {
         case recording
         case closed
         case failed(String)
+        /// The recorder would not record: the file's Data Protection class
+        /// could not be verified as `completeUnlessOpen` on a phone, so it
+        /// might stop being writable at the first lock. Nothing is recorded.
+        case refused(String)
     }
 
     var phase: Phase = .idle
@@ -491,6 +499,7 @@ nonisolated enum IMURecordingIndicator: Equatable, Sendable {
         switch status.phase {
         case .idle, .closed: self = .off
         case .failed: self = .stopped("error")
+        case .refused: self = .stopped("protection")
         case .recording: self = status.capReason.map { .stopped("\($0) cap") } ?? .writing
         }
     }
@@ -509,7 +518,7 @@ nonisolated struct IMUIOAudit: Equatable, Sendable {
 }
 
 /// The camera epoch, decided where DAT delivers: on its callback threads, in
-/// the order it delivers stream states and frames, behind a lock.
+/// the order they run, behind a lock.
 ///
 /// ## Why not on the recorder's queue
 ///
@@ -519,58 +528,110 @@ nonisolated struct IMUIOAudit: Equatable, Sendable {
 /// the `.streaming` that opened its epoch and be written under the old one --
 /// silently, because the PTS freezes across a camera stop instead of
 /// resetting, so no discontinuity flags it. Here a frame's epoch is fixed when
-/// it is stamped on DAT's thread, before any hop, and a state change is
-/// applied on DAT's thread too. The cost on DAT's thread is one uncontended
-/// lock per frame.
+/// it is stamped on DAT's thread, before any hop.
+///
+/// ## Two publishers, either order
+///
+/// DAT's stream states and frames come from two publishers, and nothing says
+/// their callbacks run in the order DAT produced them: the first resumed frame
+/// may run before the `.streaming` that announces the resume. So a pause or a
+/// stop is a marker, and **whichever comes first after it opens the next
+/// epoch** -- the return to `.streaming`, or a frame -- and the other joins
+/// it. A frame within `stragglerWindowNs` of the marker is not a resume (no
+/// pause is that short) but a frame from before it whose callback ran late,
+/// and stays in the epoch it belongs to. The cost on DAT's thread is one
+/// uncontended lock per frame.
 nonisolated struct IMUCameraEpochs: Sendable {
     struct Rotation: Equatable, Sendable {
         let previous: UUID?
         let next: UUID
     }
 
+    /// What a stream state or a frame did to the epoch.
+    enum Effect: Equatable, Sendable {
+        case none
+        /// A new epoch, and why.
+        case opened(Rotation, reason: String)
+        /// The `.streaming` of a resume whose first frame already opened the
+        /// epoch.
+        case joined
+    }
+
+    /// A frame this close after a pause or stop marker is a late callback
+    /// from before it, not a resumed frame.
+    static let stragglerWindowNs: UInt64 = 250_000_000
+
     /// The current epoch; `nil` before the first camera start.
     private(set) var current: UUID?
     /// Frames stamped in `current`.
     private(set) var frames = 0
     /// The states since the stream last left `streaming`, oldest first (a
-    /// few at most), for the resume's `reason`.
+    /// few at most), for the new epoch's `reason`.
     private var sinceStreaming: [String] = []
     /// Set at a camera start and cleared by the first `streaming` after it,
     /// which is that start arriving, not a resume. Frames can precede it.
     private var awaitingFirstStreaming = false
+    /// When the stream left `streaming` with frames in the epoch: the marker
+    /// after which the next `streaming` or frame opens a new epoch.
+    private var interruptedAtNs: UInt64?
+    /// A frame opened the current epoch after a marker; the `streaming` still
+    /// to come joins it rather than opening another.
+    private var awaitingJoiningStreaming = false
 
     /// `stream.start()`: always a new epoch.
     mutating func cameraStart() -> Rotation {
         awaitingFirstStreaming = true
+        interruptedAtNs = nil
+        awaitingJoiningStreaming = false
         sinceStreaming = []
         return rotate()
     }
 
-    /// Every `StreamState`. A `streaming` that follows any other state opens a
-    /// new epoch, once the current one has frames -- except the first one
-    /// after a camera start. `starting` is not special: a resume may pass
-    /// through it (`paused` or `waitingForDevice`, then `starting`, then
-    /// `streaming`), and it used to be excluded, which left every such resume
-    /// in the epoch before it. `from` is the path, e.g. `paused > starting`.
-    mutating func streamState(_ state: String) -> (rotation: Rotation, from: String)? {
+    /// Every `StreamState`, with the time read on DAT's thread.
+    ///
+    /// Any state but `streaming`, once the epoch has frames, is a marker
+    /// (`starting` included: a resume may pass through it, and it used to be
+    /// excluded, which left every such resume in the epoch before it) --
+    /// except `starting` while a frame's epoch waits for its `streaming`,
+    /// which is that same resume arriving. A `streaming` after a marker opens
+    /// the next epoch, unless a frame already has, in which case it joins.
+    mutating func streamState(_ state: String, monoNs: UInt64) -> Effect {
         guard state == "streaming" else {
             if sinceStreaming.count < 8 { sinceStreaming.append(state) }
-            return nil
+            if awaitingJoiningStreaming, state == "starting" { return .none }
+            awaitingJoiningStreaming = false
+            if !awaitingFirstStreaming, frames > 0, interruptedAtNs == nil {
+                interruptedAtNs = monoNs
+            }
+            return .none
         }
         let path = sinceStreaming
         sinceStreaming = []
         if awaitingFirstStreaming {
             awaitingFirstStreaming = false
-            return nil
+            return .none
         }
-        guard !path.isEmpty, frames > 0 else { return nil }
-        return (rotate(), path.joined(separator: " > "))
+        if awaitingJoiningStreaming {
+            awaitingJoiningStreaming = false
+            return .joined
+        }
+        guard interruptedAtNs != nil else { return .none }
+        interruptedAtNs = nil
+        return .opened(rotate(), reason: "resume from \(path.joined(separator: " > "))")
     }
 
-    /// One frame, arriving now: the epoch it belongs to.
-    mutating func frame() -> UUID? {
+    /// One frame, received at `rxMonoNs`: the epoch it belongs to, and
+    /// whether it opened that epoch.
+    mutating func frame(rxMonoNs: UInt64) -> (epoch: UUID?, effect: Effect) {
+        var effect = Effect.none
+        if let marker = interruptedAtNs, rxMonoNs >= marker &+ Self.stragglerWindowNs {
+            interruptedAtNs = nil
+            awaitingJoiningStreaming = true
+            let path = sinceStreaming.joined(separator: " > ")
+            effect = .opened(rotate(), reason: "frame after \(path), ahead of its streaming")
+        }
         frames += 1
-        return current
+        return (current, effect)
     }
 
     private mutating func rotate() -> Rotation {
@@ -578,6 +639,36 @@ nonisolated struct IMUCameraEpochs: Sendable {
         current = rotation.next
         frames = 0
         return rotation
+    }
+}
+
+/// Whether the log's file may be written, from the Data Protection class it
+/// reports once created (and, if that was wrong, once set on the file).
+///
+/// Walk 5 depends on the file staying writable through a lock, which only
+/// `completeUnlessOpen` (held open) guarantees. A file under `.complete`
+/// would record normally until the pocketed phone locked and then fail --
+/// the walk would look recorded and not be. So on a phone anything but
+/// `completeUnlessOpen`, including no class at all, is refused, with any
+/// failure to set it in the reason. The Simulator has no Data Protection and
+/// may report no class: that is recorded as unverified, not refused.
+nonisolated enum IMUProtectionVerdict: Equatable, Sendable {
+    case verified
+    case unverified(String)
+    case refused(String)
+
+    init(file: FileProtectionType?, setErrors: [String], onSimulator: Bool) {
+        let failures = setErrors.isEmpty ? "" : "; setting it failed (\(setErrors.joined(separator: "; ")))"
+        switch file {
+        case .some(.completeUnlessOpen):
+            self = .verified
+        case nil where onSimulator:
+            self = .unverified("the Simulator reports no protection class (it has no Data Protection)" + failures)
+        case nil:
+            self = .refused("the log file reports no protection class, so completeUnlessOpen cannot be verified" + failures)
+        case .some(let other):
+            self = .refused("the log file is \(other.rawValue), not NSFileProtectionCompleteUnlessOpen" + failures)
+        }
     }
 }
 
@@ -684,8 +775,11 @@ nonisolated final class IMURecorder: @unchecked Sendable {
     private var failure: String?
     private var timer: DispatchSourceTimer?
     private var ticks = 0
-    private var observers: [NSObjectProtocol] = []
-    private var protectedDataAvailable: Bool
+    /// Whether the phone is unlocked, as the observers and the sample have
+    /// said; `true` until one of them says otherwise.
+    private var protectedDataAvailable = true
+    /// The file protection check refused this log; see `IMUProtectionVerdict`.
+    private var refusal: String?
     private var counts = IMURecorderCounts()
     private var io = IMUIOAudit()
 
@@ -693,12 +787,27 @@ nonisolated final class IMURecorder: @unchecked Sendable {
     /// `IMUCameraEpochs`.
     private let epochs = OSAllocatedUnfairLock(initialState: IMUCameraEpochs())
 
+    /// Not queue-confined either: installed on the caller's thread, before the
+    /// open is queued, and removed on the queue. Behind `observerLock`.
+    private let observerLock = NSLock()
+    private var observerTokens: [NSObjectProtocol] = []
+    private var observersInstalled = false
+
+    /// Reads a file's Data Protection class. `IMURecorder.protection(of:)`
+    /// in the app; a test seam, so both verdicts can be reached off a phone.
+    private let readProtection: @Sendable (URL) -> FileProtectionType?
+    /// Whether this is the Simulator, which has no Data Protection and may
+    /// report no class. A test seam.
+    private let onSimulator: Bool
+
     /// Camera epochs started, as written to the log.
     private var epochCount = 0
     /// The last PTS seen, and its epoch: a discontinuity is looked for only
     /// inside one epoch.
     private var lastPTSEpoch: UUID?
     private var lastPTSUs: Int64?
+    /// The last frame with a PTS, in any epoch, for `pts_frozen`.
+    private var lastFrameWithPTS: (ptsUs: Int64, rxMonoNs: UInt64, epoch: UUID?)?
     private var lastDeviceState: IMUDeviceStateSnapshot?
     private var motionIntervalNs: Int64?
     private var motionConfiguredHz: Int?
@@ -712,9 +821,8 @@ nonisolated final class IMURecorder: @unchecked Sendable {
     /// - Parameters:
     ///   - baseDirectory: where `imu-logs/` is created; `nil` is this app's
     ///     Documents directory, resolved on the recorder's queue.
-    ///   - protectedDataAvailable: whether the phone is unlocked now
-    ///     (`UIApplication.isProtectedDataAvailable`); the notifications keep it
-    ///     current after that. Recorded in the log, not acted on.
+    ///   - readProtection, onSimulator: test seams for the protection check;
+    ///     see `IMUProtectionVerdict`.
     ///   - onStatus: called on the recorder's queue, at most once a second and
     ///     on every change of phase or cap.
     init(
@@ -723,7 +831,8 @@ nonisolated final class IMURecorder: @unchecked Sendable {
         startMonoNs: UInt64 = DispatchTime.now().uptimeNanoseconds,
         baseDirectory: URL? = nil,
         limits: Limits = .standard,
-        protectedDataAvailable: Bool = true,
+        readProtection: @escaping @Sendable (URL) -> FileProtectionType? = { IMURecorder.protection(of: $0) },
+        onSimulator: Bool = IMURecorder.runningOnSimulator,
         onStatus: (@Sendable (IMURecorderStatus) -> Void)? = nil
     ) {
         self.sessionID = sessionID
@@ -731,7 +840,8 @@ nonisolated final class IMURecorder: @unchecked Sendable {
         self.startMonoNs = startMonoNs
         self.baseDirectory = baseDirectory
         self.limits = limits
-        self.protectedDataAvailable = protectedDataAvailable
+        self.readProtection = readProtection
+        self.onSimulator = onSimulator
         self.onStatus = onStatus
         self.effectiveMaxBytes = limits.maxBytes
         let shortID = String(sessionID.uuidString.prefix(8))
@@ -742,11 +852,55 @@ nonisolated final class IMURecorder: @unchecked Sendable {
 
     // MARK: Called from any thread; each is one enqueue
 
+    #if targetEnvironment(simulator)
+    static let runningOnSimulator = true
+    #else
+    static let runningOnSimulator = false
+    #endif
+
     /// Writes the header, creates the file and starts the flush timer. Lines
     /// recorded before this are held in memory and written after the header,
-    /// so the header is always the first line on disk.
+    /// so the header is always the first line on disk. The lock observers are
+    /// installed first, here, on the caller's thread, if they are not already.
     func open(header: IMULogHeader) {
+        installObservers()
         queue.async { self.openOnQueue(header.line()) }
+    }
+
+    /// Installs the lock, unlock and thermal observers **now**, on the
+    /// caller's thread. Idempotent. `open` calls it; `GlassesConnection` calls
+    /// it earlier, at creation, and then samples the lock state
+    /// (`noteProtectedDataSampled`) -- in that order, so a lock between the
+    /// two is caught by one or the other and never missed. Installing them in
+    /// the queued open, as before, left a window in which a lock reported
+    /// nothing and the log said "unlocked".
+    func installObservers() {
+        let center = NotificationCenter.default
+        observerLock.lock()
+        defer { observerLock.unlock() }
+        guard !observersInstalled else { return }
+        observersInstalled = true
+        // Weak: nothing waits on an unlock, so nothing here has to outlive the
+        // recorder's owner. The close removes them.
+        observerTokens = [
+            center.addObserver(forName: ProcessInfo.thermalStateDidChangeNotification, object: nil, queue: nil) { [weak self] _ in
+                self?.noteEvent("phone_thermal", fields: [("state", .string(Self.name(of: ProcessInfo.processInfo.thermalState)))])
+            },
+            center.addObserver(forName: Self.protectedDataWillBecomeUnavailable, object: nil, queue: nil) { [weak self] _ in
+                self?.protectedDataWillBecomeUnavailable()
+            },
+            center.addObserver(forName: Self.protectedDataDidBecomeAvailable, object: nil, queue: nil) { [weak self] _ in
+                self?.protectedDataDidBecomeAvailable()
+            },
+        ]
+        let monoNs = DispatchTime.now().uptimeNanoseconds
+        queue.async { self.eventOnQueue("lock_observers_installed", monoNs: monoNs, fields: []) }
+    }
+
+    /// The lock state, read (`UIApplication.isProtectedDataAvailable`, on the
+    /// main actor) **after** `installObservers`. Logged either way.
+    func noteProtectedDataSampled(_ available: Bool, monoNs: UInt64 = DispatchTime.now().uptimeNanoseconds) {
+        queue.async { self.protectedDataSampledOnQueue(available, monoNs: monoNs) }
     }
 
     /// A frame's stamp: its two clocks and its camera epoch. Call it **on DAT's
@@ -754,7 +908,13 @@ nonisolated final class IMURecorder: @unchecked Sendable {
     /// when DAT delivered the frame (see `IMUCameraEpochs`). One lock, no
     /// enqueue; the line itself is written later by `recordFrame`.
     func stampFrame(ptsUs: Int64?, rxMonoNs: UInt64) -> IMUFrameStamp {
-        IMUFrameStamp(ptsUs: ptsUs, rxMonoNs: rxMonoNs, epoch: epochs.withLock { $0.frame() })
+        let (epoch, effect) = epochs.withLock { $0.frame(rxMonoNs: rxMonoNs) }
+        if case .opened(let rotation, let reason) = effect {
+            // Enqueued now, from DAT's thread, so it lands ahead of this
+            // frame's line, which comes after the main-actor hop.
+            queue.async { self.epochStartedOnQueue(rotation, reason: reason, monoNs: rxMonoNs) }
+        }
+        return IMUFrameStamp(ptsUs: ptsUs, rxMonoNs: rxMonoNs, epoch: epoch)
     }
 
     func stampFrame(sampleBuffer: CMSampleBuffer, rxMonoNs: UInt64) -> IMUFrameStamp {
@@ -793,16 +953,17 @@ nonisolated final class IMURecorder: @unchecked Sendable {
     }
 
     /// Every camera `StreamState`. Call it **on DAT's stream-state callback
-    /// thread**, before any hop, with the time read there: whether it opens an
-    /// epoch is decided now, in DAT's order against the frames being stamped.
-    /// A return to streaming from any other state is a camera start, once the
-    /// epoch has frames; see `IMUCameraEpochs.streamState`.
+    /// thread**, before any hop, with the time read there: whether it opens
+    /// (or joins) an epoch is decided now, against the frames being stamped
+    /// on DAT's other thread; see `IMUCameraEpochs`.
     func noteStreamState(_ state: String, monoNs: UInt64 = DispatchTime.now().uptimeNanoseconds) {
-        let change = epochs.withLock { $0.streamState(state) }
+        let effect = epochs.withLock { $0.streamState(state, monoNs: monoNs) }
         queue.async {
-            self.eventOnQueue("stream_state", monoNs: monoNs, fields: [("state", .string(state))])
-            if let change {
-                self.epochStartedOnQueue(change.rotation, reason: "resume from \(change.from)", monoNs: monoNs)
+            var fields: [(String, IMUJSON)] = [("state", .string(state))]
+            if effect == .joined { fields.append(("epoch", .string("joined the epoch its first frame opened"))) }
+            self.eventOnQueue("stream_state", monoNs: monoNs, fields: fields)
+            if case .opened(let rotation, let reason) = effect {
+                self.epochStartedOnQueue(rotation, reason: reason, monoNs: monoNs)
             }
         }
     }
@@ -886,6 +1047,7 @@ nonisolated final class IMURecorder: @unchecked Sendable {
         var existingFolderBytes = 0
         var folderProtection: FileProtectionType?
         var fileProtection: FileProtectionType?
+        var setErrors: [String] = []
         performIO {
             let base = try baseDirectory ?? FileManager.default.url(
                 for: .documentDirectory, in: .userDomainMask, appropriateFor: nil, create: true
@@ -898,12 +1060,16 @@ nonisolated final class IMURecorder: @unchecked Sendable {
             try folder.setResourceValues(excluded)
             // The folder's class is the one a file created in it inherits, so
             // the `open` below creates the log in the right class even while
-            // the phone is locked. Metadata, so it can be set then too; a
-            // failure is logged in `file_open`, not fatal.
-            try? FileManager.default.setAttributes(
-                [.protectionKey: FileProtectionType.completeUnlessOpen], ofItemAtPath: folder.path
-            )
-            folderProtection = Self.protection(of: folder)
+            // the phone is locked. Metadata, so it can be set then too. A
+            // failure is recorded; the file's own class decides (below).
+            do {
+                try FileManager.default.setAttributes(
+                    [.protectionKey: FileProtectionType.completeUnlessOpen], ofItemAtPath: folder.path
+                )
+            } catch {
+                setErrors.append("folder: \(error.localizedDescription)")
+            }
+            folderProtection = readProtection(folder)
             existingFolderBytes = IMULogStore.totalBytes(in: folder)
 
             // The folder's budget, fixed now. A file that would open with less
@@ -932,26 +1098,49 @@ nonisolated final class IMURecorder: @unchecked Sendable {
             handle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: true)
             var fileURL = url
             self.fileURL = fileURL
-            fileProtection = Self.protection(of: url)
-            if let inherited = fileProtection, inherited != .completeUnlessOpen {
-                // The folder's class did not reach the file: set it on the file
-                // itself, which re-wraps its key and leaves this handle open.
-                try? FileManager.default.setAttributes(
-                    [.protectionKey: FileProtectionType.completeUnlessOpen], ofItemAtPath: url.path
-                )
-                fileProtection = Self.protection(of: url)
+            fileProtection = readProtection(url)
+            if fileProtection != .completeUnlessOpen {
+                // The folder's class did not reach the file (or it reports
+                // none): set it on the file itself, which re-wraps its key and
+                // leaves this handle open, then read it back.
+                do {
+                    try FileManager.default.setAttributes(
+                        [.protectionKey: FileProtectionType.completeUnlessOpen], ofItemAtPath: url.path
+                    )
+                } catch {
+                    setErrors.append("file: \(error.localizedDescription)")
+                }
+                fileProtection = readProtection(url)
             }
             try fileURL.setResourceValues(excluded)
         }
         guard failure == nil else { return }
-        print("[Glasses][IMURec] recording to \(fileURL?.path ?? relativePath) (protection \(fileProtection?.rawValue ?? "unreported"); folder already holds \(existingFolderBytes) bytes; this file may take \(effectiveMaxBytes))")
-        // What protected the file on this phone, and whether it was locked
-        // when the file was made: the walk-5 pre-flight reads this line.
-        eventOnQueue("file_open", monoNs: DispatchTime.now().uptimeNanoseconds, fields: [
+        // What protected the file on this phone, whether it was locked when
+        // the file was made, and what could not be set: the walk-5 pre-flight
+        // reads this line.
+        let fileOpen: [(String, IMUJSON)] = [
             ("protection", .optionalString(fileProtection?.rawValue)),
             ("folder_protection", .optionalString(folderProtection?.rawValue)),
+            ("set_errors", .array(setErrors.map(IMUJSON.string))),
             ("protected_data_available", .bool(protectedDataAvailable)),
-        ])
+            ("on_simulator", .bool(onSimulator)),
+        ]
+        let verdict = IMUProtectionVerdict(file: fileProtection, setErrors: setErrors, onSimulator: onSimulator)
+        if case .refused(let reason) = verdict {
+            refuseOnQueue(reason, headerLine: headerLine, fileOpen: fileOpen)
+            return
+        }
+        eventOnQueue("file_open", monoNs: DispatchTime.now().uptimeNanoseconds, fields: fileOpen)
+        switch verdict {
+        case .verified, .refused:
+            break
+        case .unverified(let reason):
+            print("[Glasses][IMURec] file protection unverified: \(reason)")
+            eventOnQueue("protection_unverified", monoNs: DispatchTime.now().uptimeNanoseconds, fields: [
+                ("reason", .string(reason)),
+            ])
+        }
+        print("[Glasses][IMURec] recording to \(fileURL?.path ?? relativePath) (protection \(fileProtection?.rawValue ?? "unreported"); folder already holds \(existingFolderBytes) bytes; this file may take \(effectiveMaxBytes))")
         flushOnQueue()
 
         let timer = DispatchSource.makeTimerSource(queue: queue)
@@ -964,27 +1153,96 @@ nonisolated final class IMURecorder: @unchecked Sendable {
         timer.resume()
         self.timer = timer
 
-        // Weak: nothing waits on an unlock any more, so nothing here has to
-        // outlive the recorder's owner. `finishCloseOnQueue` removes them.
-        let center = NotificationCenter.default
-        observers = [
-            center.addObserver(forName: ProcessInfo.thermalStateDidChangeNotification, object: nil, queue: nil) { [weak self] _ in
-                self?.noteEvent("phone_thermal", fields: [("state", .string(Self.name(of: ProcessInfo.processInfo.thermalState)))])
-            },
-            center.addObserver(forName: Self.protectedDataWillBecomeUnavailable, object: nil, queue: nil) { [weak self] _ in
-                self?.protectedDataWillBecomeUnavailable()
-            },
-            center.addObserver(forName: Self.protectedDataDidBecomeAvailable, object: nil, queue: nil) { [weak self] _ in
-                self?.protectedDataDidBecomeAvailable()
-            },
-        ]
         eventOnQueue("phone_thermal", monoNs: DispatchTime.now().uptimeNanoseconds, fields: [
             ("state", .string(Self.name(of: ProcessInfo.processInfo.thermalState))),
         ])
         publishStatus()
     }
 
+    /// The file's class is not `completeUnlessOpen` on a phone, so it could
+    /// stop being writable at the first lock -- the walk would look recorded
+    /// and not be. Refuse instead: nothing held before the open is written
+    /// (it is sensor data), the file keeps only its header and one
+    /// `file_open` and one `protection_refused` line, the handle is closed,
+    /// and every later line is refused. Developer Tools and the badge say so
+    /// (`Phase.refused`).
+    private func refuseOnQueue(_ reason: String, headerLine: String, fileOpen: [(String, IMUJSON)]) {
+        let discarded = max(0, buffer.count - Data(headerLine.utf8).count)
+        buffer = Data(headerLine.utf8)
+        bytesAccepted = buffer.count
+        // What was counted before the open was never written.
+        counts = IMURecorderCounts()
+        let monoNs = DispatchTime.now().uptimeNanoseconds
+        eventOnQueue("file_open", monoNs: monoNs, fields: fileOpen)
+        eventOnQueue("protection_refused", monoNs: monoNs, fields: [
+            ("reason", .string(reason)),
+            ("discarded_bytes", .int(discarded)),
+        ])
+        flushOnQueue()
+        if let handle {
+            performIO {
+                try handle.synchronize()
+                try handle.close()
+            }
+        }
+        handle = nil
+        refusal = reason
+        if failure == nil { failure = "refused: \(reason)" }
+        removeObservers()
+        print("[Glasses][IMURec] NOT RECORDING: \(reason). \(relativePath) holds its header and the refusal only.")
+        publishStatus()
+    }
+
+    /// Removes the observers `installObservers` added. On the queue.
+    private func removeObservers() {
+        observerLock.lock()
+        let tokens = observerTokens
+        observerTokens = []
+        observerLock.unlock()
+        tokens.forEach { NotificationCenter.default.removeObserver($0) }
+    }
+
+    /// The lock state as sampled after the observers went in. A locked phone
+    /// is treated as a lock (flush and sync, if the file is open); either way
+    /// it is logged.
+    private func protectedDataSampledOnQueue(_ available: Bool, monoNs: UInt64) {
+        eventOnQueue("protected_data_sampled", monoNs: monoNs, fields: [
+            ("available", .bool(available)),
+            ("was", .bool(protectedDataAvailable)),
+        ])
+        if available {
+            protectedDataAvailable = true
+        } else if protectedDataAvailable {
+            lockOnQueue()
+        }
+        publishStatus()
+    }
+
     private func frameOnQueue(_ stamp: IMUFrameStamp, seq: Int, sent: Bool) {
+        // A stop or pause the PTS froze across: half a second or more between
+        // receipts, and the PTS advanced by less than half of it. Flagged
+        // whether or not the epoch changed -- a resume the epochs missed
+        // shows here and nowhere else.
+        if let pts = stamp.ptsUs {
+            if let last = lastFrameWithPTS {
+                let rxGapNs = Int64(bitPattern: stamp.rxMonoNs &- last.rxMonoNs)
+                let ptsAdvanceNs = (pts - last.ptsUs) * 1_000
+                if rxGapNs >= 500_000_000, ptsAdvanceNs < rxGapNs / 2 {
+                    counts.ptsFrozen += 1
+                    eventOnQueue("pts_frozen", monoNs: stamp.rxMonoNs, fields: [
+                        ("seq", .int(seq)),
+                        ("epoch", .optionalString(stamp.epoch?.uuidString)),
+                        ("prev_epoch", .optionalString(last.epoch?.uuidString)),
+                        ("same_epoch", .bool(stamp.epoch == last.epoch)),
+                        ("prev_pts_us", .int(Int(last.ptsUs))),
+                        ("pts_us", .int(Int(pts))),
+                        ("pts_advance_ms", .double(Double(ptsAdvanceNs) / 1_000_000)),
+                        ("rx_gap_ms", .double(Double(rxGapNs) / 1_000_000)),
+                    ])
+                }
+            }
+            lastFrameWithPTS = (pts, stamp.rxMonoNs, stamp.epoch)
+        }
         if stamp.epoch != lastPTSEpoch {
             lastPTSEpoch = stamp.epoch
             lastPTSUs = nil
@@ -1198,8 +1456,7 @@ nonisolated final class IMURecorder: @unchecked Sendable {
         ])
         timer?.cancel()
         timer = nil
-        observers.forEach { NotificationCenter.default.removeObserver($0) }
-        observers = []
+        removeObservers()
         flushOnQueue()
         if let handle {
             performIO {
@@ -1250,7 +1507,9 @@ nonisolated final class IMURecorder: @unchecked Sendable {
 
     private func statusOnQueue() -> IMURecorderStatus {
         let phase: IMURecorderStatus.Phase
-        if let failure {
+        if let refusal {
+            phase = .refused(refusal)
+        } else if let failure {
             phase = .failed(failure)
         } else if closed {
             phase = .closed
