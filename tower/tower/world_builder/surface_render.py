@@ -343,6 +343,48 @@ def _room_poses(solution):
     return room or dict(poses)
 
 
+def _pose_quarantine_on() -> bool:
+    """`TOWER_WORLD_POSE_QUARANTINE` (`config.world_pose_quarantine_setting`); off = today's camera path."""
+    from tower.config import world_pose_quarantine_setting  # noqa: PLC0415
+
+    return world_pose_quarantine_setting()
+
+
+def viewable_poses(poses: dict) -> dict:
+    """The room's poses a viewer may stand at (RUN P5-PQ RULE.md (a); manager 096 §2 (a)).
+
+    Only PUBLISHED, SUPPORTED poses -- at least `global_solve.MIN_IMAGE_OBSERVATIONS` observations, the
+    publication floor -- and, among them, only those inside the SURFACE'S OWN radius gate
+    (`surface.robust_pose_outliers`, its defaults unchanged: beyond 10 x the median radius AND 2.5 x the p95
+    radius of these poses, standing down under 8 poses or above a 5 % share). No new threshold.
+
+    WHY. Walk 4 put six impossible poses in the page's camera list -- four bed poses 0.6-9.4 M units out and
+    two unsupported riders ~2,000 units out -- because the list took every pose of component 0. They build the
+    movement tube and the prev/next stepping, and a step onto one lands in black. Walk 3 had the same class
+    (s2400: 0 observations, 2,936 x the median radius), kept out of its list only by decimation."""
+    from tower.world_builder.global_solve import MIN_IMAGE_OBSERVATIONS  # noqa: PLC0415
+    from tower.world_builder.surface import robust_pose_outliers  # noqa: PLC0415
+
+    import numpy as np
+
+    def _supported(pose) -> bool:
+        try:
+            return int(pose.get("observations") or 0) >= MIN_IMAGE_OBSERVATIONS
+        except (TypeError, ValueError):
+            return False
+
+    kept = {kid: p for kid, p in poses.items() if _supported(p)}
+    if not kept:
+        return kept
+    kids = list(kept)
+    centres = []
+    for kid in kids:
+        R = np.array(kept[kid]["rotation"], float).reshape(3, 3)
+        centres.append(-R.T @ np.array(kept[kid]["translation"], float))
+    report = robust_pose_outliers(np.asarray(centres))
+    return {kid: kept[kid] for kid, far in zip(kids, report.outlier) if not far}
+
+
 def _camera_path(store, world_id: str, session_id: str) -> list:
     """Where the wearer stood, so the viewer can open there and walk it.
 
@@ -361,6 +403,8 @@ def _camera_path(store, world_id: str, session_id: str) -> list:
     import numpy as np
 
     poses = _room_poses(solution)
+    if _pose_quarantine_on():
+        poses = viewable_poses(poses)
     out = []
     for kid in (solution.keyframe_ids or []):
         pose = poses.get(kid)

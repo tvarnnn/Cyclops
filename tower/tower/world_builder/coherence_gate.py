@@ -406,7 +406,7 @@ def _rot_deg(R) -> float:
 
 def apply_gate(model: SolveModel, links: dict, metric_log: dict, *, link_rotations: dict,
                masks_applied: bool, params: GateParams | None = None, withhold=None, room=None, seal=None,
-               link_units=None) -> dict:
+               link_units=None, rider_min_shared: int | None = None) -> dict:
     """The rule (module docstring) on one solve.
 
     links: {(name_a, name_b): inliers} (`read_verified_links`); link_rotations: {(name_a, name_b): R_b_from_a}
@@ -438,6 +438,16 @@ def apply_gate(model: SolveModel, links: dict, metric_log: dict, *, link_rotatio
         non-room parts, and a group joins only a reference on its own side (no non-room camera enters the room).
       link_units: {(name_a, name_b) sorted: unit}. The redundancy test counts two links together only when their
         units differ (`redundant_links`); a link it does not name is a unit of its own.
+
+    THE POSE QUARANTINE'S HOOK (RUN P5-PQ RULE.md (b); only with `TOWER_WORLD_POSE_QUARANTINE` on). None, the
+    default: today's rest rule, exactly.
+
+      rider_min_shared: m. A camera under `min_obs` (a RIDER) takes a label only through its own supported
+        attachment: at least m 3-D points shared with one labelled (supported) camera of its solver component,
+        and then that camera's label (today's argmax). It never defaults to the component's first label -- the
+        room, for the room's component (walk 4: five riders 500-600 m out took the room label that way). The
+        unattached riders of a component form one unplaced label of their own (`quarantined`: reason
+        `no-verified-link`). A rider is never a published keyframe, so no vote, withhold or seal reads it.
 
     Returns {"labels": {name: label}, "components": [...], "rounds": [...], "groups": [...], "evidence": {...},
     "params": ..., "params_digest": ...}. Label 0 is the room (most supported cameras); every other label is
@@ -645,9 +655,25 @@ def apply_gate(model: SolveModel, links: dict, metric_log: dict, *, link_rotatio
             next_label += 1
             continue
         first = next(rd["label"] for rd in rounds if rd["source_component"] == comp)
+        if rider_min_shared is None:
+            for i in rest:
+                row = C[i, labelled].toarray().ravel()
+                labels[i] = labels[labelled[int(np.argmax(row))]] if row.max() > 0 else first
+            continue
+        # The pose quarantine's rider rule (`rider_min_shared`): its own attachment, or unplaced.
+        unattached = []
         for i in rest:
             row = C[i, labelled].toarray().ravel()
-            labels[i] = labels[labelled[int(np.argmax(row))]] if row.max() > 0 else first
+            if len(row) and row.max() >= rider_min_shared:
+                labels[i] = labels[labelled[int(np.argmax(row))]]
+            else:
+                unattached.append(int(i))
+        if unattached:
+            labels[np.asarray(unattached, dtype=np.int64)] = next_label
+            rounds.append({"source_component": comp, "label": next_label, "reference_group": None,
+                           "kept_groups": 0, "kept_cameras": 0, "decisions": [],
+                           "quarantined": REASON_NO_VERIFIED_LINK, "riders": len(unattached)})
+            next_label += 1
     return _finish(model, labels, supported, rounds, group_decisions, masks_applied, metric_available, params,
                    evidence, group_members)
 
@@ -666,6 +692,9 @@ def _reasons(round_: dict, room_component: int, group_decisions: dict, masks_app
     if round_.get("sealed"):
         # A piece the anchor verification sealed (`seal`): its only reason, in whatever round it came up.
         return [round_["sealed"]]
+    if round_.get("quarantined"):
+        # The pose quarantine's unattached riders (`rider_min_shared`): never published, reason Tower-side only.
+        return [round_["quarantined"]]
     if round_["source_component"] != room_component or round_["reference_group"] is None:
         return [REASON_SOLVED_SEPARATELY]
     first = round_["reference_group"]["first_camera"]

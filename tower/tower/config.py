@@ -1162,6 +1162,35 @@ def world_frame_quality_log_setting() -> bool:
     return False
 
 
+# P5-PQ (manager 095 §2, as corrected by 096 §2): impossible poses are never published in a room. One
+# switch, three parts (RUN experiments/P5-PQ/RULE.md):
+#   (a) the viewer's camera list (`surface_render._camera_path`) keeps only published, supported room
+#       poses inside the surface's own radius gate;
+#   (b) the evidence gate's rider rule: a camera under `min_obs` never defaults to the room label;
+#   (c) the anchor verification: an impossible-speed motion flag seals an image-unverifiable group.
+# Read by the solve, the re-gate in place and the render pages. Off, and off is today exactly:
+# every output is byte-identical (tests/golden/world_builder_pose_quarantine_off.json).
+WORLD_POSE_QUARANTINE_ENV = "TOWER_WORLD_POSE_QUARANTINE"
+
+
+def world_pose_quarantine_setting() -> bool:
+    """`TOWER_WORLD_POSE_QUARANTINE`: the pose quarantine (P5-PQ). Off.
+
+    On is `_flag`'s set (`1`, `true`, `yes`, `on`). Unset, blank, `0`, `false`, `no` and
+    `off` are off, silently. Anything else is off and logged: a typo never removes a pose
+    from a room, and it is still visible.
+    """
+    if _flag(WORLD_POSE_QUARANTINE_ENV, default=False):
+        return True
+    value = (os.environ.get(WORLD_POSE_QUARANTINE_ENV) or "").strip()
+    if value and value.lower() not in ("0", "false", "no", "off"):
+        logger.warning(
+            "[Tower][Config] %s=%r is not on or off; treating it as off",
+            WORLD_POSE_QUARANTINE_ENV, value,
+        )
+    return False
+
+
 def _torch_threads(value: str | None) -> int | str:
     """"auto", or a non-negative integer. Garbage is "auto", not a crash.
 
