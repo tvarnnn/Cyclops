@@ -26,7 +26,9 @@ struct IMURecordingBadge: View {
         case .writing:
             badge(symbol: "record.circle.fill", title: "IMU", tint: .red, value: "recording")
         case .stopped(let reason):
-            badge(symbol: "exclamationmark.triangle.fill", title: "IMU", tint: .orange, value: "stopped, \(reason)")
+            // The reason is on the badge itself, not only in its accessibility
+            // value: "IMU protection" (refused), "IMU error", "IMU duration cap".
+            badge(symbol: "exclamationmark.triangle.fill", title: "IMU \(reason)", tint: .orange, value: "stopped, \(reason)")
         }
     }
 
