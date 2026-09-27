@@ -386,13 +386,17 @@ def _memory_record(object_class: str, *, frame_seq=None, session_id=None) -> dic
     """
     from tower.object_memory.records import Confidence, ObjectObservation
 
+    # Relative to now, not a fixed epoch: the store's reader drops records
+    # older than its 30-day default retention, so a fixed 2026-08-27 stamp
+    # made both tests below fail from 2026-09-26 on for no product reason.
+    seen = time.time() - 60.0
     return ObjectObservation(
         object_class=object_class,
         detector_score=0.9,
         confidence=Confidence.HIGH,
-        observed_at=1787810000.0,
+        observed_at=seen,
         time_basis="tower-receipt",
-        recorded_at=1787810000.0,
+        recorded_at=seen,
         source="glasses-camera",
         module_id="object-memory",
         session_id=session_id,
