@@ -433,6 +433,21 @@ final class GlassesConnection: ObservableObject {
     /// Developer Tools instead of as an alert; see `DATNonblockingWarning`.
     @Published private(set) var datNonblockingWarning: DATNonblockingWarning?
 
+    /// How long a session kept after `session.start()` **threw**
+    /// `dwaOutOfStuRange` may go without reaching `.started` before it is
+    /// treated as the failed start it then was. DAT's own start window is
+    /// about 10 s; this is that plus a margin. A test seam.
+    var sessionStartWatchdogTimeout: Duration = .seconds(15)
+    /// The watchdog for the current session, while one is armed.
+    private var sessionStartWatchdog: Task<Void, Never>?
+
+    /// Test seam: `session.start()` throws this instead of returning, and --
+    /// with `startsAnyway` -- after DAT has really started the session. DAT
+    /// cannot be made to throw a chosen error, and `DeviceSession` cannot be
+    /// faked, so this is the only way to reach the throw path on Mock Device
+    /// Kit's real session. `nil` in the app.
+    var sessionStartFaultForTesting: (error: DeviceSessionError, startsAnyway: Bool)?
+
     /// Fires once when the camera stream is confirmed live (`StreamState
     /// .streaming`) — the earliest point it's true that a session "has
     /// successfully started and is about to begin forwarding frames".
@@ -1031,17 +1046,23 @@ final class GlassesConnection: ObservableObject {
             deviceSession = session
             observeSession(session)
             deviceSessionState = .starting
-            try session.start()
+            try startSession(session)
             print("[Glasses][Camera] session.start() called — createSession succeeded with an eligible device present")
         } catch {
             // DAT documents `dwaOutOfStuRange` as the one version error that
-            // lets a session proceed. Raised by `start()`, the session exists
-            // and is starting, so it is kept and the warning goes to the log
-            // and Developer Tools, not to a modal alert. Raised by
+            // lets a session proceed. Raised by `start()`, the session is kept
+            // and the warning goes to the log and Developer Tools, not to a
+            // modal alert -- but DAT documents the *listener's* warning, not
+            // what a thrown one leaves behind. If the session did not in fact
+            // start, keeping it would wedge capture: `deviceSession` held,
+            // `.starting` forever, every Start refused as `.alreadyRunning`,
+            // and no alert. So a watchdog gives it DAT's start window and then
+            // takes the failure path this catch used to take. Raised by
             // `createSession`, there is no session to keep, so it falls through
             // to the failure path below like every other error.
-            if deviceSession != nil, Self.isNonblockingWarning(error) {
+            if let session = deviceSession, Self.isNonblockingWarning(error) {
                 noteNonblockingWarning("\(error)", source: "session.start()")
+                armSessionStartWatchdog(for: session, warning: "\(error)")
                 return
             }
             // Untyped: `createSession` and `start()` throw `DeviceSessionError`
@@ -1054,6 +1075,44 @@ final class GlassesConnection: ObservableObject {
             errorMessage = error.localizedDescription
             deviceSession = nil
             deviceSessionState = .idle
+        }
+    }
+
+    /// `session.start()`, or the test seam's fault in its place.
+    private func startSession(_ session: DeviceSession) throws(DeviceSessionError) {
+        if let fault = sessionStartFaultForTesting {
+            if fault.startsAnyway { try session.start() }
+            print("[Glasses][Camera] session.start() fault injected by the test seam: \(fault.error)")
+            throw fault.error
+        }
+        try session.start()
+    }
+
+    /// After a thrown `dwaOutOfStuRange`, gives the kept session
+    /// `sessionStartWatchdogTimeout` to reach `.started`, then abandons it
+    /// exactly as a failed start: the alert, the refusal, `deviceSession`
+    /// cleared, and `session.stop()` -- so the next Start is a real start.
+    ///
+    /// "Reached `.started`" is read as `camera != nil`: the `.started`
+    /// callback begins the camera stream in the same main-actor turn, and a
+    /// stream that failed to begin has already abandoned the session. So this
+    /// fires for a session left idle, left `.starting`, or stopped by the
+    /// wearer without DAT ever confirming `.stopped` -- every way a session
+    /// that never started can be held -- and never for one that is working,
+    /// paused or not. A session that DAT does stop is gone before it fires.
+    private func armSessionStartWatchdog(for session: DeviceSession, warning: String) {
+        sessionStartWatchdog?.cancel()
+        let timeout = sessionStartWatchdogTimeout
+        print("[Glasses][Camera] session kept after a thrown nonblocking warning; it must reach .started within \(timeout)")
+        sessionStartWatchdog = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: timeout)
+            guard !Task.isCancelled, let self, self.deviceSession === session, self.camera == nil else { return }
+            print("[Glasses][Camera] session did not start within \(timeout) of a thrown \(warning) (state \(self.deviceSessionState)); abandoning it")
+            self.sessionStartWatchdog = nil
+            self.abandonSessionAfterFailedStart(
+                refusal: .datRefused(warning),
+                reason: "The glasses session did not start (\(warning)). Start capture again; if it keeps failing, update the Meta AI app and the glasses."
+            )
         }
     }
 
@@ -1278,9 +1337,15 @@ final class GlassesConnection: ObservableObject {
 
     private func setupStreamListeners(for stream: MWDATCamera.Stream, recorder: IMURecorder?) {
         stream.statePublisher.listen { [weak self] state in
+            // HERE, on DAT's thread, before the hop below, with the time read
+            // here: the recorder decides now whether this state opens a camera
+            // epoch, in DAT's own order against the frames the listener below
+            // stamps. After the hop, this state and a resumed frame travel as
+            // two unordered main-actor `Task`s, and the first frame of a resume
+            // could be logged under the old epoch. One lock and one enqueue.
+            recorder?.noteStreamState(Self.name(of: state), monoNs: DispatchTime.now().uptimeNanoseconds)
             Task { @MainActor [weak self] in
                 self?.cameraStreamState = state
-                recorder?.noteStreamState(Self.name(of: state))
                 print("[Glasses][Camera] StreamState changed: \(state)")
                 if case .streaming = state {
                     self?.cameraStreamDidStart.send(())
@@ -1300,9 +1365,11 @@ final class GlassesConnection: ObservableObject {
             )
             // The IMU recorder's two clocks for this frame, read here for the
             // same reason: receipt before the hop, and the buffer's own PTS.
-            // Two reads, and only while the recorder is on.
-            let imuStamp = recorder.map { _ in
-                IMUFrameStamp(sampleBuffer: frame.sampleBuffer, rxMonoNs: DispatchTime.now().uptimeNanoseconds)
+            // Its camera epoch is taken here too, in DAT's order against the
+            // stream states above. Two reads and one lock, and only while the
+            // recorder is on.
+            let imuStamp = recorder.map {
+                $0.stampFrame(sampleBuffer: frame.sampleBuffer, rxMonoNs: DispatchTime.now().uptimeNanoseconds)
             }
 
             Task { @MainActor [weak self] in
@@ -1595,7 +1662,11 @@ final class GlassesConnection: ObservableObject {
     private func makeIMURecorderIfEnabled() -> IMURecorder? {
         guard imuRecorderEnabled else { return nil }
         let readout = imuRecorderReadout
-        let recorder = IMURecorder(baseDirectory: imuLogBaseDirectory, limits: imuRecorderLimits) { status in
+        let recorder = IMURecorder(
+            baseDirectory: imuLogBaseDirectory,
+            limits: imuRecorderLimits,
+            protectedDataAvailable: UIApplication.shared.isProtectedDataAvailable
+        ) { status in
             Task { @MainActor in readout.update(status) }
         }
         imuRecorder = recorder
@@ -1661,6 +1732,8 @@ final class GlassesConnection: ObservableObject {
         print("[Glasses][Camera] session cleanup")
         FramePTSProbe.shared.reportFinal(reason: "session cleanup")
         let hadCamera = camera != nil
+        sessionStartWatchdog?.cancel()
+        sessionStartWatchdog = nil
         stopMotion()
         closeIMURecorder(reason: "session cleanup")
         sessionTokenBag.clear()

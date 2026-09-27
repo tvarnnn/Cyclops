@@ -625,7 +625,7 @@ private struct IMURecorderRows: View {
         case .failed(let reason): return "Stopped: \(reason)"
         case .recording:
             if let cap = s.capReason { return "Stopped at the \(cap) cap" }
-            return s.heldWhileLocked ? "Recording (held while locked)" : "Recording"
+            return s.phoneLocked ? "Recording (phone locked)" : "Recording"
         }
     }
 

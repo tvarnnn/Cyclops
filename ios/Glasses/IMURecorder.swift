@@ -15,6 +15,7 @@ import CoreMedia
 import Foundation
 import MWDATCore
 import MWDATMotion
+import os
 
 // MARK: - Values
 
@@ -73,7 +74,7 @@ nonisolated struct IMUMotionReading: Equatable, Sendable {
 /// The two clocks read off one camera frame **on DAT's callback thread**,
 /// before the main-actor hop, for the same reason `FramePTSProbe` reads there:
 /// a receipt time taken after the hop carries main-actor queueing as well as
-/// transport.
+/// transport. The camera epoch is taken there too (`IMURecorder.stampFrame`).
 nonisolated struct IMUFrameStamp: Equatable, Sendable {
     /// `CMSampleBufferGetPresentationTimeStamp` in microseconds, or `nil` when
     /// DAT's buffer carried an invalid or indefinite time.
@@ -81,16 +82,21 @@ nonisolated struct IMUFrameStamp: Equatable, Sendable {
     /// This phone's `DispatchTime` (`mach_absolute_time`) in nanoseconds: the
     /// same base as `MonotonicClock` and as the Motion lines' `rx_mono_ns`.
     let rxMonoNs: UInt64
+    /// The camera epoch the frame arrived in, fixed when it was stamped; see
+    /// `IMUCameraEpochs`. `nil` before any camera start.
+    let epoch: UUID?
 
-    init(ptsUs: Int64?, rxMonoNs: UInt64) {
+    init(ptsUs: Int64?, rxMonoNs: UInt64, epoch: UUID? = nil) {
         self.ptsUs = ptsUs
         self.rxMonoNs = rxMonoNs
+        self.epoch = epoch
     }
 
-    init(sampleBuffer: CMSampleBuffer, rxMonoNs: UInt64) {
+    init(sampleBuffer: CMSampleBuffer, rxMonoNs: UInt64, epoch: UUID? = nil) {
         self.init(
             ptsUs: Self.microseconds(CMSampleBufferGetPresentationTimeStamp(sampleBuffer)),
-            rxMonoNs: rxMonoNs
+            rxMonoNs: rxMonoNs,
+            epoch: epoch
         )
     }
 
@@ -239,8 +245,11 @@ nonisolated indirect enum IMUJSON: Sendable {
 /// The four line types. Pure functions of their inputs, so the format is
 /// tested without a file, a queue or the SDK.
 nonisolated enum IMULogFormat {
-    /// Bumped on any change a reader must know about.
-    static let schema = 1
+    /// Bumped on any change a reader must know about. 2: a frame's epoch is
+    /// taken on DAT's thread when it arrives, a resume through `starting` opens
+    /// an epoch, the file stays open (and written) while the phone is locked,
+    /// and `counts` says what is on disk.
+    static let schema = 2
 
     /// `{"t":"m","ts_ns":…,"rx_mono_ns":…,"a":[x,y,z]|null,"g":[x,y,z]|null,"q":[w,x,y,z]|null,"src":"glasses"}`
     static func motionLine(_ reading: IMUMotionReading, rxMonoNs: UInt64) -> String {
@@ -257,11 +266,11 @@ nonisolated enum IMULogFormat {
     }
 
     /// `{"t":"f","pts_us":…,"epoch":"<uuid>","rx_mono_ns":…,"sent":true|false,"seq":N}`
-    static func frameLine(_ stamp: IMUFrameStamp, epoch: UUID?, sent: Bool, seq: Int) -> String {
+    static func frameLine(_ stamp: IMUFrameStamp, sent: Bool, seq: Int) -> String {
         IMUJSON.line([
             ("t", .string("f")),
             ("pts_us", stamp.ptsUs.map { .int(Int($0)) } ?? .null),
-            ("epoch", .optionalString(epoch?.uuidString)),
+            ("epoch", .optionalString(stamp.epoch?.uuidString)),
             ("rx_mono_ns", .uint(stamp.rxMonoNs)),
             ("sent", .bool(sent)),
             ("seq", .int(seq)),
@@ -383,7 +392,7 @@ nonisolated struct IMULogHeader: Sendable {
             ])),
             ("seq_semantics", .string("the app's 1-based DAT frame ordinal for this capture session: GlassesConnection.frameCount, sent to the Tower as frame.seq, which the Tower stores as source_seq in frames.jsonl (the app sends no source_seq)")),
             ("sent_semantics", .string("true when the 12 fps gate selected the frame and it was decoded and handed to TowerClient.sendFrame; the Tower may still not have received it (offline, send window, paused) -- frames.jsonl is the truth for receipt")),
-            ("epoch_semantics", .string("a new UUID at each camera start: stream.start(), and each return to streaming after a pause or a stop with frames already in the epoch")),
+            ("epoch_semantics", .string("a new UUID at each camera start: stream.start(), and every later return to streaming from any other state (a pause, a stop, starting, waitingForDevice) once the epoch has frames; the first streaming after stream.start() is that start. A frame's epoch is taken on DAT's callback thread when it arrives, in DAT's order against the stream states. The PTS freezes across a camera stop rather than resetting, so an epoch boundary is not visible in pts_us")),
         ])
     }
 }
@@ -411,11 +420,11 @@ nonisolated struct IMURecorderCounts: Equatable, Sendable {
     var framesSent = 0
     var framesWithoutPTS = 0
     var ptsDiscontinuities = 0
-    /// Lines refused after a cap, after close, or because the phone stayed
-    /// locked long enough to fill the in-memory buffer.
+    /// Lines refused after a cap, after close, or after the file failed (a
+    /// failed recorder holds nothing: there is no file to write it to).
     var droppedAfterCap = 0
     var droppedAfterClose = 0
-    var droppedWhileLocked = 0
+    var droppedAfterFailure = 0
     /// The frames among `droppedAfterClose`: received by the phone after the
     /// session's log closed (still queued for the main actor at the stop).
     var framesAfterClose = 0
@@ -438,7 +447,7 @@ nonisolated struct IMURecorderCounts: Equatable, Sendable {
             ("dropped_after_cap", .int(droppedAfterCap)),
             ("dropped_after_close", .int(droppedAfterClose)),
             ("f_after_close", .int(framesAfterClose)),
-            ("dropped_while_locked", .int(droppedWhileLocked)),
+            ("dropped_after_failure", .int(droppedAfterFailure)),
         ]
     }
 }
@@ -464,8 +473,8 @@ nonisolated struct IMURecorderStatus: Equatable, Sendable {
     /// Which cap stopped the data lines, if one has: `size`, `duration` or
     /// `folder`.
     var capReason: String?
-    /// The phone is locked; lines are held in memory until it unlocks.
-    var heldWhileLocked = false
+    /// The phone is locked. The open file is still being written.
+    var phoneLocked = false
 }
 
 /// The recording badge's three states.
@@ -494,6 +503,82 @@ nonisolated struct IMUIOAudit: Equatable, Sendable {
     var operations = 0
     var onMainThread = 0
     var offQueue = 0
+    /// Times the log file was opened. One per recorder: the handle is never
+    /// closed and reopened, not even across a lock.
+    var fileOpens = 0
+}
+
+/// The camera epoch, decided where DAT delivers: on its callback threads, in
+/// the order it delivers stream states and frames, behind a lock.
+///
+/// ## Why not on the recorder's queue
+///
+/// The stream-state and frame listeners each hop to the main actor in their
+/// own `Task`, and nothing orders two such `Task`s. When the epoch was decided
+/// after those hops, the first frame of a resume could reach the log ahead of
+/// the `.streaming` that opened its epoch and be written under the old one --
+/// silently, because the PTS freezes across a camera stop instead of
+/// resetting, so no discontinuity flags it. Here a frame's epoch is fixed when
+/// it is stamped on DAT's thread, before any hop, and a state change is
+/// applied on DAT's thread too. The cost on DAT's thread is one uncontended
+/// lock per frame.
+nonisolated struct IMUCameraEpochs: Sendable {
+    struct Rotation: Equatable, Sendable {
+        let previous: UUID?
+        let next: UUID
+    }
+
+    /// The current epoch; `nil` before the first camera start.
+    private(set) var current: UUID?
+    /// Frames stamped in `current`.
+    private(set) var frames = 0
+    /// The states since the stream last left `streaming`, oldest first (a
+    /// few at most), for the resume's `reason`.
+    private var sinceStreaming: [String] = []
+    /// Set at a camera start and cleared by the first `streaming` after it,
+    /// which is that start arriving, not a resume. Frames can precede it.
+    private var awaitingFirstStreaming = false
+
+    /// `stream.start()`: always a new epoch.
+    mutating func cameraStart() -> Rotation {
+        awaitingFirstStreaming = true
+        sinceStreaming = []
+        return rotate()
+    }
+
+    /// Every `StreamState`. A `streaming` that follows any other state opens a
+    /// new epoch, once the current one has frames -- except the first one
+    /// after a camera start. `starting` is not special: a resume may pass
+    /// through it (`paused` or `waitingForDevice`, then `starting`, then
+    /// `streaming`), and it used to be excluded, which left every such resume
+    /// in the epoch before it. `from` is the path, e.g. `paused > starting`.
+    mutating func streamState(_ state: String) -> (rotation: Rotation, from: String)? {
+        guard state == "streaming" else {
+            if sinceStreaming.count < 8 { sinceStreaming.append(state) }
+            return nil
+        }
+        let path = sinceStreaming
+        sinceStreaming = []
+        if awaitingFirstStreaming {
+            awaitingFirstStreaming = false
+            return nil
+        }
+        guard !path.isEmpty, frames > 0 else { return nil }
+        return (rotate(), path.joined(separator: " > "))
+    }
+
+    /// One frame, arriving now: the epoch it belongs to.
+    mutating func frame() -> UUID? {
+        frames += 1
+        return current
+    }
+
+    private mutating func rotate() -> Rotation {
+        let rotation = Rotation(previous: current, next: UUID())
+        current = rotation.next
+        frames = 0
+        return rotation
+    }
 }
 
 /// Writes one capture session's IMU log: `Documents/imu-logs/<start>-<id>.jsonl`.
@@ -505,7 +590,8 @@ nonisolated struct IMUIOAudit: Equatable, Sendable {
 /// calling thread -- `queue.async` with a small value -- and everything else,
 /// formatting included, happens on this recorder's own serial utility queue.
 /// Lines are buffered and written when 64 KB accumulate or once a second,
-/// whichever is first, so a crash loses at most about a second.
+/// whichever is first, so a crash loses at most about a second -- locked or
+/// not (see "Private").
 ///
 /// ## Bounded, three ways
 ///
@@ -519,15 +605,27 @@ nonisolated struct IMUIOAudit: Equatable, Sendable {
 ///
 /// ## Private
 ///
-/// Motion is raw sensor data (docs/06-PRIVACY-DATA.md), so the file is written
-/// with `FileProtectionType.complete` and excluded from backup. `.complete`
-/// makes the file unreadable while the phone is locked, including to this
-/// process, so when protected data is about to go away the recorder flushes and
-/// closes its handle, holds new lines in memory (bounded), and reopens and
-/// flushes when the phone is unlocked. A close requested while locked waits for
-/// the unlock rather than losing the held lines.
+/// Motion is raw sensor data (docs/06-PRIVACY-DATA.md), so the file is
+/// encrypted at rest with `FileProtectionType.completeUnlessOpen` (Data
+/// Protection's "Protected Unless Open" class) and excluded from backup.
+///
+/// Not `.complete`. Walk 5 is walked with the phone in a pocket, so the phone
+/// locks within minutes, and a `.complete` file cannot be written once it has:
+/// the recorder used to close on lock and hold every later line in memory
+/// until the unlock, so a pocketed walk lived in RAM -- lost to a crash or a
+/// jetsam, and truncated at a 32 MB hold near 30 minutes. A
+/// `completeUnlessOpen` file stays writable through a lock **for as long as it
+/// stays open**, and once closed it cannot be opened again until the phone is
+/// unlocked. So the file is created by the one `open` that writes it, that
+/// handle is never closed until the log ends, and a lock is only a durable
+/// point (flush and fsync) and an event in the log. A close while locked
+/// closes at once. The class read back from the file is logged (`file_open`)
+/// so the log itself says what protected it on the phone; the Simulator has no
+/// Data Protection.
 ///
 /// State below `queue` is confined to it; that is what the `@unchecked` asserts.
+/// The camera epoch is the exception: it lives behind its own lock, because it
+/// is decided on DAT's threads (`IMUCameraEpochs`).
 nonisolated final class IMURecorder: @unchecked Sendable {
 
     struct Limits: Equatable, Sendable {
@@ -542,9 +640,6 @@ nonisolated final class IMURecorder: @unchecked Sendable {
         var flushInterval: TimeInterval = 1.0
         /// A `counts` event every this many flush ticks (10 s by default).
         var countsEveryTicks = 10
-        /// How much may be held in memory while the phone is locked: about
-        /// half an hour of 60 Hz Motion plus 24 fps frame lines.
-        var maxBufferedBytesWhileLocked = 32 * 1024 * 1024
 
         static let standard = Limits()
     }
@@ -585,20 +680,24 @@ nonisolated final class IMURecorder: @unchecked Sendable {
     private var capIsFolder = false
     private var capReason: String?
     private var closed = false
-    private var closePending: (reason: String, monoNs: UInt64)?
     private var closeCompletions: [@Sendable (IMURecorderSummary) -> Void] = []
     private var failure: String?
     private var timer: DispatchSourceTimer?
     private var ticks = 0
     private var observers: [NSObjectProtocol] = []
-    private var protectedDataAvailable = true
+    private var protectedDataAvailable: Bool
     private var counts = IMURecorderCounts()
     private var io = IMUIOAudit()
 
-    private var epoch: UUID?
-    private var epochFrames = 0
+    /// Not queue-confined: written on DAT's threads and the main actor. See
+    /// `IMUCameraEpochs`.
+    private let epochs = OSAllocatedUnfairLock(initialState: IMUCameraEpochs())
+
+    /// Camera epochs started, as written to the log.
     private var epochCount = 0
-    private var lastStreamState: String?
+    /// The last PTS seen, and its epoch: a discontinuity is looked for only
+    /// inside one epoch.
+    private var lastPTSEpoch: UUID?
     private var lastPTSUs: Int64?
     private var lastDeviceState: IMUDeviceStateSnapshot?
     private var motionIntervalNs: Int64?
@@ -613,6 +712,9 @@ nonisolated final class IMURecorder: @unchecked Sendable {
     /// - Parameters:
     ///   - baseDirectory: where `imu-logs/` is created; `nil` is this app's
     ///     Documents directory, resolved on the recorder's queue.
+    ///   - protectedDataAvailable: whether the phone is unlocked now
+    ///     (`UIApplication.isProtectedDataAvailable`); the notifications keep it
+    ///     current after that. Recorded in the log, not acted on.
     ///   - onStatus: called on the recorder's queue, at most once a second and
     ///     on every change of phase or cap.
     init(
@@ -621,6 +723,7 @@ nonisolated final class IMURecorder: @unchecked Sendable {
         startMonoNs: UInt64 = DispatchTime.now().uptimeNanoseconds,
         baseDirectory: URL? = nil,
         limits: Limits = .standard,
+        protectedDataAvailable: Bool = true,
         onStatus: (@Sendable (IMURecorderStatus) -> Void)? = nil
     ) {
         self.sessionID = sessionID
@@ -628,6 +731,7 @@ nonisolated final class IMURecorder: @unchecked Sendable {
         self.startMonoNs = startMonoNs
         self.baseDirectory = baseDirectory
         self.limits = limits
+        self.protectedDataAvailable = protectedDataAvailable
         self.onStatus = onStatus
         self.effectiveMaxBytes = limits.maxBytes
         let shortID = String(sessionID.uuidString.prefix(8))
@@ -645,6 +749,23 @@ nonisolated final class IMURecorder: @unchecked Sendable {
         queue.async { self.openOnQueue(header.line()) }
     }
 
+    /// A frame's stamp: its two clocks and its camera epoch. Call it **on DAT's
+    /// frame callback thread**, before any hop, so the epoch is the one current
+    /// when DAT delivered the frame (see `IMUCameraEpochs`). One lock, no
+    /// enqueue; the line itself is written later by `recordFrame`.
+    func stampFrame(ptsUs: Int64?, rxMonoNs: UInt64) -> IMUFrameStamp {
+        IMUFrameStamp(ptsUs: ptsUs, rxMonoNs: rxMonoNs, epoch: epochs.withLock { $0.frame() })
+    }
+
+    func stampFrame(sampleBuffer: CMSampleBuffer, rxMonoNs: UInt64) -> IMUFrameStamp {
+        stampFrame(
+            ptsUs: IMUFrameStamp.microseconds(CMSampleBufferGetPresentationTimeStamp(sampleBuffer)),
+            rxMonoNs: rxMonoNs
+        )
+    }
+
+    /// Writes the frame's line under the epoch in its stamp, whenever it
+    /// arrives here.
     func recordFrame(_ stamp: IMUFrameStamp, seq: Int, sent: Bool) {
         queue.async { self.frameOnQueue(stamp, seq: seq, sent: sent) }
     }
@@ -653,31 +774,36 @@ nonisolated final class IMURecorder: @unchecked Sendable {
         queue.async { self.motionOnQueue(reading, rxMonoNs: rxMonoNs) }
     }
 
-    /// A camera start: a fresh epoch, which every later `f` line carries.
+    /// A camera start: a fresh epoch, which every frame stamped after this
+    /// carries. Call it before `stream.start()`.
     func noteCameraStart(reason: String, monoNs: UInt64 = DispatchTime.now().uptimeNanoseconds) {
-        queue.async { self.rotateEpoch(reason: reason, monoNs: monoNs) }
+        let rotation = epochs.withLock { $0.cameraStart() }
+        queue.async { self.epochStartedOnQueue(rotation, reason: reason, monoNs: monoNs) }
     }
 
     func noteCameraStop(reason: String, monoNs: UInt64 = DispatchTime.now().uptimeNanoseconds) {
+        let (epoch, frames) = epochs.withLock { ($0.current, $0.frames) }
         queue.async {
             self.eventOnQueue("camera_stop", monoNs: monoNs, fields: [
-                ("epoch", .optionalString(self.epoch?.uuidString)),
+                ("epoch", .optionalString(epoch?.uuidString)),
                 ("reason", .string(reason)),
-                ("epoch_frames", .int(self.epochFrames)),
+                ("epoch_frames", .int(frames)),
             ])
         }
     }
 
-    /// Every camera `StreamState`. A return to streaming after a pause or a
-    /// stop, in an epoch that already has frames, is a camera start.
+    /// Every camera `StreamState`. Call it **on DAT's stream-state callback
+    /// thread**, before any hop, with the time read there: whether it opens an
+    /// epoch is decided now, in DAT's order against the frames being stamped.
+    /// A return to streaming from any other state is a camera start, once the
+    /// epoch has frames; see `IMUCameraEpochs.streamState`.
     func noteStreamState(_ state: String, monoNs: UInt64 = DispatchTime.now().uptimeNanoseconds) {
+        let change = epochs.withLock { $0.streamState(state) }
         queue.async {
             self.eventOnQueue("stream_state", monoNs: monoNs, fields: [("state", .string(state))])
-            if state == "streaming", let previous = self.lastStreamState,
-               previous != "streaming", previous != "starting", self.epochFrames > 0 {
-                self.rotateEpoch(reason: "resume from \(previous)", monoNs: monoNs)
+            if let change {
+                self.epochStartedOnQueue(change.rotation, reason: "resume from \(change.from)", monoNs: monoNs)
             }
-            self.lastStreamState = state
         }
     }
 
@@ -721,22 +847,20 @@ nonisolated final class IMURecorder: @unchecked Sendable {
         }
     }
 
-    /// The phone is locking: flush now, while the file is still writable, and
-    /// hold everything after this in memory. Called by the notification this
-    /// recorder observes, and by tests.
+    /// The phone is locking: logged, and a durable point (flush and fsync).
+    /// The handle stays open and writing goes on. Called by the notification
+    /// this recorder observes, and by tests.
     func protectedDataWillBecomeUnavailable() {
         queue.async { self.lockOnQueue() }
     }
 
-    /// The phone unlocked: reopen, write what was held, and finish a close
-    /// that was waiting for this.
+    /// The phone unlocked: logged. Nothing was held, so nothing is owed.
     func protectedDataDidBecomeAvailable() {
         queue.async { self.unlockOnQueue() }
     }
 
     /// Final counts, flush, fsync, close. Idempotent. `completion` runs on the
-    /// recorder's queue once the file is closed -- which, if the phone is
-    /// locked, is after it next unlocks.
+    /// recorder's queue once the file is closed, locked phone or not.
     func close(reason: String, monoNs: UInt64 = DispatchTime.now().uptimeNanoseconds, completion: (@Sendable (IMURecorderSummary) -> Void)? = nil) {
         queue.async {
             if let completion { self.closeCompletions.append(completion) }
@@ -760,6 +884,8 @@ nonisolated final class IMURecorder: @unchecked Sendable {
         bytesAccepted += headerData.count
 
         var existingFolderBytes = 0
+        var folderProtection: FileProtectionType?
+        var fileProtection: FileProtectionType?
         performIO {
             let base = try baseDirectory ?? FileManager.default.url(
                 for: .documentDirectory, in: .userDomainMask, appropriateFor: nil, create: true
@@ -770,6 +896,14 @@ nonisolated final class IMURecorder: @unchecked Sendable {
             var excluded = URLResourceValues()
             excluded.isExcludedFromBackup = true
             try folder.setResourceValues(excluded)
+            // The folder's class is the one a file created in it inherits, so
+            // the `open` below creates the log in the right class even while
+            // the phone is locked. Metadata, so it can be set then too; a
+            // failure is logged in `file_open`, not fatal.
+            try? FileManager.default.setAttributes(
+                [.protectionKey: FileProtectionType.completeUnlessOpen], ofItemAtPath: folder.path
+            )
+            folderProtection = Self.protection(of: folder)
             existingFolderBytes = IMULogStore.totalBytes(in: folder)
 
             // The folder's budget, fixed now. A file that would open with less
@@ -783,19 +917,41 @@ nonisolated final class IMURecorder: @unchecked Sendable {
                 capIsFolder = true
             }
 
-            guard FileManager.default.createFile(
-                atPath: url.path, contents: nil,
-                attributes: [.protectionKey: FileProtectionType.complete]
-            ) else {
-                throw CocoaError(.fileWriteUnknown, userInfo: [NSFilePathErrorKey: url.path])
+            // Created by the open that writes it, and that descriptor is the
+            // only one this log ever has. `createFile` then `FileHandle(forWritingTo:)`
+            // would close the new file and reopen it, and a
+            // `completeUnlessOpen` file cannot be reopened while the phone is
+            // locked.
+            // `Darwin.` because `open(header:)` is this class's own. 0o644 is
+            // what `createFile` gives a file, so `pull_imu_logs.sh` reads it as before.
+            let descriptor = Darwin.open(url.path, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0o644)
+            guard descriptor >= 0 else {
+                throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO, userInfo: [NSFilePathErrorKey: url.path])
             }
+            io.fileOpens += 1
+            handle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: true)
             var fileURL = url
-            try fileURL.setResourceValues(excluded)
             self.fileURL = fileURL
-            handle = try FileHandle(forWritingTo: fileURL)
+            fileProtection = Self.protection(of: url)
+            if let inherited = fileProtection, inherited != .completeUnlessOpen {
+                // The folder's class did not reach the file: set it on the file
+                // itself, which re-wraps its key and leaves this handle open.
+                try? FileManager.default.setAttributes(
+                    [.protectionKey: FileProtectionType.completeUnlessOpen], ofItemAtPath: url.path
+                )
+                fileProtection = Self.protection(of: url)
+            }
+            try fileURL.setResourceValues(excluded)
         }
         guard failure == nil else { return }
-        print("[Glasses][IMURec] recording to \(fileURL?.path ?? relativePath) (folder already holds \(existingFolderBytes) bytes; this file may take \(effectiveMaxBytes))")
+        print("[Glasses][IMURec] recording to \(fileURL?.path ?? relativePath) (protection \(fileProtection?.rawValue ?? "unreported"); folder already holds \(existingFolderBytes) bytes; this file may take \(effectiveMaxBytes))")
+        // What protected the file on this phone, and whether it was locked
+        // when the file was made: the walk-5 pre-flight reads this line.
+        eventOnQueue("file_open", monoNs: DispatchTime.now().uptimeNanoseconds, fields: [
+            ("protection", .optionalString(fileProtection?.rawValue)),
+            ("folder_protection", .optionalString(folderProtection?.rawValue)),
+            ("protected_data_available", .bool(protectedDataAvailable)),
+        ])
         flushOnQueue()
 
         let timer = DispatchSource.makeTimerSource(queue: queue)
@@ -808,19 +964,18 @@ nonisolated final class IMURecorder: @unchecked Sendable {
         timer.resume()
         self.timer = timer
 
-        // Strong captures on purpose: a close that arrives while the phone is
-        // locked has to outlive its owner until the unlock that finishes it.
-        // `finishCloseOnQueue` removes these, which breaks the cycle.
+        // Weak: nothing waits on an unlock any more, so nothing here has to
+        // outlive the recorder's owner. `finishCloseOnQueue` removes them.
         let center = NotificationCenter.default
         observers = [
-            center.addObserver(forName: ProcessInfo.thermalStateDidChangeNotification, object: nil, queue: nil) { [self] _ in
-                noteEvent("phone_thermal", fields: [("state", .string(Self.name(of: ProcessInfo.processInfo.thermalState)))])
+            center.addObserver(forName: ProcessInfo.thermalStateDidChangeNotification, object: nil, queue: nil) { [weak self] _ in
+                self?.noteEvent("phone_thermal", fields: [("state", .string(Self.name(of: ProcessInfo.processInfo.thermalState)))])
             },
-            center.addObserver(forName: Self.protectedDataWillBecomeUnavailable, object: nil, queue: nil) { [self] _ in
-                protectedDataWillBecomeUnavailable()
+            center.addObserver(forName: Self.protectedDataWillBecomeUnavailable, object: nil, queue: nil) { [weak self] _ in
+                self?.protectedDataWillBecomeUnavailable()
             },
-            center.addObserver(forName: Self.protectedDataDidBecomeAvailable, object: nil, queue: nil) { [self] _ in
-                protectedDataDidBecomeAvailable()
+            center.addObserver(forName: Self.protectedDataDidBecomeAvailable, object: nil, queue: nil) { [weak self] _ in
+                self?.protectedDataDidBecomeAvailable()
             },
         ]
         eventOnQueue("phone_thermal", monoNs: DispatchTime.now().uptimeNanoseconds, fields: [
@@ -830,13 +985,17 @@ nonisolated final class IMURecorder: @unchecked Sendable {
     }
 
     private func frameOnQueue(_ stamp: IMUFrameStamp, seq: Int, sent: Bool) {
+        if stamp.epoch != lastPTSEpoch {
+            lastPTSEpoch = stamp.epoch
+            lastPTSUs = nil
+        }
         if let pts = stamp.ptsUs {
             // A capture clock that runs backwards, or jumps by more than any
             // frame interval, inside one epoch. Recorded, not repaired.
             if let last = lastPTSUs, pts <= last || pts - last > 1_000_000 {
                 counts.ptsDiscontinuities += 1
                 eventOnQueue("pts_discontinuity", monoNs: stamp.rxMonoNs, fields: [
-                    ("epoch", .optionalString(epoch?.uuidString)),
+                    ("epoch", .optionalString(stamp.epoch?.uuidString)),
                     ("seq", .int(seq)),
                     ("prev_pts_us", .int(Int(last))),
                     ("pts_us", .int(Int(pts))),
@@ -844,11 +1003,10 @@ nonisolated final class IMURecorder: @unchecked Sendable {
             }
             lastPTSUs = pts
         }
-        guard append(IMULogFormat.frameLine(stamp, epoch: epoch, sent: sent, seq: seq), isEvent: false) else {
+        guard append(IMULogFormat.frameLine(stamp, sent: sent, seq: seq), isEvent: false) else {
             if closed { counts.framesAfterClose += 1 }
             return
         }
-        epochFrames += 1
         counts.frames += 1
         if sent { counts.framesSent += 1 }
         if stamp.ptsUs == nil { counts.framesWithoutPTS += 1 }
@@ -888,17 +1046,13 @@ nonisolated final class IMURecorder: @unchecked Sendable {
         tickSamples += 1
     }
 
-    private func rotateEpoch(reason: String, monoNs: UInt64) {
-        let previous = epoch
-        let next = UUID()
-        epoch = next
-        epochFrames = 0
+    /// Writes an epoch that `IMUCameraEpochs` has already opened.
+    private func epochStartedOnQueue(_ rotation: IMUCameraEpochs.Rotation, reason: String, monoNs: UInt64) {
         epochCount += 1
-        lastPTSUs = nil
         eventOnQueue("camera_start", monoNs: monoNs, fields: [
-            ("epoch", .string(next.uuidString)),
+            ("epoch", .string(rotation.next.uuidString)),
             ("reason", .string(reason)),
-            ("prev_epoch", .optionalString(previous?.uuidString)),
+            ("prev_epoch", .optionalString(rotation.previous?.uuidString)),
         ])
     }
 
@@ -907,12 +1061,18 @@ nonisolated final class IMURecorder: @unchecked Sendable {
     }
 
     /// Accepts one line into the buffer, or refuses it: for a cap, because the
-    /// log is closed, or because the phone has been locked so long that the
-    /// in-memory hold is full.
+    /// log is closed, or because the file failed.
     @discardableResult
     private func append(_ line: String, isEvent: Bool) -> Bool {
         guard !closed else {
             counts.droppedAfterClose += 1
+            return false
+        }
+        // A failed file is never written again, so a line accepted now would
+        // only sit in memory for the rest of the session (Motion keeps coming
+        // at 60 Hz). Counted, not held.
+        guard failure == nil else {
+            counts.droppedAfterFailure += 1
             return false
         }
         if !isEvent, capReason == nil,
@@ -930,13 +1090,9 @@ nonisolated final class IMURecorder: @unchecked Sendable {
             if !isEvent { reachCap(capIsFolder ? "folder" : "size") }
             return false
         }
-        if !protectedDataAvailable, buffer.count + data.count > limits.maxBufferedBytesWhileLocked {
-            counts.droppedWhileLocked += 1
-            return false
-        }
         buffer.append(data)
         bytesAccepted += data.count
-        if header != nil, protectedDataAvailable, buffer.count >= limits.flushThresholdBytes {
+        if header != nil, buffer.count >= limits.flushThresholdBytes {
             flushOnQueue()
         }
         return true
@@ -961,7 +1117,7 @@ nonisolated final class IMURecorder: @unchecked Sendable {
     }
 
     private func flushOnQueue() {
-        guard let handle, protectedDataAvailable, !buffer.isEmpty, failure == nil else { return }
+        guard let handle, !buffer.isEmpty, failure == nil else { return }
         let pending = buffer
         performIO { try handle.write(contentsOf: pending) }
         guard failure == nil else { return }
@@ -969,42 +1125,43 @@ nonisolated final class IMURecorder: @unchecked Sendable {
         buffer.removeAll(keepingCapacity: true)
     }
 
+    /// The phone is locking. The handle stays open -- a `completeUnlessOpen`
+    /// file stays writable through the lock only while it is open -- so this is
+    /// an event, and a durable point before the pocket: flush, then fsync.
     private func lockOnQueue() {
         guard protectedDataAvailable, !closed else { return }
-        eventOnQueue("protected_data_unavailable", monoNs: DispatchTime.now().uptimeNanoseconds, fields: [])
-        flushOnQueue()
-        if let handle {
-            performIO {
-                try handle.synchronize()
-                try handle.close()
-            }
-        }
-        handle = nil
         protectedDataAvailable = false
-        print("[Glasses][IMURec] phone locking: flushed and closed; holding lines in memory until unlock")
+        eventOnQueue("protected_data_unavailable", monoNs: DispatchTime.now().uptimeNanoseconds, fields: [
+            ("bytes_written", .int(bytesWritten)),
+        ])
+        flushOnQueue()
+        if let handle, failure == nil {
+            performIO { try handle.synchronize() }
+        }
+        print("[Glasses][IMURec] phone locking: flushed and synced; the file stays open and is still written")
         publishStatus()
     }
 
     private func unlockOnQueue() {
         guard !protectedDataAvailable else { return }
         protectedDataAvailable = true
+        // `bytes_written` against the lock's: what reached the disk while the
+        // phone was locked. The walk-5 pre-flight reads this pair.
         eventOnQueue("protected_data_available", monoNs: DispatchTime.now().uptimeNanoseconds, fields: [
-            ("held_bytes", .int(buffer.count)),
+            ("bytes_written", .int(bytesWritten)),
         ])
-        if let fileURL, failure == nil {
-            performIO {
-                let reopened = try FileHandle(forWritingTo: fileURL)
-                try reopened.seekToEnd()
-                handle = reopened
-            }
-        }
-        flushOnQueue()
-        print("[Glasses][IMURec] phone unlocked: reopened and wrote what was held")
+        print("[Glasses][IMURec] phone unlocked: \(bytesWritten) bytes on disk")
         publishStatus()
-        if let pending = closePending {
-            closePending = nil
-            finishCloseOnQueue(reason: pending.reason, monoNs: pending.monoNs)
-        }
+    }
+
+    /// The periodic and closing `counts` body: the counters, plus what is on
+    /// disk and whether the phone is locked, so a pulled log shows the file
+    /// growing through a lock.
+    private func countsFieldsOnQueue() -> [(String, IMUJSON)] {
+        counts.jsonFields + [
+            ("bytes_written", .int(bytesWritten)),
+            ("protected_data_available", .bool(protectedDataAvailable)),
+        ]
     }
 
     private func tick() {
@@ -1019,25 +1176,20 @@ nonisolated final class IMURecorder: @unchecked Sendable {
         tickLastTsNs = nil
         tickSamples = 0
         if limits.countsEveryTicks > 0, ticks % limits.countsEveryTicks == 0 {
-            eventOnQueue("counts", monoNs: DispatchTime.now().uptimeNanoseconds, fields: counts.jsonFields)
+            eventOnQueue("counts", monoNs: DispatchTime.now().uptimeNanoseconds, fields: countsFieldsOnQueue())
         }
         publishStatus()
     }
 
+    /// Locked or not: the handle is open, so the last lines can be written now.
     private func requestCloseOnQueue(reason: String, monoNs: UInt64) {
-        guard !closed, closePending == nil else { return }
-        guard protectedDataAvailable || fileURL == nil || failure != nil else {
-            // Locked: the held lines can only be written after the unlock.
-            closePending = (reason, monoNs)
-            print("[Glasses][IMURec] close requested while locked; finishing \(relativePath) at the next unlock")
-            return
-        }
+        guard !closed else { return }
         finishCloseOnQueue(reason: reason, monoNs: monoNs)
     }
 
     private func finishCloseOnQueue(reason: String, monoNs: UInt64) {
-        // Last, so they are the file's last lines even after a locked wait.
-        eventOnQueue("counts", monoNs: monoNs, fields: counts.jsonFields)
+        // Last, so they are the file's last lines.
+        eventOnQueue("counts", monoNs: monoNs, fields: countsFieldsOnQueue())
         eventOnQueue("close", monoNs: monoNs, fields: [
             ("reason", .string(reason)),
             ("bytes", .int(bytesAccepted)),
@@ -1068,6 +1220,10 @@ nonisolated final class IMURecorder: @unchecked Sendable {
     }
 
     /// Every file operation goes through here, so the audit is complete.
+    ///
+    /// The first failure stops the file for good: the handle is closed, the
+    /// timer stopped, and whatever was buffered released, since nothing will
+    /// ever write it. `append` then refuses every later line.
     private func performIO(_ body: () throws -> Void) {
         io.operations += 1
         if Thread.isMainThread { io.onMainThread += 1 }
@@ -1082,6 +1238,7 @@ nonisolated final class IMURecorder: @unchecked Sendable {
             handle = nil
             timer?.cancel()
             timer = nil
+            buffer = Data()
             publishStatus()
         }
     }
@@ -1111,7 +1268,7 @@ nonisolated final class IMURecorder: @unchecked Sendable {
             motionConfiguredHz: motionConfiguredHz,
             motionRateHz: lastRateHz,
             capReason: capReason,
-            heldWhileLocked: !protectedDataAvailable
+            phoneLocked: !protectedDataAvailable
         )
     }
 
@@ -1145,6 +1302,12 @@ nonisolated final class IMURecorder: @unchecked Sendable {
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         return formatter.string(from: date)
+    }
+
+    /// The Data Protection class a file or folder reports, or `nil` when it
+    /// reports none (the Simulator may not). File I/O: call it on the queue.
+    static func protection(of url: URL) -> FileProtectionType? {
+        (try? FileManager.default.attributesOfItem(atPath: url.path))?[.protectionKey] as? FileProtectionType
     }
 
     static func name(of state: ProcessInfo.ThermalState) -> String {
