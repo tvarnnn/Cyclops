@@ -18,6 +18,7 @@
 > v8 (2026-09-24): `finalization.notice` is a closed set of sentences (§3.1); P3.6 manifest keys (§2.5).
 > v9 (2026-09-24): four closed-set sentences revised; `detail` client-safe (§3.1).
 > v10 (2026-09-24, after physical-test walk 1): the look-back prompt is SHOWN with one haptic, never spoken; a prompt arriving while the app is inactive is held, not consumed; the banner lasts the window left at delivery (§6.5, §6.6, §8, M3). Nothing on the wire changes (Mac draft 054a; iOS `a72e366`).
+> v11 (2026-09-28, manager 130; C7 B1): §4's example caption follows WORLDS v4's words (*… · 128 of 128 images loaded · 2 more areas shown separately*); the suffix rule is unchanged. Nothing on the wire changes.
 > Every "OPEN" reference in the text is a question
 > the drafter could not settle: M-numbers are addressed to the Mac (§10),
 > T-numbers to the Tower lane, P3.2 (§11).
@@ -343,7 +344,7 @@ screen:
 
 - the page's caption gains ` · N more areas shown separately` when at least
   one entry is `shown_as: "area"` (P2-PX: *Captured images on reconstructed
-  geometry · 128 of 128 keyframes shown · 2 more areas shown separately*), and
+  geometry · 128 of 128 images loaded · 2 more areas shown separately*), and
   the native caption line the same;
 - nothing else. Areas are **not** a rung of the room's ladder, never a query
   parameter of §4, and never drawn on §4's pages.

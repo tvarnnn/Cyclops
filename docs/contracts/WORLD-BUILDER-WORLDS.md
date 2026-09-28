@@ -5,7 +5,7 @@
 | | |
 |---|---|
 | Contract | `world_builder.worlds/2026-09-10` |
-| Document version | **v3** (2026-09-28): the viewer's accessibility fixes from the O1 viewer check (iOS Simulator), manager 115 (§4). v2 (2026-09-27): viewer honesty, manager 106 (§4). See the change log at the end. The wire identifier above does **not** move: no payload changes, and the iOS decoder compares it for equality |
+| Document version | **v4** (2026-09-28): the About panel's *The walk* no longer describes one capture, and the caption line's words are plain (*N of M images loaded*; the compact image format; `encoding_notes` never shown), manager 130 (§4). v3 (2026-09-28): the viewer's accessibility fixes from the O1 viewer check (iOS Simulator), manager 115 (§4). v2 (2026-09-27): viewer honesty, manager 106 (§4). See the change log at the end. The wire identifier above does **not** move: no payload changes, and the iOS decoder compares it for equality |
 | Transport | HTTP `GET /worlds`, same origin and same rules as the geometry routes (`WORLD-BUILDER-GEOMETRY.md` §1) |
 | Tower producer | `tower/tower/results/world_builder_library.py` |
 | Tower route | `tower/tower/routes/geometry.py` |
@@ -846,7 +846,9 @@ enforced).
     same candidate wins — so the framing lane's swept weights stand.
     What was wrong with the button was its **name** and the **speed** it
     arrived at: it now says *Best view*, the About text says what that is and
-    why there is no overview to give, and the crossing from the opening —
+    why there is no overview to give (until v4, below, which keeps what it is
+    and drops the why: a template served for every walk cannot know it), and
+    the crossing from the opening —
     5.3 units — takes **2394 ms** instead of being clipped to 1600.
     **The destination moved when the envelope did, and it has been re-swept**
     (2026-09-20, fix-it orient lane). A wider tube and a smaller standoff took
@@ -1028,7 +1030,7 @@ enforced).
   canonical world at pose 71 (46% observed, 52% black). The horizon is levelled
   to `CONFIG.up`. The caption is one line (*Captured images on reconstructed
   geometry* and an **About** button); what the images are, what the dark
-  areas mean, that the arrows pass over poses that render badly or show
+  areas mean, that the arrows pass over views that render badly or show
   nothing (at most 4 in a row, so the walk shown is shorter than the one
   recorded but never misses a stretch of it), **that turning is free and
   moving is not, what the ring at the top right is and what *Face the room*
@@ -1081,11 +1083,16 @@ enforced).
   bounded by an `AbortController` at 45 s for the same reason: on
   `glasses-world:` a request settles only if the app's handler answers it, and a
   handler that loses a task would otherwise leave the page waiting for ever.
-- **Caption.** *Captured images on reconstructed geometry · N of M keyframes
-  shown* — N and M are both the PHONE tier, so the figure is "of what this
+- **Caption.** *Captured images on reconstructed geometry · N of M images
+  loaded* — N and M are both the PHONE tier, so the figure is "of what this
   device was offered" and not "of what the Tower keeps" — (· *still building as
-  you walk*, · the currency reason when behind, · a reduced set and **which
-  side** lacks compressed textures: this device, or a Tower that built none),
+  you walk*, · the currency reason when behind, · **which side** cannot use the
+  compact image format (this device, or a Tower that did not prepare it), so
+  fewer images fit: *this device cannot use the compact image format, so fewer
+  images fit*, or *the Tower did not prepare the compact image format for this
+  world, so fewer images fit*. The manifest's `encoding_notes` are diagnostic
+  and **never shown**: the line carries no suffix after either sentence (v4,
+  below)),
   then **five short titled sections**, not one paragraph (2026-09-21, fix-it
   ux lane): *What you are looking at*, *The flat grey patches*, *Looking and
   moving*, *Finding your way*, *The walk*, and finally *Scale is unknown, so
@@ -1141,6 +1148,39 @@ enforced).
   text) is unchanged. The **haze notice** is unchanged too: *The flat grey
   patches* keeps its title, its first sentence and its bound on crack
   filling.
+  **v4 (2026-09-28, manager 130; the C7 review's corrected first batch B1)
+  changed the words of *The walk* and of the caption line, and nothing
+  else.** v2 kept the whole of *The walk*; v4 removes its claim about one
+  capture, which a template served for every walk and every area cannot know.
+  That claim described the 2026-09 canonical capture (*Best view*, above), and
+  it was shown on every room page and every area page, where there is no desk.
+  The caption line's words were the pipeline's (*keyframes*, *reduced set*,
+  *compressed textures*), and it appended the manifest's `encoding_notes`,
+  which is an object: on a Tower without the ASTC encoder the line read
+  *… for this world ([object Object])*, and printed properly it would have put
+  an exception name on the wearer's line. Each replacement below is the whole
+  of the change to its line:
+
+  | Where | Until v4 | From v4 |
+  |---|---|---|
+  | *The walk* (the whole section) | *“Best view” flies to the best-supported vantage near the path — the one whose picture is most nearly whole, rather than the one that takes in the most; this wearer never stood back from the desk, so it is a view from the desk, not of the whole room. The arrows step along the recorded walk, far enough each press to get somewhere, passing over poses that render badly or show nothing (at most N in a row). “Reset” puts you back where the page opened.* | ***“Best view” flies to the place near the walked path where this page's picture is most nearly whole, which is not always the view that takes in the most.** The arrows step along the recorded walk, far enough each press to get somewhere, passing over **views** that render badly or show nothing (at most N in a row). “Reset” puts you back where the page opened.* |
+  | Caption line, the count | *N of M keyframes shown* | *N of M **images loaded*** (the same two figures, both the phone tier) |
+  | Caption line, when this device lacks the format | *reduced set: this device has no compressed-texture support* | ***this device cannot use the compact image format, so fewer images fit*** |
+  | Caption line, when the Tower built none | *reduced set: the Tower built no compressed textures for this world (…)*, the parentheses holding `String(encoding_notes)` | ***the Tower did not prepare the compact image format for this world, so fewer images fit***, with no suffix |
+
+  N in *The walk* is `NAV.MAX_SKIP`. *So fewer images fit* is true whenever
+  either line shows at the default phone budget: without the compact format
+  the page holds at most 48 layers (`RGBA8_LAYER_CAP`), against the phone
+  budget of 128 (`phone_budget`) that ASTC's 192 (`ASTC_LAYER_CAP`) admits.
+  Every other word of the caption line and the panel is unchanged, and so
+  are: the head line, both *These are the camera's own
+  frames …* sentences, *Loading the room's surface…*, the *Face the room*
+  text and button (the exact-match anchors in `appearance_render.py`), the
+  research marker, *Best view*'s scorer, `NAV.MAX_SKIP`, and every manifest
+  key, `encoding_notes` included, which stays in the manifest for diagnosis.
+  The *Best view* paragraph above, which says the canonical walk never stood
+  back from the desk, stays too: it is the history of that capture, not a page
+  string.
 - `window.__wbAppearance` also exposes `walk`, `setView`, `coverage`,
   `snapshot`, `camera`, `shotMode`, `clock`, and for navigation `pose`,
   `setPose`, `support`, `navStats`, `navReady`, `sampleReachable`, `input`,
@@ -1349,3 +1389,4 @@ identifier unless it says so.
 |---|---|---|---|---|---|
 | **v2** | 2026-09-27 | **Manager 106** (T-UX0; from manager 096 §1, after walk 4 `c81766a3`) | §4: *Navigation* (the dark state, the edge hint, the settle), *Where the room is* (the ring's label, the notices' placement), the haze bullet, *Controls* (44 px targets and the accessible names), the cold-open window, *Caption* (the About panel's claims about the capture); §4a rule 3 | **Viewer honesty.** The dark state reads ***Not reconstructed from here*** / *Tap to turn back*, never *not photographed* or *never looked*. The edge hint reads ***Movement stops here***. The ring reads *reconstructed / from here*. The About panel stops claiming to know what the glasses saw. Every control has a 44 px target and an accessible name. The notices clear a wrapped bar. `PAGE_REVISION` stays `appearance:1`. The trigger, the thresholds, the haze, the research marker, the rendering and the camera path are unchanged | **Nothing.** `world_builder.worlds/2026-09-10` and every payload are unchanged. The page strings are Tower-served, and no iOS source reads any of them (checked 2026-09-27 against `wb-int-walk5`) |
 | **v3** | 2026-09-28 | **Manager 115** (T-UX0b; from the O1 viewer check of `9bb9727` in the iOS 26.5 Simulator: SE (3rd gen), 17e, 17 Pro, 17 Pro Max; accessibility snapshots, nothing heard spoken) | §4: *Navigation* (the dark state: hidden from assistive technology when not shown; the headline on one line), *Where the room is* (the notices clear the status line), *Controls* (`#dark` joins the closed name table as a button; no empty status element in the accessibility tree; the *About* / *Less* toggle is a 44 × 44 target) | **Viewer accessibility, presentation only.** Assistive technology is no longer given a dark line or edge hint that is not shown. The dark line is a named button. The notices no longer overlap the status line. The dark headline no longer wraps at 375 / 390 px. The toggle's exemption ends: it is 44 × 44 like the bar. No visible text changes; the one new string is `#dark`'s accessible name, its two visible lines joined. `PAGE_REVISION` stays `appearance:1`. The trigger, the thresholds, what a tap does, the rendering and the camera path are unchanged. The page's fixed-px fonts ignoring the phone's text size (O1 item 6) are NOT addressed here: they go to U1.1 (native chrome) | **Nothing.** `world_builder.worlds/2026-09-10` and every payload are unchanged. No iOS source reads any changed string, id or selector: *Not reconstructed from here*, *Tap to turn back*, *Movement stops here*, *Placing images*, `bInfo` and `#dark` have 0 hits in `ios/`, and `ios/` runs no script in the page and reads nothing from it (no `evaluateJavaScript`, `WKUserScript` or script message handler) (checked 2026-09-28 with `git grep -F` and `git grep -i -F` against product `0636fce` and the O1 app `2ff0b0e`) |
+| **v4** | 2026-09-28 | **Manager 130** (§3; the corrected first batch B1 of the C7 review, `cx-C7-tux2-plain-language-20260928-REVIEW.md`, F6e and F10) | §4: *Caption* (the caption line's words; the About panel's *The walk*) | **Plain words, copy only.** *The walk* no longer says *this wearer never stood back from the desk, so it is a view from the desk, not of the whole room*: that described one 2026-09 capture, from a template served for every walk and every area page. *Best view* is described by what it optimizes: the most nearly whole picture near the walked path, which is not always the widest. This supersedes v2, which kept the whole of *The walk* unchanged. The caption line reads *N of M images loaded* (was *keyframes shown*), and says which side cannot use the compact image format, so fewer images fit (was *reduced set: … compressed textures …*). `encoding_notes` is never shown, which also ends *([object Object])* on a Tower without the ASTC encoder. `PAGE_REVISION` stays `appearance:1`. The anchors, the research marker, *Best view*'s scorer, `NAV.MAX_SKIP`, every manifest key, the rendering and the camera path are unchanged | **Nothing.** `world_builder.worlds/2026-09-10` and every payload are unchanged. No iOS source reads any changed string. Every old and new B1 string has 0 hits in `ios/` under `git grep -F` and `git grep -i -F`: *keyframes shown*, *reduced set*, *compressed-texture*, *compressed textures*, `encoding_notes`, *never stood back*, *view from the desk*, *best-supported vantage*, *poses that render badly*, *images loaded*, *compact image format*, *fewer images fit*, *walked path*, *most nearly whole*, *views that render badly*, and each whole sentence. The trees are product `b417c9f` and the phone's branches `origin/ios/walk5-imu` (`d852770`), `world-builder/int-walk5-candidate` (`a4afea1`), `origin/ios/ux-v1` (`2ff0b0e`), `origin/ios/wb-coherence-areas-v1` (`a1f98d7`) and `origin/ios/ux-u05-a11y` (`089777f`). The same grep finds *masks were not applied* 31 times on each phone branch, so the zeros are not an empty tree (checked 2026-09-28) |
