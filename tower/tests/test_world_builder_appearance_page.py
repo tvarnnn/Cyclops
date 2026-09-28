@@ -9,6 +9,7 @@ surfaced world of `test_world_builder_appearance.py`.
 from __future__ import annotations
 
 import json
+import pathlib
 import re
 import sys
 
@@ -500,7 +501,9 @@ def test_bar_controls_have_the_contract_names_and_targets():
     button_rule = _section(page, "button{appearance:none", "button[aria-pressed")
     assert "min-height:44px" in button_rule
     assert "#bar button{min-width:44px}" in page
-    assert "#caption button{pointer-events:auto;min-height:24px" in page
+    # WORLDS v3 (manager 115): the About / Less toggle's 24 px exemption ended;
+    # it is a 44 x 44 target too (TestTheViewerForAssistiveTechnology)
+    assert "#caption button{pointer-events:auto;min-height:44px;min-width:44px;" in page
     offset = ("bottom:max(calc(104px + env(safe-area-inset-bottom)), "
               "calc(var(--barh, 56px) + 8px))")
     assert "#hint{position:fixed;left:50%;" + offset in page
@@ -2815,8 +2818,13 @@ class TestTheDarkIsSaidForAsLongAsItIsTrue:
 
     def test_the_dark_state_is_permanent_while_true_and_silent_when_not(self):
         text = _template()
-        assert '<div id="dark" role="status" aria-live="polite"></div>' in text
-        assert "#dark.on{opacity:.88;pointer-events:auto}" in text
+        # WORLDS v3 (manager 115): a named button, not an unnamed status group,
+        # and `visibility:hidden` whenever it is not showing
+        # (TestTheViewerForAssistiveTechnology)
+        assert ('<div id="dark" role="button" aria-label="Not reconstructed from here. '
+                'Tap to turn back" aria-live="polite"></div>') in text
+        assert ("#dark.on{opacity:.88;visibility:visible;pointer-events:auto;"
+                "transition:opacity .4s ease,visibility 0s}") in text
         d = _section(text, "  const DARK_SAY_ON = 0.90", "  const KEY_SPEED")
         assert "const DARK_SAY_ON = 0.90, DARK_SAY_OFF = 0.45, DARK_SAY_MS = 320;" in d
         # hysteresis, so it cannot blink on the boundary
@@ -3474,3 +3482,570 @@ assert.ok(dist(cam.p, blind.at) > 3 * u, "eased out past the wall's own distance
                        "if (rise < 0.15 * OPT.sceneUnit) continue;"):
             assert length in text, length
         assert text.count("if (z < 0.05 * OPT.sceneUnit) continue;") == 2
+
+
+# ---------------------------------------------------------------------------
+# WORLDS v3 (manager 115, T-UX0b): the O1 viewer check's page fixes
+# ---------------------------------------------------------------------------
+#
+# O1 read the page at 9bb9727 in the iOS 26.5 Simulator (375, 390, 402 and
+# 440 px) from XCUITest accessibility snapshots. Five Tower-owned defects, all
+# presentation: the dark line and the edge hint stayed in the accessibility
+# tree after they faded (`opacity` is not `visibility`), and the edge hint was
+# there from load; the dark line was an unnamed status group, though a tap on
+# it turns you back; the notices overlapped the status line; the dark headline
+# wrapped at 375 and 390 px; the About / Less toggle was 24 px high.
+#
+# ORACLE marks WORLDS v3 §4 text (or the P3-RULES presentation-only bound on
+# what may change); CHARACTERIZATION marks a fact of this page that the
+# contract does not state.
+
+WORLDS_CONTRACT = (pathlib.Path(__file__).resolve().parents[2]
+                   / "docs" / "contracts" / "WORLD-BUILDER-WORLDS.md")
+# ORACLE (WORLDS v3 §4, the closed name table): the dark line's name.
+DARK_NAME = "Not reconstructed from here. Tap to turn back"
+# ORACLE (WORLDS v2 §4): where both notices sit; (v3) where they sit while the
+# status line shows text.
+NOTICE_BOTTOM = "max(calc(104px + env(safe-area-inset-bottom)), calc(var(--barh, 56px) + 8px))"
+CLEAR_BOTTOM = "max(calc(104px + env(safe-area-inset-bottom)), calc(var(--barh, 56px) + 38px))"
+
+
+def _selectors(text):
+    """A selector list, whitespace-normalised, as a set."""
+    return frozenset(re.sub(r"\s*([~>+])\s*", r"\1", " ".join(s.split()))
+                     for s in text.split(","))
+
+
+def _rule(page, selector):
+    """The declarations of the one rule in the page's <style> whose selector
+    list is `selector` (whitespace, and the order within the list, ignored)."""
+    style = page[page.index("<style>") + len("<style>"):page.index("</style>")]
+    style = re.sub(r"/\*.*?\*/", "", style, flags=re.S)
+    want = _selectors(selector)
+    found = [m.group(2) for m in re.finditer(r"([^{}]+)\{([^{}]*)\}", style)
+             if _selectors(m.group(1)) == want]
+    assert len(found) == 1, f"{selector}: {len(found)} rules"
+    decls = {}
+    for decl in found[0].split(";"):
+        if decl.strip():
+            key, value = decl.split(":", 1)
+            decls[key.strip()] = " ".join(value.split())
+    return decls
+
+
+def _transition(value):
+    """A `transition` value as {property: (duration s, delay s)}."""
+    out = {}
+    for part in (value or "").split(","):
+        if not part.strip():
+            continue
+        prop, *rest = part.split()
+        times = [float(t[:-2]) / 1000 if t.endswith("ms") else float(t[:-1])
+                 for t in rest if re.fullmatch(r"\d*\.?\d+m?s", t)]
+        out[prop] = (times[0] if times else 0.0, times[1] if len(times) > 1 else 0.0)
+    return out
+
+
+class _Markup:
+    """The page's markup (not its script): every element's attributes, and the
+    ids of the body's direct children, in order."""
+
+    VOID = {"area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta",
+            "source", "track", "wbr"}
+
+    def __init__(self, page):
+        from html.parser import HTMLParser
+
+        markup = self
+        self.elements, self.children, depth = [], [], [-1]
+
+        class Parser(HTMLParser):
+            def handle_starttag(self, tag, attrs):
+                attrs = dict(attrs)
+                if tag == "body":
+                    depth[0] = 0
+                    return
+                if depth[0] < 0:
+                    return
+                markup.elements.append((tag, attrs))
+                if depth[0] == 0:
+                    markup.children.append(attrs.get("id"))
+                if tag not in _Markup.VOID:
+                    depth[0] += 1
+
+            def handle_endtag(self, tag):
+                if depth[0] > 0 and tag not in _Markup.VOID:
+                    depth[0] -= 1
+
+        Parser().feed(page[:page.index("<script>")])
+
+    def by_id(self, element_id):
+        found = [a for _tag, a in self.elements if a.get("id") == element_id]
+        assert len(found) == 1, element_id
+        return found[0]
+
+
+def _check_v3(page):
+    """Every WORLDS v3 page fix, read off one page's source."""
+    markup = _Markup(page)
+    dark, hint = _rule(page, "#dark"), _rule(page, "#hint")
+    script = page[page.index("<script>"):]
+
+    # 1. ORACLE (§4, the dark state): the headline on one line --
+    #    `width: max-content`, inside the existing `max-width`.
+    assert dark.get("width") == "max-content"
+    assert dark.get("max-width") == "min(84vw,360px)"
+    #    CHARACTERIZATION: still centred on `left: 50%`, which is what capped it.
+    assert dark["left"] == "50%" and dark["transform"] == "translateX(-50%)"
+
+    # 2. ORACLE (§4, where the room is): while `#status` shows text, both
+    #    notices sit at max(104px + the inset, --barh + 38px); otherwise where
+    #    v2 put them. The switch is CSS keyed on `#status` being empty, never a
+    #    script -- and `~` needs `#status` BEFORE both, as their sibling.
+    clear = _rule(page, "#status:not(:empty) ~ #hint, #status:not(:empty) ~ #dark")
+    assert clear == {"bottom": CLEAR_BOTTOM}
+    assert dark["bottom"] == NOTICE_BOTTOM and hint["bottom"] == NOTICE_BOTTOM
+    kids = markup.children
+    assert kids.index("status") < kids.index("hint")
+    assert kids.index("status") < kids.index("dark")
+    for write in (".style.bottom", ".style.visibility"):
+        assert write not in script, write
+    #    CHARACTERIZATION: the status line the 38 px was computed from
+    #    (`--barh + 8px`, 12 px text, 3 px of padding), and empty is not shown.
+    status = _rule(page, "#status")
+    assert status["bottom"] == "calc(var(--barh, 56px) + 8px)"
+    assert (status["font-size"], status["padding"]) == ("12px", "3px 8px")
+    assert _rule(page, "#status:empty") == {"display": "none"}
+
+    # 3. ORACLE (§4, the dark state): the dark line and the edge hint are
+    #    `visibility: hidden` whenever they are not showing, from page load on.
+    #    The change to hidden waits for the fade, and the fade stays as it was;
+    #    the change to visible is immediate.
+    for selector, base, fade in (("#dark", dark, 0.4), ("#hint", hint, 0.35)):
+        shown = _rule(page, selector + ".on")
+        assert base.get("opacity") == "0" and base.get("visibility") == "hidden", selector
+        assert shown.get("visibility") == "visible", selector
+        hide, show = _transition(base.get("transition")), _transition(shown.get("transition"))
+        assert hide.get("opacity") == show.get("opacity") == (fade, 0.0), selector
+        assert hide.get("visibility", (0.0, 0.0))[0] == 0.0, selector
+        assert hide.get("visibility", (0.0, 0.0))[1] >= fade, (selector, "the hide waits for the fade")
+        assert show.get("visibility") == (0.0, 0.0), (selector, "the show is immediate")
+        #    CHARACTERIZATION: it waits exactly one fade.
+        assert hide["visibility"][1] == fade, selector
+    #    CHARACTERIZATION: a shown dark line looks and taps as it did.
+    shown = _rule(page, "#dark.on")
+    assert (shown["opacity"], shown["pointer-events"]) == (".88", "auto")
+    #    ORACLE (P3-RULES, presentation only): `hint()` keeps its gate, its
+    #    text, its opacity and its 1100 ms; the class that carries its
+    #    visibility is the only new thing in it.
+    h = _section(page, "  function hint(level, text){", "  /* -------- the orientation ring")
+    for line in ("if (level < 0.35) return;", "h.textContent = text || HINT_EDGE;",
+                 "h.style.opacity = String(Math.min(0.9, 0.3 + level));",
+                 'h.classList.add("on");',
+                 'hintTimer = setTimeout(() => { h.style.opacity = "0"; '
+                 'h.classList.remove("on"); }, 1100);'):
+        assert line in h, line
+    #    CHARACTERIZATION: and nothing else was added to it (11 code lines).
+    assert len([ln for ln in h.splitlines() if ln.strip() and not ln.strip().startswith("//")]) == 11
+
+    # 4. ORACLE (§4, Controls): the About / Less toggle is a 44 x 44 CSS px
+    #    target; its name is its visible word, and it keeps `aria-expanded`.
+    toggle = _rule(page, "#caption button")
+    assert toggle.get("min-height") == "44px" and toggle.get("min-width") == "44px"
+    caption = _section(page, "  function updateCaption(){", "  /* -------- verification hooks")
+    assert 'toggle.id = "bInfo"; toggle.textContent = captionOpen ? "Less" : "About";' in caption
+    assert 'toggle.setAttribute("aria-expanded", String(captionOpen));' in caption
+    assert "aria-label" not in caption
+    #    CHARACTERIZATION: it is the only button the caption makes, and the rest
+    #    of its look is unchanged.
+    assert caption.count('document.createElement("button")') == 1
+    assert (toggle["padding"], toggle["font-size"], toggle["vertical-align"]) == (
+        "1px 8px", "11px", "baseline")
+
+    # 5. ORACLE (§4, Controls): the dark line is a button, named by its two
+    #    visible lines joined (the same on an area page), and keeps
+    #    `aria-live="polite"`.
+    el = markup.by_id("dark")
+    assert el.get("role") == "button"
+    assert el.get("aria-label") == DARK_NAME
+    assert el.get("aria-live") == "polite"
+    words = (re.search(r'const HINT_DARK = "([^"]*)";', page).group(1),
+             re.search(r'const HINT_DARK_TAP = "([^"]*)";', page).group(1))
+    assert el["aria-label"] == words[0] + ". " + words[1], "the name cannot drift from the words"
+    #    CHARACTERIZATION (I5, by decision): not in the tab order, like the ring
+    #    and the chevron it is the same control as; a tap does what they do.
+    assert "tabindex" not in el
+    assert '$("dark").onclick = () => faceTheRoom();' in page
+
+    #    ORACLE (§4, Controls): no empty status element is in the accessibility
+    #    tree. Every status or live region is hidden at load: the dark line and
+    #    the edge hint by the rules above, `#rawmark` by `hidden` (a research
+    #    build fills it). `#status` is neither, and is `display: none` empty.
+    live = {a.get("id"): a for _tag, a in markup.elements
+            if a.get("role") in ("status", "alert", "log") or "aria-live" in a}
+    assert set(live) == {"hint", "dark", "rawmark"}          # CHARACTERIZATION: which
+    assert "hidden" in live["rawmark"] and _rule(page, "#rawmark[hidden]") == {"display": "none"}
+    assert not {"role", "aria-live"} & set(markup.by_id("status"))
+
+
+def _check_names(page, *, area=False):
+    """ORACLE (WORLDS v3 §4, Controls): the closed name table has seven
+    entries, and the page's markup names exactly those seven controls, each as
+    the table says (`#bBack` reads *Face the area* on an area page)."""
+    import itertools
+
+    if not WORLDS_CONTRACT.exists():
+        pytest.skip("the WORLDS contract is not beside this Tower checkout")
+    text = WORLDS_CONTRACT.read_text(encoding="utf-8")
+    lines = [line.strip() for line in
+             text[text.index("| Control | Shows | Accessible name |"):].splitlines()[2:]]
+    rows = list(itertools.takewhile(lambda line: line.startswith("|"), lines))
+    assert len(rows) == 7, "the O1 re-run expects seven names (I6)"
+    table = {}
+    for row in rows:
+        control, _shows, name = (c.strip() for c in row.strip().strip("|").split("|"))
+        role = re.search(r'role="(\w+)"', control)
+        table[re.search(r"`#(\w+)`", control).group(1)] = (
+            re.search(r"\*([^*]+)\*", name).group(1), role.group(1) if role else None)
+    assert table["dark"] == (DARK_NAME, "button")
+    named = {a["id"]: a for _tag, a in _Markup(page).elements if "aria-label" in a}
+    assert set(named) == set(table)
+    for control, (name, role) in table.items():
+        if area and control == "bBack":
+            name = name.replace("Face the room", "Face the area")
+        assert named[control]["aria-label"] == name, control
+        if role:
+            assert named[control].get("role") == role, control
+    # CHARACTERIZATION: no script sets a name, so the markup is the whole set.
+    assert 'setAttribute("aria-label"' not in page and ".ariaLabel" not in page
+
+
+_NOTICE_DOM = r"""
+function mk(tag){
+  const el = {tag, children: [], style: {}, own: "", cls: new Set(),
+    get textContent(){ return this.own + this.children.map(c => c.textContent).join(""); },
+    set textContent(v){ this.own = String(v); this.children = []; },
+    append(...c){ this.children.push(...c); }};
+  el.classList = {add: c => { el.cls.add(c); }, remove: c => { el.cls.delete(c); },
+                  contains: c => el.cls.has(c)};
+  return el;
+}
+const document = {createElement: mk};
+const EL = {hint: mk("div"), dark: mk("div")};
+EL.hint.textContent = "Movement stops here";
+const $ = id => EL[id];
+const S = {}; function requestDraw(){}
+let now = 1000; const performance = {now: () => now};
+const timers = new Map(); let nextTimer = 1;
+function setTimeout(f, ms){ timers.set(nextTimer, {f, ms}); return nextTimer++; }
+function clearTimeout(id){ timers.delete(id); }
+function fire(){ const all = [...timers.values()]; timers.clear(); all.forEach(t => t.f());
+  return all.map(t => t.ms); }
+"""
+
+
+def _run_notices(page):
+    """The page's own `hint()` and `updateDark()`, verbatim, over a stand-in DOM,
+    with the `visibility` each class state gets from the page's own CSS."""
+    css = {k: {"off": _rule(page, "#" + k).get("visibility", "visible"),
+               "on": _rule(page, f"#{k}.on").get("visibility", "visible")} for k in ("hint", "dark")}
+    hint_source = _section(page, '  const HINT_EDGE = "Movement stops here";',
+                           "  /* -------- the orientation ring")
+    dark_source = _section(page, "  const DARK_SAY_ON = 0.90", "  const KEY_SPEED")
+    _run_plain(_NOTICE_DOM + "const CSS = " + json.dumps(css) + ";\n"
+               + 'const exposed = id => CSS[id][EL[id].cls.has("on") ? "on" : "off"];\n'
+               + hint_source + dark_source + r"""
+// ORACLE (v3): from page load on, neither is given to assistive technology
+assert.strictEqual(exposed("hint"), "hidden");
+assert.strictEqual(exposed("dark"), "hidden");
+// CHARACTERIZATION: the gate is unchanged -- a weak push says nothing
+hint(0.2);
+assert.strictEqual(exposed("hint"), "hidden");
+assert.strictEqual(timers.size, 0);
+// ORACLE: shown, it is exposed
+hint(0.6);
+assert.strictEqual(exposed("hint"), "visible");
+assert.ok(Math.abs(+EL.hint.style.opacity - 0.9) < 1e-9, EL.hint.style.opacity);
+assert.strictEqual(EL.hint.textContent, "Movement stops here");
+// CHARACTERIZATION: for 1100 ms, as before
+assert.deepStrictEqual(fire(), [1100]);
+// ORACLE: dismissed, it is hidden (after the fade: the rules' delay)
+assert.strictEqual(EL.hint.style.opacity, "0");
+assert.strictEqual(exposed("hint"), "hidden");
+// CHARACTERIZATION: a re-armed hint is one timer, and still hides after it
+hint(0.6); hint(0.6, "One moment");
+assert.strictEqual(timers.size, 1);
+assert.strictEqual(exposed("hint"), "visible");
+fire();
+assert.strictEqual(exposed("hint"), "hidden");
+// CHARACTERIZATION: the dark line is held 320 ms before it is said
+updateDark(1);
+assert.strictEqual(exposed("dark"), "hidden");
+now += 200; updateDark(1);
+assert.strictEqual(exposed("dark"), "hidden");
+now += 200; updateDark(1);
+// ORACLE: shown, it is exposed, and says its two lines
+assert.strictEqual(exposed("dark"), "visible");
+assert.strictEqual(EL.dark.textContent, HINT_DARK + HINT_DARK_TAP);
+// CHARACTERIZATION: the hysteresis is unchanged
+updateDark(0.5);
+assert.strictEqual(exposed("dark"), "visible");
+// ORACLE: dismissed (the view is back on the room), it is hidden
+updateDark(0.3);
+assert.strictEqual(exposed("dark"), "hidden");
+assert.strictEqual(S.darkSaid, false);
+""")
+
+
+# The phones O1 used, and a narrower one: Chrome on Windows sets the page's
+# font (Segoe UI) narrower than the phone's (SF), so at 375 px the headline
+# fits here even without `width: max-content`; at 320 it does not.
+PROBE_SIZES = ((320, 568), (375, 667), (390, 844), (402, 874), (440, 956))
+
+_PROBE = r"""
+(function(){
+"use strict";
+const out = {width: innerWidth};
+let now = 1000; const performance = {now: () => now};
+const timers = new Map(); let nextTimer = 1;
+const setTimeout = (f, ms) => { timers.set(nextTimer, {f, ms}); return nextTimer++; };
+const clearTimeout = id => { timers.delete(id); };
+const fire = () => { const all = [...timers.values()]; timers.clear(); all.forEach(t => t.f());
+  return all.map(t => t.ms); };
+const $ = id => document.getElementById(id);
+const S = {layers: 39, keyframesInManifest: 39}; function requestDraw(){}
+const RAW_IMAGERY = false; const manifest = {quality: "final"};
+const CONFIG = {scale_state: "unknown", current: true}; const encoding = "astc-6x6-rgba";
+const NAV = {MAX_SKIP: 3}; let captionOpen = false;
+/*SOURCES*/
+const vis = id => getComputedStyle($(id)).visibility;
+const settle = id => $(id).getAnimations().forEach(a => a.finish());
+const box = id => { const r = $(id).getBoundingClientRect();
+  return {l: r.left, t: r.top, r: r.right, b: r.bottom, w: r.width, h: r.height}; };
+const lines = el => { const rg = document.createRange(); rg.selectNodeContents(el);
+  return new Set([...rg.getClientRects()].map(r => Math.round(r.top))).size; };
+const ax = id => { const e = $(id);
+  return "computedRole" in e ? {role: e.computedRole, name: e.computedName} : null; };
+const exposedEmpty = () => [...document.querySelectorAll(
+    "[role=status],[role=alert],[role=log],[aria-live]")]
+  .filter(e => { const s = getComputedStyle(e);
+    return s.display !== "none" && s.visibility === "visible" && !e.innerText.trim(); })
+  .map(e => e.id);
+document.body.classList.remove("booting");
+status("");
+out.load = {dark: vis("dark"), hint: vis("hint"), exposedEmpty: exposedEmpty()};
+hint(0.2); out.gate = vis("hint");
+hint(0.6); out.hintShown = vis("hint");
+out.hintTimers = fire(); out.hintFading = vis("hint");
+settle("hint");
+out.hintAfter = {vis: vis("hint"), opacity: getComputedStyle($("hint")).opacity};
+updateDark(1); now += 200; updateDark(1); out.darkHeld = vis("dark");
+now += 200; updateDark(1);
+out.darkShown = {vis: vis("dark"), ax: ax("dark"), text: $("dark").innerText,
+  lines: lines($("dark").querySelector("b"))};
+settle("dark");
+hint(0.6);
+const vh = innerHeight;
+out.barh = parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--barh"));
+out.clearOff = {dark: vh - box("dark").b, hint: vh - box("hint").b};
+status("Placing images 12 / 40");
+out.clearOn = {status: box("status"), dark: box("dark"), hint: box("hint"),
+  darkUp: vh - box("dark").b, hintUp: vh - box("hint").b};
+status(""); fire(); settle("hint");
+updateDark(0.3); out.darkFading = vis("dark");
+settle("dark");
+out.darkAfter = {vis: vis("dark"), opacity: getComputedStyle($("dark")).opacity,
+  text: $("dark").innerText, exposedEmpty: exposedEmpty()};
+out.compass = box("compass"); out.clabel = box("clabel");
+updateCaption();
+out.about = {box: box("bInfo"), caption: box("caption"), text: $("bInfo").textContent,
+  expanded: $("bInfo").getAttribute("aria-expanded"), ax: ax("bInfo")};
+$("bInfo").click();
+out.less = {box: box("bInfo"), caption: box("caption"), text: $("bInfo").textContent,
+  expanded: $("bInfo").getAttribute("aria-expanded"), ax: ax("bInfo")};
+parent.document.getElementById("out-" + innerWidth).textContent = JSON.stringify(out);
+})();
+"""
+
+
+def _chrome():
+    import os
+    import shutil
+
+    for candidate in (os.environ.get("WB_CHROME"), shutil.which("chrome"),
+                      shutil.which("google-chrome"), shutil.which("chromium"),
+                      shutil.which("chromium-browser"),
+                      r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+                      r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+                      "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"):
+        if candidate and os.path.isfile(candidate):
+            return candidate
+    pytest.skip("no Chrome on this host for the optional computed-style probe")
+
+
+def _probe(chrome, page, where):
+    """The page's own <style> and markup, verbatim, with its own `status()`,
+    `hint()`, `updateDark()` and `updateCaption()` lifted verbatim and driven on
+    a fake clock, one iframe per phone width, in headless Chrome. Transitions
+    are finished with the Web Animations API rather than waited for."""
+    import html as html_lib
+    import subprocess
+
+    sources = (_section(page, "let lastBarH = -1;", "/* The second or so after the images land")
+               + _section(page, '  const HINT_EDGE = "Movement stops here";',
+                          "  /* -------- the orientation ring")
+               + _section(page, "  const DARK_SAY_ON = 0.90", "  const KEY_SPEED")
+               + _section(page, "  function updateCaption(){", "  /* -------- verification hooks"))
+    body = page[page.index('<body class="booting">') + len('<body class="booting">'):
+                page.index("<script>")]
+    style = page[page.index("<style>"):page.index("</style>") + len("</style>")]
+    frame = ('<!doctype html><html lang="en"><head><meta charset="utf-8">'
+             '<meta name="viewport" content="width=device-width,initial-scale=1">' + style
+             + '</head><body class="booting">' + body + "<script>"
+             + _PROBE.replace("/*SOURCES*/", sources) + "</script></body></html>")
+    frames = "".join(
+        f'<iframe width="{w}" height="{h}" style="border:0;display:block" '
+        f'srcdoc="{html_lib.escape(frame, quote=True)}"></iframe><pre id="out-{w}"></pre>'
+        for w, h in PROBE_SIZES)
+    where.mkdir(parents=True, exist_ok=True)
+    target = where / "probe.html"
+    target.write_text('<!doctype html><html><head><meta charset="utf-8"></head><body>'
+                      + frames + "</body></html>", encoding="utf-8")
+    run = subprocess.run(
+        [chrome, "--headless=new", "--disable-gpu", "--no-first-run", "--no-default-browser-check",
+         "--disable-extensions", "--enable-blink-features=ComputedAccessibilityInfo",
+         f"--user-data-dir={where / 'profile'}", "--window-size=1200,900", "--dump-dom",
+         target.as_uri()],
+        capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=180)
+    out = {}
+    for w, _h in PROBE_SIZES:
+        m = re.search(rf'<pre id="out-{w}">(.*?)</pre>', run.stdout, re.S)
+        assert m and m.group(1), f"the probe reported nothing at {w} px: {run.stderr[-1500:]}"
+        out[w] = json.loads(html_lib.unescape(m.group(1)))
+    return out
+
+
+def _overlap(a, b):
+    return a["l"] < b["r"] and b["l"] < a["r"] and a["t"] < b["b"] and b["t"] < a["b"]
+
+
+@pytest.fixture
+def v3_pages(built):
+    """The template and three pages as served: a room page, the room page of a
+    session with areas, and an area page."""
+    from tests.test_world_builder_components_areas import (
+        AREA1, _entries, _finalize, build_area, write_components,
+    )
+    from tower.world_builder.appearance_render import build_appearance_page
+
+    room = build_appearance_page(built.store, WORLD, SESSION)
+    _finalize(built)
+    record = write_components(built.store, _entries(built.kids))
+    build_area(built, AREA1, record)
+    client = _client(built)
+    with_areas = client.get(f"/worlds/{WORLD}/render", params={"session_id": SESSION, "viewer": V})
+    area = client.get(f"/worlds/{WORLD}/areas/{SESSION}/{AREA1}/render")
+    assert with_areas.status_code == 200 and area.status_code == 200
+    return {"template": _template(), "room": room, "room with areas": with_areas.text,
+            "area": area.text}
+
+
+class TestTheViewerForAssistiveTechnology:
+    """WORLDS v3 (manager 115, T-UX0b): the O1 viewer check's five page fixes,
+    presentation only (P3-RULES, the presentation-only extension)."""
+
+    def test_the_template_carries_every_fix(self):
+        _check_v3(_template())
+
+    def test_the_closed_name_table_has_seven_entries_and_the_page_names_each(self):
+        _check_names(_template())
+
+    def test_the_notices_hide_when_dismissed_and_show_at_once(self):
+        _run_notices(_template())
+
+    def test_room_and_area_pages_carry_every_fix(self, v3_pages):
+        from tower.world_builder import appearance_render as AR
+
+        # ORACLE (COMPONENTS §5.4, via `replace_anchors`; I3): every caption
+        # anchor is in the template once, so the area captions still apply --
+        # a repeated anchor would silently cost the area page its captions.
+        for anchor in (AR.ANCHOR_HEAD, AR.ANCHOR_WHAT_REDACTED, AR.ANCHOR_WHAT_RAW,
+                       AR.ANCHOR_LOADING, AR.ANCHOR_FACE_TEXT, AR.ANCHOR_FACE_BUTTON):
+            assert v3_pages["template"].count(anchor) == 1, anchor[:60]
+        area = v3_pages["area"]
+        assert ('aria-label="Face the area: turn to the nearest reconstructed direction">'
+                "Face the area</button>") in area
+        assert "Face the room</button>" not in area and "Area 1 of 2" in area
+        assert "2 more areas shown separately" in v3_pages["room with areas"]
+        for key in ("room", "room with areas", "area"):
+            _check_v3(v3_pages[key])
+        # these two can skip (no WORLDS contract beside the Tower; no node), so
+        # they come after every check that cannot
+        for key in ("room", "room with areas", "area"):
+            _check_names(v3_pages[key], area=key == "area")
+        for key in ("room", "room with areas", "area"):
+            _run_notices(v3_pages[key])
+
+    def test_the_notices_and_the_toggle_computed_in_a_browser(self, v3_pages, tmp_path):
+        """OPTIONAL: skipped without Chrome. The computed style and layout a
+        browser gives the page's own CSS, markup and code."""
+        chrome = _chrome()
+        for key in ("room", "area"):
+            for w, o in _probe(chrome, v3_pages[key], tmp_path / key.replace(" ", "-")).items():
+                where = f"{key} at {w} px"
+                assert o["width"] == w, where
+                # ORACLE (v3 §4): from page load on, neither notice is exposed,
+                # and no status or live region is exposed empty.
+                assert (o["load"]["dark"], o["load"]["hint"]) == ("hidden", "hidden"), where
+                assert o["load"]["exposedEmpty"] == [], where
+                # CHARACTERIZATION: the gate, and 1100 ms.
+                assert o["gate"] == "hidden", where
+                assert o["hintTimers"] == [1100], where
+                # ORACLE: the show is immediate; the hide waits for the fade,
+                # and then it is hidden.
+                assert o["hintShown"] == "visible", where
+                assert o["hintFading"] == "visible", where
+                assert o["hintAfter"] == {"vis": "hidden", "opacity": "0"}, where
+                # CHARACTERIZATION: the dark line is held 320 ms before it is said.
+                assert o["darkHeld"] == "hidden", where
+                shown = o["darkShown"]
+                assert shown["vis"] == "visible", where
+                assert shown["text"].split("\n") == ["Not reconstructed from here",
+                                                     "Tap to turn back"], where
+                # ORACLE (v3 §4, Controls): a button, with the table's name.
+                if shown["ax"] is not None:
+                    assert shown["ax"] == {"role": "button", "name": DARK_NAME}, where
+                # 1. ORACLE at 375 px and wider; CHARACTERIZATION at 320 (the
+                #    mechanism, since this host's font is narrower): one line.
+                assert shown["lines"] == 1, where
+                # 2. ORACLE: where the notices sit, with and without the status
+                #    line, and they clear it.
+                barh = o["barh"]
+                for notice in ("dark", "hint"):
+                    assert o["clearOff"][notice] == pytest.approx(max(104, barh + 8), abs=0.5), where
+                    assert o["clearOn"][notice + "Up"] == pytest.approx(
+                        max(104, barh + 38), abs=0.5), where
+                    assert o["clearOn"][notice]["b"] <= o["clearOn"]["status"]["t"], where
+                # 3. ORACLE: dismissed, the dark line fades and is then hidden,
+                #    and nothing is left exposed empty.
+                assert o["darkFading"] == "visible", where
+                after = o["darkAfter"]
+                assert (after["vis"], after["opacity"]) == ("hidden", "0"), where
+                assert after["exposedEmpty"] == [], where
+                # CHARACTERIZATION (I4): `innerText` reads "" once it is hidden.
+                assert after["text"] == "", where
+                # 4. ORACLE (v3 §4, Controls): 44 x 44 reading either word; its
+                #    name is the word and it keeps `aria-expanded`.
+                for state, word, expanded in (("about", "About", "false"),
+                                              ("less", "Less", "true")):
+                    t = o[state]
+                    assert t["box"]["w"] >= 44 and t["box"]["h"] >= 44, (where, t["box"])
+                    assert (t["text"], t["expanded"]) == (word, expanded), where
+                    if t["ax"] is not None:
+                        assert t["ax"] == {"role": "button", "name": word}, where
+                    # CHARACTERIZATION (I7): the taller line overlaps nothing --
+                    # not the ring, not its label, not the ring's gutter.
+                    assert not _overlap(t["box"], o["compass"]), where
+                    assert not _overlap(t["box"], o["clabel"]), where
+                    assert t["box"]["r"] <= w - 78 + 0.5, where
+                    assert t["caption"]["t"] <= t["box"]["t"] and t["box"]["b"] <= t["caption"]["b"], where

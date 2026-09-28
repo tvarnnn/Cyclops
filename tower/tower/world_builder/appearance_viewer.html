@@ -64,7 +64,9 @@ button[disabled]{opacity:.4}
   background:linear-gradient(to bottom,rgba(11,13,16,.96),rgba(11,13,16,.72) 55%,rgba(11,13,16,0));
   font-size:12px;color:var(--dim);pointer-events:none}
 #caption b{color:var(--ink);font-weight:600;text-shadow:0 1px 3px rgba(0,0,0,.9)}
-#caption button{pointer-events:auto;min-height:24px;padding:1px 8px;margin-left:6px;font-size:11px;border-radius:10px;vertical-align:baseline}
+/* The About / Less toggle is a 44 x 44 target like the bar (WORLDS v3). It
+   was exempt at 24px high; the caption's line grows by about 20px for it. */
+#caption button{pointer-events:auto;min-height:44px;min-width:44px;padding:1px 8px;margin-left:6px;font-size:11px;border-radius:10px;vertical-align:baseline}
 #caption .more{display:block;margin-top:6px;padding:9px 11px 10px;border-radius:8px;
   background:rgba(8,10,13,.88);color:#d3d7dd;border:1px solid rgba(255,255,255,.08);
   text-shadow:0 1px 2px rgba(0,0,0,.85);max-height:44vh;overflow-y:auto;
@@ -113,7 +115,13 @@ body.rawimagery #clabel{top:calc(66px + var(--rawmark, 26px) + env(safe-area-ins
 #pos{font-variant-numeric:tabular-nums;color:var(--dim);font-size:12px}
 #hint{position:fixed;left:50%;bottom:max(calc(104px + env(safe-area-inset-bottom)), calc(var(--barh, 56px) + 8px));transform:translateX(-50%);padding:6px 12px;border-radius:14px;
   background:rgba(11,13,16,.55);color:var(--dim);font-size:12px;pointer-events:none;opacity:0;
-  transition:opacity .35s ease}
+  visibility:hidden;transition:opacity .35s ease,visibility 0s linear .35s}
+/* NOT SHOWN IS NOT IN THE ACCESSIBILITY TREE EITHER (WORLDS v3). `opacity:0`
+   hides a notice from the eye and not from VoiceOver, so the edge hint and
+   the dark line are also `visibility:hidden` whenever they are not showing,
+   from page load on. Hiding waits for the fade (the delayed `visibility`
+   transition above); showing is immediate (the `.on` rules carry no delay). */
+#hint.on{visibility:visible;transition:opacity .35s ease,visibility 0s}
 /* THE DARK STATE, which is not a toast.
    The dark sentence used to be `hint()`: 1,100 ms of life and one showing per
    4,000 ms. Measured over a 24-step turn from the opening it was visible at
@@ -125,11 +133,17 @@ body.rawimagery #clabel{top:calc(66px + var(--rawmark, 26px) + env(safe-area-ins
    tapping it turns you to the nearest reconstructed direction, like the ring
    and the edge chevron. */
 #dark{position:fixed;left:50%;bottom:max(calc(104px + env(safe-area-inset-bottom)), calc(var(--barh, 56px) + 8px));transform:translateX(-50%);
-  max-width:min(84vw,360px);padding:7px 13px;border-radius:15px;text-align:center;
+  width:max-content;max-width:min(84vw,360px);padding:7px 13px;border-radius:15px;text-align:center;
   background:rgba(8,10,13,.62);border:1px solid rgba(255,255,255,.07);
-  color:var(--dim);font-size:12px;line-height:1.35;opacity:0;pointer-events:none;
-  transition:opacity .4s ease;cursor:pointer}
-#dark.on{opacity:.88;pointer-events:auto}
+  color:var(--dim);font-size:12px;line-height:1.35;opacity:0;visibility:hidden;pointer-events:none;
+  transition:opacity .4s ease,visibility 0s linear .4s;cursor:pointer}
+#dark.on{opacity:.88;visibility:visible;pointer-events:auto;transition:opacity .4s ease,visibility 0s}
+/* `width:max-content`: `left:50%` alone capped the pill at half the screen,
+   and at 375 and 390px the headline wrapped (WORLDS v3). While the status
+   line shows text, both notices also sit above it: it is at `--barh + 8px`
+   and about 23px tall, so 38px leaves about 6px, and the 104px floor keeps
+   them from moving down when it appears. */
+#status:not(:empty) ~ #hint,#status:not(:empty) ~ #dark{bottom:max(calc(104px + env(safe-area-inset-bottom)), calc(var(--barh, 56px) + 38px))}
 #dark b{display:block;color:#c9ced6;font-weight:600}
 #dark span{color:#7f868f;font-size:11px}
 /* THE ORIENTATION RING. Turning is free and on this capture more than half of
@@ -199,7 +213,12 @@ body.rawimagery #clabel{top:calc(66px + var(--rawmark, 26px) + env(safe-area-ins
 <div id="clabel" aria-hidden="true">reconstructed<br>from here</div>
 <div id="back" aria-hidden="true"></div>
 <div id="hint" aria-live="polite">Movement stops here</div>
-<div id="dark" role="status" aria-live="polite"></div>
+<!-- The dark line is a control (a tap turns you back), so it is a named button
+     (WORLDS v3). Its name is its two visible lines joined, HINT_DARK + ". " +
+     HINT_DARK_TAP, and the same on an area page. No tabindex, on purpose: the
+     ring and the edge chevron, the same control, are not in the tab order
+     either, and the page's keyboard is a desktop debug aid. -->
+<div id="dark" role="button" aria-label="Not reconstructed from here. Tap to turn back" aria-live="polite"></div>
 <!-- The research marker (contract §6.6). Empty and hidden for the product;
      a research build fills it and it stays on screen for the life of the
      page, above everything, because the caption can be collapsed and the
@@ -2767,10 +2786,14 @@ async function main(){
     const h = $("hint");
     h.textContent = text || HINT_EDGE;
     h.style.opacity = String(Math.min(0.9, 0.3 + level));
+    // `on` is its `visibility` (`#hint.on`), so assistive technology gets it
+    // only while it shows; the opacity above still fades it, and when it
+    // shows and for how long are unchanged
+    h.classList.add("on");
     S.hints = (S.hints || 0) + 1;
     S.lastHint = h.textContent;
     clearTimeout(hintTimer);
-    hintTimer = setTimeout(() => { h.style.opacity = "0"; }, 1100);
+    hintTimer = setTimeout(() => { h.style.opacity = "0"; h.classList.remove("on"); }, 1100);
   }
   /* -------- the orientation ring, and the way back ----------------------- */
   /* The profile is the support of the view at RING_BINS headings on the
@@ -4721,9 +4744,13 @@ async function main(){
   /* What the reader can SEE of the page's own furniture, so the cold open can
      be measured for what it shows rather than for what exists in the DOM. */
   S.chrome = () => {
+    // Since WORLDS v3 the dark line is `visibility:hidden` when not shown, so
+    // `visibility` is reported and `shown` requires it, and `text` (innerText)
+    // reads "" while it is hidden: what the reader can see, deliberately.
     const vis = id => { const e = $(id); if (!e) return null;
       const s = getComputedStyle(e);
-      return {opacity: +s.opacity, shown: s.display !== "none" && +s.opacity > 0.05,
+      return {opacity: +s.opacity, visibility: s.visibility,
+              shown: s.display !== "none" && s.visibility === "visible" && +s.opacity > 0.05,
               text: (e.innerText || "").slice(0, 80)}; };
     return {drawn: shownAt !== null, phase: S.phase,
             caption: vis("caption"), bar: vis("bar"), status: vis("status"),
