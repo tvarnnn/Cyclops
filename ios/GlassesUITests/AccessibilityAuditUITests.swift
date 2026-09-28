@@ -74,8 +74,6 @@ final class AccessibilityAuditUITests: XCTestCase {
         continueAfterFailure = true
         predictions = []
         passedAtLargest = [:]
-        seenAtLargest = [:]
-        flaggedAtLargest = [:]
     }
 
     // MARK: Dynamic Type predictions, checked at the largest size
@@ -98,15 +96,16 @@ final class AccessibilityAuditUITests: XCTestCase {
 
     private var predictions: [Prediction] = []
     /// Per screen, every label that was on a screenful at the largest size
-    /// and was NOT flagged for Dynamic Type or clipping on that screenful.
+    /// whose Dynamic Type and clipping audits both COMPLETED, and was not
+    /// flagged by either there: text actually judged at the largest size, and
+    /// clean.
+    ///
+    /// The only evidence a prediction settles on (U0.5 review F4). Text that
+    /// was merely seen at the largest size, by the contrast pass, and never
+    /// flagged by the sizing pass used to count too; but a sizing pass that
+    /// never reached the screenful the text was on flags nothing, so that was
+    /// a waiver on no verdict.
     private var passedAtLargest: [String: Set<String>] = [:]
-    /// Per screen, every label on a screenful of the contrast pass at the
-    /// largest size, and every label the sizing pass flagged there at all.
-    /// Text that was on the screen and never flagged has passed too, even
-    /// when the sizing pass's own re-layout kept it out of the tree when it
-    /// looked.
-    private var seenAtLargest: [String: Set<String>] = [:]
-    private var flaggedAtLargest: [String: Set<String>] = [:]
 
     /// A label as the two sides compare it: its first 60 characters, because
     /// the tree's description cuts a long label short.
@@ -125,17 +124,24 @@ final class AccessibilityAuditUITests: XCTestCase {
     private func settlePredictions() {
         let largestRan = modes.contains { $0.name == Mode.axl.name }
         var standing: [String] = []
+        var settled: [String: Int] = [:]
+        var stood: [String: Int] = [:]
         for prediction in predictions {
             let key = Self.key(prediction.label)
             let passed = passedAtLargest[prediction.screen]?.contains(key) == true
-                || (seenAtLargest[prediction.screen]?.contains(key) == true
-                    && flaggedAtLargest[prediction.screen]?.contains(key) != true)
             if largestRan, passed {
-                print("U05-AUDIT|\(prediction.line) -- WAIVED: the same text passes on a screenful at "
+                settled[prediction.screen, default: 0] += 1
+                print("U05-AUDIT|\(prediction.line) -- WAIVED: the same text was audited, and passed, on a screenful at "
                       + "Accessibility XXXL")
             } else {
+                stood[prediction.screen, default: 0] += 1
                 standing.append(prediction.line)
             }
+        }
+        // How many predictions each screen settled, and how many stood, so a
+        // screen whose issues are all settled away is visible as such.
+        for screen in Set(settled.keys).union(stood.keys).sorted() {
+            print("U05-SETTLED|\(screen)|settled=\(settled[screen] ?? 0)|standing=\(stood[screen] ?? 0)")
         }
         for line in standing { print("U05-AUDIT|ISSUE|\(line)") }
         XCTAssertEqual(standing, [], standing.joined(separator: "\n"))
@@ -186,8 +192,13 @@ final class AccessibilityAuditUITests: XCTestCase {
         // A control that is switched off ("Start session" and "Start capture"
         // with no glasses, "Picture" with no world): the system dims it on
         // purpose, to say it cannot be used, and WCAG 1.4.3 sets no contrast
-        // requirement for an inactive control. Its reason is stated in
-        // readable text beside it.
+        // requirement for an inactive control. Its reason is in readable text
+        // on the same screen, though not always beside it: under "Start
+        // session" on Home; for "Start capture", in the viewfinder card at the
+        // top of the World Builder workspace (DEBUG), which can be a screen
+        // above it, and in the control's VoiceOver hint; for "Picture", in the
+        // canvas under it ("No world yet"). (U0.5 review F10: the line that
+        // stood beside "Start capture" was removed as a duplicate.)
         Waiver(reason: "a disabled control (WCAG 1.4.3: inactive components are exempt)") { issue, _ in
             guard issue.auditType == .contrast else { return false }
             return AccessibilityAuditUITests.isDisabledControl(issue.element)
@@ -409,6 +420,84 @@ final class AccessibilityAuditUITests: XCTestCase {
               + "|safe=\(Int(safeArea))|share=\(String(format: "%.2f", share))")
         XCTAssertGreaterThanOrEqual(share, 0.6,
                                     "the 3D view is \(Int(web.frame.height)) pt of a \(Int(safeArea)) pt safe area")
+        app.terminate()
+    }
+
+    /// At the default text size the words above the picture do not scroll:
+    /// the walk's notice from the Tower (COMPONENTS §8: "show it verbatim
+    /// below the room caption") is on the screen whole, above the 3D view,
+    /// without scrolling -- on an iPhone SE too, where the caption's cap once
+    /// hid it (U0.5 review F1). The controls that act on the picture (the
+    /// newer reconstruction's offer, its retry, Back to the room) are pinned
+    /// between the words and the picture, and are checked the same way when
+    /// the screen shows them. Then every native text and control on the
+    /// screen is measured on the pixels, light mode, to 4.5:1 -- "Details"
+    /// included (U0.5 review F2).
+    ///
+    /// Needs the appearance fixture's walk to carry a `finalization.notice`,
+    /// and skips without one.
+    func testTheNoticeIsOnTheScreenWithoutScrollingAtTheDefaultSize() throws {
+        let authority = try towerAuthority()
+        // On a Simulator just booted, the first WebGL page can outlast the
+        // viewer's watchdog, which then swaps the page for its failure view
+        // (seen on the SE): the page is not what is judged here.
+        warmUpTheViewer(authority: authority)
+        let app = launch(.light, authority: authority)
+        openSavedWorlds(app, mode: .light)
+        let row = app.staticTexts["Appearance fixture (Mac)"]
+        XCTAssertTrue(reveal(app, row), "the appearance fixture's row")
+        row.tap()
+        let web = app.webViews.firstMatch
+        XCTAssertTrue(web.waitForExistence(timeout: 120), "the page was drawn")
+        let caption = app.staticTexts.containing(
+            NSPredicate(format: "label CONTAINS[c] %@", "not to scale")).firstMatch
+        XCTAssertTrue(caption.waitForExistence(timeout: 30), "the room's caption")
+        let notice = element(app, "world-render-notice")
+        guard notice.waitForExistence(timeout: 5) else {
+            throw XCTSkip("The appearance fixture's walk carries no finalization.notice.")
+        }
+        // The drawing has finished, so the picture is at its final frame.
+        let drawing = app.staticTexts.containing(NSPredicate(format: "label BEGINSWITH %@", "Drawing the world")).firstMatch
+        _ = waitFor(timeout: 60) { !drawing.exists }
+        Thread.sleep(forTimeInterval: 3)
+        shoot(app, "world-notice", mode: .light)
+        guard web.exists else {
+            XCTFail("the page is no longer drawn (the viewer's failure view?); nothing to measure against")
+            return
+        }
+
+        let window = app.windows.firstMatch.frame
+        let bar = app.navigationBars.firstMatch.frame
+        let below = window.height - bar.maxY
+        let noticeFrame = notice.frame
+        let webFrame = web.frame
+        print("U05-NOTICE|window=\(Int(window.width))x\(Int(window.height))|bar=\(Int(bar.maxY))"
+              + "|below=\(Int(below))|caption=\(Int(caption.frame.minY))-\(Int(caption.frame.maxY))"
+              + "|notice=\(Int(noticeFrame.minY))-\(Int(noticeFrame.maxY))"
+              + "|words=\(Int(webFrame.minY - bar.maxY))|web=\(Int(webFrame.minY))-\(Int(webFrame.maxY))"
+              + "|words_share=\(String(format: "%.2f", (webFrame.minY - bar.maxY) / below))")
+        XCTAssertTrue(notice.isHittable, "the notice can be reached")
+        XCTAssertGreaterThanOrEqual(noticeFrame.minY, bar.maxY - 1, "the notice is below the bar")
+        XCTAssertLessThanOrEqual(noticeFrame.maxY, webFrame.minY + 1,
+                                 "the notice is whole above the picture, not scrolled out of sight")
+        for id in ["world-render-newer-picture", "world-render-retry-refused", "world-render-back-to-room"] {
+            let control = element(app, id)
+            guard control.exists else { continue }
+            print("U05-NOTICE|control=\(id)|\(Int(control.frame.minY))-\(Int(control.frame.maxY))")
+            XCTAssertTrue(control.isHittable, "\(id) can be reached")
+            XCTAssertLessThanOrEqual(control.frame.maxY, webFrame.minY + 1, "\(id) is whole above the picture")
+        }
+
+        // The viewer's own words and controls, light mode, on the pixels.
+        let measured = measureNativeElements(app, in: app.screenshot().image, window: window)
+        for element in measured {
+            print("U05-CONTRAST|light world-notice|\(element.kind) '\(element.label.prefix(60))'"
+                  + "|\(String(format: "%.2f", element.ratio)):1")
+        }
+        XCTAssertTrue(measured.contains { $0.label == "Details" && $0.kind != "text" }, "the Details control was measured")
+        let low = measured.filter { $0.ratio < 4.5 }
+        XCTAssertEqual(low.map { "\($0.kind) '\($0.label)' \(String(format: "%.2f", $0.ratio)):1" }, [],
+                       "every native text and control is at least 4.5:1")
         app.terminate()
     }
 
@@ -640,9 +729,14 @@ final class AccessibilityAuditUITests: XCTestCase {
         // a WebGL page open, an audit sometimes reports "failed to complete
         // in time". A try that completes is the one that counts.
         let checks: [XCUIAccessibilityAuditType] = [.contrast, .sufficientElementDescription, .dynamicType, .textClipped]
+        // The two waivers below are for the world's WebGL page and a timeout
+        // only (U0.5 review F3); anywhere else, or any other error, fails.
+        let overTheWebGLPage = screen.hasPrefix("world-opened")
+        var sizingCompleted = true
         for check in checks where auditTypes.intersection(types).contains(check) {
             var completed = false
             var lastError: Error?
+            var onlyTimeouts = true
             for attempt in 1...4 where !completed {
                 var issues: [XCUIAccessibilityAuditIssue] = []
                 do {
@@ -654,53 +748,55 @@ final class AccessibilityAuditUITests: XCTestCase {
                     completed = true
                 } catch {
                     lastError = error
+                    onlyTimeouts = onlyTimeouts && Self.isAuditTimeout(error)
                     print("U05-AUDIT|\(mode.name) \(screen): \(Self.typeName(check)) try \(attempt) could not run (\(error))")
                     if attempt < 4 { Thread.sleep(forTimeInterval: 15) }
                 }
             }
             guard !completed else { continue }
-            if check == .contrast, let shot {
-                // Over the world's WebGL page in light mode, and only there,
-                // the contrast check never completed (four tries in each of
-                // three runs). What it would have judged that is this app's
-                // -- every native text on the screen, outside the page -- is
+            if check == .dynamicType || check == .textClipped { sizingCompleted = false }
+            if check == .contrast, let shot, overTheWebGLPage, onlyTimeouts {
+                // Over the world's WebGL page in light mode the contrast check
+                // never completed (four tries in each of three runs). What it
+                // would have judged that is this app's -- every native text
+                // and control on the screen, outside the page and the bars,
+                // buttons and disclosures included (U0.5 review F2) -- is
                 // measured on the rendered pixels instead, to the same 4.5:1.
-                let measured = measureNativeTexts(app, in: shot, window: window)
+                let measured = measureNativeElements(app, in: shot, window: window)
                 let low = measured.filter { $0.ratio < 4.5 }
-                for text in low {
-                    found.append("\(mode.name) \(screen): contrast: measured \(String(format: "%.1f", text.ratio)):1 "
-                                 + "on the rendered pixels for '\(text.label)'")
+                for element in low {
+                    found.append("\(mode.name) \(screen): contrast: measured \(String(format: "%.1f", element.ratio)):1 "
+                                 + "on the rendered pixels for \(element.kind) '\(element.label)'")
                 }
                 if low.isEmpty {
                     let lowest = measured.map(\.ratio).min().map { String(format: "%.1f", $0) } ?? "-"
+                    let buttons = measured.filter { $0.kind != "text" }.count
                     noted.append("\(mode.name) \(screen): contrast: the audit could not complete over the WebGL page "
-                                 + "-- WAIVED: its \(measured.count) native texts measured on the rendered pixels, "
-                                 + "lowest \(lowest):1, all over 4.5:1")
+                                 + "-- WAIVED: its \(measured.count) native elements (\(buttons) of them controls) "
+                                 + "measured on the rendered pixels, lowest \(lowest):1, all over 4.5:1")
                 }
-            } else if check == .dynamicType || check == .textClipped, mode.contentSize == nil {
+            } else if check == .dynamicType || check == .textClipped, mode.contentSize == nil,
+                      overTheWebGLPage, onlyTimeouts, modes.contains(where: { $0.name == Mode.axl.name }) {
                 // At the default size these two checks only predict; every
                 // text they could flag is judged again for real at
                 // Accessibility XXXL (`Prediction`), where a timeout still
-                // fails. Over the WebGL page, in the first mode, they timed
-                // out on every try in every run on this 8 GB Mac.
+                // fails -- so this holds only when that mode is in the run.
+                // Over the WebGL page, in the first mode, they timed out on
+                // every try in every run on this 8 GB Mac.
                 noted.append("\(mode.name) \(screen): \(Self.typeName(check)): the audit could not complete "
-                             + "-- WAIVED: a default-size prediction; the same texts are judged at Accessibility XXXL")
+                             + "over the WebGL page -- WAIVED: a default-size prediction; the same texts are "
+                             + "judged at Accessibility XXXL in this run")
             } else {
                 found.append("\(mode.name) \(screen): \(Self.typeName(check)): the audit could not run: "
                              + "\(lastError.map { "\($0)" } ?? "-")")
             }
         }
         predictions.append(contentsOf: newPredictions)
-        if mode.contentSize != nil {
+        if mode.contentSize != nil, sizingPass, sizingCompleted {
+            // What was audited on this screenful at the largest size, and
+            // passed. A sizing audit that did not complete judged nothing.
             let base = Self.baseScreen(screen)
-            let here = Self.labels(app)
-            if sizingPass {
-                // What passed on this screenful at the largest size.
-                passedAtLargest[base, default: []].formUnion(here.subtracting(flaggedHere))
-                flaggedAtLargest[base, default: []].formUnion(flaggedHere)
-            } else {
-                seenAtLargest[base, default: []].formUnion(here)
-            }
+            passedAtLargest[base, default: []].formUnion(Self.labels(app).subtracting(flaggedHere))
         }
         if let band {
             print("U05-BAND|\(mode.name) \(screen)|top=\(Int(band.top.isFinite ? band.top : -1))"
@@ -713,25 +809,79 @@ final class AccessibilityAuditUITests: XCTestCase {
         return cutAtBottom
     }
 
-    /// Every static text on the screen that is this app's -- outside the web
-    /// view and the navigation bars, and wholly on the screen -- with its
-    /// measured contrast.
-    private func measureNativeTexts(_ app: XCUIApplication, in shot: UIImage,
-                                    window: CGRect) -> [(label: String, ratio: Double)] {
-        let web = app.webViews.firstMatch
-        let webFrame = web.exists ? web.frame : .null
-        let bars = app.navigationBars.allElementsBoundByIndex.filter(\.exists).map(\.frame)
-        var results: [(label: String, ratio: Double)] = []
-        for text in app.staticTexts.allElementsBoundByIndex where text.exists {
-            let frame = text.frame
+    /// An element of this app's, measured on the rendered pixels.
+    private struct MeasuredElement {
+        /// "text", "button", "link", "disclosure", "toggle".
+        let kind: String
+        let label: String
+        let frame: CGRect
+        let ratio: Double
+    }
+
+    /// The kinds of element whose label is drawn as text or as a tinted
+    /// glyph: every one the contrast audit would judge.
+    private static let measuredKinds: [XCUIElement.ElementType: String] = [
+        .staticText: "text", .button: "button", .link: "link",
+        .disclosureTriangle: "disclosure", .toggle: "toggle", .switch: "toggle",
+    ]
+
+    /// Every element on the screen that is this app's and has a label --
+    /// texts, and the buttons, links and disclosures the contrast audit
+    /// judges too (U0.5 review F2: static texts alone missed the viewer's
+    /// system-blue "Details" at about 4.0:1) -- outside the web view and the
+    /// navigation bars, wholly on the screen and enabled, with its measured
+    /// contrast. A disabled control is exempt, as in `waivers`. From one
+    /// snapshot of the tree, and never inside the web view.
+    ///
+    /// Measured by the colour most of its ink is drawn in (`Ink.dominant`),
+    /// not by its strongest pixel: a disclosure's frame holds its label and
+    /// its black chevron, and the chevron alone measured "Details" at 21:1
+    /// whatever colour the word was.
+    private func measureNativeElements(_ app: XCUIApplication, in shot: UIImage,
+                                       window: CGRect) -> [MeasuredElement] {
+        guard let root = try? app.snapshot() else { return [] }
+        var webFrames: [CGRect] = []
+        var bars: [CGRect] = []
+        var candidates: [(kind: String, label: String, frame: CGRect)] = []
+        func visit(_ node: XCUIElementSnapshot) {
+            switch node.elementType {
+            case .webView:
+                webFrames.append(node.frame)
+                return
+            case .navigationBar:
+                bars.append(node.frame)
+                return
+            default:
+                break
+            }
+            if let kind = Self.measuredKinds[node.elementType], !node.label.isEmpty, node.isEnabled {
+                candidates.append((kind, node.label, node.frame))
+            }
+            node.children.forEach(visit)
+        }
+        visit(root)
+        var results: [MeasuredElement] = []
+        for candidate in candidates {
+            let frame = candidate.frame
             guard window.contains(frame), frame.width > 1, frame.height > 1,
-                  !webFrame.intersects(frame),
+                  !webFrames.contains(where: { $0.intersects(frame) }),
                   !bars.contains(where: { $0.intersects(frame) }),
-                  let ratio = Self.measuredContrast(in: shot, window: window, frame: frame)
+                  let ratio = Self.measuredContrast(in: shot, window: window, frame: frame, ink: .dominant)
             else { continue }
-            results.append((text.label, ratio))
+            results.append(MeasuredElement(kind: candidate.kind, label: candidate.label, frame: frame, ratio: ratio))
         }
         return results
+    }
+
+    /// Whether an audit failed only because it ran out of time: XCTest's
+    /// "Audit failed to complete in time" (-56), or its future timing out
+    /// while running the audit (1000). The two the WebGL page produced.
+    private static func isAuditTimeout(_ error: Error) -> Bool {
+        let error = error as NSError
+        if error.domain == "com.apple.xcode.xctest.accessibilityAudit", error.code == -56 { return true }
+        if error.domain == "com.apple.dt.XCTest.XCTFuture", error.code == 1000 { return true }
+        let text = error.localizedDescription.lowercased()
+        return text.contains("failed to complete in time") || text.contains("timed out while running accessibility audit")
     }
 
     /// The WCAG 2 contrast of the text drawn in `frame`: the ink (the pixel
@@ -744,7 +894,21 @@ final class AccessibilityAuditUITests: XCTestCase {
     /// frame's two commonest colours, the page and a card's edge, and never
     /// the text. What passes here is measured, not assumed; blue on a grey
     /// capsule measured 3.5:1 this way and was fixed, not waived.
-    static func measuredContrast(in image: UIImage, window: CGRect, frame: CGRect) -> Double? {
+    /// Which of the frame's ink `measuredContrast` measures.
+    enum Ink {
+        /// The pixel furthest from the background.
+        case strongest
+        /// The colour most of the ink is drawn in: of the pixels at least
+        /// 1.5:1 from the background, the commonest colour. The solid core of
+        /// a glyph's strokes is one colour, and its anti-aliased edges are
+        /// spread over many; a second, stronger colour in the same frame (a
+        /// chevron, an icon) does not stand in for the words. With no pixel
+        /// that far from the background, the strongest pixel's ratio.
+        case dominant
+    }
+
+    static func measuredContrast(in image: UIImage, window: CGRect, frame: CGRect,
+                                 ink: Ink = .strongest) -> Double? {
         guard let cgImage = image.cgImage, window.width > 0 else { return nil }
         let scale = CGFloat(cgImage.width) / window.width
         let rect = CGRect(x: frame.minX * scale, y: frame.minY * scale,
@@ -778,12 +942,24 @@ final class AccessibilityAuditUITests: XCTestCase {
             n += 1
         }
         let back = luminance(sum[0] / n, sum[1] / n, sum[2] / n)
+        func ratio(_ l: Double) -> Double { (max(l, back) + 0.05) / (min(l, back) + 0.05) }
         var best = 1.0
+        var inkCounts: [Int: Int] = [:]
+        var inkSums: [Int: [Double]] = [:]
         for index in stride(from: 0, to: bytes.count, by: 4) {
-            let ink = luminance(Double(bytes[index]), Double(bytes[index + 1]), Double(bytes[index + 2]))
-            best = max(best, (max(ink, back) + 0.05) / (min(ink, back) + 0.05))
+            let (r, g, b) = (Double(bytes[index]), Double(bytes[index + 1]), Double(bytes[index + 2]))
+            let here = ratio(luminance(r, g, b))
+            best = max(best, here)
+            guard ink == .dominant, here >= 1.5 else { continue }
+            let key = Int(bytes[index] >> 3) << 10 | Int(bytes[index + 1] >> 3) << 5 | Int(bytes[index + 2] >> 3)
+            inkCounts[key, default: 0] += 1
+            let sums = inkSums[key] ?? [0, 0, 0]
+            inkSums[key] = [sums[0] + r, sums[1] + g, sums[2] + b]
         }
-        return best
+        guard ink == .dominant, let dominant = inkCounts.max(by: { $0.value < $1.value }),
+              let sums = inkSums[dominant.key] else { return best }
+        let count = Double(dominant.value)
+        return ratio(luminance(sums[0] / count, sums[1] / count, sums[2] / count))
     }
 
     private static func luminance(_ r: Double, _ g: Double, _ b: Double) -> Double {

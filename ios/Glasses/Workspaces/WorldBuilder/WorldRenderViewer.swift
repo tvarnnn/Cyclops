@@ -2011,7 +2011,8 @@ struct WorldRenderScene: View {
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     /// The most of the screen the words above the picture may take before
-    /// they scroll, and the most the areas and Details below it may take.
+    /// they scroll -- at the accessibility sizes only -- and the most the
+    /// areas and Details below it may take.
     ///
     /// At the largest text size the caption grew without limit: the 3D view
     /// measured 0 pt on an iPhone SE, 72 on the 17e and 87 on the 17 Pro (O1
@@ -2019,10 +2020,16 @@ struct WorldRenderScene: View {
     /// pushed up under the navigation bar. Capped, the picture keeps at
     /// least 70 % of the screen below the bar at the accessibility sizes --
     /// about 60 % of the SE's safe area -- and the words scroll in their own
-    /// space, whole, to read and to VoiceOver. At the default size the
-    /// caption is well under its cap and nothing scrolls; the areas and
-    /// Details keep the room they had.
-    static let captionShare: CGFloat = 0.18
+    /// space, whole, to read and to VoiceOver.
+    ///
+    /// **No cap below the accessibility sizes** (U0.5 review F1). A cap of
+    /// 18 % there was about 106 pt on an SE, and a room's caption with the
+    /// Tower's notice measures more than that at the default size: the
+    /// notice was pushed into a scroller with no cue, where COMPONENTS §8
+    /// says to show it. Below the accessibility sizes the words take their
+    /// own height, as they did before the cap; the areas and Details keep the
+    /// room they had.
+    private var captionShare: CGFloat? { dynamicTypeSize.isAccessibilitySize ? 0.18 : nil }
     private var belowShare: CGFloat { dynamicTypeSize.isAccessibilitySize ? 0.12 : 0.3 }
 
     /// When the current wait began: the fetch (the screen's opening, a
@@ -2074,9 +2081,16 @@ struct WorldRenderScene: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            CappedScroll(cap: screenHeight * Self.captionShare) {
+            // The words and the controls take the readable tint (U0.5 review
+            // F2): the system blue is about 4.0:1 on white, under the 4.5:1
+            // text needs, and "Details" and the offers are text. Not the
+            // picture: the loading panel's spinner keeps its own colour.
+            CappedScroll(cap: captionShare.map { screenHeight * $0 } ?? 0) {
                 caption
             }
+            .tint(Color.readableTint)
+            controls
+                .tint(Color.readableTint)
             content
                 .layoutPriority(1)
             CappedScroll(cap: screenHeight * belowShare) {
@@ -2085,6 +2099,7 @@ struct WorldRenderScene: View {
                     details
                 }
             }
+            .tint(Color.readableTint)
         }
         .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { screenHeight = $0 }
         .navigationTitle(screenTitle)
@@ -2168,33 +2183,67 @@ struct WorldRenderScene: View {
                     .fixedSize(horizontal: false, vertical: true)
                     .accessibilityIdentifier("world-render-notice")
             }
-            if model.target.isArea {
-                areaControls
-            }
-            // A rebuild of the rung on screen is offered, never forced: the
-            // swap reloads the page and resets the camera the reader is using.
-            // A better rung replaces the picture without asking.
-            if model.newerPictureAvailable {
-                Button("A newer reconstruction is ready. Show it") {
-                    Task { await model.showNewerPicture() }
-                }
-                .font(.caption)
-                .accessibilityIdentifier("world-render-newer-picture")
-            }
-            // After a refresh could not be drawn the old picture is back and
-            // the screen is `.ready`, so the failure view's "Try again" is not
-            // there. This is that control: `load()` forgets every refusal.
-            if model.newerPictureRefused {
-                Button("A newer reconstruction could not be drawn on this phone. Try again") {
-                    Task { await model.load() }
-                }
-                .font(.caption)
-                .accessibilityIdentifier("world-render-retry-refused")
+            // When the Tower has said this area will not be served (§5.2): why
+            // the picture stopped following. Words, so they scroll with the
+            // words; *Back to the room* is pinned below them.
+            if model.target.isArea, model.areaNoLongerServed {
+                Text("The Tower no longer serves this area -- the walk may have been finished again. "
+                     + "The room's list of areas is current.")
+                    .font(.caption)
+                    .foregroundStyle(.readableSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, 16)
         .padding(.vertical, 8)
+    }
+
+    /// The controls that act on the picture, between the words and the
+    /// picture and never inside the words' scroller (U0.5 review F1): at the
+    /// accessibility sizes the words scroll in their capped space, and a
+    /// control at the end of them -- the offer, which comes last and late --
+    /// started below the fold with nothing to say it was there.
+    @ViewBuilder
+    private var controls: some View {
+        let back = model.target.isArea ? self.backToRoom : nil
+        if back != nil || model.newerPictureAvailable || model.newerPictureRefused {
+            VStack(alignment: .leading, spacing: 6) {
+                if let back {
+                    Button("Back to the room") { back() }
+                        .font(.caption)
+                        .accessibilityIdentifier("world-render-back-to-room")
+                }
+                // A rebuild of the rung on screen is offered, never forced: the
+                // swap reloads the page and resets the camera the reader is
+                // using. A better rung replaces the picture without asking.
+                if model.newerPictureAvailable {
+                    Button("A newer reconstruction is ready. Show it") {
+                        Task { await model.showNewerPicture() }
+                    }
+                    .font(.caption)
+                    .accessibilityIdentifier("world-render-newer-picture")
+                }
+                // After a refresh could not be drawn the old picture is back
+                // and the screen is `.ready`, so the failure view's "Try again"
+                // is not there. This is that control: `load()` forgets every
+                // refusal.
+                if model.newerPictureRefused {
+                    Button("A newer reconstruction could not be drawn on this phone. Try again") {
+                        Task { await model.load() }
+                    }
+                    .font(.caption)
+                    .accessibilityIdentifier("world-render-retry-refused")
+                }
+            }
+            .multilineTextAlignment(.leading)
+            // Their whole height, never squeezed to a truncated line by the
+            // picture's layout priority.
+            .fixedSize(horizontal: false, vertical: true)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 16)
+            .padding(.bottom, 8)
+        }
     }
 
     /// The caption line under the title. For an area: that it is an area, when
@@ -2208,24 +2257,6 @@ struct WorldRenderScene: View {
         }
         return WorldRenderRepresentation.caption(for: model.state.representation)
             + (WorldComponentsPresentation.roomCaptionSuffix(model.components) ?? "")
-    }
-
-    /// *Back to the room*, and -- when the Tower has said this area will not be
-    /// served (§5.2) -- why the picture stopped following.
-    @ViewBuilder
-    private var areaControls: some View {
-        if model.areaNoLongerServed {
-            Text("The Tower no longer serves this area -- the walk may have been finished again. "
-                 + "The room's list of areas is current.")
-                .font(.caption)
-                .foregroundStyle(.readableSecondary)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-        if let backToRoom {
-            Button("Back to the room") { backToRoom() }
-                .font(.caption)
-                .accessibilityIdentifier("world-render-back-to-room")
-        }
     }
 
     /// Below the room: the walk's areas, and the stretches it can only count
@@ -2473,13 +2504,17 @@ struct WorldRenderLoadingPanel: View {
 ///
 /// A plain `ScrollView` takes all the height it is offered, which would take
 /// the 3D view's; this one is exactly as tall as what it holds until that is
-/// taller than `cap`. A `cap` of zero (before the screen has been measured)
-/// means no cap.
+/// taller than `cap`. A `cap` of zero (no cap, or before the screen has been
+/// measured) means no cap.
 struct CappedScroll<Content: View>: View {
     let cap: CGFloat
     @ViewBuilder let content: Content
 
     @State private var contentHeight: CGFloat = 0
+    /// How many times the content has become taller than its cap.
+    @State private var overflows = 0
+
+    private var isOverflowing: Bool { cap > 0 && contentHeight > cap }
 
     var body: some View {
         ScrollView {
@@ -2487,9 +2522,15 @@ struct CappedScroll<Content: View>: View {
                 .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { contentHeight = $0 }
         }
         .scrollBounceBehavior(.basedOnSize)
-        // When it is capped, say so: the indicator shows once, as the screen
-        // opens, that there is more to read.
-        .scrollIndicatorsFlash(onAppear: true)
+        // When the words outgrow the cap, say so: the indicator shows once
+        // that there is more to read. On the overflow itself, not as the
+        // screen opens (U0.5 review F1): the caption's rung and the areas
+        // arrive with the Tower's answers, after the screen has appeared, and
+        // a flash at the opening came before there was anything to scroll to.
+        .scrollIndicatorsFlash(trigger: overflows)
+        .onChange(of: isOverflowing) { _, isOverflowing in
+            if isOverflowing { overflows += 1 }
+        }
         .frame(height: cap > 0 ? min(contentHeight, cap) : contentHeight)
     }
 }

@@ -123,6 +123,27 @@ final class AccessibilityContrastTests: XCTestCase {
                           "the white it replaced")
     }
 
+    // MARK: The IMU badge (DEBUG)
+
+    #if DEBUG
+    /// The IMU log's badge in the navigation bar, which the Simulator cannot
+    /// reach (it needs glasses) and so the UI audit cannot see: its words on
+    /// its red or orange capsule, over the bar in either appearance (U0.5
+    /// review F13).
+    func testTheIMUBadgeTextIsAtLeast4Point5To1OnItsCapsule() {
+        for traits in [light, dark] {
+            for tint in [UIColor.systemRed, .systemOrange] {
+                let capsule = tint.resolvedColor(with: traits).withAlphaComponent(IMURecordingBadge.capsuleOpacity)
+                assertContrast(IMURecordingBadge.textColor, on: capsule, over: .systemBackground,
+                               traits: traits, atLeast: 4.5)
+            }
+        }
+        let orange = UIColor.systemOrange.withAlphaComponent(IMURecordingBadge.capsuleOpacity)
+        XCTAssertLessThan(ratio(.systemOrange, on: orange, over: .systemBackground, traits: light), 3,
+                          "the orange text it replaced")
+    }
+    #endif
+
     // MARK: The override note's variable name
 
     func testTheVariableNameBreaksOnlyAtItsUnderscores() {

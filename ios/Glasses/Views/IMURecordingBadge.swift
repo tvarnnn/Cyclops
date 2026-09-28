@@ -7,6 +7,7 @@
 #if DEBUG
 
 import SwiftUI
+import UIKit
 
 /// The persistent sign that this phone is writing an IMU log.
 ///
@@ -32,14 +33,27 @@ struct IMURecordingBadge: View {
         }
     }
 
+    /// The badge's words: the label colour on the tinted capsule, like the
+    /// drawer's "Ready to test" badge. The tint's own red or orange on its
+    /// 15 % capsule was about 2:1 to 3:1 (U0.5 review F13), under the 4.5:1
+    /// text needs; the capsule and the symbol still carry the colour.
+    static let textColor = UIColor.label
+    /// The capsule's share of the tint.
+    static let capsuleOpacity: CGFloat = 0.15
+
     private func badge(symbol: String, title: String, tint: Color, value: String) -> some View {
-        Label(title, systemImage: symbol)
+        Label {
+            Text(title)
+                .foregroundStyle(Color(uiColor: Self.textColor))
+        } icon: {
+            Image(systemName: symbol)
+                .foregroundStyle(tint)
+        }
             .labelStyle(.titleAndIcon)
             .font(.caption.weight(.semibold))
-            .foregroundStyle(tint)
             .padding(.horizontal, 8)
             .padding(.vertical, 4)
-            .background(tint.opacity(0.15), in: .capsule)
+            .background(tint.opacity(Self.capsuleOpacity), in: .capsule)
             .accessibilityElement(children: .ignore)
             .accessibilityLabel("IMU log")
             .accessibilityValue(value)

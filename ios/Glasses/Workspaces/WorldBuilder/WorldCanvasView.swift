@@ -580,6 +580,9 @@ struct WorldCanvasView: View {
             .padding(.top, 8)
         }
         .font(.subheadline)
+        // The disclosure's label is text: the readable tint, not the system
+        // blue, which is about 4.0:1 on white (U0.5 review F2).
+        .tint(Color.readableTint)
         .accessibilityIdentifier("world-diagnostics")
     }
 
