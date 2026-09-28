@@ -2,6 +2,10 @@
 
 Contract identifier: `wb-surface-mesh/1`.
 
+Document version: **v2** (2026-09-28): the surface page's gap caption,
+manager 109 (§2 claim 2, §2 claim 8, §8). See the change log at the end. The
+artifact identifier, manifest and routes do **not** move.
+
 This describes what `<world>/surface/<session>/` contains, what it claims, and
 what it promises never to claim. It is additive: a reader that does not know
 about `surface/` must be able to ignore it exactly as it ignores `solve/` and
@@ -114,13 +118,20 @@ geometry comes from.
    earlier state would cut holes in real walls. A thin moved object (a phone on
    a desk) is inside the fusion band and invisible to any depth test; a door
    swung between passes is removed by the contradiction test where it is.
-2. **Space that was never measured is absent, not closed.** Unobserved cells
-   keep zero weight, and no cube with an unobserved corner emits. The surface
-   stops at the edge of what was seen.
+2. **Space not measured by the frames fused into this surface is absent, not
+   closed.** Unobserved cells keep zero weight, and no cube with an unobserved
+   corner emits. The surface stops at the edge of what those frames measured.
 
    **The converse is NOT claimed: a hole does not mean "nobody looked".** A
-   hole is either space no frame measured, or space the frames disagreed
-   about. Measured on the canonical capture (`b2a75ab4...`, 349 frames): of
+   hole is space no frame fused into this surface measured, or space those
+   frames did measure where their evidence did not pass claim 1 or the
+   component prune: they disagreed about it, or too little of it agreed (the
+   breakdown below). A frame the walk captured may still be absent from this
+   surface. It may never have been kept as a keyframe, or it may be unposed,
+   posed but not published, published without a usable depth fit, or in a
+   piece or page this page does not show. Walk 4's look-back frames met every
+   one of these fates (`Glasses-scratch/wb-coherence-run-2026-09-23/lead/diag4/DIAGNOSIS.md`
+   Q2). Measured on the canonical capture (`b2a75ab4...`, 349 frames): of
    the depth samples the cameras measured (every valid pixel, 6-pixel
    stride), 26.4% have no surface within 0.18 units. Of those in the review's
    in-range band, 49% lie where other frames saw past them (the field was
@@ -207,7 +218,9 @@ geometry comes from.
 
    The number is comparable **within one artifact**, not across captures: it
    is not calibrated, and it says nothing about appearance — a well-measured
-   wall no keyframe photographed scores high and is still drawn dark.
+   wall that no kept keyframe image covers scores high and still carries no
+   photograph (the appearance page draws it as haze,
+   `WORLD-BUILDER-APPEARANCE.md` §4.2b).
 
 ## 3. What this artifact PROMISES NOT to claim
 
@@ -610,6 +623,68 @@ estimate leaned 27 degrees toward the desk the wearer looked down at, and the
 page showed the room rolled; the refined vertical takes the median wall tilt
 from 13.1 to 4.6 degrees. Nothing claims the vertical is gravity.
 
+**The surface page's gap caption (v2, manager 109).** The page may say what
+its own surface and fused camera views establish. Its evidence-filter branch
+still says *Surfaces appear only where at least two camera views measured them
+and did not contradict each other.* The branch for an older surface still
+says *Surfaces appear only where the cameras' fused measurements reached the
+evidence threshold.* The displayed `N of M keyframes` count and *Scale is
+unknown, so distances here are relative.* remain as they are. The amended
+contract requires both branches, on room and area surface pages, to be
+followed by *A gap is where this page has no reconstructed surface. It is not
+proof that nothing is there.* This describes the served page, not whether any
+part of the walk was photographed. A gap can be space the glasses never looked
+at, or space whose frames the Tower did not keep, pose, publish or place in
+this page, and the page cannot tell these apart, so it names none of them.
+**No string the surface page shows, room or area (text, `aria-label` or
+label), may say that a place or direction was *not photographed*,
+*not captured* or *never looked* at, that *nothing looked* or
+*nobody looked* there, or that *nobody photographed* it.** The sentences
+about the page's own surface and fused views stay: they are true of the
+page. The native iOS surface caption already makes the same bounded claim
+(`WORLD-BUILDER-IOS.md` §10).
+
+**IMPLEMENTATION SPEC (later code task; no code change in v2).** In
+`tower/tower/world_builder/surface_viewer.html:653–654` (inside `let note` at
+`:648–654`), replace the one shared caption suffix, after either
+`CONFIG.evidence_filter` branch:
+
+| Old, exact displayed string | New, exact displayed string |
+|---|---|
+| `A gap is either a place nothing looked or a place the views disagreed about, so a gap is not proof that nothing is there.` | `A gap is where this page has no reconstructed surface. It is not proof that nothing is there.` |
+
+The old source is the two concatenated JavaScript string literals beginning
+`"A gap is either a place nothing looked or a place the views "` and
+`"disagreed about, so a gap is not proof that nothing is there."`; replace
+that pair with `"A gap is where this page has no reconstructed surface. "`
+and `"It is not proof that nothing is there."`, preserving the concatenation.
+`surface_render.py` needs **no** edit. Its anchors `SURFACE_ANCHOR_HEAD`,
+`SURFACE_ANCHOR_BITS` and `SURFACE_ANCHOR_NOTE` (`surface_render.py:181–185`)
+must stay byte-identical in the template, and `SURFACE_AREA_FIRST_CLAUSE`
+(`:186`) does not change, so the area path still prepends its own caption
+before the branch and the same suffix follows it. The line
+`  let note = (CONFIG.evidence_filter` must not be re-flowed, and
+`tower/tests/test_world_builder_component_captions.py::test_every_surface_anchor_is_in_the_template_exactly_once`
+(`:135–138`) must still pass. The `CONFIG.evidence_filter`,
+`CONFIG.frames_used`, `CONFIG.frames_offered`, and `CONFIG.scale_state` keys
+do not change. The surface page has no page version of its own: its revision
+is `<session>/surface:<built_at>` (`WORLD-BUILDER-WORLDS.md` §4a rule 2),
+which a template edit does not move. So an open page is not reloaded, and the
+next page opened carries the new words.
+
+Verification for the code task:
+
+- For a composed **room** page and a composed **area** page, each with
+  `evidence_filter` true and false, the note contains the new suffix directly
+  after the branch sentence. On the area page, the area caption precedes the
+  branch.
+- No composed page contains *nothing looked*.
+- A shown-string scan, with comments stripped (C1 review LOW), finds none of
+  *not photographed*, *not captured*, *never looked*, *nothing looked*,
+  *nobody looked* or *nobody photographed*. It must strip comments: the
+  template comment at `surface_viewer.html:640–644` says "nobody looked".
+- That comment may stay. It is not shown, and it is still true.
+
 ## 9. Rebuilding
 
 Derived, and rebuildable from authoritative data alone:
@@ -624,3 +699,11 @@ Deleting `surface/` loses nothing that cannot be rebuilt. The depth maps under
 derived; if they have been pruned, the stage recomputes them. So are
 `dense/<session>/consistency.json` and `consistency_field.npz`: deleting them
 costs one cold solve (about 35 s on the canonical capture).
+
+## Change log
+
+Document versions start at v2. **v1** is everything up to 2026-09-27.
+
+| Version | Date | Asked for by | Sections | Change | On the wire |
+|---|---|---|---|---|---|
+| **v2** | 2026-09-28 | **Manager 109** (CX-C6, O3; after walk 4 `c81766a3`) | §2 claim 2; §2 claim 8; §8 surface page caption and implementation spec | Scopes the hole claim to frames fused into this surface and replaces the gap caption's claim about where nothing looked with a statement about the page's reconstructed surface. The two evidence-filter branches, keyframe count, scale note and area-specific prefix stay unchanged. The later copy-only page edit moves no revision (the surface page has no page version; its revision follows the surface build). | **Nothing.** `wb-surface-mesh/1`, its manifest and all routes are unchanged. The page strings are Tower-served, and no iOS source reads any of them (checked 2026-09-28 against `codex/surfcap` @ `9bb9727`). Among the patterns checked, `frames_offered` has 20 hits, all in other cartridges' decoders and tests, and *nothing looked* has 2, `WorldPresentationTests.swift:1198` and `:1202`: a negative assertion on the native caption, which agrees with this change. |
