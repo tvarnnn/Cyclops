@@ -206,6 +206,72 @@ def test_a_camera_path_is_filtered_only_with_the_switch_on(tmp_path, monkeypatch
     assert any(np.allclose(p[:3], c, atol=1e-4) for p in path)
 
 
+def _radius_boundary_room():
+    # Opposite far poses leave the room's median centre at zero; its median radius stays 1.
+    entries = [(f"{F.SID}:{i:08d}", (c[0], 0.0, c[2]), 60, 0)
+               for i, c in enumerate(Q.ring_centres(20, wobble=0.0))]
+    entries += [(f"{F.SID}:00000100", (9.0, 0.0, 0.0), 60, 0),
+                (f"{F.SID}:00000101", (-12.0, 0.0, 0.0), 60, 0)]
+    return entries
+
+
+def test_a_path_keeps_nine_medians_and_drops_twelve(tmp_path, monkeypatch):
+    monkeypatch.setenv(ENV, "path")
+    entries = _radius_boundary_room()
+    C = np.asarray([centre for _kid, centre, _obs, _component in entries])
+    assert np.allclose(np.median(C, axis=0), 0.0)
+    assert np.isclose(np.median(np.linalg.norm(C - np.median(C, axis=0), axis=1)), 1.0)
+    path = Q.camera_path_of(tmp_path, Q.pose_solution(entries))
+    centres = [p[:3] for p in path]
+    assert len(path) == 21
+    assert any(np.allclose(c, (9.0, 0.0, 0.0)) for c in centres)
+    assert not any(np.allclose(c, (-12.0, 0.0, 0.0)) for c in centres)
+
+
+@pytest.mark.parametrize("value, expected_path", [("path", 21), ("off", 23)])
+def test_a_path_logs_each_drop_reason_once_and_off_logs_nothing(tmp_path, monkeypatch, caplog,
+                                                                 value, expected_path):
+    entries = _radius_boundary_room()
+    entries += [(f"{F.SID}:00000102", (0.5, 0.0, 0.0), 5, 0),
+                (f"{F.SID}:00000103", (0.5, 0.0, 0.0), 60, 1)]
+    monkeypatch.setenv(ENV, value)
+    with caplog.at_level(logging.INFO, logger="tower.world_builder.surface_render"):
+        path = Q.camera_path_of(tmp_path, Q.pose_solution(entries))
+    assert len(path) == expected_path
+    lines = [r for r in caplog.records if "[Tower][WorldBuilder][surface] published path poses" in r.message]
+    assert len(lines) == (1 if value == "path" else 0)
+    if lines:
+        assert lines[0].levelno == logging.INFO
+        assert lines[0].message == ("[Tower][WorldBuilder][surface] published path poses for w1/s1: "
+                                    "published=24, kept=21, dropped=3 "
+                                    "(unsupported=1, off_component_0=1, beyond_radius=1)")
+
+
+def test_a_page_logs_path_drops_once_when_the_budget_rebuilds_it(tmp_path, monkeypatch, caplog):
+    from tower.world_builder import surface_render as SR
+
+    monkeypatch.setenv(ENV, "path")
+    Q.camera_path_of(tmp_path, Q.pose_solution(_radius_boundary_room()))
+    caplog.clear()
+    template = tmp_path / "template.html"
+    template.write_text(SR.TOKEN_CONFIG + SR.TOKEN_MESH, encoding="utf-8")
+    monkeypatch.setattr(SR, "viewer_template_path", lambda: template)
+    calls = []
+
+    def payload(store, world_id, session_id, *, path_drop_counts, **_kwargs):
+        SR._camera_path(store, world_id, session_id, drop_counts=path_drop_counts)
+        calls.append(1)
+        return b"mesh", {"level": len(calls), "faces": 1}
+
+    monkeypatch.setattr(SR, "build_surface_payload", payload)
+    with caplog.at_level(logging.INFO, logger="tower.world_builder.surface_render"):
+        SR.build_surface_page(F.Store(tmp_path), "w1", F.SID, budget_bytes=1)
+    assert len(calls) == 2
+    lines = [r for r in caplog.records if "[Tower][WorldBuilder][surface] published path poses" in r.message]
+    assert len(lines) == 1
+    assert "published=22, kept=21, dropped=1" in lines[0].message
+
+
 def test_a_v4_a_96_pose_room_with_8_impossible_poses_lists_0_of_them_and_all_88_good_ones(tmp_path, monkeypatch):
     """RULE.md (a') v4 (manager 102 §2; RVPQ HIGH-2). 8 impossible poses of 96 is 8.3 %: the surface gate's p95 is
     then itself an impossible pose, so its 2.5 x p95 detachment term cleared all 8 (round 1 pinned that), and a larger

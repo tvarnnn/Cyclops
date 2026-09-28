@@ -252,7 +252,8 @@ def evidence_filter_ran(manifest: dict) -> bool:
 def build_surface_payload(store, world_id: str, session_id: str, *,
                           budget_bytes: int = MOBILE_BYTE_BUDGET,
                           level: int | None = None,
-                          overhead: int | None = None):
+                          overhead: int | None = None,
+                          path_drop_counts: dict | None = None):
     """Return (mesh bytes, config dict) for one session's best fitting level."""
     from tower.world_builder.surface_pipeline import (
         read_surface_level,
@@ -306,7 +307,7 @@ def build_surface_payload(store, world_id: str, session_id: str, *,
         "scale_state": scale.get("state", "unknown"),
         "current": bool(currency.get("current")),
         "currency_reason": currency.get("reason"),
-        "cameras": _camera_path(store, world_id, session_id),
+        "cameras": _camera_path(store, world_id, session_id, drop_counts=path_drop_counts),
         "up": _world_up(store, world_id, session_id, vertices, faces),
     }
     return raw, config
@@ -357,7 +358,17 @@ def _pose_quarantine_on() -> bool:
     return "path" in world_pose_quarantine_setting()
 
 
-def viewable_poses(poses: dict) -> dict:
+def _log_path_drops(world_id: str, session_id: str, counts: dict) -> None:
+    dropped = counts["unsupported"] + counts["off_component_0"] + counts["beyond_radius"]
+    logger.info(
+        "[Tower][WorldBuilder][surface] published path poses for %s/%s: "
+        "published=%s, kept=%s, dropped=%s (unsupported=%s, off_component_0=%s, beyond_radius=%s)",
+        world_id, session_id, counts["kept"] + dropped, counts["kept"], dropped,
+        counts["unsupported"], counts["off_component_0"], counts["beyond_radius"],
+    )
+
+
+def viewable_poses(poses: dict, *, drop_counts: dict | None = None) -> dict:
     """The room's poses a viewer may stand at (RUN P5-PQ RULE.md (a') v4; manager 096 §2 (a), 102 §2).
 
     Only PUBLISHED, SUPPORTED poses -- at least `global_solve.MIN_IMAGE_OBSERVATIONS` observations, the
@@ -391,7 +402,11 @@ def viewable_poses(poses: dict) -> dict:
             return False
 
     kept = {kid: p for kid, p in poses.items() if _supported(p)}
+    if drop_counts is not None:
+        drop_counts["unsupported"] = len(poses) - len(kept)
     if not kept:
+        if drop_counts is not None:
+            drop_counts["beyond_radius"] = 0
         return kept
     kids = list(kept)
     centres = []
@@ -399,10 +414,13 @@ def viewable_poses(poses: dict) -> dict:
         R = np.array(kept[kid]["rotation"], float).reshape(3, 3)
         centres.append(-R.T @ np.array(kept[kid]["translation"], float))
     report = robust_pose_outliers(np.asarray(centres), detach=0.0, max_fraction=0.0)
-    return {kid: kept[kid] for kid, far in zip(kids, report.outlier) if not far}
+    viewable = {kid: kept[kid] for kid, far in zip(kids, report.outlier) if not far}
+    if drop_counts is not None:
+        drop_counts["beyond_radius"] = len(kept) - len(viewable)
+    return viewable
 
 
-def _camera_path(store, world_id: str, session_id: str) -> list:
+def _camera_path(store, world_id: str, session_id: str, *, drop_counts: dict | None = None) -> list:
     """Where the wearer stood, so the viewer can open there and walk it.
 
     Opening on an arbitrary orbit of an incomplete room shows its missing
@@ -422,7 +440,14 @@ def _camera_path(store, world_id: str, session_id: str) -> list:
     if _pose_quarantine_on():
         # The pose quarantine's `path` part: the room's poses ONLY (no fallback to another component's --
         # RVPQ MED), and of those only the ones a viewer may stand at.
-        poses = viewable_poses(_room_poses(solution, fallback=False))
+        room = _room_poses(solution, fallback=False)
+        counts = {"off_component_0": len(solution.poses or {}) - len(room)}
+        poses = viewable_poses(room, drop_counts=counts)
+        counts["kept"] = len(poses)
+        if drop_counts is None:
+            _log_path_drops(world_id, session_id, counts)
+        else:
+            drop_counts.update(counts)
     else:
         poses = _room_poses(solution)
     out = []
@@ -587,8 +612,10 @@ def build_surface_page(store, world_id: str, session_id: str, *,
     if max_points is not None:
         budget_bytes = min(budget_bytes, max(1, int(max_points)) * 16)
 
+    path_drop_counts = {}
     raw, config = build_surface_payload(
-        store, world_id, session_id, budget_bytes=budget_bytes, level=level)
+        store, world_id, session_id, budget_bytes=budget_bytes, level=level,
+        path_drop_counts=path_drop_counts)
     page = _compose(template, raw, config)
     size = len(page.encode("utf-8"))
     if level is None and size > budget_bytes:
@@ -596,10 +623,13 @@ def build_surface_page(store, world_id: str, session_id: str, *,
         # fit. Chosen again once, never looped.
         overhead = size - 4 * ((len(raw) + 2) // 3)
         raw2, config2 = build_surface_payload(
-            store, world_id, session_id, budget_bytes=budget_bytes, overhead=overhead)
+            store, world_id, session_id, budget_bytes=budget_bytes, overhead=overhead,
+            path_drop_counts=path_drop_counts)
         if config2["level"] != config["level"]:
             raw, config = raw2, config2
             page = _compose(template, raw, config)
+    if path_drop_counts:
+        _log_path_drops(world_id, session_id, path_drop_counts)
     logger.info(
         "[Tower][WorldBuilder][surface] viewer for %s/%s: level %s, %s faces, "
         "%.1f MB of page", world_id, session_id, config["level"],
