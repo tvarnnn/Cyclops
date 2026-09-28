@@ -319,7 +319,7 @@ def build_surface_payload(store, world_id: str, session_id: str, *,
 ROOM_COMPONENT = 0
 
 
-def _room_poses(solution):
+def _room_poses(solution, *, fallback: bool = True):
     """The solution's poses of the room component only.
 
     A split walk's solution keeps every component's poses: an area the gate cut
@@ -330,7 +330,11 @@ def _room_poses(solution):
 
     A pose whose component is not a number is not the room's. A solution with no
     room-component pose at all gets every pose, as before this filter: the page
-    walks something rather than nothing (Codex review of the fix, HIGH/MED)."""
+    walks something rather than nothing (Codex review of the fix, HIGH/MED).
+
+    `fallback=False` (the pose quarantine's `path` part; RVPQ MED, manager 102
+    §3): the room's poses only -- no room-component pose is an empty dict, never
+    another component's poses."""
     poses = solution.poses or {}
 
     def _in_room(pose) -> bool:
@@ -340,6 +344,8 @@ def _room_poses(solution):
             return False
 
     room = {kid: p for kid, p in poses.items() if _in_room(p)}
+    if not fallback:
+        return room
     return room or dict(poses)
 
 
@@ -352,12 +358,22 @@ def _pose_quarantine_on() -> bool:
 
 
 def viewable_poses(poses: dict) -> dict:
-    """The room's poses a viewer may stand at (RUN P5-PQ RULE.md (a); manager 096 §2 (a)).
+    """The room's poses a viewer may stand at (RUN P5-PQ RULE.md (a') v4; manager 096 §2 (a), 102 §2).
 
     Only PUBLISHED, SUPPORTED poses -- at least `global_solve.MIN_IMAGE_OBSERVATIONS` observations, the
-    publication floor -- and, among them, only those inside the SURFACE'S OWN radius gate
-    (`surface.robust_pose_outliers`, its defaults unchanged: beyond 10 x the median radius AND 2.5 x the p95
-    radius of these poses, standing down under 8 poses or above a 5 % share). No new threshold.
+    publication floor -- and, among them, only those within `surface.OUTLIER_RADIUS_MULTIPLE` (10) x their
+    median radius, from their element-wise median centre: the surface's own gate
+    (`surface.robust_pose_outliers`) with its two stand-downs switched off by its own documented switches, and
+    its floor kept. No new threshold.
+
+      * `max_fraction=0`: the gate's 5 % stand-down is OFF. For the surface a large share is "a solve that came
+        apart"; for a list of places to stand, an impossible pose is never one, however many there are.
+      * `detach=0`: the 2.5 x p95 detachment term is OFF. It is measured on the same poses, so once impossible
+        poses are over ~5 % of them the p95 IS an impossible pose and the term clears them all (8 of 96 kept, in
+        the round-1 test). The price: a capture that dwells may not OFFER some of its far legitimate poses --
+        navigation only; the list is not a reconstruction input and nothing leaves the room.
+      * the floor is KEPT: under `surface.MIN_ROBUST_POSES` (8) poses, or with every pose in one place, nothing
+        is dropped. The median fails only when impossible poses are the majority.
 
     WHY. Walk 4 put six impossible poses in the page's camera list -- four bed poses 0.6-9.4 M units out and
     two unsupported riders ~2,000 units out -- because the list took every pose of component 0. They build the
@@ -382,7 +398,7 @@ def viewable_poses(poses: dict) -> dict:
     for kid in kids:
         R = np.array(kept[kid]["rotation"], float).reshape(3, 3)
         centres.append(-R.T @ np.array(kept[kid]["translation"], float))
-    report = robust_pose_outliers(np.asarray(centres))
+    report = robust_pose_outliers(np.asarray(centres), detach=0.0, max_fraction=0.0)
     return {kid: kept[kid] for kid, far in zip(kids, report.outlier) if not far}
 
 
@@ -403,9 +419,12 @@ def _camera_path(store, world_id: str, session_id: str) -> list:
         return []
     import numpy as np
 
-    poses = _room_poses(solution)
     if _pose_quarantine_on():
-        poses = viewable_poses(poses)
+        # The pose quarantine's `path` part: the room's poses ONLY (no fallback to another component's --
+        # RVPQ MED), and of those only the ones a viewer may stand at.
+        poses = viewable_poses(_room_poses(solution, fallback=False))
+    else:
+        poses = _room_poses(solution)
     out = []
     for kid in (solution.keyframe_ids or []):
         pose = poses.get(kid)

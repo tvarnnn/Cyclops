@@ -439,15 +439,22 @@ def apply_gate(model: SolveModel, links: dict, metric_log: dict, *, link_rotatio
       link_units: {(name_a, name_b) sorted: unit}. The redundancy test counts two links together only when their
         units differ (`redundant_links`); a link it does not name is a unit of its own.
 
-    THE POSE QUARANTINE'S HOOK (RUN P5-PQ RULE.md (b); only with `TOWER_WORLD_POSE_QUARANTINE` on). None, the
-    default: today's rest rule, exactly.
+    THE POSE QUARANTINE'S HOOK (RUN P5-PQ RULE.md (b); only with `TOWER_WORLD_POSE_QUARANTINE`'s part `riders`
+    on). None, the default: today's rest rule, exactly.
 
       rider_min_shared: m. A camera under `min_obs` (a RIDER) takes a label only through its own supported
         attachment: at least m 3-D points shared with one labelled (supported) camera of its solver component,
         and then that camera's label (today's argmax). It never defaults to the component's first label -- the
         room, for the room's component (walk 4: five riders 500-600 m out took the room label that way). The
         unattached riders of a component form one unplaced label of their own (`quarantined`: reason
-        `no-verified-link`). A rider is never a published keyframe, so no vote, withhold or seal reads it.
+        `no-verified-link`). A rider is never a published keyframe, so no vote, withhold or seal reads it. The label
+        ORDER -- and so the room -- is today's: an unattached rider is counted, for the tie-break in supported cameras
+        only, where today's rule puts it (review V17, LOW-2).
+        A COMPONENT WITH NO SUPPORTED CAMERA is untouched by the hook: its cameras keep one label of their own, as
+        today. So AN ALL-RIDER SOLVE keeps one label, 0, whose component reads `placed` (review V18, LOW-4; RVPQ
+        LOW): there is no supported camera to attach to or to compare with. Nothing is published from it -- its
+        components record is null (no keyframe reaches `min_obs`) and, with the part `path` on, its camera path is
+        empty.
 
     Returns {"labels": {name: label}, "components": [...], "rounds": [...], "groups": [...], "evidence": {...},
     "params": ..., "params_digest": ...}. Label 0 is the room (most supported cameras); every other label is

@@ -122,6 +122,7 @@ never touched.
 | `TOWER_WORLD_RELOCALIZER_SUMMARY` | `off` | `off` through walk 3; `on` with HISTORY | one `recovery_summary` line per episode, **in the journal only**; it never reaches the phone |
 | `TOWER_WORLD_ANCHOR_VERIFY` | `off` | `on` for walk 4 (manager 087) | P4 (`anchor_verify.py`; `RUN\experiments\P4-IV\RULE.md`, `RULE-a2.md`): runs once, on the chosen draw's published room, after the consensus. `images` = the masked image-only check, sealing contradicted groups as `link-contradicted`, plus one relocalizer import counting as one link; `scale` = the anchor block's capture runs split by `scale_split`, sealed `scale-mismatch` when their sign-test level CIs are more than ×1.25 apart; `motion` = physical-motion cut points only; `on` = all of them. Unset is byte-identical to before. After a walk, check `gate.anchor_verify.state == applied` and `pair_set.pairs > 0` |
 | `TOWER_WORLD_FRAME_QUALITY_LOG` | `off` | `off` for walk 4; `on` for walk 5 (the IMU walk; manager 091 B3) | one line per observed frame in `sessions\<sid>\frames_quality.jsonl`: the selector's sharpness, motion, tracker state, outcome and reason, and the keyframe id. Values are copied only, never recomputed; about 1.5 MB for a 5-minute walk. It is a new file: no existing byte changes, and nothing reaches the phone. Product `8a6ca35`; integrated after walk 4 |
+| `TOWER_WORLD_POSE_QUARANTINE` | `off` | `off` for walk 5, except possibly `path` (manager 102 §6: only if V18 is clean before the walk-5 GO) | P0-A (`RUN\experiments\P5-PQ\RULE.md`): impossible poses are never published in a room. A comma list of parts, or `on` for all: `path` = the viewer's camera list (both pages) takes component 0 only (no fallback to another component; empty if none), published poses only (>= 30 observations), and none beyond 10x their median radius -- the surface gate with its 5 % stand-down and p95 detachment off and its 8-pose floor kept (RULE (a') v4); `riders` = a camera under 30 observations takes a label only through >= 3 points shared with one supported camera, never the room's by default, and the room choice is today's (V17 LOW-2); `seal` = in P4, an impossible-speed motion flag seals an image-unverifiable group whose flag partner is in a different, image-confirmed group, as `link-contradicted` (RULE (c') v3; needs `TOWER_WORLD_ANCHOR_VERIFY`'s `motion` and `images`). Unset, blank and `off` are byte-identical to before (`tests\golden\world_builder_pose_quarantine_off.json`). **Parsed exactly as `TOWER_WORLD_ANCHOR_VERIFY`: `1`, `true` and `yes` do NOT turn it on** (they did at `f94a23d`, a single `_flag` switch); they, any unknown word, and `on`/`off` mixed with other words read as off and are logged. **An all-rider solve** (no camera with 30 observations) keeps one label, 0, whose component reads `placed`, with or without `riders`: nothing is published from it (its components record is null) and, with `path` on, its camera list is empty. **The parts are not disjoint** (review V18, LOW-3): `path` is render-only, but `riders` and `seal` change the published solution (a relabelled rider or a sealed camera leaves component 0), so the camera path read from it follows them even with `path` off |
 | `TOWER_WORLD_RELOCALIZER_WINDOW` | `loss` | `loss` | `prompt` would start a prompted episode's timeout at the prompt. It was measured worse in the replay (`RUN\lead\reloc2\`) and is not deployed |
 | `TOWER_WORLD_FINISH_PENDING` | `true` | `true` | finishes areas, owed re-gates and deferred consensus |
 | `TOWER_WORLD_SOLVE`, `_SURFACE` | `true` | `true` | the finisher runs only with these two and `TOWER_WORLD_FINISH_PENDING` on (`tower/tower/main.py`, `_world_finish_spec`) |
@@ -804,6 +805,33 @@ everything, so nothing runs after a failure:
 22. **The pocketed-prompt notification** (Tristan's decision): a locked phone cannot show
     the banner or fire the haptic. Any notification must not route audio to the glasses
     (§5.7).
+23. **Walk 3's misplaced doorway stretch survives every P0-A part** (review V17; manager 102
+    §5). W3 `4f5d0b15` keyframes 54–61 are 8 misplaced doorway keyframes at a depth of
+    5.7–7.2 m that share points only with 737–766. They stay in the room with
+    `TOWER_WORLD_POSE_QUARANTINE=on`:
+    - `path` keeps them, because they are published and within 10x the median radius;
+    - `riders` does not apply, because they are supported cameras;
+    - `seal` cannot act, because their only motion flag, 61→62 (1.81 m in 0.47 s), joins
+      two image-UNVERIFIABLE groups (54–61 and 62–73), and (c') needs a confirmed partner.
+
+    It belongs with the scale-aware and capture-evidence work (item 1, and the scale-aware
+    attach/merge of manager 095 §4), not with a P0-A rule. `RUN\experiments\P5-PQ\RESULTS.md`
+    Round 3 has the detail.
+
+24. **iOS walk-5 recorder findings (R5, for the Mac; manager 103).**
+    - MED: the generic start-failure catch never clears the old session's listeners and never
+      calls stop (`ios` `GlassesConnection.swift` about line 1081 at `d852770`).
+    - MED: the 250 ms epoch window is a heuristic.
+    - MED: short resumes under `join_imu.py`'s 0.5 s split can leave mislabelled frames.
+    - LOW: `join_imu.py` pairs Tower rows in file order, not in `source_seq` order.
+25. **V18's P0-A test gaps, MED-1 and MED-2 (on `3a6e2fb`): CLOSED in P5-PQ round 4.**
+    - MED-1 (a vacuous (c') test): a flag between two different CONFIRMED groups, and a mixed
+      case, are now tested.
+    - MED-2 (a weak LOW-2 test): the random differential now draws 400 solves with
+      multi-round components, riders on random cameras and argmax ties.
+    - Both of V18's mutants (`anchor_verify` sealing whenever the other side is confirmed;
+      `coherence_gate` `todays_label = first`) now fail the tests; they passed `3a6e2fb`'s
+      (`RUN\experiments\P5-PQ\RESULTS.md` Round 4, `out\mutants_r4.log`).
 
 ## 7. Resources this run created or stopped
 

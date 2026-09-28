@@ -1182,7 +1182,25 @@ def world_pose_quarantine_setting() -> frozenset:
     Parsed exactly as `world_anchor_verify_setting` parses its parts: the empty set (off) when unset,
     blank or `off`; `on` is every part; a comma list of known parts is those parts (no part implies
     another). Anything else -- an unknown word (`1`, `true` and `yes` included), or `off`/`on` mixed with
-    other words -- is off, and logged: a typo never removes a pose from a room, and it is still visible."""
+    other words -- is off, and logged: a typo never removes a pose from a room, and it is still visible.
+
+    CHANGED at 3a6e2fb (manager 098/102): at f94a23d this was one `_flag` switch, and `1`, `true` and `yes`
+    turned it ON. They no longer do -- they are off and logged, as for ANCHOR_VERIFY. Write `on`.
+
+    The parts, in one line each (RUN experiments/P5-PQ/RULE.md):
+      `path`   the viewer's camera list (`surface_render.viewable_poses`): component 0 only (no fallback to
+               another component's poses), published and supported (>= 30 observations), within 10 x the
+               median radius -- the surface gate with its 5 % stand-down and p95 detachment off, its
+               8-pose floor kept (RULE.md (a') v4);
+      `riders` the gate's rest rule: a camera under 30 observations takes a label only through >= 3 points
+               shared with one supported camera, never the room's by default; the room choice is today's;
+      `seal`   the anchor verification: an impossible-speed motion flag seals an image-unverifiable group
+               whose flag partner is in a DIFFERENT, image-confirmed group (RULE.md (c') v3).
+
+    AN ALL-RIDER SOLVE (no camera with 30 observations): the gate still gives its cameras one label, 0, whose
+    component reads `placed`, with or without `riders` (there is no supported camera to attach to or compare
+    with); nothing is published from it -- its components record is null (no published keyframe) -- and
+    with `path` on its camera list is empty."""
     value = os.environ.get(WORLD_POSE_QUARANTINE_ENV)
     if value is None or not value.strip():
         return frozenset()

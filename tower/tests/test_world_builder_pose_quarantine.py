@@ -2,15 +2,21 @@
 granular by 098: parts `path` (a), `riders` (b), `seal` (c'), or `on`; parsed exactly as TOWER_WORLD_ANCHOR_VERIFY).
 
 Pinned here:
-  THE SWITCH: its parser is ANCHOR_VERIFY's, shape for shape; each part alone changes only its own output.
-  THE GOLDEN: with the switch unset, blank, `off` or `0`, the gate's, the publish step's, the anchor verification's and
-      the camera path's outputs are what the product wrote BEFORE P5-PQ (6db75f3, `golden/world_builder_pose_
-      quarantine_off.json`, recorded by RUN/experiments/P5-PQ/golden_record.py).
-  (a) the viewer's camera list keeps only published, supported room poses inside the surface's own radius gate:
-      walk 4's six listed impossible poses (2031, 2047, 2053, 2056, 3092, 3097) and walk 3's s2400, at their recorded
-      distances, are out; every published room pose inside the gate stays.
+  THE SWITCH: its parser is ANCHOR_VERIFY's, shape for shape (`1`, `true`, `yes` and `0` are words it does not know:
+      off, and logged). `path` is render-only; `riders` and `seal` change the PUBLISHED solution, and a camera path
+      read from it follows it (review V18, LOW-3) -- each part alone changes only its own output otherwise.
+  THE GOLDEN: with the switch unset, blank, `off`, or a value it reads as off, the gate's, the publish step's, the
+      anchor verification's and the camera path's outputs are what the product wrote BEFORE P5-PQ (6db75f3,
+      `golden/world_builder_pose_quarantine_off.json`, recorded by RUN/experiments/P5-PQ/golden_record.py).
+  (a') the viewer's camera list (RULE.md (a') v4, manager 102): component 0 only (no fallback: empty if none),
+      published and supported poses only, none beyond 10 x their median radius -- the surface gate without its 5 %
+      stand-down and its p95 detachment term, its 8-pose floor kept. Walk 4's six listed impossible poses (2031, 2047,
+      2053, 2056, 3092, 3097), walk 3's s2400, and a 96-pose room's 8 impossible poses (8.3 %) are out; every good
+      pose stays.
   (b) the gate's rider rule: a rider never defaults to the room label; it takes a label only through >= 3 shared
-      points with one supported camera; nothing published changes.
+      points with one supported camera; nothing published changes, and every supported camera keeps today's label,
+      the room's included (V17 LOW-2; V18 MED-2's widened differential). An all-rider solve keeps label 0, `placed`,
+      publishes nothing, and has an empty path with `path` on (RVPQ LOW; V18 LOW-4).
   (c') the anchor verification (RULE.md (c') v3, manager 100): an impossible-speed motion flag seals an
       image-unverifiable group whose flag partner is in a DIFFERENT, image-CONFIRMED group (walk 4's bed stretch,
       through 2056 -> 2061), `link-contradicted`; a flag inside one group (v2's withdrawn clause: walk 3's desk), a
@@ -200,14 +206,61 @@ def test_a_camera_path_is_filtered_only_with_the_switch_on(tmp_path, monkeypatch
     assert any(np.allclose(p[:3], c, atol=1e-4) for p in path)
 
 
-def test_a_the_surface_gate_is_blind_to_a_far_share_above_five_percent():
-    """THE RULE'S KNOWN LIMIT, recorded: the surface gate is relative to the poses' own p95. With 8 impossible poses
-    of 96 (8.3 %) the p95 radius is itself an impossible pose, so 2.5 x p95 clears every one of them. Walk 4's
-    share is 8 of 354 (2.3 %). (c) is what removes such a stretch from the room itself."""
+def test_a_v4_a_96_pose_room_with_8_impossible_poses_lists_0_of_them_and_all_88_good_ones(tmp_path, monkeypatch):
+    """RULE.md (a') v4 (manager 102 §2; RVPQ HIGH-2). 8 impossible poses of 96 is 8.3 %: the surface gate's p95 is
+    then itself an impossible pose, so its 2.5 x p95 detachment term cleared all 8 (round 1 pinned that), and a larger
+    share trips its 5 % stand-down. The viewer list drops both: 0 of the 8, all 88 good ones, at both levels -- the
+    pose set and the page's camera path."""
     room = {k: p for k, p in Q.bed_solution().poses.items() if p["component"] == 0}
-    kept = viewable_poses(room)
     bed = {f"{F.SID}:{i:08d}" for i in range(*Q.BED)}
-    assert len(room) == 96 and len(set(kept) & bed) == 8
+    kept = viewable_poses(room)
+    assert len(room) == 96 and not set(kept) & bed and set(kept) == set(room) - bed
+    # the same through `_camera_path` (the list the pages carry: 88 poses, every one near, decimation step 1)
+    monkeypatch.setenv(ENV, "path")
+    path = Q.camera_path_of(tmp_path, Q.bed_solution())
+    assert len(path) == 88 and all(np.linalg.norm(c[:3]) < 100 for c in path)
+    monkeypatch.delenv(ENV)
+    assert sum(1 for c in Q.camera_path_of(tmp_path / "off", Q.bed_solution()) if np.linalg.norm(c[:3]) > 100) == 8
+
+
+def test_a_v4_the_surface_gate_itself_is_unchanged():
+    """Only the viewer list drops the stand-downs: the SURFACE's reconstruction gate still clears the 8 (its
+    detachment term), as it always has."""
+    from tower.world_builder.surface import robust_pose_outliers
+
+    room = {k: p for k, p in Q.bed_solution().poses.items() if p["component"] == 0}
+    C = [-np.asarray(p["rotation"]).reshape(3, 3).T @ np.asarray(p["translation"]) for p in room.values()]
+    assert robust_pose_outliers(np.asarray(C)).gated == 0
+
+
+@pytest.mark.parametrize("n_far, far_expected", [(5, 5), (40, 40)])
+def test_a_v4_any_minority_share_of_impossible_poses_is_dropped(n_far, far_expected):
+    """A clump as tight as a sub-model flown off whole (all at ~one distance, so its own p95 is itself): 5 or 40 of 88
+    good poses. The median holds while the impossible poses are a minority, and every one is dropped."""
+    entries = [(f"{F.SID}:{i:08d}", c, 60, 0) for i, c in enumerate(Q.ring_centres(88, radius=1.7))]
+    entries += [(f"{F.SID}:{100 + k:08d}", (2000.0 + k, 0.0, 0.0), 60, 0) for k in range(n_far)]
+    kept = viewable_poses(Q.pose_solution(entries).poses)
+    assert len(kept) == 88 and not any(int(k.split(":")[1]) >= 100 for k in kept)
+
+
+def test_a_v4_the_floor_is_kept_under_eight_poses():
+    entries = [(f"{F.SID}:{i:08d}", (float(i), 0.0, 0.0), 60, 0) for i in range(6)]
+    entries.append((f"{F.SID}:{99:08d}", (1.0e6, 0.0, 0.0), 60, 0))
+    assert len(viewable_poses(Q.pose_solution(entries).poses)) == 7        # 7 poses: a median describes nothing
+
+
+@pytest.mark.parametrize("value, expect_today", [(None, True), ("path", False), ("riders,seal", True)])
+def test_a_v4_no_room_component_is_an_empty_path_only_with_path_on(tmp_path, monkeypatch, value, expect_today):
+    """RVPQ MED (manager 102 §3): a solution with only supported component-1 poses (an area's, say) gave a room
+    page that area's camera path through `_room_poses`' fallback. With `path` on it is empty; off, today's list."""
+    if value is None:
+        monkeypatch.delenv(ENV, raising=False)
+    else:
+        monkeypatch.setenv(ENV, value)
+    entries = [(f"{F.SID}:{i:08d}", c, 60, 1) for i, c in enumerate(Q.ring_centres(20))]
+    path = Q.camera_path_of(tmp_path, Q.pose_solution(entries))
+    assert (tmp_path / "w1" / "solve" / F.SID / "solution.npz").is_file()
+    assert len(path) == (20 if expect_today else 0)
 
 
 def test_a_an_empty_or_riders_only_room_lists_nothing():
@@ -315,6 +368,31 @@ def test_c_a_flag_from_a_confirmed_group_into_an_unverifiable_one_seals_the_unve
 
 def test_c_a_flag_between_two_unverifiable_groups_seals_neither():
     assert AV.motion_sealed_groups(GROUPS, [C, U, U, C], [_flag(17, 18, 5e4)], MP) == {}
+
+
+def test_c_v3_a_flag_between_two_different_confirmed_groups_seals_neither():
+    """Review V18, MED-1: the GT shape (A0/A0h 6839fb8f: one speed flag, both ends in confirmed groups). The images
+    placed both sides, so nothing is sealed -- a rule that sealed on "the other side is confirmed" alone would seal
+    both groups here."""
+    assert AV.motion_sealed_groups(GROUPS, [C, C, C, C], [_flag(17, 18, 5e4)], MP) == {}
+    assert AV.motion_sealed_groups(GROUPS, [C, C, U, C], [_flag(9, 10, 5e4)], MP) == {}
+
+
+def test_c_v3_mixed_flags_seal_only_the_unverifiable_side_of_a_confirmed_partner():
+    """One U|C flag, one C|U flag, one C|C flag, an internal flag in a confirmed and in an unverifiable group, and a
+    head turn: only the unverifiable side of a flag to a confirmed group is sealed, and only by such flags."""
+    verdicts = [C, U, C, U]
+    flags = [_flag(9, 10, 5e4),                   # C (0) | U (1): seals 1
+             _flag(17, 18, 5e4),                  # U (1) | C (2): seals 1 again -- one group, two flags
+             _flag(29, 30, 5e4),                  # C (2) | U (3): seals 3
+             _flag(3, 4, 5e4),                    # inside 0 (confirmed)
+             _flag(31, 32, 5e4),                  # inside 3 (unverifiable): no seal of its own
+             _flag(0, 39, 0.5, deg=120.0)]        # C (0) | U (3), a head turn: not a speed
+    hit = AV.motion_sealed_groups(GROUPS, verdicts, flags, MP)
+    assert sorted(hit) == [1, 3]
+    assert [(f["a"], f["b"]) for f in hit[1]] == [(9, 10), (17, 18)]
+    assert [(f["a"], f["b"]) for f in hit[3]] == [(29, 30)]
+    assert AV.motion_sealed_groups(GROUPS, [C, C, C, C], flags, MP) == {}
 
 
 def test_c_confirmed_or_contradicted_groups_are_never_motion_sealed():
@@ -493,6 +571,9 @@ def test_b_on_a_solve_with_no_supported_camera_is_still_one_label():
                           obs_image=np.array([0, 1, 2]), obs_point=np.array([0, 0, 0]), n_points=1)
     out = CG.apply_gate(model, {}, {}, link_rotations={}, masks_applied=True, rider_min_shared=CP.RIDER_MIN_SHARED)
     assert set(out["labels"].values()) == {0} and [c["label"] for c in out["components"]] == [0]
+    # documented (review V18, LOW-4; RVPQ LOW): the label reads `placed`, with no supported camera; nothing publishes it
+    (comp,) = out["components"]
+    assert (comp["state"], comp["supported"], comp["cameras"]) == ("placed", 0, 3)
 
 
 def test_b_a_genuine_under_floor_room_view_with_its_own_attachment_keeps_the_room_label():
@@ -543,7 +624,9 @@ def _without(obj, keys):
 @pytest.mark.parametrize("part", ["path", "riders", "seal"])
 def test_each_part_alone_changes_only_its_own_output(tmp_path, monkeypatch, part):
     """Every output a part does not govern is today's, value for value, but for the part's own audit keys; the output
-    it governs is not."""
+    it governs is not. The camera path here is of a solution NO GATE PUBLISHED: `riders` and `seal` change the
+    published solution, and a path read FROM it follows it (review V18, LOW-3) --
+    `test_riders_and_seal_reach_the_path_through_the_published_solution` pins that coupling."""
     monkeypatch.delenv("TOWER_WORLD_ANCHOR_VERIFY", raising=False)
     monkeypatch.setenv(ENV, part)
     golden = json.loads(GOLDEN.read_text(encoding="utf-8"))
@@ -554,6 +637,51 @@ def test_each_part_alone_changes_only_its_own_output(tmp_path, monkeypatch, part
         got = _without(value, AUDIT_KEYS[part])
         same = got == want if exact else _round_floats(got) == _round_floats(want)
         assert same == (key != GOVERNS[part]), (part, key)
+
+
+def _published_path(root):
+    from tower.world_builder.surface_render import _camera_path
+
+    return [tuple(c[:3]) for c in _camera_path(F.Store(root), "w1", F.SID)]
+
+
+@pytest.mark.parametrize("part", ["path", "riders", "seal"])
+def test_riders_and_seal_reach_the_path_through_the_published_solution(tmp_path, monkeypatch, part):
+    """Review V18, LOW-3: the parts are NOT disjoint. `path` is render-only; `riders` and `seal` change the PUBLISHED
+    solution -- an unattached rider or a sealed camera leaves component 0 -- and every reader of component 0 follows
+    it, the camera path included. Pinned exactly, per part, against the same publish with the switch off:
+      path:   both published solutions are today's; their paths lose the riders (floor) and the 8 bed poses (radius);
+      riders: the riders' path loses exactly the 3 unattached riders; the bed's is today's;
+      seal:   the bed's path loses exactly the 8 sealed poses; the riders' is today's."""
+    monkeypatch.delenv("TOWER_WORLD_ANCHOR_VERIFY", raising=False)
+    monkeypatch.delenv(ENV, raising=False)
+    off_r, off_b = Q.publish_riders(tmp_path / "off_r"), Q.publish_bed(tmp_path / "off_b")
+    off_rp, off_bp = _published_path(tmp_path / "off_r"), _published_path(tmp_path / "off_b")
+    monkeypatch.setenv(ENV, part)
+    on_r, on_b = Q.publish_riders(tmp_path / "on_r"), Q.publish_bed(tmp_path / "on_b")
+    on_rp, on_bp = _published_path(tmp_path / "on_r"), _published_path(tmp_path / "on_b")
+    riders = [f"{F.SID}:{Q.RIDER_N + k:08d}" for k in range(len(Q.RIDERS))]
+    unattached = {k for k in riders if on_r["poses"][k] != 0} if part == "riders" else set()
+    bed = {f"{F.SID}:{i:08d}" for i in range(*Q.BED)}
+    assert len(off_rp) == Q.RIDER_N + len(Q.RIDERS) and len(off_bp) == 96          # today: every component-0 pose
+
+    def centres(sol_poses, kids):
+        return {tuple(round(float(v), 5) for v in -np.asarray(sol_poses[k]["rotation"]).reshape(3, 3).T
+                      @ np.asarray(sol_poses[k]["translation"])) for k in kids}
+
+    sol_r = Q.rider_solution(Q.RIDER_N, Q.RIDERS).poses
+    sol_b = Q.bed_solution().poses
+    if part == "path":
+        assert on_r["poses"] == off_r["poses"] and on_b["poses"] == off_b["poses"]
+        assert set(off_rp) - set(on_rp) == centres(sol_r, riders) and len(on_rp) == Q.RIDER_N
+        assert set(off_bp) - set(on_bp) == centres(sol_b, bed) and len(on_bp) == 88
+    elif part == "riders":
+        assert len(unattached) == 3 and on_b["poses"] == off_b["poses"] and on_bp == off_bp
+        assert set(off_rp) - set(on_rp) == centres(sol_r, unattached) and len(on_rp) == len(off_rp) - 3
+    else:
+        assert on_r["poses"] == off_r["poses"] and on_rp == off_rp
+        assert {k for k in bed if on_b["poses"][k] != 0} == bed
+        assert set(off_bp) - set(on_bp) == centres(sol_b, bed) and len(on_bp) == 88
 
 
 def test_part_path_alone_filters_the_list(tmp_path, monkeypatch):
@@ -649,20 +777,107 @@ def test_b_v17_low2_a_tie_in_supported_cameras_does_not_flip_the_room():
     assert all(on["labels"][F.name(i)] == off["labels"][F.name(i)] for i in (27, 28))  # ... B's stay attached
 
 
+def _rand_model(rng):
+    """A random small solve for the LOW-2 differential (review V18, MED-2, after its `rand_low2.py`): 1-4 solver
+    components of 0-10 supported cameras on a chain whose links are each DROPPED with p = 0.2 (so a component can hold
+    several groups and several rounds), a level step now and then (scale splits: more labels), riders sharing 0-20
+    points with 1-2 RANDOM cameras of their component (so today's label is often NOT the component's first, and equal
+    shares make argmax ties), riders with own points only, and sometimes a rider-only component."""
+    n_comp = int(rng.integers(1, 5))
+    sizes = [int(rng.integers(0 if c > 0 and rng.random() < 0.15 else 2, 11)) for c in range(n_comp)]
+    obs_i, obs_p, comp_of, p, idx = [], [], [], 0, 0
+    for c, n in enumerate(sizes):
+        for j in range(n):
+            comp_of.append(c)
+            for _ in range(40):
+                obs_i.append(idx + j)
+                obs_p.append(p)
+                p += 1
+            for d in (1, 2):
+                if j + d < n:
+                    for _ in range(12):
+                        obs_i += [idx + j, idx + j + d]
+                        obs_p += [p, p]
+                        p += 1
+        idx += n
+    n_sup = idx
+    own = {i: [pt for ii, pt in zip(obs_i, obs_p) if ii == i][:40] for i in range(n_sup)}
+    for _ in range(int(rng.integers(0, 10))):
+        c = int(rng.integers(0, n_comp))
+        r = len(comp_of)
+        comp_of.append(c)
+        cams = [i for i in range(n_sup) if comp_of[i] == c]
+        if cams:
+            share = int(rng.choice([0, 0, 1, 2, 3, 3, 4, 8, 20]))       # equal shares with 2 cameras: an argmax tie
+            for cam in rng.choice(cams, size=min(int(rng.integers(1, 3)), len(cams)), replace=False):
+                for pt in own[int(cam)][:share]:
+                    obs_i.append(r)
+                    obs_p.append(pt)
+        for _ in range(int(rng.integers(0, 4))):
+            obs_i.append(r)
+            obs_p.append(p)
+            p += 1
+    if rng.random() < 0.2:                                              # a rider-only component
+        for _ in range(int(rng.integers(1, 4))):
+            r = len(comp_of)
+            comp_of.append(n_comp)
+            obs_i.append(r)
+            obs_p.append(p)
+            p += 1
+    n = len(comp_of)
+    model = CG.SolveModel(names=[F.name(i) for i in range(n)], component=np.asarray(comp_of, np.int64),
+                          R_cw=np.stack([F.rz(3.0 * i) for i in range(n)]) if n else np.zeros((0, 3, 3)),
+                          n_obs=np.bincount(np.asarray(obs_i, np.int64), minlength=n),
+                          obs_image=np.asarray(obs_i, np.int64), obs_point=np.asarray(obs_p, np.int64), n_points=p)
+    links, idx = {}, 0
+    for n_c in sizes:
+        for j in range(n_c):
+            for d in (1, 2):
+                if j + d < n_c and rng.random() < 0.8:
+                    links[(F.name(idx + j), F.name(idx + j + d))] = 100
+        idx += n_c
+    rots = {(a, b): F.rz(3.0 * int(b[:8])) @ F.rz(3.0 * int(a[:8])).T for a, b in links}
+    levels = {F.name(i): float(rng.choice([0.0, 0.0, 0.0, 0.0, 0.7])) for i in range(n_sup)}
+    return model, links, rots, levels
+
+
 def test_b_v17_low2_every_supported_label_is_todays_on_random_small_solves():
     """V17 saw the room flip in 25 of 120 random small cases. With the fix, every supported camera keeps TODAY'S
-    label -- the room and the label numbers of every other piece -- whatever the riders do."""
-    rng = np.random.default_rng(17)
-    flips = 0
-    for _ in range(120):
-        sizes = tuple(int(x) for x in rng.integers(5, 8, size=int(rng.integers(2, 4))))
-        riders = [(int(rng.integers(0, len(sizes))), int(rng.choice([0, 0, 1, 2, 3, 5, 9])))
-                  for _ in range(int(rng.integers(0, 6)))]
-        model, links, rots, levels = _tie_model(sizes, riders)
+    label -- the room and the label numbers of every other piece -- whatever the riders do: 400 random solves with
+    several rounds per component, riders on random cameras and argmax ties (review V18, MED-2: the earlier generator
+    gave each component one group and its riders only its first camera, so a mutant `todays_label = first`
+    survived it)."""
+    rng = np.random.default_rng(1817)
+    flips = differing = with_unattached = not_first = 0
+    for _ in range(400):
+        model, links, rots, levels = _rand_model(rng)
+        if model.n == 0:
+            continue
         off = CG.apply_gate(model, links, levels, link_rotations=rots, masks_applied=True)
         on = CG.apply_gate(model, links, levels, link_rotations=rots, masks_applied=True,
                            rider_min_shared=CP.RIDER_MIN_SHARED)
         sup = [nm for i, nm in enumerate(model.names) if model.n_obs[i] >= 30]
         flips += _room(on, model) != _room(off, model)
-        assert all(on["labels"][nm] == off["labels"][nm] for nm in sup), (sizes, riders)
-    assert flips == 0
+        differing += any(on["labels"][nm] != off["labels"][nm] for nm in sup)
+        with_unattached += any(rd.get("quarantined") for rd in on["rounds"])
+        # the cases the mutant needs: an unplaced rider whose TODAY label is not its component's first round's
+        firsts = {}
+        for rd in off["rounds"]:
+            firsts.setdefault(rd["source_component"], rd["final_label"])
+        not_first += any(off["labels"][nm] != firsts.get(int(model.component[i]))
+                         for i, nm in enumerate(model.names)
+                         if model.n_obs[i] < 30 and on["labels"][nm] != off["labels"][nm])
+    assert (flips, differing) == (0, 0)
+    assert with_unattached > 100 and not_first > 10
+
+
+@pytest.mark.parametrize("value, listed", [(None, 12), ("path", 0)])
+def test_a_v4_an_all_rider_solve_has_an_empty_path_with_path_on(tmp_path, monkeypatch, value, listed):
+    """RVPQ LOW (manager 102 §4): a solve of riders only keeps one label, 0 (the gate's all-unsupported case), and
+    publishes no components record; with `path` on its camera path is empty too."""
+    if value is None:
+        monkeypatch.delenv(ENV, raising=False)
+    else:
+        monkeypatch.setenv(ENV, value)
+    entries = [(f"{F.SID}:{i:08d}", c, 12, 0) for i, c in enumerate(Q.ring_centres(12))]
+    assert len(Q.camera_path_of(tmp_path, Q.pose_solution(entries))) == listed
