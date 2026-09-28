@@ -593,6 +593,29 @@ everything, so nothing runs after a failure:
       runs 20 s from the loss, so about 15 s after the prompt (§6 #17).
     - **Acceptance on 6839fb8f: FAIL on thin evidence** (§5.3).
 
+11. **Walk 5 (2026-09-28; capture `b5750fa3`, world `da4ac2d3`, Tower `a4afea1` with P0-A `path,riders,seal`): the
+    verdict is MIXED, with one safety defect** (manager 136; `RUN\physical-test\scored\da4ac2d3\score\SCORE5.md`).
+    - **Acceptance: FAIL.**
+      - **The closet: 0 %** in the room, with 0 links of any kind (harness, P4 or solver).
+      - **The bathroom: 55 %** in the room (31 % clean), on solver links only: the held look-backs out of the bathroom saw
+        the bed and desk. The harness and P4 verify none of them.
+      - **The bedroom splits at the foot of the bed** into the room plus a 255-kf area (the closet and the bed-side
+        views).
+    - **Safety mostly held:**
+      - 0 implausible poses and 0 outlier cameras in the room (walk 4: 9 and 8);
+      - P0-A's riders correctly unplaced 12 bathroom-ceiling riders, 19-22 m out;
+      - the one relocalizer leg wrong by 10.9 deg was not imported.
+    - **The defect, island 5:** the desk at the very end, with the hand reaching for the phone, is drawn in the room
+      tilted 20.4 deg and fails the harness tilt check.
+    - **Capture:** blur 36.7 % (walk 4: 40.4 %), tracking losses 12.2 a minute (15.1).
+    - **The settle took 53.9 min** (`RUN\experiments\W0-WAIT\PROFILE-walk5.md`); W0 is the UX lane's item #1.
+    - **The split, diagnosed** (`RUN\experiments\P5-LINE\LINE.md`):
+      - the component split falls where the wearer pivots at the foot of the bed;
+      - blur bursts from the head turns (83-98 % of the raw frames rejected) and low-texture far walls break the chain;
+      - the matcher (sequential overlap 20 + loop detection) never tries most cross-line revisit pairs. Walk 4's
+        bed-foot pan matched the desk 40/40 and was tried 0 times;
+      - the gate's refusals are correct for the links it was given.
+
 ## 6. Next-run backlog, ranked
 
 0. **Land P3.12, V14 LOW-1, with a V15. It is a privacy regression in over-long text only.**
@@ -881,6 +904,21 @@ everything, so nothing runs after a failure:
     - **Why it is not a Tower fix alone:** the web page cannot follow the phone's text size without help from the
       native side. U1.1 decides how the text size is passed in (or the controls are drawn natively).
     - **Not** part of WORLDS v3 / T-UX0b, which covers O1 items 1–5.
+
+30. **The bedroom split at the foot of the bed** (walks 3, 4 and 5; manager 129/136; coherence lane, behind a switch).
+    - **The Tower-side candidate:** try pairs across components and low-support poses, with targeted retrieval of
+      cross-line revisit pairs. It would have joined walk 4 without a new walk. Check it against backlog 28's
+      evidence-diversity rule first.
+    - **The capture candidate:** a slow, held pan at the foot of the bed that keeps the bed or desk in view.
+    - The independent Codex diagnosis C20 is compared with P5-LINE before any design.
+31. **Island 5** (walk 5; manager 136 (b)): why did the production gate accept a 20.4-deg-tilted image island that the
+    harness catches? Evaluate on the corpus:
+    - **(i)** an end-of-walk trim: drop the final frames once the held phone and hand dominate, using the existing
+      hand/phone mask coverage;
+    - **(ii)** a gate tilt/gravity check for image islands (P5-BED hypothesis #3), which never seals on "no verticals".
+32. **The closet look-backs** (walk 5; manager 136 (c)): the held look-backs from inside the closet saw only the
+    entry-corner floor and gave **0 links of any kind**. This is a protocol finding, not a pipeline defect. Walk 6's
+    protocol says to look back until the bed or desk is in view.
 
 ## 7. Resources this run created or stopped
 
