@@ -919,6 +919,21 @@ everything, so nothing runs after a failure:
 32. **The closet look-backs** (walk 5; manager 136 (c)): the held look-backs from inside the closet saw only the
     entry-corner floor and gave **0 links of any kind**. This is a protocol finding, not a pipeline defect. Walk 6's
     protocol says to look back until the bed or desk is in view.
+33. **The old path is not decision-reproducible run to run** (manager 141 §2): the same code (`a4afea1`) on the same
+    capture (walk 5, `b5750fa3`) made a different ROOM. The real finish had 579 appearance keyframes and 499 fused
+    surface frames; OLD replay 1b had 485 and 430 (the rest went to the area). Source: `RUN\experiments\W0-GAP\GAP.md`.
+    - Every W0 proof set records each run's room decisions and size (fused frames, appearance kf, posed count). The
+      Tier Q noise band is the OLD runs' spread.
+    - W0 stage 0's frozen-database re-finish pairs say whether the difference comes from matching or from the live
+      schedule (background-solve timing).
+    - The single-thread GLOMAP maps also swing by up to ±36 % in time on identical input (stage 0). That is the
+      dominant timing noise on W0's critical path, and it raises RS1 (multi-threaded maps, Tier Q) in value.
+34. **E4, de-duplicating the appearance stage's reads and hashes, is PARKED for W0** (optimization backlog; manager 141
+    §5). Measured on this host with synthetic bytes of walk-5 size, it saves at most **about 2.4 s** on the room's path
+    (about 3.5 s per finish), not the 30–90 s estimated. The larger duplicates are the mask files read 3 times and the
+    detector-miss frames decoded twice, not the source hash. Any A/B must clone one finished world into both arms,
+    because the surface's build time feeds the appearance `params_digest`.
+    Source: `RUNeview\codex\cx-C12-e4-notes-20260928-REVIEW.md`.
 
 ## 7. Resources this run created or stopped
 
