@@ -5012,5 +5012,35 @@ final class DeadEndsTests: XCTestCase {
         XCTAssertTrue(real.contains("Meta AI app"), real)
         XCTAssertTrue(GlassesConnection.cameraPermissionNotGrantedSentence.contains("Open Connections"))
     }
+
+    // MARK: Step 6 -- saved worlds
+
+    private func listedSession(state: String, hasGeometry: Bool, ended: Bool = true) -> WorldListingSession {
+        var json: [String: Any] = [
+            "session_id": "s1", "started_at": 1788894857.0,
+            "frame_source": "live-capture", "has_geometry": hasGeometry, "state": state,
+        ]
+        if ended { json["ended_at"] = 1788895000.0 }
+        return WorldListingSession(json: json)!
+    }
+
+    /// F10: every settled row with nothing to open names walking again and
+    /// offers the way to capture; a walk still open does neither.
+    func testEverySettledRowWithNothingToOpenNamesWalkingAgain() {
+        for row in [listedSession(state: "interrupted", hasGeometry: false),
+                    listedSession(state: "unbuilt", hasGeometry: false)] {
+            let caption = WorldListingPresentation.noGeometryCaption(for: row) ?? ""
+            XCTAssertTrue(caption.contains("Walking the space again"), caption)
+            XCTAssertTrue(WorldListingPresentation.offersGoToCapture(for: row), caption)
+        }
+        let stillOpen = listedSession(state: "receiving", hasGeometry: false, ended: false)
+        let caption = WorldListingPresentation.noGeometryCaption(for: stillOpen) ?? ""
+        XCTAssertFalse(caption.contains("Walking the space again"), caption)
+        XCTAssertFalse(WorldListingPresentation.offersGoToCapture(for: stillOpen))
+        XCTAssertFalse(WorldListingPresentation.offersGoToCapture(
+            for: listedSession(state: "complete", hasGeometry: true)), "a row with geometry opens instead")
+        XCTAssertEqual(WorldListingPresentation.stateBadge(for: listedSession(state: "interrupted", hasGeometry: false)),
+                       "Needs retry", "the word stays (D2)")
+    }
 }
 #endif

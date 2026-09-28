@@ -37,6 +37,16 @@ struct WorldPickerView: View {
     @ObservedObject var world: WorldBuilderViewModel
     @Environment(\.dismiss) private var dismiss
 
+    /// Opens Connections, for a list the Tower could not be reached for
+    /// (U0.8 F09). The presenter dismisses this sheet first, because only one
+    /// sheet can be up. `nil` draws no button.
+    var onOpenConnections: (() -> Void)? = nil
+
+    /// Back to the live screen, where Start capture is, for a walk with
+    /// nothing to open (U0.8 F10). It does not start a capture. `nil` draws
+    /// no button.
+    var onGoToCapture: (() -> Void)? = nil
+
     /// The world whose 3D reconstruction is pushed, or `nil`.
     ///
     /// ## Why a tap here goes straight to the 3D world
@@ -283,17 +293,34 @@ struct WorldPickerView: View {
                     .font(.footnote)
                     .foregroundStyle(.readableSecondary)
             }
-        } else if let failure = world.worldListFailure {
+        } else if let problem = world.worldListProblem {
+            // Each failure in its own words, with its own next step (U0.8
+            // F09). The last list stays below, and its rows stay tappable.
             VStack(alignment: .leading, spacing: 8) {
-                Text(failure)
+                Text(world.worldListFailure ?? "")
                     .font(.footnote)
                     .foregroundStyle(.readableSecondary)
                     .fixedSize(horizontal: false, vertical: true)
-                Button("Retry") {
-                    Task { await world.loadWorlds() }
+                    .accessibilityIdentifier("worlds-problem")
+                let actions = dynamicTypeSize.isAccessibilitySize
+                    ? AnyLayout(VStackLayout(alignment: .leading, spacing: 8))
+                    : AnyLayout(HStackLayout(spacing: 8))
+                actions {
+                    if let title = WorldListText.retryTitle(problem) {
+                        Button(title) {
+                            Task { await world.loadWorlds() }
+                        }
+                        .font(.footnote)
+                        .readableBorderedButton()
+                        .accessibilityIdentifier("worlds-retry")
+                    }
+                    if WorldListText.offersConnections(problem), let onOpenConnections {
+                        Button(WorldListText.connections, action: onOpenConnections)
+                            .font(.footnote)
+                            .readableBorderedButton()
+                            .accessibilityIdentifier("worlds-connections")
+                    }
                 }
-                .font(.footnote)
-                .readableBorderedButton()
             }
         } else if world.worlds.isEmpty {
             // Empty after an empty answer. "None yet" is true of a Tower with
@@ -450,6 +477,18 @@ struct WorldPickerView: View {
                     .font(.caption2)
                     .foregroundStyle(.readableSecondary)
                     .fixedSize(horizontal: false, vertical: true)
+                // The next step the caption names, where this build has it:
+                // back to the live screen, where Start capture is (U0.8 F10).
+                // Release has no capture, so no button. The badge keeps its
+                // word (manager 137 D2).
+                #if DEBUG
+                if WorldListingPresentation.offersGoToCapture(for: session), let onGoToCapture {
+                    Button(WorldListText.goToCapture, action: onGoToCapture)
+                        .font(.caption)
+                        .readableBorderedButton()
+                        .accessibilityIdentifier("worlds-go-to-capture")
+                }
+                #endif
             }
         }
     }
@@ -618,5 +657,47 @@ struct WorldPickerView: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.leading, 16)
+    }
+}
+
+// MARK: - The list's problems, in words (U0.8 F09, F10)
+
+/// What the saved-worlds sheet says when the Tower's list is not a fresh
+/// answer, and the words of its controls. Each failure is worded as what the
+/// phone knows, and names its own next step.
+enum WorldListText {
+    static let connections = "Connections"
+    static let goToCapture = "Go to capture"
+
+    static func sentence(_ problem: WorldListProblem, listedAt: Date?, hasList: Bool) -> String {
+        let when = listedAt.map { $0.formatted(.relative(presentation: .named)) } ?? "earlier"
+        switch problem {
+        case .noWorldRoot:
+            return "This Tower has no folder for saved worlds set up, so it has none to list. That is set up on the Tower."
+        case .unreadable:
+            return hasList
+                ? "The Tower's latest list could not be read, so this is the list from \(when). It may be out of date."
+                : "The Tower's list of saved worlds is in a form this version of the app cannot read. Updating the app or the Tower fixes this."
+        case .unreachable(let detail):
+            return hasList
+                ? "Could not reach the Tower, so this is the list from \(when). It may be out of date, and opening a world still needs the Tower."
+                : "Could not reach the Tower for its saved worlds: \(detail)"
+        }
+    }
+
+    /// The ask-again button's words, or `nil` where asking again cannot help:
+    /// an unreadable list is fixed by an update, not a retry.
+    static func retryTitle(_ problem: WorldListProblem) -> String? {
+        switch problem {
+        case .noWorldRoot: return "Check again"
+        case .unreadable: return nil
+        case .unreachable: return "Try again"
+        }
+    }
+
+    /// Whether Connections can help: only when the Tower was not reached.
+    static func offersConnections(_ problem: WorldListProblem) -> Bool {
+        if case .unreachable = problem { return true }
+        return false
     }
 }

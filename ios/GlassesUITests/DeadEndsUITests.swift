@@ -291,6 +291,91 @@ final class DeadEndsUITests: XCTestCase {
         XCTAssertFalse(alert.exists, "the alert is gone")
     }
 
+    // MARK: Step 6 -- saved worlds
+
+    static let worldsList = "GET /worlds"
+
+    /// World Builder open on the mock Tower (its socket off: the list is
+    /// HTTP only), then its Saved worlds sheet.
+    private func openSavedWorlds() {
+        let button = app.buttons["Saved worlds"]
+        XCTAssertTrue(reveal(button), "the Saved worlds button")
+        XCTAssertTrue(tap(button, until: app.navigationBars["Saved worlds"].exists), "the Saved worlds sheet opened")
+    }
+
+    private func containing(_ text: String) -> XCUIElement {
+        app.descendants(matching: .any).matching(NSPredicate(format: "label CONTAINS %@", text)).firstMatch
+    }
+
+    /// F09: a refresh that fails keeps the last list, says it may be out of
+    /// date, and offers Try again and Connections.
+    func testSavedWorldsStayListedWhenARefreshFails() throws {
+        mock.setRoute(Self.worldsList, status: 200, body: Self.worldsListing)
+        launch(tower: mockAuthority)
+        open(cartridge: "World Builder")
+        openSavedWorlds()
+        let failed = containing("Failed fixture (Mac B0)")
+        XCTAssertTrue(failed.waitForExistence(timeout: 15), "the list arrived")
+        XCTAssertTrue(tap(app.buttons["Close"], until: !app.navigationBars["Saved worlds"].exists), "the sheet closed")
+
+        mock.setRoute(Self.worldsList, status: 503, body: "down")
+        openSavedWorlds()
+        let problem = element("worlds-problem")
+        XCTAssertTrue(problem.waitForExistence(timeout: 15), "the refresh's failure is worded")
+        XCTAssertTrue(problem.label.contains("It may be out of date"), problem.label)
+        XCTAssertTrue(failed.exists, "the last list is still there")
+        let retry = element("worlds-retry")
+        XCTAssertTrue(retry.exists, "Try again")
+        XCTAssertEqual(retry.label, "Try again")
+        let connections = element("worlds-connections")
+        XCTAssertTrue(connections.exists, "Connections")
+        XCTAssertTrue(tap(connections, until: app.navigationBars["Connections"].exists), "Connections opened")
+    }
+
+    /// F09: the Tower's "no world root" answer offers Check again, and no
+    /// Connections: the Tower was reached.
+    func testANoWorldRootAnswerOffersCheckAgainOnly() throws {
+        mock.setRoute(Self.worldsList, status: 404, body: #"{"detail":"no world root is configured"}"#)
+        launch(tower: mockAuthority)
+        open(cartridge: "World Builder")
+        openSavedWorlds()
+        let problem = element("worlds-problem")
+        XCTAssertTrue(problem.waitForExistence(timeout: 15), "the answer is worded")
+        XCTAssertTrue(problem.label.hasPrefix("This Tower has no folder for saved worlds"), problem.label)
+        let retry = element("worlds-retry")
+        XCTAssertTrue(retry.exists, "Check again")
+        XCTAssertEqual(retry.label, "Check again")
+        XCTAssertFalse(element("worlds-connections").exists, "no Connections for a Tower that answered")
+    }
+
+    /// The fixture listing with one more world first: a walk whose geometry
+    /// is gone (`interrupted`, no geometry).
+    static var worldsListingWithAnInterruptedWalk: String {
+        let interrupted = #"""
+{"created_at":1788719719.9,"display_name":"Interrupted walk (U0.8 fixture)","live":false,"session_count":1,"sessions":[{"abandoned":false,"appearance":null,"capture_id":null,"dense":null,"end_reason":"stop","ended_at":1788720319.9,"finalization":null,"frame_source":"synthetic","has_geometry":false,"keyframes_accepted":3,"keyframes_journaled":0,"photographic":null,"session_id":"9999aaaa0000bbbb1111cccc2222dddd","started_at":1788719719.9,"state":"interrupted"}],"updated_at":1788720319.9,"world_id":"0808aaaa0000bbbb1111cccc2222dddd"},
+"""#
+        return worldsListing
+            .replacingOccurrences(of: #""world_count":4"#, with: #""world_count":5"#)
+            .replacingOccurrences(of: #""worlds":["#, with: #""worlds":["# + interrupted)
+    }
+
+    /// F10: a row with nothing to open says what makes another one, and
+    /// "Go to capture" goes back to the live screen.
+    func testANoGeometryRowSaysWhatToDoAndGoesToCapture() throws {
+        mock.setRoute(Self.worldsList, status: 200, body: Self.worldsListingWithAnInterruptedWalk)
+        launch(tower: mockAuthority)
+        open(cartridge: "World Builder")
+        openSavedWorlds()
+        XCTAssertTrue(containing("Needs retry").waitForExistence(timeout: 15), "the Needs retry badge")
+        XCTAssertTrue(containing("Walking the space again makes a new one").exists, "the caption names the next step")
+        let goToCapture = element("worlds-go-to-capture")
+        XCTAssertTrue(revealInSheet(goToCapture), "Go to capture")
+        XCTAssertTrue(tap(goToCapture, until: !app.navigationBars["Saved worlds"].exists), "the sheet went away")
+        let start = app.buttons["Start capture"]
+        let noCapture = containing("Capture is not available in this build.")
+        XCTAssertTrue(waitFor(timeout: 5) { start.exists || noCapture.exists }, "back on the live screen")
+    }
+
     // MARK: Launch (H3)
 
     /// `tower` is the socket's `host:port`; `nil` uses the saved address.

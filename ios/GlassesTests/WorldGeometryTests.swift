@@ -3126,4 +3126,51 @@ final class WorldListLoadLifecycleTests: XCTestCase {
         await viewModel.loadWorlds()
         XCTAssertEqual(StubbedGeometryProtocol.requestCount(for: Self.worldsPath), 2)
     }
+
+    // MARK: U0.8 F09 -- a failed refresh keeps the list, and says which failure
+
+    func testAFailedRefreshKeepsTheLastListAndSaysItIsOld() async {
+        StubbedGeometryProtocol.reset(routes: [Self.worldsPath: (200, Self.listing)])
+        let viewModel = makeViewModel()
+        await viewModel.loadWorlds()
+        XCTAssertEqual(viewModel.worlds.map(\.worldID), ["w-new"])
+        XCTAssertNotNil(viewModel.worldsListedAt)
+
+        StubbedGeometryProtocol.set(route: Self.worldsPath, to: (503, "down"))
+        await viewModel.loadWorlds()
+
+        XCTAssertEqual(viewModel.worlds.map(\.worldID), ["w-new"], "a failed refresh blanked the list")
+        XCTAssertEqual(viewModel.worldListProblem, .unreachable("the Tower answered HTTP 503"))
+        XCTAssertTrue(viewModel.worldListFailure?.contains("It may be out of date") == true,
+                      viewModel.worldListFailure ?? "nil")
+        XCTAssertEqual(WorldListText.retryTitle(.unreachable("x")), "Try again")
+        XCTAssertTrue(WorldListText.offersConnections(.unreachable("x")))
+    }
+
+    func testNoWorldRootClearsTheListAndOffersCheckAgain() async {
+        StubbedGeometryProtocol.reset(routes: [Self.worldsPath: (200, Self.listing)])
+        let viewModel = makeViewModel()
+        await viewModel.loadWorlds()
+        XCTAssertFalse(viewModel.worlds.isEmpty)
+
+        StubbedGeometryProtocol.set(route: Self.worldsPath, to: (404, #"{"detail":"no world root is configured"}"#))
+        await viewModel.loadWorlds()
+
+        XCTAssertTrue(viewModel.worlds.isEmpty, "the Tower's own no-root answer is settled, so the list goes")
+        XCTAssertEqual(viewModel.worldListProblem, .noWorldRoot)
+        XCTAssertEqual(WorldListText.retryTitle(.noWorldRoot), "Check again")
+        XCTAssertFalse(WorldListText.offersConnections(.noWorldRoot))
+        XCTAssertTrue(viewModel.worldListFailure?.hasPrefix("This Tower has no folder for saved worlds") == true,
+                      viewModel.worldListFailure ?? "nil")
+    }
+
+    func testATowerErrorIsNotCalledUnreadable() async {
+        StubbedGeometryProtocol.reset(routes: [Self.worldsPath: (500, #"{"detail":"x"}"#)])
+        let viewModel = makeViewModel()
+        await viewModel.loadWorlds()
+
+        XCTAssertEqual(viewModel.worldListProblem, .unreachable("the Tower answered HTTP 500"))
+        XCTAssertNotEqual(viewModel.worldListProblem, .unreadable)
+        XCTAssertNil(WorldListText.retryTitle(.unreadable), "an unreadable list is fixed by an update, not a retry")
+    }
 }

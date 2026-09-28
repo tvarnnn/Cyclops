@@ -276,6 +276,18 @@ final class UnavailableWorldBuilderClient: WorldBuilderClient {
     init() {}
 }
 
+/// Why the saved-worlds list is not a fresh answer from the Tower (U0.8 F09).
+/// Worded by `WorldListText`; each case has its own next step.
+nonisolated enum WorldListProblem: Equatable {
+    /// The Tower answered 404: it has no world root, so it has none to list.
+    /// A settled answer, not a failure to reach it.
+    case noWorldRoot
+    /// The Tower answered, in a form this build cannot read.
+    case unreadable
+    /// The Tower could not be reached, or answered with an error status.
+    case unreachable(String)
+}
+
 /// Publishes World Builder state into SwiftUI.
 ///
 /// Separate from the client protocol because the protocol describes *supplying*
@@ -333,13 +345,29 @@ final class WorldBuilderViewModel: ObservableObject {
 
     /// The stored worlds the Tower listed, newest first, or empty until
     /// `loadWorlds()` has answered. Empty is also what a Tower with no world
-    /// root reports; `worldListFailure` says which.
+    /// root reports; `worldListProblem` says which.
+    ///
+    /// A refresh that fails keeps the last list (U0.8 F09): the worlds it
+    /// named were real a moment ago, and blanking them to report a dropped
+    /// connection took away the very thing the person came to look at. Only
+    /// the Tower's own "no world root" answer clears it.
     @Published private(set) var worlds: [WorldListingEntry] = []
 
-    /// Why the last `loadWorlds()` produced nothing, in a sentence, or `nil`
-    /// after a listing that succeeded. `WorldListFetchError.notFound` is the
-    /// Tower's own answer — no world root configured — and is worded as that.
-    @Published private(set) var worldListFailure: String?
+    /// Why the last `loadWorlds()` did not answer with a list, or `nil` after
+    /// one that did.
+    @Published private(set) var worldListProblem: WorldListProblem?
+
+    /// When the Tower last answered with a list, so a stale one can say how
+    /// old it is. `nil` until one has.
+    @Published private(set) var worldsListedAt: Date?
+
+    /// `worldListProblem` in a sentence. Kept for existing tests
+    /// (`WorldListLoadLifecycleTests`).
+    var worldListFailure: String? {
+        worldListProblem.map {
+            WorldListText.sentence($0, listedAt: worldsListedAt, hasList: !worlds.isEmpty)
+        }
+    }
 
     /// Whether a `loadWorlds()` is in flight. The picker draws a progress
     /// indicator from it — honestly, because a request really is out — and
@@ -1082,21 +1110,23 @@ final class WorldBuilderViewModel: ObservableObject {
         }
         do {
             worlds = try await library.worlds().worlds
-            worldListFailure = nil
+            worldListProblem = nil
+            worldsListedAt = Date()
         } catch let error as WorldListFetchError {
-            worlds = []
             switch error {
             case .notFound:
-                worldListFailure = "The Tower answered that no world root is configured, so it has no saved worlds to list."
+                // The Tower's settled answer: it has no world root, so there
+                // is no list to keep.
+                worlds = []
+                worldListProblem = .noWorldRoot
             case .undecodable:
-                worldListFailure = "The Tower's world list could not be read as the contract this build implements."
+                worldListProblem = .unreadable
             case .transport(let detail):
-                worldListFailure = "The world list could not be fetched: \(detail)"
+                worldListProblem = .unreachable(detail)
             }
             logWorldListFailure(worldListFailure ?? "\(error)")
         } catch {
-            worlds = []
-            worldListFailure = "The world list could not be fetched: \(error.localizedDescription)"
+            worldListProblem = .unreachable(error.localizedDescription)
             logWorldListFailure(error.localizedDescription)
         }
     }

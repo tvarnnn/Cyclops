@@ -233,6 +233,12 @@ nonisolated struct WorldListClient {
             if let http = response as? HTTPURLResponse, http.statusCode == 404 {
                 throw WorldListFetchError.notFound
             }
+            // Any other error status is the Tower saying no, not a list in a
+            // form this build cannot read: a 500's `{"detail": …}` body is
+            // JSON, and used to be called "undecodable" (U0.8 F09).
+            if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+                throw WorldListFetchError.transport("the Tower answered HTTP \(http.statusCode)")
+            }
             guard
                 let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
             else { throw WorldListFetchError.undecodable }

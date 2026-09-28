@@ -77,6 +77,10 @@ struct WorldBuilderWorkspaceView: View {
     /// Whether the saved-worlds sheet is up. View state, so it lives here.
     @State private var isShowingWorlds = false
 
+    /// Set by the saved-worlds sheet's Connections button: the sheet goes
+    /// first, and Connections opens once it has (U0.8 F09).
+    @State private var opensConnectionsAfterWorlds = false
+
     /// The world whose interactive picture is up, or `nil`. Captured from
     /// `world.renderTarget` at the tap rather than read live, so a report
     /// that renames the live world mid-look does not swap the sheet's content
@@ -182,8 +186,27 @@ struct WorldBuilderWorkspaceView: View {
             }
         }
         .animation(.easeInOut(duration: 0.25), value: world.lookBackBanner)
-        .sheet(isPresented: $isShowingWorlds) {
-            WorldPickerView(world: world)
+        // Only one sheet can be up, so Connections waits for this one to go
+        // (the root's `onDismiss` pattern).
+        .sheet(isPresented: $isShowingWorlds, onDismiss: {
+            if opensConnectionsAfterWorlds {
+                opensConnectionsAfterWorlds = false
+                recovery?.openConnections()
+            }
+        }) {
+            WorldPickerView(
+                world: world,
+                onOpenConnections: {
+                    opensConnectionsAfterWorlds = true
+                    isShowingWorlds = false
+                },
+                // Back to the live screen, where Start capture is. It starts
+                // nothing: the Start button is the only way in (U0.8 F10).
+                onGoToCapture: {
+                    world.returnToLive()
+                    isShowingWorlds = false
+                }
+            )
         }
         .sheet(item: $viewerTarget) { target in
             // The title and the note come from the same `WorldPresentation`

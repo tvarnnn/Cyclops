@@ -1087,10 +1087,10 @@ final class WorldListingBadgeAgreementTests: XCTestCase {
             "No geometry yet. The Tower may still build it for this walk.")
         XCTAssertEqual(
             WorldListingPresentation.noGeometryCaption(for: session(state: "interrupted", hasGeometry: false)),
-            "This walk's geometry is no longer on the Tower, so there is nothing to open.")
+            "This walk's geometry is no longer on the Tower, so there is nothing to open. Walking the space again makes a new one.")
         XCTAssertEqual(
             WorldListingPresentation.noGeometryCaption(for: session(state: "unbuilt", hasGeometry: false)),
-            "No geometry was built for this walk, so there is nothing to open.")
+            "No geometry was built for this walk, so there is nothing to open. Walking the space again makes a new one.")
     }
 }
 
