@@ -4890,3 +4890,46 @@ final class IMURecorderMockDeviceTests: XCTestCase {
     }
 }
 #endif
+
+// MARK: - U0.8: dead ends and contradictions
+
+/// The pure rules behind U0.8's fixes. A class here rather than a new
+/// `DeadEndsTests.swift`, for the reason at the top of this file:
+/// GlassesTests is not a synchronized group.
+#if DEBUG
+@MainActor
+final class DeadEndsTests: XCTestCase {
+
+    private static let towerStatuses: [TowerStatus] = [.offline, .connecting, .online, .failed("refused")]
+
+    /// F04: every offline line states the frames rule, and none claims the
+    /// frames "would not reach" the Tower (a reconnect resumes sending).
+    func testTheOfflineCaptureLineStatesTheFramesRule() {
+        for status in Self.towerStatuses {
+            for gaveUp in [false, true] {
+                let line = WorldBuilderCaptureText.towerLine(status: status, gaveUp: gaveUp)
+                if status == .online {
+                    XCTAssertNil(line, "online, gaveUp \(gaveUp)")
+                    continue
+                }
+                guard let line else { return XCTFail("no line for \(status), gaveUp \(gaveUp)") }
+                XCTAssertTrue(line.contains(WorldBuilderCaptureText.framesRule), line)
+                XCTAssertFalse(line.contains("would not reach"), line)
+            }
+        }
+    }
+
+    /// D1: whenever Start is off for the Tower, the reason says so and names
+    /// the next step.
+    func testTheStartOffReasonNamesTheTowerAndTheNextStep() {
+        for status in Self.towerStatuses where status != .online {
+            for gaveUp in [false, true] {
+                let reason = WorldBuilderCaptureText.startOffReason(status: status, gaveUp: gaveUp)
+                XCTAssertTrue(reason.hasPrefix("Start is off"), reason)
+                XCTAssertTrue(reason.contains("Tower"), reason)
+                XCTAssertTrue(reason.contains("Connect to it first") || reason.contains("connecting to it now"), reason)
+            }
+        }
+    }
+}
+#endif

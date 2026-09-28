@@ -91,6 +91,9 @@ struct WorldBuilderWorkspaceView: View {
 
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
+    /// Connect and Settings, from the root (U0.8 F03, D1). `nil` in previews.
+    @Environment(\.towerRecovery) private var recovery
+
     /// The client is injected rather than constructed here, and owned by
     /// `ProjectManager`. See `CartridgeClients` for why: this `@StateObject` is
     /// destroyed on every cartridge switch, and a Tower-backed client holding a
@@ -109,12 +112,15 @@ struct WorldBuilderWorkspaceView: View {
 
     /// Connectivity reaches the view model as a value, never as an object.
     ///
-    /// This view genuinely needs `tower`: the capture control warns when the
-    /// Tower is offline, because a `stream_start` sent while it is down is
-    /// dropped and every frame after it is then suppressed for the whole
-    /// session. So the observation is not a dead dependency here, and reading
-    /// the status costs nothing extra — passing the *fact* rather than the
-    /// client is what keeps the view model free of a reference it could act on.
+    /// This view genuinely needs `tower`: Start capture is off while the
+    /// Tower is not connected (manager 137 D1), and the capture control says
+    /// what happens to frames when it drops mid-capture. Frames are sent only
+    /// while it is connected; frames taken while it is not are dropped
+    /// (`TowerClient.sendFrame`) and never stored, and a reconnect re-opens
+    /// the stream bracket (`ProjectManager`), so sending resumes. So the
+    /// observation is not a dead dependency here, and reading the status
+    /// costs nothing extra — passing the *fact* rather than the client is
+    /// what keeps the view model free of a reference it could act on.
     ///
     /// The three cartridge workspaces that have no capture control receive this
     /// `Bool` from `TowerReachabilityReader` instead, and do not observe the
@@ -325,6 +331,35 @@ struct WorldBuilderWorkspaceView: View {
 
 // MARK: - DEBUG-only capture surface
 
+#if DEBUG
+/// The capture control's Tower sentences (U0.8 F04; manager 137 D1).
+enum WorldBuilderCaptureText {
+    static let framesRule = "Frames are sent only while it is connected; frames taken before then are not kept."
+
+    /// While a capture runs and the Tower is not connected: what happens to
+    /// the frames. `nil` while it is connected.
+    static func towerLine(status: TowerStatus, gaveUp: Bool) -> String? {
+        if status == .online { return nil }
+        if gaveUp { return "The phone has stopped trying to reconnect to the Tower. " + framesRule }
+        if status == .connecting { return "Connecting to the Tower. " + framesRule }
+        return "The Tower is not connected. " + framesRule
+    }
+
+    /// Beside a Start capture that is off because the Tower is not
+    /// connected: the reason and the next step.
+    static func startOffReason(status: TowerStatus, gaveUp: Bool) -> String {
+        if gaveUp {
+            return "Start is off while the Tower is not connected, and the phone has stopped trying to reconnect. "
+                + "Connect to it first."
+        }
+        if status == .connecting {
+            return "Start is off until the Tower is connected. The phone is connecting to it now."
+        }
+        return "Start is off while the Tower is not connected. Connect to it first."
+    }
+}
+#endif
+
 // The camera path is DEBUG-only in the model, so the capture half of this
 // workspace is gated to match. In Release the workspace still exists and still
 // tells the truth about the world half — it simply has no capture controls,
@@ -354,6 +389,15 @@ private extension WorldBuilderWorkspaceView {
     }
 
     static let waitingForGlasses = "Waiting for the glasses to become active."
+
+    /// Start's VoiceOver hint: why it is off, or nothing.
+    var startHint: String {
+        if !glasses.hasActiveDevice { return Self.waitingForGlasses }
+        if !isTowerReachable {
+            return WorldBuilderCaptureText.startOffReason(status: tower.status, gaveUp: tower.reconnectGaveUp)
+        }
+        return ""
+    }
 
     var placeholder: String {
         if !glasses.hasActiveDevice { return Self.waitingForGlasses }
@@ -389,10 +433,14 @@ private extension WorldBuilderWorkspaceView {
                         .padding(.vertical, 6)
                 }
                 .buttonStyle(.borderedProminent)
-                .disabled(!glasses.hasActiveDevice)
+                // Off while the Tower is not connected, too (manager 137 D1):
+                // a capture started then streams frames nobody keeps. Start
+                // never does nothing; it is off, with the reason beside it.
+                .disabled(!glasses.hasActiveDevice || !isTowerReachable)
                 // Why it is disabled, at the control, for VoiceOver. On screen
-                // the viewfinder above already says it; see below.
-                .accessibilityHint(glasses.hasActiveDevice ? "" : Self.waitingForGlasses)
+                // the viewfinder above says the glasses' reason, and the line
+                // under this control says the Tower's.
+                .accessibilityHint(startHint)
             }
 
             // Neither string claims a build. The Tower reconstructs in a
@@ -406,7 +454,19 @@ private extension WorldBuilderWorkspaceView {
                     : "Streams frames to the Tower. What it builds from them is reported above."
             )
 
-            if !glasses.hasActiveDevice && !isRunning {
+            if !isRunning && !isTowerReachable {
+                // Start is off because of the Tower (D1): the reason, beside
+                // the control, and the way to end it. First, because it holds
+                // whether or not the glasses are active -- the viewfinder
+                // above already gives the glasses' reason.
+                HelperText(WorldBuilderCaptureText.startOffReason(
+                    status: tower.status, gaveUp: tower.reconnectGaveUp
+                ))
+                .accessibilityIdentifier("wb-capture-tower-line")
+                if let recovery {
+                    TowerRecoveryButtons(actions: recovery, identifierPrefix: "wb-capture")
+                }
+            } else if !glasses.hasActiveDevice && !isRunning {
                 // Nothing: the viewfinder card at the top of this workspace
                 // is showing this very sentence, and it read twice on one
                 // screen (UX audit, wb-capture-idle). Kept as a branch so the
@@ -416,21 +476,18 @@ private extension WorldBuilderWorkspaceView {
                 // Advice, not a `.disabled` condition — see the equivalent
                 // branch in `HomeWorkspaceView.sessionControl`.
                 HelperText("Camera access is not granted. Allow it under Connections, then start capture.")
-            } else if tower.status != .online && tower.reconnectGaveUp {
-                // Distinct from the sentence below because the remedy is
-                // different. While the phone is still retrying, waiting is
-                // enough; once the reconnect budget is spent nothing will
-                // change until someone taps Connect, and a line that said only
-                // "not connected" — the same words in both cases — left the
-                // wearer waiting for a retry that was never coming.
-                HelperText("The phone has stopped trying to reconnect. Use Connect under Connections to retry.")
-            } else if tower.status != .online {
-                // The Tower must be online *before* capture starts: a
-                // `stream_start` sent while it is offline is dropped, and every
-                // frame after it is then suppressed for the whole session.
-                // Advice rather than a new `.disabled` condition, so the
-                // control's semantics stay what they were.
-                HelperText("The Tower is not connected. Frames from this session would not reach it.")
+            } else if let line = WorldBuilderCaptureText.towerLine(
+                status: tower.status, gaveUp: tower.reconnectGaveUp
+            ) {
+                // The Tower dropped mid-capture. What happens to the frames,
+                // truthfully: they are sent only while it is connected, and
+                // the ones taken before it reconnects are dropped and never
+                // stored -- a reconnect re-opens the stream bracket, so
+                // sending resumes (`ProjectManager`), but nothing refills the
+                // gap. The words differ once the phone has stopped retrying,
+                // because the remedy does: then only a tap on Connect helps.
+                HelperText(line)
+                    .accessibilityIdentifier("wb-capture-tower-line")
             }
         }
     }

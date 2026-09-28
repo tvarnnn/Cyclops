@@ -131,6 +131,14 @@ struct ContentView: View {
             }
             .background(Color(.systemGroupedBackground))
             .scrollBounceBehavior(.basedOnSize)
+            // Connect and Settings for every "Not connected" panel in the
+            // workspace below (U0.8 F03). Actions only: the root still does
+            // not observe the Tower; the buttons' own leaf does.
+            .environment(\.towerRecovery, TowerRecoveryActions(
+                tower: project.towerClient,
+                openConnections: { destination = .connections },
+                openSettings: { destination = .settings }
+            ))
             // A bar, not an inset: the scroll edge effect then extends under
             // it, so content passing beneath is softened like it is under
             // the navigation bar, rather than showing through between pills.

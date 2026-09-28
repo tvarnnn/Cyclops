@@ -104,6 +104,75 @@ final class DeadEndsUITests: XCTestCase {
         XCTAssertEqual(starts.count, 2, "\(mock.requestLines)")
     }
 
+    // MARK: Step 2 -- offline recovery everywhere
+
+    /// F03: every "Not connected" panel offers Connect and Settings, and
+    /// Connect dials.
+    func testEveryDisconnectedWorkspaceOffersConnectAndSettings() throws {
+        // `/ws` answers 404 (the socket off), so the app's socket fails at once.
+        launch(tower: mockAuthority)
+
+        for name in ["World Builder", "Object Memory"] {
+            open(cartridge: name)
+            let notConnected = app.descendants(matching: .any)
+                .matching(NSPredicate(format: "label CONTAINS %@", "Not connected")).firstMatch
+            XCTAssertTrue(notConnected.waitForExistence(timeout: 10), "\(name) says Not connected")
+            let connect = element("tower-recovery-connect")
+            let settings = element("tower-recovery-settings")
+            XCTAssertTrue(connect.waitForExistence(timeout: 5), "\(name) offers Connect")
+            XCTAssertTrue(reveal(settings), "\(name) offers Tower settings")
+            XCTAssertTrue(tap(settings, until: app.navigationBars["Settings"].exists), "\(name): Settings opens")
+            XCTAssertTrue(tap(app.buttons["Done"], until: !app.navigationBars["Settings"].exists),
+                          "\(name): Settings closes")
+        }
+
+        // Only a dial after the reconnect budget is spent (0.5 + 1 + 2 + 4 +
+        // 8 s) proves the tap: before it, an automatic retry would pass too.
+        var dials = socketDials
+        var steadySince = Date()
+        let deadline = Date().addingTimeInterval(60)
+        while Date() < deadline, Date().timeIntervalSince(steadySince) < 10 {
+            Thread.sleep(forTimeInterval: 1)
+            let now = socketDials
+            if now != dials { dials = now; steadySince = Date() }
+        }
+        XCTAssertGreaterThanOrEqual(Date().timeIntervalSince(steadySince), 10,
+                                    "the app never stopped redialling: \(dials) dials")
+        let connect = element("tower-recovery-connect")
+        XCTAssertTrue(reveal(connect), "Connect is on the screen")
+        XCTAssertTrue(waitFor(timeout: 5) { connect.isEnabled }, "Connect is on once the phone has given up")
+        connect.tap()
+        XCTAssertTrue(waitFor(timeout: 5) { self.socketDials >= dials + 1 },
+                      "Connect dialled the Tower: \(socketDials) dials, \(dials) before the tap")
+    }
+
+    /// D1 (manager 137): with the Tower unreachable, Start capture is off,
+    /// the reason is beside it, and Connect and Settings are offered.
+    func testStartIsDisabledWithAReasonWhileTheTowerIsUnreachable() throws {
+        launch(tower: closedAuthority, mockGlasses: true)
+        // Home's Start session is on: the glasses are active, so what turns
+        // World Builder's Start off below is the Tower alone.
+        try requireMockGlasses()
+        open(cartridge: "World Builder")
+
+        let start = app.buttons["Start capture"]
+        XCTAssertTrue(reveal(start), "Start capture is on the screen")
+        XCTAssertFalse(start.isEnabled, "Start capture is off while the Tower is unreachable")
+
+        let reason = element("wb-capture-tower-line")
+        XCTAssertTrue(reveal(reason), "the reason is beside Start")
+        XCTAssertTrue(reason.label.hasPrefix("Start is off"), reason.label)
+        XCTAssertTrue(reason.label.contains("Tower"), reason.label)
+
+        let connect = element("wb-capture-connect")
+        let settings = element("wb-capture-settings")
+        XCTAssertTrue(connect.exists, "Connect beside Start")
+        XCTAssertTrue(reveal(settings), "Tower settings beside Start")
+        XCTAssertTrue(tap(settings, until: app.navigationBars["Settings"].exists), "Tower settings opens Settings")
+        XCTAssertTrue(tap(app.buttons["Done"], until: !app.navigationBars["Settings"].exists))
+        XCTAssertFalse(app.buttons["Stop capture"].exists, "nothing started")
+    }
+
     // MARK: Launch (H3)
 
     /// `tower` is the socket's `host:port`; `nil` uses the saved address.

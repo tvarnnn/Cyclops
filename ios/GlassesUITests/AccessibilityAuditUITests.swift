@@ -232,7 +232,10 @@ final class AccessibilityAuditUITests: XCTestCase {
         // on the same screen, though not always beside it: under "Start
         // session" on Home; for "Start capture", in the viewfinder card at the
         // top of the World Builder workspace (DEBUG), which can be a screen
-        // above it, and in the control's VoiceOver hint; for "Picture", in the
+        // above it, and in the control's VoiceOver hint -- and, while it is
+        // off because the Tower is not connected (U0.8 D1), in the line
+        // directly under it ("Start is off while the Tower is not
+        // connected…") and the same hint; for "Picture", in the
         // canvas under it ("No world yet"). (U0.5 review F10: the line that
         // stood beside "Start capture" was removed as a duplicate.)
         Waiver(reason: "a disabled control (WCAG 1.4.3: inactive components are exempt)") { issue, _ in
