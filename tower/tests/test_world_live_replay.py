@@ -1092,7 +1092,10 @@ def test_the_live_safety_gate_checks_the_client_against_the_tower(tmp_path):
     assert rows["frames sent (client) = frames scheduled"] == "FAIL"
     assert rows["frames received (Tower, all windows) = frames sent"] == "FAIL"
     assert rows["every frame answered (client): unanswered, frame_error replies"] == "FAIL"
-    assert rows[":8000 during the run"] == "FAIL"
+    # A contended :8000 is the environment's FAIL, reported apart (C22-F2 item 3).
+    environment = contended["live_safety"]["environment"]
+    assert {r["check"]: r["result"] for r in environment["rows"]}[":8000 during the run"] == "FAIL"
+    assert environment["result"] == "FAIL" and ":8000 during the run" not in rows
 
 
 def test_the_report_says_not_reached_when_the_photos_never_came(tmp_path):
@@ -1184,6 +1187,380 @@ def test_compare_says_when_there_are_too_few_runs(tmp_path):
     assert "not a noise estimate" in report.render_compare(result)
     with pytest.raises(SystemExit, match="no report.json"):
         report.compare_runs([tmp_path / "missing"])
+
+
+# -- C22-F2: the review's non-blocking follow-ups ---------------------------------------------
+
+# Item 1: the Tower-side pacing row (review C22 H2, "README fidelity").
+
+
+def _pacing_fixture(tmp_path, *, speed=1.0):
+    """A recorded capture A (the source) and the test Tower's re-recording of it
+    as C1 in a data root: frame 1 +4 ms, 3 -2 ms, 5 +60 ms late, 7 +20 ms, and a
+    frame 9 the source never had."""
+    _capture(tmp_path / "src", A, started=1000.0,
+             frames=[(1, 1001.0), (3, 1001.1), (5, 1001.25), (7, 1001.3)], ended=1002.0)
+    scale = 1.0 / speed
+    _capture(tmp_path / "data", C1, started=5000.0, frames=[
+        (1, 5000.0 + 1.0 * scale + 0.004), (3, 5000.0 + 1.1 * scale - 0.002),
+        (5, 5000.0 + 1.25 * scale + 0.060), (7, 5000.0 + 1.3 * scale + 0.020), (9, 5000.0 + 1.9 * scale)],
+             ended=5002.0)
+    return {"walk": [{"capture_id": A}], "tower_captures": [C1], "speed": speed}
+
+
+@pytest.mark.parametrize("speed", [1.0, 2.0])
+def test_the_tower_side_pacing_joins_the_re_recording_to_the_source_on_wire_seq(tmp_path, speed):
+    client = {**_pacing_fixture(tmp_path, speed=speed), "first_seconds": 1.95}
+    pacing = report.tower_side_pacing(client=client, data_root=tmp_path / "data",
+                                      capture_root=tmp_path / "src" / "captures")
+    assert pacing["computable"] is True
+    assert (pacing["matched"], pacing["replay_only"], pacing["source_only"]) == (4, 1, 0)
+    offset = pacing["offset_error_ms"]  # signed, late positive: -2, 4, 20, 60
+    assert offset["count"] == 4
+    assert offset["min"] == pytest.approx(-2.0, abs=0.01) and offset["max"] == pytest.approx(60.0, abs=0.01)
+    assert offset["p50"] == pytest.approx(20.0, abs=0.01) and offset["p95"] == pytest.approx(60.0, abs=0.01)
+    assert (pacing["late_over_50ms"], pacing["early_over_50ms"]) == (1, 0)
+    gaps = pacing["inter_arrival_s"]
+    assert gaps["recorded"]["count"] == 3 and gaps["recorded"]["max"] == pytest.approx(0.15 / speed, abs=1e-3)
+    assert gaps["replayed"]["max"] == pytest.approx(0.15 / speed + 0.062, abs=1e-3)
+    assert pacing["inter_arrival_error_ms"]["min"] == pytest.approx(-40.0, abs=0.01)
+    row = next(r for r in report.live_safety(
+        client=client, timeline={}, session={}, keyframes=None, surfaces={}, rebuild_seconds=[], cadence=[],
+        pacing=pacing)["rows"] if r["check"].startswith("Tower-side pacing"))
+    assert row["result"] == "INFO" and "4 joined (1 replay-only, 0 source-only, the walk cut at first_seconds 1.95)" \
+        in row["value"] and "beyond 50 ms: 1 late, 0 early" in row["value"]
+
+
+def test_the_pacing_row_is_rendered_from_a_kept_data_root_with_a_data_root_override(tmp_path):
+    """Re-render mode: run.json names a data root that has since moved; the
+    report's --data-root reads the kept one. The run dir is never written."""
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    log = run_dir / "tower-8031-x.err.log"
+    log.write_text(_walk_log(BASE), encoding="utf-8")
+    _capture(tmp_path / "src", A, started=1000.0, frames=[(1, 1001.0), (3, 1001.1)], ended=1002.0)
+    kept = tmp_path / "kept"
+    _capture(kept, CAP, started=5000.0, frames=[(1, 5001.010), (3, 5001.105)], ended=5002.0)
+    _world(kept / "world_builder", BASE, appearance_end=BASE + 700)
+    (run_dir / "run.json").write_text(json.dumps({"err_log": str(log), "data_root": str(tmp_path / "moved")}),
+                                      encoding="utf-8")
+    (run_dir / "client.json").write_text(json.dumps({
+        "tower_captures": [CAP], "speed": 1.0, "capture_root": str(tmp_path / "src" / "captures"),
+        "walk": [{"capture_id": A, "frames": 2, "recorded_seconds": 2.0, "recorded_fps": 1.0,
+                  "end_reason": "stop"}]}), encoding="utf-8")
+    before = sorted(p.name for p in run_dir.iterdir())
+    assert report.main(["--run-dir", str(run_dir), "--out", str(tmp_path / "gone")]) == 0
+    stale = json.loads((tmp_path / "gone" / "report.json").read_text(encoding="utf-8"))
+    row = next(r for r in stale["live_safety"]["rows"] if r["check"].startswith("Tower-side pacing"))
+    assert row["result"] == "n/a" and "no journal" in row["value"]
+    assert report.main(["--run-dir", str(run_dir), "--out", str(tmp_path / "kept-out"),
+                        "--data-root", str(kept)]) == 0
+    assert sorted(p.name for p in run_dir.iterdir()) == before  # read only
+    built = json.loads((tmp_path / "kept-out" / "report.json").read_text(encoding="utf-8"))
+    rows = {r["check"]: r for r in built["live_safety"]["rows"]}
+    pacing = rows["Tower-side pacing: receipt offset - recorded offset (ms), joined on wire_seq"]
+    assert pacing["result"] == "INFO" and pacing["value"].startswith("2 joined (0 replay-only, 0 source-only)")
+    assert rows["Tower-side inter-arrival (s), replayed vs recorded"]["result"] == "INFO"
+    assert built["tower_side_pacing"]["offset_error_ms"]["max"] == pytest.approx(10.0, abs=0.01)
+    assert built["keyframes"]["count"] == 4  # the world root followed --data-root
+    metrics = report.comparable_metrics(built)
+    assert metrics["tower_pacing_offset_error_ms.p95"] == pytest.approx(10.0, abs=0.01)
+    assert "Tower-side pacing: `" in (tmp_path / "kept-out" / "REPORT.md").read_text(encoding="utf-8")
+
+
+def test_the_client_records_where_it_read_the_source_captures(tmp_path, monkeypatch):
+    monkeypatch.setattr(replay, "live_tower_state", lambda url=None, timeout=None: "down")
+    monkeypatch.setattr(replay, "http_json", lambda *a, **k: (None, None))
+    record = asyncio.run(replay.run_replay(_refusal_options(tmp_path)))
+    assert record["capture_root"] == str(tmp_path / "captures")
+
+
+# Item 2: phone_photos_at, the background solves' landing, terminated at Stop.
+
+
+def _told(t, **word):
+    payload = {"lifecycle": {"state": "finalizing"}}
+    if word:
+        payload["lifecycle"]["photographic"] = word
+    return t, {"type": "cartridge_result", "cartridge": "world_builder", "payload": payload}
+
+
+PUSHES_AFTER_STOP = [
+    _told(BASE + 50.0),  # during the walk: no photographic block
+    _told(BASE + 500.0, state="running", stage="surface"),
+    _told(BASE + 600.0, state="owed", stage="appearance"),
+    _told(BASE + 601.0, state="running", stage="appearance"),
+    # The store wrote the room's appearance `ok` at BASE + 700; the phone
+    # heard the word move on to an area at 705.
+    _told(BASE + 705.0, state="owed", stage="surface", scope="area"),
+    _told(BASE + 706.0, state="owed", stage="surface", scope="area"),
+    _told(BASE + 800.0, state="complete", stage="appearance"),
+]
+
+
+def _phone_view(pushes):
+    clock = {"t": 0.0}
+    view = replay.PhoneView(clock=lambda: clock["t"])
+    for t, message in pushes:
+        clock["t"] = t
+        view.update(message)
+    return view
+
+
+def test_the_phone_view_keeps_the_photographic_word_with_its_receive_time():
+    view = _phone_view(PUSHES_AFTER_STOP)
+    assert [(w["t"], w["state"], w["stage"], w["scope"]) for w in view.photographic] == [
+        (BASE + 500.0, "running", "surface", None), (BASE + 600.0, "owed", "appearance", None),
+        (BASE + 601.0, "running", "appearance", None), (BASE + 705.0, "owed", "surface", "area"),
+        (BASE + 800.0, "complete", "appearance", None)]
+    assert view.photographic[3]["scope_present"] is True and view.photographic[0]["scope_present"] is False
+
+
+def test_phone_photos_at_is_the_clients_receive_time_not_the_stores(tmp_path):
+    log = tmp_path / "tower.err.log"
+    log.write_text(_walk_log(BASE), encoding="utf-8")
+    _world(tmp_path / "root", BASE, appearance_end=BASE + 700.0)
+    view = _phone_view(PUSHES_AFTER_STOP)
+    built = report.build_report(tower_log=log, world_root=tmp_path / "root", client={
+        "tower_captures": [CAP], "phone_view": {"pushes": view.pushes, "transitions": view.transitions,
+                                                "photographic": view.photographic}})
+    photos = built["phone_photos"]
+    assert photos["phone_photos_at"] == BASE + 705.0 and "scope: area" in photos["how"]
+    assert photos["store_to_phone_s"] == pytest.approx(5.0)
+    assert photos["photographic_complete_at"] == BASE + 800.0
+    assert built["milestones"]["phone_photos_at"]["t"] == BASE + 705.0
+    assert built["milestones"]["room_appearance_ok"]["t"] == BASE + 700.0
+    assert built["verdict"]["stop_to_phone_photos_min"] == pytest.approx((705.0 - 100.002) / 60, abs=0.01)
+    assert report.comparable_metrics(built)["stop_to_phone_photos_min"] == built["verdict"]["stop_to_phone_photos_min"]
+    assert "The phone was told at +" in report.render_markdown(built)
+
+
+def test_phone_photos_at_is_inferred_for_a_client_that_kept_no_scope(tmp_path):
+    """A run made before this change kept only the state-like leaves."""
+    log = tmp_path / "tower.err.log"
+    log.write_text(_walk_log(BASE), encoding="utf-8")
+    _world(tmp_path / "root", BASE, appearance_end=BASE + 700.0)
+    view = _phone_view(PUSHES_AFTER_STOP)
+    built = report.build_report(tower_log=log, world_root=tmp_path / "root", client={
+        "tower_captures": [CAP], "phone_view": {"pushes": view.pushes, "transitions": view.transitions}})
+    photos = built["phone_photos"]
+    assert photos["scope_recorded"] is False
+    assert photos["phone_photos_at"] == BASE + 705.0 and photos["how"].startswith("INFERRED")
+    assert photos["photographic_complete_at"] == BASE + 800.0
+
+
+def test_phone_photos_at_needs_the_rooms_appearance_ok_and_a_push_after_stop():
+    moved_on = [{"t": 50.0, "state": "complete", "stage": "appearance", "scope": None, "scope_present": True},
+                {"t": 150.0, "state": "owed", "stage": "surface", "scope": "area", "scope_present": True}]
+    failed = report.phone_photos({"photographic": moved_on}, 100.0, {"state": "failed", "updated_at": 140.0})
+    assert failed["phone_photos_at"] is None and "failed" in failed["why"]
+    ok = report.phone_photos({"photographic": moved_on}, 100.0, {"state": "ok", "updated_at": 140.0})
+    assert ok["phone_photos_at"] == 150.0  # the `complete` at 50 was before Stop: another world's
+    assert report.phone_photos({}, 100.0, None)["phone_photos_at"] is None
+
+
+def _solves_log(base, *, terminated):
+    """Three background solves: 2 launched at 1's landing rebuild, a live surface
+    right after it; 3 is still running at Stop and is terminated or waited for."""
+    wb, ws = "tower.world_build_session", "tower.routes.ws"
+    lines = [
+        _line(base, ws, "[Tower][Session] stream_start: measurement window opened"),
+        _line(base + 0.006, ws, f"[Tower][Capture] recording started: {CAP}"),
+        _line(base + 0.013, "tower.capture_workers",
+              f"[Tower][Worker] started world-build-session pid 21204 for capture {CAP}: python x"),
+        _line(base + 1.7, wb, f"[Tower][WorldBuilder] session {S} in world {W}: source=live-capture "
+                              f"capture={CAP} root=x observed=360x640"),
+        _line(base + 20.0, wb, "[Tower][WorldBuilder] background solve 1 launched at 52 keyframes (pid 100)"),
+        _line(base + 30.0, wb, "[Tower][WorldBuilder] rebuild 4: 70 keyframes -> 60 positioned poses, "
+                               "900 points, 2 segments in 0.30s"),
+        _line(base + 35.0, wb, "[Tower][WorldBuilder] rebuild 5: 110 keyframes -> 100 positioned poses, "
+                               "1500 points, 2 segments in 0.40s"),
+        _line(base + 35.004, wb, "[Tower][WorldBuilder] background solve 2 launched at 110 keyframes (pid 200)"),
+        _line(base + 35.010, wb, "[Tower][WorldBuilder] live surface 1 launched (pid 900)"),
+        _line(base + 69.9, wb, "[Tower][WorldBuilder] rebuild 9: 180 keyframes -> 170 positioned poses, "
+                               "2500 points, 3 segments in 0.50s"),
+        _line(base + 70.0, wb, "[Tower][WorldBuilder] background solve 3 launched at 180 keyframes (pid 300)"),
+        _line(base + 100.0, ws, _summary(1200, "stream_stop")),
+        _line(base + 100.002, ws, "[Tower][Capture] recording stopped (stop): 1200 frames, 900 bytes"),
+    ]
+    if terminated:
+        lines.append(_line(base + 224.0, wb, "[Tower][WorldBuilder] background solve pid 300 still running after "
+                                             "120.0s; terminating it so the final solve owns the workspace",
+                           "WARNING"))
+    lines.append(_line(base + 224.1, wb, "[Tower][WorldBuilder] final global solve launched (pid 34464)"))
+    return "\n".join(lines) + "\n"
+
+
+@pytest.mark.parametrize("terminated", [True, False])
+def test_each_background_solve_has_a_landing_and_a_terminated_at_stop_flag(tmp_path, terminated):
+    log = tmp_path / "tower.err.log"
+    log.write_text(_solves_log(BASE, terminated=terminated), encoding="utf-8")
+    solves = report.walk_timeline(report.scan_log(log), CAP)["background_solves"]
+    first, second, third = solves
+    assert first["landed_by"]["t"] == pytest.approx(BASE + 35.004, abs=0.002)
+    assert first["landed_by"]["via"] == "background solve 2 launch"
+    assert (first["landed_by"]["rebuild_n"], first["landed_by"]["rebuild_line"]) == (5, 7)
+    assert first["horizon_s"] == pytest.approx(15.0, abs=0.01) and first["terminated_at_stop"] is False
+    assert first["live_surface_between"] is None  # launched after solve 2, at the same rebuild
+    assert second["live_surface_between"]["n"] == 1 and second["horizon_s"] == pytest.approx(35.0, abs=0.01)
+    assert third["terminated_at_stop"] is terminated
+    if terminated:
+        assert third["landed_by"] is None and third["horizon_s"] is None and third["terminated_line"] == 14
+    else:
+        assert third["landed_by"]["via"].startswith("the final solve's launch")
+        assert third["horizon_s"] == pytest.approx(154.1, abs=0.01)
+    built = report.build_report(tower_log=log, client={"tower_captures": [CAP]})
+    row = next(r for r in built["live_safety"]["rows"] if r["check"].startswith("background-solve horizons"))
+    assert row["result"] == "INFO" and row["value"].startswith("[52, 110, 180]; landed by [15.0, 35.0, ")
+    assert row["value"].endswith("terminated at Stop: solve 3" if terminated else "terminated at Stop: none")
+    metrics = report.comparable_metrics(built)
+    assert metrics["bg_solves_terminated_at_stop"] == (1 if terminated else 0)
+    assert metrics["bg_solve_landed_by_s.max"] == pytest.approx(35.0 if terminated else 154.1, abs=0.01)
+    markdown = report.render_markdown(built)
+    assert ("TERMINATED at Stop" in markdown) is terminated
+    assert "live surface 1 launched in between" in markdown
+
+
+# Item 3: :8000 during the run is the environment's verdict, not the code's.
+
+
+def _clean_client(**extra):
+    return {"tower_captures": [CAP], "schedule": {"frames": 1200},
+            "stream": {"frames_sent": 1200, "unanswered": 0, "frame_errors": {}}, **extra}
+
+
+def test_an_isolated_unknown_from_8000_is_tolerated_and_shown(tmp_path):
+    log = tmp_path / "tower.err.log"
+    log.write_text(_walk_log(BASE), encoding="utf-8")
+    _world(tmp_path / "root", BASE, appearance_end=BASE + 700)
+    watch = {"states_seen": ["idle", "unknown"], "history": [
+        {"t": 1.0, "state": "idle"}, {"t": 2.0, "state": "unknown"}, {"t": 3.0, "state": "idle"},
+        {"t": 4.0, "state": "unknown"}, {"t": 5.0, "state": "idle"}]}
+    built = report.build_report(tower_log=log, world_root=tmp_path / "root",
+                                client=_clean_client(live_tower_watch=watch))
+    environment = built["live_safety"]["environment"]
+    row = environment["rows"][0]
+    assert row["check"] == ":8000 during the run" and row["result"] == "PASS"
+    assert "2 unknown answer(s), each isolated: tolerated" in row["value"]
+    assert environment["result"] == "PASS" and built["live_safety"]["result"] == "PASS"
+    markdown = report.render_markdown(built)
+    assert "**Environment (the `:8000` guard): PASS.**" in markdown and "each isolated: tolerated" in markdown
+
+
+@pytest.mark.parametrize("watch, aborted, why", [
+    ({"states_seen": ["busy", "idle"], "busy_since": BASE + 300,
+      "history": [{"t": 1.0, "state": "idle"}, {"t": 2.0, "state": "busy"}]}, None, "busy from"),
+    ({"states_seen": ["idle", "unknown"], "history": [{"t": 1.0, "state": "idle"}, {"t": 2.0, "state": "unknown"}]},
+     {"reason": ":8000 gave no usable /health answer 2 times in a row (timeout or error); failing closed"},
+     "two in a row aborted the run"),
+])
+def test_a_contended_or_failed_closed_8000_fails_the_environment_not_the_code(tmp_path, watch, aborted, why):
+    log = tmp_path / "tower.err.log"
+    log.write_text(_walk_log(BASE), encoding="utf-8")
+    _world(tmp_path / "root", BASE, appearance_end=BASE + 700)
+    client = _clean_client(live_tower_watch=watch, **({"aborted": aborted} if aborted else {}))
+    built = report.build_report(tower_log=log, world_root=tmp_path / "root", client=client)
+    environment = built["live_safety"]["environment"]
+    assert environment["result"] == "FAIL" and why in environment["rows"][0]["value"]
+    assert built["live_safety"]["result"] == "PASS"  # the code under test is not blamed for the machine
+
+
+def test_the_runners_startup_watch_is_an_environment_row(tmp_path):
+    log = tmp_path / "tower.err.log"
+    log.write_text(_walk_log(BASE), encoding="utf-8")
+    run = {"live_tower_watch_startup": {"states_seen": ["idle", "unknown"], "history": [
+        {"t": 1.0, "state": "idle"}, {"t": 2.0, "state": "unknown"}, {"t": 3.0, "state": "idle"}]}}
+    built = report.build_report(tower_log=log, client=_clean_client(), run=run)
+    rows = {r["check"]: r for r in built["live_safety"]["environment"]["rows"]}
+    assert rows[":8000 during the run"]["result"] == "n/a"
+    assert rows[":8000 during the test Tower's startup"]["result"] == "PASS"
+    assert built["live_safety"]["environment"]["result"] == "PASS"
+
+
+# Item 4: --compare flags a candidate value that is missing.
+
+
+def test_compare_flags_a_candidate_metric_missing_where_the_baseline_has_it(tmp_path):
+    same = [[1, 0], [10, 0]]
+    for index, photos in enumerate([47.0, 47.5, 46.8]):
+        _fake_run(tmp_path / f"old{index}", photos=photos, lag_p95=6.8, sequence=same)
+    _fake_run(tmp_path / "new0", photos=40.0, lag_p95=6.8, sequence=same)
+    _fake_run(tmp_path / "new1", photos=40.0, lag_p95=6.8, sequence=same)
+    # new1 never settled: no photos, and its report has no observe lag at all.
+    path = tmp_path / "new1" / "report.json"
+    never = json.loads(path.read_text(encoding="utf-8"))
+    never["verdict"]["stop_to_room_with_photos_min"] = None
+    never["keyframes"].pop("observe_lag_s")
+    path.write_text(json.dumps(never), encoding="utf-8")
+    out = tmp_path / "cmp"
+    assert report.main(["--out", str(out), "--compare", *(str(tmp_path / f"old{i}") for i in range(3)),
+                        "--candidate", str(tmp_path / "new0"), str(tmp_path / "new1")]) == 0
+    result = json.loads((out / "compare.json").read_text(encoding="utf-8"))
+    metrics = {m["metric"]: m for m in result["metrics"]}
+    new1 = str(tmp_path / "new1")
+    assert metrics["stop_to_room_with_photos_min"]["missing"] == [new1]
+    assert metrics["stop_to_room_with_photos_min"]["outside"] == [40.0]  # new0's, judged as before
+    assert metrics["observe_lag_s.p95"]["missing"] == [new1]
+    assert "stop_to_room_with_photos_min" in result["missing"][new1]
+    assert str(tmp_path / "new0") not in result["missing"]
+    assert result["candidates_complete"] is False
+    markdown = (out / "COMPARE.md").read_text(encoding="utf-8")
+    assert "**MISSING**" in markdown and "Not passing" in markdown
+
+
+# Item 5: the abort edge -- a send caught in the drain when the Tower is killed.
+
+
+def test_a_send_that_raises_after_the_abort_is_the_abort_not_an_error(tmp_path, monkeypatch):
+    import threading
+
+    import websockets
+
+    _capture(tmp_path, A, started=0.0, frames=[(i, 0.05 * i) for i in range(1, 41)], ended=2.1)
+    tower = FakeTower([C1])
+    blocked, killed = threading.Event(), threading.Event()
+    real_send = replay.TowerSocket.send_frame
+
+    async def send_frame(self, frame, text, size):
+        if tower.frames >= 5:
+            blocked.set()  # a send waiting in the drain...
+            while not killed.is_set():
+                await asyncio.sleep(0.005)
+            raise websockets.exceptions.ConnectionClosedError(None, None)  # ...when the Tower died
+        await real_send(self, frame, text, size)
+
+    monkeypatch.setattr(replay.TowerSocket, "send_frame", send_frame)
+    monkeypatch.setattr(replay, "live_tower_state",
+                        lambda url=None, timeout=None: "recording" if blocked.is_set() else "idle")
+
+    def on_abort():
+        time.sleep(0.1)
+        killed.set()
+
+    record = _serve_and_replay(monkeypatch, tower, lambda port: replay.ReplayOptions(
+        port=port, captures=[A], capture_root=tmp_path / "captures", out=tmp_path / "out",
+        settle_timeout_min=0.5, poll_seconds=0.05, sample_seconds=60.0, session_lead=0.0,
+        live_guard=True, live_guard_every=0.02, phone_fetches=False, on_abort=on_abort))
+    assert record["outcome"] == "aborted" and replay.exit_code(record) == replay.EXIT_ABORTED
+    assert "ConnectionClosedError" in record["aborted"]["stream_error"]
+    assert "live walk" in record["aborted"]["reason"]
+    saved = json.loads((tmp_path / "out" / "client.json").read_text(encoding="utf-8"))
+    assert saved["outcome"] == "aborted" and saved["stream"]["frames_sent"] == record["stream"]["frames_sent"]
+
+
+def test_a_send_that_raises_without_an_abort_is_still_an_error(tmp_path, monkeypatch):
+    _capture(tmp_path, A, started=0.0, frames=[(1, 0.05), (2, 0.1)], ended=0.2)
+    tower = FakeTower([C1])
+
+    async def send_frame(self, frame, text, size):
+        raise RuntimeError("a harness fault")
+
+    monkeypatch.setattr(replay.TowerSocket, "send_frame", send_frame)
+    with pytest.raises(RuntimeError, match="a harness fault"):
+        _serve_and_replay(monkeypatch, tower, lambda port: replay.ReplayOptions(
+            port=port, captures=[A], capture_root=tmp_path / "captures", out=tmp_path / "out",
+            settle_timeout_min=0.5, poll_seconds=0.05, sample_seconds=60.0, session_lead=0.0,
+            live_guard=False, phone_fetches=False))
 
 
 # -- the runner ------------------------------------------------------------------------------
@@ -1396,6 +1773,26 @@ def test_the_runner_stops_the_tower_on_every_exit_path(lifecycle, monkeypatch, h
         assert calls["options"] == []  # the replay never began
     if how == "no-job":
         assert run["job"] is False and calls["options"] == []
+
+
+def test_the_runner_exits_3_and_reports_the_client_record_when_the_abort_raised(lifecycle):
+    """C22-F2 item 5: the client's own record reached disk (its `finally`) but
+    the exception reached the runner. The run was aborted, not broken."""
+    def aborted_then_raised(options):
+        (options.out / "client.json").write_text(json.dumps({
+            "outcome": None, "tower_captures": [], "stream": {"frames_sent": 7},
+            "aborted": {"t": 1.0, "reason": "a live walk is being recorded on :8000", "on_abort_done": 1.2}}),
+            encoding="utf-8")
+        raise ConnectionResetError("the send was in the drain when the Tower died")
+
+    lifecycle["state"]["replay"] = aborted_then_raised
+    assert runner.main(lifecycle["argv"]) == runner.EXIT_ABORTED
+    assert len(lifecycle["calls"]["terminate"]) == 1
+    run = _run_json(lifecycle)
+    assert run["aborted"]["during"] == "stream" and "ConnectionResetError" in run["aborted"]["raised"]
+    built = json.loads((lifecycle["out"] / "report.json").read_text(encoding="utf-8"))
+    assert built["client"]["aborted"]["reason"].startswith("a live walk")
+    assert built["client"]["stream"]["frames_sent"] == 7
 
 
 @pytest.mark.parametrize("how, match", [

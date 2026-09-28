@@ -19,11 +19,16 @@ how it was checked against walk 5's `PROFILE-walk5.md`).
 It includes the C19 F8 live-safety gate ("Live safety"): the Tower's
 counters summed over every measurement window, frames sent = received =
 observed, the keyframe sequence (`keyframes.json`), the keyframe observe
-lag, rebuild latency and cadence, live-surface latency where the run
-watched it, and :8000 during the run. All of it is read AFTER the fact, so
-a finished run is re-reported without re-running it:
+lag, rebuild latency and cadence, the background solves' launch, landing and
+termination at Stop, the Tower-side pacing (the re-recorded capture joined
+to the source journal on `wire_seq`), and live-surface latency where the
+run watched it. What :8000 did during the run is judged apart, as the
+environment's verdict. `phone_photos_at` is when the phone was told the
+room's photos were ready. All of it is read AFTER the fact, so a finished
+run is re-reported without re-running it:
 
-    python scripts/world_live_replay_report.py --run-dir <run's --out> --out <dir>
+    python scripts/world_live_replay_report.py --run-dir <run's --out> --out <dir> \
+        [--data-root <the run's data root>] [--capture-root <the source captures>]
     python scripts/world_live_replay_report.py --out <dir> --tower-log <err.log> \
         [--tower-out-log <out.log>] [--world-root <root>] [--capture-id <id>]
 
@@ -273,11 +278,16 @@ def walk_timeline(events: list, capture_id: str | None = None) -> dict:
                           for e in _all(events, "live_surface", after=t_start, before=t0)],
     }
     if t0 is None:
+        timeline["background_solves"] = solve_landings(timeline["background_solves"], rebuilds, [], None,
+                                                     timeline["live_surfaces"])
         return timeline
     horizon = walk_end
     timeline["bg_solve_wait"] = _event(_first(events, "bg_solve_wait", after=t0, before=horizon))
     launched = _first(events, "final_launched", after=t0, before=horizon)
     timeline["final_launched"] = _event(launched)
+    timeline["background_solves"] = solve_landings(
+        timeline["background_solves"], rebuilds, _all(events, "bg_solve_wait", after=t0, before=horizon), launched,
+        timeline["live_surfaces"])
     done = _first(events, "final_done", after=t0, before=horizon)
     timeline["final_done"] = _event(done)
     timeline["final_failed"] = _event(_first(events, "final_failed", after=t0, before=horizon))
@@ -317,6 +327,55 @@ def walk_timeline(events: list, capture_id: str | None = None) -> dict:
         cursor = exited.t
     timeline["chores"] = chores
     return timeline
+
+
+def solve_landings(solves: list, rebuilds: list, waits: list, final_launched, live_surfaces=()) -> list:
+    """Each background solve's landing, and whether Stop terminated it
+    (review C22 H2, the background-solve horizons row).
+
+    LANDED BY. The builder logs a solve's launch but not its end. A solve
+    "lands" when the builder next sees it finished; that forces a rebuild,
+    and the rebuild is where the NEXT background solve is launched
+    (`world_build_session.py`, the observe loop: rebuild, then
+    `solver.maybe_launch`, then the live surface). The next solve cannot
+    launch while this one runs, so the next launch line is when this solve
+    had landed BY -- exact when the next solve was due at the landing, a
+    little late when the solve cadence held it back. The rebuild logged just
+    before that launch line is the landing rebuild. The last solve of a walk
+    has no next background solve: Stop waits for it and only then launches
+    the final solve, so the final solve's launch is when it had landed by.
+
+    A live-surface launch between the two is kept (`live_surface_between`)
+    but not used: a surface is also relaunched when an earlier, stale one
+    finishes, and the log cannot tell the two apart.
+
+    TERMINATED AT STOP. Stop gives a running background solve a bounded
+    wait, then terminates it (`background solve pid N still running after
+    Ns; terminating`). A terminated solve never landed.
+    """
+    out = []
+    for index, solve in enumerate(solves):
+        item = dict(solve)
+        terminated = next((w for w in waits if w.groups.get("pid") == solve.get("pid")), None)
+        item["terminated_at_stop"] = terminated is not None
+        item["terminated_line"] = terminated.line if terminated is not None else None
+        after = solves[index + 1] if index + 1 < len(solves) else None
+        landed = None
+        if after is not None:
+            landed = {"t": after["t"], "line": after["line"], "via": f"background solve {after['n']} launch"}
+            before = [r for r in rebuilds if solve["t"] <= r.t <= after["t"] and r.line < after["line"]]
+            if before:
+                landed["rebuild_line"] = before[-1].line
+                landed["rebuild_n"] = int(before[-1].groups["n"])
+        elif terminated is None and final_launched is not None:
+            landed = {"t": final_launched.t, "line": final_launched.line,
+                      "via": "the final solve's launch (Stop waits for the last solve)"}
+        item["landed_by"] = landed
+        item["horizon_s"] = None if landed is None else round(landed["t"] - solve["t"], 2)
+        item["live_surface_between"] = None if landed is None else next(
+            (dict(s) for s in live_surfaces if solve["t"] < s["t"] < landed["t"]), None)
+        out.append(item)
+    return out
 
 
 def _event(event):
@@ -487,6 +546,137 @@ def keyframe_facts(session_dir) -> dict | None:
     }
 
 
+def read_capture_journal(directory) -> dict | None:
+    """A capture's `capture.json` `started_at` and its `frames.jsonl` rows
+    (`wire_seq`, `received_at`), in journal order. Reads only."""
+    directory = Path(directory)
+    manifest = _read_json(directory / "capture.json")
+    rows = [row for row in read_jsonl(directory / "frames.jsonl")
+            if isinstance(row.get("wire_seq"), int) and isinstance(row.get("received_at"), (int, float))]
+    if not isinstance(manifest, dict) and not rows:
+        return None
+    started = manifest.get("started_at") if isinstance(manifest, dict) else None
+    if not isinstance(started, (int, float)):
+        started = rows[0]["received_at"] if rows else None
+    return {"capture_id": directory.name, "started_at": started,
+            "frames": [(row["wire_seq"], row["received_at"]) for row in rows]}
+
+
+PACING_OVER_S = 0.05
+
+
+def tower_side_pacing(*, client: dict, data_root, capture_root) -> dict:
+    """How faithfully the test Tower RECEIVED the recorded pace (review C22
+    H2, the "README fidelity" row).
+
+    The replay's send lateness is measured at the client and stops at the
+    send call. This is the Tower's own side: the test Tower re-records every
+    frame it receives into `<data-root>/captures/<id>/frames.jsonl`, stamped
+    at receipt exactly as the recorded walk's journal was. Each re-recorded
+    frame is joined to the source journal on `wire_seq` (the phone's `seq`,
+    which the replay sends as recorded), capture by capture in walk order.
+
+    RECEIPT-OFFSET ERROR, per frame: (replayed receipt - the replay's first
+    capture `started_at`) - (recorded receipt - the recorded walk's first
+    capture `started_at`) / speed. Both origins are the Tower's receipt of
+    the walk's first `stream_start`, which is the origin the schedule is
+    built on. Positive is late. Signed p1/p5/p50/p95/p99, min/max, and the
+    count beyond 50 ms either way.
+
+    INTER-ARRIVAL: consecutive receipts within a capture, replayed and
+    recorded (scaled by speed), and their per-frame difference.
+
+    Reads the run's data root and the source captures (both read only).
+    """
+    walk = client.get("walk") or []
+    source_ids = [c.get("capture_id") for c in walk if isinstance(c, dict) and c.get("capture_id")] \
+        or list(client.get("captures_replayed") or [])
+    replay_ids = list(client.get("tower_captures") or [])
+    base = {"computable": False, "data_root": None if data_root is None else str(data_root),
+            "source_capture_root": None if capture_root is None else str(capture_root),
+            "source_captures": source_ids, "replay_captures": replay_ids}
+    if data_root is None:
+        return {**base, "why": "no data root (run.json names it; or give --data-root)"}
+    if capture_root is None:
+        return {**base, "why": "no source capture root (client.json names it; or give --capture-root)"}
+    if not source_ids:
+        return {**base, "why": "the client record names no source capture"}
+    if not replay_ids:
+        return {**base, "why": "the client record names no capture the test Tower recorded"}
+    sources = [read_capture_journal(Path(capture_root) / cid) for cid in source_ids]
+    replays = [read_capture_journal(Path(data_root) / "captures" / cid) for cid in replay_ids]
+    missing = [cid for cid, j in zip(source_ids, sources) if not j or not j["frames"]] + \
+              [cid for cid, j in zip(replay_ids, replays) if not j or not j["frames"]]
+    if missing:
+        return {**base, "why": f"no journal for {missing}"}
+    speed = client.get("speed") if isinstance(client.get("speed"), (int, float)) and client.get("speed") > 0 else 1.0
+    src_origin, rep_origin = sources[0]["started_at"], replays[0]["started_at"]
+    errors, rec_gaps, rep_gaps, gap_errors = [], [], [], []
+    matched = replay_only = source_only = duplicates = 0
+    for source, replayed in zip(sources, replays):
+        recorded = {}
+        for seq, at in source["frames"]:
+            if seq in recorded:
+                duplicates += 1
+                continue
+            recorded[seq] = at
+        seen = set()
+        previous = None
+        for seq, at in replayed["frames"]:
+            if seq not in recorded or seq in seen:
+                replay_only += 1
+                previous = None
+                continue
+            seen.add(seq)
+            matched += 1
+            got = at - rep_origin
+            want = (recorded[seq] - src_origin) / speed
+            errors.append(got - want)
+            if previous is not None:
+                rep_gap, rec_gap = got - previous[0], want - previous[1]
+                rep_gaps.append(rep_gap)
+                rec_gaps.append(rec_gap)
+                gap_errors.append(rep_gap - rec_gap)
+            previous = (got, want)
+        source_only += len(recorded) - len(seen)
+    for extra in sources[len(replays):]:
+        source_only += len(extra["frames"])
+    for extra in replays[len(sources):]:
+        replay_only += len(extra["frames"])
+    if not matched:
+        return {**base, "why": "no re-recorded frame joins the source journal on wire_seq"}
+    return {
+        **base,
+        "computable": True,
+        "speed": speed,
+        "first_seconds": client.get("first_seconds"),
+        "origins": {"source_started_at": src_origin, "replay_started_at": rep_origin},
+        "matched": matched,
+        "replay_only": replay_only,
+        "source_only": source_only,
+        "source_duplicate_seq": duplicates,
+        "captures_paired": min(len(sources), len(replays)),
+        "offset_error_ms": signed_distribution([e * 1000 for e in errors]),
+        "late_over_50ms": sum(1 for e in errors if e > PACING_OVER_S),
+        "early_over_50ms": sum(1 for e in errors if e < -PACING_OVER_S),
+        "inter_arrival_s": {"replayed": distribution(rep_gaps), "recorded": distribution(rec_gaps)},
+        "inter_arrival_error_ms": signed_distribution([e * 1000 for e in gap_errors]),
+    }
+
+
+def signed_distribution(values) -> dict:
+    """`distribution` for a signed quantity: its low tail (min, p1, p5) too."""
+    stats = distribution(values)
+    if not stats.get("count"):
+        return stats
+    ordered = sorted(values)
+
+    def pick(q):
+        return ordered[min(len(ordered) - 1, int(round(q * (len(ordered) - 1))))]
+
+    return {**stats, "min": round(ordered[0], 3), "p1": round(pick(0.01), 3), "p5": round(pick(0.05), 3)}
+
+
 _GLOG = re.compile(r"^[IWEF](\d{8}) (\d{2}:\d{2}:\d{2})\.(\d+)\s")
 DRAW_MARKER_GAP_S = 30.0
 
@@ -632,6 +822,92 @@ def live_surface_latency(live_surfaces: list, watch: list, t0) -> dict:
             "latency_s": distribution(latencies)}
 
 
+PHOTOGRAPHIC_PREFIX = "lifecycle.photographic."
+
+
+def _photographic_changes(phone_view: dict) -> tuple:
+    """The phone's `lifecycle.photographic` words in receive order, and
+    whether `scope` was recorded.
+
+    A client from this change on keeps them itself (`phone_view.photographic`,
+    scope included). An older client kept only the state-like leaves of each
+    push (`phone_view.transitions`), which hold `state` and `stage` but never
+    `scope`; they are replayed into the same shape."""
+    if isinstance(phone_view.get("photographic"), list):
+        return [item for item in phone_view["photographic"] if isinstance(item, dict)], True
+    words, current = [], {}
+    for item in phone_view.get("transitions") or []:
+        if not isinstance(item, dict):
+            continue
+        for key in item.get("gone") or []:
+            current.pop(key, None)
+        current.update(item.get("changed") or {})
+        word = {"t": item.get("t"), "state": current.get(PHOTOGRAPHIC_PREFIX + "state"),
+                "stage": current.get(PHOTOGRAPHIC_PREFIX + "stage"), "scope": None, "scope_present": False}
+        if word["state"] is None:
+            continue
+        if not words or (words[-1]["state"], words[-1]["stage"]) != (word["state"], word["stage"]):
+            words.append(word)
+    return words, False
+
+
+def phone_photos(phone_view: dict, t0, room_appearance: dict | None) -> dict:
+    """When the PHONE was told the room's photos were ready (review C22 H2:
+    `phone_photos_at`). The client's own receive time of a status push, not
+    the store's `updated_at`, which is when the worker wrote the record.
+
+    `lifecycle.photographic` is one word for the room AND its areas
+    (`WORLD-BUILDER-COMPONENTS.md` §3.4): the room's word while the room is
+    unsettled, then the first unsettled area's word with `scope: "area"`,
+    then `complete` once everything is. So the room's photos reach the phone
+    at the first push after Stop that says `complete`, or that has moved on
+    to an area -- provided the store says the room's appearance is `ok`
+    (a room that FAILED also moves the word on to its areas).
+
+    An older client did not keep `scope`. For it the move to an area is
+    INFERRED from the word's stage going back from `appearance` to `surface`
+    (a room builds surface then appearance; an area starts again at surface),
+    and labelled so. `photographic_complete_at` is the first `complete`: the
+    room and every area done.
+    """
+    words, scoped = _photographic_changes(phone_view or {})
+    result = {"phone_photos_at": None, "how": None, "photographic_complete_at": None,
+              "scope_recorded": scoped, "words": len(words)}
+    if not words:
+        result["why"] = "the client kept no lifecycle.photographic word (no subscription, or no client)"
+        return result
+    room_state = (room_appearance or {}).get("state") if isinstance(room_appearance, dict) else None
+    previous_stage = None
+    for word in words:
+        t = word.get("t")
+        if not isinstance(t, (int, float)) or (t0 is not None and t < t0):
+            previous_stage = word.get("stage")
+            continue
+        state, stage = word.get("state"), word.get("stage")
+        if state == "complete" and result["photographic_complete_at"] is None:
+            result["photographic_complete_at"] = t
+        if result["phone_photos_at"] is None:
+            how = None
+            if state == "complete":
+                how = "the word said complete"
+            elif scoped and word.get("scope") == "area":
+                how = "the word moved on to an area (scope: area)"
+            elif not scoped and previous_stage == "appearance" and stage == "surface":
+                how = ("INFERRED: the word's stage went from appearance back to surface (an area's first "
+                       "stage); this client did not record scope")
+            if how is not None and room_state not in (None, "ok"):
+                result["why"] = f"the word moved on at {t}, but the store's room appearance is {room_state}"
+            elif how is not None:
+                result["phone_photos_at"], result["how"] = t, how
+        previous_stage = stage
+    if result["phone_photos_at"] is not None and room_state is None:
+        result["how"] += "; the store's room appearance was not available to confirm it"
+    stored = (room_appearance or {}).get("updated_at") if isinstance(room_appearance, dict) else None
+    if result["phone_photos_at"] is not None and isinstance(stored, (int, float)):
+        result["store_to_phone_s"] = round(result["phone_photos_at"] - stored, 3)
+    return result
+
+
 def summarize_stage_timing(doc) -> dict | None:
     """`stage_timing.json` (TOWER_WORLD_STAGE_TIMING=on), per finish and stage."""
     if not isinstance(doc, dict) or not isinstance(doc.get("finishes"), list):
@@ -739,7 +1015,8 @@ def distribution(values) -> dict:
 
 
 def live_safety(*, client: dict, timeline: dict, session: dict, keyframes: dict | None,
-                surfaces: dict, rebuild_seconds: list, cadence: list) -> dict:
+                surfaces: dict, rebuild_seconds: list, cadence: list, pacing: dict | None = None,
+                run: dict | None = None) -> dict:
     """The C19 F8 live-safety gate, one row per check (review C22 H2).
 
     PASS / FAIL where the check has a required value; INFO where F8 asks for
@@ -747,6 +1024,11 @@ def live_safety(*, client: dict, timeline: dict, session: dict, keyframes: dict 
     N runs); n/a where this run holds no record of it (a report on a real
     walk's log has no client). Everything is read after the fact, from the
     Tower's log, the store and the run's `client.json`.
+
+    `result` is the CODE's verdict. What :8000 was doing is the machine's,
+    not the code's, so it is judged apart, in `environment` (review C22
+    round 2, "Still open" 3): a contended run is reported, and does not make
+    the code under test look unsafe.
     """
     totals = timeline.get("tower_totals") or {}
     stream = client.get("stream") or {}
@@ -815,8 +1097,30 @@ def live_safety(*, client: dict, timeline: dict, session: dict, keyframes: dict 
     row("rebuild cadence (s)", _dist_text(distribution(cadence)), "no regression (--compare)",
         "INFO" if cadence else "n/a")
     solves = timeline.get("background_solves") or []
-    row("background-solve horizons (keyframes at launch)", [s["keyframes"] for s in solves],
+    terminated = [s["n"] for s in solves if s.get("terminated_at_stop")]
+    row("background-solve horizons: keyframes at launch; landed by (s after launch); terminated at Stop",
+        f"{[s['keyframes'] for s in solves]}; landed by "
+        f"{[s.get('horizon_s') for s in solves]}; terminated at Stop: "
+        + (", ".join(f"solve {n}" for n in terminated) if terminated else "none"),
         "unchanged (--compare)", "INFO")
+    if pacing and pacing.get("computable"):
+        offset, gaps = pacing.get("offset_error_ms") or {}, pacing.get("inter_arrival_s") or {}
+        row("Tower-side pacing: receipt offset - recorded offset (ms), joined on wire_seq",
+            f"{pacing.get('matched')} joined ({pacing.get('replay_only')} replay-only, "
+            f"{pacing.get('source_only')} source-only"
+            + (f", the walk cut at first_seconds {pacing['first_seconds']}" if pacing.get("first_seconds") else "")
+            + f"); signed p50 {offset.get('p50')}, p95 {offset.get('p95')}, "
+            f"p99 {offset.get('p99')}, max {offset.get('max')} (min {offset.get('min')}, p5 {offset.get('p5')}); "
+            f"beyond 50 ms: {pacing.get('late_over_50ms')} late, {pacing.get('early_over_50ms')} early",
+            "no regression (--compare); the review sets no bar", "INFO")
+        row("Tower-side inter-arrival (s), replayed vs recorded",
+            f"replayed {_dist_text(gaps.get('replayed') or {})} / recorded "
+            f"{_dist_text(gaps.get('recorded') or {})}; difference (ms) "
+            f"{_dist_text(pacing.get('inter_arrival_error_ms') or {})}",
+            "no regression (--compare); the review sets no bar", "INFO")
+    else:
+        row("Tower-side pacing: receipt offset - recorded offset (ms), joined on wire_seq",
+            (pacing or {}).get("why"), "no regression (--compare); the review sets no bar", "n/a")
     if surfaces.get("computable"):
         latency = surfaces.get("latency_s") or {}
         killed = sum(1 for s in surfaces.get("surfaces") or [] if s.get("killed_at_stop"))
@@ -827,18 +1131,52 @@ def live_safety(*, client: dict, timeline: dict, session: dict, keyframes: dict 
     else:
         row("live surfaces: launches; launch -> ok latency", f"{surfaces.get('launches')} launched; latency "
             "not computable post hoc", "no regression (--compare)", "n/a")
-    watch = client.get("live_tower_watch") or {}
-    if watch:
-        seen = watch.get("states_seen") or []
-        contended = [s for s in seen if s not in ("idle", "down")]
-        row(":8000 during the run", ", ".join(seen) + (f"; busy from {_clock(watch.get('busy_since'))}"
-                                                     if watch.get("busy_since") else ""),
-            "idle or down throughout", "FAIL" if contended else "PASS")
-    else:
-        row(":8000 during the run", None, "idle or down throughout", "n/a")
     judged = [r["result"] for r in rows if r["result"] in ("PASS", "FAIL")]
     result = "FAIL" if "FAIL" in judged else ("PASS" if judged else "n/a")
-    return {"result": result, "rows": rows, "totals": totals}
+    return {"result": result, "rows": rows, "totals": totals,
+            "environment": live_environment(client=client, run=run)}
+
+
+def _guard_row(check: str, watch: dict | None, aborted: dict | None) -> dict:
+    """One `:8000` guard record (a `LiveGuard.summary()`) as an environment row.
+
+    Idle or down throughout is PASS. An `unknown` answer is TOLERATED when it
+    stood alone: the guard aborts on two in a row, so in a run that did not
+    abort on them every `unknown` was isolated -- a late answer from a loaded
+    machine, not a Tower that could not be vouched for. Each is still shown.
+    `recording`, `busy` (the run was contended) and an abort on consecutive
+    `unknown`s FAIL.
+    """
+    if not watch:
+        return {"check": check, "value": None, "required": "idle or down throughout; an isolated unknown "
+                "tolerated", "result": "n/a"}
+    seen = watch.get("states_seen") or []
+    history = watch.get("history") or []
+    unknowns = sum(1 for item in history if isinstance(item, dict) and item.get("state") == "unknown")
+    reason = (aborted or {}).get("reason") or ""
+    failed_closed = "unknown" in seen and "failing closed" in reason
+    contended = [s for s in seen if s in ("recording", "busy")]
+    value = ", ".join(seen) + (f"; busy from {_clock(watch.get('busy_since'))}" if watch.get("busy_since") else "")
+    if unknowns:
+        value += (f"; {unknowns} unknown answer(s)"
+                  + (" -- two in a row aborted the run" if failed_closed else ", each isolated: tolerated"))
+    return {"check": check, "value": value,
+            "required": "idle or down throughout; an isolated unknown tolerated",
+            "result": "FAIL" if contended or failed_closed else "PASS"}
+
+
+def live_environment(*, client: dict, run: dict | None) -> dict:
+    """What `:8000` did while the test Tower ran: the machine, not the code.
+    From the client's watch (the stream and the settle) and, when the runner
+    wrote one, its own (the test Tower's startup and idle wait)."""
+    rows = [_guard_row(":8000 during the run", client.get("live_tower_watch"), client.get("aborted"))]
+    startup = (run or {}).get("live_tower_watch_startup")
+    if startup:
+        aborted = (run or {}).get("aborted")
+        rows.append(_guard_row(":8000 during the test Tower's startup", startup,
+                               aborted if (aborted or {}).get("during") == "startup" else None))
+    judged = [r["result"] for r in rows if r["result"] in ("PASS", "FAIL")]
+    return {"result": "FAIL" if "FAIL" in judged else ("PASS" if judged else "n/a"), "rows": rows}
 
 
 def _dist_text(stats: dict) -> str:
@@ -848,11 +1186,26 @@ def _dist_text(stats: dict) -> str:
             f"p99 {stats.get('p99')}, max {stats.get('max')}")
 
 
+def default_capture_root(client: dict):
+    """Where a run's source captures were read: its client record says so
+    from C22-F2 on; before that it was always the replay's default."""
+    if client.get("capture_root"):
+        return Path(client["capture_root"])
+    from scripts.world_live_replay import DEFAULT_CAPTURE_ROOT  # noqa: PLC0415
+
+    return DEFAULT_CAPTURE_ROOT
+
+
 def build_report(*, tower_log, tower_out_log=None, world_root=None, capture_id=None,
-                 client=None, samples=None, label=None, run_dir=None) -> dict:
+                 client=None, samples=None, label=None, run_dir=None, data_root=None,
+                 capture_root=None, run=None) -> dict:
     """Everything, as one JSON-able dict. `render_markdown` draws it.
 
     `run_dir` is the run's `--out` (read): its `solution-snapshots/`.
+    `data_root` is the test Tower's (read): its re-recorded captures, for the
+    Tower-side pacing row. `capture_root` holds the source captures (read);
+    by default the one the client record names. `run` is the runner's
+    `run.json`: its own :8000 watch during the Tower's startup.
     """
     if client is None:
         client = {}
@@ -1026,8 +1379,19 @@ def build_report(*, tower_log, tower_out_log=None, world_root=None, capture_id=N
 
     keyframes = facts.get("keyframes") if facts.get("available") else None
     surfaces = live_surface_latency(timeline.get("live_surfaces") or [], client.get("surface_watch") or [], t0)
+    if client and capture_root is None:
+        capture_root = default_capture_root(client)
+    pacing = tower_side_pacing(client=client, data_root=data_root, capture_root=capture_root) if client else {
+        "computable": False, "why": "no client record (a real walk's log has none)"}
+    photos_told = phone_photos(client.get("phone_view") or {}, t0,
+                               stages.get("appearance") if facts.get("available") else None)
+    if photos_told.get("phone_photos_at") is not None:
+        milestones["phone_photos_at"] = photos_told["phone_photos_at"]
+    if photos_told.get("photographic_complete_at") is not None:
+        milestones["phone_photographic_complete_at"] = photos_told["photographic_complete_at"]
     safety = live_safety(client=client, timeline=timeline, session=session, keyframes=keyframes,
-                         surfaces=surfaces, rebuild_seconds=rebuild_seconds, cadence=cadence)
+                         surfaces=surfaces, rebuild_seconds=rebuild_seconds, cadence=cadence,
+                         pacing=pacing, run=run)
 
     return {
         "report": "c22-live-replay/2",
@@ -1041,8 +1405,11 @@ def build_report(*, tower_log, tower_out_log=None, world_root=None, capture_id=N
         "hard_max_minutes": HARD_MAX_MINUTES,
         "verdict": {"stop_to_room_with_photos_min": photos_minutes, "result": verdict,
                     "stop_to_settled_min": _minutes(t0, milestones.get("settled")),
-                    "stop_to_finalization_min": _minutes(t0, milestones.get("finalization_complete"))},
+                    "stop_to_finalization_min": _minutes(t0, milestones.get("finalization_complete")),
+                    "stop_to_phone_photos_min": _minutes(t0, milestones.get("phone_photos_at"))},
         "live_safety": safety,
+        "tower_side_pacing": pacing,
+        "phone_photos": photos_told,
         "keyframes": keyframes,
         "solve_draw_0": zero,
         "live_surfaces_latency": surfaces,
@@ -1155,7 +1522,9 @@ def render_markdown(report: dict) -> str:
     lines.append("")
     photos = verdict.get("stop_to_room_with_photos_min")
     lines.append(f"1. **Stop to room with photos: {photos if photos is not None else 'not reached'} min** "
-                 f"against the {report['hard_max_minutes']:.0f}-min hard maximum: **{verdict.get('result')}**.")
+                 f"against the {report['hard_max_minutes']:.0f}-min hard maximum: **{verdict.get('result')}**."
+                 + (f" The phone was told at +{verdict['stop_to_phone_photos_min']} min (`phone_photos_at`)."
+                    if verdict.get("stop_to_phone_photos_min") is not None else ""))
     lines.append(f"2. Stop to `finalization: complete`: {verdict.get('stop_to_finalization_min')} min. "
                  f"Stop to settled (worker exit and the chore's areas): {verdict.get('stop_to_settled_min')} min.")
     stream = client.get("stream") or {}
@@ -1197,6 +1566,37 @@ def render_markdown(report: dict) -> str:
         value = item.get("value")
         value = "—" if value is None else str(value).replace("|", "/")
         lines.append(f"| {item['check']} | {value} | {item['required']} | {item['result']} |")
+    environment = safety.get("environment") or {}
+    if environment:
+        lines.append("")
+        lines.append(f"**Environment (the `:8000` guard): {environment.get('result')}.** What the live Tower "
+                     "was doing is the machine's state, not the code's, so it is judged apart from the verdict "
+                     "above. An isolated `unknown` answer is tolerated and shown; two in a row abort the run.")
+        lines.append("")
+        lines.append("| Check | Value | Required | Result |")
+        lines.append("|---|---|---|---|")
+        for item in environment.get("rows") or []:
+            value = item.get("value")
+            value = "—" if value is None else str(value).replace("|", "/")
+            lines.append(f"| {item['check']} | {value} | {item['required']} | {item['result']} |")
+    pacing = report.get("tower_side_pacing") or {}
+    if pacing.get("computable"):
+        origins = pacing.get("origins") or {}
+        lines.append("")
+        lines.append(f"Tower-side pacing: `{pacing.get('data_root')}` captures {pacing.get('replay_captures')} "
+                     f"joined on `wire_seq` to `{pacing.get('source_capture_root')}` captures "
+                     f"{pacing.get('source_captures')}, speed {pacing.get('speed')}; origins are each walk's "
+                     f"first `started_at` ({_clock(origins.get('replay_started_at'))} replayed, "
+                     f"{_clock(origins.get('source_started_at'))} recorded).")
+    photos = report.get("phone_photos") or {}
+    if photos.get("phone_photos_at") is not None or photos.get("why"):
+        lines.append("")
+        lines.append(f"Phone told the room's photos were ready: {_clock(photos.get('phone_photos_at'))} "
+                     f"({photos.get('how') or photos.get('why')})"
+                     + (f"; {photos['store_to_phone_s']} s after the store's room appearance `ok`"
+                        if photos.get("store_to_phone_s") is not None else "")
+                     + (f"; every photographic stage complete: {_clock(photos.get('photographic_complete_at'))}"
+                        if photos.get("photographic_complete_at") else "") + ".")
     zero = report.get("solve_draw_0")
     if zero:
         lines.append("")
@@ -1264,7 +1664,19 @@ def render_markdown(report: dict) -> str:
                          "receive_to_result_ms_max")))
     lines.append(f"- use during the walk: {_use_text(walk.get('use_during_walk'))}")
     for solve in walk.get("background_solves") or []:
-        lines.append(f"- background solve {solve['n']} at {_clock(solve['t'])}, {solve['keyframes']} keyframes (L{solve['line']})")
+        landed = solve.get("landed_by") or {}
+        fate = ("; TERMINATED at Stop" + (f" (L{solve['terminated_line']})" if solve.get("terminated_line") else "")
+                if solve.get("terminated_at_stop") else
+                f"; landed by {_clock(landed.get('t'))} (+{solve.get('horizon_s')} s, {landed.get('via')}, "
+                f"L{landed.get('line')}" + (f", rebuild {landed['rebuild_n']} L{landed['rebuild_line']}"
+                                            if landed.get("rebuild_line") else "") + ")"
+                if landed else "; landing not seen")
+        between = solve.get("live_surface_between")
+        if between:
+            fate += (f"; live surface {between.get('n')} launched in between at {_clock(between.get('t'))} "
+                     "(the landing, or a stale surface's relaunch: the log cannot tell)")
+        lines.append(f"- background solve {solve['n']} at {_clock(solve['t'])}, {solve['keyframes']} keyframes "
+                     f"(L{solve['line']}){fate}")
     for surface in walk.get("live_surfaces") or []:
         lines.append(f"- live surface {surface['n']} at {_clock(surface['t'])} (L{surface['line']})")
     lines.append("")
@@ -1332,7 +1744,8 @@ def comparable_metrics(report: dict) -> dict:
     """One report's numbers, flat, for `--compare`."""
     metrics: dict = {}
     verdict = report.get("verdict") or {}
-    for key in ("stop_to_room_with_photos_min", "stop_to_finalization_min", "stop_to_settled_min"):
+    for key in ("stop_to_room_with_photos_min", "stop_to_finalization_min", "stop_to_settled_min",
+                "stop_to_phone_photos_min"):
         metrics[key] = verdict.get(key)
     walk = report.get("tower_walk") or {}
     totals = walk.get("totals") or {}
@@ -1351,6 +1764,22 @@ def comparable_metrics(report: dict) -> dict:
                          (report.get("live_surfaces_latency") or {}).get("latency_s") or {})):
         for q in ("p50", "p95", "p99", "max"):
             metrics[f"{name}.{q}"] = stats.get(q)
+    pacing = report.get("tower_side_pacing") or {}
+    if pacing.get("computable"):
+        for name, stats in (("tower_pacing_offset_error_ms", pacing.get("offset_error_ms") or {}),
+                            ("tower_inter_arrival_s", (pacing.get("inter_arrival_s") or {}).get("replayed") or {}),
+                            ("tower_inter_arrival_error_ms", pacing.get("inter_arrival_error_ms") or {})):
+            for q in ("p50", "p95", "p99", "max"):
+                metrics[f"{name}.{q}"] = stats.get(q)
+        metrics["tower_pacing_offset_error_ms.min"] = (pacing.get("offset_error_ms") or {}).get("min")
+        metrics["tower_pacing_beyond_50ms"] = (pacing.get("late_over_50ms") or 0) + (pacing.get("early_over_50ms") or 0)
+    solves = walk.get("background_solves") or []
+    landed = [s.get("horizon_s") for s in solves if isinstance(s.get("horizon_s"), (int, float))]
+    if any("terminated_at_stop" in s for s in solves):
+        stats = distribution(landed)
+        for q in ("p50", "p95", "max"):
+            metrics[f"bg_solve_landed_by_s.{q}"] = stats.get(q)
+        metrics["bg_solves_terminated_at_stop"] = sum(1 for s in solves if s.get("terminated_at_stop"))
     metrics["rebuilds"] = (walk.get("rebuilds") or {}).get("count")
     metrics["background_solves"] = len(walk.get("background_solves") or [])
     metrics["live_surfaces"] = len(walk.get("live_surfaces") or [])
@@ -1374,7 +1803,8 @@ def _load_run(run_dir) -> dict:
             "sha256": keyframes.get("sha256") or (report.get("keyframes") or {}).get("sha256"),
             "horizons": [s.get("keyframes") for s in (report.get("tower_walk") or {}).get("background_solves")
                          or []],
-            "live_safety": (report.get("live_safety") or {}).get("result")}
+            "live_safety": (report.get("live_safety") or {}).get("result"),
+            "environment": ((report.get("live_safety") or {}).get("environment") or {}).get("result")}
 
 
 def _first_difference(a, b):
@@ -1407,7 +1837,17 @@ def compare_runs(baseline_dirs, candidate_dirs=()) -> dict:
             item.update({"mean": round(sum(known) / len(known), 4), "min": low, "max": high,
                          "spread": round(high - low, 4)})
             item["outside"] = [v for v in cand if isinstance(v, (int, float)) and not low <= v <= high]
+            # A candidate with NO value where the baseline has one -- one
+            # that never settled, never told the phone, lost a row -- is not
+            # "within the baseline's range" (review C22 round 2, "Still
+            # open" 4). It is flagged MISSING and counted as not passing.
+            item["missing"] = [candidate[index]["dir"] for index, v in enumerate(cand)
+                               if not isinstance(v, (int, float))]
         metrics.append(item)
+    missing = {}
+    for item in metrics:
+        for directory in item.get("missing") or []:
+            missing.setdefault(directory, []).append(item["metric"])
     reference = baseline[0] if baseline else None
 
     def identity(run):
@@ -1417,7 +1857,7 @@ def compare_runs(baseline_dirs, candidate_dirs=()) -> dict:
         return {"dir": run["dir"], "sha256": run["sha256"], "identical": same,
                 "first_difference": None if same else _first_difference(run["sequence"], reference["sequence"]),
                 "horizons": run["horizons"], "horizons_identical": run["horizons"] == reference["horizons"],
-                "live_safety": run["live_safety"]}
+                "live_safety": run["live_safety"], "environment": run.get("environment")}
 
     return {
         "compare": "c22-live-replay-compare/1",
@@ -1425,6 +1865,11 @@ def compare_runs(baseline_dirs, candidate_dirs=()) -> dict:
         "baseline": [run["dir"] for run in baseline],
         "candidate": [run["dir"] for run in candidate],
         "enough_runs": len(baseline) >= 3 and (not candidate or len(candidate) >= 3),
+        # Per candidate run, every metric the baseline has and it lacks.
+        # Not passing: a candidate is never judged on the metrics it is
+        # missing.
+        "missing": missing,
+        "candidates_complete": not missing,
         "metrics": metrics,
         "keyframes": {"reference": None if reference is None else reference["dir"],
                       "baseline": [identity(run) for run in baseline],
@@ -1441,28 +1886,42 @@ def render_compare(result: dict) -> str:
     if not result["enough_runs"]:
         lines.append("")
         lines.append("**Fewer than 3 runs on a side: this is not a noise estimate (C19 F8 asks for N >= 3).**")
+    missing = result.get("missing") or {}
+    if missing:
+        lines.append("")
+        lines.append(f"**MISSING: {sum(len(v) for v in missing.values())} candidate value(s) absent where the "
+                     "baseline has one. Not passing: a candidate is not judged on what it lacks.**")
+        for directory, names in missing.items():
+            lines.append(f"- `{directory}`: {', '.join(names)}")
     lines.append("")
     lines.append("## Keyframe identity, (source_seq, segment_index), against the first baseline run")
     lines.append("")
-    lines.append("| Run | sha256 | Identical | First differing index | Solve horizons identical | Live safety |")
-    lines.append("|---|---|---|---|---|---|")
+    lines.append("| Run | sha256 | Identical | First differing index | Solve horizons identical | Live safety "
+                 "| Environment (:8000) |")
+    lines.append("|---|---|---|---|---|---|---|")
     for side in ("baseline", "candidate"):
         for item in result["keyframes"][side]:
             if item is None:
                 continue
             lines.append(f"| {side}: `{item['dir']}` | {str(item['sha256'])[:16]} | {item['identical']} | "
                          f"{'' if item['first_difference'] is None else item['first_difference']} | "
-                         f"{item['horizons_identical']} | {item['live_safety']} |")
+                         f"{item['horizons_identical']} | {item['live_safety']} | {item.get('environment')} |")
     lines.append("")
     lines.append("## Metrics")
     lines.append("")
-    lines.append("A candidate value outside the baseline's [min, max] is flagged. The spread is max - min "
-                 "over the baseline runs: the old path's own noise.")
+    lines.append("A candidate value outside the baseline's [min, max] is flagged; a candidate with no value "
+                 "where the baseline has one is flagged MISSING. The spread is max - min over the baseline "
+                 "runs: the old path's own noise.")
     lines.append("")
-    lines.append("| Metric | Baseline mean | min | max | spread | Candidate | Outside |")
+    lines.append("| Metric | Baseline mean | min | max | spread | Candidate | Flag |")
     lines.append("|---|---|---|---|---|---|---|")
     for item in result["metrics"]:
-        flag = "**yes** " + str(item["outside"]) if item.get("outside") else ""
+        flags = []
+        if item.get("outside"):
+            flags.append("**outside** " + str(item["outside"]))
+        if item.get("missing"):
+            flags.append(f"**MISSING** in {len(item['missing'])}")
+        flag = "; ".join(flags)
         lines.append(f"| {item['metric']} | {item.get('mean', '')} | {item.get('min', '')} | "
                      f"{item.get('max', '')} | {item.get('spread', '')} | "
                      f"{', '.join(str(v) for v in item['candidate'])} | {flag} |")
@@ -1481,6 +1940,7 @@ def _run_defaults(run_dir: Path) -> dict:
     if run.get("out_log"):
         defaults["tower_out_log"] = Path(run["out_log"])
     if run.get("data_root"):
+        defaults["data_root"] = Path(run["data_root"])
         defaults["world_root"] = Path(run["data_root"]) / "world_builder"
     return defaults
 
@@ -1497,6 +1957,15 @@ def main(argv=None) -> int:
     parser.add_argument("--tower-log", type=Path, default=None)
     parser.add_argument("--tower-out-log", type=Path, default=None)
     parser.add_argument("--world-root", type=Path, default=None, help="Read only.")
+    parser.add_argument("--data-root", type=Path, default=None,
+                        help="The test Tower's data root, READ: its re-recorded captures "
+                             "(<data-root>/captures/<id>/frames.jsonl) for the Tower-side pacing row. "
+                             "Default: the one run.json names. Also the world root (<data-root>/world_builder) "
+                             "unless --world-root is given.")
+    parser.add_argument("--capture-root", type=Path, default=None,
+                        help="Where the SOURCE captures are, READ (<root>/<id>/frames.jsonl): the recorded "
+                             "pace the pacing row joins to. Default: the one client.json names, else the "
+                             "replay's default capture root.")
     parser.add_argument("--capture-id", default=None,
                         help="The walk's first capture (default: client.json's, else the log's first).")
     parser.add_argument("--label", default=None)
@@ -1511,7 +1980,8 @@ def main(argv=None) -> int:
         out.mkdir(parents=True, exist_ok=True)
         (out / "compare.json").write_text(json.dumps(result, indent=2, default=str), encoding="utf-8")
         (out / "COMPARE.md").write_text(render_compare(result), encoding="utf-8")
-        print(json.dumps({"compare": str(out / "compare.json"), "enough_runs": result["enough_runs"]}, indent=2))
+        print(json.dumps({"compare": str(out / "compare.json"), "enough_runs": result["enough_runs"],
+                          "candidates_complete": result["candidates_complete"]}, indent=2))
         return 0
     run_dir = Path(args.run_dir) if args.run_dir is not None else out
     defaults = _run_defaults(run_dir)
@@ -1520,15 +1990,20 @@ def main(argv=None) -> int:
         parser.error("--tower-log is required unless --run-dir holds a run.json naming it")
     client = _read_json(run_dir / "client.json") or {}
     samples = run_dir / "samples.csv"
+    data_root = args.data_root or defaults.get("data_root")
+    world_root = args.world_root or (Path(args.data_root) / "world_builder" if args.data_root is not None
+                                     else defaults.get("world_root"))
     report = build_report(tower_log=tower_log, tower_out_log=args.tower_out_log or defaults.get("tower_out_log"),
-                          world_root=args.world_root or defaults.get("world_root"), capture_id=args.capture_id,
+                          world_root=world_root, capture_id=args.capture_id,
                           client=client, samples=samples if samples.exists() else None, label=args.label,
-                          run_dir=run_dir)
+                          run_dir=run_dir, data_root=data_root, capture_root=args.capture_root,
+                          run=defaults.get("run"))
     if defaults.get("run"):
         report["run"] = defaults["run"]
     json_path, md_path = write_report(out, report)
     print(json.dumps({"report": str(json_path), "markdown": str(md_path), "verdict": report["verdict"],
-                      "live_safety": report["live_safety"]["result"]}, indent=2))
+                      "live_safety": report["live_safety"]["result"],
+                      "environment": (report["live_safety"].get("environment") or {}).get("result")}, indent=2))
     return 0
 
 

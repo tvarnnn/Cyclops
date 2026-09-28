@@ -720,14 +720,38 @@ def geometry_coordinates(payload):
     return None
 
 
+def photographic_word(payload):
+    """`lifecycle.photographic` of a status push as (state, stage, scope,
+    scope_present), or None when the push carries no such block.
+
+    `scope` is `"area"` exactly when the word is an area's; absent means the
+    room's (`WORLD-BUILDER-COMPONENTS.md` §3.4). The combined word moves on to
+    an area only once the room's own word is settled, so it is how a phone
+    learns that the room is done while its areas are still being made."""
+    if not isinstance(payload, dict):
+        return None
+    lifecycle = payload.get("lifecycle") if isinstance(payload.get("lifecycle"), dict) else {}
+    block = lifecycle.get("photographic")
+    if not isinstance(block, dict):
+        return None
+    return block.get("state"), block.get("stage"), block.get("scope"), "scope" in block
+
+
 class PhoneView:
-    """The World Builder status pushes, reduced to their state transitions."""
+    """The World Builder status pushes, reduced to their state transitions.
+
+    `photographic` keeps every change of `lifecycle.photographic` (state,
+    stage, scope) with the CLIENT's receive time: when the phone was told the
+    room's photos were ready, which the store's `updated_at` cannot say
+    (review C22 H2, `phone_photos_at`)."""
 
     def __init__(self, clock=time.time):
         self._clock = clock
         self.pushes = 0
         self.last: dict = {}
         self.transitions: list = []
+        self.photographic: list = []
+        self._photographic_last = None
         self.target = None
 
     def update(self, message: dict):
@@ -744,6 +768,12 @@ class PhoneView:
                 "gone": gone,
             })
         self.last = summary
+        word = photographic_word(payload)
+        if word is not None and word != self._photographic_last:
+            self._photographic_last = word
+            self.photographic.append({"t": round(self._clock(), 3), "seq": message.get("seq"),
+                                      "state": word[0], "stage": word[1], "scope": word[2],
+                                      "scope_present": word[3]})
         coordinates = geometry_coordinates(payload)
         if coordinates is not None:
             self.target = coordinates[:2]
@@ -1407,6 +1437,9 @@ async def run_replay(options: ReplayOptions) -> dict:
         "label": options.label,
         "port": options.port,
         "captures_replayed": list(options.captures),
+        # Where the source journals were read (read only): the report's
+        # Tower-side pacing row joins the re-recorded capture to them.
+        "capture_root": str(options.capture_root),
         "speed": options.speed,
         "first_seconds": options.first_seconds,
         "after_stop": options.after_stop,
@@ -1577,6 +1610,21 @@ async def run_replay(options: ReplayOptions) -> dict:
                 record["outcome"] = "aborted"
             else:
                 record["outcome"] = "settled" if settle.get("settled") else "not-settled"
+    except Exception as exc:
+        # THE ABORT EDGE (review C22 round 2, "Still open" 5). The guard sets
+        # `abort` BEFORE `on_abort` kills the test Tower, so a send that was
+        # already waiting in the socket's drain when the Tower died raises
+        # here with `abort` set. That is the abort, not a harness fault: the
+        # record says `aborted` (exit 3) and is written by the `finally`,
+        # rather than the exception reaching the runner as an error (exit 1)
+        # with no client record. Anything raised WITHOUT an abort is still
+        # an error and still propagates.
+        if not abort.is_set():
+            raise
+        record["outcome"] = "aborted"
+        record.setdefault("aborted", {})["stream_error"] = f"{type(exc).__name__}: {exc}"
+        record.setdefault("stopped_at", round(time.time(), 3))
+        _log(out, f"the stream ended under the abort: {exc!r}")
     finally:
         stop_background.set()
         aborted = abort.is_set()
@@ -1597,7 +1645,8 @@ async def run_replay(options: ReplayOptions) -> dict:
         record["events"] = events
         record["stream"] = stats.summary()
         record["phone_view"] = {"pushes": phone.pushes, "target": phone.target,
-                                "transitions": phone.transitions}
+                                "transitions": phone.transitions,
+                                "photographic": phone.photographic}
         record["phone_fetches"] = mirror.summary()
         record["surface_watch"] = surfaces.transitions
         if guard is not None:

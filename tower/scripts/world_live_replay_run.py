@@ -254,6 +254,16 @@ def spawn_tower(command, **kwargs):
     return subprocess.Popen(command, **kwargs)
 
 
+def read_client_record(out: Path) -> dict:
+    """The client's `client.json` in `out`, or {} (a fresh --out holds only
+    this run's)."""
+    try:
+        record = json.loads((Path(out) / "client.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return record if isinstance(record, dict) else {}
+
+
 def probe_import(tower_dir: Path, env: dict) -> str:
     """Which `tower` the server will import: the same env, cwd and interpreter."""
     probe = subprocess.run(interpreter_command("-c", "import tower, sys; print(tower.__file__)"),
@@ -477,6 +487,18 @@ def main(argv=None) -> int:
         _log(out, f"the replay failed: {exc!r}\n{traceback.format_exc()}")
         run["error"] = repr(exc)
         code = EXIT_ERROR
+        # THE ABORT EDGE (review C22 round 2, "Still open" 5). If the client
+        # raised anyway, its own record is on disk (`run_replay` writes it in
+        # its `finally`): report from it, and when it says the live guard
+        # aborted, the exception was the kill's consequence, so exit 3 as
+        # every other abort does.
+        saved = read_client_record(out)
+        if saved:
+            record = saved
+            if saved.get("aborted") or saved.get("outcome") == "aborted":
+                run["aborted"] = {**(saved.get("aborted") or {}), "during": "stream",
+                                  "raised": repr(exc)}
+                code = EXIT_ABORTED
     finally:
         run["live_tower_watch_startup"] = watch.guard.summary()
         if process is not None:
@@ -498,7 +520,8 @@ def main(argv=None) -> int:
     report = build_report(tower_log=err_log, tower_out_log=out_log, world_root=world_root,
                           capture_id=captures[0] if captures else None, client=record,
                           samples=out / "samples.csv" if (out / "samples.csv").exists() else None,
-                          label=args.label, run_dir=out)
+                          label=args.label, run_dir=out, data_root=data_root,
+                          capture_root=args.capture_root, run=run)
     report["run"] = run
     json_path, md_path = write_report(out, report)
     _log(out, f"report: {md_path}; verdict {report['verdict']}; outcome {record.get('outcome')}")
