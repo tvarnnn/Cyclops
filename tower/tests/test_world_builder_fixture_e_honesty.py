@@ -149,8 +149,10 @@ def _without_js_comments(source: str) -> str:
     return "".join(result)
 
 
-def _reverse_vertices(directory: Path, manifest: dict, keyframe_id: int) -> int:
-    """DIAG4 Q2's no-occlusion frustum metric, from this page's own proxy."""
+def _frustum_vertices(directory: Path, manifest: dict, keyframe_id: int, *, reverse: bool) -> int:
+    """DIAG4 Q2's no-occlusion frustum metric, from this page's own proxy: the
+    vertices in the keyframe's frustum turned round (`reverse=True`), or in its
+    own frustum (`reverse=False`, the positive control)."""
     from tower.world_builder.surface import read_mesh_bytes
 
     proxy = directory / f"p.{manifest['proxy']['digest']}.bin"
@@ -164,8 +166,8 @@ def _reverse_vertices(directory: Path, manifest: dict, keyframe_id: int) -> int:
     rotation = np.asarray(camera["rotation"], dtype=np.float64).reshape(3, 3)
     translation = np.asarray(camera["translation"], dtype=np.float64)
     centre = -rotation.T @ translation
-    reverse = np.diag([-1.0, 1.0, -1.0]) @ rotation
-    points = vertices @ reverse.T - reverse @ centre
+    view = np.diag([-1.0, 1.0, -1.0]) @ rotation if reverse else rotation
+    points = vertices @ view.T - view @ centre
     z = points[:, 2]
     ahead = z > 0.05
     intrinsics = manifest["camera"]
@@ -230,7 +232,7 @@ def test_w4_pages_tell_the_truth_at_reverse_poses(frozen_world, name):
     assert 'const on = darkShown ? dark > DARK_SAY_OFF : dark > DARK_SAY_ON;' in shown
     assert 'if (on && !want) requestDraw();' in shown
 
-    count = _reverse_vertices(directory, manifest, keyframe_id)
+    count = _frustum_vertices(directory, manifest, keyframe_id, reverse=True)
     # CHARACTERIZATION: pins W4's shipped, hash-pinned proxy files, the product
     # decoder (`surface.read_mesh_bytes`) and this module's metric (DIAG4 Q2),
     # not the pipeline.  Nothing here rebuilds anything, so a pipeline fix to
@@ -246,7 +248,23 @@ def test_w4_pages_tell_the_truth_at_reverse_poses(frozen_world, name):
         # CHARACTERIZATION: a room reverse control with substantial geometry;
         # prevents a test that always reports zero from passing.
         control_id, control_count = ROOM_COVERED_CONTROL
-        assert _reverse_vertices(directory, manifest, control_id) == control_count
+        assert _frustum_vertices(directory, manifest, control_id, reverse=True) == control_count
+
+
+@pytest.mark.parametrize("name", PAGES)
+def test_each_w4_proxy_has_a_positive_forward_control(frozen_world, name):
+    """C13 T6 (the C13 review's gap 6; C2bf). Every page's reverse count is 0,
+    and the only positive control was the ROOM's keyframe 610: a metric that
+    returned 0 for any other keyframe (`if keyframe_id != 610: return 0`)
+    passed every AREA page without measuring it. The same metric, on the same
+    page's proxy and camera, must see that page's geometry in the named
+    keyframe's own frustum before its reverse zero means anything."""
+    area_id, keyframe_id, _expected, digest = PAGES[name]
+    directory, manifest = _manifest(frozen_world, area_id, digest)
+    forward = _frustum_vertices(directory, manifest, keyframe_id, reverse=False)
+    # ORACLE (positive control): a keyframe looking at the surface it was
+    # prepared against sees it (62,986 to 123,116 vertices on this copy).
+    assert forward > 0, (name, keyframe_id, forward)
 
 
 def test_research_page_reports_its_actual_imagery_source(tmp_path, monkeypatch):

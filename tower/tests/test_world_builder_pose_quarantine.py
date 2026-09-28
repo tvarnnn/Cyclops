@@ -28,6 +28,7 @@ from __future__ import annotations
 import json
 import logging
 import math
+import re
 from pathlib import Path
 
 import cv2
@@ -225,6 +226,28 @@ def test_a_path_keeps_nine_medians_and_drops_twelve(tmp_path, monkeypatch):
     centres = [p[:3] for p in path]
     assert len(path) == 21
     assert any(np.allclose(c, (9.0, 0.0, 0.0)) for c in centres)
+    assert not any(np.allclose(c, (-12.0, 0.0, 0.0)) for c in centres)
+
+
+def test_a_path_drops_ten_point_five_median_radii(tmp_path, monkeypatch):
+    """C13 T4 (the C13 review's gap 4; C5 review §5). The test above pins the path's radius only to [9, 12) median
+    radii: `surface.OUTLIER_RADIUS_MULTIPLE = 11.0`, or `multiple=11.0` passed in `viewable_poses` alone, keeps it
+    green. A pose at 10.5 x is beyond the 10 x the rule names (RULE.md (a') v4) and inside that interval."""
+    monkeypatch.setenv(ENV, "path")
+    entries = _radius_boundary_room() + [(f"{F.SID}:00000102", (10.5, 0.0, 0.0), 60, 0)]
+    C = np.asarray([centre for _kid, centre, _obs, _component in entries])
+    # The added pose leaves the room's median centre at zero and its median radius at 1.
+    assert np.allclose(np.median(C, axis=0), 0.0)
+    assert np.isclose(np.median(np.linalg.norm(C - np.median(C, axis=0), axis=1)), 1.0)
+    solution = Q.pose_solution(entries)
+    counts = {}
+    kept = viewable_poses(solution.poses, drop_counts=counts)
+    assert f"{F.SID}:00000102" not in kept and f"{F.SID}:00000100" in kept
+    assert counts == {"unsupported": 0, "beyond_radius": 2}
+    centres = [p[:3] for p in Q.camera_path_of(tmp_path, solution)]
+    assert len(centres) == 21
+    assert any(np.allclose(c, (9.0, 0.0, 0.0)) for c in centres)
+    assert not any(np.allclose(c, (10.5, 0.0, 0.0)) for c in centres)
     assert not any(np.allclose(c, (-12.0, 0.0, 0.0)) for c in centres)
 
 
@@ -613,6 +636,49 @@ def test_a_both_viewer_lists_drop_the_far_pose_and_the_rider_and_keep_the_room(b
     on = cameras()
     assert len(on) == len(room) and all(_has(on, c) for c in room)          # non-empty: every room camera
     assert not _has(on, far) and not _has(on, rider)
+
+
+_PATH_LOG = re.compile(r"\[Tower\]\[WorldBuilder\]\[surface\] published path poses for (\S+): "
+                       r"published=(\d+), kept=(\d+), dropped=(\d+) "
+                       r"\(unsupported=(\d+), off_component_0=(\d+), beyond_radius=(\d+)\)")
+
+
+@pytest.mark.parametrize("value", ["path", "off"])
+def test_the_real_surface_page_logs_path_drops_once_and_off_logs_none(built_world, monkeypatch, caplog, value):
+    """C13 T5 (the C13 review's gap 5; C5 LOW-1 and LOW-2). `test_a_page_logs_path_drops_once_when_the_budget_...`
+    swaps in a `build_surface_payload` that forwards `path_drop_counts` itself, so the REAL payload could drop the
+    hand-off -- `_camera_path(store, world_id, session_id)` -- and log once per payload, twice on a budget rebuild,
+    with the suite green. Here the real payload runs twice (`max_points=1` forces the rebuild) on the built world
+    with a far pose and a rider added: `path` logs once, with its counts adding up; `off` logs nothing."""
+    from tests.test_world_builder_appearance import SESSION, WORLD
+    from tower.world_builder import surface_render as SR
+
+    room, _far, _rider = _add_room_far_and_rider(built_world)
+    monkeypatch.setenv(ENV, value)
+    real, calls = SR.build_surface_payload, []
+
+    def spy(*args, **kwargs):
+        calls.append(kwargs.get("path_drop_counts"))
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(SR, "build_surface_payload", spy)
+    with caplog.at_level(logging.INFO, logger="tower.world_builder.surface_render"):
+        page = SR.build_surface_page(built_world.store, WORLD, SESSION, max_points=1)
+    # CHARACTERIZATION: the budget rebuild ran -- the real payload was built twice, and the page was served.
+    assert len(calls) == 2 and "const CONFIG" in page
+    lines = [r for r in caplog.records if "[Tower][WorldBuilder][surface] published path poses" in r.message]
+    if value == "off":
+        assert lines == []
+        return
+    assert len(lines) == 1 and lines[0].levelno == logging.INFO
+    match = _PATH_LOG.fullmatch(lines[0].message)
+    assert match, lines[0].message
+    published, kept, dropped, unsupported, off_component, beyond = map(int, match.groups()[1:])
+    assert match.group(1) == f"{WORLD}/{SESSION}"
+    # ORACLE: published = kept + dropped, and the reasons add up to what was dropped.
+    assert published == kept + dropped and dropped == unsupported + off_component + beyond
+    # CHARACTERIZATION: this world's own numbers -- every room pose kept, the rider and the far pose dropped.
+    assert (published, kept, unsupported, off_component, beyond) == (len(room) + 2, len(room), 1, 0, 1)
 
 
 # ---------------------------------------------------------------------------------------------------------------

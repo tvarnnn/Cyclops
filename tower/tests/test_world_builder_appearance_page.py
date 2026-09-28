@@ -547,12 +547,11 @@ class TestTheBlend:
     the viewer-polish lane (Glasses-scratch/wb-final-recon/fixit/viewer-polish)."""
 
     def test_the_script_parses(self, built):
-        import shutil
         import subprocess
 
-        node = shutil.which("node")
-        if node is None:
-            pytest.skip("no node on this host to parse the page's script")
+        from tests.wb_node import node_or_skip
+
+        node = node_or_skip("parse the page's script")
         from tower.world_builder.appearance_render import build_appearance_page
 
         html = build_appearance_page(built.store, WORLD, SESSION, transport="tower")
@@ -766,12 +765,10 @@ class TestTheRoute:
 
 
 def _node():
-    import shutil
+    # WB_NODE_REQUIRED=1 makes a missing node a failure (tests/wb_node.py).
+    from tests.wb_node import node_or_skip
 
-    node = shutil.which("node")
-    if node is None:
-        pytest.skip("no node on this host to run the page's follower")
-    return node
+    return node_or_skip("run the page's script")
 
 
 def _follower_source():
@@ -1129,6 +1126,85 @@ console.log("captured look-back ok");
                          text=True, timeout=120)
     assert run.returncode == 0 and "captured look-back ok" in run.stdout, (
         run.stdout + run.stderr)[-3000:]
+
+
+def test_current_dark_drives_the_dark_notice_on_room_and_area_pages(v3_pages):
+    """C13 T1 (the C13 review's gap 1, its items 3 and 6). The dark line's only
+    production input is `currentDark()`, which the frame loop hands to
+    `updateDark`. The look-back test above feeds `updateDark` from `NAV.step`
+    and the WORLDS v3 notice tests feed it literals, so nothing ran
+    `currentDark()`: `darkFor = {key, v: 0}`, or an early `return 0` on an area
+    page, switched the notice off with the suite green.
+
+    Each served page's own NAV unit, `currentDark()`, `updateDark()` and notice
+    words run under node with that page's own CONFIG, over the synthetic
+    front-wall room (`NAV_ROOM`). Only the page's navigation state is stood in
+    for: `navField`, `navView`, `dirFrom`, `UP` and the drawn pose
+    (`shownPose`). No W4 copy."""
+    import subprocess
+
+    for key in ("room", "room with areas", "area"):
+        page = v3_pages[key]
+        config = _config(page)
+        # CHARACTERIZATION: the fixture's area page is the one page with an area.
+        assert ("area" in config) is (key == "area"), key
+        code = _code_only(page[page.index("<script>"):])
+        # ORACLE (WORLDS §4, the dark state): the frame loop hands what
+        # `currentDark()` measured to the notice.
+        assert re.search(r"const dk = currentDark\(\);\n(?:[^\n]*\n){0,3}?[ \t]*updateDark\(dk\);",
+                         code), key
+        # CHARACTERIZATION: one definition and one call of each, so no other
+        # caller overrides what the frame loop said.
+        assert code.count("currentDark(") == 2 and code.count("updateDark(") == 2, key
+        source = (_section(page, '  const HINT_EDGE = "', "  let hintTimer")
+                  + _section(page, "  let darkFor = null;", "  const BACK_ON = ")
+                  + _section(page, "  const DARK_SAY_ON = 0.90", "  const KEY_SPEED"))
+        nav = _section(page, "/* ---------- navigation: where the camera may go",
+                       "/* ---------- end navigation */")
+        program = ("const assert = require('assert');\n" + nav + "\n" + NAV_ROOM + "\n"
+                   + "const CONFIG = " + json.dumps(config) + ";\n"
+                   + "const S = {}; let tick = 1;\n" + r"""
+const classes = new Set();
+const el = {textContent: "", children: [], classList: {
+  add: name => classes.add(name), remove: name => classes.delete(name),
+  contains: name => classes.has(name)},
+  append(...children){ this.children.push(...children); }};
+const $ = id => { assert.strictEqual(id, "dark"); return el; };
+const document = {createElement: tag => ({tag, textContent: ""})};
+const performance = {now: () => tick};
+const requestDraw = () => {};
+// the page's navigation state, stood in for: the field, the view, the drawn pose
+let navField = F;
+const UP = up, dirFrom = dir, navView = () => V;
+let pose = {p: at.slice(), yaw: 0, pitch: 0};
+const shownPose = () => pose;
+""" + source + r"""
+// the frame loop's two lines (pinned in the page's code above)
+const frame = () => { const dk = currentDark(); updateDark(dk); return dk; };
+let dk = frame();
+assert.ok(dk < DARK_SAY_OFF, `facing the wall: ${dk}`);
+assert.ok(!el.classList.contains("on"));
+pose = {p: at.slice(), yaw: Math.PI, pitch: 0};
+dk = frame();
+assert.ok(dk > DARK_SAY_ON, `turned round: ${dk}`);
+assert.ok(!el.classList.contains("on"), "held for DARK_SAY_MS before it is said");
+tick += DARK_SAY_MS + 1;
+assert.strictEqual(frame(), dk, "a still frame reads the same value");
+assert.ok(el.classList.contains("on"));
+assert.deepStrictEqual(el.children.map(child => [child.tag, child.textContent]),
+                       [["b", "Not reconstructed from here"], ["span", "Tap to turn back"]]);
+assert.strictEqual(S.darkSaid, true);
+pose = {p: at.slice(), yaw: 0, pitch: 0};
+dk = frame();
+assert.ok(dk < DARK_SAY_OFF, `turned back: ${dk}`);
+assert.ok(!el.classList.contains("on"));
+assert.strictEqual(S.darkSaid, false);
+console.log("current dark ok");
+""")
+        run = subprocess.run([_node(), "-"], input=program, capture_output=True,
+                             text=True, encoding="utf-8", timeout=120)
+        assert run.returncode == 0 and "current dark ok" in run.stdout, (
+            key, (run.stdout + run.stderr)[-3000:])
 
 
 class TestTheEnvelope:
@@ -2493,6 +2569,64 @@ assert.strictEqual(ENC.capacity(both, "astc-6x6-rgba", {maxLayers: 0}), 1, "neve
         astc = _run_caption(page, manifest=device_side, encoding="astc-6x6-rgba",
                             S={"layers": 128, "keyframesInManifest": 128})
         assert astc["line"] == "128 of 128 images loaded."
+
+
+ABOUT_SECTIONS = {"What you are looking at", "The flat grey patches", "Looking and moving",
+                  "Finding your way", "The walk"}
+
+
+def test_executed_captions_make_no_capture_absence_claim():
+    """C13 T3 (the C13 review's gap 3). The banned-phrase scans read the page's
+    SOURCE, so a claim assembled at runtime -- `" double. This place was not " +
+    "captured."` -- is on screen and in no scanned string. Here `updateCaption()`
+    is RUN under node, from the template with the components captions applied as
+    the product applies them (`apply_captions`: a room, a room with areas, and
+    an area that could not be levelled), redacted and research, in its quiet and
+    its busiest states, and every word it assembles -- the headline, the caption
+    line and each About section -- is held against fixture E's list (the
+    contract's four and this module's). No W4 copy."""
+    from tests.test_world_builder_fixture_e_honesty import BANNED
+    from tower.world_builder import appearance_render as AR
+
+    claims = tuple(dict.fromkeys(BANNED + _BANNED_VIEWER_CLAIMS))
+    template = _template()
+    area = {"number": 1, "of": 2, "from_s": 86.7, "to_s": 109.6, "levelled": False}
+    pages = {"room": AR.apply_captions(template, None),
+             "room with areas": AR.apply_captions(template, {"more_areas": 2}),
+             "area": AR.apply_captions(template, {"area": area})}
+    states = {
+        "quiet": {},
+        "live, not current, WebP from the Tower": {
+            "manifest": {"quality": "live", "encodings": {"webp-rgba": {"available": True}}},
+            "S": {"layers": 12, "keyframesInManifest": 40}, "encoding": "webp-rgba",
+            "config": {"scale_state": "unknown", "current": False}},
+        "holding, WebP on the device": {
+            "manifest": {"quality": "final", "encodings": {"astc-6x6-rgba": {"available": True}},
+                         "currency": {"reason": "built from an earlier reconstruction"}},
+            "S": {"layers": 40, "keyframesInManifest": 40, "holding": True},
+            "encoding": "webp-rgba", "config": {"scale_state": "metric", "current": False}},
+    }
+    for name, page in pages.items():
+        for raw in (False, True):
+            for state, kwargs in states.items():
+                where = (name, "research" if raw else "redacted", state)
+                run = _run_caption(page, raw=raw, **kwargs)
+                # CHARACTERIZATION: the text scanned is this page's assembled
+                # caption -- its own headline, and all five About sections.
+                assert set(run["sections"]) == ABOUT_SECTIONS, where
+                assert run["head"].startswith("RESEARCH BUILD") is raw, where
+                if name == "area":
+                    assert run["head"].endswith("Area 1 of 2 — not placed in the room"), where
+                    assert "Its vertical could not be estimated" in run["all"], where
+                elif name == "room with areas":
+                    assert run["head"].endswith(" · 2 more areas shown separately"), where
+                if state != "quiet":
+                    assert run["line"], where
+                # ORACLE (WORLDS v2 §4; fixture E): nothing the page assembles
+                # claims that a place was not captured or photographed.
+                shown = run["all"].casefold()
+                for claim in claims:
+                    assert claim not in shown, (where, claim)
 
 
 class TestBootingWithNothingPlaced:

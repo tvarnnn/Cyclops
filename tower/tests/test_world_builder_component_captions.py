@@ -17,7 +17,6 @@ asserted is the text the wearer reads, not a substring of the program.
 from __future__ import annotations
 
 import json
-import shutil
 import subprocess
 
 import pytest
@@ -33,6 +32,7 @@ from tests.test_world_builder_components_areas import (
     build_area,
     write_components,
 )
+from tests.wb_node import node_or_skip
 
 from tower.world_builder import appearance_render as AR
 from tower.world_builder import components as C
@@ -70,10 +70,8 @@ function text(n){ return typeof n === "string" ? n
 
 
 def _node():
-    node = shutil.which("node")
-    if node is None:
-        pytest.skip("no node on this host to run the page's caption code")
-    return node
+    # WB_NODE_REQUIRED=1 makes a missing node a failure (tests/wb_node.py).
+    return node_or_skip("run the page's caption code")
 
 
 def _run(program: str, tmp_path) -> dict:

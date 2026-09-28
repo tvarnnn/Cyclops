@@ -447,6 +447,171 @@ def test_the_page_never_claims_redaction_it_cannot_know_about():
     assert 'id="rawmark"' in page
 
 
+# The marker's IIFE, run as the page runs it: the page's own CONFIG, RAW_IMAGERY,
+# `$` and `markImagery`, over a stand-in for the one element and the document.
+_MARK_DOM = r"""
+const assert = require('assert');
+const window = {};
+const listeners = [];
+function addEventListener(type){ listeners.push(type); }
+const mark = {hidden: true, textContent: "", getBoundingClientRect: () => ({height: 26})};
+const bodyClasses = new Set(["booting"]);
+const props = {};
+const document = {
+  title: "World",
+  getElementById: id => { assert.strictEqual(id, "rawmark"); return mark; },
+  body: {classList: {add: c => { bodyClasses.add(c); }, remove: c => { bodyClasses.delete(c); }}},
+  documentElement: {style: {setProperty: (k, v) => { props[k] = v; }}},
+};
+"""
+
+
+def _run_mark(page: str) -> dict:
+    """`markImagery()` from `page`, with everything the page runs before it."""
+    import subprocess
+
+    from tests.wb_node import node_or_skip
+
+    start = page.index("const CONFIG = ")
+    source = page[start:page.index("function fail(text){", start)]
+    assert "(function markImagery(){" in source
+    program = (_MARK_DOM + source + r"""
+const ascii = s => s.replace(/[^\x00-\x7e]/g,
+  c => "\\u" + c.charCodeAt(0).toString(16).padStart(4, "0"));
+console.log(ascii(JSON.stringify({raw: RAW_IMAGERY, hidden: mark.hidden, text: mark.textContent,
+  body: [...bodyClasses].sort(), title: document.title, props, listeners})));
+""")
+    run = subprocess.run([node_or_skip("run the page's research marker")], input=program,
+                         capture_output=True, text=True, encoding="utf-8", timeout=60)
+    assert run.returncode == 0, (run.stdout + run.stderr)[-3000:]
+    return json.loads(run.stdout.strip().splitlines()[-1])
+
+
+_HIDING = (("display", r"none"), ("visibility", r"hidden|collapse"),
+           ("opacity", r"[+]?0*\.?0*%?"), ("content-visibility", r"hidden"))
+
+
+def _could_be_the_shown_marker_or_its_ancestor(selector: str) -> bool:
+    """Whether a selector's subject could match the SHOWN marker (a `div` with
+    `id`, `role` and `aria-live`, no class, not `hidden`, not empty) or one of
+    its ancestors (`body.booting.rawimagery`, `html`). Conservative: a
+    pseudo-class it does not know, and anything inside `:not()` / `:is()` /
+    `:where()`, is taken to match."""
+    import re
+
+    selector = re.sub(r":(?:not|is|where)\([^()]*\)", "", selector.strip())
+    subject = re.split(r"\s*[>+~]\s*|\s+", selector)[-1]
+    if "::" in subject:
+        return False
+    tag = re.match(r"[a-zA-Z][\w-]*|\*", subject)
+    tag = tag.group(0).lower() if tag else "*"
+    ids = set(re.findall(r"#([\w-]+)", subject))
+    classes = set(re.findall(r"\.([\w-]+)", subject))
+    attrs = {a.split("=")[0].strip(" ~|^$*").lower()
+             for a in re.findall(r"\[([^\]]+)\]", subject)}
+    pseudo = set(re.findall(r"(?<!:):([\w-]+)", subject))
+    elements = (("div", {"rawmark"}, set(), {"id", "role", "aria-live"}, False),
+                ("body", set(), {"booting", "rawimagery"}, {"class"}, False),
+                ("html", set(), set(), {"lang"}, True))
+    for name, own_ids, own_classes, own_attrs, root in elements:
+        if tag not in ("*", name) or not ids <= own_ids or not classes <= own_classes:
+            continue
+        if not attrs <= own_attrs or "empty" in pseudo or ("root" in pseudo and not root):
+            continue
+        return True
+    return False
+
+
+def _rules_hiding_the_shown_marker(page: str) -> list:
+    import re
+
+    style = page[page.index("<style>") + len("<style>"):page.index("</style>")]
+    style = re.sub(r"/\*.*?\*/", "", style, flags=re.S)
+    found = []
+    for m in re.finditer(r"([^{}]+)\{([^{}]*)\}", style):
+        decls = {}
+        for decl in m.group(2).split(";"):
+            if ":" in decl:
+                key, value = decl.split(":", 1)
+                decls[key.strip().lower()] = " ".join(
+                    value.replace("!important", "").split()).lower()
+        hides = {k: v for k, v in decls.items()
+                 for prop, pattern in _HIDING if k == prop and re.fullmatch(pattern, v)}
+        if hides:
+            found += [(" ".join(s.split()), hides) for s in m.group(1).split(",")
+                      if _could_be_the_shown_marker_or_its_ancestor(s)]
+    return found
+
+
+def test_the_research_marker_is_raised_and_nothing_hides_it(world, monkeypatch):
+    """C13 T2 (the C13 review's gap 2). On an unredacted page the marker is the
+    only thing on screen that says it is not privacy-safe, and the tests pinned
+    only its string and `id="rawmark"`: `m.hidden = true`, or
+    `body.rawimagery #rawmark{display:none!important}`, hid it with the suite
+    green. The served research page's own `markImagery()` runs under node; its
+    CSS, markup and script are read for anything else that could hide it. A
+    computed-style check in a browser stays optional (the WORLDS v3 probe)."""
+    import re
+
+    from tests.test_world_builder_appearance_page import _Markup, _code_only, _rule, _template
+    from tower.world_builder import appearance_render as AR
+
+    _paint_forbidden_sources(world)
+    assert world.build(params=_raw_params()).state == AP.STATE_OK
+    monkeypatch.setenv(RAWIMG.RAW_IMAGERY_ENV, "1")
+    research = AR.build_appearance_page(world.store, WORLD, SESSION)
+    template = _template()
+
+    # ORACLE (APPEARANCE §6.6): a research page raises the marker at once --
+    # shown, with its words -- and moves the top of the page down for it.
+    got = _run_mark(research)
+    assert got["raw"] is True
+    assert got["hidden"] is False
+    assert got["text"] == "Research build — unredacted local capture — not privacy-safe"
+    assert got["body"] == ["booting", "rawimagery"]
+    assert got["title"] == "RESEARCH — World"
+    # CHARACTERIZATION: its measured height, kept current on resize.
+    assert got["props"] == {"--rawmark": "26px"} and got["listeners"] == ["resize"]
+    # ORACLE: a product page (redacted, or no field at all) leaves it hidden.
+    for config in ({"imagery_source": RED}, {}):
+        product = template.replace(AR.TOKEN_CONFIG, json.dumps(config))
+        got = _run_mark(product)
+        assert (got["raw"], got["hidden"], got["text"]) == (False, True, ""), config
+        assert got["body"] == ["booting"] and got["title"] == "World", config
+        assert got["props"] == {} and got["listeners"] == [], config
+
+    for page in (research, template):
+        # ORACLE: the one rule that hides the marker is its `[hidden]` rule, and
+        # no rule hides the shown marker, or the body or root it sits in.
+        assert _rule(page, "#rawmark[hidden]") == {"display": "none"}
+        assert _rules_hiding_the_shown_marker(page) == []
+        # CHARACTERIZATION: where it sits and how it reads, and that it carries
+        # no inline style and is not taken out of the accessibility tree.
+        assert _rule(page, "#rawmark") == {
+            "position": "fixed", "top": "0", "left": "0", "right": "0", "z-index": "6",
+            "pointer-events": "none",
+            "padding": "calc(6px + env(safe-area-inset-top)) 12px 6px", "text-align": "center",
+            "font-size": "11px", "line-height": "1.35", "letter-spacing": ".04em",
+            "text-transform": "uppercase", "color": "#2a0b06", "background": "#ffb4a2",
+            "border-bottom": "1px solid #c96a52"}
+        assert _Markup(page).by_id("rawmark") == {
+            "id": "rawmark", "role": "status", "aria-live": "polite", "hidden": None}
+        # ORACLE: in the page's code, only `markImagery` touches the marker, and
+        # nothing takes the body's `rawimagery` class off again.
+        code = _code_only(page[page.index("<script>"):])
+        assert re.findall(r"[\w$.\"'(-]*rawmark[\w\"')-]*", code) == ['$("rawmark")',
+                                                                     '"--rawmark"']
+        assert code.count("rawimagery") == 1 and 'classList.add("rawimagery")' in code
+
+    # ...and the check itself sees each way the C13 mutants hid it.
+    for rule in ("body.rawimagery #rawmark{display:none!important}", "#rawmark{opacity:0}",
+                 "div[role=status]{visibility:hidden}", "body.rawimagery{display:none}"):
+        mutated = research.replace("</style>", rule + "\n</style>", 1)
+        assert _rules_hiding_the_shown_marker(mutated), rule
+    assert not _rules_hiding_the_shown_marker(
+        research.replace("</style>", "#caption.rawimagery{display:none}\n</style>", 1))
+
+
 # ---------------------------------------------------------------------------
 # 5. the bypass stays local
 # ---------------------------------------------------------------------------
