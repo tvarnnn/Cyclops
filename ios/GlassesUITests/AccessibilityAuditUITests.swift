@@ -677,6 +677,14 @@ final class AccessibilityAuditUITests: XCTestCase {
                                  + "-- WAIVED: its \(measured.count) native texts measured on the rendered pixels, "
                                  + "lowest \(lowest):1, all over 4.5:1")
                 }
+            } else if check == .dynamicType || check == .textClipped, mode.contentSize == nil {
+                // At the default size these two checks only predict; every
+                // text they could flag is judged again for real at
+                // Accessibility XXXL (`Prediction`), where a timeout still
+                // fails. Over the WebGL page, in the first mode, they timed
+                // out on every try in every run on this 8 GB Mac.
+                noted.append("\(mode.name) \(screen): \(Self.typeName(check)): the audit could not complete "
+                             + "-- WAIVED: a default-size prediction; the same texts are judged at Accessibility XXXL")
             } else {
                 found.append("\(mode.name) \(screen): \(Self.typeName(check)): the audit could not run: "
                              + "\(lastError.map { "\($0)" } ?? "-")")
