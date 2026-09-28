@@ -4444,6 +4444,13 @@ final class WorldBuilderSessionStubProtocol: URLProtocol {
         return requests
     }
 
+    /// Replaces one route's answer, keeping what was recorded.
+    static func setRoute(_ key: String, _ route: (Int, [String: Any])) {
+        lock.lock()
+        defer { lock.unlock() }
+        routes[key] = route
+    }
+
     static func makeSession() -> URLSession {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.protocolClasses = [WorldBuilderSessionStubProtocol.self]
@@ -4586,7 +4593,11 @@ final class WorldBuilderSessionControllerTests: XCTestCase {
         XCTAssertEqual(requests().count, 1)
 
         controller.towerReachabilityChanged(isReachable: false)
-        XCTAssertEqual(controller.status, .active, "an honoured start was forgotten on a drop")
+        XCTAssertEqual(controller.status, .towerLost, "a disconnect must not keep claiming active")
+        XCTAssertEqual(
+            controller.footnote,
+            "The Tower disconnected. This phone cannot tell whether World Builder is still active there; it asks again when the Tower reconnects."
+        )
         controller.towerReachabilityChanged(isReachable: true)
         let restarted = await waitUntil { self.requests().count == 2 }
         XCTAssertTrue(restarted)
@@ -4594,6 +4605,76 @@ final class WorldBuilderSessionControllerTests: XCTestCase {
             "/cartridges/world_builder/session/start",
             "/cartridges/world_builder/session/start",
         ])
+    }
+
+    /// U0.8 F01: once the socket drops, "active" is no longer a claim the
+    /// phone can make; the reconnect asks again.
+    func testADisconnectAfterActiveNeverClaimsActive() async {
+        let controller = makeController()
+        controller.workspaceDidAppear(isTowerReachable: true)
+        let active = await waitUntil { controller.status == .active }
+        XCTAssertTrue(active, "status is \(controller.status)")
+
+        controller.towerReachabilityChanged(isReachable: false)
+        XCTAssertEqual(controller.status, .towerLost)
+        XCTAssertFalse(controller.footnote.contains("is active"), controller.footnote)
+
+        controller.towerReachabilityChanged(isReachable: true)
+        let askedAgain = await waitUntil { self.requests().count == 2 }
+        XCTAssertTrue(askedAgain, "requests: \(requests())")
+        let activeAgain = await waitUntil { controller.status == .active }
+        XCTAssertTrue(activeAgain, "status is \(controller.status)")
+    }
+
+    /// U0.8 F02: a failed start is asked again in place, with no reconnect
+    /// and no leaving the workspace.
+    func testAFailedStartCanBeAskedAgainInPlace() async {
+        WorldBuilderSessionStubProtocol.reset(routes: [
+            Self.startKey: (500, ["detail": "boom"]),
+            Self.stopKey: (200, session(state: "stopped")),
+        ])
+        let controller = makeController()
+        controller.workspaceDidAppear(isTowerReachable: true)
+        let failed = await waitUntil {
+            if case .failed = controller.status { return true }
+            return false
+        }
+        XCTAssertTrue(failed, "status is \(controller.status)")
+        XCTAssertTrue(controller.canRetry)
+
+        WorldBuilderSessionStubProtocol.setRoute(Self.startKey, (200, session(state: "active")))
+        controller.retry()
+        let active = await waitUntil { controller.status == .active }
+        XCTAssertTrue(active, "status is \(controller.status)")
+        XCTAssertFalse(controller.canRetry)
+        XCTAssertEqual(requests(), [
+            "/cartridges/world_builder/session/start",
+            "/cartridges/world_builder/session/start",
+        ])
+    }
+
+    /// U0.8 F02: a Tower with no producer cannot be talked round, so no
+    /// retry is offered for it.
+    func testANoProducerRefusalOffersNoRetry() async {
+        var refusal = session(state: "stopped", accepted: false, changed: false)
+        refusal["reason"] = "unsupported"
+        refusal["message"] = "no World Builder producer is configured on this Tower"
+        WorldBuilderSessionStubProtocol.reset(routes: [
+            Self.startKey: (409, ["detail": refusal]),
+            Self.stopKey: (200, session(state: "stopped")),
+        ])
+        let controller = makeController()
+        controller.workspaceDidAppear(isTowerReachable: true)
+        let refused = await waitUntil {
+            if case .refused = controller.status { return true }
+            return false
+        }
+        XCTAssertTrue(refused, "status is \(controller.status)")
+        XCTAssertEqual(controller.lastRefusalReason, .unsupported)
+        XCTAssertFalse(controller.canRetry)
+        controller.retry()
+        try? await Task.sleep(nanoseconds: 150_000_000)
+        XCTAssertEqual(requests(), ["/cartridges/world_builder/session/start"], "a retry was sent anyway")
     }
 
     /// Off screen, a reconnect asks for nothing.

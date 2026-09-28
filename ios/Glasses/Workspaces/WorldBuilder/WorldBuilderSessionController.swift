@@ -60,6 +60,10 @@ final class WorldBuilderSessionController: ObservableObject {
         /// On screen with no Tower to ask. `start` goes out when the socket
         /// comes back.
         case waitingForTower
+        /// The start was honoured and the socket then went away. The phone
+        /// cannot tell what the Tower holds now; `start` goes out again when
+        /// the socket comes back (U0.8 F01).
+        case towerLost
         /// A `start` is in flight.
         case starting
         /// The Tower honoured `start`. **Intent, not liveness.**
@@ -77,6 +81,30 @@ final class WorldBuilderSessionController: ObservableObject {
 
     @Published private(set) var status: Status = .notAsked
 
+    /// The reason the Tower gave with its last 409, while that refusal is
+    /// the status. Cleared when a new start goes out.
+    @Published private(set) var lastRefusalReason: CartridgeSessionRefusalReason?
+
+    /// The in-place retry's title (U0.8 F02; manager 137 D2).
+    static let retryTitle = "Ask again"
+
+    /// Whether asking again could change the answer. A refusal with reason
+    /// `unsupported` means the Tower has no producer, so it cannot; a 404
+    /// (`.noSessionControl`) is a settled answer too.
+    var canRetry: Bool {
+        switch status {
+        case .failed: return true
+        case .refused: return lastRefusalReason != .unsupported
+        default: return false
+        }
+    }
+
+    /// A person asked again after a failed or refused start.
+    func retry() {
+        guard isOnScreen, canRetry else { return }
+        start()
+    }
+
     /// One line for under the capture control. Every sentence is a claim the
     /// phone can support from what it sent and what came back.
     var footnote: String { Self.footnote(for: status) }
@@ -88,6 +116,8 @@ final class WorldBuilderSessionController: ObservableObject {
             return "World Builder has not been asked for on the Tower yet."
         case .waitingForTower:
             return "The Tower is not connected. World Builder will be asked for when it is."
+        case .towerLost:
+            return "The Tower disconnected. This phone cannot tell whether World Builder is still active there; it asks again when the Tower reconnects."
         case .starting:
             return "Asking the Tower to activate World Builder…"
         case .active:
@@ -148,10 +178,12 @@ final class WorldBuilderSessionController: ObservableObject {
         guard isOnScreen else { return }
         if isReachable {
             start()
-        } else if status != .active {
-            // A start that was waiting or failing has lost its Tower. An
-            // `.active` answer already given stands as what was asked for.
-            status = .waitingForTower
+        } else {
+            // An honoured start no longer stands as a claim once the socket
+            // is gone: the Tower may have restarted, and a restarted Tower is
+            // `stopped`. A start that was waiting or failing has lost its
+            // Tower. A reconnect calls `start()`, which moves either on.
+            status = (status == .active) ? .towerLost : .waitingForTower
         }
     }
 
@@ -172,6 +204,7 @@ final class WorldBuilderSessionController: ObservableObject {
             case .honoured:
                 self.status = .active
             case .refused(let refusal):
+                self.lastRefusalReason = refusal.reason
                 self.status = .refused(refusal.message)
             }
         }
@@ -215,6 +248,7 @@ final class WorldBuilderSessionController: ObservableObject {
         generation += 1
         let mine = generation
         status = pending
+        if action == .start { lastRefusalReason = nil }
         let control = self.control
         let previous = inFlight
         inFlight = Task { [weak self] in

@@ -52,6 +52,58 @@ final class DeadEndsUITests: XCTestCase {
         mock?.stop()
     }
 
+    // MARK: Step 1 -- the World Builder session line
+
+    static let activeSentence = "World Builder is active on the Tower."
+    static let towerLostSentence = "The Tower disconnected. This phone cannot tell whether World Builder is still "
+        + "active there; it asks again when the Tower reconnects."
+
+    /// F01: once the socket drops, the line stops saying "active".
+    func testTheSessionLineStopsClaimingActiveWhenTheTowerDrops() throws {
+        mock.setRoute(Self.sessionStart, status: 200, body: Self.session(state: "active"))
+        mock.setRoute(Self.sessionStop, status: 200, body: Self.session(state: "stopped"))
+        scriptWorldBuilder(ackSubscribes: true)
+        launch(tower: mockAuthority)
+        open(cartridge: "World Builder")
+
+        let footnote = element("wb-session-footnote")
+        XCTAssertTrue(waitFor(timeout: 20) { footnote.exists && footnote.label == Self.activeSentence },
+                      "the session line said active: \(footnote.exists ? footnote.label : "(none)")")
+
+        mock.refusesSockets = true
+        mock.dropSocket()
+
+        XCTAssertTrue(waitFor(timeout: 10) { footnote.label == Self.towerLostSentence },
+                      "the session line after the drop: \(footnote.label)")
+        XCTAssertFalse(labelled(Self.activeSentence).exists, "something still claims World Builder is active")
+    }
+
+    /// F02: a failed request is asked again in place.
+    func testAFailedWorldBuilderRequestCanBeAskedAgain() throws {
+        mock.setRoute(Self.sessionStart, status: 500, body: #"{"detail":"boom"}"#)
+        mock.setRoute(Self.sessionStop, status: 200, body: Self.session(state: "stopped"))
+        scriptWorldBuilder(ackSubscribes: true)
+        launch(tower: mockAuthority)
+        open(cartridge: "World Builder")
+
+        let footnote = element("wb-session-footnote")
+        XCTAssertTrue(waitFor(timeout: 20) {
+            footnote.exists && footnote.label.hasPrefix("World Builder could not be asked for on the Tower")
+        }, "the session line: \(footnote.exists ? footnote.label : "(none)")")
+
+        mock.setRoute(Self.sessionStart, status: 200, body: Self.session(state: "active"))
+        let retry = element("wb-session-retry")
+        XCTAssertTrue(reveal(retry), "the Ask again button")
+        XCTAssertEqual(retry.label, "Ask again")
+        retry.tap()
+
+        XCTAssertTrue(waitFor(timeout: 10) { footnote.label == Self.activeSentence },
+                      "the session line after Ask again: \(footnote.label)")
+        XCTAssertFalse(retry.exists, "Ask again is gone once the Tower said yes")
+        let starts = mock.requestLines.filter { $0 == "\(Self.sessionStart) HTTP/1.1" }
+        XCTAssertEqual(starts.count, 2, "\(mock.requestLines)")
+    }
+
     // MARK: Launch (H3)
 
     /// `tower` is the socket's `host:port`; `nil` uses the saved address.

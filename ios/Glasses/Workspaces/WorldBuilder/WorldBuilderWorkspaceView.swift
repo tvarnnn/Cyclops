@@ -162,8 +162,18 @@ struct WorldBuilderWorkspaceView: View {
             // gate applies to a Release phone's neighbour as much as to a
             // DEBUG phone's own capture. One line, worded as what was asked
             // for — `active` is intent, and whether a builder attached is the
-            // canvas's report, not this line's.
-            HelperText(session.footnote)
+            // canvas's report, not this line's. A failed or refused request
+            // can be asked again in place (U0.8 F02; manager 137 D2).
+            VStack(spacing: 6) {
+                HelperText(session.footnote)
+                    .accessibilityIdentifier("wb-session-footnote")
+                if session.canRetry {
+                    Button(WorldBuilderSessionController.retryTitle) { session.retry() }
+                        .font(.footnote)
+                        .readableBorderedButton()
+                        .accessibilityIdentifier("wb-session-retry")
+                }
+            }
         }
         .animation(.easeInOut(duration: 0.25), value: world.lookBackBanner)
         .sheet(isPresented: $isShowingWorlds) {
