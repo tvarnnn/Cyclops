@@ -917,12 +917,18 @@ def _flag(name: str, *, default: bool) -> bool:
 # configuration -- `get_settings()` raises on a malformed `TOWER_PORT`, which is
 # no reason for a solve to fail.
 WORLD_SOLVE_MASKS_ENV = "TOWER_WORLD_SOLVE_MASKS"
+WORLD_SOLVE_MASKS_AT_STOP_ENV = "TOWER_WORLD_SOLVE_MASKS_AT_STOP"
 WORLD_SOLVE_SEED_ENV = "TOWER_WORLD_SOLVE_SEED"
 
 
 def world_solve_masks_setting() -> bool:
     """`TOWER_WORLD_SOLVE_MASKS`: transient masks on the final solve. Off."""
     return _flag(WORLD_SOLVE_MASKS_ENV, default=False)
+
+
+def world_solve_masks_at_stop_setting() -> bool:
+    """Prefill final-solve masks during a running background solve's Stop wait. Off."""
+    return _flag(WORLD_SOLVE_MASKS_AT_STOP_ENV, default=False)
 
 
 def world_solve_seed_setting() -> int | None:

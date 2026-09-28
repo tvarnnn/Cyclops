@@ -113,6 +113,7 @@ never touched.
 | setting | default | physical test | what it does |
 |---|---|---|---|
 | `TOWER_WORLD_SOLVE_MASKS` | `false` | `true` | masks on the final solve; the gate's hard dependency |
+| `TOWER_WORLD_SOLVE_MASKS_AT_STOP` | `off` | `off` | when masks are enabled and a background solve is running at Stop, prefills masks from its prepared solver images during the bounded wait; the final solve waits for the child to exit |
 | `TOWER_WORLD_SOLVE_SEED` | unset | `0` | seeded, single-thread mapper; freezes matching; the consensus needs it |
 | `TOWER_WORLD_SOLVE_GATE` | `false` | `true` | depth before publish, the evidence gate, `components.json`, the notice |
 | `TOWER_WORLD_SOLVE_CONSENSUS` | `1` | `3` | mapper-seed draws; accepts 1, 3, 5 or 7 only, and anything else reads as 1 and is logged |

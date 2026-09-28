@@ -123,8 +123,10 @@ from tower.world_builder.schema import (  # noqa: E402
     END_REASON_STOP,
 )
 from tower.process_ownership import (  # noqa: E402
+    assign_to_job,
     interpreter_environment,
     interpreter_executable,
+    terminate_tree,
 )
 from tower.world_builder.store import WorldStore  # noqa: E402
 from tower.world_builder import stage_timing  # noqa: E402
@@ -729,6 +731,83 @@ class BackgroundSurface:
         if self._log is not None:
             self._log.close()
             self._log = None
+
+
+class StopSolverMasks:
+    """A Stop-only mask prefill, joined before the final solve owns masks."""
+
+    def __init__(self, solver: "BackgroundSolver", *, spawn=None):
+        self.solver = solver
+        self._spawn = spawn if spawn is not None else subprocess.Popen
+        self._child = None
+        self._job = None
+
+    def launch(self) -> bool:
+        argv = [
+            python_executable(), str(TOWER_ROOT / "scripts" / "world_solve_masks.py"),
+            "--root", str(self.solver.root), "--world", self.solver.world_id,
+            "--session", self.solver.session_id,
+        ]
+        try:
+            self._child = self._spawn(
+                argv, cwd=str(TOWER_ROOT), stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                env=child_environment(),
+            )
+            self._job = assign_to_job(self._child)
+        except Exception as exc:  # prefill failure must leave the old final solve available
+            logger.warning("[Tower][WorldBuilder] Stop mask prefill could not start: %s", exc)
+            self.close()
+            return False
+        return True
+
+    def join(self, *, should_stop) -> None:
+        """Wait for a complete pass; a hard stop owns and kills the child."""
+        try:
+            if self._child is None:
+                return
+            while self._child.poll() is None:
+                if should_stop():
+                    terminate_tree(self._child, job=self._job,
+                                   timeout=CHILD_TERMINATE_TIMEOUT_S, hard=True)
+                    return
+                time.sleep(CHILD_POLL_S)
+            if self._child.returncode != 0:
+                logger.warning("[Tower][WorldBuilder] Stop mask prefill exited %s; "
+                               "the final solve will compute missing masks", self._child.returncode)
+        finally:
+            self.close()
+
+    def close(self) -> None:
+        if self._child is not None and self._child.poll() is None:
+            terminate_tree(self._child, job=self._job,
+                           timeout=CHILD_TERMINATE_TIMEOUT_S, hard=True)
+        if self._job is not None:
+            self._job.close()
+            self._job = None
+        self._child = None
+
+
+def wait_for_background_solve_at_stop(solver, timeout: float, *, should_stop) -> None:
+    """Keep the old wait; optionally overlap its running solve with masks."""
+    from tower.config import (  # noqa: PLC0415
+        world_solve_masks_at_stop_setting, world_solve_masks_setting,
+    )
+
+    mask_child = None
+    if (world_solve_masks_at_stop_setting() and world_solve_masks_setting()
+            and solver.running):
+        mask_child = StopSolverMasks(solver)
+        mask_child.launch()
+    try:
+        solver.wait(timeout, should_stop=should_stop)
+    finally:
+        if mask_child is not None:
+            try:
+                mask_child.join(should_stop=should_stop)
+            except Exception as exc:  # the final solve owns all cache misses
+                logger.warning("[Tower][WorldBuilder] Stop mask prefill failed: %s", exc)
+                mask_child.close()
 
 
 class BackgroundSolver:
@@ -2388,7 +2467,8 @@ def main(argv=None) -> int:
             # A background solve still running at Stop is given a bounded
             # wait and then TERMINATED, never abandoned: the final solve is
             # about to reuse its workspace.
-            solver.wait(args.solve_wait_seconds, should_stop=stop_request.hard_asked_for)
+            wait_for_background_solve_at_stop(
+                solver, args.solve_wait_seconds, should_stop=stop_request.hard_asked_for)
             if stop_request.hard:
                 final_solve_state = FINAL_SOLVE_SKIPPED
                 finalization_detail = (
