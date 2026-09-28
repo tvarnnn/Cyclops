@@ -47,7 +47,8 @@ body.booting #caption,body.booting #bar{opacity:0;pointer-events:none}
   background:linear-gradient(to top,rgba(11,13,16,.96),rgba(11,13,16,0));
   display:flex;gap:8px;align-items:center;flex-wrap:wrap}
 button{appearance:none;-webkit-appearance:none;border:1px solid var(--line);background:#14171c;color:var(--ink);
-  border-radius:8px;padding:8px 11px;font:inherit;font-size:13px;min-height:38px;touch-action:manipulation}
+  border-radius:8px;padding:8px 11px;font:inherit;font-size:13px;min-height:44px;touch-action:manipulation}
+#bar button{min-width:44px}
 button[aria-pressed="true"]{border-color:var(--accent);color:var(--accent)}
 button[disabled]{opacity:.4}
 /* The scrim is a gradient that fades out over the top of the frame, and the
@@ -110,7 +111,7 @@ body.rawimagery #compass{top:calc(8px + var(--rawmark, 26px) + env(safe-area-ins
 body.rawimagery #clabel{top:calc(66px + var(--rawmark, 26px) + env(safe-area-inset-top))}
 .spacer{flex:1}
 #pos{font-variant-numeric:tabular-nums;color:var(--dim);font-size:12px}
-#hint{position:fixed;left:50%;bottom:calc(104px + env(safe-area-inset-bottom));transform:translateX(-50%);padding:6px 12px;border-radius:14px;
+#hint{position:fixed;left:50%;bottom:max(calc(104px + env(safe-area-inset-bottom)), calc(var(--barh, 56px) + 8px));transform:translateX(-50%);padding:6px 12px;border-radius:14px;
   background:rgba(11,13,16,.55);color:var(--dim);font-size:12px;pointer-events:none;opacity:0;
   transition:opacity .35s ease}
 /* THE DARK STATE, which is not a toast.
@@ -121,9 +122,9 @@ body.rawimagery #clabel{top:calc(66px + var(--rawmark, 26px) + env(safe-area-ins
    is true for as long as you keep looking that way has to be SAID for as long
    as it is true. This is that: permanent while the view is on nothing, calm,
    out of the way, and gone the moment the room is back. It is also a control:
-   tapping it turns you to the nearest photographed direction, like the ring
+   tapping it turns you to the nearest reconstructed direction, like the ring
    and the edge chevron. */
-#dark{position:fixed;left:50%;bottom:calc(104px + env(safe-area-inset-bottom));transform:translateX(-50%);
+#dark{position:fixed;left:50%;bottom:max(calc(104px + env(safe-area-inset-bottom)), calc(var(--barh, 56px) + 8px));transform:translateX(-50%);
   max-width:min(84vw,360px);padding:7px 13px;border-radius:15px;text-align:center;
   background:rgba(8,10,13,.62);border:1px solid rgba(255,255,255,.07);
   color:var(--dim);font-size:12px;line-height:1.35;opacity:0;pointer-events:none;
@@ -132,11 +133,11 @@ body.rawimagery #clabel{top:calc(66px + var(--rawmark, 26px) + env(safe-area-ins
 #dark b{display:block;color:#c9ced6;font-weight:600}
 #dark span{color:#7f868f;font-size:11px}
 /* THE ORIENTATION RING. Turning is free and on this capture more than half of
-   a full turn was never photographed, so the page has to be able to say where
+   a full turn has nothing reconstructed, so the page has to be able to say where
    the room is while you are pointed away from it -- otherwise five black
    frames in a row read as a crash rather than as the truth.
    The ring is a compass of COVERAGE: the lit arc is the directions a
-   photograph exists in, from where you stand; the way you are looking is
+   kept frame covers, from where you stand; the way you are looking is
    always at the top. When the lit arc is at the bottom, the room is behind
    you. It says nothing about whether there is anything worth seeing there. */
 /* It is LEGIBLE AT REST and it is LABELLED. It used to ramp its opacity in
@@ -183,21 +184,21 @@ body.rawimagery #clabel{top:calc(66px + var(--rawmark, 26px) + env(safe-area-ins
        never stood back from the desk, so every vantage the envelope holds is
        a view FROM the desk. The button goes to the best-supported vantage
        there is, it says so, and it flies there. -->
-  <button id="bOverview" aria-label="Fly to the clearest vantage">Best view</button>
-  <!-- Turns, from where you stand, to the nearest heading the glasses actually
-       photographed. It does not move you: that is what Best view does. -->
-  <button id="bBack" aria-label="Turn to the nearest photographed direction">Face the room</button>
+  <button id="bOverview" aria-label="Best view: fly to the clearest vantage">Best view</button>
+  <!-- Turns, from where you stand, to the nearest heading the page has
+       reconstructed. It does not move you: that is what Best view does. -->
+  <button id="bBack" aria-label="Face the room: turn to the nearest reconstructed direction">Face the room</button>
   <button id="bPrev" aria-label="Previous recorded view">&#8592;</button>
-  <button id="bNext">&#8594;</button>
+  <button id="bNext" aria-label="Next recorded view">&#8594;</button>
   <span id="pos"></span>
   <span class="spacer"></span>
-  <button id="bReset">Reset</button>
+  <button id="bReset" aria-label="Reset: return to the opening view">Reset</button>
 </div>
 <canvas id="compass" width="58" height="58" role="img"
-  aria-label="Which directions were photographed from here"></canvas>
-<div id="clabel" aria-hidden="true">photographed<br>from here</div>
+  aria-label="Which directions are reconstructed from here"></canvas>
+<div id="clabel" aria-hidden="true">reconstructed<br>from here</div>
 <div id="back" aria-hidden="true"></div>
-<div id="hint" aria-live="polite">Not captured beyond here</div>
+<div id="hint" aria-live="polite">Movement stops here</div>
 <div id="dark" role="status" aria-live="polite"></div>
 <!-- The research marker (contract §6.6). Empty and hidden for the product;
      a research build fills it and it stays on screen for the life of the
@@ -580,7 +581,7 @@ const NAV = (() => {
      page, not as a boundary.
      So the two are separated. ROTATION is free -- full 360 of yaw from any
      reachable position, pitch limited only by the neck -- because turning to a
-     wall the glasses never photographed shows honest darkness, which is true
+     wall this page has not reconstructed shows honest darkness, which is true
      and expected. A cage is not. WHERE THE CAMERA MAY BE is still limited, by
      the two limits that are physically true: the tube around the walk the
      wearer actually took, and how close a 360x640 frame may be magnified. */
@@ -618,7 +619,7 @@ const NAV = (() => {
   // and 64-68% at 0.60-0.70.
   // It NO LONGER RESISTS A LOOK (fix-it interaction lane). It is what the page
   // says a view is worth: below T_LO the page tells you, once and quietly,
-  // that nothing was photographed this way -- and turns anyway. It still
+  // that this direction is poorly covered -- and turns anyway. It still
   // chooses the Best view's candidates and it is still reported.
   const T_LO = 0.68, T_HI = 0.80;
   // How close the camera may come to the surface (scene units): nearer, a
@@ -965,8 +966,8 @@ const NAV = (() => {
   function closeBound(F, p){ return 1 - smooth(D_MIN, D_SOFT, nearest(F, p)); }
   /* How far past the soft edge a camera is, 0 (inside) .. 1 (at the limit). */
   function positionBound(e){ return smooth(R_SOFT / R_MAX, 1, e); }
-  /* How far off the capture a view is, 0 (well covered) .. 1 (nothing was
-     photographed this way). It no longer resists anything: it is what the page
+  /* How far off the capture a view is, 0 (well covered) .. 1 (nothing
+     reconstructed this way). It no longer resists anything: it is what the page
      SAYS, and what a measurement reads. */
   function lookBound(s, floor){
     const hi = Math.min(T_HI, floor ?? 1), lo = Math.min(T_LO, hi - 0.06);
@@ -981,8 +982,8 @@ const NAV = (() => {
      blotch <= 2.5%, seam excess <= 8). On the canonical world that made
      `dark` exactly 1 at EIGHT of nine sampled recorded poses, including ones
      the page draws 99.4% of, and thirty frames of drag at the opening pose --
-     97% drawn, the first thing anybody sees -- raised *Nothing was
-     photographed this way* five times. A page that says that over a
+     97% drawn, the first thing anybody sees -- raised the dark sentence five
+     times. A page that says that over a
      photograph of the room is not being careful, it is crying wolf, and the
      sentence stops meaning anything by the time it is true.
      DARK_LO / DARK_HI are the band for the question actually being asked,
@@ -1154,7 +1155,7 @@ const NAV = (() => {
     }
     // Whether the view it ended on is on ANYTHING, for the page to SAY (never
     // to enforce): 0 where the capture covers this direction, 1 where nothing
-    // was photographed this way. Against the FIXED thresholds, not against
+    // is reconstructed this way. Against the FIXED thresholds, not against
     // `out.floor`. The floor exists so that a weak recorded view is never
     // treated as "beyond" by a LIMIT, and a look has no limit any more. Left in
     // the reporting it would have narrowed the one thing it must not: standing
@@ -1589,14 +1590,14 @@ uniform float uTemp; uniform float uConsensus; uniform float uBorder; uniform fl
 uniform float uConfLo; uniform float uConfHi; uniform float uConfOn;
 uniform float uHaze;
 ${GLSL_BACKGROUND}
-/* THE HAZE: what a place NOBODY PHOTOGRAPHED looks like.
+/* THE HAZE: what a place NO KEPT FRAME SAW looks like.
    The caption has always promised "a grey haze is a place no kept frame saw".
    It was not grey and it was not a haze: proxy with no evidence wrote alpha 0
    and came out as the background, and the independent review measured it at
    luminance 10-18 against a background of 11-28 -- in the opening view the
    "haze" was ten levels DARKER than the emptiness it is supposed to be
    distinguishable from, and at +90 degrees 13.4% of the frame was real
-   geometry nobody ever saw, indistinguishable from nothing at all.
+   geometry no kept frame saw, indistinguishable from nothing at all.
    So it is drawn: one flat colour, no texture, no hue of its own, no detail
    at any scale, visibly above the void and below the room. It is the only
    thing on this page that is painted rather than photographed, and that is
@@ -2756,9 +2757,10 @@ async function main(){
      are different things. The EDGE hint is for a push the envelope resisted --
      there is a limit there and the page enforces it. The DARK hint is for a
      look that has turned off the capture: nothing is enforced, the turn
-     happened, and this only says why the room went dark. */
-  const HINT_EDGE = "Not captured beyond here";
-  const HINT_DARK = "Nothing was photographed this way";
+     happened, and this only says that the room went dark. */
+  const HINT_EDGE = "Movement stops here";
+  const HINT_DARK = "Not reconstructed from here";
+  const HINT_DARK_TAP = "Tap to turn back";
   let hintTimer = null;
   function hint(level, text){
     if (level < 0.35) return;
@@ -2959,7 +2961,7 @@ async function main(){
       const b = document.createElement("b");
       b.textContent = HINT_DARK;
       const s = document.createElement("span");
-      s.textContent = "the glasses never looked this way — tap to turn back";
+      s.textContent = HINT_DARK_TAP;
       el.append(b, s);
       el.classList.add("on");
     } else if (!want && darkShown){
@@ -3200,8 +3202,8 @@ async function main(){
     const gen = ++navGeneration;
     // The one thing the page cannot do until this finishes is EXPLAIN itself.
     // A look already turns (see `navUpdate`), but a turn into the part of the
-    // room nobody photographed goes black with nothing said, because "nothing
-    // was photographed this way" is exactly what the field is still working
+    // room this page has not reconstructed goes black with nothing said, because
+    // whether anything is reconstructed there is what the field is still working
     // out -- and the Best view is disabled for the same reason. So the page
     // says so for the second or two it lasts, rather than presenting a
     // finished surface that quietly knows less than it looks like it does.
@@ -4577,26 +4579,25 @@ async function main(){
            + " This is a research build made from the original capture on this machine: no face"
            + " redaction was applied to it and it is not safe to share."
          : "These are the camera's own frames, with faces redacted, placed on the reconstructed room.")
-       + " Nothing is painted in or imagined: if the glasses did not see it, it is not here."],
+       + " Nothing is painted in or imagined. Parts of the walk the Tower could not place here are not shown, even when they were captured."],
       ["The flat grey patches",
        "A flat grey patch is a place no kept frame saw, or one that was masked as unreliable"
        + " (redaction, hands, views that disagreed). It has no texture and no detail at any scale,"
-       + " and it is never an image of anything: it is there so that “nobody photographed"
-       + " this” does not look like “there is nothing here”."
+       + " and it is never an image of anything: it is there so that “no picture here” does not look like “there is nothing here”."
        + " Cracks a few pixels wide between two parts of one surface are closed from the frames on"
        + " either side; nothing wider is. Where the geometry underneath is wrong, images smear or"
        + " double."],
       ["Looking and moving",
-       "Turning is free: all the way round, and straight up. Where the glasses never looked the room"
+       "Turning is free: all the way round, and straight up. Where nothing is reconstructed from where you stand the room"
        + " is simply dark, and the page says so while you are pointed that way. Moving is not free:"
        + " the camera stays near the path that was walked, so you can step back, stand and crouch a"
        + " little, and a push that slows to nothing has reached the edge of it."],
       ["Finding your way",
-       "The ring at the top right is a compass of what was photographed from where you stand: the lit"
-       + " part is the directions a frame exists in, and you are always at the top. It says a"
+       "The ring at the top right is a compass of what is reconstructed from where you stand: the lit"
+       + " part is the directions a kept frame covers, and you are always at the top. It says a"
        + " photograph exists, not that there is anything worth seeing."
        + " “Face the room” turns you — without moving you — to the nearest"
-       + " photographed direction; the ring, the edge arrow and the dark line do the same."],
+       + " reconstructed direction; the ring, the edge arrow and the dark line do the same."],
       ["The walk",
        "“Best view” flies to the best-supported vantage near the path — the one whose picture is"
        + " most nearly whole, rather than the one that takes in the most; this wearer"

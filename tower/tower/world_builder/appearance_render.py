@@ -325,7 +325,7 @@ ANCHOR_WHAT_RAW = (
 ANCHOR_LOADING = 'status("Loading the room\'s surface…");'
 ANCHOR_FACE_TEXT = '" “Face the room” turns you'
 ANCHOR_FACE_BUTTON = (
-    'aria-label="Turn to the nearest photographed direction">Face the room</button>')
+    'aria-label="Face the room: turn to the nearest reconstructed direction">Face the room</button>')
 AREA_FIRST_CLAUSE = "The camera's own images, faces redacted"
 AREA_FIRST_CLAUSE_RAW = "The camera's own frames, UNREDACTED"
 
@@ -350,7 +350,7 @@ def caption_replacements(captions: dict | None) -> list:
             (ANCHOR_FACE_TEXT, '" “Face the area” turns you'),
             (ANCHOR_LOADING, 'status("Loading the area\'s surface…");'),
             (ANCHOR_FACE_BUTTON,
-             'aria-label="Turn to the nearest photographed direction">Face the area</button>'),
+             'aria-label="Face the area: turn to the nearest reconstructed direction">Face the area</button>'),
         ]
     more = int(captions.get("more_areas") or 0)
     if more >= 1:

@@ -247,6 +247,8 @@ def test_the_area_appearance_page_says_what_it_is(area_world, tmp_path):
     assert "Scale is unknown, so distances are relative." in caption["all"]
     assert "“Face the area” turns you" in caption["all"]
     assert caption["button"] == "Face the area"
+    assert ('aria-label="Face the area: turn to the nearest reconstructed direction">'
+            'Face the area</button>') in page
     # Every user-visible "Face the room" (a code comment keeps its own wording).
     assert "Face the room</button>" not in page and "“Face the room”" not in page
     assert "could not be estimated" not in caption["all"]   # it was levelled

@@ -428,6 +428,85 @@ def _section(text, start, end):
     return text[text.index(start):text.index(end, text.index(start))]
 
 
+_BANNED_VIEWER_CLAIMS = (
+    "not photographed", "never looked", "never photographed", "nobody photographed",
+    "nothing was photographed", "not captured beyond", "photographed direction",
+    "photographed from here", "photographed<br>", "did not see it",
+)
+
+
+def _assert_viewer_copy(page):
+    assert 'const HINT_EDGE = "Movement stops here";' in page
+    assert 'const HINT_DARK = "Not reconstructed from here";' in page
+    assert 'const HINT_DARK_TAP = "Tap to turn back";' in page
+    assert 's.textContent = HINT_DARK_TAP;' in page
+    assert '<div id="clabel" aria-hidden="true">reconstructed<br>from here</div>' in page
+    assert 'aria-label="Which directions are reconstructed from here"' in page
+    assert "A flat grey patch is a place no kept frame saw" in page
+    assert "no texture and no detail at any scale" in page
+    assert "Cracks a few pixels wide between two parts of one surface are closed" in page
+    for claim in _BANNED_VIEWER_CLAIMS:
+        assert claim not in page.lower(), claim
+
+
+def test_every_appearance_page_tells_only_what_this_page_knows(built, tmp_path, monkeypatch):
+    """The template, room, area and research pages use the same truthful copy."""
+    from tests.test_world_builder_appearance import _paint_forbidden_sources
+    from tests.test_world_builder_components_areas import (
+        AREA1, _entries, _finalize, build_area, write_components,
+    )
+    from tests.test_world_builder_raw_imagery import _raw_params
+    from tower.world_builder.appearance_render import build_appearance_page
+    from tower.world_builder.raw_imagery import RAW_IMAGERY_ENV
+
+    template = _template()
+    room = build_appearance_page(built.store, WORLD, SESSION)
+    _finalize(built)
+    record = write_components(built.store, _entries(built.kids))
+    build_area(built, AREA1, record)
+    area_response = _client(built).get(f"/worlds/{WORLD}/areas/{SESSION}/{AREA1}/render")
+    assert area_response.status_code == 200
+
+    raw_world = World(tmp_path / "research")
+    _paint_forbidden_sources(raw_world)
+    assert raw_world.build(params=_raw_params()).state == "ok"
+    monkeypatch.setenv(RAW_IMAGERY_ENV, "1")
+    research_response = _client(raw_world).get(
+        f"/worlds/{WORLD}/render", params={"session_id": SESSION, "viewer": V})
+    assert research_response.status_code == 200
+
+    for page in (template, room, area_response.text, research_response.text):
+        _assert_viewer_copy(page)
+    assert "Research build — unredacted local capture — not privacy-safe" in research_response.text
+
+
+def test_bar_controls_have_the_contract_names_and_targets():
+    page = _template()
+    names = {
+        "bOverview": "Best view: fly to the clearest vantage",
+        "bBack": "Face the room: turn to the nearest reconstructed direction",
+        "bPrev": "Previous recorded view",
+        "bNext": "Next recorded view",
+        "bReset": "Reset: return to the opening view",
+    }
+    for button_id, name in names.items():
+        match = re.search(rf'<button id="{button_id}"([^>]*)>(.*?)</button>', page)
+        assert match, button_id
+        assert re.search(r'aria-label="([^"]+)"', match.group(1)).group(1) == name
+        if button_id in {"bOverview", "bBack", "bReset"}:
+            assert name.startswith(match.group(2))
+    assert ('<canvas id="compass" width="58" height="58" role="img"\n'
+            '  aria-label="Which directions are reconstructed from here"') in page
+    button_rule = _section(page, "button{appearance:none", "button[aria-pressed")
+    assert "min-height:44px" in button_rule
+    assert "#bar button{min-width:44px}" in page
+    assert "#caption button{pointer-events:auto;min-height:24px" in page
+    offset = ("bottom:max(calc(104px + env(safe-area-inset-bottom)), "
+              "calc(var(--barh, 56px) + 8px))")
+    assert "#hint{position:fixed;left:50%;" + offset in page
+    assert "#dark{position:fixed;left:50%;" + offset in page
+
+
 class TestTheBlend:
     """What the page draws (WORLD-BUILDER-WORLDS.md §4), checked on its source:
     the renderer runs only in a browser, and the behaviour is measured there by
@@ -910,6 +989,114 @@ def _run_nav(script):
     assert r.returncode == 0 and "nav ok" in r.stdout, (r.stdout + r.stderr)[-3000:]
 
 
+def test_captured_look_back_outside_the_shown_component_is_called_unreconstructed(built):
+    """Posed look-back frames in an unshown piece cannot support a capture claim."""
+    import dataclasses
+    import subprocess
+
+    import numpy as np
+
+    from tower.world_builder.appearance_render import build_appearance_config
+    from tower.world_builder.global_solve import load_solution
+
+    shown_cameras = build_appearance_config(built.store, WORLD, SESSION)["cameras"]
+    look_back = {}
+    turn = np.diag([-1.0, 1.0, -1.0])
+    for i, kid in enumerate(built.kids[:3]):
+        pose = built.poses[kid]
+        rotation = np.asarray(pose["rotation"]).reshape(3, 3)
+        translation = np.asarray(pose["translation"])
+        centre = -rotation.T @ translation
+        reversed_rotation = rotation @ turn
+        new_id = f"{SESSION}:{900 + i:08d}"
+        look_back[new_id] = {
+            "component": 1, "observations": 50,
+            "rotation": reversed_rotation.ravel().tolist(),
+            "translation": (-reversed_rotation @ centre).tolist(),
+        }
+        assert np.allclose(-reversed_rotation.T @ look_back[new_id]["translation"], centre)
+        assert (reversed_rotation.T @ np.array([0.0, 0.0, 1.0]))[2] < -0.9
+
+    built._write_solution(built._workspace, dataclasses.replace(
+        built.solution, keyframe_ids=[*built.kids, *look_back],
+        poses={**built.poses, **look_back}))
+    saved = load_solution(built.store, WORLD, SESSION)
+    assert set(look_back).issubset(saved.keyframe_ids)
+    assert all(saved.poses[kid]["component"] == 1 for kid in look_back)
+
+    config = build_appearance_config(built.store, WORLD, SESSION)
+    assert config["cameras"] == shown_cameras, "unshown look-back poses never reach the page"
+    assert len(config["cameras"]) == len(built.kids)
+    assert all(camera[5] > 0.9 for camera in config["cameras"])
+    response = _client(built).get(
+        f"/worlds/{WORLD}/render", params={"session_id": SESSION, "viewer": V})
+    assert response.status_code == 200
+    page = response.text
+    _assert_viewer_copy(page)
+
+    # The page's own navigation field sees only the cameras in its served config.
+    # Its proxy has a front wall at z=3; there is no shown rear view.
+    room = ("const up = [0, 1, 0], cams = " + json.dumps(config["cameras"]) + ";\n" + r"""
+const path = NAV.makePath(cams, up);
+const samples = [], off = [0], idx = [];
+for (let x = -4; x <= 4; x += 0.1) for (let y = -2.5; y <= 2.5; y += 0.1){
+  samples.push(x, y, 3);
+  for (let k = 0; k < cams.length; k++) idx.push(k);
+  off.push(idx.length);
+}
+const centres = Float32Array.from(cams.flatMap(c => [c[0], c[1], c[2]]));
+const F = NAV.fieldJob({samples: Float32Array.from(samples), seenOff: Int32Array.from(off),
+                        seenIdx: Int32Array.from(idx), centres, path});
+while (!NAV.fieldWork(F, 50)) {}
+const dir = (yaw, pitch) => [Math.sin(yaw) * Math.cos(pitch), Math.sin(pitch),
+                             Math.cos(yaw) * Math.cos(pitch)];
+const V = {dir, up, fy: 1.25, aspect: 1.2};
+""")
+    source = (_section(page, '  const HINT_EDGE = "', "  let hintTimer")
+              + _section(page, "  const DARK_SAY_ON = 0.90", "  const KEY_SPEED"))
+    program = ("const assert = require('assert');\n" + _nav_source() + "\n" + room + "\n"
+               + "const S = {}; let tick = 1;\n"
+               + r"""
+const classes = new Set();
+const el = {textContent: "", children: [], classList: {
+  add: name => classes.add(name), remove: name => classes.delete(name),
+  contains: name => classes.has(name)},
+  append(...children){ this.children.push(...children); }};
+const $ = id => { assert.strictEqual(id, "dark"); return el; };
+const document = {createElement: tag => ({tag, textContent: ""})};
+const performance = {now: () => tick};
+const requestDraw = () => {};
+""" + source + r"""
+let cam = {p: cams[1].slice(0, 3), yaw: 0, pitch: 0, floor: 1};
+let front = NAV.step(F, path, cam, {look: [0, 0], move: [0, 0, 0], held: true}, 16, V);
+assert.ok(front.dark < 0.45, `shown front view: ${front.dark}`);
+updateDark(front.dark);
+assert.ok(!el.classList.contains("on"));
+for (let i = 0; i < 105; i++)
+  cam = NAV.step(F, path, cam, {look: [Math.PI / 105, 0], move: [0, 0, 0], held: true}, 16, V);
+assert.ok(Math.abs(cam.yaw - Math.PI) < 1e-9);
+assert.ok(cam.dark > 0.90, `unshown look-back: ${cam.dark}`);
+updateDark(cam.dark);
+tick += DARK_SAY_MS + 1;
+updateDark(cam.dark);
+assert.ok(el.classList.contains("on"));
+assert.deepStrictEqual(el.children.map(child => [child.tag, child.textContent]),
+                       [["b", "Not reconstructed from here"], ["span", "Tap to turn back"]]);
+assert.strictEqual(S.darkSaid, true);
+const shown = el.children.map(child => child.textContent).join(" ").toLowerCase();
+for (const phrase of ["not photographed", "not captured", "never looked", "nobody photographed"])
+  assert.ok(!shown.includes(phrase), phrase);
+updateDark(front.dark);
+assert.ok(!el.classList.contains("on"));
+assert.strictEqual(S.darkSaid, false);
+console.log("captured look-back ok");
+""")
+    run = subprocess.run([_node(), "-"], input=program, capture_output=True,
+                         text=True, timeout=120)
+    assert run.returncode == 0 and "captured look-back ok" in run.stdout, (
+        run.stdout + run.stderr)[-3000:]
+
+
 class TestTheEnvelope:
 
     def test_the_field_is_support_where_the_walk_looked_and_nothing_elsewhere(self):
@@ -1053,8 +1240,8 @@ assert.ok(cam.p[1] > 0.3, "but it did move: " + cam.p[1]);
     def test_the_cold_open_says_it_is_preparing_while_it_is(self):
         """The other half of review 2 item 7. Answering the finger is not the
         whole fix: a first drag now turns, and on this world it turns into the
-        part of the room nobody photographed, which goes black -- and the
-        sentence that explains that (`Nothing was photographed this way`) is
+         part of the room the page has not reconstructed, which goes black -- and the
+         sentence that explains that (`Not reconstructed from here`) is
         exactly the one the page cannot say until the field is built. So for
         the second or so it takes, the page says it is preparing, and stops
         saying it the moment it is not."""
@@ -1126,7 +1313,7 @@ class TestTheNavigationWiring:
         assert "orbit" not in inp.lower(), "free orbit is gone"
         assert "feel(" in inp and "pinch" in inp.lower()
         assert 'id="bOrbit"' not in text and 'id="bOverview"' in text and 'id="hint"' in text
-        assert "Not captured beyond here" in text
+        assert "Movement stops here" in text
 
     def test_the_envelope_limits_the_camera_and_paints_nothing(self):
         text = _template()
@@ -1646,7 +1833,7 @@ assert.ok(d1 >= Math.min(NAV.D_MIN, d0) - 1e-9, "the drift never went inside the
     def test_the_edge_hint_is_for_a_push_and_the_dark_one_is_only_an_explanation(self):
         """Two different things, and they must not be confused. The edge hint
         means the page stopped you; the dark hint means the page did NOT, and
-        the room ahead is dark because nobody photographed it."""
+         the room ahead is dark because nothing is reconstructed there."""
         text = _template()
         update = _section(text, "function navUpdate(", "function mulberry(")
         assert "hint(next.hard || 0, HINT_EDGE);" in update
@@ -1658,8 +1845,10 @@ assert.ok(d1 >= Math.min(NAV.D_MIN, d0) - 1e-9, "the drift never went inside the
         # (`updateDark`), so the deepest black is the best explained.
         assert "hint(0.45, HINT_DARK);" not in update
         assert "if (looking && next.dark > 0.9) S.darkLooks" in update
-        assert 'const HINT_EDGE = "Not captured beyond here";' in text
-        assert 'const HINT_DARK = "Nothing was photographed this way";' in text
+        assert 'const HINT_EDGE = "Movement stops here";' in text
+        assert 'const HINT_DARK = "Not reconstructed from here";' in text
+        assert 'const HINT_DARK_TAP = "Tap to turn back";' in text
+        assert "s.textContent = HINT_DARK_TAP;" in text
         step = _section(text, "  function step(F, path, cam, ctl, dt, V){", "  /* A uniformly random reachable view")
         # the edge the hint is for is the tube and the standoff, and nothing else
         assert "const bAt = p => Math.max(posB(p), ready ? closeBound(F, p) : 0);" in step
@@ -1668,8 +1857,8 @@ assert.ok(d1 >= Math.min(NAV.D_MIN, d0) - 1e-9, "the drift never went inside the
         # support at which three views in four render well), and asking it here
         # made `dark` exactly 1 at eight of nine sampled recorded poses on the
         # canonical world, including ones the page draws 99.4% of -- so thirty
-        # frames of drag at the opening raised "Nothing was photographed this
-        # way" five times, over a photograph of the room (2026-09-20, fix-it
+        # frames of drag at the opening raised the dark sentence five times,
+        # over a photograph of the room (2026-09-20, fix-it
         # orient lane; ORIENT.md §2.3).
         assert "out.dark = darkness(" in step
         assert "lookBound" not in step, "the quality band is not the darkness band"
@@ -1790,7 +1979,7 @@ assert.ok(ms > 2000 && ms <= 2600, "the Best view is flown, not jumped: " + ms +
 
 class TestKnowingWhichWayTheRoomIs:
     """A look is free now, and on this capture more than half of a full turn
-    was never photographed: five consecutive 30-degree steps of pure black
+    has nothing reconstructed: five consecutive 30-degree steps of pure black
     (INTERACTION.md §3.1). Truthful, and with nothing on screen it reads as a
     crash. The page carries a compass of COVERAGE and a way back."""
 
@@ -1845,8 +2034,8 @@ assert.strictEqual(NAV.bestHeading(mk(3, NAV.RING_FLOOR * 0.5), 0), null);
 """)
 
     def test_a_camera_the_page_placed_eases_back_toward_the_capture(self):
-        """The settle used to ask only for CONTENT, and where the glasses
-        never looked there is no content anywhere near, so its gradient was
+        """The settle used to ask only for CONTENT, and where nothing is
+        reconstructed there is no content anywhere near, so its gradient was
         exactly zero and a page-placed camera on nothing sat on nothing. It
         now falls back to where the capture IS. It is a nudge at the edge and
         not a way home -- the whole budget is C_DRIFT_MAX -- and it still
@@ -1880,7 +2069,7 @@ assert.ok(NAV.C_GRAD_WIDE > NAV.C_GRAD_EPS);
         assert ">Face the room</button>" in text
         # it is a compass of coverage, and the page says so where a person reads
         cap = _section(text, "function updateCaption(", "/* -------- verification hooks")
-        assert "compass of what was photographed" in cap
+        assert "compass of what is reconstructed" in cap
         assert "not that there is anything worth seeing" in cap
         assert "turns you \u2014 without moving you \u2014 to the nearest" in cap
         cue = _section(text, "/* -------- the orientation ring", "const KEY_SPEED")
@@ -2719,7 +2908,7 @@ class TestTheCompassIsLegibleAtRest:
 
     def test_it_is_drawn_from_the_first_frame_and_it_says_what_it_is(self):
         text = _template()
-        assert '<div id="clabel" aria-hidden="true">photographed<br>from here</div>' in text
+        assert '<div id="clabel" aria-hidden="true">reconstructed<br>from here</div>' in text
         cue = _section(text, "  const RING_R = 21, RING_SIZE = 58;", "  /* The way back.")
         assert "if (shownAt === null){ el.classList.remove(\"on\"); lab.classList.remove(\"on\"); return; }" in cue
         # without a field the arcs are blank, which is the truth, not hidden
