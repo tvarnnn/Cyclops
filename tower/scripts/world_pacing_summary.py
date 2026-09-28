@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 import os
 import sys
@@ -72,7 +73,7 @@ def main(argv=None) -> int:
         output.mkdir(parents=True, exist_ok=True)
         _atomic_text(output / "pacing_summary.json", json.dumps(result, indent=2, allow_nan=False) + "\n")
         _atomic_text(output / "pacing_summary.txt", render_text(result, text_runs=args.text_runs))
-    except (OSError, UnicodeError, ValueError, AssertionError) as exc:
+    except (OSError, UnicodeError, ValueError, AssertionError, csv.Error) as exc:  # csv.Error: review LOW-6
         print(f"pacing summary: {exc}", file=sys.stderr)
         return 1
     return 0

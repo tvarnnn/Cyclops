@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import csv
 import json
 import os
@@ -13,7 +14,8 @@ from pathlib import Path
 import pytest
 
 from tower.world_builder.pacing_summary import (
-    _sharp_runs, _timing, load_frames_observed, load_journal, load_regions, render_text, summarize,
+    _region_assignments, _sharp_runs, _timing, load_frames_observed, load_journal, load_regions,
+    render_text, summarize,
 )
 
 
@@ -251,6 +253,111 @@ def test_v1_text_never_claims_different_rooms():
     assert v1[-2:] == ["", "3 blurry frames could not be assigned a room."]
     assert v11[-2:] == ["1 blurry frames came between frames showing different rooms; no room was assigned.",
                         "0 blurry frames could not be assigned a room."]
+
+
+def test_v1_1_text_calls_only_room_to_room_brackets_different_rooms():
+    # OPEN (g), C4i-G: in v1.1 a "between" bracket with exactly one label outside the room
+    # map (closet / other, other / bathroom) is not two rooms.  It renders B3 and counts in
+    # R3, with existing sentences only; the room/room bracket (desk / closet) keeps B2 and R2.
+    a, b, c, d = (f"same:{i:08d}" for i in range(1, 5))
+    rows = [row(0, "parallax", keyframe_id=a), row(.1, "blurred"), row(.2, "blurred"),
+            row(.3, "parallax", keyframe_id=b), row(.4, "blurred"), row(.5, "blurred"), row(.6, "blurred"),
+            row(.7, "parallax", keyframe_id=c), row(.8, "blurred"), row(.9, "parallax", keyframe_id=d)]
+    labels = [{"keyframe_id": a, "region": "desk", "confidence": "high"},
+              {"keyframe_id": b, "region": "closet", "confidence": "high"},
+              {"keyframe_id": c, "region": "other", "confidence": "high"},
+              {"keyframe_id": d, "region": "bathroom", "confidence": "high"}]
+    summary = summarize(rows, regions=labels, room_map=ROOM_MAP, frames_observed=len(rows))
+    # The JSON is unchanged: all three bursts are still "between" in both versions.
+    for name in ("v1", "v1_1"):
+        assert [x["bucket"] for x in summary[name]["bursts"]["top"]] == ["between"] * 3
+        assert summary[name]["regions"]["buckets"]["between"]["refused"] == 6
+    v1, v11 = _columns(render_text(summary))
+    assert v11[1:4] == [
+        "Blurry frames, 0:00 to 0:01 into the walk (0.2 seconds). The room is unknown.",
+        "Blurry frames, 0:00 to 0:00 into the walk (0.1 seconds). The frames just before and after show different rooms.",
+        "Blurry frames, 0:01 to 0:01 into the walk (0.0 seconds). The room is unknown."]
+    assert v11[-2:] == ["2 blurry frames came between frames showing different rooms; no room was assigned.",
+                        "4 blurry frames could not be assigned a room."]
+    assert all(cell.endswith("The room is unknown.") for cell in v1[1:4])
+    assert v1[-2:] == ["", "6 blurry frames could not be assigned a room."]
+
+
+def test_v1_1_between_folds_into_r3_when_the_bursts_cannot_account_for_it():
+    # OPEN (g) fallback, part 1: a blurred row carrying its own keyframe id that the CSV
+    # lacks is "unknown" while its burst is "between", so the bursts cannot split the
+    # bucket exactly; all of v1.1's "between" goes to R3 and R2 is left empty.
+    a, missing, c = "same:00000001", "same:00000002", "same:00000003"
+    rows = [row(0, "parallax", keyframe_id=a), row(.1, "blurred"),
+            row(.2, "blurred", keyframe_id=missing), row(.3, "parallax", keyframe_id=c)]
+    labels = [{"keyframe_id": a, "region": "desk", "confidence": "high"},
+              {"keyframe_id": c, "region": "other", "confidence": "high"}]
+    summary = summarize(rows, regions=labels, room_map=ROOM_MAP)
+    buckets = summary["v1_1"]["regions"]["buckets"]
+    assert (buckets["between"]["refused"], buckets["unknown"]["refused"]) == (1, 1)
+    assert summary["v1_1"]["bursts"]["top"][0]["reason_counts"]["blurred"] == 2
+    _, v11 = _columns(render_text(summary))
+    assert v11[-2:] == ["", "2 blurry frames could not be assigned a room."]
+
+
+def test_v1_1_between_folds_into_r3_past_the_200_burst_cap():
+    # OPEN (g) fallback, part 2: bursts.all is capped at 200, so past it the split is not
+    # known; all of v1.1's "between" goes to R3, while a room/room burst in the top six
+    # still renders B2.
+    a, b = "same:00000001", "same:00000002"
+    rows = [row(0, "parallax", keyframe_id=a), row(.1, "blurred"), row(.2, "blurred"),
+            row(.3, "parallax", keyframe_id=b)]
+    for i in range(205):
+        t = .4 + i * .4
+        rows += [row(t, "blurred"), row(t + .1, tracker="no_reference"), row(t + .2), row(t + .3)]
+    labels = [{"keyframe_id": a, "region": "desk", "confidence": "high"},
+              {"keyframe_id": b, "region": "closet", "confidence": "high"}]
+    summary = summarize(rows, regions=labels, room_map=ROOM_MAP)
+    v11 = summary["v1_1"]
+    assert v11["bursts"]["retained_count"] == 206 and len(v11["bursts"]["all"]) == 200
+    assert v11["regions"]["buckets"]["between"]["refused"] == 2
+    _, right = _columns(render_text(summary))
+    assert right[1].endswith("The frames just before and after show different rooms.")
+    assert right[-2:] == ["", "207 blurry frames could not be assigned a room."]
+
+
+def test_a_burst_without_a_time_gets_no_line():
+    # Review LOW-5: never a B line with "?:??"; the engine always sets received_at.
+    rows = [row(0), row(.1, "blurred"), row(.2), row(None, "blurred"), row(.3), row(.4)]
+    summary = summarize(rows)
+    assert summary["v1_1"]["bursts"]["retained_count"] == 2
+    rendered = render_text(summary)
+    assert "?" not in rendered
+    v1, v11 = _columns(rendered)
+    assert [cell for cell in v1 + v11 if cell.startswith("Blurry frames")] == [
+        "Blurry frames, 0:00 to 0:00 into the walk (0.0 seconds). The room is unknown."] * 2
+
+
+def test_keyframe_check_is_a_set_lookup():
+    # Review LOW-6: "a burst holds no keyframe" looks keyframes up in a set, not a list.
+    a = "same:00000001"
+    rows = [row(0, "parallax", keyframe_id=a), row(.1, "blurred")]
+    labels = [{"keyframe_id": a, "region": "desk", "confidence": "high"}]
+    times = _timing(rows)[0]
+    assert isinstance(_region_assignments(rows, times, labels, ROOM_MAP, True)[3], (set, frozenset))
+
+
+def test_cli_refuses_a_malformed_regions_csv_in_one_line(tmp_path):
+    # Review LOW-6: csv.Error (here a field over the csv module's 131072-char limit) is one
+    # line on stderr and exit 1, like ValueError, not a traceback.
+    journal = tmp_path / "input" / "frames_quality.jsonl"
+    journal.parent.mkdir()
+    journal.write_text(json.dumps(row(0, "parallax", keyframe_id="same:00000001")) + "\n", encoding="utf-8")
+    regions = tmp_path / "regions.csv"
+    regions.write_text("keyframe_id,region,confidence\nsame:00000001," + "x" * 140000 + ",high\n",
+                       encoding="utf-8")
+    room_map = tmp_path / "room_map.json"
+    room_map.write_text(json.dumps(ROOM_MAP), encoding="utf-8")
+    output = tmp_path / "output"
+    refused = _run_cli(journal, output, "--regions", regions, "--room-map", room_map)
+    assert refused.returncode == 1
+    assert len(refused.stderr.splitlines()) == 1 and "field larger than field limit" in refused.stderr
+    assert not output.exists()
 
 
 @pytest.mark.parametrize("reserved", ["unknown", "between", "other_labelled"])
@@ -545,7 +652,19 @@ def test_optional_walk4_frozen_pins_and_cli(tmp_path):
     left, right = _columns((output / "pacing_summary.txt").read_text(encoding="utf-8"))
     assert not any("different rooms" in cell for cell in left)
     assert left[-2:] == ["", "608 blurry frames could not be assigned a room."]
-    assert right[-2:] == ["146 blurry frames came between frames showing different rooms; no room was assigned.",
-                          "394 blurry frames could not be assigned a room."]
+    # OPEN (g), C4i-G: of v1.1's 146 "between" frames, 119 have an unmapped label ("other")
+    # on one side; only 27 are room/room.  The 119 move to R3 (513 = 368 + 26 + 119).
+    area_ranks = [b["rank"] for b in v11["bursts"]["all"] if b["bucket"] == "between" and
+                  (b["bracket"]["before"]["label"] in ROOM_MAP) != (b["bracket"]["after"]["label"] in ROOM_MAP)]
+    assert area_ranks == [7, 9, 17, 25, 32, 38, 40, 54]
+    assert sum(b["reason_counts"]["blurred"] for b in v11["bursts"]["all"] if b["rank"] in area_ranks) == 119
+    assert right[-2:] == ["27 blurry frames came between frames showing different rooms; no room was assigned.",
+                          "513 blurry frames could not be assigned a room."]
+    # Rank 7, the closet exit (closet / other), is B3 in both columns if it is ever displayed.
+    probe = copy.deepcopy(emitted)
+    for name in ("v1", "v1_1"):
+        probe[name]["bursts"]["top"] = probe[name]["bursts"]["all"][6:7]
+    left7, right7 = _columns(render_text(probe))
+    assert left7[1] == right7[1] == "Blurry frames, 1:49 to 1:53 into the walk (3.3 seconds). The room is unknown."
     print("WALK4_JSON=" + json.dumps(emitted, separators=(",", ":")))
     print("WALK4_TEXT=" + (output / "pacing_summary.txt").read_text(encoding="utf-8"))

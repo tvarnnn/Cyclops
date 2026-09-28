@@ -31,10 +31,21 @@ for the manager; none changes a walk-4 pin or the walk-5 output.
 - OPEN (f): the header line "v1<TAB>v1.1" and the empty padding cells lie
   outside the closed sentence set; a two-column layout cannot avoid them.
 - OPEN (g): v1.1's "between" also holds brackets where one side maps to a room
-  and the other is "other_labelled" (walk 4's closet exit: closet / other;
-  119 of v1.1's 146 "between" refused frames on walk 4), and B2 and R2 call
-  both sides "rooms". No approved sentence says otherwise;
-  OPEN: needs manager-approved wording.
+  and the other is an unmapped label (walk 4's closet exit: closet / other;
+  119 of v1.1's 146 "between" refused frames on walk 4). B2 and R2 would call
+  both sides "rooms", so the text gives them the MED-2 (a) treatment, with
+  existing sentences only (C4i-G; JSON unchanged):
+  - a v1.1 "between" burst with exactly one bracket label outside the room map
+    renders B3 ("The room is unknown.");
+  - its refused frames move from R2 to R3 (walk 4: R2 146 -> 27, R3 394 -> 513).
+  The split is read from bursts.all: every refused frame lies in a retained
+  burst, and all of a burst's rows share its bracket. It is used only when
+  bursts.all lists every retained burst and its "between" bursts' refused
+  frames sum to the bucket's count; otherwise (past the 200-burst cap, or a
+  blurred row carrying its own keyframe id that the CSV lacks) v1.1's whole
+  "between" count folds into R3 and its R2 cell is left empty.
+  OPEN: the manager may prefer the "while moving between areas" wording
+  (manager 141 section 4), which would need two new closed-set sentences.
 """
 
 from __future__ import annotations
@@ -379,7 +390,7 @@ def _region_assignments(rows, times, regions, room_map, room_first):
     for value in counters.values():
         if value["scored"]:
             value["share"] = value["refused"] / value["scored"]
-    return assignments, bracket, {"status": "joined", "room_map": room_map or {}, "buckets": counters}, labelled_indices
+    return assignments, bracket, {"status": "joined", "room_map": room_map or {}, "buckets": counters}, labelled_set
 
 
 def summarize(rows, *, skipped=0, frames_observed=None, regions=None, room_map=None):
@@ -441,26 +452,41 @@ def _minute_second(value):
     return f"{total // 60}:{total % 60:02d}"
 
 
+def _room_and_area(burst, room_map):
+    """OPEN (g): exactly one of the burst's bracket labels is outside the room map."""
+    bracket = burst["bracket"]
+    return bool(bracket) and (bracket["before"]["label"] in room_map) != (bracket["after"]["label"] in room_map)
+
+
+def _blurred(bursts):
+    return sum(burst["reason_counts"].get("blurred", 0) for burst in bursts)
+
+
 def _sentences(summary, text_runs, rooms_compared):
     """One column of closed-set sentences.
 
     rooms_compared is False for v1, which compares raw labels: its "between"
     bucket is not a claim about rooms, so it gets B3 and R3, never B2 or R2.
+    v1.1 keeps B2 and R2 for room/room brackets only; a room/area bracket
+    gets B3 and R3 (OPEN (g)).
     """
     if summary["status"] == "unavailable":
         return ["Blur summary unavailable for this walk."]
     count = summary["blur"]
+    room_map = summary["regions"]["room_map"]
     if summary["input"]["completeness"] == "verified":
         lines = [f"During this walk, the Tower checked {count['scored_count']} frames and refused {count['refused_count']} of them as blurry."]
     else:
         lines = [f"In this walk's frame log, {count['refused_count']} of {count['scored_count']} checked frames were refused as blurry."]
     for burst in summary["bursts"]["top"]:
+        if burst["start_s"] is None or burst["end_s"] is None:
+            continue  # LOW-5: never a B line without a time ("?:??")
         start, end = _minute_second(burst["start_s"]), _minute_second(burst["end_s"])
         duration = f"{burst['duration_s']:.1f}" if burst["duration_s"] is not None else "?"
         bucket = burst["bucket"]
         if bucket and bucket not in RESERVED_BUCKETS:
             lines.append(f"Blurry frames near {bucket}, {start} to {end} into the walk ({duration} seconds).")
-        elif bucket == "between" and rooms_compared:
+        elif bucket == "between" and rooms_compared and not _room_and_area(burst, room_map):
             lines.append(f"Blurry frames, {start} to {end} into the walk ({duration} seconds). The frames just before and after show different rooms.")
         else:
             lines.append(f"Blurry frames, {start} to {end} into the walk ({duration} seconds). The room is unknown.")
@@ -473,11 +499,21 @@ def _sentences(summary, text_runs, rooms_compared):
                 lines.append(f"In frames assigned to {room}, {values['refused']} of {values['scored']} checked frames were refused as blurry.")
         buckets = summary["regions"]["buckets"]
         unassigned = buckets["unknown"]["refused"] + buckets["other_labelled"]["refused"]
-        if rooms_compared:
-            lines.append(f"{buckets['between']['refused']} blurry frames came between frames showing different rooms; no room was assigned.")
+        between = buckets["between"]["refused"]
+        # OPEN (g): split v1.1's "between" into room/room (R2) and room/area (R3) frames,
+        # but only when bursts.all lists every retained burst and accounts for the bucket.
+        listed = [burst for burst in summary["bursts"]["all"] if burst["bucket"] == "between"]
+        if (rooms_compared and summary["bursts"]["retained_count"] == len(summary["bursts"]["all"])
+                and _blurred(listed) == between):
+            area = _blurred(burst for burst in listed if _room_and_area(burst, room_map))
+            lines.append(f"{between - area} blurry frames came between frames showing different rooms; no room was assigned.")
+            unassigned += area
         else:
-            lines.append("")  # v1 has no R2 sentence; the empty cell keeps R3 beside R3
-            unassigned += buckets["between"]["refused"]
+            # v1 has no R2 sentence, and when the bursts cannot split v1.1's "between"
+            # exactly (past the 200-burst cap) it all goes to R3; the empty cell keeps
+            # R3 beside R3.
+            lines.append("")
+            unassigned += between
         lines.append(f"{unassigned} blurry frames could not be assigned a room.")
     return lines
 
