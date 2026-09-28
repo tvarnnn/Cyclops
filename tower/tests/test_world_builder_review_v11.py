@@ -258,13 +258,16 @@ def test_an_uninterrupted_two_pass_finish_publishes_what_one_pass_publishes(tmp_
     MED-1a); at a559fc0 the second pass gated draw 0 again, so the published record differed from one pass's in
     draw 0's prediction counts (`gate.depth.predictions`, `gate.consensus.draws[0].predictions`, the stamped
     `align.json`), and on a transient failure of that second gate in the ROOM itself (RV11-A: 61 keyframes
-    where one pass gives 200). Now every file both flows leave -- solution, components, consensus detail,
-    the depth hand-off -- is identical, byte for byte of its parsed content, with the clock frozen."""
+    where one pass gives 200). The product files both flows leave -- solution, components,
+    consensus detail, the depth hand-off -- are identical, byte for byte of their parsed
+    content, with the clock frozen. The opt-in stage timing sibling has per-run identity."""
     one, one_depth = _finish(tmp_path / "one", monkeypatch, scenario, two_pass=False)
     two, two_depth = _finish(tmp_path / "two", monkeypatch, scenario, two_pass=True)
     assert two_depth == one_depth == [7, 8, 9], "each draw's depth stage ran once"
     assert set(two) == set(one)
     for rel in sorted(one):
+        if rel.endswith("/stage_timing.json"):
+            continue
         assert two[rel] == one[rel], rel
     gate = one["solve/s1/solution.json"]["gate"]
     assert gate["consensus"]["state"] == CP.CONSENSUS_APPLIED and gate["attach"] is True

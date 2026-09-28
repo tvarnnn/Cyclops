@@ -91,6 +91,7 @@ from tower.storage import (
     write_json_atomic,
 )
 from tower.world_builder.records import Keyframe, SegmentPlacement
+from tower.world_builder import stage_timing
 from tower.world_builder.schema import (
     DEGENERACY_NONE,
     POSE_STATUS_ANCHOR,
@@ -1175,6 +1176,7 @@ def resolve_run_options(*, final: bool, masks: bool | None, seed) -> tuple[bool,
     return bool(masks), seed
 
 
+@stage_timing.timed("solve", final_only=True)
 def solve(
     store,
     world_id: str,
@@ -1377,6 +1379,8 @@ def solve(
         frozen_refusal = (unreadable if images is None
                           else _frozen_matching_refusal(workspace, database_path, key, images,
                                                         accepted=accepted_digest))
+        if images is not None:
+            stage_timing.cache("pair", frozen_refusal is None)
         frozen = frozen_refusal is None
     froze = time.perf_counter()
 
@@ -1653,6 +1657,7 @@ def _loop_detection_wanted(loop_detection) -> bool:
     return wanted
 
 
+@stage_timing.timed("solve_draw", store_arg=False)
 def _map_candidate(pycolmap, database_path, workspace: SolveWorkspace, sparse_dir: Path,
                    keyframes, *, seed, threads: int, input_digest, min_image_observations,
                    camera) -> Solution:

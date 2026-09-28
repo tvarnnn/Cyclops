@@ -57,6 +57,7 @@ from tower.world_builder.dense import (
     write_points_bin,
 )
 from tower.world_builder.raw_imagery import IMAGERY_REDACTED, RAW_NOTE, is_raw
+from tower.world_builder import stage_timing
 
 logger = logging.getLogger(__name__)
 
@@ -826,6 +827,7 @@ def network_input_sha1(rgb: np.ndarray) -> str:
     return h.hexdigest()[:PREDICTION_INPUT_HEX]
 
 
+@stage_timing.cached("depth")
 def _cached_prediction(path: Path, shape=None) -> np.ndarray | None:
     """The kept prediction at `path` as float32, or None: a miss. Anything but a whole
     float16 array of `shape` (the network input's height and width) is a miss -- an empty
@@ -2005,6 +2007,7 @@ def densify(
                     )
             except (OSError, ValueError):
                 align = None
+        stage_timing.cache("depth", align is not None)
         if align is None:
             t = time.time()
             align = run_depth_stage(store, world_id, session_id, solution, intrinsics,

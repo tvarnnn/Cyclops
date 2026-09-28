@@ -127,6 +127,7 @@ from tower.process_ownership import (  # noqa: E402
     interpreter_executable,
 )
 from tower.world_builder.store import WorldStore  # noqa: E402
+from tower.world_builder import stage_timing  # noqa: E402
 
 DEFAULT_ROOT = Path("data/world_builder")
 TOWER_ROOT = Path(__file__).resolve().parents[1]
@@ -1459,6 +1460,7 @@ def _gate_setting() -> bool:
         return False
 
 
+@stage_timing.defer
 def final_surface_stages(store: WorldStore, world_id: str, session_id: str, *,
                          solved: bool, appearance: bool, prune_depth_work: bool,
                          should_stop, stop_source=lambda: None,
@@ -1531,7 +1533,8 @@ def final_surface_stages(store: WorldStore, world_id: str, session_id: str, *,
     # a stage left saying `running` by a pid that is gone is the truth.
     record(STAGE_SURFACE, state=STAGE_STATE_RUNNING)
     try:
-        surface_result = surfacify(
+        surface_result = stage_timing.measure(
+            "surface", store, world_id, session_id, surfacify,
             store, world_id, session_id,
             # The final preset, named rather than defaulted, so the union detector
             # and the final consistency iterations are what this line says.
@@ -1608,7 +1611,8 @@ def final_surface_stages(store: WorldStore, world_id: str, session_id: str, *,
 
             # `running` was recorded above, before the surface's `ok`.
             try:
-                appearance_result = build_appearance(
+                appearance_result = stage_timing.measure(
+                    "appearance", store, world_id, session_id, build_appearance,
                     store, world_id, session_id, params=AppearanceParams(),
                     should_stop=should_stop,
                 )

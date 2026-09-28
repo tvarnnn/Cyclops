@@ -1162,6 +1162,25 @@ def world_frame_quality_log_setting() -> bool:
     return False
 
 
+# Bounded, opt-in finish diagnostics in a sibling of events.jsonl.  The event
+# journal is authoritative input to derived-world freshness and must not grow.
+WORLD_STAGE_TIMING_ENV = "TOWER_WORLD_STAGE_TIMING"
+_world_stage_timing_warned_values: set[str] = set()
+
+
+def world_stage_timing_setting() -> bool:
+    """Whether to write bounded finish-stage timing (off by default)."""
+    if _flag(WORLD_STAGE_TIMING_ENV, default=False):
+        return True
+    value = (os.environ.get(WORLD_STAGE_TIMING_ENV) or "").strip()
+    if (value and value.lower() not in ("0", "false", "no", "off")
+            and value not in _world_stage_timing_warned_values):
+        _world_stage_timing_warned_values.add(value)
+        logger.warning("[Tower][Config] %s=%r is not on or off; treating it as off",
+                       WORLD_STAGE_TIMING_ENV, value)
+    return False
+
+
 # P5-PQ (manager 095 §2, as corrected by 096 §2; granular per manager 098): impossible poses are never
 # published in a room. One switch, three PARTS (RUN experiments/P5-PQ/RULE.md):
 #   `path`   (a) the viewer's camera list (`surface_render._camera_path`) keeps only published, supported

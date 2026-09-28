@@ -148,6 +148,7 @@ from tower.world_builder.records import (  # noqa: E402
     STAGE_SURFACE,
 )
 from tower.world_builder.store import WorldStore, WorldStoreError  # noqa: E402
+from tower.world_builder import stage_timing  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
@@ -1783,6 +1784,7 @@ def _regate_wrote_nothing(result) -> bool:
     return isinstance(publish, dict) and publish.get("written") is False
 
 
+@stage_timing.timed("areas")
 def build_session_areas(store: WorldStore, world_id: str, session_id: str, *,
                         appearance: bool, prune_depth_work: bool, should_stop,
                         stop_source=lambda: None, build: bool | None = None,

@@ -134,7 +134,7 @@ from typing import Callable
 import numpy as np
 
 from tower.storage import REPLACE_BUDGET_S, read_json_closed, write_bytes_atomic, write_json_atomic
-from tower.world_builder import transients as T
+from tower.world_builder import stage_timing, transients as T
 
 logger = logging.getLogger(__name__)
 
@@ -612,8 +612,10 @@ def ensure_solver_masks(workspace, names, *, keyframe_ids: dict | None = None, s
     for name, path, sha1 in images:
         any_missing = False
         for c in params.components:
-            if T.read_component(component_path(cdir, name, c, sha1),
-                                mask_key(c, params, name, sha1), shape) is None:
+            cached_mask = T.read_component(component_path(cdir, name, c, sha1),
+                                           mask_key(c, params, name, sha1), shape)
+            stage_timing.cache("mask", cached_mask is not None)
+            if cached_mask is None:
                 missing[c].append((name, path, sha1))
                 any_missing = True
         if not any_missing:

@@ -82,6 +82,8 @@ from typing import Callable
 
 import numpy as np
 
+from tower.world_builder import stage_timing
+
 logger = logging.getLogger(__name__)
 
 TRANSIENT_SCHEMA = 1
@@ -881,7 +883,9 @@ def ensure_transient_masks(store, world_id: str, session_id: str, frames, *,
         took = False
         for c, key in keys:
             path = cache_path(depth_dir, ki, c)
-            if read_component(path, key, (H, W)) is None:
+            cached_mask = read_component(path, key, (H, W))
+            stage_timing.cache("mask", cached_mask is not None)
+            if cached_mask is None:
                 if donor is not None and _take_from_donor(donor, kid, c, params, (H, W), path, key):
                     took = True
                     continue

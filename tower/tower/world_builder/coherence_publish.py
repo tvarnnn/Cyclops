@@ -62,6 +62,7 @@ import numpy as np
 
 from tower.world_builder import coherence_gate as CG
 from tower.world_builder import coherence_scale as CS
+from tower.world_builder import stage_timing
 
 logger = logging.getLogger(__name__)
 
@@ -535,6 +536,7 @@ def retire_consensus(workspace_root) -> bool:
 # the whole step
 
 
+@stage_timing.timed("gate")
 def gate_final_solution(store, world_id: str, session_id: str, solution, *, database_path, keyframes,
                         should_stop=None, params: "CG.GateParams | None" = None,
                         depth_runner: Callable | None = None, metric_fn: Callable | None = None,
@@ -721,6 +723,7 @@ def _gate(store, world_id, session_id, solution, *, database_path, keyframes, sh
                       gated=result, candidate=solution)
 
 
+@stage_timing.timed("p4")
 def anchor_verified(store, world_id: str, session_id: str, result: GateResult, *, database_path, keyframes,
                     workspace_root, params: "CG.GateParams | None" = None) -> GateResult:
     """The anchor verification (`anchor_verify.verify_published`; RUN P4-IV RULE.md) on a published gate result --
@@ -1179,6 +1182,7 @@ def gate_by_consensus(store, world_id: str, session_id: str, solution, *, plan: 
 
     def link_reader(database, camera, min_inliers):
         key = (str(database), json.dumps(camera, sort_keys=True, default=str), int(min_inliers))
+        stage_timing.cache("pair", key in link_cache)
         if key not in link_cache:
             link_cache[key] = read_links(database, camera, min_inliers)
         return link_cache[key]
@@ -1573,6 +1577,7 @@ def regate_refusal(store, world_id: str, session_id: str) -> str | None:
     return None
 
 
+@stage_timing.timed("regate")
 def regate_published(store, world_id: str, session_id: str, *, should_stop=None,
                      gate_runner: Callable | None = None) -> dict:
     """Depth stage + metric scale + gate again, IN PLACE, on the published solve: nothing is
