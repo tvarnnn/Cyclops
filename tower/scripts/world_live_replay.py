@@ -86,6 +86,7 @@ import subprocess
 import sys
 import threading
 import time
+import traceback
 import urllib.error
 import urllib.request
 from collections import Counter
@@ -1621,10 +1622,15 @@ async def run_replay(options: ReplayOptions) -> dict:
         # an error and still propagates.
         if not abort.is_set():
             raise
+        # Swallowed, so its traceback is kept, in the record (a string) and
+        # in client.log (review C22 round 3 L-c): if it was not the kill's
+        # consequence after all, this is the only trace of where it came from.
+        trace = traceback.format_exc()
         record["outcome"] = "aborted"
         record.setdefault("aborted", {})["stream_error"] = f"{type(exc).__name__}: {exc}"
+        record["aborted"]["stream_traceback"] = trace
         record.setdefault("stopped_at", round(time.time(), 3))
-        _log(out, f"the stream ended under the abort: {exc!r}")
+        _log(out, f"the stream ended under the abort: {exc!r}\n{trace.rstrip()}")
     finally:
         stop_background.set()
         aborted = abort.is_set()

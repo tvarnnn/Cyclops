@@ -1140,10 +1140,11 @@ def test_a_finished_run_is_re_reported_from_its_run_dir_into_another_out(tmp_pat
     assert built["verdict"]["stop_to_settled_min"] == pytest.approx((600.0 - 100.002) / 60, abs=0.01)
 
 
-def _fake_run(directory, *, photos, lag_p95, sequence, horizons=(52,)):
+def _fake_run(directory, *, photos, lag_p95, sequence, horizons=(52,), fidelity="PASS", environment="PASS"):
     directory.mkdir(parents=True)
     sha = report.hashlib.sha256(json.dumps(sequence, separators=(",", ":")).encode()).hexdigest()
     (directory / "report.json").write_text(json.dumps({
+        **({"replay_fidelity": {"result": fidelity}} if fidelity is not None else {}),
         "label": directory.name,
         "verdict": {"stop_to_room_with_photos_min": photos, "stop_to_settled_min": photos + 7},
         "tower_walk": {"totals": {"frames_received": 4005, "tx_seq_gap_total": 0},
@@ -1151,7 +1152,7 @@ def _fake_run(directory, *, photos, lag_p95, sequence, horizons=(52,)):
                        "background_solves": [{"keyframes": k} for k in horizons]},
         "keyframes": {"sha256": sha, "observe_lag_s": {"p50": 2.0, "p95": lag_p95, "p99": 7.0, "max": 7.2}},
         "waterfall": [{"n": "3", "minutes": photos - 13, "child": False}],
-        "live_safety": {"result": "PASS"}}), encoding="utf-8")
+        "live_safety": {"result": "PASS", "environment": {"result": environment}}}), encoding="utf-8")
     (directory / "keyframes.json").write_text(json.dumps({"sha256": sha, "sequence": sequence}), encoding="utf-8")
 
 
@@ -1361,7 +1362,9 @@ def test_phone_photos_at_needs_the_rooms_appearance_ok_and_a_push_after_stop():
 
 def _solves_log(base, *, terminated):
     """Three background solves: 2 launched at 1's landing rebuild, a live surface
-    right after it; 3 is still running at Stop and is terminated or waited for."""
+    right after it (one loop iteration: rebuild, solve launch, surface); 3 is
+    still running at Stop and is terminated after the wait (True), terminated
+    at once by a hard stop ("stop"), or waited for (False)."""
     wb, ws = "tower.world_build_session", "tower.routes.ws"
     lines = [
         _line(base, ws, "[Tower][Session] stream_start: measurement window opened"),
@@ -1383,7 +1386,10 @@ def _solves_log(base, *, terminated):
         _line(base + 100.0, ws, _summary(1200, "stream_stop")),
         _line(base + 100.002, ws, "[Tower][Capture] recording stopped (stop): 1200 frames, 900 bytes"),
     ]
-    if terminated:
+    if terminated == "stop":
+        lines.append(_line(base + 101.0, wb, "[Tower][WorldBuilder] background solve pid 300 terminated: "
+                                             "a stop was requested", "WARNING"))
+    elif terminated:
         lines.append(_line(base + 224.0, wb, "[Tower][WorldBuilder] background solve pid 300 still running after "
                                              "120.0s; terminating it so the final solve owns the workspace",
                            "WARNING"))
@@ -1401,8 +1407,11 @@ def test_each_background_solve_has_a_landing_and_a_terminated_at_stop_flag(tmp_p
     assert first["landed_by"]["via"] == "background solve 2 launch"
     assert (first["landed_by"]["rebuild_n"], first["landed_by"]["rebuild_line"]) == (5, 7)
     assert first["horizon_s"] == pytest.approx(15.0, abs=0.01) and first["terminated_at_stop"] is False
-    assert first["live_surface_between"] is None  # launched after solve 2, at the same rebuild
-    assert second["live_surface_between"]["n"] == 1 and second["horizon_s"] == pytest.approx(35.0, abs=0.01)
+    # Round 3 L-a: surface 1 is logged after solve 2's launch line, but it was
+    # launched by rebuild 5, solve 1's landing: it is solve 1's, by log line.
+    assert first["live_surface_between"]["n"] == 1
+    assert (first["live_surface_between"]["rebuild_n"], first["live_surface_between"]["rebuild_line"]) == (5, 7)
+    assert second["live_surface_between"] is None and second["horizon_s"] == pytest.approx(35.0, abs=0.01)
     assert third["terminated_at_stop"] is terminated
     if terminated:
         assert third["landed_by"] is None and third["horizon_s"] is None and third["terminated_line"] == 14
@@ -1418,7 +1427,10 @@ def test_each_background_solve_has_a_landing_and_a_terminated_at_stop_flag(tmp_p
     assert metrics["bg_solve_landed_by_s.max"] == pytest.approx(35.0 if terminated else 154.1, abs=0.01)
     markdown = report.render_markdown(built)
     assert ("TERMINATED at Stop" in markdown) is terminated
-    assert "live surface 1 launched in between" in markdown
+    solve_1 = next(line for line in markdown.splitlines() if line.startswith("- background solve 1 "))
+    assert "live surface 1 launched at" in solve_1 and "by rebuild 5 (L7), attributed by log line" in solve_1
+    solve_2 = next(line for line in markdown.splitlines() if line.startswith("- background solve 2 "))
+    assert "live surface" not in solve_2
 
 
 # Item 3: :8000 during the run is the environment's verdict, not the code's.
@@ -1546,6 +1558,13 @@ def test_a_send_that_raises_after_the_abort_is_the_abort_not_an_error(tmp_path, 
     assert "live walk" in record["aborted"]["reason"]
     saved = json.loads((tmp_path / "out" / "client.json").read_text(encoding="utf-8"))
     assert saved["outcome"] == "aborted" and saved["stream"]["frames_sent"] == record["stream"]["frames_sent"]
+    # Round 3 L-c: the swallowed exception keeps its traceback, in the record
+    # (a string) and in client.log.
+    trace = saved["aborted"]["stream_traceback"]
+    assert isinstance(trace, str) and trace.startswith("Traceback (most recent call last)")
+    assert "ConnectionClosedError" in trace and "in send_frame" in trace
+    log = (tmp_path / "out" / "client.log").read_text(encoding="utf-8")
+    assert "the stream ended under the abort" in log and "Traceback (most recent call last)" in log
 
 
 def test_a_send_that_raises_without_an_abort_is_still_an_error(tmp_path, monkeypatch):
@@ -1780,7 +1799,7 @@ def test_the_runner_exits_3_and_reports_the_client_record_when_the_abort_raised(
     the exception reached the runner. The run was aborted, not broken."""
     def aborted_then_raised(options):
         (options.out / "client.json").write_text(json.dumps({
-            "outcome": None, "tower_captures": [], "stream": {"frames_sent": 7},
+            "outcome": "aborted", "tower_captures": [], "stream": {"frames_sent": 7},
             "aborted": {"t": 1.0, "reason": "a live walk is being recorded on :8000", "on_abort_done": 1.2}}),
             encoding="utf-8")
         raise ConnectionResetError("the send was in the drain when the Tower died")
@@ -1838,3 +1857,280 @@ def test_chore_reports_are_read_across_interleaved_access_lines(tmp_path):
 def test_the_client_script_path_is_where_the_brief_says(tmp_path):
     assert Path(replay.__file__).name == "world_live_replay.py"
     assert Path(runner.__file__).name == "world_live_replay_run.py"
+
+
+# -- C22-F3: the replay-fidelity bar (manager 142) and the round-3 LOWs -------------------------
+
+
+def test_the_fidelity_bar_is_the_one_manager_142_approved():
+    assert report.FIDELITY_BAR == {"offset_p50_abs_ms": 5.0, "offset_p95_ms": 60.0, "offset_p99_ms": 250.0,
+                                   "beyond_ms": 50.0, "beyond_max_fraction": 0.05, "early_max_ms": 50.0,
+                                   "client_lateness_p95_ms": 5.0}
+    assert "manager 142" in report.FIDELITY_RULING
+    assert report.PACING_OVER_S == pytest.approx(0.05)
+    assert "NOT a pass" in report.FIDELITY_NA_NOTE and "--capture-root" in report.FIDELITY_NA_NOTE
+
+
+def _fidelity_inputs():
+    """A pacing block and a client record ON every edge of the bar: 1000 of
+    4000 source frames sent (a first_seconds cut), all joined."""
+    pacing = {"computable": True, "matched": 1000, "replay_only": 0, "source_only": 3000, "source_frames": 4000,
+              "source_duplicate_seq": 0, "late_over_50ms": 50, "early_over_50ms": 0,
+              "offset_error_ms": {"count": 1000, "p50": -5.0, "p95": 60.0, "p99": 250.0, "min": -50.0}}
+    client = {"first_seconds": 60.0, "schedule": {"frames": 1000},
+              "stream": {"frames_sent": 1000, "lateness_ms": {"p95": 5.0}, "late_over_50ms": 2}}
+    return pacing, client
+
+
+def test_a_replay_on_every_edge_of_the_fidelity_bar_passes():
+    pacing, client = _fidelity_inputs()
+    fidelity = report.replay_fidelity(pacing=pacing, client=client)
+    assert fidelity["result"] == "PASS" and len(fidelity["rows"]) == 7
+    assert all(row["result"] == "PASS" for row in fidelity["rows"])
+    assert fidelity["bar"] == report.FIDELITY_BAR and "manager 142" in fidelity["ruling"]
+
+
+FIDELITY_BREAKS = {
+    "p50 late": (lambda p, c: p["offset_error_ms"].update(p50=5.01), "|p50|"),
+    "p50 early": (lambda p, c: p["offset_error_ms"].update(p50=-5.01), "|p50|"),
+    "p95": (lambda p, c: p["offset_error_ms"].update(p95=60.01), "error p95"),
+    "p99": (lambda p, c: p["offset_error_ms"].update(p99=250.01), "error p99"),
+    "beyond 5 %": (lambda p, c: p.update(late_over_50ms=51), "frames beyond"),
+    "early": (lambda p, c: p["offset_error_ms"].update(min=-50.01), "early: min"),
+    "client lateness": (lambda p, c: c["stream"]["lateness_ms"].update(p95=5.01), "client send lateness"),
+    "replay-only": (lambda p, c: p.update(replay_only=1), "wire_seq join"),
+    "source unmatched": (lambda p, c: p.update(source_only=3001), "wire_seq join"),
+    "sent, not joined": (lambda p, c: c["stream"].update(frames_sent=1001), "wire_seq join"),
+    "duplicate seq": (lambda p, c: p.update(source_duplicate_seq=1), "wire_seq join"),
+}
+
+
+@pytest.mark.parametrize("name", list(FIDELITY_BREAKS))
+def test_each_fidelity_bar_fails_the_verdict_on_its_own(name):
+    pacing, client = _fidelity_inputs()
+    change, check = FIDELITY_BREAKS[name]
+    change(pacing, client)
+    fidelity = report.replay_fidelity(pacing=pacing, client=client)
+    failed = [row["check"] for row in fidelity["rows"] if row["result"] == "FAIL"]
+    assert fidelity["result"] == "FAIL" and len(failed) == 1 and check in failed[0], failed
+
+
+def test_no_source_journal_is_n_a_and_says_n_a_is_not_a_pass(tmp_path):
+    fidelity = report.replay_fidelity(pacing={"computable": False, "why": f"no journal for ['{A}']"}, client={})
+    assert fidelity["result"] == "n/a" and fidelity["rows"] == [] and "no journal" in fidelity["why"]
+    assert "NOT a pass" in fidelity["note"]
+    pacing, client = _fidelity_inputs()
+    client.pop("schedule")  # a check with no value is not a pass either
+    partial = report.replay_fidelity(pacing=pacing, client=client)
+    assert partial["result"] == "n/a" and "wire_seq join" in partial["why"]
+    log = tmp_path / "tower.err.log"
+    log.write_text(_walk_log(BASE), encoding="utf-8")
+    built = report.build_report(tower_log=log, client=_clean_client(), capture_root=tmp_path / "nothing-here",
+                                data_root=tmp_path / "no-data")
+    assert built["replay_fidelity"]["result"] == "n/a"
+    markdown = report.render_markdown(built)
+    assert "**Replay fidelity: n/a.**" in markdown and "n/a is NOT a pass" in markdown
+    assert "replay fidelity **n/a** (n/a is NOT a pass for a proof set)" in markdown
+
+
+def _pinned_run(tmp_path, *, late_ms=(1.0, 2.0), capture_root=None):
+    """A finished 10976c6-style run: its client.json names NO capture_root. The
+    source journal is in a snapshot directory; the test Tower's re-recording is
+    `late_ms` behind it."""
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    log = run_dir / "tower-8031-x.err.log"
+    log.write_text(_walk_log(BASE), encoding="utf-8")
+    snapshot = _capture(tmp_path / "snap", A, started=1000.0, frames=[(1, 1001.0), (3, 1001.1)],
+                        ended=1002.0).parent
+    kept = tmp_path / "data"
+    _capture(kept, CAP, started=5000.0, frames=[(1, 5001.0 + late_ms[0] / 1000), (3, 5001.1 + late_ms[1] / 1000)],
+             ended=5002.0)
+    _world(kept / "world_builder", BASE, appearance_end=BASE + 700)
+    (run_dir / "run.json").write_text(json.dumps({"err_log": str(log), "data_root": str(kept)}), encoding="utf-8")
+    client = {**_clean_client(), "schedule": {"frames": 2},
+              "stream": {"frames_sent": 2, "unanswered": 0, "frame_errors": {}, "lateness_ms": {"p95": 1.2},
+                         "late_over_50ms": 0},
+              "speed": 1.0, "walk": [{"capture_id": A, "frames": 2, "recorded_seconds": 2.0, "recorded_fps": 1.0,
+                                      "end_reason": "stop"}]}
+    if capture_root is not None:
+        client["capture_root"] = str(capture_root)
+    (run_dir / "client.json").write_text(json.dumps(client), encoding="utf-8")
+    return run_dir, snapshot
+
+
+def test_capture_root_pins_a_re_render_to_a_snapshot_and_the_report_says_which_journal(tmp_path, monkeypatch):
+    """Round 3 L-g: a pinned run's pacing row must not depend on the live store."""
+    run_dir, snapshot = _pinned_run(tmp_path)
+    monkeypatch.setattr(replay, "DEFAULT_CAPTURE_ROOT", tmp_path / "live-store-today")  # no longer holds A
+    assert report.main(["--run-dir", str(run_dir), "--out", str(tmp_path / "unpinned")]) == 0
+    unpinned = json.loads((tmp_path / "unpinned" / "report.json").read_text(encoding="utf-8"))
+    assert unpinned["tower_side_pacing"]["source_capture_root_from"] == report.CAPTURE_ROOT_DEFAULT
+    assert unpinned["replay_fidelity"]["result"] == "n/a"
+    assert report.main(["--run-dir", str(run_dir), "--out", str(tmp_path / "pinned"),
+                        "--capture-root", str(snapshot)]) == 0
+    pinned = json.loads((tmp_path / "pinned" / "report.json").read_text(encoding="utf-8"))
+    pacing = pinned["tower_side_pacing"]
+    assert pacing["source_capture_root"] == str(snapshot) and pacing["source_capture_root_from"] == "--capture-root"
+    digest = report.hashlib.sha256((snapshot / A / "frames.jsonl").read_bytes()).hexdigest()
+    assert pacing["source_sha256"][A]["frames.jsonl"] == digest
+    assert pinned["replay_fidelity"]["result"] == "PASS"
+    markdown = (tmp_path / "pinned" / "REPORT.md").read_text(encoding="utf-8")
+    assert "**Replay fidelity: PASS.**" in markdown and f"frames.jsonl sha256 {digest[:16]}" in markdown
+    assert "The source root is from --capture-root" in markdown
+
+
+def test_capture_root_given_wins_over_the_client_record_which_wins_over_the_default(tmp_path):
+    client = {"capture_root": str(tmp_path / "recorded")}
+    assert report.resolve_capture_root(tmp_path / "snap", client) == (tmp_path / "snap", report.CAPTURE_ROOT_GIVEN)
+    assert report.resolve_capture_root(None, client) == (tmp_path / "recorded", report.CAPTURE_ROOT_FROM_CLIENT)
+    assert report.resolve_capture_root(None, {}) == (replay.DEFAULT_CAPTURE_ROOT, report.CAPTURE_ROOT_DEFAULT)
+    assert "AT RENDER TIME" in report.CAPTURE_ROOT_DEFAULT
+
+
+def test_a_fidelity_fail_is_its_own_verdict_and_leaves_the_codes_alone(tmp_path):
+    built = {}
+    for name, late in (("faithful", (1.0, 2.0)), ("unfaithful", (1.0, 300.0))):
+        root = tmp_path / name
+        root.mkdir()
+        run_dir, _ = _pinned_run(root, late_ms=late, capture_root=root / "snap" / "captures")
+        assert report.main(["--run-dir", str(run_dir), "--out", str(root / "out")]) == 0
+        built[name] = json.loads((root / "out" / "report.json").read_text(encoding="utf-8"))
+    bad = built["unfaithful"]
+    assert bad["tower_side_pacing"]["source_capture_root_from"] == report.CAPTURE_ROOT_FROM_CLIENT
+    assert (built["faithful"]["replay_fidelity"]["result"], bad["replay_fidelity"]["result"]) == ("PASS", "FAIL")
+    # The code's verdict and its rows do not move with the replay's fidelity.
+    assert [(r["check"], r["result"]) for r in bad["live_safety"]["rows"]] == \
+        [(r["check"], r["result"]) for r in built["faithful"]["live_safety"]["rows"]]
+    assert bad["live_safety"]["result"] == built["faithful"]["live_safety"]["result"]
+    assert "replay_fidelity" not in bad["live_safety"]
+    markdown = (tmp_path / "unfaithful" / "out" / "REPORT.md").read_text(encoding="utf-8")
+    assert "**Replay fidelity: FAIL.**" in markdown and "invalid as proof" in markdown
+
+
+def test_a_safe_code_verdict_stays_pass_when_the_replay_was_not_faithful(tmp_path):
+    """The code's PASS is not turned into a FAIL by the harness's pace, nor the reverse."""
+    log = tmp_path / "tower.err.log"
+    log.write_text(_walk_log(BASE), encoding="utf-8")
+    _world(tmp_path / "data" / "world_builder", BASE, appearance_end=BASE + 700)
+    _capture(tmp_path / "src", A, started=1000.0, frames=[(1, 1001.0), (3, 1001.1)], ended=1002.0)
+    _capture(tmp_path / "data", CAP, started=5000.0, frames=[(1, 5001.0), (3, 5001.4)], ended=5002.0)
+    built = report.build_report(tower_log=log, world_root=tmp_path / "data" / "world_builder",
+                                client={**_clean_client(), "walk": [{"capture_id": A}], "speed": 1.0},
+                                data_root=tmp_path / "data", capture_root=tmp_path / "src" / "captures")
+    assert built["replay_fidelity"]["result"] == "FAIL"
+    assert built["live_safety"]["result"] == "PASS"
+    assert built["live_safety"]["environment"]["result"] == "n/a"
+
+
+def test_compare_leaves_runs_that_fail_fidelity_or_the_environment_out_of_the_baseline_range(tmp_path):
+    """Manager 142 and round 3 L-f: an invalid run is flagged, and never widens the old path's noise."""
+    same = [[1, 0], [10, 0]]
+    for index, photos in enumerate([47.0, 47.5, 46.8]):
+        _fake_run(tmp_path / f"old{index}", photos=photos, lag_p95=6.8, sequence=same)
+    _fake_run(tmp_path / "old-unfaithful", photos=30.0, lag_p95=6.8, sequence=same, fidelity="FAIL")
+    _fake_run(tmp_path / "old-contended", photos=60.0, lag_p95=6.8, sequence=same, environment="FAIL")
+    _fake_run(tmp_path / "old-unjudged", photos=47.2, lag_p95=6.8, sequence=same, fidelity=None)
+    _fake_run(tmp_path / "new0", photos=47.1, lag_p95=6.8, sequence=same)
+    _fake_run(tmp_path / "new-unfaithful", photos=47.1, lag_p95=6.8, sequence=same, fidelity="FAIL")
+    olds = ["old0", "old1", "old2", "old-unfaithful", "old-contended", "old-unjudged"]
+    out = tmp_path / "cmp"
+    assert report.main(["--out", str(out), "--compare", *(str(tmp_path / n) for n in olds),
+                        "--candidate", str(tmp_path / "new0"), str(tmp_path / "new-unfaithful")]) == 0
+    result = json.loads((out / "compare.json").read_text(encoding="utf-8"))
+    photos = {m["metric"]: m for m in result["metrics"]}["stop_to_room_with_photos_min"]
+    assert (photos["min"], photos["max"]) == (46.8, 47.5)  # not 30.0, not 60.0
+    assert photos["baseline_in_range"] == [True, True, True, False, False, True]
+    assert photos["mean"] == pytest.approx((47.0 + 47.5 + 46.8 + 47.2) / 4, abs=1e-4)
+    excluded = {item["dir"]: item["reasons"] for item in result["excluded_from_baseline"]}
+    assert excluded == {str(tmp_path / "old-unfaithful"): ["replay fidelity FAIL"],
+                        str(tmp_path / "old-contended"): ["Environment (:8000) FAIL"]}
+    assert [item["dir"] for item in result["invalid_candidates"]] == [str(tmp_path / "new-unfaithful")]
+    assert [item["dir"] for item in result["fidelity_not_judged"]] == [str(tmp_path / "old-unjudged")]
+    assert result["baseline_counted"] == 4
+    markdown = (out / "COMPARE.md").read_text(encoding="utf-8")
+    assert "**EXCLUDED FROM THE BASELINE RANGE: 2 run(s).**" in markdown
+    assert f"- `{tmp_path / 'old-unfaithful'}`: replay fidelity FAIL" in markdown
+    assert f"- `{tmp_path / 'old-contended'}`: Environment (:8000) FAIL" in markdown
+    assert "| stop_to_room_with_photos_min | 47.125 | 46.8 | 47.5 | 0.7 | 30.0, 60.0 | 47.1, 47.1 (INVALID) |" \
+        in markdown
+    assert "(excluded from the range)" in markdown and "**INVALID CANDIDATE(S): 1.**" in markdown
+
+
+def test_the_runner_exits_1_when_the_guard_aborted_only_after_a_genuine_fault(lifecycle):
+    """Round 3 L-b: the guard can abort inside run_replay's finally, after a
+    real fault was re-raised. The OUTCOME is not `aborted`: exit 1."""
+    def fault_then_a_late_abort(options):
+        (options.out / "client.json").write_text(json.dumps({
+            "outcome": None, "tower_captures": [], "stream": {"frames_sent": 7},
+            "aborted": {"t": 1.0, "reason": "a live walk is being recorded on :8000"}}), encoding="utf-8")
+        raise RuntimeError("a harness fault")
+
+    lifecycle["state"]["replay"] = fault_then_a_late_abort
+    assert runner.main(lifecycle["argv"]) == runner.EXIT_ERROR
+    run = _run_json(lifecycle)
+    assert "aborted" not in run and "a harness fault" in run["error"]
+    assert "a harness fault" in run["guard_aborted_after_the_fault"]["raised"]
+    built = json.loads((lifecycle["out"] / "report.json").read_text(encoding="utf-8"))
+    assert built["client"]["stream"]["frames_sent"] == 7  # still reported from the client's record
+
+
+@pytest.mark.parametrize("states, expected", [
+    (["unknown", "unknown"], 2),
+    (["unknown", "idle", "unknown", "unknown"], 3),
+])
+def test_a_fail_closed_abort_counts_every_unknown_answer(states, expected):
+    """Round 3 L-d: the history keeps changes of state, so the aborting run of
+    unknowns is one entry."""
+    guard = replay.LiveGuard("idle", clock=lambda: 1.0)
+    reason = None
+    for state in states:
+        reason = guard.observe(state)
+    assert reason and "failing closed" in reason
+    row = report._guard_row(":8000 during the run", guard.summary(), {"reason": reason})
+    assert row["result"] == "FAIL"
+    assert f"{expected} unknown answer(s) -- two in a row aborted the run" in row["value"]
+
+
+def test_a_hard_stops_termination_of_a_background_solve_is_recognised(tmp_path):
+    """Round 3 L-e: `terminated: a stop was requested` is a termination too."""
+    log = tmp_path / "tower.err.log"
+    log.write_text(_solves_log(BASE, terminated="stop"), encoding="utf-8")
+    third = report.walk_timeline(report.scan_log(log), CAP)["background_solves"][2]
+    assert third["terminated_at_stop"] is True and third["terminated_how"] == "a stop was requested"
+    assert third["landed_by"] is None and third["terminated_line"] == 14
+    built = report.build_report(tower_log=log, client={"tower_captures": [CAP]})
+    row = next(r for r in built["live_safety"]["rows"] if r["check"].startswith("background-solve horizons"))
+    assert row["value"].endswith("terminated at Stop: solve 3")
+    assert "TERMINATED at Stop (a stop was requested) (L14)" in report.render_markdown(built)
+
+
+def test_the_landing_rebuild_is_the_surfaces_when_the_cadence_held_the_next_solve_back(tmp_path):
+    """Round 3 L-a, 1b's solve 1: the landing rebuild launched live surface 1;
+    the next solve was not yet due and launched one rebuild later."""
+    wb, ws = "tower.world_build_session", "tower.routes.ws"
+    lines = [
+        _line(BASE, ws, "[Tower][Session] stream_start: measurement window opened"),
+        _line(BASE + 0.006, ws, f"[Tower][Capture] recording started: {CAP}"),
+        _line(BASE + 0.013, "tower.capture_workers",
+              f"[Tower][Worker] started world-build-session pid 21204 for capture {CAP}: python x"),
+        _line(BASE + 1.7, wb, f"[Tower][WorldBuilder] session {S} in world {W}: source=live-capture "
+                              f"capture={CAP} root=x observed=360x640"),
+        _line(BASE + 20.0, wb, "[Tower][WorldBuilder] background solve 1 launched at 52 keyframes (pid 100)"),
+        _line(BASE + 30.0, wb, "[Tower][WorldBuilder] rebuild 4: 90 keyframes -> 80 positioned poses, "
+                               "900 points, 2 segments in 0.30s"),
+        _line(BASE + 30.01, wb, "[Tower][WorldBuilder] live surface 1 launched (pid 900)"),
+        _line(BASE + 31.5, wb, "[Tower][WorldBuilder] rebuild 5: 102 keyframes -> 95 positioned poses, "
+                               "1000 points, 2 segments in 0.30s"),
+        _line(BASE + 31.504, wb, "[Tower][WorldBuilder] background solve 2 launched at 102 keyframes (pid 200)"),
+        _line(BASE + 100.0, ws, _summary(1200, "stream_stop")),
+        _line(BASE + 100.002, ws, "[Tower][Capture] recording stopped (stop): 1200 frames, 900 bytes"),
+        _line(BASE + 101.0, wb, "[Tower][WorldBuilder] final global solve launched (pid 34464)"),
+    ]
+    log = tmp_path / "tower.err.log"
+    log.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    first = report.walk_timeline(report.scan_log(log), CAP)["background_solves"][0]
+    assert first["landed_by"]["t"] == pytest.approx(BASE + 31.504, abs=0.002)  # still "landed BY" the launch
+    assert (first["landed_by"]["rebuild_n"], first["landed_by"]["rebuild_line"]) == (4, 6)
+    assert first["landed_by"]["rebuild_why"] == "it launched live surface 1"
+    assert first["live_surface_between"]["n"] == 1

@@ -489,16 +489,24 @@ def main(argv=None) -> int:
         code = EXIT_ERROR
         # THE ABORT EDGE (review C22 round 2, "Still open" 5). If the client
         # raised anyway, its own record is on disk (`run_replay` writes it in
-        # its `finally`): report from it, and when it says the live guard
-        # aborted, the exception was the kill's consequence, so exit 3 as
-        # every other abort does.
+        # its `finally`): report from it, and when its OUTCOME is `aborted`,
+        # the exception was the kill's consequence, so exit 3 as every other
+        # abort does.
+        #
+        # The outcome, not the `aborted` block (review C22 round 3 L-b): the
+        # guard can still abort DURING `run_replay`'s `finally`, after a
+        # genuine fault was re-raised. That record has an `aborted` block and
+        # no `aborted` outcome, and the fault is what ended the run: exit 1,
+        # with the late abort kept beside it.
         saved = read_client_record(out)
         if saved:
             record = saved
-            if saved.get("aborted") or saved.get("outcome") == "aborted":
+            if saved.get("outcome") == "aborted":
                 run["aborted"] = {**(saved.get("aborted") or {}), "during": "stream",
                                   "raised": repr(exc)}
                 code = EXIT_ABORTED
+            elif saved.get("aborted"):
+                run["guard_aborted_after_the_fault"] = {**saved["aborted"], "raised": repr(exc)}
     finally:
         run["live_tower_watch_startup"] = watch.guard.summary()
         if process is not None:
@@ -521,10 +529,12 @@ def main(argv=None) -> int:
                           capture_id=captures[0] if captures else None, client=record,
                           samples=out / "samples.csv" if (out / "samples.csv").exists() else None,
                           label=args.label, run_dir=out, data_root=data_root,
-                          capture_root=args.capture_root, run=run)
+                          capture_root=args.capture_root, run=run,
+                          capture_root_from="the runner's --capture-root (the replay streamed from it)")
     report["run"] = run
     json_path, md_path = write_report(out, report)
-    _log(out, f"report: {md_path}; verdict {report['verdict']}; outcome {record.get('outcome')}")
+    _log(out, f"report: {md_path}; verdict {report['verdict']}; outcome {record.get('outcome')}; "
+              f"replay fidelity {report['replay_fidelity']['result']}")
     return code
 
 

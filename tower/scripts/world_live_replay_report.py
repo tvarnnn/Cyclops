@@ -23,7 +23,10 @@ lag, rebuild latency and cadence, the background solves' launch, landing and
 termination at Stop, the Tower-side pacing (the re-recorded capture joined
 to the source journal on `wire_seq`), and live-surface latency where the
 run watched it. What :8000 did during the run is judged apart, as the
-environment's verdict. `phone_photos_at` is when the phone was told the
+environment's verdict, and so is "Replay fidelity": the Tower-side pacing
+against the bar manager 142 approved (`FIDELITY_BAR`), which every proof-set
+run must PASS (n/a is not a pass). `--compare` flags a run that fails either
+and leaves it out of the baseline's range. `phone_photos_at` is when the phone was told the
 room's photos were ready. All of it is read AFTER the fact, so a finished
 run is re-reported without re-running it:
 
@@ -91,6 +94,10 @@ PATTERNS = {
     "bg_solve_wait": re.compile(
         r"\[Tower\]\[WorldBuilder\] background solve pid (?P<pid>\d+) still running after (?P<s>[\d.]+)s; "
         r"terminating"),
+    # A HARD stop ends the wait at once (`BackgroundSolver.wait`, should_stop):
+    # the solve is terminated just the same (review C22 round 3 L-e).
+    "bg_solve_stop_requested": re.compile(
+        r"\[Tower\]\[WorldBuilder\] background solve pid (?P<pid>\d+) terminated: a stop was requested"),
     "live_surface": re.compile(r"\[Tower\]\[WorldBuilder\] live surface (?P<n>\d+) launched \(pid (?P<pid>\d+)\)"),
     "final_launched": re.compile(r"\[Tower\]\[WorldBuilder\] final global solve launched \(pid (?P<pid>\d+)\)"),
     "final_done": re.compile(
@@ -283,11 +290,14 @@ def walk_timeline(events: list, capture_id: str | None = None) -> dict:
         return timeline
     horizon = walk_end
     timeline["bg_solve_wait"] = _event(_first(events, "bg_solve_wait", after=t0, before=horizon))
+    timeline["bg_solve_stop_requested"] = _event(_first(events, "bg_solve_stop_requested", after=t0,
+                                                        before=horizon))
     launched = _first(events, "final_launched", after=t0, before=horizon)
     timeline["final_launched"] = _event(launched)
+    terminations = [e for e in events if e.kind in ("bg_solve_wait", "bg_solve_stop_requested")
+                    and e.t >= t0 and (horizon is None or e.t <= horizon)]
     timeline["background_solves"] = solve_landings(
-        timeline["background_solves"], rebuilds, _all(events, "bg_solve_wait", after=t0, before=horizon), launched,
-        timeline["live_surfaces"])
+        timeline["background_solves"], rebuilds, terminations, launched, timeline["live_surfaces"])
     done = _first(events, "final_done", after=t0, before=horizon)
     timeline["final_done"] = _event(done)
     timeline["final_failed"] = _event(_first(events, "final_failed", after=t0, before=horizon))
@@ -340,40 +350,81 @@ def solve_landings(solves: list, rebuilds: list, waits: list, final_launched, li
     `solver.maybe_launch`, then the live surface). The next solve cannot
     launch while this one runs, so the next launch line is when this solve
     had landed BY -- exact when the next solve was due at the landing, a
-    little late when the solve cadence held it back. The rebuild logged just
-    before that launch line is the landing rebuild. The last solve of a walk
-    has no next background solve: Stop waits for it and only then launches
-    the final solve, so the final solve's launch is when it had landed by.
+    little late when the solve cadence held it back. The last solve of a
+    walk has no next background solve: Stop waits for it and only then
+    launches the final solve, so the final solve's launch is when it had
+    landed by.
 
-    A live-surface launch between the two is kept (`live_surface_between`)
-    but not used: a surface is also relaunched when an earlier, stale one
-    finishes, and the log cannot tell the two apart.
+    BY LOG LINE, NOT BY TIME (review C22 round 3 L-a). One loop iteration
+    logs the rebuild, then the next solve's launch, then the live surface.
+    So a surface launched at this solve's landing rebuild is logged AFTER
+    the next solve's launch line, and a time window would give it to the
+    next solve. Each live surface belongs to the rebuild logged just before
+    it, and that rebuild to the last solve launched before IT
+    (`live_surface_between`, now with its rebuild). The LANDING REBUILD is
+    the first rebuild after this solve's launch that launched either this
+    solve's surface or the next solve: when the cadence held the next launch
+    back, the surface's rebuild is the earlier, and the right, one. A surface
+    is also relaunched when an earlier, stale one finishes, and the log
+    cannot tell that from a landing: said so where it is shown.
 
     TERMINATED AT STOP. Stop gives a running background solve a bounded
     wait, then terminates it (`background solve pid N still running after
-    Ns; terminating`). A terminated solve never landed.
+    Ns; terminating`); a HARD stop terminates it at once (`background solve
+    pid N terminated: a stop was requested`, review C22 round 3 L-e). A
+    terminated solve never landed.
     """
+    rebuilds = sorted(rebuilds, key=lambda r: r.line)
+
+    def rebuild_before(line):
+        found = None
+        for rebuild in rebuilds:
+            if rebuild.line >= line:
+                break
+            found = rebuild
+        return found
+
+    surfaces = []
+    for surface in live_surfaces:
+        rebuild = rebuild_before(surface["line"])
+        surfaces.append({**surface, "rebuild_line": None if rebuild is None else rebuild.line,
+                         "rebuild_n": None if rebuild is None else int(rebuild.groups["n"])})
     out = []
     for index, solve in enumerate(solves):
         item = dict(solve)
         terminated = next((w for w in waits if w.groups.get("pid") == solve.get("pid")), None)
         item["terminated_at_stop"] = terminated is not None
         item["terminated_line"] = terminated.line if terminated is not None else None
+        item["terminated_how"] = None if terminated is None else (
+            "a stop was requested" if terminated.kind == "bg_solve_stop_requested"
+            else f"still running after {terminated.groups.get('s')} s")
         after = solves[index + 1] if index + 1 < len(solves) else None
         landed = None
         if after is not None:
             landed = {"t": after["t"], "line": after["line"], "via": f"background solve {after['n']} launch"}
-            before = [r for r in rebuilds if solve["t"] <= r.t <= after["t"] and r.line < after["line"]]
-            if before:
-                landed["rebuild_line"] = before[-1].line
-                landed["rebuild_n"] = int(before[-1].groups["n"])
         elif terminated is None and final_launched is not None:
             landed = {"t": final_launched.t, "line": final_launched.line,
                       "via": "the final solve's launch (Stop waits for the last solve)"}
+        # This solve's own log lines: from its launch to the next launch.
+        mine = [s for s in surfaces if s["rebuild_line"] is not None and s["rebuild_line"] > solve["line"]
+                and (after is None or s["rebuild_line"] < after["line"])]
+        surface = mine[0] if mine and landed is not None else None
+        if landed is not None:
+            candidates = []
+            if surface is not None:
+                candidates.append((surface["rebuild_line"], surface["rebuild_n"],
+                                   f"it launched live surface {surface['n']}"))
+            if after is not None:
+                launcher = rebuild_before(after["line"])
+                if launcher is not None and launcher.line > solve["line"]:
+                    candidates.append((launcher.line, int(launcher.groups["n"]),
+                                       f"it launched background solve {after['n']}"))
+            if candidates:
+                line, number, why = min(candidates)
+                landed.update({"rebuild_line": line, "rebuild_n": number, "rebuild_why": why})
         item["landed_by"] = landed
         item["horizon_s"] = None if landed is None else round(landed["t"] - solve["t"], 2)
-        item["live_surface_between"] = None if landed is None else next(
-            (dict(s) for s in live_surfaces if solve["t"] < s["t"] < landed["t"]), None)
+        item["live_surface_between"] = None if surface is None else dict(surface)
         out.append(item)
     return out
 
@@ -562,10 +613,51 @@ def read_capture_journal(directory) -> dict | None:
             "frames": [(row["wire_seq"], row["received_at"]) for row in rows]}
 
 
-PACING_OVER_S = 0.05
+def journal_sha256(directory) -> dict:
+    """sha256 of a capture's `capture.json` and `frames.jsonl`, so a re-render
+    shows WHICH source journal it joined to (review C22 round 3 L-g: a pinned
+    run's pacing row must not silently depend on whatever the live store holds
+    at render time). Reads only."""
+    digests = {}
+    for name in ("capture.json", "frames.jsonl"):
+        try:
+            digests[name] = hashlib.sha256((Path(directory) / name).read_bytes()).hexdigest()
+        except OSError:
+            digests[name] = None
+    return digests
 
 
-def tower_side_pacing(*, client: dict, data_root, capture_root) -> dict:
+# THE REPLAY-FIDELITY BAR. Manager 142 (RUN\lead\W0-STAGES.md, "Manager 142
+# rulings", 2026-09-28) APPROVED it as the C22 review's round 3 proposed it:
+# "Every proof-set run must pass it, or it is discarded and re-run." These are
+# the only copies of these numbers; `replay_fidelity` judges against them and
+# the report prints them.
+FIDELITY_RULING = "manager 142 (W0-STAGES.md, 2026-09-28), as proposed by the C22 review round 3"
+FIDELITY_BAR = {
+    # Signed receipt-offset error (`tower_side_pacing`), ms. Positive is late.
+    "offset_p50_abs_ms": 5.0,
+    "offset_p95_ms": 60.0,
+    "offset_p99_ms": 250.0,
+    # At most this fraction of the joined frames beyond +/- `beyond_ms`...
+    "beyond_ms": 50.0,
+    "beyond_max_fraction": 0.05,
+    # ...and no frame more than this early.
+    "early_max_ms": 50.0,
+    # The client's own send lateness (stops at the send call), ms.
+    "client_lateness_p95_ms": 5.0,
+}
+FIDELITY_NA_NOTE = ("n/a is NOT a pass. Every proof-set run must PASS replay fidelity (manager 142): "
+                    "re-render it with the source journal (`--capture-root`, e.g. "
+                    "RUN\\experiments\\C22-REPLAY\\source-captures, and `--data-root` if the test "
+                    "Tower's root moved), or discard it and re-run.")
+
+PACING_OVER_S = FIDELITY_BAR["beyond_ms"] / 1000.0
+# The pacing rows stay INFO in the CODE's verdict: their bar is the separate
+# Replay fidelity verdict, and their tails are `--compare`'s.
+PACING_ROW_REQUIRED = "its bar is the Replay fidelity verdict (manager 142); the tails: no regression (--compare)"
+
+
+def tower_side_pacing(*, client: dict, data_root, capture_root, capture_root_from=None) -> dict:
     """How faithfully the test Tower RECEIVED the recorded pace (review C22
     H2, the "README fidelity" row).
 
@@ -594,6 +686,7 @@ def tower_side_pacing(*, client: dict, data_root, capture_root) -> dict:
     replay_ids = list(client.get("tower_captures") or [])
     base = {"computable": False, "data_root": None if data_root is None else str(data_root),
             "source_capture_root": None if capture_root is None else str(capture_root),
+            "source_capture_root_from": capture_root_from,
             "source_captures": source_ids, "replay_captures": replay_ids}
     if data_root is None:
         return {**base, "why": "no data root (run.json names it; or give --data-root)"}
@@ -654,7 +747,11 @@ def tower_side_pacing(*, client: dict, data_root, capture_root) -> dict:
         "matched": matched,
         "replay_only": replay_only,
         "source_only": source_only,
+        # Every distinct wire_seq of the source journals: those the schedule
+        # did not send (the `first_seconds` cut) are source-only by design.
+        "source_frames": sum(len({seq for seq, _ in source["frames"]}) for source in sources),
         "source_duplicate_seq": duplicates,
+        "source_sha256": {cid: journal_sha256(Path(capture_root) / cid) for cid in source_ids},
         "captures_paired": min(len(sources), len(replays)),
         "offset_error_ms": signed_distribution([e * 1000 for e in errors]),
         "late_over_50ms": sum(1 for e in errors if e > PACING_OVER_S),
@@ -677,7 +774,89 @@ def signed_distribution(values) -> dict:
     return {**stats, "min": round(ordered[0], 3), "p1": round(pick(0.01), 3), "p5": round(pick(0.05), 3)}
 
 
-_GLOG = re.compile(r"^[IWEF](\d{8}) (\d{2}:\d{2}:\d{2})\.(\d+)\s")
+def replay_fidelity(*, pacing: dict | None, client: dict) -> dict:
+    """Did the replay reproduce the recorded pace well enough to be PROOF?
+    Judged against `FIDELITY_BAR` (manager 142).
+
+    Its own verdict, apart from the code's live-safety verdict and the
+    Environment's: a FAIL says nothing about the code under test, and makes
+    the run invalid as proof (discard it and re-run). `n/a` -- no source
+    journal to join, or no client record -- is NOT a pass.
+
+      1. the `wire_seq` join is exact: every frame sent was joined, the Tower
+         re-recorded nothing the source lacks, and the only source frames not
+         joined are those the schedule never sent (the `first_seconds` cut);
+      2. signed receipt-offset error |p50|, p95 and p99 within the bar;
+      3. at most 5 % of the frames beyond +/-50 ms, and none more than 50 ms
+         early;
+      4. the client's own send lateness p95 within the bar, so that a FAIL on
+         the Tower's side is the Tower's and not the harness's.
+    """
+    bar = FIDELITY_BAR
+    result: dict = {"result": "n/a", "ruling": FIDELITY_RULING, "bar": dict(bar), "rows": []}
+    if not pacing or not pacing.get("computable"):
+        result["why"] = (pacing or {}).get("why") or "no Tower-side pacing"
+        result["note"] = FIDELITY_NA_NOTE
+        return result
+    rows = result["rows"]
+
+    def row(check, value, required, ok):
+        rows.append({"check": check, "value": value, "required": required,
+                     "result": "n/a" if ok is None else ("PASS" if ok else "FAIL")})
+
+    stream = client.get("stream") or {}
+    sent = stream.get("frames_sent")
+    scheduled = (client.get("schedule") or {}).get("frames")
+    matched, replay_only = pacing.get("matched"), pacing.get("replay_only")
+    source_only, source_frames = pacing.get("source_only"), pacing.get("source_frames")
+    duplicates = pacing.get("source_duplicate_seq") or 0
+    known = all(isinstance(v, int) for v in (sent, scheduled, matched, replay_only, source_only, source_frames))
+    cut = source_frames - scheduled if known else None
+    unmatched_source = source_only - cut if known else None
+    row("wire_seq join exact: joined = frames sent; nothing unmatched on either side",
+        f"{matched} joined / {sent} sent; {replay_only} replay-only; {source_only} source-only = "
+        f"{cut} never scheduled (first_seconds {client.get('first_seconds')}) + {unmatched_source} unmatched"
+        + (f"; {duplicates} duplicate source seq" if duplicates else ""),
+        "joined = sent, 0 replay-only, 0 unmatched source frames",
+        None if not known else (matched == sent and replay_only == 0 and unmatched_source == 0
+                                and duplicates == 0))
+    offset = pacing.get("offset_error_ms") or {}
+
+    def number(value):
+        return value if isinstance(value, (int, float)) else None
+
+    p50, p95, p99, low = (number(offset.get(k)) for k in ("p50", "p95", "p99", "min"))
+    row("receipt-offset error |p50| (ms)", p50, f"<= {bar['offset_p50_abs_ms']:g}",
+        None if p50 is None else abs(p50) <= bar["offset_p50_abs_ms"])
+    row("receipt-offset error p95 (ms)", p95, f"<= {bar['offset_p95_ms']:g}",
+        None if p95 is None else p95 <= bar["offset_p95_ms"])
+    row("receipt-offset error p99 (ms)", p99, f"<= {bar['offset_p99_ms']:g}",
+        None if p99 is None else p99 <= bar["offset_p99_ms"])
+    late, early = pacing.get("late_over_50ms"), pacing.get("early_over_50ms")
+    beyond = (late or 0) + (early or 0)
+    fraction = beyond / matched if matched else None
+    row(f"frames beyond +/-{bar['beyond_ms']:g} ms",
+        None if fraction is None else f"{beyond} of {matched} ({fraction * 100:.2f} %): {late} late, {early} early",
+        f"<= {bar['beyond_max_fraction'] * 100:g} %",
+        None if fraction is None else fraction <= bar["beyond_max_fraction"])
+    row(f"no frame more than {bar['early_max_ms']:g} ms early: min (ms)", low,
+        f">= -{bar['early_max_ms']:g}", None if low is None else low >= -bar["early_max_ms"])
+    lateness = number((stream.get("lateness_ms") or {}).get("p95"))
+    row("client send lateness p95 (ms)",
+        None if lateness is None else f"{lateness} ({stream.get('late_over_50ms')} frame(s) sent > 50 ms late, "
+                                      "INFO)",
+        f"<= {bar['client_lateness_p95_ms']:g}",
+        None if lateness is None else lateness <= bar["client_lateness_p95_ms"])
+    verdicts = [r["result"] for r in rows]
+    result["result"] = ("FAIL" if "FAIL" in verdicts else "PASS" if all(v == "PASS" for v in verdicts)
+                        else "n/a")
+    if result["result"] == "n/a":
+        result["why"] = "a check had no value: " + ", ".join(r["check"] for r in rows if r["result"] == "n/a")
+        result["note"] = FIDELITY_NA_NOTE
+    return result
+
+
+_GLOG =re.compile(r"^[IWEF](\d{8}) (\d{2}:\d{2}:\d{2})\.(\d+)\s")
 DRAW_MARKER_GAP_S = 30.0
 
 
@@ -1112,15 +1291,15 @@ def live_safety(*, client: dict, timeline: dict, session: dict, keyframes: dict 
             + f"); signed p50 {offset.get('p50')}, p95 {offset.get('p95')}, "
             f"p99 {offset.get('p99')}, max {offset.get('max')} (min {offset.get('min')}, p5 {offset.get('p5')}); "
             f"beyond 50 ms: {pacing.get('late_over_50ms')} late, {pacing.get('early_over_50ms')} early",
-            "no regression (--compare); the review sets no bar", "INFO")
+            PACING_ROW_REQUIRED, "INFO")
         row("Tower-side inter-arrival (s), replayed vs recorded",
             f"replayed {_dist_text(gaps.get('replayed') or {})} / recorded "
             f"{_dist_text(gaps.get('recorded') or {})}; difference (ms) "
             f"{_dist_text(pacing.get('inter_arrival_error_ms') or {})}",
-            "no regression (--compare); the review sets no bar", "INFO")
+            PACING_ROW_REQUIRED, "INFO")
     else:
         row("Tower-side pacing: receipt offset - recorded offset (ms), joined on wire_seq",
-            (pacing or {}).get("why"), "no regression (--compare); the review sets no bar", "n/a")
+            (pacing or {}).get("why"), PACING_ROW_REQUIRED, "n/a")
     if surfaces.get("computable"):
         latency = surfaces.get("latency_s") or {}
         killed = sum(1 for s in surfaces.get("surfaces") or [] if s.get("killed_at_stop"))
@@ -1155,6 +1334,14 @@ def _guard_row(check: str, watch: dict | None, aborted: dict | None) -> dict:
     unknowns = sum(1 for item in history if isinstance(item, dict) and item.get("state") == "unknown")
     reason = (aborted or {}).get("reason") or ""
     failed_closed = "unknown" in seen and "failing closed" in reason
+    if failed_closed and unknowns:
+        # `history` keeps CHANGES of state (`LiveGuard.observe`), so the run
+        # of `unknown`s that aborted is one entry however many answers it
+        # held (review C22 round 3 L-d). The guard aborts at exactly the Nth
+        # in a row, which its reason states; every earlier run was a single
+        # answer, or it would have aborted then.
+        streak = re.search(r"answer (\d+) times in a row", reason)
+        unknowns += (int(streak.group(1)) if streak else _unknown_abort_after()) - 1
     contended = [s for s in seen if s in ("recording", "busy")]
     value = ", ".join(seen) + (f"; busy from {_clock(watch.get('busy_since'))}" if watch.get("busy_since") else "")
     if unknowns:
@@ -1163,6 +1350,12 @@ def _guard_row(check: str, watch: dict | None, aborted: dict | None) -> dict:
     return {"check": check, "value": value,
             "required": "idle or down throughout; an isolated unknown tolerated",
             "result": "FAIL" if contended or failed_closed else "PASS"}
+
+
+def _unknown_abort_after() -> int:
+    from scripts.world_live_replay import LIVE_UNKNOWN_ABORT_AFTER  # noqa: PLC0415
+
+    return LIVE_UNKNOWN_ABORT_AFTER
 
 
 def live_environment(*, client: dict, run: dict | None) -> dict:
@@ -1186,26 +1379,44 @@ def _dist_text(stats: dict) -> str:
             f"p99 {stats.get('p99')}, max {stats.get('max')}")
 
 
+CAPTURE_ROOT_GIVEN = "--capture-root"
+CAPTURE_ROOT_FROM_CLIENT = "client.json capture_root (where the replay read the walk)"
+CAPTURE_ROOT_DEFAULT = ("the replay's default capture root (the live store AT RENDER TIME: this client "
+                        "recorded none; pass --capture-root <a snapshot> for a pinned run)")
+
+
 def default_capture_root(client: dict):
     """Where a run's source captures were read: its client record says so
     from C22-F2 on; before that it was always the replay's default."""
+    return resolve_capture_root(None, client)[0]
+
+
+def resolve_capture_root(given, client: dict) -> tuple:
+    """The source-capture root the pacing row joins to, and where that came
+    from (review C22 round 3 L-g). An explicit `--capture-root` wins -- a
+    proof set's re-render names the RUN's snapshot of the source journal --
+    then the run's `client.json` value, then the replay's default, which is
+    the live store as it is at render time and is labelled so."""
+    if given is not None:
+        return Path(given), CAPTURE_ROOT_GIVEN
     if client.get("capture_root"):
-        return Path(client["capture_root"])
+        return Path(client["capture_root"]), CAPTURE_ROOT_FROM_CLIENT
     from scripts.world_live_replay import DEFAULT_CAPTURE_ROOT  # noqa: PLC0415
 
-    return DEFAULT_CAPTURE_ROOT
+    return DEFAULT_CAPTURE_ROOT, CAPTURE_ROOT_DEFAULT
 
 
 def build_report(*, tower_log, tower_out_log=None, world_root=None, capture_id=None,
                  client=None, samples=None, label=None, run_dir=None, data_root=None,
-                 capture_root=None, run=None) -> dict:
+                 capture_root=None, run=None, capture_root_from=None) -> dict:
     """Everything, as one JSON-able dict. `render_markdown` draws it.
 
     `run_dir` is the run's `--out` (read): its `solution-snapshots/`.
     `data_root` is the test Tower's (read): its re-recorded captures, for the
     Tower-side pacing row. `capture_root` holds the source captures (read);
-    by default the one the client record names. `run` is the runner's
-    `run.json`: its own :8000 watch during the Tower's startup.
+    by default the one the client record names (`resolve_capture_root`);
+    `capture_root_from` says where a given one came from. `run` is the
+    runner's `run.json`: its own :8000 watch during the Tower's startup.
     """
     if client is None:
         client = {}
@@ -1244,14 +1455,19 @@ def build_report(*, tower_log, tower_out_log=None, world_root=None, capture_id=N
             detail=f"{len(catchup_after)} rebuild(s) after Stop",
             evidence=f"L{timeline['stop']['line']}")
         wait = timeline.get("bg_solve_wait")
+        stopped = timeline.get("bg_solve_stop_requested")
         launched, done = timeline.get("final_launched"), timeline.get("final_done")
         cursor = catchup_end
-        gap_end = _t(launched) or _t(wait)
+        gap_end = _t(launched) or _t(wait) or _t(stopped)
         if catchup_end is not None and gap_end is not None and gap_end - catchup_end > 1.0:
             if wait is not None:
                 stage = (f"Wait for background solve pid {wait['pid']} ({wait['s']} s), then terminate it "
                          "and launch the final solve")
                 evidence = f"L{wait['line']}"
+            elif stopped is not None:
+                stage = (f"Background solve pid {stopped['pid']} terminated: a stop was requested (a hard "
+                         "stop ends the wait at once)")
+                evidence = f"L{stopped['line']}"
             else:
                 stage = ("Before the final solve: the last background solve finishes (no terminate line; "
                          "it ended inside the wait)")
@@ -1379,10 +1595,13 @@ def build_report(*, tower_log, tower_out_log=None, world_root=None, capture_id=N
 
     keyframes = facts.get("keyframes") if facts.get("available") else None
     surfaces = live_surface_latency(timeline.get("live_surfaces") or [], client.get("surface_watch") or [], t0)
-    if client and capture_root is None:
-        capture_root = default_capture_root(client)
-    pacing = tower_side_pacing(client=client, data_root=data_root, capture_root=capture_root) if client else {
+    if client:
+        capture_root, resolved_from = resolve_capture_root(capture_root, client)
+        capture_root_from = capture_root_from or resolved_from
+    pacing = tower_side_pacing(client=client, data_root=data_root, capture_root=capture_root,
+                               capture_root_from=capture_root_from) if client else {
         "computable": False, "why": "no client record (a real walk's log has none)"}
+    fidelity = replay_fidelity(pacing=pacing, client=client)
     photos_told = phone_photos(client.get("phone_view") or {}, t0,
                                stages.get("appearance") if facts.get("available") else None)
     if photos_told.get("phone_photos_at") is not None:
@@ -1408,12 +1627,14 @@ def build_report(*, tower_log, tower_out_log=None, world_root=None, capture_id=N
                     "stop_to_finalization_min": _minutes(t0, milestones.get("finalization_complete")),
                     "stop_to_phone_photos_min": _minutes(t0, milestones.get("phone_photos_at"))},
         "live_safety": safety,
+        # Apart from the code's verdict and the Environment's (manager 142).
+        "replay_fidelity": fidelity,
         "tower_side_pacing": pacing,
         "phone_photos": photos_told,
         "keyframes": keyframes,
         "solve_draw_0": zero,
         "live_surfaces_latency": surfaces,
-        "client": {k: client.get(k) for k in ("outcome", "speed", "first_seconds", "walk", "schedule",
+        "client": {k: client.get(k) for k in ("outcome", "speed", "first_seconds", "capture_root", "walk", "schedule",
                                               "stream", "phone_fetches", "handshake", "session_start",
                                               "live_tower_at_start", "live_tower_watch", "target_listener",
                                               "aborted", "t0", "stopped_at")
@@ -1550,8 +1771,14 @@ def render_markdown(report: dict) -> str:
                  f"{rebuilds.get('after_stop')} after Stop. "
                  f"{len(walk.get('background_solves') or [])} background solves and "
                  f"{len(walk.get('live_surfaces') or [])} live surfaces launched during the walk.")
+    safety_head = report.get("live_safety") or {}
+    fidelity_head = report.get("replay_fidelity") or {}
+    lines.append(f"5. Verdicts, kept apart: code live safety **{safety_head.get('result')}**; Environment "
+                 f"(:8000) **{(safety_head.get('environment') or {}).get('result')}**; replay fidelity "
+                 f"**{fidelity_head.get('result')}**"
+                 + (" (n/a is NOT a pass for a proof set)" if fidelity_head.get("result") == "n/a" else "") + ".")
     if client.get("aborted"):
-        lines.append(f"5. **Aborted** at {_clock(client['aborted'].get('t'))}: {client['aborted'].get('reason')}.")
+        lines.append(f"6. **Aborted** at {_clock(client['aborted'].get('t'))}: {client['aborted'].get('reason')}.")
     lines.append("")
     safety = report.get("live_safety") or {}
     lines.append(f"## 2. Live safety (C19 F8): **{safety.get('result')}**")
@@ -1579,15 +1806,38 @@ def render_markdown(report: dict) -> str:
             value = item.get("value")
             value = "—" if value is None else str(value).replace("|", "/")
             lines.append(f"| {item['check']} | {value} | {item['required']} | {item['result']} |")
+    fidelity = report.get("replay_fidelity") or {}
+    if fidelity:
+        lines.append("")
+        lines.append(f"**Replay fidelity: {fidelity.get('result')}.** Did the test Tower receive the recorded "
+                     f"pace? Judged apart from the code's verdict and the Environment's, against the bar "
+                     f"approved by {fidelity.get('ruling')}. A FAIL makes the run invalid as proof: discard it "
+                     "and re-run.")
+        if fidelity.get("result") == "n/a":
+            lines.append("")
+            lines.append(f"n/a: {fidelity.get('why')}. **{fidelity.get('note') or FIDELITY_NA_NOTE}**")
+        if fidelity.get("rows"):
+            lines.append("")
+            lines.append("| Check | Value | Required | Result |")
+            lines.append("|---|---|---|---|")
+            for item in fidelity["rows"]:
+                value = item.get("value")
+                value = "—" if value is None else str(value).replace("|", "/")
+                lines.append(f"| {item['check']} | {value} | {item['required']} | {item['result']} |")
     pacing = report.get("tower_side_pacing") or {}
     if pacing.get("computable"):
         origins = pacing.get("origins") or {}
+        digests = "; ".join(f"{cid[:8]}… frames.jsonl sha256 {str((d or {}).get('frames.jsonl'))[:16]}, "
+                            f"capture.json {str((d or {}).get('capture.json'))[:16]}"
+                            for cid, d in (pacing.get("source_sha256") or {}).items())
         lines.append("")
         lines.append(f"Tower-side pacing: `{pacing.get('data_root')}` captures {pacing.get('replay_captures')} "
                      f"joined on `wire_seq` to `{pacing.get('source_capture_root')}` captures "
                      f"{pacing.get('source_captures')}, speed {pacing.get('speed')}; origins are each walk's "
                      f"first `started_at` ({_clock(origins.get('replay_started_at'))} replayed, "
-                     f"{_clock(origins.get('source_started_at'))} recorded).")
+                     f"{_clock(origins.get('source_started_at'))} recorded). The source root is from "
+                     f"{pacing.get('source_capture_root_from') or 'the caller'}"
+                     + (f"; source journal {digests}" if digests else "") + ".")
     photos = report.get("phone_photos") or {}
     if photos.get("phone_photos_at") is not None or photos.get("why"):
         lines.append("")
@@ -1665,15 +1915,18 @@ def render_markdown(report: dict) -> str:
     lines.append(f"- use during the walk: {_use_text(walk.get('use_during_walk'))}")
     for solve in walk.get("background_solves") or []:
         landed = solve.get("landed_by") or {}
-        fate = ("; TERMINATED at Stop" + (f" (L{solve['terminated_line']})" if solve.get("terminated_line") else "")
+        fate = ("; TERMINATED at Stop" + (f" ({solve['terminated_how']})" if solve.get("terminated_how") else "")
+                + (f" (L{solve['terminated_line']})" if solve.get("terminated_line") else "")
                 if solve.get("terminated_at_stop") else
                 f"; landed by {_clock(landed.get('t'))} (+{solve.get('horizon_s')} s, {landed.get('via')}, "
-                f"L{landed.get('line')}" + (f", rebuild {landed['rebuild_n']} L{landed['rebuild_line']}"
+                f"L{landed.get('line')}" + (f"; landing rebuild {landed['rebuild_n']} L{landed['rebuild_line']}: "
+                                            f"{landed.get('rebuild_why')}"
                                             if landed.get("rebuild_line") else "") + ")"
                 if landed else "; landing not seen")
         between = solve.get("live_surface_between")
         if between:
-            fate += (f"; live surface {between.get('n')} launched in between at {_clock(between.get('t'))} "
+            fate += (f"; live surface {between.get('n')} launched at {_clock(between.get('t'))} by rebuild "
+                     f"{between.get('rebuild_n')} (L{between.get('rebuild_line')}), attributed by log line "
                      "(the landing, or a stale surface's relaunch: the log cannot tell)")
         lines.append(f"- background solve {solve['n']} at {_clock(solve['t'])}, {solve['keyframes']} keyframes "
                      f"(L{solve['line']}){fate}")
@@ -1804,7 +2057,26 @@ def _load_run(run_dir) -> dict:
             "horizons": [s.get("keyframes") for s in (report.get("tower_walk") or {}).get("background_solves")
                          or []],
             "live_safety": (report.get("live_safety") or {}).get("result"),
-            "environment": ((report.get("live_safety") or {}).get("environment") or {}).get("result")}
+            "environment": ((report.get("live_safety") or {}).get("environment") or {}).get("result"),
+            # None: a report rendered before the bar existed.
+            "fidelity": (report.get("replay_fidelity") or {}).get("result")}
+
+
+def run_validity(run: dict) -> dict:
+    """Is a run valid as proof? A replay-fidelity FAIL (manager 142) or an
+    Environment FAIL (review C22 round 3 L-f: a contended run widens the old
+    path's noise) makes it INVALID: flagged, and never counted in the
+    baseline's range. A fidelity verdict that is n/a, or absent (a report
+    rendered before the bar), is NOT a pass either: flagged, but kept."""
+    invalid, unjudged = [], []
+    if run.get("fidelity") == "FAIL":
+        invalid.append("replay fidelity FAIL")
+    elif run.get("fidelity") != "PASS":
+        unjudged.append("replay fidelity " + ("not in this render (re-render it)" if run.get("fidelity") is None
+                                              else str(run.get("fidelity"))))
+    if run.get("environment") == "FAIL":
+        invalid.append("Environment (:8000) FAIL")
+    return {"invalid": invalid, "not_a_pass": unjudged}
 
 
 def _first_difference(a, b):
@@ -1821,6 +2093,11 @@ def compare_runs(baseline_dirs, candidate_dirs=()) -> dict:
     against that spread; keyframe-sequence identity to the first baseline."""
     baseline = [_load_run(d) for d in baseline_dirs]
     candidate = [_load_run(d) for d in candidate_dirs]
+    for run in baseline + candidate:
+        run["validity"] = run_validity(run)
+    # An invalid baseline run is shown and never counted (manager 142; review
+    # C22 round 3 L-f): the range is the VALID old runs' noise.
+    in_range = [not run["validity"]["invalid"] for run in baseline]
     names = []
     for run in baseline + candidate:
         for name in run["metrics"]:
@@ -1830,8 +2107,8 @@ def compare_runs(baseline_dirs, candidate_dirs=()) -> dict:
     for name in names:
         base = [run["metrics"].get(name) for run in baseline]
         cand = [run["metrics"].get(name) for run in candidate]
-        known = [v for v in base if isinstance(v, (int, float))]
-        item = {"metric": name, "baseline": base, "candidate": cand}
+        known = [v for v, counted in zip(base, in_range) if counted and isinstance(v, (int, float))]
+        item = {"metric": name, "baseline": base, "baseline_in_range": in_range, "candidate": cand}
         if known:
             low, high = min(known), max(known)
             item.update({"mean": round(sum(known) / len(known), 4), "min": low, "max": high,
@@ -1848,7 +2125,9 @@ def compare_runs(baseline_dirs, candidate_dirs=()) -> dict:
     for item in metrics:
         for directory in item.get("missing") or []:
             missing.setdefault(directory, []).append(item["metric"])
-    reference = baseline[0] if baseline else None
+    counted = [run for run, keep in zip(baseline, in_range) if keep]
+    valid_candidates = [run for run in candidate if not run["validity"]["invalid"]]
+    reference = (counted or baseline or [None])[0]
 
     def identity(run):
         if reference is None:
@@ -1857,14 +2136,27 @@ def compare_runs(baseline_dirs, candidate_dirs=()) -> dict:
         return {"dir": run["dir"], "sha256": run["sha256"], "identical": same,
                 "first_difference": None if same else _first_difference(run["sequence"], reference["sequence"]),
                 "horizons": run["horizons"], "horizons_identical": run["horizons"] == reference["horizons"],
-                "live_safety": run["live_safety"], "environment": run.get("environment")}
+                "live_safety": run["live_safety"], "environment": run.get("environment"),
+                "fidelity": run.get("fidelity"), "invalid": run["validity"]["invalid"],
+                "not_a_pass": run["validity"]["not_a_pass"]}
+
+    def flagged(runs, key):
+        return [{"dir": run["dir"], "reasons": run["validity"][key]} for run in runs if run["validity"][key]]
 
     return {
-        "compare": "c22-live-replay-compare/1",
+        "compare": "c22-live-replay-compare/2",
         "generated_at": round(time.time(), 3),
         "baseline": [run["dir"] for run in baseline],
         "candidate": [run["dir"] for run in candidate],
-        "enough_runs": len(baseline) >= 3 and (not candidate or len(candidate) >= 3),
+        "fidelity_ruling": FIDELITY_RULING,
+        # Shown, never counted in the range (replay fidelity or Environment FAIL).
+        "excluded_from_baseline": flagged(baseline, "invalid"),
+        # Flagged: not proof; judged against the range only for the record.
+        "invalid_candidates": flagged(candidate, "invalid"),
+        # Replay fidelity n/a or not rendered: not a pass for a proof set.
+        "fidelity_not_judged": flagged(baseline + candidate, "not_a_pass"),
+        "baseline_counted": len(counted),
+        "enough_runs": len(counted) >= 3 and (not candidate or len(valid_candidates) >= 3),
         # Per candidate run, every metric the baseline has and it lacks.
         # Not passing: a candidate is never judged on the metrics it is
         # missing.
@@ -1885,7 +2177,29 @@ def render_compare(result: dict) -> str:
                      + ", ".join(f"`{d}`" for d in result["candidate"]))
     if not result["enough_runs"]:
         lines.append("")
-        lines.append("**Fewer than 3 runs on a side: this is not a noise estimate (C19 F8 asks for N >= 3).**")
+        lines.append("**Fewer than 3 valid runs on a side: this is not a noise estimate (C19 F8 asks for N >= 3).**")
+    excluded = result.get("excluded_from_baseline") or []
+    if excluded:
+        lines.append("")
+        lines.append(f"**EXCLUDED FROM THE BASELINE RANGE: {len(excluded)} run(s).** A run that fails replay "
+                     f"fidelity ({result.get('fidelity_ruling')}) or the Environment (:8000) verdict is not valid "
+                     "as proof: it is shown below and never counted in the mean, min, max or spread "
+                     f"({result.get('baseline_counted')} baseline run(s) counted).")
+        for item in excluded:
+            lines.append(f"- `{item['dir']}`: {', '.join(item['reasons'])}")
+    invalid = result.get("invalid_candidates") or []
+    if invalid:
+        lines.append("")
+        lines.append(f"**INVALID CANDIDATE(S): {len(invalid)}.** Not proof (discard and re-run); its values are "
+                     "marked INVALID below.")
+        for item in invalid:
+            lines.append(f"- `{item['dir']}`: {', '.join(item['reasons'])}")
+    unjudged = result.get("fidelity_not_judged") or []
+    if unjudged:
+        lines.append("")
+        lines.append(f"**Replay fidelity not judged for {len(unjudged)} run(s): {FIDELITY_NA_NOTE}**")
+        for item in unjudged:
+            lines.append(f"- `{item['dir']}`: {', '.join(item['reasons'])}")
     missing = result.get("missing") or {}
     if missing:
         lines.append("")
@@ -1897,24 +2211,30 @@ def render_compare(result: dict) -> str:
     lines.append("## Keyframe identity, (source_seq, segment_index), against the first baseline run")
     lines.append("")
     lines.append("| Run | sha256 | Identical | First differing index | Solve horizons identical | Live safety "
-                 "| Environment (:8000) |")
-    lines.append("|---|---|---|---|---|---|---|")
+                 "| Environment (:8000) | Replay fidelity | Valid as proof |")
+    lines.append("|---|---|---|---|---|---|---|---|---|")
     for side in ("baseline", "candidate"):
         for item in result["keyframes"][side]:
             if item is None:
                 continue
+            valid = ("**NO**: " + ", ".join(item.get("invalid") or []) + (" (excluded from the range)"
+                                                                          if side == "baseline" else "")
+                     if item.get("invalid") else ("not judged" if item.get("not_a_pass") else "yes"))
             lines.append(f"| {side}: `{item['dir']}` | {str(item['sha256'])[:16]} | {item['identical']} | "
                          f"{'' if item['first_difference'] is None else item['first_difference']} | "
-                         f"{item['horizons_identical']} | {item['live_safety']} | {item.get('environment')} |")
+                         f"{item['horizons_identical']} | {item['live_safety']} | {item.get('environment')} | "
+                         f"{item.get('fidelity')} | {valid} |")
     lines.append("")
     lines.append("## Metrics")
     lines.append("")
     lines.append("A candidate value outside the baseline's [min, max] is flagged; a candidate with no value "
                  "where the baseline has one is flagged MISSING. The spread is max - min over the baseline "
-                 "runs: the old path's own noise.")
+                 "runs COUNTED: the old path's own noise. A baseline run excluded above is not in the mean, "
+                 "min, max or spread; an INVALID candidate's value is marked.")
     lines.append("")
-    lines.append("| Metric | Baseline mean | min | max | spread | Candidate | Flag |")
-    lines.append("|---|---|---|---|---|---|---|")
+    lines.append("| Metric | Baseline mean | min | max | spread | Excluded baseline value(s) | Candidate | Flag |")
+    lines.append("|---|---|---|---|---|---|---|---|")
+    invalid_dirs = {item["dir"] for item in invalid}
     for item in result["metrics"]:
         flags = []
         if item.get("outside"):
@@ -1922,9 +2242,12 @@ def render_compare(result: dict) -> str:
         if item.get("missing"):
             flags.append(f"**MISSING** in {len(item['missing'])}")
         flag = "; ".join(flags)
+        counted = item.get("baseline_in_range") or [True] * len(item["baseline"])
+        dropped = ", ".join(str(v) for v, keep in zip(item["baseline"], counted) if not keep)
+        values = ", ".join(str(v) + (" (INVALID)" if directory in invalid_dirs else "")
+                           for v, directory in zip(item["candidate"], result["candidate"]))
         lines.append(f"| {item['metric']} | {item.get('mean', '')} | {item.get('min', '')} | "
-                     f"{item.get('max', '')} | {item.get('spread', '')} | "
-                     f"{', '.join(str(v) for v in item['candidate'])} | {flag} |")
+                     f"{item.get('max', '')} | {item.get('spread', '')} | {dropped} | {values} | {flag} |")
     lines.append("")
     return "\n".join(lines)
 
@@ -1963,9 +2286,13 @@ def main(argv=None) -> int:
                              "Default: the one run.json names. Also the world root (<data-root>/world_builder) "
                              "unless --world-root is given.")
     parser.add_argument("--capture-root", type=Path, default=None,
-                        help="Where the SOURCE captures are, READ (<root>/<id>/frames.jsonl): the recorded "
-                             "pace the pacing row joins to. Default: the one client.json names, else the "
-                             "replay's default capture root.")
+                        help="Where the SOURCE captures are, READ (<root>/<id>/capture.json + frames.jsonl): "
+                             "the recorded pace the pacing row and the replay-fidelity verdict join to. "
+                             "Default: the one the run's client.json names, else the replay's default "
+                             "capture root, which is the live store AS IT IS AT RENDER TIME. Give a snapshot "
+                             "directory to pin it: proof-set re-renders pass "
+                             "RUN\\experiments\\C22-REPLAY\\source-captures. The report records which root "
+                             "it read, where that came from, and the journal's sha256.")
     parser.add_argument("--capture-id", default=None,
                         help="The walk's first capture (default: client.json's, else the log's first).")
     parser.add_argument("--label", default=None)
@@ -1981,7 +2308,9 @@ def main(argv=None) -> int:
         (out / "compare.json").write_text(json.dumps(result, indent=2, default=str), encoding="utf-8")
         (out / "COMPARE.md").write_text(render_compare(result), encoding="utf-8")
         print(json.dumps({"compare": str(out / "compare.json"), "enough_runs": result["enough_runs"],
-                          "candidates_complete": result["candidates_complete"]}, indent=2))
+                          "candidates_complete": result["candidates_complete"],
+                          "excluded_from_baseline": result["excluded_from_baseline"],
+                          "invalid_candidates": result["invalid_candidates"]}, indent=2))
         return 0
     run_dir = Path(args.run_dir) if args.run_dir is not None else out
     defaults = _run_defaults(run_dir)
@@ -2003,7 +2332,8 @@ def main(argv=None) -> int:
     json_path, md_path = write_report(out, report)
     print(json.dumps({"report": str(json_path), "markdown": str(md_path), "verdict": report["verdict"],
                       "live_safety": report["live_safety"]["result"],
-                      "environment": (report["live_safety"].get("environment") or {}).get("result")}, indent=2))
+                      "environment": (report["live_safety"].get("environment") or {}).get("result"),
+                      "replay_fidelity": report["replay_fidelity"]["result"]}, indent=2))
     return 0
 
 
