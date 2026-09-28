@@ -186,6 +186,14 @@ struct ContentView: View {
         }
     }
 
+    /// Half height, with full height a drag away -- except at the
+    /// accessibility sizes, where half an iPhone SE held about one row of the
+    /// drawer and World Builder was four drags down (O1 viewer check): there
+    /// the sheets open at full height.
+    private var sheetDetents: Set<PresentationDetent> {
+        dynamicTypeSize.isAccessibilitySize ? [.large] : [.medium, .large]
+    }
+
     /// Opaque, for the two sheets that open at half height. There a sheet
     /// is Liquid Glass, and the screen behind showed through its rows enough
     /// to take their grey text under 4.5:1 (accessibility audit, U0.5); at
@@ -390,14 +398,14 @@ struct ContentView: View {
         switch destination {
         case .cartridges:
             CartridgeDrawerView(selectedCartridgeID: $selectedCartridgeID)
-                .presentationDetents([.medium, .large])
+                .presentationDetents(sheetDetents)
                 .presentationBackground(Self.sheetBackground)
         case .connections:
             ConnectionSheet(
                 glasses: project.glassesConnection,
                 tower: project.towerClient
             )
-            .presentationDetents([.medium, .large])
+            .presentationDetents(sheetDetents)
             .presentationBackground(Self.sheetBackground)
         case .settings:
             SettingsSheet(howItWorks: HowGlassesWorksEntry(
@@ -448,7 +456,7 @@ extension ContentView {
                     glasses: project.glassesConnection,
                     tower: project.towerClient
                 )
-                .presentationDetents([.medium, .large])
+                .presentationDetents(sheetDetents)
                 .presentationBackground(Self.sheetBackground)
             case .settings:
                 SettingsSheet()

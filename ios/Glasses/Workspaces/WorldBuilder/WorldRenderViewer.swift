@@ -2005,15 +2005,25 @@ struct WorldRenderScene: View {
     /// debugger.
     @State private var isShowingDetails = false
 
-    /// The screen's height, for `CappedScroll`.
+    /// The screen's height below the navigation bar, for `CappedScroll`.
     @State private var screenHeight: CGFloat = 0
 
-    /// The most of the screen the words above the picture, or those below
-    /// it, may take before they scroll. At the accessibility sizes the
-    /// caption alone took all but a strip of the 3D view, and with Details
-    /// open it was pushed up under the navigation bar and cut off. At the
-    /// default size neither comes near it, and nothing scrolls.
-    static let textShare: CGFloat = 0.3
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+
+    /// The most of the screen the words above the picture may take before
+    /// they scroll, and the most the areas and Details below it may take.
+    ///
+    /// At the largest text size the caption grew without limit: the 3D view
+    /// measured 0 pt on an iPhone SE, 72 on the 17e and 87 on the 17 Pro (O1
+    /// viewer check, at 2ff0b0e), and with Details open the caption was
+    /// pushed up under the navigation bar. Capped, the picture keeps at
+    /// least 70 % of the screen below the bar at the accessibility sizes --
+    /// about 60 % of the SE's safe area -- and the words scroll in their own
+    /// space, whole, to read and to VoiceOver. At the default size the
+    /// caption is well under its cap and nothing scrolls; the areas and
+    /// Details keep the room they had.
+    static let captionShare: CGFloat = 0.18
+    private var belowShare: CGFloat { dynamicTypeSize.isAccessibilitySize ? 0.12 : 0.3 }
 
     /// When the current wait began: the fetch (the screen's opening, a
     /// Reload, a Try again), or the drawing that follows it or a reload of
@@ -2064,11 +2074,12 @@ struct WorldRenderScene: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            CappedScroll(cap: screenHeight * Self.textShare) {
+            CappedScroll(cap: screenHeight * Self.captionShare) {
                 caption
             }
             content
-            CappedScroll(cap: screenHeight * Self.textShare) {
+                .layoutPriority(1)
+            CappedScroll(cap: screenHeight * belowShare) {
                 VStack(spacing: 0) {
                     if !model.target.isArea { areasRow }
                     details
@@ -2476,6 +2487,9 @@ struct CappedScroll<Content: View>: View {
                 .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { contentHeight = $0 }
         }
         .scrollBounceBehavior(.basedOnSize)
+        // When it is capped, say so: the indicator shows once, as the screen
+        // opens, that there is more to read.
+        .scrollIndicatorsFlash(onAppear: true)
         .frame(height: cap > 0 ? min(contentHeight, cap) : contentHeight)
     }
 }
