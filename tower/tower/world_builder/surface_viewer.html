@@ -650,8 +650,8 @@ function main(){
                 + "them and did not contradict each other. "
               : "Surfaces appear only where the cameras' fused measurements "
                 + "reached the evidence threshold. ")
-           + "A gap is either a place nothing looked or a place the views "
-           + "disagreed about, so a gap is not proof that nothing is there.";
+           + "A gap is where this page has no reconstructed surface. "
+           + "It is not proof that nothing is there.";
   if ((CONFIG.scale_state || "unknown") === "unknown")
     note += " Scale is unknown, so distances here are relative.";
   const cap = document.getElementById("caption");
