@@ -269,6 +269,16 @@ final class GlassesConnection: ObservableObject {
     /// The alert when a capture is started without camera permission.
     static let cameraPermissionNotGrantedSentence = "Camera permission is not granted. Open Connections, allow camera access for the glasses, then start capture again."
 
+    /// The alert when a capture is started with no active glasses. Mock
+    /// Device Kit is named only when it is the device in use: on real
+    /// glasses it is a developer tool the person has never heard of
+    /// (U0.8 F08).
+    static func noActiveDeviceSentence(mockDeviceKitEnabled: Bool) -> String {
+        mockDeviceKitEnabled
+            ? "No eligible glasses device yet. Make sure Mock Device Kit is enabled, paired, powered on, and donned, then wait a moment for the device to become active."
+            : "No glasses are active on this phone yet. Make sure they are on, nearby and connected in the Meta AI app, then start again."
+    }
+
     #if DEBUG
     /// Mirrors `MockDeviceKit.shared.isEnabled` — read back from the SDK
     /// after every call, not toggled optimistically.
@@ -1042,7 +1052,7 @@ final class GlassesConnection: ObservableObject {
         guard hasActiveDevice, let deviceSelector else {
             print("[Glasses][Camera] startCameraSession refused: no active eligible device yet")
             lastCaptureStartRefusal = .noActiveDevice
-            errorMessage = "No eligible glasses device yet. Make sure Mock Device Kit is enabled, paired, powered on, and donned, then wait a moment for the device to become active."
+            errorMessage = Self.noActiveDeviceSentence(mockDeviceKitEnabled: mockDeviceKitEnabled)
             return
         }
 
@@ -1274,7 +1284,7 @@ final class GlassesConnection: ObservableObject {
             print("[Glasses][Camera] camera permission not granted (\(String(describing: cameraPermissionStatus))); not starting stream")
             abandonSessionAfterFailedStart(
                 refusal: .cameraPermissionNotGranted,
-                reason: "Camera permission is not granted. Open Connections, allow camera access for the glasses, then start capture again."
+                reason: Self.cameraPermissionNotGrantedSentence
             )
             return
         }

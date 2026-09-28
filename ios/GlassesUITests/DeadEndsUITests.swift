@@ -273,6 +273,24 @@ final class DeadEndsUITests: XCTestCase {
         XCTAssertTrue(honest, "the pill's word: \(text)")
     }
 
+    // MARK: Step 5 -- the glasses alert
+
+    /// F08: the glasses alert opens Connections, where its problem is fixed.
+    func testTheGlassesAlertOpensConnections() throws {
+        launch(tower: closedAuthority, args: ["-UITestGlassesAlert"])
+        let alert = app.alerts["Something went wrong"]
+        XCTAssertTrue(alert.waitForExistence(timeout: 15), "the glasses alert")
+        let open = alert.buttons["Open Connections"]
+        XCTAssertTrue(open.exists, "the alert offers Open Connections")
+        XCTAssertTrue(alert.buttons["OK"].exists, "and OK")
+        open.tap()
+
+        XCTAssertTrue(app.navigationBars["Connections"].waitForExistence(timeout: 10), "Connections opened")
+        let camera = app.buttons.matching(NSPredicate(format: "label ENDSWITH %@", "Camera access")).firstMatch
+        XCTAssertTrue(revealInSheet(camera), "Connections has the camera-access row")
+        XCTAssertFalse(alert.exists, "the alert is gone")
+    }
+
     // MARK: Launch (H3)
 
     /// `tower` is the socket's `host:port`; `nil` uses the saved address.

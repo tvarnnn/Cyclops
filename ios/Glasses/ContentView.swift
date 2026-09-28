@@ -162,7 +162,10 @@ struct ContentView: View {
             .fullScreenCover(item: onboardingShowing) { mode in
                 onboardingCards(mode)
             }
-            .modifier(GlassesErrorAlert(glasses: project.glassesConnection))
+            .modifier(GlassesErrorAlert(
+                glasses: project.glassesConnection,
+                openConnections: { destination = .connections }
+            ))
         }
         // The app's only automatic side effect, in the one place it belongs.
         // `startAutomaticConnections()` is itself idempotent, so a re-run of
@@ -515,8 +518,14 @@ extension ContentView {
 /// `ProjectManager`'s `objectWillChange` fan-in was removed so the shell would
 /// stop re-evaluating at the capture rate. The alert has to observe the object
 /// it reads, and this is the smallest thing that does.
+///
+/// Every glasses alert offers Connections (U0.8 F08): each `GlassesConnection`
+/// error is about registration, permission or the device, and Connections is
+/// where those are recovered. Navigation always works, so this is never a
+/// futile control.
 private struct GlassesErrorAlert: ViewModifier {
     @ObservedObject var glasses: GlassesConnection
+    let openConnections: () -> Void
 
     func body(content: Content) -> some View {
         content.alert(
@@ -528,7 +537,11 @@ private struct GlassesErrorAlert: ViewModifier {
                 }
             )
         ) {
-            Button("OK") { glasses.errorMessage = nil }
+            Button("Open Connections") {
+                glasses.errorMessage = nil
+                openConnections()
+            }
+            Button("OK", role: .cancel) { glasses.errorMessage = nil }
         } message: {
             Text(glasses.errorMessage ?? "")
         }

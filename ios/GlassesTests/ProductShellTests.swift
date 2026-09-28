@@ -5001,5 +5001,16 @@ final class DeadEndsTests: XCTestCase {
         // The registration word itself is unchanged (pinned above).
         XCTAssertEqual(StateDisplay.registration(.registered), "Registered")
     }
+
+    /// F08: the no-device alert names Mock Device Kit only when the mock is
+    /// the device in use, and both sentences name the next step.
+    func testTheNoDeviceSentenceNamesMockDeviceKitOnlyForTheMock() {
+        let mock = GlassesConnection.noActiveDeviceSentence(mockDeviceKitEnabled: true)
+        let real = GlassesConnection.noActiveDeviceSentence(mockDeviceKitEnabled: false)
+        XCTAssertTrue(mock.contains("Mock Device Kit"), mock)
+        XCTAssertFalse(real.contains("Mock Device Kit"), real)
+        XCTAssertTrue(real.contains("Meta AI app"), real)
+        XCTAssertTrue(GlassesConnection.cameraPermissionNotGrantedSentence.contains("Open Connections"))
+    }
 }
 #endif
