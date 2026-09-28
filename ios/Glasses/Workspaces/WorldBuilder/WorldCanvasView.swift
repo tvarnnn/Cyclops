@@ -104,6 +104,19 @@ struct WorldCanvasView: View {
     /// is not drawn at all rather than drawn and inert.
     var openReconstruction: ((WorldRenderTarget) -> Void)? = nil
 
+    /// Asks the Tower again for a report, after the channel failed or the
+    /// first update is overdue (U0.8 F11, F13). `nil` draws no button.
+    var askAgain: (() -> Void)? = nil
+
+    /// Back to the live screen, where Start capture is, for a world with
+    /// nothing usable in it (U0.8 F12). `nil` draws no button: when following
+    /// live, Start capture is already on the screen.
+    var goToCapture: (() -> Void)? = nil
+
+    /// The first update has not come within `WorldBuilderViewModel
+    /// .awaitingBound` (U0.8 F13): the spinner gives way to a sentence.
+    var awaitingIsOverdue = false
+
     /// Whether the Diagnostics disclosure is open.
     ///
     /// View state, and deliberately not remembered: every time this screen
@@ -179,16 +192,31 @@ struct WorldCanvasView: View {
             }
 
         case .awaitingFirstUpdate:
-            // The one honest use of a progress indicator: frames really are
-            // going out and the Tower really has not answered yet.
-            HStack(spacing: 10) {
-                ProgressView()
-                Text(waitingHeadline)
+            if awaitingIsOverdue {
+                // Every spinner ends in a sentence (U0.8 F13): past the bound
+                // the wait is stated, with how long, and never guessed at.
+                Label(waitingHeadline, systemImage: "clock")
                     .font(.subheadline)
                     .foregroundStyle(.readableSecondary)
-            }
-            if let detail = waitingDetail {
-                detailText(detail)
+                detailText(WorldCanvasText.overdue(
+                    binding: sessionBinding,
+                    seconds: Int(WorldBuilderViewModel.awaitingBound.components.seconds)
+                ))
+                if sessionBinding.allowsThroughTheGate {
+                    askAgainButton
+                }
+            } else {
+                // The one honest use of a progress indicator: frames really are
+                // going out and the Tower really has not answered yet.
+                HStack(spacing: 10) {
+                    ProgressView()
+                    Text(waitingHeadline)
+                        .font(.subheadline)
+                        .foregroundStyle(.readableSecondary)
+                }
+                if let detail = waitingDetail {
+                    detailText(detail)
+                }
             }
 
         case .receiving(let snapshot):
@@ -264,6 +292,12 @@ struct WorldCanvasView: View {
             stageHeadline(fallback: "Saved", systemImage: "cube.fill")
             worldName(snapshot)
             photographicFailureNote
+            // A finished world with nothing usable says what happened and
+            // what makes another one, as the interrupted one does (U0.8 F12).
+            if presentation.stage == .needsRetry, let sentence = presentation.recoverability?.sentence {
+                detailText(sentence)
+            }
+            goToCaptureButton
             reconstructionCard
             finalSolveNote
             WorldSummaryView(snapshot: snapshot, isLive: false)
@@ -284,6 +318,7 @@ struct WorldCanvasView: View {
                let sentence = recoverability.sentence {
                 detailText(sentence)
             }
+            goToCaptureButton
             reconstructionCard
             finalSolveNote
             // The Tower's own words for what happened, kept verbatim. Under the
@@ -301,13 +336,42 @@ struct WorldCanvasView: View {
             // whether a world is being built; headlining it "World building
             // failed" told a wearer whose walk was fine that it was not.
             // Everything else is the Tower's own report of a failure.
+            //
+            // A report this build cannot read is neither: it is fixed by an
+            // update, and says so (U0.8 F11).
             switch failure.kind {
             case .transport, .timedOut:
                 headline("World Builder is not reporting", systemImage: "antenna.radiowaves.left.and.right.slash")
-            case .notSupported, .towerReportedFailure, .undecodableResponse:
+                detailText(failure.message)
+                askAgainButton
+            case .notSupported, .undecodableResponse:
+                headline(WorldCanvasText.cannotReadHeadline, systemImage: "arrow.down.circle")
+                detailText(failure.message)
+                detailText(WorldCanvasText.updateFixesIt)
+            case .towerReportedFailure:
                 headline("World building failed", systemImage: "exclamationmark.triangle.fill")
+                detailText(failure.message)
             }
-            detailText(failure.message)
+        }
+    }
+
+    /// "Ask the Tower again" (U0.8 F11, F13), where the caller gave the way.
+    @ViewBuilder
+    private var askAgainButton: some View {
+        if let askAgain {
+            Button(WorldCanvasText.askAgain, action: askAgain)
+                .readableBorderedButton()
+                .accessibilityIdentifier("wb-ask-again")
+        }
+    }
+
+    /// "Go to capture" (U0.8 F12), for a world with nothing usable in it.
+    @ViewBuilder
+    private var goToCaptureButton: some View {
+        if presentation.stage == .needsRetry, let goToCapture {
+            Button(WorldCanvasText.goToCapture, action: goToCapture)
+                .readableBorderedButton()
+                .accessibilityIdentifier("wb-go-to-capture")
         }
     }
 
@@ -865,4 +929,30 @@ struct WorldSummaryView: View {
         explanation: UnavailableWorldBuilderClient.reason
     )
     .padding()
+}
+
+// MARK: - The canvas's words (U0.8 F11-F13)
+
+/// The canvas's new sentences and control words, in one place for U0.4.
+/// Each says what the phone knows and names the next step; none guesses why.
+enum WorldCanvasText {
+    static let askAgain = "Ask the Tower again"
+    static let goToCapture = "Go to capture"
+    static let cannotReadHeadline = "This app cannot read the Tower's World Builder report"
+    static let updateFixesIt = "Updating the app or the Tower fixes this."
+    /// The header's disabled Picture button, for VoiceOver (U0.8 F14).
+    static let pictureOffValue = "Not available: the Tower has not named a world with a 3D picture yet."
+
+    /// The sentence a wait ends in, once `seconds` have passed with no
+    /// first update, by what the phone knows about the capture.
+    static func overdue(binding: WorldSessionBinding, seconds: Int) -> String {
+        switch binding {
+        case .none, .bound:
+            return "No world update has arrived in \(seconds) seconds. The connection to the Tower is open; this screen cannot see why nothing has arrived."
+        case .awaiting:
+            return "The Tower has not started a world from these frames in \(seconds) seconds. The line under the capture button says whether World Builder is active there."
+        case .foreign:
+            return "After \(seconds) seconds the Tower is still reporting a world this phone cannot match to this capture. Stopping and starting capture begins a new one."
+        }
+    }
 }

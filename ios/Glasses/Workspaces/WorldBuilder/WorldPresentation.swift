@@ -559,8 +559,11 @@ enum WorldStage: Equatable {
             return solve == .solved && figuresAbsent ? .saved : .needsRetry
         case .interrupted:
             return evidence?.hasGeometry == true ? .interrupted : .needsRetry
-        case .failed:
-            return .needsRetry
+        case .failed(let failure):
+            // Only the Tower's own report of a failed build says anything
+            // about the walk. A channel or decoding failure is about this
+            // screen's subscription, and is not a stage (U0.8 F11).
+            return failure.kind == .towerReportedFailure ? .needsRetry : nil
         }
     }
 }

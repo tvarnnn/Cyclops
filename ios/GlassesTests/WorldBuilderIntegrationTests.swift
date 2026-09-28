@@ -720,6 +720,88 @@ final class TowerWorldBuilderClientTests: XCTestCase {
         tower.disconnect()
     }
 
+    /// U0.8 F11: after the bounded wait fails, "Ask the Tower again" is a
+    /// fresh subscription on the same socket, not a reconnect -- and its ack
+    /// is adopted, not ranked as a superseded one.
+    func testAskingAgainAfterATimeoutResubscribes() async throws {
+        let server = try MockTowerServer()
+        let port = try await server.start()
+        defer { server.stop() }
+
+        final class Script: @unchecked Sendable {
+            let lock = NSLock()
+            var acks = false
+            var subscribes = 0
+        }
+        let script = Script()
+        // Built here, on the main actor: one per subscription id the Tower
+        // could hand out on this connection.
+        let snapshots = (1...16).map {
+            snapshotMessage(seq: 1, modelState: "receiving", keyframes: 12, revision: "r1", subscription: "sub-\($0)")
+        }
+        server.onText = { text in
+            guard
+                let data = text.data(using: .utf8),
+                let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                let type = json["type"] as? String
+            else { return }
+            switch type {
+            case "ping":
+                server.send(text: #"{"type":"pong"}"#)
+            case "cartridges":
+                server.send(text: """
+                    {"type":"cartridges",
+                     "envelope_contract":"cartridge_results.envelope/2026-08-23",
+                     "cartridges":[{"cartridge":"world_builder","result_type":"status",
+                        "contract":"\(Self.contract)","available":true,
+                        "unavailable_reason":null,"snapshot_only":true}],
+                     "not_offered":[]}
+                    """)
+            case "result_subscribe":
+                let (acks, count): (Bool, Int) = script.lock.withLock {
+                    script.subscribes += 1
+                    return (script.acks, script.subscribes)
+                }
+                // Silent until the test says otherwise.
+                guard acks else { return }
+                server.send(text: """
+                    {"type":"result_subscribed",
+                     "envelope_contract":"cartridge_results.envelope/2026-08-23",
+                     "subscription_id":"sub-\(count)","cartridge":"world_builder",
+                     "result_type":"status","contract":"\(Self.contract)",
+                     "snapshot_only":true,"world_id":null,"session_id":null,
+                     "cursor_status":"absent"}
+                    """)
+                if count <= snapshots.count { server.send(text: snapshots[count - 1]) }
+            default:
+                break
+            }
+        }
+
+        let tower = TowerClient(metrics: SenderMetrics())
+        let client = TowerWorldBuilderClient(tower: tower, subscribeAckTimeout: .milliseconds(300))
+        tower.connect(to: url(port: port))
+
+        await expect("the subscription wait never ended") {
+            if case .failed(let failure) = client.state { return failure.kind == .timedOut }
+            return false
+        }
+        let before = script.lock.withLock { script.subscribes }
+
+        script.lock.withLock { script.acks = true }
+        client.askAgain()
+
+        await expect("asking again never produced a report: \(client.state)") {
+            if case .receiving = client.state { return true }
+            return false
+        }
+        let after = script.lock.withLock { script.subscribes }
+        XCTAssertEqual(after, before + 1, "one fresh subscribe, adopted on its first ack")
+        XCTAssertEqual(tower.status, .online, "the same socket throughout")
+
+        tower.disconnect()
+    }
+
     /// The bound must not fire into a subscription that succeeded.
     ///
     /// The timeout sleeps off the main actor, so the ack can land while it is
@@ -4188,6 +4270,10 @@ final class ScriptedWorldBuilderClient: WorldBuilderClient {
         inspection = .live
         inspectionSubject.send(inspection)
     }
+
+    /// How many times "Ask the Tower again" reached the client (U0.8 F11).
+    private(set) var askAgainCount = 0
+    func askAgain() { askAgainCount += 1 }
 }
 
 @MainActor

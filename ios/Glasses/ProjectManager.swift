@@ -309,6 +309,7 @@ enum UITestHooks {
     static let glassesAlertArgument = "-UITestGlassesAlert"
     static let doffAfterSecondsVariable = "GLASSES_UITEST_MOCK_DOFF_AFTER_SECONDS"
     static let subscribeAckMillisecondsVariable = "GLASSES_UITEST_SUBSCRIBE_ACK_MS"
+    static let awaitingBoundSecondsVariable = "GLASSES_UITEST_AWAITING_BOUND_SECONDS"
 
     /// `GLASSES_UITEST_SUBSCRIBE_ACK_MS`, for `TowerWorldBuilderClient`;
     /// `nil` (the client's own default) otherwise, and always in Release.
@@ -336,6 +337,12 @@ private extension ProjectManager {
         if arguments.contains(UITestHooks.mockGlassesArgument) {
             if !glassesConnection.mockDeviceKitEnabled { glassesConnection.toggleMockDeviceKit() }
             glassesConnection.pairMockGlasses()
+        }
+
+        // World Builder's first-update wait, shortened (U0.8 F13).
+        if let value = environment[UITestHooks.awaitingBoundSecondsVariable],
+           let seconds = Double(value), seconds > 0 {
+            WorldBuilderViewModel.awaitingBound = .milliseconds(Int(seconds * 1000))
         }
 
         if arguments.contains(UITestHooks.glassesAlertArgument) {

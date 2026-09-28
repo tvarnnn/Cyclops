@@ -1048,6 +1048,31 @@ final class TowerWorldBuilderClient: WorldBuilderClient {
         restartSubscription()
     }
 
+    /// Ask again, in place, after the channel failed or while the first
+    /// update is overdue (U0.8 F11, F13). "Reconnecting is what resolves it"
+    /// used to be the only way back; a fresh subscription is the same cure
+    /// without dropping the socket. Under the current pin, with a fresh
+    /// budget, because this is a person's tap and not a loop. Any other state
+    /// is the Tower's own report, and asking again cannot change it.
+    func askAgain() {
+        guard tower.status == .online else { return }
+        switch state {
+        case .failed(let failure) where failure.kind == .transport || failure.kind == .timedOut:
+            if failure.kind == .timedOut {
+                // The attempt that timed out is written off, as the timeout's
+                // own retry does: otherwise the count ranks the new
+                // subscribe's ack as a superseded one and closes it.
+                pendingSubscribeAcks = max(0, pendingSubscribeAcks - 1)
+            }
+        case .awaitingFirstUpdate:
+            break
+        default:
+            return
+        }
+        resubscribesUsed = 0
+        restartSubscription()   // unsubscribes any held id
+    }
+
     /// Tear down the current subscription and open one under the current pin.
     ///
     /// The unsubscribe is best-effort and its `result_unsubscribed` is ignored

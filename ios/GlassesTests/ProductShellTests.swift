@@ -5042,5 +5042,45 @@ final class DeadEndsTests: XCTestCase {
         XCTAssertEqual(WorldListingPresentation.stateBadge(for: listedSession(state: "interrupted", hasGeometry: false)),
                        "Needs retry", "the word stays (D2)")
     }
+
+    // MARK: Step 7 -- the World Builder canvas
+
+    /// F13: the first-update wait is bounded, measured from when it began,
+    /// and ends with any other state.
+    func testTheWaitEndsInASentence() async {
+        let saved = WorldBuilderViewModel.awaitingBound
+        WorldBuilderViewModel.awaitingBound = .milliseconds(50)
+        defer { WorldBuilderViewModel.awaitingBound = saved }
+
+        let client = ScriptedWorldBuilderClient()
+        let model = WorldBuilderViewModel(client: client)
+        XCTAssertFalse(model.awaitingIsOverdue)
+        client.send(.awaitingFirstUpdate)
+        var overdue = false
+        for _ in 0..<50 where !overdue {
+            try? await Task.sleep(for: .milliseconds(20))
+            overdue = model.awaitingIsOverdue
+        }
+        XCTAssertTrue(overdue, "the wait never became overdue")
+
+        client.send(.idle)
+        for _ in 0..<50 where model.awaitingIsOverdue {
+            try? await Task.sleep(for: .milliseconds(20))
+        }
+        XCTAssertFalse(model.awaitingIsOverdue, "another state ends the wait")
+
+        // "Ask the Tower again" reaches the client.
+        model.askTowerAgain()
+        XCTAssertEqual(client.askAgainCount, 1)
+
+        let bindings: [WorldSessionBinding] = [.none, .awaiting(captureID: "c1"), .bound(captureID: "c1"),
+                                               .foreign(captureID: "c2")]
+        for binding in bindings {
+            let text = WorldCanvasText.overdue(binding: binding, seconds: 30)
+            XCTAssertTrue(text.contains("30 seconds"), text)
+            XCTAssertFalse(text.lowercased().contains("failed"), text)
+            XCTAssertFalse(text.lowercased().contains("never"), text)
+        }
+    }
 }
 #endif

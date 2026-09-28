@@ -156,6 +156,9 @@ struct WorldBuilderWorkspaceView: View {
                 geometryChunks: world.geometryChunks,
                 presentation: world.presentation,
                 openReconstruction: { target in viewerTarget = target },
+                askAgain: { world.askTowerAgain() },
+                goToCapture: goToCapture,
+                awaitingIsOverdue: world.awaitingIsOverdue,
                 recentWorld: world.recentWorld,
                 openRecent: { recent in
                     world.open(worldID: recent.worldID, sessionID: recent.sessionID)
@@ -232,6 +235,18 @@ struct WorldBuilderWorkspaceView: View {
         }
     }
 
+    /// "Go to capture" for a saved world with nothing usable in it: back to
+    /// the live screen, where Start capture is (U0.8 F12). Only while a saved
+    /// world is pinned -- following live, Start capture is already here --
+    /// and never in Release, which has no capture.
+    private var goToCapture: (() -> Void)? {
+        #if DEBUG
+        world.inspection.isInspecting ? { world.returnToLive() } : nil
+        #else
+        nil
+        #endif
+    }
+
     // MARK: Header
 
     /// The two read-only controls, the sentence about the screen, and -- when
@@ -287,6 +302,9 @@ struct WorldBuilderWorkspaceView: View {
         .readableBorderedButton()
         .disabled(world.renderTarget == nil)
         .accessibilityLabel("Interactive picture of the world")
+        // Why it is off, for VoiceOver: the canvas says it on screen (U0.8
+        // F14). Once here, so both of the header's layouts carry it.
+        .accessibilityValue(world.renderTarget == nil ? WorldCanvasText.pictureOffValue : "")
         // Voice Control matches what is on screen: "Tap Picture" has to find
         // it, although VoiceOver reads the longer name.
         .accessibilityInputLabels(["Picture", "Interactive picture of the world"])

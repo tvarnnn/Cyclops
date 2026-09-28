@@ -376,6 +376,77 @@ final class DeadEndsUITests: XCTestCase {
         XCTAssertTrue(waitFor(timeout: 5) { start.exists || noCapture.exists }, "back on the live screen")
     }
 
+    // MARK: Step 7 -- the World Builder canvas
+
+    private func worldBuilderOnTheMock(ackSubscribes: Bool, env: [String: String] = [:]) {
+        mock.setRoute(Self.sessionStart, status: 200, body: Self.session(state: "active"))
+        mock.setRoute(Self.sessionStop, status: 200, body: Self.session(state: "stopped"))
+        scriptWorldBuilder(ackSubscribes: ackSubscribes)
+        launch(tower: mockAuthority, env: env)
+        open(cartridge: "World Builder")
+    }
+
+    private func beginning(_ text: String) -> XCUIElement {
+        app.descendants(matching: .any).matching(NSPredicate(format: "label BEGINSWITH %@", text)).firstMatch
+    }
+
+    /// F11: a World Builder that stops reporting is asked again in place.
+    func testAWorldBuilderThatStopsReportingCanBeAskedAgain() throws {
+        worldBuilderOnTheMock(ackSubscribes: false, env: ["GLASSES_UITEST_SUBSCRIBE_ACK_MS": "500"])
+        let notReporting = beginning("World Builder is not reporting")
+        XCTAssertTrue(notReporting.waitForExistence(timeout: 15), "the bounded wait failed as not reporting")
+
+        script.snapshotOnAck = (modelState: "receiving", elementCount: 1360, poseCount: 12)
+        script.ackSubscribes = true
+        let askAgain = element("wb-ask-again")
+        XCTAssertTrue(reveal(askAgain), "Ask the Tower again")
+        XCTAssertEqual(askAgain.label, "Ask the Tower again")
+        askAgain.tap()
+
+        XCTAssertTrue(beginning("Building").waitForExistence(timeout: 10), "the report arrived")
+        XCTAssertFalse(notReporting.exists, "no longer not reporting")
+    }
+
+    /// F12: a finished world with nothing usable says what happened and
+    /// what makes another one.
+    func testANeedsRetryWorldSaysWhatHappened() throws {
+        script.snapshotOnAck = (modelState: "finalized", elementCount: 0, poseCount: 0)
+        worldBuilderOnTheMock(ackSubscribes: true)
+        XCTAssertTrue(beginning("Needs retry").waitForExistence(timeout: 20), "the Needs retry headline")
+        let sentence = containing("Walking the space again is what produces another one")
+        XCTAssertTrue(sentence.exists, "the recoverability sentence")
+    }
+
+    /// F13: the waiting spinner ends in a sentence, with Ask again.
+    func testTheWaitingSpinnerEndsInASentence() throws {
+        worldBuilderOnTheMock(ackSubscribes: true, env: ["GLASSES_UITEST_AWAITING_BOUND_SECONDS": "3"])
+        let waiting = labelled("Waiting for the Tower's first world update…")
+        XCTAssertTrue(waiting.waitForExistence(timeout: 10), "the waiting headline")
+        let spinnerSeen = app.activityIndicators.firstMatch.exists
+        print("U08|F13|spinner seen before the bound: \(spinnerSeen)")
+        XCTAssertTrue(spinnerSeen, "a spinner while the wait is live")
+
+        let overdue = beginning("No world update has arrived in 3 seconds")
+        XCTAssertTrue(overdue.waitForExistence(timeout: 6), "the wait ended in a sentence")
+        XCTAssertTrue(element("wb-ask-again").exists, "Ask the Tower again")
+        let row = waiting.frame
+        let spinnersInTheCanvas = app.activityIndicators.allElementsBoundByIndex.filter {
+            $0.exists && abs($0.frame.midY - row.midY) < 40
+        }
+        XCTAssertTrue(spinnersInTheCanvas.isEmpty, "no spinner is left beside the wait")
+    }
+
+    /// F14: the disabled Picture button says why, for VoiceOver.
+    func testThePictureButtonSaysWhyItIsOff() throws {
+        launch(tower: closedAuthority)
+        open(cartridge: "World Builder")
+        let picture = app.buttons["Interactive picture of the world"]
+        XCTAssertTrue(picture.waitForExistence(timeout: 10), "the Picture button")
+        XCTAssertFalse(picture.isEnabled, "no world has been named")
+        let value = (picture.value as? String) ?? ""
+        XCTAssertTrue(value.hasPrefix("Not available:"), "its value: \(value)")
+    }
+
     // MARK: Launch (H3)
 
     /// `tower` is the socket's `host:port`; `nil` uses the saved address.
@@ -457,6 +528,14 @@ final class DeadEndsUITests: XCTestCase {
                      "snapshot_only":true,"world_id":\(world),"session_id":\(session),
                      "cursor_status":"absent"}
                     """)
+                // The first snapshot, straight after the ack, when a test
+                // asked for one.
+                if let snapshot = script.snapshotOnAck {
+                    mock.sendSocket(text: DeadEndsUITests.snapshotText(
+                        subscription: "sub-\(count)", modelState: snapshot.modelState,
+                        elementCount: snapshot.elementCount, poseCount: snapshot.poseCount
+                    ))
+                }
             default:
                 break
             }
@@ -467,10 +546,19 @@ final class DeadEndsUITests: XCTestCase {
     /// acknowledged; one for any other id is dropped by the app as retired.
     /// The world has geometry when `elementCount > 0 || poseCount > 0`.
     private func sendSnapshot(modelState: String, elementCount: Int, poseCount: Int, seq: Int = 1) {
-        mock.sendSocket(text: """
+        mock.sendSocket(text: Self.snapshotText(
+            subscription: "sub-\(script.subscribeCount)", modelState: modelState,
+            elementCount: elementCount, poseCount: poseCount, seq: seq
+        ))
+    }
+
+    /// The snapshot envelope itself, for `sendSnapshot` and for the script.
+    static func snapshotText(subscription: String, modelState: String, elementCount: Int, poseCount: Int,
+                             seq: Int = 1) -> String {
+        """
             {"type":"cartridge_result",
              "envelope_contract":"cartridge_results.envelope/2026-08-23",
-             "subscription_id":"sub-\(script.subscribeCount)","cartridge":"world_builder","result_type":"status",
+             "subscription_id":"\(subscription)","cartridge":"world_builder","result_type":"status",
              "contract":"\(Self.worldBuilderContract)","seq":\(seq),"revision":"r\(seq)",
              "revision_changed":true,"coalesced":0,"cursor_status":null,
              "snapshot":true,"tower_sent_at":1787463092.9,"time_basis":"tower-receipt",
@@ -484,7 +572,7 @@ final class DeadEndsUITests: XCTestCase {
                  "trajectory":{"pose_count":\(poseCount),"path_length":2.85,
                                "path_length_unit":"world units","scale":"relative"},
                  "persistence":{"state":"saved","revision":"p1"}}}}
-            """)
+            """
     }
 
     // MARK: Fixtures (H0), verbatim
@@ -608,6 +696,13 @@ final class SocketScript: @unchecked Sendable {
     private let lock = NSLock()
     private var ack = true
     private var count = 0
+    private var snapshot: (modelState: String, elementCount: Int, poseCount: Int)?
+
+    /// A snapshot to send straight after each ack, or `nil` for none.
+    var snapshotOnAck: (modelState: String, elementCount: Int, poseCount: Int)? {
+        get { lock.withLock { snapshot } }
+        set { lock.withLock { snapshot = newValue } }
+    }
 
     var ackSubscribes: Bool {
         get { lock.withLock { ack } }

@@ -162,6 +162,11 @@ protocol WorldBuilderClient: CartridgeClient {
     /// Return to following the live world. A no-op for a client with no
     /// transport.
     func followLive()
+
+    /// Ask the Tower again for a World Builder report, after the channel
+    /// failed or the first update is overdue (U0.8 F11, F13). A no-op for a
+    /// client with no transport, and in any other state.
+    func askAgain()
 }
 
 extension WorldBuilderClient {
@@ -241,6 +246,8 @@ extension WorldBuilderClient {
     func inspect(worldID: String, sessionID: String?) {}
 
     func followLive() {}
+
+    func askAgain() {}
 }
 
 /// A World Builder client with no Tower behind it.
@@ -572,6 +579,9 @@ final class WorldBuilderViewModel: ObservableObject {
         // keeps no current value to read back. It is re-earned from the next
         // coordinates, which for a live world arrive on the next heartbeat.
         markWorldPresent(in: client.state)
+        // A seeded wait is bounded from now: this object cannot know when
+        // the client's began (U0.8 F13).
+        watchAwaiting(client.state)
 
         client.stateUpdates
             .receive(on: DispatchQueue.main)
@@ -652,6 +662,7 @@ final class WorldBuilderViewModel: ObservableObject {
     /// that publishes.
     func stateDidChange(to state: WorldModelState) {
         self.state = state
+        watchAwaiting(state)
         switch state {
         case .idle, .failed, .unsupported:
             forgetGeometry()
@@ -669,6 +680,37 @@ final class WorldBuilderViewModel: ObservableObject {
             markWorldPresent(in: state)
         case .awaitingFirstUpdate:
             break
+        }
+    }
+
+    // MARK: The bounded wait (U0.8 F13)
+
+    /// How long the first update may take before the canvas's spinner gives
+    /// way to a sentence. A UI test shortens it
+    /// (`GLASSES_UITEST_AWAITING_BOUND_SECONDS`).
+    static var awaitingBound: Duration = .seconds(30)
+
+    /// The first update has not arrived within `awaitingBound`.
+    @Published private(set) var awaitingIsOverdue = false
+
+    private var awaitingWatch: Task<Void, Never>?
+
+    /// Measured from the moment the state became `.awaitingFirstUpdate`, not
+    /// from each re-send of it: a resubscribe that republishes the wait does
+    /// not restart the clock. Any other state ends the wait.
+    private func watchAwaiting(_ state: WorldModelState) {
+        guard case .awaitingFirstUpdate = state else {
+            awaitingWatch?.cancel()
+            awaitingWatch = nil
+            awaitingIsOverdue = false
+            return
+        }
+        guard awaitingWatch == nil else { return }
+        let bound = Self.awaitingBound
+        awaitingWatch = Task { [weak self] in
+            try? await Task.sleep(for: bound)
+            guard !Task.isCancelled, let self, case .awaitingFirstUpdate = self.state else { return }
+            self.awaitingIsOverdue = true
         }
     }
 
@@ -1168,6 +1210,18 @@ final class WorldBuilderViewModel: ObservableObject {
     func returnToLive() {
         client.followLive()
         forgetGeometry()
+    }
+
+    /// "Ask the Tower again", from the canvas (U0.8 F11, F13). A new
+    /// request is a new wait, so an overdue one starts its clock again.
+    func askTowerAgain() {
+        client.askAgain()
+        if awaitingIsOverdue, case .awaitingFirstUpdate = state {
+            awaitingWatch?.cancel()
+            awaitingWatch = nil
+            awaitingIsOverdue = false
+            watchAwaiting(state)
+        }
     }
 
     /// Forget what is drawn and rearm the fetch. A fetch already in flight for

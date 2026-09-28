@@ -451,6 +451,22 @@ final class WorldStageTests: XCTestCase {
             XCTAssertFalse(stage.isStillChanging, "\(stage.label)")
         }
     }
+
+    /// U0.8 F11: only the Tower's own report of a failed build is a stage.
+    /// A channel or decoding failure says nothing about the walk.
+    func testOnlyATowerReportedFailureIsAStage() {
+        for kind in [CartridgeFailure.Kind.transport, .timedOut, .notSupported, .undecodableResponse] {
+            XCTAssertNil(
+                WorldStage.stage(for: .failed(CartridgeFailure(kind: kind, message: "x")), evidence: nil, finalization: nil),
+                "\(kind)"
+            )
+        }
+        XCTAssertEqual(
+            WorldStage.stage(for: .failed(CartridgeFailure(kind: .towerReportedFailure, message: "x")),
+                             evidence: nil, finalization: nil),
+            .needsRetry
+        )
+    }
 }
 
 // MARK: - Recoverability, with no rebuild route to offer
@@ -485,6 +501,22 @@ final class WorldRecoverabilityTests: XCTestCase {
         XCTAssertNil(
             WorldRecoverability.of(stage: .building, evidence: FieldWalk.evidence, reason: nil).sentence
         )
+    }
+
+    /// U0.8 F12: a finalized world whose figures are all zero, with no
+    /// finalization record, is "Needs retry" -- and carries the sentence
+    /// that says what makes another one.
+    func testAFinalizedWorldWithNothingUsableCarriesItsSentence() {
+        let zeros = WorldSnapshot(
+            worldID: "w-zero", keyframeCount: 3,
+            geometry: WorldGeometryReport(representation: "sparse point cloud", elementCount: 0, isIncremental: false),
+            trajectory: WorldTrajectoryReport(poseCount: 0)
+        )
+        let evidence = WorldEvidence(snapshot: zeros)
+        let stage = WorldStage.stage(for: .finalized(zeros), evidence: evidence, finalization: nil)
+        XCTAssertEqual(stage, .needsRetry)
+        let sentence = WorldRecoverability.of(stage: .needsRetry, evidence: evidence, reason: nil).sentence
+        XCTAssertTrue(sentence?.contains("Walking the space again") == true, sentence ?? "nil")
     }
 }
 
