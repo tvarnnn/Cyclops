@@ -433,7 +433,28 @@ _BANNED_VIEWER_CLAIMS = (
     "not photographed", "never looked", "never photographed", "nobody photographed",
     "nothing was photographed", "not captured beyond", "photographed direction",
     "photographed from here", "photographed<br>", "did not see it",
+    # WORLDS v4 (manager 130, C7 B1): the About panel's claim about one capture,
+    # and the caption line's old count.
+    "never stood back", "view from the desk", "keyframes shown",
 )
+# Of those, the two that template COMMENTS still carry as the history of the
+# 2026-09 canonical capture: the bar's HTML comment above `#bOverview` (which
+# the C7 review lets stay) and the note in Best view's scorer (which B1 does
+# not touch). A page never shows a comment, so these two are held against the
+# comment-stripped text (as fixture E holds its list); every other claim is
+# held against the whole page, comments included.
+_CAPTURE_HISTORY_IN_COMMENTS = ("never stood back", "view from the desk")
+
+# WORLDS v4 §4: the About panel's *The walk*, with NAV.MAX_SKIP = 4.
+THE_WALK_V4 = (
+    "“Best view” flies to the place near the walked path where this page's picture is most"
+    " nearly whole, which is not always the view that takes in the most."
+    " The arrows step along the recorded walk, far enough each press to get somewhere, passing"
+    " over views that render badly or show nothing (at most 4 in a row)."
+    " “Reset” puts you back where the page opened.")
+DEVICE_LACKS_ASTC = "this device cannot use the compact image format, so fewer images fit"
+TOWER_BUILT_NO_ASTC = ("the Tower did not prepare the compact image format for this world,"
+                       " so fewer images fit")
 
 
 def _assert_viewer_copy(page):
@@ -446,8 +467,18 @@ def _assert_viewer_copy(page):
     assert "A flat grey patch is a place no kept frame saw" in page
     assert "no texture and no detail at any scale" in page
     assert "Cracks a few pixels wide between two parts of one surface are closed" in page
+    # WORLDS v4 (C7 B1): the caption line and *The walk* in plain words.
+    assert 'bits.push(S.layers + " of " + S.keyframesInManifest + " images loaded");' in page
+    assert f'? "{DEVICE_LACKS_ASTC}"' in page and f': "{TOWER_BUILT_NO_ASTC}");' in page
+    assert ("\"“Best view” flies to the place near the walked path where this page's picture"
+            " is most\"") in page
+    from tests.test_world_builder_fixture_e_honesty import _shown_source
+
+    shown = _shown_source(page).lower()
     for claim in _BANNED_VIEWER_CLAIMS:
-        assert claim not in page.lower(), claim
+        assert claim not in shown, claim
+        if claim not in _CAPTURE_HISTORY_IN_COMMENTS:
+            assert claim not in page.lower(), claim
 
 
 def test_every_appearance_page_tells_only_what_this_page_knows(built, tmp_path, monkeypatch):
@@ -1944,7 +1975,12 @@ assert.strictEqual(NAV.support(F, away.p, dir(away.yaw, 0), up, V.fy, V.aspect).
         assert ">Best view</button>" in text and ">Overview</button>" not in text
         cap = _section(text, "function updateCaption(", "/* -------- verification hooks")
         assert "Turning is free" in cap and "Moving is not free" in cap
-        assert "never stood back from the desk" in cap
+        # WORLDS v4 (manager 130, C7 B1): the About text no longer describes one
+        # capture, which a template served for every walk and every area page
+        # cannot know. It still says what the button does NOT promise: the view
+        # that takes in the most. Checked on the text the page composes.
+        assert "never stood back" not in cap and "view from the desk" not in cap
+        assert _run_caption(text)["sections"]["The walk"] == THE_WALK_V4
         over = _section(text, "const OVERVIEW_AWAY", "function overview(){")
         assert "* (0.5 + 0.5 * Math.min(1, (r.depthSpread || 0) / (OVERVIEW_RANGE * ref)))" in over
         score = over[over.index("f.rendered ="):]
@@ -2299,6 +2335,56 @@ def _run_encoding(script):
     assert r.returncode == 0 and "enc ok" in r.stdout, (r.stdout + r.stderr)[-3000:]
 
 
+_CAPTION_DOM = r"""
+function mk(tag){
+  const el = {tag, children: [], style: {}, own: "", hidden: false, className: "", attrs: {},
+    get textContent(){ return this.own + this.children.map(c => c.textContent).join(""); },
+    set textContent(v){ this.own = String(v); this.children = []; },
+    append(...c){ this.children.push(...c); },
+    setAttribute(k, v){ this.attrs[k] = String(v); }};
+  return el;
+}
+const document = {createElement: mk};
+const CAP = mk("div");
+const $ = id => { assert.strictEqual(id, "caption"); return CAP; };
+const ascii = s => s.replace(/[^\x00-\x7e]/g,
+  c => "\\u" + c.charCodeAt(0).toString(16).padStart(4, "0"));
+"""
+
+
+def _run_caption(page, *, manifest=None, S=None, encoding="astc-6x6-rgba", raw=False,
+                 config=None):
+    """The page's own `updateCaption()`, verbatim, over a stand-in DOM, under node:
+    the caption line (the `<i>` the bits are joined into) and each titled About
+    section, as the wearer reads them. The page's curly quotes go in as UTF-8 and
+    come back escaped, so the comparison does not depend on the console's code page."""
+    import subprocess
+
+    source = _section(page, "  function updateCaption(){", "  /* -------- verification hooks")
+    program = ("const assert = require('assert');\n" + _CAPTION_DOM
+               + f"const RAW_IMAGERY = {json.dumps(raw)};\n"
+               + f"let manifest = {json.dumps({'quality': 'final'} if manifest is None else manifest)};\n"
+               + f"const S = {json.dumps(S or {'layers': 39, 'keyframesInManifest': 39})};\n"
+               + f"const CONFIG = {json.dumps(config or {'scale_state': 'unknown', 'current': True})};\n"
+               + f"let encoding = {json.dumps(encoding)};\n"
+               + "const NAV = {MAX_SKIP: 4}; let captionOpen = false;\n"
+               + source + r"""
+updateCaption();
+const [head, toggle, more] = CAP.children;
+assert.strictEqual(toggle.tag, "button");
+const line = more.children.find(c => c.tag === "i");
+const sections = {};
+more.children.forEach((c, i) => {
+  if (c.tag === "em") sections[c.textContent] = more.children[i + 1].textContent; });
+console.log(ascii(JSON.stringify({head: head.textContent, line: line ? line.textContent : null,
+                                  sections, all: CAP.textContent})));
+""")
+    r = subprocess.run([_node(), "-"], input=program, capture_output=True, text=True,
+                       encoding="utf-8", timeout=60)
+    assert r.returncode == 0, (r.stdout + r.stderr)[-3000:]
+    return json.loads(r.stdout.strip().splitlines()[-1])
+
+
 ENC_ROOM = r"""
 const astcChunk = {encoding: "astc-6x6-rgba", tier: "phone", digest: "a"};
 const webpChunk = {encoding: "webp-rgba", tier: "phone", digest: "b"};
@@ -2371,10 +2457,42 @@ assert.strictEqual(ENC.capacity(both, "astc-6x6-rgba", {maxLayers: 0}), 1, "neve
         caption = _section(text, "function updateCaption(", "/* -------- verification hooks")
         # A Tower built without an encoder used to be reported as a phone
         # without one, so a Tower bug was going to be filed against a phone
-        # (review 2, P-8).
-        assert "this device has no compressed-texture support" in caption
-        assert "the Tower built no compressed textures for this world" in caption
-        assert "encoding_notes" in caption
+        # (review 2, P-8). WORLDS v4: in plain words, and the manifest's
+        # `encoding_notes` are diagnostic, never read into the caption.
+        assert DEVICE_LACKS_ASTC in caption
+        assert TOWER_BUILT_NO_ASTC in caption
+        assert "manifest.encoding_notes" not in caption
+
+    def test_the_caption_line_never_shows_the_towers_encoder_notes(self):
+        """C7 F6e: `encoding_notes` is an OBJECT (`{"astc-6x6-rgba": "astc-encoder-py
+        is not installed (ModuleNotFoundError: ...)"}`), and the line used to append
+        `String(notes)`: on a Tower without the ASTC encoder the wearer read
+        "([object Object])". `updateCaption()` from the page, run under node."""
+        notes = {"astc-6x6-rgba": "astc-encoder-py is not installed (ModuleNotFoundError: "
+                                  "No module named 'astc_encoder')"}
+        tower_side = {"quality": "final", "encodings": {"webp-rgba": {"available": True}},
+                      "encoding_notes": notes}
+        device_side = {**tower_side, "encodings": {"astc-6x6-rgba": {"available": True},
+                                                   "webp-rgba": {"available": True}}}
+        page = _template()
+        webp = {"layers": 48, "keyframesInManifest": 128}
+        runs = {
+            "tower": _run_caption(page, manifest=tower_side, S=webp, encoding="webp-rgba"),
+            "tower, a string note": _run_caption(
+                page, manifest={**tower_side, "encoding_notes": notes["astc-6x6-rgba"]},
+                S=webp, encoding="webp-rgba"),
+            "device": _run_caption(page, manifest=device_side, S=webp, encoding="webp-rgba"),
+        }
+        assert runs["tower"]["line"] == "48 of 128 images loaded · " + TOWER_BUILT_NO_ASTC + "."
+        assert runs["tower, a string note"]["line"] == runs["tower"]["line"]
+        assert runs["device"]["line"] == "48 of 128 images loaded · " + DEVICE_LACKS_ASTC + "."
+        for name, run in runs.items():
+            for leak in ("[object Object]", "ModuleNotFoundError", "astc-encoder-py", "astc_encoder"):
+                assert leak not in run["all"], (name, leak)
+        # ASTC on both sides: the count alone, the COMPONENTS §4 example's words
+        astc = _run_caption(page, manifest=device_side, encoding="astc-6x6-rgba",
+                            S={"layers": 128, "keyframesInManifest": 128})
+        assert astc["line"] == "128 of 128 images loaded."
 
 
 class TestBootingWithNothingPlaced:

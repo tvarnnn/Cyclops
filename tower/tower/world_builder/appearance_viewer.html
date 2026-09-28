@@ -194,10 +194,12 @@ body.rawimagery #clabel{top:calc(66px + var(--rawmark, 26px) + env(safe-area-ins
 <div id="caption"></div>
 <div id="status"></div>
 <div id="bar">
-  <!-- NOT "Overview". On this capture there is no overview to give: the walk
-       never stood back from the desk, so every vantage the envelope holds is
-       a view FROM the desk. The button goes to the best-supported vantage
-       there is, it says so, and it flies there. -->
+  <!-- NOT "Overview": a page cannot promise one. On the 2026-09 canonical
+       capture the walk never stood back from the desk, so every vantage the
+       envelope held was a view FROM the desk (WORLDS §4 *Best view*). The
+       button goes to the best-supported vantage near the walked path and flies
+       there; the About panel's *The walk* says it is not always the view that
+       takes in the most (WORLDS v4). -->
   <button id="bOverview" aria-label="Best view: fly to the clearest vantage">Best view</button>
   <!-- Turns, from where you stand, to the nearest heading the page has
        reconstructed. It does not move you: that is what Best view does. -->
@@ -4548,7 +4550,7 @@ async function main(){
     const bits = [];
     if (RAW_IMAGERY) bits.push("original local capture: faces and screens are NOT redacted");
     if (manifest){
-      bits.push(S.layers + " of " + S.keyframesInManifest + " keyframes shown");
+      bits.push(S.layers + " of " + S.keyframesInManifest + " images loaded");
       if (S.holding) bits.push("finishing the world: these are the walk's images until the final ones arrive");
       else if (manifest.quality === "live") bits.push("still building as you walk");
     }
@@ -4561,14 +4563,14 @@ async function main(){
       // device has no ASTC and when the TOWER built without an ASTC encoder,
       // and this line blamed the device for both -- so a Tower missing its
       // encoder was going to be filed as a phone bug (review 2, P-8). The
-      // manifest says which; `encoding_notes` carries the Tower's own reason.
+      // manifest says which. Its `encoding_notes` (the Tower's own reason, an
+      // object naming the encoder and its exception) are diagnostic and are
+      // never shown: appended here they read "([object Object])" (WORLDS v4).
       const encs = (manifest && manifest.encodings) || {};
       const towerHasAstc = !!(encs["astc-6x6-rgba"] && encs["astc-6x6-rgba"].available !== false);
-      const notes = manifest && manifest.encoding_notes;
       bits.push(towerHasAstc
-        ? "reduced set: this device has no compressed-texture support"
-        : "reduced set: the Tower built no compressed textures for this world"
-          + (notes ? " (" + String(notes) + ")" : ""));
+        ? "this device cannot use the compact image format, so fewer images fit"
+        : "the Tower did not prepare the compact image format for this world, so fewer images fit");
     }
     // One short line by default; what it is and what the grey areas mean on
     // tap (the review: four lines covered 11-13% of the frame).
@@ -4622,11 +4624,10 @@ async function main(){
        + " “Face the room” turns you — without moving you — to the nearest"
        + " reconstructed direction; the ring, the edge arrow and the dark line do the same."],
       ["The walk",
-       "“Best view” flies to the best-supported vantage near the path — the one whose picture is"
-       + " most nearly whole, rather than the one that takes in the most; this wearer"
-       + " never stood back from the desk, so it is a view from the desk, not of the whole room."
+       "“Best view” flies to the place near the walked path where this page's picture is most"
+       + " nearly whole, which is not always the view that takes in the most."
        + " The arrows step along the recorded walk, far enough each press to get somewhere, passing"
-       + " over poses that render badly or show nothing (at most " + NAV.MAX_SKIP + " in a row)."
+       + " over views that render badly or show nothing (at most " + NAV.MAX_SKIP + " in a row)."
        + " “Reset” puts you back where the page opened."],
     ];
     const more = document.createElement("span");
