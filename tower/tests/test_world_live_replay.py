@@ -1875,7 +1875,7 @@ V1_NUMBERS = {"offset_p50_abs_ms": 5.0, "offset_p95_ms": 60.0, "offset_p99_ms": 
 
 def test_the_fidelity_bar_is_the_one_manager_142_approved():
     v1 = dict(report.FIDELITY_BAR["v1"])
-    assert "manager 142" in v1.pop("ruling") and v1.pop("declared_at") is None
+    assert "manager 142" in v1.pop("ruling") and v1.pop("applies_after") is None
     assert v1 == V1_NUMBERS
     assert "manager 142" in report.FIDELITY_RULING
     assert report.PACING_OVER_S == pytest.approx(0.05)
@@ -2085,36 +2085,47 @@ def test_compare_leaves_runs_that_fail_fidelity_or_the_environment_out_of_the_ba
     assert "(excluded from the range)" in markdown and "**INVALID CANDIDATE(S): 1.**" in markdown
 
 
-# -- C22-F5: the amended bar (manager 148 §1), versioned by the run's start ---------------------
+# -- C22-F6: bar v3 (manager 149 §2) replaces v2, for runs started after 16:55 EDT ---------------
 
-V2_DECLARED = 1790628900.0  # 2026-09-28 16:55:00 EDT = 20:55:00 UTC
-BEFORE, AFTER = V2_DECLARED - 1.0, V2_DECLARED + 1.0
+V3_APPLIES_AFTER = 1790628900.0  # 2026-09-28 16:55:00 EDT = 20:55:00 UTC
+BEFORE, AFTER = V3_APPLIES_AFTER - 1.0, V3_APPLIES_AFTER + 1.0
+# The OLD runs' recorded starts (run.json started_at, RUN\experiments\C22-REPLAY\runs\walk5-old-a4afea1-<n>).
+OLD_RUN_STARTED = {2: 1790620478.101, 3: 1790631854.085, 4: 1790623633.864, 5: 1790634922.735}
+JITTER_CHECK = "receipt-offset jitter: p95 |offset - median(offset)| (ms)"
+BIAS_CHECK = "receipt-offset constant bias: |median(offset)| (ms)"
 
 
-def test_v2_is_v1_with_the_p50_clause_detrended_plus_the_sanity_clause_declared_at_16_55_edt():
-    v1, v2 = report.FIDELITY_BAR["v1"], report.FIDELITY_BAR["v2"]
-    assert sorted(report.FIDELITY_BAR) == ["v1", "v2"]
-    assert v2["declared_at"] == V2_DECLARED and report.FIDELITY_V2_DECLARED_TEXT == "2026-09-28 16:55 EDT"
-    assert "manager 148" in v2["ruling"] and "manager 142" in v2["ruling"]
-    assert v2["offset_detrended_p50_abs_ms"] == 5.0 and v2["offset_median_abs_ms"] == 20.0
-    assert "offset_p50_abs_ms" not in v2
-    # every other clause unchanged
+def test_v3_is_v1_without_its_p50_clause_plus_jitter_and_bias_for_runs_started_after_16_55_edt():
+    v1, v3 = report.FIDELITY_BAR["v1"], report.FIDELITY_BAR["v3"]
+    # ONE versioned bar: v1 and v3. v2 (manager 148) judged no run; manager 149 withdrew it.
+    assert sorted(report.FIDELITY_BAR) == ["v1", "v3"]
+    assert v3["applies_after"] == V3_APPLIES_AFTER
+    assert report.FIDELITY_V3_APPLIES_AFTER_TEXT == "2026-09-28 16:55 EDT"
+    assert all(f"manager {n}" in v3["ruling"] for n in (142, 148, 149)) and "17:25 EDT" in v3["ruling"]
+    assert v3["offset_abs_deviation_p95_ms"] == 45.0 and v3["offset_median_abs_ms"] == 20.0
+    assert "offset_p50_abs_ms" not in v3                      # NO |p50| clause
+    # every other clause is v1's, unchanged
     unchanged = {k: v for k, v in V1_NUMBERS.items() if k != "offset_p50_abs_ms"}
-    assert {k: v2[k] for k in unchanged} == unchanged == {k: v1[k] for k in unchanged}
-    assert set(v2) == set(unchanged) | {"ruling", "declared_at", "offset_detrended_p50_abs_ms",
+    assert {k: v3[k] for k in unchanged} == unchanged == {k: v1[k] for k in unchanged}
+    assert set(v3) == set(unchanged) | {"ruling", "applies_after", "offset_abs_deviation_p95_ms",
                                         "offset_median_abs_ms"}
-    assert "v1: manager 142" in report.FIDELITY_RULING and "v2: manager 148" in report.FIDELITY_RULING
+    assert "v1: manager 142" in report.FIDELITY_RULING and "v3: manager 149" in report.FIDELITY_RULING
+    assert "v2:" not in report.FIDELITY_RULING
 
 
 @pytest.mark.parametrize("started, version", [
-    (None, "v1"), (V2_DECLARED - 3600, "v1"), (BEFORE, "v1"),
-    (V2_DECLARED, "v1"),              # AT the declaration is not after it
-    (V2_DECLARED + 0.001, "v2"), (AFTER, "v2"), (V2_DECLARED + 86400, "v2"),
+    (None, "v1"), (V3_APPLIES_AFTER - 3600, "v1"), (BEFORE, "v1"),
+    (V3_APPLIES_AFTER, "v1"),                  # AT the cut-off is not after it
+    (V3_APPLIES_AFTER + 0.001, "v3"), (AFTER, "v3"),
+    (V3_APPLIES_AFTER + 1799, "v3"),           # 17:24:59: before v3 was DECLARED, still after its cut-off
+    (V3_APPLIES_AFTER + 86400, "v3"),
+    # the OLD runs: 2 and 4 started before 16:55, 3 and 5 after it
+    (OLD_RUN_STARTED[2], "v1"), (OLD_RUN_STARTED[4], "v1"), (OLD_RUN_STARTED[3], "v3"), (OLD_RUN_STARTED[5], "v3"),
 ])
 def test_the_bar_version_is_the_one_in_force_when_the_run_started(started, version):
     got, why = report.fidelity_version(started)
     assert got == version
-    assert ("after v2's declaration" in why) == (version == "v2")
+    assert ("after v3's cut-off" in why) == (version == "v3")
     if started is None:
         assert "no recorded start" in why
 
@@ -2127,51 +2138,53 @@ def test_the_runs_start_is_run_json_s_else_the_client_record_s():
     assert report.run_started_at(None, None) == (None, None)
 
 
-def _v2_inputs():
-    """`_fidelity_inputs`, on every edge of v2 too: the offset less its median has p50 -5, its median is 20."""
+def _v3_inputs(*, median=20.0):
+    """`_fidelity_inputs`, on every edge of v3 too: p95 |offset - median| is 45, |median| is 20."""
     pacing, client = _fidelity_inputs()
-    pacing.update(offset_median_ms=20.0, offset_detrended_ms={"count": 1000, "p50": -5.0})
+    pacing.update(offset_median_ms=median,
+                  offset_abs_deviation_ms={"count": 1000, "mean": 9.0, "p50": 3.0, "p95": 45.0, "p99": 200.0,
+                                           "max": 250.0})
     client["started_at"] = AFTER
     return pacing, client
 
 
-def test_a_v2_run_on_every_edge_of_the_v2_bar_passes_and_says_v2():
-    pacing, client = _v2_inputs()
+@pytest.mark.parametrize("median", [20.0, -20.0])
+def test_a_v3_run_on_every_edge_of_the_v3_bar_passes_and_says_v3(median):
+    pacing, client = _v3_inputs(median=median)
     fidelity = report.replay_fidelity(pacing=pacing, client=client)
     assert fidelity["result"] == "PASS" and len(fidelity["rows"]) == 8
     assert all(row["result"] == "PASS" for row in fidelity["rows"])
     assert (fidelity["version"], fidelity["started_at"], fidelity["started_at_from"]) == \
-        ("v2", AFTER, "client.json started_at")
-    assert fidelity["bar"] == report.FIDELITY_BAR["v2"] and "manager 148" in fidelity["ruling"]
+        ("v3", AFTER, "client.json started_at")
+    assert fidelity["bar"] == report.FIDELITY_BAR["v3"] and "manager 149" in fidelity["ruling"]
     checks = [row["check"] for row in fidelity["rows"]]
     assert "receipt-offset error |p50| (ms)" not in checks
-    assert checks[1:3] == ["receipt-offset error, detrended: |p50(offset - median(offset))| (ms)",
-                           "receipt-offset error |median| (ms), the sanity clause"]
+    assert checks[1:3] == [JITTER_CHECK, BIAS_CHECK]
+    assert [(row["value"], row["required"]) for row in fidelity["rows"][1:3]] == [(45.0, "<= 45"), (median, "<= 20")]
 
 
-V2_BREAKS = {
-    "detrended p50 late": (lambda p, c: p["offset_detrended_ms"].update(p50=5.01), "detrended"),
-    "detrended p50 early": (lambda p, c: p["offset_detrended_ms"].update(p50=-5.01), "detrended"),
-    "median late": (lambda p, c: p.update(offset_median_ms=20.01), "sanity clause"),
-    "median early": (lambda p, c: p.update(offset_median_ms=-20.01), "sanity clause"),
+V3_BREAKS = {
+    "jitter": (lambda p, c: p["offset_abs_deviation_ms"].update(p95=45.01), "jitter"),
+    "bias late": (lambda p, c: p.update(offset_median_ms=20.01), "constant bias"),
+    "bias early": (lambda p, c: p.update(offset_median_ms=-20.01), "constant bias"),
     **{name: case for name, case in FIDELITY_BREAKS.items() if not name.startswith("p50")},
 }
 
 
-@pytest.mark.parametrize("name", list(V2_BREAKS))
-def test_each_v2_clause_fails_the_verdict_on_its_own(name):
-    pacing, client = _v2_inputs()
-    change, check = V2_BREAKS[name]
+@pytest.mark.parametrize("name", list(V3_BREAKS))
+def test_each_v3_clause_fails_the_verdict_on_its_own(name):
+    pacing, client = _v3_inputs()
+    change, check = V3_BREAKS[name]
     change(pacing, client)
     fidelity = report.replay_fidelity(pacing=pacing, client=client)
     failed = [row["check"] for row in fidelity["rows"] if row["result"] == "FAIL"]
-    assert fidelity["version"] == "v2"
+    assert fidelity["version"] == "v3"
     assert fidelity["result"] == "FAIL" and len(failed) == 1 and check in failed[0], failed
 
 
 @pytest.mark.parametrize("p50", [5.01, -5.01, 7.35, 19.9])
-def test_v2_does_not_judge_the_raw_p50_and_v1_still_does(p50):
-    pacing, client = _v2_inputs()
+def test_v3_does_not_judge_the_raw_p50_and_v1_still_does(p50):
+    pacing, client = _v3_inputs()
     pacing["offset_error_ms"].update(p50=p50)
     assert report.replay_fidelity(pacing=pacing, client=client)["result"] == "PASS"
     client["started_at"] = BEFORE
@@ -2180,24 +2193,52 @@ def test_v2_does_not_judge_the_raw_p50_and_v1_still_does(p50):
     assert fidelity["version"] == "v1" and fidelity["result"] == "FAIL" and failed == ["receipt-offset error |p50| (ms)"]
 
 
-def test_a_v2_run_whose_pacing_lacks_the_v2_values_is_n_a_not_a_pass():
-    pacing, client = _v2_inputs()
-    del pacing["offset_detrended_ms"], pacing["offset_median_ms"]
+def test_a_run_before_16_55_stays_on_v1_exactly_v3_s_clauses_are_not_added_to_it():
+    pacing, client = _v3_inputs(median=35.0)
+    pacing["offset_abs_deviation_ms"].update(p95=59.0)
+    client["started_at"] = BEFORE
     fidelity = report.replay_fidelity(pacing=pacing, client=client)
-    assert fidelity["result"] == "n/a" and "detrended" in fidelity["why"] and "sanity clause" in fidelity["why"]
+    assert (fidelity["version"], fidelity["result"], len(fidelity["rows"])) == ("v1", "PASS", 7)
+    assert fidelity["bar"] == report.FIDELITY_BAR["v1"] and "manager 142" in fidelity["ruling"]
+    client["started_at"] = AFTER
+    fidelity = report.replay_fidelity(pacing=pacing, client=client)
+    assert [row["check"] for row in fidelity["rows"] if row["result"] == "FAIL"] == [JITTER_CHECK, BIAS_CHECK]
+
+
+def test_a_v3_run_whose_pacing_lacks_the_v3_values_is_n_a_not_a_pass():
+    pacing, client = _v3_inputs()
+    del pacing["offset_abs_deviation_ms"], pacing["offset_median_ms"]
+    fidelity = report.replay_fidelity(pacing=pacing, client=client)
+    assert fidelity["result"] == "n/a" and "jitter" in fidelity["why"] and "constant bias" in fidelity["why"]
     assert "NOT a pass" in fidelity["note"]
 
 
-def test_the_pacing_block_carries_the_offset_median_and_the_detrended_offset(tmp_path):
+def test_the_pacing_block_carries_the_offset_median_and_the_absolute_deviation_from_it(tmp_path):
     client = {**_pacing_fixture(tmp_path), "first_seconds": 1.95}
     pacing = report.tower_side_pacing(client=client, data_root=tmp_path / "data",
                                       capture_root=tmp_path / "src" / "captures")
-    # offsets -2, 4, 20, 60: the median is (4 + 20) / 2; less it, -14, -8, 8, 48
+    # offsets -2, 4, 20, 60: the median is (4 + 20) / 2 = 12; |offset - 12| = 14, 8, 8, 48
     assert pacing["offset_median_ms"] == pytest.approx(12.0, abs=0.01)
-    detrended = pacing["offset_detrended_ms"]
-    assert detrended["count"] == 4
-    assert (detrended["min"], detrended["max"]) == (pytest.approx(-14.0, abs=0.01), pytest.approx(48.0, abs=0.01))
-    assert detrended["p50"] == pytest.approx(pacing["offset_error_ms"]["p50"] - 12.0, abs=0.01)
+    jitter = pacing["offset_abs_deviation_ms"]
+    assert jitter["count"] == 4 and jitter["mean"] == pytest.approx(19.5, abs=0.01)
+    assert jitter["p50"] == pytest.approx(14.0, abs=0.01)
+    assert jitter["p95"] == pytest.approx(48.0, abs=0.01) and jitter["max"] == pytest.approx(48.0, abs=0.01)
+    assert "offset_detrended_ms" not in pacing   # v2's, withdrawn
+
+
+def test_the_jitter_is_absolute_so_an_early_tail_counts_as_much_as_a_late_one(tmp_path):
+    _capture(tmp_path / "src", A, started=1000.0,
+             frames=[(1, 1001.0), (3, 1001.1), (5, 1001.25), (7, 1001.3)], ended=1002.0)
+    # offsets 0, +1, -40, +2 ms: the median is 0.5; |offset - 0.5| = 0.5, 0.5, 40.5, 1.5
+    _capture(tmp_path / "data", C1, started=5000.0,
+             frames=[(1, 5001.0), (3, 5001.101), (5, 5001.21), (7, 5001.302)], ended=5002.0)
+    client = {"walk": [{"capture_id": A}], "tower_captures": [C1], "speed": 1.0, "first_seconds": 1.95}
+    pacing = report.tower_side_pacing(client=client, data_root=tmp_path / "data",
+                                      capture_root=tmp_path / "src" / "captures")
+    assert pacing["offset_median_ms"] == pytest.approx(0.5, abs=0.01)
+    assert pacing["offset_abs_deviation_ms"]["p95"] == pytest.approx(40.5, abs=0.01)
+    # the signed offset's p95 sees none of the early tail
+    assert pacing["offset_error_ms"]["p95"] == pytest.approx(2.0, abs=0.01)
 
 
 def _started_run(root, *, started, late_ms):
@@ -2208,32 +2249,48 @@ def _started_run(root, *, started, late_ms):
     return run_dir
 
 
-def test_a_run_started_before_16_55_that_would_pass_v2_stays_a_v1_fail(tmp_path):
-    """Manager 148 §1: never loosen a bar after seeing the data it fails. Two runs with the SAME
-    constant 7 ms receipt lag (run 4's shape: the whole distribution shifted late): the one that
-    started before the declaration is judged by v1 and FAILS |p50|; the one after passes v2."""
-    built = {}
-    for name, started in (("before", BEFORE), ("after", AFTER)):
-        root = _beyond_max_path(tmp_path) / name
-        root.mkdir()
-        run_dir = _started_run(root, started=started, late_ms=(7.0, 7.0))
-        assert report.main(["--run-dir", str(run_dir), "--out", str(root / "out")]) == 0
-        built[name] = (json.loads((root / "out" / "report.json").read_text(encoding="utf-8")),
-                       (root / "out" / "REPORT.md").read_text(encoding="utf-8"))
-    (old, old_md), (new, new_md) = built["before"], built["after"]
-    assert (old["replay_fidelity"]["version"], old["replay_fidelity"]["result"]) == ("v1", "FAIL")
-    assert [r["check"] for r in old["replay_fidelity"]["rows"] if r["result"] == "FAIL"] == \
+def _render_started(tmp_path, name, *, started, late_ms):
+    """A pinned run with a recorded start, re-rendered through --run-dir: (report.json, REPORT.md)."""
+    root = _beyond_max_path(tmp_path) / name
+    root.mkdir()
+    run_dir = _started_run(root, started=started, late_ms=late_ms)
+    assert report.main(["--run-dir", str(run_dir), "--out", str(root / "out")]) == 0
+    return (json.loads((root / "out" / "report.json").read_text(encoding="utf-8")),
+            (root / "out" / "REPORT.md").read_text(encoding="utf-8"))
+
+
+def test_a_run_started_before_16_55_stays_on_v1_run_4_fails_and_run_2_passes(tmp_path):
+    """Managers 148 and 149: never loosen a bar after seeing the data it fails. Run 4's shape -- a
+    constant 7 ms receipt lag, the whole distribution shifted late -- at run 4's recorded start is
+    judged by v1 and FAILS |p50|; run 2's shape (1-2 ms) at run 2's start PASSES v1. The same 7 ms
+    lag started after 16:55 passes v3 (no |p50| clause, |median| 7 <= 20, no jitter)."""
+    run4, run4_md = _render_started(tmp_path, "run4", started=OLD_RUN_STARTED[4], late_ms=(7.0, 7.0))
+    run2, run2_md = _render_started(tmp_path, "run2", started=OLD_RUN_STARTED[2], late_ms=(1.0, 2.0))
+    late, late_md = _render_started(tmp_path, "late", started=AFTER, late_ms=(7.0, 7.0))
+    assert (run4["replay_fidelity"]["version"], run4["replay_fidelity"]["result"]) == ("v1", "FAIL")
+    assert [r["check"] for r in run4["replay_fidelity"]["rows"] if r["result"] == "FAIL"] == \
         ["receipt-offset error |p50| (ms)"]
-    assert old["replay_fidelity"]["started_at_from"] == "run.json started_at"
-    assert (new["replay_fidelity"]["version"], new["replay_fidelity"]["result"]) == ("v2", "PASS")
-    assert new["tower_side_pacing"]["offset_median_ms"] == pytest.approx(7.0, abs=0.01)
-    assert new["tower_side_pacing"]["offset_detrended_ms"]["p50"] == pytest.approx(0.0, abs=0.01)
+    assert run4["replay_fidelity"]["started_at_from"] == "run.json started_at"
+    assert (run2["replay_fidelity"]["version"], run2["replay_fidelity"]["result"]) == ("v1", "PASS")
+    assert len(run2["replay_fidelity"]["rows"]) == 7
+    assert (late["replay_fidelity"]["version"], late["replay_fidelity"]["result"]) == ("v3", "PASS")
+    assert late["tower_side_pacing"]["offset_median_ms"] == pytest.approx(7.0, abs=0.01)
+    assert late["tower_side_pacing"]["offset_abs_deviation_ms"]["p95"] == pytest.approx(0.0, abs=0.01)
     # the report says which version judged the run, and why
-    assert "replay fidelity **FAIL**, judged by fidelity bar v1." in old_md
-    assert "**fidelity bar v1**, manager 142" in old_md and "at or before v2's declaration" in old_md
-    assert "replay fidelity **PASS**, judged by fidelity bar v2." in new_md
-    assert "**fidelity bar v2**, manager 148" in new_md and "after v2's declaration" in new_md
-    assert "(run.json started_at)" in new_md
+    assert "replay fidelity **FAIL**, judged by fidelity bar v1." in run4_md
+    assert "**fidelity bar v1**, manager 142" in run4_md and "at or before v3's cut-off" in run4_md
+    assert "replay fidelity **PASS**, judged by fidelity bar v1." in run2_md
+    assert "replay fidelity **PASS**, judged by fidelity bar v3." in late_md
+    assert "**fidelity bar v3**, manager 149" in late_md and "after v3's cut-off" in late_md
+    assert "(run.json started_at)" in late_md
+
+
+def test_a_run_started_after_16_55_with_a_constant_bias_fails_v3_on_that_clause_alone(tmp_path):
+    biased, biased_md = _render_started(tmp_path, "biased", started=AFTER, late_ms=(25.0, 25.0))
+    fidelity = biased["replay_fidelity"]
+    assert (fidelity["version"], fidelity["result"]) == ("v3", "FAIL")
+    assert [r["check"] for r in fidelity["rows"] if r["result"] == "FAIL"] == [BIAS_CHECK]
+    assert "replay fidelity **FAIL**, judged by fidelity bar v3." in biased_md
 
 
 def test_a_render_keeps_the_client_s_start_so_compare_judges_it_by_its_own_version(tmp_path):
@@ -2247,55 +2304,65 @@ def test_a_render_keeps_the_client_s_start_so_compare_judges_it_by_its_own_versi
     assert built["client"]["started_at"] == AFTER and "started_at" not in built["run"]
     fidelity = built["replay_fidelity"]
     assert (fidelity["version"], fidelity["started_at_from"], fidelity["result"]) == \
-        ("v2", "client.json started_at", "PASS")
+        ("v3", "client.json started_at", "PASS")
     (row,) = report.compare_runs([root / "out"])["keyframes"]["baseline"]
     assert (row["fidelity"], row["fidelity_version"], row["fidelity_judged_by"], row["not_a_pass"]) == \
-        ("PASS", "v2", "v2", [])
+        ("PASS", "v3", "v3", [])
 
 
 def test_compare_judges_each_run_by_its_own_bar_version(tmp_path):
     same = [[1, 0], [10, 0]]
-    # counted: a v1 run rendered before versioning, a v1 run, a v2 run (the start from the client record)
+    # counted: a v1 run rendered before versioning, run 2 (v1), a v3 run (the start from the client record)
     _fake_run(tmp_path / "old-v1-unversioned", photos=47.0, lag_p95=6.8, sequence=same, run_started=BEFORE)
-    _fake_run(tmp_path / "old-v1", photos=47.5, lag_p95=6.8, sequence=same, version="v1", run_started=BEFORE)
-    _fake_run(tmp_path / "old-v2", photos=46.8, lag_p95=6.8, sequence=same, version="v2", client_started=AFTER)
+    _fake_run(tmp_path / "old-2", photos=47.5, lag_p95=6.8, sequence=same, version="v1",
+              run_started=OLD_RUN_STARTED[2])
+    _fake_run(tmp_path / "old-v3", photos=46.8, lag_p95=6.8, sequence=same, version="v3", client_started=AFTER)
     # run 4: before 16:55, its v1 FAIL stands
     _fake_run(tmp_path / "old-4", photos=47.2, lag_p95=6.8, sequence=same, fidelity="FAIL", version="v1",
-              run_started=BEFORE)
-    # after 16:55 but rendered by the old code (v1's numbers): not judged, whichever way it went
+              run_started=OLD_RUN_STARTED[4])
+    # after 16:55 but rendered before versioning (v1's numbers): not judged, whichever way it went
     _fake_run(tmp_path / "old-late-render-fail", photos=30.0, lag_p95=6.8, sequence=same, fidelity="FAIL",
               run_started=AFTER)
     _fake_run(tmp_path / "old-late-render-pass", photos=60.0, lag_p95=6.8, sequence=same, run_started=AFTER)
-    # a candidate judged by the wrong version: v2 on a pre-16:55 run
-    _fake_run(tmp_path / "new-wrong-bar", photos=47.1, lag_p95=6.8, sequence=same, version="v2",
+    # after 16:55, rendered under the withdrawn v2 (C22-F5): not judged either, whichever way it went
+    _fake_run(tmp_path / "old-v2-render-pass", photos=20.0, lag_p95=6.8, sequence=same, version="v2",
+              run_started=OLD_RUN_STARTED[3])
+    _fake_run(tmp_path / "old-v2-render-fail", photos=70.0, lag_p95=6.8, sequence=same, fidelity="FAIL",
+              version="v2", run_started=OLD_RUN_STARTED[5])
+    # candidates: one judged by the wrong version (v3 on a pre-16:55 run), and a v3 run
+    _fake_run(tmp_path / "new-wrong-bar", photos=47.1, lag_p95=6.8, sequence=same, version="v3",
               run_started=BEFORE)
-    _fake_run(tmp_path / "new-v2", photos=47.1, lag_p95=6.8, sequence=same, version="v2", run_started=AFTER)
-    olds = ["old-v1-unversioned", "old-v1", "old-v2", "old-4", "old-late-render-fail", "old-late-render-pass"]
+    _fake_run(tmp_path / "new-v3", photos=47.1, lag_p95=6.8, sequence=same, version="v3", run_started=AFTER)
+    olds = ["old-v1-unversioned", "old-2", "old-v3", "old-4", "old-late-render-fail", "old-late-render-pass",
+            "old-v2-render-pass", "old-v2-render-fail"]
     out = tmp_path / "cmp"
     assert report.main(["--out", str(out), "--compare", *(str(tmp_path / n) for n in olds),
-                        "--candidate", str(tmp_path / "new-v2"), str(tmp_path / "new-wrong-bar")]) == 0
+                        "--candidate", str(tmp_path / "new-v3"), str(tmp_path / "new-wrong-bar")]) == 0
     result = json.loads((out / "compare.json").read_text(encoding="utf-8"))
-    assert result["compare"] == "c22-live-replay-compare/4"
+    assert result["compare"] == "c22-live-replay-compare/5"
+    assert "v1: manager 142" in result["fidelity_ruling"] and "v3: manager 149" in result["fidelity_ruling"]
     photos = {m["metric"]: m for m in result["metrics"]}["stop_to_room_with_photos_min"]
-    assert photos["baseline_in_range"] == [True, True, True, False, False, False]
+    assert photos["baseline_in_range"] == [True, True, True, False, False, False, False, False]
     assert (photos["min"], photos["max"]) == (46.8, 47.5) and result["baseline_counted"] == 3
     excluded = {item["dir"]: item["reasons"] for item in result["excluded_from_baseline"]}
     assert excluded[str(tmp_path / "old-4")] == ["replay fidelity FAIL"]
-    for name, verdict in (("old-late-render-fail", "FAIL"), ("old-late-render-pass", "PASS")):
+    for name, verdict, bar in (("old-late-render-fail", "FAIL", "v1"), ("old-late-render-pass", "PASS", "v1"),
+                               ("old-v2-render-pass", "PASS", "v2"), ("old-v2-render-fail", "FAIL", "v2")):
         (reason,) = excluded[str(tmp_path / name)]
-        assert reason.startswith(f"replay fidelity {verdict} under bar v1, but this run's own bar is v2")
+        assert reason.startswith(f"replay fidelity {verdict} under bar {bar}, but this run's own bar is v3")
         assert reason.endswith("not judged, not counted (re-render it)")
     assert [item["dir"] for item in result["invalid_candidates"]] == [str(tmp_path / "new-wrong-bar")]
     (reason,) = result["invalid_candidates"][0]["reasons"]
-    assert reason.startswith("replay fidelity PASS under bar v2, but this run's own bar is v1")
+    assert reason.startswith("replay fidelity PASS under bar v3, but this run's own bar is v1")
     rows = {item["dir"]: item for item in result["keyframes"]["baseline"] + result["keyframes"]["candidate"]}
     assert (rows[str(tmp_path / "old-v1-unversioned")]["fidelity_version"],
             rows[str(tmp_path / "old-v1-unversioned")]["fidelity_judged_by"]) == ("v1", "v1")
-    assert (rows[str(tmp_path / "old-v2")]["fidelity_version"], rows[str(tmp_path / "new-v2")]["fidelity_version"]) \
-        == ("v2", "v2")
+    assert [rows[str(tmp_path / n)]["fidelity_version"] for n in ("old-2", "old-4", "old-v3", "new-v3")] == \
+        ["v1", "v1", "v3", "v3"]
     markdown = (out / "COMPARE.md").read_text(encoding="utf-8")
-    assert "| Fidelity bar (own / render) |" in markdown and "| PASS | v2 / v2 | yes |" in markdown
-    assert "| FAIL | v2 / v1 | **NO**: replay fidelity FAIL under bar v1" in markdown
+    assert "| Fidelity bar (own / render) |" in markdown and "| PASS | v3 / v3 | yes |" in markdown
+    assert "| FAIL | v3 / v1 | **NO**: replay fidelity FAIL under bar v1" in markdown
+    assert "| PASS | v3 / v2 | **NO**: replay fidelity PASS under bar v2" in markdown
     assert "Each run is judged by its own fidelity bar version" in markdown
 
 

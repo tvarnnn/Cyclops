@@ -24,10 +24,11 @@ termination at Stop, the Tower-side pacing (the re-recorded capture joined
 to the source journal on `wire_seq`), and live-surface latency where the
 run watched it. What :8000 did during the run is judged apart, as the
 environment's verdict, and so is "Replay fidelity": the Tower-side pacing
-against the bar manager 142 approved (`FIDELITY_BAR` v1), as manager 148 §1
-amended it for runs started after 2026-09-28 16:55 EDT (v2) -- each run is
-judged by the version in force when it started, and the report says which --
-which every proof-set run must PASS (n/a is not a pass). `--compare` flags a run that fails either
+against the bar manager 142 approved (`FIDELITY_BAR` v1), or, for a run
+started after 2026-09-28 16:55 EDT, v3 (manager 149 §2, which replaced
+manager 148's v2) -- each run is judged by the version in force when it
+started, and the report says which -- which every proof-set run must PASS
+(n/a is not a pass). `--compare` flags a run that fails either
 and leaves it out of the baseline's range. `phone_photos_at` is when the phone was told the
 room's photos were ready. All of it is read AFTER the fact, so a finished
 run is re-reported without re-running it:
@@ -660,21 +661,28 @@ def journal_sha256(directory) -> dict:
 #   v1  Manager 142 (RUN\lead\W0-STAGES.md, "Manager 142 rulings", 2026-09-28)
 #       APPROVED it as the C22 review's round 3 proposed it: "Every proof-set
 #       run must pass it, or it is discarded and re-run."
-#   v2  Manager 148 §1 (RUN\physical-test\WALK6-PLAN.md), DECLARED 2026-09-28
-#       16:55 EDT for runs NOT YET MADE -- "never loosen a bar after seeing the
-#       data it fails": the |p50| clause becomes detrended,
-#       |p50(offset - median(offset))| <= 5 ms, PLUS a sanity clause,
-#       |median(offset)| <= 20 ms, which still catches a gross clock or
-#       accept-loop fault. Every other clause is v1's, unchanged (so they are
-#       taken from v1 below, never restated).
+#   (v2 Manager 148 §1, declared 2026-09-28 16:55 EDT for runs started after
+#       it: a detrended |p50(offset - median(offset))| <= 5 ms plus
+#       |median(offset)| <= 20 ms. It was degenerate -- the detrended p50 is
+#       ~0 by construction -- it judged no run, and manager 149 withdrew it.
+#       No copy of it is kept: a render that names v2 is re-rendered.)
+#   v3  Manager 149 §2 (RUN\physical-test\WALK6-PLAN.md), DECLARED 2026-09-28
+#       17:25 EDT for every run started after 2026-09-28 16:55 EDT (manager
+#       148's cut-off; no run was made between 16:55 and 17:25) -- "never
+#       loosen a bar after seeing the data it fails": v1 WITHOUT its |p50|
+#       clause, PLUS a jitter clause, p95 |offset - median(offset)| <= 45 ms,
+#       and a constant-bias clause, |median(offset)| <= 20 ms. Every other
+#       clause is v1's, unchanged (so they are taken from v1 below, never
+#       restated).
 # A run is judged by the version in force when it STARTED (`fidelity_version`):
-# v2 only when its recorded start is AFTER v2's declaration; a run started at
-# or before it, or with no recorded start, keeps v1 -- the bar as written.
+# v3 only when its recorded start is AFTER 16:55 EDT; a run started at or
+# before it, or with no recorded start, keeps v1 -- the bar as written.
 _EDT = datetime.timezone(datetime.timedelta(hours=-4), "EDT")
 FIDELITY_BAR = {
     "v1": {
         "ruling": "manager 142 (W0-STAGES.md, 2026-09-28), as proposed by the C22 review round 3",
-        "declared_at": None,
+        # In force for runs started after this (epoch s); None: from the first.
+        "applies_after": None,
         # Signed receipt-offset error (`tower_side_pacing`), ms. Positive is late.
         "offset_p50_abs_ms": 5.0,
         "offset_p95_ms": 60.0,
@@ -688,17 +696,17 @@ FIDELITY_BAR = {
         "client_lateness_p95_ms": 5.0,
     },
 }
-FIDELITY_BAR["v2"] = {
+FIDELITY_BAR["v3"] = {
     **{key: value for key, value in FIDELITY_BAR["v1"].items() if key != "offset_p50_abs_ms"},
-    "ruling": ("manager 148 §1 (WALK6-PLAN.md), declared 2026-09-28 16:55 EDT for runs started after it; "
-               "amends manager 142's bar"),
-    "declared_at": datetime.datetime(2026, 9, 28, 16, 55, tzinfo=_EDT).timestamp(),
-    # |p50(offset - median(offset))|, ms: the |p50| clause, detrended.
-    "offset_detrended_p50_abs_ms": 5.0,
-    # |median(offset)|, ms: the sanity clause.
+    "ruling": ("manager 149 §2 (WALK6-PLAN.md), declared 2026-09-28 17:25 EDT for every run started after "
+               "2026-09-28 16:55 EDT; replaces manager 148's v2, which judged no run; amends manager 142's bar"),
+    "applies_after": datetime.datetime(2026, 9, 28, 16, 55, tzinfo=_EDT).timestamp(),
+    # p95 of |offset - median(offset)|, ms: the jitter clause.
+    "offset_abs_deviation_p95_ms": 45.0,
+    # |median(offset)|, ms: the constant-bias clause.
     "offset_median_abs_ms": 20.0,
 }
-FIDELITY_V2_DECLARED_TEXT = "2026-09-28 16:55 EDT"
+FIDELITY_V3_APPLIES_AFTER_TEXT = "2026-09-28 16:55 EDT"
 # Both versions' rulings, for a record that spans runs (`--compare`).
 FIDELITY_RULING = "; ".join(f"{version}: {bar['ruling']}" for version, bar in FIDELITY_BAR.items())
 FIDELITY_NA_NOTE = ("n/a is NOT a pass. Every proof-set run must PASS replay fidelity (manager 142): "
@@ -706,7 +714,7 @@ FIDELITY_NA_NOTE = ("n/a is NOT a pass. Every proof-set run must PASS replay fid
                     "RUN\\experiments\\C22-REPLAY\\source-captures, and `--data-root` if the test "
                     "Tower's root moved), or discard it and re-run.")
 
-PACING_OVER_S = FIDELITY_BAR["v1"]["beyond_ms"] / 1000.0   # v2 keeps v1's
+PACING_OVER_S = FIDELITY_BAR["v1"]["beyond_ms"] / 1000.0   # v3 keeps v1's
 # The pacing rows stay INFO in the CODE's verdict: their bar is the separate
 # Replay fidelity verdict, and their tails are `--compare`'s.
 PACING_ROW_REQUIRED = "its bar is the Replay fidelity verdict (manager 142); the tails: no regression (--compare)"
@@ -811,10 +819,11 @@ def tower_side_pacing(*, client: dict, data_root, capture_root, capture_root_fro
         "source_sha256": {cid: journal_sha256(Path(capture_root) / cid) for cid in source_ids},
         "captures_paired": min(len(sources), len(replays)),
         "offset_error_ms": signed_distribution(offsets_ms),
-        # Fidelity bar v2 (manager 148 §1): the offset's median, and the
-        # offset less its median ("detrended"), whose p50 v2 judges.
+        # Fidelity bar v3 (manager 149 §2): the offset's median (the constant
+        # bias), and each offset's absolute deviation from it,
+        # |offset - median(offset)| (the jitter), whose p95 v3 judges.
         "offset_median_ms": round(median_ms, 3),
-        "offset_detrended_ms": signed_distribution([v - median_ms for v in offsets_ms]),
+        "offset_abs_deviation_ms": distribution([abs(v - median_ms) for v in offsets_ms]),
         "late_over_50ms": sum(1 for e in errors if e > PACING_OVER_S),
         "early_over_50ms": sum(1 for e in errors if e < -PACING_OVER_S),
         "inter_arrival_s": {"replayed": distribution(rep_gaps), "recorded": distribution(rec_gaps)},
@@ -856,24 +865,24 @@ def run_started_at(run: dict | None, client: dict | None) -> tuple:
 
 
 def fidelity_version(started_at) -> tuple:
-    """(version, why): the fidelity bar in force when a run STARTED. v2 only
-    for a start AFTER v2's declaration; at or before it, or no recorded start,
-    v1, the bar as written (manager 148 §1: never loosen a bar after seeing the
-    data it fails)."""
+    """(version, why): the fidelity bar in force when a run STARTED. v3 only
+    for a start AFTER 2026-09-28 16:55 EDT; at or before it, or no recorded
+    start, v1, the bar as written (managers 148 and 149: never loosen a bar
+    after seeing the data it fails)."""
     if started_at is None:
-        return "v1", (f"no recorded start, so the bar as written (v2 applies only to a run started after "
-                      f"{FIDELITY_V2_DECLARED_TEXT})")
+        return "v1", (f"no recorded start, so the bar as written (v3 applies only to a run started after "
+                      f"{FIDELITY_V3_APPLIES_AFTER_TEXT})")
     when = datetime.datetime.fromtimestamp(started_at, _EDT).isoformat(timespec="seconds")
-    if started_at > FIDELITY_BAR["v2"]["declared_at"]:
-        return "v2", f"the run started {when}, after v2's declaration ({FIDELITY_V2_DECLARED_TEXT})"
-    return "v1", f"the run started {when}, at or before v2's declaration ({FIDELITY_V2_DECLARED_TEXT})"
+    if started_at > FIDELITY_BAR["v3"]["applies_after"]:
+        return "v3", f"the run started {when}, after v3's cut-off ({FIDELITY_V3_APPLIES_AFTER_TEXT})"
+    return "v1", f"the run started {when}, at or before v3's cut-off ({FIDELITY_V3_APPLIES_AFTER_TEXT})"
 
 
 def replay_fidelity(*, pacing: dict | None, client: dict, run: dict | None = None) -> dict:
     """Did the replay reproduce the recorded pace well enough to be PROOF?
     Judged against `FIDELITY_BAR`, in the version in force when the run
     started (`fidelity_version`; the start from `run` -- `run.json` -- else
-    `client`): v1 (manager 142), or v2 (manager 148 §1) for a run started
+    `client`): v1 (manager 142), or v3 (manager 149 §2) for a run started
     after 2026-09-28 16:55 EDT. The result says which version judged it.
 
     Its own verdict, apart from the code's live-safety verdict and the
@@ -886,8 +895,8 @@ def replay_fidelity(*, pacing: dict | None, client: dict, run: dict | None = Non
          joined are those the schedule never sent (the `first_seconds` cut);
       2. signed receipt-offset error p95 and p99 within the bar, and
          v1: its |p50|;
-         v2: its detrended |p50(offset - median(offset))| AND |median(offset)|
-         (the sanity clause);
+         v3: its jitter, p95 |offset - median(offset)|, AND its constant
+         bias, |median(offset)| (no |p50| clause);
       3. at most 5 % of the frames beyond +/-50 ms, and none more than 50 ms
          early;
       4. the client's own send lateness p95 within the bar, so that a FAIL on
@@ -934,14 +943,14 @@ def replay_fidelity(*, pacing: dict | None, client: dict, run: dict | None = Non
     if "offset_p50_abs_ms" in bar:              # v1
         row("receipt-offset error |p50| (ms)", p50, f"<= {bar['offset_p50_abs_ms']:g}",
             None if p50 is None else abs(p50) <= bar["offset_p50_abs_ms"])
-    if "offset_detrended_p50_abs_ms" in bar:    # v2
-        detrended = number((pacing.get("offset_detrended_ms") or {}).get("p50"))
-        row("receipt-offset error, detrended: |p50(offset - median(offset))| (ms)", detrended,
-            f"<= {bar['offset_detrended_p50_abs_ms']:g}",
-            None if detrended is None else abs(detrended) <= bar["offset_detrended_p50_abs_ms"])
-    if "offset_median_abs_ms" in bar:           # v2
+    if "offset_abs_deviation_p95_ms" in bar:    # v3
+        jitter = number((pacing.get("offset_abs_deviation_ms") or {}).get("p95"))
+        row("receipt-offset jitter: p95 |offset - median(offset)| (ms)", jitter,
+            f"<= {bar['offset_abs_deviation_p95_ms']:g}",
+            None if jitter is None else jitter <= bar["offset_abs_deviation_p95_ms"])
+    if "offset_median_abs_ms" in bar:           # v3
         median = number(pacing.get("offset_median_ms"))
-        row("receipt-offset error |median| (ms), the sanity clause", median,
+        row("receipt-offset constant bias: |median(offset)| (ms)", median,
             f"<= {bar['offset_median_abs_ms']:g}",
             None if median is None else abs(median) <= bar["offset_median_abs_ms"])
     row("receipt-offset error p95 (ms)", p95, f"<= {bar['offset_p95_ms']:g}",
@@ -2182,10 +2191,11 @@ def _load_run(run_dir) -> dict:
                          "(world_live_replay_report.py --run-dir <run> --out <run>)")
     keyframes = _read_json(run_dir / "keyframes.json") or {}
     fidelity = report.get("replay_fidelity") or {}
-    # EACH RUN'S OWN BAR (manager 148 §1): the version in force when THIS run
-    # started, from its own recorded start (`run.json`, else `client.json`, as
-    # the report kept them). A verdict rendered before the bar was versioned
-    # (no `version`) was judged by v1's numbers, the only ones there were.
+    # EACH RUN'S OWN BAR (managers 148 and 149): the version in force when THIS
+    # run started, from its own recorded start (`run.json`, else `client.json`,
+    # as the report kept them). A verdict rendered before the bar was versioned
+    # (no `version`) was judged by v1's numbers, the only ones there were; one
+    # rendered under the withdrawn v2 is never a run's own bar (re-render it).
     own_version, own_why = fidelity_version(run_started_at(report.get("run"), report.get("client"))[0])
     judged_by = fidelity.get("version") or ("v1" if fidelity.get("result") is not None else None)
     return {"dir": str(run_dir), "label": report.get("label"), "report": report,
@@ -2214,9 +2224,9 @@ def run_validity(run: dict) -> dict:
     spread, and not toward N >= 3. Both are shown and flagged, and a
     candidate of either kind is marked INVALID.
 
-    Each run is judged by ITS OWN fidelity bar version (manager 148 §1): a
-    verdict its render reached under another version is not judged either
-    (re-render it), whichever way it went."""
+    Each run is judged by ITS OWN fidelity bar version (managers 148 and 149):
+    a verdict its render reached under another version -- the withdrawn v2
+    included -- is not judged either (re-render it), whichever way it went."""
     invalid, unjudged = [], []
     own, judged_by = run.get("fidelity_version"), run.get("fidelity_judged_by")
     if run.get("fidelity") is not None and own and judged_by and judged_by != own:
@@ -2308,7 +2318,8 @@ def compare_runs(baseline_dirs, candidate_dirs=()) -> dict:
 
     return {
         # /4: each run judged by its own fidelity bar version (manager 148 §1).
-        "compare": "c22-live-replay-compare/4",
+        # /5: the versions are v1 and v3 (manager 149 §2); v2 is withdrawn.
+        "compare": "c22-live-replay-compare/5",
         "generated_at": round(time.time(), 3),
         "baseline": [run["dir"] for run in baseline],
         "candidate": [run["dir"] for run in candidate],
