@@ -24,8 +24,10 @@ termination at Stop, the Tower-side pacing (the re-recorded capture joined
 to the source journal on `wire_seq`), and live-surface latency where the
 run watched it. What :8000 did during the run is judged apart, as the
 environment's verdict, and so is "Replay fidelity": the Tower-side pacing
-against the bar manager 142 approved (`FIDELITY_BAR`), which every proof-set
-run must PASS (n/a is not a pass). `--compare` flags a run that fails either
+against the bar manager 142 approved (`FIDELITY_BAR` v1), as manager 148 §1
+amended it for runs started after 2026-09-28 16:55 EDT (v2) -- each run is
+judged by the version in force when it started, and the report says which --
+which every proof-set run must PASS (n/a is not a pass). `--compare` flags a run that fails either
 and leaves it out of the baseline's range. `phone_photos_at` is when the phone was told the
 room's photos were ready. All of it is read AFTER the fact, so a finished
 run is re-reported without re-running it:
@@ -653,31 +655,58 @@ def journal_sha256(directory) -> dict:
     return digests
 
 
-# THE REPLAY-FIDELITY BAR. Manager 142 (RUN\lead\W0-STAGES.md, "Manager 142
-# rulings", 2026-09-28) APPROVED it as the C22 review's round 3 proposed it:
-# "Every proof-set run must pass it, or it is discarded and re-run." These are
-# the only copies of these numbers; `replay_fidelity` judges against them and
-# the report prints them.
-FIDELITY_RULING = "manager 142 (W0-STAGES.md, 2026-09-28), as proposed by the C22 review round 3"
+# THE REPLAY-FIDELITY BAR, VERSIONED. These are the only copies of these
+# numbers; `replay_fidelity` judges against them and the report prints them.
+#   v1  Manager 142 (RUN\lead\W0-STAGES.md, "Manager 142 rulings", 2026-09-28)
+#       APPROVED it as the C22 review's round 3 proposed it: "Every proof-set
+#       run must pass it, or it is discarded and re-run."
+#   v2  Manager 148 §1 (RUN\physical-test\WALK6-PLAN.md), DECLARED 2026-09-28
+#       16:55 EDT for runs NOT YET MADE -- "never loosen a bar after seeing the
+#       data it fails": the |p50| clause becomes detrended,
+#       |p50(offset - median(offset))| <= 5 ms, PLUS a sanity clause,
+#       |median(offset)| <= 20 ms, which still catches a gross clock or
+#       accept-loop fault. Every other clause is v1's, unchanged (so they are
+#       taken from v1 below, never restated).
+# A run is judged by the version in force when it STARTED (`fidelity_version`):
+# v2 only when its recorded start is AFTER v2's declaration; a run started at
+# or before it, or with no recorded start, keeps v1 -- the bar as written.
+_EDT = datetime.timezone(datetime.timedelta(hours=-4), "EDT")
 FIDELITY_BAR = {
-    # Signed receipt-offset error (`tower_side_pacing`), ms. Positive is late.
-    "offset_p50_abs_ms": 5.0,
-    "offset_p95_ms": 60.0,
-    "offset_p99_ms": 250.0,
-    # At most this fraction of the joined frames beyond +/- `beyond_ms`...
-    "beyond_ms": 50.0,
-    "beyond_max_fraction": 0.05,
-    # ...and no frame more than this early.
-    "early_max_ms": 50.0,
-    # The client's own send lateness (stops at the send call), ms.
-    "client_lateness_p95_ms": 5.0,
+    "v1": {
+        "ruling": "manager 142 (W0-STAGES.md, 2026-09-28), as proposed by the C22 review round 3",
+        "declared_at": None,
+        # Signed receipt-offset error (`tower_side_pacing`), ms. Positive is late.
+        "offset_p50_abs_ms": 5.0,
+        "offset_p95_ms": 60.0,
+        "offset_p99_ms": 250.0,
+        # At most this fraction of the joined frames beyond +/- `beyond_ms`...
+        "beyond_ms": 50.0,
+        "beyond_max_fraction": 0.05,
+        # ...and no frame more than this early.
+        "early_max_ms": 50.0,
+        # The client's own send lateness (stops at the send call), ms.
+        "client_lateness_p95_ms": 5.0,
+    },
 }
+FIDELITY_BAR["v2"] = {
+    **{key: value for key, value in FIDELITY_BAR["v1"].items() if key != "offset_p50_abs_ms"},
+    "ruling": ("manager 148 §1 (WALK6-PLAN.md), declared 2026-09-28 16:55 EDT for runs started after it; "
+               "amends manager 142's bar"),
+    "declared_at": datetime.datetime(2026, 9, 28, 16, 55, tzinfo=_EDT).timestamp(),
+    # |p50(offset - median(offset))|, ms: the |p50| clause, detrended.
+    "offset_detrended_p50_abs_ms": 5.0,
+    # |median(offset)|, ms: the sanity clause.
+    "offset_median_abs_ms": 20.0,
+}
+FIDELITY_V2_DECLARED_TEXT = "2026-09-28 16:55 EDT"
+# Both versions' rulings, for a record that spans runs (`--compare`).
+FIDELITY_RULING = "; ".join(f"{version}: {bar['ruling']}" for version, bar in FIDELITY_BAR.items())
 FIDELITY_NA_NOTE = ("n/a is NOT a pass. Every proof-set run must PASS replay fidelity (manager 142): "
                     "re-render it with the source journal (`--capture-root`, e.g. "
                     "RUN\\experiments\\C22-REPLAY\\source-captures, and `--data-root` if the test "
                     "Tower's root moved), or discard it and re-run.")
 
-PACING_OVER_S = FIDELITY_BAR["beyond_ms"] / 1000.0
+PACING_OVER_S = FIDELITY_BAR["v1"]["beyond_ms"] / 1000.0   # v2 keeps v1's
 # The pacing rows stay INFO in the CODE's verdict: their bar is the separate
 # Replay fidelity verdict, and their tails are `--compare`'s.
 PACING_ROW_REQUIRED = "its bar is the Replay fidelity verdict (manager 142); the tails: no regression (--compare)"
@@ -764,6 +793,8 @@ def tower_side_pacing(*, client: dict, data_root, capture_root, capture_root_fro
         replay_only += len(extra["frames"])
     if not matched:
         return {**base, "why": "no re-recorded frame joins the source journal on wire_seq"}
+    offsets_ms = [e * 1000 for e in errors]
+    median_ms = _median(offsets_ms)
     return {
         **base,
         "computable": True,
@@ -779,7 +810,11 @@ def tower_side_pacing(*, client: dict, data_root, capture_root, capture_root_fro
         "source_duplicate_seq": duplicates,
         "source_sha256": {cid: journal_sha256(Path(capture_root) / cid) for cid in source_ids},
         "captures_paired": min(len(sources), len(replays)),
-        "offset_error_ms": signed_distribution([e * 1000 for e in errors]),
+        "offset_error_ms": signed_distribution(offsets_ms),
+        # Fidelity bar v2 (manager 148 §1): the offset's median, and the
+        # offset less its median ("detrended"), whose p50 v2 judges.
+        "offset_median_ms": round(median_ms, 3),
+        "offset_detrended_ms": signed_distribution([v - median_ms for v in offsets_ms]),
         "late_over_50ms": sum(1 for e in errors if e > PACING_OVER_S),
         "early_over_50ms": sum(1 for e in errors if e < -PACING_OVER_S),
         "inter_arrival_s": {"replayed": distribution(rep_gaps), "recorded": distribution(rec_gaps)},
@@ -800,9 +835,46 @@ def signed_distribution(values) -> dict:
     return {**stats, "min": round(ordered[0], 3), "p1": round(pick(0.01), 3), "p5": round(pick(0.05), 3)}
 
 
-def replay_fidelity(*, pacing: dict | None, client: dict) -> dict:
+def _median(values) -> float:
+    """The median: the middle value, or the mean of the two middle values."""
+    ordered = sorted(values)
+    middle = len(ordered) // 2
+    return ordered[middle] if len(ordered) % 2 else (ordered[middle - 1] + ordered[middle]) / 2
+
+
+def run_started_at(run: dict | None, client: dict | None) -> tuple:
+    """(epoch seconds, where it was read) -- the run's RECORDED start, which
+    decides its fidelity bar version: `run.json`'s `started_at` (the runner's,
+    written before it launched the test Tower: the run's earliest record), else
+    `client.json`'s (a replay run without the runner). (None, None) when
+    neither records one."""
+    for source, record in (("run.json started_at", run), ("client.json started_at", client)):
+        value = record.get("started_at") if isinstance(record, dict) else None
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            return float(value), source
+    return None, None
+
+
+def fidelity_version(started_at) -> tuple:
+    """(version, why): the fidelity bar in force when a run STARTED. v2 only
+    for a start AFTER v2's declaration; at or before it, or no recorded start,
+    v1, the bar as written (manager 148 §1: never loosen a bar after seeing the
+    data it fails)."""
+    if started_at is None:
+        return "v1", (f"no recorded start, so the bar as written (v2 applies only to a run started after "
+                      f"{FIDELITY_V2_DECLARED_TEXT})")
+    when = datetime.datetime.fromtimestamp(started_at, _EDT).isoformat(timespec="seconds")
+    if started_at > FIDELITY_BAR["v2"]["declared_at"]:
+        return "v2", f"the run started {when}, after v2's declaration ({FIDELITY_V2_DECLARED_TEXT})"
+    return "v1", f"the run started {when}, at or before v2's declaration ({FIDELITY_V2_DECLARED_TEXT})"
+
+
+def replay_fidelity(*, pacing: dict | None, client: dict, run: dict | None = None) -> dict:
     """Did the replay reproduce the recorded pace well enough to be PROOF?
-    Judged against `FIDELITY_BAR` (manager 142).
+    Judged against `FIDELITY_BAR`, in the version in force when the run
+    started (`fidelity_version`; the start from `run` -- `run.json` -- else
+    `client`): v1 (manager 142), or v2 (manager 148 §1) for a run started
+    after 2026-09-28 16:55 EDT. The result says which version judged it.
 
     Its own verdict, apart from the code's live-safety verdict and the
     Environment's: a FAIL says nothing about the code under test, and makes
@@ -812,14 +884,21 @@ def replay_fidelity(*, pacing: dict | None, client: dict) -> dict:
       1. the `wire_seq` join is exact: every frame sent was joined, the Tower
          re-recorded nothing the source lacks, and the only source frames not
          joined are those the schedule never sent (the `first_seconds` cut);
-      2. signed receipt-offset error |p50|, p95 and p99 within the bar;
+      2. signed receipt-offset error p95 and p99 within the bar, and
+         v1: its |p50|;
+         v2: its detrended |p50(offset - median(offset))| AND |median(offset)|
+         (the sanity clause);
       3. at most 5 % of the frames beyond +/-50 ms, and none more than 50 ms
          early;
       4. the client's own send lateness p95 within the bar, so that a FAIL on
          the Tower's side is the Tower's and not the harness's.
     """
-    bar = FIDELITY_BAR
-    result: dict = {"result": "n/a", "ruling": FIDELITY_RULING, "bar": dict(bar), "rows": []}
+    started_at, started_from = run_started_at(run, client)
+    version, version_why = fidelity_version(started_at)
+    bar = FIDELITY_BAR[version]
+    result: dict = {"result": "n/a", "version": version, "version_why": version_why,
+                    "started_at": started_at, "started_at_from": started_from,
+                    "ruling": bar["ruling"], "bar": dict(bar), "rows": []}
     if not pacing or not pacing.get("computable"):
         result["why"] = (pacing or {}).get("why") or "no Tower-side pacing"
         result["note"] = FIDELITY_NA_NOTE
@@ -852,8 +931,19 @@ def replay_fidelity(*, pacing: dict | None, client: dict) -> dict:
         return value if isinstance(value, (int, float)) else None
 
     p50, p95, p99, low = (number(offset.get(k)) for k in ("p50", "p95", "p99", "min"))
-    row("receipt-offset error |p50| (ms)", p50, f"<= {bar['offset_p50_abs_ms']:g}",
-        None if p50 is None else abs(p50) <= bar["offset_p50_abs_ms"])
+    if "offset_p50_abs_ms" in bar:              # v1
+        row("receipt-offset error |p50| (ms)", p50, f"<= {bar['offset_p50_abs_ms']:g}",
+            None if p50 is None else abs(p50) <= bar["offset_p50_abs_ms"])
+    if "offset_detrended_p50_abs_ms" in bar:    # v2
+        detrended = number((pacing.get("offset_detrended_ms") or {}).get("p50"))
+        row("receipt-offset error, detrended: |p50(offset - median(offset))| (ms)", detrended,
+            f"<= {bar['offset_detrended_p50_abs_ms']:g}",
+            None if detrended is None else abs(detrended) <= bar["offset_detrended_p50_abs_ms"])
+    if "offset_median_abs_ms" in bar:           # v2
+        median = number(pacing.get("offset_median_ms"))
+        row("receipt-offset error |median| (ms), the sanity clause", median,
+            f"<= {bar['offset_median_abs_ms']:g}",
+            None if median is None else abs(median) <= bar["offset_median_abs_ms"])
     row("receipt-offset error p95 (ms)", p95, f"<= {bar['offset_p95_ms']:g}",
         None if p95 is None else p95 <= bar["offset_p95_ms"])
     row("receipt-offset error p99 (ms)", p99, f"<= {bar['offset_p99_ms']:g}",
@@ -1627,7 +1717,7 @@ def build_report(*, tower_log, tower_out_log=None, world_root=None, capture_id=N
     pacing = tower_side_pacing(client=client, data_root=data_root, capture_root=capture_root,
                                capture_root_from=capture_root_from) if client else {
         "computable": False, "why": "no client record (a real walk's log has none)"}
-    fidelity = replay_fidelity(pacing=pacing, client=client)
+    fidelity = replay_fidelity(pacing=pacing, client=client, run=run)
     photos_told = phone_photos(client.get("phone_view") or {}, t0,
                                stages.get("appearance") if facts.get("available") else None)
     if photos_told.get("phone_photos_at") is not None:
@@ -1663,7 +1753,7 @@ def build_report(*, tower_log, tower_out_log=None, world_root=None, capture_id=N
         "client": {k: client.get(k) for k in ("outcome", "speed", "first_seconds", "capture_root", "walk", "schedule",
                                               "stream", "phone_fetches", "handshake", "session_start",
                                               "live_tower_at_start", "live_tower_watch", "target_listener",
-                                              "aborted", "t0", "stopped_at")
+                                              "aborted", "started_at", "t0", "stopped_at")
                    if k in client},
         "tower_walk": {
             "captures": timeline.get("captures"),
@@ -1802,7 +1892,9 @@ def render_markdown(report: dict) -> str:
     lines.append(f"5. Verdicts, kept apart: code live safety **{safety_head.get('result')}**; Environment "
                  f"(:8000) **{(safety_head.get('environment') or {}).get('result')}**; replay fidelity "
                  f"**{fidelity_head.get('result')}**"
-                 + (" (n/a is NOT a pass for a proof set)" if fidelity_head.get("result") == "n/a" else "") + ".")
+                 + (" (n/a is NOT a pass for a proof set)" if fidelity_head.get("result") == "n/a" else "")
+                 + (f", judged by fidelity bar {fidelity_head['version']}" if fidelity_head.get("version") else "")
+                 + ".")
     if client.get("aborted"):
         lines.append(f"6. **Aborted** at {_clock(client['aborted'].get('t'))}: {client['aborted'].get('reason')}.")
     lines.append("")
@@ -1835,10 +1927,13 @@ def render_markdown(report: dict) -> str:
     fidelity = report.get("replay_fidelity") or {}
     if fidelity:
         lines.append("")
+        judged_by = (f"**fidelity bar {fidelity['version']}**, {fidelity.get('ruling')} -- the version in force "
+                     f"when the run started: {fidelity.get('version_why')}"
+                     + (f" ({fidelity['started_at_from']})" if fidelity.get("started_at_from") else "")
+                     if fidelity.get("version") else f"the bar approved by {fidelity.get('ruling')}")
         lines.append(f"**Replay fidelity: {fidelity.get('result')}.** Did the test Tower receive the recorded "
-                     f"pace? Judged apart from the code's verdict and the Environment's, against the bar "
-                     f"approved by {fidelity.get('ruling')}. A FAIL makes the run invalid as proof: discard it "
-                     "and re-run.")
+                     f"pace? Judged apart from the code's verdict and the Environment's, against {judged_by}. "
+                     "A FAIL makes the run invalid as proof: discard it and re-run.")
         if fidelity.get("result") == "n/a":
             lines.append("")
             lines.append(f"n/a: {fidelity.get('why')}. **{fidelity.get('note') or FIDELITY_NA_NOTE}**")
@@ -2086,6 +2181,13 @@ def _load_run(run_dir) -> dict:
         raise SystemExit(f"{run_dir} has no report.json; render it first "
                          "(world_live_replay_report.py --run-dir <run> --out <run>)")
     keyframes = _read_json(run_dir / "keyframes.json") or {}
+    fidelity = report.get("replay_fidelity") or {}
+    # EACH RUN'S OWN BAR (manager 148 §1): the version in force when THIS run
+    # started, from its own recorded start (`run.json`, else `client.json`, as
+    # the report kept them). A verdict rendered before the bar was versioned
+    # (no `version`) was judged by v1's numbers, the only ones there were.
+    own_version, own_why = fidelity_version(run_started_at(report.get("run"), report.get("client"))[0])
+    judged_by = fidelity.get("version") or ("v1" if fidelity.get("result") is not None else None)
     return {"dir": str(run_dir), "label": report.get("label"), "report": report,
             "metrics": comparable_metrics(report), "sequence": keyframes.get("sequence"),
             "sha256": keyframes.get("sha256") or (report.get("keyframes") or {}).get("sha256"),
@@ -2094,7 +2196,10 @@ def _load_run(run_dir) -> dict:
             "live_safety": (report.get("live_safety") or {}).get("result"),
             "environment": ((report.get("live_safety") or {}).get("environment") or {}).get("result"),
             # None: a report rendered before the bar existed.
-            "fidelity": (report.get("replay_fidelity") or {}).get("result")}
+            "fidelity": fidelity.get("result"),
+            # The bar version this run is judged by, and the one its render used.
+            "fidelity_version": own_version, "fidelity_version_why": own_why,
+            "fidelity_judged_by": judged_by}
 
 
 def run_validity(run: dict) -> dict:
@@ -2107,9 +2212,17 @@ def run_validity(run: dict) -> dict:
     bar), is NOT a pass either (review C22 round 4 M-1): the run is "not
     judged". Neither kind is COUNTED: not in the baseline's mean, min, max or
     spread, and not toward N >= 3. Both are shown and flagged, and a
-    candidate of either kind is marked INVALID."""
+    candidate of either kind is marked INVALID.
+
+    Each run is judged by ITS OWN fidelity bar version (manager 148 §1): a
+    verdict its render reached under another version is not judged either
+    (re-render it), whichever way it went."""
     invalid, unjudged = [], []
-    if run.get("fidelity") == "FAIL":
+    own, judged_by = run.get("fidelity_version"), run.get("fidelity_judged_by")
+    if run.get("fidelity") is not None and own and judged_by and judged_by != own:
+        unjudged.append(f"replay fidelity {run.get('fidelity')} under bar {judged_by}, but this run's own bar is "
+                        f"{own} ({run.get('fidelity_version_why')}): not judged, not counted (re-render it)")
+    elif run.get("fidelity") == "FAIL":
         invalid.append("replay fidelity FAIL")
     elif run.get("fidelity") != "PASS":
         unjudged.append("replay fidelity " + ("not in this render (re-render it)" if run.get("fidelity") is None
@@ -2182,7 +2295,8 @@ def compare_runs(baseline_dirs, candidate_dirs=()) -> dict:
                 "first_difference": None if same else _first_difference(run["sequence"], reference["sequence"]),
                 "horizons": run["horizons"], "horizons_identical": run["horizons"] == reference["horizons"],
                 "live_safety": run["live_safety"], "environment": run.get("environment"),
-                "fidelity": run.get("fidelity"), "invalid": run["validity"]["invalid"],
+                "fidelity": run.get("fidelity"), "fidelity_version": run.get("fidelity_version"),
+                "fidelity_judged_by": run.get("fidelity_judged_by"), "invalid": run["validity"]["invalid"],
                 "not_a_pass": run["validity"]["not_a_pass"]}
 
     def flagged(runs, key):
@@ -2193,7 +2307,8 @@ def compare_runs(baseline_dirs, candidate_dirs=()) -> dict:
                 for run in runs if not run["validity"]["counted"]]
 
     return {
-        "compare": "c22-live-replay-compare/3",
+        # /4: each run judged by its own fidelity bar version (manager 148 §1).
+        "compare": "c22-live-replay-compare/4",
         "generated_at": round(time.time(), 3),
         "baseline": [run["dir"] for run in baseline],
         "candidate": [run["dir"] for run in candidate],
@@ -2242,7 +2357,8 @@ def render_compare(result: dict) -> str:
                      f"fidelity ({result.get('fidelity_ruling')}) or the Environment (:8000) verdict, or whose "
                      "replay fidelity is n/a or not in its render (not judged: n/a is NOT a pass), is not valid "
                      "as proof: it is shown below and never counted in the mean, min, max or spread, nor toward "
-                     f"N >= 3 ({result.get('baseline_counted')} baseline run(s) counted).")
+                     f"N >= 3 ({result.get('baseline_counted')} baseline run(s) counted). Each run is judged by "
+                     "its own fidelity bar version: the one in force when it started.")
         for item in excluded:
             lines.append(f"- `{item['dir']}`: {', '.join(item['reasons'])}")
     invalid = result.get("invalid_candidates") or []
@@ -2275,8 +2391,8 @@ def render_compare(result: dict) -> str:
             " -- **NO baseline run is valid as proof: this reference is not one either.**"))
         lines.append("")
     lines.append("| Run | sha256 | Identical | First differing index | Solve horizons identical | Live safety "
-                 "| Environment (:8000) | Replay fidelity | Valid as proof |")
-    lines.append("|---|---|---|---|---|---|---|---|---|")
+                 "| Environment (:8000) | Replay fidelity | Fidelity bar (own / render) | Valid as proof |")
+    lines.append("|---|---|---|---|---|---|---|---|---|---|")
     for side in ("baseline", "candidate"):
         for item in result["keyframes"][side]:
             if item is None:
@@ -2288,7 +2404,8 @@ def render_compare(result: dict) -> str:
             lines.append(f"| {side}: `{item['dir']}` | {str(item['sha256'])[:16]} | {item['identical']} | "
                          f"{'' if item['first_difference'] is None else item['first_difference']} | "
                          f"{item['horizons_identical']} | {item['live_safety']} | {item.get('environment')} | "
-                         f"{item.get('fidelity')} | {valid} |")
+                         f"{item.get('fidelity')} | {item.get('fidelity_version')} / "
+                         f"{item.get('fidelity_judged_by') or '—'} | {valid} |")
     lines.append("")
     lines.append("## Metrics")
     lines.append("")
