@@ -1195,7 +1195,8 @@ def world_stage_timing_setting() -> bool:
 #        and params digest unchanged.
 # Read when an `appearance.AppearanceParams` is built (the default of its `exposure_deterministic_gains`), so the
 # solve and the appearance's params digest read ONE value: a build with it on never reuses a build without it, and
-# the reverse. Every appearance build in a process with it on takes it, the walk's live builds included.
+# the reverse. FINAL builds only (manager 148 §4): `AppearanceParams.live()`, the walk's live builds, sets it
+# False, so a live build keeps `index_add_` and its params digest with the switch on.
 WORLD_APPEARANCE_DETERMINISTIC_GAINS_ENV = "TOWER_WORLD_APPEARANCE_DETERMINISTIC_GAINS"
 _world_appearance_deterministic_gains_warned: set[str] = set()
 

@@ -273,6 +273,7 @@ class AppearanceParams:
     # `TOWER_WORLD_APPEARANCE_DETERMINISTIC_GAINS`, read HERE, when the params
     # are built, so the solve and the params digest read one value; a caller
     # that passes it explicitly wins. Recorded in `as_dict()` only when on.
+    # FINAL builds only: `live()` sets it False (manager 148 §4).
     exposure_deterministic_gains: bool = field(default_factory=_deterministic_gains_setting)
     # selection (§5.5)
     selection_samples: int = 60_000
@@ -320,7 +321,12 @@ class AppearanceParams:
                     exposure_iterations=20, transient_grid_px=12,
                     # OneFormer only during a walk: the union costs about
                     # twice as much per keyframe (contract §10).
-                    transient_detector="oneformer")
+                    transient_detector="oneformer",
+                    # DET-GAINS is for FINAL builds only (manager 148 §4): a
+                    # live build keeps `index_add_` whatever the switch says,
+                    # so the walk pays none of its cost, and its params record
+                    # and digest are the ones it had before the switch existed.
+                    exposure_deterministic_gains=False)
         base.update(overrides)
         return cls(**base)
 

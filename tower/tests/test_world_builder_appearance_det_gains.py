@@ -7,6 +7,10 @@ summation order changes run to run. §6.6 measured the fix, `index_put_(accumula
 CUDA across repeats and processes. It is NOT reproducible on the CPU, so on a CPU device the switch keeps
 `index_add_` -- the OFF op.
 
+FINAL BUILDS ONLY (manager 148 §4): `AppearanceParams.live()` -- the walk's live appearance, built by
+`scripts/world_surface.py --live --appearance` -- sets the param False, so with the switch on a live build still
+runs `index_add_`, byte for byte the OFF solve, under the OFF params record and digest.
+
 THE GOLDEN (`golden/world_builder_appearance_gains_44fbd13.json`) was recorded from the UNEDITED 44fbd13
 `appearance.py` by RUN/experiments/DET-GAINS/golden_record.py. With the switch unset, blank, `off` or garbage:
   - a small CPU exposure solve runs the same torch ops in the same order (every torch function and Tensor
@@ -204,7 +208,10 @@ def test_the_switch_is_read_when_the_params_are_built_and_an_explicit_value_wins
     assert A.AppearanceParams.live().exposure_deterministic_gains is False
     monkeypatch.setenv(ENV, "on")
     assert A.AppearanceParams().exposure_deterministic_gains is True
-    assert A.AppearanceParams.live().exposure_deterministic_gains is True
+    # FINAL builds only (manager 148 §4): the live preset never takes the switch ...
+    assert A.AppearanceParams.live().exposure_deterministic_gains is False
+    # ... and, like every preset value, an explicit override of it wins
+    assert A.AppearanceParams.live(exposure_deterministic_gains=True).exposure_deterministic_gains is True
     assert A.AppearanceParams(exposure_deterministic_gains=False).exposure_deterministic_gains is False
     # read once, at construction: a params object never changes under a build
     assert off.exposure_deterministic_gains is False
@@ -408,6 +415,123 @@ def test_on_a_cpu_device_the_switch_keeps_index_add_and_the_off_bytes(monkeypatc
     assert r1["slopes"].tobytes() == r0["slopes"].tobytes() and r1["vignette"] == r0["vignette"]
 
 
+# -- FINAL builds only (manager 148 §4): with the switch on, a live build is the OFF build --------------------
+
+
+def _as_if_cuda(monkeypatch):
+    """The device half of the decision taken as if the solve ran on CUDA -- the one device where the switch
+    changes the op -- while the params half stays the product's. On this CPU host, which op each site runs is
+    the point; the values are the CPU's."""
+    real = A._deterministic_accumulate
+    cuda_device = torch.device("cuda")   # made here, once: a torch.device() inside a traced solve is an op
+    monkeypatch.setattr(A, "_deterministic_accumulate", lambda params, dev: real(params, cuda_device))
+
+
+@pytest.mark.parametrize("value", ["on", "1", "true"])
+def test_live_params_with_the_switch_on_are_the_off_live_params(monkeypatch, golden, value):
+    monkeypatch.setenv(ENV, value)
+    live, final = A.AppearanceParams.live(), A.AppearanceParams()
+    assert (live.exposure_deterministic_gains, final.exposure_deterministic_gains) == (False, True)
+    # the live params record -- and so the live params digest -- is 44fbd13's, key for key and in order
+    assert KEY not in live.as_dict()
+    assert params_items(live) == golden["params_live"]
+    assert A._deterministic_accumulate(live, torch.device("cuda")) is False
+    assert A._deterministic_accumulate(final, torch.device("cuda")) is True
+
+
+def test_live_with_the_switch_on_runs_the_off_ops_byte_identical_even_on_cuda(monkeypatch, golden):
+    _as_if_cuda(monkeypatch)
+    monkeypatch.delenv(ENV, raising=False)
+    off = run_traced(A, A.AppearanceParams.live(**GOLDEN_PARAMS))
+    monkeypatch.setenv(ENV, "on")
+    live_on = A.AppearanceParams.live(**GOLDEN_PARAMS)
+    on = run_traced(A, live_on)
+    assert (on["ops"], on["ops_sha256"]) == (off["ops"], off["ops_sha256"])
+    assert on["op_counts"] == off["op_counts"]
+    assert "torch.Tensor.index_put_" not in on["op_counts"]
+    assert on["op_counts"]["torch.Tensor.index_add_"] == index_sums(live_on)
+    for k in ("gains_sha256", "slopes_sha256", "gains", "slopes", "per_frame", "record"):
+        assert on[k] == off[k], k
+    # The live preset differs from the final one only in fields this spatial solve does not read, so the live
+    # solve with the switch on is also the recorded 44fbd13 solve, op for op.
+    want = golden["solve"]
+    assert (on["ops"], on["ops_sha256"], on["op_counts"]) == (want["ops"], want["ops_sha256"],
+                                                              want["op_counts"])
+    if _exact_build(golden):
+        assert (on["gains_sha256"], on["slopes_sha256"]) == (want["gains_sha256"], want["slopes_sha256"])
+    counts = _count_index_ops(monkeypatch)
+    _solve(live_on)
+    assert counts["index_put_"] == 0 and counts["index_add_"] == index_sums(live_on)
+
+
+def test_final_with_the_switch_on_takes_the_deterministic_op_at_every_site(monkeypatch):
+    """The control for the test above: the same as-if-CUDA decision DOES reach `index_put_` for a final build."""
+    _as_if_cuda(monkeypatch)
+    monkeypatch.setenv(ENV, "on")
+    final = A.AppearanceParams(**GOLDEN_PARAMS)
+    counts = _count_index_ops(monkeypatch)
+    _solve(final)
+    assert counts["index_add_"] == 0 and counts["index_put_"] == index_sums(final)
+
+
+def test_a_live_build_with_the_switch_on_is_served_as_the_live_build_without_it(monkeypatch, tmp_path):
+    w = World(tmp_path)
+    monkeypatch.delenv(ENV, raising=False)
+    live_off = A.AppearanceParams.live(selection_samples=3000)
+    assert w.build(params=live_off, redactor_factory=_never_redact).state == AP.STATE_OK
+    m_off = w.manifest()
+    assert m_off["quality"] == "live" and KEY not in m_off["params"]
+
+    monkeypatch.setenv(ENV, "on")
+    r_live = w.build(params=A.AppearanceParams.live(selection_samples=3000), redactor_factory=_never_redact)
+    assert r_live.detail == AP.ALREADY_BUILT
+    assert w.manifest()["params_digest"] == m_off["params_digest"]
+
+    r_final = w.build(params=A.AppearanceParams(selection_samples=4000), redactor_factory=_never_redact)
+    assert r_final.state == AP.STATE_OK and r_final.detail != AP.ALREADY_BUILT
+    m_final = w.manifest()
+    assert m_final["quality"] == "final" and m_final["params"][KEY] is True
+
+
+def test_an_area_is_shaded_by_the_rooms_own_final_stages_so_it_takes_the_switch_as_the_room_does():
+    """A2 (manager 148 §4), the wiring half of why the room-only GPU proof covers the areas: an area's appearance
+    is `area_build.build_area` running THE SAME `world_build_session.final_surface_stages` the room's finish runs
+    (the finisher passes that very function; `world_refinish` imports it), whose appearance is the final preset
+    `AppearanceParams()` -- the one place the switch is read -- and never the live one."""
+    import scripts.world_build_session as B
+    import scripts.world_finish_pending as F
+    from tower.world_builder import area_build as AB
+
+    assert F.final_surface_stages is B.final_surface_stages
+    assert "final_surface_stages=final_surface_stages" in inspect.getsource(F.build_session_areas)
+    code = "\n".join(line.split("#")[0] for line in inspect.getsource(B.final_surface_stages).splitlines())
+    assert "params=AppearanceParams()," in code and "AppearanceParams.live" not in code
+    assert "final_surface_stages(" in inspect.getsource(AB.build_area)
+
+
+class _Captured(Exception):
+    pass
+
+
+@pytest.mark.parametrize("live, expected", [(True, False), (False, True)])
+def test_the_surface_cli_builds_the_walks_appearance_without_it_and_a_final_one_with_it(
+        monkeypatch, live, expected):
+    """`scripts/world_surface.py --live --appearance` is the walk's live appearance (the builder's live child);
+    without `--live` it is a final build. The switch is on for both."""
+    import scripts.world_surface as CLI
+
+    def build_appearance(store, world_id, sid, *, params=None, **kw):
+        raise _Captured(params)
+
+    monkeypatch.setenv(ENV, "on")
+    monkeypatch.setattr(AP, "build_appearance", build_appearance)
+    with pytest.raises(_Captured) as got:
+        CLI._build_appearance(None, "w", "s", live=live)
+    params = got.value.args[0]
+    assert params.quality == ("live" if live else "final")
+    assert params.exposure_deterministic_gains is expected
+
+
 # -- CUDA (opt-in; never run by an agent outside gpulock) ------------------------------------------------------
 
 cuda = pytest.mark.skipif(
@@ -433,3 +557,20 @@ def test_on_cuda_the_exposure_solve_is_repeat_identical_with_the_switch_on():
     for g, o, r in runs[1:]:
         assert g.tobytes() == runs[0][0].tobytes() and np.array_equal(o, runs[0][1])
         assert r["slopes"].tobytes() == runs[0][2]["slopes"].tobytes()
+
+
+@cuda
+def test_on_cuda_with_the_switch_on_a_final_solve_is_repeat_identical_and_a_live_one_keeps_index_add(
+        monkeypatch):
+    monkeypatch.setenv(ENV, "on")
+    inputs = golden_inputs()
+    final = A.AppearanceParams(**GOLDEN_PARAMS)
+    assert final.exposure_deterministic_gains is True
+    runs = [A.solve_gains(*inputs, final, device="cuda") for _ in range(3)]
+    for g, o, r in runs[1:]:
+        assert g.tobytes() == runs[0][0].tobytes() and np.array_equal(o, runs[0][1])
+        assert r["slopes"].tobytes() == runs[0][2]["slopes"].tobytes()
+    live = A.AppearanceParams.live(**GOLDEN_PARAMS)
+    counts = _count_index_ops(monkeypatch)
+    A.solve_gains(*inputs, live, device="cuda")
+    assert counts["index_put_"] == 0 and counts["index_add_"] == index_sums(live)
