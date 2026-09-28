@@ -541,21 +541,25 @@ def gate_final_solution(store, world_id: str, session_id: str, solution, *, data
                         should_stop=None, params: "CG.GateParams | None" = None,
                         depth_runner: Callable | None = None, metric_fn: Callable | None = None,
                         withhold=None, room=None, link_reader: Callable | None = None, seal=None,
-                        link_units=None) -> GateResult:
+                        link_units=None, admit=None, rider_min_shared: int | None = None) -> GateResult:
     """Steps 1-4 of the module docstring on the candidate; never raises. `depth_runner` and `metric_fn`
     replace `run_gate_depth` / `measure_metric_scale` (tests, and the consensus, which gates a draw again
     with the depth and scale it already has). `withhold` and `room`: `coherence_gate.apply_gate`'s consensus
     hooks. `link_reader(database_path, camera, min_inliers) -> (links, rotations)` replaces `read_links`
     (the consensus reads the one frozen database once for all its draws). `seal` and `link_units`: the anchor
     verification's hooks (`anchor_verify.py`; None, the default, is today's gate); `link_units` None with the
-    switch's `imports` part on is read from the database here."""
+    switch's `imports` part on is read from the database here. `admit` and `rider_min_shared`: the retrieval
+    admission's projection re-gate (`retrieval_admission.py`; None, the default, is today's gate): `admit` the
+    admitted cameras, with `room` the camera allow-list; `rider_min_shared` forces the rider rule whatever the pose
+    quarantine's `riders` part says."""
     params = params or CG.GateParams()
     started = time.perf_counter()
     try:
         return _gate(store, world_id, session_id, solution, database_path=database_path, keyframes=keyframes,
                      should_stop=should_stop, params=params, depth_runner=depth_runner or run_gate_depth,
                      metric_fn=metric_fn or measure_metric_scale, started=started, withhold=withhold,
-                     room=room, link_reader=link_reader or read_links, seal=seal, link_units=link_units)
+                     room=room, link_reader=link_reader or read_links, seal=seal, link_units=link_units,
+                     admit=admit, rider_min_shared=rider_min_shared)
     except Exception as exc:  # noqa: BLE001 -- a broken gate publishes today's solve and says so
         logger.exception("[Tower][WorldBuilder] the evidence gate failed on %s/%s; the final solve is "
                          "published as the solver returned it, with no components record",
@@ -576,7 +580,7 @@ def read_links(database_path, camera, min_inliers: int) -> tuple[dict, dict]:
 
 def _gate(store, world_id, session_id, solution, *, database_path, keyframes, should_stop, params,
           depth_runner, metric_fn, started, withhold=None, room=None, link_reader=read_links, seal=None,
-          link_units=None) -> GateResult:
+          link_units=None, admit=None, rider_min_shared=None) -> GateResult:
     transients = solution.transients or {}
     masks_state = transients.get("state")
     masks_applied = masks_state == "applied"
@@ -644,6 +648,10 @@ def _gate(store, world_id, session_id, solution, *, database_path, keyframes, sh
         # The anchor verification's seal re-gate (`anchor_verify.py`): the consensus's withhold unchanged,
         # the sealed cameras, and the room's cameras as the allow-list.
         hooks.update(withhold=withhold, room=room, seal=seal)
+    if admit is not None:
+        # The retrieval admission's projection re-gate (`retrieval_admission.py`): the consensus's withhold
+        # unchanged, the room's cameras plus the admitted ones as the camera allow-list, and the admitted cameras.
+        hooks.update(withhold=withhold, room=room, admit=admit)
     import_units = None
     if link_units is None and _anchor_verify_parts():
         from tower.world_builder import anchor_verify as AV  # noqa: PLC0415
@@ -656,6 +664,9 @@ def _gate(store, world_id, session_id, solution, *, database_path, keyframes, sh
     if quarantine:
         # The pose quarantine's rider rule (RUN P5-PQ RULE.md (b)): a rider never defaults to the room label.
         hooks["rider_min_shared"] = RIDER_MIN_SHARED
+    if rider_min_shared is not None:
+        # The retrieval admission's projection re-gate forces the rider rule (BRIEF-IMPL section 3.4).
+        hooks["rider_min_shared"] = int(rider_min_shared)
     result = CG.apply_gate(model, links, metric_log, link_rotations=rotations, masks_applied=masks_applied,
                            params=params, **hooks)
     gate_seconds = round(time.perf_counter() - t, 3)
@@ -1423,6 +1434,11 @@ def gate_and_publish(store, world_id: str, session_id: str, workspace, solution,
         if not draw_0_stopped(result):
             result = anchor_verified(store, world_id, session_id, result, database_path=database_path,
                                      keyframes=keyframes, workspace_root=workspace.root)
+            # The retrieval admission (`TOWER_WORLD_RETRIEVAL_ADMISSION`; off: `result`, untouched).
+            from tower.world_builder import retrieval_admission as RA  # noqa: PLC0415
+
+            result = RA.admitted(store, world_id, session_id, result, database_path=database_path,
+                                 keyframes=keyframes, workspace_root=workspace.root)
         if gate_results is not None:
             gate_results.append(result)
         if keep_on_stop and draw_0_stopped(result):
@@ -1620,6 +1636,11 @@ def regate_published(store, world_id: str, session_id: str, *, should_stop=None,
     if not draw_0_stopped(result):
         result = anchor_verified(store, world_id, session_id, result, database_path=database, keyframes=keyframes,
                                  workspace_root=workspace.root)
+        # The retrieval admission (`TOWER_WORLD_RETRIEVAL_ADMISSION`; off: `result`, untouched).
+        from tower.world_builder import retrieval_admission as RA  # noqa: PLC0415
+
+        result = RA.admitted(store, world_id, session_id, result, database_path=database, keyframes=keyframes,
+                             workspace_root=workspace.root)
     if draw_0_stopped(result):
         logger.info("[Tower][WorldBuilder] %s/%s: a stop reached the re-gate's draw-0 depth stage; nothing "
                     "is written, and the re-gate is still owed", world_id, session_id)

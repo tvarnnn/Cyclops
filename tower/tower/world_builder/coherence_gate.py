@@ -406,7 +406,7 @@ def _rot_deg(R) -> float:
 
 def apply_gate(model: SolveModel, links: dict, metric_log: dict, *, link_rotations: dict,
                masks_applied: bool, params: GateParams | None = None, withhold=None, room=None, seal=None,
-               link_units=None, rider_min_shared: int | None = None) -> dict:
+               link_units=None, rider_min_shared: int | None = None, admit=None) -> dict:
     """The rule (module docstring) on one solve.
 
     links: {(name_a, name_b): inliers} (`read_verified_links`); link_rotations: {(name_a, name_b): R_b_from_a}
@@ -467,7 +467,8 @@ def apply_gate(model: SolveModel, links: dict, metric_log: dict, *, link_rotatio
     seal_of = {str(k): str(v) for k, v in (seal or {}).items()}
     units_of = dict(link_units) if link_units else None
     room_cams = None
-    if seal_of and room_names is not None:
+    admit_cams = frozenset(admit) if admit is not None else None
+    if (seal_of or admit_cams is not None) and room_names is not None:
         # With a seal the room is named by its CAMERAS, and it is enforced CAMERA BY CAMERA: the groups re-form
         # without the sealed cameras (a block or scale segment can then mix room and non-room cameras -- RUN P4-IV
         # phase 2), so every group is split into its room part and its non-room part, and a group joins only a
@@ -623,7 +624,10 @@ def apply_gate(model: SolveModel, links: dict, metric_log: dict, *, link_rotatio
                         d["barred"] = (("withheld reference" if held_ref else "sealed reference") if sealed
                                        else "a group of the room" if other_side and not ref_in_room
                                        else "not a group of the room")
-                    if attach and not barred and redundant and coupled and d["scale_ok"] and len(cross) > best_n:
+                    adm = bool(admit_cams) and ref_in_room and all(names[int(v)] in admit_cams for v in g)
+                    if adm:
+                        d["admitted"] = True
+                    if attach and not barred and (redundant or adm) and (coupled or adm) and d["scale_ok"] and len(cross) > best_n:
                         best, best_n = j, len(cross)
                 if best is not None:
                     g = pending.pop(best)

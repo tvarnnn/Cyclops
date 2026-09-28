@@ -110,11 +110,13 @@ def test_off_is_byte_identical_to_uninstrumented_and_on_changes_only_timing(tmp_
 def test_records_are_bounded_independent_of_input_count(tmp_path, monkeypatch):
     monkeypatch.setenv(ENV, "on")
     store = Store(tmp_path)
-    expected = {"solve": 1, "solve_draw": 7, "gate": 16, "p4": 2,
+    # `admission` (the retrieval admission, `retrieval_admission.py`; C23-IMPL): 2, as `p4` -- the early publish of
+    # draw 0 and the full consensus. It raised the bound from 90 to 96 records.
+    expected = {"solve": 1, "solve_draw": 7, "gate": 16, "p4": 2, "admission": 2,
                 "regate": 1, "surface": 1, "appearance": 1, "areas": 1}
     assert timing.FINISH_LIMIT == 3
     assert timing.LIMITS == expected
-    assert sum(expected.values()) * timing.FINISH_LIMIT == 90  # the doc's and handoff's bound
+    assert sum(expected.values()) * timing.FINISH_LIMIT == 96  # the doc's and handoff's bound (was 90)
     for stage, limit in expected.items():
         store.session_dir("w", stage).mkdir(parents=True)
         for _ in range(20):

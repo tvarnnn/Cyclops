@@ -1037,6 +1037,36 @@ def world_anchor_verify_setting() -> frozenset:
     return frozenset()
 
 
+# THE RETRIEVAL ADMISSION (`world_builder/retrieval_admission.py`; RUN experiments/C23-CERT,
+# BRIEF-IMPL.md; manager 144 section 3 and 145 section 1): after the gate, the consensus and
+# the anchor verification, a group the gate left outside the room joins it only on a
+# certificate of DIRECT, image-verified evidence -- the database's links plus pairs found by
+# retrieval and verified -- and its own scale check. Retrieval links never enter the gate's
+# block formation. Unset, blank and `off` are OFF, and OFF is today's publish byte for byte;
+# `on` turns it on. Read by the solve and by the re-gate in place. OFF for walk 6.
+WORLD_RETRIEVAL_ADMISSION_ENV = "TOWER_WORLD_RETRIEVAL_ADMISSION"
+
+
+def world_retrieval_admission_setting() -> bool:
+    """`TOWER_WORLD_RETRIEVAL_ADMISSION`: the direct-certificate retrieval admission. Off.
+
+    Off when unset, blank or `off`; on only for `on` (either case, spaces trimmed). Anything
+    else -- `1`, `true`, `yes`, a typo -- is off, and logged: a typo never admits a piece to a
+    room, and it is still visible (the pattern of `world_anchor_verify_setting`)."""
+    value = os.environ.get(WORLD_RETRIEVAL_ADMISSION_ENV)
+    if value is None or not value.strip():
+        return False
+    word = value.strip().lower()
+    if word == "on":
+        return True
+    if word != "off":
+        logger.warning(
+            "[Tower][Config] %s=%r is not on or off; treating it as off",
+            WORLD_RETRIEVAL_ADMISSION_ENV, value,
+        )
+    return False
+
+
 # The AREA builds (`world_builder/area_build.py`, WORLD-BUILDER-COMPONENTS.md
 # §5.4): a surface and an appearance for each component the gate showed as an
 # area, built by `scripts/world_finish_pending.py` at the Tower's next idle

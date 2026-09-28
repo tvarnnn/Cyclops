@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 FILENAME = "stage_timing.json"
 SCHEMA = 2
 FINISH_LIMIT = 3
-LIMITS = {"solve": 1, "solve_draw": 7, "gate": 16, "p4": 2,
+LIMITS = {"solve": 1, "solve_draw": 7, "gate": 16, "p4": 2, "admission": 2,
           "regate": 1, "surface": 1, "appearance": 1, "areas": 1}
 CACHES = ("mask", "depth", "pair")
 _active = contextvars.ContextVar("world_stage_timing_active", default=None)
