@@ -29,6 +29,9 @@ struct ViewfinderCard: View {
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
+    /// The placeholder's glyph, scaled with the text beside it.
+    @ScaledMetric(relativeTo: .title) private var placeholderSymbolSize: CGFloat = 40
+
     var body: some View {
         ZStack {
             RoundedRectangle(cornerRadius: 18)
@@ -55,8 +58,10 @@ struct ViewfinderCard: View {
             }
         }
         // Compact until there is something to look at, so an idle dashboard
-        // isn't dominated by an empty rectangle.
-        .frame(height: frame == nil ? 150 : 260)
+        // isn't dominated by an empty rectangle. The placeholder's height is
+        // a minimum, so its sentence grows the card at the accessibility
+        // sizes instead of being clipped by it.
+        .frame(minHeight: frame == nil ? 150 : 260, maxHeight: frame == nil ? nil : 260)
         .clipShape(.rect(cornerRadius: 18))
         .overlay(alignment: .topLeading) {
             if isStreaming {
@@ -82,14 +87,17 @@ struct ViewfinderCard: View {
     private var placeholder: some View {
         VStack(spacing: 10) {
             Image(systemName: "eyeglasses")
-                .font(.system(size: 40))
+                .font(.system(size: placeholderSymbolSize))
                 .foregroundStyle(.tertiary)
+                .accessibilityHidden(true)
             Text(placeholderReason)
                 .font(.footnote)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(.readableSecondary)
                 .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
                 .padding(.horizontal, 32)
         }
+        .padding(.vertical, 24)
         .accessibilityElement(children: .combine)
     }
 

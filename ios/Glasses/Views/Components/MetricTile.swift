@@ -18,7 +18,7 @@ struct MetricTile: View {
         VStack(alignment: .leading, spacing: 4) {
             Text(caption)
                 .font(.caption)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(.readableSecondary)
 
             Text(value)
                 .font(.title2.weight(.semibold))
@@ -30,7 +30,7 @@ struct MetricTile: View {
             if let footnote {
                 Text(footnote)
                     .font(.caption2)
-                    .foregroundStyle(.tertiary)
+                    .foregroundStyle(.readableSecondary)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)

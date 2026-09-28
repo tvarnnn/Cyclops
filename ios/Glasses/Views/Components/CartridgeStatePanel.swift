@@ -59,7 +59,7 @@ struct CartridgeStatePanel: View {
                         ProgressView()
                         Text(explanation)
                             .font(.subheadline)
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(.readableSecondary)
                             .fixedSize(horizontal: false, vertical: true)
                     }
                 } else {
@@ -67,14 +67,14 @@ struct CartridgeStatePanel: View {
                         .font(.headline)
                     Text(explanation)
                         .font(.subheadline)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(.readableSecondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
 
                 if let futureDescription {
                     Text(futureDescription)
                         .font(.footnote)
-                        .foregroundStyle(.tertiary)
+                        .foregroundStyle(.readableSecondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }

@@ -113,6 +113,8 @@ struct WorldCanvasView: View {
     /// expanded is a screen that has quietly gone back to being a debugger.
     @State private var isShowingDiagnostics = false
 
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+
     /// The stored world the Tower offered in place of a live one, when
     /// following live and nothing is live. Drawn in `.idle` as one line with
     /// an Open action and nowhere else — its rows and gallery arrive only
@@ -183,7 +185,7 @@ struct WorldCanvasView: View {
                 ProgressView()
                 Text(waitingHeadline)
                     .font(.subheadline)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.readableSecondary)
             }
             if let detail = waitingDetail {
                 detailText(detail)
@@ -198,7 +200,7 @@ struct WorldCanvasView: View {
             if let line = presentation.recovery?.displayLine {
                 Label(line, systemImage: "location.viewfinder")
                     .font(.subheadline)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.readableSecondary)
                     .accessibilityIdentifier("world-recovery")
             }
             reconstructionCard
@@ -242,7 +244,7 @@ struct WorldCanvasView: View {
                     ProgressView()
                     Text("The Tower is finishing this world.")
                         .font(.subheadline)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(.readableSecondary)
                 }
             }
             reconstructionCard
@@ -322,19 +324,26 @@ struct WorldCanvasView: View {
     /// One line, one action. `Last saved world: <title> · <state>` names what
     /// the Tower offered without drawing any of it; Open pins it, and the
     /// canvas then says "Saved world" over everything it shows.
+    ///
+    /// Wraps rather than being cut to two lines, and at the accessibility
+    /// sizes puts Open under the line rather than beside it.
     private func recentWorldLine(_ recent: WorldRecentReference) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: 8) {
+        let layout = dynamicTypeSize.isAccessibilitySize
+            ? AnyLayout(VStackLayout(alignment: .leading, spacing: 8))
+            : AnyLayout(HStackLayout(alignment: .firstTextBaseline, spacing: 8))
+        return layout {
             Text("Last saved world: \(recent.title) · \(recent.stateLabel)")
                 .font(.footnote)
-                .foregroundStyle(.secondary)
-                .lineLimit(2)
-                .truncationMode(.middle)
-            Spacer(minLength: 8)
+                .foregroundStyle(.readableSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
             if let openRecent {
                 Button("Open") { openRecent(recent) }
                     .font(.footnote)
-                    .buttonStyle(.bordered)
+                    .readableBorderedButton()
                     .accessibilityLabel("Open the last saved world")
+                    // Voice Control matches the visible word.
+                    .accessibilityInputLabels(["Open", "Open the last saved world"])
             }
         }
     }
@@ -416,7 +425,7 @@ struct WorldCanvasView: View {
                 if let note = reconstructionNote {
                     Text(note)
                         .font(.footnote)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(.readableSecondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
             } else if let reason = reconstructionUnavailableReason {
@@ -425,7 +434,7 @@ struct WorldCanvasView: View {
                 // which is what the header's "Picture" button was.
                 Text(reason)
                     .font(.footnote)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.readableSecondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
@@ -482,7 +491,7 @@ struct WorldCanvasView: View {
                let reason = WorldPhotographicCopy.failedReason(detail) {
                 Text(reason)
                     .font(.footnote)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.readableSecondary)
                     .lineLimit(4)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -494,7 +503,7 @@ struct WorldCanvasView: View {
         if let sentence = presentation.finalSolve.sentence {
             Text(sentence)
                 .font(.footnote)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(.readableSecondary)
                 .fixedSize(horizontal: false, vertical: true)
         }
     }
@@ -519,7 +528,7 @@ struct WorldCanvasView: View {
             VStack(alignment: .leading, spacing: 12) {
                 Text("The solver's own view: geometry per tracking segment, in the frames the solver placed them in. Not the world above.")
                     .font(.caption2)
-                    .foregroundStyle(.tertiary)
+                    .foregroundStyle(.readableSecondary)
                     .fixedSize(horizontal: false, vertical: true)
 
                 // The Tower's own page, opened straight into its diagnostics
@@ -540,7 +549,7 @@ struct WorldCanvasView: View {
                         Label("Open the solver's 3D view", systemImage: "scope")
                             .font(.footnote)
                     }
-                    .buttonStyle(.bordered)
+                    .readableBorderedButton()
                     .accessibilityLabel("Open the solver's 3D view")
                 }
 
@@ -558,7 +567,7 @@ struct WorldCanvasView: View {
                 if let identifiers {
                     Text(identifiers)
                         .font(.caption2.monospaced())
-                        .foregroundStyle(.tertiary)
+                        .foregroundStyle(.readableSecondary)
                         .textSelection(.enabled)
                         .fixedSize(horizontal: false, vertical: true)
                 }
@@ -583,7 +592,7 @@ struct WorldCanvasView: View {
         // product concept and creates no dead UI to explain away later.
         Text(Self.futureDescription)
             .font(.footnote)
-            .foregroundStyle(.tertiary)
+            .foregroundStyle(.readableSecondary)
             .fixedSize(horizontal: false, vertical: true)
     }
 
@@ -622,7 +631,7 @@ struct WorldCanvasView: View {
         if let name = snapshot.name, !name.isEmpty {
             Text(name)
                 .font(.subheadline)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(.readableSecondary)
                 .lineLimit(2)
         }
     }
@@ -634,7 +643,7 @@ struct WorldCanvasView: View {
     private func detailText(_ text: String) -> some View {
         Text(text)
             .font(.subheadline)
-            .foregroundStyle(.secondary)
+            .foregroundStyle(.readableSecondary)
             .fixedSize(horizontal: false, vertical: true)
     }
 }
@@ -735,7 +744,7 @@ struct WorldSummaryView: View {
             if !isLive {
                 Text("Capture has ended.")
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.readableSecondary)
             }
         }
     }
@@ -828,7 +837,7 @@ struct WorldSummaryView: View {
     private func caption(_ text: String) -> some View {
         Text(text)
             .font(.caption)
-            .foregroundStyle(.tertiary)
+            .foregroundStyle(.readableSecondary)
             .fixedSize(horizontal: false, vertical: true)
     }
 
@@ -836,7 +845,7 @@ struct WorldSummaryView: View {
         HStack {
             Text(label)
                 .font(.subheadline)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(.readableSecondary)
             Spacer(minLength: 12)
             Text(value)
                 .font(.subheadline.weight(.medium))

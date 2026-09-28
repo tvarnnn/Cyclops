@@ -105,15 +105,24 @@ struct ContentView: View {
         Cartridge.workspaceCartridge(forID: selectedCartridgeID)
     }
 
+    /// Where the status bar goes: pinned under the navigation bar, or -- at
+    /// the accessibility sizes -- at the top of the scrolling content.
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+
+    /// Pinned, so the status stays in view while a long workspace is read.
+    /// It used to scroll away under the floating toolbar, with its values
+    /// behind the glass buttons (UX audit, shell-status-bar). At the
+    /// accessibility sizes its three rows take a third of the screen, which
+    /// is too much to hold there for good, so it scrolls with the content.
+    private var isStatusPinned: Bool { !dynamicTypeSize.isAccessibilitySize }
+
     var body: some View {
         NavigationStack {
             ScrollView {
                 VStack(spacing: 16) {
-                    ShellStatusBar(
-                        glasses: project.glassesConnection,
-                        tower: project.towerClient,
-                        onTap: { destination = .connections }
-                    )
+                    if !isStatusPinned {
+                        statusBar
+                    }
 
                     workspace
                 }
@@ -122,6 +131,16 @@ struct ContentView: View {
             }
             .background(Color(.systemGroupedBackground))
             .scrollBounceBehavior(.basedOnSize)
+            // A bar, not an inset: the scroll edge effect then extends under
+            // it, so content passing beneath is softened like it is under
+            // the navigation bar, rather than showing through between pills.
+            .safeAreaBar(edge: .top) {
+                if isStatusPinned {
+                    statusBar
+                        .padding(.horizontal, 16)
+                        .padding(.bottom, 8)
+                }
+            }
             .navigationTitle(selectedCartridge?.name ?? "Glasses")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { toolbar }
@@ -165,6 +184,20 @@ struct ContentView: View {
                 if busy { onboarding.captureChanged(isBusy: true) }
             }
         }
+    }
+
+    /// Opaque, for the two sheets that open at half height. There a sheet
+    /// is Liquid Glass, and the screen behind showed through its rows enough
+    /// to take their grey text under 4.5:1 (accessibility audit, U0.5); at
+    /// full height it is opaque anyway.
+    static let sheetBackground = Color(.systemGroupedBackground)
+
+    private var statusBar: some View {
+        ShellStatusBar(
+            glasses: project.glassesConnection,
+            tower: project.towerClient,
+            onTap: { destination = .connections }
+        )
     }
 
     // MARK: Workspace
@@ -358,12 +391,14 @@ struct ContentView: View {
         case .cartridges:
             CartridgeDrawerView(selectedCartridgeID: $selectedCartridgeID)
                 .presentationDetents([.medium, .large])
+                .presentationBackground(Self.sheetBackground)
         case .connections:
             ConnectionSheet(
                 glasses: project.glassesConnection,
                 tower: project.towerClient
             )
             .presentationDetents([.medium, .large])
+            .presentationBackground(Self.sheetBackground)
         case .settings:
             SettingsSheet(howItWorks: HowGlassesWorksEntry(
                 isAvailable: OnboardingGate.canReopen(isCaptureBusy: isCaptureBusy),
@@ -414,6 +449,7 @@ extension ContentView {
                     tower: project.towerClient
                 )
                 .presentationDetents([.medium, .large])
+                .presentationBackground(Self.sheetBackground)
             case .settings:
                 SettingsSheet()
             }

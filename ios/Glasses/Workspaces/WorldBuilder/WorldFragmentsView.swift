@@ -503,13 +503,13 @@ struct WorldFragmentsView: View {
             if let note = model.buildingNote {
                 Text(note)
                     .font(.footnote)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.readableSecondary)
             }
 
             if let summary = model.placementSummary {
                 Text(summary)
                     .font(.footnote)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.readableSecondary)
             }
 
             ForEach(clusters, id: \.id) { cluster in
@@ -532,7 +532,7 @@ struct WorldFragmentsView: View {
                 if let detail = account.detail {
                     Text(detail)
                         .font(.footnote)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(.readableSecondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
             } else if !loose.isEmpty {
@@ -549,7 +549,7 @@ struct WorldFragmentsView: View {
                 // would invent a location.
                 Text("\(model.unresolvedCount) areas were seen but could not be reconstructed.")
                     .font(.footnote)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.readableSecondary)
             }
         }
     }
@@ -568,18 +568,18 @@ struct WorldFragmentsView: View {
                     + "\(cluster.referenceSegment) · \(cluster.pointCount) points"
             )
             .font(.caption2)
-            .foregroundStyle(.secondary)
+            .foregroundStyle(.readableSecondary)
 
             if missing > 0 {
                 // The canvas stays empty until every member is in hand; see
                 // `WorldClusterBuilder.referenceFrameBounds`.
                 Text("Waiting for \(missing) of \(cluster.members.count) segments before drawing them together.")
                     .font(.caption2)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.readableSecondary)
             } else {
                 Text("Drag to pan, pinch to zoom, twist to turn. Double-tap to reset.")
                     .font(.caption2)
-                    .foregroundStyle(.tertiary)
+                    .foregroundStyle(.readableSecondary)
             }
         }
     }
@@ -597,25 +597,25 @@ struct WorldFragmentsView: View {
 
             Text("\(segment.pointCount) points")
                 .font(.caption2)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(.readableSecondary)
             if let caption = WorldFragmentsModel.placementCaption(for: segment) {
                 // The Tower's registration word and its refusal reason,
                 // verbatim. Usually "the wearer stood still", which is advice
                 // to the wearer rather than a fault.
                 Text(caption)
                     .font(.caption2)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.readableSecondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
             if let coverage = WorldFragmentsModel.coverageCaption(for: segment) {
                 Text(coverage)
                     .font(.caption2)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.readableSecondary)
             }
             if let chunk = chunks[segment.cacheKey], chunk.isSampled {
                 Text("showing \(chunk.pointsSent) of \(chunk.pointsTotal)")
                     .font(.caption2)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.readableSecondary)
             }
         }
     }

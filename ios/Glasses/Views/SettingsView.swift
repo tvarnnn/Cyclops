@@ -24,11 +24,40 @@ enum TowerSettingsText {
     static let unencryptedBody = "The phone talks to the Tower over plain http:// and ws://, so frames and results cross the network unencrypted. Use an address on your own network or on Tailscale."
     static let restartTitle = "Restart Glasses to use it"
 
+    /// The override note's title. The variable's name is in the note's
+    /// sentence; in the title as well, one unbroken 23-letter word in a bold
+    /// face broke mid-word at the accessibility sizes.
+    static let overrideTitle = "Developer override"
+
+    /// `text` with a line-break opportunity after every `_`, `/`, `:` and
+    /// `.` inside a word, for display. `GLASSES_TOWER_AUTHORITY`, an address
+    /// like `127.0.0.1:63219` and a contract like
+    /// `cartridge_results.envelope/2026-08-23` are each one word to the line
+    /// breaker, wider than a phone at the accessibility sizes, so they were
+    /// broken wherever the line ran out ("cartridge_re-sults.enve-lope",
+    /// "127.0.0.1:63 / 219"); now they break at their own punctuation. The
+    /// zero-width space is not drawn; rows that show it give VoiceOver the
+    /// plain text as their label.
+    static func breakable(_ text: String) -> String {
+        var out = ""
+        var previous: Character?
+        for character in text {
+            if let previous, "_/:.".contains(previous), !character.isWhitespace {
+                out.append("\u{200B}")
+            }
+            out.append(character)
+            previous = character
+        }
+        return out
+    }
+
     static func source(_ source: TowerConfiguration.Source) -> String {
         switch source {
         case .builtIn: return "Built-in address"
         case .saved: return "Saved in Settings"
-        case .developerOverride: return "Developer override (GLASSES_TOWER_AUTHORITY)"
+        // The variable is named in the override note below this row. Here
+        // too, the long unbroken name was what the accessibility sizes cut.
+        case .developerOverride: return "Developer override"
         }
     }
 
@@ -319,8 +348,10 @@ struct SettingsView: View {
                 .accessibilityIdentifier("tower-unencrypted-note")
             } header: {
                 Text(TowerSettingsText.sectionHeader)
+                    .foregroundStyle(.readableSecondary)
             } footer: {
                 Text(TowerSettingsText.footer(policy: model.policy))
+                    .foregroundStyle(.readableSecondary)
             }
 
             if model.inUse.source == .developerOverride {
@@ -328,7 +359,7 @@ struct SettingsView: View {
                     NoteRow(
                         symbol: "hammer.fill",
                         tint: .secondary,
-                        title: TowerSettingsText.source(.developerOverride),
+                        title: TowerSettingsText.overrideTitle,
                         text: TowerSettingsText.overrideBody(
                             overrideAuthority: model.inUse.authority,
                             withoutOverride: model.withoutOverride.authority
@@ -349,10 +380,14 @@ struct SettingsView: View {
                 } footer: {
                     if !howItWorks.isAvailable {
                         Text(OnboardingText.settingsRowUnavailable)
+                            .foregroundStyle(.readableSecondary)
                     }
                 }
             }
         }
+        // Test connection, Save and How Glasses works are tinted text on a
+        // card: the system blue was under 4.5:1 on a sheet's dark card.
+        .tint(Color.readableTint)
         .navigationTitle(TowerSettingsText.title)
         .navigationBarTitleDisplayMode(.inline)
         .onDisappear { model.cancelProbe() }
@@ -362,12 +397,12 @@ struct SettingsView: View {
         VStack(alignment: .leading, spacing: 2) {
             Text(TowerSettingsText.inUseLabel)
                 .font(.subheadline)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(.readableSecondary)
             Text(model.inUse.authority)
                 .font(.body.monospaced())
-            Text(TowerSettingsText.source(model.inUse.source))
+            Text(TowerSettingsText.breakable(TowerSettingsText.source(model.inUse.source)))
                 .font(.footnote)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(.readableSecondary)
         }
         .fixedSize(horizontal: false, vertical: true)
         .accessibilityElement(children: .combine)
@@ -378,7 +413,7 @@ struct SettingsView: View {
         VStack(alignment: .leading, spacing: 6) {
             Text(TowerSettingsText.fieldLabel)
                 .font(.subheadline)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(.readableSecondary)
                 .accessibilityHidden(true)
             // Vertical, so a long address wraps at the accessibility sizes
             // instead of scrolling out of sight. Return still means "done":
@@ -454,13 +489,15 @@ private struct TowerProbeResultRow: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text(TowerSettingsText.outcomeTitle(outcome))
                     .font(.body.weight(.semibold))
-                Text(TowerSettingsText.outcomeDetail(outcome, authority: authority))
+                Text(TowerSettingsText.breakable(TowerSettingsText.outcomeDetail(outcome, authority: authority)))
                     .font(.footnote)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.readableSecondary)
             }
             .fixedSize(horizontal: false, vertical: true)
         }
         .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(TowerSettingsText.outcomeTitle(outcome)), "
+                            + TowerSettingsText.outcomeDetail(outcome, authority: authority))
         .accessibilityIdentifier("tower-test-result")
     }
 
@@ -482,26 +519,35 @@ private struct TowerProbeResultRow: View {
 }
 
 /// A titled note with an icon: the restart, encryption and override notes.
+///
+/// At the accessibility sizes the icon sits above the words rather than
+/// beside them, so the words have the row's whole width.
 private struct NoteRow: View {
     let symbol: String
     let tint: Color
     let title: String
     let text: String
 
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+
     var body: some View {
-        HStack(alignment: .firstTextBaseline, spacing: 10) {
+        let layout = dynamicTypeSize.isAccessibilitySize
+            ? AnyLayout(VStackLayout(alignment: .leading, spacing: 6))
+            : AnyLayout(HStackLayout(alignment: .firstTextBaseline, spacing: 10))
+        layout {
             Image(systemName: symbol)
                 .foregroundStyle(tint)
                 .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 2) {
                 Text(title)
                     .font(.subheadline.weight(.semibold))
-                Text(text)
+                Text(TowerSettingsText.breakable(text))
                     .font(.footnote)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.readableSecondary)
             }
             .fixedSize(horizontal: false, vertical: true)
         }
         .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(title), \(text)")
     }
 }

@@ -28,25 +28,39 @@ struct ShellStatusBar: View {
     @ObservedObject var tower: TowerClient
     let onTap: () -> Void
 
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+
+    /// Three across, or -- at the accessibility sizes, where a third of the
+    /// screen is too narrow for "Connected" -- one above the other, each
+    /// value with the full width.
+    private var isStacked: Bool { dynamicTypeSize.isAccessibilitySize }
+
     var body: some View {
+        let layout = isStacked
+            ? AnyLayout(VStackLayout(spacing: 8))
+            : AnyLayout(HStackLayout(spacing: 10))
+        let pill: StatusPill.Layout = isStacked ? .row : .column
         Button(action: onTap) {
-            HStack(spacing: 10) {
+            layout {
                 StatusPill(
                     title: "Glasses",
                     value: StateDisplay.registration(glasses.registrationState),
-                    level: glassesLevel
+                    level: glassesLevel,
+                    layout: pill
                 )
                 #if DEBUG
                 StatusPill(
                     title: "Camera",
                     value: cameraValue,
-                    level: cameraLevel
+                    level: cameraLevel,
+                    layout: pill
                 )
                 #endif
                 StatusPill(
                     title: "Tower",
                     value: StateDisplay.tower(tower.status),
-                    level: towerLevel
+                    level: towerLevel,
+                    layout: pill
                 )
             }
         }

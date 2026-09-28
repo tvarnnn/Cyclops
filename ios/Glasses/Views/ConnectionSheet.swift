@@ -26,6 +26,7 @@ struct ConnectionSheet: View {
     @ObservedObject var tower: TowerClient
 
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @State private var isConfirmingUnregister = false
 
     var body: some View {
@@ -78,27 +79,45 @@ struct ConnectionSheet: View {
                     NavigationLink {
                         SettingsView()
                     } label: {
-                        LabeledContent("Tower address") {
+                        // Not `LabeledContent`, whose one-line label is cut
+                        // off at the large sizes: the address goes under the
+                        // label at the accessibility sizes, and both wrap.
+                        let layout = dynamicTypeSize.isAccessibilitySize
+                            ? AnyLayout(VStackLayout(alignment: .leading, spacing: 2))
+                            : AnyLayout(HStackLayout(alignment: .firstTextBaseline))
+                        layout {
+                            Text("Tower address")
+                                .frame(maxWidth: .infinity, alignment: .leading)
                             Text(TowerConfiguration.authority)
                                 .font(.footnote.monospaced())
+                                .foregroundStyle(.readableSecondary)
                         }
+                        .fixedSize(horizontal: false, vertical: true)
+                        .accessibilityElement(children: .combine)
                     }
                     .accessibilityHint("Opens Settings, to change or test the Tower's address")
                     .accessibilityIdentifier("connections-tower-address")
-                } header: {
-                    Text("Connections")
                 } footer: {
+                    // No "Connections" header: the navigation bar above says
+                    // it, and the two read as one title twice (UX audit,
+                    // connection-sheet).
                     Text(towerFooter)
+                        .foregroundStyle(.readableSecondary)
                 }
 
                 Section {
                     Button("Unregister from Meta AI", role: .destructive) {
                         isConfirmingUnregister = true
                     }
+                    .foregroundStyle(Color(uiColor: .readableDestructive))
                 } footer: {
                     Text("Unregistering means completing the full pairing flow again before the glasses can be used.")
+                        .foregroundStyle(.readableSecondary)
                 }
             }
+            // Register, Check and Connect are tinted text on a card; see
+            // `UIColor.readableTint`.
+            .tint(Color.readableTint)
             .navigationTitle("Connections")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {

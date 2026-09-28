@@ -72,6 +72,7 @@ struct CartridgeDrawerView: View {
                     }
                 } header: {
                     Text("Modules")
+                        .foregroundStyle(.readableSecondary)
                 } footer: {
                     // The middle clause of this footer used to read: "It does
                     // not start anything on the Tower — the Tower chooses what
@@ -134,6 +135,7 @@ struct CartridgeDrawerView: View {
                     // this claim must never be wrong in — worse than the
                     // stale-but-conservative sentence it replaced.
                     Text("Opening a cartridge changes this app's workspace. Two of them also set the Tower working as they open: World Builder activates its session, and Scene Understanding starts watching the scene — so if a camera is already streaming, opening those is enough. They differ in what is left behind: Scene Understanding keeps nothing, while World Builder's session is what lets the Tower build and save a world from a capture that is already running. Recording is otherwise a deliberate act, and those controls live inside the workspace. Badges describe this app: \u{201C}Ready to test\u{201D} means there is something here to try, not that the Tower you are connected to is serving it right now. Each workspace says what that Tower can actually do.")
+                        .foregroundStyle(.readableSecondary)
                         .padding(.top, 4)
                 }
             }
@@ -158,10 +160,12 @@ private struct HomeRow: View {
                     .font(.body.weight(.medium))
                 Text("Infrastructure status and a plain capture session.")
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.readableSecondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
-            Spacer(minLength: 8)
+            // The words take the row's width and grow down, rather than
+            // being offered only their one-line width beside a spacer.
+            .frame(maxWidth: .infinity, alignment: .leading)
             if isSelected {
                 Image(systemName: "checkmark")
                     .font(.body.weight(.semibold))
@@ -188,20 +192,26 @@ private struct CartridgeRow: View {
     private var cartridge: Cartridge { row.cartridge }
     private var isOpenable: Bool { row.isOpenable }
 
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+
     var body: some View {
-        HStack(alignment: .top, spacing: 12) {
+        // The badge under the words at the accessibility sizes, where a
+        // trailing column squeezed both.
+        let layout = dynamicTypeSize.isAccessibilitySize
+            ? AnyLayout(VStackLayout(alignment: .leading, spacing: 8))
+            : AnyLayout(HStackLayout(alignment: .top, spacing: 12))
+        layout {
             VStack(alignment: .leading, spacing: 3) {
                 Text(cartridge.name)
                     .font(.body.weight(.medium))
                 Text(cartridge.summary)
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.readableSecondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
 
-            Spacer(minLength: 8)
-
-            VStack(alignment: .trailing, spacing: 6) {
+            VStack(alignment: dynamicTypeSize.isAccessibilitySize ? .leading : .trailing, spacing: 6) {
                 // Tinted for exactly one status, so the drawer answers "which
                 // of these can I try?" in a glance rather than after reading
                 // eight identical capsules. Colour is not the only carrier —
@@ -217,7 +227,10 @@ private struct CartridgeRow: View {
                             : AnyShapeStyle(Color(.tertiarySystemFill)),
                         in: .capsule
                     )
-                    .foregroundStyle(cartridge.status.isProminent ? AnyShapeStyle(.tint) : AnyShapeStyle(.secondary))
+                    // The label colour on the tinted capsule: tint on a
+                    // 0.18 tint was about 3:1, under the 4.5:1 text needs.
+                    // The capsule still carries the colour.
+                    .foregroundStyle(cartridge.status.isProminent ? AnyShapeStyle(.primary) : AnyShapeStyle(.readableSecondary))
 
                 if isSelected {
                     Image(systemName: "checkmark")

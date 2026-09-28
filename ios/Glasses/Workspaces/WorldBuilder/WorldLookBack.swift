@@ -387,17 +387,31 @@ final class WorldLookBackPrompter {
 
 /// The banner itself: at the top of the World Builder screen, large and
 /// coloured, because the wearer glances at it mid-walk.
+///
+/// Black on the colour, not white: white on system orange is about 2.3:1 and
+/// on system green about 2.2:1, under even the 3:1 large text needs, and this
+/// is read at a glance while walking (UX audit, wb-lookback-banner). Black is
+/// about 9:1 on both, in light and dark. Deliberately no VoiceOver
+/// announcement: contract v10 makes the prompt shown, never spoken, because
+/// audio stops the glasses' camera.
 struct WorldLookBackBannerView: View {
     let banner: WorldLookBackBanner
+
+    /// The banner's two fills and its text colour, named so a test can
+    /// measure their contrast.
+    static let lookBackFill = UIColor.systemOrange
+    static let backOnTrackFill = UIColor.systemGreen
+    static let textColor = UIColor.black
 
     var body: some View {
         let isLookBack: Bool = { if case .lookBack = banner { return true } else { return false } }()
         Label(banner.text, systemImage: isLookBack ? "arrow.uturn.backward.circle.fill" : "checkmark.circle.fill")
             .font(.title3.weight(.semibold))
-            .foregroundStyle(.white)
+            .foregroundStyle(Color(uiColor: Self.textColor))
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(16)
-            .background(isLookBack ? Color.orange : Color.green, in: .rect(cornerRadius: 14))
+            .background(Color(uiColor: isLookBack ? Self.lookBackFill : Self.backOnTrackFill),
+                        in: .rect(cornerRadius: 14))
             .accessibilityIdentifier(isLookBack ? "world-lookback-banner" : "world-back-on-track-banner")
             .transition(.move(edge: .top).combined(with: .opacity))
     }
