@@ -158,7 +158,10 @@ final class ProjectManager: ObservableObject {
         // Tower over HTTP and needs no socket handed to it.
         self.cartridgeClients = cartridgeClients
             ?? CartridgeClients(
-                worldBuilder: TowerWorldBuilderClient(tower: tower),
+                worldBuilder: TowerWorldBuilderClient(
+                    tower: tower,
+                    subscribeAckTimeout: UITestHooks.subscribeAckTimeout
+                ),
                 experimentalCV: TowerExperimentalCVClient(tower: tower),
                 documentMemory: TowerDocumentMemoryClient(tower: tower),
                 sceneUnderstanding: TowerSceneUnderstandingClient(tower: tower)
@@ -291,5 +294,68 @@ final class ProjectManager: ObservableObject {
         // Connections sheet reports honestly as "Not checked yet".
         glassesConnection.checkCameraPermission(reportErrors: false)
         towerClient.connectIfIdle()
+        #if DEBUG
+        applyUITestHooks()
+        #endif
     }
 }
+
+// MARK: - UI-test launch hooks (U0.8 H2)
+
+/// What a UI test can ask of a DEBUG launch. Every hook does nothing unless
+/// its argument or variable is present, and none exists in Release.
+enum UITestHooks {
+    static let mockGlassesArgument = "-UITestMockGlasses"
+    static let glassesAlertArgument = "-UITestGlassesAlert"
+    static let doffAfterSecondsVariable = "GLASSES_UITEST_MOCK_DOFF_AFTER_SECONDS"
+    static let subscribeAckMillisecondsVariable = "GLASSES_UITEST_SUBSCRIBE_ACK_MS"
+
+    /// `GLASSES_UITEST_SUBSCRIBE_ACK_MS`, for `TowerWorldBuilderClient`;
+    /// `nil` (the client's own default) otherwise, and always in Release.
+    static var subscribeAckTimeout: Duration? {
+        #if DEBUG
+        guard let value = ProcessInfo.processInfo.environment[subscribeAckMillisecondsVariable],
+              let milliseconds = Int(value), milliseconds > 0
+        else { return nil }
+        return .milliseconds(milliseconds)
+        #else
+        return nil
+        #endif
+    }
+}
+
+#if DEBUG
+private extension ProjectManager {
+    /// Runs once, from `startAutomaticConnections()`.
+    func applyUITestHooks() {
+        let arguments = ProcessInfo.processInfo.arguments
+        let environment = ProcessInfo.processInfo.environment
+
+        // A paired, powered-on, donned Mock Device Kit device, with no camera
+        // feed: a capture then runs and delivers no frames.
+        if arguments.contains(UITestHooks.mockGlassesArgument) {
+            if !glassesConnection.mockDeviceKitEnabled { glassesConnection.toggleMockDeviceKit() }
+            glassesConnection.pairMockGlasses()
+        }
+
+        if arguments.contains(UITestHooks.glassesAlertArgument) {
+            glassesConnection.errorMessage = GlassesConnection.cameraPermissionNotGrantedSentence
+        }
+
+        // The glasses taken off `n` seconds after the stream first streams,
+        // which is how DAT pauses a capture on its own.
+        if let value = environment[UITestHooks.doffAfterSecondsVariable], let seconds = Double(value) {
+            glassesConnection.$cameraStreamState
+                .first { $0 == .streaming }
+                .receive(on: DispatchQueue.main)
+                .sink { [weak self] _ in
+                    Task { @MainActor [weak self] in
+                        try? await Task.sleep(for: .seconds(seconds))
+                        self?.glassesConnection.doffMockGlassesForUITest()
+                    }
+                }
+                .store(in: &cancellables)
+        }
+    }
+}
+#endif

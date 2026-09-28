@@ -92,6 +92,10 @@ final class AccessibilityAuditUITests: XCTestCase {
         let screen: String
         let label: String
         let line: String
+        /// What the audit flagged, and whether at a default text size (light
+        /// or dark) rather than at Accessibility XXXL.
+        let auditType: XCUIAccessibilityAuditType
+        let isDefaultSize: Bool
     }
 
     private var predictions: [Prediction] = []
@@ -127,6 +131,23 @@ final class AccessibilityAuditUITests: XCTestCase {
         var settled: [String: Int] = [:]
         var stood: [String: Int] = [:]
         for prediction in predictions {
+            // Clipping at a default size settles only for a world or session
+            // id (U0.8 H0; U0.5 review F4, owed). Those are the intentional
+            // truncations -- `WorldPickerView` cuts them to one line, in the
+            // middle, below the accessibility sizes. Any other text passing
+            // at Accessibility XXXL proves nothing about the default size:
+            // the layouts switch there (`AnyLayout`, `ViewThatFits`), so that
+            // pass judged a different layout.
+            if prediction.isDefaultSize && prediction.auditType == .textClipped {
+                if Self.isWorldOrSessionID(prediction.label) {
+                    settled[prediction.screen, default: 0] += 1
+                    print("U05-AUDIT|\(prediction.line) -- WAIVED: an intentional truncation (a world or session id)")
+                } else {
+                    stood[prediction.screen, default: 0] += 1
+                    standing.append(prediction.line)
+                }
+                continue
+            }
             let key = Self.key(prediction.label)
             let passed = passedAtLargest[prediction.screen]?.contains(key) == true
             if largestRan, passed {
@@ -146,6 +167,21 @@ final class AccessibilityAuditUITests: XCTestCase {
         for line in standing { print("U05-AUDIT|ISSUE|\(line)") }
         XCTAssertEqual(standing, [], standing.joined(separator: "\n"))
         predictions = []
+    }
+
+    /// Whether a flagged label is a world or session id (U0.8 H0; the
+    /// recognition is OPEN-7's pick). The whole label must be one token of
+    /// id characters -- letters, digits, `.`, `_`, `:` and `-` -- with a digit,
+    /// a `-` or a `_` in it, so no word ("Done", "Settings") passes. An id
+    /// the audit reports on the row's combined button, with the row's other
+    /// words around it, is therefore NOT recognised and stands as an issue,
+    /// to be triaged: the conservative side.
+    static func isWorldOrSessionID(_ label: String) -> Bool {
+        let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "._:-"))
+        guard label.count >= 2, label.unicodeScalars.allSatisfy({ allowed.contains($0) && $0.isASCII }) else {
+            return false
+        }
+        return label.contains { $0.isNumber || $0 == "-" || $0 == "_" }
     }
 
     override func tearDownWithError() throws {
@@ -710,7 +746,9 @@ final class AccessibilityAuditUITests: XCTestCase {
                 noted.append("\(line) -- WAIVED: measured \(String(format: "%.1f", measured)):1 on the "
                              + "rendered pixels (WCAG 2), over 4.5:1")
             } else if sizingPass, let label {
-                newPredictions.append(Prediction(screen: Self.baseScreen(screen), label: label, line: line))
+                newPredictions.append(Prediction(screen: Self.baseScreen(screen), label: label, line: line,
+                                                 auditType: issue.auditType,
+                                                 isDefaultSize: mode.contentSize == nil))
                 noted.append("\(line) -- checked against Accessibility XXXL at the end")
             } else if let band, let element, let frame,
                       !band.isBarContent(element.elementType, element.label, frame) {

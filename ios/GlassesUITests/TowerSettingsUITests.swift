@@ -190,7 +190,18 @@ final class TowerSettingsUITests: XCTestCase {
         let field = element(app, "tower-address-field")
         XCTAssertTrue(reveal(app, field, builtAbove: true), "the address field")
         // Bottom-right of a field that wraps: the end of its text.
-        field.coordinate(withNormalizedOffset: CGVector(dx: 0.97, dy: 0.9)).tap()
+        let end = field.coordinate(withNormalizedOffset: CGVector(dx: 0.97, dy: 0.9))
+        end.tap()
+        // On a loaded Mac the tap can land before the field takes focus, and
+        // the keys then go nowhere (U0.8 H0). Once more at the same point,
+        // and never type into a field that has no focus.
+        if !hasKeyboardFocus(app, field, timeout: 5) {
+            end.tap()
+            guard hasKeyboardFocus(app, field, timeout: 5) else {
+                XCTFail("the address field never took keyboard focus")
+                return
+            }
+        }
         let current = (field.value as? String) ?? ""
         field.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: current.count + 4))
         field.typeText(text + "\n")
@@ -200,14 +211,41 @@ final class TowerSettingsUITests: XCTestCase {
     /// Taps Test connection and returns the first line of the answer.
     private func runTest(_ app: XCUIApplication) -> String? {
         let test = app.buttons["tower-test"]
+        // The Return that ended the address puts the keyboard away, and the
+        // list moves as it goes: a tap on Test aimed during that animation
+        // lands where the button was, not where it is. Wait for it to settle.
+        _ = waitFor(timeout: 5) { !app.keyboards.firstMatch.exists }
         XCTAssertTrue(reveal(app, test), "the Test connection button")
         XCTAssertTrue(test.isEnabled, "Test is on for a usable address")
         test.tap()
+        // Finished means the answer row is drawn and begins with one of the
+        // three titles: the row appears only once the probe is `.finished`,
+        // and until then the button reads "Testing…". The probe gives up by
+        // itself after 5 s; the rest of the 30 is slack for a loaded Mac. A
+        // second tap to recover is never made: each Test must send exactly
+        // one `GET /cartridges` (U0.8 H0).
         let result = element(app, "tower-test-result")
-        guard waitFor(timeout: 8, { result.exists }) else { return nil }
-        reveal(app, result)
         let titles = ["Connected to a Tower", "Reached something, but it isn't a Glasses Tower", "Not reachable"]
+        let finished = waitFor(timeout: 30) {
+            result.exists && titles.contains { result.label.hasPrefix($0) }
+        }
+        guard finished else {
+            XCTFail("the probe did not finish in 30 s; tower-test reads \"\(test.exists ? test.label : "(gone)")\", "
+                    + "tower-test-result \(result.exists ? "reads \"\(result.label)\"" : "is not drawn")")
+            return nil
+        }
+        reveal(app, result)
         return titles.first { result.label.hasPrefix($0) }
+    }
+
+    /// Whether the keyboard is up for `field` within `timeout`: the software
+    /// keyboard, or -- with a hardware keyboard attached, when none is drawn
+    /// -- the field's own focus.
+    private func hasKeyboardFocus(_ app: XCUIApplication, _ field: XCUIElement, timeout: TimeInterval) -> Bool {
+        waitFor(timeout: timeout) {
+            app.keyboards.firstMatch.exists
+                || (field.value(forKey: "hasKeyboardFocus") as? Bool) == true
+        }
     }
 
     /// Scroll until `element` can be tapped and is clear of the navigation

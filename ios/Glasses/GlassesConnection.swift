@@ -266,6 +266,9 @@ final class GlassesConnection: ObservableObject {
     @Published private(set) var cameraPermissionStatus: PermissionStatus?
     @Published var errorMessage: String?
 
+    /// The alert when a capture is started without camera permission.
+    static let cameraPermissionNotGrantedSentence = "Camera permission is not granted. Open Connections, allow camera access for the glasses, then start capture again."
+
     #if DEBUG
     /// Mirrors `MockDeviceKit.shared.isEnabled` — read back from the SDK
     /// after every call, not toggled optimistically.
@@ -806,6 +809,13 @@ final class GlassesConnection: ObservableObject {
             print("[Glasses][MockDeviceKit] pairGlasses failed: \(error.localizedDescription)")
             errorMessage = error.localizedDescription
         }
+    }
+
+    /// Takes the paired mock off the wearer's head, which is how DAT pauses
+    /// a capture on its own. For UI tests only (U0.8 H2).
+    func doffMockGlassesForUITest() {
+        print("[Glasses][MockDeviceKit] doff() for a UI test")
+        pairedMockDevice?.doff()
     }
 
     // MARK: Camera session (proof-of-path milestone)
