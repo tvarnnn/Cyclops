@@ -4985,5 +4985,21 @@ final class DeadEndsTests: XCTestCase {
         }
         XCTAssertTrue(ViewfinderText.pausedControlLine(stopTitle: "Stop capture").hasSuffix("Stop capture ends it."))
     }
+
+    /// F07: "Registered" is not "Active". With a device model, a registered
+    /// state is Active or Not active; without one (Release) it stays
+    /// "Registered"; every other state keeps its word and level.
+    func testTheGlassesPillTellsRegisteredFromActive() {
+        XCTAssertTrue(StateDisplay.glasses(.registered, hasActiveDevice: true) == ("Active", .ok))
+        XCTAssertTrue(StateDisplay.glasses(.registered, hasActiveDevice: false) == ("Not active", .idle))
+        XCTAssertTrue(StateDisplay.glasses(.registered, hasActiveDevice: nil) == ("Registered", .ok))
+        for hasDevice in [true, false, nil] as [Bool?] {
+            XCTAssertTrue(StateDisplay.glasses(.available, hasActiveDevice: hasDevice) == ("Not registered", .idle))
+            XCTAssertTrue(StateDisplay.glasses(.registering, hasActiveDevice: hasDevice) == ("Registering…", .working))
+            XCTAssertTrue(StateDisplay.glasses(.unavailable, hasActiveDevice: hasDevice) == ("Meta AI unavailable", .problem))
+        }
+        // The registration word itself is unchanged (pinned above).
+        XCTAssertEqual(StateDisplay.registration(.registered), "Registered")
+    }
 }
 #endif

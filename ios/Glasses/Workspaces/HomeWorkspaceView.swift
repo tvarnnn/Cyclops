@@ -15,6 +15,12 @@ import SwiftUI
 import MWDATCamera
 #endif
 
+/// Home's readiness words that are new in U0.8.
+enum HomeReadinessText {
+    static let noActiveGlasses = "The glasses are registered, but none are active on this phone. "
+        + "Make sure they are on, nearby and connected in the Meta AI app."
+}
+
 /// The workspace shown when no cartridge is loaded.
 ///
 /// Replaces the old dashboard. The difference is what it does when everything
@@ -142,6 +148,18 @@ struct HomeWorkspaceView: View {
                 action: { glasses.connect() }
             )
         }
+
+        #if DEBUG
+        // Registered is not active: with no glasses active on this phone the
+        // session control is off, so "Ready" would be false (U0.8 F07).
+        if !glasses.hasActiveDevice {
+            return Blocker(
+                reason: HomeReadinessText.noActiveGlasses,
+                actionTitle: "Open connections",
+                action: onOpenConnections
+            )
+        }
+        #endif
 
         if tower.status != .online {
             return Blocker(

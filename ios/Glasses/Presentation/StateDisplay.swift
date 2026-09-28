@@ -31,6 +31,21 @@ enum StateDisplay {
         }
     }
 
+    /// The shell's Glasses pill (U0.8 F07). "Registered" says Meta AI knows
+    /// the glasses, not that any are on this phone now: with a device model
+    /// (DEBUG), a registered state is told apart as "Active" or "Not
+    /// active". `hasActiveDevice` is `nil` in Release, which has none.
+    static func glasses(_ state: RegistrationState, hasActiveDevice: Bool?) -> (value: String, level: StatusLevel) {
+        switch state {
+        case .registered:
+            guard let hasActiveDevice else { return ("Registered", .ok) }
+            return hasActiveDevice ? ("Active", .ok) : ("Not active", .idle)
+        case .registering: return (registration(state), .working)
+        case .unavailable: return (registration(state), .problem)
+        default: return (registration(state), .idle)
+        }
+    }
+
     /// `nil` is meaningful: `PermissionStatus` has no `notDetermined` case, so
     /// an absent value means the app has not asked DAT yet.
     static func cameraPermission(_ status: PermissionStatus?) -> String {

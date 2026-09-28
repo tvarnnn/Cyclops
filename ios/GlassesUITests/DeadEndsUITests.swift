@@ -233,6 +233,46 @@ final class DeadEndsUITests: XCTestCase {
         stopCaptureIfRunning()
     }
 
+    // MARK: Step 4 -- glasses readiness words
+
+    /// The shell status bar's words: its label and, when SwiftUI puts the
+    /// pills' values there, its value.
+    private func shellText() -> String {
+        let bar = element("shell-status-bar")
+        guard bar.exists else { return "" }
+        let value = (bar.value as? String) ?? ""
+        return value.isEmpty ? bar.label : "\(bar.label), \(value)"
+    }
+
+    /// F07: the Glasses pill says "Active" only while glasses are active on
+    /// this phone, and never "Registered" as ready without one.
+    func testTheGlassesPillSaysActiveOnlyForAnActiveDevice() throws {
+        launch(tower: closedAuthority, mockGlasses: true)
+        let bar = element("shell-status-bar")
+        XCTAssertTrue(bar.waitForExistence(timeout: 15), "the shell status bar")
+        let first = shellText()
+        if first.contains("Not registered") || first.contains("Meta AI unavailable") {
+            throw XCTSkip("the mock is not a registered device in this Simulator (\(first))")
+        }
+        try requireMockGlasses()
+        XCTAssertTrue(waitFor(timeout: 5) { self.shellText().contains("Active") },
+                      "the pill says Active for the active mock: \(shellText())")
+
+        let developer = app.buttons["Developer tools"]
+        XCTAssertTrue(tap(developer, until: app.navigationBars["Developer"].exists), "Developer tools opens")
+        let disable = app.buttons["Disable Mock Device Kit"]
+        XCTAssertTrue(revealInSheet(disable), "Disable Mock Device Kit")
+        disable.tap()
+        XCTAssertTrue(tap(app.buttons["Done"], until: !app.navigationBars["Developer"].exists), "Developer tools closes")
+
+        let settled = waitFor(timeout: 10) { !self.shellText().contains("Active") }
+        let text = shellText()
+        XCTAssertTrue(settled, "the pill still says Active with the mock disabled: \(text)")
+        XCTAssertFalse(text.contains("Registered"), "a registered word stood for ready: \(text)")
+        let honest = ["Not active", "Not registered", "Registering…", "Meta AI unavailable"].contains { text.contains($0) }
+        XCTAssertTrue(honest, "the pill's word: \(text)")
+    }
+
     // MARK: Launch (H3)
 
     /// `tower` is the socket's `host:port`; `nil` uses the saved address.
@@ -432,21 +472,25 @@ final class DeadEndsUITests: XCTestCase {
         let drawerDone = app.buttons["Done"]
         XCTAssertTrue(tap(cartridges, until: drawerDone.exists), "the cartridge drawer opened")
         let row = app.buttons.containing(NSPredicate(format: "label BEGINSWITH %@", name)).firstMatch
-        // The drawer is a lazy list in a half-height sheet: a row below the
-        // fold is not built until it is scrolled to. Settle first -- a sheet
-        // still sliding in reads as not hittable -- and then only swipe up:
-        // a drag down at the top of a sheet pulls the sheet away.
-        var found = waitFor(timeout: 3) { row.exists && row.isHittable }
-        for _ in 0..<6 where !found {
-            app.swipeUp(velocity: .slow)
-            found = waitFor(timeout: 1) { row.exists && row.isHittable }
-        }
-        XCTAssertTrue(found, "a drawer row for \(name)")
+        XCTAssertTrue(revealInSheet(row), "a drawer row for \(name)")
         // The workspace has arrived when the drawer is gone and the shell's
         // title names it -- not when a static text with that name exists,
         // which the drawer row itself satisfies.
         XCTAssertTrue(tap(row, until: !drawerDone.exists && app.navigationBars[name].exists),
                       "the \(name) workspace opened")
+    }
+
+    /// A row of a lazy list in a sheet is not built until it is scrolled to.
+    /// Settle first -- a sheet still sliding in reads as not hittable -- and
+    /// then only swipe up: a drag down at the top of a sheet pulls it away.
+    @discardableResult
+    private func revealInSheet(_ element: XCUIElement) -> Bool {
+        var found = waitFor(timeout: 3) { element.exists && element.isHittable }
+        for _ in 0..<6 where !found {
+            app.swipeUp(velocity: .slow)
+            found = waitFor(timeout: 1) { element.exists && element.isHittable }
+        }
+        return found
     }
 
     /// How many times the app has dialled the socket.
