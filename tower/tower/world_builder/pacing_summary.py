@@ -5,6 +5,36 @@ data only, before walk 5's 04:43:42 recording start. v1.1 adds the MED-A
 seed diagnostic and MED-B room-first mapping approved by manager 126 at
 05:25 EDT, before anyone read walk 5's quality journal. Neither version is
 selected by the CLI or calibrated from walk 5.
+
+v1's text column (C4i review MED-2, fix (a); text only, JSON unchanged).
+v1 compares raw labels, so its "between" bucket also holds brackets whose two
+labels map to the same room (desk and bed are both the bedroom). v1's column
+therefore never uses the two "different rooms" sentences (B2, R2):
+- a v1 burst whose bucket is "between" renders B3 ("The room is unknown.");
+- v1's "between" count is folded into R3 ("could not be assigned a room");
+- v1's R2 cell is left empty, so both columns stay row-aligned.
+The JSON still names v1's bucket "between" and still counts it separately.
+v1.1 compares rooms after the room map, and keeps B2 and R2.
+
+Interpretive choices the brief leaves open (C4i review LOW-4). Each is OPEN
+for the manager; none changes a walk-4 pin or the walk-5 output.
+- OPEN (a): R3 counts "unknown" + "other_labelled" (+ "between" in v1 only),
+  so the R lines account for every refused frame (walk 4: 394 = 368 + 26).
+- OPEN (b): a bracket skips journal keyframes that are absent from the CSV,
+  and such a keyframe's own row is "unknown". The brief's "keyframe not in
+  the CSV -> unknown" could instead mean the bracket itself goes "unknown".
+- OPEN (c): a missing or non-finite received_at breaks the clock before its
+  own row and also before the next row.
+- OPEN (d): an "other_labelled" burst renders B3 ("The room is unknown.").
+- OPEN (e): numbers are not digit-grouped ("2196", not "2,196"); the brief
+  says only "Numbers are formatted".
+- OPEN (f): the header line "v1<TAB>v1.1" and the empty padding cells lie
+  outside the closed sentence set; a two-column layout cannot avoid them.
+- OPEN (g): v1.1's "between" also holds brackets where one side maps to a room
+  and the other is "other_labelled" (walk 4's closet exit: closet / other;
+  119 of v1.1's 146 "between" refused frames on walk 4), and B2 and R2 call
+  both sides "rooms". No approved sentence says otherwise;
+  OPEN: needs manager-approved wording.
 """
 
 from __future__ import annotations
@@ -25,19 +55,30 @@ DECLARED_AT = {
     "v1_1": "2026-09-28 05:25 EDT",
 }
 BURST_REASONS = frozenset(("blurred", "tracking_degraded", "tracking_held", "tracking_lost"))
+# Bucket names the tool itself assigns; a room map may not use them as rooms (C4i review LOW-5).
+RESERVED_BUCKETS = ("other_labelled", "between", "unknown")
 
 
 @dataclass(frozen=True)
 class Parameters:
-    """Frozen on walk-4 only before walk 5; manager review may revise for walk 6.
+    """The declared v1 parameters, with the brief's provenance (brief C4i, verbatim).
 
-    gap_percentile and gap_multiplier: codex-pace 00:42, C4r 00:52, OPEN.
-    blur_tolerance: codex-pace 00:42, C4r 00:52, OPEN.
-    min_overlap_ratio: KeyframePolicy.min_overlap_ratio, selector.
-    sharpness_floor: KeyframePolicy.min_sharpness, selector; diagnostic only.
-    min_run_sharp_rows: codex-pace 00:42, OPEN.
-    display_top_k and region_span_cap_s: C4r 00:52, OPEN.
-    confident: C4r 00:52 plus review LOW-E, OPEN.
+    Frozen for walk 5; revisable only for walk 6 and later, by the manager.
+
+      gap_percentile        0.75   p75 of positive adjacent received_at intervals, linear interpolation
+                                   [codex-pace 00:42; C4r 00:52; OPEN]
+      gap_multiplier        4.0    gap = 4 x p75 [same]
+      blur_tolerance        1      isolated blurred rows a sharp run may absorb [same]
+      min_overlap_ratio     0.75   = KeyframePolicy.min_overlap_ratio (keyframes.py:218) [selector]
+      sharpness_floor       25.0   = KeyframePolicy.min_sharpness [selector]; used only for a per-burst diagnostic
+      min_run_sharp_rows    2      and >= 1 overlap-backed row [codex-pace 00:42; OPEN]
+      display_top_k         6      [C4r; OPEN]
+      region_span_cap_s     5.0    [C4r; OPEN]
+      confident             {"high","med","medium"}   [C4r + review LOW-E]
+
+    Nothing may be tuned on walk-5 data. v1 and v1.1 share these values; the
+    v1.1 additions (seed_joined_groups, the label->room map applied first) add
+    no parameter.
     """
 
     gap_percentile: float = .75
@@ -349,6 +390,9 @@ def summarize(rows, *, skipped=0, frames_observed=None, regions=None, room_map=N
         raise ValueError("journal rows must be objects")
     if not all(isinstance(k, str) and isinstance(v, str) for k, v in room_map.items()):
         raise ValueError("room map must contain string labels and rooms")
+    reserved = sorted(set(room_map.values()).intersection(RESERVED_BUCKETS))
+    if reserved:
+        raise ValueError("room map may not name a room " + ", ".join(reserved) + " (reserved bucket names)")
     times, breaks, origin, clock = _timing(rows)
     bursts, non_blur = _bursts(rows, times, breaks, origin)
     runs = _sharp_runs(rows, times, breaks, origin)
@@ -397,7 +441,12 @@ def _minute_second(value):
     return f"{total // 60}:{total % 60:02d}"
 
 
-def _sentences(summary, text_runs):
+def _sentences(summary, text_runs, rooms_compared):
+    """One column of closed-set sentences.
+
+    rooms_compared is False for v1, which compares raw labels: its "between"
+    bucket is not a claim about rooms, so it gets B3 and R3, never B2 or R2.
+    """
     if summary["status"] == "unavailable":
         return ["Blur summary unavailable for this walk."]
     count = summary["blur"]
@@ -409,9 +458,9 @@ def _sentences(summary, text_runs):
         start, end = _minute_second(burst["start_s"]), _minute_second(burst["end_s"])
         duration = f"{burst['duration_s']:.1f}" if burst["duration_s"] is not None else "?"
         bucket = burst["bucket"]
-        if bucket and bucket not in ("between", "unknown", "other_labelled"):
+        if bucket and bucket not in RESERVED_BUCKETS:
             lines.append(f"Blurry frames near {bucket}, {start} to {end} into the walk ({duration} seconds).")
-        elif bucket == "between":
+        elif bucket == "between" and rooms_compared:
             lines.append(f"Blurry frames, {start} to {end} into the walk ({duration} seconds). The frames just before and after show different rooms.")
         else:
             lines.append(f"Blurry frames, {start} to {end} into the walk ({duration} seconds). The room is unknown.")
@@ -420,18 +469,22 @@ def _sentences(summary, text_runs):
             lines.append(f"{following['sharp_rows']} sharp frames followed, over {following['duration_s']:.1f} seconds.")
     if summary["regions"]["status"] == "joined":
         for room, values in summary["regions"]["buckets"].items():
-            if room not in ("between", "unknown", "other_labelled") and values["scored"]:
+            if room not in RESERVED_BUCKETS and values["scored"]:
                 lines.append(f"In frames assigned to {room}, {values['refused']} of {values['scored']} checked frames were refused as blurry.")
         buckets = summary["regions"]["buckets"]
-        lines.append(f"{buckets['between']['refused']} blurry frames came between frames showing different rooms; no room was assigned.")
         unassigned = buckets["unknown"]["refused"] + buckets["other_labelled"]["refused"]
+        if rooms_compared:
+            lines.append(f"{buckets['between']['refused']} blurry frames came between frames showing different rooms; no room was assigned.")
+        else:
+            lines.append("")  # v1 has no R2 sentence; the empty cell keeps R3 beside R3
+            unassigned += buckets["between"]["refused"]
         lines.append(f"{unassigned} blurry frames could not be assigned a room.")
     return lines
 
 
 def render_text(result, *, text_runs=False):
     """Parallel v1/v1.1 columns; each nonempty cell is a closed template."""
-    left = _sentences(result["v1"], text_runs)
-    right = _sentences(result["v1_1"], text_runs)
+    left = _sentences(result["v1"], text_runs, rooms_compared=False)
+    right = _sentences(result["v1_1"], text_runs, rooms_compared=True)
     return "\n".join(["v1\tv1.1", *(f"{a}\t{b}" for a, b in zip(left + [""] * (max(len(left), len(right)) - len(left)),
                                                               right + [""] * (max(len(left), len(right)) - len(right))))]) + "\n"

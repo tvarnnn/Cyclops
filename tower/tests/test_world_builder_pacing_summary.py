@@ -25,10 +25,10 @@ ROOM_MAP = {"desk": "bedroom", "bed": "bedroom", "closet": "closet", "bathroom":
 
 
 def row(t, reason="insufficient_motion", *, tracker="reference", sharp=100.0,
-        overlap=.9, outcome="skip", keyframe_id=None, segment=0):
+        overlap=.9, outcome="skip", keyframe_id=None, segment=0, parallax=2.0):
     return {"received_at": t, "reason": reason, "tracker": tracker,
             "sharpness": sharp, "overlap_ratio": overlap, "outcome": outcome,
-            "median_parallax_px": 2.0, "keyframe_id": keyframe_id,
+            "median_parallax_px": parallax, "keyframe_id": keyframe_id,
             "segment_index": segment}
 
 
@@ -54,6 +54,61 @@ def test_reconnect_breaks_bursts_and_runs():
     assert result["bursts"]["retained_count"] == 2
     assert all(b["duration_s"] <= .11 for b in result["bursts"]["all"])
     assert all(r["duration_s"] < 1 for r in result["sharp_runs"]["longest"])
+
+
+# Review C4i MED-1: in each journal below the 21 s reconnect gap falls where nothing
+# else would split, so only the clock-break rule can.  The 0.1 s rows around it keep
+# p75 at 0.1 s, so the gap threshold is 0.4 s.
+def _by_start(items):
+    return sorted(items, key=lambda item: item["start_s"])
+
+
+def test_reconnect_gap_inside_a_burst_splits_it():
+    rows = [row(0), row(.1), row(.2), row(.3, "blurred"), row(.4, "blurred"),
+            row(21.4, "blurred"), row(21.5, "blurred"), row(21.6), row(21.7), row(21.8)]
+    result = version(rows)
+    assert result["clock"]["clock_break_count"] == 1
+    assert result["bursts"]["retained_count"] == 2
+    bursts = _by_start(result["bursts"]["all"])
+    assert [(b["start_s"], b["end_s"], b["rows"]) for b in bursts] == [
+        pytest.approx((.3, .4, 2)), pytest.approx((21.4, 21.5, 2))]
+
+
+def test_reconnect_gap_inside_a_run_splits_it_and_the_next_row_starts_fresh():
+    rows = [row(0), row(.1), row(.2), row(.3), row(21.3), row(21.4), row(21.5), row(21.6)]
+    runs = _by_start(version(rows)["sharp_runs"]["longest"])
+    assert [(r["start_s"], r["end_s"], r["sharp_rows"], r["tolerated_blur_rows"]) for r in runs] == [
+        pytest.approx((0, .3, 4, 0)), pytest.approx((21.3, 21.6, 4, 0))]
+    # A pending tolerated blur is not carried across the gap either.
+    rows = [row(0), row(.1), row(.2), row(.3, "blurred"), row(21.3), row(21.4), row(21.5)]
+    runs = _by_start(version(rows)["sharp_runs"]["longest"])
+    assert [(r["start_s"], r["sharp_rows"], r["tolerated_blur_rows"]) for r in runs] == [
+        pytest.approx((0, 3, 0)), pytest.approx((21.3, 3, 0))]
+
+
+def test_following_run_stops_at_a_reconnect_gap():
+    def journal(resume):
+        return [row(0), row(.1), row(.2, "blurred"), row(.3, "blurred"),
+                row(resume), row(resume + .1), row(resume + .2)]
+    control = version(journal(.4))["bursts"]["all"][0]["following_run"]
+    assert control["start_s"] == pytest.approx(.4) and control["sharp_rows"] == 3
+    result = version(journal(21.3))
+    assert result["clock"]["clock_break_count"] == 1
+    assert [r["start_s"] for r in _by_start(result["sharp_runs"]["longest"])] == pytest.approx([0, 21.3])
+    assert result["bursts"]["all"][0]["following_run"] is None
+
+
+@pytest.mark.parametrize("seed_at, blur_at", [(21.3, 21.4), (.4, 21.4)], ids=["gap-before-seed", "gap-after-seed"])
+def test_no_seed_group_forms_across_a_reconnect_gap(seed_at, blur_at):
+    def journal(seed_t, blur_t):
+        return [row(0), row(.1), row(.2, "blurred"), row(.3, "tracking_lost", tracker="no_reference"),
+                row(seed_t, "session_seed", tracker="no_reference"), row(blur_t, "blurred"),
+                row(blur_t + .1), row(blur_t + .2)]
+    assert len(summarize(journal(.4, .5))["v1_1"]["seed_joined_groups"]) == 1
+    summary = summarize(journal(seed_at, blur_at))
+    assert summary["v1_1"]["clock"]["clock_break_count"] == 1
+    assert summary["v1_1"]["bursts"]["retained_count"] == 2
+    assert summary["v1_1"]["seed_joined_groups"] == []
 
 
 def test_loss_stays_inside_burst_and_seed_creates_diagnostic_group():
@@ -165,6 +220,147 @@ def test_regions_require_session_and_compare_rooms_after_mapping():
     assert mismatch["regions"]["status"] == "session_mismatch"
     assert mismatch["regions"]["buckets"] == {}
     assert all(b["bucket"] is None for b in mismatch["bursts"]["all"])
+
+
+def _columns(rendered):
+    cells = [line.split("\t") for line in rendered.splitlines()]
+    assert cells[0] == ["v1", "v1.1"] and all(len(c) == 2 for c in cells)
+    return [c[0] for c in cells[1:]], [c[1] for c in cells[1:]]
+
+
+def test_v1_text_never_claims_different_rooms():
+    # Review C4i MED-2 fix (a): v1 compares raw labels, so desk/bed is "between" in v1
+    # although both are the bedroom.  Its text uses B3 and R3 only; the JSON is unchanged.
+    a, b, c = "same:00000001", "same:00000002", "same:00000003"
+    rows = [row(0, "parallax", keyframe_id=a), row(.1, "blurred"), row(.2, "blurred"),
+            row(.3, "parallax", keyframe_id=b), row(.4, "blurred"),
+            row(.5, "parallax", keyframe_id=c)]
+    labels = [{"keyframe_id": a, "region": "desk", "confidence": "high"},
+              {"keyframe_id": b, "region": "bed", "confidence": "high"},
+              {"keyframe_id": c, "region": "closet", "confidence": "high"}]
+    summary = summarize(rows, regions=labels, room_map=ROOM_MAP, frames_observed=len(rows))
+    assert [x["bucket"] for x in summary["v1"]["bursts"]["top"]] == ["between", "between"]
+    assert [x["bucket"] for x in summary["v1_1"]["bursts"]["top"]] == ["bedroom", "between"]
+    assert summary["v1"]["regions"]["buckets"]["between"]["refused"] == 3
+    v1, v11 = _columns(render_text(summary))
+    assert not any("different rooms" in cell for cell in v1)
+    assert v1[1:3] == ["Blurry frames, 0:00 to 0:00 into the walk (0.1 seconds). The room is unknown.",
+                       "Blurry frames, 0:00 to 0:00 into the walk (0.0 seconds). The room is unknown."]
+    assert v11[1:3] == ["Blurry frames near bedroom, 0:00 to 0:00 into the walk (0.1 seconds).",
+                        "Blurry frames, 0:00 to 0:00 into the walk (0.0 seconds). The frames just before and after show different rooms."]
+    assert v1[-2:] == ["", "3 blurry frames could not be assigned a room."]
+    assert v11[-2:] == ["1 blurry frames came between frames showing different rooms; no room was assigned.",
+                        "0 blurry frames could not be assigned a room."]
+
+
+@pytest.mark.parametrize("reserved", ["unknown", "between", "other_labelled"])
+def test_reserved_bucket_names_are_refused_as_rooms(reserved):
+    a = "same:00000001"
+    rows = [row(0, "parallax", keyframe_id=a), row(.1, "blurred")]
+    labels = [{"keyframe_id": a, "region": "desk", "confidence": "high"}]
+    with pytest.raises(ValueError, match="reserved"):
+        summarize(rows, regions=labels, room_map={**ROOM_MAP, "desk": reserved})
+
+
+def test_cli_refuses_a_reserved_room_in_one_line(tmp_path):
+    journal = tmp_path / "input" / "frames_quality.jsonl"
+    journal.parent.mkdir()
+    journal.write_text(json.dumps(row(0, "parallax", keyframe_id="same:00000001")) + "\n", encoding="utf-8")
+    regions = tmp_path / "regions.csv"
+    regions.write_text("keyframe_id,region,confidence\nsame:00000001,desk,high\n", encoding="utf-8")
+    room_map = tmp_path / "room_map.json"
+    room_map.write_text(json.dumps({"desk": "between"}), encoding="utf-8")
+    output = tmp_path / "output"
+    refused = _run_cli(journal, output, "--regions", regions, "--room-map", room_map)
+    assert refused.returncode != 0
+    assert len(refused.stderr.splitlines()) == 1 and "reserved" in refused.stderr
+    assert not output.exists()
+
+
+# Review C4i LOW-2: one assertion per rule that a surviving mutant showed unguarded.
+def test_gap_threshold_is_strict_at_equality():
+    # Binary-exact times: p75 = 0.125 s, so the threshold is exactly 0.5 s.
+    base = [0, .125, .25, .375, .5]
+    equal = version([row(t) for t in base + [1.0, 1.125, 1.25, 1.375]])
+    assert equal["clock"]["gap_threshold_s"] == .5 and equal["clock"]["clock_break_count"] == 0
+    above = version([row(t) for t in base + [1.03125, 1.15625, 1.28125, 1.40625]])
+    assert above["clock"]["gap_threshold_s"] == .5 and above["clock"]["clock_break_count"] == 1
+
+
+def test_run_needs_an_overlap_backed_row():
+    accepted = [row(t, "parallax", outcome="accept", overlap=.5) for t in (0, .1, .2)]
+    assert version(accepted)["sharp_runs"]["count"] == 0
+    accepted[1]["overlap_ratio"] = .75
+    assert version(accepted)["sharp_runs"]["count"] == 1
+
+
+def test_tracking_lost_ends_a_run_even_with_a_reference_tracker():
+    rows = [row(0), row(.1), row(.2, "tracking_lost", tracker="reference"), row(.3), row(.4)]
+    runs = _by_start(version(rows)["sharp_runs"]["longest"])
+    assert [(r["start_s"], r["sharp_rows"]) for r in runs] == [pytest.approx((0, 2)), pytest.approx((.3, 2))]
+
+
+def test_burst_rank_ties_break_on_rows_then_earlier_start():
+    # Binary-exact times, so the three durations are exactly equal (0.125 s).
+    rows = [row(0), row(.125, "blurred"), row(.25, "blurred"), row(.375), row(.5),
+            row(.625, "blurred"), row(.75, "blurred"), row(.875), row(1.0),
+            row(1.125, "blurred"), row(1.1875, "blurred"), row(1.25, "blurred"), row(1.375)]
+    bursts = version(rows)["bursts"]["all"]
+    assert [(b["rank"], b["start_s"], b["rows"], b["duration_s"]) for b in bursts] == [
+        (1, 1.125, 3, .125), (2, .125, 2, .125), (3, .625, 2, .125)]
+
+
+def test_completeness_needs_frames_observed_to_equal_the_row_count():
+    rows = [row(0), row(.1)]
+    for observed, status in [(2, "verified"), (3, "unverified"), (1, "unverified"), (None, "unverified")]:
+        assert version(rows, frames_observed=observed)["input"]["completeness"] == status
+
+
+def test_regions_from_another_session_are_a_mismatch():
+    rows = [row(0, "parallax", keyframe_id="same:00000001"), row(.1, "blurred"),
+            row(.2, "parallax", keyframe_id="same:00000002")]
+    labels = [{"keyframe_id": "other:00000001", "region": "desk", "confidence": "high"},
+              {"keyframe_id": "other:00000002", "region": "desk", "confidence": "high"}]
+    for name in ("v1", "v1_1"):
+        assert version(rows, name, regions=labels, room_map=ROOM_MAP)["regions"]["status"] == "session_mismatch"
+
+
+def test_a_keyframe_missing_from_the_csv_is_unknown():
+    a, missing, b = "same:00000001", "same:00000002", "same:00000003"
+    rows = [row(0, "parallax", keyframe_id=a), row(.1, "parallax", keyframe_id=missing),
+            row(.2, "parallax", keyframe_id=b)]
+    labels = [{"keyframe_id": a, "region": "desk", "confidence": "high"},
+              {"keyframe_id": b, "region": "desk", "confidence": "high"}]
+    buckets = version(rows, regions=labels, room_map=ROOM_MAP)["regions"]["buckets"]
+    assert (buckets["bedroom"]["scored"], buckets["unknown"]["scored"]) == (2, 1)
+
+
+def test_region_span_cap_is_inclusive():
+    a, b = "same:00000001", "same:00000002"
+    rows = [row(0, "parallax", keyframe_id=a), row(2.5, "blurred"), row(5.0, "parallax", keyframe_id=b)]
+    labels = [{"keyframe_id": a, "region": "desk", "confidence": "high"},
+              {"keyframe_id": b, "region": "desk", "confidence": "high"}]
+    burst = version(rows, regions=labels, room_map=ROOM_MAP)["bursts"]["top"][0]
+    assert burst["bracket"]["span_s"] == 5.0 and burst["bucket"] == "bedroom"
+
+
+def test_burst_diagnostics_floor_sharpness_and_parallax():
+    rows = [row(0), row(.1, "blurred", sharp=10.0, parallax=1.0),
+            row(.2, "blurred", sharp=25.0, parallax=3.0),
+            row(.3, "blurred", sharp=30.0, parallax=8.0), row(.4)]
+    burst = version(rows)["bursts"]["top"][0]
+    assert (burst["below_floor_count"], burst["median_sharpness"], burst["median_parallax_px"]) == (1, 25.0, 3.0)
+
+
+def test_output_caps_all_bursts_at_200_and_runs_at_20():
+    rows = []
+    for i in range(210):
+        t = i * .4
+        rows += [row(t, "blurred"), row(t + .1, tracker="no_reference"), row(t + .2), row(t + .3)]
+    result = version(rows)
+    assert result["bursts"]["retained_count"] == 210
+    assert [b["rank"] for b in result["bursts"]["all"]] == list(range(1, 201))
+    assert result["sharp_runs"]["count"] == 210 and len(result["sharp_runs"]["longest"]) == 20
 
 
 def test_text_is_closed_and_outputs_contain_no_private_data():
@@ -291,6 +487,9 @@ def test_optional_walk4_frozen_pins_and_cli(tmp_path):
         assert burst["rows"] == count
         assert burst["reason_counts"]["tracking_lost"] == 1
     closet = v1["bursts"]["all"][6]
+    assert closet["rank"] == 7
+    assert closet["start_s"] == pytest.approx(108.987 + .314, abs=.005)
+    assert closet["end_s"] == pytest.approx(112.308 + .314, abs=.005)
     assert closet["rows"] == 41 and closet["reason_counts"] == {"blurred": 40, "tracking_lost": 1}
     assert closet["bucket"] == "between" and closet["following_run"] is None
     assert len(v11["seed_joined_groups"]) == 5
@@ -300,11 +499,13 @@ def test_optional_walk4_frozen_pins_and_cli(tmp_path):
     for group, (start, end) in zip(groups, expected_groups):
         assert group["start_s"] == pytest.approx(start + .314, abs=.005)
         assert group["end_s"] == pytest.approx(end + .314, abs=.005)
-    for group, rows_count, reasons, duration, sharp, tolerated in [
-        (groups[2], 118, {"blurred": 115, "tracking_lost": 2, "session_seed": 1}, 2.245, 27, 1),
-        (groups[3], 51, {"blurred": 48, "tracking_lost": 2, "session_seed": 1}, 1.540, 20, 0),
+    for group, rows_count, reasons, (start, end), duration, sharp, tolerated in [
+        (groups[2], 118, {"blurred": 115, "tracking_lost": 2, "session_seed": 1}, (65.549, 67.794), 2.245, 27, 1),
+        (groups[3], 51, {"blurred": 48, "tracking_lost": 2, "session_seed": 1}, (113.252, 114.792), 1.540, 20, 0),
     ]:
         assert group["rows"] == rows_count and group["reason_counts"] == reasons
+        assert group["following_run"]["start_s"] == pytest.approx(start + .314, abs=.005)
+        assert group["following_run"]["end_s"] == pytest.approx(end + .314, abs=.005)
         assert group["following_run"]["duration_s"] == pytest.approx(duration, abs=.005)
         assert group["following_run"]["sharp_rows"] == sharp
         assert group["following_run"]["tolerated_blur_rows"] == tolerated
@@ -316,11 +517,18 @@ def test_optional_walk4_frozen_pins_and_cli(tmp_path):
                              ((177.9, 178.6), .714)]:
         candidates = [r for r in all_runs
                       if r["start_s"] <= window[1] + .314 and r["end_s"] >= window[0] + .314]
-        assert any(r["duration_s"] == pytest.approx(duration, abs=.005) for r in candidates)
+        longest = max(candidates, key=lambda r: r["duration_s"])
+        assert longest["duration_s"] == pytest.approx(duration, abs=.005)
+    # v1 keeps the C4r table's label-first order; v1.1 maps labels to rooms first.
+    assert list(v1["regions"]["buckets"]) == list(v11["regions"]["buckets"]) == [
+        "bedroom", "closet", "bathroom", "other_labelled", "between", "unknown"]
+    assert [(b["refused"], b["scored"]) for b in v1["regions"]["buckets"].values()] == [
+        (127, 849), (29, 233), (123, 320), (26, 63), (214, 241), (368, 490)]
     assert [(b["refused"], b["scored"]) for b in v11["regions"]["buckets"].values()] == [
         (195, 922), (29, 233), (123, 320), (26, 63), (146, 168), (368, 490)]
-    assert [b["bucket"] for b in v11["bursts"]["top"]] == [
-        "unknown", "unknown", "unknown", "bedroom", "unknown", "bathroom"]
+    for summary_version in (v1, v11):
+        assert [b["bucket"] for b in summary_version["bursts"]["top"]] == [
+            "unknown", "unknown", "unknown", "bedroom", "unknown", "bathroom"]
     journal = tmp_path / "frames_quality.jsonl"
     journal.write_text("\n".join(json.dumps(r) for r in rows) + "\n", encoding="utf-8")
     room_map = tmp_path / "room_map.json"
@@ -332,5 +540,12 @@ def test_optional_walk4_frozen_pins_and_cli(tmp_path):
     assert cli.returncode == 0, cli.stderr
     emitted = json.loads((output / "pacing_summary.json").read_text(encoding="utf-8"))
     assert emitted["v1_1"]["regions"]["buckets"] == v11["regions"]["buckets"]
+    # MED-2: v1's 214 label-first "between" frames (68 of them desk/bed) are never called
+    # "different rooms"; they are folded into R3 (608 = 368 + 26 + 214).
+    left, right = _columns((output / "pacing_summary.txt").read_text(encoding="utf-8"))
+    assert not any("different rooms" in cell for cell in left)
+    assert left[-2:] == ["", "608 blurry frames could not be assigned a room."]
+    assert right[-2:] == ["146 blurry frames came between frames showing different rooms; no room was assigned.",
+                          "394 blurry frames could not be assigned a room."]
     print("WALK4_JSON=" + json.dumps(emitted, separators=(",", ":")))
     print("WALK4_TEXT=" + (output / "pacing_summary.txt").read_text(encoding="utf-8"))
