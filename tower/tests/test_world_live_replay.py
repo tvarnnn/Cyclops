@@ -3,18 +3,28 @@
 The pacing tests pin that a replay keeps the RECORDED pace (absolute offsets,
 never accumulated lateness) and the walk's shape (Stop vs disconnect, a
 reconnected walk's second socket, a truncated walk ending with Stop). The
-framing test runs the client against a fake /ws server and checks every
-message the phone would have sent. The report tests parse a log written in
-the Tower's own line formats (copied from walk 5's log) and a small world
-root, and check the waterfall, the milestones and the 10-minute verdict.
+framing tests run the client against a fake /ws server and check every
+message the phone would have sent, including a reconnect's re-sent
+`session/start` and an abort mid-stream. The report tests parse a log
+written in the Tower's own line formats (copied from walk 5's log) and a
+small world root, and check the waterfall, the milestones, the 10-minute
+verdict, the live-safety gate (C19 F8) and the N-run comparison. The runner
+tests drive its whole lifecycle with fakes for the process, the job and the
+network.
 
-No test here starts a Tower, touches a GPU or reads the live store.
+No test here starts a Tower, touches a GPU or reads the live store. None
+reaches :8000 or a port in 8031-8040: an autouse fixture turns any such
+HTTP request, socket open or port probe into a test failure.
 """
 
 import asyncio
 import base64
 import json
+import os
 import time
+import urllib.error
+import urllib.parse
+import urllib.request
 from pathlib import Path
 
 import pytest
@@ -24,6 +34,38 @@ from scripts import world_live_replay_report as report
 from scripts import world_live_replay_run as runner
 
 # -- helpers -----------------------------------------------------------------------
+
+
+def _forbidden(port) -> bool:
+    return port == 8000 or (port is not None and 8031 <= port <= 8040)
+
+
+@pytest.fixture(autouse=True)
+def _never_the_live_tower_or_a_test_port(monkeypatch):
+    """Every test: no HTTP to, no socket to, no probe of :8000 or 8031-8040.
+    A full OLD baseline replay may be running on 8031 while these run."""
+    real_urlopen = urllib.request.urlopen
+
+    def guarded_urlopen(url, *args, **kwargs):
+        target = getattr(url, "full_url", None) or str(url)
+        if _forbidden(urllib.parse.urlsplit(target).port):
+            raise AssertionError(f"a test tried to reach {target}")
+        return real_urlopen(url, *args, **kwargs)
+
+    monkeypatch.setattr(urllib.request, "urlopen", guarded_urlopen)
+    real_open = replay.TowerSocket.open
+
+    async def guarded_open(self):
+        if _forbidden(urllib.parse.urlsplit(self.uri).port):
+            raise AssertionError(f"a test tried to open {self.uri}")
+        return await real_open(self)
+
+    monkeypatch.setattr(replay.TowerSocket, "open", guarded_open)
+
+    def no_probe(port):
+        raise AssertionError(f"a test probed a real port {port}; monkeypatch runner.port_in_use")
+
+    monkeypatch.setattr(runner, "port_in_use", no_probe)
 
 
 def _capture(tmp_path, capture_id, *, started, frames, ended, end_reason="stop", continues=None,
@@ -49,6 +91,11 @@ def _capture(tmp_path, capture_id, *, started, frames, ended, end_reason="stop",
 
 A = "a" * 32
 B = "b" * 32
+C1 = "1" * 32
+C2 = "2" * 32
+
+IDLE_HEALTH = {"capture": {"recording": False, "capture_id": None}, "capture_workers": {"workers": []},
+               "background_chore": {"state": "idle", "runs": 1}}
 
 
 # -- the walk and its schedule --------------------------------------------------------
@@ -159,10 +206,14 @@ def test_the_pacer_waits_for_absolute_offsets_and_reports_lateness():
     assert late[4] < 0.002
 
 
-def test_distribution():
+def test_distribution_has_p99_by_nearest_rank():
     assert replay.distribution([]) == {"count": 0}
     stats = replay.distribution([1, 2, 3, 4, 100])
     assert stats["count"] == 5 and stats["p50"] == 3 and stats["max"] == 100
+    hundred = list(range(1, 202))  # 201 values: index round(q * 200)
+    assert replay.distribution(hundred)["p99"] == 199
+    assert report.distribution(hundred)["p99"] == 199
+    assert report.distribution(hundred)["p95"] == 191
 
 
 def test_the_live_tower_port_and_low_ports_are_refused():
@@ -190,88 +241,122 @@ def test_the_frame_message_is_the_phones():
 # -- the socket, against a fake /ws server ----------------------------------------------
 
 
-def test_a_replay_against_a_fake_tower_speaks_the_phones_protocol(tmp_path, monkeypatch):
-    """The whole client run: handshake, session start, stream, Stop, settle."""
+class FakeTower:
+    """A /ws server and a /health + session/start that answer as a Tower does.
+
+    `order` is every message the Tower saw, the socket's and the HTTP POSTs,
+    in the order it saw them. /health names the capture of the latest
+    `stream_start`; `stale_after_reconnect` keeps naming the PREVIOUS capture
+    for that many polls after a reconnect's stream_start, as a Tower can.
+    """
+
+    def __init__(self, capture_ids, *, stale_after_reconnect=0, on_frame=None):
+        self.capture_ids = capture_ids
+        self.order = []
+        self.received = []
+        self.connections = 0
+        self.stream_starts = 0
+        self.frames = 0
+        self.settling = False
+        self.stale_after_reconnect = stale_after_reconnect
+        self._stale_served = 0
+        self.on_frame = on_frame
+        self.settle_states = iter([
+            {"capture_workers": {"workers": [{"pid": 1}]}, "background_chore": {"state": "idle", "runs": 1}},
+            {"capture_workers": {"workers": []}, "background_chore": {"state": "running", "runs": 2}},
+        ])
+
+    async def handler(self, connection):
+        import websockets
+
+        self.connections += 1
+        number = self.connections
+        try:
+            async for raw in connection:
+                message = json.loads(raw)
+                kind = message["type"]
+                self.received.append((number, message))
+                self.order.append(("ws", kind))
+                if kind == "ping":
+                    await connection.send(json.dumps({"type": "pong"}))
+                elif kind == "cartridges":
+                    await connection.send(json.dumps({"type": "cartridges", "cartridges": [
+                        {"cartridge": "world_builder", "result_type": "status",
+                         "contract": "world_builder.status/test", "available": True}]}))
+                elif kind == "result_subscribe":
+                    assert message["contract"] == "world_builder.status/test"
+                    await connection.send(json.dumps({"type": "result_subscribed", "subscription_id": "s1"}))
+                    await connection.send(json.dumps({
+                        "type": "cartridge_result", "cartridge": "world_builder", "seq": 1,
+                        "revision_changed": True,
+                        "payload": {"model_state": "receiving", "lifecycle": {"state": "receiving"},
+                                    "world_snapshot": {"world_id": "w"}, "session": {"session_id": "s"},
+                                    "geometry": {"revision": "r1"}}}))
+                elif kind == "stream_start":
+                    self.stream_starts += 1
+                elif kind == "frame":
+                    self.frames += 1
+                    await connection.send(json.dumps({"type": "frame_result", "seq": message["seq"]}))
+                    if self.on_frame is not None:
+                        self.on_frame(self)
+        except websockets.ConnectionClosed:
+            pass
+
+    def http_json(self, method, url, timeout=10.0):
+        if method == "POST":
+            assert url.endswith("/cartridges/world_builder/session/start")
+            self.order.append(("http", "session/start"))
+            return 200, {"state": "active", "session_id": "sess"}
+        if self.settling:
+            return 200, next(self.settle_states, {"capture_workers": {"workers": []}, "background_chore": {
+                "state": "idle", "runs": 2, "last": {"outcome": "finished"}}})
+        if self.stream_starts == 0:
+            return 200, IDLE_HEALTH
+        index = self.stream_starts - 1
+        if index > 0 and self._stale_served < self.stale_after_reconnect:
+            self._stale_served += 1
+            index -= 1
+        return 200, {"capture": {"recording": True, "capture_id": self.capture_ids[index]},
+                     "capture_workers": {"workers": [{}]}, "background_chore": {"state": "idle", "runs": 1}}
+
+
+def _serve_and_replay(monkeypatch, tower, options_for):
+    """Run the replay against `tower` on an ephemeral port."""
     import websockets
 
+    monkeypatch.setattr(replay, "http_json", tower.http_json)
+    original = replay._follow_settle
+
+    async def follow(*args, **kwargs):
+        tower.settling = True
+        return await original(*args, **kwargs)
+
+    monkeypatch.setattr(replay, "_follow_settle", follow)
+
+    async def go():
+        async with websockets.serve(tower.handler, "127.0.0.1", 0) as server:
+            port = server.sockets[0].getsockname()[1]
+            return await replay.run_replay(options_for(port))
+
+    return asyncio.run(go())
+
+
+def test_a_replay_against_a_fake_tower_speaks_the_phones_protocol(tmp_path, monkeypatch):
+    """The whole client run: handshake, session start, stream, Stop, settle."""
     jpeg = b"\xff\xd8replay\xff\xd9"
     _capture(tmp_path, A, started=500.0, frames=[(1, 500.05), (3, 500.10), (5, 500.15)],
              ended=500.2, jpeg=jpeg)
-    received = []
-    order = []
+    tower = FakeTower([C1])
+    record = _serve_and_replay(monkeypatch, tower, lambda port: replay.ReplayOptions(
+        port=port, captures=[A], capture_root=tmp_path / "captures", out=tmp_path / "out",
+        settle_timeout_min=0.5, poll_seconds=0.05, sample_seconds=60.0, session_lead=0.0,
+        live_guard=False, phone_fetches=False))
 
-    async def handler(connection):
-        async for raw in connection:
-            message = json.loads(raw)
-            received.append(message)
-            order.append(("ws", message["type"]))
-            kind = message["type"]
-            if kind == "ping":
-                await connection.send(json.dumps({"type": "pong"}))
-            elif kind == "cartridges":
-                await connection.send(json.dumps({"type": "cartridges", "cartridges": [
-                    {"cartridge": "world_builder", "result_type": "status",
-                     "contract": "world_builder.status/test", "available": True}]}))
-            elif kind == "result_subscribe":
-                assert message["contract"] == "world_builder.status/test"
-                await connection.send(json.dumps({"type": "result_subscribed", "subscription_id": "s1"}))
-                await connection.send(json.dumps({
-                    "type": "cartridge_result", "cartridge": "world_builder", "seq": 1,
-                    "revision_changed": True,
-                    "payload": {"model_state": "receiving", "lifecycle": {"state": "receiving"},
-                                "world_snapshot": {"world_id": "w"}, "session": {"session_id": "s"},
-                                "geometry": {"revision": "r1"}}}))
-            elif kind == "frame":
-                await connection.send(json.dumps({"type": "frame_result", "seq": message["seq"]}))
-
-    health_polls = iter([
-        {"capture": {"recording": True, "capture_id": "c" * 32}, "capture_workers": {"workers": [{}]},
-         "background_chore": {"state": "idle", "runs": 1}},
-    ])
-    settle_states = iter([
-        {"capture_workers": {"workers": [{"pid": 1}]}, "background_chore": {"state": "idle", "runs": 1}},
-        {"capture_workers": {"workers": []}, "background_chore": {"state": "running", "runs": 2}},
-        {"capture_workers": {"workers": []}, "background_chore": {"state": "idle", "runs": 2,
-                                                                  "last": {"outcome": "finished"}}},
-    ])
-    streamed = {"done": False}
-
-    def fake_http_json(method, url, timeout=10.0):
-        if method == "POST":
-            order.append(("http", "session/start"))
-            assert url.endswith("/cartridges/world_builder/session/start")
-            return 200, {"state": "active", "session_id": "sess"}
-        if streamed["done"]:
-            return 200, next(settle_states)
-        return 200, next(health_polls, {"capture": {"recording": True, "capture_id": "c" * 32},
-                                        "capture_workers": {"workers": [{}]},
-                                        "background_chore": {"state": "idle", "runs": 1}})
-
-    monkeypatch.setattr(replay, "http_json", fake_http_json)
-
-    async def go():
-        async with websockets.serve(handler, "127.0.0.1", 0) as server:
-            port = server.sockets[0].getsockname()[1]
-            options = replay.ReplayOptions(
-                port=port, captures=[A], capture_root=tmp_path / "captures", out=tmp_path / "out",
-                settle_timeout_min=0.5, poll_seconds=0.05, sample_seconds=60.0, session_lead=0.0,
-                live_guard=False, phone_fetches=False)
-            original = replay._follow_settle
-
-            async def follow(*args, **kwargs):
-                streamed["done"] = True
-                return await original(*args, **kwargs)
-
-            monkeypatch.setattr(replay, "_follow_settle", follow)
-            return await replay.run_replay(options)
-
-    record = asyncio.run(go())
-
-    kinds = [kind for _, kind in order]
+    kinds = [kind for _, kind in tower.order]
     assert kinds[:3] == ["ping", "cartridges", "result_subscribe"]
-    assert order.index(("http", "session/start")) < order.index(("ws", "stream_start"))
+    assert tower.order.index(("http", "session/start")) < tower.order.index(("ws", "stream_start"))
     assert kinds[-1] == "stream_stop"
-    frames = [m for m in received if m["type"] == "frame"]
+    frames = [m for _, m in tower.received if m["type"] == "frame"]
     assert [m["seq"] for m in frames] == [1, 3, 5]
     assert [m["tx_seq"] for m in frames] == [0, 1, 2]
     assert all(base64.b64decode(m["data"]).startswith(jpeg) for m in frames)
@@ -279,43 +364,213 @@ def test_a_replay_against_a_fake_tower_speaks_the_phones_protocol(tmp_path, monk
     assert record["stream"]["frames_sent"] == 3
     assert record["stream"]["frame_results"] == 3
     assert record["stream"]["unanswered"] == 0
-    assert record["tower_captures"] == ["c" * 32]
+    assert record["tower_captures"] == [C1]
     assert record["phone_view"]["transitions"][0]["changed"]["model_state"] == "receiving"
+    assert record["target_listener"] == {"checked": False, "why": "no tower pid given"}
+    assert record["harness"]["files_sha1"]["world_live_replay.py"]
     saved = json.loads((tmp_path / "out" / "client.json").read_text(encoding="utf-8"))
     assert saved["outcome"] == "settled"
 
 
-def test_the_replay_refuses_while_a_live_walk_is_recording(tmp_path, monkeypatch):
-    monkeypatch.setattr(replay, "http_json",
-                        lambda method, url, timeout=10.0: (200, {"capture": {"recording": True}}))
-    options = replay.ReplayOptions(port=8031, captures=[A], capture_root=tmp_path, out=tmp_path / "out")
-    record = asyncio.run(replay.run_replay(options))
-    assert record["outcome"] == "refused-live-walk"
+def test_a_reconnect_re_sends_the_handshake_and_session_start_before_stream_start(tmp_path, monkeypatch):
+    """T1 / H1: the phone re-POSTs session/start on every reconnect; without it
+    the Tower's deferred stop ends World Builder 105 s after the disconnect.
+    Also L1: /health still naming the old capture does not lose the new one."""
+    _capture(tmp_path, A, started=0.0, frames=[(1, 0.05), (2, 0.10)], ended=0.15, end_reason="disconnect")
+    # B streams long enough (to 2.1 s) for the capture lookup's stale poll
+    # (1.4 s) and fresh poll (1.9 s) to land before Stop.
+    _capture(tmp_path, B, started=0.9, frames=[(3, 0.95), (4, 1.5), (5, 2.0)], ended=2.1, end_reason="stop",
+             continues=A)
+    tower = FakeTower([C1, C2], stale_after_reconnect=1)
+    record = _serve_and_replay(monkeypatch, tower, lambda port: replay.ReplayOptions(
+        port=port, captures=[A], capture_root=tmp_path / "captures", out=tmp_path / "out",
+        settle_timeout_min=0.5, poll_seconds=0.05, sample_seconds=60.0, session_lead=0.0,
+        live_guard=False, phone_fetches=False))
+
+    assert tower.connections == 2
+    pings = [index for index, item in enumerate(tower.order) if item == ("ws", "ping")]
+    assert len(pings) == 2
+    expected = [("ws", "ping"), ("ws", "cartridges"), ("ws", "result_subscribe"), ("http", "session/start"),
+                ("ws", "stream_start")]
+    assert tower.order[pings[0]:pings[0] + 5] == expected
+    assert tower.order[pings[1]:pings[1] + 5] == expected  # the reconnect, as the phone does it
+    second = [m["type"] for number, m in tower.received if number == 2]
+    assert second == ["ping", "cartridges", "result_subscribe", "stream_start", "frame", "frame", "frame",
+                      "stream_stop"]
+    reconnected = next(e for e in record["events"] if e["kind"] == "reconnected")
+    assert reconnected["session_start"]["status"] == 200
+    assert record["tower_captures"] == [C1, C2]
+    assert record["outcome"] == "settled"
+    assert record["stream"]["frames_sent"] == 5 and record["stream"]["connections"] == 2
+
+
+def test_an_abort_mid_stream_kills_the_test_tower_before_the_teardown(tmp_path, monkeypatch):
+    """T2 / M3: the guard sees a live walk, streaming stops, `on_abort` (the
+    runner's kill) runs BEFORE the client closes its socket, exit 3."""
+    _capture(tmp_path, A, started=0.0, frames=[(i, 0.05 * i) for i in range(1, 41)], ended=2.1)
+    calls = []
+    tower = FakeTower([C1])
+    monkeypatch.setattr(replay, "live_tower_state",
+                        lambda url=None, timeout=None: "recording" if tower.frames >= 5 else "idle")
+    real_close = replay.TowerSocket.close
+
+    async def close(self):
+        calls.append("socket-close")
+        await real_close(self)
+
+    monkeypatch.setattr(replay.TowerSocket, "close", close)
+
+    def on_abort():
+        time.sleep(0.2)  # a kill takes a moment; the teardown must still wait for it
+        calls.append("on_abort")
+
+    record = _serve_and_replay(monkeypatch, tower, lambda port: replay.ReplayOptions(
+        port=port, captures=[A], capture_root=tmp_path / "captures", out=tmp_path / "out",
+        settle_timeout_min=0.5, poll_seconds=0.05, sample_seconds=60.0, session_lead=0.0,
+        live_guard=True, live_guard_every=0.02, phone_fetches=False, on_abort=on_abort))
+
+    assert record["outcome"] == "aborted" and replay.exit_code(record) == replay.EXIT_ABORTED
+    assert "live walk" in record["aborted"]["reason"]
+    assert record["aborted"]["on_abort_done"] >= record["aborted"]["t"]
+    assert 5 <= record["stream"]["frames_sent"] < 40
+    assert calls[0] == "on_abort" and "socket-close" in calls
+    assert "settle" not in record
+    assert record["live_tower_watch"]["states_seen"] == ["idle", "recording"]
+
+
+def _refusal_options(tmp_path, **extra):
+    _capture(tmp_path, A, started=0.0, frames=[(1, 0.1)], ended=0.2)
+    return replay.ReplayOptions(port=8031, captures=[A], capture_root=tmp_path / "captures",
+                                out=tmp_path / "out", **extra)
+
+
+@pytest.mark.parametrize("state, outcome", [("recording", "refused-live-walk"), ("busy", "refused-live-busy"),
+                                            ("unknown", "refused-live-unknown")])
+def test_the_replay_does_not_start_unless_8000_is_idle_or_down(tmp_path, monkeypatch, state, outcome):
+    """M1 / M2: recording, finishing a world, and no usable answer all refuse."""
+    monkeypatch.setattr(replay, "live_tower_state", lambda url=None, timeout=None: state)
+    monkeypatch.setattr(replay, "http_json", lambda *a, **k: pytest.fail("streamed toward a target"))
+    record = asyncio.run(replay.run_replay(_refusal_options(tmp_path)))
+    assert record["outcome"] == outcome
     assert replay.exit_code(record) == replay.EXIT_ABORTED
+    assert record["live_tower_at_start"] == state
 
 
-def test_a_live_walk_starting_mid_replay_aborts_it(tmp_path, monkeypatch):
-    answers = iter([False, False, True])
-    monkeypatch.setattr(replay, "live_walk_recording", lambda url=None, timeout=3.0: next(answers))
+def test_a_down_live_tower_lets_the_replay_go_on_to_its_target(tmp_path, monkeypatch):
+    monkeypatch.setattr(replay, "live_tower_state", lambda url=None, timeout=None: "down")
+    monkeypatch.setattr(replay, "http_json", lambda *a, **k: (None, None))
+    record = asyncio.run(replay.run_replay(_refusal_options(tmp_path)))
+    assert record["outcome"] == "no-test-tower"  # past the guard; no target answered
+
+
+@pytest.mark.parametrize("health, why", [
+    ({**IDLE_HEALTH, "capture": {"recording": True, "capture_id": C1}}, "recording"),
+    ({**IDLE_HEALTH, "capture_workers": {"workers": [{"pid": 7}]}}, "capture worker"),
+])
+def test_the_replay_refuses_a_target_that_is_recording_or_has_workers(tmp_path, monkeypatch, health, why):
+    """M4: a second stream_start into somebody's run supersedes its recording."""
+    monkeypatch.setattr(replay, "live_tower_state", lambda url=None, timeout=None: "idle")
+    monkeypatch.setattr(replay, "http_json", lambda *a, **k: (200, health))
+    record = asyncio.run(replay.run_replay(_refusal_options(tmp_path)))
+    assert record["outcome"] == "refused-target-busy"
+    assert replay.exit_code(record) == replay.EXIT_ABORTED
+    assert why in (tmp_path / "out" / "client.log").read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("owners", [{9999}, {4242, 9999}, None])
+def test_the_replay_refuses_a_target_served_by_another_process(tmp_path, monkeypatch, owners):
+    """M4: given the test Tower's pid, the listener on the port must be it."""
+    monkeypatch.setattr(replay, "live_tower_state", lambda url=None, timeout=None: "idle")
+    monkeypatch.setattr(replay, "http_json", lambda *a, **k: (200, IDLE_HEALTH))
+    monkeypatch.setattr(replay, "listener_pids", lambda port: owners)
+    record = asyncio.run(replay.run_replay(_refusal_options(tmp_path, tower_pid=4242)))
+    assert record["outcome"] == "refused-target-foreign"
+    assert record["target_listener"]["checked"] is True
+
+
+def test_a_live_walk_starting_mid_replay_aborts_it_and_calls_on_abort(tmp_path, monkeypatch):
+    answers = iter(["idle", "idle", "recording"])
+    monkeypatch.setattr(replay, "live_tower_state", lambda url=None, timeout=None: next(answers))
+    killed = []
     options = replay.ReplayOptions(port=8031, captures=[A], capture_root=tmp_path, out=tmp_path / "out",
-                                   live_guard_every=0.01)
+                                   live_guard_every=0.01, on_abort=lambda: killed.append(True))
     (tmp_path / "out").mkdir()
 
     async def go():
         abort, stop, record = asyncio.Event(), asyncio.Event(), {}
-        await asyncio.wait_for(replay._guard_live(options, abort, record, stop), 5)
+        await asyncio.wait_for(replay._guard_live(options, abort, record, stop, replay.LiveGuard("idle")), 5)
         return abort.is_set(), record
 
     aborted, record = asyncio.run(go())
     assert aborted and "live walk" in record["aborted"]["reason"]
+    assert killed == [True] and "on_abort_done" in record["aborted"]
     assert replay.exit_code({"outcome": "aborted"}) == replay.EXIT_ABORTED
 
 
-def test_the_live_guard_reads_recording_from_health(monkeypatch):
-    monkeypatch.setattr(replay, "http_json", lambda *a, **k: (200, {"capture": {"recording": False}}))
-    assert replay.live_walk_recording() is False
-    monkeypatch.setattr(replay, "http_json", lambda *a, **k: (None, None))
-    assert replay.live_walk_recording() is None
+def test_the_live_guard_fails_closed_on_two_unusable_answers_and_records_busy():
+    """M1: one late answer is a loaded machine; two in a row abort. M2: busy
+    is recorded, not aborted on."""
+    clock = iter(range(100, 200))
+    guard = replay.LiveGuard("idle", clock=lambda: float(next(clock)))
+    assert guard.observe("unknown") is None
+    assert guard.observe("idle") is None  # the streak is broken
+    assert guard.observe("busy") is None
+    assert guard.busy_since is not None
+    assert guard.observe("unknown") is None
+    assert "failing closed" in guard.observe("unknown")
+    assert "live walk" in replay.LiveGuard("down").observe("recording")
+    assert guard.summary()["states_seen"] == ["busy", "idle", "unknown"]
+
+
+@pytest.mark.parametrize("probe, state", [
+    (("refused", None), "down"),
+    (("timeout", None), "unknown"),
+    (("error", {"status": 503}), "unknown"),
+    (("error", None), "unknown"),
+    (("ok", {"capture": {"recording": True}}), "recording"),
+    (("ok", {"capture": {"recording": False}, "capture_workers": {"workers": [{"pid": 1}]}}), "busy"),
+    (("ok", {"capture": {"recording": False}, "background_chore": {"state": "running"}}), "busy"),
+    (("ok", IDLE_HEALTH), "idle"),
+])
+def test_the_live_tower_state_is_read_from_health(monkeypatch, probe, state):
+    monkeypatch.setattr(replay, "health_probe", lambda url, timeout=None: probe)
+    assert replay.live_tower_state() == state
+
+
+class _Response:
+    def __init__(self, body, status=200):
+        self._body, self.status = body, status
+
+    def read(self):
+        return self._body
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+@pytest.mark.parametrize("behaviour, kind", [
+    (urllib.error.URLError(ConnectionRefusedError(10061, "refused")), "refused"),
+    (ConnectionRefusedError(10061, "refused"), "refused"),
+    (urllib.error.URLError(TimeoutError("timed out")), "timeout"),
+    (TimeoutError("timed out"), "timeout"),
+    (urllib.error.HTTPError("http://x/health", 503, "busy", {}, None), "error"),
+    (ConnectionResetError(10054, "reset"), "error"),
+    (_Response(b"not json"), "error"),
+    (_Response(b"[1, 2]"), "error"),
+    (_Response(b'{"capture": {}}'), "ok"),
+])
+def test_the_health_probe_tells_refused_from_slow(monkeypatch, behaviour, kind):
+    """M1: only a refused connection is `down`; a timeout is never "not recording"."""
+    def fake_urlopen(url, timeout=None):
+        if isinstance(behaviour, BaseException):
+            raise behaviour
+        return behaviour
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    assert replay.health_probe("http://127.0.0.1:9/health", 5.0)[0] == kind
 
 
 def test_geometry_coordinates_are_read_as_the_phone_reads_them():
@@ -411,11 +666,95 @@ def test_settle_snapshot_flattens_health_and_session():
     assert snap["finalization"] == "complete" and snap["stage.appearance"] == "running"
 
 
+def test_solution_snapshots_keep_each_version_once(tmp_path):
+    """M6: draw 0's early publish survives the consensus overwriting it."""
+    solve = tmp_path / "root" / "worlds" / "w" / "solve" / "s"
+    solve.mkdir(parents=True)
+    session = tmp_path / "root" / "worlds" / "w" / "sessions" / "s" / "session.json"
+    path = replay.solution_path_for(session)
+    assert path == solve / "solution.json"
+    snaps = replay.SolutionSnapshots(tmp_path / "out")
+    assert snaps.poll(path) is False  # not written yet
+    path.write_text(json.dumps({"solved_at": 1.0, "timing": {"map_s": 30.5, "gate_s": 90.0},
+                                "gate": {"consensus": {"state": "deferred"}}}), encoding="utf-8")
+    assert snaps.poll(path) is True
+    assert snaps.poll(path) is False  # unchanged
+    path.write_text("{torn", encoding="utf-8")
+    assert snaps.poll(path) is False  # skipped, retried next time
+    os.utime(path, None)
+    path.write_text(json.dumps({"solved_at": 2.0, "timing": {"map_s": 40.0},
+                                "gate": {"consensus": {"state": "applied"}}}), encoding="utf-8")
+    assert snaps.poll(path) is True
+    index = json.loads((tmp_path / "out" / "solution-snapshots" / "index.json").read_text(encoding="utf-8"))
+    assert [(i["file"], i["consensus_state"], i["map_s"]) for i in index] == [
+        ("000.json", "deferred", 30.5), ("001.json", "applied", 40.0)]
+    first = json.loads((tmp_path / "out" / "solution-snapshots" / "000.json").read_text(encoding="utf-8"))
+    assert first["timing"]["map_s"] == 30.5
+
+
+def test_the_surface_watch_keeps_transitions_and_their_kind(tmp_path):
+    path = tmp_path / "status.json"
+    watch = replay.SurfaceWatch()
+    assert watch.poll(path) is False
+    for doc in ({"pid": 5, "state": "running", "stage": "depth", "updated_at": 10.0, "params_digest": "x|live|y"},
+                {"pid": 5, "state": "running", "stage": "depth", "updated_at": 10.0, "params_digest": "x|live|y"},
+                {"pid": 5, "state": "ok", "updated_at": 40.0, "params_digest": "x|live|y"},
+                {"pid": 9, "state": "ok", "updated_at": 90.0, "params_digest": "x|final|y"}):
+        path.write_text(json.dumps(doc), encoding="utf-8")
+        watch.poll(path)
+    assert [(t["state"], t["kind"], t["updated_at"]) for t in watch.transitions] == [
+        ("running", "live", 10.0), ("ok", "live", 40.0), ("ok", "final", 90.0)]
+
+
+def test_the_sampler_never_appends_to_an_old_samples_file(tmp_path, monkeypatch):
+    """L4: one samples.csv is one run's samples."""
+    monkeypatch.setattr(replay, "gpu_sample", lambda: (None, None))
+    csv_path = tmp_path / "samples.csv"
+    csv_path.write_text("old,run\n1,2\n", encoding="utf-8")
+    sampler = replay.ResourceSampler(None, 0.01, csv_path)
+    sampler.start()
+    time.sleep(0.1)
+    sampler.stop()
+    sampler.join(5)
+    lines = csv_path.read_text(encoding="utf-8").splitlines()
+    assert lines[0].startswith("t,sys_cpu_pct") and "old,run" not in lines
+
+
+def test_the_harness_pins_its_own_scripts():
+    """L5: run.json and client.json carry the harness's own identity."""
+    identity = replay.harness_identity()
+    assert set(identity["files_sha1"]) == set(replay.HARNESS_FILES)
+    assert all(len(v) == 40 for v in identity["files_sha1"].values())
+    assert len(identity["sha1"]) == 40
+    assert len(identity.get("git_head", "")) == 40  # this worktree is a checkout
+    assert isinstance(identity.get("git_dirty"), list)
+
+
+def test_a_reused_out_is_refused(tmp_path):
+    replay.refuse_non_empty_out(tmp_path / "new")
+    (tmp_path / "used").mkdir()
+    replay.refuse_non_empty_out(tmp_path / "used")  # empty is fine
+    (tmp_path / "used" / "client.log").write_text("x", encoding="utf-8")
+    with pytest.raises(SystemExit, match="not empty"):
+        replay.refuse_non_empty_out(tmp_path / "used")
+
+
+def test_the_standalone_client_needs_the_tower_pid_and_a_fresh_out(tmp_path):
+    with pytest.raises(SystemExit) as missing:
+        replay.main(["--capture", A, "--port", "8031", "--out", str(tmp_path / "out")])
+    assert missing.value.code == 2
+    (tmp_path / "used").mkdir()
+    (tmp_path / "used" / "samples.csv").write_text("x", encoding="utf-8")
+    with pytest.raises(SystemExit, match="not empty"):
+        replay.main(["--capture", A, "--port", "8031", "--tower-pid", "1", "--out", str(tmp_path / "used")])
+
+
 # -- the report ----------------------------------------------------------------------------
 
 W = "d" * 32
 S = "e" * 32
 CAP = "b5750fa3271d4e80b959c628e3e82c94"
+CAP2 = "c" * 32
 
 
 def _ts(clock):
@@ -426,14 +765,23 @@ def _line(clock, logger, message, level="INFO"):
     return f"{_ts(clock)} {level} {logger} {message}"
 
 
-def _walk_log(base):
-    """A Tower log in the real line formats (walk 5's), 100 s walk, then the settle."""
+def _summary(frames, end_reason, **extra):
+    fields = {"session_duration_s": 100.0, "frames_received": frames, "effective_fps": 12.0,
+              "tx_seq_gap_total": 0, "backpressure_drops": 0, "frame_processing_errors": 0,
+              "frames_rejected": 0, "receive_to_result_ms_max": 30.0, **extra, "end_reason": end_reason}
+    return "[Tower][Session] final summary: " + repr(fields)
+
+
+def _walk_log(base, *, reconnect=False, processing_errors=0):
+    """A Tower log in the real line formats (walk 5's), 100 s walk, then the settle.
+    `reconnect`: the walk is two captures, the first ended by disconnect."""
     wb = "tower.world_build_session"
+    ws = "tower.routes.ws"
     lines = [
         "INFO:     Started server process [1]",
         _line(base - 2, "tower.cartridge_session", "[Tower][Session] world_builder start -> state=active"),
-        _line(base, "tower.routes.ws", "[Tower][Session] stream_start: measurement window opened"),
-        _line(base + 0.006, "tower.routes.ws", f"[Tower][Capture] recording started: {CAP}"),
+        _line(base, ws, "[Tower][Session] stream_start: measurement window opened"),
+        _line(base + 0.006, ws, f"[Tower][Capture] recording started: {CAP}"),
         _line(base + 0.013, "tower.capture_workers",
               f"[Tower][Worker] started world-build-session pid 21204 for capture {CAP}: python x"),
         _line(base + 1.7, wb, f"[Tower][WorldBuilder] session {S} in world {W}: source=live-capture "
@@ -444,13 +792,21 @@ def _walk_log(base):
         _line(base + 30.0, wb, "[Tower][WorldBuilder] rebuild 2: 8 keyframes -> 6 positioned poses, "
                                "1255 points, 2 segments in 0.50s"),
         _line(base + 40.0, wb, "[Tower][WorldBuilder] live surface 1 launched (pid 2656)"),
+    ]
+    if reconnect:
+        lines += [
+            _line(base + 50.0, ws, _summary(500, "disconnect", tx_seq_gap_total=2, receive_to_result_ms_max=90.5)),
+            _line(base + 50.002, ws, "[Tower][Capture] recording stopped (disconnect): 500 frames, 400 bytes"),
+            _line(base + 51.0, ws, "[Tower][Session] stream_start: measurement window opened"),
+            _line(base + 51.006, ws, f"[Tower][Capture] recording started: {CAP2}"),
+        ]
+    lines += [
         _line(base + 99.0, wb, "[Tower][WorldBuilder] rebuild 3: 12 keyframes -> 10 positioned poses, "
                                "1823 points, 2 segments in 1.08s"),
-        _line(base + 100.0, "tower.routes.ws",
-              "[Tower][Session] final summary: {'session_duration_s': 100.0, 'frames_received': 1200, "
-              "'effective_fps': 12.0, 'tx_seq_gap_total': 0, 'backpressure_drops': 0, "
-              "'frames_rejected': 0, 'end_reason': 'stream_stop'}"),
-        _line(base + 100.002, "tower.routes.ws", "[Tower][Capture] recording stopped (stop): 1200 frames, 900 bytes"),
+        _line(base + 100.0, ws, _summary(700 if reconnect else 1200, "stream_stop",
+                                         frame_processing_errors=processing_errors)),
+        _line(base + 100.002, ws, f"[Tower][Capture] recording stopped (stop): {700 if reconnect else 1200} "
+                                  "frames, 900 bytes"),
         _line(base + 101.5, wb, "[Tower][WorldBuilder] rebuild 4: 16 keyframes -> 12 positioned poses, "
                                 "2000 points, 3 segments in 1.21s"),
         _line(base + 224.0, wb, "[Tower][WorldBuilder] background solve pid 31120 still running after "
@@ -476,32 +832,48 @@ def _walk_log(base):
         _line(base + 600.0, "tower.main", "[Tower][Worker] the world-finish-pending chore (pid 41924) exited 0 "
                                           "after 66.0 s: finished"),
         # A later walk on the same Tower must not leak into this one.
-        _line(base + 900.0, "tower.routes.ws", f"[Tower][Capture] recording started: {'f' * 32}"),
+        _line(base + 900.0, ws, _summary(77, "stream_stop")),
+        _line(base + 900.0, ws, f"[Tower][Capture] recording started: {'f' * 32}"),
         _line(base + 901.0, wb, "[Tower][WorldBuilder] rebuild 1: 4 keyframes -> 2 positioned poses, "
                                 "5 points, 1 segments in 9.99s"),
     ]
     return "\n".join(lines) + "\n"
 
 
-def _world(root, base, *, appearance_end):
+# The keyframes of the synthetic session: (source_seq, segment_index, received, accepted).
+KEYFRAMES = [(1, 0, 10.0, 10.5), (10, 0, 11.0, 13.0), (54, 1, 12.0, 12.25), (80, 1, 20.0, 27.0)]
+
+
+def _world(root, base, *, appearance_end, draw0_map=None):
     world = root / "worlds" / W
     (world / "sessions" / S).mkdir(parents=True)
     (world / "sessions" / S / "session.json").write_text(json.dumps({
         "session_id": S, "world_id": W, "capture_id": CAP, "ended_at": base + 104.0,
-        "frames_observed": 1200, "keyframes_accepted": 16,
+        "frames_observed": 1200, "keyframes_accepted": 4,
         "finalization": {"state": "complete", "final_solve": "solved", "started_at": base + 104.0,
                          "updated_at": base + 401.0},
         "stages": {"surface": {"state": "ok", "started_at": base + 401.0, "updated_at": base + 500.0},
                    "appearance": {"state": "ok", "started_at": base + 500.0, "updated_at": appearance_end},
                    "dense": {"state": "unavailable", "started_at": base + 525.0, "updated_at": base + 525.0}},
     }), encoding="utf-8")
+    (world / "sessions" / S / "keyframes.jsonl").write_text("".join(
+        json.dumps({"keyframe_id": f"{S}:{seq:08d}", "source_seq": seq, "segment_index": seg,
+                    "received_at": base + got}) + "\n" for seq, seg, got, _ in KEYFRAMES), encoding="utf-8")
+    (world / "sessions" / S / "events.jsonl").write_text("".join(
+        [json.dumps({"kind": "session_started", "at": base}) + "\n"]
+        + [json.dumps({"kind": "keyframe_accepted", "at": base + at,
+                       "payload": {"keyframe_id": f"{S}:{seq:08d}"}}) + "\n" for seq, _, _, at in KEYFRAMES]),
+        encoding="utf-8")
     (world / "solve" / S).mkdir(parents=True)
     (world / "solve" / S / "solution.json").write_text(json.dumps({
-        "timing": {"masks_s": 60.0, "match_s": 5.0, "map_s": 40.0, "gate_s": 20.0},
+        "solved_at": base + 392.0,
+        "timing": {"prepare_s": 1.0, "masks_s": 60.0, "freeze_s": 1.0, "extract_s": 1.0, "match_s": 5.0,
+                   "map_s": 25.0, "gate_s": 20.0},
         "transients": {"computed": 16, "cache_hits": 0, "seconds": {"total": 60.0}},
-        "gate": {"state": "applied", "consensus": {"requested": 3, "state": "applied", "draws": [
-            {"draw": 0, "seed": 0, "map_s": None, "gate_s": 30.0},
-            {"draw": 1, "seed": 1, "map_s": 40.0, "gate_s": 5.0}]}},
+        "gate": {"state": "applied", "consensus": {"requested": 2, "state": "applied",
+                                                   "chosen": {"draw": 1, "seed": 1}, "draws": [
+                                                       {"draw": 0, "seed": 0, "map_s": draw0_map, "gate_s": 30.0},
+                                                       {"draw": 1, "seed": 1, "map_s": 25.0, "gate_s": 5.0}]}},
     }), encoding="utf-8")
     (world / "surface" / S).mkdir(parents=True)
     (world / "surface" / S / "status.json").write_text(json.dumps({
@@ -516,10 +888,14 @@ def _world(root, base, *, appearance_end):
         "area_id": "22a4b5d1fe879458", "session_id": S, "updated_at": base + 599.0,
         "stages": {"surface": {"state": "ok", "started_at": base + 540.0, "updated_at": base + 590.0}}}),
         encoding="utf-8")
+    return world
+
+
+BASE = time.mktime(time.strptime("2026-09-28 04:43:42", "%Y-%m-%d %H:%M:%S"))
 
 
 def test_the_timeline_is_read_from_the_towers_own_lines(tmp_path):
-    base = time.mktime(time.strptime("2026-09-28 04:43:42", "%Y-%m-%d %H:%M:%S"))
+    base = BASE
     log = tmp_path / "tower.err.log"
     log.write_text(_walk_log(base), encoding="utf-8")
     timeline = report.walk_timeline(report.scan_log(log), CAP)
@@ -527,6 +903,7 @@ def test_the_timeline_is_read_from_the_towers_own_lines(tmp_path):
     assert timeline["stop"]["t"] == pytest.approx(base + 100.002, abs=0.002)
     assert [r["n"] for r in timeline["rebuilds"]] == [1, 2, 3, 4]  # the later walk's rebuild is excluded
     assert timeline["tower_summary"]["frames_received"] == 1200
+    assert timeline["tower_totals"]["windows"] == 1  # the later walk's summary is excluded
     assert timeline["bg_solve_wait"]["pid"] == "31120"
     assert timeline["final_done"]["posed"] == "15" and timeline["final_done"]["s"] == "175.90"
     assert timeline["appearance_seconds"]["total"] == 30.0
@@ -534,10 +911,35 @@ def test_the_timeline_is_read_from_the_towers_own_lines(tmp_path):
     assert [s["keyframes"] for s in timeline["background_solves"]] == [52]
 
 
+def test_a_reconnected_walk_sums_every_measurement_window(tmp_path):
+    """T5 / H2: the Tower's summary is per window; the last one alone undercounts."""
+    log = tmp_path / "tower.err.log"
+    log.write_text(_walk_log(BASE, reconnect=True, processing_errors=1), encoding="utf-8")
+    timeline = report.walk_timeline(report.scan_log(log), CAP)
+    assert timeline["captures"] == [CAP, CAP2]
+    totals = timeline["tower_totals"]
+    assert totals["windows"] == 2 and totals["end_reasons"] == ["disconnect", "stream_stop"]
+    assert totals["frames_received"] == 1200 and timeline["tower_summary"]["frames_received"] == 700
+    assert totals["tx_seq_gap_total"] == 2 and totals["frame_processing_errors"] == 1
+    assert totals["receive_to_result_ms_max"] == 90.5
+    assert timeline["recorded_frames"] == 1200
+    _world(tmp_path / "root", BASE, appearance_end=BASE + 700)
+    built = report.build_report(tower_log=log, world_root=tmp_path / "root", client={"tower_captures": [CAP]})
+    rows = {r["check"]: r for r in built["live_safety"]["rows"]}
+    assert rows["frames received (Tower, all windows) = frames recorded"]["result"] == "PASS"
+    assert rows["frames observed (builder) = frames received"]["result"] == "PASS"
+    assert rows["tx_seq gaps (all windows)"]["result"] == "FAIL"
+    assert rows["frame processing errors (all windows)"]["value"] == 1
+    assert built["live_safety"]["result"] == "FAIL"
+    markdown = report.render_markdown(built)
+    assert "frame processing errors 1" in markdown and "## 2. Live safety (C19 F8): **FAIL**" in markdown
+    assert "ended by disconnect" in markdown
+
+
 @pytest.mark.parametrize("appearance_after_stop_min, verdict", [(9.5, "PASS"), (10.5, "FAIL")])
 def test_the_report_draws_the_waterfall_and_judges_the_hard_maximum(
         tmp_path, appearance_after_stop_min, verdict):
-    base = time.mktime(time.strptime("2026-09-28 04:43:42", "%Y-%m-%d %H:%M:%S"))
+    base = BASE
     log = tmp_path / "tower.err.log"
     log.write_text(_walk_log(base), encoding="utf-8")
     out_log = tmp_path / "tower.out.log"
@@ -571,14 +973,130 @@ def test_the_report_draws_the_waterfall_and_judges_the_hard_maximum(
     assert built["areas_from_chore"][0]["appearance_total"] == 68.9
     assert built["tower_walk"]["rebuilds"]["after_stop"] == 1
     assert built["store"]["stage_timing"]["finishes"][0]["stages"]["solve_draw"][0]["wall_s"] == 40.0
+    # M6: the solve sub-rows are the CHOSEN draw's, and say so.
+    labels = [row["stage"] for row in built["waterfall"] if row.get("child")]
+    assert "solve map (solution.json timing: the chosen draw's (draw 1, seed 1) map/gate)" in labels
+    assert not any("last draw" in label for label in labels)
+    assert "consensus draw 1 (seed 1) CHOSEN" in labels
     markdown = report.render_markdown(built)
     assert f"**{verdict}**" in markdown
     assert "| 3 | Final global solve, pid 34464 |" in markdown
     assert "solve_draw: 40.0 s (seed 1)" in markdown
+    assert "## 2. Live safety (C19 F8): **PASS**" in markdown
+
+
+def test_the_report_gives_the_keyframe_sequence_and_the_observe_lag(tmp_path):
+    """T5 / H2: identity by (source_seq, segment_index), never keyframe_id, and
+    the lag from `received_at` to `keyframe_accepted`."""
+    log = tmp_path / "tower.err.log"
+    log.write_text(_walk_log(BASE), encoding="utf-8")
+    _world(tmp_path / "root", BASE, appearance_end=BASE + 700)
+    built = report.build_report(tower_log=log, world_root=tmp_path / "root", client={"tower_captures": [CAP]})
+    keyframes = built["keyframes"]
+    assert keyframes["sequence"] == [[1, 0], [10, 0], [54, 1], [80, 1]]
+    assert keyframes["sha256"] == report.hashlib.sha256(
+        b"[[1,0],[10,0],[54,1],[80,1]]").hexdigest()
+    lag = keyframes["observe_lag_s"]  # 0.5, 2.0, 0.25, 7.0
+    assert (lag["count"], lag["p50"], lag["p95"], lag["p99"], lag["max"]) == (4, 2.0, 7.0, 7.0, 7.0)
+    assert keyframes["observe_lag_unmatched"] == 0
+    report.write_report(tmp_path / "out", built)
+    saved = json.loads((tmp_path / "out" / "keyframes.json").read_text(encoding="utf-8"))
+    assert saved["sha256"] == keyframes["sha256"] and saved["sequence"][2] == [54, 1]
+    # The same walk in another session (another id) is the same sequence.
+    other = report.keyframe_facts(tmp_path / "root" / "worlds" / W / "sessions" / S)
+    assert other["sha256"] == keyframes["sha256"]
+
+
+def test_draw_zero_comes_from_the_snapshot_when_the_run_kept_one(tmp_path):
+    """M6: the consensus overwrote draw 0's solution.json; the snapshot did not."""
+    log = tmp_path / "tower.err.log"
+    log.write_text(_walk_log(BASE), encoding="utf-8")
+    _world(tmp_path / "root", BASE, appearance_end=BASE + 700)
+    run_dir = tmp_path / "run"
+    snaps = run_dir / "solution-snapshots"
+    snaps.mkdir(parents=True)
+    (snaps / "000.json").write_text(json.dumps({"solved_at": BASE + 330.0, "timing": {"map_s": 37.7, "gate_s": 44.0},
+                                                "gate": {"consensus": {"state": "deferred"}}}), encoding="utf-8")
+    (snaps / "index.json").write_text(json.dumps([{"n": 0, "file": "000.json", "mtime": BASE + 336.0}]),
+                                      encoding="utf-8")
+    built = report.build_report(tower_log=log, world_root=tmp_path / "root", client={"tower_captures": [CAP]},
+                                run_dir=run_dir)
+    zero = built["solve_draw_0"]
+    assert (zero["source"], zero["map_s"], zero["published_at"]) == ("snapshot", 37.7, BASE + 336.0)
+    draw_row = next(r for r in built["waterfall"] if r["stage"].startswith("consensus draw 0"))
+    assert draw_row["detail"].startswith("map 37.7 s (draw-0 snapshot)")
+    assert built["milestones"]["draw0_published"]["t"] == BASE + 336.0
+
+
+def _glog(clock):
+    return time.strftime("%Y%m%d %H:%M:%S", time.localtime(int(clock))) + f".{int((clock % 1) * 1e6):06d}"
+
+
+def test_draw_zero_is_estimated_from_solve_log_when_no_snapshot_exists(tmp_path):
+    """M6 fallback for runs made before the snapshots: one end-of-map burst per
+    draw in solve.log, calibrated on the chosen draw's solved_at."""
+    log = tmp_path / "tower.err.log"
+    log.write_text(_walk_log(BASE), encoding="utf-8")
+    world = _world(tmp_path / "root", BASE, appearance_end=BASE + 700)
+    (world / "solve" / S / "solve.log").write_text("\n".join([
+        f"E{_glog(BASE + 90.0)}  7260 global_mapper.cc:26] a background solve, before the final launch",
+        "Loading weights: 100%",
+        f"E{_glog(BASE + 330.0)} 15500 global_mapper.cc:26] Cannot run bundle adjustment",
+        f"E{_glog(BASE + 330.001)} 15500 global_pipeline.cc:190] Global mapping failed",
+        f"E{_glog(BASE + 390.0)} 15500 global_mapper.cc:26] Cannot run bundle adjustment",
+    ]) + "\n", encoding="utf-8")
+    built = report.build_report(tower_log=log, world_root=tmp_path / "root", client={"tower_captures": [CAP]})
+    zero = built["solve_draw_0"]
+    # map starts at launch 224.1 + 68 s of pre-map stages = 292.1; draw 0 ends at
+    # its marker 330.001 + the chosen draw's calibration (392 - 390 = 2 s).
+    assert zero["source"] == "estimate"
+    assert zero["map_s"] == pytest.approx(332.001 - 292.1, abs=0.05)
+    assert zero["published_at"] == pytest.approx(BASE + 392.0 - 25.0, abs=0.01)
+    assert "calibrated +2.00 s on chosen draw 1" in zero["how"]
+    draw_row = next(r for r in built["waterfall"] if r["stage"].startswith("consensus draw 0"))
+    assert "(estimated:" in draw_row["detail"]
+    assert "draw0_published_estimated" in built["milestones"]
+
+
+def test_live_surface_latency_needs_the_runs_surface_watch(tmp_path):
+    log = tmp_path / "tower.err.log"
+    log.write_text(_walk_log(BASE), encoding="utf-8")
+    _world(tmp_path / "root", BASE, appearance_end=BASE + 700)
+    blind = report.build_report(tower_log=log, world_root=tmp_path / "root", client={"tower_captures": [CAP]})
+    assert blind["live_surfaces_latency"]["computable"] is False
+    watch = [{"t": BASE + 41.0, "state": "running", "kind": "live", "updated_at": BASE + 41.0},
+             {"t": BASE + 71.0, "state": "ok", "kind": "live", "updated_at": BASE + 70.0},
+             {"t": BASE + 500.0, "state": "ok", "kind": "final", "updated_at": BASE + 500.0}]
+    seen = report.build_report(tower_log=log, world_root=tmp_path / "root",
+                               client={"tower_captures": [CAP], "surface_watch": watch})
+    surfaces = seen["live_surfaces_latency"]
+    assert surfaces["computable"] and surfaces["surfaces"][0]["latency_s"] == 30.0
+    assert surfaces["surfaces"][0]["killed_at_stop"] is False
+    row = next(r for r in seen["live_safety"]["rows"] if r["check"].startswith("live surfaces"))
+    assert row["result"] == "INFO" and "1 launched" in row["value"]
+
+
+def test_the_live_safety_gate_checks_the_client_against_the_tower(tmp_path):
+    log = tmp_path / "tower.err.log"
+    log.write_text(_walk_log(BASE), encoding="utf-8")
+    _world(tmp_path / "root", BASE, appearance_end=BASE + 700)
+    client = {"tower_captures": [CAP], "schedule": {"frames": 1200},
+              "stream": {"frames_sent": 1200, "unanswered": 0, "frame_errors": {}},
+              "live_tower_watch": {"states_seen": ["idle"]}}
+    ok = report.build_report(tower_log=log, world_root=tmp_path / "root", client=client)
+    assert ok["live_safety"]["result"] == "PASS"
+    contended = report.build_report(tower_log=log, world_root=tmp_path / "root", client={
+        **client, "stream": {"frames_sent": 1201, "unanswered": 1, "frame_errors": {"bad": 1}},
+        "live_tower_watch": {"states_seen": ["busy", "idle"], "busy_since": BASE + 300}})
+    rows = {r["check"]: r["result"] for r in contended["live_safety"]["rows"]}
+    assert rows["frames sent (client) = frames scheduled"] == "FAIL"
+    assert rows["frames received (Tower, all windows) = frames sent"] == "FAIL"
+    assert rows["every frame answered (client): unanswered, frame_error replies"] == "FAIL"
+    assert rows[":8000 during the run"] == "FAIL"
 
 
 def test_the_report_says_not_reached_when_the_photos_never_came(tmp_path):
-    base = time.mktime(time.strptime("2026-09-28 04:43:42", "%Y-%m-%d %H:%M:%S"))
+    base = BASE
     log = tmp_path / "tower.err.log"
     log.write_text("\n".join(_walk_log(base).splitlines()[:14]) + "\n", encoding="utf-8")
     built = report.build_report(tower_log=log, client={"tower_captures": [CAP]})
@@ -596,7 +1114,79 @@ def test_window_use_averages_the_samples_inside_a_row():
     assert report.window_use(rows, 3.0, 4.0) is None
 
 
-# -- the runner's pure parts ----------------------------------------------------------------
+def test_a_finished_run_is_re_reported_from_its_run_dir_into_another_out(tmp_path):
+    """H2: everything is computable after the fact, from the run's --out, its
+    data root and its log, without touching the run's own directory."""
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    log = run_dir / "tower-8031-x.err.log"
+    log.write_text(_walk_log(BASE), encoding="utf-8")
+    data_root = tmp_path / "data"
+    _world(data_root / "world_builder", BASE, appearance_end=BASE + 700)
+    (run_dir / "run.json").write_text(json.dumps({"err_log": str(log), "out_log": str(run_dir / "none.log"),
+                                                  "data_root": str(data_root), "harness": {"sha1": "h"}}),
+                                      encoding="utf-8")
+    (run_dir / "client.json").write_text(json.dumps({"tower_captures": [CAP], "label": "old run 1"}),
+                                         encoding="utf-8")
+    before = sorted(p.name for p in run_dir.iterdir())
+    assert report.main(["--run-dir", str(run_dir), "--out", str(tmp_path / "rerender")]) == 0
+    assert sorted(p.name for p in run_dir.iterdir()) == before  # read only
+    built = json.loads((tmp_path / "rerender" / "report.json").read_text(encoding="utf-8"))
+    assert built["label"] == "old run 1" and built["run"]["harness"]["sha1"] == "h"
+    assert built["keyframes"]["count"] == 4 and (tmp_path / "rerender" / "keyframes.json").exists()
+    assert built["verdict"]["stop_to_settled_min"] == pytest.approx((600.0 - 100.002) / 60, abs=0.01)
+
+
+def _fake_run(directory, *, photos, lag_p95, sequence, horizons=(52,)):
+    directory.mkdir(parents=True)
+    sha = report.hashlib.sha256(json.dumps(sequence, separators=(",", ":")).encode()).hexdigest()
+    (directory / "report.json").write_text(json.dumps({
+        "label": directory.name,
+        "verdict": {"stop_to_room_with_photos_min": photos, "stop_to_settled_min": photos + 7},
+        "tower_walk": {"totals": {"frames_received": 4005, "tx_seq_gap_total": 0},
+                       "frames_observed": 4005, "rebuilds": {"count": 201, "seconds": {"p95": 1.1, "max": 1.9}},
+                       "background_solves": [{"keyframes": k} for k in horizons]},
+        "keyframes": {"sha256": sha, "observe_lag_s": {"p50": 2.0, "p95": lag_p95, "p99": 7.0, "max": 7.2}},
+        "waterfall": [{"n": "3", "minutes": photos - 13, "child": False}],
+        "live_safety": {"result": "PASS"}}), encoding="utf-8")
+    (directory / "keyframes.json").write_text(json.dumps({"sha256": sha, "sequence": sequence}), encoding="utf-8")
+
+
+def test_compare_gives_the_baseline_spread_and_flags_a_candidate_outside_it(tmp_path):
+    same = [[1, 0], [10, 0], [54, 1]]
+    for index, (photos, lag) in enumerate([(47.0, 6.7), (47.5, 6.9), (46.8, 6.8)]):
+        _fake_run(tmp_path / f"old{index}", photos=photos, lag_p95=lag, sequence=same)
+    _fake_run(tmp_path / "new0", photos=40.0, lag_p95=6.8, sequence=same)
+    _fake_run(tmp_path / "new1", photos=41.0, lag_p95=9.5, sequence=[[1, 0], [10, 0], [55, 1]], horizons=(60,))
+    _fake_run(tmp_path / "new2", photos=40.5, lag_p95=6.75, sequence=same)
+    out = tmp_path / "cmp"
+    assert report.main(["--out", str(out), "--compare", *(str(tmp_path / f"old{i}") for i in range(3)),
+                        "--candidate", *(str(tmp_path / f"new{i}") for i in range(3))]) == 0
+    result = json.loads((out / "compare.json").read_text(encoding="utf-8"))
+    assert result["enough_runs"] is True
+    metrics = {m["metric"]: m for m in result["metrics"]}
+    photos = metrics["stop_to_room_with_photos_min"]
+    assert (photos["min"], photos["max"], photos["spread"]) == (46.8, 47.5, 0.7)
+    assert photos["outside"] == [40.0, 41.0, 40.5]
+    assert metrics["observe_lag_s.p95"]["outside"] == [9.5]
+    assert metrics["row 3 min"]["baseline"] == pytest.approx([34.0, 34.5, 33.8])
+    candidates = result["keyframes"]["candidate"]
+    assert [c["identical"] for c in candidates] == [True, False, True]
+    assert candidates[1]["first_difference"] == 2 and candidates[1]["horizons_identical"] is False
+    assert all(item["identical"] for item in result["keyframes"]["baseline"])
+    assert "| stop_to_room_with_photos_min |" in (out / "COMPARE.md").read_text(encoding="utf-8")
+
+
+def test_compare_says_when_there_are_too_few_runs(tmp_path):
+    _fake_run(tmp_path / "old0", photos=47.0, lag_p95=6.7, sequence=[[1, 0]])
+    result = report.compare_runs([tmp_path / "old0"])
+    assert result["enough_runs"] is False
+    assert "not a noise estimate" in report.render_compare(result)
+    with pytest.raises(SystemExit, match="no report.json"):
+        report.compare_runs([tmp_path / "missing"])
+
+
+# -- the runner ------------------------------------------------------------------------------
 
 
 def test_the_tower_environment_drops_the_shells_switches_and_owns_the_roots(tmp_path):
@@ -633,6 +1223,25 @@ def test_inside_is_a_path_test_not_a_string_prefix(tmp_path):
     assert not runner._inside(tmp_path / "ab", tmp_path / "a")
 
 
+def test_code_identity_takes_no_optional_git_locks(tmp_path, monkeypatch):
+    """L3: a plain `git status` can take another lane's index.lock."""
+    (tmp_path / "tower" / "tower").mkdir(parents=True)
+    calls = []
+
+    class Done:
+        returncode, stdout = 0, str(tmp_path / "tower")
+
+    def fake_run(argv, **kwargs):
+        calls.append(argv)
+        return Done()
+
+    monkeypatch.setattr(runner.subprocess, "run", fake_run)
+    identity = runner.code_identity(tmp_path / "tower")
+    assert [argv[1] for argv in calls] == ["--no-optional-locks"] * 3
+    assert calls[-1][-3:] == ["status", "--porcelain", "--untracked-files=no"]
+    assert "git_dirty" in identity
+
+
 def test_the_runner_refuses_a_non_empty_data_root_before_starting_anything(tmp_path):
     root = tmp_path / "root"
     root.mkdir()
@@ -646,6 +1255,180 @@ def test_the_runner_refuses_port_8000(tmp_path):
     with pytest.raises(SystemExit, match="live Tower"):
         runner.main(["--capture", A, "--code", str(tmp_path), "--port", "8000",
                      "--data-root", str(tmp_path / "root"), "--out", str(tmp_path / "out")])
+
+
+@pytest.mark.parametrize("flag", ["--data-root", "--out"])
+def test_the_runner_refuses_a_drive_root_for_what_it_writes(tmp_path, flag):
+    """T6: the two flags that write go through artifact_root_arg."""
+    drive = Path(tmp_path.anchor) / "c22-drive-root-test"
+    paths = {"--data-root": str(tmp_path / "root"), "--out": str(tmp_path / "out"), flag: str(drive)}
+    with pytest.raises(SystemExit) as refused:
+        runner.main(["--capture", A, "--code", str(tmp_path), "--port", "8031",
+                     "--data-root", paths["--data-root"], "--out", paths["--out"]])
+    assert refused.value.code == 2
+    assert not drive.exists()
+
+
+def test_the_client_and_the_report_refuse_a_drive_root_out(tmp_path):
+    drive = str(Path(tmp_path.anchor) / "c22-drive-root-test")
+    with pytest.raises(SystemExit) as client:
+        replay.main(["--capture", A, "--port", "8031", "--tower-pid", "1", "--out", drive])
+    with pytest.raises(SystemExit) as rendered:
+        report.main(["--out", drive, "--tower-log", str(tmp_path / "x.log")])
+    assert client.value.code == 2 and rendered.value.code == 2
+
+
+class _FakeProcess:
+    pid = 4242
+    returncode = None
+
+    def poll(self):
+        return None
+
+
+class _FakeJob:
+    closed = False
+
+    def close(self):
+        self.closed = True
+
+
+@pytest.fixture
+def lifecycle(tmp_path, monkeypatch):
+    """The runner with every outside effect replaced: no process, no job, no
+    network, no git. `state` steers it; `calls` records what it did."""
+    code = tmp_path / "code" / "tower"
+    (code / "tower").mkdir(parents=True)
+    (code / "tower" / "main.py").write_text("", encoding="utf-8")
+    state = {"live": ["idle"], "health": (200, IDLE_HEALTH), "owners": {4242}, "job": _FakeJob(),
+             "replay": lambda options: {"outcome": "settled", "tower_captures": []}}
+    calls = {"spawn": [], "terminate": [], "options": []}
+
+    def live(url=None, timeout=None):
+        return state["live"].pop(0) if len(state["live"]) > 1 else state["live"][0]
+
+    def spawn(command, **kwargs):
+        calls["spawn"].append(command)
+        return _FakeProcess()
+
+    async def fake_run_replay(options):
+        calls["options"].append(options)
+        return state["replay"](options)
+
+    monkeypatch.setattr(runner, "live_tower_state", live)
+    monkeypatch.setattr(runner, "port_in_use", lambda port: False)
+    monkeypatch.setattr(runner, "probe_import", lambda tower_dir, env: str(tower_dir / "tower" / "__init__.py"))
+    monkeypatch.setattr(runner, "spawn_tower", spawn)
+    monkeypatch.setattr(runner, "assign_to_job", lambda process: state["job"])
+    monkeypatch.setattr(runner, "terminate_tree",
+                        lambda process, job=None, timeout=0, hard=False: calls["terminate"].append(process))
+    monkeypatch.setattr(runner, "http_json", lambda *a, **k: state["health"])
+    monkeypatch.setattr(runner, "listener_pids", lambda port: state["owners"])
+    monkeypatch.setattr(runner, "run_replay", fake_run_replay)
+    monkeypatch.setattr(runner, "_leftovers", lambda port, markers: [])
+    monkeypatch.setattr(runner, "harness_identity", lambda: {"sha1": "harness"})
+    monkeypatch.setattr(runner, "HEALTH_POLL_S", 0.01)
+    monkeypatch.setattr(runner, "IDLE_POLL_S", 0.0)
+    monkeypatch.setattr(runner, "AFTER_STOP_S", 0.0)
+    argv = ["--capture", A, "--code", str(code), "--port", "8031", "--data-root", str(tmp_path / "data"),
+            "--out", str(tmp_path / "out"), "--intrinsics-from", str(tmp_path / "no-intrinsics"),
+            "--health-timeout", "0.2"]
+    return {"state": state, "calls": calls, "argv": argv, "out": tmp_path / "out"}
+
+
+def _run_json(lifecycle):
+    return json.loads((lifecycle["out"] / "run.json").read_text(encoding="utf-8"))
+
+
+def test_the_runner_settles_stops_the_tower_and_hands_the_client_a_kill_switch(lifecycle):
+    assert runner.main(lifecycle["argv"]) == 0
+    calls = lifecycle["calls"]
+    assert len(calls["spawn"]) == 1 and len(calls["terminate"]) == 1
+    options = calls["options"][0]
+    assert options.tower_pid == 4242 and callable(options.on_abort)
+    options.on_abort()  # M3: the client's abort kills the Tower at once
+    assert len(calls["terminate"]) == 2
+    run = _run_json(lifecycle)
+    assert run["harness"] == {"sha1": "harness"} and run["listener_pids"] == [4242]
+    assert set(run["timing_env"]) == set(runner.TIMING_ENV_KEYS)
+    assert run["live_tower_at_start"] == "idle" and run["job"] is True
+    assert (lifecycle["out"] / "report.json").exists()
+
+
+@pytest.mark.parametrize("how", ["health-timeout", "replay-raises", "ctrl-c", "no-job", "foreign-listener",
+                                 "live-walk-during-startup"])
+def test_the_runner_stops_the_tower_on_every_exit_path(lifecycle, monkeypatch, how):
+    """T3 / L2 / M3 / M4: whatever ends the run, the Tower started is stopped."""
+    state, calls = lifecycle["state"], lifecycle["calls"]
+    expect = None
+    if how == "health-timeout":
+        state["health"] = (None, None)
+        expect = pytest.raises(SystemExit, match="did not answer")
+    elif how == "replay-raises":
+        state["replay"] = lambda options: (_ for _ in ()).throw(RuntimeError("boom"))
+    elif how == "ctrl-c":
+        state["replay"] = lambda options: (_ for _ in ()).throw(KeyboardInterrupt())
+    elif how == "no-job":
+        if os.name != "nt":
+            pytest.skip("a Job Object is a Windows guarantee")
+        state["job"] = None
+        expect = pytest.raises(SystemExit, match="Job Object")
+    elif how == "foreign-listener":
+        state["owners"] = {4242, 777}
+        expect = pytest.raises(SystemExit, match="served by")
+    elif how == "live-walk-during-startup":
+        state["live"] = ["idle", "recording"]  # idle at the start check, a walk once the Tower is starting
+        monkeypatch.setattr(runner, "LIVE_WATCH_EVERY_S", 0.0)
+    if expect is None:
+        code = runner.main(lifecycle["argv"])
+    else:
+        with expect:
+            runner.main(lifecycle["argv"])
+        code = None
+    assert len(calls["spawn"]) == 1
+    assert len(calls["terminate"]) == 1, "the finally must stop the Tower exactly once here"
+    run = _run_json(lifecycle)
+    assert "stopped_at" in run
+    if how in ("replay-raises", "ctrl-c"):
+        assert code == runner.EXIT_ERROR
+    if how == "live-walk-during-startup":
+        assert code == runner.EXIT_ABORTED and run["aborted"]["during"] == "startup"
+        assert calls["options"] == []  # the replay never began
+    if how == "no-job":
+        assert run["job"] is False and calls["options"] == []
+
+
+@pytest.mark.parametrize("how, match", [
+    ("port-in-use", "already listens"),
+    ("data-root-in-live-store", "inside the live store"),
+    ("import-elsewhere", "import tower resolves"),
+    ("out-not-empty", "not empty"),
+])
+def test_the_runner_refuses_before_starting_anything(lifecycle, monkeypatch, tmp_path, how, match):
+    """T4: refusals, with the port probe and the live store monkeypatched --
+    no port in 8031-8040 is bound or probed."""
+    argv = list(lifecycle["argv"])
+    if how == "port-in-use":
+        monkeypatch.setattr(runner, "port_in_use", lambda port: True)
+    elif how == "data-root-in-live-store":
+        monkeypatch.setattr(runner, "LIVE_DATA", tmp_path / "live")
+        argv[argv.index("--data-root") + 1] = str(tmp_path / "live" / "world_builder" / "x")
+    elif how == "import-elsewhere":
+        monkeypatch.setattr(runner, "probe_import", lambda tower_dir, env: r"C:\elsewhere\tower\__init__.py")
+    elif how == "out-not-empty":
+        lifecycle["out"].mkdir()
+        (lifecycle["out"] / "runner.log").write_text("an earlier run", encoding="utf-8")
+    with pytest.raises(SystemExit, match=match):
+        runner.main(argv)
+    assert lifecycle["calls"]["spawn"] == [] and lifecycle["calls"]["terminate"] == []
+
+
+@pytest.mark.parametrize("live", ["recording", "busy", "unknown"])
+def test_the_runner_starts_nothing_unless_8000_is_idle_or_down(lifecycle, live):
+    """M1 / M2: the runner's own start check fails closed too."""
+    lifecycle["state"]["live"] = [live]
+    assert runner.main(lifecycle["argv"]) == runner.EXIT_ABORTED
+    assert lifecycle["calls"]["spawn"] == []
 
 
 def test_chore_reports_are_read_across_interleaved_access_lines(tmp_path):

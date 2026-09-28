@@ -27,26 +27,45 @@ recorded walk back through the phone's own door instead:
   * across a multi-capture walk as the phone produced it. A capture that
     ended by `disconnect` is ended by closing the socket, and the next one
     begins on a new socket at its recorded offset. That offset is inside the
-    90 s resume grace, so the Tower keeps one session.
+    90 s resume grace, so the Tower keeps one session. On the new socket the
+    phone re-sends its handshake AND `POST .../session/start`
+    (`WorldBuilderSessionController.towerReachabilityChanged`), and so does
+    this: without the POST the Tower's deferred stop ends World Builder
+    105 s after the disconnect (`ws.py` `_arm_world_builder_follow_up`).
 
 Then it follows the Tower from Stop until it settles: finalization, room
 surface, room appearance, worker exit, and the finisher chore's areas. It
-samples CPU and GPU every few seconds and writes a report in the shape of
-`PROFILE-walk5.md` (`world_live_replay_report.py`).
+samples CPU and GPU every few seconds, keeps a copy of `solution.json` each
+time it changes (draw 0's early publish is overwritten by the consensus),
+watches the session's surface `status.json` (the store keeps only the last
+one), and writes a report in the shape of `PROFILE-walk5.md`
+(`world_live_replay_report.py`).
 
 SAFETY
   * It never talks to :8000 except to read `/health`, and it refuses a
     target port below 8031.
-  * Before streaming, and every few seconds while it runs, it asks :8000's
-    `/health` whether a real walk is being recorded. If one is, it does not
-    start; or it stops streaming at once and returns `aborted`, so its runner
-    can stop the test Tower and free the GPU.
+  * THE :8000 GUARD FAILS CLOSED. Before streaming, and every few seconds
+    while it runs, it reads :8000's `/health` into one of five states
+    (`live_tower_state`): `recording`, `busy` (a world is being finished:
+    capture workers alive or the finisher chore running), `idle`, `down`
+    (the connection was refused: nothing listens), `unknown` (a timeout, a
+    5xx, anything else). It does not start on `recording`, `busy` or
+    `unknown`. Once running it aborts on `recording` or on two `unknown`
+    answers in a row, and records when :8000 became `busy`.
+  * On abort the runner's `on_abort` kills the test Tower FIRST, then the
+    client tears down.
+  * It refuses a target that is recording or has capture workers, and,
+    given the test Tower's pid, a target whose listener is another process.
   * It reads the stored capture and writes nothing beside it.
 
 WHAT IT CANNOT SEE is listed in RUN\\experiments\\C22-REPLAY\\README.md. In
 short: the phone's own experience (rendering, battery, the radio link, the
-phone's send window dropping frames under backpressure), and anything that
-depends on the store holding earlier worlds (a fresh root has none).
+phone's send window dropping frames under backpressure), anything that
+depends on the store holding earlier worlds (a fresh root has none), and a
+phone's reconnect OVERLAP: a phone's dropped socket is noticed 20-40 s late,
+so its new socket's `stream_start` supersedes the old capture while the old
+connection still counts; the replay closes cleanly and reconnects, so the
+Tower always takes the last-client path.
 
 Usually driven by `world_live_replay_run.py`, which starts a test Tower from
 a named code tree, runs this, stops the Tower and writes the report.
@@ -59,6 +78,7 @@ import asyncio
 import base64
 import contextlib
 import csv
+import hashlib
 import json
 import os
 import statistics
@@ -91,6 +111,15 @@ LIVE_HEALTH_URL = f"http://127.0.0.1:{LIVE_TOWER_PORT}/health"
 # never point a replay at the live Tower or at another lane's.
 MIN_TEST_PORT = 8031
 
+# The live guard (review C22 M1/M2). A slow answer is not "down": a Tower
+# that is recording or finishing a world while the test Tower loads every
+# core answers late, and that is exactly the case the guard exists for.
+LIVE_GUARD_TIMEOUT_S = 5.0
+# States in which a replay does not start.
+LIVE_REFUSE_AT_START = frozenset({"recording", "busy", "unknown"})
+# Consecutive `unknown` answers that abort a running replay.
+LIVE_UNKNOWN_ABORT_AFTER = 2
+
 WORLD_BUILDER = "world_builder"
 WORLD_BUILDER_RESULT_TYPE = "status"
 
@@ -98,6 +127,9 @@ EXIT_SETTLED = 0
 EXIT_ERROR = 1
 EXIT_NOT_SETTLED = 2
 EXIT_ABORTED = 3
+
+# The harness itself, pinned in every run record (review C22 L5).
+HARNESS_FILES = ("world_live_replay.py", "world_live_replay_report.py", "world_live_replay_run.py")
 
 # Leaf keys copied out of each World Builder status push to show what the
 # phone was being told, and when. Generic on purpose: the payload is large
@@ -433,7 +465,8 @@ def fine_timer():
 
 
 def distribution(values) -> dict:
-    """count / mean / p50 / p95 / max of a list of numbers, rounded."""
+    """count / mean / p50 / p95 / p99 / max of a list of numbers, rounded.
+    Percentiles are nearest-rank on (n - 1), as in the report."""
     values = sorted(float(v) for v in values)
     if not values:
         return {"count": 0}
@@ -446,6 +479,7 @@ def distribution(values) -> dict:
         "mean": round(statistics.fmean(values), 4),
         "p50": round(pick(0.5), 4),
         "p95": round(pick(0.95), 4),
+        "p99": round(pick(0.99), 4),
         "max": round(values[-1], 4),
     }
 
@@ -481,14 +515,175 @@ def http_bytes(url: str, timeout: float = 30.0):
         return None, 0
 
 
-def live_walk_recording(url: str = LIVE_HEALTH_URL, timeout: float = 3.0):
-    """True when the live Tower is recording a walk, False when it is not,
-    None when it does not answer (a Tower that is down records nothing)."""
-    status, doc = http_json("GET", url, timeout=timeout)
-    if status != 200 or not isinstance(doc, dict):
+def health_probe(url: str, timeout: float = LIVE_GUARD_TIMEOUT_S):
+    """(kind, doc) for one GET of a `/health`. `kind` is `ok` (200 and a JSON
+    object), `refused` (the connection was refused: nothing listens), or
+    `timeout` / `error` (anything else: a slow Tower, a 5xx, a reset, a body
+    that is not JSON). Never raises for an HTTP or socket fault."""
+    try:
+        with urllib.request.urlopen(url, timeout=timeout) as response:
+            body = response.read()
+            status = response.status
+    except urllib.error.HTTPError as exc:
+        return "error", {"status": exc.code}
+    except urllib.error.URLError as exc:
+        reason = exc.reason
+        if isinstance(reason, ConnectionRefusedError):
+            return "refused", None
+        if isinstance(reason, TimeoutError):
+            return "timeout", None
+        return "error", None
+    except ConnectionRefusedError:
+        return "refused", None
+    except TimeoutError:  # socket.timeout is TimeoutError on 3.10+
+        return "timeout", None
+    except (OSError, ValueError):
+        return "error", None
+    if status != 200:
+        return "error", {"status": status}
+    try:
+        doc = json.loads(body.decode("utf-8"))
+    except (ValueError, UnicodeDecodeError):
+        return "error", None
+    return ("ok", doc) if isinstance(doc, dict) else ("error", None)
+
+
+def classify_health(doc: dict) -> str:
+    """`recording`, `busy` or `idle` from a `/health` answer.
+
+    `busy` is a Tower finishing a world: after a real walk's Stop, :8000
+    runs 35-55 min of GPU-heavy finishing with `recording: false`, and a
+    replay started then distorts both runs (review C22 M2).
+    """
+    capture = doc.get("capture") if isinstance(doc.get("capture"), dict) else {}
+    if capture.get("recording"):
+        return "recording"
+    workers = (doc.get("capture_workers") or {}).get("workers") if isinstance(
+        doc.get("capture_workers"), dict) else None
+    chore = doc.get("background_chore") if isinstance(doc.get("background_chore"), dict) else {}
+    if (isinstance(workers, list) and workers) or chore.get("state") == "running":
+        return "busy"
+    return "idle"
+
+
+def live_tower_state(url: str = LIVE_HEALTH_URL, timeout: float = LIVE_GUARD_TIMEOUT_S) -> str:
+    """:8000 as one of `recording`, `busy`, `idle`, `down`, `unknown`.
+
+    FAILS CLOSED (review C22 M1). Only a refused connection is `down`: on
+    loopback that is a definite "nothing listens", and a Tower that is not
+    running records nothing. A timeout, a 5xx or a garbled answer is
+    `unknown`, never "not recording": a live Tower that is recording, or
+    finishing a world while the test Tower loads every core, answers late.
+    """
+    kind, doc = health_probe(url, timeout)
+    if kind == "refused":
+        return "down"
+    if kind != "ok":
+        return "unknown"
+    return classify_health(doc)
+
+
+class LiveGuard:
+    """What :8000's state means once a replay (or its runner) is running.
+
+    Aborts on `recording`, and on `LIVE_UNKNOWN_ABORT_AFTER` `unknown`
+    answers in a row: one late answer is a loaded machine, two is a Tower
+    that cannot be vouched for. `busy` does not abort -- a finisher chore
+    can start on :8000 at any idle moment -- but when it began is kept, so
+    the report can say the run was contended. Every change of state is kept.
+    """
+
+    def __init__(self, at_start: str | None = None, clock=time.time):
+        self.at_start = at_start
+        self._clock = clock
+        self.unknown_streak = 0
+        self.history: list = []
+        self.busy_since = None
+        self.last = at_start
+        if at_start is not None:
+            self.history.append({"t": round(clock(), 3), "state": at_start})
+
+    def observe(self, state: str) -> str | None:
+        """An abort reason, or None to carry on."""
+        now = self._clock()
+        if state != self.last:
+            self.history.append({"t": round(now, 3), "state": state})
+            self.last = state
+        if state == "busy" and self.busy_since is None:
+            self.busy_since = round(now, 3)
+        if state == "recording":
+            return "a live walk is being recorded on :8000"
+        if state == "unknown":
+            self.unknown_streak += 1
+            if self.unknown_streak >= LIVE_UNKNOWN_ABORT_AFTER:
+                return (f":8000 gave no usable /health answer {self.unknown_streak} times in a row "
+                        "(timeout or error); failing closed")
+        else:
+            self.unknown_streak = 0
         return None
-    capture = doc.get("capture") or {}
-    return bool(isinstance(capture, dict) and capture.get("recording"))
+
+    def summary(self) -> dict:
+        states = [item["state"] for item in self.history]
+        return {"at_start": self.at_start, "history": self.history, "busy_since": self.busy_since,
+                "states_seen": sorted(set(states))}
+
+
+def listener_pids(port: int):
+    """The pids listening on TCP `port`, or None when that cannot be read."""
+    try:
+        import psutil
+
+        return {c.pid for c in psutil.net_connections("tcp")
+                if c.status == psutil.CONN_LISTEN and c.laddr and c.laddr.port == port}
+    except Exception:  # noqa: BLE001 -- unknown is refused by the caller
+        return None
+
+
+def target_refusal(health: dict | None) -> str | None:
+    """Why a test Tower must not be streamed into, or None (review C22 M4).
+    A target that is recording or has capture workers is somebody's run."""
+    if not isinstance(health, dict):
+        return "the target gave no /health answer"
+    state = classify_health(health)
+    if state == "recording":
+        return "the target is recording a capture already"
+    workers = (health.get("capture_workers") or {}).get("workers") if isinstance(
+        health.get("capture_workers"), dict) else None
+    if isinstance(workers, list) and workers:
+        return f"the target has {len(workers)} capture worker(s) alive"
+    return None
+
+
+def harness_identity() -> dict:
+    """Which harness this is: the sha1 of its three scripts, and git HEAD and
+    the scripts' own uncommitted changes when they sit in a checkout
+    (review C22 L5: "pin its SHA before any proof"). Read-only git, without
+    optional locks."""
+    scripts = Path(__file__).resolve().parent
+    digest = hashlib.sha1()
+    files = {}
+    for name in HARNESS_FILES:
+        try:
+            data = (scripts / name).read_bytes()
+        except OSError:
+            files[name] = None
+            continue
+        files[name] = hashlib.sha1(data).hexdigest()
+        digest.update(name.encode())
+        digest.update(data)
+    identity = {"scripts_dir": str(scripts), "sha1": digest.hexdigest(), "files_sha1": files}
+    try:
+        head = subprocess.run(["git", "--no-optional-locks", "-C", str(scripts), "rev-parse", "HEAD"],
+                              capture_output=True, text=True, timeout=20)
+        if head.returncode == 0:
+            identity["git_head"] = head.stdout.strip()
+            dirty = subprocess.run(["git", "--no-optional-locks", "-C", str(scripts), "status",
+                                    "--porcelain", "--", *HARNESS_FILES],
+                                   capture_output=True, text=True, timeout=60)
+            identity["git_dirty"] = [line for line in dirty.stdout.splitlines() if line.strip()]
+    except (OSError, subprocess.SubprocessError):
+        pass
+    return identity
 
 
 # -- what the phone would have been told ---------------------------------------
@@ -875,10 +1070,10 @@ class ResourceSampler(threading.Thread):
             psutil.cpu_percent(None)
         writer = handle = None
         if self.csv_path is not None:
-            handle = open(self.csv_path, "a", newline="", encoding="utf-8")
+            # Never appended to (review C22 L4): one file is one run's samples.
+            handle = open(self.csv_path, "w", newline="", encoding="utf-8")
             writer = csv.DictWriter(handle, fieldnames=SAMPLE_FIELDS)
-            if handle.tell() == 0:
-                writer.writeheader()
+            writer.writeheader()
         try:
             while not self._stop_event.wait(self.interval):
                 row = self._sample(psutil, previous, last_t)
@@ -967,6 +1162,93 @@ def _read_json(path: Path | None):
         return None
 
 
+def solution_path_for(session_path: Path | None) -> Path | None:
+    """`worlds/<w>/solve/<s>/solution.json` beside `worlds/<w>/sessions/<s>/session.json`."""
+    if session_path is None:
+        return None
+    session_path = Path(session_path)
+    return session_path.parents[2] / "solve" / session_path.parent.name / "solution.json"
+
+
+class SolutionSnapshots:
+    """A copy of `solution.json` each time it changes, into `<out>/solution-snapshots/`.
+
+    WHY (review C22 M6). A consensus solve publishes draw 0 first, its
+    consensus `deferred`, and overwrites it minutes later with the chosen
+    draw's. Draw 0's map and gate times, and when it was published, exist
+    only in that first version. The file is written atomically by the
+    Tower, so a copy is never torn; a copy that does not parse is skipped
+    and retried on the next poll. Reads the data root; writes only `out`.
+    """
+
+    def __init__(self, out: Path):
+        self.dir = Path(out) / "solution-snapshots"
+        self.items: list = []
+        self._last = None
+
+    def poll(self, path: Path | None) -> bool:
+        if path is None:
+            return False
+        try:
+            st = Path(path).stat()
+            data = Path(path).read_bytes()
+        except OSError:
+            return False
+        stamp = (st.st_mtime_ns, st.st_size)
+        if stamp == self._last:
+            return False
+        try:
+            doc = json.loads(data.decode("utf-8"))
+        except (ValueError, UnicodeDecodeError):
+            return False
+        self._last = stamp
+        n = len(self.items)
+        name = f"{n:03d}.json"
+        self.dir.mkdir(parents=True, exist_ok=True)
+        (self.dir / name).write_bytes(data)
+        gate = doc.get("gate") if isinstance(doc.get("gate"), dict) else {}
+        consensus = gate.get("consensus") if isinstance(gate.get("consensus"), dict) else {}
+        timing = doc.get("timing") if isinstance(doc.get("timing"), dict) else {}
+        self.items.append({
+            "n": n, "file": name, "mtime": round(st.st_mtime, 3), "seen_at": round(time.time(), 3),
+            "solved_at": doc.get("solved_at"), "consensus_state": consensus.get("state"),
+            "map_s": timing.get("map_s"), "gate_s": timing.get("gate_s"),
+        })
+        index = self.dir / "index.json.tmp"
+        index.write_text(json.dumps(self.items, indent=2), encoding="utf-8")
+        os.replace(index, self.dir / "index.json")
+        return True
+
+
+class SurfaceWatch:
+    """The session's `surface/<s>/status.json`, read while the run lasts.
+
+    WHY. Each live surface and then the final one overwrite that one file,
+    and the Tower logs a live surface's launch but not its end, so a
+    finished run's store cannot say when a live surface became `ok`. Each
+    change of (pid, state, stage, updated_at) is kept, with the kind -- live
+    or final -- read from the params digest. Read only.
+    """
+
+    def __init__(self):
+        self.transitions: list = []
+        self._last = None
+
+    def poll(self, path: Path) -> bool:
+        doc = _read_json(path)
+        if not isinstance(doc, dict):
+            return False
+        key = (doc.get("pid"), doc.get("state"), doc.get("stage"), doc.get("updated_at"))
+        if key == self._last:
+            return False
+        self._last = key
+        digest = str(doc.get("params_digest") or "")
+        kind = "live" if "|live|" in digest else "final" if "|final|" in digest else None
+        self.transitions.append({"t": round(time.time(), 3), "pid": key[0], "state": key[1],
+                                 "stage": key[2], "updated_at": key[3], "kind": kind})
+        return True
+
+
 def settle_snapshot(health: dict | None, session: dict | None) -> dict:
     """The facts the settle follower watches, flattened."""
     snap = {"health": health is not None}
@@ -1047,6 +1329,12 @@ class ReplayOptions:
     live_guard: bool = True
     live_guard_url: str = LIVE_HEALTH_URL
     live_guard_every: float = 10.0
+    live_guard_timeout: float = LIVE_GUARD_TIMEOUT_S
+    # Called (in a thread) the moment the live guard aborts, BEFORE the
+    # client tears down: the runner passes "kill the test Tower", so the GPU
+    # is free at once rather than after the teardown's waits (review C22 M3).
+    on_abort: object = None
+    surface_watch_seconds: float = 1.0
     label: str | None = None
 
 
@@ -1057,17 +1345,47 @@ def _log(out: Path, text: str) -> None:
         handle.write(line + "\n")
 
 
-async def _guard_live(options: ReplayOptions, abort: asyncio.Event, record: dict, stop: asyncio.Event):
+async def _guard_live(options: ReplayOptions, abort: asyncio.Event, record: dict, stop: asyncio.Event,
+                      guard: LiveGuard | None = None):
+    """Watch :8000 for the whole run, streaming and settle alike. On an abort
+    reason: set `abort`, then run `on_abort` (kill the test Tower) and only
+    then return, so the caller's teardown comes after the kill."""
+    guard = guard if guard is not None else LiveGuard(record.get("live_tower_at_start"))
+    busy_logged = False
     while not stop.is_set() and not abort.is_set():
-        recording = await asyncio.to_thread(live_walk_recording, options.live_guard_url)
-        if recording:
-            record["aborted"] = {"t": round(time.time(), 3),
-                                 "reason": "a live walk is being recorded on :8000"}
-            _log(options.out, "ABORT: :8000 is recording a live walk; stopping the replay now")
+        state = await asyncio.to_thread(live_tower_state, options.live_guard_url, options.live_guard_timeout)
+        reason = guard.observe(state)
+        record["live_tower_watch"] = guard.summary()
+        if guard.busy_since is not None and not busy_logged:
+            busy_logged = True
+            _log(options.out, ":8000 is busy finishing a world; this run is contended from here "
+                              "(recorded in client.json live_tower_watch)")
+        if reason:
+            record["aborted"] = {"t": round(time.time(), 3), "reason": reason}
+            _log(options.out, f"ABORT: {reason}; stopping the replay now")
             abort.set()
+            if options.on_abort is not None:
+                try:
+                    await asyncio.to_thread(options.on_abort)
+                    record["aborted"]["on_abort_done"] = round(time.time(), 3)
+                except Exception as exc:  # noqa: BLE001 -- the runner's finally stops it again
+                    record["aborted"]["on_abort_error"] = repr(exc)
             return
         with contextlib.suppress(asyncio.TimeoutError):
             await asyncio.wait_for(stop.wait(), options.live_guard_every)
+
+
+async def _watch_surface(options: ReplayOptions, phone: "PhoneView", watch: SurfaceWatch,
+                         stop: asyncio.Event) -> None:
+    """Poll the session's surface status.json once the pushes name the session."""
+    while not stop.is_set():
+        if options.world_root is not None and phone.target:
+            world_id, session_id = phone.target
+            path = Path(options.world_root) / "worlds" / world_id / "surface" / session_id / "status.json"
+            with contextlib.suppress(Exception):
+                await asyncio.to_thread(watch.poll, path)
+        with contextlib.suppress(asyncio.TimeoutError):
+            await asyncio.wait_for(stop.wait(), options.surface_watch_seconds)
 
 
 async def _wait_or_abort(abort: asyncio.Event, seconds: float) -> None:
@@ -1093,17 +1411,24 @@ async def run_replay(options: ReplayOptions) -> dict:
         "first_seconds": options.first_seconds,
         "after_stop": options.after_stop,
         "started_at": round(time.time(), 3),
+        "harness": harness_identity(),
         "outcome": None,
     }
 
+    guard = None
     if options.live_guard:
-        live = live_walk_recording(options.live_guard_url)
-        record["live_tower_at_start"] = {True: "recording", False: "idle", None: "no answer"}[live]
-        if live:
-            record["outcome"] = "refused-live-walk"
-            _log(out, "REFUSED: :8000 is recording a live walk; nothing was streamed")
+        live = await asyncio.to_thread(live_tower_state, options.live_guard_url, options.live_guard_timeout)
+        record["live_tower_at_start"] = live
+        if live in LIVE_REFUSE_AT_START:
+            record["outcome"] = {"recording": "refused-live-walk", "busy": "refused-live-busy",
+                                 "unknown": "refused-live-unknown"}[live]
+            _log(out, {"recording": "REFUSED: :8000 is recording a live walk",
+                       "busy": "REFUSED: :8000 is finishing a world (capture workers alive or the chore running)",
+                       "unknown": "REFUSED: :8000 gave no usable /health answer; the guard fails closed",
+                       }[live] + "; nothing was streamed")
             _write_client(out, record)
             return record
+        guard = LiveGuard(live)
 
     walk = load_walk(options.capture_root, options.captures, follow_chain=options.follow_chain)
     schedule = build_schedule(walk, speed=options.speed, first_seconds=options.first_seconds,
@@ -1125,15 +1450,39 @@ async def run_replay(options: ReplayOptions) -> dict:
         _write_client(out, record)
         return record
     record["tower_health_at_start"] = settle_snapshot(health, None)
+    # Is the target idle, and is it ours? (review C22 M4) A second
+    # `stream_start` into somebody else's run supersedes its recording.
+    busy = target_refusal(health)
+    if busy is not None:
+        record["outcome"] = "refused-target-busy"
+        _log(out, f"REFUSED: {busy} on :{options.port}; nothing was streamed")
+        _write_client(out, record)
+        return record
+    if options.tower_pid is None:
+        record["target_listener"] = {"checked": False, "why": "no tower pid given"}
+    else:
+        owners = await asyncio.to_thread(listener_pids, options.port)
+        record["target_listener"] = {"checked": True, "pids": None if owners is None else sorted(owners),
+                                     "expected": options.tower_pid}
+        if owners != {options.tower_pid}:
+            record["outcome"] = "refused-target-foreign"
+            _log(out, f"REFUSED: :{options.port} is served by {owners}, not the test Tower "
+                      f"{options.tower_pid}; nothing was streamed")
+            _write_client(out, record)
+            return record
 
     stats = StreamStats()
     phone = PhoneView()
     mirror = GeometryMirror(base, enabled=options.phone_fetches)
+    surfaces = SurfaceWatch()
     abort = asyncio.Event()
     stop_background = asyncio.Event()
-    background = [asyncio.create_task(mirror.run(stop_background))]
+    background = [asyncio.create_task(mirror.run(stop_background)),
+                  asyncio.create_task(_watch_surface(options, phone, surfaces, stop_background))]
+    guard_task = None
     if options.live_guard:
-        background.append(asyncio.create_task(_guard_live(options, abort, record, stop_background)))
+        guard_task = asyncio.create_task(_guard_live(options, abort, record, stop_background, guard))
+        background.append(guard_task)
     sampler = ResourceSampler(options.tower_pid, options.sample_seconds, out / "samples.csv")
     sampler.start()
     uri = f"ws://127.0.0.1:{options.port}/ws"
@@ -1143,6 +1492,12 @@ async def run_replay(options: ReplayOptions) -> dict:
     def note(kind: str, **extra) -> None:
         events.append({"t": round(time.time(), 3), "kind": kind, **extra})
 
+    async def start_session() -> dict:
+        status, body = await asyncio.to_thread(
+            http_json, "POST", f"{base}/cartridges/{WORLD_BUILDER}/session/start", 15.0)
+        return {"status": status, "state": (body or {}).get("state"),
+                "session_id": (body or {}).get("session_id")}
+
     socket = None
     try:
         with fine_timer():
@@ -1151,12 +1506,9 @@ async def run_replay(options: ReplayOptions) -> dict:
             record["handshake"] = await socket.handshake(options.subscribe)
             note("connected", handshake=record["handshake"])
             if options.start_session:
-                status, body = await asyncio.to_thread(
-                    http_json, "POST", f"{base}/cartridges/{WORLD_BUILDER}/session/start", 15.0)
-                record["session_start"] = {"status": status, "state": (body or {}).get("state"),
-                                           "session_id": (body or {}).get("session_id")}
-                note("session_start", status=status)
-                _log(out, f"POST session/start -> {status} {record['session_start']}")
+                record["session_start"] = await start_session()
+                note("session_start", status=record["session_start"]["status"])
+                _log(out, f"POST session/start -> {record['session_start']['status']} {record['session_start']}")
                 await _wait_or_abort(abort, options.session_lead)
 
             pacer = Pacer()
@@ -1185,15 +1537,21 @@ async def run_replay(options: ReplayOptions) -> dict:
                 elif step.kind == "connect":
                     socket = TowerSocket(uri, stats, phone, mirror)
                     await socket.open()
-                    note("reconnected", handshake=await socket.handshake(options.subscribe))
+                    handshake = await socket.handshake(options.subscribe)
+                    # The phone re-sends `start` on every reconnect
+                    # (`towerReachabilityChanged`). It is the only thing that
+                    # moves `requested_at`, so without it the Tower's deferred
+                    # stop ends World Builder 105 s after the disconnect
+                    # (review C22 H1).
+                    restarted = await start_session() if options.start_session else None
+                    note("reconnected", handshake=handshake, session_start=restarted)
                 elif step.kind == "stream_start":
                     await socket.send({"type": "stream_start"})
                     note("stream_start", capture=step.capture, late_s=round(late, 4))
                     # Off the send path: the Tower is spawning the builder
                     # right now, and an inline /health held the first frames
                     # back by ~0.5 s in the first smoke run.
-                    background.append(asyncio.create_task(
-                        _learn_capture(base, tower_captures, len(tower_captures))))
+                    background.append(asyncio.create_task(_learn_capture(base, tower_captures)))
                 elif step.kind == "stream_stop":
                     await socket.send({"type": "stream_stop"})
                     note("stream_stop", capture=step.capture, late_s=round(late, 4))
@@ -1221,34 +1579,47 @@ async def run_replay(options: ReplayOptions) -> dict:
                 record["outcome"] = "settled" if settle.get("settled") else "not-settled"
     finally:
         stop_background.set()
+        aborted = abort.is_set()
+        if aborted and guard_task is not None:
+            # The guard kills the test Tower (`on_abort`) before it returns:
+            # let it finish that first, so the teardown comes after the kill.
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await asyncio.wait_for(asyncio.shield(guard_task), 45)
         for task in background:
-            with contextlib.suppress(Exception):
-                await asyncio.wait_for(task, 35)
+            if aborted and not task.done():
+                task.cancel()  # nothing they would still learn matters after an abort
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await asyncio.wait_for(task, 5 if aborted else 35)
         if socket is not None:
             await socket.close()
         sampler.stop()
-        sampler.join(timeout=20)
+        sampler.join(timeout=5 if aborted else 20)
         record["events"] = events
         record["stream"] = stats.summary()
         record["phone_view"] = {"pushes": phone.pushes, "target": phone.target,
                                 "transitions": phone.transitions}
         record["phone_fetches"] = mirror.summary()
+        record["surface_watch"] = surfaces.transitions
+        if guard is not None:
+            record["live_tower_watch"] = guard.summary()
         record["tower_captures"] = tower_captures
         record["ended_at"] = round(time.time(), 3)
         _write_client(out, record)
     return record
 
 
-async def _learn_capture(base: str, captures: list, index: int) -> None:
-    """The capture id the Tower minted for the stream just opened (/health)."""
-    for _ in range(20):
+async def _learn_capture(base: str, captures: list, polls: int = 40) -> None:
+    """The capture id the Tower minted for the stream just opened (/health).
+
+    Keeps polling until an id it has not seen appears (review C22 L1): right
+    after a reconnect /health can still name the previous capture.
+    """
+    for _ in range(polls):
         await asyncio.sleep(0.5)
         status, health = await asyncio.to_thread(http_json, "GET", f"{base}/health", 10.0)
         cid = ((health or {}).get("capture") or {}).get("capture_id") if status == 200 else None
-        if cid and cid not in captures and len(captures) == index:
+        if cid and cid not in captures:
             captures.append(cid)
-            return
-        if cid in captures:
             return
 
 
@@ -1261,10 +1632,16 @@ async def _follow_settle(options: ReplayOptions, base: str, captures: list,
     judge = None
     session_path = None
     settled_at = None
+    snapshots = SolutionSnapshots(out)
     while time.time() < deadline and not abort.is_set():
         status, health = await asyncio.to_thread(http_json, "GET", f"{base}/health", 10.0)
         if options.world_root is not None and captures and session_path is None:
             session_path = await asyncio.to_thread(find_session_file, options.world_root, captures)
+        with contextlib.suppress(Exception):
+            if await asyncio.to_thread(snapshots.poll, solution_path_for(session_path)):
+                item = snapshots.items[-1]
+                _log(out, f"solution.json changed: snapshot {item['file']} (consensus "
+                          f"{item['consensus_state']}, map_s {item['map_s']})")
         session = await asyncio.to_thread(_read_json, session_path)
         snap = settle_snapshot(health if status == 200 else None, session)
         if judge is None and snap.get("health"):
@@ -1286,6 +1663,7 @@ async def _follow_settle(options: ReplayOptions, base: str, captures: list,
         "session_file": None if session_path is None else str(session_path),
         "transitions": transitions,
         "last": last,
+        "solution_snapshots": snapshots.items,
     }
 
 
@@ -1329,7 +1707,7 @@ def add_replay_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--label", default=None)
 
 
-def options_from_args(args, *, port, out, world_root=None, tower_pid=None) -> ReplayOptions:
+def options_from_args(args, *, port, out, world_root=None, tower_pid=None, on_abort=None) -> ReplayOptions:
     return ReplayOptions(
         port=port, captures=list(args.capture), capture_root=Path(args.capture_root),
         out=Path(out), world_root=None if world_root is None else Path(world_root),
@@ -1339,17 +1717,27 @@ def options_from_args(args, *, port, out, world_root=None, tower_pid=None) -> Re
         sample_seconds=args.sample_seconds, after_stop=args.after_stop,
         subscribe=not args.no_subscribe, phone_fetches=not args.no_phone_fetches,
         start_session=not args.no_session_start, live_guard=not args.no_live_guard,
-        label=args.label,
+        on_abort=on_abort, label=args.label,
     )
 
 
+def refuse_non_empty_out(out: Path) -> None:
+    """An `--out` must be new or empty (review C22 L4): the logs are appended
+    to, and a reused directory mixes two runs' records."""
+    out = Path(out)
+    if out.exists() and (not out.is_dir() or any(out.iterdir())):
+        raise SystemExit(f"refused: --out {out} is not empty; every run needs a fresh --out")
+
+
 def exit_code(record: dict) -> int:
+    outcome = record.get("outcome")
+    if isinstance(outcome, str) and outcome.startswith("refused-"):
+        return EXIT_ABORTED
     return {
         "settled": EXIT_SETTLED,
         "not-settled": EXIT_NOT_SETTLED,
         "aborted": EXIT_ABORTED,
-        "refused-live-walk": EXIT_ABORTED,
-    }.get(record.get("outcome"), EXIT_ERROR)
+    }.get(outcome, EXIT_ERROR)
 
 
 def main(argv=None) -> int:
@@ -1360,15 +1748,17 @@ def main(argv=None) -> int:
     add_replay_arguments(parser)
     parser.add_argument("--port", type=int, required=True, help=f"The test Tower's port (>= {MIN_TEST_PORT}).")
     parser.add_argument("--out", type=artifact_root_arg, required=True,
-                        help="Where client.json, samples.csv and the report go.")
+                        help="A NEW or empty directory for client.json, samples.csv and the report.")
     parser.add_argument("--world-root", type=Path, default=None,
                         help="The test Tower's TOWER_WORLD_ROOT (read), for session.json and the report.")
-    parser.add_argument("--tower-pid", type=int, default=None,
-                        help="The test Tower's pid, for CPU sampling of its process tree.")
+    parser.add_argument("--tower-pid", type=int, required=True,
+                        help="The test Tower's pid: the replay refuses a port another process serves, "
+                             "and samples this pid's process tree.")
     parser.add_argument("--tower-log", type=Path, default=None, help="The test Tower's stderr log.")
     parser.add_argument("--tower-out-log", type=Path, default=None, help="The test Tower's stdout log.")
     args = parser.parse_args(argv)
     check_target_port(args.port)
+    refuse_non_empty_out(args.out)
     options = options_from_args(args, port=args.port, out=args.out, world_root=args.world_root,
                                 tower_pid=args.tower_pid)
     record = asyncio.run(run_replay(options))
@@ -1377,7 +1767,8 @@ def main(argv=None) -> int:
 
         report = build_report(tower_log=args.tower_log, tower_out_log=args.tower_out_log,
                               world_root=args.world_root, client=record,
-                              samples=Path(args.out) / "samples.csv", label=args.label)
+                              samples=Path(args.out) / "samples.csv", label=args.label,
+                              run_dir=Path(args.out))
         write_report(Path(args.out), report)
     return exit_code(record)
 

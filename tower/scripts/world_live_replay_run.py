@@ -25,14 +25,24 @@ WHAT IT GUARANTEES
   * The Tower binds 127.0.0.1 only: no phone can reach it by accident.
   * `import tower` in the test Tower resolves to the code tree under test
     (checked before the start, as start-test-tower.ps1 checks it).
+  * A NEW or empty --out: a reused one would mix two runs' logs and samples.
   * The Tower and everything it spawns sit in a Job Object this process
-    owns with KILL_ON_JOB_CLOSE. It is stopped at the end on every path
+    owns with KILL_ON_JOB_CLOSE; when the kernel refuses one, the Tower is
+    stopped and nothing is replayed. It is stopped at the end on every path
     (settled, timeout, abort, error, Ctrl+C), and if this process dies the
     kernel kills the whole tree. Afterwards it checks that the port is free
     and that no process of the tree is left.
-  * :8000 is only ever asked for /health. If it is recording a walk, the
-    replay does not start, or it stops and the Tower is killed at once so
-    the GPU is free for the real walk.
+  * Once the Tower answers, the process listening on --port must be the
+    Tower this runner started (psutil); anything else is refused.
+  * :8000 is only ever asked for /health, and the guard FAILS CLOSED
+    (`world_live_replay.live_tower_state`). Nothing starts while :8000 is
+    recording, finishing a world, or not answering usably. From the start
+    of the test Tower to its stop -- its startup, the idle wait, the stream
+    and the settle -- a live walk (or two unusable answers in a row) kills
+    the test Tower FIRST, so the GPU is free for the real walk.
+  * run.json pins the harness itself (git HEAD, its uncommitted changes, and
+    a sha1 of the three scripts) and the thread-count variables inherited
+    from the shell.
 
 The calibration (`intrinsics/*.json`) is copied into the fresh world root from
 `--intrinsics-from` (read only): without a calibration at the observed
@@ -59,16 +69,27 @@ from scripts.world_live_replay import (  # noqa: E402
     EXIT_ABORTED,
     EXIT_ERROR,
     LIVE_HEALTH_URL,
+    LIVE_REFUSE_AT_START,
+    LiveGuard,
     add_replay_arguments,
     check_target_port,
     exit_code,
+    harness_identity,
     http_json,
-    live_walk_recording,
+    listener_pids,
+    live_tower_state,
     options_from_args,
+    refuse_non_empty_out,
     run_replay,
 )
 from scripts.world_live_replay_report import build_report, write_report  # noqa: E402
 from tower.artifact_paths import artifact_root_arg  # noqa: E402
+from tower.process_ownership import (  # noqa: E402
+    assign_to_job,
+    interpreter_command,
+    interpreter_environment,
+    terminate_tree,
+)
 
 LIVE_DATA = Path(r"C:\Users\tvllo\Projects\Glasses\tower\data")
 DEFAULT_INTRINSICS = LIVE_DATA / "world_builder" / "intrinsics"
@@ -76,6 +97,23 @@ DEFAULT_INTRINSICS = LIVE_DATA / "world_builder" / "intrinsics"
 # Roots the runner owns. Anything a switch file says about them is replaced.
 FORCED_KEYS = ("TOWER_CAPTURE_ROOT", "TOWER_WORLD_ROOT", "TOWER_OBSERVATION_ROOT",
                "TOWER_DOCUMENT_ROOT", "TOWER_SOURCES_ROOT", "TOWER_HOST", "TOWER_PORT")
+
+# Inherited from the shell and not scrubbed, but they change timing, so
+# run.json records them (review C22 L6).
+TIMING_ENV_KEYS = ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS",
+                   "CUDA_VISIBLE_DEVICES", "PYTORCH_CUDA_ALLOC_CONF")
+
+HEALTH_POLL_S = 2.0
+IDLE_POLL_S = 3.0
+IDLE_WAIT_S = 120.0
+# :8000 during the runner's own waits (startup and idle), as often as the
+# client watches it during the stream.
+LIVE_WATCH_EVERY_S = 10.0
+AFTER_STOP_S = 2.0
+
+
+class LiveTowerAbort(Exception):
+    """:8000 said stop while the runner itself was waiting (startup, idle)."""
 
 
 def resolve_code_tree(code: Path) -> Path:
@@ -92,19 +130,22 @@ def code_identity(tower_dir: Path) -> dict:
     """Which code this is: git HEAD when it is a checkout (read-only git), and
     always a fingerprint of the .py sources, so two archives can be told apart."""
     identity = {"tower_dir": str(tower_dir)}
+    # `--no-optional-locks` on every call (review C22 L3): a plain `git
+    # status` may refresh another lane's index and take its index.lock.
+    git = ["git", "--no-optional-locks", "-C", str(tower_dir)]
     try:
-        top = subprocess.run(["git", "-C", str(tower_dir), "rev-parse", "--show-toplevel"],
+        top = subprocess.run([*git, "rev-parse", "--show-toplevel"],
                              capture_output=True, text=True, timeout=20)
         # Only this tree's own checkout: an archive directory sitting inside
         # some other repository must not report that repository's HEAD.
         own = top.returncode == 0 and Path(top.stdout.strip()).resolve() in (
             tower_dir.resolve(), tower_dir.parent.resolve())
-        head = subprocess.run(["git", "-C", str(tower_dir), "rev-parse", "HEAD"],
+        head = subprocess.run([*git, "rev-parse", "HEAD"],
                               capture_output=True, text=True, timeout=20) if own else None
         if head is not None and head.returncode == 0:
             identity["git_head"] = head.stdout.strip()
-            dirty = subprocess.run(["git", "-C", str(tower_dir), "status", "--porcelain",
-                                    "--untracked-files=no"], capture_output=True, text=True, timeout=60)
+            dirty = subprocess.run([*git, "status", "--porcelain", "--untracked-files=no"],
+                                   capture_output=True, text=True, timeout=60)
             identity["git_dirty"] = [line for line in dirty.stdout.splitlines() if line.strip()]
     except (OSError, subprocess.SubprocessError):
         pass
@@ -206,6 +247,41 @@ def _leftovers(port: int, markers) -> list:
     return found
 
 
+
+
+def spawn_tower(command, **kwargs):
+    """`subprocess.Popen`, behind a name the tests can replace."""
+    return subprocess.Popen(command, **kwargs)
+
+
+def probe_import(tower_dir: Path, env: dict) -> str:
+    """Which `tower` the server will import: the same env, cwd and interpreter."""
+    probe = subprocess.run(interpreter_command("-c", "import tower, sys; print(tower.__file__)"),
+                           cwd=str(tower_dir), env=env, capture_output=True, text=True, timeout=120)
+    return (probe.stdout.strip().splitlines() or [""])[-1]
+
+
+class StartupLiveWatch:
+    """:8000 while the runner waits for its own Tower (review C22 M3): the
+    startup can take 240 s and the idle wait 120 s, and a live walk that
+    begins then must stop the test Tower just as it would mid-stream."""
+
+    def __init__(self, guard: LiveGuard, every: float | None = None, clock=time.monotonic):
+        self.guard = guard
+        self.every = LIVE_WATCH_EVERY_S if every is None else every
+        self._clock = clock
+        self._next = clock() + self.every
+
+    def check(self) -> None:
+        now = self._clock()
+        if now < self._next:
+            return
+        self._next = now + self.every
+        reason = self.guard.observe(live_tower_state(LIVE_HEALTH_URL))
+        if reason:
+            raise LiveTowerAbort(reason)
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     add_replay_arguments(parser)
@@ -220,7 +296,8 @@ def main(argv=None) -> int:
                         help="A FRESH root for the test Tower's captures and worlds (keep it short: "
                              "Windows MAX_PATH).")
     parser.add_argument("--out", type=artifact_root_arg, required=True,
-                        help="Logs, client.json, samples.csv, report.json and REPORT.md.")
+                        help="A NEW or empty directory: logs, client.json, samples.csv, report.json "
+                             "and REPORT.md.")
     parser.add_argument("--intrinsics-from", type=Path, default=DEFAULT_INTRINSICS,
                         help="Calibrations copied into the fresh world root (read only).")
     parser.add_argument("--health-timeout", type=float, default=240.0)
@@ -234,7 +311,7 @@ def main(argv=None) -> int:
             raise SystemExit(f"refused: {what} {path} is inside the live store {LIVE_DATA}")
     if data_root.exists() and any(data_root.iterdir()):
         raise SystemExit(f"refused: --data-root {data_root} is not empty; a replay needs a fresh root")
-    out.mkdir(parents=True, exist_ok=True)
+    refuse_non_empty_out(out)
     if _inside(out, data_root) or _inside(data_root, out):
         raise SystemExit("refused: --out and --data-root must be separate directories")
 
@@ -254,19 +331,21 @@ def main(argv=None) -> int:
         identity["stage_timing_note"] = ("TOWER_WORLD_STAGE_TIMING is set but this code has no "
                                          "tower/world_builder/stage_timing.py: no stage_timing.json will exist")
 
-    live = live_walk_recording(LIVE_HEALTH_URL)
-    if live:
-        print("REFUSED: :8000 is recording a live walk. Nothing was started.", flush=True)
+    # The guard fails closed (review C22 M1, M2): recording, finishing a
+    # world, or no usable answer all mean "do not start".
+    live = live_tower_state(LIVE_HEALTH_URL)
+    if live in LIVE_REFUSE_AT_START:
+        print(f"REFUSED: :8000 is {live} (the guard refuses recording, busy and unknown). "
+              "Nothing was started.", flush=True)
         return EXIT_ABORTED
     if port_in_use(args.port):
         raise SystemExit(f"refused: something already listens on 127.0.0.1:{args.port}")
-
-    from tower.process_ownership import assign_to_job, interpreter_command, interpreter_environment, terminate_tree
 
     if not (Path(sys.prefix) / "pyvenv.cfg").is_file():
         print("warning: this runner is not running from a venv; the test Tower gets this interpreter",
               flush=True)
 
+    out.mkdir(parents=True, exist_ok=True)
     data_root.mkdir(parents=True, exist_ok=True)
     world_root = data_root / "world_builder"
     intrinsics = world_root / "intrinsics"
@@ -288,23 +367,22 @@ def main(argv=None) -> int:
         uvicorn += ["--loop", "tower.serve_loop:resilient_loop_factory"]
     command = list(interpreter_command(*uvicorn))
 
-    # Which `tower` will the server import? The same env, cwd and interpreter.
-    probe = subprocess.run(interpreter_command("-c", "import tower, sys; print(tower.__file__)"),
-                           cwd=str(tower_dir), env=env, capture_output=True, text=True, timeout=120)
-    resolved = (probe.stdout.strip().splitlines() or [""])[-1]
-    if not _inside(Path(resolved or "."), tower_dir) or not resolved:
+    resolved = probe_import(tower_dir, env)
+    if not resolved or not _inside(Path(resolved), tower_dir):
         raise SystemExit(f"refused: import tower resolves to {resolved!r}, not under {tower_dir}")
 
     run = {
         "tool": "world_live_replay_run",
         "label": args.label,
         "started_at": round(time.time(), 3),
+        "harness": harness_identity(),
         "code": identity,
         "import_tower": resolved,
         "switches": switches,
         "switches_ignored_roots": ignored,
         "effective_tower_env": {k: v for k, v in sorted(env.items()) if k.startswith("TOWER_")
                                 or k in ("PYTHONPATH", "PYTHONDONTWRITEBYTECODE", "__PYVENV_LAUNCHER__")},
+        "timing_env": {k: env.get(k) for k in TIMING_ENV_KEYS},
         "port": args.port,
         "data_root": str(data_root),
         "intrinsics_copied": copied,
@@ -313,9 +391,11 @@ def main(argv=None) -> int:
         "cwd": str(tower_dir),
         "err_log": str(err_log),
         "out_log": str(out_log),
-        "live_tower_at_start": {True: "recording", False: "idle", None: "no answer"}[live],
+        "live_tower_at_start": live,
     }
     (out / "run.json").write_text(json.dumps(run, indent=2), encoding="utf-8")
+    _log(out, f"harness {run['harness'].get('git_head')} sha1 {run['harness'].get('sha1')} "
+              f"dirty {run['harness'].get('git_dirty')}")
     _log(out, f"code {identity}; switches {switches}")
     _log(out, f"starting the test Tower: {' '.join(command)} (cwd {tower_dir})")
 
@@ -324,68 +404,101 @@ def main(argv=None) -> int:
     creationflags = 0
     if os.name == "nt":
         creationflags = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW
-    with open(err_log, "ab") as err_handle, open(out_log, "ab") as out_handle:
-        process = subprocess.Popen(command, cwd=str(tower_dir), env=env, stdin=subprocess.DEVNULL,
-                                   stdout=out_handle, stderr=err_handle, creationflags=creationflags)
+    process = job = None
+    watch = StartupLiveWatch(LiveGuard(live))
+    health_url = f"http://127.0.0.1:{args.port}/health"
+    try:
+        # Spawn and job assignment INSIDE the try (review C22 L2): whatever
+        # happens from here on, the finally stops what was started.
+        with open(err_log, "ab") as err_handle, open(out_log, "ab") as out_handle:
+            process = spawn_tower(command, cwd=str(tower_dir), env=env, stdin=subprocess.DEVNULL,
+                                  stdout=out_handle, stderr=err_handle, creationflags=creationflags)
         job = assign_to_job(process)
         run["tower_pid"] = process.pid
         run["job"] = job is not None
-        try:
-            deadline = time.time() + args.health_timeout
-            health = None
-            while time.time() < deadline:
-                if process.poll() is not None:
-                    raise SystemExit(f"the test Tower exited with {process.returncode} before answering; "
-                                     f"read {err_log}")
-                status, health = http_json("GET", f"http://127.0.0.1:{args.port}/health", 5.0)
-                if status == 200:
-                    break
-                time.sleep(2.0)
-            else:
-                raise SystemExit(f"the test Tower did not answer /health within {args.health_timeout} s")
-            _log(out, f"test Tower up: pid {process.pid}, job {job is not None}")
-            # The startup chore on an empty root finds nothing; let it end so
-            # the replay starts from an idle Tower.
-            idle_deadline = time.time() + 120
-            while time.time() < idle_deadline:
-                chore = (health or {}).get("background_chore") or {}
-                if chore.get("state") not in ("running",):
-                    break
-                time.sleep(3.0)
-                _, health = http_json("GET", f"http://127.0.0.1:{args.port}/health", 5.0)
-            options = options_from_args(args, port=args.port, out=out, world_root=world_root,
-                                        tower_pid=process.pid)
-            record = asyncio.run(run_replay(options))
-            code = exit_code(record)
-        except KeyboardInterrupt:
-            _log(out, "interrupted; stopping the test Tower")
-            code = EXIT_ERROR
-        except Exception as exc:  # noqa: BLE001 -- the Tower is stopped and a report still written
-            import traceback
+        if job is None and os.name == "nt":
+            run["error"] = "no Job Object"
+            raise SystemExit("refused: the test Tower could not be put in a Job Object with "
+                             "KILL_ON_JOB_CLOSE, so a dead runner could leave it running; it was "
+                             "stopped and nothing was replayed")
+        deadline = time.time() + args.health_timeout
+        health = None
+        while time.time() < deadline:
+            if process.poll() is not None:
+                raise SystemExit(f"the test Tower exited with {process.returncode} before answering; "
+                                 f"read {err_log}")
+            watch.check()
+            status, health = http_json("GET", health_url, 5.0)
+            if status == 200:
+                break
+            time.sleep(HEALTH_POLL_S)
+        else:
+            raise SystemExit(f"the test Tower did not answer /health within {args.health_timeout} s")
+        # Is the process answering on the port the one just started?
+        # (review C22 M4) Another process could have won a bind race.
+        owners = listener_pids(args.port)
+        run["listener_pids"] = None if owners is None else sorted(owners)
+        if owners != {process.pid}:
+            run["error"] = "foreign listener"
+            raise SystemExit(f"refused: :{args.port} is served by {owners}, not the test Tower {process.pid}")
+        _log(out, f"test Tower up: pid {process.pid}, job {job is not None}, listener {sorted(owners)}")
+        # The startup chore on an empty root finds nothing; let it end so
+        # the replay starts from an idle Tower.
+        idle_deadline = time.time() + IDLE_WAIT_S
+        while time.time() < idle_deadline:
+            chore = (health or {}).get("background_chore") or {}
+            if chore.get("state") not in ("running",):
+                break
+            watch.check()
+            time.sleep(IDLE_POLL_S)
+            _, health = http_json("GET", health_url, 5.0)
 
-            _log(out, f"the replay failed: {exc!r}\n{traceback.format_exc()}")
-            run["error"] = repr(exc)
-            code = EXIT_ERROR
-        finally:
+        def kill_tower_now() -> None:
+            # M3: the guard calls this the moment it aborts, before the
+            # client's teardown. The finally below stops it again; that is
+            # idempotent.
+            _log(out, f"ABORT: stopping the test Tower pid {process.pid} now")
+            terminate_tree(process, job=job, timeout=30.0, hard=True)
+
+        options = options_from_args(args, port=args.port, out=out, world_root=world_root,
+                                    tower_pid=process.pid, on_abort=kill_tower_now)
+        record = asyncio.run(run_replay(options))
+        code = exit_code(record)
+    except LiveTowerAbort as exc:
+        _log(out, f"ABORT before the replay: {exc}; stopping the test Tower")
+        run["aborted"] = {"t": round(time.time(), 3), "reason": str(exc), "during": "startup"}
+        code = EXIT_ABORTED
+    except KeyboardInterrupt:
+        _log(out, "interrupted; stopping the test Tower")
+        code = EXIT_ERROR
+    except Exception as exc:  # noqa: BLE001 -- the Tower is stopped and a report still written
+        import traceback
+
+        _log(out, f"the replay failed: {exc!r}\n{traceback.format_exc()}")
+        run["error"] = repr(exc)
+        code = EXIT_ERROR
+    finally:
+        run["live_tower_watch_startup"] = watch.guard.summary()
+        if process is not None:
             _log(out, f"stopping the test Tower pid {process.pid}")
             terminate_tree(process, job=job, timeout=30.0, hard=True)
-            if job is not None:
-                job.close()
-            time.sleep(2.0)
-            left = _leftovers(args.port, [str(world_root)])
-            run["stopped_at"] = round(time.time(), 3)
-            run["port_free_after"] = not port_in_use(args.port)
-            run["leftover_processes"] = left
-            if left:
-                _log(out, f"WARNING: processes left after the stop: {left}")
-            _log(out, f"test Tower stopped; port {args.port} free: {run['port_free_after']}")
-            (out / "run.json").write_text(json.dumps(run, indent=2), encoding="utf-8")
+        if job is not None:
+            job.close()
+        time.sleep(AFTER_STOP_S)
+        left = _leftovers(args.port, [str(world_root)])
+        run["stopped_at"] = round(time.time(), 3)
+        run["port_free_after"] = not port_in_use(args.port)
+        run["leftover_processes"] = left
+        if left:
+            _log(out, f"WARNING: processes left after the stop: {left}")
+        _log(out, f"test Tower stopped; port {args.port} free: {run['port_free_after']}")
+        (out / "run.json").write_text(json.dumps(run, indent=2), encoding="utf-8")
 
     captures = record.get("tower_captures") or []
     report = build_report(tower_log=err_log, tower_out_log=out_log, world_root=world_root,
                           capture_id=captures[0] if captures else None, client=record,
                           samples=out / "samples.csv" if (out / "samples.csv").exists() else None,
-                          label=args.label)
+                          label=args.label, run_dir=out)
     report["run"] = run
     json_path, md_path = write_report(out, report)
     _log(out, f"report: {md_path}; verdict {report['verdict']}; outcome {record.get('outcome')}")
