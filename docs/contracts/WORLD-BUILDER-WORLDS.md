@@ -5,7 +5,7 @@
 | | |
 |---|---|
 | Contract | `world_builder.worlds/2026-09-10` |
-| Document version | **v2** (2026-09-27): viewer honesty, manager 106 (§4). See the change log at the end. The wire identifier above does **not** move: no payload changes, and the iOS decoder compares it for equality |
+| Document version | **v3** (2026-09-28): the viewer's accessibility fixes from the O1 viewer check (iOS Simulator), manager 115 (§4). v2 (2026-09-27): viewer honesty, manager 106 (§4). See the change log at the end. The wire identifier above does **not** move: no payload changes, and the iOS decoder compares it for equality |
 | Transport | HTTP `GET /worlds`, same origin and same rules as the geometry routes (`WORLD-BUILDER-GEOMETRY.md` §1) |
 | Tower producer | `tower/tower/results/world_builder_library.py` |
 | Tower route | `tower/tower/routes/geometry.py` |
@@ -496,9 +496,24 @@ enforced).
     when `dark < 0.45`, so sweeping through a dark patch on the way somewhere
     does not flash it and stopping in one always explains it. It reads
     ***Not reconstructed from here*** / *Tap to turn back*, and tapping it does
-    what *Face the room* does. Measured
-    again over the same 24 steps: visible at **10 of 24 and at 6 of 6** of the
-    100%-background steps, and at none of the 14 that show the room.
+    what *Face the room* does. Measured again over the same 24 steps: visible
+    at **10 of 24 and at 6 of 6** of the 100%-background steps, and at none of
+    the 14 that show the room. **When it is not shown, assistive technology
+    does not get it either** (v3, manager 115). The O1 check of `9bb9727` (the
+    iOS 26.5 Simulator at 375, 390, 402 and 440 px, read from XCUITest
+    accessibility snapshots; the Simulator has no VoiceOver, so nothing was
+    heard) found the dark line still in the accessibility tree after *Face the
+    room* had cleared it, because it was only faded to `opacity: 0`. The edge
+    hint (`#hint`, *Movement stops here*) was also exposed from page load,
+    before it had ever shown. So the dark line and the edge hint are also
+    `visibility: hidden` whenever they are not showing, from page load on,
+    whatever they say. The change to hidden waits for the fade to finish, so
+    the fade stays as it was; the change to visible is immediate, so neither
+    the fade-in nor the tap is delayed. The dark line's headline stays on one
+    line at 375 px and wider (`width: max-content`, inside the existing
+    `max-width`). O1 measured the pill at three lines at 375 and 390 px because
+    the headline wrapped: it needs about 169 px, and `left: 50%` left the pill
+    at most half the screen.
     **What it says, and what it must never say** (v2, 2026-09-27, manager 106,
     from manager 096 §1). Until v2 it read *Nothing was photographed this way /
     the glasses never looked this way — tap to turn back*, and walk 4
@@ -654,7 +669,20 @@ enforced).
       rows at 390×844 (`barHeight()` in the page), and with 44 px buttons two
       rows come to about 116 px plus the inset by the page's own CSS (10 + 44 +
       8 + 44 + 10), so a fixed 104 px would put both notices over the top row.
-      Computed, not measured on a device.
+      Computed, not measured on a device. **They also clear the status line**
+      (v3, manager 115). While the status line (`#status`: *Placing images
+      n / m* and the other loading lines) shows text, both notices sit above it
+      as well, at `bottom: max(104px + the bottom safe-area inset, --barh +
+      38px)`. The status line sits at `--barh + 8px` and is about 23 px tall
+      (12 px text at the page's 1.45 line height, plus 3 px of padding above
+      and below), so 38 px leaves about 6 px between them, and the 104 px floor
+      keeps the notices from moving down when the status line appears. The
+      switch is CSS, keyed on whether `#status` is empty
+      (`#status:not(:empty) ~ #dark`, `#status:not(:empty) ~ #hint`), never a
+      script. Computed from the page's CSS, not measured on a device. O1
+      measured the status line and the dark line overlapping at all four
+      widths in the Simulator when *Placing images n / m* showed while the view
+      was dark.
     - **Face the room** — a button, and the ring, the arrow and the dark line
       are the same control. It turns the camera, from where it stands, to the heading
       `NAV.bestHeading` names: the best-supported one discounted by how far
@@ -747,9 +775,35 @@ enforced).
     | `#bNext` | → | *Next recorded view* |
     | `#bReset` | Reset | *Reset: return to the opening view* |
     | `#compass` (`role="img"`) | the ring | *Which directions are reconstructed from here* |
+    | `#dark` (`role="button"`, v3) | the dark line, while shown | *Not reconstructed from here. Tap to turn back* (the same on an area page) |
 
-    The caption's *About* / *Less* toggle is not a navigation control and is
-    unchanged.
+    **The dark line is a control** (v3, manager 115). Tapping it does what
+    *Face the room* does (*Face the area* on an area page), so it is exposed
+    as a button with the name above, not as a status group. O1 found it
+    exposed as an "application status" group with no name. It keeps
+    `aria-live="polite"`, so that its appearance may still be announced. That
+    is not verified and not promised: O1 heard nothing, a button's children
+    are presentational to assistive technology, and a live region that is
+    hidden until the moment it changes is not reliably announced. The role and
+    the name are the contract; the announcement is best effort. While it is
+    not showing it is hidden from assistive technology (the dark state,
+    above).
+
+    **No empty status element is in the accessibility tree** (v3). A status or
+    live-region element is exposed only while it shows text. At `9bb9727` the
+    only status element in the tree at load was `#dark` (`role="status"`,
+    empty until the view first went dark). `#status` is already
+    `display: none` when empty, and `#rawmark` is `hidden` unless a research
+    build fills it; the dark line and the edge hint are `visibility: hidden`
+    while they are not showing.
+
+    The caption's *About* / *Less* toggle (`#bInfo`) is not a navigation
+    control, but **it is a touch target of at least 44 × 44 CSS px** too
+    (`min-height` and `min-width` 44 px, v3, manager 115). It was exempt until
+    v3, at 24 px high: O1 measured it at 49 × 24 reading *About*, at all four
+    widths in the Simulator, and reading *Less* it is narrower still (about
+    41–43 px by the page's CSS; computed, not measured). Its accessible name
+    is its visible word (*About* or *Less*), and it keeps `aria-expanded`.
   - **Stepping the walk glides**: eased position and the short way round in
     yaw, 400–2600 ms by distance and turn, instead of jumping (the walkthrough's
     worst flicker steps were path jumps). Any touch interrupts a glide. The cap
@@ -1294,3 +1348,4 @@ identifier unless it says so.
 | Version | Date | Asked for by | Sections | Change | On the wire |
 |---|---|---|---|---|---|
 | **v2** | 2026-09-27 | **Manager 106** (T-UX0; from manager 096 §1, after walk 4 `c81766a3`) | §4: *Navigation* (the dark state, the edge hint, the settle), *Where the room is* (the ring's label, the notices' placement), the haze bullet, *Controls* (44 px targets and the accessible names), the cold-open window, *Caption* (the About panel's claims about the capture); §4a rule 3 | **Viewer honesty.** The dark state reads ***Not reconstructed from here*** / *Tap to turn back*, never *not photographed* or *never looked*. The edge hint reads ***Movement stops here***. The ring reads *reconstructed / from here*. The About panel stops claiming to know what the glasses saw. Every control has a 44 px target and an accessible name. The notices clear a wrapped bar. `PAGE_REVISION` stays `appearance:1`. The trigger, the thresholds, the haze, the research marker, the rendering and the camera path are unchanged | **Nothing.** `world_builder.worlds/2026-09-10` and every payload are unchanged. The page strings are Tower-served, and no iOS source reads any of them (checked 2026-09-27 against `wb-int-walk5`) |
+| **v3** | 2026-09-28 | **Manager 115** (T-UX0b; from the O1 viewer check of `9bb9727` in the iOS 26.5 Simulator: SE (3rd gen), 17e, 17 Pro, 17 Pro Max; accessibility snapshots, nothing heard spoken) | §4: *Navigation* (the dark state: hidden from assistive technology when not shown; the headline on one line), *Where the room is* (the notices clear the status line), *Controls* (`#dark` joins the closed name table as a button; no empty status element in the accessibility tree; the *About* / *Less* toggle is a 44 × 44 target) | **Viewer accessibility, presentation only.** Assistive technology is no longer given a dark line or edge hint that is not shown. The dark line is a named button. The notices no longer overlap the status line. The dark headline no longer wraps at 375 / 390 px. The toggle's exemption ends: it is 44 × 44 like the bar. No visible text changes; the one new string is `#dark`'s accessible name, its two visible lines joined. `PAGE_REVISION` stays `appearance:1`. The trigger, the thresholds, what a tap does, the rendering and the camera path are unchanged. The page's fixed-px fonts ignoring the phone's text size (O1 item 6) are NOT addressed here: they go to U1.1 (native chrome) | **Nothing.** `world_builder.worlds/2026-09-10` and every payload are unchanged. No iOS source reads any changed string, id or selector: *Not reconstructed from here*, *Tap to turn back*, *Movement stops here*, *Placing images*, `bInfo` and `#dark` have 0 hits in `ios/`, and `ios/` runs no script in the page and reads nothing from it (no `evaluateJavaScript`, `WKUserScript` or script message handler) (checked 2026-09-28 with `git grep -F` and `git grep -i -F` against product `0636fce` and the O1 app `2ff0b0e`) |
