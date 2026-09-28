@@ -2,9 +2,10 @@
 
 Contract identifier: `wb-surface-mesh/1`.
 
-Document version: **v2** (2026-09-28): the surface page's gap caption,
-manager 109 (§2 claim 2, §2 claim 8, §8). See the change log at the end. The
-artifact identifier, manifest and routes do **not** move.
+Document version: **v3** (2026-09-28): what a hole and a gap can be, the
+area page's revision, and a fixed template allowance in the page estimate,
+manager 130 from the C9 cross-check (§2 claim 2, §8). See the change log at the
+end. The artifact identifier, manifest and routes do **not** move.
 
 This describes what `<world>/surface/<session>/` contains, what it claims, and
 what it promises never to claim. It is additive: a reader that does not know
@@ -123,14 +124,16 @@ geometry comes from.
    corner emits. The surface stops at the edge of what those frames measured.
 
    **The converse is NOT claimed: a hole does not mean "nobody looked".** A
-   hole is space no frame fused into this surface measured, or space those
+   hole is space no frame fused into this surface measured; or space those
    frames did measure where their evidence did not pass claim 1 or the
-   component prune: they disagreed about it, or too little of it agreed (the
-   breakdown below). A frame the walk captured may still be absent from this
-   surface. It may never have been kept as a keyframe, or it may be unposed,
-   posed but not published, published without a usable depth fit, or in a
-   piece or page this page does not show. Walk 4's look-back frames met every
-   one of these fates (`Glasses-scratch/wb-coherence-run-2026-09-23/lead/diag4/DIAGNOSIS.md`
+   component prune (they disagreed about it, or too little of it agreed) or
+   where their samples were never integrated (the breakdown below); or, on a
+   decimated level, a crack that decimation opened where level 0 has surface
+   (§8, *Decimation keeps rims*). A frame the walk captured may still be
+   absent from this surface. It may never have been kept as a keyframe, or it
+   may be unposed, posed but not published, published without a usable depth
+   fit, or in a piece or page this page does not show. Walk 4's look-back
+   frames met every one of these fates (`Glasses-scratch/wb-coherence-run-2026-09-23/lead/diag4/DIAGNOSIS.md`
    Q2). Measured on the canonical capture (`b2a75ab4...`, 349 frames): of
    the depth samples the cameras measured (every valid pixel, 6-pixel
    stride), 26.4% have no surface within 0.18 units. Of those in the review's
@@ -573,13 +576,39 @@ comparison.
 **The phone budget bounds the page, not the mesh.** The page inlines the
 chosen level base64-encoded (4/3 of its bytes) beside the viewer and its
 configuration. The served level is the largest whose **page** fits
-`MOBILE_BYTE_BUDGET` (6 MiB). The estimate is the template's size plus a
-64 KiB configuration allowance; if the composed page still exceeds the budget,
-the level is chosen once more with the measured overhead. The pack stage makes
-`mobile_level` fit that page. `lod_face_targets[mobile_level]` is a ceiling:
-the level is decimated again from its parent, scaled by the byte overshoot,
-until its page fits `params.mobile_page_bytes`. `detail.mobile_page_fit`
-records the result.
+`MOBILE_BYTE_BUDGET` (6 MiB). The estimate is a fixed 32,576-byte template
+allowance (`PAGE_TEMPLATE_ALLOWANCE`), which the template may not exceed (a
+test holds it), plus a 64 KiB configuration allowance: 98,112 bytes in all. If
+the composed page still exceeds the budget, the level is chosen once more with
+the measured overhead. The pack stage makes `mobile_level` fit that page.
+`lod_face_targets[mobile_level]` is a ceiling: the level is decimated again
+from its parent, scaled by the byte overshoot, until its page fits
+`params.mobile_page_bytes`. `detail.mobile_page_fit` records the result.
+
+**The template's share of the estimate is fixed, not measured (v3).** It is
+not the template's size on disk, for two reasons. The phone level's mesh budget
+is ¾ of what the estimate leaves of the page, and the pack stage both aims its
+decimation at that budget and decides against it whether a whole decimation
+pass runs, so a measured share let every edit to the page's copy move
+geometry. And a measured share depended on the checkout: a CRLF checkout
+counts one byte a line more than an LF one (670 bytes for the template at v3),
+although the page is composed from the same LF text on both. With the share
+fixed, a copy edit never moves geometry, and a CRLF and an LF checkout give the
+same estimate. The allowance is 32,576 bytes because every surface the Tower's
+CRLF checkout built since `fc99d20` was packed with that share: its
+`detail.mobile_page_fit` records a mesh budget of 4,645,008 bytes for a 6 MiB
+page, and a `page_bytes_estimate` 98,112 = 32,576 + 65,536 bytes above its
+mesh's base64; every build after v3, on either checkout, records the same.
+The estimate stays an upper bound only while the template fits under the
+allowance:
+`tower/tests/test_world_builder_surface_pipeline.py::TestThePhoneBudgetBoundsThePage::test_the_surface_template_fits_its_page_allowance`
+pins `PAGE_TEMPLATE_ALLOWANCE` at 32,576 and holds `surface_viewer.html` at or
+under it as the page inlines it: the LF text it is read as on every checkout
+(31,878 bytes at v3), not a CRLF checkout's bytes on disk;
+`test_the_pack_stage_makes_the_phone_level_fit_its_page` holds the composed
+page free of CR. A template edit that outgrows it fails that test; raising the
+allowance is then a declared change to this section, because it lowers every
+later phone level's mesh budget by ¾ of the raise.
 
 **Decimation keeps rims.** Every level is decimated with quadric boundary
 weight `lod_boundary_weight` (100; it is in the params digest). A surface that
@@ -634,8 +663,10 @@ contract requires both branches, on room and area surface pages, to be
 followed by *A gap is where this page has no reconstructed surface. It is not
 proof that nothing is there.* This describes the served page, not whether any
 part of the walk was photographed. A gap can be space the glasses never looked
-at, or space whose frames the Tower did not keep, pose, publish or place in
-this page, and the page cannot tell these apart, so it names none of them.
+at; space whose frames the Tower did not keep, pose, publish, fit with usable
+depth or place in this page; or space this page's own fused frames measured
+but did not agree on enough to keep (§2 claim 2). The page cannot tell these
+apart, so it names none of them.
 **No string the surface page shows, room or area (text, `aria-label` or
 label), may say that a place or direction was *not photographed*,
 *not captured* or *never looked* at, that *nothing looked* or
@@ -667,10 +698,11 @@ before the branch and the same suffix follows it. The line
 `tower/tests/test_world_builder_component_captions.py::test_every_surface_anchor_is_in_the_template_exactly_once`
 (`:135–138`) must still pass. The `CONFIG.evidence_filter`,
 `CONFIG.frames_used`, `CONFIG.frames_offered`, and `CONFIG.scale_state` keys
-do not change. The surface page has no page version of its own: its revision
-is `<session>/surface:<built_at>` (`WORLD-BUILDER-WORLDS.md` §4a rule 2),
-which a template edit does not move. So an open page is not reloaded, and the
-next page opened carries the new words.
+do not change. The surface page has no page version of its own: a room page's
+revision is `<session>/surface:<built_at>` (`WORLD-BUILDER-WORLDS.md` §4a
+rule 2) and an area page's is `<session>/area:<area>/surface:<built_at>`
+(`WORLD-BUILDER-COMPONENTS.md` §5.2), and a template edit moves neither. So an
+open page is not reloaded, and the next page opened carries the new words.
 
 Verification for the code task:
 
@@ -707,3 +739,4 @@ Document versions start at v2. **v1** is everything up to 2026-09-27.
 | Version | Date | Asked for by | Sections | Change | On the wire |
 |---|---|---|---|---|---|
 | **v2** | 2026-09-28 | **Manager 109** (CX-C6, O3; after walk 4 `c81766a3`) | §2 claim 2; §2 claim 8; §8 surface page caption and implementation spec | Scopes the hole claim to frames fused into this surface and replaces the gap caption's claim about where nothing looked with a statement about the page's reconstructed surface. The two evidence-filter branches, keyframe count, scale note and area-specific prefix stay unchanged. The later copy-only page edit moves no revision (the surface page has no page version; its revision follows the surface build). | **Nothing.** `wb-surface-mesh/1`, its manifest and all routes are unchanged. The page strings are Tower-served, and no iOS source reads any of them (checked 2026-09-28 against `codex/surfcap` @ `9bb9727`). Among the patterns checked, `frames_offered` has 20 hits, all in other cartridges' decoders and tests, and *nothing looked* has 2, `WorldPresentationTests.swift:1198` and `:1202`: a negative assertion on the native caption, which agrees with this change. |
+| **v3** | 2026-09-28 | **Manager 130** (from the C9 cross-check; C6f LOW-1, LOW-2 and NIT-1) | §2 claim 2; §8 page budget, surface page caption and implementation spec | Claim 2's "A hole is …" also names measured samples that were never integrated and the cracks decimation opens on a served level (C9 MED; C6f NIT-1). §8's "A gap can be …" adds frames published without a usable depth fit and space this page's own fused frames measured but did not agree on enough to keep (C6f LOW-2). The revision sentence gives an area page's revision, `<session>/area:<area>/surface:<built_at>`, beside a room page's (C9 LOW; C6f LOW-1). The page estimate's template share becomes a fixed `PAGE_TEMPLATE_ALLOWANCE` of 32,576 bytes instead of the template's size on disk, held by a guard test, so a copy edit never moves geometry and a CRLF and an LF checkout give the same estimate (C9 item 3; its review's §3.4 item 4). | **Nothing.** `wb-surface-mesh/1`, its manifest keys and all routes are unchanged. What moves is a diagnostic record: on the Tower's CRLF checkout, the `detail.mobile_page_fit.mesh_budget_bytes` a later surface build records returns to its pre-`0636fce` value, 4,645,008 bytes (`0636fce`'s 28-byte-shorter template made it 4,645,029; `0636fce` is not in `world-builder/int-walk5-candidate`), and `page_bytes_estimate` for the same mesh is 28 bytes higher; on an LF checkout the budget moves from 4,645,530 to the same 4,645,008. No product code and no iOS source reads either key. `params_digest` does not include the estimate (it never has), so no served artifact is rebuilt. |
