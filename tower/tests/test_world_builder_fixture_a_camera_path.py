@@ -6,6 +6,9 @@ To run the frozen cases, set TOWER_FX1A_W4_WORLD_DIR and
 TOWER_FX1A_W3_WORLD_DIR to their respective world directories. The lead's
 default copies are under Glasses-scratch/wb-coherence-run-2026-09-23/
 physical-test/scored/<short world ID>/worlds/<full world ID>.
+A frozen case skips when its copy is absent (variable unset, files missing, or
+an older solution schema), unless WB_FROZEN_FIXTURES_REQUIRED=1, which makes
+each of those a failure; a run that sets it must set both variables too.
 """
 
 from __future__ import annotations
@@ -34,6 +37,16 @@ W4_BAD = (2026, 2031, 2037, 2047, 2050, 2053, 2055, 2056, 3090, 3092, 3095, 3097
 # LABEL4 independently names W4 s1617 as bed and s2847 as desk content.
 # W3's retained controls are a solve/path characterization, not visual labels.
 GOOD = {"w4": (1617, 2847), "w3": (5827, 6505)}
+# Opt-in, for the lead's integration run on the host that holds the copies, as
+# in fixture E: "1" turns a frozen case that cannot run into a failure, so a
+# moved or renamed copy cannot quietly turn it into a skip (C9 LOW).
+FROZEN_REQUIRED_ENV = "WB_FROZEN_FIXTURES_REQUIRED"
+
+
+def _frozen_copy_unusable(reason: str):
+    if os.environ.get(FROZEN_REQUIRED_ENV) == "1":
+        pytest.fail(f"{FROZEN_REQUIRED_ENV}=1 but {reason}")
+    pytest.skip(reason)
 
 
 def _kid(session_id: str, seq: int) -> str:
@@ -144,15 +157,15 @@ def test_frozen_world_saved_path(case, monkeypatch):
     variable = f"TOWER_FX1A_{case.upper()}_WORLD_DIR"
     override = os.environ.get(variable)
     if not override:
-        pytest.skip(f"{variable} is not set")
+        _frozen_copy_unusable(f"{variable} is not set")
     world_dir = Path(override)
     solve_dir = world_dir / "solve" / session_id
     solution_path = solve_dir / "solution.json"
     if not solution_path.is_file() or not (solve_dir / "solution.npz").is_file():
-        pytest.skip(f"local frozen {case.upper()} solution.json and solution.npz are absent")
+        _frozen_copy_unusable(f"local frozen {case.upper()} solution.json and solution.npz are absent")
     schema = json.loads(solution_path.read_text(encoding="utf-8")).get("schema_version")
     if schema != SOLUTION_SCHEMA_VERSION:
-        pytest.skip(f"local frozen {case.upper()} solution schema {schema!r} != {SOLUTION_SCHEMA_VERSION}; re-freeze the copy")
+        _frozen_copy_unusable(f"local frozen {case.upper()} solution schema {schema!r} != {SOLUTION_SCHEMA_VERSION}; re-freeze the copy")
     store = _ReadOnlyFrozenStore(world_dir, world_id)
     solution = load_solution(store, world_id, session_id)
     # CHARACTERIZATION: the frozen inputs load completely, so the path test

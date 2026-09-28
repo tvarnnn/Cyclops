@@ -43,14 +43,22 @@ MOBILE_BYTE_BUDGET = MOBILE_PAGE_BYTES
 # world; the allowance is generous because under-estimating it is the failure.
 PAGE_CONFIG_ALLOWANCE = 64 * 1024
 
+# The template's share of the page estimate, fixed: every surface the Tower's
+# CRLF checkout built since fc99d20 was packed with it (detail.mobile_page_fit:
+# overhead 98,112 B).
+# Fixed, not measured (WORLD-BUILDER-SURFACE.md §8, v3): the phone level's mesh
+# budget is 3/4 of what the estimate leaves of the page, so a measured template
+# let every copy edit move geometry, and a CRLF checkout measured one byte a
+# line more than an LF one although the page is composed from the same text.
+# The estimate is an upper bound only while the template, as the page inlines
+# it (LF: read_text translates a CRLF checkout), fits under it, which
+# test_world_builder_surface_pipeline.py holds.
+PAGE_TEMPLATE_ALLOWANCE = 32_576
+
 
 def page_overhead_bytes() -> int:
     """Everything in a surface page except the base64 mesh, estimated."""
-    try:
-        template = viewer_template_path().stat().st_size
-    except OSError:
-        template = 64 * 1024
-    return int(template) + PAGE_CONFIG_ALLOWANCE
+    return PAGE_TEMPLATE_ALLOWANCE + PAGE_CONFIG_ALLOWANCE
 
 
 def page_bytes_for_mesh(mesh_bytes: int, overhead: int | None = None) -> int:

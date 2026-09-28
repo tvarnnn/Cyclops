@@ -1826,6 +1826,35 @@ class TestThePhoneBudgetBoundsThePage:
         assert phone["faces"] > 0.3 * free["faces"], "the largest that fits, not a token mesh"
         page = build_surface_page(store, WORLD, SESSION, budget_bytes=budget)
         assert len(page.encode("utf-8")) <= budget
+        # SURFACE v3 §8: the template allowance holds the template's LF size, which
+        # is the size the page inlines only while the page is composed from LF text.
+        assert "\r" not in page
+
+    def test_the_surface_template_fits_its_page_allowance(self):
+        """SURFACE v3 §8: the estimate's template share is a fixed allowance, not the
+        template's size on disk, so a copy edit never moves geometry and a CRLF and an
+        LF checkout estimate alike. It stays an upper bound only while the template, as
+        the page inlines it, fits under it; outgrowing it is a declared change. The page
+        inlines the LF text read_text gives on every checkout (a CRLF checkout's line
+        endings are translated on read), so that is the size held, not the disk's."""
+        from tower.world_builder.surface_render import (
+            PAGE_CONFIG_ALLOWANCE,
+            PAGE_TEMPLATE_ALLOWANCE,
+            page_overhead_bytes,
+            viewer_template_path,
+        )
+
+        # ORACLE (SURFACE v3 §8): the share every surface the Tower's CRLF checkout
+        # built since fc99d20 was packed with (detail.mobile_page_fit: overhead
+        # 98,112 = 32,576 + 65,536).
+        assert PAGE_TEMPLATE_ALLOWANCE == 32_576
+        assert page_overhead_bytes() == PAGE_TEMPLATE_ALLOWANCE + PAGE_CONFIG_ALLOWANCE == 98_112
+        inlined = len(viewer_template_path().read_text(encoding="utf-8").encode("utf-8"))
+        assert inlined <= PAGE_TEMPLATE_ALLOWANCE, (
+            f"surface_viewer.html is {inlined} bytes as the page inlines it (LF), over "
+            f"the {PAGE_TEMPLATE_ALLOWANCE}-byte PAGE_TEMPLATE_ALLOWANCE. Raising it "
+            f"lowers every later phone level's mesh budget, so it is a declared "
+            f"change (WORLD-BUILDER-SURFACE.md §8)")
 
     def test_the_phone_page_budget_is_part_of_what_was_built(self):
         a = S.SurfaceParams().digest_fields()

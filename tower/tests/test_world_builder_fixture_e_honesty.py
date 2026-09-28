@@ -4,6 +4,8 @@ The copy stays outside the repository.  This module reads its manifests and
 proxies, composes pages in memory, and never reads or publishes image chunks.
 The producing Walk 4 integration was f58d890; the world/session identifiers
 below bind the characterization to that run, not to a synthetic world.
+The W4 checks skip where the copy is absent, unless
+WB_FROZEN_FIXTURES_REQUIRED=1, which makes an absent copy fail.
 """
 
 from __future__ import annotations
@@ -45,12 +47,19 @@ CONTRACT_BANNED = ("not photographed", "not captured", "never looked", "nobody p
 # comment-stripped text of the W4 pages and of the research page.
 BANNED = CONTRACT_BANNED + tuple(
     claim for claim in _BANNED_VIEWER_CLAIMS if claim not in CONTRACT_BANNED)
+# Opt-in, for the lead's integration run on the host that holds the local copy:
+# "1" turns an absent copy from a skip into a failure, so a moved or renamed
+# copy cannot quietly turn the only real-W4 checks into skips (C9 LOW).  Unset,
+# a fresh clone or another host still skips.  Fixture A reads the same switch.
+FROZEN_REQUIRED_ENV = "WB_FROZEN_FIXTURES_REQUIRED"
 
 
 @pytest.fixture(scope="module")
 def frozen_world():
     path = Path(os.environ.get("WB_FIXTURE_E_WORLD", str(DEFAULT_WORLD)))
     if not path.is_dir():
+        if os.environ.get(FROZEN_REQUIRED_ENV) == "1":
+            pytest.fail(f"{FROZEN_REQUIRED_ENV}=1 but the W4 world copy is absent: {path}")
         pytest.skip(f"local-only W4 world copy absent: {path}")
     assert path.name == WORLD, "fixture must name the W4 world, not another capture"
     # The pages are built through WorldStore(path.parent.parent), which needs
@@ -77,23 +86,30 @@ def _manifest(frozen_world: Path, area_id: str | None, expected_sha: str):
     return directory, json.loads(data)
 
 
+# An HTML comment and a script element are taken in document order, whichever
+# starts first, as an HTML parser takes them: "<!--" inside a script's string is
+# text, and "<script>" inside an HTML comment is comment (C9 MED).
+_COMMENT_OR_SCRIPT = re.compile(r"<!--.*?-->|<script\b[^>]*>.*?</script>",
+                                flags=re.IGNORECASE | re.DOTALL)
+
+
 def _shown_source(page: str) -> str:
     """Remove comments before scanning HTML text, labels, and JS strings.
 
     The kept C1 comment itself says 'not captured'. A whole-source search
     falsely rejects that harmless comment and cannot guard the actual copy.
     """
-    page = re.sub(r"<!--.*?-->", "", page, flags=re.DOTALL)
-    parts = re.split(r"(<script\b[^>]*>.*?</script>)", page,
-                     flags=re.IGNORECASE | re.DOTALL)
     shown = []
-    for part in parts:
-        if part.lower().startswith("<script"):
-            start = part.index(">") + 1
-            end = part.lower().rfind("</script>")
-            shown.append(part[:start] + _without_js_comments(part[start:end]) + part[end:])
-        else:
-            shown.append(re.sub(r"/\*.*?\*/", "", part, flags=re.DOTALL))
+    pos = 0
+    for match in _COMMENT_OR_SCRIPT.finditer(page):
+        shown.append(re.sub(r"/\*.*?\*/", "", page[pos:match.start()], flags=re.DOTALL))
+        block = match.group(0)
+        if block.lower().startswith("<script"):
+            start = block.index(">") + 1
+            end = block.lower().rfind("</script>")
+            shown.append(block[:start] + _without_js_comments(block[start:end]) + block[end:])
+        pos = match.end()
+    shown.append(re.sub(r"/\*.*?\*/", "", page[pos:], flags=re.DOTALL))
     return "".join(shown)
 
 
@@ -255,3 +271,16 @@ def test_research_page_reports_its_actual_imagery_source(tmp_path, monkeypatch):
     assert config["privacy_safe"] is False
     for phrase in BANNED:
         assert phrase not in _shown_source(page).casefold(), phrase
+
+
+@pytest.mark.parametrize("phrase", BANNED)
+def test_the_stripper_keeps_shown_strings_that_hold_comment_markers(phrase):
+    """C9 MED: an HTML comment marker inside a script's string is text, not a comment."""
+    for shown in (f'<script>\nconst s = "<!-- {phrase} -->";\nel.textContent = s;\n</script>',
+                  f'<script>\nconst a = "<!--";\nb.textContent = "{phrase}";\nconst c = "-->";\n</script>',
+                  f"<script>\nel.setAttribute('aria-label', `<!-- {phrase} -->`);\n</script>"):
+        assert phrase in _shown_source(shown).casefold(), shown
+    # ...while a real HTML comment, even one holding script text, is still stripped.
+    for hidden in (f"<!-- {phrase} -->\n<div>ok</div>",
+                   f'<!-- <script>el.textContent = "{phrase}";</script> -->\n<div>ok</div>'):
+        assert phrase not in _shown_source(hidden).casefold(), hidden

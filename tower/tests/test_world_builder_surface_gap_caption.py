@@ -231,5 +231,6 @@ def test_the_scan_reads_shown_strings_and_skips_comments(phrase):
                   f'<button aria-label="{phrase}">x</button>',
                   f'<script>const a = "{phrase}"; // ok\n</script>',
                   f"<script>b.textContent = '{phrase}';</script>",
-                  f"<script>const c = `{phrase}`;</script>"):
+                  f"<script>const c = `{phrase}`;</script>",
+                  f'<script>const d = "<!-- {phrase} -->";</script>'):
         assert phrase in _shown_source(shown), shown
