@@ -58,7 +58,8 @@ struct HomeWorkspaceView: View {
                 ViewfinderCard(
                     frame: glasses.latestCapturedFrame,
                     isStreaming: glasses.cameraStreamState == .streaming,
-                    placeholderReason: viewfinderPlaceholder
+                    placeholderReason: viewfinderPlaceholder,
+                    isPausedByGlasses: glasses.captureClaim == .devicePaused
                 )
                 liveNumbers
             }
@@ -184,10 +185,17 @@ private extension HomeWorkspaceView {
     /// read "Start", and a tap in it did nothing observable.
     var isRunning: Bool { glasses.isCaptureEngaged }
 
+    /// Stop, Stop while the glasses hold it paused, or Start (U0.8 F06).
+    var controlMode: CaptureControlMode {
+        CaptureControlMode.mode(isEngaged: glasses.isCaptureEngaged, claim: glasses.captureClaim)
+    }
+
     @ViewBuilder
     var sessionControl: some View {
         VStack(spacing: 10) {
-            if isRunning {
+            if controlMode != .start {
+                // A session the glasses paused is still a session: a Start
+                // then would be refused and do nothing observable (U0.8 F06).
                 Button {
                     glasses.stopCameraSession()
                 } label: {
@@ -198,6 +206,10 @@ private extension HomeWorkspaceView {
                 }
                 .readableBorderedButton()
                 .disabled(isStopping)
+                if controlMode == .stopWhilePaused {
+                    HelperText(ViewfinderText.pausedControlLine(stopTitle: "Stop session"))
+                        .accessibilityIdentifier("capture-paused-line")
+                }
             } else {
                 Button {
                     glasses.startCameraSession()
@@ -211,9 +223,9 @@ private extension HomeWorkspaceView {
                 .disabled(!canStart)
             }
 
-            if !canStart && !isRunning {
-                HelperText("Waiting for the glasses to become active.")
-            } else if glasses.cameraPermissionStatus == .denied && !isRunning {
+            if !canStart && controlMode == .start {
+                HelperText(ViewfinderText.waitingForGlasses)
+            } else if glasses.cameraPermissionStatus == .denied && controlMode == .start {
                 // Stated rather than enforced with `.disabled`. A start that
                 // is refused now reports why and leaves the session clean, so
                 // an out-of-date reading here costs a tap and an explanation
@@ -363,14 +375,16 @@ private extension HomeWorkspaceView {
         return String(format: "%.1f", value)
     }
 
+    /// Never "Start…" while the camera is on or coming up (U0.8 F05).
     var viewfinderPlaceholder: String {
-        if !glasses.hasActiveDevice {
-            return "Waiting for the glasses to become active."
-        }
-        if glasses.cameraPermissionStatus != .granted {
-            return "Camera access is needed before a session can stream."
-        }
-        return "Start a session to see what the glasses see."
+        ViewfinderText.placeholder(
+            isStreaming: glasses.cameraStreamState == .streaming,
+            isEngaged: glasses.isCaptureEngaged,
+            isPausedByGlasses: glasses.captureClaim == .devicePaused,
+            hasActiveDevice: glasses.hasActiveDevice,
+            permission: glasses.cameraPermissionStatus,
+            noun: "session"
+        )
     }
 }
 #endif

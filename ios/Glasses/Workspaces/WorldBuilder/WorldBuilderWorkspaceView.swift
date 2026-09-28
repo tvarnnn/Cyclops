@@ -383,12 +383,15 @@ private extension WorldBuilderWorkspaceView {
             ViewfinderCard(
                 frame: glasses.latestCapturedFrame,
                 isStreaming: isStreaming,
-                placeholderReason: placeholder
+                placeholderReason: placeholder,
+                isPausedByGlasses: glasses.captureClaim == .devicePaused
             )
         }
     }
 
-    static let waitingForGlasses = "Waiting for the glasses to become active."
+    /// The viewfinder's sentence, so the placeholder and Start's hint cannot
+    /// drift apart.
+    static var waitingForGlasses: String { ViewfinderText.waitingForGlasses }
 
     /// Start's VoiceOver hint: why it is off, or nothing.
     var startHint: String {
@@ -399,12 +402,21 @@ private extension WorldBuilderWorkspaceView {
         return ""
     }
 
+    /// Never "Start…" while the camera is on or coming up (U0.8 F05).
     var placeholder: String {
-        if !glasses.hasActiveDevice { return Self.waitingForGlasses }
-        if glasses.cameraPermissionStatus != .granted {
-            return "Camera access is needed before a session can stream."
-        }
-        return "Start a capture session to see what the glasses see."
+        ViewfinderText.placeholder(
+            isStreaming: isStreaming,
+            isEngaged: glasses.isCaptureEngaged,
+            isPausedByGlasses: glasses.captureClaim == .devicePaused,
+            hasActiveDevice: glasses.hasActiveDevice,
+            permission: glasses.cameraPermissionStatus,
+            noun: "capture session"
+        )
+    }
+
+    /// Stop, Stop while the glasses hold it paused, or Start (U0.8 F06).
+    var controlMode: CaptureControlMode {
+        CaptureControlMode.mode(isEngaged: glasses.isCaptureEngaged, claim: glasses.captureClaim)
     }
 
     /// Labelled for what it actually does. See the type's doc comment for why
@@ -412,7 +424,9 @@ private extension WorldBuilderWorkspaceView {
     @ViewBuilder
     var captureControl: some View {
         VStack(spacing: 8) {
-            if isRunning {
+            if controlMode != .start {
+                // A capture the glasses paused is still a capture: a Start
+                // then would be refused and do nothing observable (U0.8 F06).
                 Button {
                     glasses.stopCameraSession()
                 } label: {
@@ -423,6 +437,10 @@ private extension WorldBuilderWorkspaceView {
                 }
                 .readableBorderedButton()
                 .disabled(glasses.cameraStreamState == .stopping)
+                if controlMode == .stopWhilePaused {
+                    HelperText(ViewfinderText.pausedControlLine(stopTitle: "Stop capture"))
+                        .accessibilityIdentifier("capture-paused-line")
+                }
             } else {
                 Button {
                     glasses.startCameraSession()
@@ -454,7 +472,7 @@ private extension WorldBuilderWorkspaceView {
                     : "Streams frames to the Tower. What it builds from them is reported above."
             )
 
-            if !isRunning && !isTowerReachable {
+            if controlMode == .start && !isTowerReachable {
                 // Start is off because of the Tower (D1): the reason, beside
                 // the control, and the way to end it. First, because it holds
                 // whether or not the glasses are active -- the viewfinder
@@ -466,13 +484,13 @@ private extension WorldBuilderWorkspaceView {
                 if let recovery {
                     TowerRecoveryButtons(actions: recovery, identifierPrefix: "wb-capture")
                 }
-            } else if !glasses.hasActiveDevice && !isRunning {
+            } else if !glasses.hasActiveDevice && controlMode == .start {
                 // Nothing: the viewfinder card at the top of this workspace
                 // is showing this very sentence, and it read twice on one
                 // screen (UX audit, wb-capture-idle). Kept as a branch so the
                 // advice below still never shows while the glasses are away.
                 EmptyView()
-            } else if glasses.cameraPermissionStatus == .denied && !isRunning {
+            } else if glasses.cameraPermissionStatus == .denied && controlMode == .start {
                 // Advice, not a `.disabled` condition — see the equivalent
                 // branch in `HomeWorkspaceView.sessionControl`.
                 HelperText("Camera access is not granted. Allow it under Connections, then start capture.")

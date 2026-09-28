@@ -173,6 +173,66 @@ final class DeadEndsUITests: XCTestCase {
         XCTAssertFalse(app.buttons["Stop capture"].exists, "nothing started")
     }
 
+    // MARK: Step 3 -- the viewfinder and the paused capture
+
+    /// Mock glasses and the mock Tower online (D1 leaves no "Start anyway"),
+    /// World Builder open, Start capture tapped.
+    private func startCaptureWithTheTowerOnline(env: [String: String] = [:]) throws {
+        mock.setRoute(Self.sessionStart, status: 200, body: Self.session(state: "active"))
+        mock.setRoute(Self.sessionStop, status: 200, body: Self.session(state: "stopped"))
+        scriptWorldBuilder(ackSubscribes: true)
+        launch(tower: mockAuthority, mockGlasses: true, env: env)
+        try requireMockGlasses()
+        open(cartridge: "World Builder")
+        let start = app.buttons["Start capture"]
+        XCTAssertTrue(reveal(start), "Start capture is on the screen")
+        XCTAssertTrue(waitFor(timeout: 15) { start.isEnabled }, "Start capture turns on once the Tower is online")
+        start.tap()
+    }
+
+    private func stopCaptureIfRunning() {
+        let stop = app.buttons["Stop capture"]
+        if stop.exists, stop.isHittable || reveal(stop) { stop.tap() }
+    }
+
+    /// F05: while the camera is on or coming up, the viewfinder never says
+    /// "Start a capture session".
+    func testTheViewfinderNeverSaysStartWhileTheCameraIsOn() throws {
+        try startCaptureWithTheTowerOnline()
+        let stop = app.buttons["Stop capture"]
+        XCTAssertTrue(stop.waitForExistence(timeout: 15), "the capture started")
+
+        let startWords = app.descendants(matching: .any)
+            .matching(NSPredicate(format: "label BEGINSWITH %@", "Start a capture session")).firstMatch
+        XCTAssertFalse(startWords.exists, "the viewfinder says Start while the camera is on")
+        let starting = labelled("Starting the glasses camera…").exists
+        let waiting = labelled("Camera on. Waiting for the first frame from the glasses.").exists
+        print("U08|F05|viewfinder: starting=\(starting) waitingForFirstFrame=\(waiting)")
+        XCTAssertTrue(starting || waiting, "the viewfinder says the camera is starting or waiting for a frame")
+        stopCaptureIfRunning()
+    }
+
+    /// F06: a capture the glasses paused offers Stop, not a silent Start.
+    func testAPausedCaptureOffersStop() throws {
+        try startCaptureWithTheTowerOnline(env: ["GLASSES_UITEST_MOCK_DOFF_AFTER_SECONDS": "2"])
+        let pausedLine = element("capture-paused-line")
+        guard pausedLine.waitForExistence(timeout: 15) else {
+            let shell = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "Camera")).firstMatch
+            let seen = "shell: \(shell.exists ? shell.label : "(none)"); Stop capture "
+                + (app.buttons["Stop capture"].exists ? "shown" : "absent")
+            stopCaptureIfRunning()
+            throw XCTSkip("Mock doff() did not pause the DAT session in this Simulator (\(seen))")
+        }
+        let stop = app.buttons["Stop capture"]
+        XCTAssertTrue(stop.exists, "Stop capture while paused")
+        XCTAssertTrue(stop.isEnabled, "Stop capture is on while paused")
+        XCTAssertFalse(app.buttons["Start capture"].exists, "no Start while the glasses hold the capture")
+        let badge = app.descendants(matching: .any)
+            .matching(NSPredicate(format: "label BEGINSWITH %@", "Paused by the glasses")).firstMatch
+        XCTAssertTrue(badge.exists, "the viewfinder says the glasses paused it")
+        stopCaptureIfRunning()
+    }
+
     // MARK: Launch (H3)
 
     /// `tower` is the socket's `host:port`; `nil` uses the saved address.

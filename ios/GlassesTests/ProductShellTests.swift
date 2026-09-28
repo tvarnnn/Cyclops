@@ -4931,5 +4931,59 @@ final class DeadEndsTests: XCTestCase {
             }
         }
     }
+
+    private static let claims: [CaptureClaim] = [.unclaimed, .running, .devicePaused, .ending]
+
+    /// F05: whenever the camera is on or coming up, the viewfinder never
+    /// tells the person to start it.
+    func testTheViewfinderNeverSaysStartWhileTheCameraIsOn() {
+        let permissions: [PermissionStatus?] = [nil, .granted, .denied]
+        for isStreaming in [false, true] {
+            for isEngaged in [false, true] {
+                for isPaused in [false, true] {
+                    for hasDevice in [false, true] {
+                        for permission in permissions {
+                            for noun in ["capture session", "session"] {
+                                let text = ViewfinderText.placeholder(
+                                    isStreaming: isStreaming, isEngaged: isEngaged, isPausedByGlasses: isPaused,
+                                    hasActiveDevice: hasDevice, permission: permission, noun: noun
+                                )
+                                // "Start a …" is the instruction; "Starting the
+                                // glasses camera…" is the honest state.
+                                if isStreaming || isEngaged {
+                                    XCTAssertFalse(text.hasPrefix("Start a"), text)
+                                }
+                                if isPaused && !isStreaming && !isEngaged {
+                                    XCTAssertEqual(text, ViewfinderText.paused)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        XCTAssertEqual(
+            ViewfinderText.placeholder(isStreaming: false, isEngaged: false, isPausedByGlasses: false,
+                                       hasActiveDevice: true, permission: .granted, noun: "session"),
+            "Start a session to see what the glasses see."
+        )
+    }
+
+    /// F06: a capture the glasses paused offers Stop, never a silent Start.
+    func testAPausedCaptureIsStoppableNotStartable() {
+        for claim in Self.claims {
+            for isEngaged in [false, true] {
+                let mode = CaptureControlMode.mode(isEngaged: isEngaged, claim: claim)
+                if isEngaged {
+                    XCTAssertEqual(mode, .stop, "\(claim), engaged")
+                } else if claim == .devicePaused {
+                    XCTAssertEqual(mode, .stopWhilePaused, "\(claim), not engaged")
+                } else {
+                    XCTAssertEqual(mode, .start, "\(claim), not engaged")
+                }
+            }
+        }
+        XCTAssertTrue(ViewfinderText.pausedControlLine(stopTitle: "Stop capture").hasSuffix("Stop capture ends it."))
+    }
 }
 #endif
