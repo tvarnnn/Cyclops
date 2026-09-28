@@ -872,6 +872,14 @@ everything, so nothing runs after a failure:
       - for every revisit or look-back link into the room, the share of its inliers on a display or on one compact
         planar cluster;
       - whether any look-back links through static structure with ≥ 30 inliers off any screen.
+29. **The viewer page ignores the phone's text size** (O1 item 6, manager 115; an input to U1.1, native chrome).
+    - **The finding:** the page's fonts are fixed px, so Dynamic Type at AX5 does not reach them.
+    - **The iOS side of it:** the native caption above the web view grows without limit and squeezes the viewer. On
+      the SE the web view goes 458 → 0 pt, with 0 of 5 bar buttons on screen. This is iOS-owned
+      (`WorldRenderViewer.swift`); the Mac U0.5 agent is fixing it.
+    - **Why it is not a Tower fix alone:** the web page cannot follow the phone's text size without help from the
+      native side. U1.1 decides how the text size is passed in (or the controls are drawn natively).
+    - **Not** part of WORLDS v3 / T-UX0b, which covers O1 items 1–5.
 
 ## 7. Resources this run created or stopped
 
