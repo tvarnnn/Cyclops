@@ -5,6 +5,7 @@
 | | |
 |---|---|
 | Contract | `world_builder.worlds/2026-09-10` |
+| Document version | **v2** (2026-09-27): viewer honesty, manager 106 (§4). See the change log at the end. The wire identifier above does **not** move: no payload changes, and the iOS decoder compares it for equality |
 | Transport | HTTP `GET /worlds`, same origin and same rules as the geometry routes (`WORLD-BUILDER-GEOMETRY.md` §1) |
 | Tower producer | `tower/tower/results/world_builder_library.py` |
 | Tower route | `tower/tower/routes/geometry.py` |
@@ -328,7 +329,7 @@ enforced).
   large void dims its surroundings over tens of pixels while a pinhole changes
   nothing. The fog has no texture and no detail and never raises a pixel's
   alpha. **It is always darker than the room beside it**, which is what makes a
-  void read as "nothing was seen here" rather than as something: the layer is
+  void read as "there is no picture here" rather than as something: the layer is
   written PREMULTIPLIED, so the mip level is the mean of what is actually on the
   screen, and 0.35 of that cannot reach it. Corrected 2026-09-17 (review 2,
   P-2): the mean was taken over an unpremultiplied layer and divided by the mean
@@ -358,16 +359,16 @@ enforced).
   (42 MB colour) and the caption says the set is reduced.
 - **Navigation** (revised 2026-09-17, fix-it nav lane; **revised again
   2026-09-18, fix-it interaction lane — looking is now free**). This
-  representation is photographic where the wearer stood and looked and dark from
-  anywhere else: the walkthrough found every orbit behind or outside the room
+  representation is photographic only where the wearer stood and looked, and dark
+  from anywhere else: the walkthrough found every orbit behind or outside the room
   99–100% dark, and orbiting was the first thing a person tried. So there is
   **no free orbit**. One camera `{position, yaw, pitch}`, levelled to
   `CONFIG.up` (`NAV` in the page, pure, run under node by the Tower's tests).
 
   **The two halves are not the same thing, and the page must not treat them as
   one.** *Which way it faces* is free: a full turn of yaw from any position it
-  can be in, and pitch limited only by the neck. Turning to a wall the glasses
-  never photographed shows honest darkness, which is true and expected; a
+  can be in, and pitch limited only by the neck. Turning to a wall this page
+  has not reconstructed shows honest darkness, which is true and expected; a
   control that answers a deliberate two-inch drag with four degrees is not a
   boundary, it is a broken page. *Where it may be* is limited, by the two
   limits that are physically true: the tube around the walk that was actually
@@ -403,7 +404,7 @@ enforced).
     detail as the opening. The tube was three times tighter than the pictures
     require. At 2.2 × 1.4 a finger reaches **back 2.10, up 1.25, down 1.25** of
     a 4.48-unit push (from 1.41 / 0.71 / 0.70), and each of those directions
-    still stops, visibly, with *Not captured beyond here*. The price is the
+    still stops, visibly, with the edge hint (*Movement stops here*, below). The price is the
     support field's volume, and it is paid in **lattice spacing** (below), not
     in waiting.
   - **Which way.** A **support field** over position and look direction, built
@@ -431,7 +432,9 @@ enforced).
     edge and never passes it: no wall, no snap, and no resistance at all over
     the first part of the band. A released camera drifts back inside (position
     toward 0.75 of the tube with a 450 ms time constant). A resisted push shows
-    *Not captured beyond here* for about a second. **A look is never resisted
+    ***Movement stops here*** for about a second. (It read *Not captured beyond
+    here* until v2, 2026-09-27, manager 106. The tube bounds the walked path,
+    not the capture: the frames can hold imagery well beyond it.) **A look is never resisted
     by the capture** — not by support, not by content, not by a recorded pose's
     own quality. Yaw is therefore never scaled at all and never raises
     `resisted`. The single exception is the *neck*: the last 0.2 rad before
@@ -463,13 +466,14 @@ enforced).
     full either way. Support still filters the Best view's candidates and is
     still reported by `S.support`.
     **The darkness the page reports is a different band** (2026-09-20, fix-it
-    orient lane). *Nothing was photographed this way* is a claim about whether
+    orient lane). The dark sentence (below; *Nothing was photographed this way*
+    until v2) is a claim about whether
     a view is on **anything**, and it was being read off T_LO, which is the
     band at which three views in four render *well*. On the canonical world
     that made `dark` exactly 1 at eight of nine sampled recorded poses —
     including poses the page draws 99.4% of — so thirty frames of drag at the
     opening, over 97% drawn, raised the sentence five times. A page that says
-    *nothing was photographed this way* over a photograph of the room is
+    its view is on nothing over a photograph of the room is
     crying wolf, and the sentence has stopped meaning anything by the time it
     is true. `dark` is now `1 − smoothstep(DARK_LO, DARK_HI, support)` with
     **DARK_LO = 0.07, DARK_HI = 0.25**, swept against the page's own
@@ -491,10 +495,39 @@ enforced).
     nothing: it appears when `dark > 0.90` has held for **320 ms** and goes
     when `dark < 0.45`, so sweeping through a dark patch on the way somewhere
     does not flash it and stopping in one always explains it. It reads
-    *Nothing was photographed this way / the glasses never looked this way —
-    tap to turn back*, and tapping it does what *Face the room* does. Measured
+    ***Not reconstructed from here*** / *Tap to turn back*, and tapping it does
+    what *Face the room* does. Measured
     again over the same 24 steps: visible at **10 of 24 and at 6 of 6** of the
     100%-background steps, and at none of the 14 that show the room.
+    **What it says, and what it must never say** (v2, 2026-09-27, manager 106,
+    from manager 096 §1). Until v2 it read *Nothing was photographed this way /
+    the glasses never looked this way — tap to turn back*, and walk 4
+    (`c81766a3`) showed that sentence false. The wearer looked back out of the
+    closet, out of the bathroom and across the room. Most of those frames were
+    captured and keyframed, but they landed in pieces the Tower could not place
+    in the page's room or area, or they were never posed (all 33 bathroom
+    look-back keyframes, and all 19 of the closet exit's); part of the room's
+    reverse direction was never kept as a keyframe at all. So the page's proxy had no
+    geometry behind the viewer: in all three area pages 0 of 150 cameras reach
+    even 6% reverse coverage, and 186 of the room's 341 are below 5% (run
+    `wb-coherence-run-2026-09-23`, `lead\diag4\DIAGNOSIS.md` Q2). The sentence
+    now says only what the page knows: from this place, in this direction, this
+    page has nothing reconstructed. It never says why. A dark direction can be
+    - one the glasses never looked;
+    - one they looked, but whose frames the Tower did not keep or could not
+      place here;
+    - one whose frames were placed but are not among the phone-tier images this
+      page draws from (secondary on walk 4).
+
+    The page cannot tell these apart, so it names none of them.
+    *Reconstructed* in the page's words means what this page can draw: a
+    surface on its own proxy, with a picture from its own kept frames. **No
+    string the page shows (text, `aria-label` or label) may say that a
+    direction or a place was *not photographed*, *not captured* or *never
+    looked* at, or that *nobody photographed* it.** A page knows its own kept
+    frames, not the capture. Sentences about the page's own kept frames (*no
+    kept frame saw …*) are literally true and stay. The trigger, both bands,
+    the 320 ms hold and the tap are unchanged.
   - **Content, not only quality** (added 2026-09-17, fix-it framing lane). A
     view can be 100% drawn, clean, and hold nothing — a plain wall, a plain
     ceiling, a blank door panel — and support rated it exactly as highly as the
@@ -578,7 +611,8 @@ enforced).
     Three things, all of them reporting **coverage** and none of them implying
     content:
     - an **orientation ring** at the top right, on from the **first drawn
-      frame** and labelled *photographed / from here* underneath, with **YOU**
+      frame** and labelled *reconstructed / from here* underneath
+      (*photographed / from here* until v2), with **YOU**
       at its centre (2026-09-21, fix-it ux lane: it used to ramp its opacity
       in only once the field existed, a second or more after the first
       picture — exactly when a first-time viewer looks at it — and it carried
@@ -586,8 +620,10 @@ enforced).
       a field the arcs are drawn blank, which is the truth: the page does not
       know yet). `RING_BINS` = 36 headings on the horizon from where the camera
       stands, each one the same `support` the rest of the page uses at the
-      same field of view, drawn as an arc that is lit where a frame exists and
-      dim where none does, rotated so the current heading is always at the top
+      same field of view, drawn as an arc that is lit where one of the page's
+      kept frames covers the view and dim where none does (a dim arc says
+      nothing about the capture: v2, the dark state above), rotated so the
+      current heading is always at the top
       (so the room being behind you *looks* like the room being behind you).
       The view's own horizontal spread is shaded inside it. The profile is
       recomputed only when the camera has moved more than 0.22 units — turning
@@ -611,7 +647,14 @@ enforced).
       `fixit\ux\tools\arrowside.py`. The flip that IS real is the one fixed
       here.)
     - a **dark line** above the bar, held for as long as the view is on
-      nothing (see the darkness band above), which is also a control.
+      nothing (see the darkness band above), which is also a control. It and
+      the edge hint sit above the button bar **whatever height the bar is**:
+      `bottom: max(104px + the bottom safe-area inset, --barh + 8px)`, where
+      `--barh` is the bar's measured height (v2). The bar already wraps to two
+      rows at 390×844 (`barHeight()` in the page), and with 44 px buttons two
+      rows come to about 116 px plus the inset by the page's own CSS (10 + 44 +
+      8 + 44 + 10), so a fixed 104 px would put both notices over the top row.
+      Computed, not measured on a device.
     - **Face the room** — a button, and the ring, the arrow and the dark line
       are the same control. It turns the camera, from where it stands, to the heading
       `NAV.bestHeading` names: the best-supported one discounted by how far
@@ -621,24 +664,25 @@ enforced).
       when nothing at all is covered from where you stand it returns null and
       offers nothing rather than inventing a direction.
 
-    The **settle** gained one fallback for the same reason: where the glasses
-    never looked there is no content anywhere near, so the content gradient is
+    The **settle** gained one fallback for the same reason: where nothing is
+    reconstructed there is no content anywhere near, so the content gradient is
     exactly zero and a camera *the page placed* on nothing sat on nothing. It
     now falls back to the **coverage** gradient over a wider 0.60 rad. It is a
     nudge at the edge of the capture and not a way home — the whole budget is
     still `C_DRIFT_MAX`, about 17°, and half a turn of dark is 180° — and it
     is still refused for a look of the person's own and while a finger is
     down.
-  - **A place nobody photographed is drawn as a flat grey haze** (added
+  - **A place no kept frame saw is drawn as a flat grey haze** (added
     2026-09-21, fix-it ux lane, `UX.md` §8; `WORLD-BUILDER-APPEARANCE.md`
-    §4.2b). Proxy geometry that no kept frame saw used to write alpha 0 and
+    §4.2b; the heading read *A place nobody photographed* until v2). Proxy
+    geometry that no kept frame saw used to write alpha 0 and
     come out as the background. The caption had always called that *a grey
     haze … always darker than the room around it*, and the last independent
     review measured it: in the shipped render the "haze" is luminance
     **10–18** against a background of **11–28**, so in the opening view it was
     **darker than the emptiness it is supposed to be distinguishable from**,
-    and at +90° **13.4%** of the frame was real geometry nobody ever
-    photographed, indistinguishable from nothing at all. Those fragments now
+    and at +90° **13.4%** of the frame was real geometry no kept frame saw,
+    indistinguishable from nothing at all. Those fragments now
     write **one flat colour** (display RGB 0.160 / 0.168 / 0.190, alpha
     `CONFIG.unseen_haze` = 0.9) with no texture, no hue of its own and no
     detail at any scale. It is the only thing on the page that is painted
@@ -688,6 +732,24 @@ enforced).
     ←/→ step the walk, O is the Best view. Motion coasts after a flick (220 ms
     time constant). Buttons: **Best view**, **Face the room**, **←**, **→**
     (the recorded walk), **Reset** (the opening).
+    **Every button in the bar is a touch target of at least 44 × 44 CSS px**
+    (`min-height` and `min-width` 44 px; the bar's buttons were 38 px high
+    until v2, and the arrows narrower still). The ring (58 px) and the edge
+    chevron (44 × 64) already were. **Every control has an accessible name,
+    and it begins with the control's visible words** (so a spoken "Reset"
+    finds *Reset*). The names are a closed set (v2):
+
+    | Control | Shows | Accessible name |
+    |---|---|---|
+    | `#bOverview` | Best view | *Best view: fly to the clearest vantage* |
+    | `#bBack` | Face the room | *Face the room: turn to the nearest reconstructed direction* (on an area page, *Face the area: …*, `WORLD-BUILDER-COMPONENTS.md` §5.4) |
+    | `#bPrev` | ← | *Previous recorded view* |
+    | `#bNext` | → | *Next recorded view* |
+    | `#bReset` | Reset | *Reset: return to the opening view* |
+    | `#compass` (`role="img"`) | the ring | *Which directions are reconstructed from here* |
+
+    The caption's *About* / *Less* toggle is not a navigation control and is
+    unchanged.
   - **Stepping the walk glides**: eased position and the short way round in
     yaw, 400–2600 ms by distance and turn, instead of jumping (the walkthrough's
     worst flicker steps were path jumps). Any touch interrupts a glide. The cap
@@ -827,10 +889,10 @@ enforced).
   - Before the field is built (a second or so after the images land) the look
     and the walk work, the status line reads **“Preparing the view…”**, and
     **Best view** is disabled. Both of the things the field is needed for are
-    things the page *says*, not things it does: which vantage is best, and why
-    a direction is dark. A first drag in that window turns, and on a world like
-    the canonical one it turns straight into the part of the room nobody
-    photographed — so without the line the page would answer the finger with a
+    things the page *says*, not things it does: which vantage is best, and
+    that a direction is dark. A first drag in that window turns, and on a world like
+    the canonical one it turns straight into the part of the room the page has
+    not reconstructed — so without the line the page would answer the finger with a
     black screen and no account of it. The line is cleared the moment the field
     completes, and only if nothing else has since written to the status.
     **The field is built twice** (2026-09-20, fix-it orient lane): a coarse
@@ -988,7 +1050,8 @@ enforced).
     so that ‘nobody photographed this’ does not look like ‘there is nothing
     here’.”** The old claim was false as written — the haze measured luminance
     10–18 against a background of 11–28 — and the page now draws a patch that
-    makes the new one true and checkable.
+    makes the new one true and checkable. (Its last clause changed in v2,
+    below.)
   - *Moving is not free* gained **“so you can step back, stand and crouch a
     little”**, which is what the widened tube bought.
   The *Cracks a few pixels wide …* sentence is **unchanged, deliberately**: a
@@ -1000,6 +1063,30 @@ enforced).
   states the BOUND rather than a denial, which is the part a wearer can act on.
   The native caption above the web view says the same in one line
   (`WORLD-BUILDER-IOS.md` §10).
+  **v2 (2026-09-27, manager 106) changed the panel's claims about the
+  capture, and nothing else.** Walk 4 showed that a direction or a place can
+  be dark or grey on the page although the glasses looked at it (the dark
+  state, above). Each replacement below is the whole of the change to its
+  section:
+
+  | Section | Until v2 | From v2 |
+  |---|---|---|
+  | *What you are looking at* (last sentence, both the redacted and the research variant) | *Nothing is painted in or imagined: if the glasses did not see it, it is not here.* | ***Nothing is painted in or imagined. Parts of the walk the Tower could not place here are not shown, even when they were captured.*** |
+  | *The flat grey patches* (the end of its first sentence group) | *… it is there so that “nobody photographed this” does not look like “there is nothing here”.* | *… it is there so that **“no picture here”** does not look like “there is nothing here”.* |
+  | *Looking and moving* | *Where the glasses never looked the room is simply dark, and the page says so …* | *Where **nothing is reconstructed from where you stand** the room is simply dark, and the page says so …* |
+  | *Finding your way* | *… a compass of what was photographed from where you stand: the lit part is the directions a frame exists in …* | *… a compass of **what is reconstructed** from where you stand: the lit part is the directions **a kept frame covers** …* |
+  | *Finding your way* | *… to the nearest photographed direction; …* | *… to the nearest **reconstructed** direction; …* |
+
+  Every other word of the panel is unchanged. That includes *A flat grey
+  patch is a place no kept frame saw, or one that was masked as unreliable
+  …*, which is true of the page's own kept frames; *It says a photograph
+  exists, not that there is anything worth seeing*, which is true of the lit
+  arc; and the whole of *The walk*. The **research marker** (§6.6 of
+  `WORLD-BUILDER-APPEARANCE.md`: the `#rawmark` bar, the *RESEARCH BUILD*
+  headline and the research variant's *UNREDACTED … not safe to share*
+  text) is unchanged. The **haze notice** is unchanged too: *The flat grey
+  patches* keeps its title, its first sentence and its bound on crack
+  filling.
 - `window.__wbAppearance` also exposes `walk`, `setView`, `coverage`,
   `snapshot`, `camera`, `shotMode`, `clock`, and for navigation `pose`,
   `setPose`, `support`, `navStats`, `navReady`, `sampleReachable`, `input`,
@@ -1127,6 +1214,12 @@ Every page §4 serves carries the same two values in its head, within its first
    `<session_id>/appearance:1`, so a page that had dropped its textures was
    stamped exactly like its rebuild and was never replaced (review 1, B1). A
    manifest built before epochs existed answers `appearance:1`.
+   **A change to the page's words alone does not bump the page version** (v2
+   decision). A page already open is consistent with itself, and the next
+   page opened carries the new words. A bump would reload every open
+   appearance page, and reset its camera, at the moment the Tower updates.
+   v2's copy therefore ships under `appearance:1`. Bump it only when a Tower
+   update needs pages that are already open to be replaced.
    The sparse rung's revision is the constant `<session_id>/sparse`. The derived
    tree is rewritten every few keyframes during a walk, and a picture that
    reloaded on each of those would be unusable to look at; the step the wearer
@@ -1191,3 +1284,13 @@ short:
 - The only page that reaches these routes is §4's appearance page, through the
   transport §4 names (`glasses-world:` on the phone, the Tower's origin only
   under `transport=tower`). Every other page still loads nothing from anywhere.
+
+## Change log
+
+This document is dated inline wherever it changed. The table lists the numbered
+versions from v2 on. **v1** is everything up to 2026-09-26. No row moves a wire
+identifier unless it says so.
+
+| Version | Date | Asked for by | Sections | Change | On the wire |
+|---|---|---|---|---|---|
+| **v2** | 2026-09-27 | **Manager 106** (T-UX0; from manager 096 §1, after walk 4 `c81766a3`) | §4: *Navigation* (the dark state, the edge hint, the settle), *Where the room is* (the ring's label, the notices' placement), the haze bullet, *Controls* (44 px targets and the accessible names), the cold-open window, *Caption* (the About panel's claims about the capture); §4a rule 3 | **Viewer honesty.** The dark state reads ***Not reconstructed from here*** / *Tap to turn back*, never *not photographed* or *never looked*. The edge hint reads ***Movement stops here***. The ring reads *reconstructed / from here*. The About panel stops claiming to know what the glasses saw. Every control has a 44 px target and an accessible name. The notices clear a wrapped bar. `PAGE_REVISION` stays `appearance:1`. The trigger, the thresholds, the haze, the research marker, the rendering and the camera path are unchanged | **Nothing.** `world_builder.worlds/2026-09-10` and every payload are unchanged. The page strings are Tower-served, and no iOS source reads any of them (checked 2026-09-27 against `wb-int-walk5`) |

@@ -2,6 +2,8 @@
 
 Contract identifier: `wb-appearance-keyframes/1`.
 
+Document version: **v2** (2026-09-27): §4.2b's wording about the capture, manager 106. See the change log at the end. The identifier above does **not** move: the artifact, the manifest and every route are unchanged.
+
 **Living document.** Added 2026-09-17 (fix-it campaign, appearance stage). §6.5 (re-redaction) added 2026-09-17. §5.3b (the cross-frame redaction consensus) added 2026-09-21.
 
 | | |
@@ -227,7 +229,9 @@ measured and rejected: at 110/255 the cost triples (2.53% of drawn) for no
 visible gain, and at 140/255 (6.85% of drawn, 16.5% at worst) it begins
 fogging real photographs of the shelf and the laptop.
 
-### 4.2b A place nobody photographed
+### 4.2b A place no kept frame saw
+
+(Titled *A place nobody photographed* until v2, 2026-09-27, manager 106.)
 
 A proxy fragment that **no kept frame saw** carries no imagery, and the page
 must not pretend otherwise. Until 2026-09-21 it wrote alpha 0 and came out as
@@ -235,7 +239,14 @@ the background vignette, which the last independent review measured at
 luminance **10–18** against a background of **11–28**: in the opening view the
 "grey haze" the caption promised was *darker than the emptiness it is supposed
 to be distinguishable from*, and at +90° **13.4%** of the frame was real
-geometry nobody ever photographed, indistinguishable from nothing at all.
+geometry no kept frame saw, indistinguishable from nothing at all.
+**A fragment no kept frame saw may still have been captured.** Its frames can
+sit in a piece the Tower could not place in this room or area, or be
+unposed, or be kept only in the Tower tier and not offered to the phone.
+Walk 4's reverse views met all three fates (run `wb-coherence-run-2026-09-23`,
+`lead\diag4\DIAGNOSIS.md` Q2; `WORLD-BUILDER-WORLDS.md` §4, the dark state).
+So the haze says *there is a surface here and no picture of it*, and
+never *nobody photographed this*.
 
 Such a fragment now writes **one flat colour** — display RGB 0.160 / 0.168 /
 0.190 at alpha `unseen_haze` (0.9) — with no texture, no hue of its own and no
@@ -1215,3 +1226,12 @@ a world nobody asked for a surface. A stage the builder was never asked for
 records `unavailable` / `attempted: false` with a `not requested` detail, and
 a stage still `running` under a process that is gone is the honest record of a
 builder the Job Object killed mid-stage.
+
+## Change log
+
+This document is dated inline wherever it changed. The table lists the numbered
+versions from v2 on. **v1** is everything up to 2026-09-26.
+
+| Version | Date | Asked for by | Sections | Change | On the wire |
+|---|---|---|---|---|---|
+| **v2** | 2026-09-27 | **Manager 106** (T-UX0; from manager 096 §1, after walk 4 `c81766a3`) | §4.2b | The heading reads *A place no kept frame saw* (was *A place nobody photographed*). *Nobody ever photographed* becomes *no kept frame saw*. A new last sentence in the first paragraph says a fragment no kept frame saw may still have been captured, and that the haze never says *nobody photographed this*. Every number, constant and rule in §4.2b is unchanged, and so is the haze. The page's copy is amended in `WORLD-BUILDER-WORLDS.md` v2 (§4). The page version `PAGE_REVISION` stays `1` (§9; WORLDS §4a rule 3) | **Nothing.** `wb-appearance-keyframes/1`, the manifest and the routes are unchanged |
