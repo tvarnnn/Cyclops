@@ -361,12 +361,20 @@ def solve_landings(solves: list, rebuilds: list, waits: list, final_launched, li
     the next solve's launch line, and a time window would give it to the
     next solve. Each live surface belongs to the rebuild logged just before
     it, and that rebuild to the last solve launched before IT
-    (`live_surface_between`, now with its rebuild). The LANDING REBUILD is
-    the first rebuild after this solve's launch that launched either this
-    solve's surface or the next solve: when the cadence held the next launch
-    back, the surface's rebuild is the earlier, and the right, one. A surface
-    is also relaunched when an earlier, stale one finishes, and the log
-    cannot tell that from a landing: said so where it is shown.
+    (`live_surface_between`, with its rebuild).
+
+    THE REBUILDS (review C22 round 4 L-1). The log proves one: the rebuild
+    that launched the next solve, which this solve had landed BY
+    (`rebuild_*`; none for a walk's last solve). A surface's rebuild before
+    it is at most a POSSIBLY EARLIER landing (`possibly_earlier`), and OPEN:
+    a surface is also relaunched when an earlier, stale one finishes, and
+    the log cannot tell that from a landing. A surface at the FIRST rebuild
+    after this solve's launch, when an earlier solve exists, is not read as
+    this solve's landing at all (`landing_rebuild_unknown`): the builder
+    reads `finished()` before its rebuild, so an earlier solve reaped inside
+    the launch of this one surfaces one rebuild late, right there (smoke 1:
+    solve 2 at L5180, surface 1 at L5209, 0.3 s later). The log cannot tell
+    which, so its landing rebuild is unknown.
 
     TERMINATED AT STOP. Stop gives a running background solve a bounded
     wait, then terminates it (`background solve pid N still running after
@@ -383,6 +391,9 @@ def solve_landings(solves: list, rebuilds: list, waits: list, final_launched, li
                 break
             found = rebuild
         return found
+
+    def rebuild_after(line):
+        return next((rebuild for rebuild in rebuilds if rebuild.line > line), None)
 
     surfaces = []
     for surface in live_surfaces:
@@ -410,18 +421,33 @@ def solve_landings(solves: list, rebuilds: list, waits: list, final_launched, li
                 and (after is None or s["rebuild_line"] < after["line"])]
         surface = mine[0] if mine and landed is not None else None
         if landed is not None:
-            candidates = []
-            if surface is not None:
-                candidates.append((surface["rebuild_line"], surface["rebuild_n"],
-                                   f"it launched live surface {surface['n']}"))
-            if after is not None:
-                launcher = rebuild_before(after["line"])
-                if launcher is not None and launcher.line > solve["line"]:
-                    candidates.append((launcher.line, int(launcher.groups["n"]),
-                                       f"it launched background solve {after['n']}"))
-            if candidates:
-                line, number, why = min(candidates)
-                landed.update({"rebuild_line": line, "rebuild_n": number, "rebuild_why": why})
+            launcher = rebuild_before(after["line"]) if after is not None else None
+            if launcher is not None and launcher.line <= solve["line"]:
+                launcher = None
+            # A surface at the first rebuild after this launch is not read as
+            # this solve's landing when an earlier solve exists (L-1).
+            first = rebuild_after(solve["line"])
+            doubtful = [s for s in mine if index > 0 and first is not None and s["rebuild_line"] == first.line]
+            plausible = next((s for s in mine if s not in doubtful), None)
+            if launcher is not None:
+                shared = plausible is not None and plausible["rebuild_line"] == launcher.line
+                landed.update({"rebuild_line": launcher.line, "rebuild_n": int(launcher.groups["n"]),
+                               "rebuild_why": f"it launched background solve {after['n']}"
+                               + (f" and live surface {plausible['n']}" if shared else
+                                  "; landed by then at the latest")})
+
+            def shown(s, why):
+                return {"rebuild_line": s["rebuild_line"], "rebuild_n": s["rebuild_n"], "surface": s["n"],
+                        "after_launch_s": round(s["t"] - solve["t"], 2), "open": why}
+
+            if plausible is not None and (launcher is None or plausible["rebuild_line"] < launcher.line):
+                landed["possibly_earlier"] = shown(
+                    plausible, "the landing, or a stale surface's relaunch; the log cannot tell")
+            if doubtful:
+                landed["landing_rebuild_unknown"] = shown(
+                    doubtful[0], "the first rebuild after this solve's launch: the previous solve's landing "
+                                 "seen one rebuild late, this solve's, or a stale surface's relaunch; the log "
+                                 "cannot tell")
         item["landed_by"] = landed
         item["horizon_s"] = None if landed is None else round(landed["t"] - solve["t"], 2)
         item["live_surface_between"] = None if surface is None else dict(surface)
@@ -1915,19 +1941,28 @@ def render_markdown(report: dict) -> str:
     lines.append(f"- use during the walk: {_use_text(walk.get('use_during_walk'))}")
     for solve in walk.get("background_solves") or []:
         landed = solve.get("landed_by") or {}
+        earlier = landed.get("possibly_earlier")
+        unknown = landed.get("landing_rebuild_unknown")
         fate = ("; TERMINATED at Stop" + (f" ({solve['terminated_how']})" if solve.get("terminated_how") else "")
                 + (f" (L{solve['terminated_line']})" if solve.get("terminated_line") else "")
                 if solve.get("terminated_at_stop") else
                 f"; landed by {_clock(landed.get('t'))} (+{solve.get('horizon_s')} s, {landed.get('via')}, "
-                f"L{landed.get('line')}" + (f"; landing rebuild {landed['rebuild_n']} L{landed['rebuild_line']}: "
-                                            f"{landed.get('rebuild_why')}"
-                                            if landed.get("rebuild_line") else "") + ")"
+                f"L{landed.get('line')}"
+                + (f"; landed-by rebuild {landed['rebuild_n']} L{landed['rebuild_line']}: {landed.get('rebuild_why')}"
+                   if landed.get("rebuild_line") else "")
+                + (f"; possibly earlier, rebuild {earlier['rebuild_n']} L{earlier['rebuild_line']} "
+                   f"(+{earlier['after_launch_s']} s): it launched live surface {earlier['surface']} -- "
+                   f"OPEN: {earlier['open']}" if earlier else "")
+                + (f"; landing rebuild UNKNOWN: live surface {unknown['surface']} at rebuild {unknown['rebuild_n']} "
+                   f"L{unknown['rebuild_line']}, +{unknown['after_launch_s']} s after this launch, is not read as "
+                   f"its landing -- OPEN: {unknown['open']}" if unknown else "")
+                + ")"
                 if landed else "; landing not seen")
         between = solve.get("live_surface_between")
         if between:
             fate += (f"; live surface {between.get('n')} launched at {_clock(between.get('t'))} by rebuild "
                      f"{between.get('rebuild_n')} (L{between.get('rebuild_line')}), attributed by log line "
-                     "(the landing, or a stale surface's relaunch: the log cannot tell)")
+                     "(OPEN whose landing it marks, or a stale surface's relaunch: the log cannot tell)")
         lines.append(f"- background solve {solve['n']} at {_clock(solve['t'])}, {solve['keyframes']} keyframes "
                      f"(L{solve['line']}){fate}")
     for surface in walk.get("live_surfaces") or []:
@@ -2063,20 +2098,25 @@ def _load_run(run_dir) -> dict:
 
 
 def run_validity(run: dict) -> dict:
-    """Is a run valid as proof? A replay-fidelity FAIL (manager 142) or an
-    Environment FAIL (review C22 round 3 L-f: a contended run widens the old
-    path's noise) makes it INVALID: flagged, and never counted in the
-    baseline's range. A fidelity verdict that is n/a, or absent (a report
-    rendered before the bar), is NOT a pass either: flagged, but kept."""
+    """Is a run valid as proof? Only a replay-fidelity PASS is (manager 142:
+    "every proof-set run must pass it, or it is discarded and re-run").
+
+    A replay-fidelity FAIL, or an Environment FAIL (review C22 round 3 L-f: a
+    contended run widens the old path's noise), makes a run INVALID. A
+    fidelity verdict that is n/a, or absent (a report rendered before the
+    bar), is NOT a pass either (review C22 round 4 M-1): the run is "not
+    judged". Neither kind is COUNTED: not in the baseline's mean, min, max or
+    spread, and not toward N >= 3. Both are shown and flagged, and a
+    candidate of either kind is marked INVALID."""
     invalid, unjudged = [], []
     if run.get("fidelity") == "FAIL":
         invalid.append("replay fidelity FAIL")
     elif run.get("fidelity") != "PASS":
         unjudged.append("replay fidelity " + ("not in this render (re-render it)" if run.get("fidelity") is None
-                                              else str(run.get("fidelity"))))
+                                              else str(run.get("fidelity"))) + ": not judged, not counted")
     if run.get("environment") == "FAIL":
         invalid.append("Environment (:8000) FAIL")
-    return {"invalid": invalid, "not_a_pass": unjudged}
+    return {"invalid": invalid, "not_a_pass": unjudged, "counted": not invalid and not unjudged}
 
 
 def _first_difference(a, b):
@@ -2089,15 +2129,18 @@ def _first_difference(a, b):
 
 
 def compare_runs(baseline_dirs, candidate_dirs=()) -> dict:
-    """Per-metric spread over the baseline runs, and each candidate run
-    against that spread; keyframe-sequence identity to the first baseline."""
+    """Per-metric spread over the COUNTED baseline runs, and each candidate
+    run against that spread; keyframe-sequence identity to the first counted
+    baseline run. Counted means valid as proof (`run_validity`): replay
+    fidelity PASS and no Environment FAIL."""
     baseline = [_load_run(d) for d in baseline_dirs]
     candidate = [_load_run(d) for d in candidate_dirs]
     for run in baseline + candidate:
         run["validity"] = run_validity(run)
-    # An invalid baseline run is shown and never counted (manager 142; review
-    # C22 round 3 L-f): the range is the VALID old runs' noise.
-    in_range = [not run["validity"]["invalid"] for run in baseline]
+    # A baseline run that is invalid OR not judged is shown and never counted
+    # (manager 142; review C22 round 3 L-f, round 4 M-1): the range is the
+    # VALID old runs' noise.
+    in_range = [run["validity"]["counted"] for run in baseline]
     names = []
     for run in baseline + candidate:
         for name in run["metrics"]:
@@ -2126,7 +2169,9 @@ def compare_runs(baseline_dirs, candidate_dirs=()) -> dict:
         for directory in item.get("missing") or []:
             missing.setdefault(directory, []).append(item["metric"])
     counted = [run for run, keep in zip(baseline, in_range) if keep]
-    valid_candidates = [run for run in candidate if not run["validity"]["invalid"]]
+    valid_candidates = [run for run in candidate if run["validity"]["counted"]]
+    # The identity reference is a counted run; only when none is does it fall
+    # back to the first baseline run, and then it says so.
     reference = (counted or baseline or [None])[0]
 
     def identity(run):
@@ -2143,19 +2188,26 @@ def compare_runs(baseline_dirs, candidate_dirs=()) -> dict:
     def flagged(runs, key):
         return [{"dir": run["dir"], "reasons": run["validity"][key]} for run in runs if run["validity"][key]]
 
+    def not_counted(runs):
+        return [{"dir": run["dir"], "reasons": run["validity"]["invalid"] + run["validity"]["not_a_pass"]}
+                for run in runs if not run["validity"]["counted"]]
+
     return {
-        "compare": "c22-live-replay-compare/2",
+        "compare": "c22-live-replay-compare/3",
         "generated_at": round(time.time(), 3),
         "baseline": [run["dir"] for run in baseline],
         "candidate": [run["dir"] for run in candidate],
         "fidelity_ruling": FIDELITY_RULING,
-        # Shown, never counted in the range (replay fidelity or Environment FAIL).
-        "excluded_from_baseline": flagged(baseline, "invalid"),
-        # Flagged: not proof; judged against the range only for the record.
-        "invalid_candidates": flagged(candidate, "invalid"),
+        # Shown, never counted in the range nor toward N >= 3: replay fidelity
+        # FAIL, n/a or not rendered, or Environment FAIL.
+        "excluded_from_baseline": not_counted(baseline),
+        # Not proof (discard and re-run): the same reasons. Judged against the
+        # range only for the record.
+        "invalid_candidates": not_counted(candidate),
         # Replay fidelity n/a or not rendered: not a pass for a proof set.
         "fidelity_not_judged": flagged(baseline + candidate, "not_a_pass"),
         "baseline_counted": len(counted),
+        "candidates_counted": len(valid_candidates),
         "enough_runs": len(counted) >= 3 and (not candidate or len(valid_candidates) >= 3),
         # Per candidate run, every metric the baseline has and it lacks.
         # Not passing: a candidate is never judged on the metrics it is
@@ -2164,6 +2216,7 @@ def compare_runs(baseline_dirs, candidate_dirs=()) -> dict:
         "candidates_complete": not missing,
         "metrics": metrics,
         "keyframes": {"reference": None if reference is None else reference["dir"],
+                      "reference_counted": reference is not None and reference["validity"]["counted"],
                       "baseline": [identity(run) for run in baseline],
                       "candidate": [identity(run) for run in candidate]},
     }
@@ -2177,21 +2230,26 @@ def render_compare(result: dict) -> str:
                      + ", ".join(f"`{d}`" for d in result["candidate"]))
     if not result["enough_runs"]:
         lines.append("")
-        lines.append("**Fewer than 3 valid runs on a side: this is not a noise estimate (C19 F8 asks for N >= 3).**")
+        counted_text = f"{result.get('baseline_counted')} of {len(result['baseline'])} baseline run(s) valid"
+        if result["candidate"]:
+            counted_text += f", {result.get('candidates_counted')} of {len(result['candidate'])} candidate(s)"
+        lines.append("**Fewer than 3 valid runs on a side: this is not a noise estimate (C19 F8 asks for N >= 3; "
+                     f"only a replay-fidelity PASS counts, manager 142): {counted_text}.**")
     excluded = result.get("excluded_from_baseline") or []
     if excluded:
         lines.append("")
         lines.append(f"**EXCLUDED FROM THE BASELINE RANGE: {len(excluded)} run(s).** A run that fails replay "
-                     f"fidelity ({result.get('fidelity_ruling')}) or the Environment (:8000) verdict is not valid "
-                     "as proof: it is shown below and never counted in the mean, min, max or spread "
-                     f"({result.get('baseline_counted')} baseline run(s) counted).")
+                     f"fidelity ({result.get('fidelity_ruling')}) or the Environment (:8000) verdict, or whose "
+                     "replay fidelity is n/a or not in its render (not judged: n/a is NOT a pass), is not valid "
+                     "as proof: it is shown below and never counted in the mean, min, max or spread, nor toward "
+                     f"N >= 3 ({result.get('baseline_counted')} baseline run(s) counted).")
         for item in excluded:
             lines.append(f"- `{item['dir']}`: {', '.join(item['reasons'])}")
     invalid = result.get("invalid_candidates") or []
     if invalid:
         lines.append("")
-        lines.append(f"**INVALID CANDIDATE(S): {len(invalid)}.** Not proof (discard and re-run); its values are "
-                     "marked INVALID below.")
+        lines.append(f"**INVALID CANDIDATE(S): {len(invalid)}.** Not proof (discard and re-run): replay fidelity "
+                     "FAIL, n/a or not in its render, or an Environment FAIL; its values are marked INVALID below.")
         for item in invalid:
             lines.append(f"- `{item['dir']}`: {', '.join(item['reasons'])}")
     unjudged = result.get("fidelity_not_judged") or []
@@ -2208,8 +2266,14 @@ def render_compare(result: dict) -> str:
         for directory, names in missing.items():
             lines.append(f"- `{directory}`: {', '.join(names)}")
     lines.append("")
-    lines.append("## Keyframe identity, (source_seq, segment_index), against the first baseline run")
+    lines.append("## Keyframe identity, (source_seq, segment_index), against the first counted baseline run")
     lines.append("")
+    reference = result["keyframes"].get("reference")
+    if reference is not None:
+        lines.append(f"Reference: `{reference}`" + (
+            "" if result["keyframes"].get("reference_counted") else
+            " -- **NO baseline run is valid as proof: this reference is not one either.**"))
+        lines.append("")
     lines.append("| Run | sha256 | Identical | First differing index | Solve horizons identical | Live safety "
                  "| Environment (:8000) | Replay fidelity | Valid as proof |")
     lines.append("|---|---|---|---|---|---|---|---|---|")
@@ -2217,9 +2281,10 @@ def render_compare(result: dict) -> str:
         for item in result["keyframes"][side]:
             if item is None:
                 continue
-            valid = ("**NO**: " + ", ".join(item.get("invalid") or []) + (" (excluded from the range)"
-                                                                          if side == "baseline" else "")
-                     if item.get("invalid") else ("not judged" if item.get("not_a_pass") else "yes"))
+            reasons = (item.get("invalid") or []) + (item.get("not_a_pass") or [])
+            valid = ("**NO**: " + ", ".join(reasons) + (" (excluded from the range)" if side == "baseline"
+                                                        else " (INVALID)")
+                     if reasons else "yes")
             lines.append(f"| {side}: `{item['dir']}` | {str(item['sha256'])[:16]} | {item['identical']} | "
                          f"{'' if item['first_difference'] is None else item['first_difference']} | "
                          f"{item['horizons_identical']} | {item['live_safety']} | {item.get('environment')} | "
@@ -2229,8 +2294,9 @@ def render_compare(result: dict) -> str:
     lines.append("")
     lines.append("A candidate value outside the baseline's [min, max] is flagged; a candidate with no value "
                  "where the baseline has one is flagged MISSING. The spread is max - min over the baseline "
-                 "runs COUNTED: the old path's own noise. A baseline run excluded above is not in the mean, "
-                 "min, max or spread; an INVALID candidate's value is marked.")
+                 "runs COUNTED (replay fidelity PASS, no Environment FAIL): the old path's own noise. A "
+                 "baseline run excluded above, invalid or not judged, is not in the mean, min, max or spread; "
+                 "an INVALID candidate's value is marked.")
     lines.append("")
     lines.append("| Metric | Baseline mean | min | max | spread | Excluded baseline value(s) | Candidate | Flag |")
     lines.append("|---|---|---|---|---|---|---|---|")

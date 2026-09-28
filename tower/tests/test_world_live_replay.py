@@ -1988,10 +1988,20 @@ def test_capture_root_given_wins_over_the_client_record_which_wins_over_the_defa
     assert "AT RENDER TIME" in report.CAPTURE_ROOT_DEFAULT
 
 
+def _beyond_max_path(path: Path) -> Path:
+    """`path` in Windows' extended-length form, which MAX_PATH does not limit.
+    This fixture nests a world (two 32-character ids) one level below
+    tmp_path and reached exactly 260 characters under a long --basetemp
+    (review C22 round 4). Elsewhere the path is returned unchanged."""
+    if os.name != "nt" or str(path).startswith("\\\\?\\"):
+        return path
+    return Path("\\\\?\\" + str(Path(path).resolve()))
+
+
 def test_a_fidelity_fail_is_its_own_verdict_and_leaves_the_codes_alone(tmp_path):
     built = {}
     for name, late in (("faithful", (1.0, 2.0)), ("unfaithful", (1.0, 300.0))):
-        root = tmp_path / name
+        root = _beyond_max_path(tmp_path) / name
         root.mkdir()
         run_dir, _ = _pinned_run(root, late_ms=late, capture_root=root / "snap" / "captures")
         assert report.main(["--run-dir", str(run_dir), "--out", str(root / "out")]) == 0
@@ -2004,7 +2014,7 @@ def test_a_fidelity_fail_is_its_own_verdict_and_leaves_the_codes_alone(tmp_path)
         [(r["check"], r["result"]) for r in built["faithful"]["live_safety"]["rows"]]
     assert bad["live_safety"]["result"] == built["faithful"]["live_safety"]["result"]
     assert "replay_fidelity" not in bad["live_safety"]
-    markdown = (tmp_path / "unfaithful" / "out" / "REPORT.md").read_text(encoding="utf-8")
+    markdown = (_beyond_max_path(tmp_path) / "unfaithful" / "out" / "REPORT.md").read_text(encoding="utf-8")
     assert "**Replay fidelity: FAIL.**" in markdown and "invalid as proof" in markdown
 
 
@@ -2040,19 +2050,23 @@ def test_compare_leaves_runs_that_fail_fidelity_or_the_environment_out_of_the_ba
     result = json.loads((out / "compare.json").read_text(encoding="utf-8"))
     photos = {m["metric"]: m for m in result["metrics"]}["stop_to_room_with_photos_min"]
     assert (photos["min"], photos["max"]) == (46.8, 47.5)  # not 30.0, not 60.0
-    assert photos["baseline_in_range"] == [True, True, True, False, False, True]
-    assert photos["mean"] == pytest.approx((47.0 + 47.5 + 46.8 + 47.2) / 4, abs=1e-4)
+    # Round 4 M-1: the unjudged run (47.2) is not counted either.
+    assert photos["baseline_in_range"] == [True, True, True, False, False, False]
+    assert photos["mean"] == pytest.approx((47.0 + 47.5 + 46.8) / 3, abs=1e-4)
+    unjudged = "replay fidelity not in this render (re-render it): not judged, not counted"
     excluded = {item["dir"]: item["reasons"] for item in result["excluded_from_baseline"]}
     assert excluded == {str(tmp_path / "old-unfaithful"): ["replay fidelity FAIL"],
-                        str(tmp_path / "old-contended"): ["Environment (:8000) FAIL"]}
+                        str(tmp_path / "old-contended"): ["Environment (:8000) FAIL"],
+                        str(tmp_path / "old-unjudged"): [unjudged]}
     assert [item["dir"] for item in result["invalid_candidates"]] == [str(tmp_path / "new-unfaithful")]
     assert [item["dir"] for item in result["fidelity_not_judged"]] == [str(tmp_path / "old-unjudged")]
-    assert result["baseline_counted"] == 4
+    assert result["baseline_counted"] == 3
     markdown = (out / "COMPARE.md").read_text(encoding="utf-8")
-    assert "**EXCLUDED FROM THE BASELINE RANGE: 2 run(s).**" in markdown
+    assert "**EXCLUDED FROM THE BASELINE RANGE: 3 run(s).**" in markdown
     assert f"- `{tmp_path / 'old-unfaithful'}`: replay fidelity FAIL" in markdown
     assert f"- `{tmp_path / 'old-contended'}`: Environment (:8000) FAIL" in markdown
-    assert "| stop_to_room_with_photos_min | 47.125 | 46.8 | 47.5 | 0.7 | 30.0, 60.0 | 47.1, 47.1 (INVALID) |" \
+    assert f"- `{tmp_path / 'old-unjudged'}`: {unjudged}" in markdown
+    assert "| stop_to_room_with_photos_min | 47.1 | 46.8 | 47.5 | 0.7 | 30.0, 60.0, 47.2 | 47.1, 47.1 (INVALID) |" \
         in markdown
     assert "(excluded from the range)" in markdown and "**INVALID CANDIDATE(S): 1.**" in markdown
 
@@ -2105,9 +2119,27 @@ def test_a_hard_stops_termination_of_a_background_solve_is_recognised(tmp_path):
     assert "TERMINATED at Stop (a stop was requested) (L14)" in report.render_markdown(built)
 
 
-def test_the_landing_rebuild_is_the_surfaces_when_the_cadence_held_the_next_solve_back(tmp_path):
-    """Round 3 L-a, 1b's solve 1: the landing rebuild launched live surface 1;
-    the next solve was not yet due and launched one rebuild later."""
+def test_the_stop_to_final_timeline_names_a_hard_stops_termination_as_its_step(tmp_path):
+    """Round 3 L-e, the waterfall part (round 4: mutant Le3 survived). Between
+    the catch-up and the final solve, a hard stop's termination is the step --
+    not "the last background solve finishes (no terminate line)"."""
+    log = tmp_path / "tower.err.log"
+    log.write_text(_solves_log(BASE, terminated="stop"), encoding="utf-8")
+    _world(tmp_path / "wb", BASE, appearance_end=BASE + 700)  # its finalization starts at +104 s
+    built = report.build_report(tower_log=log, world_root=tmp_path / "wb", client={"tower_captures": [CAP]})
+    step = next(row for row in built["waterfall"] if row["n"] == "2")
+    assert step["stage"] == ("Background solve pid 300 terminated: a stop was requested (a hard stop ends the "
+                             "wait at once)")
+    assert step["evidence"] == "L14" and step["wait"] == "waits on another process"
+    assert step["start"] == pytest.approx(BASE + 104.0) and step["end"] == pytest.approx(BASE + 224.1, abs=0.002)
+    assert "Background solve pid 300 terminated: a stop was requested" in report.render_markdown(built)
+
+
+def test_a_surface_before_the_next_launch_is_a_possibly_earlier_landing_and_open(tmp_path):
+    """Round 3 L-a, 1b's solve 1: live surface 1 was launched a rebuild before
+    the next solve (not yet due). Round 4 L-1: the log proves only the next
+    launch's rebuild; the surface's is a possibly-earlier landing, OPEN (a
+    stale surface's relaunch looks the same)."""
     wb, ws = "tower.world_build_session", "tower.routes.ws"
     lines = [
         _line(BASE, ws, "[Tower][Session] stream_start: measurement window opened"),
@@ -2131,6 +2163,165 @@ def test_the_landing_rebuild_is_the_surfaces_when_the_cadence_held_the_next_solv
     log.write_text("\n".join(lines) + "\n", encoding="utf-8")
     first = report.walk_timeline(report.scan_log(log), CAP)["background_solves"][0]
     assert first["landed_by"]["t"] == pytest.approx(BASE + 31.504, abs=0.002)  # still "landed BY" the launch
-    assert (first["landed_by"]["rebuild_n"], first["landed_by"]["rebuild_line"]) == (4, 6)
-    assert first["landed_by"]["rebuild_why"] == "it launched live surface 1"
+    assert (first["landed_by"]["rebuild_n"], first["landed_by"]["rebuild_line"]) == (5, 8)
+    assert first["landed_by"]["rebuild_why"] == "it launched background solve 2; landed by then at the latest"
+    earlier = first["landed_by"]["possibly_earlier"]
+    assert (earlier["rebuild_n"], earlier["rebuild_line"], earlier["surface"]) == (4, 6, 1)
+    assert earlier["after_launch_s"] == pytest.approx(10.01, abs=0.002) and "stale" in earlier["open"]
+    # Solve 1 has no earlier solve whose late landing it could be: not "unknown".
+    assert "landing_rebuild_unknown" not in first["landed_by"]
     assert first["live_surface_between"]["n"] == 1
+    built = report.build_report(tower_log=log, client={"tower_captures": [CAP]})
+    solve_1 = next(line for line in report.render_markdown(built).splitlines()
+                   if line.startswith("- background solve 1 "))
+    assert ("landed-by rebuild 5 L8: it launched background solve 2; landed by then at the latest; "
+            "possibly earlier, rebuild 4 L6 (+10.01 s): it launched live surface 1 -- OPEN: the landing, "
+            "or a stale surface's relaunch") in solve_1
+
+
+def _late_landing_log(base):
+    """Smoke 1's shape (review C22 round 4 L-1 (a)): solve 1 is reaped INSIDE
+    the launch of solve 2 (no surface at rebuild 35), so its landing surfaces
+    one rebuild later, 0.3 s after solve 2's launch. Solve 2's own landing is
+    at rebuild 40, which launches solve 3 and live surface 2."""
+    wb, ws = "tower.world_build_session", "tower.routes.ws"
+
+    def rebuild(n, kf):
+        return f"[Tower][WorldBuilder] rebuild {n}: {kf} keyframes -> {kf - 5} positioned poses, " \
+               "900 points, 2 segments in 0.30s"
+
+    return "\n".join([
+        _line(base, ws, "[Tower][Session] stream_start: measurement window opened"),
+        _line(base + 0.006, ws, f"[Tower][Capture] recording started: {CAP}"),
+        _line(base + 0.013, "tower.capture_workers",
+              f"[Tower][Worker] started world-build-session pid 21204 for capture {CAP}: python x"),
+        _line(base + 1.7, wb, f"[Tower][WorldBuilder] session {S} in world {W}: source=live-capture "
+                              f"capture={CAP} root=x observed=360x640"),
+        _line(base + 20.0, wb, "[Tower][WorldBuilder] background solve 1 launched at 52 keyframes (pid 100)"),
+        _line(base + 60.0, wb, rebuild(34, 100)),
+        _line(base + 61.5, wb, rebuild(35, 104)),
+        _line(base + 61.504, wb, "[Tower][WorldBuilder] background solve 2 launched at 104 keyframes (pid 200)"),
+        _line(base + 61.8, wb, rebuild(36, 105)),
+        _line(base + 61.81, wb, "[Tower][WorldBuilder] live surface 1 launched (pid 900)"),
+        _line(base + 90.0, wb, rebuild(40, 160)),
+        _line(base + 90.004, wb, "[Tower][WorldBuilder] background solve 3 launched at 160 keyframes (pid 300)"),
+        _line(base + 90.01, wb, "[Tower][WorldBuilder] live surface 2 launched (pid 901)"),
+        _line(base + 100.0, ws, _summary(1200, "stream_stop")),
+        _line(base + 100.002, ws, "[Tower][Capture] recording stopped (stop): 1200 frames, 900 bytes"),
+        _line(base + 130.0, wb, "[Tower][WorldBuilder] final global solve launched (pid 34464)"),
+    ]) + "\n"
+
+
+def test_a_surface_0_3_s_after_a_launch_is_an_unknown_landing_not_this_solves(tmp_path):
+    """Review C22 round 4 L-1: ee6c385 read rebuild 36 as solve 2's landing,
+    0.3 s after solve 2 launched. It is shown as UNKNOWN, and OPEN."""
+    log = tmp_path / "tower.err.log"
+    log.write_text(_late_landing_log(BASE), encoding="utf-8")
+    first, second, third = report.walk_timeline(report.scan_log(log), CAP)["background_solves"]
+    assert (first["landed_by"]["rebuild_n"], first["landed_by"]["rebuild_line"]) == (35, 7)
+    assert first["live_surface_between"] is None and "possibly_earlier" not in first["landed_by"]
+    landed = second["landed_by"]
+    assert (landed["rebuild_n"], landed["rebuild_line"]) == (40, 11)  # not 36
+    assert landed["rebuild_why"] == "it launched background solve 3 and live surface 2"
+    unknown = landed["landing_rebuild_unknown"]
+    assert (unknown["rebuild_n"], unknown["rebuild_line"], unknown["surface"]) == (36, 9, 1)
+    assert unknown["after_launch_s"] == pytest.approx(0.31, abs=0.002)
+    assert "possibly_earlier" not in landed
+    assert second["horizon_s"] == pytest.approx(28.5, abs=0.01)  # the metric does not move
+    assert "landing_rebuild_unknown" not in (third["landed_by"] or {})
+    markdown = report.render_markdown(report.build_report(tower_log=log, client={"tower_captures": [CAP]}))
+    solve_2 = next(line for line in markdown.splitlines() if line.startswith("- background solve 2 "))
+    assert "landed-by rebuild 40 L11: it launched background solve 3 and live surface 2" in solve_2
+    assert ("landing rebuild UNKNOWN: live surface 1 at rebuild 36 L9, +0.31 s after this launch, is not read "
+            "as its landing -- OPEN: the first rebuild after this solve's launch") in solve_2
+    assert "rebuild 36 L9:" not in solve_2  # never shown as a landing rebuild
+
+
+# -- C22-F4: review round 4 -- M-1 and the surviving mutants ----------------------------------
+
+# Every way a run is not valid as proof; n/a and a pre-F3 render (no verdict) count no more than a FAIL.
+NOT_VALID = {"fidelity n/a": {"fidelity": "n/a"}, "fidelity not rendered": {"fidelity": None},
+             "fidelity FAIL": {"fidelity": "FAIL"}, "Environment FAIL": {"environment": "FAIL"}}
+
+
+@pytest.mark.parametrize("why", list(NOT_VALID))
+def test_three_baselines_one_not_valid_are_not_enough_valid_runs(tmp_path, why):
+    """Review C22 round 4 M-1 (and mutant C04): exactly 3 baselines, one of them
+    n/a -- or not rendered, FAIL, contended. Only 2 count, and 2 is not N >= 3."""
+    same = [[1, 0], [10, 0]]
+    _fake_run(tmp_path / "old0", photos=47.0, lag_p95=6.8, sequence=same)
+    _fake_run(tmp_path / "old1", photos=47.5, lag_p95=6.8, sequence=same)
+    _fake_run(tmp_path / "old2", photos=52.0, lag_p95=6.8, sequence=same, **NOT_VALID[why])
+    result = report.compare_runs([tmp_path / f"old{i}" for i in range(3)])
+    assert result["enough_runs"] is False and result["baseline_counted"] == 2
+    photos = {m["metric"]: m for m in result["metrics"]}["stop_to_room_with_photos_min"]
+    assert (photos["mean"], photos["min"], photos["max"]) == (47.25, 47.0, 47.5)  # 52.0 is not counted
+    assert photos["baseline_in_range"] == [True, True, False]
+    assert [item["dir"] for item in result["excluded_from_baseline"]] == [str(tmp_path / "old2")]
+    markdown = report.render_compare(result)
+    assert "**Fewer than 3 valid runs on a side" in markdown and "2 of 3 baseline run(s) valid" in markdown
+    assert "**EXCLUDED FROM THE BASELINE RANGE: 1 run(s).**" in markdown
+    # A fourth, valid run makes it enough; the bad one still does not count.
+    _fake_run(tmp_path / "old3", photos=46.8, lag_p95=6.8, sequence=same)
+    four = report.compare_runs([tmp_path / f"old{i}" for i in range(4)])
+    assert four["enough_runs"] is True and four["baseline_counted"] == 3
+
+
+@pytest.mark.parametrize("why", list(NOT_VALID))
+def test_a_candidate_that_is_not_valid_is_invalid_and_not_counted_toward_n_3(tmp_path, why):
+    """Round 4 M-1 and C04, the candidate side: an n/a candidate is INVALID
+    like a FAIL one, and 3 candidates with one of them not valid are too few."""
+    same = [[1, 0], [10, 0]]
+    for index, photos in enumerate([47.0, 47.5, 46.8]):
+        _fake_run(tmp_path / f"old{index}", photos=photos, lag_p95=6.8, sequence=same)
+    _fake_run(tmp_path / "new0", photos=47.1, lag_p95=6.8, sequence=same)
+    _fake_run(tmp_path / "new1", photos=47.2, lag_p95=6.8, sequence=same)
+    _fake_run(tmp_path / "new2", photos=47.3, lag_p95=6.8, sequence=same, **NOT_VALID[why])
+    result = report.compare_runs([tmp_path / f"old{i}" for i in range(3)], [tmp_path / f"new{i}" for i in range(3)])
+    assert result["baseline_counted"] == 3 and result["candidates_counted"] == 2
+    assert result["enough_runs"] is False
+    assert [item["dir"] for item in result["invalid_candidates"]] == [str(tmp_path / "new2")]
+    markdown = report.render_compare(result)
+    assert "2 of 3 candidate(s)" in markdown and "**INVALID CANDIDATE(S): 1.**" in markdown
+    assert "| 47.1, 47.2, 47.3 (INVALID) |" in markdown
+    new2 = next(line for line in markdown.splitlines() if line.startswith(f"| candidate: `{tmp_path / 'new2'}`"))
+    assert new2.endswith(" (INVALID) |") and "| **NO**: " in new2
+
+
+@pytest.mark.parametrize("why", list(NOT_VALID))
+def test_the_keyframe_identity_reference_is_a_counted_baseline_run(tmp_path, why):
+    """Round 4, mutant C08: the first baseline run is not valid as proof (and
+    its sequence differs), so the reference is the first COUNTED run."""
+    same, other = [[1, 0], [10, 0], [54, 1]], [[1, 0], [10, 0], [55, 1]]
+    _fake_run(tmp_path / "old-bad", photos=47.0, lag_p95=6.8, sequence=other, **NOT_VALID[why])
+    _fake_run(tmp_path / "old0", photos=47.5, lag_p95=6.8, sequence=same)
+    _fake_run(tmp_path / "old1", photos=46.8, lag_p95=6.8, sequence=same)
+    _fake_run(tmp_path / "new0", photos=47.1, lag_p95=6.8, sequence=same)
+    result = report.compare_runs([tmp_path / "old-bad", tmp_path / "old0", tmp_path / "old1"], [tmp_path / "new0"])
+    keyframes = result["keyframes"]
+    assert keyframes["reference"] == str(tmp_path / "old0") and keyframes["reference_counted"] is True
+    identical = {item["dir"]: item["identical"] for item in keyframes["baseline"] + keyframes["candidate"]}
+    assert identical == {str(tmp_path / "old-bad"): False, str(tmp_path / "old0"): True,
+                         str(tmp_path / "old1"): True, str(tmp_path / "new0"): True}
+    assert keyframes["baseline"][0]["first_difference"] == 2
+    markdown = report.render_compare(result)
+    assert f"Reference: `{tmp_path / 'old0'}`\n" in markdown
+    # With no counted run at all, the fallback reference says it is not proof.
+    alone = report.compare_runs([tmp_path / "old-bad"], [tmp_path / "new0"])
+    assert alone["keyframes"]["reference"] == str(tmp_path / "old-bad")
+    assert alone["keyframes"]["reference_counted"] is False
+    assert "**NO baseline run is valid as proof: this reference is not one either.**" in report.render_compare(alone)
+
+
+def test_the_runners_report_labels_its_capture_root_as_the_one_the_replay_streamed_from(lifecycle, tmp_path):
+    """Round 3 L-g, the runner's part (round 4: mutant Lg6 survived). The
+    runner's --capture-root is what the replay read, so the report says so --
+    not the bare "--capture-root" a re-render's explicit root gets."""
+    snapshot = tmp_path / "snapshot"
+    assert runner.main([*lifecycle["argv"], "--capture-root", str(snapshot)]) == 0
+    assert lifecycle["calls"]["options"][0].capture_root == snapshot
+    built = json.loads((lifecycle["out"] / "report.json").read_text(encoding="utf-8"))
+    pacing = built["tower_side_pacing"]
+    assert pacing["source_capture_root"] == str(snapshot)
+    assert pacing["source_capture_root_from"] == "the runner's --capture-root (the replay streamed from it)"
+    assert pacing["source_capture_root_from"] != report.CAPTURE_ROOT_GIVEN
