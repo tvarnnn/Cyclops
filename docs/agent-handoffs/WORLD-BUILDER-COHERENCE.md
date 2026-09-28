@@ -113,7 +113,18 @@ never touched.
 | setting | default | physical test | what it does |
 |---|---|---|---|
 | `TOWER_WORLD_SOLVE_MASKS` | `false` | `true` | masks on the final solve; the gate's hard dependency |
-| `TOWER_WORLD_SOLVE_MASKS_AT_STOP` | `off` | `off` | when masks are enabled and a background solve is running at Stop, prefills masks from its prepared solver images during the bounded wait; the final solve waits for the child to exit |
+| `TOWER_WORLD_SOLVE_MASKS_AT_STOP` | `off` | `off` | when masks are enabled and a background solve is running at Stop, prefills masks from immutable copies of prepared solver images during the original 120 s background wait; a bounded join confirms child exit before the final solve. The child runs at below normal priority with two CPU threads. Its output is `solve/<session>/solve_masks_at_stop.log`. Failed child output stays quarantined under `transients/`. |
+
+For W0-3 comparisons with the switch on, `solution.json` may differ in
+`transients.cache_hits`, `computed`, `seconds`, `gpu_peak_mb`, `device`,
+`retried.*`, and `retries`. Cache reuse changes which work the final process
+performs, its measured time and peak, and whether it records a device or retry.
+Stage timing `cache.mask.*` may differ when I0 is enabled. A child that succeeds
+where the final mask pass would fail can also change mask `state` and related
+failure fields; that direction still needs proof. Mask and published-output
+identity is conditional on the database at the background-solve cutoff. Child
+CPU contention may change that database, so C22 must check its distribution
+across repeated 1.0x replays before enabling this switch for a walk.
 | `TOWER_WORLD_SOLVE_SEED` | unset | `0` | seeded, single-thread mapper; freezes matching; the consensus needs it |
 | `TOWER_WORLD_SOLVE_GATE` | `false` | `true` | depth before publish, the evidence gate, `components.json`, the notice |
 | `TOWER_WORLD_SOLVE_CONSENSUS` | `1` | `3` | mapper-seed draws; accepts 1, 3, 5 or 7 only, and anything else reads as 1 and is logged |

@@ -207,6 +207,56 @@ def test_a_normal_stop_records_a_complete_finalization_and_releases_the_lock(
     assert report["finalization"] == FINALIZATION_COMPLETE
 
 
+@pytest.mark.parametrize("at_stop,solve_every,masks_enabled,expected", [
+    (False, 2, True, ["background", "final"]),
+    (True, 2, False, ["background", "final"]),
+    (True, 0, True, ["final"]),
+    (True, 2, True, ["background", "mask-after-stop", "mask-exit", "final"]),
+])
+def test_stop_mask_call_site_and_off_cutoff(finished_capture, tmp_path, monkeypatch,
+                                            at_stop, solve_every, masks_enabled, expected):
+    """Drive main with a live background child through the real Stop call site."""
+    capture_dir, _capture_id = finished_capture
+    root = tmp_path / "worlds"
+    events = tmp_path / "events.txt"
+    solve = tmp_path / "stub_solve.py"
+    solve.write_text(
+        "import json, pathlib, sys, time\n"
+        f"events = pathlib.Path({str(events)!r})\n"
+        "if '--final' in sys.argv:\n"
+        "    with events.open('a') as f: f.write('final\\n')\n"
+        "    print(json.dumps({'solved': False, 'reason': 'stub'}))\n"
+        "else:\n"
+        "    with events.open('a') as f: f.write('background\\n')\n"
+        "    time.sleep(20)\n", encoding="utf-8")
+    masks = tmp_path / "stub_masks.py"
+    masks.write_text(
+        "import json, os, pathlib, sys, time\n"
+        "from tower.world_builder.store import WorldStore\n"
+        f"events = pathlib.Path({str(events)!r})\n"
+        "args = sys.argv\n"
+        "root = pathlib.Path(args[args.index('--root')+1])\n"
+        "world = args[args.index('--world')+1]\n"
+        "session = args[args.index('--session')+1]\n"
+        "stopped = WorldStore(root).read_session(world, session).ended_at is not None\n"
+        "with events.open('a') as f: f.write('mask-after-stop\\n' if stopped else 'mask-before-stop\\n')\n"
+        "time.sleep(0.3)\n"
+        "stage = root/'worlds'/world/'solve'/session/'transients'/f's{os.getpid()}'\n"
+        "stage.mkdir(parents=True, exist_ok=True)\n"
+        "(stage/'result.json').write_text(json.dumps({'images': {}, 'masked': 0, 'cache_hits': 0, 'available': True}))\n"
+        "with events.open('a') as f: f.write('mask-exit\\n')\n",
+        encoding="utf-8")
+    monkeypatch.setenv("TOWER_WORLD_SOLVE_MASKS", "on" if masks_enabled else "off")
+    monkeypatch.setenv("TOWER_WORLD_SOLVE_MASKS_AT_STOP", "on" if at_stop else "off")
+    process = _spawn(capture_dir, root, "--solve", "--solve-every", str(solve_every),
+                     "--solve-wait-seconds", "0.3", "--solve-script", str(solve),
+                     "--stop-masks-script", str(masks))
+    stdout, stderr = _finish(process)
+    assert process.returncode == 0, stderr[-2000:]
+    order = events.read_text().splitlines()
+    assert order == expected
+
+
 # -- asked to stop mid-walk -------------------------------------------------
 
 

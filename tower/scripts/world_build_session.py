@@ -68,12 +68,14 @@ rather than hanging.
 """
 
 import argparse
+import hashlib
 import io
 import itertools
 import json
 import logging
 import os
 import signal
+import shutil
 import subprocess
 import sys
 import threading
@@ -733,81 +735,193 @@ class BackgroundSurface:
             self._log = None
 
 
+def _stop_mask_stage(workspace) -> Path:
+    path = workspace.root / "transients" / "s"
+    return Path("\\\\?\\" + str(path)) if os.name == "nt" else path
+
+
 class StopSolverMasks:
     """A Stop-only mask prefill, joined before the final solve owns masks."""
 
-    def __init__(self, solver: "BackgroundSolver", *, spawn=None):
+    def __init__(self, solver: "BackgroundSolver", *, script=None, spawn=None,
+                 join_timeout=1800.0):
         self.solver = solver
+        self.script = script or TOWER_ROOT / "scripts" / "world_solve_masks.py"
         self._spawn = spawn if spawn is not None else subprocess.Popen
         self._child = None
         self._job = None
+        self._log = None
+        self._started = None
+        self._exit_logged = False
+        self.join_timeout = join_timeout
 
     def launch(self) -> bool:
-        argv = [
-            python_executable(), str(TOWER_ROOT / "scripts" / "world_solve_masks.py"),
-            "--root", str(self.solver.root), "--world", self.solver.world_id,
-            "--session", self.solver.session_id,
-        ]
         try:
+            argv = [python_executable(), str(self.script),
+                    "--root", str(self.solver.root), "--world", self.solver.world_id,
+                    "--session", self.solver.session_id]
+            from tower.world_builder.global_solve import workspace_for  # noqa: PLC0415
+            workspace = workspace_for(WorldStore(self.solver.root),
+                                      self.solver.world_id, self.solver.session_id)
+            workspace.root.mkdir(parents=True, exist_ok=True)
+            self._log = open(workspace.root / "solve_masks_at_stop.log", "ab")
+            self._started = time.monotonic()
+            env = child_environment()
+            env.update({"OMP_NUM_THREADS": "2", "OPENBLAS_NUM_THREADS": "2",
+                        "MKL_NUM_THREADS": "2", "NUMEXPR_NUM_THREADS": "2"})
             self._child = self._spawn(
                 argv, cwd=str(TOWER_ROOT), stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                env=child_environment(),
+                stdout=self._log, stderr=subprocess.STDOUT,
+                env=env,
+                creationflags=(subprocess.BELOW_NORMAL_PRIORITY_CLASS if os.name == "nt" else 0),
             )
             self._job = assign_to_job(self._child)
+            if self._job is None:
+                logger.warning("[Tower][WorldBuilder] Stop mask prefill has no Job Object; disabling it")
+                self.close()
+                return False
+            logger.info("[Tower][WorldBuilder] Stop mask prefill launched (pid %s)",
+                        self._child.pid)
         except Exception as exc:  # prefill failure must leave the old final solve available
             logger.warning("[Tower][WorldBuilder] Stop mask prefill could not start: %s", exc)
             self.close()
             return False
         return True
 
-    def join(self, *, should_stop) -> None:
-        """Wait for a complete pass; a hard stop owns and kills the child."""
+    def join(self, *, should_stop, should_soft_stop=lambda: False) -> bool:
+        """Return false if the child cannot be confirmed gone."""
         try:
             if self._child is None:
-                return
+                return True
+            deadline = time.monotonic() + self.join_timeout
             while self._child.poll() is None:
-                if should_stop():
-                    terminate_tree(self._child, job=self._job,
-                                   timeout=CHILD_TERMINATE_TIMEOUT_S, hard=True)
-                    return
+                if should_stop() or should_soft_stop() or time.monotonic() >= deadline:
+                    logger.warning("[Tower][WorldBuilder] Stop mask prefill join ended; terminating pid %s",
+                                   self._child.pid)
+                    return self.close()
                 time.sleep(CHILD_POLL_S)
-            if self._child.returncode != 0:
+            rc = self._child.poll()
+            self._log_exit(rc)
+            if rc == 0:
+                self._promote()
+            else:
                 logger.warning("[Tower][WorldBuilder] Stop mask prefill exited %s; "
-                               "the final solve will compute missing masks", self._child.returncode)
+                               "staged masks quarantined", rc)
+            return True
         finally:
-            self.close()
+            if self._child is not None and self._child.poll() is not None:
+                self.close()
 
-    def close(self) -> None:
+    def _promote(self) -> None:
+        from tower.world_builder import global_solve, solve_masks  # noqa: PLC0415
+        workspace = global_solve.workspace_for(WorldStore(self.solver.root),
+                                               self.solver.world_id, self.solver.session_id)
+        stage = _stop_mask_stage(workspace)
+        manifest = json.loads((stage / "result.json").read_text(encoding="utf-8"))
+        if not manifest["available"]:
+            return
+        valid = {}
+        for name, sha in manifest["images"].items():
+            try:
+                current = hashlib.sha1((workspace.images_dir / name).read_bytes()).hexdigest()
+            except OSError:
+                continue
+            if current == sha:
+                valid[name] = sha
+        cache = workspace.root / "transients"
+        for name, sha in valid.items():
+            for source in (stage / "transients").glob(f"{Path(name).stem}.{sha[:12]}.*.npz"):
+                target = cache / source.name
+                if not target.exists():
+                    os.replace(source, target)
+            source_png = stage / "masks" / f"{name}.png"
+            if source_png.is_file():
+                masks = workspace.root / "masks"
+                masks.mkdir(exist_ok=True)
+                os.replace(source_png, masks / source_png.name)
+        index_path = stage / "transients" / "index.json"
+        if index_path.is_file():
+            index = json.loads(index_path.read_text(encoding="utf-8"))
+            entries = {kid: row for kid, row in index.get("images", {}).items()
+                       if valid.get(row.get("image")) == row.get("image_sha1")}
+            if entries:
+                solve_masks._merge_index(cache, entries, solve_masks.solver_params())
+        logger.info("[Tower][WorldBuilder] Stop mask prefill: %s images masked, %s cache hits; "
+                    "%s images still match at final solve", manifest["masked"],
+                    manifest["cache_hits"], len(valid))
+        shutil.rmtree(stage)
+
+    def _log_exit(self, rc) -> None:
+        if self._exit_logged or self._child is None:
+            return
+        from tower.world_builder.global_solve import workspace_for  # noqa: PLC0415
+        workspace = workspace_for(WorldStore(self.solver.root),
+                                  self.solver.world_id, self.solver.session_id)
+        stage = _stop_mask_stage(workspace)
+        try:
+            stats = json.loads((stage / "result.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            stats = {}
+        logger.info("[Tower][WorldBuilder] Stop mask prefill exited %s in %.2fs; "
+                    "images masked %s, cache hits %s", rc,
+                    time.monotonic() - self._started, stats.get("masked", "unknown"),
+                    stats.get("cache_hits", "unknown"))
+        self._exit_logged = True
+
+    def close(self) -> bool:
         if self._child is not None and self._child.poll() is None:
-            terminate_tree(self._child, job=self._job,
-                           timeout=CHILD_TERMINATE_TIMEOUT_S, hard=True)
+            gone = terminate_tree(self._child, job=self._job,
+                                  timeout=CHILD_TERMINATE_TIMEOUT_S, hard=True)
+            if not gone or self._child.poll() is None:
+                _owned_stalled_mask_children.append(self)
+                logger.error("[Tower][WorldBuilder] Stop mask prefill pid %s still owns mask writes; "
+                             "final solve blocked", self._child.pid)
+                return False
+        if self._child is not None and self._started is not None:
+            self._log_exit(self._child.poll())
         if self._job is not None:
             self._job.close()
             self._job = None
+        if self._log is not None:
+            self._log.close()
+            self._log = None
         self._child = None
+        return True
 
 
-def wait_for_background_solve_at_stop(solver, timeout: float, *, should_stop) -> None:
+_owned_stalled_mask_children = []
+
+
+def wait_for_background_solve_at_stop(solver, timeout: float, *, should_stop,
+                                      should_soft_stop=lambda: False, script=None,
+                                      stop_at: float | None = None) -> bool:
     """Keep the old wait; optionally overlap its running solve with masks."""
-    from tower.config import (  # noqa: PLC0415
-        world_solve_masks_at_stop_setting, world_solve_masks_setting,
-    )
-
     mask_child = None
-    if (world_solve_masks_at_stop_setting() and world_solve_masks_setting()
-            and solver.running):
-        mask_child = StopSolverMasks(solver)
-        mask_child.launch()
+    launch_safe = True
+    if solver.running:
+        mask_child = StopSolverMasks(solver, script=script)
+        launched = mask_child.launch()
+        launch_safe = launched or mask_child._child is None
     try:
-        solver.wait(timeout, should_stop=should_stop)
-    finally:
+        # Popen, Job Object assignment and Python start-up all consume the
+        # original Stop budget; none grants the background solve extra time.
+        remaining = (timeout if stop_at is None else
+                     max(0.0, stop_at + timeout - time.monotonic()))
+        solver.wait(remaining, should_stop=should_stop)
+    except BaseException:
         if mask_child is not None:
-            try:
-                mask_child.join(should_stop=should_stop)
-            except Exception as exc:  # the final solve owns all cache misses
-                logger.warning("[Tower][WorldBuilder] Stop mask prefill failed: %s", exc)
-                mask_child.close()
+            mask_child.close()
+        raise
+    if not launch_safe:
+        return False
+    if mask_child is not None:
+        try:
+            return mask_child.join(should_stop=should_stop,
+                                   should_soft_stop=should_soft_stop)
+        except Exception as exc:
+            logger.warning("[Tower][WorldBuilder] Stop mask prefill failed: %s", exc)
+            return mask_child.close()
+    return True
 
 
 class BackgroundSolver:
@@ -1980,6 +2094,8 @@ def main(argv=None) -> int:
         default=None,
         help=argparse.SUPPRESS,  # a test seam: run this instead of world_solve.py
     )
+    parser.add_argument("--stop-masks-script", type=Path, default=None,
+                        help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
 
     # Configured here rather than at import, so importing this module for
@@ -2467,9 +2583,23 @@ def main(argv=None) -> int:
             # A background solve still running at Stop is given a bounded
             # wait and then TERMINATED, never abandoned: the final solve is
             # about to reuse its workspace.
-            wait_for_background_solve_at_stop(
-                solver, args.solve_wait_seconds, should_stop=stop_request.hard_asked_for)
-            if stop_request.hard:
+            from tower.config import (  # noqa: PLC0415
+                world_solve_masks_at_stop_setting, world_solve_masks_setting,
+            )
+            if (world_solve_masks_at_stop_setting() and world_solve_masks_setting()
+                    and solver.running):
+                stop_at = time.monotonic()
+                masks_safe = wait_for_background_solve_at_stop(
+                    solver, args.solve_wait_seconds, should_stop=stop_request.hard_asked_for,
+                    should_soft_stop=stop_request.asked_for,
+                    script=args.stop_masks_script, stop_at=stop_at)
+            else:
+                solver.wait(args.solve_wait_seconds, should_stop=stop_request.hard_asked_for)
+                masks_safe = True
+            if not masks_safe:
+                final_solve_state = FINAL_SOLVE_SKIPPED
+                finalization_detail = "final solve skipped: Stop mask child could not be stopped"
+            elif stop_request.hard:
                 final_solve_state = FINAL_SOLVE_SKIPPED
                 finalization_detail = (
                     f"final solve skipped: hard stop ({stop_request.source}) during finalization"
