@@ -1576,7 +1576,9 @@ struct WorldRenderWebView: UIViewRepresentable {
         webView.allowsBackForwardNavigationGestures = false
         webView.allowsLinkPreview = false
         webView.isOpaque = false
-        webView.backgroundColor = .black
+        // The page's own background, so nothing changes colour between the
+        // loading panel, the web view before the page paints, and the page.
+        webView.backgroundColor = WorldRenderLoadingPanel.pageBackground
         // The page draws on a canvas that owns every touch (`touch-action:
         // none`) and sets `overflow: hidden`; the scroll view underneath it
         // would otherwise bounce on the first drag and steal the orbit.
@@ -2003,6 +2005,31 @@ struct WorldRenderScene: View {
     /// debugger.
     @State private var isShowingDetails = false
 
+    /// The screen's height below the navigation bar, for `CappedScroll`.
+    @State private var screenHeight: CGFloat = 0
+
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+
+    /// The most of the screen the words above the picture may take before
+    /// they scroll, and the most the areas and Details below it may take.
+    ///
+    /// At the largest text size the caption grew without limit: the 3D view
+    /// measured 0 pt on an iPhone SE, 72 on the 17e and 87 on the 17 Pro (O1
+    /// viewer check, at 2ff0b0e), and with Details open the caption was
+    /// pushed up under the navigation bar. Capped, the picture keeps at
+    /// least 70 % of the screen below the bar at the accessibility sizes --
+    /// about 60 % of the SE's safe area -- and the words scroll in their own
+    /// space, whole, to read and to VoiceOver. At the default size the
+    /// caption is well under its cap and nothing scrolls; the areas and
+    /// Details keep the room they had.
+    static let captionShare: CGFloat = 0.18
+    private var belowShare: CGFloat { dynamicTypeSize.isAccessibilitySize ? 0.12 : 0.3 }
+
+    /// When the current wait began: the fetch (the screen's opening, a
+    /// Reload, a Try again), or the drawing that follows it or a reload of
+    /// the page. The loading panel counts each step from here.
+    @State private var waitingSince = Date.now
+
     /// `finalization.notice` for the walk this room belongs to (v6, §8): what
     /// the Tower could not do and who can fix it, shown verbatim below the
     /// room caption as a plain note. `nil` shows nothing -- every older world,
@@ -2047,11 +2074,19 @@ struct WorldRenderScene: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            caption
+            CappedScroll(cap: screenHeight * Self.captionShare) {
+                caption
+            }
             content
-            if !model.target.isArea { areasRow }
-            details
+                .layoutPriority(1)
+            CappedScroll(cap: screenHeight * belowShare) {
+                VStack(spacing: 0) {
+                    if !model.target.isArea { areasRow }
+                    details
+                }
+            }
         }
+        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { screenHeight = $0 }
         .navigationTitle(screenTitle)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
@@ -2059,7 +2094,7 @@ struct WorldRenderScene: View {
                 ToolbarItem(placement: .principal) {
                     VStack(spacing: 0) {
                         Text(area.numberLine).font(.headline)
-                        Text(WorldAreaOpening.notPlacedLine).font(.caption).foregroundStyle(.secondary)
+                        Text(WorldAreaOpening.notPlacedLine).font(.caption).foregroundStyle(.readableSecondary)
                     }
                     .accessibilityElement(children: .combine)
                     .accessibilityLabel(area.header)
@@ -2074,6 +2109,12 @@ struct WorldRenderScene: View {
             await model.load()
             await model.refreshComponents()
             await model.followRevisions()
+        }
+        .onChange(of: model.state.isFetching) { _, isFetching in
+            if isFetching { waitingSince = .now }
+        }
+        .onChange(of: model.state.isRendering) { _, isRendering in
+            if isRendering { waitingSince = .now }
         }
         // `PRIVACY.md` §3.6: in-memory reuse within one open viewer is fine;
         // drop it when the viewer closes. Nothing did (review 2, M-4).
@@ -2107,7 +2148,7 @@ struct WorldRenderScene: View {
             if let note {
                 Text(note)
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.readableSecondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
             // Follows the page. "Not a surface" was load-bearing while every
@@ -2116,14 +2157,14 @@ struct WorldRenderScene: View {
             // Before the page arrives it claims neither.
             Text(nativeCaption)
                 .font(.caption2)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(.readableSecondary)
                 .fixedSize(horizontal: false, vertical: true)
             // The walk's notice (v6, §8): verbatim, below the room caption, a
             // plain note and not an error -- no icon, no tint, no control.
             if let notice {
                 Text(notice)
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.readableSecondary)
                     .fixedSize(horizontal: false, vertical: true)
                     .accessibilityIdentifier("world-render-notice")
             }
@@ -2177,7 +2218,7 @@ struct WorldRenderScene: View {
             Text("The Tower no longer serves this area -- the walk may have been finished again. "
                  + "The room's list of areas is current.")
                 .font(.caption)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(.readableSecondary)
                 .fixedSize(horizontal: false, vertical: true)
         }
         if let backToRoom {
@@ -2197,7 +2238,7 @@ struct WorldRenderScene: View {
                 if let heading = WorldComponentsPresentation.areasHeading(components) {
                     Text(heading)
                         .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(.readableSecondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 let areas = components.areas
@@ -2207,7 +2248,7 @@ struct WorldRenderScene: View {
                 if let footer = WorldComponentsPresentation.footer(components) {
                     Text(footer)
                         .font(.caption2)
-                        .foregroundStyle(.tertiary)
+                        .foregroundStyle(.readableSecondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }
@@ -2230,16 +2271,16 @@ struct WorldRenderScene: View {
                 HStack {
                     Text(line).font(.footnote)
                     Spacer()
-                    Image(systemName: "chevron.right").font(.caption2).foregroundStyle(.tertiary)
+                    Image(systemName: "chevron.right").font(.caption2).foregroundStyle(.secondary)
                 }
             }
             .buttonStyle(.plain)
         } else {
             HStack {
-                Text(line).font(.footnote).foregroundStyle(.secondary)
+                Text(line).font(.footnote).foregroundStyle(.readableSecondary)
                 Spacer()
                 if let word = WorldComponentsPresentation.availabilityWord(availability) {
-                    Text(word).font(.caption2).foregroundStyle(.secondary)
+                    Text(word).font(.caption2).foregroundStyle(.readableSecondary)
                 }
             }
         }
@@ -2267,38 +2308,22 @@ struct WorldRenderScene: View {
         } else if model.state.failureMessage != nil {
             failureView
         } else {
-            waiting("Fetching this world from the Tower…")
+            WorldRenderLoadingPanel(sentence: "Fetching this world from the Tower…",
+                                    step: 1, since: waitingSince)
         }
     }
 
     /// Over the web view while the page has not reported finishing.
     ///
-    /// Opaque on purpose: underneath it is a black rectangle, and a
-    /// half-transparent spinner over black reads as a stuck page rather than as
-    /// a page arriving. It disappears on `didFinish`, and if that never comes
-    /// the watchdog replaces the whole thing with a sentence.
+    /// Opaque on purpose: a half-transparent spinner over an unpainted page
+    /// reads as a stuck page rather than as a page arriving. It disappears on
+    /// `didFinish`, and if that never comes the watchdog replaces the whole
+    /// thing with a sentence.
     @ViewBuilder
     private var renderingOverlay: some View {
         if model.state.isRendering {
-            waiting("Drawing the world…")
-                .background(Color(.systemBackground))
+            WorldRenderLoadingPanel(sentence: "Drawing the world…", step: 2, since: waitingSince)
         }
-    }
-
-    /// The two waits, worded for what is actually happening.
-    ///
-    /// The fetching sentence read "Building the 3D world…", which described
-    /// neither half: the Tower composed the page before this screen existed,
-    /// and what this app is doing is downloading it. Then drawing it. Those are
-    /// different waits, they fail differently, and they now say so.
-    private func waiting(_ sentence: String) -> some View {
-        VStack(spacing: 12) {
-            ProgressView()
-            Text(sentence)
-                .font(.footnote)
-                .foregroundStyle(.secondary)
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     private var failureView: some View {
@@ -2306,16 +2331,17 @@ struct WorldRenderScene: View {
             Image(systemName: "cube.transparent")
                 .font(.largeTitle)
                 .foregroundStyle(.secondary)
+                .accessibilityHidden(true)
             Text(model.state.failureMessage ?? "")
                 .font(.footnote)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(.readableSecondary)
                 .multilineTextAlignment(.center)
                 .padding(.horizontal, 24)
             if model.state.failureIsRetryable {
                 Button("Try again") {
                     Task { await model.load() }
                 }
-                .buttonStyle(.bordered)
+                .readableBorderedButton()
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -2334,7 +2360,7 @@ struct WorldRenderScene: View {
                       ?? "World \(model.target.worldID)\nNewest session with geometry")
                      + (model.target.areaID.map { "\nArea \($0)" } ?? ""))
                     .font(.caption2.monospaced())
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.readableSecondary)
                     .textSelection(.enabled)
                     .fixedSize(horizontal: false, vertical: true)
 
@@ -2388,3 +2414,83 @@ struct WorldRenderScene: View {
         .padding(.vertical, 8)
     }
 }
+
+/// The viewer's wait, drawn in the page's own colours: the dark surface the
+/// page will paint, so opening a world never flashes a white panel and then
+/// cuts to black (UX audit, room-viewer-fetching). Adapted from Codex draft
+/// d0c5a44, with the page's background rather than pure black.
+///
+/// The two waits are worded for what is actually happening: fetching the page
+/// from the Tower, then drawing it. (The first once read "Building the 3D
+/// world…", which described neither half: the Tower composed the page before
+/// this screen existed.) The panel says which of the two it is, as a step of
+/// two, and how long that step has taken once it is more than a moment:
+/// 6–11 s on the real Tower, with nothing moving but a spinner, read as stuck.
+struct WorldRenderLoadingPanel: View {
+    let sentence: String
+    let step: Int
+    let since: Date
+
+    /// `--bg` in `appearance_viewer.html` and `surface_viewer.html`.
+    static let pageBackground = UIColor(red: 0x0B / 255, green: 0x0D / 255, blue: 0x10 / 255, alpha: 1)
+
+    var body: some View {
+        TimelineView(.periodic(from: since, by: 1)) { context in
+            let seconds = Int(context.date.timeIntervalSince(since))
+            VStack(spacing: 12) {
+                ProgressView()
+                    .accessibilityHidden(true)
+                // In the dark scheme forced below, `.primary` is near-white
+                // (about 18:1 on the page background) and the readable
+                // secondary is #AAAAB0 (8:1).
+                Text(sentence)
+                    .font(.footnote.weight(.medium))
+                    .foregroundStyle(.primary)
+                Text(Self.progress(step: step, seconds: seconds))
+                    .font(.caption)
+                    .monospacedDigit()
+                    .foregroundStyle(.readableSecondary)
+            }
+            .multilineTextAlignment(.center)
+            .fixedSize(horizontal: false, vertical: true)
+            .padding(.horizontal, 24)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .accessibilityElement(children: .combine)
+        }
+        .background(Color(uiColor: Self.pageBackground))
+        .environment(\.colorScheme, .dark)
+        .accessibilityIdentifier("world-render-loading")
+    }
+
+    /// "Step 1 of 2", then "Step 1 of 2 · 3 s" from the second second on.
+    static func progress(step: Int, seconds: Int) -> String {
+        let steps = "Step \(step) of 2"
+        return seconds >= 2 ? "\(steps) · \(seconds) s" : steps
+    }
+}
+
+/// Its content at its own height, up to `cap`, and scrolling beyond it.
+///
+/// A plain `ScrollView` takes all the height it is offered, which would take
+/// the 3D view's; this one is exactly as tall as what it holds until that is
+/// taller than `cap`. A `cap` of zero (before the screen has been measured)
+/// means no cap.
+struct CappedScroll<Content: View>: View {
+    let cap: CGFloat
+    @ViewBuilder let content: Content
+
+    @State private var contentHeight: CGFloat = 0
+
+    var body: some View {
+        ScrollView {
+            content
+                .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { contentHeight = $0 }
+        }
+        .scrollBounceBehavior(.basedOnSize)
+        // When it is capped, say so: the indicator shows once, as the screen
+        // opens, that there is more to read.
+        .scrollIndicatorsFlash(onAppear: true)
+        .frame(height: cap > 0 ? min(contentHeight, cap) : contentHeight)
+    }
+}
+

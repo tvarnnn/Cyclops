@@ -89,6 +89,8 @@ struct WorldBuilderWorkspaceView: View {
     /// `stop` on disappear comes from the same object that sent `start`.
     @StateObject private var session: WorldBuilderSessionController
 
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+
     /// The client is injected rather than constructed here, and owned by
     /// `ProjectManager`. See `CartridgeClients` for why: this `@StateObject` is
     /// destroyed on every cartridge switch, and a Tower-backed client holding a
@@ -193,64 +195,100 @@ struct WorldBuilderWorkspaceView: View {
 
     // MARK: Header
 
+    /// The two read-only controls, the sentence about the screen, and -- when
+    /// a saved world is pinned -- which one, with the way back to live.
+    ///
+    /// No in-page "World Builder" title: the navigation bar already says it,
+    /// directly above, and the two together read as the same title twice
+    /// (UX audit, wb-header).
     private var header: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(alignment: .firstTextBaseline) {
-                Text("World Builder")
-                    .font(.title2.weight(.semibold))
-                Spacer()
-                // Both read only, so neither is `#if DEBUG`: a Release build
-                // with no camera can still look at what the Tower has stored.
-                //
-                // The picture button is disabled, not hidden, until the Tower
-                // has named a world with geometry (`renderTarget`): a control
-                // that appears from nowhere is one nobody looks for, and a
-                // disabled one says "not yet" truthfully.
-                Button {
-                    viewerTarget = world.renderTarget
-                } label: {
-                    Label("Picture", systemImage: "cube.transparent")
-                        .font(.subheadline)
+        VStack(alignment: .leading, spacing: 10) {
+            // Side by side while both labels fit on one line each, and one
+            // above the other when they do not. An HStack that never gave way
+            // broke "Picture" and "Saved worlds" mid-word inside their
+            // capsules at the accessibility sizes (UX audit, wb-header).
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 8) {
+                    pictureButton
+                    savedWorldsButton
+                    Spacer(minLength: 0)
                 }
-                .buttonStyle(.bordered)
-                .disabled(world.renderTarget == nil)
-                .accessibilityLabel("Interactive picture of the world")
-                Button {
-                    isShowingWorlds = true
-                } label: {
-                    Label("Saved worlds", systemImage: "archivebox")
-                        .font(.subheadline)
+                VStack(alignment: .leading, spacing: 8) {
+                    pictureButton
+                    savedWorldsButton
                 }
-                .buttonStyle(.bordered)
             }
+
             Text("What the glasses see, and what the Tower reports it has built from that. Figures come from the Tower; absent ones are not drawn.")
                 .font(.subheadline)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(.readableSecondary)
                 .fixedSize(horizontal: false, vertical: true)
 
             if world.inspection.isInspecting {
-                HStack(spacing: 8) {
-                    // The world's NAME, or nothing. This line used to end in a
-                    // raw 32-character hex world id — `Looking at saved world
-                    // fcbca9e90b244785bdb671530b33c6a5.` — which is a database
-                    // key on the ordinary surface of the app. The id is still
-                    // reachable: it is in the canvas's Diagnostics disclosure
-                    // and in the 3D viewer's Details.
-                    Text(savedWorldLine)
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                    Spacer()
-                    Button("Back to live") {
-                        world.returnToLive()
-                    }
-                    .font(.footnote)
-                    .buttonStyle(.bordered)
-                }
+                inspectingLine
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    // Both read only, so neither is `#if DEBUG`: a Release build with no
+    // camera can still look at what the Tower has stored.
+    //
+    // The picture button is disabled, not hidden, until the Tower has named a
+    // world with geometry (`renderTarget`): a control that appears from
+    // nowhere is one nobody looks for, and a disabled one says "not yet"
+    // truthfully.
+    private var pictureButton: some View {
+        Button {
+            viewerTarget = world.renderTarget
+        } label: {
+            Label("Picture", systemImage: "cube.transparent")
+                .font(.subheadline)
+        }
+        .readableBorderedButton()
+        .disabled(world.renderTarget == nil)
+        .accessibilityLabel("Interactive picture of the world")
+        // Voice Control matches what is on screen: "Tap Picture" has to find
+        // it, although VoiceOver reads the longer name.
+        .accessibilityInputLabels(["Picture", "Interactive picture of the world"])
+    }
+
+    private var savedWorldsButton: some View {
+        Button {
+            isShowingWorlds = true
+        } label: {
+            Label("Saved worlds", systemImage: "archivebox")
+                .font(.subheadline)
+        }
+        .readableBorderedButton()
+    }
+
+    /// Which saved world is pinned, and the way back. Wraps rather than
+    /// truncating, and at the accessibility sizes puts the button under the
+    /// sentence instead of squeezing both into one line.
+    @ViewBuilder
+    private var inspectingLine: some View {
+        let layout = dynamicTypeSize.isAccessibilitySize
+            ? AnyLayout(VStackLayout(alignment: .leading, spacing: 8))
+            : AnyLayout(HStackLayout(alignment: .firstTextBaseline, spacing: 8))
+        layout {
+            // The world's NAME, or nothing. This line used to end in a raw
+            // 32-character hex world id — `Looking at saved world
+            // fcbca9e90b244785bdb671530b33c6a5.` — which is a database key on
+            // the ordinary surface of the app. The id is still reachable: it
+            // is in the canvas's Diagnostics disclosure and in the 3D viewer's
+            // Details.
+            Text(savedWorldLine)
+                .font(.footnote)
+                .foregroundStyle(.readableSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            Button("Back to live") {
+                world.returnToLive()
+            }
+            .font(.footnote)
+            .readableBorderedButton()
+        }
     }
 
     /// What the inspecting line says. The Tower's display name when it gave
@@ -305,8 +343,10 @@ private extension WorldBuilderWorkspaceView {
         }
     }
 
+    static let waitingForGlasses = "Waiting for the glasses to become active."
+
     var placeholder: String {
-        if !glasses.hasActiveDevice { return "Waiting for the glasses to become active." }
+        if !glasses.hasActiveDevice { return Self.waitingForGlasses }
         if glasses.cameraPermissionStatus != .granted {
             return "Camera access is needed before a session can stream."
         }
@@ -327,7 +367,7 @@ private extension WorldBuilderWorkspaceView {
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 6)
                 }
-                .buttonStyle(.bordered)
+                .readableBorderedButton()
                 .disabled(glasses.cameraStreamState == .stopping)
             } else {
                 Button {
@@ -340,6 +380,9 @@ private extension WorldBuilderWorkspaceView {
                 }
                 .buttonStyle(.borderedProminent)
                 .disabled(!glasses.hasActiveDevice)
+                // Why it is disabled, at the control, for VoiceOver. On screen
+                // the viewfinder above already says it; see below.
+                .accessibilityHint(glasses.hasActiveDevice ? "" : Self.waitingForGlasses)
             }
 
             // Neither string claims a build. The Tower reconstructs in a
@@ -354,7 +397,11 @@ private extension WorldBuilderWorkspaceView {
             )
 
             if !glasses.hasActiveDevice && !isRunning {
-                HelperText("Waiting for the glasses to become active.")
+                // Nothing: the viewfinder card at the top of this workspace
+                // is showing this very sentence, and it read twice on one
+                // screen (UX audit, wb-capture-idle). Kept as a branch so the
+                // advice below still never shows while the glasses are away.
+                EmptyView()
             } else if glasses.cameraPermissionStatus == .denied && !isRunning {
                 // Advice, not a `.disabled` condition — see the equivalent
                 // branch in `HomeWorkspaceView.sessionControl`.

@@ -86,13 +86,13 @@ struct HomeWorkspaceView: View {
 
             Text(detail)
                 .font(.subheadline)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(.readableSecondary)
                 .fixedSize(horizontal: false, vertical: true)
 
             if let blocker {
                 Button(blocker.actionTitle, action: blocker.action)
                     .font(.subheadline.weight(.medium))
-                    .buttonStyle(.bordered)
+                    .readableBorderedButton()
                     .padding(.top, 2)
             }
         }
@@ -196,7 +196,7 @@ private extension HomeWorkspaceView {
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 6)
                 }
-                .buttonStyle(.bordered)
+                .readableBorderedButton()
                 .disabled(isStopping)
             } else {
                 Button {
@@ -350,7 +350,7 @@ private extension HomeWorkspaceView {
                 let caveat = (reading?.provenance ?? CVFrameReading.provenance).caveat {
                 Text("The experiment's figures above: \(caveat)")
                     .font(.caption2)
-                    .foregroundStyle(.tertiary)
+                    .foregroundStyle(.readableSecondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
         }

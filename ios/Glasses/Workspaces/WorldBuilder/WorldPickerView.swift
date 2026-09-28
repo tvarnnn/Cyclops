@@ -55,6 +55,18 @@ struct WorldPickerView: View {
     /// from the row it was opened from. `nil` for a room.
     @State private var openedArea: WorldAreaOpening?
 
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+
+    /// A row's trailing word (a session's badge, an area's "not placed") goes
+    /// under the row's words at the accessibility sizes: as a column beside
+    /// them it squeezed "synthetic-fixture · 24 keyframes" into ragged
+    /// hyphenated columns (UX audit, world-picker-world-row).
+    private var trailingWordsWrap: Bool { dynamicTypeSize.isAccessibilitySize }
+
+    /// An id is kept to one line, cut in the middle, where it fits; at the
+    /// accessibility sizes it wraps instead of being cut off.
+    private var idLineLimit: Int? { dynamicTypeSize.isAccessibilitySize ? nil : 1 }
+
     private var grouped: WorldListingPresentation.Grouped {
         WorldListingPresentation.grouped(world.worlds)
     }
@@ -88,7 +100,7 @@ struct WorldPickerView: View {
                             }
                         }
                         .font(.footnote)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(.readableSecondary)
                     }
                 }
             }
@@ -269,19 +281,19 @@ struct WorldPickerView: View {
                 ProgressView()
                 Text("Asking the Tower for its saved worlds…")
                     .font(.footnote)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.readableSecondary)
             }
         } else if let failure = world.worldListFailure {
             VStack(alignment: .leading, spacing: 8) {
                 Text(failure)
                     .font(.footnote)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.readableSecondary)
                     .fixedSize(horizontal: false, vertical: true)
                 Button("Retry") {
                     Task { await world.loadWorlds() }
                 }
                 .font(.footnote)
-                .buttonStyle(.bordered)
+                .readableBorderedButton()
             }
         } else if world.worlds.isEmpty {
             // Empty after an empty answer. "None yet" is true of a Tower with
@@ -289,7 +301,7 @@ struct WorldPickerView: View {
             // claiming which; the log line says which.
             Text("No saved worlds have been listed yet.")
                 .font(.footnote)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(.readableSecondary)
         }
     }
 
@@ -325,13 +337,14 @@ struct WorldPickerView: View {
                 }
             }
             .buttonStyle(.plain)
+            .accessibilityHint("Opens its 3D world")
         } else {
             HStack {
                 VStack(alignment: .leading, spacing: 2) {
                     worldLabel(entry)
                     Text("None of these sessions has geometry, so there is nothing to open.")
                         .font(.caption2)
-                        .foregroundStyle(.tertiary)
+                        .foregroundStyle(.readableSecondary)
                 }
                 Spacer()
                 liveBadge(entry)
@@ -373,7 +386,7 @@ struct WorldPickerView: View {
             worldLabel(entry)
             Text("No sessions, so there is nothing to open.")
                 .font(.caption2)
-                .foregroundStyle(.tertiary)
+                .foregroundStyle(.readableSecondary)
         }
     }
 
@@ -394,12 +407,12 @@ struct WorldPickerView: View {
             // title, which is the arrangement that was never the complaint.
             Text(entry.worldID)
                 .font(.caption2.monospaced())
-                .foregroundStyle(.tertiary)
-                .lineLimit(1)
+                .foregroundStyle(.readableSecondary)
+                .lineLimit(idLineLimit)
                 .truncationMode(.middle)
             Text(WorldListingPresentation.sessionCount(entry.sessions.count))
                 .font(.caption)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(.readableSecondary)
         }
     }
 
@@ -429,19 +442,23 @@ struct WorldPickerView: View {
                 sessionLabel(session)
             }
             .buttonStyle(.plain)
+            .accessibilityHint("Opens its 3D world")
         } else {
             VStack(alignment: .leading, spacing: 2) {
                 sessionLabel(session)
                 Text(WorldListingPresentation.noGeometryCaption(for: session) ?? "")
                     .font(.caption2)
-                    .foregroundStyle(.tertiary)
+                    .foregroundStyle(.readableSecondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
     }
 
     private func sessionLabel(_ session: WorldListingSession) -> some View {
-        HStack {
+        let layout = trailingWordsWrap
+            ? AnyLayout(VStackLayout(alignment: .leading, spacing: 2))
+            : AnyLayout(HStackLayout())
+        return layout {
             VStack(alignment: .leading, spacing: 2) {
                 // When the walk happened, as the row's primary label.
                 //
@@ -454,15 +471,14 @@ struct WorldPickerView: View {
                 // and in the canvas's Diagnostics.
                 Text(WorldListingPresentation.sessionTitle(for: session))
                     .font(.subheadline)
-                HStack(spacing: 6) {
-                    Text(session.frameSource)
-                    if let keyframes = WorldListingPresentation.keyframeCaption(for: session) {
-                        Text("·")
-                        Text(keyframes)
-                    }
-                }
-                .font(.caption2)
-                .foregroundStyle(.secondary)
+                // One Text, so it wraps as a sentence. Three Texts in an
+                // HStack each took a column and hyphenated inside it.
+                Text([session.frameSource, WorldListingPresentation.keyframeCaption(for: session)]
+                        .compactMap { $0 }
+                        .joined(separator: " · "))
+                    .font(.caption2)
+                    .foregroundStyle(.readableSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
                 // The final pass, when the Tower's own record says it did
                 // not happen. `WorldListingSession.finalization` has been
                 // decoded off this route since 2026-09-06 and read by
@@ -473,7 +489,7 @@ struct WorldPickerView: View {
                 if let solve = WorldListingPresentation.finalSolveCaption(for: session) {
                     Text(solve)
                         .font(.caption2)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(.readableSecondary)
                 }
                 // A complete walk whose photographic build failed: the badge
                 // is short, so the whole sentence is here, where the reader
@@ -481,7 +497,7 @@ struct WorldPickerView: View {
                 if let photographic = WorldListingPresentation.photographicCaption(for: session) {
                     Text(photographic)
                         .font(.caption2)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(.readableSecondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 // The session id, restored as a caption rather than as the
@@ -495,24 +511,23 @@ struct WorldPickerView: View {
                 // under a dated title, it is not.
                 Text(session.sessionID)
                     .font(.caption2.monospaced())
-                    .foregroundStyle(.tertiary)
-                    .lineLimit(1)
+                    .foregroundStyle(.readableSecondary)
+                    .lineLimit(idLineLimit)
                     .truncationMode(.middle)
             }
-            Spacer()
+            if !trailingWordsWrap {
+                Spacer()
+            }
+            // The words carry the meaning. It used to be fainter still for a
+            // session with nothing to show, so "No geometry" would not read
+            // as an alarm, and that level of grey was too faint to read at
+            // all; muted text is as far as it goes now.
             if let badge = WorldListingPresentation.stateBadge(for: session) {
                 Text(badge)
                     .font(.caption2)
-                    .foregroundStyle(badgeStyle(for: session))
+                    .foregroundStyle(.readableSecondary)
             }
         }
-    }
-
-    /// Muted for a session with nothing to show, ordinary otherwise. The
-    /// words carry the meaning; the colour only stops "No geometry" from
-    /// reading as an alarm.
-    private func badgeStyle(for session: WorldListingSession) -> HierarchicalShapeStyle {
-        session.hasGeometry ? .secondary : .tertiary
     }
 
     /// Pin the world for the workspace behind, and push its 3D reconstruction.
@@ -556,30 +571,52 @@ struct WorldPickerView: View {
                          opening: WorldAreaOpening(number: index + 1, total: areas.count,
                                                    spans: area.captureSpans))
                 } label: {
-                    HStack {
+                    areaLine {
                         Text(line).font(.caption)
-                        Spacer()
-                        Text("not placed").font(.caption2).foregroundStyle(.secondary)
+                    } trailing: {
+                        Text("not placed").font(.caption2).foregroundStyle(.readableSecondary)
                     }
-                    .padding(.leading, 16)
                 }
                 .buttonStyle(.plain)
             } else {
-                HStack {
-                    Text(line).font(.caption).foregroundStyle(.secondary)
-                    Spacer()
+                areaLine {
+                    Text(line).font(.caption).foregroundStyle(.readableSecondary)
+                } trailing: {
                     if let word = WorldComponentsPresentation.availabilityWord(availability) {
-                        Text(word).font(.caption2).foregroundStyle(.tertiary)
+                        Text(word).font(.caption2).foregroundStyle(.readableSecondary)
                     }
                 }
-                .padding(.leading, 16)
             }
         }
         if let footer = WorldComponentsPresentation.footer(components) {
             Text(footer)
                 .font(.caption2)
-                .foregroundStyle(.tertiary)
+                .foregroundStyle(.readableSecondary)
+                .fixedSize(horizontal: false, vertical: true)
                 .padding(.leading, 16)
         }
+    }
+
+    /// An area's line and its trailing word: side by side, or the word under
+    /// the line at the accessibility sizes.
+    private func areaLine<Leading: View, Trailing: View>(
+        @ViewBuilder _ leading: () -> Leading, @ViewBuilder trailing: () -> Trailing
+    ) -> some View {
+        Group {
+            if trailingWordsWrap {
+                VStack(alignment: .leading, spacing: 2) {
+                    leading()
+                    trailing()
+                }
+            } else {
+                HStack {
+                    leading()
+                    Spacer()
+                    trailing()
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.leading, 16)
     }
 }

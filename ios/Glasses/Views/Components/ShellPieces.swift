@@ -22,9 +22,12 @@ struct SectionLabel: View {
     var body: some View {
         Text(text.uppercased())
             .font(.caption2.weight(.semibold))
-            .foregroundStyle(.secondary)
+            .foregroundStyle(.readableSecondary)
             .tracking(0.6)
             .padding(.leading, 4)
+            // A heading to VoiceOver too, so the rotor can move between the
+            // groups it heads.
+            .accessibilityAddTraits(.isHeader)
     }
 }
 
@@ -36,7 +39,7 @@ struct HelperText: View {
     var body: some View {
         Text(text)
             .font(.caption)
-            .foregroundStyle(.secondary)
+            .foregroundStyle(.readableSecondary)
             .multilineTextAlignment(.center)
             .frame(maxWidth: .infinity)
     }
@@ -55,30 +58,52 @@ struct SetupRow: View {
     let actionTitle: String
     let action: () -> Void
 
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+
     var body: some View {
-        HStack(spacing: 10) {
+        HStack(alignment: dynamicTypeSize.isAccessibilitySize ? .top : .center, spacing: 10) {
             Image(systemName: isComplete ? "checkmark.circle.fill" : "circle.dashed")
                 .foregroundStyle(isComplete ? Color.green : Color.secondary)
                 .accessibilityHidden(true)
 
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title)
-                Text(detail)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+            // The action under the words at the accessibility sizes: a
+            // trailing column left the detail so narrow that "unavailable"
+            // broke into "unavail- able" (UX audit, connection-sheet).
+            if dynamicTypeSize.isAccessibilitySize {
+                VStack(alignment: .leading, spacing: 6) {
+                    words
+                    actionButton
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            } else {
+                words
+                Spacer(minLength: 8)
+                actionButton
             }
-
-            Spacer(minLength: 8)
-
-            Button(actionTitle, action: action)
-                .font(.subheadline.weight(.medium))
-                .buttonStyle(.borderless)
-                .accessibilityLabel("\(actionTitle) \(title)")
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 12)
         .accessibilityElement(children: .contain)
         .accessibilityValue(isComplete ? "Done. \(detail)" : detail)
+    }
+
+    private var words: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(title)
+            Text(detail)
+                .font(.caption)
+                .foregroundStyle(.readableSecondary)
+        }
+        .fixedSize(horizontal: false, vertical: true)
+    }
+
+    private var actionButton: some View {
+        Button(actionTitle, action: action)
+            .font(.subheadline.weight(.medium))
+            .buttonStyle(.borderless)
+            .accessibilityLabel("\(actionTitle) \(title)")
+            // Voice Control matches the visible word.
+            .accessibilityInputLabels([actionTitle, "\(actionTitle) \(title)"])
     }
 }
 
@@ -95,8 +120,10 @@ struct FailureBanner: View {
 
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
+            // Decoration: the words say it is a problem.
             Image(systemName: "exclamationmark.triangle.fill")
                 .foregroundStyle(.orange)
+                .accessibilityHidden(true)
             if dynamicTypeSize.isAccessibilitySize {
                 VStack(alignment: .leading, spacing: 8) {
                     message
@@ -126,6 +153,9 @@ struct FailureBanner: View {
             Button(actionTitle, action: action)
                 .font(.footnote.weight(.medium))
                 .buttonStyle(.borderless)
+                // Footnote-sized tinted text on a card: the system blue was
+                // just under 4.5:1 there ("Tower settings", on Home).
+                .tint(Color.readableTint)
         }
     }
 }
