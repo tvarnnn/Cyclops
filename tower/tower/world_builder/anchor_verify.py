@@ -77,6 +77,11 @@ IMAGE_SEAL_REASON = CG.REASON_LINK_CONTRADICTED
 SCALE_SEAL_REASON = CG.REASON_SCALE_MISMATCH
 SOURCE_IMAGES = "anchor-image-verification"
 SOURCE_SCALE = "anchor-scale-segmentation"
+# THE POSE QUARANTINE's part `seal` (`TOWER_WORLD_POSE_QUARANTINE`; RUN P5-PQ RULE.md (c'), v3; manager 096 §2 (c),
+# 100): an impossible-speed motion flag seals an image-unverifiable group whose flag partner is in an image-confirmed
+# group. Its reason is the images' (no new reason string); the source is recorded Tower-side only.
+MOTION_SEAL_REASON = CG.REASON_LINK_CONTRADICTED
+SOURCE_MOTION = "anchor-motion-unverifiable"
 
 VERDICT_CONTRADICTED = "contradicted"
 VERDICT_CONFIRMED = "confirmed"
@@ -908,9 +913,43 @@ def _room_w(result, x: Inputs) -> list[int]:
                   and int(p.get("observations", 0)) >= x.min_obs)
 
 
+def impossible_speed(flag: dict, mp: MotionParams) -> bool:
+    """A motion flag whose TRANSLATION breaks the human speed bound (`v_max_mps * dt + margin_m`), as opposed to one
+    raised by the head-turn bound alone (RUN P5-PQ RULE.md (c))."""
+    return float(flag["metres"]) > mp.v_max_mps * float(flag["dt"]) + mp.margin_m
+
+
+def motion_sealed_groups(groups: list, verdicts: list, flags: list, mp: MotionParams) -> dict:
+    """RUN P5-PQ RULE.md (c') (v3; manager 100): {group index: [the flags that seal it]}. A group is sealed when the
+    images found it UNVERIFIABLE and it holds an endpoint of an impossible-speed flag whose OTHER endpoint is in a
+    DIFFERENT group the images CONFIRMED -- the images placed the other side, and no human moved between the two poses,
+    so the unverified side is what the solve misplaced.
+
+    Nothing else seals: a flag with both ends in one group (the merge of small runs joined it across the flag) says
+    only that ONE of its two poses is wrong, not that the group is -- v2's clause for it sealed nine probably-correct
+    walk-3 desk keyframes, and is withdrawn; a flag between two unverifiable groups does not say which side is wrong;
+    a flag into a contradicted group is left to that group's own seal."""
+    group_of = {int(c): gi for gi, g in enumerate(groups) for c in g}
+    out: dict = {}
+    for f in flags:
+        if not impossible_speed(f, mp):
+            continue
+        ga, gb = group_of.get(int(f["a"])), group_of.get(int(f["b"]))
+        if ga is None or gb is None or ga == gb:
+            continue
+        for mine, other in ((ga, gb), (gb, ga)):
+            if verdicts[mine] == VERDICT_UNVERIFIABLE and verdicts[other] == VERDICT_CONFIRMED:
+                if f not in out.setdefault(mine, []):
+                    out[mine].append(f)
+    return out
+
+
 def analyse(result, x: Inputs, pairs: Pairs | None, parts, vp: VerifyParams, mp: MotionParams,
-            gp: CG.GateParams) -> tuple[dict, dict]:
-    """(c), (a) and (b) on the room of one gated result. Returns ({world index: reason} to seal, the round's audit)."""
+            gp: CG.GateParams, motion_seal: bool = False) -> tuple[dict, dict]:
+    """(c), (a) and (b) on the room of one gated result. Returns ({world index: reason} to seal, the round's audit).
+
+    `motion_seal` (the pose quarantine's part `seal`, RULE.md (c'); False = today): with `motion` and `images` both
+    on, an impossible-speed flag seals an image-unverifiable group (`motion_sealed_groups`)."""
     kept_w = _room_w(result, x)
     gg, anchor_first = {}, None
     for g in (result.gated or {}).get("groups") or []:
@@ -992,6 +1031,24 @@ def analyse(result, x: Inputs, pairs: Pairs | None, parts, vp: VerifyParams, mp:
                                                              "two_hop_ends", "two_hop_legs", "two_hop_med",
                                                              "sealed_round", "keyframe_ids")}})
         rd["image_verification"] = {"groups": rows, "peeling_rounds": vres["rounds"], **_counts(rows)}
+        if motion_seal and PART_MOTION in parts:
+            hit = motion_sealed_groups(groups, [vres["groups"][gi]["verdict"] for gi in range(len(groups))], flags,
+                                       mp)
+            ms_rows = []
+            for gi in sorted(hit):
+                g = groups[gi]
+                for c in g:
+                    seal[int(c)] = MOTION_SEAL_REASON
+                fl = hit[gi]
+                row = {"first_keyframe": x.kids[int(g[0])], "keyframes": int(len(g)), "flags": len(fl),
+                       "metres_max": round(max(float(f["metres"]) for f in fl), 3),
+                       "flag_keyframes": sorted({x.kids[int(f[k])] for f in fl for k in ("a", "b")}),
+                       "keyframe_ids": [x.kids[int(c)] for c in g]}
+                ms_rows.append(row)
+                sealed_groups.append({"source": SOURCE_MOTION, "reason": MOTION_SEAL_REASON, **row})
+            rd["motion_seal"] = {"speed_flags": sum(1 for f in flags if impossible_speed(f, mp)),
+                                 "groups": len(ms_rows), "keyframes": sum(r["keyframes"] for r in ms_rows),
+                                 "sealed": ms_rows}
     rd["sealed_groups"] = sealed_groups
     return seal, rd
 
@@ -1089,9 +1146,11 @@ _GATE_KEYS = ("attach", "evidence", "labels", "components", "components_file", "
 
 def verify_published(result, *, keyframes, parts, regate: Callable, workspace_root, min_obs: int = 30,
                      pair_builder: Callable | None = None, vp: VerifyParams | None = None,
-                     mp: MotionParams | None = None, gp: CG.GateParams | None = None):
+                     mp: MotionParams | None = None, gp: CG.GateParams | None = None, motion_seal: bool = False):
     """RULE.md section 1 step 3 on a gated result (a `coherence_publish.GateResult`, the chosen draw as the
     consensus publishes it). Never raises: a failure publishes `result` as it was gated, and says so.
+
+    `motion_seal`: the pose quarantine's part `seal` (`analyse`); False, the default, is today's verification exactly.
 
     `regate(seal={name: reason}, room=[names]) -> GateResult`: the seal re-gate (the caller's
     `gate_final_solution` with the same candidate, depth and scale, and the consensus's withhold). Returns the
@@ -1104,6 +1163,12 @@ def verify_published(result, *, keyframes, parts, regate: Callable, workspace_ro
     audit: dict = {"id": ANCHOR_VERIFY_ID, "parts": sorted(parts), "params": vp.to_json(),
                    "params_digest": vp.digest(), "motion_params": mp.to_json(),
                    "image_seal_reason": IMAGE_SEAL_REASON}
+    if motion_seal:
+        # The pose quarantine's part `seal` is on (Tower-internal, additive; absent when off).
+        audit["motion_seal_rule"] = {"source": SOURCE_MOTION, "reason": MOTION_SEAL_REASON,
+                                     "needs": [PART_MOTION, PART_IMAGES],
+                                     "speed": "metres > v_max_mps * dt + margin_m",
+                                     "rule": "c' v3: unverifiable group, flag partner in a different CONFIRMED group"}
     if PART_SCALE in parts:
         audit["a2"] = {"spec": A2_SPEC, "digest": a2_digest(vp)}
 
@@ -1141,7 +1206,8 @@ def verify_published(result, *, keyframes, parts, regate: Callable, workspace_ro
         cap_hit = False
         before = _room_kids(result.solution, min_obs)
         while True:
-            new, rd = analyse(cur, x, pairs, parts, vp, mp, gp)
+            new, rd = (analyse(cur, x, pairs, parts, vp, mp, gp, motion_seal=True) if motion_seal
+                       else analyse(cur, x, pairs, parts, vp, mp, gp))
             new = {w: why for w, why in new.items() if w not in seal_w}
             rd["sealed_new"] = {why: sum(1 for v in new.values() if v == why) for why in sorted(set(new.values()))}
             rounds.append(rd)
@@ -1176,13 +1242,15 @@ def verify_published(result, *, keyframes, parts, regate: Callable, workspace_ro
         # components record, whose reason is the contract's.
         sealed_groups = [dict(g, round=k + 1) for k, rd in enumerate(rounds) for g in rd.get("sealed_groups") or []
                          if any(kid in sealed_kids for kid in g["keyframe_ids"])]
+        extra = {"motion_seal": _first(rounds, "motion_seal")} if motion_seal else {}
         return done(published, STATE_APPLIED, rounds=rounds, cap_hit=cap_hit, sealed=_sealed_summary(sealed_kids),
                     sealed_groups=sealed_groups,
                     sealed_kf=len(sealed_kids), collateral={"keyframes": len(collateral_all),
                                                             "keyframe_ids": sorted(collateral_all)},
                     room_before=len(before), room_after=len(_room_kids(published.solution, min_obs)),
                     image_verification=_first(rounds, "image_verification"),
-                    anchor_scale=_first(rounds, "anchor_scale"), motion_flags=_first(rounds, "motion_flags"))
+                    anchor_scale=_first(rounds, "anchor_scale"), motion_flags=_first(rounds, "motion_flags"),
+                    **extra)
     except Exception as exc:  # noqa: BLE001 -- the room is published as gated, and the record says why
         logger.exception("[Tower][WorldBuilder] anchor verification failed; the room is published as it was gated")
         return done(result, STATE_FAILED, detail=f"{type(exc).__name__}: {exc}")

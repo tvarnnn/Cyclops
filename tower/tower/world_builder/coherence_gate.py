@@ -406,7 +406,7 @@ def _rot_deg(R) -> float:
 
 def apply_gate(model: SolveModel, links: dict, metric_log: dict, *, link_rotations: dict,
                masks_applied: bool, params: GateParams | None = None, withhold=None, room=None, seal=None,
-               link_units=None) -> dict:
+               link_units=None, rider_min_shared: int | None = None) -> dict:
     """The rule (module docstring) on one solve.
 
     links: {(name_a, name_b): inliers} (`read_verified_links`); link_rotations: {(name_a, name_b): R_b_from_a}
@@ -438,6 +438,23 @@ def apply_gate(model: SolveModel, links: dict, metric_log: dict, *, link_rotatio
         non-room parts, and a group joins only a reference on its own side (no non-room camera enters the room).
       link_units: {(name_a, name_b) sorted: unit}. The redundancy test counts two links together only when their
         units differ (`redundant_links`); a link it does not name is a unit of its own.
+
+    THE POSE QUARANTINE'S HOOK (RUN P5-PQ RULE.md (b); only with `TOWER_WORLD_POSE_QUARANTINE`'s part `riders`
+    on). None, the default: today's rest rule, exactly.
+
+      rider_min_shared: m. A camera under `min_obs` (a RIDER) takes a label only through its own supported
+        attachment: at least m 3-D points shared with one labelled (supported) camera of its solver component,
+        and then that camera's label (today's argmax). It never defaults to the component's first label -- the
+        room, for the room's component (walk 4: five riders 500-600 m out took the room label that way). The
+        unattached riders of a component form one unplaced label of their own (`quarantined`: reason
+        `no-verified-link`). A rider is never a published keyframe, so no vote, withhold or seal reads it. The label
+        ORDER -- and so the room -- is today's: an unattached rider is counted, for the tie-break in supported cameras
+        only, where today's rule puts it (review V17, LOW-2).
+        A COMPONENT WITH NO SUPPORTED CAMERA is untouched by the hook: its cameras keep one label of their own, as
+        today. So AN ALL-RIDER SOLVE keeps one label, 0, whose component reads `placed` (review V18, LOW-4; RVPQ
+        LOW): there is no supported camera to attach to or to compare with. Nothing is published from it -- its
+        components record is null (no keyframe reaches `min_obs`) and, with the part `path` on, its camera path is
+        empty.
 
     Returns {"labels": {name: label}, "components": [...], "rounds": [...], "groups": [...], "evidence": {...},
     "params": ..., "params_digest": ...}. Label 0 is the room (most supported cameras); every other label is
@@ -502,6 +519,7 @@ def apply_gate(model: SolveModel, links: dict, metric_log: dict, *, link_rotatio
     rounds = []
     group_decisions: dict = {}  # group min camera -> decision, for the reasons
     group_members: list = []    # every decided group: its cameras and round label (the consensus's identity)
+    todays_label: dict = {}     # the rider hook only: unattached rider -> the label today's rest rule gives it
     next_label = 0
     comps = [int(v) for v, _ in sorted(zip(*np.unique(model.component, return_counts=True)),
                                        key=lambda vc: (-vc[1], vc[0]))]
@@ -645,11 +663,38 @@ def apply_gate(model: SolveModel, links: dict, metric_log: dict, *, link_rotatio
             next_label += 1
             continue
         first = next(rd["label"] for rd in rounds if rd["source_component"] == comp)
+        if rider_min_shared is None:
+            for i in rest:
+                row = C[i, labelled].toarray().ravel()
+                labels[i] = labels[labelled[int(np.argmax(row))]] if row.max() > 0 else first
+            continue
+        # The pose quarantine's rider rule (`rider_min_shared`): its own attachment, or unplaced.
+        unattached = []
         for i in rest:
             row = C[i, labelled].toarray().ravel()
-            labels[i] = labels[labelled[int(np.argmax(row))]] if row.max() > 0 else first
+            if len(row) and row.max() >= rider_min_shared:
+                labels[i] = labels[labelled[int(np.argmax(row))]]
+            else:
+                unattached.append(int(i))
+                # Where today's rest rule puts it: the label order (and so the room) is decided with it there.
+                todays_label[int(i)] = labels[labelled[int(np.argmax(row))]] if row.max() > 0 else first
+        if unattached:
+            labels[np.asarray(unattached, dtype=np.int64)] = next_label
+            rounds.append({"source_component": comp, "label": next_label, "reference_group": None,
+                           "kept_groups": 0, "kept_cameras": 0, "decisions": [],
+                           "quarantined": REASON_NO_VERIFIED_LINK, "riders": len(unattached)})
+            next_label += 1
+    order_labels = None
+    if todays_label:
+        # REVIEW V17, LOW-2: the room choice breaks a tie in supported cameras by the TOTAL count, riders included,
+        # so unplacing riders could flip which label is the room. The order is decided with every unattached rider
+        # counted where today's rule puts it: every label keeps today's rank (the room included), and the riders'
+        # own unplaced labels rank last.
+        order_labels = labels.copy()
+        for i, lab in todays_label.items():
+            order_labels[i] = lab
     return _finish(model, labels, supported, rounds, group_decisions, masks_applied, metric_available, params,
-                   evidence, group_members)
+                   evidence, group_members, order_labels=order_labels)
 
 
 def _reasons(round_: dict, room_component: int, group_decisions: dict, masks_applied: bool,
@@ -666,6 +711,9 @@ def _reasons(round_: dict, room_component: int, group_decisions: dict, masks_app
     if round_.get("sealed"):
         # A piece the anchor verification sealed (`seal`): its only reason, in whatever round it came up.
         return [round_["sealed"]]
+    if round_.get("quarantined"):
+        # The pose quarantine's unattached riders (`rider_min_shared`): never published, reason Tower-side only.
+        return [round_["quarantined"]]
     if round_["source_component"] != room_component or round_["reference_group"] is None:
         return [REASON_SOLVED_SEPARATELY]
     first = round_["reference_group"]["first_camera"]
@@ -688,9 +736,12 @@ def _reasons(round_: dict, room_component: int, group_decisions: dict, masks_app
 
 
 def _finish(model, labels, supported, rounds, group_decisions, masks_applied, metric_available, params,
-            evidence, group_members=()) -> dict:
+            evidence, group_members=(), order_labels=None) -> dict:
+    """`order_labels` (the rider hook only; None = `labels`, today): the labels the tie-break in supported cameras
+    counts TOTAL cameras by."""
     counts = {int(lab): int(((labels == lab) & supported).sum()) for lab in np.unique(labels)}
-    order = sorted(counts, key=lambda lab: (-counts[lab], -int((labels == lab).sum()), lab))
+    tally = labels if order_labels is None else order_labels
+    order = sorted(counts, key=lambda lab: (-counts[lab], -int((tally == lab).sum()), lab))
     remap = {old: new for new, old in enumerate(order)}
     final = np.array([remap[int(v)] for v in labels], dtype=np.int64)
     for rd in rounds:

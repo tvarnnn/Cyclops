@@ -1162,6 +1162,62 @@ def world_frame_quality_log_setting() -> bool:
     return False
 
 
+# P5-PQ (manager 095 §2, as corrected by 096 §2; granular per manager 098): impossible poses are never
+# published in a room. One switch, three PARTS (RUN experiments/P5-PQ/RULE.md):
+#   `path`   (a) the viewer's camera list (`surface_render._camera_path`) keeps only published, supported
+#                room poses inside the surface's own radius gate;
+#   `riders` (b) the evidence gate's rider rule: a camera under `min_obs` never defaults to the room label;
+#   `seal`   (c') the anchor verification: an impossible-speed motion flag seals an image-unverifiable
+#                group when the flag's other end is in an image-confirmed group.
+# A comma list of those words, or `on` for all three. Read by the solve, the re-gate in place and the
+# render pages. Unset, blank and `off` are OFF, and off is today exactly: every output is byte-identical
+# (tests/golden/world_builder_pose_quarantine_off.json).
+WORLD_POSE_QUARANTINE_ENV = "TOWER_WORLD_POSE_QUARANTINE"
+WORLD_POSE_QUARANTINE_PARTS = ("path", "riders", "seal")
+
+
+def world_pose_quarantine_setting() -> frozenset:
+    """`TOWER_WORLD_POSE_QUARANTINE`: the parts of the pose quarantine (P5-PQ) that are on.
+
+    Parsed exactly as `world_anchor_verify_setting` parses its parts: the empty set (off) when unset,
+    blank or `off`; `on` is every part; a comma list of known parts is those parts (no part implies
+    another). Anything else -- an unknown word (`1`, `true` and `yes` included), or `off`/`on` mixed with
+    other words -- is off, and logged: a typo never removes a pose from a room, and it is still visible.
+
+    CHANGED at 3a6e2fb (manager 098/102): at f94a23d this was one `_flag` switch, and `1`, `true` and `yes`
+    turned it ON. They no longer do -- they are off and logged, as for ANCHOR_VERIFY. Write `on`.
+
+    The parts, in one line each (RUN experiments/P5-PQ/RULE.md):
+      `path`   the viewer's camera list (`surface_render.viewable_poses`): component 0 only (no fallback to
+               another component's poses), published and supported (>= 30 observations), within 10 x the
+               median radius -- the surface gate with its 5 % stand-down and p95 detachment off, its
+               8-pose floor kept (RULE.md (a') v4);
+      `riders` the gate's rest rule: a camera under 30 observations takes a label only through >= 3 points
+               shared with one supported camera, never the room's by default; the room choice is today's;
+      `seal`   the anchor verification: an impossible-speed motion flag seals an image-unverifiable group
+               whose flag partner is in a DIFFERENT, image-confirmed group (RULE.md (c') v3).
+
+    AN ALL-RIDER SOLVE (no camera with 30 observations): the gate still gives its cameras one label, 0, whose
+    component reads `placed`, with or without `riders` (there is no supported camera to attach to or compare
+    with); nothing is published from it -- its components record is null (no published keyframe) -- and
+    with `path` on its camera list is empty."""
+    value = os.environ.get(WORLD_POSE_QUARANTINE_ENV)
+    if value is None or not value.strip():
+        return frozenset()
+    words = [w.strip().lower() for w in value.split(",") if w.strip()]
+    if words == ["off"]:
+        return frozenset()
+    if words == ["on"]:
+        return frozenset(WORLD_POSE_QUARANTINE_PARTS)
+    if words and all(w in WORLD_POSE_QUARANTINE_PARTS for w in words):
+        return frozenset(words)
+    logger.warning(
+        "[Tower][Config] %s=%r is not off, on, or a comma list of %s; treating it as off",
+        WORLD_POSE_QUARANTINE_ENV, value, ", ".join(WORLD_POSE_QUARANTINE_PARTS),
+    )
+    return frozenset()
+
+
 def _torch_threads(value: str | None) -> int | str:
     """"auto", or a non-negative integer. Garbage is "auto", not a crash.
 
