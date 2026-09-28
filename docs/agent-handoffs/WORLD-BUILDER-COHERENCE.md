@@ -832,6 +832,16 @@ everything, so nothing runs after a failure:
     - Both of V18's mutants (`anchor_verify` sealing whenever the other side is confirmed;
       `coherence_gate` `todays_label = first`) now fail the tests; they passed `3a6e2fb`'s
       (`RUN\experiments\P5-PQ\RESULTS.md` Round 4, `out\mutants_r4.log`).
+26. **Log the count of `path` drops** (V18 round-4 LOW; manager 105).
+    - `surface_render._camera_path` with `path` on drops poses silently.
+    - Log, per render, how many published poses the filter removed and why (unsupported, off
+      component 0, or beyond 10× the median radius), so walk scoring can see what `path` hid.
+    - This matters for the accepted dwell cost: a walk that dwells in one spot for about
+      26–36 % or more of its keyframes loses legitimate far poses from the viewer list
+      (render-time only; reversible by turning `path` off).
+27. **Pin the 10× multiple with a 12×/9× test** (V18 round-4 LOW; manager 105).
+    - A mutant raising the 10× multiple to 20× passes all 108 quarantine tests.
+    - Add a test in which a 12× pose is dropped and a 9× pose is kept.
 
 ## 7. Resources this run created or stopped
 
