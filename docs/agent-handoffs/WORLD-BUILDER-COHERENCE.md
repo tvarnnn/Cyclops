@@ -659,6 +659,19 @@ everything, so nothing runs after a failure:
      - **The path forward is capture-time evidence:** views that revisit the bed from room viewpoints (the protocol) and,
        for new walks, **the gyro's rotation check** (`Glasses-scratch\ux-phase\research\gyro-integration.md` §2 (c)).
        The bed stretch is 10–33° off in rotation, which a gyro check at Δt ≤ 10 s would catch.
+     - **Revised 2026-09-28 (manager 111 §3 / 114; `RUN\experiments\P5-BED\DIAGNOSIS.md`): the misplacement's size is
+       UNCERTAIN.**
+       - Every link that joins the bed region to the room lies on one compact planar patch, a laptop screen and keyboard.
+       - 59 of 62 are config-6 (planar) links, and they admit two rotations about 33° apart. The solver database picks
+         one; the independent harness pairs pick the other (pair 4432–3769: 2.2° masked, 32.6° unmasked).
+       - So the 10–33° figure (042/053/092) and GT's MIS verdict rest on the **same ambiguous screen pairs**; they are
+         not an independent measurement.
+       - An image-only gravity probe (vertical vanishing point) puts 4309–4512 about **8°** off, not 33°. It is one
+         uncalibrated probe.
+       - **P0-A changes nothing here** (`a4afea1`, quarantine off vs `path,riders,seal`: 19 of 54 sealed, 35 attached,
+         in both). Riders unplace 0. The motion seal has no flags, because the solve's positions are continuous. The
+         LOW-2 fix does not touch the tie in `anchor_verify`.
+       - The next step is backlog 28 (evidence diversity).
    - **Decide how the gate counts a relocalizer import (manager 064).** One accepted
      triangle imports two pairs through one anchor image whose other ends are consecutive
      keyframes already linked to each other. That is exactly the gate's "two pairs through
@@ -842,6 +855,23 @@ everything, so nothing runs after a failure:
 27. **Pin the 10× multiple with a 12×/9× test** (V18 round-4 LOW; manager 105).
     - A mutant raising the 10× multiple to 20× passes all 108 quarantine tests.
     - Add a test in which a 12× pose is dropped and a 9× pose is kept.
+    - **26 and 27 are DONE** in `612162a` (Codex C5, reviewed INTEGRATE).
+28. **Evidence diversity: a planar single-object cluster is ONE unit of evidence** (manager 114; P5-BED hypothesis #2).
+    - **The mechanism (6839fb8f):** many links on one compact planar patch count as redundant, independent evidence.
+      A static display is valid room evidence; a single planar patch is not *independent* evidence.
+    - **Why #2 is first:** it targets planar ambiguity itself, needs no detector, and generalises to posters, TVs and
+      whiteboards.
+    - **The fallback, #1:** treat displays and movable objects as non-room evidence. It needs a segmenter.
+    - **Measured first, before any design:** `RUN\experiments\P5-BED\EVIDENCE-DIVERSITY-MEASURE.md`.
+      - Per-link config type, inlier hull fraction and inlier count, on every corpus database.
+      - Correct groups vs GT-MIS groups.
+      - A provisional re-gate of c10 and the control.
+      - Its thresholds are exploratory.
+    - **Then:** a Codex design task, whose threshold is declared control-first, P4-style, behind a switch.
+    - **Walk 5 (observation only, no new thresholds):**
+      - for every revisit or look-back link into the room, the share of its inliers on a display or on one compact
+        planar cluster;
+      - whether any look-back links through static structure with ≥ 30 inliers off any screen.
 
 ## 7. Resources this run created or stopped
 
