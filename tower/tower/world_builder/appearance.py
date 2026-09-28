@@ -158,6 +158,14 @@ class AppearanceUnavailable(RuntimeError):
         self.retryable = retryable
 
 
+def _deterministic_gains_setting() -> bool:
+    """`TOWER_WORLD_APPEARANCE_DETERMINISTIC_GAINS` (`tower.config`): the
+    default of `AppearanceParams.exposure_deterministic_gains`."""
+    from tower.config import world_appearance_deterministic_gains_setting  # noqa: PLC0415
+
+    return world_appearance_deterministic_gains_setting()
+
+
 @dataclass(frozen=True)
 class AppearanceParams:
     quality: str = "final"
@@ -258,6 +266,14 @@ class AppearanceParams:
     exposure_vignette_ridge: float = 0.0
     exposure_cg_outer: int = 4
     exposure_cg_iterations: int = 40
+    # DET-GAINS (manager 146 §1): the exposure solve's 15 sums as
+    # `index_put_(accumulate=True)` on a CUDA device, which is bit-reproducible
+    # there, instead of `index_add_`'s float32 atomics, which are not
+    # (`_index_accumulate`). Off by default, and the default is the switch
+    # `TOWER_WORLD_APPEARANCE_DETERMINISTIC_GAINS`, read HERE, when the params
+    # are built, so the solve and the params digest read one value; a caller
+    # that passes it explicitly wins. Recorded in `as_dict()` only when on.
+    exposure_deterministic_gains: bool = field(default_factory=_deterministic_gains_setting)
     # selection (§5.5)
     selection_samples: int = 60_000
     selection_vis_tol: float = 0.03
@@ -282,6 +298,10 @@ class AppearanceParams:
         if self.imagery_source not in IMAGERY_SOURCES:
             raise ValueError(f"unknown imagery source {self.imagery_source!r}; "
                              f"one of {IMAGERY_SOURCES}")
+        if not isinstance(self.exposure_deterministic_gains, bool):
+            # A bool, not anything truthy: the string "off" is truthy.
+            raise ValueError(f"exposure_deterministic_gains is True or False, not "
+                             f"{self.exposure_deterministic_gains!r}")
         if is_raw(self.imagery_source):
             # THE CONSENSUS IS A REDACTION RULE AND THERE IS NO REDACTION.
             # Left as the caller passed it, the params digest and the manifest
@@ -305,7 +325,16 @@ class AppearanceParams:
         return cls(**base)
 
     def as_dict(self) -> dict:
-        return dict(self.__dict__)
+        d = dict(self.__dict__)
+        # `exposure_deterministic_gains` is recorded only when on
+        # (`DenseParams.known_fov`'s rule). Off, every params record and params
+        # digest is byte-identical to one written before the switch existed. On,
+        # the digest differs, so `appearance_pipeline._already_built` never
+        # serves a build made without it as one made with it, or the reverse,
+        # and the manifest's `params` says which sums produced its gains.
+        if not self.exposure_deterministic_gains:
+            d.pop("exposure_deterministic_gains", None)
+        return d
 
 
 # ---------------------------------------------------------------------------
@@ -1206,15 +1235,50 @@ def exposure_field(slope, vignette, width: int, height: int) -> np.ndarray:
     return np.exp(sx * xn + sy * yn + k1 * r2 + k2 * r2 * r2).astype(np.float32)
 
 
+# THE EXPOSURE SOLVE'S ONE SCATTER-ADD (DET-GAINS, manager 146 §1; RUN
+# experiments/W0-STAGE0/STAGE0.md §3.4, §6.6). Every per-keyframe and per-point
+# sum of the solve -- 15 call sites, about 700 calls a solve -- goes through
+# `_index_accumulate`. On CUDA, `index_add_` on float32 is an atomic add: the
+# order in which 6 M observations reach 477 keyframe bins changes from run to
+# run, the last bits of each sum with it, and the truncated CGLS amplifies them
+# to 0.18 % of a gain. `index_put_(accumulate=True)` computes the same sums
+# with CUDA's sort-based kernel, which stage 4 measured bit-identical across
+# repeats and across processes, under full GPU load too, for about +3 s a
+# solve. It is NOT reproducible on the CPU (torch lists CPU `index_put_`
+# accumulate as nondeterministic; stage 0 measured repeats 1.2e-7 apart), so
+# the deterministic op is taken only on a CUDA device; every other device keeps
+# `index_add_`, the op it ran before.
+
+
+def _deterministic_accumulate(params, dev) -> bool:
+    """Whether this solve's sums take the deterministic op: the params ask for
+    it (`AppearanceParams.exposure_deterministic_gains`) AND the device is CUDA."""
+    if not getattr(params, "exposure_deterministic_gains", False):
+        return False
+    kind = getattr(dev, "type", None) or str(dev).split(":", 1)[0]
+    return kind == "cuda"
+
+
+def _index_accumulate(out, index, source, deterministic: bool):
+    """`out[index[i]] += source[i]` for every i, along dim 0, in place; returns
+    `out`. `deterministic` False is `out.index_add_(0, index, source)`, exactly
+    the op every site ran before this helper existed; True is
+    `out.index_put_((index,), source, accumulate=True)`."""
+    if deterministic:
+        return out.index_put_((index,), source, accumulate=True)
+    return out.index_add_(0, index, source)
+
+
 def _solve_spatial_exposure(L, P, S, XN, YN, R2, la, lg, npts, N, params, huber, dev):
     """Huber-IRLS over the joint weighted least squares of §5.4 -- albedos,
     per-keyframe (gain, tilt) and the shared falloff together -- each
     reweighting solved by Jacobi-preconditioned CGLS, warm-started from the
     gain model. Ridges: `exposure_slope_ridge` x a keyframe's weight on its tilt,
     `exposure_vignette_ridge` x the total weight on the falloff. Gauge: mean log
-    gain 0 over keyframes with observations."""
+    gain 0 over keyframes with observations. Every sum is `_index_accumulate`."""
     import torch  # noqa: PLC0415
 
+    det = _deterministic_accumulate(params, dev)
     R4 = R2 * R2
     sl = torch.zeros((N, 2), device=dev)
     vg = torch.zeros(2, device=dev)
@@ -1225,14 +1289,15 @@ def _solve_spatial_exposure(L, P, S, XN, YN, R2, la, lg, npts, N, params, huber,
         w = huber(L - pred)
         sw = w.sqrt()
         wsum = w.sum(1)
-        fw = torch.zeros(N, device=dev).index_add_(0, S, wsum)
+        fw = _index_accumulate(torch.zeros(N, device=dev), S, wsum, det)
         lam_s = params.exposure_slope_ridge * fw                      # (N,)
         lam_v = params.exposure_vignette_ridge * wsum.sum()
         # column norms (diag of AtA) -> Jacobi scaling
-        d_la = torch.zeros((npts, 3), device=dev).index_add_(0, P, w)
-        d_lg = torch.zeros((N, 3), device=dev).index_add_(0, S, w)
-        d_sl = torch.stack([torch.zeros(N, device=dev).index_add_(0, S, wsum * XN * XN),
-                            torch.zeros(N, device=dev).index_add_(0, S, wsum * YN * YN)], 1) + lam_s[:, None]
+        d_la = _index_accumulate(torch.zeros((npts, 3), device=dev), P, w, det)
+        d_lg = _index_accumulate(torch.zeros((N, 3), device=dev), S, w, det)
+        d_sl = torch.stack([_index_accumulate(torch.zeros(N, device=dev), S, wsum * XN * XN, det),
+                            _index_accumulate(torch.zeros(N, device=dev), S, wsum * YN * YN, det)],
+                           1) + lam_s[:, None]
         d_vg = torch.stack([(wsum * R2 * R2).sum(), (wsum * R4 * R4).sum()]) + lam_v
         D = [1 / d.clamp(min=1e-9).sqrt() for d in (d_la, d_lg, d_sl, d_vg)]
         sq_s, sq_v = lam_s.sqrt(), lam_v.sqrt()
@@ -1245,10 +1310,11 @@ def _solve_spatial_exposure(L, P, S, XN, YN, R2, la, lg, npts, N, params, huber,
         def At(y):
             u = sw * y[0]
             us = u.sum(1)
-            ga = torch.zeros((npts, 3), device=dev).index_add_(0, P, u)
-            gg = torch.zeros((N, 3), device=dev).index_add_(0, S, u)
-            gs = torch.stack([torch.zeros(N, device=dev).index_add_(0, S, us * XN),
-                              torch.zeros(N, device=dev).index_add_(0, S, us * YN)], 1) + sq_s[:, None] * y[1]
+            ga = _index_accumulate(torch.zeros((npts, 3), device=dev), P, u, det)
+            gg = _index_accumulate(torch.zeros((N, 3), device=dev), S, u, det)
+            gs = torch.stack([_index_accumulate(torch.zeros(N, device=dev), S, us * XN, det),
+                              _index_accumulate(torch.zeros(N, device=dev), S, us * YN, det)],
+                             1) + sq_s[:, None] * y[1]
             gv = torch.stack([(us * R2).sum(), (us * R4).sum()]) + sq_v * y[2]
             return [ga * D[0], gg * D[1], gs * D[2], gv * D[3]]
 
@@ -1308,6 +1374,11 @@ def solve_gains(rgbs, opaque, zps, Rs, ts, K, params: AppearanceParams, device=N
     then (k1, k2). The record then also carries `slopes` (N,2), which the
     pipeline moves onto the keyframes, and `vignette`. With `gain` the model
     and the solve are the first build's, exactly.
+
+    Every per-keyframe and per-point sum is `_index_accumulate`: CUDA's
+    reproducible `index_put_(accumulate=True)` when
+    `params.exposure_deterministic_gains` is on and the device is CUDA, and
+    `index_add_` -- the op of every build before the switch -- otherwise.
     """
     import torch  # noqa: PLC0415
     import torch.nn.functional as TF  # noqa: PLC0415
@@ -1317,6 +1388,7 @@ def solve_gains(rgbs, opaque, zps, Rs, ts, K, params: AppearanceParams, device=N
         raise ValueError(f"unknown exposure model {model!r}")
     spatial = model == EXPOSURE_MODEL_SPATIAL
     dev = _torch_device(device)
+    det = _deterministic_accumulate(params, dev)
     N = len(rgbs)
     if N == 0:
         return np.ones((0, 3), np.float32), np.zeros(0, int), {"observations": 0, "model": model}
@@ -1436,13 +1508,13 @@ def solve_gains(rgbs, opaque, zps, Rs, ts, K, params: AppearanceParams, device=N
     for it in range(params.exposure_iterations if not spatial else 10):
         r0 = L - lg[S]
         w = torch.ones_like(L) if la is None else huber(r0 - la[P])
-        acc = torch.zeros((npts, 3), device=dev).index_add_(0, P, w * r0)
-        ws = torch.zeros((npts, 3), device=dev).index_add_(0, P, w)
+        acc = _index_accumulate(torch.zeros((npts, 3), device=dev), P, w * r0, det)
+        ws = _index_accumulate(torch.zeros((npts, 3), device=dev), P, w, det)
         la = acc / ws.clamp(min=1e-9)
         r1 = L - la[P]
         w = huber(r1 - lg[S])
-        g = torch.zeros((N, 3), device=dev).index_add_(0, S, w * r1)
-        gw = torch.zeros((N, 3), device=dev).index_add_(0, S, w)
+        g = _index_accumulate(torch.zeros((N, 3), device=dev), S, w * r1, det)
+        gw = _index_accumulate(torch.zeros((N, 3), device=dev), S, w, det)
         lg = torch.where(gw > 0, g / gw.clamp(min=1e-9), torch.zeros_like(g))
         seen = gw[:, 0] > 0
         if bool(seen.any()):
@@ -1450,8 +1522,8 @@ def solve_gains(rgbs, opaque, zps, Rs, ts, K, params: AppearanceParams, device=N
     if spatial:
         la, lg, sl, vg = _solve_spatial_exposure(L, P, S, XN, YN, R2, la, lg, npts, N, params, huber, dev)
 
-    la0 = torch.zeros((npts, 3), device=dev).index_add_(0, P, L)
-    c0 = torch.zeros((npts, 3), device=dev).index_add_(0, P, torch.ones_like(L))
+    la0 = _index_accumulate(torch.zeros((npts, 3), device=dev), P, L, det)
+    c0 = _index_accumulate(torch.zeros((npts, 3), device=dev), P, torch.ones_like(L), det)
     before = (L - la0[P] / c0[P].clamp(min=1)).abs()
     after = (L - lg[S] - la[P] - (spatial_term()[:, None] if spatial else 0.0)).abs()
     per_frame = torch.bincount(S, minlength=N).cpu().numpy()

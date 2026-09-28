@@ -1,0 +1,608 @@
+{
+ "recorded_from": "44fbd13 (44fbd13ac1267908f2fe6a392aba509ec72467f9) tower/tower/world_builder/appearance.py, unedited: blob a4eaf7b7baf285209f329fecf6ba486d07af235c",
+ "recorder": "RUN/experiments/DET-GAINS/golden_record.py",
+ "torch": "2.13.0+cu132",
+ "numpy": "2.5.2",
+ "machine": "AMD64",
+ "system": "Windows",
+ "python": "3.12.5",
+ "golden_params": {
+  "exposure_grid_px": 6,
+  "exposure_border_px": 4,
+  "exposure_cg_outer": 2,
+  "exposure_cg_iterations": 3
+ },
+ "params_final": [
+  [
+   "quality",
+   "final"
+  ],
+  [
+   "imagery_source",
+   "redacted"
+  ],
+  [
+   "occluder_ratio_max",
+   0.6
+  ],
+  [
+   "occluder_ratio_min",
+   0.3
+  ],
+  [
+   "occluder_mad_multiple",
+   4.0
+  ],
+  [
+   "occluder_open_px",
+   5
+  ],
+  [
+   "occluder_min_area_frac",
+   0.002
+  ],
+  [
+   "occluder_dilate_px",
+   4
+  ],
+  [
+   "transient_grid_px",
+   8
+  ],
+  [
+   "transient_box_px",
+   15
+  ],
+  [
+   "transient_vis_tol",
+   0.03
+  ],
+  [
+   "transient_min_views",
+   6
+  ],
+  [
+   "transient_consensus",
+   0.7
+  ],
+  [
+   "transient_abs",
+   0.12
+  ],
+  [
+   "transient_rel",
+   0.5
+  ],
+  [
+   "transient_dark",
+   0.03
+  ],
+  [
+   "transient_saturated",
+   0.92
+  ],
+  [
+   "transient_frame_max",
+   0.2
+  ],
+  [
+   "transient_shift_px",
+   6
+  ],
+  [
+   "transient_open_cells",
+   1
+  ],
+  [
+   "transient_detector",
+   "union"
+  ],
+  [
+   "redaction_consensus",
+   "off"
+  ],
+  [
+   "consensus_area_max",
+   0.1
+  ],
+  [
+   "consensus_depth_tol",
+   0.2
+  ],
+  [
+   "consensus_erode",
+   0.2
+  ],
+  [
+   "consensus_hand_overlap",
+   0.5
+  ],
+  [
+   "consensus_voxel_px",
+   3.0
+  ],
+  [
+   "consensus_dilate_cells",
+   1
+  ],
+  [
+   "consensus_dilate_px",
+   2
+  ],
+  [
+   "exposure_grid_px",
+   16
+  ],
+  [
+   "exposure_vis_tol",
+   0.03
+  ],
+  [
+   "exposure_border_px",
+   8
+  ],
+  [
+   "exposure_box_px",
+   7
+  ],
+  [
+   "exposure_dark",
+   0.02
+  ],
+  [
+   "exposure_saturated",
+   0.97
+  ],
+  [
+   "exposure_huber",
+   0.15
+  ],
+  [
+   "exposure_iterations",
+   30
+  ],
+  [
+   "exposure_min_views",
+   3
+  ],
+  [
+   "exposure_max_observations",
+   6000000
+  ],
+  [
+   "exposure_model",
+   "gain+slope+vignette"
+  ],
+  [
+   "exposure_slope_ridge",
+   0.005
+  ],
+  [
+   "exposure_vignette_ridge",
+   0.0
+  ],
+  [
+   "exposure_cg_outer",
+   4
+  ],
+  [
+   "exposure_cg_iterations",
+   40
+  ],
+  [
+   "selection_samples",
+   60000
+  ],
+  [
+   "selection_vis_tol",
+   0.03
+  ],
+  [
+   "selection_second_weight",
+   0.5
+  ],
+  [
+   "selection_min_gain_frac",
+   0.0001
+  ],
+  [
+   "phone_budget",
+   128
+  ],
+  [
+   "quality_floor",
+   0.15
+  ],
+  [
+   "seed",
+   0
+  ],
+  [
+   "chunk_slots",
+   16
+  ],
+  [
+   "astc_quality",
+   60.0
+  ],
+  [
+   "webp_quality",
+   90
+  ],
+  [
+   "alpha_feather_px",
+   8
+  ]
+ ],
+ "params_live": [
+  [
+   "quality",
+   "live"
+  ],
+  [
+   "imagery_source",
+   "redacted"
+  ],
+  [
+   "occluder_ratio_max",
+   0.6
+  ],
+  [
+   "occluder_ratio_min",
+   0.3
+  ],
+  [
+   "occluder_mad_multiple",
+   4.0
+  ],
+  [
+   "occluder_open_px",
+   5
+  ],
+  [
+   "occluder_min_area_frac",
+   0.002
+  ],
+  [
+   "occluder_dilate_px",
+   4
+  ],
+  [
+   "transient_grid_px",
+   12
+  ],
+  [
+   "transient_box_px",
+   15
+  ],
+  [
+   "transient_vis_tol",
+   0.03
+  ],
+  [
+   "transient_min_views",
+   6
+  ],
+  [
+   "transient_consensus",
+   0.7
+  ],
+  [
+   "transient_abs",
+   0.12
+  ],
+  [
+   "transient_rel",
+   0.5
+  ],
+  [
+   "transient_dark",
+   0.03
+  ],
+  [
+   "transient_saturated",
+   0.92
+  ],
+  [
+   "transient_frame_max",
+   0.2
+  ],
+  [
+   "transient_shift_px",
+   6
+  ],
+  [
+   "transient_open_cells",
+   1
+  ],
+  [
+   "transient_detector",
+   "oneformer"
+  ],
+  [
+   "redaction_consensus",
+   "off"
+  ],
+  [
+   "consensus_area_max",
+   0.1
+  ],
+  [
+   "consensus_depth_tol",
+   0.2
+  ],
+  [
+   "consensus_erode",
+   0.2
+  ],
+  [
+   "consensus_hand_overlap",
+   0.5
+  ],
+  [
+   "consensus_voxel_px",
+   3.0
+  ],
+  [
+   "consensus_dilate_cells",
+   1
+  ],
+  [
+   "consensus_dilate_px",
+   2
+  ],
+  [
+   "exposure_grid_px",
+   24
+  ],
+  [
+   "exposure_vis_tol",
+   0.03
+  ],
+  [
+   "exposure_border_px",
+   8
+  ],
+  [
+   "exposure_box_px",
+   7
+  ],
+  [
+   "exposure_dark",
+   0.02
+  ],
+  [
+   "exposure_saturated",
+   0.97
+  ],
+  [
+   "exposure_huber",
+   0.15
+  ],
+  [
+   "exposure_iterations",
+   20
+  ],
+  [
+   "exposure_min_views",
+   3
+  ],
+  [
+   "exposure_max_observations",
+   6000000
+  ],
+  [
+   "exposure_model",
+   "gain+slope+vignette"
+  ],
+  [
+   "exposure_slope_ridge",
+   0.005
+  ],
+  [
+   "exposure_vignette_ridge",
+   0.0
+  ],
+  [
+   "exposure_cg_outer",
+   4
+  ],
+  [
+   "exposure_cg_iterations",
+   40
+  ],
+  [
+   "selection_samples",
+   30000
+  ],
+  [
+   "selection_vis_tol",
+   0.03
+  ],
+  [
+   "selection_second_weight",
+   0.5
+  ],
+  [
+   "selection_min_gain_frac",
+   0.0001
+  ],
+  [
+   "phone_budget",
+   128
+  ],
+  [
+   "quality_floor",
+   0.15
+  ],
+  [
+   "seed",
+   0
+  ],
+  [
+   "chunk_slots",
+   16
+  ],
+  [
+   "astc_quality",
+   60.0
+  ],
+  [
+   "webp_quality",
+   90
+  ],
+  [
+   "alpha_feather_px",
+   8
+  ]
+ ],
+ "solve": {
+  "ops": 2199,
+  "ops_sha256": "90c29435af47cc7806f306a68a660abca450bf76544ec1ae42de2fd8f6c75460",
+  "op_counts": {
+   "torch.Tensor.__and__": 54,
+   "torch.Tensor.__bool__": 20,
+   "torch.Tensor.__float__": 22,
+   "torch.Tensor.__getitem__": 369,
+   "torch.Tensor.__rtruediv__": 29,
+   "torch.Tensor.__setitem__": 18,
+   "torch.Tensor.abs": 50,
+   "torch.Tensor.add": 208,
+   "torch.Tensor.amax": 6,
+   "torch.Tensor.amin": 6,
+   "torch.Tensor.any": 20,
+   "torch.Tensor.clamp": 42,
+   "torch.Tensor.clone": 8,
+   "torch.Tensor.cpu": 28,
+   "torch.Tensor.div": 96,
+   "torch.Tensor.float": 36,
+   "torch.Tensor.ge": 1,
+   "torch.Tensor.gt": 59,
+   "torch.Tensor.index_add_": 84,
+   "torch.Tensor.le": 21,
+   "torch.Tensor.lt": 25,
+   "torch.Tensor.matmul": 6,
+   "torch.Tensor.mean": 13,
+   "torch.Tensor.median": 4,
+   "torch.Tensor.mul": 382,
+   "torch.Tensor.neg": 4,
+   "torch.Tensor.numel": 6,
+   "torch.Tensor.numpy": 4,
+   "torch.Tensor.permute": 12,
+   "torch.Tensor.reshape": 4,
+   "torch.Tensor.shape.__get__": 6,
+   "torch.Tensor.sqrt": 14,
+   "torch.Tensor.sub": 115,
+   "torch.Tensor.sum": 82,
+   "torch.Tensor.to": 43,
+   "torch.Tensor.unsqueeze": 6,
+   "torch.arange": 8,
+   "torch.as_tensor": 11,
+   "torch.bincount": 2,
+   "torch.cat": 28,
+   "torch.device": 1,
+   "torch.empty": 1,
+   "torch.exp": 1,
+   "torch.functional.einsum": 6,
+   "torch.functional.meshgrid": 1,
+   "torch.functional.unique": 1,
+   "torch.isfinite": 6,
+   "torch.log": 1,
+   "torch.nn.functional.avg_pool2d": 6,
+   "torch.nn.functional.grid_sample": 18,
+   "torch.nonzero": 6,
+   "torch.ones_like": 23,
+   "torch.stack": 38,
+   "torch.where": 31,
+   "torch.zeros": 89,
+   "torch.zeros_like": 18
+  },
+  "gains_sha256": "2c6066bb21b7dec4228ea63551b327ca7be09605022a1010fc8f793855f1ed1a",
+  "slopes_sha256": "3ec7d8b31916d4eba122365b09b3c14c75fc19fb10548e1f9007d1ecc6342c6b",
+  "gains": [
+   [
+    1.0668892860412598,
+    1.0544270277023315,
+    1.0431591272354126
+   ],
+   [
+    1.0464837551116943,
+    1.0344029664993286,
+    1.0233148336410522
+   ],
+   [
+    0.7520207762718201,
+    0.7970871329307556,
+    0.8410775065422058
+   ],
+   [
+    1.081716775894165,
+    1.0692468881607056,
+    1.057769775390625
+   ],
+   [
+    1.0541341304779053,
+    1.0419175624847412,
+    1.0308341979980469
+   ],
+   [
+    1.0445009469985962,
+    1.0324678421020508,
+    1.021466612815857
+   ]
+  ],
+  "slopes": [
+   [
+    -0.06529097259044647,
+    -0.026621095836162567
+   ],
+   [
+    -0.04718886315822601,
+    0.01952911913394928
+   ],
+   [
+    -0.03829339146614075,
+    0.07440405339002609
+   ],
+   [
+    -0.02120964042842388,
+    0.07896467298269272
+   ],
+   [
+    0.18346340954303741,
+    -0.13186880946159363
+   ],
+   [
+    0.009100887924432755,
+    0.016967063769698143
+   ]
+  ],
+  "per_frame": [
+   1831,
+   1984,
+   1856,
+   1154,
+   1800,
+   2002
+  ],
+  "record": {
+   "abs_log_residual_after": 0.0057,
+   "abs_log_residual_after_centre": 0.0057,
+   "abs_log_residual_after_edge": 0.0053,
+   "abs_log_residual_before": 0.0796,
+   "coordinates": "xn=(u-W/2)/(W/2), yn=(v-H/2)/(H/2), r2=((u-W/2)^2+(v-H/2)^2)/((W/2)^2+(H/2)^2); u,v pixel centres",
+   "gain_range": [
+    0.7967,
+    1.0696
+   ],
+   "model": "gain+slope+vignette",
+   "observations": 10627,
+   "points": 2178,
+   "slope_abs_median": 0.04274,
+   "vignette": [
+    -0.0383,
+    -0.12147
+   ]
+  }
+ }
+}

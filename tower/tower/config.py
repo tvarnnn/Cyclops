@@ -1181,6 +1181,42 @@ def world_stage_timing_setting() -> bool:
     return False
 
 
+# DET-GAINS (manager 146 §1; RUN experiments/W0-STAGE0/STAGE0.md §3.4 and §6.6): the appearance's exposure-gain
+# solve (`appearance.solve_gains` and `_solve_spatial_exposure`) sums with 15 CUDA `index_add_` calls, which are
+# float32 atomics: the order in which the terms reach a bin changes from run to run. The truncated CGLS inside
+# Huber-IRLS carries those last-bit differences up to 0.18 % of a gain between two re-finishes of one frozen world,
+# and on to tiers, ranks and chunk bytes (2 phone/tower tier swaps of 477 keyframes on 6839fb8f).
+#   On:  each of the 15 sums is `index_put_(accumulate=True)` instead -- on CUDA the sort-based kernel, which
+#        stage 4 measured bit-identical across repeats and across processes, under full GPU load too, for about
+#        +3 s a solve. On any other device nothing changes: CPU `index_put_(accumulate=True)` is NOT reproducible
+#        (torch lists it as nondeterministic; stage 0 measured repeats 1.2e-7 apart), so a CPU solve keeps
+#        `index_add_`, the op it ran before. That is the OFF op, not a CPU determinism claim.
+#   Off: unset, blank and `off`. Today exactly: the same ops in the same order, and every appearance params record
+#        and params digest unchanged.
+# Read when an `appearance.AppearanceParams` is built (the default of its `exposure_deterministic_gains`), so the
+# solve and the appearance's params digest read ONE value: a build with it on never reuses a build without it, and
+# the reverse. Every appearance build in a process with it on takes it, the walk's live builds included.
+WORLD_APPEARANCE_DETERMINISTIC_GAINS_ENV = "TOWER_WORLD_APPEARANCE_DETERMINISTIC_GAINS"
+_world_appearance_deterministic_gains_warned: set[str] = set()
+
+
+def world_appearance_deterministic_gains_setting() -> bool:
+    """`TOWER_WORLD_APPEARANCE_DETERMINISTIC_GAINS`: the deterministic exposure-gain sums. Off.
+
+    On is `_flag`'s set (`1`, `true`, `yes`, `on`). Unset, blank, `0`, `false`, `no` and `off` are off,
+    silently. Anything else is off and logged once per value: a typo never changes a published appearance, and
+    it is still visible."""
+    if _flag(WORLD_APPEARANCE_DETERMINISTIC_GAINS_ENV, default=False):
+        return True
+    value = (os.environ.get(WORLD_APPEARANCE_DETERMINISTIC_GAINS_ENV) or "").strip()
+    if (value and value.lower() not in ("0", "false", "no", "off")
+            and value not in _world_appearance_deterministic_gains_warned):
+        _world_appearance_deterministic_gains_warned.add(value)
+        logger.warning("[Tower][Config] %s=%r is not on or off; treating it as off",
+                       WORLD_APPEARANCE_DETERMINISTIC_GAINS_ENV, value)
+    return False
+
+
 # P5-PQ (manager 095 §2, as corrected by 096 §2; granular per manager 098): impossible poses are never
 # published in a room. One switch, three PARTS (RUN experiments/P5-PQ/RULE.md):
 #   `path`   (a) the viewer's camera list (`surface_render._camera_path`) keeps only published, supported
