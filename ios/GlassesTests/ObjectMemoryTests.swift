@@ -2701,6 +2701,31 @@ final class ObjectMemoryPictureLoaderTests: XCTestCase {
         try await settle()
         XCTAssertEqual(loader.phase, .noPicturesOffered)
     }
+
+    /// U0.8 F16: a picture that did not arrive can be asked for again, and
+    /// the second ask is a real fetch.
+    func testAPictureThatFailedCanBeAskedForAgain() async throws {
+        let client = StubObjectMemoryClient()
+        client.stubbedImagery = .unreachable("timed out")
+
+        let loader = ObjectMemoryPictureLoader(client: client, observationID: "9f2c41b7ad0e6538")
+        loader.load()
+        try await settle()
+        guard case .failed(let failure) = loader.phase else {
+            return XCTFail("an unreachable Tower reached the wrong phase: \(loader.phase)")
+        }
+        XCTAssertEqual(failure.kind, .transport, "only a transport failure offers the retry")
+
+        client.stubbedImagery = .described(try description())
+        client.stubbedPicture = .picture(Data([0xFF, 0xD8]))
+        loader.load()
+        try await settle()
+        guard case .picture = loader.phase else {
+            return XCTFail("asking again did not fetch the picture: \(loader.phase)")
+        }
+        XCTAssertFalse(ObjectMemoryCopy.askingForThePicture.isEmpty)
+        XCTAssertFalse(ObjectMemoryCopy.tryThePictureAgainButton.isEmpty)
+    }
 }
 
 // MARK: - Copy for the session and the pictures

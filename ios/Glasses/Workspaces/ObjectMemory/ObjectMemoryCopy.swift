@@ -631,6 +631,10 @@ enum ObjectMemoryCopy {
     static let showTheWholeFrameButton = "Show the whole frame"
     static let showTheDetectionButton = "Show just the detection"
     static let showThePictureButton = "Show the picture"
+    /// Beside the spinner while a picture is asked for (U0.8 F16).
+    static let askingForThePicture = "Asking the Tower for the picture…"
+    /// Under a picture that did not arrive (U0.8 F16).
+    static let tryThePictureAgainButton = "Try the picture again"
 
     /// The headline when there are no bytes.
     ///
@@ -1489,6 +1493,8 @@ enum ObjectMemoryCopy {
         showTheWholeFrameButton,
         showTheDetectionButton,
         showThePictureButton,
+        askingForThePicture,
+        tryThePictureAgainButton,
         // All three retention sentences, not whichever one a fixture happens to
         // produce. The two stores have opposite lifetimes and the third case is
         // a Tower that names neither, so a test that saw only one of them would

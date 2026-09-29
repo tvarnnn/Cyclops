@@ -934,7 +934,14 @@ struct ObjectMemoryPictureView: View {
                     .buttonStyle(.bordered)
 
             case .loading:
-                ProgressView()
+                // The wait, labelled (U0.8 F16).
+                HStack(spacing: 8) {
+                    ProgressView()
+                    Text(ObjectMemoryCopy.askingForThePicture)
+                        .font(.caption2)
+                        .foregroundStyle(.readableSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
 
             case .picture(let data, let description):
                 picture(data, description)
@@ -947,6 +954,14 @@ struct ObjectMemoryPictureView: View {
 
             case .failed(let failure):
                 caption(failure.message)
+                // A picture that did not arrive can be asked for again (U0.8
+                // F16). A settled answer keeps its sentence and no button.
+                if failure.kind == .transport {
+                    Button(ObjectMemoryCopy.tryThePictureAgainButton) { loader.load() }
+                        .font(.caption)
+                        .readableBorderedButton()
+                        .accessibilityIdentifier("om-picture-retry")
+                }
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
