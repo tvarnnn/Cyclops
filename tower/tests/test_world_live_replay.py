@@ -1140,19 +1140,43 @@ def test_a_finished_run_is_re_reported_from_its_run_dir_into_another_out(tmp_pat
     assert built["verdict"]["stop_to_settled_min"] == pytest.approx((600.0 - 100.002) / 60, abs=0.01)
 
 
+# A proof run's comparability key, as `_fake_run` writes it (review C24 HIGH-2).
+FAKE_SWITCHES = {"TOWER_WORLD_SOLVE": "true", "TOWER_WORLD_SOLVE_CONSENSUS": "3"}
+FAKE_CODE = {"py_fingerprint": "bd4f37d4c9f16a21", "tower_dir": "C:\\code\\a4afea1\\tower"}
+FAKE_HARNESS = {"sha1": "h" * 40, "files_sha1": {"world_live_replay.py": "a" * 40,
+                                                 "world_live_replay_run.py": "b" * 40,
+                                                 "world_live_replay_report.py": "c" * 40}}
+FAKE_JOURNAL = {CAP: {"capture.json": "1" * 64, "frames.jsonl": "2" * 64}}
+
+
 def _fake_run(directory, *, photos, lag_p95, sequence, horizons=(52,), fidelity="PASS", environment="PASS",
-              version=None, run_started=None, client_started=None):
+              version=None, run_started=None, client_started=None, switches=None, code=None, harness=None,
+              journal=None, not_proof=None, store_photos=None, speed=1.0, tower_side_only=False):
     """`version` None: a verdict rendered before the bar was versioned (C22-F5). `run_started` /
-    `client_started`: the run's recorded start, as the report keeps run.json and the client record."""
+    `client_started`: the run's recorded start, as the report keeps run.json and the client record.
+    By default a proof-eligible run whose comparability key is `FAKE_*` (C24 HIGH-2/3); `photos` is
+    the W0 timing, Stop to `phone_photos_at` (C24 HIGH-1)."""
     directory.mkdir(parents=True)
     sha = report.hashlib.sha256(json.dumps(sequence, separators=(",", ":")).encode()).hexdigest()
-    verdict = {"result": fidelity, **({"version": version} if version is not None else {})}
+    verdict = {"result": fidelity, **({"version": version} if version is not None else {}),
+               **({"tower_side_only": True} if tower_side_only else {})}
+    run = {"switches": FAKE_SWITCHES if switches is None else switches, "code": code or FAKE_CODE,
+           "harness": harness or FAKE_HARNESS, "intrinsics_copied": ["360x640.json"],
+           **({"started_at": run_started} if run_started is not None else {})}
+    client = {"walk": [{"capture_id": CAP}], "speed": speed, "first_seconds": None, "after_stop": "stay",
+              "schedule": {"frames": 4005, "captures": 1, "stop_at_s": 335.861, "ends_with": "stream_stop",
+                           "reconnects": 0},
+              "stream": {"frames_sent": 4005}, "live_tower_watch": {"states_seen": ["idle"]},
+              **({"started_at": client_started} if client_started is not None else {})}
     (directory / "report.json").write_text(json.dumps({
         **({"replay_fidelity": verdict} if fidelity is not None else {}),
-        **({"run": {"started_at": run_started}} if run_started is not None else {}),
-        **({"client": {"started_at": client_started}} if client_started is not None else {}),
+        "run": run, "client": client,
+        "proof": {"proof": not not_proof, "not_proof_reasons": [not_proof] if not_proof else []},
+        "tower_side_pacing": {"computable": True, "source_sha256": journal or FAKE_JOURNAL},
         "label": directory.name,
-        "verdict": {"stop_to_room_with_photos_min": photos, "stop_to_settled_min": photos + 7},
+        "verdict": {"basis": "phone", "stop_to_room_with_photos_min": photos, "stop_to_phone_photos_min": photos,
+                    "stop_to_store_photos_min": round(photos - 0.25, 2) if store_photos is None else store_photos,
+                    "stop_to_settled_min": photos + 7},
         "tower_walk": {"totals": {"frames_received": 4005, "tx_seq_gap_total": 0},
                        "frames_observed": 4005, "rebuilds": {"count": 201, "seconds": {"p95": 1.1, "max": 1.9}},
                        "background_solves": [{"keyframes": k} for k in horizons]},
@@ -1175,16 +1199,16 @@ def test_compare_gives_the_baseline_spread_and_flags_a_candidate_outside_it(tmp_
     result = json.loads((out / "compare.json").read_text(encoding="utf-8"))
     assert result["enough_runs"] is True
     metrics = {m["metric"]: m for m in result["metrics"]}
-    photos = metrics["stop_to_room_with_photos_min"]
+    photos = metrics["stop_to_phone_photos_min"]
     assert (photos["min"], photos["max"], photos["spread"]) == (46.8, 47.5, 0.7)
     assert photos["outside"] == [40.0, 41.0, 40.5]
-    assert metrics["observe_lag_s.p95"]["outside"] == [9.5]
+    assert metrics["keyframe_accept_lag_s.p95"]["outside"] == [9.5]
     assert metrics["row 3 min"]["baseline"] == pytest.approx([34.0, 34.5, 33.8])
     candidates = result["keyframes"]["candidate"]
     assert [c["identical"] for c in candidates] == [True, False, True]
     assert candidates[1]["first_difference"] == 2 and candidates[1]["horizons_identical"] is False
     assert all(item["identical"] for item in result["keyframes"]["baseline"])
-    assert "| stop_to_room_with_photos_min |" in (out / "COMPARE.md").read_text(encoding="utf-8")
+    assert "| stop_to_phone_photos_min **(W0 timing)** |" in (out / "COMPARE.md").read_text(encoding="utf-8")
 
 
 def test_compare_says_when_there_are_too_few_runs(tmp_path):
@@ -1265,14 +1289,15 @@ def test_the_pacing_row_is_rendered_from_a_kept_data_root_with_a_data_root_overr
     assert sorted(p.name for p in run_dir.iterdir()) == before  # read only
     built = json.loads((tmp_path / "kept-out" / "report.json").read_text(encoding="utf-8"))
     rows = {r["check"]: r for r in built["live_safety"]["rows"]}
-    pacing = rows["Tower-side pacing: receipt offset - recorded offset (ms), joined on wire_seq"]
+    pacing = rows[report.PACING_ROW]
     assert pacing["result"] == "INFO" and pacing["value"].startswith("2 joined (0 replay-only, 0 source-only)")
-    assert rows["Tower-side inter-arrival (s), replayed vs recorded"]["result"] == "INFO"
+    assert rows[report.INTERVAL_ROW]["result"] == "INFO"
     assert built["tower_side_pacing"]["offset_error_ms"]["max"] == pytest.approx(10.0, abs=0.01)
     assert built["keyframes"]["count"] == 4  # the world root followed --data-root
     metrics = report.comparable_metrics(built)
-    assert metrics["tower_pacing_offset_error_ms.p95"] == pytest.approx(10.0, abs=0.01)
-    assert "Tower-side pacing: `" in (tmp_path / "kept-out" / "REPORT.md").read_text(encoding="utf-8")
+    assert metrics["recorder_stamp_offset_error_ms.p95"] == pytest.approx(10.0, abs=0.01)
+    assert "Tower-side pacing (the recorder's post-reply stamps, not socket arrival): `" in \
+        (tmp_path / "kept-out" / "REPORT.md").read_text(encoding="utf-8")
 
 
 def test_the_client_records_where_it_read_the_source_captures(tmp_path, monkeypatch):
@@ -1339,7 +1364,19 @@ def test_phone_photos_at_is_the_clients_receive_time_not_the_stores(tmp_path):
     assert built["milestones"]["room_appearance_ok"]["t"] == BASE + 700.0
     assert built["verdict"]["stop_to_phone_photos_min"] == pytest.approx((705.0 - 100.002) / 60, abs=0.01)
     assert report.comparable_metrics(built)["stop_to_phone_photos_min"] == built["verdict"]["stop_to_phone_photos_min"]
-    assert "The phone was told at +" in report.render_markdown(built)
+    # C24 HIGH-1: the W0 verdict is the CLIENT's receipt. The store wrote the room's appearance
+    # at +10.00 min (a PASS on the store's clock); the client was told at +10.08: FAIL.
+    verdict = built["verdict"]
+    assert verdict["basis"] == "phone" and verdict["measure"] == report.BASIS_PHONE
+    assert verdict["stop_to_room_with_photos_min"] == verdict["stop_to_phone_photos_min"] == 10.08
+    assert verdict["stop_to_store_photos_min"] == 10.0 and verdict["result"] == "FAIL"
+    metrics = report.comparable_metrics(built)
+    assert (metrics["stop_to_phone_photos_min"], metrics["stop_to_store_photos_min"]) == (10.08, 10.0)
+    assert "stop_to_room_with_photos_min" not in metrics
+    markdown = report.render_markdown(built)
+    assert ("1. **Stop to room with photos, as the replay client received it (`phone_photos_at`): 10.08 min** "
+            "against the 10-min hard maximum: **FAIL**.") in markdown
+    assert "INFO: the store wrote the room appearance `ok` at +10.0 min (not the W0 measure)" in markdown
 
 
 def test_phone_photos_at_is_inferred_for_a_client_that_kept_no_scope(tmp_path):
@@ -1354,6 +1391,13 @@ def test_phone_photos_at_is_inferred_for_a_client_that_kept_no_scope(tmp_path):
     assert photos["scope_recorded"] is False
     assert photos["phone_photos_at"] == BASE + 705.0 and photos["how"].startswith("INFERRED")
     assert photos["photographic_complete_at"] == BASE + 800.0
+    # C24 HIGH-1: the verdict rests on that inferred time, and its line says so.
+    assert built["verdict"]["phone_photos_how"].startswith("INFERRED")
+    assert "**The client's time is INFERRED**" in report.render_markdown(built)
+    scoped = report.build_report(tower_log=log, world_root=tmp_path / "root", client={
+        "tower_captures": [CAP], "phone_view": {"pushes": view.pushes, "transitions": view.transitions,
+                                                "photographic": view.photographic}})
+    assert "INFERRED" not in report.render_markdown(scoped).split("## 2.")[0]
 
 
 def test_phone_photos_at_needs_the_rooms_appearance_ok_and_a_push_after_stop():
@@ -1488,9 +1532,10 @@ def test_the_runners_startup_watch_is_an_environment_row(tmp_path):
     log.write_text(_walk_log(BASE), encoding="utf-8")
     run = {"live_tower_watch_startup": {"states_seen": ["idle", "unknown"], "history": [
         {"t": 1.0, "state": "idle"}, {"t": 2.0, "state": "unknown"}, {"t": 3.0, "state": "idle"}]}}
-    built = report.build_report(tower_log=log, client=_clean_client(), run=run)
+    watch = {"states_seen": ["idle"], "history": [{"t": 4.0, "state": "idle"}]}
+    built = report.build_report(tower_log=log, client=_clean_client(live_tower_watch=watch), run=run)
     rows = {r["check"]: r for r in built["live_safety"]["environment"]["rows"]}
-    assert rows[":8000 during the run"]["result"] == "n/a"
+    assert rows[":8000 during the run"]["result"] == "PASS"
     assert rows[":8000 during the test Tower's startup"]["result"] == "PASS"
     assert built["live_safety"]["environment"]["result"] == "PASS"
 
@@ -1507,7 +1552,7 @@ def test_compare_flags_a_candidate_metric_missing_where_the_baseline_has_it(tmp_
     # new1 never settled: no photos, and its report has no observe lag at all.
     path = tmp_path / "new1" / "report.json"
     never = json.loads(path.read_text(encoding="utf-8"))
-    never["verdict"]["stop_to_room_with_photos_min"] = None
+    never["verdict"]["stop_to_phone_photos_min"] = None
     never["keyframes"].pop("observe_lag_s")
     path.write_text(json.dumps(never), encoding="utf-8")
     out = tmp_path / "cmp"
@@ -1516,10 +1561,10 @@ def test_compare_flags_a_candidate_metric_missing_where_the_baseline_has_it(tmp_
     result = json.loads((out / "compare.json").read_text(encoding="utf-8"))
     metrics = {m["metric"]: m for m in result["metrics"]}
     new1 = str(tmp_path / "new1")
-    assert metrics["stop_to_room_with_photos_min"]["missing"] == [new1]
-    assert metrics["stop_to_room_with_photos_min"]["outside"] == [40.0]  # new0's, judged as before
-    assert metrics["observe_lag_s.p95"]["missing"] == [new1]
-    assert "stop_to_room_with_photos_min" in result["missing"][new1]
+    assert metrics["stop_to_phone_photos_min"]["missing"] == [new1]
+    assert metrics["stop_to_phone_photos_min"]["outside"] == [40.0]  # new0's, judged as before
+    assert metrics["keyframe_accept_lag_s.p95"]["missing"] == [new1]
+    assert "stop_to_phone_photos_min" in result["missing"][new1]
     assert str(tmp_path / "new0") not in result["missing"]
     assert result["candidates_complete"] is False
     markdown = (out / "COMPARE.md").read_text(encoding="utf-8")
@@ -1779,7 +1824,8 @@ def test_the_runner_stops_the_tower_on_every_exit_path(lifecycle, monkeypatch, h
         state["owners"] = {4242, 777}
         expect = pytest.raises(SystemExit, match="served by")
     elif how == "live-walk-during-startup":
-        state["live"] = ["idle", "recording"]  # idle at the start check, a walk once the Tower is starting
+        # idle at the start check and at the pre-spawn re-read (C24 HIGH-3), a walk once the Tower is starting
+        state["live"] = ["idle", "idle", "recording"]
         monkeypatch.setattr(runner, "LIVE_WATCH_EVERY_S", 0.0)
     if expect is None:
         code = runner.main(lifecycle["argv"])
@@ -2044,7 +2090,8 @@ def test_a_safe_code_verdict_stays_pass_when_the_replay_was_not_faithful(tmp_pat
                                 data_root=tmp_path / "data", capture_root=tmp_path / "src" / "captures")
     assert built["replay_fidelity"]["result"] == "FAIL"
     assert built["live_safety"]["result"] == "PASS"
-    assert built["live_safety"]["environment"]["result"] == "n/a"
+    # C24 HIGH-3: this client streamed and kept no :8000 watch -- FAIL, never n/a.
+    assert built["live_safety"]["environment"]["result"] == "FAIL"
 
 
 def test_compare_leaves_runs_that_fail_fidelity_or_the_environment_out_of_the_baseline_range(tmp_path):
@@ -2062,7 +2109,7 @@ def test_compare_leaves_runs_that_fail_fidelity_or_the_environment_out_of_the_ba
     assert report.main(["--out", str(out), "--compare", *(str(tmp_path / n) for n in olds),
                         "--candidate", str(tmp_path / "new0"), str(tmp_path / "new-unfaithful")]) == 0
     result = json.loads((out / "compare.json").read_text(encoding="utf-8"))
-    photos = {m["metric"]: m for m in result["metrics"]}["stop_to_room_with_photos_min"]
+    photos = {m["metric"]: m for m in result["metrics"]}["stop_to_phone_photos_min"]
     assert (photos["min"], photos["max"]) == (46.8, 47.5)  # not 30.0, not 60.0
     # Round 4 M-1: the unjudged run (47.2) is not counted either.
     assert photos["baseline_in_range"] == [True, True, True, False, False, False]
@@ -2080,8 +2127,8 @@ def test_compare_leaves_runs_that_fail_fidelity_or_the_environment_out_of_the_ba
     assert f"- `{tmp_path / 'old-unfaithful'}`: replay fidelity FAIL" in markdown
     assert f"- `{tmp_path / 'old-contended'}`: Environment (:8000) FAIL" in markdown
     assert f"- `{tmp_path / 'old-unjudged'}`: {unjudged}" in markdown
-    assert "| stop_to_room_with_photos_min | 47.1 | 46.8 | 47.5 | 0.7 | 30.0, 60.0, 47.2 | 47.1, 47.1 (INVALID) |" \
-        in markdown
+    assert ("| stop_to_phone_photos_min **(W0 timing)** | 47.1 | 46.8 | 47.5 | 0.7 | 30.0, 60.0, 47.2 | "
+            "47.1, 47.1 (INVALID) |") in markdown
     assert "(excluded from the range)" in markdown and "**INVALID CANDIDATE(S): 1.**" in markdown
 
 
@@ -2091,8 +2138,9 @@ V3_APPLIES_AFTER = 1790628900.0  # 2026-09-28 16:55:00 EDT = 20:55:00 UTC
 BEFORE, AFTER = V3_APPLIES_AFTER - 1.0, V3_APPLIES_AFTER + 1.0
 # The OLD runs' recorded starts (run.json started_at, RUN\experiments\C22-REPLAY\runs\walk5-old-a4afea1-<n>).
 OLD_RUN_STARTED = {2: 1790620478.101, 3: 1790631854.085, 4: 1790623633.864, 5: 1790634922.735}
-JITTER_CHECK = "receipt-offset jitter: p95 |offset - median(offset)| (ms)"
-BIAS_CHECK = "receipt-offset constant bias: |median(offset)| (ms)"
+JITTER_CHECK = "recorder-stamp offset jitter: p95 |offset - median(offset)| (ms)"
+BIAS_CHECK = "recorder-stamp offset constant bias: |median(offset)| (ms)"
+P50_CHECK = "recorder-stamp offset error |p50| (ms)"
 
 
 def test_v3_is_v1_without_its_p50_clause_plus_jitter_and_bias_for_runs_started_after_16_55_edt():
@@ -2158,7 +2206,7 @@ def test_a_v3_run_on_every_edge_of_the_v3_bar_passes_and_says_v3(median):
         ("v3", AFTER, "client.json started_at")
     assert fidelity["bar"] == report.FIDELITY_BAR["v3"] and "manager 149" in fidelity["ruling"]
     checks = [row["check"] for row in fidelity["rows"]]
-    assert "receipt-offset error |p50| (ms)" not in checks
+    assert P50_CHECK not in checks
     assert checks[1:3] == [JITTER_CHECK, BIAS_CHECK]
     assert [(row["value"], row["required"]) for row in fidelity["rows"][1:3]] == [(45.0, "<= 45"), (median, "<= 20")]
 
@@ -2190,7 +2238,7 @@ def test_v3_does_not_judge_the_raw_p50_and_v1_still_does(p50):
     client["started_at"] = BEFORE
     fidelity = report.replay_fidelity(pacing=pacing, client=client)
     failed = [row["check"] for row in fidelity["rows"] if row["result"] == "FAIL"]
-    assert fidelity["version"] == "v1" and fidelity["result"] == "FAIL" and failed == ["receipt-offset error |p50| (ms)"]
+    assert fidelity["version"] == "v1" and fidelity["result"] == "FAIL" and failed == [P50_CHECK]
 
 
 def test_a_run_before_16_55_stays_on_v1_exactly_v3_s_clauses_are_not_added_to_it():
@@ -2268,8 +2316,7 @@ def test_a_run_started_before_16_55_stays_on_v1_run_4_fails_and_run_2_passes(tmp
     run2, run2_md = _render_started(tmp_path, "run2", started=OLD_RUN_STARTED[2], late_ms=(1.0, 2.0))
     late, late_md = _render_started(tmp_path, "late", started=AFTER, late_ms=(7.0, 7.0))
     assert (run4["replay_fidelity"]["version"], run4["replay_fidelity"]["result"]) == ("v1", "FAIL")
-    assert [r["check"] for r in run4["replay_fidelity"]["rows"] if r["result"] == "FAIL"] == \
-        ["receipt-offset error |p50| (ms)"]
+    assert [r["check"] for r in run4["replay_fidelity"]["rows"] if r["result"] == "FAIL"] == [P50_CHECK]
     assert run4["replay_fidelity"]["started_at_from"] == "run.json started_at"
     assert (run2["replay_fidelity"]["version"], run2["replay_fidelity"]["result"]) == ("v1", "PASS")
     assert len(run2["replay_fidelity"]["rows"]) == 7
@@ -2339,9 +2386,9 @@ def test_compare_judges_each_run_by_its_own_bar_version(tmp_path):
     assert report.main(["--out", str(out), "--compare", *(str(tmp_path / n) for n in olds),
                         "--candidate", str(tmp_path / "new-v3"), str(tmp_path / "new-wrong-bar")]) == 0
     result = json.loads((out / "compare.json").read_text(encoding="utf-8"))
-    assert result["compare"] == "c22-live-replay-compare/5"
+    assert result["compare"] == "c22-live-replay-compare/6"
     assert "v1: manager 142" in result["fidelity_ruling"] and "v3: manager 149" in result["fidelity_ruling"]
-    photos = {m["metric"]: m for m in result["metrics"]}["stop_to_room_with_photos_min"]
+    photos = {m["metric"]: m for m in result["metrics"]}["stop_to_phone_photos_min"]
     assert photos["baseline_in_range"] == [True, True, True, False, False, False, False, False]
     assert (photos["min"], photos["max"]) == (46.8, 47.5) and result["baseline_counted"] == 3
     excluded = {item["dir"]: item["reasons"] for item in result["excluded_from_baseline"]}
@@ -2549,7 +2596,7 @@ def test_three_baselines_one_not_valid_are_not_enough_valid_runs(tmp_path, why):
     _fake_run(tmp_path / "old2", photos=52.0, lag_p95=6.8, sequence=same, **NOT_VALID[why])
     result = report.compare_runs([tmp_path / f"old{i}" for i in range(3)])
     assert result["enough_runs"] is False and result["baseline_counted"] == 2
-    photos = {m["metric"]: m for m in result["metrics"]}["stop_to_room_with_photos_min"]
+    photos = {m["metric"]: m for m in result["metrics"]}["stop_to_phone_photos_min"]
     assert (photos["mean"], photos["min"], photos["max"]) == (47.25, 47.0, 47.5)  # 52.0 is not counted
     assert photos["baseline_in_range"] == [True, True, False]
     assert [item["dir"] for item in result["excluded_from_baseline"]] == [str(tmp_path / "old2")]
@@ -2620,3 +2667,516 @@ def test_the_runners_report_labels_its_capture_root_as_the_one_the_replay_stream
     assert pacing["source_capture_root"] == str(snapshot)
     assert pacing["source_capture_root_from"] == "the runner's --capture-root (the replay streamed from it)"
     assert pacing["source_capture_root_from"] != report.CAPTURE_ROOT_GIVEN
+
+
+# -- C22-F7: the Codex xhigh review C24 (HIGH-1..4, MED-5..8) ---------------------------------------
+
+
+# HIGH-1: the W0 verdict is the replay client's receipt (`phone_photos_at`); the store is INFO.
+
+
+def test_a_client_that_was_never_told_is_not_reached_even_when_the_store_passes(tmp_path):
+    """C24 HIGH-1: a run whose client heard no photographic push (no subscription) must not PASS on
+    the store's clock alone. The store wrote the room's appearance at +8.3 min here."""
+    log = tmp_path / "tower.err.log"
+    log.write_text(_walk_log(BASE), encoding="utf-8")
+    _world(tmp_path / "root", BASE, appearance_end=BASE + 600.0)
+    client = _clean_client(phone_view={"pushes": 0, "transitions": []})
+    built = report.build_report(tower_log=log, world_root=tmp_path / "root", client=client)
+    verdict = built["verdict"]
+    assert verdict["basis"] == "phone" and verdict["result"] == "NOT REACHED"
+    assert verdict["stop_to_room_with_photos_min"] is None and verdict["stop_to_phone_photos_min"] is None
+    assert verdict["stop_to_store_photos_min"] == pytest.approx(8.33, abs=0.01)
+    assert "no lifecycle.photographic word" in verdict["not_reached_why"]
+    markdown = report.render_markdown(built)
+    assert "(`phone_photos_at`): not reached (the client kept no lifecycle.photographic word" in markdown
+    assert "**NOT REACHED**" in markdown
+    # --compare's W0 metric is the client's: MISSING for this run, never the store's 8.33.
+    assert report.comparable_metrics(built)[report.W0_TIMING_METRIC] is None
+
+
+def test_a_real_walks_log_gives_the_store_time_labelled_not_the_client_measure(tmp_path):
+    """C24 HIGH-1: no client record (a real walk's log): the store's time, and it says so."""
+    log = tmp_path / "tower.err.log"
+    log.write_text(_walk_log(BASE), encoding="utf-8")
+    _world(tmp_path / "root", BASE, appearance_end=BASE + 600.0)
+    built = report.build_report(tower_log=log, world_root=tmp_path / "root", client={})
+    verdict = built["verdict"]
+    assert (verdict["basis"], verdict["measure"], verdict["result"]) == ("store", report.BASIS_STORE, "PASS")
+    assert verdict["stop_to_room_with_photos_min"] == verdict["stop_to_store_photos_min"] == pytest.approx(8.33, abs=0.01)
+    assert verdict["stop_to_phone_photos_min"] is None
+    assert "NOT the client measure" in report.BASIS_STORE
+    markdown = report.render_markdown(built)
+    assert "-- the STORE's `updated_at`, NOT the client measure** (no client record: a real walk's log)" in markdown
+    assert built["proof"] == {"proof": False, "not_proof_reasons": ["no replay client record (not a replay run)"]}
+
+
+def test_compare_reads_a_render_made_before_f7_as_the_store_time_not_the_clients():
+    """A pre-F7 render's `stop_to_room_with_photos_min` was the store's: it is never the W0 metric."""
+    old = {"verdict": {"stop_to_room_with_photos_min": 47.03, "stop_to_phone_photos_min": 47.18}}
+    metrics = report.comparable_metrics(old)
+    assert (metrics["stop_to_phone_photos_min"], metrics["stop_to_store_photos_min"]) == (47.18, 47.03)
+    new = {"verdict": {"basis": "phone", "stop_to_room_with_photos_min": 47.18, "stop_to_phone_photos_min": 47.18,
+                       "stop_to_store_photos_min": 47.03}}
+    assert report.comparable_metrics(new)["stop_to_store_photos_min"] == 47.03
+    assert list(report.comparable_metrics(new))[0] == report.W0_TIMING_METRIC == "stop_to_phone_photos_min"
+
+
+# HIGH-2: --compare counts only comparable runs; a candidate differs only in the declared switches.
+
+
+def _keyed_render(root):
+    """A real render whose comparability key is complete: a runner run.json and a client record."""
+    run_dir, _snapshot = _pinned_run(root, capture_root=root / "snap" / "captures")
+    run = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
+    run.update(switches=dict(FAKE_SWITCHES), code=dict(FAKE_CODE), harness=FAKE_HARNESS,
+               intrinsics_copied=["360x640.json"], started_at=BEFORE)
+    (run_dir / "run.json").write_text(json.dumps(run), encoding="utf-8")
+    client = json.loads((run_dir / "client.json").read_text(encoding="utf-8"))
+    client.update(after_stop="stay", live_tower_watch={"states_seen": ["idle"]}, live_guard=True,
+                  not_a_proof_run=False)
+    (run_dir / "client.json").write_text(json.dumps(client), encoding="utf-8")
+    assert report.main(["--run-dir", str(run_dir), "--out", str(root / "out")]) == 0
+    return json.loads((root / "out" / "report.json").read_text(encoding="utf-8"))
+
+
+def test_the_comparability_key_is_complete_on_a_runners_render(tmp_path):
+    built = _keyed_render(_beyond_max_path(tmp_path))
+    key = built["comparability_key"]
+    assert key == report.comparability_key(built)
+    assert list(key) == list(report.KEY_FIELDS) and all(key[name] is not None for name in report.KEY_FIELDS)
+    assert key["source_captures"] == [A]
+    assert set(key["source_journal_sha256"][A]) == {"capture.json", "frames.jsonl"}
+    assert key["switches"] == FAKE_SWITCHES and key["code"] == FAKE_CODE
+    # the STREAMING harness only: a report-script change does not make runs incomparable
+    assert key["harness"] == {"world_live_replay.py": "a" * 40, "world_live_replay_run.py": "b" * 40}
+    assert key["replay"]["speed"] == 1.0 and key["replay"]["after_stop"] == "stay"
+    assert key["replay"]["schedule"]["frames"] == 2
+    assert key["calibration"] == ["360x640.json"] and key["fidelity_family"] == "recorder-stamp"
+
+
+# Each way a baseline run can differ from the others' key.
+KEY_BREAKS = {
+    "switches": {"switches": {**FAKE_SWITCHES, "TOWER_WORLD_SOLVE_CONSENSUS": "1"}},
+    "source_journal_sha256": {"journal": {CAP: {"capture.json": "1" * 64, "frames.jsonl": "9" * 64}}},
+    "code": {"code": {**FAKE_CODE, "py_fingerprint": "0000000000000000"}},
+    "code path": {"code": {**FAKE_CODE, "tower_dir": "C:\\\\elsewhere\\\\tower"}},
+    "harness": {"harness": {"files_sha1": {**FAKE_HARNESS["files_sha1"], "world_live_replay.py": "d" * 40}}},
+    "replay": {"speed": 2.0},
+}
+
+
+@pytest.mark.parametrize("name", list(KEY_BREAKS))
+def test_a_baseline_run_that_differs_in_its_key_is_excluded_not_counted(tmp_path, name):
+    same = [[1, 0], [10, 0]]
+    for index, photos in enumerate([47.0, 47.5, 46.8]):
+        _fake_run(tmp_path / f"old{index}", photos=photos, lag_p95=6.8, sequence=same)
+    _fake_run(tmp_path / "odd", photos=30.0, lag_p95=6.8, sequence=same, **KEY_BREAKS[name])
+    # The odd run is FIRST: the reference is the majority key, not the first run's.
+    result = report.compare_runs([tmp_path / "odd", *(tmp_path / f"old{i}" for i in range(3))])
+    assert result["baseline_counted"] == 3 and result["enough_runs"] is True
+    photos = {m["metric"]: m for m in result["metrics"]}["stop_to_phone_photos_min"]
+    assert (photos["min"], photos["max"]) == (46.8, 47.5)  # 30.0 is not counted
+    (reason,) = {item["dir"]: item["reasons"] for item in result["excluded_from_baseline"]}[str(tmp_path / "odd")]
+    field = name.split()[0]
+    assert reason.startswith("not comparable: " + ("switches differ" if field == "switches" else f"{field} differs"))
+    assert result["comparability"]["reference_from"] == str(tmp_path / "old0")
+    assert [item["dir"] for item in result["comparability"]["not_comparable"]] == [str(tmp_path / "odd")]
+    markdown = report.render_compare(result)
+    assert "**NOT COMPARABLE: 1 run(s), excluded.**" in markdown and "## Comparability (review C24 HIGH-2)" in markdown
+
+
+def test_a_candidate_may_differ_only_in_the_declared_switches(tmp_path):
+    same = [[1, 0], [10, 0]]
+    for index, photos in enumerate([47.0, 47.5, 46.8]):
+        _fake_run(tmp_path / f"old{index}", photos=photos, lag_p95=6.8, sequence=same)
+    lever = {**FAKE_SWITCHES, "TOWER_WORLD_SOLVE_CONSENSUS_CONCURRENT": "on"}
+    _fake_run(tmp_path / "new-lever", photos=40.0, lag_p95=6.8, sequence=same, switches=lever)
+    _fake_run(tmp_path / "new-lever-2", photos=40.2, lag_p95=6.8, sequence=same, switches=lever)
+    _fake_run(tmp_path / "new-extra", photos=40.1, lag_p95=6.8, sequence=same,
+              switches={**lever, "TOWER_WORLD_DENSIFY": "true"})                 # an undeclared switch too
+    _fake_run(tmp_path / "new-unapplied", photos=40.3, lag_p95=6.8, sequence=same)  # the lever never set
+    _fake_run(tmp_path / "new-other-code", photos=40.4, lag_p95=6.8, sequence=same, switches=lever,
+              code={**FAKE_CODE, "py_fingerprint": "1111111111111111"})          # the code differs too
+    olds = [tmp_path / f"old{i}" for i in range(3)]
+    news = [tmp_path / n for n in ("new-lever", "new-lever-2", "new-extra", "new-unapplied", "new-other-code")]
+    out = tmp_path / "cmp"
+    assert report.main(["--out", str(out), "--compare", *map(str, olds), "--candidate", *map(str, news),
+                        "--candidate-switches", "TOWER_WORLD_SOLVE_CONSENSUS_CONCURRENT=on"]) == 0
+    result = json.loads((out / "compare.json").read_text(encoding="utf-8"))
+    assert result["comparability"]["candidate_switches"] == {"TOWER_WORLD_SOLVE_CONSENSUS_CONCURRENT": "on"}
+    invalid = {item["dir"]: item["reasons"] for item in result["invalid_candidates"]}
+    assert set(invalid) == {str(tmp_path / n) for n in ("new-extra", "new-unapplied", "new-other-code")}
+    assert "TOWER_WORLD_DENSIFY: expected None, got 'true'" in invalid[str(tmp_path / "new-extra")][0]
+    assert "TOWER_WORLD_SOLVE_CONSENSUS_CONCURRENT: expected 'on', got None" in \
+        invalid[str(tmp_path / "new-unapplied")][0]
+    assert invalid[str(tmp_path / "new-other-code")][0].startswith("not comparable: code differs")
+    assert result["candidates_counted"] == 2
+    # Without the declaration the lever itself is an undeclared difference.
+    bare = report.compare_runs(olds, [tmp_path / "new-lever"])
+    (reason,) = bare["invalid_candidates"][0]["reasons"]
+    assert reason.startswith("not comparable: switches differ from the baseline's (")
+    markdown = (out / "COMPARE.md").read_text(encoding="utf-8")
+    assert "`TOWER_WORLD_SOLVE_CONSENSUS_CONCURRENT=on`" in markdown
+    with pytest.raises(SystemExit, match="KEY=VALUE"):
+        report.parse_switches(["NOEQUALS"])
+
+
+def test_a_run_whose_key_is_incomplete_is_never_comparable(tmp_path):
+    """Fail closed: a run with no run.json (the standalone client) cannot show it is the same code."""
+    same = [[1, 0], [10, 0]]
+    for index, photos in enumerate([47.0, 47.5, 46.8]):
+        _fake_run(tmp_path / f"old{index}", photos=photos, lag_p95=6.8, sequence=same)
+    _fake_run(tmp_path / "new-standalone", photos=40.0, lag_p95=6.8, sequence=same)
+    path = tmp_path / "new-standalone" / "report.json"
+    doc = json.loads(path.read_text(encoding="utf-8"))
+    doc.pop("run")
+    path.write_text(json.dumps(doc), encoding="utf-8")
+    result = report.compare_runs([tmp_path / f"old{i}" for i in range(3)], [tmp_path / "new-standalone"])
+    (reason,) = result["invalid_candidates"][0]["reasons"]
+    assert reason.startswith("not comparable: its comparability key lacks switches, code, harness, calibration")
+    # And with no complete baseline key there is nothing to be comparable WITH.
+    alone = report.compare_runs([tmp_path / "new-standalone"])
+    assert alone["baseline_counted"] == 0
+    assert "no baseline run has a complete comparability key" in alone["excluded_from_baseline"][0]["reasons"][0]
+
+
+def test_runs_judged_by_v1_and_by_v3_are_one_fidelity_family_and_compare(tmp_path):
+    """Old runs 2 (started before 16:55, v1) and 3 and 5 (after, v3) are comparable: both bars judge
+    the same recorder stamp. The family is the run's OWN bar's, from its recorded start."""
+    same = [[1, 0], [10, 0]]
+    for name, started in (("old2", OLD_RUN_STARTED[2]), ("old3", OLD_RUN_STARTED[3]), ("old5", OLD_RUN_STARTED[5])):
+        _fake_run(tmp_path / name, photos=47.0, lag_p95=6.8, sequence=same, run_started=started,
+                  version="v1" if name == "old2" else "v3")
+    result = report.compare_runs([tmp_path / n for n in ("old2", "old3", "old5")])
+    assert result["baseline_counted"] == 3 and result["comparability"]["not_comparable"] == []
+    assert result["comparability"]["reference_key"]["fidelity_family"] == "recorder-stamp"
+    assert report.FIDELITY_FAMILY == {"v1": "recorder-stamp", "v3": "recorder-stamp"}
+
+
+# HIGH-3: --no-live-guard only in a declared NOT-proof run; no blind interval at the start.
+
+
+def test_the_runner_refuses_no_live_guard_unless_the_run_is_declared_not_proof(lifecycle):
+    lifecycle["state"]["replay"] = lambda options: {
+        "tool": "world_live_replay", "outcome": "settled", "tower_captures": [],
+        "live_guard": options.live_guard, "not_a_proof_run": options.not_a_proof_run}
+    with pytest.raises(SystemExit, match="--not-a-proof-run"):
+        runner.main([*lifecycle["argv"], "--no-live-guard"])
+    assert lifecycle["calls"]["spawn"] == [] and not lifecycle["out"].exists()
+    assert runner.main([*lifecycle["argv"], "--no-live-guard", "--not-a-proof-run"]) == 0
+    run = _run_json(lifecycle)
+    assert (run["live_guard"], run["not_a_proof_run"]) == (False, True)
+    options = lifecycle["calls"]["options"][0]
+    assert (options.live_guard, options.not_a_proof_run) == (False, True)
+    built = json.loads((lifecycle["out"] / "report.json").read_text(encoding="utf-8"))
+    assert built["proof"]["proof"] is False
+    assert built["proof"]["not_proof_reasons"] == ["declared --not-a-proof-run",
+                                                   "the :8000 guard was off (--no-live-guard)"]
+    assert "**NOT-PROOF:**" in (lifecycle["out"] / "REPORT.md").read_text(encoding="utf-8")
+
+
+def test_the_standalone_client_refuses_no_live_guard_unless_declared_not_proof(tmp_path):
+    with pytest.raises(SystemExit, match="--not-a-proof-run"):
+        replay.main(["--capture", A, "--port", "8031", "--tower-pid", "1", "--out", str(tmp_path / "out"),
+                     "--no-live-guard"])
+    assert not (tmp_path / "out").exists()
+
+
+def test_an_unguarded_or_undeclared_stream_is_not_proof_and_its_environment_fails(tmp_path):
+    log = tmp_path / "tower.err.log"
+    log.write_text(_walk_log(BASE), encoding="utf-8")
+    watched = {"states_seen": ["idle"], "history": [{"t": 1.0, "state": "idle"}]}
+    run = {"live_tower_watch_startup": watched}   # the runner's startup watch PASSES...
+    unguarded = report.build_report(tower_log=log, client=_clean_client(live_guard=False), run=run)
+    rows = {r["check"]: r for r in unguarded["live_safety"]["environment"]["rows"]}
+    assert rows[":8000 during the run"]["result"] == "FAIL"               # ...but the stream was not watched
+    assert rows[":8000 during the run"]["value"] == "NOT WATCHED: the guard was off (--no-live-guard)"
+    assert unguarded["live_safety"]["environment"]["result"] == "FAIL"
+    assert unguarded["proof"]["not_proof_reasons"] == ["the :8000 guard was off (--no-live-guard)"]
+    declared = report.build_report(tower_log=log, client=_clean_client(live_tower_watch=watched,
+                                                                        not_a_proof_run=True), run=run)
+    assert declared["live_safety"]["environment"]["result"] == "PASS"
+    assert declared["proof"] == {"proof": False, "not_proof_reasons": ["declared --not-a-proof-run"]}
+    proof = report.build_report(tower_log=log, client=_clean_client(live_tower_watch=watched), run=run)
+    assert proof["proof"] == {"proof": True, "not_proof_reasons": []}
+    assert "Proof: eligible." in report.render_markdown(proof)
+
+
+def test_compare_never_counts_a_not_proof_run(tmp_path):
+    same = [[1, 0], [10, 0]]
+    for index, photos in enumerate([47.0, 47.5, 46.8]):
+        _fake_run(tmp_path / f"old{index}", photos=photos, lag_p95=6.8, sequence=same)
+    _fake_run(tmp_path / "old-unguarded", photos=30.0, lag_p95=6.8, sequence=same,
+              not_proof="the :8000 guard was off (--no-live-guard)")
+    result = report.compare_runs([tmp_path / n for n in ("old0", "old1", "old2", "old-unguarded")])
+    assert result["baseline_counted"] == 3
+    (reason,) = {i["dir"]: i["reasons"] for i in result["excluded_from_baseline"]}[str(tmp_path / "old-unguarded")]
+    assert reason == "NOT-PROOF: the :8000 guard was off (--no-live-guard)"
+
+
+def test_a_render_made_before_f7_is_judged_not_proof_from_its_own_client_record():
+    """A pre-F7 report has no `proof`: it is worked out from what the report kept."""
+    streamed_unwatched = {"client": {"stream": {"frames_sent": 4005}}}
+    assert report.proof_status(client=streamed_unwatched["client"], run={})["not_proof_reasons"] == [
+        "it streamed with no :8000 watch on record"]
+    watched = {"stream": {"frames_sent": 4005}, "live_tower_watch": {"states_seen": ["idle"]}}
+    assert report.proof_status(client=watched, run={})["proof"] is True
+
+
+def test_the_runner_re_reads_8000_right_before_the_spawn(lifecycle, monkeypatch):
+    """C24 HIGH-3: the preflight (import probe, up to 120 s) was unwatched. A live walk that began
+    in it now stops the Tower from being started at all."""
+    order = []
+    answers = iter(["idle", "recording"])
+    monkeypatch.setattr(runner, "live_tower_state", lambda url=None, timeout=None: order.append("live")
+                        or next(answers))
+    monkeypatch.setattr(runner, "probe_import", lambda tower_dir, env: order.append("import")
+                        or str(tower_dir / "tower" / "__init__.py"))
+    assert runner.main(lifecycle["argv"]) == runner.EXIT_ABORTED
+    assert order == ["live", "import", "live"]
+    assert lifecycle["calls"]["spawn"] == [] and lifecycle["calls"]["terminate"] == []
+    assert "became recording during the preflight" in (lifecycle["out"] / "runner.log").read_text(encoding="utf-8")
+
+
+def test_the_runner_reads_8000_at_the_hand_off_even_when_its_watch_is_not_due(lifecycle, monkeypatch):
+    """C24 HIGH-3: the startup watch reads every 10 s; the hand-off to the client reads NOW."""
+    monkeypatch.setattr(runner, "LIVE_WATCH_EVERY_S", 1000.0)   # never due during this startup
+    lifecycle["state"]["live"] = ["idle", "idle", "recording"]  # start, pre-spawn, hand-off
+    assert runner.main(lifecycle["argv"]) == runner.EXIT_ABORTED
+    run = _run_json(lifecycle)
+    assert run["aborted"]["during"] == "startup" and run["live_tower_before_spawn"] == "idle"
+    assert lifecycle["calls"]["options"] == [] and len(lifecycle["calls"]["terminate"]) == 1
+    assert run["live_tower_watch_startup"]["states_seen"] == ["idle", "recording"]
+
+
+def test_the_client_arms_its_guard_before_anything_else_it_does(tmp_path, monkeypatch):
+    """C24 HIGH-3: the guard is read AND armed first -- its own first read happens before the
+    harness pin's git calls (which used to run before even the start read)."""
+    import threading
+
+    reads = []
+    guard_read = threading.Event()
+
+    def live(url=None, timeout=None):
+        reads.append("live")
+        if len(reads) >= 2:
+            guard_read.set()  # the armed guard's first read
+        return "idle"
+
+    calls = []
+
+    def harness():
+        # every call, in order: was the guard already reading :8000 when the harness pin ran?
+        calls.append(guard_read.wait(5))
+        return {"sha1": "h"}
+
+    monkeypatch.setattr(replay, "live_tower_state", live)
+    monkeypatch.setattr(replay, "harness_identity", harness)
+    monkeypatch.setattr(replay, "http_json", lambda *a, **k: (None, None))
+    record = asyncio.run(replay.run_replay(_refusal_options(tmp_path, live_guard_every=0.01)))
+    assert calls == [True]  # one harness call, and only after the guard was armed and reading
+    assert record["outcome"] == "no-test-tower" and record["harness"] == {"sha1": "h"}
+    assert record["live_tower_watch"]["states_seen"] == ["idle"]  # the disarmed guard's record is kept
+    assert (record["live_guard"], record["not_a_proof_run"]) == (True, False)
+
+
+def test_a_live_walk_before_the_first_frame_aborts_the_client_and_kills_the_tower(tmp_path, monkeypatch):
+    answers = iter(["idle"] + ["recording"] * 100)
+    monkeypatch.setattr(replay, "live_tower_state", lambda url=None, timeout=None: next(answers))
+
+    def slow_target(*a, **k):
+        time.sleep(0.3)  # the guard reads every 10 ms meanwhile
+        return None, None
+
+    monkeypatch.setattr(replay, "http_json", slow_target)
+    killed = []
+    record = asyncio.run(replay.run_replay(_refusal_options(tmp_path, live_guard_every=0.01,
+                                                            on_abort=lambda: killed.append(True))))
+    assert record["outcome"] == "aborted" and replay.exit_code(record) == replay.EXIT_ABORTED
+    assert killed == [True] and "live walk" in record["aborted"]["reason"]
+    assert "stream" not in record
+
+
+# HIGH-4: the pacing clock is the recorder's post-reply stamp, and every label says so.
+
+
+def test_the_fidelity_rows_name_the_recorder_stamp_and_say_what_the_bar_measures():
+    pacing, client = _fidelity_inputs()
+    fidelity = report.replay_fidelity(pacing=pacing, client=client)
+    checks = [row["check"] for row in fidelity["rows"]]
+    assert not any("receipt" in check for check in checks)
+    assert [c for c in checks if c.startswith("recorder-stamp offset")] == [
+        P50_CHECK, "recorder-stamp offset error p95 (ms)", "recorder-stamp offset error p99 (ms)"]
+    assert fidelity["family"] == "recorder-stamp" and "post-reply" in fidelity["measures"]
+    assert "not socket arrival" in fidelity["measures"]
+    assert "post-reply stamp, not socket arrival" in report.PACING_ROW
+    assert "not arrivals" in report.INTERVAL_ROW
+    # The numbers are the approved ones, unchanged (review C24 HIGH-4: relabel, never re-tune).
+    assert {k: v for k, v in report.FIDELITY_BAR["v1"].items() if k not in ("ruling", "applies_after")} == V1_NUMBERS
+
+
+def test_a_tower_side_fail_with_the_client_on_time_is_flagged_as_possibly_the_code_under_test(tmp_path):
+    pacing, client = _fidelity_inputs()
+    pacing["offset_error_ms"].update(p95=61.0)                    # a Tower-side clause fails...
+    tower_side = report.replay_fidelity(pacing=pacing, client=client)
+    assert tower_side["result"] == "FAIL" and tower_side["tower_side_only"] is True
+    client["stream"]["lateness_ms"].update(p95=9.0)               # ...and now the client was late too
+    both = report.replay_fidelity(pacing=pacing, client=client)
+    assert both["result"] == "FAIL" and both["tower_side_only"] is False
+    same = [[1, 0], [10, 0]]
+    for index, photos in enumerate([47.0, 47.5, 46.8]):
+        _fake_run(tmp_path / f"old{index}", photos=photos, lag_p95=6.8, sequence=same)
+    _fake_run(tmp_path / "new-slow-frame-path", photos=40.0, lag_p95=6.8, sequence=same, fidelity="FAIL",
+              tower_side_only=True)
+    result = report.compare_runs([tmp_path / f"old{i}" for i in range(3)], [tmp_path / "new-slow-frame-path"])
+    (reason,) = result["invalid_candidates"][0]["reasons"]
+    assert reason.startswith("replay fidelity FAIL (Tower-side clauses only, the client on time")
+    assert "code under test's own frame path" in reason
+
+
+def test_the_report_says_the_pacing_clock_is_post_reply(tmp_path):
+    run_dir, snapshot = _pinned_run(_beyond_max_path(tmp_path), late_ms=(1.0, 300.0),
+                                    capture_root=_beyond_max_path(tmp_path) / "snap" / "captures")
+    out = _beyond_max_path(tmp_path) / "out"
+    assert report.main(["--run-dir", str(run_dir), "--out", str(out)]) == 0
+    markdown = (out / "REPORT.md").read_text(encoding="utf-8")
+    assert "Did the test Tower handle the frames at the recorded pace?" in markdown
+    assert "What the bar measures (review C24 HIGH-4): the recorder's post-reply stamp" in markdown
+    assert "This FAIL is on the Tower-side clauses alone, with the client on time" in markdown
+    assert "Did the test Tower receive the recorded pace?" not in markdown
+
+
+# MED-5: an incomplete /health answer is `unknown`, never `idle`.
+
+
+@pytest.mark.parametrize("doc, state", [
+    ({}, "unknown"),
+    ({"capture_workers": {"workers": []}, "background_chore": {"state": "idle"}}, "unknown"),
+    ({"capture": {"recording": False}, "background_chore": {"state": "idle"}}, "unknown"),
+    ({"capture": {"recording": False}, "capture_workers": {"workers": []}}, "unknown"),
+    ({**IDLE_HEALTH, "capture": {"armed": True, "error": "unavailable"}}, "unknown"),
+    ({**IDLE_HEALTH, "capture": {"recording": False, "error": "unavailable"}}, "unknown"),
+    ({**IDLE_HEALTH, "capture_workers": {"error": "unavailable"}}, "unknown"),
+    ({**IDLE_HEALTH, "background_chore": {"error": "unavailable"}}, "unknown"),
+    ({**IDLE_HEALTH, "capture": {"recording": None}}, "unknown"),
+    ({**IDLE_HEALTH, "capture_workers": {"workers": None}}, "unknown"),
+    ({**IDLE_HEALTH, "background_chore": {"runs": 1}}, "unknown"),
+    ({**IDLE_HEALTH, "capture": "armed"}, "unknown"),
+    # null blocks are the Tower saying "not configured here": a definite answer
+    ({"capture": None, "capture_workers": None, "background_chore": None}, "idle"),
+    (IDLE_HEALTH, "idle"),
+    # a positive answer is believed whatever else is missing
+    ({"capture": {"recording": True}}, "recording"),
+    ({"capture_workers": {"workers": [{"pid": 1}]}}, "busy"),
+    ({"background_chore": {"state": "running"}}, "busy"),
+])
+def test_an_incomplete_health_answer_is_unknown_not_idle(monkeypatch, doc, state):
+    monkeypatch.setattr(replay, "health_probe", lambda url, timeout=None: ("ok", doc))
+    assert replay.live_tower_state() == state
+    assert (replay.health_gaps(doc) == []) is (state == "idle")
+
+
+def test_the_replay_does_not_start_when_8000_answers_an_empty_health(tmp_path, monkeypatch):
+    monkeypatch.setattr(replay, "health_probe", lambda url, timeout=None: ("ok", {}))
+    monkeypatch.setattr(replay, "http_json", lambda *a, **k: pytest.fail("streamed toward a target"))
+    record = asyncio.run(replay.run_replay(_refusal_options(tmp_path)))
+    assert record["outcome"] == "refused-live-unknown" and replay.exit_code(record) == replay.EXIT_ABORTED
+    assert "missing capture / capture_workers / background_chore" in \
+        (tmp_path / "out" / "client.log").read_text(encoding="utf-8")
+
+
+def test_a_target_whose_health_lacks_its_capture_or_worker_block_is_refused():
+    assert "lacks capture_workers (absent)" in replay.target_refusal({"capture": {"recording": False}})
+    assert "lacks capture.recording" in replay.target_refusal(
+        {"capture": {"armed": True, "error": "unavailable"}, "capture_workers": {"workers": []}})
+    # the target's chore is its own: not needed to vouch that nothing records or works
+    assert replay.target_refusal({"capture": {"recording": False}, "capture_workers": {"workers": []}}) is None
+    assert replay.target_refusal(IDLE_HEALTH) is None
+
+
+# MED-6: every writing entrypoint refuses the live store.
+
+
+def test_the_client_and_the_report_refuse_an_out_inside_the_live_store(tmp_path, monkeypatch):
+    live = tmp_path / "live"
+    monkeypatch.setattr(replay, "LIVE_DATA", live)
+    inside = live / "world_builder" / "c22-out"
+    with pytest.raises(SystemExit, match="inside the live store"):
+        replay.main(["--capture", A, "--port", "8031", "--tower-pid", "1", "--out", str(inside)])
+    with pytest.raises(SystemExit, match="inside the live store"):
+        report.main(["--out", str(inside), "--tower-log", str(tmp_path / "x.log")])
+    _fake_run(tmp_path / "old0", photos=47.0, lag_p95=6.8, sequence=[[1, 0]])
+    with pytest.raises(SystemExit, match="inside the live store"):
+        report.main(["--out", str(inside), "--compare", str(tmp_path / "old0")])
+    assert not inside.exists()
+    assert replay.LIVE_DATA == live and runner.LIVE_DATA == replay.CANONICAL_CAPTURE_ROOT.parent
+
+
+# MED-7 and MED-8: the limits are printed, and the lag and identity labels say what they are.
+
+
+def test_the_report_prints_what_the_replay_cannot_exercise(tmp_path):
+    log = tmp_path / "tower.err.log"
+    log.write_text(_walk_log(BASE), encoding="utf-8")
+    markdown = report.render_markdown(report.build_report(tower_log=log, client=_clean_client()))
+    assert f"Limits (review C24 MED-7): {report.REPLAY_LIMITS}" in markdown
+    for words in ("never drops a frame", "send window", "stalled-socket reconnect", "physical walk"):
+        assert words in report.REPLAY_LIMITS
+
+
+def test_the_keyframe_rows_are_a_selection_sequence_and_an_accepted_keyframe_lag(tmp_path):
+    log = tmp_path / "tower.err.log"
+    log.write_text(_walk_log(BASE), encoding="utf-8")
+    _world(tmp_path / "root", BASE, appearance_end=BASE + 700)
+    built = report.build_report(tower_log=log, world_root=tmp_path / "root", client=_clean_client())
+    rows = {r["check"]: r for r in built["live_safety"]["rows"]}
+    assert "not their image content, not capture-qualified" in report.KEYFRAME_SEQUENCE_ROW
+    assert "ACCEPTED keyframes only (not a per-frame observe lag)" in report.KEYFRAME_LAG_ROW
+    assert rows[report.KEYFRAME_SEQUENCE_ROW]["result"] == "INFO"
+    assert rows[report.KEYFRAME_LAG_ROW]["value"].endswith("; 0 accepted keyframe(s) unmatched")
+    metrics = report.comparable_metrics(built)
+    assert metrics["keyframe_accept_lag_s.p95"] == 7.0 and metrics["keyframe_accept_lag_unmatched"] == 0
+    assert not any(name.startswith("observe_lag") for name in metrics)
+    assert not any("inter_arrival" in name or name.startswith("tower_pacing") for name in metrics)
+    report.write_report(tmp_path / "out", built)
+    saved = json.loads((tmp_path / "out" / "keyframes.json").read_text(encoding="utf-8"))
+    assert "not their image content" in saved["identity"]
+    markdown = report.render_compare(report.compare_runs([]))
+    assert "## Keyframe selection sequence, (source_seq, segment_index)" in markdown
+
+
+# Manager 154 §2: the harness pin and version are self-evident in run.json, client.json and the report.
+
+
+def test_the_harness_pin_and_its_version_are_in_every_record_and_report(lifecycle, tmp_path):
+    # a committed, clean pin, whether or not these scripts sit in a checkout right now
+    identity = {**replay.harness_identity(), "git_head": "f" * 40, "git_dirty": []}
+    assert identity["version"] == replay.HARNESS_VERSION and "F7" in replay.HARNESS_VERSION
+    pin = replay.harness_pin(identity)
+    assert pin["version"] == replay.HARNESS_VERSION and pin["git_head"] == identity.get("git_head")
+    assert set(pin["streaming_sha1"]) == set(replay.STREAMING_FILES) == set(report.STREAMING_HARNESS_FILES)
+    assert pin["streaming_sha1"]["world_live_replay.py"] == identity["files_sha1"]["world_live_replay.py"]
+    assert replay.harness_pin({"git_head": "x" * 40, "git_dirty": []})["committed_clean"] is True
+    assert replay.harness_pin({"git_head": "x" * 40, "git_dirty": [" M a.py"]})["committed_clean"] is False
+    assert replay.harness_pin({"files_sha1": {}})["committed_clean"] is False
+    # run.json (the fixture's harness is a stand-in with no version)
+    lifecycle["state"]["replay"] = lambda options: {"tool": "world_live_replay", "outcome": "settled",
+                                                    "tower_captures": []}
+    assert runner.main(lifecycle["argv"]) == 0
+    run = _run_json(lifecycle)
+    assert run["harness_pin"] == replay.harness_pin({"sha1": "harness"})
+    # the report: which harness streamed the run, and which rendered it
+    log = tmp_path / "tower.err.log"
+    log.write_text(_walk_log(BASE), encoding="utf-8")
+    built = report.build_report(tower_log=log, client=_clean_client(harness=identity))
+    assert built["harness_pin"]["version"] == replay.HARNESS_VERSION
+    assert built["rendered_by"]["version"] == replay.HARNESS_VERSION and len(built["rendered_by"]["report_sha1"]) == 40
+    markdown = report.render_markdown(built)
+    assert (f"Harness pin (the harness that STREAMED this run): version `{replay.HARNESS_VERSION}`, git HEAD "
+            f"`{identity.get('git_head')}` (committed, clean); streaming scripts sha1 world_live_replay.py "
+            f"`{identity['files_sha1']['world_live_replay.py']}`") in markdown
+    assert f"Rendered by harness version `{replay.HARNESS_VERSION}`" in markdown
+    old = report.render_markdown(report.build_report(tower_log=log, client=_clean_client(
+        harness={"git_head": "10976c6933db6b2f6662e53b79f0ee776ffed868", "git_dirty": [], "sha1": "f8d9"})))
+    assert "version `not recorded (made before C22-F7)`, git HEAD `10976c6933db6b2f6662e53b79f0ee776ffed868`" in old

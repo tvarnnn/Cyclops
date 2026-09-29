@@ -29,9 +29,28 @@ started after 2026-09-28 16:55 EDT, v3 (manager 149 §2, which replaced
 manager 148's v2) -- each run is judged by the version in force when it
 started, and the report says which -- which every proof-set run must PASS
 (n/a is not a pass). `--compare` flags a run that fails either
-and leaves it out of the baseline's range. `phone_photos_at` is when the phone was told the
-room's photos were ready. All of it is read AFTER the fact, so a finished
-run is re-reported without re-running it:
+and leaves it out of the baseline's range.
+
+THE W0 VERDICT (review C24 HIGH-1) is Stop -> `phone_photos_at`, when the
+replay CLIENT received the push saying the room's photos were ready. The
+store's `updated_at` for the room appearance is INFO. A report with no client
+record (a real walk's log) can only give the store time, and says so: that is
+NOT the client measure. Neither is a phone rendering the photos.
+
+THE PACING CLOCK (review C24 HIGH-4). `frames.jsonl` `received_at` is the
+capture recorder's stamp, taken when `ws.py` hands it the frame AFTER parsing,
+decoding, the CV module and the `frame_result` send: a post-reply stamp, not
+socket arrival. The pacing rows and the fidelity bar are labelled so.
+
+`--compare` counts only COMPARABLE runs (review C24 HIGH-2,
+`comparability_key`): the same source capture and journal, switch set, code,
+streaming harness, replay shape, calibration and fidelity family. A candidate
+may differ from the baseline only in the switches declared with
+`--candidate-switches`. A run made without the :8000 guard, or declared
+`--not-a-proof-run`, is NOT-PROOF and never counted (review C24 HIGH-3).
+
+All of it is read AFTER the fact, so a finished run is re-reported without
+re-running it:
 
     python scripts/world_live_replay_report.py --run-dir <run's --out> --out <dir> \
         [--data-root <the run's data root>] [--capture-root <the source captures>]
@@ -41,7 +60,7 @@ run is re-reported without re-running it:
 and N runs are compared (old x N against new x N, per-metric spread):
 
     python scripts/world_live_replay_report.py --out <dir> --compare <old1> <old2> <old3> \
-        [--candidate <new1> <new2> <new3>]
+        [--candidate <new1> <new2> <new3> [--candidate-switches KEY=VALUE ...]]
 """
 
 from __future__ import annotations
@@ -56,6 +75,7 @@ import os
 import re
 import sys
 import time
+from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -65,6 +85,20 @@ from tower.artifact_paths import artifact_root_arg  # noqa: E402
 
 HARD_MAX_MINUTES = 10.0
 CHORE_CHAIN_GAP_S = 90.0
+
+# The W0 timing measure (review C24 HIGH-1) and what each basis is.
+W0_TIMING_METRIC = "stop_to_phone_photos_min"
+BASIS_PHONE = ("phone_photos_at: the replay client's receipt of the status push that said the room's photos "
+               "were ready (not photos rendered on a phone)")
+BASIS_STORE = ("the STORE's room-appearance updated_at -- NOT the client measure: this report has no client "
+               "record (a real walk's log), so nothing says when a client was told")
+
+# What the replay cannot exercise (review C24 MED-7), printed in every report.
+REPLAY_LIMITS = ("The replay awaits every send, so it never drops a frame, and it replays only the frames the "
+                 "original Tower recorded; it reconnects cleanly. It cannot exercise the phone's bounded send "
+                 "window, its frame drops or its stalled-socket reconnect under a changed Tower, nor the "
+                 "overlapping reconnect of a multi-capture walk: those need a phone trace and a physical walk. "
+                 "It is a Tower benchmark.")
 
 _TS = re.compile(r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}),(\d{3}) (\w+) (\S+) (.*)$")
 _ID = r"[0-9a-f]{32}"
@@ -588,18 +622,24 @@ def read_jsonl(path) -> list:
 
 
 def keyframe_facts(session_dir) -> dict | None:
-    """The session's keyframe sequence and its observe lag (review C22 H2).
+    """The session's keyframe SELECTION SEQUENCE and its keyframe-accept lag
+    (review C22 H2; labels qualified by review C24 MED-8).
 
-    IDENTITY is the ordered `(source_seq, segment_index)` of `keyframes.jsonl`,
-    never `keyframe_id`: that embeds the session id, which differs between
-    runs. Selection is content-driven, so two runs of one walk that differ
-    here leaked timing into the builder.
+    THE SELECTION SEQUENCE is the ordered `(source_seq, segment_index)` of
+    `keyframes.jsonl`, never `keyframe_id`: that embeds the session id, which
+    differs between runs. It says WHICH frames were selected, in which
+    segments -- not their image content, and not capture-qualified (two
+    captures of one walk can reuse a `source_seq`). Selection is
+    content-driven, so two runs of one walk that differ here leaked timing
+    into the builder; two that agree may still differ in pixels.
 
-    OBSERVE LAG is `events.jsonl` `keyframe_accepted.at` minus that
-    keyframe's `received_at` (joined on `keyframe_id`): how long after the
-    Tower received a frame the builder had observed and accepted it. It is
-    keyframe-level; a true per-frame lag would need an `observed_at` in
-    `frames_quality.jsonl`, which the Tower does not write.
+    THE KEYFRAME-ACCEPT LAG is `events.jsonl` `keyframe_accepted.at` minus
+    that keyframe's `received_at` (joined on `keyframe_id`), for ACCEPTED
+    keyframes only -- never every frame. `received_at` is the recorder's
+    post-reply stamp (review C24 HIGH-4), not socket arrival. A per-frame
+    observe lag would need an `observed_at` in `frames_quality.jsonl`, which
+    the Tower does not write. `observe_lag_s` / `observe_lag_unmatched` keep
+    their data names so older renders still compare.
     """
     session_dir = Path(session_dir)
     rows = read_jsonl(session_dir / "keyframes.jsonl")
@@ -683,7 +723,8 @@ FIDELITY_BAR = {
         "ruling": "manager 142 (W0-STAGES.md, 2026-09-28), as proposed by the C22 review round 3",
         # In force for runs started after this (epoch s); None: from the first.
         "applies_after": None,
-        # Signed receipt-offset error (`tower_side_pacing`), ms. Positive is late.
+        # Signed recorder-stamp offset error (`tower_side_pacing`: the post-reply
+        # stamp, not socket arrival -- review C24 HIGH-4), ms. Positive is late.
         "offset_p50_abs_ms": 5.0,
         "offset_p95_ms": 60.0,
         "offset_p99_ms": 250.0,
@@ -707,6 +748,16 @@ FIDELITY_BAR["v3"] = {
     "offset_median_abs_ms": 20.0,
 }
 FIDELITY_V3_APPLIES_AFTER_TEXT = "2026-09-28 16:55 EDT"
+# THE FAMILY of a bar version: the clock its offsets are measured on (review
+# C24 HIGH-2, one field of `comparability_key`). v1 and v3 both judge the
+# recorder's post-reply stamp, so runs judged by either compare; a bar on a
+# future pre-decode ingress stamp (C24 HIGH-4's Tower-side fix) would be a
+# new family, and its runs would not compare with these.
+FIDELITY_FAMILY = {"v1": "recorder-stamp", "v3": "recorder-stamp"}
+# What the bar measures, printed with the verdict (review C24 HIGH-4).
+FIDELITY_MEASURES = ("the recorder's post-reply stamp (`frames.jsonl` `received_at`, taken after parse, decode, "
+                     "the CV module and the frame_result send), not socket arrival: a FAIL on the Tower-side "
+                     "clauses with the client on time can be the code under test's own frame path")
 # Both versions' rulings, for a record that spans runs (`--compare`).
 FIDELITY_RULING = "; ".join(f"{version}: {bar['ruling']}" for version, bar in FIDELITY_BAR.items())
 FIDELITY_NA_NOTE = ("n/a is NOT a pass. Every proof-set run must PASS replay fidelity (manager 142): "
@@ -718,28 +769,58 @@ PACING_OVER_S = FIDELITY_BAR["v1"]["beyond_ms"] / 1000.0   # v3 keeps v1's
 # The pacing rows stay INFO in the CODE's verdict: their bar is the separate
 # Replay fidelity verdict, and their tails are `--compare`'s.
 PACING_ROW_REQUIRED = "its bar is the Replay fidelity verdict (manager 142); the tails: no regression (--compare)"
+# The pacing rows' names (review C24 HIGH-4: a post-reply stamp, not receipt).
+# The keyframe rows' names (review C24 MED-8): a selection sequence, not an
+# image identity; a lag over ACCEPTED keyframes only, from the post-reply stamp.
+KEYFRAME_SEQUENCE_ROW = ("keyframe selection sequence (source_seq, segment_index) -- which frames were selected, "
+                         "not their image content, not capture-qualified")
+KEYFRAME_LAG_ROW = ("keyframe-accept lag (s): keyframe_accepted.at - the recorder's post-reply received_at, "
+                    "ACCEPTED keyframes only (not a per-frame observe lag)")
+PACING_ROW = ("Tower-side pacing: recorder-stamp offset - recorded offset (ms), joined on wire_seq "
+              "(post-reply stamp, not socket arrival)")
+INTERVAL_ROW = "Tower-side recorder-stamp intervals (s), replayed vs recorded (post-reply stamps, not arrivals)"
 
 
 def tower_side_pacing(*, client: dict, data_root, capture_root, capture_root_from=None) -> dict:
-    """How faithfully the test Tower RECEIVED the recorded pace (review C22
-    H2, the "README fidelity" row).
+    """How faithfully the test Tower HANDLED the frames at the recorded pace
+    (review C22 H2, the "README fidelity" row), on the recorder's clock.
 
     The replay's send lateness is measured at the client and stops at the
     send call. This is the Tower's own side: the test Tower re-records every
-    frame it receives into `<data-root>/captures/<id>/frames.jsonl`, stamped
-    at receipt exactly as the recorded walk's journal was. Each re-recorded
-    frame is joined to the source journal on `wire_seq` (the phone's `seq`,
-    which the replay sends as recorded), capture by capture in walk order.
+    frame into `<data-root>/captures/<id>/frames.jsonl`, stamped exactly as
+    the recorded walk's journal was. Each re-recorded frame is joined to the
+    source journal on `wire_seq` (the phone's `seq`, which the replay sends
+    as recorded), capture by capture in walk order.
 
-    RECEIPT-OFFSET ERROR, per frame: (replayed receipt - the replay's first
-    capture `started_at`) - (recorded receipt - the recorded walk's first
-    capture `started_at`) / speed. Both origins are the Tower's receipt of
-    the walk's first `stream_start`, which is the origin the schedule is
-    built on. Positive is late. Signed p1/p5/p50/p95/p99, min/max, and the
-    count beyond 50 ms either way.
+    WHAT THE STAMP IS (review C24 HIGH-4). `received_at` is NOT socket
+    arrival. `CaptureRecorder.write_frame` takes it (`time.time()`, a4afea1
+    `capture.py:257`) when `ws.py` `_record_capture` calls it -- AFTER the
+    frame was JSON-parsed off the socket, base64- and header-decoded, run
+    through the CV module and answered with `frame_result`, and after the
+    previous frame's fsync'd write, because the socket is read one message
+    at a time (`ws.py` `_handle_frame_message`, `_fan_out_frame`). The
+    recorded walk's stamps are the same kind, and the schedule SENDS each
+    frame at its recorded stamp. So the offset below is, per frame:
 
-    INTER-ARRIVAL: consecutive receipts within a capture, replayed and
-    recorded (scaled by speed), and their per-frame difference.
+        client send lateness + loopback transit
+        + the TEST Tower's handling delay (queue + parse + decode + CV + reply)
+
+    relative to the recorded walk, whose own handling delay is already in
+    the schedule. A frame path made slower by the code under test moves it,
+    exactly as a late client does; only the client-lateness clause of the
+    fidelity bar is the harness's alone.
+
+    RECORDER-STAMP OFFSET ERROR, per frame: (replayed stamp - the replay's
+    first capture `started_at`) - (recorded stamp - the recorded walk's first
+    capture `started_at`) / speed. Both origins are the recorder's start on
+    the walk's first `stream_start`, the origin the schedule is built on.
+    Positive is late. Signed p1/p5/p50/p95/p99, min/max, and the count beyond
+    50 ms either way.
+
+    STAMP INTERVALS (`inter_arrival_*`, a data name kept for older renders):
+    consecutive stamps within a capture, replayed and recorded (scaled by
+    speed), and their per-frame difference. Intervals between post-reply
+    stamps, not between arrivals.
 
     Reads the run's data root and the source captures (both read only).
     """
@@ -893,7 +974,7 @@ def replay_fidelity(*, pacing: dict | None, client: dict, run: dict | None = Non
       1. the `wire_seq` join is exact: every frame sent was joined, the Tower
          re-recorded nothing the source lacks, and the only source frames not
          joined are those the schedule never sent (the `first_seconds` cut);
-      2. signed receipt-offset error p95 and p99 within the bar, and
+      2. signed recorder-stamp offset error p95 and p99 within the bar, and
          v1: its |p50|;
          v3: its jitter, p95 |offset - median(offset)|, AND its constant
          bias, |median(offset)| (no |p50| clause);
@@ -901,11 +982,21 @@ def replay_fidelity(*, pacing: dict | None, client: dict, run: dict | None = Non
          early;
       4. the client's own send lateness p95 within the bar, so that a FAIL on
          the Tower's side is the Tower's and not the harness's.
+
+    WHAT IT MEASURES (review C24 HIGH-4). Clauses 1-3 judge the recorder's
+    post-reply stamp (`tower_side_pacing`), not socket arrival: they judge
+    whether the test Tower HANDLED each frame at the recorded pace, which
+    includes the code under test's own parse, decode, CV and reply time.
+    The numbers are unchanged; only what they are called. So a Tower-side
+    FAIL with the client on time (clause 4 PASS) is not necessarily the
+    harness's: it can be the candidate's own frame path, and `--compare`
+    says so rather than calling it a bad replay (`tower_side_only`).
     """
     started_at, started_from = run_started_at(run, client)
     version, version_why = fidelity_version(started_at)
     bar = FIDELITY_BAR[version]
     result: dict = {"result": "n/a", "version": version, "version_why": version_why,
+                    "family": FIDELITY_FAMILY[version], "measures": FIDELITY_MEASURES,
                     "started_at": started_at, "started_at_from": started_from,
                     "ruling": bar["ruling"], "bar": dict(bar), "rows": []}
     if not pacing or not pacing.get("computable"):
@@ -941,21 +1032,21 @@ def replay_fidelity(*, pacing: dict | None, client: dict, run: dict | None = Non
 
     p50, p95, p99, low = (number(offset.get(k)) for k in ("p50", "p95", "p99", "min"))
     if "offset_p50_abs_ms" in bar:              # v1
-        row("receipt-offset error |p50| (ms)", p50, f"<= {bar['offset_p50_abs_ms']:g}",
+        row("recorder-stamp offset error |p50| (ms)", p50, f"<= {bar['offset_p50_abs_ms']:g}",
             None if p50 is None else abs(p50) <= bar["offset_p50_abs_ms"])
     if "offset_abs_deviation_p95_ms" in bar:    # v3
         jitter = number((pacing.get("offset_abs_deviation_ms") or {}).get("p95"))
-        row("receipt-offset jitter: p95 |offset - median(offset)| (ms)", jitter,
+        row("recorder-stamp offset jitter: p95 |offset - median(offset)| (ms)", jitter,
             f"<= {bar['offset_abs_deviation_p95_ms']:g}",
             None if jitter is None else jitter <= bar["offset_abs_deviation_p95_ms"])
     if "offset_median_abs_ms" in bar:           # v3
         median = number(pacing.get("offset_median_ms"))
-        row("receipt-offset constant bias: |median(offset)| (ms)", median,
+        row("recorder-stamp offset constant bias: |median(offset)| (ms)", median,
             f"<= {bar['offset_median_abs_ms']:g}",
             None if median is None else abs(median) <= bar["offset_median_abs_ms"])
-    row("receipt-offset error p95 (ms)", p95, f"<= {bar['offset_p95_ms']:g}",
+    row("recorder-stamp offset error p95 (ms)", p95, f"<= {bar['offset_p95_ms']:g}",
         None if p95 is None else p95 <= bar["offset_p95_ms"])
-    row("receipt-offset error p99 (ms)", p99, f"<= {bar['offset_p99_ms']:g}",
+    row("recorder-stamp offset error p99 (ms)", p99, f"<= {bar['offset_p99_ms']:g}",
         None if p99 is None else p99 <= bar["offset_p99_ms"])
     late, early = pacing.get("late_over_50ms"), pacing.get("early_over_50ms")
     beyond = (late or 0) + (early or 0)
@@ -975,6 +1066,11 @@ def replay_fidelity(*, pacing: dict | None, client: dict, run: dict | None = Non
     verdicts = [r["result"] for r in rows]
     result["result"] = ("FAIL" if "FAIL" in verdicts else "PASS" if all(v == "PASS" for v in verdicts)
                         else "n/a")
+    # A FAIL on the Tower-side clauses alone, with the client on time: the
+    # stamp is post-reply, so it can be the code under test's frame path
+    # (review C24 HIGH-4). Reported, never a change to the verdict.
+    result["tower_side_only"] = (result["result"] == "FAIL" and rows[-1]["result"] == "PASS"
+                                 and rows[-1]["check"].startswith("client send lateness"))
     if result["result"] == "n/a":
         result["why"] = "a check had no value: " + ", ".join(r["check"] for r in rows if r["result"] == "n/a")
         result["note"] = FIDELITY_NA_NOTE
@@ -1384,18 +1480,17 @@ def live_safety(*, client: dict, timeline: dict, session: dict, keyframes: dict 
         "no regression (--compare)", "INFO" if totals.get("receive_to_result_ms_max") is not None else "n/a")
     accepted = session.get("keyframes_accepted") if session else None
     if keyframes:
-        row("keyframes accepted; sequence (source_seq, segment_index)",
+        row(KEYFRAME_SEQUENCE_ROW,
             f"{accepted} accepted, {keyframes['count']} in keyframes.jsonl, sha256 {keyframes['sha256'][:16]}",
             "identical to baseline (--compare)",
             "INFO" if accepted in (None, keyframes["count"]) else "FAIL")
         lag = keyframes.get("observe_lag_s") or {}
-        row("observe lag, keyframe accepted - received (s)",
-            _dist_text(lag) + (f"; {keyframes.get('observe_lag_unmatched')} unmatched"
-                               if keyframes.get("observe_lag_unmatched") else ""),
-            "no regression (--compare)", "INFO" if lag.get("count") else "n/a")
+        row(KEYFRAME_LAG_ROW,
+            _dist_text(lag) + f"; {keyframes.get('observe_lag_unmatched') or 0} accepted keyframe(s) unmatched",
+            "no regression (--compare), every accepted keyframe joined", "INFO" if lag.get("count") else "n/a")
     else:
-        row("keyframes accepted; sequence", accepted, "identical to baseline (--compare)", "n/a")
-        row("observe lag (s)", None, "no regression (--compare)", "n/a")
+        row(KEYFRAME_SEQUENCE_ROW, accepted, "identical to baseline (--compare)", "n/a")
+        row(KEYFRAME_LAG_ROW, None, "no regression (--compare)", "n/a")
     row("rebuild latency (s)", _dist_text(distribution(rebuild_seconds)), "no regression (--compare)",
         "INFO" if rebuild_seconds else "n/a")
     row("rebuild cadence (s)", _dist_text(distribution(cadence)), "no regression (--compare)",
@@ -1409,7 +1504,7 @@ def live_safety(*, client: dict, timeline: dict, session: dict, keyframes: dict 
         "unchanged (--compare)", "INFO")
     if pacing and pacing.get("computable"):
         offset, gaps = pacing.get("offset_error_ms") or {}, pacing.get("inter_arrival_s") or {}
-        row("Tower-side pacing: receipt offset - recorded offset (ms), joined on wire_seq",
+        row(PACING_ROW,
             f"{pacing.get('matched')} joined ({pacing.get('replay_only')} replay-only, "
             f"{pacing.get('source_only')} source-only"
             + (f", the walk cut at first_seconds {pacing['first_seconds']}" if pacing.get("first_seconds") else "")
@@ -1417,14 +1512,13 @@ def live_safety(*, client: dict, timeline: dict, session: dict, keyframes: dict 
             f"p99 {offset.get('p99')}, max {offset.get('max')} (min {offset.get('min')}, p5 {offset.get('p5')}); "
             f"beyond 50 ms: {pacing.get('late_over_50ms')} late, {pacing.get('early_over_50ms')} early",
             PACING_ROW_REQUIRED, "INFO")
-        row("Tower-side inter-arrival (s), replayed vs recorded",
+        row(INTERVAL_ROW,
             f"replayed {_dist_text(gaps.get('replayed') or {})} / recorded "
             f"{_dist_text(gaps.get('recorded') or {})}; difference (ms) "
             f"{_dist_text(pacing.get('inter_arrival_error_ms') or {})}",
             PACING_ROW_REQUIRED, "INFO")
     else:
-        row("Tower-side pacing: receipt offset - recorded offset (ms), joined on wire_seq",
-            (pacing or {}).get("why"), PACING_ROW_REQUIRED, "n/a")
+        row(PACING_ROW, (pacing or {}).get("why"), PACING_ROW_REQUIRED, "n/a")
     if surfaces.get("computable"):
         latency = surfaces.get("latency_s") or {}
         killed = sum(1 for s in surfaces.get("surfaces") or [] if s.get("killed_at_stop"))
@@ -1483,11 +1577,50 @@ def _unknown_abort_after() -> int:
     return LIVE_UNKNOWN_ABORT_AFTER
 
 
+def client_recorded(client) -> bool:
+    """Whether a replay client's own record is at hand (a real walk's log has
+    none): the W0 verdict's basis (review C24 HIGH-1)."""
+    return isinstance(client, dict) and any(key in client for key in ("tool", "stream", "phone_view", "handshake"))
+
+
+def _streamed(client: dict) -> bool:
+    sent = (client.get("stream") or {}).get("frames_sent")
+    return isinstance(sent, int) and not isinstance(sent, bool) and sent > 0
+
+
+def proof_status(*, client: dict, run: dict | None) -> dict:
+    """Can this run be proof at all? (review C24 HIGH-3.) NOT-PROOF when it
+    was declared so (`--not-a-proof-run`), when the :8000 guard was off
+    (`--no-live-guard`), when it streamed with no :8000 watch on record, or
+    when there is no replay client record. `--compare` never counts it."""
+    run = run or {}
+    reasons = []
+    if not client_recorded(client):
+        reasons.append("no replay client record (not a replay run)")
+    if client.get("not_a_proof_run") or run.get("not_a_proof_run"):
+        reasons.append("declared --not-a-proof-run")
+    if client.get("live_guard") is False or run.get("live_guard") is False:
+        reasons.append("the :8000 guard was off (--no-live-guard)")
+    elif _streamed(client) and not client.get("live_tower_watch"):
+        reasons.append("it streamed with no :8000 watch on record")
+    return {"proof": not reasons, "not_proof_reasons": reasons}
+
+
 def live_environment(*, client: dict, run: dict | None) -> dict:
     """What `:8000` did while the test Tower ran: the machine, not the code.
     From the client's watch (the stream and the settle) and, when the runner
-    wrote one, its own (the test Tower's startup and idle wait)."""
-    rows = [_guard_row(":8000 during the run", client.get("live_tower_watch"), client.get("aborted"))]
+    wrote one, its own (the test Tower's startup and idle wait).
+
+    A stream that nobody watched is a FAIL, never n/a (review C24 HIGH-3):
+    the runner's startup watch alone must not make an unguarded stream PASS."""
+    watch = client.get("live_tower_watch")
+    if not watch and (client.get("live_guard") is False or _streamed(client)):
+        why = ("the guard was off (--no-live-guard)" if client.get("live_guard") is False
+               else "the client streamed and kept no :8000 watch")
+        rows = [{"check": ":8000 during the run", "value": f"NOT WATCHED: {why}",
+                 "required": "idle or down throughout; an isolated unknown tolerated", "result": "FAIL"}]
+    else:
+        rows = [_guard_row(":8000 during the run", watch, client.get("aborted"))]
     startup = (run or {}).get("live_tower_watch_startup")
     if startup:
         aborted = (run or {}).get("aborted")
@@ -1686,10 +1819,7 @@ def build_report(*, tower_log, tower_out_log=None, world_root=None, capture_id=N
             milestones["settled"] = settled
             add("Σ", "Stop to settled", t0, settled, use=False)
 
-    photos = milestones.get("room_appearance_ok")
-    photos_minutes = _minutes(t0, photos)
-    verdict = ("PASS" if photos_minutes is not None and photos_minutes <= HARD_MAX_MINUTES
-               else "FAIL" if photos_minutes is not None else "NOT REACHED")
+    store_minutes = _minutes(t0, milestones.get("room_appearance_ok"))
 
     rebuild_seconds = [r["seconds"] for r in timeline.get("rebuilds", [])]
     rebuild_times = [r["t"] for r in timeline.get("rebuilds", [])]
@@ -1733,12 +1863,26 @@ def build_report(*, tower_log, tower_out_log=None, world_root=None, capture_id=N
         milestones["phone_photos_at"] = photos_told["phone_photos_at"]
     if photos_told.get("photographic_complete_at") is not None:
         milestones["phone_photographic_complete_at"] = photos_told["photographic_complete_at"]
+    # THE W0 VERDICT (review C24 HIGH-1): Stop -> the replay CLIENT's receipt
+    # of the room's photos. The store's `updated_at` is INFO -- it says when a
+    # worker wrote the record, not that any client was told. Without a client
+    # record (a real walk's log) only the store time exists, and the verdict
+    # says it is NOT the client measure.
+    phone_minutes = _minutes(t0, milestones.get("phone_photos_at"))
+    has_client = client_recorded(client)
+    photos_minutes = phone_minutes if has_client else store_minutes
+    verdict = ("PASS" if photos_minutes is not None and photos_minutes <= HARD_MAX_MINUTES
+               else "FAIL" if photos_minutes is not None else "NOT REACHED")
+    not_reached_why = None
+    if verdict == "NOT REACHED":
+        not_reached_why = ((photos_told.get("why") or "no push after Stop told the client the room's photos were "
+                            "ready") if has_client else "the store has no room appearance `ok`")
     safety = live_safety(client=client, timeline=timeline, session=session, keyframes=keyframes,
                          surfaces=surfaces, rebuild_seconds=rebuild_seconds, cadence=cadence,
                          pacing=pacing, run=run)
 
-    return {
-        "report": "c22-live-replay/2",
+    built = {
+        "report": "c22-live-replay/3",
         "label": label or client.get("label"),
         "generated_at": round(time.time(), 3),
         "inputs": {"tower_log": str(tower_log), "tower_out_log": None if tower_out_log is None
@@ -1746,11 +1890,25 @@ def build_report(*, tower_log, tower_out_log=None, world_root=None, capture_id=N
                    "samples": None if samples is None else str(samples),
                    "run_dir": None if run_dir is None else str(run_dir)},
         "harness": client.get("harness"),
+        # Which harness STREAMED this run, and which rendered this report
+        # (manager 154 §2: the pin and version are self-evident).
+        "harness_pin": harness_pin_of((run or {}).get("harness") or client.get("harness")),
+        "rendered_by": rendered_by(),
         "hard_max_minutes": HARD_MAX_MINUTES,
-        "verdict": {"stop_to_room_with_photos_min": photos_minutes, "result": verdict,
+        "verdict": {"basis": "phone" if has_client else "store",
+                    "measure": BASIS_PHONE if has_client else BASIS_STORE,
+                    "stop_to_room_with_photos_min": photos_minutes, "result": verdict,
+                    "not_reached_why": not_reached_why,
+                    # How `phone_photos_at` was read: INFERRED for a client that
+                    # recorded no `scope` (made before C22-F2).
+                    "phone_photos_how": photos_told.get("how") if has_client else None,
+                    "stop_to_phone_photos_min": phone_minutes,
+                    # INFO: when the store wrote the room appearance `ok`.
+                    "stop_to_store_photos_min": store_minutes,
                     "stop_to_settled_min": _minutes(t0, milestones.get("settled")),
-                    "stop_to_finalization_min": _minutes(t0, milestones.get("finalization_complete")),
-                    "stop_to_phone_photos_min": _minutes(t0, milestones.get("phone_photos_at"))},
+                    "stop_to_finalization_min": _minutes(t0, milestones.get("finalization_complete"))},
+        # Can this run be proof at all (review C24 HIGH-3)?
+        "proof": proof_status(client=client, run=run),
         "live_safety": safety,
         # Apart from the code's verdict and the Environment's (manager 142).
         "replay_fidelity": fidelity,
@@ -1759,9 +1917,11 @@ def build_report(*, tower_log, tower_out_log=None, world_root=None, capture_id=N
         "keyframes": keyframes,
         "solve_draw_0": zero,
         "live_surfaces_latency": surfaces,
-        "client": {k: client.get(k) for k in ("outcome", "speed", "first_seconds", "capture_root", "walk", "schedule",
+        "client": {k: client.get(k) for k in ("outcome", "speed", "first_seconds", "after_stop", "options",
+                                              "capture_root", "walk", "schedule",
                                               "stream", "phone_fetches", "handshake", "session_start",
                                               "live_tower_at_start", "live_tower_watch", "target_listener",
+                                              "live_guard", "not_a_proof_run",
                                               "aborted", "started_at", "t0", "stopped_at")
                    if k in client},
         "tower_walk": {
@@ -1801,6 +1961,12 @@ def build_report(*, tower_log, tower_out_log=None, world_root=None, capture_id=N
         "timeline": timeline,
         "samples": len(sample_rows),
     }
+    if run:
+        built["run"] = run
+    # What a run must share with the runs --compare sets it against (review
+    # C24 HIGH-2); recomputed there from the report, shown here.
+    built["comparability_key"] = comparability_key(built)
+    return built
 
 
 def _minutes_where(samples, start, predicate):
@@ -1860,17 +2026,44 @@ def render_markdown(report: dict) -> str:
     harness = run.get("harness") or report.get("harness") or {}
     if harness:
         dirty = harness.get("git_dirty")
-        lines.append(f"Harness: `{harness.get('git_head') or 'not a checkout'}`"
-                     + (f" with uncommitted changes {dirty}" if dirty else (" (clean)" if dirty == [] else ""))
-                     + f"; scripts sha1 `{harness.get('sha1')}`.")
+        pin = harness_pin_of(harness)
+        lines.append(f"Harness pin (the harness that STREAMED this run): version "
+                     f"`{pin.get('version') or 'not recorded (made before C22-F7)'}`, git HEAD "
+                     f"`{harness.get('git_head') or 'not a checkout'}`"
+                     + (f" with uncommitted changes {dirty}" if dirty else (" (committed, clean)" if dirty == [] else ""))
+                     + "; streaming scripts sha1 "
+                     + ", ".join(f"{name} `{sha}`" for name, sha in (pin.get("streaming_sha1") or {}).items())
+                     + f"; all three scripts sha1 `{harness.get('sha1')}`.")
+        lines.append("")
+    rendered = report.get("rendered_by") or {}
+    if rendered:
+        lines.append(f"Rendered by harness version `{rendered.get('version')}`, world_live_replay_report.py sha1 "
+                     f"`{rendered.get('report_sha1')}`.")
         lines.append("")
     lines.append("## 1. Summary")
     lines.append("")
+    proof = report.get("proof") or {}
+    if proof and not proof.get("proof"):
+        lines.append(f"**NOT-PROOF:** {'; '.join(proof.get('not_proof_reasons') or [])}. `--compare` never counts "
+                     "this run (review C24 HIGH-3).")
+        lines.append("")
     photos = verdict.get("stop_to_room_with_photos_min")
-    lines.append(f"1. **Stop to room with photos: {photos if photos is not None else 'not reached'} min** "
-                 f"against the {report['hard_max_minutes']:.0f}-min hard maximum: **{verdict.get('result')}**."
-                 + (f" The phone was told at +{verdict['stop_to_phone_photos_min']} min (`phone_photos_at`)."
-                    if verdict.get("stop_to_phone_photos_min") is not None else ""))
+    shown = f"{photos} min" if photos is not None else f"not reached ({verdict.get('not_reached_why')})"
+    store = verdict.get("stop_to_store_photos_min")
+    if verdict.get("basis") == "store":
+        lines.append(f"1. **Stop to room with photos: {shown} -- the STORE's `updated_at`, NOT the client "
+                     f"measure** (no client record: a real walk's log) against the "
+                     f"{report['hard_max_minutes']:.0f}-min hard maximum: **{verdict.get('result')}**.")
+    else:
+        lines.append(f"1. **Stop to room with photos, as the replay client received it (`phone_photos_at`): "
+                     f"{shown}** against the {report['hard_max_minutes']:.0f}-min hard maximum: "
+                     f"**{verdict.get('result')}**. This is the replay client's receipt of the status push, not "
+                     "photos rendered on a phone."
+                     + (" **The client's time is INFERRED**: this client did not record the word's `scope` (a "
+                        "record made before C22-F2), so the move to an area is read from its stage."
+                        if str(verdict.get("phone_photos_how") or "").startswith("INFERRED") else "")
+                     + (f" INFO: the store wrote the room appearance `ok` at +{store} min (not the W0 measure)."
+                        if store is not None else ""))
     lines.append(f"2. Stop to `finalization: complete`: {verdict.get('stop_to_finalization_min')} min. "
                  f"Stop to settled (worker exit and the chore's areas): {verdict.get('stop_to_settled_min')} min.")
     stream = client.get("stream") or {}
@@ -1903,9 +2096,11 @@ def render_markdown(report: dict) -> str:
                  f"**{fidelity_head.get('result')}**"
                  + (" (n/a is NOT a pass for a proof set)" if fidelity_head.get("result") == "n/a" else "")
                  + (f", judged by fidelity bar {fidelity_head['version']}" if fidelity_head.get("version") else "")
-                 + ".")
+                 + ". Proof: " + ("**NOT-PROOF**" if proof and not proof.get("proof") else "eligible") + ".")
     if client.get("aborted"):
         lines.append(f"6. **Aborted** at {_clock(client['aborted'].get('t'))}: {client['aborted'].get('reason')}.")
+    lines.append("")
+    lines.append(f"Limits (review C24 MED-7): {REPLAY_LIMITS}")
     lines.append("")
     safety = report.get("live_safety") or {}
     lines.append(f"## 2. Live safety (C19 F8): **{safety.get('result')}**")
@@ -1940,9 +2135,14 @@ def render_markdown(report: dict) -> str:
                      f"when the run started: {fidelity.get('version_why')}"
                      + (f" ({fidelity['started_at_from']})" if fidelity.get("started_at_from") else "")
                      if fidelity.get("version") else f"the bar approved by {fidelity.get('ruling')}")
-        lines.append(f"**Replay fidelity: {fidelity.get('result')}.** Did the test Tower receive the recorded "
-                     f"pace? Judged apart from the code's verdict and the Environment's, against {judged_by}. "
+        lines.append(f"**Replay fidelity: {fidelity.get('result')}.** Did the test Tower handle the frames at the "
+                     f"recorded pace? Judged apart from the code's verdict and the Environment's, against {judged_by}. "
                      "A FAIL makes the run invalid as proof: discard it and re-run.")
+        lines.append("")
+        lines.append(f"What the bar measures (review C24 HIGH-4): {fidelity.get('measures') or FIDELITY_MEASURES}."
+                     + (" **This FAIL is on the Tower-side clauses alone, with the client on time: inspect the "
+                        "code under test's frame path before discarding the run.**"
+                        if fidelity.get("tower_side_only") else ""))
         if fidelity.get("result") == "n/a":
             lines.append("")
             lines.append(f"n/a: {fidelity.get('why')}. **{fidelity.get('note') or FIDELITY_NA_NOTE}**")
@@ -1961,7 +2161,8 @@ def render_markdown(report: dict) -> str:
                             f"capture.json {str((d or {}).get('capture.json'))[:16]}"
                             for cid, d in (pacing.get("source_sha256") or {}).items())
         lines.append("")
-        lines.append(f"Tower-side pacing: `{pacing.get('data_root')}` captures {pacing.get('replay_captures')} "
+        lines.append(f"Tower-side pacing (the recorder's post-reply stamps, not socket arrival): "
+                     f"`{pacing.get('data_root')}` captures {pacing.get('replay_captures')} "
                      f"joined on `wire_seq` to `{pacing.get('source_capture_root')}` captures "
                      f"{pacing.get('source_captures')}, speed {pacing.get('speed')}; origins are each walk's "
                      f"first `started_at` ({_clock(origins.get('replay_started_at'))} replayed, "
@@ -2123,7 +2324,8 @@ def write_report(out_dir: Path, report: dict) -> tuple:
     keyframes = report.get("keyframes")
     if keyframes:
         (out_dir / "keyframes.json").write_text(json.dumps({
-            "identity": "(source_seq, segment_index), in keyframes.jsonl order",
+            "identity": ("the keyframe SELECTION sequence (source_seq, segment_index), in keyframes.jsonl order: "
+                         "which frames were selected, not their image content, not capture-qualified"),
             "count": keyframes.get("count"), "sha256": keyframes.get("sha256"),
             "sequence": keyframes.get("sequence")}), encoding="utf-8")
     return json_path, md_path
@@ -2133,11 +2335,22 @@ def write_report(out_dir: Path, report: dict) -> tuple:
 
 
 def comparable_metrics(report: dict) -> dict:
-    """One report's numbers, flat, for `--compare`."""
+    """One report's numbers, flat, for `--compare`.
+
+    THE W0 TIMING METRIC is `stop_to_phone_photos_min` (review C24 HIGH-1):
+    Stop to the replay client's receipt of the room's photos. The store's
+    time is `stop_to_store_photos_min`, INFO. A render made before C22-F7 has
+    no verdict `basis`: its `stop_to_room_with_photos_min` was the store's.
+
+    Names say what they measure (review C24 HIGH-4, MED-8): the keyframe lag
+    is over ACCEPTED keyframes only, and the pacing metrics are the
+    recorder's post-reply stamps, not arrivals."""
     metrics: dict = {}
     verdict = report.get("verdict") or {}
-    for key in ("stop_to_room_with_photos_min", "stop_to_finalization_min", "stop_to_settled_min",
-                "stop_to_phone_photos_min"):
+    metrics[W0_TIMING_METRIC] = verdict.get("stop_to_phone_photos_min")
+    metrics["stop_to_store_photos_min"] = (verdict.get("stop_to_store_photos_min") if "basis" in verdict
+                                           else verdict.get("stop_to_room_with_photos_min"))
+    for key in ("stop_to_finalization_min", "stop_to_settled_min"):
         metrics[key] = verdict.get(key)
     walk = report.get("tower_walk") or {}
     totals = walk.get("totals") or {}
@@ -2148,23 +2361,27 @@ def comparable_metrics(report: dict) -> dict:
     metrics["keyframes_accepted"] = walk.get("keyframes_accepted")
     stream = (report.get("client") or {}).get("stream") or {}
     metrics["frames_sent"] = stream.get("frames_sent")
+    keyframes = report.get("keyframes") or {}
     for name, stats in (("send_lateness_ms", stream.get("lateness_ms") or {}),
-                        ("observe_lag_s", ((report.get("keyframes") or {}).get("observe_lag_s")) or {}),
+                        ("keyframe_accept_lag_s", keyframes.get("observe_lag_s") or {}),
                         ("rebuild_s", (walk.get("rebuilds") or {}).get("seconds") or {}),
                         ("rebuild_cadence_s", (walk.get("rebuilds") or {}).get("cadence_s") or {}),
                         ("live_surface_latency_s",
                          (report.get("live_surfaces_latency") or {}).get("latency_s") or {})):
         for q in ("p50", "p95", "p99", "max"):
             metrics[f"{name}.{q}"] = stats.get(q)
+    # An accepted keyframe the lag could not join (review C24 MED-8): the lag
+    # distribution is incomplete by that many.
+    metrics["keyframe_accept_lag_unmatched"] = keyframes.get("observe_lag_unmatched")
     pacing = report.get("tower_side_pacing") or {}
     if pacing.get("computable"):
-        for name, stats in (("tower_pacing_offset_error_ms", pacing.get("offset_error_ms") or {}),
-                            ("tower_inter_arrival_s", (pacing.get("inter_arrival_s") or {}).get("replayed") or {}),
-                            ("tower_inter_arrival_error_ms", pacing.get("inter_arrival_error_ms") or {})):
+        for name, stats in (("recorder_stamp_offset_error_ms", pacing.get("offset_error_ms") or {}),
+                            ("recorder_stamp_interval_s", (pacing.get("inter_arrival_s") or {}).get("replayed") or {}),
+                            ("recorder_stamp_interval_error_ms", pacing.get("inter_arrival_error_ms") or {})):
             for q in ("p50", "p95", "p99", "max"):
                 metrics[f"{name}.{q}"] = stats.get(q)
-        metrics["tower_pacing_offset_error_ms.min"] = (pacing.get("offset_error_ms") or {}).get("min")
-        metrics["tower_pacing_beyond_50ms"] = (pacing.get("late_over_50ms") or 0) + (pacing.get("early_over_50ms") or 0)
+        metrics["recorder_stamp_offset_error_ms.min"] = (pacing.get("offset_error_ms") or {}).get("min")
+        metrics["recorder_stamp_beyond_50ms"] = (pacing.get("late_over_50ms") or 0) + (pacing.get("early_over_50ms") or 0)
     solves = walk.get("background_solves") or []
     landed = [s.get("horizon_s") for s in solves if isinstance(s.get("horizon_s"), (int, float))]
     if any("terminated_at_stop" in s for s in solves):
@@ -2183,6 +2400,140 @@ def comparable_metrics(report: dict) -> dict:
     return metrics
 
 
+# THE COMPARABILITY KEY (review C24 HIGH-2), field by field.
+KEY_FIELDS = ("source_captures", "source_journal_sha256", "switches", "code", "harness", "replay",
+              "calibration", "fidelity_family")
+# The harness that STREAMED the run. The report script is not part of the
+# pin: a re-render reads, it does not stream.
+STREAMING_HARNESS_FILES = ("world_live_replay.py", "world_live_replay_run.py")
+
+
+def comparability_key(report: dict) -> dict:
+    """What a run must share with every run `--compare` sets it against
+    (review C24 HIGH-2). Two walks can each pass fidelity against their OWN
+    journal; only runs of the same input, code, switches and harness measure
+    the same thing. A field is None when the report cannot say -- a
+    standalone-client run has no run.json, a render made before C22-F7 lacks
+    the replay's shape -- and such a run is never comparable (fail closed).
+
+      source_captures        the walk's source capture ids, in walk order;
+      source_journal_sha256  sha256 of each source `capture.json` and
+                             `frames.jsonl` the fidelity join read;
+      switches               run.json's switch set (--env-file / --set);
+      code                   the code tree's .py fingerprint AND its path;
+      harness                the sha1 of the streaming harness the run was
+                             made with (`STREAMING_HARNESS_FILES`);
+      replay                 speed, first_seconds, after_stop, the schedule's
+                             shape, and the client's options when recorded;
+      calibration            the intrinsics files copied into the fresh root
+                             (names: run.json records no content hash);
+      fidelity_family        the family of the run's OWN fidelity bar version
+                             (the one in force when it started): v1 and v3
+                             are one family, `FIDELITY_FAMILY`.
+    """
+    run = report.get("run") if isinstance(report.get("run"), dict) else {}
+    client = report.get("client") if isinstance(report.get("client"), dict) else {}
+    harness = run.get("harness") or report.get("harness") or {}
+    files = harness.get("files_sha1") if isinstance(harness, dict) and isinstance(harness.get("files_sha1"), dict) \
+        else {}
+    pacing = report.get("tower_side_pacing") if isinstance(report.get("tower_side_pacing"), dict) else {}
+    code = run.get("code") if isinstance(run.get("code"), dict) else {}
+    walk = [capture for capture in client.get("walk") or [] if isinstance(capture, dict)]
+    schedule = client.get("schedule") if isinstance(client.get("schedule"), dict) else {}
+    journals = pacing.get("source_sha256") if isinstance(pacing.get("source_sha256"), dict) else None
+    if journals is not None and not all(isinstance(d, dict) and d.get("capture.json") and d.get("frames.jsonl")
+                                        for d in journals.values()):
+        journals = None
+    speed = client.get("speed")
+    replay = None
+    if isinstance(speed, (int, float)) and client.get("after_stop") and schedule.get("frames") is not None:
+        replay = {"speed": speed, "first_seconds": client.get("first_seconds"), "after_stop": client["after_stop"],
+                  "schedule": {k: schedule.get(k) for k in ("frames", "captures", "stop_at_s", "ends_with",
+                                                            "reconnects")},
+                  "options": client.get("options")}
+    version = fidelity_version(run_started_at(report.get("run"), report.get("client"))[0])[0]
+    return {
+        "source_captures": [capture.get("capture_id") for capture in walk] or None,
+        "source_journal_sha256": journals or None,
+        "switches": dict(sorted(run["switches"].items())) if isinstance(run.get("switches"), dict) else None,
+        "code": ({"py_fingerprint": code["py_fingerprint"], "tower_dir": code["tower_dir"]}
+                 if code.get("py_fingerprint") and code.get("tower_dir") else None),
+        "harness": ({name: files[name] for name in STREAMING_HARNESS_FILES}
+                    if all(files.get(name) for name in STREAMING_HARNESS_FILES) else None),
+        "replay": replay,
+        "calibration": sorted(run["intrinsics_copied"]) if isinstance(run.get("intrinsics_copied"), list) else None,
+        "fidelity_family": FIDELITY_FAMILY.get(version),
+    }
+
+
+def harness_pin_of(identity) -> dict:
+    """`world_live_replay.harness_pin`: the version, git HEAD, clean or not,
+    and the streaming scripts' sha1 (manager 154 §2)."""
+    from scripts.world_live_replay import harness_pin  # noqa: PLC0415
+
+    return harness_pin(identity)
+
+
+def rendered_by() -> dict:
+    """Which harness version and report script rendered a report (a
+    re-render may be newer than the run's own harness)."""
+    from scripts.world_live_replay import HARNESS_VERSION  # noqa: PLC0415
+
+    try:
+        report_sha1 = hashlib.sha1(Path(__file__).read_bytes()).hexdigest()
+    except OSError:
+        report_sha1 = None
+    return {"version": HARNESS_VERSION, "report_sha1": report_sha1}
+
+
+def _short(value) -> str:
+    return json.dumps(value, sort_keys=True, default=str)[:200]
+
+
+def key_differences(key: dict, reference: dict | None, declared: dict | None = None) -> list:
+    """Why a run is NOT comparable with the baseline's key, or [] (review C24
+    HIGH-2). A candidate (`declared` given) may differ in the switches it
+    declares, and only there: its switches must be exactly the baseline's
+    with the declared ones laid over them. A baseline run may differ in
+    nothing."""
+    if reference is None:
+        return ["no baseline run has a complete comparability key to compare against"]
+    missing = [name for name in KEY_FIELDS if key.get(name) is None]
+    if missing:
+        return [f"its comparability key lacks {', '.join(missing)} (a run without run.json or a client record, "
+                "or a render made before C22-F7: re-render it)"]
+    out = []
+    for name in KEY_FIELDS:
+        mine, theirs = key[name], reference[name]
+        if name == "switches":
+            expected = {**theirs, **(declared or {})}
+            if mine != expected:
+                names = sorted(k for k in set(expected) | set(mine) if expected.get(k) != mine.get(k))
+                detail = ", ".join(f"{k}: expected {expected.get(k)!r}, got {mine.get(k)!r}" for k in names)
+                out.append("switches differ from the baseline's"
+                           + (" with the declared --candidate-switches" if declared else "")
+                           + f" ({detail})")
+        elif mine != theirs:
+            out.append(f"{name} differs (this run {_short(mine)}; the baseline {_short(theirs)})")
+    return out
+
+
+def _reference_key(runs: list) -> tuple:
+    """(key, run dir) the baseline is compared on: the most common COMPLETE
+    key among the baseline runs otherwise valid as proof (ties: the earliest
+    given), else among every baseline run; (None, None) when none is
+    complete."""
+    for pool in ([run for run in runs if run["validity"]["counted"]], runs):
+        complete = [(json.dumps(run["key"], sort_keys=True), run) for run in pool
+                    if all(run["key"].get(name) is not None for name in KEY_FIELDS)]
+        if complete:
+            counts = Counter(text for text, _ in complete)
+            best = max(counts.values())
+            text, run = next(item for item in complete if counts[item[0]] == best)
+            return json.loads(text), run["dir"]
+    return None, None
+
+
 def _load_run(run_dir) -> dict:
     run_dir = Path(run_dir)
     report = _read_json(run_dir / "report.json")
@@ -2198,6 +2549,10 @@ def _load_run(run_dir) -> dict:
     # rendered under the withdrawn v2 is never a run's own bar (re-render it).
     own_version, own_why = fidelity_version(run_started_at(report.get("run"), report.get("client"))[0])
     judged_by = fidelity.get("version") or ("v1" if fidelity.get("result") is not None else None)
+    # A render made before C22-F7 has no `proof`: it is worked out from the
+    # record the report kept (review C24 HIGH-3).
+    proof = report.get("proof") if isinstance(report.get("proof"), dict) else proof_status(
+        client=report.get("client") or {}, run=report.get("run"))
     return {"dir": str(run_dir), "label": report.get("label"), "report": report,
             "metrics": comparable_metrics(report), "sequence": keyframes.get("sequence"),
             "sha256": keyframes.get("sha256") or (report.get("keyframes") or {}).get("sha256"),
@@ -2207,9 +2562,13 @@ def _load_run(run_dir) -> dict:
             "environment": ((report.get("live_safety") or {}).get("environment") or {}).get("result"),
             # None: a report rendered before the bar existed.
             "fidelity": fidelity.get("result"),
+            "fidelity_tower_side_only": bool(fidelity.get("tower_side_only")),
             # The bar version this run is judged by, and the one its render used.
             "fidelity_version": own_version, "fidelity_version_why": own_why,
-            "fidelity_judged_by": judged_by}
+            "fidelity_judged_by": judged_by,
+            "proof": proof,
+            # Recomputed from the report, never trusted from it (review C24 HIGH-2).
+            "key": comparability_key(report)}
 
 
 def run_validity(run: dict) -> dict:
@@ -2217,28 +2576,41 @@ def run_validity(run: dict) -> dict:
     "every proof-set run must pass it, or it is discarded and re-run").
 
     A replay-fidelity FAIL, or an Environment FAIL (review C22 round 3 L-f: a
-    contended run widens the old path's noise), makes a run INVALID. A
-    fidelity verdict that is n/a, or absent (a report rendered before the
-    bar), is NOT a pass either (review C22 round 4 M-1): the run is "not
-    judged". Neither kind is COUNTED: not in the baseline's mean, min, max or
-    spread, and not toward N >= 3. Both are shown and flagged, and a
-    candidate of either kind is marked INVALID.
+    contended run widens the old path's noise), makes a run INVALID. So does
+    NOT-PROOF (review C24 HIGH-3: made without the :8000 guard, or declared
+    `--not-a-proof-run`). A fidelity verdict that is n/a, or absent (a report
+    rendered before the bar), is NOT a pass either (review C22 round 4 M-1):
+    the run is "not judged". Neither kind is COUNTED: not in the baseline's
+    mean, min, max or spread, and not toward N >= 3. Both are shown and
+    flagged, and a candidate of either kind is marked INVALID.
+    (`compare_runs` adds the last reason, review C24 HIGH-2: a run that is
+    not comparable with the baseline.)
 
     Each run is judged by ITS OWN fidelity bar version (managers 148 and 149):
     a verdict its render reached under another version -- the withdrawn v2
-    included -- is not judged either (re-render it), whichever way it went."""
+    included -- is not judged either (re-render it), whichever way it went.
+
+    A fidelity FAIL on the Tower-side clauses alone, with the client on time,
+    says so (review C24 HIGH-4): the stamp is post-reply, so it can be the
+    code under test's own frame path rather than a bad replay."""
     invalid, unjudged = [], []
     own, judged_by = run.get("fidelity_version"), run.get("fidelity_judged_by")
     if run.get("fidelity") is not None and own and judged_by and judged_by != own:
         unjudged.append(f"replay fidelity {run.get('fidelity')} under bar {judged_by}, but this run's own bar is "
                         f"{own} ({run.get('fidelity_version_why')}): not judged, not counted (re-render it)")
     elif run.get("fidelity") == "FAIL":
-        invalid.append("replay fidelity FAIL")
+        invalid.append("replay fidelity FAIL" + (
+            " (Tower-side clauses only, the client on time: the post-reply stamp includes the code under test's "
+            "own frame path -- inspect it before discarding the run)" if run.get("fidelity_tower_side_only")
+            else ""))
     elif run.get("fidelity") != "PASS":
         unjudged.append("replay fidelity " + ("not in this render (re-render it)" if run.get("fidelity") is None
                                               else str(run.get("fidelity"))) + ": not judged, not counted")
     if run.get("environment") == "FAIL":
         invalid.append("Environment (:8000) FAIL")
+    proof = run.get("proof") or {}
+    if proof and not proof.get("proof", True):
+        invalid.append("NOT-PROOF: " + "; ".join(proof.get("not_proof_reasons") or ["declared"]))
     return {"invalid": invalid, "not_a_pass": unjudged, "counted": not invalid and not unjudged}
 
 
@@ -2251,15 +2623,39 @@ def _first_difference(a, b):
     return None if len(a) == len(b) else min(len(a), len(b))
 
 
-def compare_runs(baseline_dirs, candidate_dirs=()) -> dict:
+def parse_switches(items) -> dict:
+    """`KEY=VALUE` items (`--candidate-switches`) as a dict; later wins."""
+    switches = {}
+    for item in items or ():
+        if "=" not in str(item):
+            raise SystemExit(f"--candidate-switches wants KEY=VALUE, got {item!r}")
+        key, value = str(item).split("=", 1)
+        switches[key.strip()] = value.strip()
+    return switches
+
+
+def compare_runs(baseline_dirs, candidate_dirs=(), candidate_switches=None) -> dict:
     """Per-metric spread over the COUNTED baseline runs, and each candidate
     run against that spread; keyframe-sequence identity to the first counted
-    baseline run. Counted means valid as proof (`run_validity`): replay
-    fidelity PASS and no Environment FAIL."""
+    baseline run. Counted means valid as proof (`run_validity`: replay
+    fidelity PASS, no Environment FAIL, not NOT-PROOF) AND comparable with
+    the baseline's key (review C24 HIGH-2): a candidate may differ from it
+    only in `candidate_switches`, the switches under test."""
     baseline = [_load_run(d) for d in baseline_dirs]
     candidate = [_load_run(d) for d in candidate_dirs]
     for run in baseline + candidate:
         run["validity"] = run_validity(run)
+    declared = dict(candidate_switches or {})
+    reference_key, reference_from = _reference_key(baseline)
+    not_comparable = []
+    for side, runs in (("baseline", baseline), ("candidate", candidate)):
+        for run in runs:
+            differences = key_differences(run["key"], reference_key, declared if side == "candidate" else None)
+            run["comparable"] = not differences
+            if differences:
+                run["validity"]["invalid"].append("not comparable: " + "; ".join(differences))
+                run["validity"]["counted"] = False
+                not_comparable.append({"dir": run["dir"], "side": side, "differences": differences})
     # A baseline run that is invalid OR not judged is shown and never counted
     # (manager 142; review C22 round 3 L-f, round 4 M-1): the range is the
     # VALID old runs' noise.
@@ -2306,7 +2702,8 @@ def compare_runs(baseline_dirs, candidate_dirs=()) -> dict:
                 "horizons": run["horizons"], "horizons_identical": run["horizons"] == reference["horizons"],
                 "live_safety": run["live_safety"], "environment": run.get("environment"),
                 "fidelity": run.get("fidelity"), "fidelity_version": run.get("fidelity_version"),
-                "fidelity_judged_by": run.get("fidelity_judged_by"), "invalid": run["validity"]["invalid"],
+                "fidelity_judged_by": run.get("fidelity_judged_by"), "comparable": run.get("comparable"),
+                "proof": (run.get("proof") or {}).get("proof"), "invalid": run["validity"]["invalid"],
                 "not_a_pass": run["validity"]["not_a_pass"]}
 
     def flagged(runs, key):
@@ -2319,13 +2716,21 @@ def compare_runs(baseline_dirs, candidate_dirs=()) -> dict:
     return {
         # /4: each run judged by its own fidelity bar version (manager 148 §1).
         # /5: the versions are v1 and v3 (manager 149 §2); v2 is withdrawn.
-        "compare": "c22-live-replay-compare/5",
+        # /6: the comparability key, NOT-PROOF, and the W0 timing metric on
+        #     phone_photos_at (review C24 HIGH-1..3).
+        "compare": "c22-live-replay-compare/6",
         "generated_at": round(time.time(), 3),
         "baseline": [run["dir"] for run in baseline],
         "candidate": [run["dir"] for run in candidate],
         "fidelity_ruling": FIDELITY_RULING,
+        "w0_timing_metric": W0_TIMING_METRIC,
+        # What every counted run shares (review C24 HIGH-2).
+        "comparability": {"fields": list(KEY_FIELDS), "reference_key": reference_key,
+                          "reference_from": reference_from, "candidate_switches": declared,
+                          "not_comparable": not_comparable},
         # Shown, never counted in the range nor toward N >= 3: replay fidelity
-        # FAIL, n/a or not rendered, or Environment FAIL.
+        # FAIL, n/a or not rendered, Environment FAIL, NOT-PROOF, or not
+        # comparable.
         "excluded_from_baseline": not_counted(baseline),
         # Not proof (discard and re-run): the same reasons. Judged against the
         # range only for the record.
@@ -2348,12 +2753,35 @@ def compare_runs(baseline_dirs, candidate_dirs=()) -> dict:
     }
 
 
+def _key_text(key: dict | None) -> list:
+    """The comparability key, one markdown bullet per field."""
+    if not key:
+        return ["- (none: no baseline run has a complete key)"]
+    journals = "; ".join(f"{cid[:8]}… frames.jsonl {str(d.get('frames.jsonl'))[:16]}, capture.json "
+                         f"{str(d.get('capture.json'))[:16]}" for cid, d in (key.get("source_journal_sha256") or {}).items())
+    code = key.get("code") or {}
+    harness = key.get("harness") or {}
+    return [
+        f"- source captures: {key.get('source_captures')}; journals: {journals}",
+        f"- code: py fingerprint `{code.get('py_fingerprint')}` at `{code.get('tower_dir')}`",
+        "- streaming harness: " + ", ".join(f"{name} `{str(sha)[:12]}`" for name, sha in harness.items()),
+        f"- switches ({len(key.get('switches') or {})}): "
+        + ", ".join(f"{k}={v}" for k, v in (key.get("switches") or {}).items()),
+        f"- replay: {_short(key.get('replay'))}",
+        f"- calibration: {key.get('calibration')}; fidelity family: {key.get('fidelity_family')}",
+    ]
+
+
 def render_compare(result: dict) -> str:
     lines = ["# C22 live replay: compare", ""]
     lines.append(f"Baseline ({len(result['baseline'])} runs): " + ", ".join(f"`{d}`" for d in result["baseline"]))
     if result["candidate"]:
         lines.append(f"Candidate ({len(result['candidate'])} runs): "
                      + ", ".join(f"`{d}`" for d in result["candidate"]))
+    lines.append("")
+    lines.append(f"**The W0 timing metric is `{result.get('w0_timing_metric', W0_TIMING_METRIC)}`**: Stop to the "
+                 "replay client's receipt of the room's photos (`phone_photos_at`, review C24 HIGH-1). "
+                 "`stop_to_store_photos_min`, the store's `updated_at`, is INFO.")
     if not result["enough_runs"]:
         lines.append("")
         counted_text = f"{result.get('baseline_counted')} of {len(result['baseline'])} baseline run(s) valid"
@@ -2361,22 +2789,43 @@ def render_compare(result: dict) -> str:
             counted_text += f", {result.get('candidates_counted')} of {len(result['candidate'])} candidate(s)"
         lines.append("**Fewer than 3 valid runs on a side: this is not a noise estimate (C19 F8 asks for N >= 3; "
                      f"only a replay-fidelity PASS counts, manager 142): {counted_text}.**")
+    comparability = result.get("comparability") or {}
+    if comparability:
+        lines.append("")
+        lines.append("## Comparability (review C24 HIGH-2)")
+        lines.append("")
+        lines.append("Only runs with the SAME comparability key are counted: " + ", ".join(
+            f"`{name}`" for name in comparability.get("fields") or KEY_FIELDS)
+            + ". A candidate may differ from the baseline only in the declared `--candidate-switches`"
+            + (": " + ", ".join(f"`{k}={v}`" for k, v in comparability["candidate_switches"].items())
+               if comparability.get("candidate_switches") else " (none declared: its switches must equal the "
+                                                                "baseline's)")
+            + f". The baseline's key (from `{comparability.get('reference_from')}`):")
+        lines.extend(_key_text(comparability.get("reference_key")))
+        not_comparable = comparability.get("not_comparable") or []
+        if not_comparable:
+            lines.append("")
+            lines.append(f"**NOT COMPARABLE: {len(not_comparable)} run(s), excluded.**")
+            for item in not_comparable:
+                lines.append(f"- {item['side']} `{item['dir']}`: {'; '.join(item['differences'])}")
     excluded = result.get("excluded_from_baseline") or []
     if excluded:
         lines.append("")
         lines.append(f"**EXCLUDED FROM THE BASELINE RANGE: {len(excluded)} run(s).** A run that fails replay "
-                     f"fidelity ({result.get('fidelity_ruling')}) or the Environment (:8000) verdict, or whose "
-                     "replay fidelity is n/a or not in its render (not judged: n/a is NOT a pass), is not valid "
-                     "as proof: it is shown below and never counted in the mean, min, max or spread, nor toward "
-                     f"N >= 3 ({result.get('baseline_counted')} baseline run(s) counted). Each run is judged by "
-                     "its own fidelity bar version: the one in force when it started.")
+                     f"fidelity ({result.get('fidelity_ruling')}) or the Environment (:8000) verdict, that is "
+                     "NOT-PROOF or not comparable, or whose replay fidelity is n/a or not in its render (not "
+                     "judged: n/a is NOT a pass), is not valid as proof: it is shown below and never counted in the "
+                     f"mean, min, max or spread, nor toward N >= 3 ({result.get('baseline_counted')} baseline "
+                     "run(s) counted). Each run is judged by its own fidelity bar version: the one in force when it "
+                     "started.")
         for item in excluded:
             lines.append(f"- `{item['dir']}`: {', '.join(item['reasons'])}")
     invalid = result.get("invalid_candidates") or []
     if invalid:
         lines.append("")
         lines.append(f"**INVALID CANDIDATE(S): {len(invalid)}.** Not proof (discard and re-run): replay fidelity "
-                     "FAIL, n/a or not in its render, or an Environment FAIL; its values are marked INVALID below.")
+                     "FAIL, n/a or not in its render, an Environment FAIL, NOT-PROOF, or not comparable; its values "
+                     "are marked INVALID below.")
         for item in invalid:
             lines.append(f"- `{item['dir']}`: {', '.join(item['reasons'])}")
     unjudged = result.get("fidelity_not_judged") or []
@@ -2393,7 +2842,11 @@ def render_compare(result: dict) -> str:
         for directory, names in missing.items():
             lines.append(f"- `{directory}`: {', '.join(names)}")
     lines.append("")
-    lines.append("## Keyframe identity, (source_seq, segment_index), against the first counted baseline run")
+    lines.append("## Keyframe selection sequence, (source_seq, segment_index), against the first counted baseline "
+                 "run")
+    lines.append("")
+    lines.append("Which frames were selected, in which segments -- not their image content, and not "
+                 "capture-qualified (review C24 MED-8).")
     lines.append("")
     reference = result["keyframes"].get("reference")
     if reference is not None:
@@ -2422,13 +2875,15 @@ def render_compare(result: dict) -> str:
     lines.append("")
     lines.append("A candidate value outside the baseline's [min, max] is flagged; a candidate with no value "
                  "where the baseline has one is flagged MISSING. The spread is max - min over the baseline "
-                 "runs COUNTED (replay fidelity PASS, no Environment FAIL): the old path's own noise. A "
-                 "baseline run excluded above, invalid or not judged, is not in the mean, min, max or spread; "
-                 "an INVALID candidate's value is marked.")
+                 "runs COUNTED (replay fidelity PASS, no Environment FAIL, proof-eligible, comparable): the old "
+                 "path's own noise. A baseline run excluded above is not in the mean, min, max or spread; an "
+                 "INVALID candidate's value is marked. `keyframe_accept_lag_s` is over ACCEPTED keyframes only; "
+                 "`recorder_stamp_*` are the recorder's post-reply stamps, not arrivals.")
     lines.append("")
     lines.append("| Metric | Baseline mean | min | max | spread | Excluded baseline value(s) | Candidate | Flag |")
     lines.append("|---|---|---|---|---|---|---|---|")
     invalid_dirs = {item["dir"] for item in invalid}
+    w0_metric = result.get("w0_timing_metric", W0_TIMING_METRIC)
     for item in result["metrics"]:
         flags = []
         if item.get("outside"):
@@ -2440,7 +2895,8 @@ def render_compare(result: dict) -> str:
         dropped = ", ".join(str(v) for v, keep in zip(item["baseline"], counted) if not keep)
         values = ", ".join(str(v) + (" (INVALID)" if directory in invalid_dirs else "")
                            for v, directory in zip(item["candidate"], result["candidate"]))
-        lines.append(f"| {item['metric']} | {item.get('mean', '')} | {item.get('min', '')} | "
+        name = f"{item['metric']} **(W0 timing)**" if item["metric"] == w0_metric else item["metric"]
+        lines.append(f"| {name} | {item.get('mean', '')} | {item.get('min', '')} | "
                      f"{item.get('max', '')} | {item.get('spread', '')} | {dropped} | {values} | {flag} |")
     lines.append("")
     return "\n".join(lines)
@@ -2494,14 +2950,23 @@ def main(argv=None) -> int:
                         help="Compare mode: the BASELINE run dirs (each with report.json), N >= 3.")
     parser.add_argument("--candidate", type=Path, nargs="+", default=(), metavar="RUN",
                         help="With --compare: the candidate run dirs, judged against the baseline's spread.")
+    parser.add_argument("--candidate-switches", nargs="+", default=(), metavar="KEY=VALUE",
+                        help="With --candidate: the switches under test. A candidate is comparable only when "
+                             "its switch set is the baseline's with exactly these laid over it, and its every "
+                             "other key field equals the baseline's (review C24 HIGH-2).")
     args = parser.parse_args(argv)
     out = Path(args.out)
+    # Nothing is written inside the live store (review C24 MED-6).
+    from scripts.world_live_replay import refuse_inside_live_store  # noqa: PLC0415
+
+    refuse_inside_live_store(out, "--out")
     if args.compare:
-        result = compare_runs(args.compare, args.candidate)
+        result = compare_runs(args.compare, args.candidate, parse_switches(args.candidate_switches))
         out.mkdir(parents=True, exist_ok=True)
         (out / "compare.json").write_text(json.dumps(result, indent=2, default=str), encoding="utf-8")
         (out / "COMPARE.md").write_text(render_compare(result), encoding="utf-8")
         print(json.dumps({"compare": str(out / "compare.json"), "enough_runs": result["enough_runs"],
+                          "not_comparable": result["comparability"]["not_comparable"],
                           "candidates_complete": result["candidates_complete"],
                           "excluded_from_baseline": result["excluded_from_baseline"],
                           "invalid_candidates": result["invalid_candidates"]}, indent=2))
@@ -2527,7 +2992,8 @@ def main(argv=None) -> int:
     print(json.dumps({"report": str(json_path), "markdown": str(md_path), "verdict": report["verdict"],
                       "live_safety": report["live_safety"]["result"],
                       "environment": (report["live_safety"].get("environment") or {}).get("result"),
-                      "replay_fidelity": report["replay_fidelity"]["result"]}, indent=2))
+                      "replay_fidelity": report["replay_fidelity"]["result"],
+                      "proof": report["proof"]}, indent=2))
     return 0
 
 

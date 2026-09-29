@@ -15,10 +15,17 @@ recorded walk back through the phone's own door instead:
   * the SAME /ws ingest (`tower/routes/ws.py`): `stream_start`, one `frame`
     message per recorded frame carrying the recorded JPEG bytes and the
     recorded `seq` / `tx_seq` / width / height, and `stream_stop`;
-  * at the RECORDED pace: each frame leaves at its recorded tower-receipt
-    offset from its capture's start (`frames.jsonl` `received_at`), divided
-    by `--speed` (default 1.0), against an absolute clock, so lateness never
-    accumulates;
+  * at the RECORDED pace: each frame leaves at its recorded offset from its
+    capture's start (`frames.jsonl` `received_at`), divided by `--speed`
+    (default 1.0), against an absolute clock, so lateness never accumulates.
+    WHAT THAT CLOCK IS (review C24 HIGH-4): `received_at` is NOT socket
+    arrival. The Tower's capture recorder stamps it (`CaptureRecorder.
+    write_frame`, `time.time()`) when `ws.py` hands it the frame, which is
+    AFTER the frame was JSON-parsed, base64- and header-decoded, run through
+    the CV module and answered with `frame_result` -- and the socket is read
+    one message at a time, so also after the previous frame's fsync'd write.
+    The recorded pace is therefore the live Tower's post-reply recording
+    pace, an approximation of when the phone's frames arrived;
   * with the World Builder cartridge started the way the phone starts it
     (`POST /cartridges/world_builder/session/start` before `stream_start`),
     subscribed to its status channel the way the phone is, and fetching the
@@ -54,18 +61,30 @@ SAFETY
     answers in a row, and records when :8000 became `busy`.
   * On abort the runner's `on_abort` kills the test Tower FIRST, then the
     client tears down.
+  * An incomplete `/health` answer -- `capture`, `capture_workers` or
+    `background_chore` absent or unreadable -- is `unknown`, never `idle`
+    (review C24 MED-5).
+  * The guard is armed as soon as :8000 has been read at the start, before
+    anything else the client does (review C24 HIGH-3). `--no-live-guard`
+    is refused unless `--not-a-proof-run` is given too, and such a run is
+    marked NOT-PROOF in its record and its report.
   * It refuses a target that is recording or has capture workers, and,
     given the test Tower's pid, a target whose listener is another process.
-  * It reads the stored capture and writes nothing beside it.
+  * It reads the stored capture and writes nothing beside it; its `--out`
+    must be outside the live store (review C24 MED-6).
 
 WHAT IT CANNOT SEE is listed in RUN\\experiments\\C22-REPLAY\\README.md. In
-short: the phone's own experience (rendering, battery, the radio link, the
-phone's send window dropping frames under backpressure), anything that
-depends on the store holding earlier worlds (a fresh root has none), and a
-phone's reconnect OVERLAP: a phone's dropped socket is noticed 20-40 s late,
-so its new socket's `stream_start` supersedes the old capture while the old
-connection still counts; the replay closes cleanly and reconnects, so the
-Tower always takes the last-client path.
+short: the phone's own experience (rendering, battery, the radio link), the
+phone's SEND WINDOW and its RECONNECT WINDOW (review C24 MED-7: the replay
+awaits every send, so it never drops a frame, and it replays only the frames
+the original Tower recorded; the phone's client has a bounded send window,
+drops frames when it is full and replaces a stalled socket -- none of which
+a replay against a changed Tower can exercise), and a phone's reconnect
+OVERLAP: a phone's dropped socket is noticed 20-40 s late, so its new
+socket's `stream_start` supersedes the old capture while the old connection
+still counts; the replay closes cleanly and reconnects, so the Tower always
+takes the last-client path. It is a Tower benchmark: send-window loss and a
+reconnected walk need a phone trace and a physical walk.
 
 Usually driven by `world_live_replay_run.py`, which starts a test Tower from
 a named code tree, runs this, stops the Tower and writes the report.
@@ -103,6 +122,10 @@ TOWER_ROOT = Path(__file__).resolve().parents[1]
 CANONICAL_CAPTURE_ROOT = Path(r"C:\Users\tvllo\Projects\Glasses\tower\data\captures")
 DEFAULT_CAPTURE_ROOT = (CANONICAL_CAPTURE_ROOT if CANONICAL_CAPTURE_ROOT.is_dir()
                         else TOWER_ROOT / "data" / "captures")
+# Tristan's live store. Nothing any of the three scripts writes may land
+# inside it (the runner's rule, now every writing entrypoint's: review C24
+# MED-6).
+LIVE_DATA = CANONICAL_CAPTURE_ROOT.parent
 
 # Tristan's own Tower. Read-only (/health), and only to find out whether a
 # real walk is being recorded.
@@ -131,6 +154,14 @@ EXIT_ABORTED = 3
 
 # The harness itself, pinned in every run record (review C22 L5).
 HARNESS_FILES = ("world_live_replay.py", "world_live_replay_report.py", "world_live_replay_run.py")
+# The two scripts that STREAM a run. Their sha1 is the pin `--compare` keys
+# on (review C24 HIGH-2); the report script only reads a finished run.
+STREAMING_FILES = ("world_live_replay.py", "world_live_replay_run.py")
+# The harness's own version, recorded beside the pin in run.json, client.json
+# and every report, so which harness made a run is self-evident (manager 154
+# §2: proof sets run only on a pin that passed the C24x2 re-verify). Change it
+# with every change to the harness.
+HARNESS_VERSION = "c22-harness/F7 (review C24)"
 
 # Leaf keys copied out of each World Builder status push to show what the
 # phone was being told, and when. Generic on purpose: the payload is large
@@ -549,13 +580,47 @@ def health_probe(url: str, timeout: float = LIVE_GUARD_TIMEOUT_S):
     return ("ok", doc) if isinstance(doc, dict) else ("error", None)
 
 
+# The /health blocks an "idle" decision needs (review C24 MED-5). The Tower
+# always sends all three keys (`routes/health.py`); each is `null` when that
+# subsystem is not configured, which is a definite answer ("no recorder",
+# "no supervisor", "no chore"). An ABSENT key, a block that reports
+# `error`, or a block without the field that is read is not.
+HEALTH_BLOCKS = ("capture", "capture_workers", "background_chore")
+
+
+def health_gaps(doc) -> list:
+    """What an `idle` decision needs that this `/health` answer lacks: the
+    absent, unreadable or malformed blocks, by name. Empty: complete."""
+    if not isinstance(doc, dict):
+        return list(HEALTH_BLOCKS)
+    gaps = []
+    for name, field_name, kind in (("capture", "recording", bool), ("capture_workers", "workers", list),
+                                   ("background_chore", "state", str)):
+        if name not in doc:
+            gaps.append(f"{name} (absent)")
+            continue
+        block = doc[name]
+        if block is None:
+            continue  # not configured on this Tower: a definite answer
+        if not isinstance(block, dict) or "error" in block or not isinstance(block.get(field_name), kind):
+            gaps.append(f"{name}.{field_name}")
+    return gaps
+
+
 def classify_health(doc: dict) -> str:
-    """`recording`, `busy` or `idle` from a `/health` answer.
+    """`recording`, `busy`, `idle` or `unknown` from a `/health` answer.
 
     `busy` is a Tower finishing a world: after a real walk's Stop, :8000
     runs 35-55 min of GPU-heavy finishing with `recording: false`, and a
     replay started then distorts both runs (review C22 M2).
+
+    FAILS CLOSED (review C24 MED-5): a positive answer (`recording`, then
+    `busy`) is believed whatever else the answer lacks, but `idle` needs
+    every block (`health_gaps`). `{}`, or an answer missing its worker or
+    chore block, is `unknown`, which the guard refuses.
     """
+    if not isinstance(doc, dict):
+        return "unknown"
     capture = doc.get("capture") if isinstance(doc.get("capture"), dict) else {}
     if capture.get("recording"):
         return "recording"
@@ -564,6 +629,8 @@ def classify_health(doc: dict) -> str:
     chore = doc.get("background_chore") if isinstance(doc.get("background_chore"), dict) else {}
     if (isinstance(workers, list) and workers) or chore.get("state") == "running":
         return "busy"
+    if health_gaps(doc):
+        return "unknown"
     return "idle"
 
 
@@ -575,6 +642,8 @@ def live_tower_state(url: str = LIVE_HEALTH_URL, timeout: float = LIVE_GUARD_TIM
     running records nothing. A timeout, a 5xx or a garbled answer is
     `unknown`, never "not recording": a live Tower that is recording, or
     finishing a world while the test Tower loads every core, answers late.
+    So is an answer that parses but lacks a block the decision needs
+    (`classify_health`, review C24 MED-5).
     """
     kind, doc = health_probe(url, timeout)
     if kind == "refused":
@@ -652,6 +721,11 @@ def target_refusal(health: dict | None) -> str | None:
         health.get("capture_workers"), dict) else None
     if isinstance(workers, list) and workers:
         return f"the target has {len(workers)} capture worker(s) alive"
+    # What this decision reads must be there to be believed (review C24
+    # MED-5). The chore is not read here: a target's chore is its own.
+    gaps = [gap for gap in health_gaps(health) if not gap.startswith("background_chore")]
+    if gaps:
+        return f"the target's /health lacks {', '.join(gaps)}; it cannot be vouched for as idle"
     return None
 
 
@@ -672,7 +746,8 @@ def harness_identity() -> dict:
         files[name] = hashlib.sha1(data).hexdigest()
         digest.update(name.encode())
         digest.update(data)
-    identity = {"scripts_dir": str(scripts), "sha1": digest.hexdigest(), "files_sha1": files}
+    identity = {"version": HARNESS_VERSION, "scripts_dir": str(scripts), "sha1": digest.hexdigest(),
+                "files_sha1": files}
     try:
         head = subprocess.run(["git", "--no-optional-locks", "-C", str(scripts), "rev-parse", "HEAD"],
                               capture_output=True, text=True, timeout=20)
@@ -685,6 +760,18 @@ def harness_identity() -> dict:
     except (OSError, subprocess.SubprocessError):
         pass
     return identity
+
+
+def harness_pin(identity) -> dict:
+    """The pin, in one place (manager 154 §2): the harness version, its git
+    HEAD, whether the three scripts were committed and clean there, and the
+    sha1 of the two STREAMING scripts (what `--compare` keys on). A record
+    made before C22-F7 has no version: `None`, shown as not recorded."""
+    identity = identity if isinstance(identity, dict) else {}
+    files = identity.get("files_sha1") if isinstance(identity.get("files_sha1"), dict) else {}
+    return {"version": identity.get("version"), "git_head": identity.get("git_head"),
+            "committed_clean": bool(identity.get("git_head")) and identity.get("git_dirty") == [],
+            "streaming_sha1": {name: files.get(name) for name in STREAMING_FILES}}
 
 
 # -- what the phone would have been told ---------------------------------------
@@ -1358,6 +1445,9 @@ class ReplayOptions:
     start_session: bool = True
     session_lead: float = 2.0
     live_guard: bool = True
+    # Declared NOT proof (a smoke, a test). The CLIs refuse `--no-live-guard`
+    # without it (review C24 HIGH-3); either one marks the run NOT-PROOF.
+    not_a_proof_run: bool = False
     live_guard_url: str = LIVE_HEALTH_URL
     live_guard_every: float = 10.0
     live_guard_timeout: float = LIVE_GUARD_TIMEOUT_S
@@ -1428,6 +1518,11 @@ async def run_replay(options: ReplayOptions) -> dict:
     """Stream the walk, follow the settle, and return everything the client saw.
 
     Also writes `client.json` (and `samples.csv`) into `options.out`.
+
+    `phone_view.photographic` holds when THIS CLIENT received each status
+    push; the report's W0 verdict is judged on it (`phone_photos_at`, review
+    C24 HIGH-1). It is the replay client's receipt, not photos rendered on a
+    phone.
     """
     check_target_port(options.port)
     out = Path(options.out)
@@ -1444,12 +1539,25 @@ async def run_replay(options: ReplayOptions) -> dict:
         "speed": options.speed,
         "first_seconds": options.first_seconds,
         "after_stop": options.after_stop,
+        # The rest of the replay's shape, for `--compare`'s comparability key
+        # (review C24 HIGH-2).
+        "options": {"end_with_stop": options.end_with_stop, "follow_chain": options.follow_chain,
+                    "subscribe": options.subscribe, "phone_fetches": options.phone_fetches,
+                    "start_session": options.start_session, "session_lead": options.session_lead},
+        # Whether this run can be proof at all (review C24 HIGH-3): an
+        # unguarded or declared-not-proof run is NOT-PROOF in its report.
+        "live_guard": bool(options.live_guard),
+        "not_a_proof_run": bool(options.not_a_proof_run),
         "started_at": round(time.time(), 3),
-        "harness": harness_identity(),
         "outcome": None,
     }
 
-    guard = None
+    # The :8000 guard is read and ARMED FIRST (review C24 HIGH-3), before the
+    # harness pin's git calls, the walk's journals and the target checks:
+    # from here to the teardown nothing the client does is unwatched.
+    guard = guard_task = None
+    abort = asyncio.Event()
+    stop_background = asyncio.Event()
     if options.live_guard:
         live = await asyncio.to_thread(live_tower_state, options.live_guard_url, options.live_guard_timeout)
         record["live_tower_at_start"] = live
@@ -1458,11 +1566,31 @@ async def run_replay(options: ReplayOptions) -> dict:
                                  "unknown": "refused-live-unknown"}[live]
             _log(out, {"recording": "REFUSED: :8000 is recording a live walk",
                        "busy": "REFUSED: :8000 is finishing a world (capture workers alive or the chore running)",
-                       "unknown": "REFUSED: :8000 gave no usable /health answer; the guard fails closed",
+                       "unknown": "REFUSED: :8000 gave no usable /health answer (a timeout, an error, or an "
+                                  "answer missing capture / capture_workers / background_chore); the guard "
+                                  "fails closed",
                        }[live] + "; nothing was streamed")
+            record["harness"] = await asyncio.to_thread(harness_identity)
+            record["harness_pin"] = harness_pin(record["harness"])
             _write_client(out, record)
             return record
         guard = LiveGuard(live)
+        guard_task = asyncio.create_task(_guard_live(options, abort, record, stop_background, guard))
+    record["harness"] = await asyncio.to_thread(harness_identity)
+    record["harness_pin"] = harness_pin(record["harness"])
+
+    async def finish_before_streaming(outcome: str, text: str) -> dict:
+        """End the run before a frame was sent: disarm the guard (after its
+        kill, when it aborted), keep what it saw, write the record."""
+        stop_background.set()
+        if guard_task is not None:
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await asyncio.wait_for(asyncio.shield(guard_task), 45)
+            record["live_tower_watch"] = guard.summary()
+        record["outcome"] = "aborted" if abort.is_set() else outcome
+        _log(out, text)
+        _write_client(out, record)
+        return record
 
     walk = load_walk(options.capture_root, options.captures, follow_chain=options.follow_chain)
     schedule = build_schedule(walk, speed=options.speed, first_seconds=options.first_seconds,
@@ -1479,19 +1607,14 @@ async def run_replay(options: ReplayOptions) -> dict:
 
     status, health = await asyncio.to_thread(http_json, "GET", f"{base}/health", 10.0)
     if status != 200:
-        record["outcome"] = "no-test-tower"
-        _log(out, f"no test Tower answers {base}/health")
-        _write_client(out, record)
-        return record
+        return await finish_before_streaming("no-test-tower", f"no test Tower answers {base}/health")
     record["tower_health_at_start"] = settle_snapshot(health, None)
     # Is the target idle, and is it ours? (review C22 M4) A second
     # `stream_start` into somebody else's run supersedes its recording.
     busy = target_refusal(health)
     if busy is not None:
-        record["outcome"] = "refused-target-busy"
-        _log(out, f"REFUSED: {busy} on :{options.port}; nothing was streamed")
-        _write_client(out, record)
-        return record
+        return await finish_before_streaming(
+            "refused-target-busy", f"REFUSED: {busy} on :{options.port}; nothing was streamed")
     if options.tower_pid is None:
         record["target_listener"] = {"checked": False, "why": "no tower pid given"}
     else:
@@ -1499,23 +1622,20 @@ async def run_replay(options: ReplayOptions) -> dict:
         record["target_listener"] = {"checked": True, "pids": None if owners is None else sorted(owners),
                                      "expected": options.tower_pid}
         if owners != {options.tower_pid}:
-            record["outcome"] = "refused-target-foreign"
-            _log(out, f"REFUSED: :{options.port} is served by {owners}, not the test Tower "
-                      f"{options.tower_pid}; nothing was streamed")
-            _write_client(out, record)
-            return record
+            return await finish_before_streaming(
+                "refused-target-foreign", f"REFUSED: :{options.port} is served by {owners}, not the test "
+                                          f"Tower {options.tower_pid}; nothing was streamed")
+    if abort.is_set():
+        return await finish_before_streaming("aborted", "the :8000 guard aborted the run before streaming; "
+                                                        "nothing was streamed")
 
     stats = StreamStats()
     phone = PhoneView()
     mirror = GeometryMirror(base, enabled=options.phone_fetches)
     surfaces = SurfaceWatch()
-    abort = asyncio.Event()
-    stop_background = asyncio.Event()
     background = [asyncio.create_task(mirror.run(stop_background)),
                   asyncio.create_task(_watch_surface(options, phone, surfaces, stop_background))]
-    guard_task = None
-    if options.live_guard:
-        guard_task = asyncio.create_task(_guard_live(options, abort, record, stop_background, guard))
+    if guard_task is not None:
         background.append(guard_task)
     sampler = ResourceSampler(options.tower_pid, options.sample_seconds, out / "samples.csv")
     sampler.start()
@@ -1758,8 +1878,37 @@ def add_replay_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--no-session-start", action="store_true",
                         help="Do not POST /cartridges/world_builder/session/start first.")
     parser.add_argument("--no-live-guard", action="store_true",
-                        help="Do not watch :8000 for a live walk. For tests only.")
+                        help="Do not watch :8000 for a live walk. For tests only: refused unless "
+                             "--not-a-proof-run is given too, and the run is marked NOT-PROOF.")
+    parser.add_argument("--not-a-proof-run", action="store_true",
+                        help="Declare this run NOT proof (a smoke, a test). Its record and report say "
+                             "NOT-PROOF and --compare never counts it. Required with --no-live-guard.")
     parser.add_argument("--label", default=None)
+
+
+def refuse_unguarded_proof(args) -> None:
+    """`--no-live-guard` only in a run declared NOT proof (review C24 HIGH-3):
+    a run nobody watched :8000 for must never become a proof run."""
+    if getattr(args, "no_live_guard", False) and not getattr(args, "not_a_proof_run", False):
+        raise SystemExit("refused: --no-live-guard turns off the :8000 guard, so this run could never be "
+                         "proof; give --not-a-proof-run as well to run it anyway (it is marked NOT-PROOF)")
+
+
+def path_inside(path, parent) -> bool:
+    """Whether `path` resolves inside `parent` (junctions resolved; a path
+    test, not a string prefix)."""
+    try:
+        Path(path).resolve().relative_to(Path(parent).resolve())
+        return True
+    except ValueError:
+        return False
+
+
+def refuse_inside_live_store(path, what: str) -> None:
+    """No writing entrypoint writes inside the live store (review C24 MED-6:
+    the runner refused it; the client and the report did not)."""
+    if path is not None and path_inside(path, LIVE_DATA):
+        raise SystemExit(f"refused: {what} {path} is inside the live store {LIVE_DATA}")
 
 
 def options_from_args(args, *, port, out, world_root=None, tower_pid=None, on_abort=None) -> ReplayOptions:
@@ -1772,6 +1921,7 @@ def options_from_args(args, *, port, out, world_root=None, tower_pid=None, on_ab
         sample_seconds=args.sample_seconds, after_stop=args.after_stop,
         subscribe=not args.no_subscribe, phone_fetches=not args.no_phone_fetches,
         start_session=not args.no_session_start, live_guard=not args.no_live_guard,
+        not_a_proof_run=bool(getattr(args, "not_a_proof_run", False)),
         on_abort=on_abort, label=args.label,
     )
 
@@ -1812,7 +1962,9 @@ def main(argv=None) -> int:
     parser.add_argument("--tower-log", type=Path, default=None, help="The test Tower's stderr log.")
     parser.add_argument("--tower-out-log", type=Path, default=None, help="The test Tower's stdout log.")
     args = parser.parse_args(argv)
+    refuse_unguarded_proof(args)
     check_target_port(args.port)
+    refuse_inside_live_store(args.out, "--out")
     refuse_non_empty_out(args.out)
     options = options_from_args(args, port=args.port, out=args.out, world_root=args.world_root,
                                 tower_pid=args.tower_pid)

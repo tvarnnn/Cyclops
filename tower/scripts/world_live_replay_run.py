@@ -40,6 +40,13 @@ WHAT IT GUARANTEES
     of the test Tower to its stop -- its startup, the idle wait, the stream
     and the settle -- a live walk (or two unusable answers in a row) kills
     the test Tower FIRST, so the GPU is free for the real walk.
+  * NO BLIND INTERVAL AT START (review C24 HIGH-3). :8000 is read before
+    the preflight and read AGAIN immediately before the Tower is spawned
+    (the preflight's import probe can take 120 s), then every 10 s through
+    the startup and the idle wait, once more at the hand-off, and the client
+    arms its own guard before it does anything else.
+  * `--no-live-guard` is refused unless `--not-a-proof-run` is given too;
+    run.json records both, and the report marks such a run NOT-PROOF.
   * run.json pins the harness itself (git HEAD, its uncommitted changes, and
     a sha1 of the three scripts) and the thread-count variables inherited
     from the shell.
@@ -68,6 +75,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from scripts.world_live_replay import (  # noqa: E402
     EXIT_ABORTED,
     EXIT_ERROR,
+    LIVE_DATA,
     LIVE_HEALTH_URL,
     LIVE_REFUSE_AT_START,
     LiveGuard,
@@ -75,11 +83,13 @@ from scripts.world_live_replay import (  # noqa: E402
     check_target_port,
     exit_code,
     harness_identity,
+    harness_pin,
     http_json,
     listener_pids,
     live_tower_state,
     options_from_args,
     refuse_non_empty_out,
+    refuse_unguarded_proof,
     run_replay,
 )
 from scripts.world_live_replay_report import build_report, write_report  # noqa: E402
@@ -91,7 +101,8 @@ from tower.process_ownership import (  # noqa: E402
     terminate_tree,
 )
 
-LIVE_DATA = Path(r"C:\Users\tvllo\Projects\Glasses\tower\data")
+# `LIVE_DATA` (the live store) is `world_live_replay.LIVE_DATA`, one copy for
+# every writing entrypoint (review C24 MED-6).
 DEFAULT_INTRINSICS = LIVE_DATA / "world_builder" / "intrinsics"
 
 # Roots the runner owns. Anything a switch file says about them is replaced.
@@ -282,9 +293,11 @@ class StartupLiveWatch:
         self._clock = clock
         self._next = clock() + self.every
 
-    def check(self) -> None:
+    def check(self, force: bool = False) -> None:
+        """Read :8000 when the interval is due, or now when `force` (the
+        hand-off to the client: review C24 HIGH-3, no unwatched gap)."""
         now = self._clock()
-        if now < self._next:
+        if now < self._next and not force:
             return
         self._next = now + self.every
         reason = self.guard.observe(live_tower_state(LIVE_HEALTH_URL))
@@ -312,6 +325,7 @@ def main(argv=None) -> int:
                         help="Calibrations copied into the fresh world root (read only).")
     parser.add_argument("--health-timeout", type=float, default=240.0)
     args = parser.parse_args(argv)
+    refuse_unguarded_proof(args)
 
     check_target_port(args.port)
     out = Path(args.out)
@@ -381,11 +395,26 @@ def main(argv=None) -> int:
     if not resolved or not _inside(Path(resolved), tower_dir):
         raise SystemExit(f"refused: import tower resolves to {resolved!r}, not under {tower_dir}")
 
+    harness = harness_identity()
+    # THE PRE-SPAWN RE-READ (review C24 HIGH-3). The first read was before
+    # the calibration copy and the import probe (up to 120 s); a live walk
+    # that began in between must stop the Tower from starting at all.
+    before_spawn = live_tower_state(LIVE_HEALTH_URL)
+    if before_spawn in LIVE_REFUSE_AT_START:
+        _log(out, f"REFUSED: :8000 became {before_spawn} during the preflight (the guard refuses recording, "
+                  "busy and unknown). Nothing was started.")
+        return EXIT_ABORTED
+    # The startup watch continues from these two reads.
+    startup_guard = LiveGuard(live)
+    startup_guard.observe(before_spawn)
+
     run = {
         "tool": "world_live_replay_run",
         "label": args.label,
         "started_at": round(time.time(), 3),
-        "harness": harness_identity(),
+        # The pin and the harness version, self-evident (manager 154 §2).
+        "harness_pin": harness_pin(harness),
+        "harness": harness,
         "code": identity,
         "import_tower": resolved,
         "switches": switches,
@@ -402,9 +431,14 @@ def main(argv=None) -> int:
         "err_log": str(err_log),
         "out_log": str(out_log),
         "live_tower_at_start": live,
+        "live_tower_before_spawn": before_spawn,
+        # Whether this run can be proof (review C24 HIGH-3).
+        "live_guard": not args.no_live_guard,
+        "not_a_proof_run": bool(args.not_a_proof_run),
     }
     (out / "run.json").write_text(json.dumps(run, indent=2), encoding="utf-8")
-    _log(out, f"harness {run['harness'].get('git_head')} sha1 {run['harness'].get('sha1')} "
+    _log(out, f"harness {run['harness'].get('version')} at {run['harness'].get('git_head')} "
+              f"(committed and clean: {run['harness_pin']['committed_clean']}) sha1 {run['harness'].get('sha1')} "
               f"dirty {run['harness'].get('git_dirty')}")
     _log(out, f"code {identity}; switches {switches}")
     _log(out, f"starting the test Tower: {' '.join(command)} (cwd {tower_dir})")
@@ -415,7 +449,7 @@ def main(argv=None) -> int:
     if os.name == "nt":
         creationflags = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW
     process = job = None
-    watch = StartupLiveWatch(LiveGuard(live))
+    watch = StartupLiveWatch(startup_guard)
     health_url = f"http://127.0.0.1:{args.port}/health"
     try:
         # Spawn and job assignment INSIDE the try (review C22 L2): whatever
@@ -470,6 +504,9 @@ def main(argv=None) -> int:
             _log(out, f"ABORT: stopping the test Tower pid {process.pid} now")
             terminate_tree(process, job=job, timeout=30.0, hard=True)
 
+        # The hand-off: read :8000 once more, now, so the gap to the client's
+        # own first read is the client's start-up alone (review C24 HIGH-3).
+        watch.check(force=True)
         options = options_from_args(args, port=args.port, out=out, world_root=world_root,
                                     tower_pid=process.pid, on_abort=kill_tower_now)
         record = asyncio.run(run_replay(options))
