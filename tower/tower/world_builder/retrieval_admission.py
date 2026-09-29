@@ -25,7 +25,8 @@ produced the chosen draw's published result, in both publish entry points (`cohe
      readout) plus the verified new links (the calibrated readout):
        (C1) M_H >= 2, a maximum endpoint-disjoint matching over the honoured NONCOMPACT links;
        (C2) H > C, strictly: weights 1 / max(deg_G, deg_R) over ALL of L; a link without a readout counts in C;
-       (C3) one consistent correction: m(A*) >= 2 and m(A*) > m(B*);
+       (C3) one consistent correction: m(A*) >= 2 and m(A*) > m(B*), each seed's consensus set S'_l classified by
+            the angle of its SEED mean G_l, exactly as frozen (C23-IMPL-G; Codex C23x HIGH-1);
        (C4) the scale check, at certification (step 1) and again inside the re-gate at attachment.
   4. THE PROJECTION RE-GATE (B.1): `coherence_publish.gate_final_solution` on the same candidate with the same depth
      and scale, the consensus's withhold, the P4 seals carried, the CAMERA allow-list (the room's cameras -- P4's
@@ -37,8 +38,12 @@ produced the chosen draw's published result, in both publish entry points (`cohe
      pieces keep the input's published reasons (`coherence_publish.keep_outside_pieces`).
   6. P4 AGAIN, when the anchor verification's parts are on: `anchor_verify.verify_published` on the projected room,
      its seal re-gate carrying `admit`, the carried seals and the projected room as the allow-list. An admitted group
-     is image-verified like any attached group.
-  7. THE RECORD `gate.retrieval_admission` (Tower-internal, additive, absent when off): ids and numbers only.
+     is image-verified like any attached group. Only an `applied` second run is published; any other outcome
+     (`not-applied`: its seal re-gate failed its post-checks; `failed`; `not-run`) publishes the input (Codex C23x
+     HIGH-2), with the admission `not-applied` (`failed` for a failed run).
+  7. THE RECORD `gate.retrieval_admission` (Tower-internal, additive, absent when off): ids and numbers only. When P4
+     ran again, `p4_first_run` (the input's run, whose record stays the published `anchor_verify`) and
+     `p4_second_run` (the run on the projected room): state, and the keyframe ids and reason of every seal.
 
 THE BINDING INVARIANT (manager 144 section 3; PREREG A.5). Retrieval links reach ONLY the certificate. Every gate
 call of the admission receives the database reader's own `links` and `link_rotations` objects, read-only
@@ -47,18 +52,22 @@ call of the admission receives the database reader's own `links` and `link_rotat
 
 THE CHOICES THE STUDY LEFT OPEN (manager 145 section 1), made here:
   (a) the verifier's seed: per pair, from its image names (`pair_seed`); the same for the database links' 1.5 px
-      re-fit; pairs in sorted order. A serial and a threaded verification give the same links. BUT (C23-IMPL probe,
-      W4): OpenCV 5.0.0's USAC_MAGSAC is deterministic here without any seed, and the 70-vs-71 is the BAG OF WORDS:
-      its float32 GEMM is not bitwise stable across BLAS thread counts (1 vs 8 threads: 499 query pairs each, about
-      10 different, 71 vs 70 verified). Within one Tower (one BLAS configuration) the links are reproducible; across
-      thread configurations they are not -- OPEN (pin the BoW's BLAS threads, or a tie-refined nearest word).
+      re-fit; pairs in sorted order. A serial and a threaded verification give the same links. The 70-vs-71 was the
+      BAG OF WORDS, not the verifier (C23-IMPL probe, W4: OpenCV 5.0.0's USAC_MAGSAC is deterministic without any
+      seed; OpenBLAS's float32 GEMM is not bitwise stable across thread counts). So the bag of words' products run
+      under ONE BLAS thread, the reference's setting (`one_blas_thread`; C23-IMPL-G, Codex C23x MED-3): the links do
+      not depend on the process's BLAS thread count.
   (b) the consensus's withhold: a withheld group is never a candidate; the projection re-gate carries the withhold, so
       the withheld piece stays sealed with its one reason `seed-unstable`, and the post-checks require it unchanged.
   (c) the published reason: an outside piece whose keyframes the admission did not change keeps the reasons the
       input published (the frozen rule; the consensus's and P4's precedent: a piece's reason is the database gate's
-      decision that produced it). A piece that LOSES admitted cameras has no reason in the closed set that fits its
-      remainder (redundantly linked to cameras admitted on retrieval evidence) -- OPEN: needs a contract amendment --
-      so the projection is `not-applied` and nothing new is published.
+      decision that produced it). A piece that LOSES admitted cameras: PREREG B.2(c) lets its remainder be published
+      with the re-gate's reasons, but for a remainder redundantly linked to the admitted cameras the re-gate's reason
+      is its fallback `no-verified-link` (the allow-list, not the evidence, keeps it out), which contradicts that
+      reason's contract meaning (COMPONENTS section 2.2: no verified pair links it to the room). Until a
+      reason-contract ruling (C23-IMPL-G ruling request, RUN experiments/C23-CERT/PROGRESS.md), the projection is
+      `not-applied`: a strict subset of the frozen rule's admissions (it never admits more), and no corpus case
+      reaches it (C23-CERT, 44 solves x 2).
   (d) the cost: `stage_timing` stage `admission` (with `TOWER_WORLD_STAGE_TIMING` on), and per-stage seconds in the
       record.
 
@@ -66,17 +75,20 @@ THRESHOLDS: none new. Every value in `AdmissionParams` is PREREG section A's or 
 frozen and passed in C23-CERT; `honoured_deg` is the gate's `max_link_disagreement_deg`. `VERIFY_WORKERS` is not a
 decision parameter (any value gives the same links) and is OPEN (the thread budget, BRIEF-IMPL section 6.3).
 
-Never raises: any failure publishes the input result as it was, with `state: failed` in the record.
+Never raises: any failure after the call -- the switch's read and the parameters included -- publishes the input
+result as it was, with `state: failed` in the record (an unreadable switch is off: the very input object).
 """
 
 from __future__ import annotations
 
+import contextlib
 import dataclasses
 import hashlib
 import itertools
 import json
 import logging
 import math
+import threading
 import time
 from collections import Counter
 from dataclasses import asdict, dataclass
@@ -273,12 +285,83 @@ def load_masked_features(database_path, mask_dir) -> tuple[dict, set, dict]:
         con.close()
 
 
+# The bag of words' float32 products under ONE BLAS thread (Codex C23x MED-3). OpenBLAS's float32 GEMM is not bitwise
+# stable across its thread counts (C23-IMPL probe, W4: 1 vs 8 threads give a different V, ~10 of 499 query pairs
+# swapped, 71 vs 70 verified links), and C23-CERT's saved pool and serial cost run were computed with ONE thread
+# (P5-RETR retr_lib pins OPENBLAS_NUM_THREADS=1 at import). So exactly those products -- the nearest-word assignment
+# (k-means and the final words) and the query similarities -- run with numpy's OpenBLAS set to one thread, and the
+# count the process had is restored afterwards (threadpoolctl's `threadpool_limits(1)` pattern, done here with
+# OpenBLAS's own API because threadpoolctl is not in the Tower venv). The descriptors' own products (`mnn`) are exact
+# in float32 (integer values, sums < 2**24) and need no pin. No thread count is set for the process as a whole.
+_BLAS_LOCK = threading.Lock()
+_BLAS: dict = {"api": None, "depth": 0, "saved": None}
+_OPENBLAS_SYMBOLS = (("scipy_openblas_get_num_threads64_", "scipy_openblas_set_num_threads64_"),
+                     ("scipy_openblas_get_num_threads", "scipy_openblas_set_num_threads"),
+                     ("openblas_get_num_threads64_", "openblas_set_num_threads64_"),
+                     ("openblas_get_num_threads", "openblas_set_num_threads"))
+
+
+def _openblas_threads_api():
+    """(get, set) for the thread count of the OpenBLAS numpy itself loaded -- the library numpy's wheel bundles
+    (`numpy.libs` on Windows and Linux, `numpy/.dylibs` on macOS), opened by its full path, which hands back the
+    module numpy already holds -- or None when there is none (another BLAS). Found once."""
+    if _BLAS["api"] is None:
+        import ctypes  # noqa: PLC0415
+
+        api = False
+        root = Path(np.__file__).resolve().parent
+        for folder in (root.parent / "numpy.libs", root / ".dylibs"):
+            for lib_path in sorted(folder.glob("*openblas*")) if folder.is_dir() else []:
+                try:
+                    lib = ctypes.CDLL(str(lib_path))
+                except OSError:
+                    continue
+                for get_name, set_name in _OPENBLAS_SYMBOLS:
+                    if hasattr(lib, get_name) and hasattr(lib, set_name):
+                        get, put = getattr(lib, get_name), getattr(lib, set_name)
+                        get.restype, get.argtypes = ctypes.c_int, []
+                        put.restype, put.argtypes = None, [ctypes.c_int]
+                        api = (get, put)
+                        break
+                if api:
+                    break
+            if api:
+                break
+        _BLAS["api"] = api
+    return _BLAS["api"] or None
+
+
+@contextlib.contextmanager
+def one_blas_thread():
+    """numpy's OpenBLAS at one thread for the block, then the count it had. Nested and concurrent uses share one
+    pin (the last to leave restores). No OpenBLAS handle: RuntimeError -- the admission fails closed and publishes
+    its input, rather than compute a bag of words that depends on the thread count."""
+    api = _openblas_threads_api()
+    if api is None:
+        raise RuntimeError("numpy's OpenBLAS thread count cannot be pinned to one thread for the bag of words")
+    get, put = api
+    with _BLAS_LOCK:
+        if _BLAS["depth"] == 0:
+            _BLAS["saved"] = int(get())
+            put(1)
+        _BLAS["depth"] += 1
+    try:
+        yield
+    finally:
+        with _BLAS_LOCK:
+            _BLAS["depth"] -= 1
+            if _BLAS["depth"] == 0:
+                put(int(_BLAS["saved"]))
+                _BLAS["saved"] = None
+
+
 def _nearest(X, C, cc, chunk=8192):
     out = np.empty(len(X), np.int32)
-    for s in range(0, len(X), chunk):
-        x = X[s:s + chunk]
-        d = cc[None, :] - 2.0 * (x @ C.T)
-        out[s:s + chunk] = np.argmin(d, axis=1)
+    with one_blas_thread():
+        for s in range(0, len(X), chunk):
+            x = X[s:s + chunk]
+            d = cc[None, :] - 2.0 * (x @ C.T)
+            out[s:s + chunk] = np.argmin(d, axis=1)
     return out
 
 
@@ -331,7 +414,8 @@ def query_pairs(candidates: list, room: set, bow_names: list, V: np.ndarray, tri
         for q in g["members"]:
             if q not in vi:
                 continue
-            s = room_V @ V[vi[q]]
+            with one_blas_thread():
+                s = room_V @ V[vi[q]]
             for j in np.argsort(-s, kind="stable")[:params.k_room]:
                 p = sorted_pair(q, room_list[j])
                 if p in tried or p in seen:
@@ -652,7 +736,11 @@ def certificate(L: list, params: AdmissionParams) -> tuple[bool, dict]:
             H += w
         else:
             C += w
-    # (C3) one consistent correction over the noncompact links with a readout
+    # (C3) one consistent correction over the noncompact links with a readout. For each seed link l: S_l = the links
+    # within tau of D_l; G_l = the chordal mean of D over S_l (the SEED mean); S'_l = the links within tau of G_l.
+    # S'_l is classified by the angle of G_l -- the seed mean, exactly as PREREG A.4 is frozen -- and NOT by a mean
+    # recomputed over S'_l (Codex C23x HIGH-1: a recomputed mean can move a rival across tau and admit it). So the
+    # same S'_l reached from two seeds can be classified twice: m depends on S'_l alone, the angle on the seed.
     N = [x for x in nc if x["D"] is not None]
     best_A, A_star = None, None
     B_star_m, G_B = 0, None
@@ -669,8 +757,8 @@ def certificate(L: list, params: AdmissionParams) -> tuple[bool, dict]:
             if not S2:
                 continue
             if S2 not in seen:
-                seen[S2] = (matching([(N[k]["g"], N[k]["r"]) for k in S2]), rot_deg(chordal_mean(Ds[list(S2)])))
-            m_, ang = seen[S2]
+                seen[S2] = matching([(N[k]["g"], N[k]["r"]) for k in S2])
+            m_, ang = seen[S2], rot_deg(Gi)
             if ang <= tau:
                 key = (m_, len(S2), -ang, -i)
                 if A_star is None or key > best_A:
@@ -735,21 +823,40 @@ def admitted(store, world_id: str, session_id: str, result, *, database_path, ke
     """The retrieval admission on a published gate result (`coherence_publish.GateResult`; the chosen draw after the
     consensus and the anchor verification). Off (`TOWER_WORLD_RETRIEVAL_ADMISSION` unset, blank, `off` or garbage):
     `result`, the very object, untouched. On: the result to publish, its record carrying `retrieval_admission`.
-    Never raises."""
-    from tower.config import world_retrieval_admission_setting  # noqa: PLC0415
+    Never raises: every step after the call -- reading the switch, building the parameters, the stage-timing hook,
+    the admission itself and its record -- is contained (Codex C23x MED-4). A switch that cannot be read is off (the
+    input, the very object); any later failure publishes the input as it was, with `state: failed` when the record
+    can still be written, and the very input object when it cannot."""
+    try:
+        from tower.config import world_retrieval_admission_setting  # noqa: PLC0415
 
-    if not world_retrieval_admission_setting():
+        on = world_retrieval_admission_setting()
+    except Exception:  # noqa: BLE001 -- an unreadable switch is off: today's publish, the very object
+        logger.exception("[Tower][WorldBuilder] the retrieval admission's switch could not be read on %s/%s; it is "
+                         "treated as off", world_id, session_id)
         return result
-    return _admit(store, world_id, session_id, result, database_path=database_path, keyframes=keyframes,
-                  workspace_root=workspace_root, params=params or AdmissionParams(), gp=gp or CG.GateParams())
+    if not on:
+        return result
+    try:
+        return _admit(store, world_id, session_id, result, database_path=database_path, keyframes=keyframes,
+                      workspace_root=workspace_root, params=params, gp=gp)
+    except Exception:  # noqa: BLE001 -- only a failure outside `_admit`'s own containment (the timing hook)
+        logger.exception("[Tower][WorldBuilder] the retrieval admission failed on %s/%s; the room is published as "
+                         "it was gated", world_id, session_id)
+        return result
 
 
 @stage_timing.timed("admission")
 def _admit(store, world_id, session_id, result, *, database_path, keyframes, workspace_root, params, gp):
-    started = time.perf_counter()
-    audit: dict = {"id": ADMISSION_ID, "params": params.to_json(), "params_digest": params.digest(),
-                   "rider_min_shared": None, "seconds": {}}
+    audit: dict = {"id": ADMISSION_ID, "params": None, "params_digest": None, "rider_min_shared": None,
+                   "seconds": {}}
+    started = None
     try:
+        started = time.perf_counter()
+        params = params or AdmissionParams()
+        gp = gp or CG.GateParams()
+        audit["params"] = params.to_json()
+        audit["params_digest"] = params.digest()
         return _run(store, world_id, session_id, result, database_path=database_path, keyframes=keyframes,
                     workspace_root=workspace_root, params=params, gp=gp, audit=audit, started=started)
     except Exception as exc:  # noqa: BLE001 -- the input is published as it was, and the record says why
@@ -786,6 +893,25 @@ def _done(result, published, audit: dict, state: str, started: float, **kw):
 
 def _names_of_kids(kids, name_of: dict) -> set:
     return {name_of[k] for k in kids or [] if k in name_of}
+
+
+def _p4_run_record(a: dict) -> dict:
+    """One anchor-verification run (`anchor_verify`'s own record) as the admission's record keeps it: its state (with
+    `why` / `detail`), and the keyframe ids and the reason of every seal it made -- for a run that is not `applied`,
+    the seals it found and did NOT publish, as its own record lists them -- its collateral, rooms and rounds. Ids and
+    numbers only."""
+    a = a or {}
+    out = {"state": a.get("state")}
+    out.update({k: a[k] for k in ("why", "detail", "sealed_kf", "room_before", "room_after", "cap_hit") if k in a})
+    out["sealed"] = {why: {"keyframes": int((b or {}).get("keyframes") or 0),
+                           "keyframe_ids": list((b or {}).get("keyframe_ids") or [])}
+                     for why, b in sorted((a.get("sealed") or {}).items())}
+    if isinstance(a.get("collateral"), dict):
+        out["collateral"] = {"keyframes": int(a["collateral"].get("keyframes") or 0),
+                             "keyframe_ids": list(a["collateral"].get("keyframe_ids") or [])}
+    if isinstance(a.get("rounds"), list):
+        out["rounds"] = len(a["rounds"])
+    return out
 
 
 def _run(store, world_id, session_id, result, *, database_path, keyframes, workspace_root, params, gp, audit,
@@ -953,15 +1079,27 @@ def _run(store, world_id, session_id, result, *, database_path, keyframes, works
                                     regate=lambda *, seal, room: regate(seal={**carried, **seal}, room=room),
                                     workspace_root=workspace_root, min_obs=gp.min_obs, gp=gp, **extra)
         a2 = (rerun.record or {}).get("anchor_verify") or {}
-        audit["p4_rerun"] = {k: a2.get(k) for k in ("state", "why", "detail", "sealed_kf", "room_before",
-                                                   "room_after", "cap_hit") if k in a2}
-        audit["p4_rerun"]["sealed"] = {w: (b or {}).get("keyframes") for w, b in (a2.get("sealed") or {}).items()}
-        lap("p4_rerun", t)
-        if a2.get("state") == AV.STATE_FAILED:
+        # The seal provenance (Codex C23x MED-5): the published record's own `anchor_verify` stays the FIRST run's
+        # (the input's: the seals carried into the projection); the SECOND run -- on the projected room -- is here,
+        # with the keyframe ids and the reason of every seal it made, beside the first run's.
+        audit["p4_first_run"] = _p4_run_record(av)
+        audit["p4_second_run"] = _p4_run_record(a2)
+        lap("p4_second_run", t)
+        state = a2.get("state")
+        if state != AV.STATE_APPLIED:
+            # Codex C23x HIGH-2: ANY outcome but `applied` -- `not-applied` (its seal re-gate failed its post-checks,
+            # so the seals it found were NOT published), `failed`, `not-run` or anything else -- means the admitted
+            # room was not image-verified as published: the input is published (BASE), never the projection.
             audit["invariant"]["gate_calls"] = gate_calls["n"]
-            return _done(result, result, audit, STATE_FAILED, started,
-                         detail="the anchor verification of the admitted room failed; the room is published as it "
-                                "was gated")
+            if state == AV.STATE_FAILED:
+                return _done(result, result, audit, STATE_FAILED, started,
+                             detail="the anchor verification of the admitted room failed; the room is published as "
+                                    "it was gated")
+            logger.warning("[Tower][WorldBuilder] retrieval admission on %s/%s: the anchor verification of the "
+                           "admitted room is %s; the room is published as it was gated", world_id, session_id, state)
+            return _done(result, result, audit, STATE_NOT_APPLIED, started,
+                         why=f"the anchor verification of the admitted room is {state!r}, not applied; the room is "
+                             "published as it was gated")
         final = rerun
     audit["invariant"]["gate_calls"] = gate_calls["n"]
     audit["room_after"] = len(CP._room_kids(final.solution, gp.min_obs))
@@ -1004,14 +1142,15 @@ def db_geometry(database_path, keys: list, K, area: float, params: AdmissionPara
 
 
 def _lost_admitted(model: CG.SolveModel, base: dict, adm: set, gp: CG.GateParams) -> str | None:
-    """Decision (c): an outside piece that LOSES admitted cameras keeps a remainder that no reason of the closed set
-    describes (it is linked to the room only through cameras admitted on retrieval evidence). OPEN: needs a contract
-    amendment -- until then nothing new is published."""
+    """Decision (c): an outside piece that LOSES admitted cameras. PREREG B.2(c) would publish its remainder with the
+    re-gate's reasons; for a remainder redundantly linked to the admitted cameras that is the gate's fallback
+    `no-verified-link`, which contradicts the reason's contract meaning. Conservative until a reason-contract ruling
+    (C23-IMPL-G ruling request): `not-applied`, nothing new is published."""
     sup = model.n_obs >= gp.min_obs
     for v in _pieces_of(base["labels"], model.names, sup).values():
         if v & adm and not v <= adm:
-            return ("an outside piece would lose admitted cameras, and no reason of the contract's closed set fits "
-                    "its remainder (OPEN: needs a contract amendment)")
+            return ("an outside piece would lose admitted cameras, and which reason its remainder publishes awaits a "
+                    "ruling (OPEN: needs a reason-contract ruling)")
     return None
 
 

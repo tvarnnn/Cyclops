@@ -2,18 +2,26 @@
 tests in `test_world_builder_retrieval_admission_corpus.py` run it in a subprocess, because the study's loaders pin
 BLAS threads at import and load the reference gate by file path.
 
-    python -m tests.wb_retrieval_admission_corpus replay <RUN_DIR> <out.json> TAG [TAG ...]
-    python -m tests.wb_retrieval_admission_corpus fresh  <RUN_DIR> <out.json> walk:c81766a3
+    python -m tests.wb_retrieval_admission_corpus replay  <RUN_DIR> <out.json> TAG [TAG ...]
+    python -m tests.wb_retrieval_admission_corpus fresh   <RUN_DIR> <out.json> walk:c81766a3
+    python -m tests.wb_retrieval_admission_corpus threads <RUN_DIR> <out.json> walk:c81766a3
 
 `replay`: per case and per P4 setting, BASE is built by the study's own machinery (`c23c_lib`: the case's gate, then
 P4 with its seals); then the PRODUCT's functions decide -- `retrieval_admission.candidates`, `direct_links` and
 `certificate` on the study's saved link pool (`P5-RETR` / `C23-CERT out\\retr`), the PRODUCT gate's projection re-gate
 (`coherence_gate.apply_gate(admit=...)`) and `post_checks` -- and the P4 re-run goes through the product gate too.
 Every gate call is also made with the study's in-memory patched gate and compared. The output is compared with
-`C23-CERT\\out\\cases\\*.json`.
+`C23-CERT\\out\\cases\\*.json`. Each candidate also carries `prereg_c3`: (C3) recomputed here from PREREG A.4's frozen
+text alone (`_prereg_c3`), because the study's own `c23c_lib.certificate` classified a RECOMPUTED mean (Codex C23x
+HIGH-1; its corrected replay, C23-IMPL-G, changed no decision): the product's C3 statistics are checked against this.
 
 `fresh`: the product's own retrieval on W4's frozen database and masks (features, bag of words, queries, verification
 serially and on 8 threads), then the certificates.
+
+`threads`: numpy is imported FIRST, so the process's OpenBLAS runs with ITS OWN environment's thread count (the
+study's loader cannot pin it); then the product's candidate path end to end -- features, the bag of words, the
+queries, the verification, the database links' geometry, the certificates -- on W4. Two processes with different
+`OPENBLAS_NUM_THREADS` must give the same bag of words, pairs, links and verdicts (Codex C23x MED-3).
 
 READ-ONLY on RUN: nothing is written but `<out.json>`.
 """
@@ -45,6 +53,37 @@ def _setup(run_dir: Path):
         del sys.modules[k]
     sys.path[:] = [p for p in sys.path if Path(p or ".").resolve() != product]
     return X, PCG, RA
+
+
+def _prereg_c3(X, L, tau: float = 16.8) -> dict:
+    """PREREG A.4 (C3), written from the frozen text alone (independent of the product's `certificate` and of the
+    study's): over N = the noncompact links of L with a readout, for each l: S_l = {k : angle(D_k^T D_l) <= tau};
+    G_l = the chordal mean of D over S_l; S'_l = {k : angle(D_k^T G_l) <= tau}; A* = the S'_l with angle(G_l) <= tau
+    maximising m (ties: larger |S|, smaller angle(G), lower l); B* = the S'_l with angle(G_l) > tau maximising m
+    (0 if none; its reported angle is the first l's); pass iff m(A*) >= 2 and m(A*) > m(B*). Brute force."""
+    import numpy as np  # noqa: PLC0415
+
+    RL = X.RL
+    N = [x for x in L if x["noncompact"] and x["D"] is not None]
+    best_a, best_b = None, None
+    for l_, x in enumerate(N):
+        S = [k for k, y in enumerate(N) if RL.rot_deg(np.asarray(y["D"]).T @ np.asarray(x["D"])) <= tau]
+        G = RL.chordal_mean(np.asarray([N[k]["D"] for k in S], np.float64))
+        S2 = [k for k, y in enumerate(N) if RL.rot_deg(np.asarray(y["D"]).T @ G) <= tau]
+        if not S2:
+            continue
+        m = X.matching([(N[k]["g"], N[k]["r"]) for k in S2])
+        ang = RL.rot_deg(G)
+        if ang <= tau:
+            key = (m, len(S2), -ang, -l_)
+            if best_a is None or key > best_a[0]:
+                best_a = (key, m, len(S2), ang)
+        elif best_b is None or m > best_b[0]:
+            best_b = (m, ang)
+    m_a = best_a[1] if best_a else 0
+    m_b = best_b[0] if best_b else 0
+    return {"mA": m_a, "nA": best_a[2] if best_a else 0, "G_A": round(best_a[3], 2) if best_a else None,
+            "mB": m_b, "G_B": round(best_b[1], 2) if best_b else None, "C3": bool(m_a >= 2 and m_a > m_b)}
 
 
 def _gate_equal(a, b):
@@ -162,6 +201,7 @@ def replay(run_dir: Path, tags: list) -> dict:
                                         "cert": {k: st.get(k) for k in ("links", "db", "new", "honoured",
                                                                         "noncompact", "M_H", "H", "C", "mA", "G_A",
                                                                         "nA", "mB", "G_B", "C1", "C2", "C3")},
+                                        "prereg_c3": _prereg_c3(X, L, P.honoured_deg),
                                         "admitted": ok})
                 if ok:
                     admitted.append(c)
@@ -187,6 +227,10 @@ def replay(run_dir: Path, tags: list) -> dict:
                             ctx, published, lambda seal, pr=pr: prod_gate(**dict(hooks_p, seal=seal, room=pr,
                                                                                 admit=set(adm))), dict(seals_B))
                         S["p4_rerun_sealed"] = p4c.get("sealed", 0)
+                        S["p4_rerun_state"] = p4c.get("state")
+                        if p4c.get("state") != "applied":
+                            # the product (Codex C23x HIGH-2): a P4 re-run that is not applied publishes BASE
+                            published, state = BASE, f"not-applied: the P4 re-run is {p4c.get('state')}"
             S["state"] = state
             RP = X.room_of(published["labels"], cs)
             S["room_base"], S["room_published"] = len(ROOM_B), len(RP)
@@ -284,10 +328,73 @@ def fresh(run_dir: Path, tag: str) -> dict:
             "seconds": {k: round(v, 2) for k, v in T.items()}}
 
 
+def threads(run_dir: Path, tag: str) -> dict:
+    """The product's candidate path end to end in a process whose OpenBLAS runs with the environment's own thread
+    count (`main` imports numpy before anything else). Every decision-relevant output is returned, plus the bag of
+    words computed WITHOUT the pin in the same process (to show the pin is what makes it thread-free)."""
+    import contextlib  # noqa: PLC0415
+    import hashlib  # noqa: PLC0415
+
+    import numpy as np  # noqa: PLC0415
+
+    X, PCG, RA = _setup(run_dir)
+    RL = X.RL
+    P, GP = RA.AdmissionParams(), PCG.GateParams()
+    get, _put = RA._openblas_threads_api()
+    threads_before = int(get())
+    cs = RL.load_case(tag)
+    idx = cs.model.index()
+    base = X.gate_db(cs, **X.base_hooks(cs))
+    room = X.room_of(base["labels"], cs)
+    r = np.full(cs.model.n, np.nan)
+    for nm, v in (cs.metric_log or {}).items():
+        if nm in idx and v is not None and np.isfinite(v):
+            r[idx[nm]] = float(v)
+    cands, _ = RA.candidates(cs.model, base, r, room, sealed=set(), collateral=set(),
+                             withheld=set(cs.hooks.get("withhold") or []), params=P, gp=GP)
+    cam = RL.camera_of(cs)
+    area = float(cam["width"]) * float(cam["height"])
+    feats, tried, _ = RA.load_masked_features(RL.db_of(cs), RL.mask_dir_of(cs))
+    names, V = RA.build_bow(feats, P)
+    threads_after = int(get())
+    pairs = RA.query_pairs(cands, room, names, V, tried, P)
+    new = RA.verify_pairs(pairs, feats, cs.K, area, P, workers=1)
+    cams = {n for c in cands for n in c["members"]}
+    keys = sorted(k for k in cs.links if (k[0] in cams and k[1] in room) or (k[1] in cams and k[0] in room))
+    db_attrs = RA.db_geometry(RL.db_of(cs), keys, cs.K, area, P)
+    certs = {}
+    for c in cands:
+        L = RA.direct_links(cs.model, set(c["members"]), room, cs.links, cs.rots, new, db_attrs, P)
+        ok, st = RA.certificate(L, P)
+        certs[c["first_camera"]] = {"admitted": ok, **{k: st.get(k) for k in (
+            "links", "db", "new", "honoured", "noncompact", "M_H", "H", "C", "mA", "nA", "G_A", "mB", "G_B", "C1",
+            "C2", "C3")}}
+    real = RA.one_blas_thread
+    RA.one_blas_thread = contextlib.nullcontext                          # the same bag of words, NOT pinned
+    try:
+        _n2, V_unpinned = RA.build_bow(feats, P)
+    finally:
+        RA.one_blas_thread = real
+    return {"openblas_threads": threads_before, "openblas_threads_after_bow": threads_after,
+            "V_sha1": hashlib.sha1(np.ascontiguousarray(V).tobytes()).hexdigest(),
+            "V_unpinned_sha1": hashlib.sha1(np.ascontiguousarray(V_unpinned).tobytes()).hexdigest(),
+            "pairs": [list(p) for p in pairs],
+            "links": [[x["a"], x["b"], x["inl"], np.asarray(x["R"]).round(12).tolist(), bool(x["noncompact"]),
+                       round(float(x["amb"]), 9), round(float(x["hull_a"]), 12), round(float(x["hull_b"]), 12)]
+                      for x in new],
+            "db_noncompact": {f"{a}|{b}": bool(v["noncompact"]) for (a, b), v in sorted(db_attrs.items())},
+            "certificates": certs}
+
+
 def main():
     mode, run_dir, out = sys.argv[1], Path(sys.argv[2]), Path(sys.argv[3])
     tags = sys.argv[4:]
-    res = replay(run_dir, tags) if mode == "replay" else fresh(run_dir, tags[0])
+    if mode == "threads":
+        import numpy  # noqa: F401,PLC0415  (FIRST: OpenBLAS starts with this process's own thread count)
+
+        res = threads(run_dir, tags[0])
+    else:
+        res = replay(run_dir, tags) if mode == "replay" else fresh(run_dir, tags[0])
     out.write_text(json.dumps(res, indent=1, default=str), encoding="utf-8")
 
 

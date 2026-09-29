@@ -19,6 +19,7 @@ The frozen corpus's decisions (W4 27/27, W5 refused, the control, c10's bed) are
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import logging
 import math
@@ -231,6 +232,94 @@ def test_gate_and_publish_off_is_todays_code_path_on_a_solve_it_would_change(tmp
     on = _publish_bytes(tmp_path / "on", monkeypatch, consensus=consensus)
     assert on["components.json"] != before["components.json"]           # it would change: the test has power
     assert on["record"]["retrieval_admission"]["state"] == RA.STATE_APPLIED
+
+
+def _fixed_clock(monkeypatch):
+    """A deterministic clock for a literal byte comparison: `time.perf_counter` advances 1 ms per call from the same
+    start on every `reset()`, and `time.time` is one constant. Returns `reset`."""
+    import time as _time
+
+    state = {"t": 0.0}
+
+    def perf_counter():
+        state["t"] += 0.001
+        return state["t"]
+
+    monkeypatch.setattr(_time, "perf_counter", perf_counter)
+    monkeypatch.setattr(_time, "time", lambda: 1_790_000_000.0)
+
+    def reset():
+        state["t"] = 1000.0
+
+    return reset
+
+
+def _raw(root: Path, *files) -> list:
+    """The files' bytes with the run's own root folder spelled out as <ROOT> (each run has its own tmp folder)."""
+    out = []
+    for f in files:
+        b = f.read_bytes()
+        for spelling in (str(root), json.dumps(str(root))[1:-1], root.as_posix()):
+            b = b.replace(spelling.encode("utf-8"), b"<ROOT>")
+        out.append(b)
+    return out
+
+
+@pytest.mark.parametrize("consensus", [False, True])
+def test_gate_and_publish_off_writes_the_same_bytes_as_todays_code_path(tmp_path, monkeypatch, consensus):
+    """The review's evidence limit (LOW): the OFF comparisons above normalise away timings and paths. Here, on a clock
+    that runs the same in both runs, the written solution.json and components.json and the record are compared as
+    RAW BYTES (only the run's own tmp folder is spelled out), the switch set to garbage (off, and logged)."""
+    from tower.world_builder.global_solve import SolveWorkspace, write_solution
+
+    reset = _fixed_clock(monkeypatch)
+    sizes = (30, 20) if not consensus else (30, 20, 20, 6, 10)
+    n = sum(sizes)
+    links, rots = F.multi_links(sizes, () if not consensus else F.CONSENSUS_CROSS)
+    F.patch_gate_inputs(monkeypatch, links, rots, [0.0] * n)
+    cands = [F.multi_solution(sizes, o) for o in (({},) if not consensus else F.CONSENSUS_OFFSETS)]
+    fake_retrieval(monkeypatch, island_links(cands[0], n, ISLAND1 if not consensus else
+                                             [(76 + k, k) for k in range(6)]))
+
+    def publish(root):
+        reset()
+        plan = CP.ConsensusPlan(draws=3, seed=7, map_draw=lambda seed: cands[seed - 7]) if consensus else None
+        ws = SolveWorkspace(root / "w1" / "solve" / F.SID)
+        _, record = CP.gate_and_publish(F.Store(root), "w1", F.SID, ws, cands[0], final=True, gate=True,
+                                        database_path="db", keyframes=F.keyframes(n), write=write_solution,
+                                        consensus=plan)
+        return _raw(root, ws.solution_path, ws.root / CP.COMPONENTS_FILENAME) + \
+            [json.dumps(record, default=str).replace(json.dumps(str(root))[1:-1], "<ROOT>").encode()]
+
+    today = RA.admitted
+    monkeypatch.setattr(RA, "admitted", lambda store, w, s, result, **kw: result)   # the call site removed
+    before = publish(tmp_path / "a")
+    monkeypatch.setattr(RA, "admitted", today)
+    monkeypatch.setenv(ENV, "garbage")
+    assert publish(tmp_path / "b") == before
+    monkeypatch.setenv(ENV, "on")
+    assert publish(tmp_path / "c")[1] != before[1]                           # the test has power
+
+
+def test_regate_published_off_writes_the_same_bytes_as_todays_code_path(tmp_path, monkeypatch):
+    reset = _fixed_clock(monkeypatch)
+
+    def regate(root):
+        reset()
+        store, ws = _saved_world(root, monkeypatch)
+        reset()
+        out = CP.regate_published(store, "w1", F.SID)
+        return _raw(root, ws.solution_path, ws.root / CP.COMPONENTS_FILENAME) + \
+            [json.dumps(out, default=str).replace(json.dumps(str(root))[1:-1], "<ROOT>").encode()]
+
+    today = RA.admitted
+    monkeypatch.setattr(RA, "admitted", lambda store, w, s, result, **kw: result)
+    before = regate(tmp_path / "a")
+    monkeypatch.setattr(RA, "admitted", today)
+    monkeypatch.setenv(ENV, "off")
+    assert regate(tmp_path / "b") == before
+    monkeypatch.setenv(ENV, "on")
+    assert regate(tmp_path / "c")[1] != before[1]
 
 
 def _saved_world(tmp_path, monkeypatch, sizes=(30, 20)):
@@ -461,6 +550,27 @@ def test_a_consistent_alternative_correction_as_strong_is_refused():
     assert ok and (st["mA"], st["mB"]) == (3, 2)
 
 
+def test_c3_classifies_the_seed_mean_not_a_recomputed_one():
+    """Codex C23x HIGH-1, PREREG A.4 as frozen. Four endpoint-disjoint noncompact links whose corrections turn 30,
+    13.3, 13.3 and 2.5 deg about one axis. Seeded at the 30 deg link: S = {30, 13.3, 13.3} (the 2.5 is 27.5 deg
+    away), its seed mean G turns 18.85 deg -- a RIVAL correction beyond tau -- and S' around it takes all four links
+    (m 4). Seeded at a 13.3 deg link: S = all four, G 14.75 deg, S' all four (m 4). So m(B*) = 4 = m(A*): refused.
+    The mean RECOMPUTED over S' (all four, 14.75 deg) would move the rival across 16.8 deg and admit the group."""
+    L = _L(("g1", "r1", False, True, 30.0), ("g2", "r2", True, True, 13.3), ("g3", "r3", True, True, 13.3),
+           ("g4", "r4", True, True, 2.5))
+    ok, st = RA.certificate(L, P)
+    assert (st["M_H"], st["H"], st["C"], st["C1"], st["C2"]) == (3, 3.0, 1.0, True, True)       # only C3 decides
+    assert (st["mA"], st["nA"], st["mB"]) == (4, 4, 4)
+    assert st["G_A"] == pytest.approx(14.75, abs=0.01) and st["G_B"] == pytest.approx(18.85, abs=0.01)
+    assert not st["C3"] and not ok
+    # the power of the case: the seed mean is past tau, the recomputed mean over the same S' is not
+    Ds = np.asarray([x["D"] for x in L])
+    assert RA.rot_deg(RA.chordal_mean(Ds[:3])) > P.honoured_deg >= RA.rot_deg(RA.chordal_mean(Ds))
+    # without the rival's seed (the 30 deg link alone removed), the same evidence certifies
+    ok, st = RA.certificate(L[1:], P)
+    assert ok and (st["mA"], st["mB"]) == (3, 0)
+
+
 def test_compact_honoured_links_never_satisfy_c1():
     # A* is two noncompact links (one honoured at 5 deg, one contradicted at 20 deg, one correction of 12.5 deg), so
     # C3 holds; the honoured NONCOMPACT evidence is one link: C1 fails. A compact honoured link must not rescue it.
@@ -629,16 +739,39 @@ def test_a_follower_stays_out_and_its_piece_keeps_the_published_reason(tmp_path,
 
 
 def test_a_piece_that_would_lose_admitted_cameras_is_not_applied(tmp_path, monkeypatch):
-    """Decision (c): F is redundantly linked to A, so they are ONE input piece; A alone is certified. No reason of the
-    closed set fits F's remainder: OPEN (a contract amendment), and nothing new is published."""
+    """Decision (c), Codex C23x MED-6: F is redundantly linked to A, so they are ONE input piece; A alone is
+    certified. PREREG B.2(c) would publish F with the re-gate's reasons, which here contradict the contract (next
+    test): conservative until the reason-contract ruling -- `not-applied`, nothing new is published."""
     sol, result = _gate(tmp_path, monkeypatch, (30, 20, 8), cross=((49, 50), (49, 51)))
     assert _pieces(result) == {0: (30, []), 30: (28, [CG.REASON_NO_VERIFIED_LINK])}
     monkeypatch.setenv(ENV, "on")
     fake_retrieval(monkeypatch, island_links(sol, 58, ISLAND1))
     out = _admit(tmp_path, result, 58)
     ra = out.record["retrieval_admission"]
-    assert ra["state"] == RA.STATE_NOT_APPLIED and "OPEN: needs a contract amendment" in ra["why"]
+    assert ra["state"] == RA.STATE_NOT_APPLIED and "OPEN: needs a reason-contract ruling" in ra["why"]
+    assert ra["candidates"][0]["admitted"] is True                         # the certificate held; the piece did not
     assert out.components == result.components and _room(out, 58) == list(range(30))
+
+
+def test_the_re_gates_reason_for_such_a_remainder_contradicts_the_contract():
+    """Why MED-6 needs a ruling: in the projection re-gate, F (50..57) has TWO verified, redundant links to the
+    admitted cameras now in the room; the camera allow-list, not the evidence, keeps it out; and the gate's reason
+    for it falls back to `no-verified-link` -- which COMPONENTS section 2.2 defines as "no verified image pair links
+    it to the room"."""
+    sizes = (30, 20, 8)
+    sol = F.multi_solution(sizes)
+    links, rots = F.multi_links(sizes, ((49, 50), (49, 51)))
+    model = CP.solve_model(sol, {k.keyframe_id: F.name(i) for i, k in enumerate(F.keyframes(58))})
+    lv = {F.name(i): 0.0 for i in range(58)}
+    adm = {F.name(i) for i in range(30, 50)}
+    out = CG.apply_gate(model, links, lv, link_rotations=rots, masks_applied=True,
+                        room=[F.name(i) for i in range(30)] + sorted(adm), admit=adm, rider_min_shared=3)
+    lab = out["labels"][F.name(50)]
+    assert lab != 0 and {out["labels"][F.name(i)] for i in range(50, 58)} == {lab}
+    (reasons,) = [c["reasons"] for c in out["components"] if c["label"] == lab]
+    assert reasons == [CG.REASON_NO_VERIFIED_LINK]
+    (d,) = [d for rd in out["rounds"] for d in rd["decisions"] if d.get("first_camera") == F.name(50)]
+    assert d["cross_links"] == 2 and d["redundant"] and d["barred"] == "not a group of the room"
 
 
 # ---------------------------------------------------------------------------------------------------------------
@@ -784,9 +917,10 @@ def test_the_p4_re_run_carries_admit_and_the_seals(tmp_path, monkeypatch):
     assert out.record["anchor_verify"] == result.record["anchor_verify"]     # P4's own record is the input's
 
 
-def test_an_image_contradicted_admission_is_sealed_by_the_p4_re_run(tmp_path, monkeypatch):
-    """The masked image tier contradicts the admitted group A (70..89) by 10 deg, and confirms the room's own groups:
-    the P4 re-run seals A, like any attached group. (Without the re-run it would stay in the room.)"""
+def _contradicted_admission(tmp_path, monkeypatch):
+    """The masked image tier contradicts island A (70..89) by 10 deg against the room and confirms the room's own
+    groups; the first P4 run (on the gate's room, A outside) seals nothing. Retrieval certifies A. Returns (the
+    input as the first P4 run publishes it, its keyframes, n)."""
     sizes = (70, 20)
     n = sum(sizes)
     segments = [0] * 35 + [2] * 35 + [1] * 20
@@ -805,16 +939,85 @@ def test_an_image_contradicted_admission_is_sealed_by_the_p4_re_run(tmp_path, mo
     result = CP.anchor_verified(F.Store(tmp_path), "w1", F.SID, result, database_path="db", keyframes=kfs,
                                 workspace_root=tmp_path)
     assert result.record["anchor_verify"]["sealed_kf"] == 0 and _room(result, n) == list(range(70))
+    assert _pieces(result)[70] == (20, [CG.REASON_NO_VERIFIED_LINK])
     monkeypatch.setenv(ENV, "on")
     fake_retrieval(monkeypatch, island_links(sol, n, [(70 + k, k) for k in range(6)]))
+    return result, kfs, n
+
+
+def test_an_image_contradicted_admission_is_sealed_by_the_p4_re_run(tmp_path, monkeypatch):
+    """The P4 re-run seals A like any attached group (without it A would stay in the room), and the record says which
+    run sealed what (Codex C23x MED-5): the published `anchor_verify` is the FIRST run's (0 sealed), and the
+    admission's record carries both runs, the second with the keyframe ids and the reason of all 20 seals."""
+    result, kfs, n = _contradicted_admission(tmp_path, monkeypatch)
     out = RA.admitted(F.Store(tmp_path), "w1", F.SID, result, database_path="db", keyframes=kfs,
                       workspace_root=tmp_path)
     ra = out.record["retrieval_admission"]
     assert ra["state"] == RA.STATE_APPLIED and ra["admitted_keyframes"] == 20
-    assert ra["p4_rerun"]["state"] == AV.STATE_APPLIED and ra["p4_rerun"]["sealed_kf"] == 20
     assert _room(out, n) == list(range(70)) and ra["room_after"] == 70
     assert _pieces(out)[70] == (20, [AV.IMAGE_SEAL_REASON])
-    assert out.record["anchor_verify"]["sealed_kf"] == 0                    # the first run's record, kept
+    ids = [f"{F.SID}:{i:08d}" for i in range(70, 90)]
+    first, second = ra["p4_first_run"], ra["p4_second_run"]
+    assert (first["state"], first["sealed_kf"], first["sealed"]) == (AV.STATE_APPLIED, 0, {})
+    assert (second["state"], second["sealed_kf"], second["room_before"], second["room_after"]) == \
+        (AV.STATE_APPLIED, 20, 90, 70)
+    assert second["sealed"] == {AV.IMAGE_SEAL_REASON: {"keyframes": 20, "keyframe_ids": ids}}
+    assert out.record["anchor_verify"] == result.record["anchor_verify"]     # the published P4 record: the first run
+    # every sealed keyframe published is accounted for by exactly one run
+    sealed_out = {k for e in out.components["components"] if e["reasons"] == [AV.IMAGE_SEAL_REASON]
+                  for k in e["keyframe_ids"]}
+    assert sealed_out == set(ids) == {k for b in second["sealed"].values() for k in b["keyframe_ids"]}
+
+
+def test_the_first_runs_carried_seals_are_recorded_with_their_ids(tmp_path, monkeypatch):
+    sol, result = _p4_sealed_input(tmp_path, monkeypatch)
+    monkeypatch.setenv(ENV, "on")
+    monkeypatch.setenv(config.WORLD_ANCHOR_VERIFY_ENV, "images")
+    fake_retrieval(monkeypatch, island_links(sol, 50, ISLAND1))
+    monkeypatch.setattr(AV, "verify_published", lambda res, **kw: dataclasses.replace(
+        res, record=dict(res.record, anchor_verify={"state": AV.STATE_APPLIED, "sealed_kf": 0, "sealed": {}})))
+    ra = _admit(tmp_path, result, 50).record["retrieval_admission"]
+    assert ra["p4_first_run"]["sealed"] == {CG.REASON_LINK_CONTRADICTED: {"keyframes": 1,
+                                                                          "keyframe_ids": [f"{F.SID}:{29:08d}"]}}
+    assert ra["p4_second_run"] == {"state": AV.STATE_APPLIED, "sealed_kf": 0, "sealed": {}}
+
+
+def _second_run_is(state):
+    """`anchor_verify.verify_published` as a second run ending in `state`: the projected room returned as it came
+    in (as verify_published does for anything but `applied`), its record saying so."""
+    def verify(res, **kw):
+        return dataclasses.replace(res, record=dict(res.record, anchor_verify={"state": state, "why": "stub"}))
+    return verify
+
+
+@pytest.mark.parametrize("second", ["not-applied", "failed", "not-run", "no-such-state"])
+def test_every_p4_re_run_that_is_not_applied_publishes_the_input(tmp_path, monkeypatch, second):
+    """Codex C23x HIGH-2. `not-applied`, for real: the second run's seal re-gate fails its post-checks, so the 20
+    contradicted admitted keyframes it found are NOT sealed -- publishing the projection would leave them in the
+    room. `failed`, for real: its pair builder breaks. `not-run` and an unknown state: stubbed. Every one publishes
+    the input, never the projection."""
+    result, kfs, n = _contradicted_admission(tmp_path, monkeypatch)
+    if second == "not-applied":
+        monkeypatch.setattr(AV, "seal_refusal", lambda *a, **k: "a piece outside the chosen room changed its keyframes")
+    elif second == "failed":
+        def broken_builder(root, names, camera):
+            raise OSError("no pairs")
+        monkeypatch.setattr(AV, "_default_pair_builder", broken_builder)
+    else:
+        monkeypatch.setattr(AV, "verify_published", _second_run_is(second))
+    out = RA.admitted(F.Store(tmp_path), "w1", F.SID, result, database_path="db", keyframes=kfs,
+                      workspace_root=tmp_path)
+    ra = out.record["retrieval_admission"]
+    assert ra["p4_second_run"]["state"] == second
+    assert ra["state"] == (RA.STATE_FAILED if second == "failed" else RA.STATE_NOT_APPLIED)
+    assert out.components == result.components and _room(out, n) == list(range(70))
+    assert _pieces(out)[70] == (20, [CG.REASON_NO_VERIFIED_LINK])            # A is published as the input had it
+    assert out.solution.poses == result.solution.poses
+    assert out.record["anchor_verify"] == result.record["anchor_verify"]
+    if second == "not-applied":
+        # the seals the second run found and did NOT publish are on the record, by id
+        assert ra["p4_second_run"]["sealed_kf"] == 0
+        assert ra["p4_second_run"]["sealed"][AV.IMAGE_SEAL_REASON]["keyframes"] == 20
 
 
 def test_a_failed_p4_re_run_publishes_the_input(tmp_path, monkeypatch):
@@ -829,7 +1032,7 @@ def test_a_failed_p4_re_run_publishes_the_input(tmp_path, monkeypatch):
     monkeypatch.setattr(AV, "_default_pair_builder", broken_builder)
     out = _admit(tmp_path, result, 50)
     ra = out.record["retrieval_admission"]
-    assert ra["state"] == RA.STATE_FAILED and ra["p4_rerun"]["state"] == AV.STATE_FAILED
+    assert ra["state"] == RA.STATE_FAILED and ra["p4_second_run"]["state"] == AV.STATE_FAILED
     assert out.components == result.components and _room(out, 50) == list(range(30))
 
 
@@ -936,6 +1139,69 @@ def test_any_failure_publishes_the_input_and_says_so(tmp_path, monkeypatch, capl
     assert "retrieval admission failed" in caplog.text
 
 
+def test_a_switch_that_cannot_be_read_is_off_and_returns_the_very_object(tmp_path, monkeypatch, caplog):
+    """Codex C23x MED-4, the first boundary: the switch's read raises -- the input, the very object, as when off."""
+    _, result = _gate(tmp_path, monkeypatch, (30, 20))
+    monkeypatch.setenv(ENV, "on")
+
+    def broken():
+        raise RuntimeError("the environment is unreadable")
+
+    monkeypatch.setattr(config, "world_retrieval_admission_setting", broken)
+    monkeypatch.setattr(RA, "_admit", lambda *a, **k: pytest.fail("the admission ran on an unreadable switch"))
+    with caplog.at_level(logging.ERROR, logger="tower.world_builder.retrieval_admission"):
+        assert _admit(tmp_path, result, 50) is result
+    assert "switch could not be read" in caplog.text
+
+
+@pytest.mark.parametrize("where", ["AdmissionParams", "digest", "GateParams"])
+def test_a_failure_building_the_parameters_publishes_the_input(tmp_path, monkeypatch, where):
+    """Codex C23x MED-4, the second boundary: the parameters (or their digest, or the gate's) cannot be built -- the
+    input is published as it was, its record saying `failed`."""
+    sol, result = _gate(tmp_path, monkeypatch, (30, 20))
+    monkeypatch.setenv(ENV, "on")
+    fake_retrieval(monkeypatch, island_links(sol, 50, ISLAND1))
+
+    def broken(*a, **k):
+        raise ValueError(f"{where} broke")
+
+    if where == "AdmissionParams":
+        monkeypatch.setattr(RA, "AdmissionParams", broken)
+    elif where == "digest":
+        monkeypatch.setattr(RA.AdmissionParams, "digest", broken)
+    else:
+        monkeypatch.setattr(CG, "GateParams", broken)
+    out = RA.admitted(F.Store(tmp_path), "w1", F.SID, result, database_path="db", keyframes=F.keyframes(50),
+                      workspace_root=tmp_path)
+    ra = out.record["retrieval_admission"]
+    assert ra["state"] == RA.STATE_FAILED and ra["detail"] == f"ValueError: {where} broke"
+    assert out.solution is result.solution and out.components is result.components and out.gated is result.gated
+
+
+def test_a_failure_outside_the_admissions_own_containment_returns_the_very_object(tmp_path, monkeypatch):
+    """The stage-timing hook (or anything else around `_admit`) raises: the input, the very object."""
+    _, result = _gate(tmp_path, monkeypatch, (30, 20))
+    monkeypatch.setenv(ENV, "on")
+
+    def broken(*a, **k):
+        raise RuntimeError("the timing hook broke")
+
+    monkeypatch.setattr(RA, "_admit", broken)
+    assert _admit(tmp_path, result, 50) is result
+
+
+def test_not_even_the_failure_record_can_be_written_returns_the_very_object(tmp_path, monkeypatch):
+    sol, result = _gate(tmp_path, monkeypatch, (30, 20))
+    monkeypatch.setenv(ENV, "on")
+
+    def broken(*a, **k):
+        raise ValueError("broke")
+
+    monkeypatch.setattr(RA, "_run", broken)
+    monkeypatch.setattr(RA, "_done", broken)
+    assert _admit(tmp_path, result, 50) is result
+
+
 def test_the_real_retrieval_without_the_solves_masks_fails_safely(tmp_path, monkeypatch):
     sol, result = _gate(tmp_path, monkeypatch, (30, 20))
     monkeypatch.setenv(ENV, "on")
@@ -1017,6 +1283,75 @@ def test_mnn_is_exact_on_integer_descriptors():
     b = np.vstack([a[:150], rng.integers(0, 256, (200, 128)).astype(np.uint8)])
     ia, ib = RA.mnn(a, b, P.ratio)
     assert list(ia) == list(range(150)) and list(ib) == list(range(150))
+
+
+@pytest.fixture
+def blas_threads():
+    """numpy's OpenBLAS thread count: (get, set), restored after the test."""
+    api = RA._openblas_threads_api()
+    assert api is not None, "numpy's OpenBLAS is not reachable in this venv"
+    get, put = api
+    before = get()
+    yield get, put
+    put(before)
+
+
+def test_one_blas_thread_pins_one_and_restores_the_processs_count(blas_threads):
+    get, put = blas_threads
+    put(4)
+    with RA.one_blas_thread():
+        assert get() == 1
+        with RA.one_blas_thread():                                           # nested: one pin
+            assert get() == 1
+        assert get() == 1
+    assert get() == 4
+    with pytest.raises(ZeroDivisionError):
+        with RA.one_blas_thread():
+            1 / 0                                                            # noqa: B018
+    assert get() == 4 and RA._BLAS["depth"] == 0
+
+
+def test_without_an_openblas_handle_the_bag_of_words_refuses(monkeypatch):
+    """No way to pin the thread count: the bag of words is not computed (the admission fails closed)."""
+    monkeypatch.setitem(RA._BLAS, "api", False)
+    with pytest.raises(RuntimeError, match="cannot be pinned"):
+        with RA.one_blas_thread():
+            pass
+    feats, _names, _K = _scene(15, n_cams=4, n_pts=200)
+    with pytest.raises(RuntimeError, match="cannot be pinned"):
+        RA.build_bow(feats, RA.AdmissionParams(words=16, sample=500, iterations=2))
+
+
+def test_the_bag_of_words_products_run_under_one_blas_thread(monkeypatch, blas_threads):
+    """Codex C23x MED-3: the nearest-word products (k-means and the final words) and the query similarities run with
+    ONE BLAS thread whatever the process's count, so the bag of words and the query pairs are the same at 1 and at
+    8 threads (bitwise). The cross-process proof on W4 is the corpus test."""
+    get, put = blas_threads
+    feats, names, _K = _scene(16, n_cams=8, n_pts=300)
+    small = RA.AdmissionParams(words=32, sample=2000, iterations=3)
+    cand = [{"members": [names[6], names[7]]}]
+    room = set(names[:6])
+    out = {}
+    for n in (1, 8):
+        put(n)
+        seen = []
+        real = RA.one_blas_thread
+
+        @RA.contextlib.contextmanager
+        def spy():
+            with real():
+                seen.append(get())
+                yield
+
+        monkeypatch.setattr(RA, "one_blas_thread", spy)
+        bn, V = RA.build_bow(feats, small)
+        pairs = RA.query_pairs(cand, room, bn, V, set(), RA.AdmissionParams(k_room=3))
+        monkeypatch.setattr(RA, "one_blas_thread", real)
+        assert seen and set(seen) == {1} and get() == n
+        # k-means: one pin per iteration and the final words; the queries: one per candidate camera
+        assert len(seen) == small.iterations + 1 + 2
+        out[n] = (bn, V.tobytes(), pairs)
+    assert out[1] == out[8]
 
 
 def test_the_bag_of_words_and_queries_are_seeded_and_candidate_only():

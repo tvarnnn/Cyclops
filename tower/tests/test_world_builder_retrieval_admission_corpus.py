@@ -10,7 +10,15 @@ Pinned, per case and in BOTH P4 settings, over all 44 solves: the product's cand
 and verdict, the admitted groups, the projection's state and published room, the null projection, and the product
 gate equal to the study's patched gate on every gate call. By name: W4 group 249 admits 27/27 with no closet or
 bathroom camera; W5's Area 1 stays out; the control never has a candidate; c10's bed is never admitted. And, fresh on
-W4: the product's own retrieval reproduces the study's links and certificate, serially and on 8 threads alike.
+W4: the product's own retrieval reproduces the study's links and certificate, serially and on 8 threads alike, and
+in two processes with different BLAS thread counts alike (Codex C23x MED-3).
+
+C3 (C23-IMPL-G; Codex C23x HIGH-1). The study's `c23c_lib.certificate` classified each consensus set by a mean
+RECOMPUTED over it; PREREG A.4, as frozen, classifies it by its SEED mean. The product implements the frozen text.
+A corrected copy of the study's library replayed all 44 solves x 2 settings (`wbcpt\\c23g-replay`): no admission and no
+C1-C3 verdict changed; only the reported angles G_A / G_B moved on 4 solves. So the frozen outputs pin every
+decision and every statistic but those two angles, and the product's C3 statistics (m(A*), |A*|, G_A, m(B*), G_B,
+C3) are pinned against `prereg_c3`, a brute-force reading of the frozen text computed in the driver.
 """
 
 from __future__ import annotations
@@ -25,8 +33,10 @@ import pytest
 
 TOWER = Path(__file__).resolve().parents[1]
 RUN_ENV = "TOWER_C23_RUN_DIR"
-CERT_KEYS = ("links", "db", "new", "honoured", "noncompact", "M_H", "H", "C", "mA", "G_A", "nA", "mB", "G_B",
-             "C1", "C2", "C3")
+# Every certificate statistic the frozen study pins: all but the two reported angles, which the study computed from a
+# recomputed mean (see the docstring); those, and the whole of C3, are pinned against the driver's `prereg_c3`.
+CERT_KEYS = ("links", "db", "new", "honoured", "noncompact", "M_H", "H", "C", "mA", "nA", "mB", "C1", "C2", "C3")
+C3_KEYS = ("mA", "nA", "G_A", "mB", "G_B", "C3")
 
 
 def _run_dir() -> Path:
@@ -49,9 +59,9 @@ def _all_tags(run: Path) -> list:
         "*.json"))
 
 
-def _driver(mode: str, run: Path, out: Path, tags: list) -> subprocess.Popen:
+def _driver(mode: str, run: Path, out: Path, tags: list, **extra_env) -> subprocess.Popen:
     # CPU only: -1, never an empty value (Windows drops an empty variable and the GPU stays visible; manager 146 s6)
-    env = dict(os.environ, PYTHONPATH=str(TOWER), PYTHONDONTWRITEBYTECODE="1", CUDA_VISIBLE_DEVICES="-1")
+    env = dict(os.environ, PYTHONPATH=str(TOWER), PYTHONDONTWRITEBYTECODE="1", CUDA_VISIBLE_DEVICES="-1", **extra_env)
     return subprocess.Popen([sys.executable, "-m", "tests.wb_retrieval_admission_corpus", mode, str(run), str(out),
                              *tags], cwd=str(TOWER), env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
 
@@ -99,6 +109,9 @@ def test_every_case_reproduces_the_frozen_decisions(replayed):
                         gc["admitted"] != wc["admitted"]:
                     bad.append((tag, setting, gc["first"], {k: (gc["cert"][k], wc["cert"][k]) for k in keys
                                                            if gc["cert"][k] != wc["cert"][k]}))
+                # C3 exactly as frozen (the seed mean), against the driver's independent reading of the text
+                if {k: gc["cert"][k] for k in C3_KEYS} != gc["prereg_c3"]:
+                    bad.append((tag, setting, gc["first"], "C3 vs PREREG", gc["cert"], gc["prereg_c3"]))
             if g["admitted"] != w["admitted"]:
                 bad.append((tag, setting, "admitted", g["admitted"], w["admitted"]))
             if g["state"] != w["projection"]["state"]:
@@ -158,3 +171,27 @@ def test_fresh_retrieval_on_w4_reproduces_the_study_and_is_schedule_free(tmp_pat
     assert g249["admitted"] and (g249["links"], g249["M_H"], g249["H"], g249["C"], g249["mA"], g249["mB"]) == \
         (76, 11, 8.406, 2.0214, 11, 2)
     assert not res["certificates"]["00001887.jpg"]["admitted"] and res["admitted_cameras"] == 27
+
+
+def test_the_links_and_verdicts_do_not_depend_on_the_blas_thread_count(tmp_path):
+    """Codex C23x MED-3: two processes whose OpenBLAS starts with 1 and with 8 threads (numpy imported before anything
+    can pin it) give the same bag of words, query pairs, verified links, database-link geometry and certificates on
+    W4 -- the study's 71 links and g249's admission -- and each process's own thread count is restored after the bag
+    of words."""
+    run = _run_dir()
+    res = {}
+    for n in ("1", "8"):
+        out = tmp_path / f"threads{n}.json"
+        p = _driver("threads", run, out, ["walk:c81766a3"], OPENBLAS_NUM_THREADS=n, OMP_NUM_THREADS=n)
+        log, _ = p.communicate(timeout=1800)
+        assert p.returncode == 0, log.decode("utf-8", "replace")[-4000:]
+        res[n] = json.loads(out.read_text(encoding="utf-8"))
+    one, eight = res["1"], res["8"]
+    assert (one["openblas_threads"], eight["openblas_threads"]) == (1, 8)          # really two configurations
+    assert (one["openblas_threads_after_bow"], eight["openblas_threads_after_bow"]) == (1, 8)   # restored
+    for key in ("V_sha1", "pairs", "links", "db_noncompact", "certificates"):
+        assert one[key] == eight[key], key
+    assert len(one["pairs"]) == 499 and len(one["links"]) == 71
+    g249 = one["certificates"]["00001715.jpg"]
+    assert g249["admitted"] and (g249["links"], g249["M_H"], g249["mA"], g249["mB"]) == (76, 11, 11, 2)
+    assert not one["certificates"]["00001887.jpg"]["admitted"]
