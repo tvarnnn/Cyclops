@@ -1,0 +1,17 @@
+# W0-1 frozen database identity proof (lead-run)
+
+`prove_identity.py` is ready for the lead's C18 GPU-locked proof. It has **not** been run by Codex. Run it once for each of the three frozen stage-0 worlds: 6839fb8f (GT), b2a75ab4 (control), and da4ac2d3 (walk 5). Use a fresh output directory for each world. The source is a read-only, already finished world directory whose `solve/<session>/solution.json` says `solve.matching: frozen` and whose named database exists. The b2a75ab4 seed-20 source in STAGE0.md is unsuitable; use its prepared seed-0 frozen copy. Never point it at the live Tower store.
+
+The lead supplies the `--source-world`, `--session`, and fresh `--out` paths. Invoke the script through `lead/gpulock.py run --who W0-1 --what "C18 W0-1 identity <world>" -- <venv-python> <this-script> ...`. Pass `--full-refinish`, `--env-file <RUN>/experiments/C22-REPLAY/switches/walk5.env`, and `--compare-w0 <RUN>/experiments/W0-STAGE0/compare_w0.py`. Set the stage-0 source/capture environment used to produce each frozen input before launching. The runner forces consensus 3, deterministic gains on, stage timing on, and the W0-1 switch per arm. It does not cap threads in the parent, so P4 keeps its old DINOv2 thread count.
+
+Example argument shape:
+
+```text
+<venv-python> scratch/w0-1-proof/prove_identity.py --source-world <frozen-copy>/worlds/<world-id> --session <session-id> --out <fresh-work-directory>/w0-1-<world-id> --seed 0 --full-refinish --env-file <RUN>/experiments/C22-REPLAY/switches/walk5.env --compare-w0 <RUN>/experiments/W0-STAGE0/compare_w0.py
+```
+
+The direct phase makes six copies and maps further seeds 1 and 2 three times per arm. It compares every `Solution` field except `solved_at` and `timing`, including every pose and the exact dtype, shape, and bytes of every array. It checks the source database before and after and every private database after child mapping. A missing private database detects a silent serial fallback.
+
+The full phase makes six more independent copies, omitting copied `verify_pairs` caches so P4 descriptors and similarities are recomputed at the original thread count. It runs the real `world_refinish.py`, asserts from I0 that the new arm actually ran `after-draw-0` without fallback, and compares the five other published worlds to old run 1 with the C18 `compare_w0.py` spec (no `--by-design` and frozen matching required). It adds one in-memory exclusion for `consensus_concurrent`, the I0-only provenance key; the external comparator file stays unchanged. It also compares **all** P4 `pairs.npz` arrays, including `similarity`, across all six runs. The comparator checks `solution.json`, `consensus.json`, `components.json`, `solution.npz`, surface and appearance outputs, chosen draw, votes, and groups under its declared exclusions. No new published keys are allowed.
+
+`result.json` and `VERDICT IDENTICAL` mean all scripted assertions passed. The individual `compare-old-1-vs-*.txt` files end in `VERDICT IDENTICAL`; read them and the JSON reports for detail. A nonzero exit or `VERDICT DIFFERS` fails the proof. Keep the output directory; the runner refuses to overwrite it. The existing serial mapper removes its own transient sparse models inside each copied world. After this proof, the lead still runs the separate C22 quiet replay timing and live-safety proof. A pass on these frozen worlds establishes identity only for their inputs, host, and pinned stack.

@@ -968,6 +968,17 @@ def world_solve_gate_setting() -> bool:
 # predictions are kept, R3): measured ~3 min per draw on a 700-keyframe walk (RUN P3-PF
 # var/map, P3-H2), all of it under the world's writer lock. Read by the solve.
 WORLD_SOLVE_CONSENSUS_ENV = "TOWER_WORLD_SOLVE_CONSENSUS"
+WORLD_SOLVE_CONSENSUS_CONCURRENT_ENV = "TOWER_WORLD_SOLVE_CONSENSUS_CONCURRENT"
+
+
+def world_solve_consensus_concurrent_setting() -> str:
+    """Further final consensus draws: off (default) or after-draw-0."""
+    value = os.environ.get(WORLD_SOLVE_CONSENSUS_CONCURRENT_ENV, "off").strip().lower()
+    if value in ("off", "after-draw-0"):
+        return value
+    logger.warning("[Tower][Config] %s=%r is invalid; treating it as off",
+                   WORLD_SOLVE_CONSENSUS_CONCURRENT_ENV, value)
+    return "off"
 # The values it accepts (review V9, M-3): ODD, so a strict majority never ties, and at
 # most 7, so a typo (30 for 3: about 2 h under the lock) cannot multiply a finish. The
 # cap is a bound on the cost, not a measured optimum; the run measured 3 (manager 025).

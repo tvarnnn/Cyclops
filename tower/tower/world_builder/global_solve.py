@@ -73,7 +73,10 @@ import io
 import json
 import logging
 import os
+import pickle
 import shutil
+import sqlite3
+import subprocess
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -92,6 +95,7 @@ from tower.storage import (
 )
 from tower.world_builder.records import Keyframe, SegmentPlacement
 from tower.world_builder import stage_timing
+from tower.config import world_solve_consensus_concurrent_setting
 from tower.world_builder.schema import (
     DEGENERACY_NONE,
     POSE_STATUS_ANCHOR,
@@ -1580,9 +1584,16 @@ def solve(
     if requested >= 2:
         plan = coherence_publish.ConsensusPlan(
             draws=requested, seed=seed,
-            map_draw=(frozen_draw_mapper(store, world_id, session_id, database_path, solution,
-                                         keyframes=keyframes,
-                                         min_image_observations=min_image_observations)
+            map_draw=((concurrent_draw_mapper(store, world_id, session_id, database_path, solution,
+                                              seeds=range(int(seed) + 1, int(seed) + requested),
+                                              keyframes=keyframes,
+                                              should_stop=should_stop,
+                                              min_image_observations=min_image_observations)
+                       if final and gated and seeded and
+                       world_solve_consensus_concurrent_setting() == "after-draw-0"
+                       else frozen_draw_mapper(store, world_id, session_id, database_path, solution,
+                                               keyframes=keyframes,
+                                               min_image_observations=min_image_observations))
                       if seeded else None),
             refusal=None if seeded else (
                 "the solve is not seeded (TOWER_WORLD_SOLVE_SEED): a consensus of mapper seeds "
@@ -1753,6 +1764,8 @@ def frozen_draw_mapper(store, world_id: str, session_id: str, database_path, bas
     keyframes = keyframes if keyframes is not None else store.read_keyframes(world_id, session_id)
     camera = PinholeCamera.from_json_dict(base.camera or read_json_closed(workspace.camera_path))
     draw_root = workspace.root / CONSENSUS_SPARSE_DIRNAME
+    if _unconfirmed_draw_alive():
+        raise RuntimeError("an earlier consensus child still owns draw scratch")
     shutil.rmtree(draw_root, ignore_errors=True)
 
     def map_draw(seed: int) -> Solution:
@@ -1775,6 +1788,215 @@ def frozen_draw_mapper(store, world_id: str, session_id: str, database_path, bas
         candidate.timing = dict(base.timing or {}, map_s=map_s)
         return candidate
 
+    return map_draw
+
+
+# A worker whose death could not be confirmed must remain owned and visible. Never
+# reuse its private database or sparse path for a replacement writer.
+_UNCONFIRMED_DRAW_CHILDREN = []
+_DRAW_CHILD_RAM_BYTES = 3758096384  # 3.5 GiB RSS measured for the final solve (C19 F3)
+_DRAW_RAM_RESERVE_BYTES = 2147483648
+
+
+def _unconfirmed_draw_alive() -> bool:
+    survivors = []
+    for process, job in _UNCONFIRMED_DRAW_CHILDREN:
+        try:
+            alive = process.poll() is None
+        except Exception:
+            alive = True
+        if alive:
+            survivors.append((process, job))
+        elif job is not None:
+            job.close()
+    _UNCONFIRMED_DRAW_CHILDREN[:] = survivors
+    return bool(survivors)
+
+
+def _private_draw_database(source: Path, destination: Path) -> None:
+    """SQLite backup includes a possible WAL without opening the source for writing."""
+    source_uri = source.resolve().as_uri() + "?mode=ro"
+    with sqlite3.connect(source_uri, uri=True) as original:
+        with sqlite3.connect(destination) as private:
+            original.backup(private)
+
+
+def _draw_free_ram() -> int:
+    import psutil  # noqa: PLC0415
+    return int(psutil.virtual_memory().available)
+
+
+def _launch_draw_child(context, database, seed, sparse, output, expected_digest):
+    from tower import process_ownership  # noqa: PLC0415
+
+    script = Path(__file__).resolve().parents[2] / "scripts" / "world_solve_draw.py"
+    args = process_ownership.interpreter_argv(
+        script, "--context", context, "--database", database, "--seed", str(seed),
+        "--sparse", sparse, "--output", output,
+        "--expected-digest", expected_digest)
+    with (Path(output).parent / "child.log").open("wb") as log:
+        process = subprocess.Popen(args, stdin=subprocess.DEVNULL, stdout=log,
+                                   stderr=subprocess.STDOUT,
+                                   env=process_ownership.interpreter_environment())
+    try:
+        job = process_ownership.assign_to_job(process)
+    except BaseException as exc:
+        if not process_ownership.terminate_tree(process, timeout=5, hard=True):
+            _UNCONFIRMED_DRAW_CHILDREN.append((process, None))
+            raise RuntimeError("a consensus child could not be confirmed stopped") from exc
+        raise
+    return process, job
+
+
+def _stop_draw_children(children) -> bool:
+    from tower import process_ownership  # noqa: PLC0415
+
+    all_gone = True
+    for process, job in children.values():
+        if process.poll() is None:
+            gone = process_ownership.terminate_tree(process, job=job, timeout=5, hard=True)
+            if not gone:
+                _UNCONFIRMED_DRAW_CHILDREN.append((process, job))
+                all_gone = False
+                continue
+        if job is not None:
+            job.close()
+    return all_gone
+
+
+def concurrent_draw_mapper(store, world_id: str, session_id: str, database_path,
+                           base: Solution, *, seeds, keyframes=None,
+                           should_stop=None,
+                           min_image_observations: int = MIN_IMAGE_OBSERVATIONS):
+    """Launch private, seeded one-thread maps after draw 0 attaches.
+
+    The consensus still calls this in seed order and gates each returned candidate
+    before asking for the next. Resource or digest refusal selects the original
+    serial mapper, with diagnostics only in I0. No child sees the parent database.
+    """
+    seeds = tuple(int(s) for s in seeds)
+    serial = None
+    workspace = workspace_for(store, world_id, session_id)
+    source = Path(database_path)
+    root = workspace.root / CONSENSUS_SPARSE_DIRNAME
+    context = root / "concurrent-context.pkl"
+    children = {}
+    expected = None
+    launched = False
+    fallback = False
+    closed = False
+
+    def use_serial(reason):
+        nonlocal fallback, serial
+        fallback = True
+        stage_timing.concurrent_draw_event(reason)
+        if not _stop_draw_children(children):
+            raise RuntimeError("a consensus child could not be confirmed stopped")
+        children.clear()
+        if serial is None:
+            serial = frozen_draw_mapper(store, world_id, session_id, database_path, base,
+                                        keyframes=keyframes,
+                                        min_image_observations=min_image_observations)
+
+    def launch():
+        nonlocal expected, launched
+        launched = True
+        if _unconfirmed_draw_alive():
+            raise RuntimeError("an earlier consensus child still owns draw scratch")
+        if _draw_free_ram() < len(seeds) * _DRAW_CHILD_RAM_BYTES + _DRAW_RAM_RESERVE_BYTES:
+            use_serial("ram-refusal")
+            return
+        expected = (database_digest(source) or {}).get("content")
+        if expected is None:
+            use_serial("database-digest-unavailable")
+            return
+        try:
+            root.mkdir(parents=True, exist_ok=True)
+            camera = PinholeCamera.from_json_dict(base.camera or read_json_closed(workspace.camera_path))
+            with context.open("wb") as handle:
+                pickle.dump((workspace, keyframes if keyframes is not None else
+                             store.read_keyframes(world_id, session_id), camera,
+                             base.input_digest, min_image_observations), handle,
+                            protocol=pickle.HIGHEST_PROTOCOL)
+            for draw_seed in seeds:
+                private_root = root / f"seed-{draw_seed}"
+                private_root.mkdir(parents=True, exist_ok=True)
+                private = private_root / "database.db"
+                _private_draw_database(source, private)
+                if (database_digest(private) or {}).get("content") != expected:
+                    use_serial("database-copy-digest-mismatch")
+                    return
+            if (database_digest(source) or {}).get("content") != expected:
+                use_serial("database-source-digest-mismatch")
+                return
+            for draw_seed in seeds:
+                private_root = root / f"seed-{draw_seed}"
+                process, job = _launch_draw_child(
+                    context, private_root / "database.db", draw_seed,
+                    private_root / "sparse", private_root / "candidate.pkl", expected)
+                children[draw_seed] = (process, job)
+                # Ownership is mandatory on Windows: no orphan can remain after
+                # the final solve is hard-stopped.
+                if os.name == "nt" and job is None:
+                    use_serial("job-object-unavailable")
+                    return
+            stage_timing.concurrent_draw_event("after-draw-0")
+        except (OSError, sqlite3.Error, ValueError, TypeError,
+                pickle.PickleError, MemoryError) as exc:
+            use_serial(f"launch-refusal:{type(exc).__name__}")
+
+    def map_draw(seed: int) -> Solution:
+        nonlocal fallback
+        if closed:
+            raise RuntimeError("concurrent draw mapper is closed")
+        if not launched:
+            launch()
+        if fallback:
+            return serial(seed)
+        draw_seed = int(seed)
+        if draw_seed not in children:
+            raise ValueError(f"unexpected consensus seed {draw_seed}")
+        process, job = children[draw_seed]
+        if should_stop is None:
+            return_code = process.wait()
+        else:
+            while True:
+                if should_stop():
+                    use_serial("stop-during-map")
+                    return serial(seed)
+                try:
+                    return_code = process.wait(timeout=0.2)
+                    break
+                except subprocess.TimeoutExpired:
+                    pass
+        if job is not None:
+            job.close()
+        del children[draw_seed]
+        if return_code:
+            stage_timing.child_draw_timing(draw_seed, 0, "raised")
+            raise RuntimeError(f"consensus draw child exited {return_code}")
+        private_root = root / f"seed-{draw_seed}"
+        with (private_root / "candidate.pkl").open("rb") as handle:
+            result = pickle.load(handle)
+        if (result.get("before") != expected or result.get("after") != expected or
+                (database_digest(private_root / "database.db") or {}).get("content") != expected):
+            use_serial("database-child-digest-mismatch")
+            return serial(seed)
+        stage_timing.child_draw_timing(draw_seed, result["map_ms"])
+        candidate = result["candidate"]
+        candidate.transients = base.transients
+        candidate.solve = None if base.solve is None else dict(base.solve, seed=draw_seed)
+        candidate.timing = dict(base.timing or {}, map_s=round(result["map_ms"] / 1000, 3))
+        return candidate
+
+    def close():
+        nonlocal closed
+        if not closed:
+            closed = True
+            _stop_draw_children(children)
+            children.clear()
+
+    map_draw.close = close
     return map_draw
 
 
@@ -1829,10 +2051,15 @@ def _publish_draw_0_first(store, world_id: str, session_id: str, workspace: Solv
         return first
     draw_0 = getattr(gated[0], "draw_0", None) if gated else None
     stop_kw = {} if should_stop is None else {"should_stop": should_stop, "keep_on_stop": True}
-    published, _record = coherence_publish.gate_and_publish(
-        store, world_id, session_id, workspace, solution, final=final, gate=gate,
-        database_path=database_path, keyframes=keyframes, write=write_solution, consensus=plan,
-        draw_0=draw_0, **stop_kw)
+    try:
+        published, _record = coherence_publish.gate_and_publish(
+            store, world_id, session_id, workspace, solution, final=final, gate=gate,
+            database_path=database_path, keyframes=keyframes, write=write_solution, consensus=plan,
+            draw_0=draw_0, **stop_kw)
+    finally:
+        close = getattr(plan.map_draw, "close", None)
+        if close is not None:
+            close()
     return first if published is None else published
 
 

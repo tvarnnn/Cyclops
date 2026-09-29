@@ -38,8 +38,10 @@ class _Sample:
         self.started = time.perf_counter()
         self.caches = {name: {"hits": 0, "misses": 0} for name in CACHES}
         self.pending = []
+        self.parent = parent
         self.run = parent.run if parent is not None else None
         self.seed = seed
+        self.concurrent = None
         if self.run is None and stage in ("solve", "regate", "areas"):
             self.run = _new_run(stage)
 
@@ -52,6 +54,30 @@ def cache(name: str, hit: bool) -> None:
             sample.caches[name]["hits" if hit else "misses"] += 1
     except Exception:  # noqa: BLE001 -- diagnostics cannot change a lookup
         pass
+
+
+def concurrent_draw_event(event: str) -> None:
+    """I0-only reason for taking the serial path; never enters a world record."""
+    sample = _active.get()
+    while sample is not None and sample.stage != "solve":
+        sample = sample.parent
+    if sample is not None:
+        sample.concurrent = event
+
+
+def child_draw_timing(seed: int, wall_ms: float, status: str = "ok") -> None:
+    """Join a child's map time into this solve, in the parent's seed order."""
+    parent = _active.get()
+    while parent is not None and parent.stage != "solve":
+        parent = parent.parent
+    if parent is None:
+        return
+    sample = _Sample("solve_draw", parent.identity, parent, seed=seed)
+    parent.pending.append((sample, {
+        "wall_ms": max(0.0, round(float(wall_ms), 3)), "gpu_wait_ms": 0.0,
+        "gpu_wait_source": "no_blocking_gpu_lock", "cache": sample.caches,
+        "status": status,
+    }))
 
 
 def _write(store, world_id: str, session_id: str, sample: _Sample, record: dict) -> None:
@@ -101,6 +127,8 @@ def _finish(sample, parent, status):
         record = {"wall_ms": max(0, round((time.perf_counter() - sample.started) * 1000, 3)),
                   "gpu_wait_ms": 0.0, "gpu_wait_source": "no_blocking_gpu_lock",
                   "cache": sample.caches, "status": status}
+        if sample.concurrent is not None:
+            record["consensus_concurrent"] = sample.concurrent
         sample.pending.append((sample, record))
         if parent is not None:
             parent.pending.extend(sample.pending)
