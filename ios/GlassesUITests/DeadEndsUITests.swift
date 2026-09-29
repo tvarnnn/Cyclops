@@ -447,6 +447,80 @@ final class DeadEndsUITests: XCTestCase {
         XCTAssertTrue(value.hasPrefix("Not available:"), "its value: \(value)")
     }
 
+    // MARK: Step 8 -- leaving World Builder mid-capture (D3)
+
+    /// A button of the confirmation dialog in front: an action sheet on a
+    /// phone, an alert where the system draws it as one.
+    private func dialogButton(_ title: String) -> XCUIElement {
+        let inSheet = app.sheets.buttons[title]
+        if inSheet.exists { return inSheet }
+        return app.alerts.buttons[title]
+    }
+
+    /// Cartridges, then the Home row, with a capture running.
+    private func tapHomeInTheDrawer() {
+        let cartridges = app.buttons["Cartridges"]
+        XCTAssertTrue(cartridges.waitForExistence(timeout: 10), "the Cartridges button")
+        // Mid-capture the button can read as not hittable while it is drawn
+        // and tappable; then tap where it is drawn, and say what was in front.
+        let drawerDone = app.buttons["Done"]
+        for _ in 0..<4 where !drawerDone.exists {
+            if cartridges.isHittable {
+                cartridges.tap()
+            } else {
+                let alert = app.alerts.firstMatch
+                print("U08|F15|Cartridges not hittable: frame=\(cartridges.frame) alerts=\(app.alerts.count)"
+                      + " alert=\(alert.exists ? alert.label : "-") sheets=\(app.sheets.count)")
+                cartridges.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
+            }
+            _ = waitFor(timeout: 3) { drawerDone.exists }
+        }
+        XCTAssertTrue(drawerDone.exists, "the cartridge drawer opened")
+        let home = app.buttons.containing(NSPredicate(format: "label BEGINSWITH %@", "Home")).firstMatch
+        XCTAssertTrue(revealInSheet(home), "the Home row")
+        home.tap()
+    }
+
+    /// F15 (D3): leaving World Builder mid-capture asks first; Keep capturing
+    /// stays, and Stop capture stops both the camera stream and the build.
+    func testLeavingMidCaptureAsksAndStopsBothStreamAndBuild() throws {
+        try startCaptureWithTheTowerOnline()
+        XCTAssertTrue(app.buttons["Stop capture"].waitForExistence(timeout: 15), "the capture started")
+
+        // Keep capturing: still in World Builder, still capturing.
+        tapHomeInTheDrawer()
+        let title = app.staticTexts["Leave and stop the capture?"]
+        XCTAssertTrue(title.waitForExistence(timeout: 10), "the dialog asks first")
+        let keep = dialogButton("Keep capturing")
+        XCTAssertTrue(keep.exists, "Keep capturing")
+        XCTAssertTrue(dialogButton("Stop capture").exists, "Stop capture")
+        keep.tap()
+        XCTAssertTrue(waitFor(timeout: 10) { !self.app.buttons["Done"].exists }, "the drawer closed")
+        XCTAssertTrue(app.navigationBars["World Builder"].exists, "still in World Builder")
+        XCTAssertTrue(app.buttons["Stop capture"].exists, "still capturing")
+        let stopsBefore = mock.requestLines.filter { $0 == "\(Self.sessionStop) HTTP/1.1" }.count
+        XCTAssertEqual(stopsBefore, 0, "keeping the capture asked the Tower for nothing: \(mock.requestLines)")
+
+        // Stop capture: Home, the camera off, the build stopped.
+        tapHomeInTheDrawer()
+        XCTAssertTrue(title.waitForExistence(timeout: 10), "the dialog asks again")
+        dialogButton("Stop capture").tap()
+        XCTAssertTrue(app.navigationBars["Glasses"].waitForExistence(timeout: 10), "Home")
+        XCTAssertTrue(waitFor(timeout: 15) {
+            self.mock.requestLines.contains("\(Self.sessionStop) HTTP/1.1")
+        }, "the Tower was asked to stop building: \(mock.requestLines)")
+        XCTAssertTrue(waitFor(timeout: 15) { !self.app.buttons["Stop session"].exists },
+                      "the glasses camera is still on")
+        let texts = mock.socketTexts
+        let streamStarted = texts.contains { $0.contains(#""stream_start""#) }
+        print("U08|F15|stream_start sent: \(streamStarted)")
+        if streamStarted {
+            XCTAssertTrue(waitFor(timeout: 10) {
+                self.mock.socketTexts.contains { $0.contains(#""stream_stop""#) }
+            }, "the stream bracket was not closed")
+        }
+    }
+
     // MARK: Launch (H3)
 
     /// `tower` is the socket's `host:port`; `nil` uses the saved address.

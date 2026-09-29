@@ -408,7 +408,15 @@ struct ContentView: View {
     private func sheet(for destination: Destination) -> some View {
         switch destination {
         case .cartridges:
-            CartridgeDrawerView(selectedCartridgeID: $selectedCartridgeID)
+            CartridgeDrawerView(
+                selectedCartridgeID: $selectedCartridgeID,
+                leavingNeedsConfirmation: {
+                    CartridgeLeaveRule.needsConfirmation(
+                        workspace: selectedCartridge?.workspace, claim: currentCaptureClaim
+                    )
+                },
+                stopCapture: { project.glassesConnection.stopCameraSession() }
+            )
                 .presentationDetents(sheetDetents)
                 .presentationBackground(Self.sheetBackground)
         case .connections:

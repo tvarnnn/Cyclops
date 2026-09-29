@@ -5082,5 +5082,23 @@ final class DeadEndsTests: XCTestCase {
             XCTAssertFalse(text.lowercased().contains("never"), text)
         }
     }
+
+    // MARK: Step 8 -- leaving World Builder mid-capture (D3)
+
+    /// F15: only a World Builder capture that runs, or that the glasses hold
+    /// paused, asks before leaving.
+    func testOnlyALiveWorldBuilderCaptureAsksBeforeLeaving() {
+        let workspaces: [CartridgeWorkspace?] = [nil] + CartridgeWorkspace.allCases.map { $0 }
+        for workspace in workspaces {
+            for claim in Self.claims {
+                let asks = CartridgeLeaveRule.needsConfirmation(workspace: workspace, claim: claim)
+                let expected = workspace == .worldBuilder && (claim == .running || claim == .devicePaused)
+                XCTAssertEqual(asks, expected, "\(String(describing: workspace)), \(claim)")
+            }
+        }
+        XCTAssertEqual(CartridgeLeaveText.title, "Leave and stop the capture?")
+        XCTAssertEqual(CartridgeLeaveText.stopCapture, "Stop capture")
+        XCTAssertEqual(CartridgeLeaveText.keepCapturing, "Keep capturing")
+    }
 }
 #endif

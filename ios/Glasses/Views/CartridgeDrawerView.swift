@@ -31,6 +31,18 @@ import SwiftUI
 struct CartridgeDrawerView: View {
     @Binding var selectedCartridgeID: String
 
+    /// Whether leaving the workspace on screen must ask first: a World
+    /// Builder capture is running (U0.8 F15, manager 137 D3). Read at the tap.
+    var leavingNeedsConfirmation: () -> Bool = { false }
+
+    /// Stops the glasses camera, for "Stop capture". Leaving World Builder
+    /// then asks the Tower to stop building, so both end together: the camera
+    /// never keeps streaming with no build (D3).
+    var stopCapture: () -> Void = {}
+
+    /// The row tapped while a capture runs, waiting on the dialog.
+    @State private var pendingSelection: String?
+
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
@@ -38,8 +50,7 @@ struct CartridgeDrawerView: View {
             List {
                 Section {
                     Button {
-                        selectedCartridgeID = ""
-                        dismiss()
+                        select("")
                     } label: {
                         HomeRow(isSelected: selectedCartridgeID.isEmpty)
                     }
@@ -57,8 +68,7 @@ struct CartridgeDrawerView: View {
                         switch row {
                         case .openable(let cartridge, _):
                             Button {
-                                selectedCartridgeID = cartridge.id
-                                dismiss()
+                                select(cartridge.id)
                             } label: {
                                 CartridgeRow(
                                     row: row,
@@ -146,7 +156,59 @@ struct CartridgeDrawerView: View {
                     Button("Done") { dismiss() }
                 }
             }
+            // Leaving World Builder mid-capture asks first, and "Stop capture"
+            // stops the camera and the build together (U0.8 F15, D3).
+            .confirmationDialog(
+                CartridgeLeaveText.title,
+                isPresented: Binding(
+                    get: { pendingSelection != nil },
+                    set: { if !$0 { pendingSelection = nil } }
+                ),
+                titleVisibility: .visible,
+                presenting: pendingSelection
+            ) { id in
+                Button(CartridgeLeaveText.stopCapture, role: .destructive) {
+                    stopCapture()
+                    selectedCartridgeID = id
+                    pendingSelection = nil
+                    dismiss()
+                }
+                Button(CartridgeLeaveText.keepCapturing, role: .cancel) {
+                    pendingSelection = nil
+                    dismiss()
+                }
+            } message: { _ in
+                Text(CartridgeLeaveText.message)
+            }
         }
+    }
+
+    /// A row's tap: switch at once, or ask first while a capture runs.
+    private func select(_ id: String) {
+        if id != selectedCartridgeID && leavingNeedsConfirmation() {
+            pendingSelection = id
+        } else {
+            selectedCartridgeID = id
+            dismiss()
+        }
+    }
+}
+
+/// The words of the leave-mid-capture dialog (U0.8 F15; manager 137 D3).
+enum CartridgeLeaveText {
+    static let title = "Leave and stop the capture?"
+    static let message = "Leaving World Builder stops the glasses camera and asks the Tower to stop building a world from this capture."
+    static let stopCapture = "Stop capture"
+    static let keepCapturing = "Keep capturing"
+}
+
+/// When leaving the workspace on screen must ask first (U0.8 F15): only World
+/// Builder, and only while its capture runs or the glasses hold it paused.
+/// Leaving there would ask the Tower to stop building while the camera kept
+/// streaming.
+enum CartridgeLeaveRule {
+    static func needsConfirmation(workspace: CartridgeWorkspace?, claim: CaptureClaim) -> Bool {
+        workspace == .worldBuilder && (claim == .running || claim == .devicePaused)
     }
 }
 
