@@ -160,10 +160,13 @@ def test_the_pipeline_hands_the_solve_device_none_and_the_decision_is_made_on_wh
     assert result.state == AP.STATE_OK, result.detail
     assert len(solves) == 1 and solves[0]["device"] is None
     assert solves[0]["index_add_"] == 0 and solves[0]["index_put_"] > 0
-    # one decision in solve_gains, one in _solve_spatial_exposure, each on the object the solve resolved
-    assert len(seen["decided"]) == 2 and _made_on_a_resolved_device(seen)
+    # DET-GAINS-F (Codex C27x MED): one decision for the build's reuse key (`A.exposure_accumulate_path`, from the
+    # pipeline's own device=None), then one in solve_gains and one in _solve_spatial_exposure -- each on an object
+    # the product resolved, so the key names the op the sums took
+    assert len(seen["decided"]) == 3 and _made_on_a_resolved_device(seen)
     assert all(d.type == "cpu" for d in seen["decided"])
     assert w.manifest()["params"][KEY] is True
+    assert w.manifest()["exposure"]["accumulate"] == A.EXPOSURE_ACCUMULATE_DETERMINISTIC
 
 
 # -- CUDA (opt-in; never run by an agent outside gpulock) -----------------------------------------------------------
@@ -228,6 +231,8 @@ def test_on_cuda_a_final_build_through_the_pipelines_device_none_is_deterministi
     assert again.state == AP.STATE_OK and again.detail != AP.ALREADY_BUILT
     m2 = w.manifest()
     assert m1["params"][KEY] is True
+    # DET-GAINS-F: the manifest names the op the CUDA sums took (it is in the reuse key too)
+    assert m1["exposure"]["accumulate"] == m2["exposure"]["accumulate"] == A.EXPOSURE_ACCUMULATE_DETERMINISTIC
     assert len(solves) == 2
     for s in solves:
         assert s["index_add_"] == 0 and s["index_put_"] > 0

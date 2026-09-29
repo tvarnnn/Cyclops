@@ -273,7 +273,12 @@ class AppearanceParams:
     # `TOWER_WORLD_APPEARANCE_DETERMINISTIC_GAINS`, read HERE, when the params
     # are built, so the solve and the params digest read one value; a caller
     # that passes it explicitly wins. Recorded in `as_dict()` only when on.
-    # FINAL builds only: `live()` sets it False (manager 148 §4).
+    # FINAL builds only: `live()` sets it False (manager 148 §4). On, the op
+    # the sums EFFECTIVELY take on the build's device is part of the reuse key
+    # too (`exposure_accumulate_path`). Off, every PERSISTED appearance datum
+    # -- params record, params digest, manifest, chunks, the solve's ops and
+    # bytes -- is 44fbd13's; the in-memory `repr()` of the params does show
+    # this field (nothing persists or compares that repr).
     exposure_deterministic_gains: bool = field(default_factory=_deterministic_gains_setting)
     # selection (§5.5)
     selection_samples: int = 60_000
@@ -1265,6 +1270,33 @@ def _deterministic_accumulate(params, dev) -> bool:
     return kind == "cuda"
 
 
+# The op the exposure solve's sums EFFECTIVELY take, as recorded -- ONLY when
+# `exposure_deterministic_gains` is on -- in the params digest's inputs
+# (`appearance_pipeline`, `exposure_accumulate`) and in the manifest's
+# `exposure.accumulate` (Codex C27x MED). With the switch on, a CPU solve still
+# runs `index_add_` and a CUDA solve runs `index_put_`; without this in the
+# reuse key, a world built ON on the CPU fallback would be served as
+# ALREADY_BUILT to a later ON build on CUDA (and the reverse) without the CUDA
+# op ever running. Off, neither record carries it: the device was never in the
+# OFF key, and every OFF digest and record stays byte-identical.
+EXPOSURE_ACCUMULATE_ATOMIC = "index_add_"
+EXPOSURE_ACCUMULATE_DETERMINISTIC = "index_put_(accumulate=True)"
+
+
+def _accumulate_name(deterministic: bool) -> str:
+    return EXPOSURE_ACCUMULATE_DETERMINISTIC if deterministic else EXPOSURE_ACCUMULATE_ATOMIC
+
+
+def exposure_accumulate_path(params, device=None) -> str | None:
+    """The op `solve_gains(..., params, device=device)` will sum with: resolved
+    exactly as the solve resolves it (`_torch_device`, then
+    `_deterministic_accumulate`). None when `exposure_deterministic_gains` is
+    off -- the OFF key and record never name it."""
+    if not getattr(params, "exposure_deterministic_gains", False):
+        return None
+    return _accumulate_name(_deterministic_accumulate(params, _torch_device(device)))
+
+
 def _index_accumulate(out, index, source, deterministic: bool):
     """`out[index[i]] += source[i]` for every i, along dim 0, in place; returns
     `out`. `deterministic` False is `out.index_add_(0, index, source)`, exactly
@@ -1562,6 +1594,11 @@ def solve_gains(rgbs, opaque, zps, Rs, ts, K, params: AppearanceParams, device=N
             if bool(edge.any()) else None,
             "slopes": slopes,
         })
+    if getattr(params, "exposure_deterministic_gains", False):
+        # ON only: the op the sums above took on THIS device (Codex C27x MED).
+        # The pipeline checks it against its reuse key. Off: no key, the
+        # record exactly as before.
+        record["accumulate"] = _accumulate_name(det)
     if dev.type == "cuda":
         torch.cuda.empty_cache()
     return gains, per_frame.astype(int), record

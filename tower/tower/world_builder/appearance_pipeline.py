@@ -397,6 +397,16 @@ def _build(store, world_id, session_id, root, params, should_stop, progress, for
         "encoders": {k: [v["encoder"], v["version"], v["quality"], v["available"]]
                      for k, v in encoders.items()},
     }
+    # DET-GAINS (Codex C27x MED): with `exposure_deterministic_gains` ON, the op
+    # the exposure sums will EFFECTIVELY take here -- `index_put_(accumulate=True)`
+    # on CUDA, `index_add_` on the CPU fallback -- is part of the key, so an ON
+    # build made on one is never served as ALREADY_BUILT on the other. Resolved
+    # from the same `device` the solve gets, by the solve's own rule; the solve
+    # records what it ran and the build is refused below if the two disagree.
+    # OFF: None, the key is absent and every OFF digest is the one before.
+    accumulate = A.exposure_accumulate_path(params, device)
+    if accumulate is not None:
+        digest_inputs["exposure_accumulate"] = accumulate
     pdigest = hashlib.sha256(json.dumps(digest_inputs, sort_keys=True,
                                         default=str).encode()).hexdigest()
     done = _already_built(root, pdigest, force)
@@ -519,6 +529,13 @@ def _build(store, world_id, session_id, root, params, should_stop, progress, for
         should_stop=should_stop)
     if gains is None:
         return _stop(root, STAGE_EXPOSURE, seconds)
+    if accumulate is not None and exposure.get("accumulate", accumulate) != accumulate:
+        # The key above names an op the solve did not run. Publishing would
+        # label these gains with the other path's key: refused, nothing written,
+        # tried again (a solve with no observations ran no sum and says nothing).
+        raise A.AppearanceUnavailable(
+            f"the exposure solve summed with {exposure.get('accumulate')} but this build's key "
+            f"says {accumulate}", retryable=True)
     # the per-keyframe tilt travels on the keyframes, not in the record
     slopes = exposure.pop("slopes", None)
     vignette = exposure.get("vignette")

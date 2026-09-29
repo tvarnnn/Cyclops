@@ -1191,8 +1191,13 @@ def world_stage_timing_setting() -> bool:
 #        +3 s a solve. On any other device nothing changes: CPU `index_put_(accumulate=True)` is NOT reproducible
 #        (torch lists it as nondeterministic; stage 0 measured repeats 1.2e-7 apart), so a CPU solve keeps
 #        `index_add_`, the op it ran before. That is the OFF op, not a CPU determinism claim.
-#   Off: unset, blank and `off`. Today exactly: the same ops in the same order, and every appearance params record
-#        and params digest unchanged.
+#   Off: unset, blank and `off`. Today exactly, in everything an appearance PERSISTS: the same ops in the same order
+#        and the same solve bytes, and every params record, params digest, manifest and chunk unchanged (a world
+#        saved before the switch existed is served as already built). Not claimed beyond persisted data: the
+#        in-memory `repr()` of `AppearanceParams` shows the new field, and a value that is neither on nor off is
+#        logged once below -- both deliberately (Codex C27x LOW; RUN experiments/DET-GAINS/PROGRESS.md).
+#   On, the reuse key also names the op the sums EFFECTIVELY take on the build's device (`index_put_` on CUDA,
+#        `index_add_` on the CPU fallback), so an ON build on one is never served as already built on the other.
 # Read when an `appearance.AppearanceParams` is built (the default of its `exposure_deterministic_gains`), so the
 # solve and the appearance's params digest read ONE value: a build with it on never reuses a build without it, and
 # the reverse. FINAL builds only (manager 148 §4): `AppearanceParams.live()`, the walk's live builds, sets it
