@@ -521,6 +521,71 @@ final class DeadEndsUITests: XCTestCase {
         }
     }
 
+    // MARK: Step 10 -- Connections after a saved address
+
+    /// Settings from the shell's toolbar, a new address saved, Settings
+    /// closed. The field and the buttons are revealed by swiping up only: a
+    /// drag down at the top of the sheet pulls it away.
+    private func saveTowerAddress(_ authority: String) {
+        XCTAssertTrue(tap(app.buttons["Settings"], until: app.navigationBars["Settings"].exists), "Settings opens")
+        let field = element("tower-address-field")
+        XCTAssertTrue(revealInSheet(field), "the address field")
+        let end = field.coordinate(withNormalizedOffset: CGVector(dx: 0.97, dy: 0.9))
+        end.tap()
+        let focused = { self.app.keyboards.firstMatch.exists
+            || (field.value(forKey: "hasKeyboardFocus") as? Bool) == true }
+        if !waitFor(timeout: 5, focused) {
+            end.tap()
+            guard waitFor(timeout: 5, focused) else {
+                XCTFail("the address field never took keyboard focus")
+                return
+            }
+        }
+        // One key at a time, and checked: on a loaded Mac a whole string
+        // typed at once lost its keys after "127." (U0.8 Part B).
+        for attempt in 1...2 {
+            let current = (field.value as? String) ?? ""
+            if !current.isEmpty {
+                field.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: current.count + 4))
+            }
+            for key in authority { field.typeText(String(key)) }
+            if (field.value as? String) == authority { break }
+            print("U08|F17|attempt \(attempt) left \(String(describing: field.value)) in the field")
+        }
+        XCTAssertEqual(field.value as? String, authority, "the field holds what was typed")
+        field.typeText("\n")
+        _ = waitFor(timeout: 5) { !self.app.keyboards.firstMatch.exists }
+        let save = app.buttons["tower-save"]
+        XCTAssertTrue(revealInSheet(save), "Save")
+        save.tap()
+        XCTAssertTrue(waitFor(timeout: 5) { !save.isEnabled }, "saved")
+        XCTAssertTrue(tap(app.buttons["Done"], until: !app.navigationBars["Settings"].exists), "Settings closes")
+    }
+
+    /// F17: after a new address is saved, Connections says which one the
+    /// next launch uses.
+    func testConnectionsSaysWhichAddressTheNextLaunchUses() throws {
+        // Launch 1: save 127.0.0.1:10, which the next launch then uses.
+        launch(tower: closedAuthority)
+        saveTowerAddress("127.0.0.1:10")
+        app.terminate()
+
+        // Launch 2: the saved address is in use (nothing listens there, and
+        // no real Tower is ever dialled). Save another.
+        launch(tower: nil, reset: false)
+        saveTowerAddress("127.0.0.1:11")
+        let bar = element("shell-status-bar")
+        XCTAssertTrue(bar.waitForExistence(timeout: 10), "the shell status bar")
+        XCTAssertTrue(tap(bar, until: app.navigationBars["Connections"].exists), "Connections opens")
+
+        let next = element("connections-next-address")
+        XCTAssertTrue(revealInSheet(next), "the next-launch line is on the screen")
+        XCTAssertTrue(next.isHittable, "the next-launch line is its own element")
+        XCTAssertTrue(next.label.contains("127.0.0.1:11"), next.label)
+        let rule = containing("The saved address is used after Glasses is closed and opened again")
+        XCTAssertTrue(rule.exists, "the footer says when the saved address applies")
+    }
+
     // MARK: Launch (H3)
 
     /// `tower` is the socket's `host:port`; `nil` uses the saved address.

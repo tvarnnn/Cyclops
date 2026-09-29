@@ -101,8 +101,20 @@ struct ConnectionSheet: View {
                     // No "Connections" header: the navigation bar above says
                     // it, and the two read as one title twice (UX audit,
                     // connection-sheet).
-                    Text(towerFooter)
-                        .foregroundStyle(.readableSecondary)
+                    VStack(alignment: .leading, spacing: 6) {
+                        // The address the next launch uses, when a saved one
+                        // differs from the one in use (U0.8 F17). Its own
+                        // element, outside the row's combined layout.
+                        if let next = nextLaunchAuthority {
+                            Text(ConnectionsText.nextLaunch(next))
+                                .font(.footnote.monospaced())
+                                .foregroundStyle(.readableSecondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                                .accessibilityIdentifier("connections-next-address")
+                        }
+                        Text(towerFooter)
+                            .foregroundStyle(.readableSecondary)
+                    }
                 }
 
                 Section {
@@ -143,10 +155,25 @@ struct ConnectionSheet: View {
     /// problem with it — fixed in Settings, one row up.
     private var towerFooter: String {
         let endpoint = TowerConfiguration.webSocketURL.absoluteString
+        // Connect retries the address in use; a newly saved one waits for
+        // the next launch, and that is said where Connect is (U0.8 F17).
+        let pending = nextLaunchAuthority == nil ? "" : ConnectionsText.savedAddressRule
         if case .failed(let message) = tower.status {
-            return "Could not reach \(endpoint)\n\(message)"
+            return "Could not reach \(endpoint)\n\(message)" + pending
         }
-        return "Tower endpoint: \(endpoint)"
+        return "Tower endpoint: \(endpoint)" + pending
+    }
+
+    /// The address the next launch will use, launched the way this one was,
+    /// when it is not the one in use; `nil` when they agree. The same
+    /// resolution Settings shows (`TowerSettingsModel.nextLaunch`).
+    private var nextLaunchAuthority: String? {
+        let next = TowerConfiguration.resolve(
+            overrideValue: TowerConfiguration.launchOverrideValue,
+            savedValue: TowerAddressStore().saved,
+            policy: .current
+        )
+        return next.authority == TowerConfiguration.authority ? nil : next.authority
     }
 
     private var cameraActionTitle: String {
@@ -163,5 +190,13 @@ struct ConnectionSheet: View {
         case .connecting: return "Cancel"
         case .offline, .failed: return "Connect"
         }
+    }
+}
+
+/// The Connections sheet's words about the next launch (U0.8 F17).
+enum ConnectionsText {
+    static func nextLaunch(_ authority: String) -> String { "Next launch: \(authority)" }
+    static var savedAddressRule: String {
+        " Connect retries \(TowerConfiguration.authority). The saved address is used after Glasses is closed and opened again."
     }
 }
