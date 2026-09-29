@@ -16,6 +16,7 @@ import json
 import os
 import shutil
 import sys
+import time
 import uuid
 from pathlib import Path
 
@@ -40,6 +41,15 @@ RESULT_FILENAME = "result.json"
 # suspended), so a stage a dead builder left behind is attributable -- and sweepable once
 # that pid is gone (`world_build_session.sweep_stale_stop_mask_stages`, C25x2 MED-3).
 WRITER_MARKER_PREFIX = "writer.p"
+# `stop_masks/s/progress`: the child's PROGRESS BEAT (C25f-FIX2 review L-2). The parent ends
+# the join once the stage has shown no progress for its stall bound
+# (`world_build_session.STOP_MASKS_STALL_FLOOR_S`), and finished files alone go silent for
+# minutes while Grounding DINO runs over every image. So the child counts every image each
+# model finishes -- the backends' own per-image `should_stop` check, and each cache file
+# emitted -- and rewrites the count here at most once per PROGRESS_BEAT_S. It changes
+# nothing the models compute: the check it answers always says "carry on".
+PROGRESS_FILENAME = "progress"
+PROGRESS_BEAT_S = 1.0
 
 # The child's CPU thread cap. Stage 0 measured the solver masks (Grounding DINO + SAM
 # 2.1 + OneFormer: hand/phone arrays and the COLMAP PNGs) BIT-IDENTICAL under exactly
@@ -97,8 +107,59 @@ def _fresh_stage(workspace_root) -> Path:
     return stage
 
 
+class _ProgressBeat:
+    """Counts finished steps; writes the count to `path` at most once per PROGRESS_BEAT_S.
+    A beat that cannot be written is skipped: it must never fail the pass."""
+
+    def __init__(self, path: Path):
+        self.path = Path(path)
+        self.count = 0
+        self._written = None
+
+    def __call__(self) -> None:
+        self.count += 1
+        now = time.monotonic()
+        if self._written is not None and now - self._written < PROGRESS_BEAT_S:
+            return
+        self._written = now
+        try:
+            self.path.write_text(str(self.count), encoding="ascii")
+        except Exception:  # noqa: BLE001 -- a beat is never a reason to fail
+            pass
+
+
+class _BeatingBackend:
+    """A mask backend that beats once per image it checks in and once per mask it emits.
+    It hands the backend a `should_stop` that beats and then answers exactly what the
+    caller's would (`ensure_solver_masks` passes none: always "carry on"), so the backend
+    computes what it would have computed without it."""
+
+    def __init__(self, backend, beat: _ProgressBeat):
+        self._backend, self._beat = backend, beat
+        self.component = getattr(backend, "component", None)
+
+    def probe(self):
+        return self._backend.probe()
+
+    def run(self, items, params, emit, should_stop=None):
+        def check() -> bool:
+            self._beat()
+            return bool(should_stop()) if should_stop is not None else False
+
+        def emitted(*args, **kwargs):
+            emit(*args, **kwargs)
+            self._beat()
+
+        return self._backend.run(items, params, emitted, should_stop=check)
+
+
+def _beating(factory, beat: _ProgressBeat):
+    """`factory` (a component -> backend callable), with every backend beating."""
+    return lambda component: _BeatingBackend(factory(component), beat)
+
+
 def prefill(root: Path, world_id: str, session_id: str) -> int:
-    from tower.world_builder import global_solve, solve_masks
+    from tower.world_builder import global_solve, solve_masks, transients
     from tower.world_builder.store import WorldStore
     from tower.storage import read_json_closed
 
@@ -127,6 +188,8 @@ def prefill(root: Path, world_id: str, session_id: str) -> int:
                 pass
         names = [name for name in names if name in images]
         stage = global_solve.SolveWorkspace(_fresh_stage(workspace.root))
+        beat = _ProgressBeat(stage.root / PROGRESS_FILENAME)
+        beat()
         stage.images_dir.mkdir(exist_ok=True)
         for name, data in images.items():
             (stage.images_dir / name).write_bytes(data)
@@ -139,7 +202,8 @@ def prefill(root: Path, world_id: str, session_id: str) -> int:
             except OSError:
                 shutil.copy2(source, target)
         result = solve_masks.ensure_solver_masks(
-            stage, names, keyframe_ids=ids, shape=(camera.height, camera.width))
+            stage, names, keyframe_ids=ids, shape=(camera.height, camera.width),
+            backend_factory=_beating(transients.BACKEND_FACTORY, beat))
         complete = (result.available and not result.partial and not result.unmasked
                     and not result.cache_write_failed and not result.retries)
         _write_result(stage.root,

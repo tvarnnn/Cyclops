@@ -776,11 +776,17 @@ STOP_MASKS_UNCONFIRMED_CHILD_SKIPS_FINAL = False
 #       RECORDED partial set of individually valid files; the final solve computes the
 #       rest (C25x2 MED-2; `StopSolverMasks._promote`);
 #   (c) NOT CODE: no enable claim until the real-model 2-thread-cap check passes
-#       (RUN experiments/C25f-FINISH/cap_identity_real.py, with its control arm).
-# A hard stop, or a soft stop under a flipped RULING 1, still promotes nothing. A child
-# that exits NON-ZERO still promotes nothing (C25x M5's quarantine: manager 154 ruled on
-# the timeout only). False restores C25f's discard on timeout. Read in
-# `StopSolverMasks._join`; tested by
+#       (RUN experiments/C25f-FINISH/cap_identity_real.py, with its control arm and a
+#       repeated capped arm).
+# A hard stop, or a soft stop under a flipped RULING 1, still promotes nothing -- even at
+# the very instant the join times out. A child that exits NON-ZERO still promotes nothing
+# (C25x M5's quarantine: manager 154 ruled on the timeout only), and so the two corners
+# where a timeout and a non-zero exit met are decided as the exit would be (C25f-FIX2
+# review L-4): a child that had REPORTED an incomplete pass (its result says so; it would
+# exit 1) and then hung promotes nothing, and a child that exits by itself at the timeout
+# instant is judged by its own exit code. A STALL -- no progress for the stall bound
+# (L-2, below) -- is a timeout. False restores C25f's discard on timeout (and on a stall).
+# Read in `StopSolverMasks._join`; tested by
 # `test_world_builder_stop_masks.py::test_ruling_3_a_timed_out_child_promotes_only_verified_files`.
 STOP_MASKS_PROMOTE_PARTIAL_ON_TIMEOUT = True
 
@@ -803,6 +809,40 @@ STOP_MASKS_SECONDS_PER_IMAGE = 0.538
 STOP_MASKS_JOIN_FACTOR = 4.0
 STOP_MASKS_JOIN_FLOOR_S = 1800.0
 
+# THE STALL BOUND (C25f-FIX2 review L-2; W0's bar: Stop -> room with photos <= 10 min).
+# The join bound is for a child that is SLOW. A child that has HUNG -- a CUDA hang, a
+# teardown hang -- would hold the final solve for all of it: 2146 s at walk 5, ~2 h at
+# 3,300 solver images. So the join ALSO ends when the child has made NO PROGRESS for
+#     max(STOP_MASKS_STALL_FLOOR_S,
+#         STOP_MASKS_JOIN_FACTOR x STOP_MASKS_SILENT_S_PER_IMAGE x solver images at Stop),
+# counted from the join's start or the last progress seen, whichever is later; and a stall
+# is then handled EXACTLY as a timeout: the child is terminated through its Job, and
+# RULING 3 promotes the verified files it finished.
+# PROGRESS is any change the parent can see in the child's stage (`_stage_progress`): a
+# finished file (a snapshot image, a cache file, a PNG, the result) or the child's
+# PROGRESS BEAT (`world_solve_masks.PROGRESS_FILENAME`), which the child rewrites, at most
+# once a second, as each model finishes each image. Finished files ALONE would not do:
+# Grounding DINO runs over EVERY image before SAM writes the first cache file -- 220.4 s
+# with no new file at walk 5, GPU idle (RUN experiments/C22-REPLAY/runs/
+# walk5-old-a4afea1-2, the final solve's `transients.seconds["gdsam.gdino"]`), ~595 s at
+# 2.7x -- so a files-only bound would have had to be as long as the bar itself.
+#   * FLOOR 120 s: DECLARED. Between two beats the child runs ONE image through ONE model:
+#     at most 0.538 s (all three models; MEASURED, walk 5, see above) x the declared 4.0
+#     (2.7x contention x 1.06x cap, +40 %) = 2.15 s. 120 s is 55 such images without a
+#     single beat: a hang, not a slow image. The floor also covers the phases with no
+#     per-image beat, measured at walk 5 (the same record): the lookup 0.53 s, each read
+#     pass 0.92-0.95 s, each model load 0.32-1.12 s -- 4.6 s together, ~12 s at 2.7x.
+#     The child's start-up (interpreter, prewarm, CUDA) is not timed on its own (OPEN:
+#     C22's NEW runs record launch -> first beat); it normally overlaps the 120-s
+#     background wait, and the stall clock starts only at the join.
+#   * SILENT 0.0024 s per image: MEASURED, the per-image cost of those passes (lookup +
+#     both read passes: 2.404 s / 997 images, the same record). x 4.0 it passes the floor
+#     only above ~12,500 solver images, beyond any walk the capture's bound allows.
+STOP_MASKS_STALL_FLOOR_S = 120.0
+STOP_MASKS_SILENT_S_PER_IMAGE = 0.0024
+# How often the join looks at the stage for progress (a directory listing each time).
+STOP_MASKS_PROGRESS_POLL_S = 5.0
+
 # The Stop child's log, in the session's solve directory (not a compared artifact). The
 # parent appends each promotion's RECORD to it (RULING 3 (b)).
 STOP_MASKS_LOG_NAME = "solve_masks_at_stop.log"
@@ -819,6 +859,13 @@ def stop_masks_join_bound(images: int) -> float:
     """The join's bound for a walk with `images` solver images at Stop (MED-1, above)."""
     return max(STOP_MASKS_JOIN_FLOOR_S,
                STOP_MASKS_JOIN_FACTOR * STOP_MASKS_SECONDS_PER_IMAGE * max(0, int(images)))
+
+
+def stop_masks_stall_bound(images: int) -> float:
+    """How long the join waits WITHOUT PROGRESS for a walk with `images` solver images
+    at Stop (C25f-FIX2 review L-2, above)."""
+    return max(STOP_MASKS_STALL_FLOOR_S,
+               STOP_MASKS_JOIN_FACTOR * STOP_MASKS_SILENT_S_PER_IMAGE * max(0, int(images)))
 
 
 def _solver_image_count(images_dir) -> int:
@@ -911,7 +958,22 @@ def sweep_stale_stop_mask_stages(store, world_id: str) -> list:
     writes before the child is resumed. A `stop_masks/` with no marker, or with
     a marker naming a live pid (under RULING 2, a child its builder could not
     confirm dead), is left. Read-only when there is nothing to sweep. Returns
-    the sessions swept."""
+    the sessions swept.
+
+    A KNOWN LEAK, NOT FIXED (C25f-FIX2 review L-3). Only a builder start for
+    the SAME world sweeps, so a stage stays on disk when a builder died in its
+    Stop (switch on) and then (a) the world is never walked again, or (b) an
+    attended `world_refinish` set the session's `solve/<session>` aside first
+    -- the stage then travels into `refinish/<stamp>/`, whose purpose is to
+    keep that directory as it was. A marker pid the OS has reused also delays
+    the sweep until that pid exits (conservative: never a live writer's
+    stage). THE SIZE BOUND: one stage per session (every launch sweeps the
+    session's `stop_masks/` first), of at most the solver-image snapshot plus
+    two cache files and one PNG per image -- 44.5 MB of images and 117.7 MB
+    of cache for walk 5's 997 solver images (the read-only copy
+    `wbcpt\\w0s0-7`), so about 0.17 MB per solver image, ~165 MB at walk 5.
+    Sweeping from `world_finish_pending` as well would close (a); it is left
+    to a separate, reviewed change."""
     from scripts.world_solve_masks import writer_pids  # noqa: PLC0415
     from tower.world_builder.global_solve import workspace_for  # noqa: PLC0415
 
@@ -943,8 +1005,9 @@ class StopSolverMasks:
     The child masks an immutable snapshot of the solver images into its own
     stage (`world_solve_masks.stage_path`, OUTSIDE `transients/`). The parent
     promotes the stage's cache files into the live cache only after the child
-    was confirmed gone, only after an exit 0 or a timeout (RULING 3), and only
-    files that VERIFY for the live image bytes; it then SWEEPS the stage. Every
+    was confirmed gone, only after an exit 0 or a timeout -- a stall included
+    (RULING 3; L-2) -- and only files that VERIFY for the live image bytes; it
+    then SWEEPS the stage. Every
     other exit it can confirm sweeps it too. A child it cannot confirm dead
     keeps its stage (it may still be writing there), which nothing reads.
 
@@ -960,7 +1023,7 @@ class StopSolverMasks:
     """
 
     def __init__(self, solver: "BackgroundSolver", *, script=None, spawn=None,
-                 join_timeout=None):
+                 join_timeout=None, stall_timeout=None):
         self.solver = solver
         self.script = script or TOWER_ROOT / "scripts" / "world_solve_masks.py"
         self._spawn = spawn if spawn is not None else subprocess.Popen
@@ -973,6 +1036,8 @@ class StopSolverMasks:
         self._soft_stop_logged = False
         # None: `stop_masks_join_bound` of the solver images at `launch` (MED-1).
         self.join_timeout = join_timeout
+        # None: `stop_masks_stall_bound` of the solver images at `launch` (L-2).
+        self.stall_timeout = stall_timeout
 
     def _workspace(self):
         from tower.world_builder.global_solve import workspace_for  # noqa: PLC0415
@@ -1003,6 +1068,8 @@ class StopSolverMasks:
             images = _solver_image_count(workspace.images_dir)
             if self.join_timeout is None:
                 self.join_timeout = stop_masks_join_bound(images)
+            if self.stall_timeout is None:
+                self.stall_timeout = stop_masks_stall_bound(images)
             self._log = open(workspace.root / STOP_MASKS_LOG_NAME, "ab")
             self._started = time.monotonic()
             env = child_environment()
@@ -1036,7 +1103,8 @@ class StopSolverMasks:
                     return False
                 self._resumed = True
             logger.info("[Tower][WorldBuilder] Stop mask prefill launched (pid %s); join bound "
-                        "%.0fs for %s solver images", self._child.pid, self.join_timeout, images)
+                        "%.0fs for %s solver images, or %.0fs without progress", self._child.pid,
+                        self.join_timeout, images, self.stall_timeout)
         except Exception as exc:  # prefill failure must leave the old final solve available
             logger.warning("[Tower][WorldBuilder] Stop mask prefill could not start: %s", exc)
             self.close()
@@ -1048,8 +1116,9 @@ class StopSolverMasks:
 
         Returns False only when the child cannot be confirmed gone (then
         nothing is promoted, and its stage is left where nothing reads it).
-        A HARD stop (`should_stop`) or the `join_timeout` ends the wait early;
-        the ordinary soft stop does not (RULING 1, above).
+        A HARD stop (`should_stop`), the `join_timeout`, or `stall_timeout`
+        without progress (a stall is a timeout: L-2, above) ends the wait
+        early; the ordinary soft stop does not (RULING 1, above).
 
         The answer is read at the END (C25f review LOW-5): a child that a
         failed termination left running, but that died before the join
@@ -1064,11 +1133,25 @@ class StopSolverMasks:
     def _join(self, should_stop, should_soft_stop) -> None:
         if self._child is None:
             return
-        if self.join_timeout is None:       # a child this object did not `launch`
-            self.join_timeout = stop_masks_join_bound(
-                _solver_image_count(self._workspace().images_dir))
-        deadline = time.monotonic() + self.join_timeout
+        if self.join_timeout is None or self.stall_timeout is None:
+            # A child this object did not `launch`.
+            images = _solver_image_count(self._workspace().images_dir)
+            if self.join_timeout is None:
+                self.join_timeout = stop_masks_join_bound(images)
+            if self.stall_timeout is None:
+                self.stall_timeout = stop_masks_stall_bound(images)
+        start = time.monotonic()
+        deadline = start + self.join_timeout
+        # THE STALL CLOCK (L-2): from the join's start, reset by every change seen in the
+        # stage, which is looked at every STOP_MASKS_PROGRESS_POLL_S.
+        seen, progressed, look = self._stage_progress(), start, start + STOP_MASKS_PROGRESS_POLL_S
         while self._child.poll() is None:
+            now = time.monotonic()
+            if now >= look:
+                look = now + STOP_MASKS_PROGRESS_POLL_S
+                progress = self._stage_progress()
+                if progress != seen:
+                    seen, progressed = progress, now
             soft = should_soft_stop()
             if soft and not self._soft_stop_logged:
                 self._soft_stop_logged = True
@@ -1078,22 +1161,40 @@ class StopSolverMasks:
                             "a builder that is finalizing carries on, so it does not "
                             "end the join")
             soft = soft and STOP_MASKS_JOIN_ENDS_ON_SOFT_STOP          # RULING 1
-            timed_out = time.monotonic() >= deadline
+            over = now >= deadline
+            stalled = now - progressed >= self.stall_timeout                   # L-2
+            timed_out = over or stalled
             hard = should_stop()
             if hard or soft or timed_out:
                 stopped = hard or soft
+                if not stopped and self._child.poll() is not None:
+                    # C25f-FIX2 review L-4 (ii): it EXITED by itself since the loop's
+                    # poll; its own exit code decides, as for any exit (below), and a
+                    # non-zero exit is not promoted as a "timeout".
+                    break
                 partial = timed_out and not stopped and STOP_MASKS_PROMOTE_PARTIAL_ON_TIMEOUT
+                why = ("a stop was requested" if stopped
+                       else "timed out after %.0fs" % self.join_timeout if over
+                       else "no progress for %.0fs" % self.stall_timeout)
                 logger.warning("[Tower][WorldBuilder] Stop mask prefill join ended (%s); "
-                               "terminating pid %s; %s",
-                               "a stop was requested" if stopped
-                               else "timed out after %.0fs" % self.join_timeout,
-                               self._child.pid,
+                               "terminating pid %s; %s", why, self._child.pid,
                                "once it is confirmed dead, the cache files it finished are "
                                "verified, and only those are promoted" if partial  # RULING 3
                                else "nothing it staged is promoted")
                 if self.close(sweep=not partial) and partial:
                     try:
-                        self._promote(self._snapshot_names(), why="timed out")
+                        if self._reported_incomplete():
+                            # C25f-FIX2 review L-4 (i): a child that REPORTED an
+                            # incomplete pass exits 1 (`world_solve_masks.prefill`), and a
+                            # non-zero exit promotes nothing. The same child hanging
+                            # afterwards promotes nothing either.
+                            logger.warning("[Tower][WorldBuilder] Stop mask prefill had "
+                                           "reported an incomplete pass before it was "
+                                           "terminated; as for a non-zero exit, nothing it "
+                                           "staged is promoted")
+                        else:
+                            self._promote(self._snapshot_names(),
+                                          why="timed out" if over else "stalled")
                     finally:
                         self._sweep_stage()
                 return
@@ -1115,6 +1216,40 @@ class StopSolverMasks:
             return sorted(p.name for p in images.iterdir() if p.is_file())
         except OSError:
             return []
+
+    def _stage_progress(self) -> tuple:
+        """What the child has done, as far as the parent can see (L-2): its progress
+        beat, and how many FINISHED files its stage holds -- snapshot images, cache
+        files and PNGs (a writer's `.tmp` is not finished) -- and whether its result
+        exists. Any change is progress. Nothing here is read for any other purpose."""
+        from scripts.world_solve_masks import PROGRESS_FILENAME, RESULT_FILENAME  # noqa: PLC0415
+
+        stage = _stop_mask_stage(self._workspace())
+        try:
+            beat = (stage / PROGRESS_FILENAME).read_bytes()
+        except OSError:
+            beat = None
+        counts = []
+        for sub in ("images", "transients", "masks"):
+            try:
+                with os.scandir(stage / sub) as entries:
+                    counts.append(sum(1 for entry in entries if not entry.name.endswith(".tmp")))
+            except OSError:
+                counts.append(None)
+        return (beat, *counts, (stage / RESULT_FILENAME).exists())
+
+    def _reported_incomplete(self) -> bool:
+        """The child's result says its pass was NOT complete (L-4 (i)). A result that is
+        missing or unreadable -- a child killed before or while writing it -- reports
+        nothing, and RULING 3 decides."""
+        from scripts.world_solve_masks import RESULT_FILENAME  # noqa: PLC0415
+
+        try:
+            result = json.loads((_stop_mask_stage(self._workspace()) / RESULT_FILENAME)
+                                .read_text(encoding="utf-8"))
+            return not result["available"]
+        except (OSError, ValueError, KeyError, TypeError):
+            return False
 
     def _promote_result(self) -> None:
         """An exit 0: promote from its result, and only when it says the pass was COMPLETE."""

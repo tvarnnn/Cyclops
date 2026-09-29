@@ -343,6 +343,7 @@ def test_stop_mask_call_site_and_off_cutoff(finished_capture, tmp_path, monkeypa
         assert "Stop mask prefill launched (pid" in stderr
         # The floor: the background stub may not have written its image yet at launch.
         assert "; join bound 1800s for " in stderr
+        assert " solver images, or 120s without progress" in stderr    # the stall bound (L-2)
         assert "Stop mask prefill promoted 1 cache files" in stderr
         assert "1 of 1 images still match at the final solve" in stderr
         log = (ws / "solve_masks_at_stop.log").read_text(encoding="utf-8")

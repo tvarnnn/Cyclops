@@ -196,7 +196,7 @@ def test_launch_contract_and_job_assignment(tmp_path, monkeypatch, caplog):
     # duration, images masked and cache hits.
     messages = [r.getMessage() for r in caplog.records]
     assert (f"[Tower][WorldBuilder] Stop mask prefill launched (pid {process.pid}); join bound "
-            "1800s for 0 solver images") in messages
+            "1800s for 0 solver images, or 120s without progress") in messages
     exits = [m for m in messages if m.startswith("[Tower][WorldBuilder] Stop mask prefill exited 1 in ")]
     assert len(exits) == 1 and exits[0].endswith("; images masked unknown, cache hits unknown")
     assert any("exited 1; nothing it staged is promoted, and the stage is swept" in m
@@ -312,6 +312,88 @@ def test_a_real_child_that_cannot_be_put_in_a_job_never_runs(tmp_path, monkeypat
     assert child not in B._owned_stalled_mask_children
 
 
+@pytest.mark.skipif(os.name != "nt", reason="only a Windows child is created suspended")
+def test_a_failed_resume_kills_the_child_through_its_job_and_falls_back(tmp_path, monkeypatch,
+                                                                        caplog):
+    """C25f-FIX2 review L-1 (mutant V6): the child IS in its Job, but
+    `NtResumeProcess` fails. It must be terminated through that Job (it is still
+    suspended, so it never ran), its marker and stage swept, and the wrapper must
+    FALL BACK: the background wait on the original deadline, no join of a live
+    child -- it would wait the whole bound for a child that never runs -- and
+    True, since the child is confirmed dead and the final solve computes every
+    mask."""
+    process, job, kills, joined, made = Process(), Job(), [], [], []
+    monkeypatch.setattr(B, "assign_to_job", lambda p: job)
+    monkeypatch.setattr(B, "_resume_suspended", lambda p: False)
+
+    def terminate(p, **kw):
+        kills.append(kw)
+        p.returncode = 1
+        return True
+
+    monkeypatch.setattr(B, "terminate_tree", terminate)
+    real, real_join = B.StopSolverMasks, B.StopSolverMasks.join
+
+    def join(self, **kwargs):
+        # The child the join would WAIT for. The real join of a launch that failed
+        # and was confirmed has none, and returns at once; one with a child here
+        # would wait the whole bound for a child that never runs (not run: True).
+        joined.append(self._child)
+        return real_join(self, **kwargs) if self._child is None else True
+
+    monkeypatch.setattr(B.StopSolverMasks, "join", join)
+
+    def factory(s, *, script=None):
+        made.append(real(s, script=script, spawn=lambda *a, **k: process))
+        return made[-1]
+
+    monkeypatch.setattr(B, "StopSolverMasks", factory)
+    s = solver(tmp_path)
+    with caplog.at_level(logging.WARNING, logger=LOGGER):
+        answer = B.wait_for_background_solve_at_stop(s, 0.2, should_stop=lambda: False,
+                                                     stop_at=time.monotonic())
+    assert answer is True, "a confirmed-dead child must leave the ordinary final solve"
+    assert all(c is None for c in joined), "a child whose resume failed was joined"
+    assert len(kills) == 1 and kills[0]["job"] is job and kills[0]["hard"]
+    assert process.poll() == 1 and job.closed
+    assert made[0]._child is None and made[0] not in B._owned_stalled_mask_children
+    assert 0.0 < s.timeout <= 0.2 + 1e-6, "the background wait still ran"
+    assert not (_live(tmp_path).root / M.STAGE_PARENT_DIRNAME).exists(), "marker not swept"
+    assert any("could not be resumed; disabling it" in r.getMessage() for r in caplog.records)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="CREATE_SUSPENDED and Job Objects are Windows")
+def test_a_real_child_whose_resume_fails_dies_in_its_job_without_running(tmp_path, monkeypatch):
+    """L-1 with a REAL process, a REAL Job and the real termination: only the
+    resume fails. `launch` answers False with the child confirmed dead, and its
+    first line -- which would write a file -- never ran."""
+    ran = tmp_path / "ran.txt"
+    script = tmp_path / "stub_mask_child.py"
+    script.write_text(f"import pathlib\npathlib.Path({str(ran)!r}).write_text('ran')\n",
+                      encoding="utf-8")
+    spawned, jobs, real_assign = [], [], B.assign_to_job
+    monkeypatch.setattr(B, "assign_to_job", lambda p: jobs.append(real_assign(p)) or jobs[-1])
+    monkeypatch.setattr(B, "_resume_suspended", lambda p: False)
+    child = B.StopSolverMasks(solver(tmp_path), script=script,
+                              spawn=lambda *a, **k: spawned.append(subprocess.Popen(*a, **k))
+                              or spawned[-1])
+    try:
+        assert child.launch() is False
+        assert len(jobs) == 1 and jobs[0] is not None, "no real Job: this proves nothing"
+        assert jobs[0].closed
+        assert child._child is None and child not in B._owned_stalled_mask_children
+        (process,) = spawned
+        assert process.poll() is not None, "the Job did not take the suspended child"
+        time.sleep(0.5)
+        assert not ran.exists(), "a child whose resume failed ran its own code"
+        assert not (_live(tmp_path).root / M.STAGE_PARENT_DIRNAME).exists()
+    finally:
+        for process in spawned:
+            if process.poll() is None:
+                process.kill()
+                process.wait(10)
+
+
 def test_close_trusts_the_process_not_terminate_trees_answer(tmp_path, monkeypatch):
     """C25f review LOW-4 (mutant V3): `terminate_tree` says gone, `poll()` says
     alive. The child is NOT confirmed: retained, its Job kept open, its stage kept."""
@@ -338,6 +420,49 @@ def test_launch_exception_leaves_background_wait_available(tmp_path, monkeypatch
     assert B.wait_for_background_solve_at_stop(s, 0.2, should_stop=lambda: False,
                                                stop_at=time.monotonic())
     assert 0.0 < s.timeout <= 0.2 + 1e-6
+
+
+@pytest.mark.parametrize("confirmed", [True, False])
+def test_a_join_that_raises_answers_only_what_close_confirms(tmp_path, monkeypatch, caplog,
+                                                             confirmed):
+    """C25f-FIX2 review L-9 (mutant V10): the join raises while the child still
+    runs (here the stop channel itself breaks). The wrapper's exception branch
+    ends the child and answers what `close` CONFIRMED: True only for a child
+    confirmed dead. An unkillable one is False -- under a flipped RULING 2 that
+    is what keeps the final solve from running beside it -- stays registered,
+    and its Job stays open."""
+    process, job, made = Process(), Job(), []
+    monkeypatch.setattr(B, "assign_to_job", lambda p: job)
+    monkeypatch.setattr(B, "terminate_tree", lambda p, **k: (
+        setattr(p, "returncode", 1) or True) if confirmed else False)
+    real = B.StopSolverMasks
+
+    def factory(s, *, script=None):
+        made.append(real(s, script=script, spawn=lambda *a, **k: process))
+        return made[-1]
+
+    def broken_stop_channel():
+        raise RuntimeError("injected: the stop channel broke")
+
+    monkeypatch.setattr(B, "StopSolverMasks", factory)
+    try:
+        with caplog.at_level(logging.WARNING, logger=LOGGER):
+            answer = B.wait_for_background_solve_at_stop(
+                solver(tmp_path), 0.0, should_stop=broken_stop_channel,
+                stop_at=time.monotonic())
+        messages = [r.getMessage() for r in caplog.records]
+        assert any("Stop mask prefill failed: injected: the stop channel broke" in m
+                   for m in messages)
+        assert answer is confirmed
+        if confirmed:
+            assert made[0]._child is None and job.closed
+        else:
+            assert made[0] in B._owned_stalled_mask_children and not job.closed
+            assert any("could not be confirmed dead" in m for m in messages)
+    finally:
+        process.returncode = 1
+        made[0].close()
+    assert made[0] not in B._owned_stalled_mask_children
 
 
 def test_a_stale_stage_is_swept_before_the_child_starts(tmp_path, monkeypatch):
@@ -556,8 +681,8 @@ def test_the_join_bound_scales_with_the_solver_images(tmp_path, monkeypatch, cap
     with caplog.at_level(logging.INFO, logger=LOGGER):
         assert child.launch()
     assert child.join_timeout == pytest.approx(4.0 * 0.538 * 5)
-    assert any(r.getMessage().endswith("; join bound 11s for 5 solver images")
-               for r in caplog.records)
+    assert any(r.getMessage().endswith("; join bound 11s for 5 solver images, or 120s without "
+                                       "progress") for r in caplog.records)
     child.join(should_stop=lambda: False)
     fixed = B.StopSolverMasks(solver(tmp_path), spawn=lambda *a, **k: Process(rc=1),
                               join_timeout=7.0)
@@ -576,6 +701,120 @@ def test_ruling_1_flipped_a_soft_stop_ends_the_join(tmp_path, monkeypatch):
     assert child.launch()
     assert child.join(should_stop=lambda: False, should_soft_stop=lambda: True)
     assert process.poll() == 1 and job.closed
+
+
+# -- the stall bound: a HUNG child does not hold the final for the join bound (L-2) --
+
+
+def test_the_stall_bound_is_declared_beside_the_join_bound(tmp_path, monkeypatch, caplog):
+    """C25f-FIX2 review L-2: max(120 s, 4.0 x 0.0024 s x images). 120 s is 55
+    images' worth at the declared worst per-image rate (4.0 x 0.538 s) with no
+    beat at all; 0.0024 s/image is the MEASURED cost of the passes that have no
+    per-image beat (lookup + two read passes, walk 5). The same factor as the
+    join bound, which it must stay well below."""
+    assert B.STOP_MASKS_STALL_FLOOR_S == 120.0
+    assert B.STOP_MASKS_SILENT_S_PER_IMAGE == 0.0024
+    assert B.STOP_MASKS_PROGRESS_POLL_S == 5.0
+    assert B.STOP_MASKS_STALL_FLOOR_S >= 50 * B.STOP_MASKS_JOIN_FACTOR * B.STOP_MASKS_SECONDS_PER_IMAGE
+    assert B.stop_masks_stall_bound(0) == 120.0
+    assert B.stop_masks_stall_bound(997) == 120.0                  # walk 5
+    assert B.stop_masks_stall_bound(12_000) == 120.0
+    assert B.stop_masks_stall_bound(20_000) == pytest.approx(4.0 * 0.0024 * 20_000)
+    for images in (0, 997, 3_300, 20_000):
+        assert B.stop_masks_stall_bound(images) < B.stop_masks_join_bound(images) / 10
+    # `launch` applies it to the images it finds; an explicit bound wins.
+    ws = _live(tmp_path)
+    ws.images_dir.mkdir(parents=True)
+    (ws.images_dir / "a.jpg").write_bytes(b"x")
+    monkeypatch.setattr(B, "STOP_MASKS_STALL_FLOOR_S", 0.0)
+    monkeypatch.setattr(B, "assign_to_job", lambda p: Job())
+    child = B.StopSolverMasks(solver(tmp_path), spawn=lambda *a, **k: Process(rc=1))
+    assert child.stall_timeout is None
+    with caplog.at_level(logging.INFO, logger=LOGGER):
+        assert child.launch()
+    assert child.stall_timeout == pytest.approx(4.0 * 0.0024)
+    assert any(r.getMessage().endswith(" for 1 solver images, or 0s without progress")
+               for r in caplog.records)
+    child.join(should_stop=lambda: False)
+    fixed = B.StopSolverMasks(solver(tmp_path), spawn=lambda *a, **k: Process(rc=1),
+                              stall_timeout=7.0)
+    assert fixed.launch() and fixed.stall_timeout == 7.0
+    fixed.join(should_stop=lambda: False)
+
+
+@pytest.mark.parametrize("behaviour", ["stalls", "keeps progressing"])
+def test_a_child_without_progress_is_ended_at_the_stall_bound_not_the_join_bound(
+        tmp_path, monkeypatch, caplog, behaviour):
+    """C25f-FIX2 review L-2, on a frozen clock. The child beats every 30 s. One
+    that STALLS -- its last beat at 570 s into the join, then silence, as in a
+    CUDA or teardown hang -- is terminated through its Job at the STALL bound
+    (120 s later, give or take one look at the stage), not at the 1800-s join
+    bound, and handled exactly as a timeout: the files it finished are
+    verified and promoted (RULING 3), and the record says "stalled". One that
+    KEEPS PROGRESSING is never ended by the stall bound; only the join bound
+    ends it."""
+    clock = Clock()
+    monkeypatch.setattr(B, "time", clock)
+    ws = _live(tmp_path)
+    ws.images_dir.mkdir(parents=True)
+    _camera(ws)
+    data = _jpeg(90)
+    (ws.images_dir / "a.jpg").write_bytes(data)
+    sha = hashlib.sha1(data).hexdigest()
+    stage = ws.root / M.STAGE_PARENT_DIRNAME / M.STAGE_DIRNAME
+    kills = []
+
+    class Child(Process):
+        beats = 0
+
+        def poll(self):
+            elapsed = clock.now - t0
+            if (self.returncode is None and elapsed >= 30 * self.beats
+                    and (behaviour == "keeps progressing" or elapsed < 600)):
+                self.beats += 1
+                (stage / M.PROGRESS_FILENAME).write_text(str(self.beats), encoding="ascii")
+            return self.returncode
+
+    def terminate(p, **kw):
+        kills.append((clock.now - t0, kw["job"]))
+        p.returncode = 1
+        return True
+
+    process, job = Child(), Job()
+    monkeypatch.setattr(B, "assign_to_job", lambda p: job)
+    monkeypatch.setattr(B, "terminate_tree", terminate)
+    child = B.StopSolverMasks(solver(tmp_path), spawn=lambda *a, **k: process)
+    assert child.launch()
+    assert (child.join_timeout, child.stall_timeout) == (1800.0, 120.0)
+    # What it finished before the join: a snapshot and image a's two cache files.
+    (stage / "images").mkdir(parents=True)
+    (stage / "images" / "a.jpg").write_bytes(data)
+    good = sorted(_component(stage / "transients", "a.jpg", sha, component).name
+                  for component in (SM.T.COMPONENT_GDSAM, SM.T.COMPONENT_ONEFORMER))
+    t0 = clock.now
+    with caplog.at_level(logging.INFO, logger=LOGGER):
+        assert child.join(should_stop=lambda: False)
+    (ended, by), = kills
+    assert by is job and job.closed and process.poll() == 1
+    assert not stage.parent.exists(), "the stage is swept"
+    messages = [r.getMessage() for r in caplog.records]
+    (record,) = _promotion_records(ws)
+    assert sorted(p.name for p in (ws.root / "transients").glob("*.npz")) == good
+    if behaviour == "stalls":
+        last_beat = 570.0
+        assert (last_beat + 120.0 <= ended
+                <= last_beat + 120.0 + B.STOP_MASKS_PROGRESS_POLL_S + B.CHILD_POLL_S + 1e-6)
+        assert ended < 1800.0 - 1000.0, "ended by the join bound, not the stall bound"
+        assert any("join ended (no progress for 120s); terminating pid" in m
+                   and m.endswith("only those are promoted") for m in messages)
+        assert record["why"] == "stalled" and record["verified"] == 2
+        assert ("[Tower][WorldBuilder] Stop mask prefill promoted 2 verified cache files from a "
+                "child that stalled, for 1 snapshot images") in messages
+    else:
+        assert 1800.0 <= ended <= 1800.0 + B.CHILD_POLL_S + 1e-6
+        assert process.beats > 1800 // 30, "it made progress throughout"
+        assert any("join ended (timed out after 1800s); terminating pid" in m for m in messages)
+        assert record["why"] == "timed out" and record["verified"] == 2
 
 
 # -- a child that cannot be confirmed dead; RULING 2 --------------------------
@@ -929,32 +1168,212 @@ def test_ruling_3_flipped_a_timed_out_child_promotes_nothing(tmp_path, monkeypat
     assert any(r.getMessage().endswith("nothing it staged is promoted") for r in caplog.records)
 
 
+def _hung_child_with_a_finished_stage(tmp_path, monkeypatch, *, result=None, **bounds):
+    """A launched child that never exits by itself, whose stage holds a snapshot of
+    one live image and that image's two VALID cache files -- everything RULING 3
+    would promote -- and, if `result` is given, a result with `available: result`.
+    Returns (child, process, job, ws, stage, promotable names)."""
+    process, job = Process(), Job()
+    monkeypatch.setattr(B, "assign_to_job", lambda p: job)
+    monkeypatch.setattr(B, "terminate_tree", lambda p, **k: setattr(p, "returncode", 1) or True)
+    monkeypatch.setattr(B, "CHILD_POLL_S", 0.001)
+    ws = _live(tmp_path)
+    ws.images_dir.mkdir(parents=True)
+    (ws.images_dir / "a.jpg").write_bytes(b"pixels")
+    sha = hashlib.sha1(b"pixels").hexdigest()
+    child = B.StopSolverMasks(solver(tmp_path), spawn=lambda *a, **k: process, **bounds)
+    assert child.launch()
+    stage = _write_stage(ws, {"a.jpg": sha}, available=bool(result),
+                         snapshot={"a.jpg": b"pixels"})
+    _component(stage / "transients", "a.jpg", sha, SM.T.COMPONENT_ONEFORMER)
+    if result is None:
+        (stage / M.RESULT_FILENAME).unlink()
+    names = sorted(p.name for p in (stage / "transients").glob("*.npz"))
+    return child, process, job, ws, stage, names
+
+
+@pytest.mark.parametrize("bound", ["timeout", "stall"])
+def test_a_hard_stop_at_the_timeout_instant_promotes_nothing(tmp_path, monkeypatch, caplog,
+                                                             bound):
+    """C25f-FIX2 review L-7 (mutant V8): the join times out -- or stalls -- at
+    the very poll where a HARD stop arrives. The stop wins: nothing is promoted
+    (`main` then skips the final solve), exactly as the RULING 3 comment says,
+    although the same stage alone WOULD be promoted on a timeout."""
+    child, process, job, ws, stage, _names = _hung_child_with_a_finished_stage(
+        tmp_path, monkeypatch, join_timeout=-1 if bound == "timeout" else 1800,
+        stall_timeout=-1 if bound == "stall" else 120)
+    with caplog.at_level(logging.WARNING, logger=LOGGER):
+        assert child.join(should_stop=lambda: True)
+    assert process.poll() == 1 and job.closed
+    assert not (ws.root / "transients").exists() and _promotion_records(ws) == []
+    assert not stage.parent.exists()
+    assert any("join ended (a stop was requested); terminating pid" in r.getMessage()
+               and r.getMessage().endswith("nothing it staged is promoted")
+               for r in caplog.records)
+
+
+@pytest.mark.parametrize("how,result,promoted", [
+    ("exited 1", False, False),        # the reference: a non-zero exit promotes nothing
+    ("timed out", False, False),       # L-4 (i): reported incomplete, then hung
+    ("stalled", False, False),
+    ("timed out", True, True),         # a COMPLETE report, then a teardown hang: RULING 3
+    ("timed out", None, True),         # no report at all: RULING 3
+])
+def test_a_child_that_reported_an_incomplete_pass_is_never_promoted_however_it_ends(
+        tmp_path, monkeypatch, caplog, how, result, promoted):
+    """C25f-FIX2 review L-4 (i). A child whose result says its pass was NOT
+    complete exits 1 (`world_solve_masks.prefill`), and a non-zero exit promotes
+    nothing. If that same child then HANGS instead -- in teardown, say -- the
+    join ends it (a timeout or a stall), and it must promote nothing either,
+    although every file it staged would verify. A child that reported a
+    COMPLETE pass, or nothing at all, is promoted as RULING 3 says."""
+    child, process, job, ws, stage, names = _hung_child_with_a_finished_stage(
+        tmp_path, monkeypatch, result=result, join_timeout=-1 if how == "timed out" else 1800,
+        stall_timeout=-1 if how == "stalled" else 120)
+    if how == "exited 1":
+        process.returncode = 1
+    with caplog.at_level(logging.INFO, logger=LOGGER):
+        assert child.join(should_stop=lambda: False)
+    assert process.poll() == 1 and job.closed and not stage.parent.exists()
+    live = sorted(p.name for p in (ws.root / "transients").glob("*.npz"))
+    messages = [r.getMessage() for r in caplog.records]
+    if promoted:
+        assert live == names and len(names) == 2
+        (record,) = _promotion_records(ws)
+        assert record["why"] == how and record["promoted"] == names
+    else:
+        assert live == [] and _promotion_records(ws) == []
+    reported = any("had reported an incomplete pass before it was terminated; as for a "
+                   "non-zero exit, nothing it staged is promoted" in m for m in messages)
+    assert reported is (how != "exited 1" and result is False)
+
+
+@pytest.mark.parametrize("rc", [1, 0])
+def test_a_child_that_exits_at_the_timeout_instant_is_judged_by_its_own_exit(
+        tmp_path, monkeypatch, caplog, rc):
+    """C25f-FIX2 review L-4 (ii). The child exits by itself between the join's
+    poll and its timeout decision. It is not "terminated", and not promoted as
+    a timeout: its own exit code decides, as for any exit -- 1 promotes nothing,
+    0 promotes from its result."""
+
+    class ExitsAtTheDeadline(Process):
+        polls = 0
+
+        def poll(self):
+            self.polls += 1
+            if self.polls >= 2 and self.returncode is None:
+                self.returncode = rc
+            return self.returncode
+
+    kills = []
+    child, _process, job, ws, stage, names = _hung_child_with_a_finished_stage(
+        tmp_path, monkeypatch, result=rc == 0, join_timeout=-1)
+    process = ExitsAtTheDeadline()
+    child._child = process
+    monkeypatch.setattr(B, "terminate_tree", lambda p, **k: kills.append(p) or True)
+    with caplog.at_level(logging.INFO, logger=LOGGER):
+        assert child.join(should_stop=lambda: False)
+    assert kills == [], "a child that had exited by itself was terminated as timed out"
+    assert job.closed and not stage.parent.exists()
+    messages = [r.getMessage() for r in caplog.records]
+    assert not any("join ended" in m for m in messages)
+    assert any(m.startswith(f"[Tower][WorldBuilder] Stop mask prefill exited {rc} in ")
+               for m in messages)
+    live = sorted(p.name for p in (ws.root / "transients").glob("*.npz"))
+    if rc == 0:
+        (record,) = _promotion_records(ws)
+        assert record["why"] == "exited 0" and live == names
+    else:
+        assert live == [] and _promotion_records(ws) == []
+
+
+def test_a_stop_at_the_instant_the_child_exits_0_still_promotes_nothing(tmp_path, monkeypatch,
+                                                                        caplog):
+    """The other side of L-4 (ii): the re-check that lets a child's own exit
+    decide is for a TIMEOUT only. A hard stop that arrives as the child exits 0
+    with a complete result promotes nothing (`main` skips the final solve)."""
+
+    class ExitsAsTheStopArrives(Process):
+        polls = 0
+
+        def poll(self):
+            self.polls += 1
+            if self.polls >= 2 and self.returncode is None:
+                self.returncode = 0
+            return self.returncode
+
+    child, _process, job, ws, stage, _names = _hung_child_with_a_finished_stage(
+        tmp_path, monkeypatch, result=True)
+    child._child = ExitsAsTheStopArrives()
+    with caplog.at_level(logging.WARNING, logger=LOGGER):
+        assert child.join(should_stop=lambda: True)
+    assert job.closed and not stage.parent.exists()
+    assert not list((ws.root / "transients").glob("*.npz")) and _promotion_records(ws) == []
+    assert any("join ended (a stop was requested)" in r.getMessage() for r in caplog.records)
+
+
 # -- ownership across process death -----------------------------------------
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows Job Object contract")
 def test_job_kills_mask_child_when_parent_dies(tmp_path):
+    """A RUNNING child in a KILL_ON_JOB_CLOSE Job dies with the process that owns the Job.
+
+    HARDENED AGAINST LOAD (C25f-FIX2 review L-5), proving the same thing. It flaked when
+    the parent spawned `sys.executable` -- the venv LAUNCHER, which starts the real
+    interpreter with silent breakaway -- and assigned the Job after: under load the
+    sleeper escaped the Job and held the test's stdout pipe (`TimeoutExpired`). The child
+    is now the one `StopSolverMasks.launch` makes: ONE process
+    (`interpreter_executable`), created SUSPENDED, put in the Job, and only then resumed
+    (`NtResumeProcess`, as `world_build_session._resume_suspended`). It must be RUNNING --
+    it writes its started-file -- before the parent dies, it holds none of the parent's
+    pipes (so an escape fails the assertion below instead of timing out), and the
+    time limits allow for a loaded host."""
     import psutil
 
-    pidfile = tmp_path / "child.pid"
+    pidfile, started = tmp_path / "child.pid", tmp_path / "child.started"
     parent = tmp_path / "parent.py"
+    child_code = (f"import pathlib, time; pathlib.Path({str(started)!r}).write_text('ran'); "
+                  "time.sleep(120)")
     parent.write_text(
-        "import os, pathlib, subprocess, sys\n"
-        "from tower.process_ownership import assign_to_job\n"
-        "p = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'],\n"
-        "                     stdin=subprocess.DEVNULL)\n"
+        "import ctypes, os, pathlib, subprocess, sys, time\n"
+        "from tower.process_ownership import (assign_to_job, interpreter_environment,\n"
+        "                                     interpreter_executable)\n"
+        f"p = subprocess.Popen([interpreter_executable(), '-c', {child_code!r}],\n"
+        "                     env=interpreter_environment(), stdin=subprocess.DEVNULL,\n"
+        "                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,\n"
+        f"                     creationflags={B._CREATE_SUSPENDED})\n"
         "job = assign_to_job(p)\n"
         "if job is None: p.kill(); sys.exit(3)\n"
-        f"pathlib.Path({str(pidfile)!r}).write_text(str(p.pid))\n"
+        "import psutil\n"
+        f"pathlib.Path({str(pidfile)!r}).write_text(\n"
+        "    f'{p.pid} {psutil.Process(p.pid).create_time()!r}')\n"
+        "ntdll = ctypes.WinDLL('ntdll')\n"
+        "ntdll.NtResumeProcess.argtypes = [ctypes.c_void_p]\n"
+        "ntdll.NtResumeProcess.restype = ctypes.c_long\n"
+        "if ntdll.NtResumeProcess(ctypes.c_void_p(int(p._handle))) != 0: p.kill(); sys.exit(4)\n"
+        "deadline = time.monotonic() + 90\n"
+        f"while not pathlib.Path({str(started)!r}).exists():\n"
+        "    if p.poll() is not None or time.monotonic() > deadline: sys.exit(5)\n"
+        "    time.sleep(0.05)\n"
         "os._exit(0)\n", encoding="utf-8")
-    completed = subprocess.run([sys.executable, str(parent)], timeout=20,
+    completed = subprocess.run([sys.executable, str(parent)], timeout=150,
                                check=False, capture_output=True)
     assert completed.returncode == 0, completed.stderr.decode(errors="replace")
-    pid = int(pidfile.read_text())
-    deadline = time.monotonic() + 10
-    while psutil.pid_exists(pid) and time.monotonic() < deadline:
+    pid, created = pidfile.read_text().split()
+    assert started.read_text() == "ran", "the child never ran: nothing proven for a running child"
+
+    def child_alive() -> bool:
+        # THAT process, not a later one the OS gave its pid to (also a load flake).
+        try:
+            return psutil.Process(int(pid)).create_time() == float(created)
+        except psutil.Error:
+            return False
+
+    deadline = time.monotonic() + 30
+    while child_alive() and time.monotonic() < deadline:
         time.sleep(0.05)
-    assert not psutil.pid_exists(pid), "Job close left a mask child alive"
+    assert not child_alive(), "Job close left a mask child alive"
 
 
 def test_wait_exception_kills_child(tmp_path, monkeypatch):
@@ -1017,6 +1436,33 @@ def test_stale_stages_are_swept_only_when_their_writer_is_gone(tmp_path, caplog)
     assert not (global_solve.workspace_for(store, "w", "none").root).exists()
     assert any("swept 1 stale Stop mask stage(s)" in r.getMessage() for r in caplog.records)
     assert B.sweep_stale_stop_mask_stages(store, "w") == []
+
+
+def test_a_writer_pid_that_cannot_be_checked_is_treated_as_alive(tmp_path, monkeypatch):
+    """C25f-FIX2 review L-8 (mutant V9): `_pid_alive` follows
+    `solve_masks._pid_alive`'s rule, UNKNOWN IS ALIVE. When psutil cannot answer,
+    the stage is KEPT -- a leak at worst -- and never swept from under a writer
+    that may still be alive."""
+    import psutil
+
+    from tower.world_builder.store import SESSION_FILENAME
+
+    store = WorldStore(tmp_path)
+    folder = store.world_dir("w") / "sessions" / "s"
+    folder.mkdir(parents=True)
+    (folder / SESSION_FILENAME).write_text("{}", encoding="utf-8")
+    pid = _dead_pid()
+    stage = _leftover_stage(store, "w", "s", pid)
+
+    def cannot_tell(_pid):
+        raise psutil.AccessDenied(_pid)
+
+    monkeypatch.setattr(psutil, "pid_exists", cannot_tell)
+    assert B._pid_alive(pid) is True
+    assert B.sweep_stale_stop_mask_stages(store, "w") == []
+    assert stage.exists() and M.writer_pids(stage) == [pid]
+    monkeypatch.undo()
+    assert B.sweep_stale_stop_mask_stages(store, "w") == ["s"], "the dead writer's, once known"
 
 
 def test_the_next_builder_start_sweeps_a_dead_builders_stage(tmp_path, monkeypatch):
@@ -1246,6 +1692,35 @@ def test_an_exit_0_without_a_complete_result_promotes_nothing(tmp_path, caplog):
     assert any("without a complete result" in r.getMessage() for r in caplog.records)
 
 
+@pytest.mark.parametrize("camera", ["missing", "unreadable"])
+def test_no_live_camera_at_promotion_promotes_nothing_unverified(tmp_path, caplog, camera):
+    """C25f-FIX2 review L-6 (mutant V7): a complete, VALID stage from an exit 0,
+    but the parent cannot read the live solver camera when it promotes. With no
+    expected shape nothing can be verified (manager 154 (a)), so NOTHING is
+    promoted: every candidate is quarantined and recorded, and the final solve
+    computes it."""
+    ws = _live(tmp_path)
+    ws.images_dir.mkdir(parents=True)
+    (ws.images_dir / "a.jpg").write_bytes(b"pixels")
+    stage = _write_stage(ws, {"a.jpg": hashlib.sha1(b"pixels").hexdigest()})
+    candidate = next((stage / "transients").glob("*.npz")).name
+    if camera == "missing":
+        ws.camera_path.unlink()
+    else:
+        ws.camera_path.write_text("{", encoding="utf-8")
+    child = B.StopSolverMasks(solver(tmp_path))
+    child._child, child._started = Process(rc=0), time.monotonic()
+    with caplog.at_level(logging.INFO, logger=LOGGER):
+        assert child.join(should_stop=lambda: False)
+    assert not list((ws.root / "transients").glob("*.npz")), "promoted without verification"
+    (record,) = _promotion_records(ws)
+    assert record == {"why": "exited 0", "state": "complete", "verified": 0, "promoted": [],
+                      "quarantined": [candidate], "error": None}
+    assert not stage.parent.exists()
+    assert any("1 staged files did not verify or were incomplete, and were quarantined, never "
+               "promoted" in r.getMessage() for r in caplog.records)
+
+
 def _decoded_cache(cache: Path) -> dict:
     out = {}
     for path in sorted(cache.glob("*.npz")):
@@ -1344,6 +1819,101 @@ def test_no_camera_at_stop_is_a_clean_exit_that_promotes_nothing(tmp_path, monke
             "0 cache hits in the child; 0 of 0 images still match at the final solve") in messages
     assert not (_live(tmp_path).root / M.STAGE_PARENT_DIRNAME).exists()
     assert not (_live(tmp_path).root / "transients").exists()
+
+
+# -- the child's progress beat (L-2, the child's half) --------------------------
+
+
+class _CheckingDetector(SM.T.ComponentBackend):
+    """Like the real backends: `should_stop` is checked before every image, and the
+    answer is honoured. `gdsam` marks a rectangle, `oneformer` nothing."""
+
+    answers = []
+
+    def __init__(self, component):
+        self.component = component
+
+    def probe(self):
+        return None
+
+    def run(self, items, params, emit, should_stop=None):
+        for i, rgb, _unobserved in items:
+            answer = should_stop() if should_stop is not None else None
+            _CheckingDetector.answers.append(answer)
+            if answer:
+                return {"stopped": True}
+            hand = np.zeros(rgb.shape[:2], bool)
+            if self.component == SM.T.COMPONENT_GDSAM:
+                hand[4:20, 8:30] = True
+            emit(i, hand, np.zeros(rgb.shape[:2], bool), 0.001)
+        return {"frames": len(items)}
+
+
+def test_the_child_beats_per_image_and_per_mask_and_computes_the_same_masks(images, monkeypatch,
+                                                                            tmp_path):
+    """The child counts every image each model checks in (`should_stop`) and
+    every mask it emits, into `stop_masks/s/progress`, which the join watches.
+    The backend's `should_stop` always answers "carry on" (`ensure_solver_masks`
+    passes none), so the masks, keys and PNGs are exactly those of the same
+    detector run WITHOUT the beat; and the beat file is swept with the stage."""
+    root, _store, world, session, ws = images
+    twin = global_solve.SolveWorkspace(tmp_path / "twin")
+    shutil.copytree(ws.root, twin.root)              # the same images, no beat
+    monkeypatch.setattr(SM.T, "BACKEND_FACTORY", _CheckingDetector)
+    monkeypatch.setattr(M, "PROGRESS_BEAT_S", 0.0)   # write every beat
+    monkeypatch.setattr(_CheckingDetector, "answers", [])
+    assert M.prefill(root, world, session) == 0
+    stage = ws.root / M.STAGE_PARENT_DIRNAME / M.STAGE_DIRNAME
+    # 1 at the stage's creation; 2 images x 2 models checked in; 2 x 2 masks emitted.
+    assert (stage / M.PROGRESS_FILENAME).read_text(encoding="ascii") == str(1 + 4 + 4)
+    assert _CheckingDetector.answers == [False] * 4, "the backend was told to stop"
+    _CheckingDetector.answers.clear()
+    names = ["00000000.jpg", "00000001.jpg"]
+    direct = SM.ensure_solver_masks(twin, names, shape=(48, 64),
+                                    backend_factory=_CheckingDetector)
+    assert direct.computed == 2 and _CheckingDetector.answers == [None] * 4
+    assert _decoded_cache(stage / "transients") == _decoded_cache(twin.root / "transients")
+    assert _files(stage / "masks") == _files(twin.root / "masks")
+    for png in (stage / "masks").glob("*.png"):
+        assert png.read_bytes() == (twin.root / "masks" / png.name).read_bytes()
+    assert _join(images, 0)
+    assert not (ws.root / M.STAGE_PARENT_DIRNAME).exists(), "the beat is swept with the stage"
+
+
+def test_the_beat_is_rate_limited_and_never_fails_the_pass(tmp_path, monkeypatch):
+    """At most one write per PROGRESS_BEAT_S (1 s): a beat costs one small write
+    a second, not one per image. A beat that cannot be written is skipped."""
+    clock = Clock()
+    monkeypatch.setattr(M, "time", clock)
+    assert M.PROGRESS_BEAT_S == 1.0
+    path = tmp_path / "progress"
+    beat = M._ProgressBeat(path)
+    beat()
+    assert path.read_text() == "1"
+    clock.sleep(0.5)
+    beat()
+    assert path.read_text() == "1" and beat.count == 2
+    clock.sleep(0.5)
+    beat()
+    assert path.read_text() == "3"
+    lost = M._ProgressBeat(tmp_path / "no such directory" / "progress")
+    lost()
+    assert lost.count == 1 and not (tmp_path / "no such directory").exists()
+
+
+def test_the_beating_backend_honours_a_callers_stop(tmp_path, monkeypatch):
+    """The wrapper answers exactly what the caller's `should_stop` says -- here
+    "stop" at the second image -- and still beats for each check."""
+    monkeypatch.setattr(_CheckingDetector, "answers", [])
+    beat = M._ProgressBeat(tmp_path / "progress")
+    wrapped = M._beating(_CheckingDetector, beat)(SM.T.COMPONENT_GDSAM)
+    assert wrapped.component == SM.T.COMPONENT_GDSAM and wrapped.probe() is None
+    calls, emitted = [], []
+    items = [(i, np.zeros((4, 8, 3), np.uint8), None) for i in range(3)]
+    out = wrapped.run(items, None, lambda *a, **k: emitted.append(a[0]),
+                      should_stop=lambda: calls.append(1) or len(calls) >= 2)
+    assert out == {"stopped": True} and emitted == [0] and beat.count == 3
+    assert _CheckingDetector.answers == [False, True]
 
 
 # -- the child's 2-thread cap: an identity assertion (manager 150) ------------
