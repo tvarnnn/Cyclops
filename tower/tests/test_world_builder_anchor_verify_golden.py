@@ -3,7 +3,12 @@ and the publish step's outputs -- `solution.json`, `components.json`, `consensus
 `apply_gate`'s own result, with and without the consensus's hooks -- are what the product wrote BEFORE the anchor
 verification existed, recorded from the d649f9f working tree by RUN/experiments/P4-PROD/golden_record.py
 (`wb_anchor_verify_fixtures.golden_outputs`). The only exclusions are the comparison's ALWAYS set (timestamps,
-timings, paths)."""
+timings, paths).
+
+THE RETRIEVAL ADMISSION'S ON PATH (C23-IMPL-F; `wb_retrieval_admission_on`): with `TOWER_WORLD_RETRIEVAL_ADMISSION`
+on, each publish scenario is the golden's plus exactly one additive key, `retrieval_admission`, in its record and in
+`solution.json`'s gate -- `ADMISSION_ON`, value for value; `apply_gate`'s own outputs are the golden's. Unset or off,
+the golden as it was."""
 
 from __future__ import annotations
 
@@ -15,9 +20,27 @@ import numpy as np
 import pytest
 
 from tests import wb_anchor_verify_fixtures as F
+from tests import wb_retrieval_admission_on as RA_ON
 from tower.world_builder import coherence_gate as CG
 
 GOLDEN = Path(__file__).parent / "golden" / "world_builder_gate_d649f9f.json"
+# The ON golden's one addition per publish scenario: no gate group is a candidate in any of them -- the triangle's
+# island is attached, the other-level island is refused on scale, and the consensus's D is withheld.
+ADMISSION_ON = {
+    "single_triangle": RA_ON.not_run(room_before=50),
+    "single_link_other_level": RA_ON.not_run(room_before=30, scale_refused=[
+        {"first_keyframe": "s1:00000030", "keyframes": 20, "ratios": 20, "scale_factor": 2.0}]),
+    "consensus_withhold": RA_ON.not_run(room_before=70, withheld_groups=1),
+}
+
+
+def _expected(golden: dict) -> dict:
+    """The golden's outputs as the switches in the environment write them: the OFF golden, and with the retrieval
+    admission on, the OFF golden plus `ADMISSION_ON`."""
+    expected = golden["outputs"]
+    if not RA_ON.on():
+        return expected
+    return {k: RA_ON.with_record(v, ADMISSION_ON[k]) if k in ADMISSION_ON else v for k, v in expected.items()}
 
 
 def _round_floats(obj, nd=9):
@@ -38,7 +61,7 @@ def test_golden_with_the_switch_unset_or_off_every_output_is_todays(tmp_path, mo
         monkeypatch.setenv("TOWER_WORLD_ANCHOR_VERIFY", value)
     golden = json.loads(GOLDEN.read_text(encoding="utf-8"))
     now = json.loads(json.dumps(F.golden_outputs(tmp_path), sort_keys=True))
-    expected = golden["outputs"]
+    expected = _expected(golden)
     assert sorted(now) == sorted(expected)
     for key in expected:
         if (golden["cv2"], golden["numpy"]) == (cv2.__version__, np.__version__):

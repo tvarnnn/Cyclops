@@ -8,6 +8,9 @@ Pinned here:
   THE GOLDEN: with the switch unset, blank, `off`, or a value it reads as off, the gate's, the publish step's, the
       anchor verification's and the camera path's outputs are what the product wrote BEFORE P5-PQ (6db75f3,
       `golden/world_builder_pose_quarantine_off.json`, recorded by RUN/experiments/P5-PQ/golden_record.py).
+      With `TOWER_WORLD_RETRIEVAL_ADMISSION` on (C23-IMPL-F; `wb_retrieval_admission_on`), each publish output is
+      the golden's plus exactly one additive key, `retrieval_admission`, in its record and in `solution.json`'s
+      gate (`ADMISSION_ON`, value for value); the golden and each-part tests compare against that.
   (a') the viewer's camera list (RULE.md (a') v4, manager 102): component 0 only (no fallback: empty if none),
       published and supported poses only, none beyond 10 x their median radius -- the surface gate without its 5 %
       stand-down and its p95 detachment term, its 8-pose floor kept. Walk 4's six listed impossible poses (2031, 2047,
@@ -36,6 +39,7 @@ import pytest
 
 from tests import wb_anchor_verify_fixtures as F
 from tests import wb_pose_quarantine_fixtures as Q
+from tests import wb_retrieval_admission_on as RA_ON
 from tower.config import WORLD_POSE_QUARANTINE_ENV, world_pose_quarantine_setting
 from tower.world_builder import anchor_verify as AV
 from tower.world_builder import coherence_gate as CG
@@ -44,6 +48,21 @@ from tower.world_builder.surface_render import viewable_poses
 
 GOLDEN = Path(__file__).parent / "golden" / "world_builder_pose_quarantine_off.json"
 ENV = WORLD_POSE_QUARANTINE_ENV
+# The retrieval admission's ON golden: its one addition per publish output with this file's switch off. No gate group
+# is a candidate: the riders are riders, and the bed stretch is in the room.
+ADMISSION_ON = {
+    "publish_riders": RA_ON.not_run(room_before=40),
+    "publish_bed_av_on": RA_ON.not_run(room_before=96),
+    "publish_bed_av_on_unconfirmed": RA_ON.not_run(room_before=96),
+}
+
+
+def _expected(outputs: dict, key: str):
+    """The golden output `key` as the retrieval admission's switch in the environment writes it (unset or off: the
+    golden's; on: the golden's plus `ADMISSION_ON[key]`)."""
+    if RA_ON.on() and key in ADMISSION_ON:
+        return RA_ON.with_record(outputs[key], ADMISSION_ON[key])
+    return outputs[key]
 
 
 def _round_floats(obj, nd=9):
@@ -135,7 +154,7 @@ def test_golden_with_the_switch_unset_or_off_every_output_is_todays(tmp_path, mo
     monkeypatch.delenv("TOWER_WORLD_ANCHOR_VERIFY", raising=False)
     golden = json.loads(GOLDEN.read_text(encoding="utf-8"))
     now = json.loads(json.dumps(Q.golden_outputs(tmp_path), sort_keys=True, default=str))
-    expected = golden["outputs"]
+    expected = {key: _expected(golden["outputs"], key) for key in golden["outputs"]}
     assert sorted(now) == sorted(expected)
     for key in expected:
         if (golden["cv2"], golden["numpy"]) == (cv2.__version__, np.__version__):
@@ -699,7 +718,7 @@ def test_each_part_alone_changes_only_its_own_output(tmp_path, monkeypatch, part
     exact = (golden["cv2"], golden["numpy"]) == (cv2.__version__, np.__version__)
     now = json.loads(json.dumps(_outputs(tmp_path), sort_keys=True, default=str))
     for key, value in now.items():
-        want = golden["outputs"][key]
+        want = _expected(golden["outputs"], key)
         got = _without(value, AUDIT_KEYS[part])
         same = got == want if exact else _round_floats(got) == _round_floats(want)
         assert same == (key != GOVERNS[part]), (part, key)

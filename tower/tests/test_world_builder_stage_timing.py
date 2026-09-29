@@ -116,7 +116,9 @@ def test_records_are_bounded_independent_of_input_count(tmp_path, monkeypatch):
                 "regate": 1, "surface": 1, "appearance": 1, "areas": 1}
     assert timing.FINISH_LIMIT == 3
     assert timing.LIMITS == expected
-    assert sum(expected.values()) * timing.FINISH_LIMIT == 96  # the doc's and handoff's bound (was 90)
+    # The bound (was 90). tower/docs/world-builder-stage-timing.md and the coherence handoff still state 90, without
+    # `admission`: OPEN for the lead (files C23-IMPL did not touch).
+    assert sum(expected.values()) * timing.FINISH_LIMIT == 96
     for stage, limit in expected.items():
         store.session_dir("w", stage).mkdir(parents=True)
         for _ in range(20):

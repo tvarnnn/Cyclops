@@ -21,6 +21,12 @@ exactly these, which a reader must exclude when comparing two finishes:
                     solve.matching and solve.matching_detail ("matched" -> "frozen");
                     gate.depth.predictions (made -> cached); and, only when masks had to
                     be computed, transients.cache_hits / computed / device / gpu_peak_mb
+  WITH TOWER_WORLD_RETRIEVAL_ADMISSION ON (C23-IMPL-F), in both comparisons:
+                    gate.retrieval_admission.seconds.* (the admission's own stage timings)
+
+With the retrieval admission on, `gate.retrieval_admission` is pinned too (`_assert_admission`):
+the island is a candidate, and retrieval needs the solve database's SIFT, which the recording
+fake does not write, so the admission fails closed and the room is published as it was gated.
 """
 
 from __future__ import annotations
@@ -37,6 +43,7 @@ import cv2
 import numpy as np
 import pytest
 
+from tests import wb_retrieval_admission_on as RA_ON
 from tests.test_world_builder_solve_masks import (  # noqa: F401 -- fixtures and helpers
     HEIGHT,
     WIDTH,
@@ -73,6 +80,25 @@ MASKS_COMPUTED = (
     ("solution", "transients", "cache_hits"), ("solution", "transients", "computed"),
     ("solution", "transients", "device"), ("solution", "transients", "gpu_peak_mb"),
 )
+# Only with TOWER_WORLD_RETRIEVAL_ADMISSION on: the admission's own stage timings (a duration, as gate.seconds).
+ADMISSION_EVERY_RUN = (("solution", "gate", "retrieval_admission", "seconds"),)
+
+
+def _admission_every_run() -> tuple:
+    return ADMISSION_EVERY_RUN if RA_ON.on() else ()
+
+
+def _assert_admission(published):
+    """The retrieval admission's record on this walk: none with the switch unset or off; on, the ON path -- the
+    island (N_B keyframes outside a room of N_A) is its candidate, and retrieval fails closed on the recording fake's
+    database, which has no descriptors table. Its seconds aside, the record is pinned value for value."""
+    gate = published["solution"]["gate"]
+    if not RA_ON.on():
+        assert RA_ON.KEY not in gate
+        return
+    got = {k: v for k, v in gate[RA_ON.KEY].items() if k != "seconds"}
+    assert got == RA_ON.record(RA_ON.STATE_FAILED, room_before=N_A, detail=RA_ON.NO_DESCRIPTORS)
+    assert set(gate[RA_ON.KEY]["seconds"]) == {"candidates", "db_links", "total"}
 
 
 def _rz(deg):
@@ -254,12 +280,15 @@ def test_two_refinishes_with_one_seed_publish_the_same_world(walk, engines, colm
     # the gate did decide something: a room and a piece outside it
     assert [e["shown_as"] for e in second["components"]["components"]] == ["room", "area"]
     assert second["solution"]["transients"]["cache_hits"] == N_KF
+    for published in (first, second, third):
+        _assert_admission(published)
     # warm against warm: equal but for the timestamps, durations and per-solve paths
-    assert _without(second, EVERY_RUN) == _without(third, EVERY_RUN)
+    every_run = EVERY_RUN + _admission_every_run()
+    assert _without(second, every_run) == _without(third, every_run)
     assert second["arrays"] == third["arrays"]
     # the first re-finish of the world against a later one: the same world
     assert first["solution"]["transients"]["computed"] == N_KF, "this walk's masks were not cached"
-    cold = COLD_AGAINST_WARM + MASKS_COMPUTED
+    cold = COLD_AGAINST_WARM + MASKS_COMPUTED + _admission_every_run()
     assert _without(first, cold) == _without(second, cold)
     assert first["arrays"] == second["arrays"]
     # and the exclusions are real differences, not dead entries
@@ -281,8 +310,11 @@ def test_nothing_else_differs(walk, engines, colmap, no_attempt_ledger):
         else:
             yield prefix, doc
 
-    lb = dict(leaves(_without(b, EVERY_RUN)))
-    lc = dict(leaves(_without(c, EVERY_RUN)))
+    _assert_admission(b)
+    _assert_admission(c)
+    every_run = EVERY_RUN + _admission_every_run()
+    lb = dict(leaves(_without(b, every_run)))
+    lc = dict(leaves(_without(c, every_run)))
     assert lb.keys() == lc.keys()
     assert [k for k in lb if lb[k] != lc[k]] == []
     assert len(lb) > 100, "the comparison covers the whole record"

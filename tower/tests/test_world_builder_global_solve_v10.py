@@ -25,6 +25,7 @@ import cv2
 import numpy as np
 import pytest
 
+from tests import wb_retrieval_admission_on as RA_ON
 from tests.test_world_builder_reproducible_finish import N_A, engines, walk  # noqa: F401
 from tests.test_world_builder_solve_masks import (  # noqa: F401 -- fixtures and helpers
     HEIGHT,
@@ -158,7 +159,16 @@ def test_without_a_kill_the_full_consensus_is_published_over_draw_0(walk, seeds,
     assert draw0["predictions"]["predicted"] > 0 and draw0["predictions"]["cached"] == 0
     if published["gate"]["consensus"]["chosen"]["draw"] == 0:
         assert published["gate"]["depth"]["predictions"] == draw0["predictions"]
-        assert published["gate"]["seconds"] == draw0["gate_s"]
+        admission = published["gate"].get(RA_ON.KEY)
+        if RA_ON.on():
+            # THE RETRIEVAL ADMISSION'S ON PATH (C23-IMPL-F): it runs after the consensus on the chosen draw, fails
+            # closed here (the recording fake's database has no descriptors table), and the published gate's
+            # seconds are draw 0's plus the admission's own (`retrieval_admission._carried`)
+            assert admission["state"] == RA_ON.STATE_FAILED and admission["detail"] == RA_ON.NO_DESCRIPTORS
+            assert published["gate"]["seconds"] == round(draw0["gate_s"] + admission["seconds"]["total"], 3)
+        else:
+            assert admission is None
+            assert published["gate"]["seconds"] == draw0["gate_s"]
 
 
 @pytest.mark.parametrize("stop_at", ["after-draw-0", "during-draw-1-gate", "after-draw-1"])
