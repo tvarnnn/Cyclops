@@ -311,8 +311,9 @@ final class DeadEndsUITests: XCTestCase {
         app.descendants(matching: .any).matching(NSPredicate(format: "label CONTAINS %@", text)).firstMatch
     }
 
-    /// F09: a refresh that fails keeps the last list, says it may be out of
-    /// date, and offers Try again and Connections.
+    /// F09: a refresh that cannot reach the Tower keeps the last list, says
+    /// it may be out of date, and offers Try again and Connections. The mock
+    /// is stopped, not answering 503: a Tower that answers was reached (M-1).
     func testSavedWorldsStayListedWhenARefreshFails() throws {
         mock.setRoute(Self.worldsList, status: 200, body: Self.worldsListing)
         launch(tower: mockAuthority)
@@ -322,10 +323,11 @@ final class DeadEndsUITests: XCTestCase {
         XCTAssertTrue(failed.waitForExistence(timeout: 15), "the list arrived")
         XCTAssertTrue(tap(app.buttons["Close"], until: !app.navigationBars["Saved worlds"].exists), "the sheet closed")
 
-        mock.setRoute(Self.worldsList, status: 503, body: "down")
+        mock.stop()
         openSavedWorlds()
         let problem = element("worlds-problem")
         XCTAssertTrue(problem.waitForExistence(timeout: 15), "the refresh's failure is worded")
+        XCTAssertTrue(problem.label.hasPrefix("Could not reach the Tower"), problem.label)
         XCTAssertTrue(problem.label.contains("It may be out of date"), problem.label)
         XCTAssertTrue(failed.exists, "the last list is still there")
         let retry = element("worlds-retry")

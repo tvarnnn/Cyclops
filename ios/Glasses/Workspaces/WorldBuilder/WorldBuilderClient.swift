@@ -291,7 +291,11 @@ nonisolated enum WorldListProblem: Equatable {
     case noWorldRoot
     /// The Tower answered, in a form this build cannot read.
     case unreadable
-    /// The Tower could not be reached, or answered with an error status.
+    /// The Tower answered with an error status other than 404: it was
+    /// reached, and failed to list. Asking again may help; Connections
+    /// cannot (U0.8 M-1).
+    case towerError(Int)
+    /// The Tower could not be reached.
     case unreachable(String)
 }
 
@@ -1163,6 +1167,8 @@ final class WorldBuilderViewModel: ObservableObject {
                 worldListProblem = .noWorldRoot
             case .undecodable:
                 worldListProblem = .unreadable
+            case .towerError(let status):
+                worldListProblem = .towerError(status)
             case .transport(let detail):
                 worldListProblem = .unreachable(detail)
             }

@@ -3140,11 +3140,41 @@ final class WorldListLoadLifecycleTests: XCTestCase {
         await viewModel.loadWorlds()
 
         XCTAssertEqual(viewModel.worlds.map(\.worldID), ["w-new"], "a failed refresh blanked the list")
-        XCTAssertEqual(viewModel.worldListProblem, .unreachable("the Tower answered HTTP 503"))
+        XCTAssertEqual(viewModel.worldListProblem, .towerError(503))
         XCTAssertTrue(viewModel.worldListFailure?.contains("It may be out of date") == true,
                       viewModel.worldListFailure ?? "nil")
+        XCTAssertEqual(WorldListText.retryTitle(.towerError(503)), "Try again")
         XCTAssertEqual(WorldListText.retryTitle(.unreachable("x")), "Try again")
         XCTAssertTrue(WorldListText.offersConnections(.unreachable("x")))
+    }
+
+    /// U0.8 M-1: a Tower that answered with an error was reached. It is not
+    /// "Could not reach the Tower", and Connections cannot help with it.
+    func testATowerErrorSaysTheTowerAnsweredAndOffersNoConnections() async {
+        StubbedGeometryProtocol.reset(routes: [Self.worldsPath: (500, #"{"detail":"x"}"#)])
+        let viewModel = makeViewModel()
+        await viewModel.loadWorlds()
+
+        XCTAssertEqual(viewModel.worldListProblem, .towerError(500))
+        let sentence = viewModel.worldListFailure ?? ""
+        XCTAssertTrue(sentence.hasPrefix("The Tower answered but could not list its saved worlds (HTTP 500)"), sentence)
+        XCTAssertFalse(sentence.contains("Could not reach"), sentence)
+        XCTAssertEqual(WorldListText.retryTitle(.towerError(500)), "Try again")
+        XCTAssertFalse(WorldListText.offersConnections(.towerError(500)))
+    }
+
+    /// U0.8 M-1: only a request that reached nothing is "Could not reach".
+    func testAnUnreachableTowerSaysSoAndOffersConnections() async {
+        StubbedGeometryProtocol.reset(routes: [:])
+        let viewModel = makeViewModel()
+        await viewModel.loadWorlds()
+
+        guard case .unreachable = viewModel.worldListProblem else {
+            return XCTFail("a transport failure: \(String(describing: viewModel.worldListProblem))")
+        }
+        let sentence = viewModel.worldListFailure ?? ""
+        XCTAssertTrue(sentence.hasPrefix("Could not reach the Tower"), sentence)
+        XCTAssertTrue(WorldListText.offersConnections(viewModel.worldListProblem!))
     }
 
     func testNoWorldRootClearsTheListAndOffersCheckAgain() async {
@@ -3169,7 +3199,7 @@ final class WorldListLoadLifecycleTests: XCTestCase {
         let viewModel = makeViewModel()
         await viewModel.loadWorlds()
 
-        XCTAssertEqual(viewModel.worldListProblem, .unreachable("the Tower answered HTTP 500"))
+        XCTAssertEqual(viewModel.worldListProblem, .towerError(500))
         XCTAssertNotEqual(viewModel.worldListProblem, .unreadable)
         XCTAssertNil(WorldListText.retryTitle(.unreadable), "an unreadable list is fixed by an update, not a retry")
     }

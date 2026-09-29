@@ -678,6 +678,10 @@ enum WorldListText {
             return hasList
                 ? "The Tower's latest list could not be read, so this is the list from \(when). It may be out of date."
                 : "The Tower's list of saved worlds is in a form this version of the app cannot read. Updating the app or the Tower fixes this."
+        case .towerError(let status):
+            return hasList
+                ? "The Tower answered but could not list its saved worlds (HTTP \(status)), so this is the list from \(when). It may be out of date."
+                : "The Tower answered but could not list its saved worlds (HTTP \(status)). Try again; if it keeps failing, the Tower's log says why."
         case .unreachable(let detail):
             return hasList
                 ? "Could not reach the Tower, so this is the list from \(when). It may be out of date, and opening a world still needs the Tower."
@@ -691,7 +695,7 @@ enum WorldListText {
         switch problem {
         case .noWorldRoot: return "Check again"
         case .unreadable: return nil
-        case .unreachable: return "Try again"
+        case .towerError, .unreachable: return "Try again"
         }
     }
 
