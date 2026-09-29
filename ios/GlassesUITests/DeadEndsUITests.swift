@@ -14,6 +14,7 @@
 //  a pass: the `TowerSmokeUITests` rule.
 //
 
+import AVFoundation
 import XCTest
 
 final class DeadEndsUITests: XCTestCase {
@@ -177,11 +178,11 @@ final class DeadEndsUITests: XCTestCase {
 
     /// Mock glasses and the mock Tower online (D1 leaves no "Start anyway"),
     /// World Builder open, Start capture tapped.
-    private func startCaptureWithTheTowerOnline(env: [String: String] = [:]) throws {
+    private func startCaptureWithTheTowerOnline(args: [String] = [], env: [String: String] = [:]) throws {
         mock.setRoute(Self.sessionStart, status: 200, body: Self.session(state: "active"))
         mock.setRoute(Self.sessionStop, status: 200, body: Self.session(state: "stopped"))
         scriptWorldBuilder(ackSubscribes: true)
-        launch(tower: mockAuthority, mockGlasses: true, env: env)
+        launch(tower: mockAuthority, mockGlasses: true, args: args, env: env)
         try requireMockGlasses()
         open(cartridge: "World Builder")
         let start = app.buttons["Start capture"]
@@ -207,8 +208,11 @@ final class DeadEndsUITests: XCTestCase {
         XCTAssertFalse(startWords.exists, "the viewfinder says Start while the camera is on")
         let starting = labelled("Starting the glasses camera…").exists
         let waiting = labelled("Camera on. Waiting for the first frame from the glasses.").exists
-        print("U08|F05|viewfinder: starting=\(starting) waitingForFirstFrame=\(waiting)")
-        XCTAssertTrue(starting || waiting, "the viewfinder says the camera is starting or waiting for a frame")
+        // The mock streams a feed, so a frame may already be up.
+        let live = labelled("Live frame from the glasses camera").exists
+        print("U08|F05|viewfinder: starting=\(starting) waitingForFirstFrame=\(waiting) liveFrame=\(live)")
+        XCTAssertTrue(starting || waiting || live,
+                      "the viewfinder says the camera is starting or waiting for a frame, or shows one")
         stopCaptureIfRunning()
     }
 
@@ -449,33 +453,67 @@ final class DeadEndsUITests: XCTestCase {
 
     // MARK: Step 8 -- leaving World Builder mid-capture (D3)
 
-    /// A button of the confirmation dialog in front: an action sheet on a
-    /// phone, an alert where the system draws it as one.
-    private func dialogButton(_ title: String) -> XCUIElement {
-        let inSheet = app.sheets.buttons[title]
-        if inSheet.exists { return inSheet }
-        return app.alerts.buttons[title]
+    /// The leave prompt: an alert, which always draws both of its choices.
+    private var leavePrompt: XCUIElement { app.alerts["Leave and stop the capture?"] }
+
+    /// The prompt is up with both choices on screen and tappable (D3).
+    private func assertBothLeaveChoicesAreShown(_ moment: String) {
+        XCTAssertTrue(leavePrompt.waitForExistence(timeout: 10), "the alert asks first \(moment)")
+        for choice in ["Keep capturing", "Stop capture"] {
+            let button = leavePrompt.buttons[choice]
+            XCTAssertTrue(button.exists, "\(choice) is in the alert \(moment)")
+            XCTAssertTrue(button.isHittable, "\(choice) can be tapped \(moment)")
+        }
+    }
+
+    /// Taps one choice of the leave prompt until the prompt closes, and logs
+    /// how many taps that took. With frames streaming, one run lost the first
+    /// tap on "Stop capture": the touch reached the app and the alert did
+    /// not act. The count says whether that recurs; a screenshot is kept.
+    private func choose(_ choice: String) {
+        let shot = XCTAttachment(screenshot: app.screenshot())
+        shot.name = "before \(choice)"
+        shot.lifetime = .keepAlways
+        add(shot)
+        let button = leavePrompt.buttons[choice]
+        var taps = 0
+        for _ in 0..<3 where leavePrompt.exists {
+            if button.exists, button.isHittable {
+                button.tap()
+                taps += 1
+            }
+            _ = waitFor(timeout: 4) { !self.leavePrompt.exists }
+        }
+        print("U08|F15|\(choice): \(taps) tap(s) to close the alert")
+        XCTAssertFalse(leavePrompt.exists, "\(choice) did not close the alert after \(taps) tap(s)")
+    }
+
+    /// The app's own glasses alert, which a healthy mock capture never
+    /// raises. It was DAT's "Critical error, the stream should end" while the
+    /// mock glasses had no camera feed (the harness now gives them one). If
+    /// it is up, its sentence is logged and attached, it is dismissed by its
+    /// own OK -- never tapped past -- and the test fails.
+    private func failIfTheGlassesAlertIsUp(_ moment: String, wait: TimeInterval = 0) {
+        let alert = app.alerts["Something went wrong"]
+        guard wait > 0 ? alert.waitForExistence(timeout: wait) : alert.exists else { return }
+        let texts = alert.staticTexts.allElementsBoundByIndex.map(\.label)
+        let attachment = XCTAttachment(string: "\(moment)\n\(texts.joined(separator: "\n"))\n\n\(alert.debugDescription)")
+        attachment.name = "glasses alert"
+        attachment.lifetime = .keepAlways
+        add(attachment)
+        print("U08|F15|glasses alert \(moment): \(texts)")
+        let ok = alert.buttons["OK"]
+        if ok.exists { ok.tap() }
+        XCTFail("a glasses alert \(moment): \(texts)")
     }
 
     /// Cartridges, then the Home row, with a capture running.
     private func tapHomeInTheDrawer() {
+        failIfTheGlassesAlertIsUp("before the drawer")
         let cartridges = app.buttons["Cartridges"]
         XCTAssertTrue(cartridges.waitForExistence(timeout: 10), "the Cartridges button")
-        // Mid-capture the button can read as not hittable while it is drawn
-        // and tappable; then tap where it is drawn, and say what was in front.
         let drawerDone = app.buttons["Done"]
-        for _ in 0..<4 where !drawerDone.exists {
-            if cartridges.isHittable {
-                cartridges.tap()
-            } else {
-                let alert = app.alerts.firstMatch
-                print("U08|F15|Cartridges not hittable: frame=\(cartridges.frame) alerts=\(app.alerts.count)"
-                      + " alert=\(alert.exists ? alert.label : "-") sheets=\(app.sheets.count)")
-                cartridges.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
-            }
-            _ = waitFor(timeout: 3) { drawerDone.exists }
-        }
-        XCTAssertTrue(drawerDone.exists, "the cartridge drawer opened")
+        XCTAssertTrue(tap(cartridges, until: drawerDone.exists), "the cartridge drawer opened")
         let home = app.buttons.containing(NSPredicate(format: "label BEGINSWITH %@", "Home")).firstMatch
         XCTAssertTrue(revealInSheet(home), "the Home row")
         home.tap()
@@ -486,15 +524,13 @@ final class DeadEndsUITests: XCTestCase {
     func testLeavingMidCaptureAsksAndStopsBothStreamAndBuild() throws {
         try startCaptureWithTheTowerOnline()
         XCTAssertTrue(app.buttons["Stop capture"].waitForExistence(timeout: 15), "the capture started")
+        // A healthy mock capture raises no glasses alert.
+        failIfTheGlassesAlertIsUp("after Start capture", wait: 5)
 
         // Keep capturing: still in World Builder, still capturing.
         tapHomeInTheDrawer()
-        let title = app.staticTexts["Leave and stop the capture?"]
-        XCTAssertTrue(title.waitForExistence(timeout: 10), "the dialog asks first")
-        let keep = dialogButton("Keep capturing")
-        XCTAssertTrue(keep.exists, "Keep capturing")
-        XCTAssertTrue(dialogButton("Stop capture").exists, "Stop capture")
-        keep.tap()
+        assertBothLeaveChoicesAreShown("the first time")
+        choose("Keep capturing")
         XCTAssertTrue(waitFor(timeout: 10) { !self.app.buttons["Done"].exists }, "the drawer closed")
         XCTAssertTrue(app.navigationBars["World Builder"].exists, "still in World Builder")
         XCTAssertTrue(app.buttons["Stop capture"].exists, "still capturing")
@@ -503,8 +539,8 @@ final class DeadEndsUITests: XCTestCase {
 
         // Stop capture: Home, the camera off, the build stopped.
         tapHomeInTheDrawer()
-        XCTAssertTrue(title.waitForExistence(timeout: 10), "the dialog asks again")
-        dialogButton("Stop capture").tap()
+        assertBothLeaveChoicesAreShown("again")
+        choose("Stop capture")
         XCTAssertTrue(app.navigationBars["Glasses"].waitForExistence(timeout: 10), "Home")
         XCTAssertTrue(waitFor(timeout: 15) {
             self.mock.requestLines.contains("\(Self.sessionStop) HTTP/1.1")
@@ -519,6 +555,23 @@ final class DeadEndsUITests: XCTestCase {
                 self.mock.socketTexts.contains { $0.contains(#""stream_stop""#) }
             }, "the stream bracket was not closed")
         }
+    }
+
+    /// F15 at the largest accessibility text size: the alert still shows
+    /// both choices, and each can be tapped.
+    func testTheLeavePromptShowsBothChoicesAtTheLargestTextSize() throws {
+        try startCaptureWithTheTowerOnline(
+            args: ["-UIPreferredContentSizeCategoryName", "UICTContentSizeCategoryAccessibilityXXXL"])
+        XCTAssertTrue(app.buttons["Stop capture"].waitForExistence(timeout: 15), "the capture started")
+        failIfTheGlassesAlertIsUp("after Start capture", wait: 5)
+
+        tapHomeInTheDrawer()
+        assertBothLeaveChoicesAreShown("at the largest text size")
+        choose("Stop capture")
+        XCTAssertTrue(app.navigationBars["Glasses"].waitForExistence(timeout: 10), "Home")
+        XCTAssertTrue(waitFor(timeout: 15) {
+            self.mock.requestLines.contains("\(Self.sessionStop) HTTP/1.1")
+        }, "the Tower was asked to stop building: \(mock.requestLines)")
     }
 
     // MARK: Step 10 -- Connections after a saved address
@@ -595,13 +648,22 @@ final class DeadEndsUITests: XCTestCase {
         let app = XCUIApplication()
         app.launchArguments = ["-UITestSkipOnboarding"]
         if reset { app.launchArguments.append("-UITestResetTowerAddress") }
-        if mockGlasses { app.launchArguments.append("-UITestMockGlasses") }
+        if mockGlasses {
+            app.launchArguments.append("-UITestMockGlasses")
+            switch Self.cameraFeed {
+            case .success(let feed): app.launchEnvironment["GLASSES_UITEST_MOCK_CAMERA_FEED"] = feed.path
+            case .failure(let problem): XCTFail("the mock glasses' camera feed: \(problem.text)")
+            }
+        }
         app.launchArguments += args
         if let tower { app.launchEnvironment["GLASSES_TOWER_AUTHORITY"] = tower }
         for (name, value) in env { app.launchEnvironment[name] = value }
         // A system alert (location, notifications) would otherwise sit over
         // the app and every wait below would time out on it.
         addUIInterruptionMonitor(withDescription: "system alert") { alert in
+            // The app's own glasses alert is not a system interruption, and
+            // its "OK" must never be tapped away unexplained (U0.8 F15).
+            if alert.label == "Something went wrong" { return false }
             for title in ["Allow", "Don't Allow", "OK", "Not Now"] {
                 let button = alert.buttons[title]
                 if button.exists { button.tap(); return true }
@@ -622,6 +684,64 @@ final class DeadEndsUITests: XCTestCase {
             starts.allElementsBoundByIndex.contains { $0.exists && $0.isEnabled }
         }
         if !active { throw XCTSkip("Mock Device Kit gave no active device in this Simulator") }
+    }
+
+    // MARK: The mock glasses' camera feed
+
+    struct FeedProblem: Error { let text: String }
+
+    /// A silent HEVC clip for the mock glasses to stream, written once per run
+    /// into this runner's temporary folder and named on every mock launch.
+    /// DAT's mock streams H.265 frames from a video file; with none it fails
+    /// every stream at once with "Critical error, the stream should end",
+    /// which the app shows as a glasses alert (U0.8 F15). Four minutes at
+    /// 6 fps outlasts any capture here; each frame is a different grey.
+    private static let cameraFeed: Result<URL, FeedProblem> = {
+        do { return .success(try makeCameraFeed(seconds: 240, fps: 6)) } catch let problem as FeedProblem {
+            return .failure(problem)
+        } catch {
+            return .failure(FeedProblem(text: "\(error)"))
+        }
+    }()
+
+    private static func makeCameraFeed(seconds: Int, fps: Int32) throws -> URL {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("dead-ends-camera-feed.mov")
+        try? FileManager.default.removeItem(at: url)
+        let writer = try AVAssetWriter(outputURL: url, fileType: .mov)
+        let input = AVAssetWriterInput(mediaType: .video, outputSettings: [
+            AVVideoCodecKey: AVVideoCodecType.hevc,
+            AVVideoWidthKey: 360,
+            AVVideoHeightKey: 640,
+        ])
+        input.expectsMediaDataInRealTime = false
+        let adaptor = AVAssetWriterInputPixelBufferAdaptor(assetWriterInput: input, sourcePixelBufferAttributes: [
+            kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
+            kCVPixelBufferWidthKey as String: 360,
+            kCVPixelBufferHeightKey as String: 640,
+        ])
+        writer.add(input)
+        guard writer.startWriting() else {
+            throw FeedProblem(text: "startWriting: \(String(describing: writer.error))")
+        }
+        writer.startSession(atSourceTime: .zero)
+        for frame in 0..<(Int(fps) * seconds) {
+            while !input.isReadyForMoreMediaData { Thread.sleep(forTimeInterval: 0.001) }
+            var buffer: CVPixelBuffer?
+            if let pool = adaptor.pixelBufferPool { CVPixelBufferPoolCreatePixelBuffer(nil, pool, &buffer) }
+            guard let pixels = buffer else { throw FeedProblem(text: "no pixel buffer for frame \(frame)") }
+            CVPixelBufferLockBaseAddress(pixels, [])
+            memset(CVPixelBufferGetBaseAddress(pixels), Int32(frame * 3 % 256), CVPixelBufferGetDataSize(pixels))
+            CVPixelBufferUnlockBaseAddress(pixels, [])
+            adaptor.append(pixels, withPresentationTime: CMTime(value: CMTimeValue(frame), timescale: fps))
+        }
+        input.markAsFinished()
+        let finished = DispatchSemaphore(value: 0)
+        writer.finishWriting { finished.signal() }
+        finished.wait()
+        guard writer.status == .completed else {
+            throw FeedProblem(text: "finishWriting: \(String(describing: writer.error))")
+        }
+        return url
     }
 
     // MARK: The mock Tower's socket (H1)

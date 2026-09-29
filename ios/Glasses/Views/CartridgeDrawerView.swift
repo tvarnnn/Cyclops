@@ -40,7 +40,7 @@ struct CartridgeDrawerView: View {
     /// never keeps streaming with no build (D3).
     var stopCapture: () -> Void = {}
 
-    /// The row tapped while a capture runs, waiting on the dialog.
+    /// The row tapped while a capture runs, waiting on the alert.
     @State private var pendingSelection: String?
 
     @Environment(\.dismiss) private var dismiss
@@ -158,13 +158,17 @@ struct CartridgeDrawerView: View {
             }
             // Leaving World Builder mid-capture asks first, and "Stop capture"
             // stops the camera and the build together (U0.8 F15, D3).
-            .confirmationDialog(
+            //
+            // An alert, not a `confirmationDialog`: on iOS 26 a confirmation
+            // dialog can present as a popover, and a popover drops its
+            // `.cancel` button (tapping outside stands in for it). D3 needs
+            // both choices on screen, and an alert always draws both.
+            .alert(
                 CartridgeLeaveText.title,
                 isPresented: Binding(
                     get: { pendingSelection != nil },
                     set: { if !$0 { pendingSelection = nil } }
                 ),
-                titleVisibility: .visible,
                 presenting: pendingSelection
             ) { id in
                 Button(CartridgeLeaveText.stopCapture, role: .destructive) {
@@ -194,7 +198,7 @@ struct CartridgeDrawerView: View {
     }
 }
 
-/// The words of the leave-mid-capture dialog (U0.8 F15; manager 137 D3).
+/// The words of the leave-mid-capture alert (U0.8 F15; manager 137 D3).
 enum CartridgeLeaveText {
     static let title = "Leave and stop the capture?"
     static let message = "Leaving World Builder stops the glasses camera and asks the Tower to stop building a world from this capture."

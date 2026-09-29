@@ -828,6 +828,15 @@ final class GlassesConnection: ObservableObject {
         pairedMockDevice?.doff()
     }
 
+    /// Gives the paired mock a video file to stream, for UI tests only (U0.8
+    /// F15). Without a feed, DAT's mock fails every stream at once with
+    /// "Critical error, the stream should end", which the app rightly shows
+    /// as a glasses alert: a harness gap, not a capture a test can use.
+    func setMockCameraFeedForUITest(fileURL: URL) {
+        print("[Glasses][MockDeviceKit] camera feed for a UI test: \(fileURL.path)")
+        pairedMockDevice?.services.camera.setCameraFeed(fileURL: fileURL)
+    }
+
     // MARK: Camera session (proof-of-path milestone)
 
     /// Points the paired mock device's simulated camera at the iPhone's own

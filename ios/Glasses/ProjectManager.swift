@@ -310,6 +310,7 @@ enum UITestHooks {
     static let doffAfterSecondsVariable = "GLASSES_UITEST_MOCK_DOFF_AFTER_SECONDS"
     static let subscribeAckMillisecondsVariable = "GLASSES_UITEST_SUBSCRIBE_ACK_MS"
     static let awaitingBoundSecondsVariable = "GLASSES_UITEST_AWAITING_BOUND_SECONDS"
+    static let mockCameraFeedVariable = "GLASSES_UITEST_MOCK_CAMERA_FEED"
 
     /// `GLASSES_UITEST_SUBSCRIBE_ACK_MS`, for `TowerWorldBuilderClient`;
     /// `nil` (the client's own default) otherwise, and always in Release.
@@ -332,11 +333,16 @@ private extension ProjectManager {
         let arguments = ProcessInfo.processInfo.arguments
         let environment = ProcessInfo.processInfo.environment
 
-        // A paired, powered-on, donned Mock Device Kit device, with no camera
-        // feed: a capture then runs and delivers no frames.
+        // A paired, powered-on, donned Mock Device Kit device, streaming the
+        // video file the test names. With no feed, DAT's mock fails every
+        // stream at once ("Critical error, the stream should end") and the
+        // app shows that as a glasses alert (U0.8 F15).
         if arguments.contains(UITestHooks.mockGlassesArgument) {
             if !glassesConnection.mockDeviceKitEnabled { glassesConnection.toggleMockDeviceKit() }
             glassesConnection.pairMockGlasses()
+            if let path = environment[UITestHooks.mockCameraFeedVariable] {
+                glassesConnection.setMockCameraFeedForUITest(fileURL: URL(fileURLWithPath: path))
+            }
         }
 
         // World Builder's first-update wait, shortened (U0.8 F13).
