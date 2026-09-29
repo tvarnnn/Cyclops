@@ -319,7 +319,20 @@ def test_the_120s_cutoff_boundary_is_the_same_on_both_paths(tmp_path, monkeypatc
 
 @pytest.mark.parametrize("reason", ["timeout", "hard"])
 def test_join_terminates_hung_child_before_return(tmp_path, monkeypatch, reason, caplog):
-    process, job = Process(), Job()
+    class Hung(Process):
+        """Hung, as far as the join can tell -- except that, so a join that
+        never ends it FAILS this test instead of hanging the suite, it gives
+        up by itself after 200 polls, exiting 0."""
+        polls = 0
+
+        def poll(self):
+            self.polls += 1
+            if self.returncode is None and self.polls > 200:
+                self.returncode = 0
+            return self.returncode
+
+    process, job = Hung(), Job()
+    monkeypatch.setattr(B, "CHILD_POLL_S", 0.001)
     monkeypatch.setattr(B, "assign_to_job", lambda p: job)
     calls = []
 
