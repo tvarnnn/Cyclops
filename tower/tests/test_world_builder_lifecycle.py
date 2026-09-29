@@ -207,54 +207,218 @@ def test_a_normal_stop_records_a_complete_finalization_and_releases_the_lock(
     assert report["finalization"] == FINALIZATION_COMPLETE
 
 
+# -- W0-3: the Stop mask child through `main` ---------------------------------
+#
+# Real processes: the builder, a background-solve stub still running at Stop, a
+# Stop-mask stub (`--stop-masks-script`) and the final-solve stub. The background
+# stub writes one live solver image first thing; the mask stub stages a cache
+# file for it in the REAL stage layout (`world_solve_masks.stage_path`); the
+# final stub records whether that file had been PROMOTED into the live cache
+# before it started (`final-saw-prefill`) or not (`final`).
+
+_STOP_MASK_IMAGE = "00000000.jpg"
+
+
+def _stop_mask_stubs(tmp_path, *, mask_sleep=0.3, hang=False):
+    events = tmp_path / "events.txt"
+    pids = tmp_path / "mask-pids.txt"
+    head = (
+        "import hashlib, json, os, pathlib, signal, subprocess, sys, time\n"
+        f"events = pathlib.Path({str(events)!r})\n"
+        "def note(what):\n"
+        "    with events.open('a') as f: f.write(what + '\\n')\n"
+        "args = sys.argv\n"
+        "root = pathlib.Path(args[args.index('--root') + 1])\n"
+        "world = args[args.index('--world') + 1]\n"
+        "session = args[args.index('--session') + 1]\n"
+        "ws = root / 'worlds' / world / 'solve' / session\n"
+        f"name = {_STOP_MASK_IMAGE!r}\n"
+    )
+    solve = tmp_path / "stub_solve.py"
+    solve.write_text(
+        head
+        + "if '--final' in args:\n"
+        "    seen = list((ws / 'transients').glob(name.split('.')[0] + '.*.gdsam.npz'))\n"
+        "    note('final-saw-prefill' if seen else 'final')\n"
+        "    print(json.dumps({'solved': False, 'reason': 'stub'}))\n"
+        "else:\n"
+        "    (ws / 'images').mkdir(parents=True, exist_ok=True)\n"
+        "    (ws / 'images' / name).write_bytes(b'solver image bytes')\n"
+        "    note('background')\n"
+        "    time.sleep(60)\n", encoding="utf-8")
+    masks = tmp_path / "stub_masks.py"
+    grand_pid = str(pids) + ".g"
+    body = (
+        head
+        + "from tower.world_builder.store import WorldStore\n"
+        "stopped = WorldStore(root).read_session(world, session).ended_at is not None\n"
+    )
+    if hang:
+        # A child that ignores the console's CTRL_BREAK and has a grandchild that
+        # does too: only the builder's own termination (the Job Object) ends them.
+        grand_code = (
+            "import os, pathlib, signal, time\n"
+            "for s in ('SIGBREAK', 'SIGTERM'):\n"
+            "    if hasattr(signal, s): signal.signal(getattr(signal, s), signal.SIG_IGN)\n"
+            f"pathlib.Path({grand_pid!r}).write_text(str(os.getpid()))\n"
+            "time.sleep(120)\n"
+        )
+        body += (
+            "for sig in ('SIGBREAK', 'SIGTERM'):\n"
+            "    if hasattr(signal, sig): signal.signal(getattr(signal, sig), signal.SIG_IGN)\n"
+            f"grand = subprocess.Popen([sys.executable, '-c', {grand_code!r}],\n"
+            "                         stdin=subprocess.DEVNULL)\n"
+            "deadline = time.monotonic() + 30\n"
+            f"while not pathlib.Path({grand_pid!r}).exists() and time.monotonic() < deadline:\n"
+            "    time.sleep(0.05)\n"
+            f"pathlib.Path({str(pids)!r}).write_text(str(os.getpid()) + ' ' + str(grand.pid))\n"
+            "note('mask-after-stop' if stopped else 'mask-before-stop')\n"
+            "time.sleep(120)\n"
+        )
+    else:
+        body += (
+            "note('mask-after-stop' if stopped else 'mask-before-stop')\n"
+            f"time.sleep({mask_sleep!r})\n"
+            "data = (ws / 'images' / name).read_bytes()\n"
+            "sha = hashlib.sha1(data).hexdigest()\n"
+            "stage = ws / 'stop_masks' / 's'\n"
+            "(stage / 'transients').mkdir(parents=True, exist_ok=True)\n"
+            "(stage / 'transients' / (name.split('.')[0] + '.' + sha[:12] + '.gdsam.npz'))"
+            ".write_bytes(b'stub mask')\n"
+            "(stage / 'result.json').write_text(json.dumps({'images': {name: sha}, "
+            "'masked': 1, 'cache_hits': 0, 'available': True}))\n"
+            "note('mask-exit')\n"
+        )
+    masks.write_text(body, encoding="utf-8")
+    return events, pids, solve, masks
+
+
+def _events_file(events):
+    return events.read_text().splitlines() if events.exists() else []
+
+
 @pytest.mark.parametrize("at_stop,solve_every,masks_enabled,expected", [
     (False, 2, True, ["background", "final"]),
     (True, 2, False, ["background", "final"]),
     (True, 0, True, ["final"]),
-    (True, 2, True, ["background", "mask-after-stop", "mask-exit", "final"]),
+    (True, 2, True, ["background", "mask-after-stop", "mask-exit", "final-saw-prefill"]),
 ])
 def test_stop_mask_call_site_and_off_cutoff(finished_capture, tmp_path, monkeypatch,
                                             at_stop, solve_every, masks_enabled, expected):
-    """Drive main with a live background child through the real Stop call site."""
+    """Drive main with a live background child through the real Stop call site.
+
+    Switch ON: the child starts after Stop, is joined, and its staged cache
+    file is PROMOTED before the final solve starts -- in the real stage layout,
+    which is swept afterwards (C25f audit B9(a): the stub used to write a stage
+    the product never read, and the test passed through a swallowed error)."""
     capture_dir, _capture_id = finished_capture
     root = tmp_path / "worlds"
-    events = tmp_path / "events.txt"
-    solve = tmp_path / "stub_solve.py"
-    solve.write_text(
-        "import json, pathlib, sys, time\n"
-        f"events = pathlib.Path({str(events)!r})\n"
-        "if '--final' in sys.argv:\n"
-        "    with events.open('a') as f: f.write('final\\n')\n"
-        "    print(json.dumps({'solved': False, 'reason': 'stub'}))\n"
-        "else:\n"
-        "    with events.open('a') as f: f.write('background\\n')\n"
-        "    time.sleep(20)\n", encoding="utf-8")
-    masks = tmp_path / "stub_masks.py"
-    masks.write_text(
-        "import json, os, pathlib, sys, time\n"
-        "from tower.world_builder.store import WorldStore\n"
-        f"events = pathlib.Path({str(events)!r})\n"
-        "args = sys.argv\n"
-        "root = pathlib.Path(args[args.index('--root')+1])\n"
-        "world = args[args.index('--world')+1]\n"
-        "session = args[args.index('--session')+1]\n"
-        "stopped = WorldStore(root).read_session(world, session).ended_at is not None\n"
-        "with events.open('a') as f: f.write('mask-after-stop\\n' if stopped else 'mask-before-stop\\n')\n"
-        "time.sleep(0.3)\n"
-        "stage = root/'worlds'/world/'solve'/session/'transients'/f's{os.getpid()}'\n"
-        "stage.mkdir(parents=True, exist_ok=True)\n"
-        "(stage/'result.json').write_text(json.dumps({'images': {}, 'masked': 0, 'cache_hits': 0, 'available': True}))\n"
-        "with events.open('a') as f: f.write('mask-exit\\n')\n",
-        encoding="utf-8")
+    events, _pids, solve, masks = _stop_mask_stubs(tmp_path)
     monkeypatch.setenv("TOWER_WORLD_SOLVE_MASKS", "on" if masks_enabled else "off")
     monkeypatch.setenv("TOWER_WORLD_SOLVE_MASKS_AT_STOP", "on" if at_stop else "off")
+    # 2 s: the background stub writes its image before any Stop could end it.
     process = _spawn(capture_dir, root, "--solve", "--solve-every", str(solve_every),
-                     "--solve-wait-seconds", "0.3", "--solve-script", str(solve),
+                     "--solve-wait-seconds", "2", "--solve-script", str(solve),
                      "--stop-masks-script", str(masks))
     stdout, stderr = _finish(process)
     assert process.returncode == 0, stderr[-2000:]
-    order = events.read_text().splitlines()
-    assert order == expected
+    assert _events_file(events) == expected
+    store, world_id, session_id = _the_session(root)
+    ws = store.world_dir(world_id) / "solve" / session_id
+    assert "Stop mask prefill failed" not in stderr
+    assert not (ws / "stop_masks").exists(), "the stage must be swept"
+    assert not (ws / "transients" / "s").exists()
+    if expected[-1] == "final-saw-prefill":
+        assert "Stop mask prefill launched (pid" in stderr
+        assert "Stop mask prefill promoted 1 cache files" in stderr
+        assert "1 of 1 images still match at the final solve" in stderr
+        assert (ws / "solve_masks_at_stop.log").exists()
+    else:
+        assert "Stop mask prefill" not in stderr
+
+
+def test_stop_masks_ordinary_soft_stop_still_promotes(finished_capture, tmp_path, monkeypatch):
+    """RULING 1, with a REAL soft stop: the builder's stdin is closed while the
+    Stop mask child is still running -- the ordinary end of every walk (iOS
+    posts `session/stop` from `.onDisappear`). The join carries on, the child's
+    cache file is promoted, and the final solve starts with it. A join that a
+    soft stop ended would kill the child and the final would see nothing."""
+    capture_dir, _capture_id = finished_capture
+    root = tmp_path / "worlds"
+    # The child works 4 s; the soft stop arrives within the 2-s background wait,
+    # so it is already set when the join starts -- as on every ordinary walk.
+    events, _pids, solve, masks = _stop_mask_stubs(tmp_path, mask_sleep=4.0)
+    monkeypatch.setenv("TOWER_WORLD_SOLVE_MASKS", "on")
+    monkeypatch.setenv("TOWER_WORLD_SOLVE_MASKS_AT_STOP", "on")
+    process = _spawn(capture_dir, root, "--solve", "--solve-every", "2",
+                     "--solve-wait-seconds", "2", "--solve-script", str(solve),
+                     "--stop-masks-script", str(masks), stop_on_stdin_close=True)
+    try:
+        _wait_for(lambda: "mask-after-stop" in _events_file(events),
+                  what="the Stop mask child to start")
+        process.stdin.close()          # the soft stop, while the child still works
+        stdout, stderr = _finish(process)
+    finally:
+        if process.poll() is None:
+            process.kill()
+    assert process.returncode == 0, stderr[-2000:]
+    assert _events_file(events) == ["background", "mask-after-stop", "mask-exit",
+                                    "final-saw-prefill"]
+    assert "a soft stop arrived during the join" in stderr
+    assert "so it does not end the join" in stderr
+    assert "Stop mask prefill promoted 1 cache files" in stderr
+    store, world_id, session_id = _the_session(root)
+    session = store.read_session(world_id, session_id)
+    assert session.end_reason == "stop"
+    assert session.finalization["final_solve"] == FINAL_SOLVE_UNAVAILABLE   # the stub's answer
+
+
+def test_stop_masks_hard_stop_during_the_join_kills_the_child_tree(finished_capture, tmp_path,
+                                                                    monkeypatch):
+    """The other half of RULING 1: a HARD stop during the join ends it at once
+    and kills the child AND its grandchild -- both ignore the console's
+    CTRL_BREAK, so only the builder's own termination can end them."""
+    import psutil
+
+    capture_dir, _capture_id = finished_capture
+    root = tmp_path / "worlds"
+    events, pids, solve, masks = _stop_mask_stubs(tmp_path, hang=True)
+    monkeypatch.setenv("TOWER_WORLD_SOLVE_MASKS", "on")
+    monkeypatch.setenv("TOWER_WORLD_SOLVE_MASKS_AT_STOP", "on")
+    process = _spawn(capture_dir, root, "--solve", "--solve-every", "2",
+                     "--solve-wait-seconds", "0.3", "--solve-script", str(solve),
+                     "--stop-masks-script", str(masks))
+    tree = []
+    try:
+        _wait_for(lambda: "mask-after-stop" in _events_file(events),
+                  what="the Stop mask child and its grandchild to start")
+        tree = [psutil.Process(int(pid)) for pid in pids.read_text().split()]
+        time.sleep(1.0)                # past the 0.3-s background wait: in the join
+        _hard_stop(process)
+        started = time.monotonic()
+        stdout, stderr = _finish(process)
+        elapsed = time.monotonic() - started
+        # Asserted BEFORE the cleanup below, which would otherwise do the killing.
+        assert len(tree) == 2
+        _wait_for(lambda: not any(p.is_running() for p in tree), timeout=15.0,
+                  what="the Stop mask child and its grandchild to be gone")
+    finally:
+        for proc in tree:              # never leave a stub behind a failed assertion
+            try:
+                if proc.is_running():
+                    proc.kill()
+            except psutil.Error:
+                pass
+    assert process.returncode == 0, stderr[-2000:]
+    assert elapsed < 45.0, "the builder waited for a child it was told to abandon"
+    assert "join ended (a stop was requested)" in stderr
+    store, world_id, session_id = _the_session(root)
+    session = store.read_session(world_id, session_id)
+    assert session.finalization["final_solve"] == FINAL_SOLVE_SKIPPED
+    assert "hard stop" in session.finalization["detail"]
+    assert not {"final", "final-saw-prefill"} & set(_events_file(events))
+    ws = store.world_dir(world_id) / "solve" / session_id
+    assert not (ws / "stop_masks").exists()
 
 
 # -- asked to stop mid-walk -------------------------------------------------

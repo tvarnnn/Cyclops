@@ -113,18 +113,7 @@ never touched.
 | setting | default | physical test | what it does |
 |---|---|---|---|
 | `TOWER_WORLD_SOLVE_MASKS` | `false` | `true` | masks on the final solve; the gate's hard dependency |
-| `TOWER_WORLD_SOLVE_MASKS_AT_STOP` | `off` | `off` | when masks are enabled and a background solve is running at Stop, prefills masks from immutable copies of prepared solver images during the original 120 s background wait; a bounded join confirms child exit before the final solve. The child runs at below normal priority with two CPU threads. Its output is `solve/<session>/solve_masks_at_stop.log`. Failed child output stays quarantined under `transients/`. |
-
-For W0-3 comparisons with the switch on, `solution.json` may differ in
-`transients.cache_hits`, `computed`, `seconds`, `gpu_peak_mb`, `device`,
-`retried.*`, and `retries`. Cache reuse changes which work the final process
-performs, its measured time and peak, and whether it records a device or retry.
-Stage timing `cache.mask.*` may differ when I0 is enabled. A child that succeeds
-where the final mask pass would fail can also change mask `state` and related
-failure fields; that direction still needs proof. Mask and published-output
-identity is conditional on the database at the background-solve cutoff. Child
-CPU contention may change that database, so C22 must check its distribution
-across repeated 1.0x replays before enabling this switch for a walk.
+| `TOWER_WORLD_SOLVE_MASKS_AT_STOP` | `false` | `false` | W0-3 (Codex C25 + C25f, finished by Claude C25f-FINISH). With `TOWER_WORLD_SOLVE_MASKS` on and a background solve still running at Stop, a child masks an immutable snapshot of the prepared solver images during the original 120 s wait, whose deadline is measured from the same Stop instant as with the switch off. The child runs at below-normal priority with a 2-thread CPU cap (masks measured bit-identical under that cap: `RUN\experiments\W0-STAGE0\STAGE0.md` §6.6, row T), in a Job Object, and writes only its stage `solve/<session>/stop_masks/s/` (outside `transients/`, so a re-finish never copies it). A join bounded at 1800 s ends early only on a HARD stop (ruling 1: the ordinary end-of-walk soft stop does not end it). On a confirmed exit 0 the parent promotes the stage's `transients/*.npz` for images whose bytes still match, and sweeps the stage on every exit it can confirm. A child that cannot be confirmed dead is never promoted, and the final solve runs anyway (ruling 2). Both rulings were proposed by the lead on 2026-09-28 and confirmed by manager 150 §1; each is one constant in `world_build_session.py` (`STOP_MASKS_JOIN_ENDS_ON_SOFT_STOP`, `STOP_MASKS_UNCONFIRMED_CHILD_SKIPS_FINAL`). The child's output goes to `solve/<session>/solve_masks_at_stop.log`. An unrecognised value reads as off and is logged |
 | `TOWER_WORLD_SOLVE_SEED` | unset | `0` | seeded, single-thread mapper; freezes matching; the consensus needs it |
 | `TOWER_WORLD_SOLVE_GATE` | `false` | `true` | depth before publish, the evidence gate, `components.json`, the notice |
 | `TOWER_WORLD_SOLVE_CONSENSUS` | `1` | `3` | mapper-seed draws; accepts 1, 3, 5 or 7 only, and anything else reads as 1 and is logged |
@@ -148,6 +137,42 @@ across repeated 1.0x replays before enabling this switch for a walk.
 
 Sources: `tower/tower/config.py` and `tower/.env.example` at the product lane head; the test
 values are in `RUN\lead\deploy\make-test-env.ps1` and `RUN\lead\deploy\DEPLOY-PLAN.md` §2.
+
+### W0-3 (`TOWER_WORLD_SOLVE_MASKS_AT_STOP`) with the switch on: what can differ
+
+**Tier A holds only GIVEN the database at the cutoff.** The child competes with background
+solve 7 for the CPU during the 120 s wait (at below-normal priority, 2 threads), so what solve 7
+has matched and verified when it is killed can differ, and the final solve extends exactly that
+database. The cutoff effect is a distributional check on the C22 replay (OLD×N against NEW×N),
+not a Tier A claim.
+
+Given that database, `solve/<session>/solution.json` can differ only in these `transients.*`
+fields, each because cache reuse changes which work the final process performs:
+- `cache_hits` and `computed`: images the child masked are cache hits for the final solve;
+- `seconds` and `gpu_peak_mb`: the final process measures only its own work;
+- `device`: set only when the final solve computes something, so `None` when the child
+  masked every image;
+- `retried.hash`, `retried.read` and `retries`: the final process's own retries, not the child's;
+- `cache_write_failed`: recorded only when the FINAL process's cache writes failed, and fewer
+  writes happen when the child's entries are hits.
+
+Stage timing `cache.mask.*` can differ when I0 (`TOWER_WORLD_STAGE_TIMING`) is on.
+
+**The failure direction still needs proof.** When the final solve's detector would have
+failed or fallen back, but the child's cache is complete, the record can read `applied` where
+the switch-off path reads `unavailable` or `partial`. The fields that then move are `state`,
+`outcome`, `extraction_masked`, `detail`, `cause`, `retryable`, `rule_fallback`, `rule`,
+`models` and `mask_dir`, and every count that follows them. This is the "better" direction, and
+it is not yet proven.
+
+The child's stage `masks/*.png` and `index.json` are NOT promoted: the final solve writes every
+PNG and index row itself. So a final solve that ends unavailable leaves no `masks/` and no index
+rows, as it does with the switch off.
+
+**The saving shrinks when solve 7 ends early** (C25 review L5). The child still runs its full
+pass. The final solve then masks the tail images solve 7 never prepared, which costs a second
+model load. So the net saving is at most the wait minus one model-load set: about 1.8 min on
+walk 5 (C19).
 
 **What the re-finish decides for itself.** `world_refinish.py` always runs with masks, the
 gate and its own `--seed`, and it builds areas whatever the Tower says. It takes the

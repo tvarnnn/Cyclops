@@ -926,9 +926,23 @@ def world_solve_masks_setting() -> bool:
     return _flag(WORLD_SOLVE_MASKS_ENV, default=False)
 
 
+_world_solve_masks_at_stop_warned_values: set[str] = set()
+
+
 def world_solve_masks_at_stop_setting() -> bool:
-    """Prefill final-solve masks during a running background solve's Stop wait. Off."""
-    return _flag(WORLD_SOLVE_MASKS_AT_STOP_ENV, default=False)
+    """Prefill final-solve masks during a running background solve's Stop wait. Off.
+
+    An unrecognised value reads as off and is logged once per value (C25 review L6),
+    as `TOWER_WORLD_STAGE_TIMING` does."""
+    if _flag(WORLD_SOLVE_MASKS_AT_STOP_ENV, default=False):
+        return True
+    value = (os.environ.get(WORLD_SOLVE_MASKS_AT_STOP_ENV) or "").strip()
+    if (value and value.lower() not in ("0", "false", "no", "off")
+            and value not in _world_solve_masks_at_stop_warned_values):
+        _world_solve_masks_at_stop_warned_values.add(value)
+        logger.warning("[Tower][Config] %s=%r is not on or off; treating it as off",
+                       WORLD_SOLVE_MASKS_AT_STOP_ENV, value)
+    return False
 
 
 def world_solve_seed_setting() -> int | None:

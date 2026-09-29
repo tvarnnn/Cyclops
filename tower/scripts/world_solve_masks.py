@@ -1,9 +1,11 @@
 #!/usr/bin/env python
 """Prefill masks for solver images already prepared at Stop.
 
-This child reads the session keyframes, camera and images. Its mask routine
-writes only the transient cache, COLMAP masks, and the transient index. The
-final solve owns image preparation and every database operation.
+This child reads the session keyframes, camera and images. It masks an
+immutable snapshot of those images in its own STAGE, and writes nothing else:
+the parent promotes the stage's cache files after it has confirmed this
+process exited 0 (`world_build_session.StopSolverMasks`). The final solve owns
+image preparation, the live mask cache, `masks/` and every database operation.
 """
 
 import argparse
@@ -20,10 +22,57 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from tower.artifact_paths import artifact_root_arg  # noqa: E402
 from tower.native_prewarm import prewarm_world_builder  # noqa: E402
 
+# THE STAGE LIVES OUTSIDE `transients/` (C25f audit CL-L4). `transients/` is the live
+# mask cache: the final solve reads it, and `world_refinish.SOLVE_COPY_BACK` copies it
+# into every re-finish -- so a stage kept there (a full copy of the solver images plus
+# hard links into the cache) would ride forward into every re-finish, the links turning
+# into copies. `solve/<session>/stop_masks/` is read by nothing but the parent, which
+# sweeps it on every exit it can confirm. The names are SHORT on purpose: the stage
+# nests its own `transients/` cache, and a longer stage name put the cache's staging
+# files past MAX_PATH under pytest's temporary directory.
+STAGE_PARENT_DIRNAME = "stop_masks"
+STAGE_DIRNAME = "s"
+RESULT_FILENAME = "result.json"
 
-def _stage_path(workspace) -> Path:
-    path = workspace.root / "transients" / "s"
-    return Path("\\\\?\\" + str(path)) if os.name == "nt" else path
+# The child's CPU thread cap. Stage 0 measured the solver masks (Grounding DINO + SAM
+# 2.1 + OneFormer: hand/phone arrays and the COLMAP PNGs) BIT-IDENTICAL under exactly
+# this cap -- OMP / MKL / OPENBLAS = 2, torch and cv2 = 2 -- against default threads
+# (RUN experiments/W0-STAGE0/STAGE0.md §6.6, row T: 200/200 arrays, 50/50 PNGs). It
+# was NOT for DINOv2, which this child never runs.
+CHILD_THREADS = 2
+
+
+def _long_path(path) -> Path:
+    """`path` with the Windows extended-length prefix, so the stage's nested cache
+    is not cut at MAX_PATH. Absolute first: the prefix on a relative path is not a
+    path. Unchanged on POSIX, and for a path that already carries a prefix."""
+    if os.name != "nt":
+        return Path(path)
+    text = os.path.abspath(str(path))
+    if text.startswith("\\\\"):
+        return Path(text)       # already extended, or a UNC share: leave it as it is
+    return Path("\\\\?\\" + text)
+
+
+def stage_parent(workspace_root) -> Path:
+    """`solve/<session>/stop_masks`: everything the Stop child ever writes."""
+    return _long_path(Path(workspace_root) / STAGE_PARENT_DIRNAME)
+
+
+def stage_path(workspace_root) -> Path:
+    """The one stage a Stop child masks into. The parent and the child both call
+    this; it is the single definition of the layout."""
+    return stage_parent(workspace_root) / STAGE_DIRNAME
+
+
+def _fresh_stage(workspace_root) -> Path:
+    """An empty stage. One left behind (a parent that died before it could sweep)
+    is moved aside inside `stop_masks/`, never reused, never under `transients/`."""
+    stage = stage_path(workspace_root)
+    if stage.exists():
+        stage.rename(stage.with_name(f"q{uuid.uuid4().hex[:8]}"))
+    stage.mkdir(parents=True, exist_ok=True)
+    return stage
 
 
 def prefill(root: Path, world_id: str, session_id: str) -> int:
@@ -50,10 +99,7 @@ def prefill(root: Path, world_id: str, session_id: str) -> int:
             except OSError:
                 pass
         names = [name for name in names if name in images]
-        stage = global_solve.SolveWorkspace(_stage_path(workspace))
-        if stage.root.exists():
-            stage.root.rename(stage.root.with_name(f"q{uuid.uuid4().hex[:8]}"))
-        stage.root.mkdir(parents=True, exist_ok=True)
+        stage = global_solve.SolveWorkspace(_fresh_stage(workspace.root))
         stage.images_dir.mkdir(exist_ok=True)
         for name, data in images.items():
             (stage.images_dir / name).write_bytes(data)
@@ -69,20 +115,24 @@ def prefill(root: Path, world_id: str, session_id: str) -> int:
             stage, names, keyframe_ids=ids, shape=(camera.height, camera.width))
         complete = (result.available and not result.partial and not result.unmasked
                     and not result.cache_write_failed and not result.retries)
-        (stage.root / "result.json").write_text(json.dumps({
+        (stage.root / RESULT_FILENAME).write_text(json.dumps({
             "images": {name: hashlib.sha1(images[name]).hexdigest() for name in names},
             "masked": len(result.masked), "cache_hits": result.cache_hits,
             "available": complete,
         }), encoding="utf-8")
         return 0 if complete else 1
-    stage = _stage_path(workspace)
-    if stage.exists():
-        stage.rename(stage.with_name(f"q{uuid.uuid4().hex[:8]}"))
-    stage.mkdir(parents=True, exist_ok=True)
-    (stage / "result.json").write_text(json.dumps({
+    stage = _fresh_stage(workspace.root)
+    (stage / RESULT_FILENAME).write_text(json.dumps({
         "images": {}, "masked": 0, "cache_hits": 0, "available": True,
     }), encoding="utf-8")
     return 0
+
+
+def _cap_threads() -> None:
+    import cv2  # noqa: PLC0415
+    import torch  # noqa: PLC0415
+    cv2.setNumThreads(CHILD_THREADS)
+    torch.set_num_threads(CHILD_THREADS)
 
 
 def main(argv=None) -> int:
@@ -94,10 +144,7 @@ def main(argv=None) -> int:
     # No stdin watcher is installed here. Warm the native stack before any
     # future watcher could be added (tower/native_prewarm.py).
     prewarm_world_builder()
-    import cv2  # noqa: PLC0415
-    import torch  # noqa: PLC0415
-    cv2.setNumThreads(2)
-    torch.set_num_threads(2)
+    _cap_threads()
     return prefill(Path(args.root), args.world, args.session)
 
 
