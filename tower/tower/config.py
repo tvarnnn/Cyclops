@@ -537,6 +537,7 @@ class Settings:
     # today's unmasked recipe. A machine that cannot run the detector still
     # solves, unmasked, and the solution says so (`transients.state`).
     world_solve_masks: bool = False
+    world_solve_masks_unheld_phone: bool = False
     # The seeded single-thread final solve. None (unset) is today's solve:
     # every core, and GLOMAP's own unseeded randomness. An integer seeds every
     # mapper random number generator, pycolmap's global one and the two-view
@@ -667,6 +668,7 @@ def get_settings() -> Settings:
         world_register=_flag("TOWER_WORLD_REGISTER", default=True),
         world_solve=_flag("TOWER_WORLD_SOLVE", default=True),
         world_solve_masks=world_solve_masks_setting(),
+        world_solve_masks_unheld_phone=world_solve_masks_unheld_phone_setting(),
         world_solve_seed=world_solve_seed_setting(),
         world_densify=_flag("TOWER_WORLD_DENSIFY", default=False),
         world_surface=_flag("TOWER_WORLD_SURFACE", default=True),
@@ -917,12 +919,18 @@ def _flag(name: str, *, default: bool) -> bool:
 # configuration -- `get_settings()` raises on a malformed `TOWER_PORT`, which is
 # no reason for a solve to fail.
 WORLD_SOLVE_MASKS_ENV = "TOWER_WORLD_SOLVE_MASKS"
+WORLD_SOLVE_MASKS_UNHELD_PHONE_ENV = "TOWER_WORLD_SOLVE_MASKS_UNHELD_PHONE"
 WORLD_SOLVE_SEED_ENV = "TOWER_WORLD_SOLVE_SEED"
 
 
 def world_solve_masks_setting() -> bool:
     """`TOWER_WORLD_SOLVE_MASKS`: transient masks on the final solve. Off."""
     return _flag(WORLD_SOLVE_MASKS_ENV, default=False)
+
+
+def world_solve_masks_unheld_phone_setting() -> bool:
+    """Add persistent lower-frame unheld phones to final solver masks. Off."""
+    return _flag(WORLD_SOLVE_MASKS_UNHELD_PHONE_ENV, default=False)
 
 
 def world_solve_seed_setting() -> int | None:

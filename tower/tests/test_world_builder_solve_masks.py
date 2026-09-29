@@ -408,7 +408,7 @@ def test_a_masked_solve_masks_every_solver_image_before_extraction(session, colm
 
     record = _solution_json(session)["transients"]
     assert record["state"] == SM.RECORD_APPLIED
-    assert record["rule"] == T.TransientParams().rule_id()
+    assert record["rule"] == SM.solver_params().rule_id()
     assert record["requested"] is True and record["extraction_masked"] is True
     assert record["images"] == record["images_masked"] == N
     assert record["images_unmasked"] == 0
@@ -836,8 +836,9 @@ def test_a_union_without_grounding_dino_is_masked_by_oneformer_and_is_not_applie
     assert record["state"] == SM.RECORD_PARTIAL
     assert record["extraction_masked"] is True
     assert record["images_masked"] == N and record["images_unmasked"] == 0
-    assert record["rule"] == T.TransientParams(mode=T.MODE_ONEFORMER).rule_id()
-    assert record["requested_rule"] == T.TransientParams().rule_id()
+    assert record["rule"] == T.TransientParams(
+        mode=T.MODE_ONEFORMER, unheld_phone=SM.solver_params().unheld_phone).rule_id()
+    assert record["requested_rule"] == SM.solver_params().rule_id()
     assert "Grounding DINO weights missing" in record["rule_fallback"]
 
 
@@ -974,6 +975,24 @@ def test_a_raw_imagery_surface_takes_the_solvers_masks_instead_of_recomputing(tm
     _h, _p, rec = T.read_component(T.cache_path(world.dense / "work" / "depth", 0, T.COMPONENT_GDSAM))
     assert rec["origin"] == "solve" and rec["solve_image"] == names[0]
     assert (H, W) == m.shape
+
+
+def test_lpbig_on_still_lends_original_components_to_raw_surface(tmp_path, monkeypatch):
+    from tests.test_world_builder_appearance import SESSION, WORLD, H, W
+    from tower.world_builder import appearance as A
+    from tower.world_builder import raw_imagery as RAWIMG
+
+    monkeypatch.setenv("TOWER_WORLD_SOLVE_MASKS_UNHELD_PHONE", "on")
+    world, ws, names, _ = _world_with_solver_masks(tmp_path)
+    donor = SM.solve_mask_donor(world.store, WORLD, SESSION)
+    assert donor(world.kids[0], T.COMPONENT_GDSAM, T.TransientParams(), (H, W)) is not None
+    policy = A.resolve_label_policy(world.store, WORLD, SESSION, imagery_source=RAWIMG.IMAGERY_RAW)
+    surface_stub = StubDetector()
+    report = _surface_masks(world, policy, surface_stub)
+    assert report.reused_from_solve == len(world.kids)
+    assert surface_stub.calls == []
+    assert report.mask(0)[10:40, 10:50].all()
+    assert not report.mask(0)[:, 100:].any()
 
 
 def test_a_redacted_surface_never_takes_a_mask_made_from_raw_pixels(tmp_path):

@@ -220,7 +220,9 @@ _PAIR_ID_BASE = 2147483647   # COLMAP: pair_id = image_id1 * kMaxNumImages + ima
 def solver_params() -> T.TransientParams:
     """The rule the solver's masks are made under: `transients`' union mode,
     the recipe the run measured (HANDS.md; FORENSICS H-A)."""
-    return T.TransientParams()
+    from tower.config import world_solve_masks_unheld_phone_setting  # noqa: PLC0415
+
+    return T.TransientParams(unheld_phone=world_solve_masks_unheld_phone_setting())
 
 
 def cache_dir(workspace) -> Path:
@@ -422,6 +424,8 @@ class SolverMasks:
     # and computes it again.
     cache_write_failed: int = 0
     kept: dict = field(default_factory=dict, repr=False)
+    unheld_phone_images: int = 0
+    unheld_phone_components: int = 0
 
     @property
     def available(self) -> bool:
@@ -539,6 +543,9 @@ class SolverMasks:
         # records exactly what it recorded before.
         if self.cache_write_failed:
             out["cache_write_failed"] = self.cache_write_failed
+        if self.params.unheld_phone:
+            out["unheld_phone"] = {"images": self.unheld_phone_images,
+                                   "components": self.unheld_phone_components}
         return out
 
 
@@ -754,6 +761,16 @@ def ensure_solver_masks(workspace, names, *, keyframe_ids: dict | None = None, s
     mdir = masks_dir(workspace)
     mdir.mkdir(parents=True, exist_ok=True)
     index = {}
+    additions = {}
+    if params.unheld_phone:
+        described = []
+        for name, _path, sha1 in images:
+            parts = _read_cached_parts(name, sha1, out, cdir, params, shape)
+            if parts is not None:
+                described.append((name, parts[0][0].shape, T.phone_components(parts, params)))
+        additions = T.unheld_phone_additions(described, params)
+        out.unheld_phone_images = len(additions)
+        out.unheld_phone_components = sum(map(len, additions.values()))
     for name, path, sha1 in images:
         parts = []
         for c in params.components:
@@ -780,7 +797,11 @@ def ensure_solver_masks(workspace, names, *, keyframe_ids: dict | None = None, s
             _exclude(out, png_path, name, sha1, shape)
             continue
         H, W = parts[0][0].shape
-        m = T.compose(parts, params, (H, W))
+        if params.unheld_phone:
+            add = _unheld_component_mask(parts, additions.get(name), (H, W))
+            m = T.compose(parts, params, (H, W), add=add)
+        else:
+            m = T.compose(parts, params, (H, W))
         png = np.where(m, 0, 255).astype(np.uint8)
         mask_sha1 = _write_png(png_path, png)
         out.masked[name] = {"image_sha1": sha1, "mask_sha1": mask_sha1,
@@ -816,6 +837,33 @@ def ensure_solver_masks(workspace, names, *, keyframe_ids: dict | None = None, s
                 len(out.masked), out.images, out.cache_hits, out.computed,
                 params.mode, out.seconds["total"])
     return out
+
+
+def _read_cached_parts(name, sha1, out, cdir, params, shape):
+    parts = []
+    for component in params.components:
+        packed = out.kept.get((name, component))
+        got = (T.unpack_masks(packed) if packed is not None else
+               T.read_component(component_path(cdir, name, component, sha1),
+                                mask_key(component, params, name, sha1), shape))
+        if got is None:
+            return None
+        parts.append(got[:2])
+    return parts
+
+
+def _unheld_component_mask(parts, picked, shape):
+    if not picked:
+        return None
+    import cv2  # noqa: PLC0415
+
+    added = np.zeros(shape, bool)
+    for ci, (_hand, phone) in enumerate(parts):
+        labels_needed = [label for component, label in picked if component == ci]
+        if labels_needed:
+            labels = cv2.connectedComponentsWithStats(np.asarray(phone, bool).astype(np.uint8))[1]
+            added |= np.isin(labels, labels_needed)
+    return added
 
 
 def _none_masked_detail(images: int, reasons) -> str:

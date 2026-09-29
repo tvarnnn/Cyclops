@@ -166,6 +166,14 @@ class TransientParams:
     phone_near_px: int = 12
     dilate_px: int = 12
     reference_width: int = 359
+    # Solver-only LPbig extension (PHONE-MASK RESULTS section 7). Surface
+    # callers keep the default and compose the original held-phone mask.
+    unheld_phone: bool = False
+    unheld_low_frac: float = 0.75
+    unheld_min_area_frac: float = 0.005
+    unheld_window: int = 2
+    unheld_iou: float = 0.2
+    unheld_centroid_px: float = 30.0
 
     def __post_init__(self):
         if self.mode not in MODES:
@@ -207,7 +215,10 @@ class TransientParams:
             parts.append(f"oneformer-swinl-coco@{self.oneformer_threshold:g}")
         parts.append(f"phone-near{self.phone_near_px}|dil{self.dilate_px}@w{self.reference_width}"
                      f"|gamma{self.gamma:g}|v{TRANSIENT_SCHEMA}")
-        return "|".join(parts)
+        rule = "|".join(parts)
+        if self.unheld_phone:
+            rule += "|unheld-phone-low0.75-a0.005-w2"
+        return rule
 
     def models(self) -> dict:
         out = {mid: rev for c in self.components for mid, rev in COMPONENT_MODELS[c]}
@@ -252,14 +263,74 @@ def dilation_radius(params: TransientParams, width: int) -> int:
     return max(0, int(round(params.dilate_px * width / max(1, params.reference_width))))
 
 
-def compose(parts, params: TransientParams, shape) -> np.ndarray:
+def compose(parts, params: TransientParams, shape, add=None) -> np.ndarray:
     """The transient mask from each component's (hand, phone) masks: held
     phones per component, union over components, dilated."""
     H, W = shape
     out = np.zeros((H, W), bool)
     for hand, phone in parts:
         out |= held_phones(np.asarray(hand, bool), np.asarray(phone, bool), params.phone_near_px)
+    if add is not None:
+        out |= np.asarray(add, bool)
     return _ellipse_dilate(out, dilation_radius(params, W))
+
+
+def phone_components(parts, params: TransientParams) -> list[dict]:
+    """One descriptor per detector phone component, including today's held flag."""
+    import cv2  # noqa: PLC0415
+
+    objects = []
+    for ci, (hand, phone) in enumerate(parts):
+        hand, phone = np.asarray(hand, bool), np.asarray(phone, bool)
+        if not phone.any():
+            continue
+        held = held_phones(hand, phone, params.phone_near_px) & phone
+        count, labels, stats, centers = cv2.connectedComponentsWithStats(phone.astype(np.uint8))
+        for label in range(1, count):
+            x, y, width, height, area = (int(v) for v in stats[label])
+            objects.append({"ci": ci, "label": label,
+                            "bbox": (x, y, x + width - 1, y + height - 1),
+                            "area": area, "center": (float(centers[label][0]),
+                                                     float(centers[label][1])),
+                            "held": bool((held & (labels == label)).any())})
+    return objects
+
+
+def _phone_box_iou(a, b) -> float:
+    ax0, ay0, ax1, ay1 = a
+    bx0, by0, bx1, by1 = b
+    width = min(ax1, bx1) - max(ax0, bx0) + 1
+    height = min(ay1, by1) - max(ay0, by0) + 1
+    if width <= 0 or height <= 0:
+        return 0.0
+    intersection = width * height
+    area_a = (ax1 - ax0 + 1) * (ay1 - ay0 + 1)
+    area_b = (bx1 - bx0 + 1) * (by1 - by0 + 1)
+    return intersection / (area_a + area_b - intersection)
+
+
+def unheld_phone_additions(descriptors_in_capture_order, params: TransientParams) -> dict:
+    """Image name -> component/label pairs selected by LPbig across nearby keyframes."""
+    import math  # noqa: PLC0415
+
+    ordered = sorted(descriptors_in_capture_order, key=lambda row: row[0])
+    picked = {}
+    for index, (name, (height, width), objects) in enumerate(ordered):
+        neighbours = (ordered[max(0, index - params.unheld_window):index] +
+                      ordered[index + 1:index + 1 + params.unheld_window])
+        center_limit = params.unheld_centroid_px * width / params.reference_width
+        for obj in objects:
+            if obj["held"]:
+                continue
+            if ((obj["bbox"][3] + 1) / height < params.unheld_low_frac or
+                    obj["area"] / (height * width) < params.unheld_min_area_frac):
+                continue
+            if any(_phone_box_iou(obj["bbox"], other["bbox"]) >= params.unheld_iou or
+                   math.hypot(obj["center"][0] - other["center"][0],
+                              obj["center"][1] - other["center"][1]) <= center_limit
+                   for _near_name, _shape, near_objects in neighbours for other in near_objects):
+                picked.setdefault(name, []).append((obj["ci"], obj["label"]))
+    return picked
 
 
 def filter_instance_masks(masks, labels, scores, unobserved, params: TransientParams):
