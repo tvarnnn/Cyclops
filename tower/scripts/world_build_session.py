@@ -735,7 +735,7 @@ class BackgroundSurface:
             self._log = None
 
 
-# TOWER_WORLD_SOLVE_MASKS_AT_STOP (W0-3; default off, `tower.config`). Two rulings
+# TOWER_WORLD_SOLVE_MASKS_AT_STOP (W0-3; default off, `tower.config`). Three rulings
 # shape what the Stop mask child may cost the final solve. Each is ONE constant, read
 # at ONE place, with its own test, so a different ruling is a one-line change.
 #
@@ -748,26 +748,122 @@ class BackgroundSurface:
 # (C25f audit B4). `StopRequest` already says a builder that is finalizing carries on
 # under a soft stop. Only a HARD stop, or the bounded join timeout, ends the join
 # early. Brief C25f item 4 / C25x H1 asked for the opposite: True restores it.
-# Read in `StopSolverMasks.join`; tested by
+# Read in `StopSolverMasks._join`; tested by
 # `test_world_builder_lifecycle.py::test_stop_masks_ordinary_soft_stop_still_promotes`.
 STOP_MASKS_JOIN_ENDS_ON_SOFT_STOP = False
 #
 # RULING 2 (proposed by the lead 2026-09-28; CONFIRMED by manager 150 §1). A Stop
 # mask child that cannot be confirmed dead does NOT skip the final solve: the final
-# solve runs anyway, the child's staging is NEVER promoted, and the builder logs it. The staging is what rules out two writers on one key: a
-# surviving child writes only under `solve/<session>/stop_masks/`, which the final
-# solve never reads, and promotion happens only in `join`, after a confirmed exit 0.
-# Skipping would cost the wearer the reconstruction for nothing (the 2026-09-09
-# comment at the soft-stop branch in `main`). True restores C25f's skip. Read in
-# `main`'s Stop branch; tested by
+# solve runs anyway, the child's staging is NEVER promoted, and the builder logs it. The
+# staging is what rules out two writers on one key: a surviving child writes only under
+# `solve/<session>/stop_masks/`, which the final solve never reads, and promotion
+# happens only after a confirmed exit. Skipping would cost the wearer the
+# reconstruction for nothing (the 2026-09-09 comment at the soft-stop branch in
+# `main`). True restores C25f's skip. Read in `main`'s Stop branch; tested by
 # `test_world_builder_stop_masks.py::test_ruling_2_unkillable_child_final_solve_still_runs`.
 STOP_MASKS_UNCONFIRMED_CHILD_SKIPS_FINAL = False
+#
+# RULING 3 (MANAGER 154 §1, 2026-09-28). A join that TIMES OUT terminates the child and,
+# once it is CONFIRMED dead, promotes the cache files it FINISHED, under two coded
+# conditions and one that is not code:
+#   (a) every file is VERIFIED before it is promoted, exactly as the final solve's own
+#       lookup would accept it (`_verified_cache_file`): its content key names the live
+#       image's current bytes and the solver's parameters, and it loads whole with the
+#       solver camera's shape and the cache's dtypes. A file that does not verify, and
+#       every `.tmp` a killed writer left, is moved to the stage's `quarantine/` and never
+#       promoted;
+#   (b) promotion is atomic PER FILE, and a promotion that stops part-way leaves a
+#       RECORDED partial set of individually valid files; the final solve computes the
+#       rest (C25x2 MED-2; `StopSolverMasks._promote`);
+#   (c) NOT CODE: no enable claim until the real-model 2-thread-cap check passes
+#       (RUN experiments/C25f-FINISH/cap_identity_real.py, with its control arm).
+# A hard stop, or a soft stop under a flipped RULING 1, still promotes nothing. A child
+# that exits NON-ZERO still promotes nothing (C25x M5's quarantine: manager 154 ruled on
+# the timeout only). False restores C25f's discard on timeout. Read in
+# `StopSolverMasks._join`; tested by
+# `test_world_builder_stop_masks.py::test_ruling_3_a_timed_out_child_promotes_only_verified_files`.
+STOP_MASKS_PROMOTE_PARTIAL_ON_TIMEOUT = True
 
-# The Stop child's log, in the session's solve directory (not a compared artifact).
+# THE JOIN'S BOUND SCALES WITH THE WALK (C25f review MED-1). A fixed 1800 s ended the
+# join -- and threw the child's work away -- at about 3,300 solver images, an ~18-min
+# walk at walk 5's density, and at ~1,300 beside a busy GPU. The bound, from the join's
+# start, is
+#     max(STOP_MASKS_JOIN_FLOOR_S,
+#         STOP_MASKS_JOIN_FACTOR x STOP_MASKS_SECONDS_PER_IMAGE x solver images at Stop)
+#   * 0.538 s per image: MEASURED. Walk 5's solver masks, 536 s for 997 images, GPU
+#     uncontended (RUN experiments/W0-WAIT/PROFILE-walk5.md, row 3b).
+#   * FACTOR 4.0: DECLARED. Stage 0's worst measured slowdowns of these masks multiply
+#     to 2.86x -- 2.7x beside a compute-bound GPU neighbour (row C) and 1.06x under the
+#     child's 2-thread cap (row T; RUN experiments/W0-STAGE0/STAGE0.md §6.6) -- and 4.0
+#     leaves 40 % on top.
+#   * FLOOR 1800 s: the bound before it scaled. Start-up and model load dominate a short
+#     walk, and every walk below ~837 solver images keeps exactly the old bound.
+# A child that still overruns it is terminated, and RULING 3 keeps what it finished.
+STOP_MASKS_SECONDS_PER_IMAGE = 0.538
+STOP_MASKS_JOIN_FACTOR = 4.0
+STOP_MASKS_JOIN_FLOOR_S = 1800.0
+
+# The Stop child's log, in the session's solve directory (not a compared artifact). The
+# parent appends each promotion's RECORD to it (RULING 3 (b)).
 STOP_MASKS_LOG_NAME = "solve_masks_at_stop.log"
 # The child's CPU thread cap: see `world_solve_masks.CHILD_THREADS` (Stage 0 §6.6).
 STOP_MASKS_THREAD_ENV = ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS",
                          "NUMEXPR_NUM_THREADS")
+# Where a stage's unverified and incomplete files go (RULING 3 (a)); swept with the stage.
+STOP_MASKS_QUARANTINE_DIRNAME = "quarantine"
+# CREATE_SUSPENDED (winbase.h). `subprocess` does not name it.
+_CREATE_SUSPENDED = 0x00000004
+
+
+def stop_masks_join_bound(images: int) -> float:
+    """The join's bound for a walk with `images` solver images at Stop (MED-1, above)."""
+    return max(STOP_MASKS_JOIN_FLOOR_S,
+               STOP_MASKS_JOIN_FACTOR * STOP_MASKS_SECONDS_PER_IMAGE * max(0, int(images)))
+
+
+def _solver_image_count(images_dir) -> int:
+    """The files in the live solver image directory: the child's snapshot, near enough.
+    A staging file a killed writer left counts too, which only lengthens the bound."""
+    try:
+        with os.scandir(images_dir) as entries:
+            return sum(1 for entry in entries if entry.is_file())
+    except OSError:
+        return 0
+
+
+def _resume_suspended(process) -> bool:
+    """Let a child created with CREATE_SUSPENDED run. True when it runs.
+
+    `NtResumeProcess` on the handle `Popen` holds -- the call psutil's
+    `Process.resume()` makes on Windows -- so no pid is looked up, and none can
+    have been reused. A process that was never created suspended (POSIX, or a
+    stand-in in a test, which has no `_handle`) already runs: True."""
+    handle = getattr(process, "_handle", None)
+    if os.name != "nt" or handle is None:
+        return True
+    import ctypes  # noqa: PLC0415
+
+    ntdll = ctypes.WinDLL("ntdll")
+    ntdll.NtResumeProcess.argtypes = [ctypes.c_void_p]
+    ntdll.NtResumeProcess.restype = ctypes.c_long
+    return ntdll.NtResumeProcess(ctypes.c_void_p(int(handle))) == 0
+
+
+def _verified_cache_file(path: Path, key: dict, shape) -> bool:
+    """RULING 3 (a): `path` is a cache file the final solve would read as a HIT for
+    `key` at `shape`. `transients.read_component` IS that lookup: the archive loads
+    whole, every key field matches (the image's name and SHA-1, the input rule, the
+    pinned models, the component's parameters), the recorded shape is `shape`, and
+    the bit planes unpack -- which needs them stored as uint8 -- to that shape. The
+    dtype and shape of what comes back are asserted here as well."""
+    from tower.world_builder import transients as T  # noqa: PLC0415
+
+    got = T.read_component(path, key, shape)
+    if got is None:
+        return False
+    hand, phone, _record = got
+    return (hand.dtype == bool and phone.dtype == bool
+            and tuple(hand.shape) == tuple(shape) and tuple(phone.shape) == tuple(shape))
 
 
 def _stop_mask_stage_parent(workspace) -> Path:
@@ -783,22 +879,88 @@ def _stop_mask_stage(workspace) -> Path:
     return stage_path(workspace.root)
 
 
+def _pid_alive(pid: int) -> bool:
+    """`solve_masks._pid_alive`'s rule: UNKNOWN IS ALIVE -- never sweep a live writer's work."""
+    try:
+        import psutil  # noqa: PLC0415
+
+        return psutil.pid_exists(int(pid))
+    except Exception:  # noqa: BLE001
+        return True
+
+
+def sweep_stale_stop_mask_stages(store, world_id: str) -> list:
+    """Remove every `solve/<session>/stop_masks/` of this world whose writer is gone.
+
+    A builder that dies during the Stop wait or the join -- a Tower shut down
+    mid-finalization, the supervisor's stop grace, a crash -- never sweeps its
+    stage. Its Job Object kills the child with it, but the stage stays: a full
+    snapshot of the solver images and the child's cache files (~140 MB for walk
+    5), read by nothing and counted by `store.storage_usage`. The only other
+    sweep is the next Stop launch for the SAME session, which never comes
+    (C25x2 MED-3; C25f review LOW-1).
+
+    Called at the next builder start for the world, holding its writer lock
+    (`engine.start_session`), so no other builder of this world is in its Stop.
+    It DELETES, following the product's own precedent for its own leavings:
+    `storage.sweep_abandoned_staging` via `global_solve.sweep_workspace` (every
+    solve's start) and `solve_masks.sweep_masked_databases` (every masked
+    solve) each delete what a DEAD writer left -- keyed on the writer's pid --
+    and leave anything whose writer is alive, or that names no writer, alone.
+    Here the pid is the child's, in `stop_masks/writer.p<pid>`, which `launch`
+    writes before the child is resumed. A `stop_masks/` with no marker, or with
+    a marker naming a live pid (under RULING 2, a child its builder could not
+    confirm dead), is left. Read-only when there is nothing to sweep. Returns
+    the sessions swept."""
+    from scripts.world_solve_masks import writer_pids  # noqa: PLC0415
+    from tower.world_builder.global_solve import workspace_for  # noqa: PLC0415
+
+    swept = []
+    for session_id in store.list_session_ids(world_id):
+        parent = _stop_mask_stage_parent(workspace_for(store, world_id, session_id))
+        if not parent.is_dir():
+            continue
+        pids = writer_pids(parent)
+        if not pids or any(_pid_alive(pid) for pid in pids):
+            continue
+        try:
+            shutil.rmtree(parent)
+        except OSError as exc:
+            logger.warning("[Tower][WorldBuilder] a stale Stop mask stage could not be swept "
+                           "(session %s): %s", session_id, exc)
+            continue
+        swept.append(session_id)
+    if swept:
+        logger.info("[Tower][WorldBuilder] swept %s stale Stop mask stage(s) whose child is gone "
+                    "(a builder of this world died before it could): %s", len(swept),
+                    ", ".join(swept))
+    return swept
+
+
 class StopSolverMasks:
     """A Stop-only mask prefill, joined before the final solve owns masks.
 
     The child masks an immutable snapshot of the solver images into its own
     stage (`world_solve_masks.stage_path`, OUTSIDE `transients/`). The parent
     promotes the stage's cache files into the live cache only after the child
-    was confirmed to exit 0, and only for images whose bytes still match; it
-    then SWEEPS the stage. Every other exit it can confirm sweeps it too. A
-    child it cannot confirm dead keeps its stage (it may still be writing
-    there), which nothing reads.
+    was confirmed gone, only after an exit 0 or a timeout (RULING 3), and only
+    files that VERIFY for the live image bytes; it then SWEEPS the stage. Every
+    other exit it can confirm sweeps it too. A child it cannot confirm dead
+    keeps its stage (it may still be writing there), which nothing reads.
+
+    OWNERSHIP BEFORE EXECUTION (C25x2 HIGH-1). On Windows the child is created
+    SUSPENDED and resumed only once it is in this builder's Job Object
+    (KILL_ON_JOB_CLOSE). A child that cannot be put in a Job therefore never
+    runs a single instruction of its own: it is terminated while suspended, and
+    even if that cannot be confirmed, it writes nothing and uses no CPU or GPU
+    beside the final solve, and the wrapper never joins it. (POSIX has no Job
+    Object at all; there the child is refused right after its spawn, as before.)
 
     The switches are `main`'s to check: whoever constructs this launches.
     """
 
     def __init__(self, solver: "BackgroundSolver", *, script=None, spawn=None,
-                 join_timeout=1800.0):
+                 join_timeout=None):
         self.solver = solver
         self.script = script or TOWER_ROOT / "scripts" / "world_solve_masks.py"
         self._spawn = spawn if spawn is not None else subprocess.Popen
@@ -806,8 +968,10 @@ class StopSolverMasks:
         self._job = None
         self._log = None
         self._started = None
+        self._resumed = False
         self._exit_logged = False
         self._soft_stop_logged = False
+        # None: `stop_masks_join_bound` of the solver images at `launch` (MED-1).
         self.join_timeout = join_timeout
 
     def _workspace(self):
@@ -817,8 +981,9 @@ class StopSolverMasks:
                              self.solver.world_id, self.solver.session_id)
 
     def _sweep_stage(self) -> None:
-        """Remove `stop_masks/` -- the stage, its `.tmp` files, any stage moved
-        aside. Only ever called with no child alive to write into it."""
+        """Remove `stop_masks/` -- the stage, its `.tmp` files, its quarantine, any
+        stage moved aside, the writer marker. Only ever called with no child alive
+        to write into it."""
         try:
             parent = _stop_mask_stage_parent(self._workspace())
             if parent.exists():
@@ -835,6 +1000,9 @@ class StopSolverMasks:
             workspace = self._workspace()
             workspace.root.mkdir(parents=True, exist_ok=True)
             self._sweep_stage()   # a stage no child owns: a builder that died before sweeping
+            images = _solver_image_count(workspace.images_dir)
+            if self.join_timeout is None:
+                self.join_timeout = stop_masks_join_bound(images)
             self._log = open(workspace.root / STOP_MASKS_LOG_NAME, "ab")
             self._started = time.monotonic()
             env = child_environment()
@@ -843,15 +1011,32 @@ class StopSolverMasks:
                 argv, cwd=str(TOWER_ROOT), stdin=subprocess.DEVNULL,
                 stdout=self._log, stderr=subprocess.STDOUT,
                 env=env,
-                creationflags=(subprocess.BELOW_NORMAL_PRIORITY_CLASS if os.name == "nt" else 0),
+                # SUSPENDED until it is owned (HIGH-1: the class docstring).
+                creationflags=(subprocess.BELOW_NORMAL_PRIORITY_CLASS | _CREATE_SUSPENDED
+                               if os.name == "nt" else 0),
             )
+            self._resumed = os.name != "nt"
             self._job = assign_to_job(self._child)
             if self._job is None:
-                logger.warning("[Tower][WorldBuilder] Stop mask prefill has no Job Object; disabling it")
+                logger.warning("[Tower][WorldBuilder] Stop mask prefill has no Job Object; "
+                               "disabling it (%s)", "it is never resumed"
+                               if not self._resumed else "it is terminated")
                 self.close()
                 return False
-            logger.info("[Tower][WorldBuilder] Stop mask prefill launched (pid %s)",
-                        self._child.pid)
+            from scripts.world_solve_masks import writer_marker  # noqa: PLC0415
+
+            marker = writer_marker(workspace.root, self._child.pid)
+            marker.parent.mkdir(parents=True, exist_ok=True)
+            marker.write_bytes(b"")
+            if not self._resumed:
+                if not _resume_suspended(self._child):
+                    logger.warning("[Tower][WorldBuilder] Stop mask prefill could not be "
+                                   "resumed; disabling it")
+                    self.close()
+                    return False
+                self._resumed = True
+            logger.info("[Tower][WorldBuilder] Stop mask prefill launched (pid %s); join bound "
+                        "%.0fs for %s solver images", self._child.pid, self.join_timeout, images)
         except Exception as exc:  # prefill failure must leave the old final solve available
             logger.warning("[Tower][WorldBuilder] Stop mask prefill could not start: %s", exc)
             self.close()
@@ -859,83 +1044,206 @@ class StopSolverMasks:
         return True
 
     def join(self, *, should_stop, should_soft_stop=lambda: False) -> bool:
-        """Wait for the child; promote its stage on a confirmed exit 0.
+        """Wait for the child; promote what verifies, after an exit 0 or a timeout.
 
         Returns False only when the child cannot be confirmed gone (then
         nothing is promoted, and its stage is left where nothing reads it).
         A HARD stop (`should_stop`) or the `join_timeout` ends the wait early;
-        the ordinary soft stop does not (RULING 1, above)."""
+        the ordinary soft stop does not (RULING 1, above).
+
+        The answer is read at the END (C25f review LOW-5): a child that a
+        failed termination left running, but that died before the join
+        returned, is confirmed, swept and reported gone -- not reported alive."""
         try:
-            if self._child is None:
-                return True
-            deadline = time.monotonic() + self.join_timeout
-            while self._child.poll() is None:
-                soft = should_soft_stop()
-                if soft and not self._soft_stop_logged:
-                    self._soft_stop_logged = True
-                    logger.info("[Tower][WorldBuilder] Stop mask prefill: a soft stop arrived "
-                                "during the join; %s", "it ends the join"
-                                if STOP_MASKS_JOIN_ENDS_ON_SOFT_STOP else
-                                "a builder that is finalizing carries on, so it does not "
-                                "end the join")
-                soft = soft and STOP_MASKS_JOIN_ENDS_ON_SOFT_STOP          # RULING 1
-                timed_out = time.monotonic() >= deadline
-                if should_stop() or soft or timed_out:
-                    logger.warning("[Tower][WorldBuilder] Stop mask prefill join ended (%s); "
-                                   "terminating pid %s; nothing it staged is promoted",
-                                   "timed out after %.0fs" % self.join_timeout if timed_out
-                                   else "a stop was requested", self._child.pid)
-                    return self.close()
-                time.sleep(CHILD_POLL_S)
-            rc = self._child.poll()
-            self._log_exit(rc)
-            if rc == 0:
-                self._promote()
-            else:
-                logger.warning("[Tower][WorldBuilder] Stop mask prefill exited %s; nothing it "
-                               "staged is promoted, and the stage is swept", rc)
-            return True
+            self._join(should_stop, should_soft_stop)
         finally:
             if self._child is not None and self._child.poll() is not None:
                 self.close()
+        return self._child is None
 
-    def _promote(self) -> None:
-        """Move the stage's cache files for images whose bytes still match.
+    def _join(self, should_stop, should_soft_stop) -> None:
+        if self._child is None:
+            return
+        if self.join_timeout is None:       # a child this object did not `launch`
+            self.join_timeout = stop_masks_join_bound(
+                _solver_image_count(self._workspace().images_dir))
+        deadline = time.monotonic() + self.join_timeout
+        while self._child.poll() is None:
+            soft = should_soft_stop()
+            if soft and not self._soft_stop_logged:
+                self._soft_stop_logged = True
+                logger.info("[Tower][WorldBuilder] Stop mask prefill: a soft stop arrived "
+                            "during the join; %s", "it ends the join"
+                            if STOP_MASKS_JOIN_ENDS_ON_SOFT_STOP else
+                            "a builder that is finalizing carries on, so it does not "
+                            "end the join")
+            soft = soft and STOP_MASKS_JOIN_ENDS_ON_SOFT_STOP          # RULING 1
+            timed_out = time.monotonic() >= deadline
+            hard = should_stop()
+            if hard or soft or timed_out:
+                stopped = hard or soft
+                partial = timed_out and not stopped and STOP_MASKS_PROMOTE_PARTIAL_ON_TIMEOUT
+                logger.warning("[Tower][WorldBuilder] Stop mask prefill join ended (%s); "
+                               "terminating pid %s; %s",
+                               "a stop was requested" if stopped
+                               else "timed out after %.0fs" % self.join_timeout,
+                               self._child.pid,
+                               "once it is confirmed dead, the cache files it finished are "
+                               "verified, and only those are promoted" if partial  # RULING 3
+                               else "nothing it staged is promoted")
+                if self.close(sweep=not partial) and partial:
+                    try:
+                        self._promote(self._snapshot_names(), why="timed out")
+                    finally:
+                        self._sweep_stage()
+                return
+            time.sleep(CHILD_POLL_S)
+        rc = self._child.poll()
+        self._log_exit(rc)
+        if rc == 0:
+            self._promote_result()
+        else:
+            logger.warning("[Tower][WorldBuilder] Stop mask prefill exited %s; nothing it "
+                           "staged is promoted, and the stage is swept", rc)
 
-        ONLY the content-keyed `transients/*.npz`: they are the one thing the
-        final solve reads from here (a cache hit instead of an inference). The
-        stage's `masks/*.png` and `index.json` are NOT promoted -- the final
-        solve writes every PNG and index row itself from the cache, and a
-        final solve that ends unavailable then leaves exactly what it left
-        without this switch: no `masks/`, no index rows."""
-        workspace = self._workspace()
-        stage = _stop_mask_stage(workspace)
+    def _snapshot_names(self) -> list:
+        """The images a child that did not finish had snapshotted: its stage's `images/`."""
+        from tower.world_builder.global_solve import SolveWorkspace  # noqa: PLC0415
+
+        try:
+            images = SolveWorkspace(_stop_mask_stage(self._workspace())).images_dir
+            return sorted(p.name for p in images.iterdir() if p.is_file())
+        except OSError:
+            return []
+
+    def _promote_result(self) -> None:
+        """An exit 0: promote from its result, and only when it says the pass was COMPLETE."""
+        stage = _stop_mask_stage(self._workspace())
         manifest = json.loads((stage / "result.json").read_text(encoding="utf-8"))
         if not manifest["available"]:
             logger.warning("[Tower][WorldBuilder] Stop mask prefill exited 0 without a complete "
                            "result; nothing it staged is promoted")
             return
-        valid = {}
-        for name, sha in manifest["images"].items():
+        self._promote(list(manifest["images"]), why="exited 0", manifest=manifest)
+
+    def _promote(self, names, *, why: str, manifest=None) -> None:
+        """Promote the stage's cache files that VERIFY; one atomic replace each.
+
+        ONLY the content-keyed `transients/*.npz`: they are the one thing the
+        final solve reads from here (a cache hit instead of an inference). The
+        stage's `masks/*.png` and `index.json` are NOT promoted -- the final
+        solve writes every PNG and index row itself from the cache, and a final
+        solve that ends unavailable then leaves exactly what it left without
+        this switch: no `masks/`, no index rows.
+
+        For each image and each solver component the one candidate is the stage
+        file named for the LIVE image's CURRENT bytes. With a result
+        (`manifest`), an image whose bytes changed since the child's snapshot is
+        skipped first (C25x H2). A candidate is promoted only if it VERIFIES
+        (`_verified_cache_file`, RULING 3 (a)); one that does not, and every
+        `.tmp` a killed writer left, goes to the stage's `quarantine/`, which is
+        swept with the stage. A file the live cache already holds (a hit the
+        child linked) stays where it is.
+
+        THE SET (RULING 3 (b); C25x2 MED-2). Each promotion is ONE `os.replace`
+        within `solve/<session>`: atomic per file, so the live cache holds a
+        whole verified file or none. The set is not atomic, and it is not rolled
+        back: when a replace fails part-way, the files already promoted are each
+        individually valid for the very bytes the final solve will read, and
+        that solve computes every mask it does not find. The partial set is
+        RECORDED instead, in the log and in `solve_masks_at_stop.log`
+        (`test_a_promotion_that_stops_halfway_is_recorded_and_harmless`)."""
+        from tower.storage import read_json_closed  # noqa: PLC0415
+        from tower.world_builder import global_solve  # noqa: PLC0415
+        from tower.world_builder import solve_masks as SM  # noqa: PLC0415
+
+        workspace = self._workspace()
+        stage = _stop_mask_stage(workspace)
+        staged = SM.cache_dir(global_solve.SolveWorkspace(stage))
+        live = SM.cache_dir(workspace)
+        try:
+            camera = global_solve.PinholeCamera.from_json_dict(
+                read_json_closed(workspace.camera_path))
+            shape = (int(camera.height), int(camera.width))
+        except Exception:  # noqa: BLE001 -- no camera, no expected shape: nothing verifies
+            shape = None
+        params = SM.solver_params()
+        matched, candidates, unverified = 0, [], []
+        for name in names:
             try:
-                current = hashlib.sha1((workspace.images_dir / name).read_bytes()).hexdigest()
+                sha = SM.file_sha1(workspace.images_dir / name)
             except OSError:
                 continue
-            if current == sha:
-                valid[name] = sha
-        cache = workspace.root / "transients"
-        cache.mkdir(parents=True, exist_ok=True)
-        promoted = 0
-        for name, sha in valid.items():
-            for source in (stage / "transients").glob(f"{Path(name).stem}.{sha[:12]}.*.npz"):
-                target = cache / source.name
-                if not target.exists():
-                    os.replace(source, target)
-                    promoted += 1
-        logger.info("[Tower][WorldBuilder] Stop mask prefill promoted %s cache files: %s images "
-                    "masked, %s cache hits in the child; %s of %s images still match at the "
-                    "final solve", promoted, manifest["masked"], manifest["cache_hits"],
-                    len(valid), len(manifest["images"]))
+            if manifest is not None and manifest["images"].get(name) != sha:
+                continue
+            matched += 1
+            for component in params.components:
+                source = SM.component_path(staged, name, component, sha)
+                target = SM.component_path(live, name, component, sha)
+                if not source.is_file() or target.exists():
+                    continue
+                if shape is not None and _verified_cache_file(
+                        source, SM.mask_key(component, params, name, sha), shape):
+                    candidates.append((source, target))
+                else:
+                    unverified.append(source)
+        incomplete = sorted(staged.glob("*.tmp")) if staged.is_dir() else []
+        quarantined = self._quarantine(unverified + incomplete,
+                                       stage / STOP_MASKS_QUARANTINE_DIRNAME)
+        promoted, error = [], None
+        for source, target in candidates:
+            try:
+                live.mkdir(parents=True, exist_ok=True)
+                os.replace(source, target)
+            except OSError as exc:
+                error = exc
+                break
+            promoted.append(target.name)
+        self._record_promotion({
+            "why": why, "state": "complete" if error is None else "partial",
+            "verified": len(candidates), "promoted": promoted, "quarantined": quarantined,
+            "error": None if error is None else f"{type(error).__name__}: {error}",
+        })
+        also = (f"; {len(quarantined)} staged files did not verify or were incomplete, and "
+                "were quarantined, never promoted" if quarantined else "")
+        if error is not None:
+            logger.warning("[Tower][WorldBuilder] Stop mask prefill promotion stopped after %s "
+                           "of %s verified cache files (%s: %s); that partial set is recorded, "
+                           "every file in it verified, and the final solve computes the rest%s",
+                           len(promoted), len(candidates), type(error).__name__, error, also)
+        elif manifest is not None:
+            logger.info("[Tower][WorldBuilder] Stop mask prefill promoted %s cache files: %s "
+                        "images masked, %s cache hits in the child; %s of %s images still "
+                        "match at the final solve%s", len(promoted), manifest["masked"],
+                        manifest["cache_hits"], matched, len(manifest["images"]), also)
+        else:
+            logger.info("[Tower][WorldBuilder] Stop mask prefill promoted %s verified cache "
+                        "files from a child that %s, for %s snapshot images%s",
+                        len(promoted), why, len(names), also)
+
+    @staticmethod
+    def _quarantine(files, quarantine: Path) -> list:
+        """RULING 3 (a): move what must never be promoted out of the stage's cache."""
+        moved = []
+        for path in files:
+            try:
+                quarantine.mkdir(parents=True, exist_ok=True)
+                os.replace(path, quarantine / path.name)
+            except OSError:
+                continue    # it stays in the stage, never promoted, and is swept with it
+            moved.append(path.name)
+        return moved
+
+    def _record_promotion(self, record: dict) -> None:
+        """RULING 3 (b): the promotion set, as it ended, in the child's log file."""
+        try:
+            with open(self._workspace().root / STOP_MASKS_LOG_NAME, "a",
+                      encoding="utf-8") as handle:
+                handle.write("[Tower][WorldBuilder] Stop mask prefill promotion record: "
+                             + json.dumps(record, sort_keys=True) + "\n")
+        except OSError as exc:
+            logger.warning("[Tower][WorldBuilder] Stop mask prefill promotion record could not "
+                           "be written: %s", exc)
 
     def _log_exit(self, rc) -> None:
         if self._exit_logged or self._child is None:
@@ -951,23 +1259,37 @@ class StopSolverMasks:
                     stats.get("cache_hits", "unknown"))
         self._exit_logged = True
 
-    def close(self) -> bool:
+    def close(self, *, sweep: bool = True) -> bool:
         """End the child if it is alive. False when it cannot be confirmed gone.
 
-        A child that cannot be confirmed gone is kept in an OWNED registry:
-        its Job Object handle stays open (KILL_ON_JOB_CLOSE), so the child
-        dies with this builder at the latest. Its stage is left alone -- it
-        may still be writing there -- and is never promoted."""
+        A child that cannot be confirmed gone is kept in a TRACKED registry, and
+        the log says what holds it. With a Job Object (every child that ever
+        ran, on Windows) the handle stays open -- KILL_ON_JOB_CLOSE, so the child
+        dies with this builder at the latest. Without one it was never resumed
+        (HIGH-1) and has run none of its own code. Its stage is left alone -- it
+        may still be writing there -- and is never promoted. A child confirmed
+        gone leaves the registry, and its stage is swept unless the caller
+        (`_join`, RULING 3) sweeps it after promoting."""
         if self._child is not None and self._child.poll() is None:
             gone = terminate_tree(self._child, job=self._job,
                                   timeout=CHILD_TERMINATE_TIMEOUT_S, hard=True)
             if not gone or self._child.poll() is None:
                 if self not in _owned_stalled_mask_children:
                     _owned_stalled_mask_children.append(self)
+                if self._job is not None:
+                    held = ("it stays owned: its Job Object closes with this builder and kills "
+                            "it")
+                elif not self._resumed:
+                    held = ("it was created suspended and never resumed, so it has run none of "
+                            "its own code: it writes nothing and uses no CPU or GPU. It is in NO "
+                            "Job Object and may outlive this builder, still suspended; it is "
+                            "tracked")
+                else:
+                    held = ("it is in NO Job Object and is NOT owned: it may outlive this "
+                            "builder")
                 logger.error("[Tower][WorldBuilder] Stop mask prefill pid %s could not be "
-                             "confirmed dead; it stays owned (its Job Object closes with this "
-                             "builder), and nothing it staged is ever promoted",
-                             self._child.pid)
+                             "confirmed dead; %s; nothing it staged is ever promoted",
+                             self._child.pid, held)
                 return False
         if self._child is not None and self._started is not None:
             self._log_exit(self._child.poll())
@@ -978,12 +1300,16 @@ class StopSolverMasks:
             self._log.close()
             self._log = None
         self._child = None
-        self._sweep_stage()
+        if self in _owned_stalled_mask_children:
+            _owned_stalled_mask_children.remove(self)
+        if sweep:
+            self._sweep_stage()
         return True
 
 
 # Stop mask children that could not be confirmed dead (`StopSolverMasks.close`). Held
-# only so their Job Object handles stay open until this builder exits, which kills them.
+# so their Job Object handles stay open until this builder exits, which kills them, and
+# so a never-resumed child without one stays tracked.
 _owned_stalled_mask_children = []
 
 
@@ -996,6 +1322,9 @@ def wait_for_background_solve_at_stop(solver, timeout: float, *, should_stop, st
     background solve's deadline is `stop_at + timeout` on both paths. It is
     REQUIRED, so a call site cannot forget it and quietly grant the child's
     start-up to the background solve (C25x H3).
+
+    A child whose launch failed and that could not be confirmed dead is never
+    joined (C25f review LOW-2): the wait still runs, and the answer is False.
 
     Returns False only when the mask child cannot be confirmed gone
     (RULING 2 decides what `main` does then)."""
@@ -2392,6 +2721,13 @@ def main(argv=None) -> int:
         declared_size=declared_size,
         capture_id=capture_id,
     )
+    # A Stop mask stage a dead builder of this world left behind (C25x2 MED-3), now that
+    # this builder holds the world's writer lock. Only a switch-on Stop ever makes one;
+    # with none on disk this reads a directory listing and writes nothing.
+    try:
+        sweep_stale_stop_mask_stages(store, world_id)
+    except Exception as exc:  # noqa: BLE001 -- scratch; never a reason not to build
+        logger.warning("[Tower][WorldBuilder] stale Stop mask stages were not swept: %s", exc)
 
     # Everything a physical run needs in order to answer "is calibration
     # active?" without opening a session record afterwards, on one line.

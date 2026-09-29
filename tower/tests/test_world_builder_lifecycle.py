@@ -244,6 +244,9 @@ def _stop_mask_stubs(tmp_path, *, mask_sleep=0.3, hang=False):
         "else:\n"
         "    (ws / 'images').mkdir(parents=True, exist_ok=True)\n"
         "    (ws / 'images' / name).write_bytes(b'solver image bytes')\n"
+        # The solver camera: promotion verifies each cache file against its shape.
+        "    (ws / 'camera.json').write_text(json.dumps({'fx': 8.0, 'fy': 8.0, 'cx': 4.0,\n"
+        "        'cy': 2.0, 'width': 8, 'height': 4}))\n"
         "    note('background')\n"
         "    time.sleep(60)\n", encoding="utf-8")
     masks = tmp_path / "stub_masks.py"
@@ -272,6 +275,9 @@ def _stop_mask_stubs(tmp_path, *, mask_sleep=0.3, hang=False):
             f"while not pathlib.Path({grand_pid!r}).exists() and time.monotonic() < deadline:\n"
             "    time.sleep(0.05)\n"
             f"pathlib.Path({str(pids)!r}).write_text(str(os.getpid()) + ' ' + str(grand.pid))\n"
+            # What it has staged so far: a snapshot, as the real child makes first.
+            "(ws / 'stop_masks' / 's' / 'images').mkdir(parents=True, exist_ok=True)\n"
+            "(ws / 'stop_masks' / 's' / 'images' / name).write_bytes(b'snapshot')\n"
             "note('mask-after-stop' if stopped else 'mask-before-stop')\n"
             "time.sleep(120)\n"
         )
@@ -283,8 +289,13 @@ def _stop_mask_stubs(tmp_path, *, mask_sleep=0.3, hang=False):
             "sha = hashlib.sha1(data).hexdigest()\n"
             "stage = ws / 'stop_masks' / 's'\n"
             "(stage / 'transients').mkdir(parents=True, exist_ok=True)\n"
-            "(stage / 'transients' / (name.split('.')[0] + '.' + sha[:12] + '.gdsam.npz'))"
-            ".write_bytes(b'stub mask')\n"
+            # A REAL cache file, as the child writes one: promotion verifies it.
+            "import numpy as np\n"
+            "from tower.world_builder import solve_masks as SM\n"
+            "hand = np.zeros((4, 8), bool)\n"
+            "SM.T.write_component(SM.component_path(stage / 'transients', name, 'gdsam', sha),\n"
+            "                     SM.mask_key('gdsam', SM.solver_params(), name, sha),\n"
+            "                     hand, hand, image_sha1=sha)\n"
             "(stage / 'result.json').write_text(json.dumps({'images': {name: sha}, "
             "'masked': 1, 'cache_hits': 0, 'available': True}))\n"
             "note('mask-exit')\n"
@@ -330,11 +341,16 @@ def test_stop_mask_call_site_and_off_cutoff(finished_capture, tmp_path, monkeypa
     assert not (ws / "transients" / "s").exists()
     if expected[-1] == "final-saw-prefill":
         assert "Stop mask prefill launched (pid" in stderr
+        # The floor: the background stub may not have written its image yet at launch.
+        assert "; join bound 1800s for " in stderr
         assert "Stop mask prefill promoted 1 cache files" in stderr
         assert "1 of 1 images still match at the final solve" in stderr
-        assert (ws / "solve_masks_at_stop.log").exists()
+        log = (ws / "solve_masks_at_stop.log").read_text(encoding="utf-8")
+        assert '"state": "complete"' in log and '"verified": 1' in log
     else:
         assert "Stop mask prefill" not in stderr
+        # The builder-start sweep (C25x2 MED-3) is silent with nothing to sweep.
+        assert "Stop mask stage" not in stderr
 
 
 def test_stop_masks_ordinary_soft_stop_still_promotes(finished_capture, tmp_path, monkeypatch):
@@ -419,6 +435,56 @@ def test_stop_masks_hard_stop_during_the_join_kills_the_child_tree(finished_capt
     assert not {"final", "final-saw-prefill"} & set(_events_file(events))
     ws = store.world_dir(world_id) / "solve" / session_id
     assert not (ws / "stop_masks").exists()
+
+
+def test_a_builder_killed_in_the_join_leaves_a_stage_the_next_builder_sweeps(
+        finished_capture, tmp_path, monkeypatch):
+    """C25x2 MED-3, with real processes and a real parent death. The builder is
+    KILLED (TerminateProcess: no `finally`, no sweep) while its Stop mask child
+    hangs in the join. The Job Object takes the child and its grandchild with
+    it; the stage stays, attributed by its writer marker to the child's pid,
+    now gone. The next builder start for that world sweeps it."""
+    import psutil
+
+    from scripts import world_solve_masks as M
+
+    capture_dir, _capture_id = finished_capture
+    root = tmp_path / "worlds"
+    events, pids, solve, masks = _stop_mask_stubs(tmp_path, hang=True)
+    monkeypatch.setenv("TOWER_WORLD_SOLVE_MASKS", "on")
+    monkeypatch.setenv("TOWER_WORLD_SOLVE_MASKS_AT_STOP", "on")
+    process = _spawn(capture_dir, root, "--solve", "--solve-every", "2",
+                     "--solve-wait-seconds", "0.3", "--solve-script", str(solve),
+                     "--stop-masks-script", str(masks))
+    tree = []
+    try:
+        _wait_for(lambda: "mask-after-stop" in _events_file(events),
+                  what="the Stop mask child and its grandchild to start")
+        tree = [psutil.Process(int(pid)) for pid in pids.read_text().split()]
+        time.sleep(1.0)                # past the 0.3-s background wait: in the join
+        process.kill()                 # the builder dies; nothing of it runs again
+        process.communicate(timeout=EXIT_TIMEOUT_S)
+        _wait_for(lambda: not any(p.is_running() for p in tree), timeout=15.0,
+                  what="the Job Object to take the child tree with the builder")
+    finally:
+        if process.poll() is None:
+            process.kill()
+        for proc in tree:              # never leave a stub behind a failed assertion
+            try:
+                if proc.is_running():
+                    proc.kill()
+            except psutil.Error:
+                pass
+    store, world_id, first = _the_session(root)
+    parent = store.world_dir(world_id) / "solve" / first / "stop_masks"
+    assert (parent / "s" / "images" / _STOP_MASK_IMAGE).is_file(), "a killed builder cannot sweep"
+    assert M.writer_pids(parent) == [tree[0].pid]
+    second = _spawn(capture_dir, root, "--world", world_id)
+    stdout, stderr = _finish(second)
+    assert second.returncode == 0, stderr[-2000:]
+    assert len(store.list_session_ids(world_id)) == 2
+    assert not parent.exists(), "the next builder start did not sweep the dead builder's stage"
+    assert "swept 1 stale Stop mask stage(s) whose child is gone" in stderr
 
 
 # -- asked to stop mid-walk -------------------------------------------------

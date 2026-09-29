@@ -4,7 +4,9 @@
 This child reads the session keyframes, camera and images. It masks an
 immutable snapshot of those images in its own STAGE, and writes nothing else:
 the parent promotes the stage's cache files after it has confirmed this
-process exited 0 (`world_build_session.StopSolverMasks`). The final solve owns
+process exited 0 -- or, once it is confirmed dead, after the join's bound
+killed it (manager 154 §1) -- and only the files that verify for the live
+image bytes (`world_build_session.StopSolverMasks`). The final solve owns
 image preparation, the live mask cache, `masks/` and every database operation.
 """
 
@@ -33,6 +35,11 @@ from tower.native_prewarm import prewarm_world_builder  # noqa: E402
 STAGE_PARENT_DIRNAME = "stop_masks"
 STAGE_DIRNAME = "s"
 RESULT_FILENAME = "result.json"
+# `stop_masks/writer.p<pid>`: which process may write this stage. The parent writes it for
+# the child it launched BEFORE that child runs a single instruction (it is created
+# suspended), so a stage a dead builder left behind is attributable -- and sweepable once
+# that pid is gone (`world_build_session.sweep_stale_stop_mask_stages`, C25x2 MED-3).
+WRITER_MARKER_PREFIX = "writer.p"
 
 # The child's CPU thread cap. Stage 0 measured the solver masks (Grounding DINO + SAM
 # 2.1 + OneFormer: hand/phone arrays and the COLMAP PNGs) BIT-IDENTICAL under exactly
@@ -65,6 +72,21 @@ def stage_path(workspace_root) -> Path:
     return stage_parent(workspace_root) / STAGE_DIRNAME
 
 
+def writer_marker(workspace_root, pid: int) -> Path:
+    """`stop_masks/writer.p<pid>`: the marker naming the process that may write the stage."""
+    return stage_parent(workspace_root) / f"{WRITER_MARKER_PREFIX}{int(pid)}"
+
+
+def writer_pids(parent: Path) -> list:
+    """The pids the markers in `parent` (a `stop_masks/`) name, in name order."""
+    pids = []
+    for marker in sorted(Path(parent).glob(f"{WRITER_MARKER_PREFIX}*")):
+        digits = marker.name[len(WRITER_MARKER_PREFIX):]
+        if digits.isdigit():
+            pids.append(int(digits))
+    return pids
+
+
 def _fresh_stage(workspace_root) -> Path:
     """An empty stage. One left behind (a parent that died before it could sweep)
     is moved aside inside `stop_masks/`, never reused, never under `transients/`."""
@@ -83,7 +105,12 @@ def prefill(root: Path, world_id: str, session_id: str) -> int:
     store = WorldStore(root)
     workspace = global_solve.workspace_for(store, world_id, session_id)
     if not workspace.camera_path.is_file():
-        return 0  # no committed solver camera yet; the final solve will mask
+        # No committed solver camera yet: nothing to mask, and the final solve will mask
+        # everything. Said in a RESULT like every other exit 0, so the parent promotes
+        # nothing and reports no failure (C25f review LOW-6: it read a missing result as a
+        # failed prefill).
+        _write_result(_fresh_stage(workspace.root), {})
+        return 0
     camera = global_solve.PinholeCamera.from_json_dict(
         read_json_closed(workspace.camera_path))
     keyframes = store.read_keyframes(world_id, session_id)
@@ -115,17 +142,23 @@ def prefill(root: Path, world_id: str, session_id: str) -> int:
             stage, names, keyframe_ids=ids, shape=(camera.height, camera.width))
         complete = (result.available and not result.partial and not result.unmasked
                     and not result.cache_write_failed and not result.retries)
-        (stage.root / RESULT_FILENAME).write_text(json.dumps({
-            "images": {name: hashlib.sha1(images[name]).hexdigest() for name in names},
-            "masked": len(result.masked), "cache_hits": result.cache_hits,
-            "available": complete,
-        }), encoding="utf-8")
+        _write_result(stage.root,
+                      {name: hashlib.sha1(images[name]).hexdigest() for name in names},
+                      masked=len(result.masked), cache_hits=result.cache_hits,
+                      available=complete)
         return 0 if complete else 1
-    stage = _fresh_stage(workspace.root)
-    (stage / RESULT_FILENAME).write_text(json.dumps({
-        "images": {}, "masked": 0, "cache_hits": 0, "available": True,
-    }), encoding="utf-8")
+    _write_result(_fresh_stage(workspace.root), {})
     return 0
+
+
+def _write_result(stage: Path, images: dict, *, masked: int = 0, cache_hits: int = 0,
+                  available: bool = True) -> None:
+    """The child's last word: the image bytes it masked (by SHA-1), and whether the pass
+    was COMPLETE. The parent promotes nothing from a stage without one."""
+    (Path(stage) / RESULT_FILENAME).write_text(json.dumps({
+        "images": images, "masked": masked, "cache_hits": cache_hits,
+        "available": available,
+    }), encoding="utf-8")
 
 
 def _cap_threads() -> None:
