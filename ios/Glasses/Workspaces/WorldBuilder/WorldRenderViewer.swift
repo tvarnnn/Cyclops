@@ -2017,10 +2017,13 @@ struct WorldRenderScene: View {
     /// At the largest text size the caption grew without limit: the 3D view
     /// measured 0 pt on an iPhone SE, 72 on the 17e and 87 on the 17 Pro (O1
     /// viewer check, at 2ff0b0e), and with Details open the caption was
-    /// pushed up under the navigation bar. Capped, the picture keeps at
-    /// least 70 % of the screen below the bar at the accessibility sizes --
-    /// about 60 % of the SE's safe area -- and the words scroll in their own
-    /// space, whole, to read and to VoiceOver.
+    /// pushed up under the navigation bar. Capped, at the accessibility sizes
+    /// the words take at most 18 % of the screen, the controls between them
+    /// and the picture at most 10 % (`controlsShare`, U0.8 R1), and the
+    /// areas and Details at most 12 % -- so the picture keeps at least 60 %
+    /// of the screen below the bar with a control shown, and 70 % without
+    /// one. Each part scrolls in its own space, whole, to read and to
+    /// VoiceOver.
     ///
     /// **No cap below the accessibility sizes** (U0.5 review F1). A cap of
     /// 18 % there was about 106 pt on an SE, and a room's caption with the
@@ -2030,6 +2033,10 @@ struct WorldRenderScene: View {
     /// own height, as they did before the cap; the areas and Details keep the
     /// room they had.
     private var captionShare: CGFloat? { dynamicTypeSize.isAccessibilitySize ? 0.18 : nil }
+    /// The controls' cap, at the accessibility sizes only, as for the words
+    /// (U0.8 R1). On an SE, 10 % is about one AX5 caption line and its
+    /// padding; below the accessibility sizes they take their own height.
+    private var controlsShare: CGFloat? { dynamicTypeSize.isAccessibilitySize ? 0.10 : nil }
     private var belowShare: CGFloat { dynamicTypeSize.isAccessibilitySize ? 0.12 : 0.3 }
 
     /// When the current wait began: the fetch (the screen's opening, a
@@ -2207,42 +2214,52 @@ struct WorldRenderScene: View {
     @ViewBuilder
     private var controls: some View {
         let back = model.target.isArea ? self.backToRoom : nil
-        if back != nil || model.newerPictureAvailable || model.newerPictureRefused {
-            VStack(alignment: .leading, spacing: 6) {
-                if let back {
-                    Button("Back to the room") { back() }
+        // One offer at a time (U0.8 R1): with both up, the controls alone
+        // could take the SE's whole screen at AX5.
+        let offer = WorldRenderOffer.current(
+            newerPictureAvailable: model.newerPictureAvailable,
+            newerPictureRefused: model.newerPictureRefused
+        )
+        if back != nil || offer != WorldRenderOffer.none {
+            // Capped at the accessibility sizes, and scrolling beyond it
+            // (U0.8 R1), as the words above are.
+            CappedScroll(cap: controlsShare.map { screenHeight * $0 } ?? 0) {
+                VStack(alignment: .leading, spacing: 6) {
+                    if let back {
+                        Button("Back to the room") { back() }
+                            .font(.caption)
+                            .accessibilityIdentifier("world-render-back-to-room")
+                    }
+                    // A rebuild of the rung on screen is offered, never forced: the
+                    // swap reloads the page and resets the camera the reader is
+                    // using. A better rung replaces the picture without asking.
+                    if offer == .newerPicture {
+                        Button("A newer reconstruction is ready. Show it") {
+                            Task { await model.showNewerPicture() }
+                        }
                         .font(.caption)
-                        .accessibilityIdentifier("world-render-back-to-room")
-                }
-                // A rebuild of the rung on screen is offered, never forced: the
-                // swap reloads the page and resets the camera the reader is
-                // using. A better rung replaces the picture without asking.
-                if model.newerPictureAvailable {
-                    Button("A newer reconstruction is ready. Show it") {
-                        Task { await model.showNewerPicture() }
+                        .accessibilityIdentifier("world-render-newer-picture")
                     }
-                    .font(.caption)
-                    .accessibilityIdentifier("world-render-newer-picture")
-                }
-                // After a refresh could not be drawn the old picture is back
-                // and the screen is `.ready`, so the failure view's "Try again"
-                // is not there. This is that control: `load()` forgets every
-                // refusal.
-                if model.newerPictureRefused {
-                    Button("A newer reconstruction could not be drawn on this phone. Try again") {
-                        Task { await model.load() }
+                    // After a refresh could not be drawn the old picture is back
+                    // and the screen is `.ready`, so the failure view's "Try again"
+                    // is not there. This is that control: `load()` forgets every
+                    // refusal.
+                    if offer == .retryRefused {
+                        Button("A newer reconstruction could not be drawn on this phone. Try again") {
+                            Task { await model.load() }
+                        }
+                        .font(.caption)
+                        .accessibilityIdentifier("world-render-retry-refused")
                     }
-                    .font(.caption)
-                    .accessibilityIdentifier("world-render-retry-refused")
                 }
+                .multilineTextAlignment(.leading)
+                // Their whole height, never squeezed to a truncated line by the
+                // picture's layout priority.
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 16)
+                .padding(.bottom, 8)
             }
-            .multilineTextAlignment(.leading)
-            // Their whole height, never squeezed to a truncated line by the
-            // picture's layout priority.
-            .fixedSize(horizontal: false, vertical: true)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, 16)
-            .padding(.bottom, 8)
         }
     }
 
@@ -2497,6 +2514,21 @@ struct WorldRenderLoadingPanel: View {
     static func progress(step: Int, seconds: Int) -> String {
         let steps = "Step \(step) of 2"
         return seconds >= 2 ? "\(steps) · \(seconds) s" : steps
+    }
+}
+
+/// Which offer the viewer's controls show (U0.8 R1). Only one at a time: both
+/// together could leave the picture no room at the largest text size.
+enum WorldRenderOffer: Equatable {
+    case none, newerPicture, retryRefused
+
+    /// Showing the newer picture is itself a fresh attempt, so it wins. If it
+    /// draws, the refusal is cleared; if it fails, the refusal is set again
+    /// and the retry comes back.
+    static func current(newerPictureAvailable: Bool, newerPictureRefused: Bool) -> WorldRenderOffer {
+        if newerPictureAvailable { return .newerPicture }
+        if newerPictureRefused { return .retryRefused }
+        return .none
     }
 }
 

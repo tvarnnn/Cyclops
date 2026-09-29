@@ -462,6 +462,59 @@ final class AccessibilityAuditUITests: XCTestCase {
         app.terminate()
     }
 
+    /// With an AREA open -- whose viewer always shows "Back to the room" --
+    /// the picture still keeps most of the screen at the largest text size
+    /// (U0.8 R1): the controls between the words and the picture are capped
+    /// at 10 %, beside the words' 18 % and the areas' and Details' 12 %.
+    func testTheWorldKeepsMostOfTheScreenWithAnAreaOpenAtTheLargestTextSize() throws {
+        let authority = try towerAuthority()
+        // On a Simulator just booted, the first WebGL page can outlast the
+        // viewer's watchdog (seen on the SE).
+        warmUpTheViewer(authority: authority)
+        let app = launch(.axl, authority: authority)
+        openSavedWorlds(app, mode: .axl)
+        let row = app.staticTexts["Appearance fixture (Mac)"]
+        XCTAssertTrue(reveal(app, row, attempts: 30), "the appearance fixture's row")
+        row.tap()
+        let web = app.webViews.firstMatch
+        XCTAssertTrue(web.waitForExistence(timeout: 120), "the page was drawn")
+
+        // An area that opens: the first enabled button in the areas row.
+        let areas = element(app, "world-render-areas")
+        guard areas.waitForExistence(timeout: 30) else {
+            throw XCTSkip("the fixture world has no area that opens (no areas row)")
+        }
+        guard let area = areas.buttons.allElementsBoundByIndex.first(where: { $0.exists && $0.isEnabled }) else {
+            throw XCTSkip("the fixture world has no area that opens")
+        }
+        XCTAssertTrue(reveal(app, area), "the area's button")
+        area.tap()
+
+        let back = element(app, "world-render-back-to-room")
+        XCTAssertTrue(back.waitForExistence(timeout: 60), "Back to the room")
+        XCTAssertTrue(web.waitForExistence(timeout: 120), "the area's page was drawn")
+        let drawing = app.staticTexts.containing(NSPredicate(format: "label BEGINSWITH %@", "Drawing the world")).firstMatch
+        _ = waitFor(timeout: 60) { !drawing.exists }
+        Thread.sleep(forTimeInterval: 3)
+        shoot(app, "world-area-share", mode: .axl)
+
+        let window = app.windows.firstMatch.frame
+        let bar = app.navigationBars.firstMatch.frame
+        let homeIndicator: CGFloat = window.height >= 800 ? 34 : 0
+        let below = window.height - bar.maxY - homeIndicator
+        let share = web.frame.height / below
+        let offers = ["world-render-newer-picture", "world-render-retry-refused"].filter { element(app, $0).exists }
+        print("U05-VIEWER|area|window=\(Int(window.width))x\(Int(window.height))|bar=\(Int(bar.maxY))"
+              + "|back=\(Int(back.frame.minY))-\(Int(back.frame.maxY))|web=\(Int(web.frame.minY))-\(Int(web.frame.maxY))"
+              + "|below=\(Int(below))|share=\(String(format: "%.2f", share))|offers=\(offers)")
+        XCTAssertTrue(back.isHittable, "Back to the room can be reached")
+        XCTAssertLessThanOrEqual(back.frame.maxY, web.frame.minY + 1, "Back to the room ends above the picture")
+        XCTAssertLessThanOrEqual(offers.count, 1, "one offer at a time")
+        XCTAssertGreaterThanOrEqual(share, 0.59,
+                                    "the 3D view is \(Int(web.frame.height)) pt of \(Int(below)) pt below the bar")
+        app.terminate()
+    }
+
     /// At the default text size the words above the picture do not scroll:
     /// the walk's notice from the Tower (COMPONENTS §8: "show it verbatim
     /// below the room caption") is on the screen whole, above the 3D view,

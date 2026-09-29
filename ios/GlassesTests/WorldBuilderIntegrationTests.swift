@@ -5850,6 +5850,16 @@ final class WorldRenderRevisionTests: XCTestCase {
         XCTAssertEqual(StubbedGeometryProtocol.requestCount(for: Self.revisionPath), asked,
                        "no request after the follower ended")
     }
+
+    /// U0.8 R1: the viewer's controls show one offer at a time. The fixture
+    /// cannot reach the both-offers state, so this is what pins it.
+    func testTheViewerShowsOneOfferAtATime() {
+        XCTAssertEqual(WorldRenderOffer.current(newerPictureAvailable: false, newerPictureRefused: false), WorldRenderOffer.none)
+        XCTAssertEqual(WorldRenderOffer.current(newerPictureAvailable: true, newerPictureRefused: false), .newerPicture)
+        XCTAssertEqual(WorldRenderOffer.current(newerPictureAvailable: false, newerPictureRefused: true), .retryRefused)
+        XCTAssertEqual(WorldRenderOffer.current(newerPictureAvailable: true, newerPictureRefused: true), .newerPicture,
+                       "showing the newer picture is itself a fresh attempt")
+    }
 }
 
 
