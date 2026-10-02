@@ -2935,8 +2935,11 @@ def test_an_unguarded_or_undeclared_stream_is_not_proof_and_its_environment_fail
     assert declared["live_safety"]["environment"]["result"] == "PASS"
     assert declared["proof"] == {"proof": False, "not_proof_reasons": ["declared --not-a-proof-run"]}
     proof = report.build_report(tower_log=log, client=_clean_client(live_tower_watch=watched), run=run)
-    assert proof["proof"] == {"proof": True, "not_proof_reasons": []}
-    assert "Proof: eligible." in report.render_markdown(proof)
+    # An idle guard alone no longer licenses proof when the JPEG/calibration
+    # comparison evidence is missing, even if the harness version is absent.
+    assert proof["proof"]["proof"] is False
+    assert "input evidence missing or changed" in proof["proof"]["not_proof_reasons"][-1]
+    assert "**NOT-PROOF:**" in report.render_markdown(proof)
 
 
 def test_compare_never_counts_a_not_proof_run(tmp_path):
@@ -3229,6 +3232,109 @@ def test_changed_jpeg_between_pin_and_send_aborts_before_the_changed_frame(tmp_p
     assert tower.frames == 1
     saved = json.loads((tmp_path / "out" / "client.json").read_text(encoding="utf-8"))
     assert saved["source_images"]["verified"] is False
+
+
+def test_send_lateness_includes_integrity_read_after_pacing_wait(tmp_path, monkeypatch):
+    _capture(tmp_path, A, started=0.0, frames=[(1, 0.05), (2, 0.10)], ended=0.15)
+    tower = FakeTower([C1])
+    real_hash = replay.sha256_file
+
+    def slow_integrity_read(path):
+        if path.suffix == ".jpg":
+            time.sleep(0.08)
+        return real_hash(path)
+
+    monkeypatch.setattr(replay, "sha256_file", slow_integrity_read)
+    record = _serve_and_replay(monkeypatch, tower, lambda port: replay.ReplayOptions(
+        port=port, captures=[A], capture_root=tmp_path / "captures", out=tmp_path / "out",
+        live_guard=False, phone_fetches=False, session_lead=0.0, sample_seconds=60.0,
+        settle_timeout_min=0.5, poll_seconds=0.05))
+    assert record["outcome"] == "settled" and tower.frames == 2
+    assert record["stream"]["lateness_ms"]["p95"] > 50.0
+    assert record["stream"]["late_over_50ms"] >= 1
+
+
+def test_client_guard_first_probe_completes_before_handoff_or_traffic(tmp_path, monkeypatch):
+    import threading
+    import websockets
+
+    _capture(tmp_path, A, started=0.0, frames=[(1, 0.05)], ended=0.1)
+    tower = FakeTower([C1])
+    entered, release, handoff = threading.Event(), threading.Event(), threading.Event()
+    calls = 0
+    lock = threading.Lock()
+
+    def live(url=None, timeout=None):
+        nonlocal calls
+        with lock:
+            calls += 1
+            n = calls
+        if n == 1:
+            return "idle"
+        if n == 2:
+            entered.set()
+            assert release.wait(2), "first guard probe was not released"
+        return "recording"
+
+    monkeypatch.setattr(replay, "live_tower_state", live)
+
+    async def go():
+        async with websockets.serve(tower.handler, "127.0.0.1", 0) as server:
+            port = server.sockets[0].getsockname()[1]
+            task = asyncio.create_task(replay.run_replay(replay.ReplayOptions(
+                port=port, captures=[A], capture_root=tmp_path / "captures", out=tmp_path / "out",
+                live_guard=True, phone_fetches=False, session_lead=0.0,
+                on_guard_armed=handoff.set)))
+            assert await asyncio.to_thread(entered.wait, 2)
+            assert not handoff.is_set() and tower.connections == 0 and not tower.order
+            release.set()
+            return await asyncio.wait_for(task, 5)
+
+    record = asyncio.run(go())
+    assert record["outcome"] == "aborted" and not handoff.is_set()
+    assert tower.connections == 0 and not tower.order
+    assert record["live_tower_watch"]["poll_count"] == 1
+
+
+def test_guard_probe_exception_aborts_and_cannot_report_proof(tmp_path, monkeypatch):
+    _capture(tmp_path, A, started=0.0, frames=[(1, 0.2)], ended=0.3)
+    tower = FakeTower([C1])
+    calls = 0
+
+    def live(url=None, timeout=None):
+        nonlocal calls
+        calls += 1
+        if calls >= 3:
+            raise RuntimeError("probe died")
+        return "idle"
+
+    monkeypatch.setattr(replay, "live_tower_state", live)
+    record = _serve_and_replay(monkeypatch, tower, lambda port: replay.ReplayOptions(
+        port=port, captures=[A], capture_root=tmp_path / "captures", out=tmp_path / "out",
+        live_guard=True, live_guard_every=0.01, phone_fetches=False,
+        session_lead=0.0, sample_seconds=60.0))
+    assert record["outcome"] == "aborted"
+    assert "probe died" in record["live_guard_error"]
+    assert record["live_tower_watch"]["poll_count"] == 1
+    assert report.proof_status(client=record, run={})["proof"] is False
+    assert "guard failed" in report.proof_status(client=record, run={})["not_proof_reasons"][-1]
+    built = report.build_report(tower_log=tmp_path / "absent.log", client=record)
+    assert built["live_safety"]["environment"]["result"] == "FAIL"
+
+
+def test_missing_harness_version_cannot_make_missing_inputs_proof(tmp_path):
+    root = _beyond_max_path(tmp_path)
+    _keyed_render(root)
+    run_dir = root / "run"
+    run = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
+    assert "version" not in run["harness"]
+    image = root / "snap" / "captures" / A / "frames" / "00000001.jpg"
+    image.write_bytes(b"changed after the run")
+    assert report.main(["--run-dir", str(run_dir), "--out", str(root / "rerender-missing-version")]) == 0
+    built = json.loads((root / "rerender-missing-version" / "report.json").read_text(encoding="utf-8"))
+    assert built["comparability_key"]["source_jpegs_sha256"] is None
+    assert built["proof"]["proof"] is False
+    assert "source_jpegs_sha256" in built["proof"]["not_proof_reasons"][-1]
 
 
 def test_missing_jpeg_is_refused_before_any_proof_traffic(tmp_path, monkeypatch):

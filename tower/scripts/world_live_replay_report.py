@@ -1599,10 +1599,15 @@ def proof_status(*, client: dict, run: dict | None) -> dict:
         reasons.append("no replay client record (not a replay run)")
     if client.get("not_a_proof_run") or run.get("not_a_proof_run"):
         reasons.append("declared --not-a-proof-run")
+    outcome = client.get("outcome")
+    if isinstance(outcome, str) and outcome != "settled":
+        reasons.append(f"replay outcome was {outcome}, not settled")
     if client.get("live_guard") is False or run.get("live_guard") is False:
         reasons.append("the :8000 guard was off (--no-live-guard)")
     elif _streamed(client) and not client.get("live_tower_watch"):
         reasons.append("it streamed with no :8000 watch on record")
+    if client.get("live_guard_error"):
+        reasons.append("the :8000 guard failed: " + str(client["live_guard_error"]))
     return {"proof": not reasons, "not_proof_reasons": reasons}
 
 
@@ -1614,7 +1619,11 @@ def live_environment(*, client: dict, run: dict | None) -> dict:
     A stream that nobody watched is a FAIL, never n/a (review C24 HIGH-3):
     the runner's startup watch alone must not make an unguarded stream PASS."""
     watch = client.get("live_tower_watch")
-    if not watch and (client.get("live_guard") is False or _streamed(client)):
+    if client.get("live_guard_error"):
+        rows = [{"check": ":8000 during the run",
+                 "value": "WATCH FAILED: " + str(client["live_guard_error"]),
+                 "required": "idle or down throughout; an isolated unknown tolerated", "result": "FAIL"}]
+    elif not watch and (client.get("live_guard") is False or _streamed(client)):
         why = ("the guard was off (--no-live-guard)" if client.get("live_guard") is False
                else "the client streamed and kept no :8000 watch")
         rows = [{"check": ":8000 during the run", "value": f"NOT WATCHED: {why}",
@@ -1967,14 +1976,15 @@ def build_report(*, tower_log, tower_out_log=None, world_root=None, capture_id=N
     # What a run must share with the runs --compare sets it against (review
     # C24 HIGH-2); recomputed there from the report, shown here.
     built["comparability_key"] = comparability_key(built)
-    streamed_version = ((run or {}).get("harness") or {}).get("version") if isinstance(run, dict) else None
-    if isinstance(streamed_version, str) and streamed_version.startswith("c22-harness/F8"):
-        missing_input = [name for name in ("source_jpegs_sha256", "calibration")
-                         if built["comparability_key"].get(name) is None]
-        if missing_input:
-            built["proof"]["proof"] = False
-            built["proof"]["not_proof_reasons"].append(
-                "input evidence missing or changed: " + ", ".join(missing_input))
+    # A malformed or absent version cannot exempt a proof-labelled render
+    # from the input evidence this harness promises. Comparison also rejects
+    # incomplete keys, but a standalone report must fail closed on its own.
+    missing_input = [name for name in ("source_jpegs_sha256", "calibration")
+                     if built["comparability_key"].get(name) is None]
+    if built["proof"]["proof"] and missing_input:
+        built["proof"]["proof"] = False
+        built["proof"]["not_proof_reasons"].append(
+            "input evidence missing or changed: " + ", ".join(missing_input))
     return built
 
 
@@ -2608,7 +2618,7 @@ def _load_run(run_dir) -> dict:
     report = _read_json(run_dir / "report.json")
     if not isinstance(report, dict):
         raise SystemExit(f"{run_dir} has no report.json; render it first "
-                         "(world_live_replay_report.py --run-dir <run> --out <run>)")
+                         "(world_live_replay_report.py --run-dir <run> --out <new-empty-dir>)")
     keyframes = _read_json(run_dir / "keyframes.json") or {}
     fidelity = report.get("replay_fidelity") or {}
     # EACH RUN'S OWN BAR (managers 148 and 149): the version in force when THIS

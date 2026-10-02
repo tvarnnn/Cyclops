@@ -670,12 +670,16 @@ class LiveGuard:
         self.history: list = []
         self.busy_since = None
         self.last = at_start
+        self.poll_count = 0
+        self.last_probe_at = None
         if at_start is not None:
             self.history.append({"t": round(clock(), 3), "state": at_start})
 
     def observe(self, state: str) -> str | None:
         """An abort reason, or None to carry on."""
         now = self._clock()
+        self.poll_count += 1
+        self.last_probe_at = round(now, 3)
         if state != self.last:
             self.history.append({"t": round(now, 3), "state": state})
             self.last = state
@@ -695,7 +699,8 @@ class LiveGuard:
     def summary(self) -> dict:
         states = [item["state"] for item in self.history]
         return {"at_start": self.at_start, "history": self.history, "busy_since": self.busy_since,
-                "states_seen": sorted(set(states))}
+                "states_seen": sorted(set(states)), "poll_count": self.poll_count,
+                "last_probe_at": self.last_probe_at}
 
 
 def listener_pids(port: int):
@@ -1470,33 +1475,49 @@ def _log(out: Path, text: str) -> None:
 
 
 async def _guard_live(options: ReplayOptions, abort: asyncio.Event, record: dict, stop: asyncio.Event,
-                      guard: LiveGuard | None = None):
+                      guard: LiveGuard | None = None, first_observation: asyncio.Event | None = None):
     """Watch :8000 for the whole run, streaming and settle alike. On an abort
     reason: set `abort`, then run `on_abort` (kill the test Tower) and only
     then return, so the caller's teardown comes after the kill."""
     guard = guard if guard is not None else LiveGuard(record.get("live_tower_at_start"))
     busy_logged = False
-    while not stop.is_set() and not abort.is_set():
-        state = await asyncio.to_thread(live_tower_state, options.live_guard_url, options.live_guard_timeout)
-        reason = guard.observe(state)
+    async def refuse(reason: str) -> None:
+        record["aborted"] = {"t": round(time.time(), 3), "reason": reason}
+        abort.set()
+        if first_observation is not None:
+            first_observation.set()
+        _log(options.out, f"ABORT: {reason}; stopping the replay now")
+        if options.on_abort is not None:
+            try:
+                await asyncio.to_thread(options.on_abort)
+                record["aborted"]["on_abort_done"] = round(time.time(), 3)
+            except Exception as exc:  # noqa: BLE001 -- the runner's finally stops it again
+                record["aborted"]["on_abort_error"] = repr(exc)
+
+    try:
+        while not stop.is_set() and not abort.is_set():
+            state = await asyncio.to_thread(live_tower_state, options.live_guard_url, options.live_guard_timeout)
+            reason = guard.observe(state)
+            record["live_tower_watch"] = guard.summary()
+            if guard.busy_since is not None and not busy_logged:
+                busy_logged = True
+                _log(options.out, ":8000 is busy finishing a world; this run is contended from here "
+                                  "(recorded in client.json live_tower_watch)")
+            if reason:
+                await refuse(reason)
+                return
+            if first_observation is not None:
+                first_observation.set()
+            with contextlib.suppress(asyncio.TimeoutError):
+                await asyncio.wait_for(stop.wait(), options.live_guard_every)
+    except Exception as exc:  # noqa: BLE001 -- any failed observer must stop proof traffic
+        record["live_guard_error"] = f"{type(exc).__name__}: {exc}"
         record["live_tower_watch"] = guard.summary()
-        if guard.busy_since is not None and not busy_logged:
-            busy_logged = True
-            _log(options.out, ":8000 is busy finishing a world; this run is contended from here "
-                              "(recorded in client.json live_tower_watch)")
-        if reason:
-            record["aborted"] = {"t": round(time.time(), 3), "reason": reason}
-            _log(options.out, f"ABORT: {reason}; stopping the replay now")
-            abort.set()
-            if options.on_abort is not None:
-                try:
-                    await asyncio.to_thread(options.on_abort)
-                    record["aborted"]["on_abort_done"] = round(time.time(), 3)
-                except Exception as exc:  # noqa: BLE001 -- the runner's finally stops it again
-                    record["aborted"]["on_abort_error"] = repr(exc)
-            return
-        with contextlib.suppress(asyncio.TimeoutError):
-            await asyncio.wait_for(stop.wait(), options.live_guard_every)
+        if not abort.is_set():
+            await refuse(f":8000 live guard failed unexpectedly ({record['live_guard_error']})")
+    finally:
+        if first_observation is not None:
+            first_observation.set()
 
 
 async def _watch_surface(options: ReplayOptions, phone: "PhoneView", watch: SurfaceWatch,
@@ -1578,7 +1599,20 @@ async def run_replay(options: ReplayOptions) -> dict:
             _write_client(out, record)
             return record
         guard = LiveGuard(live)
-        guard_task = asyncio.create_task(_guard_live(options, abort, record, stop_background, guard))
+        first_observation = asyncio.Event()
+        guard_task = asyncio.create_task(_guard_live(
+            options, abort, record, stop_background, guard, first_observation))
+        # Keep the runner's faster preflight watcher until this independent
+        # client observer has actually completed its first /health read.
+        await first_observation.wait()
+        if abort.is_set():
+            stop_background.set()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await asyncio.wait_for(asyncio.shield(guard_task), 45)
+            record["live_tower_watch"] = guard.summary()
+            record["outcome"] = "aborted"
+            _write_client(out, record)
+            return record
     # The runner's background preflight observer hands off only after this
     # client's live guard is armed. It then stops its faster preflight polls.
     if options.on_guard_armed is not None:
@@ -1731,7 +1765,10 @@ async def run_replay(options: ReplayOptions) -> dict:
                     if on_disk != entry["sha256"]:
                         raise RuntimeError(f"source JPEG changed during the stream: {entry['capture_id']}/"
                                            f"{entry['relpath']}")
-                    stats.lateness_s.append(late)
+                    # Integrity reads happen after the pacing wait. Measure at
+                    # the actual call boundary so their I/O cannot hide a late
+                    # frame from the client-lateness fidelity bar.
+                    stats.lateness_s.append(pacer.elapsed() - step.at)
                     await socket.send_frame(step.frame, text, size)
                     sent_inputs.append(entry)
                     frame_input_index += 1
