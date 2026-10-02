@@ -40,11 +40,12 @@ WHAT IT GUARANTEES
     of the test Tower to its stop -- its startup, the idle wait, the stream
     and the settle -- a live walk (or two unusable answers in a row) kills
     the test Tower FIRST, so the GPU is free for the real walk.
-  * NO BLIND INTERVAL AT START (review C24 HIGH-3). :8000 is read before
-    the preflight and read AGAIN immediately before the Tower is spawned
-    (the preflight's import probe can take 120 s), then every 10 s through
-    the startup and the idle wait, once more at the hand-off, and the client
-    arms its own guard before it does anything else.
+  * NO BLIND PREFLIGHT INTERVAL (review C24 HIGH-3). A background observer
+    polls :8000 from the first idle check through calibration copy, the
+    blocking import probe, Tower startup and hand-off; an unsafe preflight
+    state is latched even if the next endpoint read is idle. Forced reads
+    occur before spawn and hand-off. The observer stops only after the
+    client's guard is armed.
   * `--no-live-guard` is refused unless `--not-a-proof-run` is given too;
     run.json records both, and the report marks such a run NOT-PROOF.
   * run.json pins the harness itself (git HEAD, its uncommitted changes, and
@@ -63,10 +64,10 @@ import asyncio
 import hashlib
 import json
 import os
-import shutil
 import socket
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -81,6 +82,7 @@ from scripts.world_live_replay import (  # noqa: E402
     LiveGuard,
     add_replay_arguments,
     check_target_port,
+    calibration_digests,
     exit_code,
     harness_identity,
     harness_pin,
@@ -91,6 +93,7 @@ from scripts.world_live_replay import (  # noqa: E402
     refuse_non_empty_out,
     refuse_unguarded_proof,
     run_replay,
+    sha256_file,
 )
 from scripts.world_live_replay_report import build_report, write_report  # noqa: E402
 from tower.artifact_paths import artifact_root_arg  # noqa: E402
@@ -120,6 +123,7 @@ IDLE_WAIT_S = 120.0
 # :8000 during the runner's own waits (startup and idle), as often as the
 # client watches it during the stream.
 LIVE_WATCH_EVERY_S = 10.0
+PREFLIGHT_WATCH_EVERY_S = 0.5
 AFTER_STOP_S = 2.0
 
 
@@ -283,26 +287,73 @@ def probe_import(tower_dir: Path, env: dict) -> str:
 
 
 class StartupLiveWatch:
-    """:8000 while the runner waits for its own Tower (review C22 M3): the
-    startup can take 240 s and the idle wait 120 s, and a live walk that
-    begins then must stop the test Tower just as it would mid-stream."""
+    """Keep observing :8000 across blocking preflight and Tower startup.
+
+    Endpoint reads alone miss a walk that starts and ends during the import
+    probe. The background observer starts before copying calibration and is
+    not disarmed until the replay client's own guard has run. Its preflight
+    verdict is latched, even if the next endpoint read is idle again.
+    """
 
     def __init__(self, guard: LiveGuard, every: float | None = None, clock=time.monotonic):
         self.guard = guard
         self.every = LIVE_WATCH_EVERY_S if every is None else every
         self._clock = clock
         self._next = clock() + self.every
+        self._lock = threading.Lock()
+        self._stop = threading.Event()
+        self._thread = None
+        self._reason = None
+        self._preflight = True
+        self.last_state = guard.at_start
 
-    def check(self, force: bool = False) -> None:
+    def start(self) -> None:
+        self._thread = threading.Thread(target=self._observe_background,
+                                        name="c22-preflight-live-watch", daemon=True)
+        self._thread.start()
+
+    def _observe(self, state: str) -> None:
+        with self._lock:
+            self.last_state = state
+            reason = self.guard.observe(state)
+            if self._preflight and state in LIVE_REFUSE_AT_START:
+                reason = f":8000 became {state} during the preflight"
+            if reason and self._reason is None:
+                self._reason = reason
+
+    def _observe_background(self) -> None:
+        while not self._stop.wait(PREFLIGHT_WATCH_EVERY_S):
+            try:
+                state = live_tower_state(LIVE_HEALTH_URL)
+            except Exception:  # noqa: BLE001 -- no usable answer fails closed
+                state = "unknown"
+            self._observe(state)
+            with self._lock:
+                aborted = self._reason is not None
+            if aborted:
+                return
+
+    def close(self) -> None:
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=6.0)
+
+    def check(self, force: bool = False) -> str:
         """Read :8000 when the interval is due, or now when `force` (the
         hand-off to the client: review C24 HIGH-3, no unwatched gap)."""
-        now = self._clock()
-        if now < self._next and not force:
-            return
-        self._next = now + self.every
-        reason = self.guard.observe(live_tower_state(LIVE_HEALTH_URL))
+        with self._lock:
+            reason = self._reason
         if reason:
             raise LiveTowerAbort(reason)
+        now = self._clock()
+        if now >= self._next or force:
+            self._next = now + self.every
+            self._observe(live_tower_state(LIVE_HEALTH_URL))
+        with self._lock:
+            reason, state = self._reason, self.last_state
+        if reason:
+            raise LiveTowerAbort(reason)
+        return state
 
 
 def main(argv=None) -> int:
@@ -362,7 +413,11 @@ def main(argv=None) -> int:
         print(f"REFUSED: :8000 is {live} (the guard refuses recording, busy and unknown). "
               "Nothing was started.", flush=True)
         return EXIT_ABORTED
+    startup_guard = LiveGuard(live)
+    watch = StartupLiveWatch(startup_guard)
+    watch.start()
     if port_in_use(args.port):
+        watch.close()
         raise SystemExit(f"refused: something already listens on 127.0.0.1:{args.port}")
 
     if not (Path(sys.prefix) / "pyvenv.cfg").is_file():
@@ -375,10 +430,22 @@ def main(argv=None) -> int:
     intrinsics = world_root / "intrinsics"
     intrinsics.mkdir(parents=True, exist_ok=True)
     copied = []
-    if Path(args.intrinsics_from).is_dir():
-        for calibration in sorted(Path(args.intrinsics_from).glob("*.json")):
-            shutil.copyfile(calibration, intrinsics / calibration.name)
-            copied.append(calibration.name)
+    copied_sha256 = {}
+    try:
+        if Path(args.intrinsics_from).is_dir():
+            for calibration in sorted(Path(args.intrinsics_from).glob("*.json")):
+                data = calibration.read_bytes()
+                (intrinsics / calibration.name).write_bytes(data)
+                digest = hashlib.sha256(data).hexdigest()
+                if sha256_file(calibration) != digest:
+                    raise SystemExit(f"refused: calibration changed while copying {calibration}")
+                copied.append(calibration.name)
+                copied_sha256[calibration.name] = digest
+        if not copied_sha256 and not args.not_a_proof_run:
+            raise SystemExit("refused: no calibration JSONs were copied; a proof run needs pinned calibration")
+    except BaseException:
+        watch.close()
+        raise
 
     env = interpreter_environment(tower_environment(os.environ, switches, data_root=data_root,
                                                     tower_dir=tower_dir, port=args.port))
@@ -391,22 +458,27 @@ def main(argv=None) -> int:
         uvicorn += ["--loop", "tower.serve_loop:resilient_loop_factory"]
     command = list(interpreter_command(*uvicorn))
 
-    resolved = probe_import(tower_dir, env)
+    try:
+        resolved = probe_import(tower_dir, env)
+    except BaseException:
+        watch.close()
+        raise
     if not resolved or not _inside(Path(resolved), tower_dir):
+        watch.close()
         raise SystemExit(f"refused: import tower resolves to {resolved!r}, not under {tower_dir}")
 
     harness = harness_identity()
-    # THE PRE-SPAWN RE-READ (review C24 HIGH-3). The first read was before
-    # the calibration copy and the import probe (up to 120 s); a live walk
-    # that began in between must stop the Tower from starting at all.
-    before_spawn = live_tower_state(LIVE_HEALTH_URL)
-    if before_spawn in LIVE_REFUSE_AT_START:
-        _log(out, f"REFUSED: :8000 became {before_spawn} during the preflight (the guard refuses recording, "
-                  "busy and unknown). Nothing was started.")
+    # A background watch has covered the copy and the import probe. Its
+    # latched verdict cannot be erased by an idle answer at this endpoint.
+    try:
+        before_spawn = watch.check(force=True)
+    except LiveTowerAbort as exc:
+        _log(out, f"REFUSED: {exc}. Nothing was started.")
+        watch.close()
         return EXIT_ABORTED
-    # The startup watch continues from these two reads.
-    startup_guard = LiveGuard(live)
-    startup_guard.observe(before_spawn)
+    if calibration_digests(intrinsics) != copied_sha256:
+        watch.close()
+        raise SystemExit("refused: copied calibration changed before the test Tower started")
 
     run = {
         "tool": "world_live_replay_run",
@@ -425,6 +497,7 @@ def main(argv=None) -> int:
         "port": args.port,
         "data_root": str(data_root),
         "intrinsics_copied": copied,
+        "intrinsics_sha256": copied_sha256,
         "intrinsics_from": str(args.intrinsics_from),
         "command": command,
         "cwd": str(tower_dir),
@@ -449,11 +522,13 @@ def main(argv=None) -> int:
     if os.name == "nt":
         creationflags = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW
     process = job = None
-    watch = StartupLiveWatch(startup_guard)
     health_url = f"http://127.0.0.1:{args.port}/health"
     try:
         # Spawn and job assignment INSIDE the try (review C22 L2): whatever
         # happens from here on, the finally stops what was started.
+        run["live_tower_immediate_spawn"] = watch.check(force=True)
+        if calibration_digests(intrinsics) != copied_sha256:
+            raise SystemExit("refused: copied calibration changed before the test Tower started")
         with open(err_log, "ab") as err_handle, open(out_log, "ab") as out_handle:
             process = spawn_tower(command, cwd=str(tower_dir), env=env, stdin=subprocess.DEVNULL,
                                   stdout=out_handle, stderr=err_handle, creationflags=creationflags)
@@ -507,8 +582,20 @@ def main(argv=None) -> int:
         # The hand-off: read :8000 once more, now, so the gap to the client's
         # own first read is the client's start-up alone (review C24 HIGH-3).
         watch.check(force=True)
+
+        def handoff_live_watch() -> None:
+            # The client calls this after arming its own guard and before any
+            # proof traffic. Catch an unsafe state latched in the hand-off
+            # interval, then stop the faster preflight observer.
+            try:
+                watch.check(force=True)
+            finally:
+                watch.close()
+
         options = options_from_args(args, port=args.port, out=out, world_root=world_root,
-                                    tower_pid=process.pid, on_abort=kill_tower_now)
+                                    tower_pid=process.pid, on_abort=kill_tower_now,
+                                    calibration_root=intrinsics, calibration_expected=copied_sha256,
+                                    on_guard_armed=handoff_live_watch)
         record = asyncio.run(run_replay(options))
         code = exit_code(record)
     except LiveTowerAbort as exc:
@@ -545,6 +632,7 @@ def main(argv=None) -> int:
             elif saved.get("aborted"):
                 run["guard_aborted_after_the_fault"] = {**saved["aborted"], "raised": repr(exc)}
     finally:
+        watch.close()
         run["live_tower_watch_startup"] = watch.guard.summary()
         if process is not None:
             _log(out, f"stopping the test Tower pid {process.pid}")

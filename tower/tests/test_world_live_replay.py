@@ -1151,28 +1151,46 @@ FAKE_JOURNAL = {CAP: {"capture.json": "1" * 64, "frames.jsonl": "2" * 64}}
 
 def _fake_run(directory, *, photos, lag_p95, sequence, horizons=(52,), fidelity="PASS", environment="PASS",
               version=None, run_started=None, client_started=None, switches=None, code=None, harness=None,
-              journal=None, not_proof=None, store_photos=None, speed=1.0, tower_side_only=False):
+              journal=None, not_proof=None, store_photos=None, speed=1.0, tower_side_only=False,
+              jpeg_bytes=b"proof-fixture-jpeg", calibration_bytes=b'{"fx": 1}'):
     """`version` None: a verdict rendered before the bar was versioned (C22-F5). `run_started` /
     `client_started`: the run's recorded start, as the report keeps run.json and the client record.
     By default a proof-eligible run whose comparability key is `FAKE_*` (C24 HIGH-2/3); `photos` is
     the W0 timing, Stop to `phone_photos_at` (C24 HIGH-1)."""
     directory.mkdir(parents=True)
+    source_root = directory / "source-captures"
+    image = source_root / CAP / "frames" / "00000001.jpg"
+    image.parent.mkdir(parents=True)
+    image.write_bytes(jpeg_bytes)
+    entry = {"capture_id": CAP, "relpath": "frames/00000001.jpg", "wire_seq": 1,
+             "bytes": image.stat().st_size, "sha256": report.hashlib.sha256(image.read_bytes()).hexdigest()}
+    image_digest = replay.input_list_sha256([entry])
+    cal_root = directory / "data" / "world_builder" / "intrinsics"
+    cal_root.mkdir(parents=True)
+    (cal_root / "360x640.json").write_bytes(calibration_bytes)
+    calibration = replay.calibration_digests(cal_root)
     sha = report.hashlib.sha256(json.dumps(sequence, separators=(",", ":")).encode()).hexdigest()
     verdict = {"result": fidelity, **({"version": version} if version is not None else {}),
                **({"tower_side_only": True} if tower_side_only else {})}
     run = {"switches": FAKE_SWITCHES if switches is None else switches, "code": code or FAKE_CODE,
            "harness": harness or FAKE_HARNESS, "intrinsics_copied": ["360x640.json"],
+           "intrinsics_sha256": calibration, "data_root": str(directory / "data"),
            **({"started_at": run_started} if run_started is not None else {})}
     client = {"walk": [{"capture_id": CAP}], "speed": speed, "first_seconds": None, "after_stop": "stay",
-              "schedule": {"frames": 4005, "captures": 1, "stop_at_s": 335.861, "ends_with": "stream_stop",
+              "schedule": {"frames": 1, "captures": 1, "stop_at_s": 335.861, "ends_with": "stream_stop",
                            "reconnects": 0},
               "stream": {"frames_sent": 4005}, "live_tower_watch": {"states_seen": ["idle"]},
+              "source_images": {"planned": [entry], "planned_sha256": image_digest, "sent": [entry],
+                                "sent_sha256": image_digest, "verified": True},
+              "calibration_check": {"expected": calibration, "before_stream": calibration,
+                                    "after_stream": calibration, "verified": True},
               **({"started_at": client_started} if client_started is not None else {})}
     (directory / "report.json").write_text(json.dumps({
         **({"replay_fidelity": verdict} if fidelity is not None else {}),
         "run": run, "client": client,
         "proof": {"proof": not not_proof, "not_proof_reasons": [not_proof] if not_proof else []},
-        "tower_side_pacing": {"computable": True, "source_sha256": journal or FAKE_JOURNAL},
+        "tower_side_pacing": {"computable": True, "source_sha256": journal or FAKE_JOURNAL,
+                              "source_capture_root": str(source_root)},
         "label": directory.name,
         "verdict": {"basis": "phone", "stop_to_room_with_photos_min": photos, "stop_to_phone_photos_min": photos,
                     "stop_to_store_photos_min": round(photos - 0.25, 2) if store_photos is None else store_photos,
@@ -1747,6 +1765,9 @@ def lifecycle(tmp_path, monkeypatch):
     code = tmp_path / "code" / "tower"
     (code / "tower").mkdir(parents=True)
     (code / "tower" / "main.py").write_text("", encoding="utf-8")
+    calibrations = tmp_path / "intrinsics"
+    calibrations.mkdir()
+    (calibrations / "360x640.json").write_bytes(b'{"fx": 1}')
     state = {"live": ["idle"], "health": (200, IDLE_HEALTH), "owners": {4242}, "job": _FakeJob(),
              "replay": lambda options: {"outcome": "settled", "tower_captures": []}}
     calls = {"spawn": [], "terminate": [], "options": []}
@@ -1778,7 +1799,7 @@ def lifecycle(tmp_path, monkeypatch):
     monkeypatch.setattr(runner, "IDLE_POLL_S", 0.0)
     monkeypatch.setattr(runner, "AFTER_STOP_S", 0.0)
     argv = ["--capture", A, "--code", str(code), "--port", "8031", "--data-root", str(tmp_path / "data"),
-            "--out", str(tmp_path / "out"), "--intrinsics-from", str(tmp_path / "no-intrinsics"),
+            "--out", str(tmp_path / "out"), "--intrinsics-from", str(calibrations),
             "--health-timeout", "0.2"]
     return {"state": state, "calls": calls, "argv": argv, "out": tmp_path / "out"}
 
@@ -1825,7 +1846,7 @@ def test_the_runner_stops_the_tower_on_every_exit_path(lifecycle, monkeypatch, h
         expect = pytest.raises(SystemExit, match="served by")
     elif how == "live-walk-during-startup":
         # idle at the start check and at the pre-spawn re-read (C24 HIGH-3), a walk once the Tower is starting
-        state["live"] = ["idle", "idle", "recording"]
+        state["live"] = ["idle", "idle", "idle", "recording"]
         monkeypatch.setattr(runner, "LIVE_WATCH_EVERY_S", 0.0)
     if expect is None:
         code = runner.main(lifecycle["argv"])
@@ -2729,12 +2750,24 @@ def _keyed_render(root):
     """A real render whose comparability key is complete: a runner run.json and a client record."""
     run_dir, _snapshot = _pinned_run(root, capture_root=root / "snap" / "captures")
     run = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
+    cal_root = Path(run["data_root"]) / "world_builder" / "intrinsics"
+    cal_root.mkdir(parents=True, exist_ok=True)
+    (cal_root / "360x640.json").write_bytes(b'{"fx": 1}')
+    calibration = replay.calibration_digests(cal_root)
     run.update(switches=dict(FAKE_SWITCHES), code=dict(FAKE_CODE), harness=FAKE_HARNESS,
-               intrinsics_copied=["360x640.json"], started_at=BEFORE)
+               intrinsics_copied=["360x640.json"], intrinsics_sha256=calibration, started_at=BEFORE)
     (run_dir / "run.json").write_text(json.dumps(run), encoding="utf-8")
     client = json.loads((run_dir / "client.json").read_text(encoding="utf-8"))
+    source = Path(client["capture_root"])
+    walk = replay.load_walk(source, [A])
+    planned = replay.pin_frame_inputs(walk, replay.build_schedule(walk))
+    digest = replay.input_list_sha256(planned)
     client.update(after_stop="stay", live_tower_watch={"states_seen": ["idle"]}, live_guard=True,
-                  not_a_proof_run=False)
+                  not_a_proof_run=False,
+                  source_images={"planned": planned, "planned_sha256": digest, "sent": planned,
+                                 "sent_sha256": digest, "verified": True},
+                  calibration_check={"expected": calibration, "before_stream": calibration,
+                                     "after_stream": calibration, "verified": True})
     (run_dir / "client.json").write_text(json.dumps(client), encoding="utf-8")
     assert report.main(["--run-dir", str(run_dir), "--out", str(root / "out")]) == 0
     return json.loads((root / "out" / "report.json").read_text(encoding="utf-8"))
@@ -2747,12 +2780,15 @@ def test_the_comparability_key_is_complete_on_a_runners_render(tmp_path):
     assert list(key) == list(report.KEY_FIELDS) and all(key[name] is not None for name in report.KEY_FIELDS)
     assert key["source_captures"] == [A]
     assert set(key["source_journal_sha256"][A]) == {"capture.json", "frames.jsonl"}
+    assert len(key["source_jpegs_sha256"]) == 64
     assert key["switches"] == FAKE_SWITCHES and key["code"] == FAKE_CODE
     # the STREAMING harness only: a report-script change does not make runs incomparable
     assert key["harness"] == {"world_live_replay.py": "a" * 40, "world_live_replay_run.py": "b" * 40}
     assert key["replay"]["speed"] == 1.0 and key["replay"]["after_stop"] == "stay"
     assert key["replay"]["schedule"]["frames"] == 2
-    assert key["calibration"] == ["360x640.json"] and key["fidelity_family"] == "recorder-stamp"
+    assert key["calibration"] == replay.calibration_digests(
+        Path(built["run"]["data_root"]) / "world_builder" / "intrinsics")
+    assert key["fidelity_family"] == "recorder-stamp"
 
 
 # Each way a baseline run can differ from the others' key.
@@ -2942,7 +2978,7 @@ def test_the_runner_re_reads_8000_right_before_the_spawn(lifecycle, monkeypatch)
 def test_the_runner_reads_8000_at_the_hand_off_even_when_its_watch_is_not_due(lifecycle, monkeypatch):
     """C24 HIGH-3: the startup watch reads every 10 s; the hand-off to the client reads NOW."""
     monkeypatch.setattr(runner, "LIVE_WATCH_EVERY_S", 1000.0)   # never due during this startup
-    lifecycle["state"]["live"] = ["idle", "idle", "recording"]  # start, pre-spawn, hand-off
+    lifecycle["state"]["live"] = ["idle", "idle", "idle", "recording"]  # start, pre-spawn, final spawn check, hand-off
     assert runner.main(lifecycle["argv"]) == runner.EXIT_ABORTED
     run = _run_json(lifecycle)
     assert run["aborted"]["during"] == "startup" and run["live_tower_before_spawn"] == "idle"
@@ -3152,7 +3188,7 @@ def test_the_keyframe_rows_are_a_selection_sequence_and_an_accepted_keyframe_lag
 def test_the_harness_pin_and_its_version_are_in_every_record_and_report(lifecycle, tmp_path):
     # a committed, clean pin, whether or not these scripts sit in a checkout right now
     identity = {**replay.harness_identity(), "git_head": "f" * 40, "git_dirty": []}
-    assert identity["version"] == replay.HARNESS_VERSION and "F7" in replay.HARNESS_VERSION
+    assert identity["version"] == replay.HARNESS_VERSION and "F8" in replay.HARNESS_VERSION
     pin = replay.harness_pin(identity)
     assert pin["version"] == replay.HARNESS_VERSION and pin["git_head"] == identity.get("git_head")
     assert set(pin["streaming_sha1"]) == set(replay.STREAMING_FILES) == set(report.STREAMING_HARNESS_FILES)
@@ -3180,3 +3216,162 @@ def test_the_harness_pin_and_its_version_are_in_every_record_and_report(lifecycl
     old = report.render_markdown(report.build_report(tower_log=log, client=_clean_client(
         harness={"git_head": "10976c6933db6b2f6662e53b79f0ee776ffed868", "git_dirty": [], "sha1": "f8d9"})))
     assert "version `not recorded (made before C22-F7)`, git HEAD `10976c6933db6b2f6662e53b79f0ee776ffed868`" in old
+
+
+def test_changed_jpeg_between_pin_and_send_aborts_before_the_changed_frame(tmp_path, monkeypatch):
+    capture = _capture(tmp_path, A, started=0.0, frames=[(1, 0.05), (2, 0.2)], ended=0.3)
+    second = capture / "frames" / "00000002.jpg"
+    tower = FakeTower([C1], on_frame=lambda t: second.write_bytes(b"different-jpeg") if t.frames == 1 else None)
+    with pytest.raises(RuntimeError, match="source JPEG changed during the stream"):
+        _serve_and_replay(monkeypatch, tower, lambda port: replay.ReplayOptions(
+            port=port, captures=[A], capture_root=tmp_path / "captures", out=tmp_path / "out",
+            live_guard=False, phone_fetches=False, session_lead=0.0, sample_seconds=60.0))
+    assert tower.frames == 1
+    saved = json.loads((tmp_path / "out" / "client.json").read_text(encoding="utf-8"))
+    assert saved["source_images"]["verified"] is False
+
+
+def test_missing_jpeg_is_refused_before_any_proof_traffic(tmp_path, monkeypatch):
+    capture = _capture(tmp_path, A, started=0.0, frames=[(1, 0.05)], ended=0.1)
+    (capture / "frames" / "00000001.jpg").unlink()
+    tower = FakeTower([C1])
+    record = _serve_and_replay(monkeypatch, tower, lambda port: replay.ReplayOptions(
+        port=port, captures=[A], capture_root=tmp_path / "captures", out=tmp_path / "out",
+        live_guard=False, phone_fetches=False, session_lead=0.0, sample_seconds=60.0))
+    assert record["outcome"] == "invalid-input" and tower.frames == 0 and tower.connections == 0
+
+
+def test_calibration_changed_during_stream_aborts_before_next_frame(tmp_path, monkeypatch):
+    _capture(tmp_path, A, started=0.0, frames=[(1, 0.05), (2, 0.2)], ended=0.3)
+    cal_root = tmp_path / "copied-intrinsics"
+    cal_root.mkdir()
+    file = cal_root / "360x640.json"
+    file.write_bytes(b'{"fx": 1}')
+    expected = replay.calibration_digests(cal_root)
+    tower = FakeTower([C1], on_frame=lambda t: file.write_bytes(b'{"fx": 2}') if t.frames == 1 else None)
+    with pytest.raises(RuntimeError, match="copied calibration changed during the stream"):
+        _serve_and_replay(monkeypatch, tower, lambda port: replay.ReplayOptions(
+            port=port, captures=[A], capture_root=tmp_path / "captures", out=tmp_path / "out",
+            live_guard=False, phone_fetches=False, session_lead=0.0, sample_seconds=60.0,
+            calibration_root=cal_root, calibration_expected=expected))
+    assert tower.frames == 1
+
+
+def test_compare_rechecks_persisted_jpeg_and_calibration_contents(tmp_path):
+    for name in ("old0", "old1", "old2", "changed-jpeg", "changed-cal"):
+        _fake_run(tmp_path / name, photos=47.0, lag_p95=6.8, sequence=[[1, 0]])
+    (tmp_path / "changed-jpeg" / "source-captures" / CAP / "frames" / "00000001.jpg").write_bytes(b"changed")
+    (tmp_path / "changed-cal" / "data" / "world_builder" / "intrinsics" / "360x640.json").write_bytes(
+        b'{"fx": 2}')
+    result = report.compare_runs([tmp_path / n for n in ("old0", "old1", "old2")],
+                                 [tmp_path / "changed-jpeg", tmp_path / "changed-cal"])
+    assert result["baseline_counted"] == 3
+    invalid = {item["dir"]: item["reasons"] for item in result["invalid_candidates"]}
+    assert "source_jpegs_sha256" in invalid[str(tmp_path / "changed-jpeg")][0]
+    assert "calibration" in invalid[str(tmp_path / "changed-cal")][0]
+
+
+def test_preflight_watch_latches_a_walk_that_ends_during_blocked_import(lifecycle, monkeypatch):
+    import threading
+
+    in_import, observed = threading.Event(), threading.Event()
+    calls = []
+
+    def live(url=None, timeout=None):
+        calls.append(threading.current_thread().name)
+        if in_import.is_set() and threading.current_thread().name == "c22-preflight-live-watch":
+            observed.set()
+            return "recording"
+        return "idle"
+
+    def blocked_probe(tower_dir, env):
+        in_import.set()
+        assert observed.wait(2.0), "background guard did not observe the live walk"
+        in_import.clear()
+        return str(tower_dir / "tower" / "__init__.py")
+
+    monkeypatch.setattr(runner, "live_tower_state", live)
+    monkeypatch.setattr(runner, "probe_import", blocked_probe)
+    monkeypatch.setattr(runner, "PREFLIGHT_WATCH_EVERY_S", 0.01)
+    assert runner.main(lifecycle["argv"]) == runner.EXIT_ABORTED
+    assert lifecycle["calls"]["spawn"] == []
+    assert "c22-preflight-live-watch" in calls
+
+
+def test_report_and_compare_refuse_a_nonempty_output(tmp_path):
+    out = tmp_path / "out"
+    out.mkdir()
+    (out / "keep.txt").write_text("existing evidence", encoding="utf-8")
+    with pytest.raises(SystemExit, match="not empty"):
+        report.main(["--out", str(out), "--tower-log", str(tmp_path / "tower.log")])
+    with pytest.raises(SystemExit, match="not empty"):
+        report.main(["--out", str(out), "--compare", str(tmp_path / "missing")])
+    assert (out / "keep.txt").read_text(encoding="utf-8") == "existing evidence"
+
+
+def test_f8_rerender_marks_changed_image_not_proof(tmp_path):
+    root = _beyond_max_path(tmp_path)
+    _keyed_render(root)
+    run_dir = root / "run"
+    run = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
+    run["harness"]["version"] = replay.HARNESS_VERSION
+    (run_dir / "run.json").write_text(json.dumps(run), encoding="utf-8")
+    image = root / "snap" / "captures" / A / "frames" / "00000001.jpg"
+    image.write_bytes(b"changed after the run")
+    assert report.main(["--run-dir", str(run_dir), "--out", str(root / "rerender")]) == 0
+    built = json.loads((root / "rerender" / "report.json").read_text(encoding="utf-8"))
+    assert built["comparability_key"]["source_jpegs_sha256"] is None
+    assert built["proof"]["proof"] is False
+    assert "source_jpegs_sha256" in built["proof"]["not_proof_reasons"][-1]
+
+
+def test_different_but_self_consistent_jpeg_and_calibration_inputs_do_not_compare(tmp_path):
+    for name in ("old0", "old1", "old2"):
+        _fake_run(tmp_path / name, photos=47.0, lag_p95=6.8, sequence=[[1, 0]])
+    _fake_run(tmp_path / "other-jpeg", photos=40.0, lag_p95=6.8, sequence=[[1, 0]],
+              jpeg_bytes=b"different-valid-jpeg")
+    _fake_run(tmp_path / "other-cal", photos=40.0, lag_p95=6.8, sequence=[[1, 0]],
+              calibration_bytes=b'{"fx": 2}')
+    result = report.compare_runs([tmp_path / n for n in ("old0", "old1", "old2")],
+                                 [tmp_path / "other-jpeg", tmp_path / "other-cal"])
+    assert result["baseline_counted"] == 3 and result["candidates_counted"] == 0
+    invalid = {item["dir"]: item["reasons"] for item in result["invalid_candidates"]}
+    assert invalid[str(tmp_path / "other-jpeg")][0].startswith("not comparable: source_jpegs_sha256 differs")
+    assert invalid[str(tmp_path / "other-cal")][0].startswith("not comparable: calibration differs")
+
+
+def test_runner_refuses_missing_calibration_before_spawning(lifecycle):
+    source = Path(lifecycle["argv"][lifecycle["argv"].index("--intrinsics-from") + 1])
+    (source / "360x640.json").unlink()
+    with pytest.raises(SystemExit, match="no calibration JSONs were copied"):
+        runner.main(lifecycle["argv"])
+    assert lifecycle["calls"]["spawn"] == []
+
+
+def test_changed_calibration_before_stream_refuses_target_without_socket(tmp_path, monkeypatch):
+    _capture(tmp_path, A, started=0.0, frames=[(1, 0.05)], ended=0.1)
+    cal_root = tmp_path / "copied-intrinsics"
+    cal_root.mkdir()
+    file = cal_root / "360x640.json"
+    file.write_bytes(b'{"fx": 1}')
+    expected = replay.calibration_digests(cal_root)
+    file.write_bytes(b'{"fx": 2}')
+    tower = FakeTower([C1])
+    record = _serve_and_replay(monkeypatch, tower, lambda port: replay.ReplayOptions(
+        port=port, captures=[A], capture_root=tmp_path / "captures", out=tmp_path / "out",
+        live_guard=False, phone_fetches=False, session_lead=0.0, sample_seconds=60.0,
+        calibration_root=cal_root, calibration_expected=expected))
+    assert record["outcome"] == "invalid-input" and tower.connections == 0
+
+
+def test_runner_handoff_rechecks_a_latched_live_change_before_client_traffic(lifecycle):
+    def during_handoff(options):
+        lifecycle["state"]["live"] = ["recording"]
+        options.on_guard_armed()
+        raise AssertionError("the proof client must not continue after a live walk")
+
+    lifecycle["state"]["replay"] = during_handoff
+    assert runner.main(lifecycle["argv"]) == runner.EXIT_ABORTED
+    assert len(lifecycle["calls"]["spawn"]) == 1
+    assert len(lifecycle["calls"]["terminate"]) == 1
+    assert _run_json(lifecycle)["aborted"]["during"] == "startup"

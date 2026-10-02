@@ -1918,7 +1918,8 @@ def build_report(*, tower_log, tower_out_log=None, world_root=None, capture_id=N
         "solve_draw_0": zero,
         "live_surfaces_latency": surfaces,
         "client": {k: client.get(k) for k in ("outcome", "speed", "first_seconds", "after_stop", "options",
-                                              "capture_root", "walk", "schedule",
+                                              "capture_root", "walk", "schedule", "source_images",
+                                              "calibration_check",
                                               "stream", "phone_fetches", "handshake", "session_start",
                                               "live_tower_at_start", "live_tower_watch", "target_listener",
                                               "live_guard", "not_a_proof_run",
@@ -1966,6 +1967,14 @@ def build_report(*, tower_log, tower_out_log=None, world_root=None, capture_id=N
     # What a run must share with the runs --compare sets it against (review
     # C24 HIGH-2); recomputed there from the report, shown here.
     built["comparability_key"] = comparability_key(built)
+    streamed_version = ((run or {}).get("harness") or {}).get("version") if isinstance(run, dict) else None
+    if isinstance(streamed_version, str) and streamed_version.startswith("c22-harness/F8"):
+        missing_input = [name for name in ("source_jpegs_sha256", "calibration")
+                         if built["comparability_key"].get(name) is None]
+        if missing_input:
+            built["proof"]["proof"] = False
+            built["proof"]["not_proof_reasons"].append(
+                "input evidence missing or changed: " + ", ".join(missing_input))
     return built
 
 
@@ -2401,11 +2410,68 @@ def comparable_metrics(report: dict) -> dict:
 
 
 # THE COMPARABILITY KEY (review C24 HIGH-2), field by field.
-KEY_FIELDS = ("source_captures", "source_journal_sha256", "switches", "code", "harness", "replay",
+KEY_FIELDS = ("source_captures", "source_journal_sha256", "source_jpegs_sha256", "switches", "code", "harness", "replay",
               "calibration", "fidelity_family")
 # The harness that STREAMED the run. The report script is not part of the
 # pin: a re-render reads, it does not stream.
 STREAMING_HARNESS_FILES = ("world_live_replay.py", "world_live_replay_run.py")
+
+
+def _ordered_digest(entries: list[dict]) -> str:
+    return hashlib.sha256(json.dumps(entries, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+
+def _verified_source_jpegs(client: dict, pacing: dict) -> str | None:
+    """Recheck the stream's per-frame hashes against the pinned source at render/compare time."""
+    evidence = client.get("source_images")
+    if not isinstance(evidence, dict) or evidence.get("verified") is not True:
+        return None
+    planned, sent = evidence.get("planned"), evidence.get("sent")
+    if not isinstance(planned, list) or not planned or planned != sent:
+        return None
+    digest = _ordered_digest(planned)
+    if digest != evidence.get("planned_sha256") or digest != evidence.get("sent_sha256"):
+        return None
+    if len(sent) != (client.get("schedule") or {}).get("frames"):
+        return None
+    root_name = pacing.get("source_capture_root")
+    if not root_name:
+        return None
+    root = Path(root_name).resolve()
+    for item in sent:
+        if not isinstance(item, dict) or not all(k in item for k in
+                ("capture_id", "relpath", "wire_seq", "bytes", "sha256")):
+            return None
+        path = (root / str(item["capture_id"]) / str(item["relpath"])).resolve()
+        try:
+            path.relative_to(root)
+            data = path.read_bytes()
+        except (ValueError, OSError):
+            return None
+        if len(data) != item["bytes"] or hashlib.sha256(data).hexdigest() != item["sha256"]:
+            return None
+    return digest
+
+
+def _verified_calibration(run: dict, client: dict) -> dict | None:
+    """Bind the copied files the test Tower actually used, not their names alone."""
+    expected = run.get("intrinsics_sha256")
+    check = client.get("calibration_check")
+    if not isinstance(expected, dict) or not expected or not isinstance(check, dict) or \
+            check.get("verified") is not True or check.get("expected") != expected or \
+            check.get("before_stream") != expected or check.get("after_stream") != expected or \
+            set(expected) != set(run.get("intrinsics_copied") or []):
+        return None
+    root_name = run.get("data_root")
+    if not root_name:
+        return None
+    root = Path(root_name) / "world_builder" / "intrinsics"
+    try:
+        paths = sorted(root.glob("*.json"))
+        actual = {path.name: hashlib.sha256(path.read_bytes()).hexdigest() for path in paths}
+    except OSError:
+        return None
+    return dict(sorted(expected.items())) if actual == expected else None
 
 
 def comparability_key(report: dict) -> dict:
@@ -2419,14 +2485,16 @@ def comparability_key(report: dict) -> dict:
       source_captures        the walk's source capture ids, in walk order;
       source_journal_sha256  sha256 of each source `capture.json` and
                              `frames.jsonl` the fidelity join read;
+      source_jpegs_sha256    ordered digest of the JPEG bytes read at send time,
+                             checked against preflight and the source snapshot;
       switches               run.json's switch set (--env-file / --set);
       code                   the code tree's .py fingerprint AND its path;
       harness                the sha1 of the streaming harness the run was
                              made with (`STREAMING_HARNESS_FILES`);
       replay                 speed, first_seconds, after_stop, the schedule's
                              shape, and the client's options when recorded;
-      calibration            the intrinsics files copied into the fresh root
-                             (names: run.json records no content hash);
+      calibration            content hashes of the intrinsics copied into the
+                             fresh root and checked during streaming;
       fidelity_family        the family of the run's OWN fidelity bar version
                              (the one in force when it started): v1 and v3
                              are one family, `FIDELITY_FAMILY`.
@@ -2455,13 +2523,14 @@ def comparability_key(report: dict) -> dict:
     return {
         "source_captures": [capture.get("capture_id") for capture in walk] or None,
         "source_journal_sha256": journals or None,
+        "source_jpegs_sha256": _verified_source_jpegs(client, pacing),
         "switches": dict(sorted(run["switches"].items())) if isinstance(run.get("switches"), dict) else None,
         "code": ({"py_fingerprint": code["py_fingerprint"], "tower_dir": code["tower_dir"]}
                  if code.get("py_fingerprint") and code.get("tower_dir") else None),
         "harness": ({name: files[name] for name in STREAMING_HARNESS_FILES}
                     if all(files.get(name) for name in STREAMING_HARNESS_FILES) else None),
         "replay": replay,
-        "calibration": sorted(run["intrinsics_copied"]) if isinstance(run.get("intrinsics_copied"), list) else None,
+        "calibration": _verified_calibration(run, client),
         "fidelity_family": FIDELITY_FAMILY.get(version),
     }
 
@@ -2957,9 +3026,10 @@ def main(argv=None) -> int:
     args = parser.parse_args(argv)
     out = Path(args.out)
     # Nothing is written inside the live store (review C24 MED-6).
-    from scripts.world_live_replay import refuse_inside_live_store  # noqa: PLC0415
+    from scripts.world_live_replay import refuse_inside_live_store, refuse_non_empty_out  # noqa: PLC0415
 
     refuse_inside_live_store(out, "--out")
+    refuse_non_empty_out(out)
     if args.compare:
         result = compare_runs(args.compare, args.candidate, parse_switches(args.candidate_switches))
         out.mkdir(parents=True, exist_ok=True)

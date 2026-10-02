@@ -161,7 +161,7 @@ STREAMING_FILES = ("world_live_replay.py", "world_live_replay_run.py")
 # and every report, so which harness made a run is self-evident (manager 154
 # §2: proof sets run only on a pin that passed the C24x2 re-verify). Change it
 # with every change to the harness.
-HARNESS_VERSION = "c22-harness/F7 (review C24)"
+HARNESS_VERSION = "c22-harness/F8 (input binding and preflight watch)"
 
 # Leaf keys copied out of each World Builder status push to show what the
 # phone was being told, and when. Generic on purpose: the payload is large
@@ -1455,8 +1455,11 @@ class ReplayOptions:
     # client tears down: the runner passes "kill the test Tower", so the GPU
     # is free at once rather than after the teardown's waits (review C22 M3).
     on_abort: object = None
+    on_guard_armed: object = None
     surface_watch_seconds: float = 1.0
     label: str | None = None
+    calibration_root: Path | None = None
+    calibration_expected: dict[str, str] | None = None
 
 
 def _log(out: Path, text: str) -> None:
@@ -1576,6 +1579,10 @@ async def run_replay(options: ReplayOptions) -> dict:
             return record
         guard = LiveGuard(live)
         guard_task = asyncio.create_task(_guard_live(options, abort, record, stop_background, guard))
+    # The runner's background preflight observer hands off only after this
+    # client's live guard is armed. It then stops its faster preflight polls.
+    if options.on_guard_armed is not None:
+        await asyncio.to_thread(options.on_guard_armed)
     record["harness"] = await asyncio.to_thread(harness_identity)
     record["harness_pin"] = harness_pin(record["harness"])
 
@@ -1604,6 +1611,25 @@ async def run_replay(options: ReplayOptions) -> dict:
     record["schedule"] = schedule_summary(schedule)
     _log(out, f"walk: {len(walk)} capture(s) {[c.capture_id for c in walk]}; schedule "
               f"{record['schedule']}")
+
+    try:
+        planned_inputs = pin_frame_inputs(walk, schedule)
+    except OSError as exc:
+        record["input_error"] = f"source JPEG unavailable before streaming: {exc}"
+        return await finish_before_streaming("invalid-input", record["input_error"])
+    record["source_images"] = {"planned": planned_inputs,
+                               "planned_sha256": input_list_sha256(planned_inputs),
+                               "sent": [], "sent_sha256": None, "verified": False}
+    if options.calibration_expected is not None:
+        try:
+            actual = calibration_digests(options.calibration_root)
+        except (OSError, TypeError) as exc:
+            actual = {"error": str(exc)}
+        record["calibration_check"] = {"expected": options.calibration_expected,
+                                       "before_stream": actual, "after_stream": None,
+                                       "verified": False}
+        if not actual or actual != options.calibration_expected:
+            return await finish_before_streaming("invalid-input", "copied calibration is missing or changed before streaming")
 
     status, health = await asyncio.to_thread(http_json, "GET", f"{base}/health", 10.0)
     if status != 200:
@@ -1642,6 +1668,8 @@ async def run_replay(options: ReplayOptions) -> dict:
     uri = f"ws://127.0.0.1:{options.port}/ws"
     events: list = []
     tower_captures: list = []
+    sent_inputs: list[dict] = record["source_images"]["sent"]
+    frame_input_index = 0
 
     def note(kind: str, **extra) -> None:
         events.append({"t": round(time.time(), 3), "kind": kind, **extra})
@@ -1676,14 +1704,37 @@ async def run_replay(options: ReplayOptions) -> dict:
                     break
                 text = size = None
                 if step.kind == "frame":
+                    if options.calibration_expected is not None and \
+                            calibration_digests(options.calibration_root) != options.calibration_expected:
+                        raise RuntimeError("copied calibration changed during the stream")
                     jpeg = (walk[step.capture].directory / step.frame.relpath).read_bytes()
+                    entry = frame_input_entry(walk[step.capture], step.frame, jpeg)
+                    expected = planned_inputs[frame_input_index]
+                    if entry != expected:
+                        raise RuntimeError(f"source JPEG changed during the stream: {entry['capture_id']}/"
+                                           f"{entry['relpath']}")
                     text, size = encode(frame_message(step.frame, jpeg)), len(jpeg)
                 late = await pacer.wait_until(step.at, abort)
                 if abort.is_set():
                     break
                 if step.kind == "frame":
+                    # The pacing wait can outlast a source-file mutation. The
+                    # encoded payload above is pinned, but the source must
+                    # still be the same at the send boundary for a proof run.
+                    if options.calibration_expected is not None and \
+                            calibration_digests(options.calibration_root) != options.calibration_expected:
+                        raise RuntimeError("copied calibration changed during the stream")
+                    try:
+                        on_disk = sha256_file(walk[step.capture].directory / step.frame.relpath)
+                    except OSError as exc:
+                        raise RuntimeError(f"source JPEG disappeared during the stream: {entry['relpath']}") from exc
+                    if on_disk != entry["sha256"]:
+                        raise RuntimeError(f"source JPEG changed during the stream: {entry['capture_id']}/"
+                                           f"{entry['relpath']}")
                     stats.lateness_s.append(late)
                     await socket.send_frame(step.frame, text, size)
+                    sent_inputs.append(entry)
+                    frame_input_index += 1
                     if step.at >= next_progress:
                         next_progress += progress_every
                         _log(out, f"t={step.at:6.1f}s sent {stats.frames_sent} frames, "
@@ -1779,6 +1830,19 @@ async def run_replay(options: ReplayOptions) -> dict:
             record["live_tower_watch"] = guard.summary()
         record["tower_captures"] = tower_captures
         record["ended_at"] = round(time.time(), 3)
+        source = record["source_images"]
+        source["sent_sha256"] = input_list_sha256(sent_inputs)
+        source["verified"] = (len(sent_inputs) == len(planned_inputs)
+                              and source["sent_sha256"] == source["planned_sha256"]
+                              and record.get("outcome") == "settled")
+        if options.calibration_expected is not None:
+            check = record["calibration_check"]
+            try:
+                check["after_stream"] = calibration_digests(options.calibration_root)
+            except (OSError, TypeError) as exc:
+                check["after_stream"] = {"error": str(exc)}
+            check["verified"] = (check["before_stream"] == check["after_stream"]
+                                 == options.calibration_expected)
         _write_client(out, record)
     return record
 
@@ -1848,6 +1912,35 @@ def _write_client(out: Path, record: dict) -> None:
     os.replace(tmp, out / "client.json")
 
 
+def sha256_file(path: Path) -> str:
+    """Hash bytes from the file the replay will use, without trusting journal sizes."""
+    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+
+def calibration_digests(root: Path) -> dict[str, str]:
+    """The actual copied JSONs visible to the test Tower."""
+    return {path.name: sha256_file(path) for path in sorted(Path(root).glob("*.json"))}
+
+
+def input_list_sha256(entries: list[dict]) -> str:
+    """Stable, ordered manifest digest; order and capture identity matter."""
+    wire = json.dumps(entries, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(wire).hexdigest()
+
+
+def frame_input_entry(capture, frame, jpeg: bytes) -> dict:
+    return {"capture_id": capture.capture_id, "relpath": frame.relpath,
+            "wire_seq": frame.wire_seq, "bytes": len(jpeg),
+            "sha256": hashlib.sha256(jpeg).hexdigest()}
+
+
+def pin_frame_inputs(walk, schedule) -> list[dict]:
+    """Read every scheduled JPEG before proof traffic. Missing files fail now."""
+    return [frame_input_entry(walk[step.capture], step.frame,
+                              (walk[step.capture].directory / step.frame.relpath).read_bytes())
+            for step in schedule if step.kind == "frame"]
+
+
 # -- CLI -------------------------------------------------------------------------
 
 
@@ -1911,7 +2004,8 @@ def refuse_inside_live_store(path, what: str) -> None:
         raise SystemExit(f"refused: {what} {path} is inside the live store {LIVE_DATA}")
 
 
-def options_from_args(args, *, port, out, world_root=None, tower_pid=None, on_abort=None) -> ReplayOptions:
+def options_from_args(args, *, port, out, world_root=None, tower_pid=None, on_abort=None,
+                      calibration_root=None, calibration_expected=None, on_guard_armed=None) -> ReplayOptions:
     return ReplayOptions(
         port=port, captures=list(args.capture), capture_root=Path(args.capture_root),
         out=Path(out), world_root=None if world_root is None else Path(world_root),
@@ -1922,7 +2016,8 @@ def options_from_args(args, *, port, out, world_root=None, tower_pid=None, on_ab
         subscribe=not args.no_subscribe, phone_fetches=not args.no_phone_fetches,
         start_session=not args.no_session_start, live_guard=not args.no_live_guard,
         not_a_proof_run=bool(getattr(args, "not_a_proof_run", False)),
-        on_abort=on_abort, label=args.label,
+        on_abort=on_abort, on_guard_armed=on_guard_armed, label=args.label,
+        calibration_root=calibration_root, calibration_expected=calibration_expected,
     )
 
 
