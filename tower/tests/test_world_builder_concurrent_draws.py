@@ -243,6 +243,62 @@ def test_unwritable_fallback_journal_aborts_consensus(world, tmp_path, monkeypat
         mapper.close()
     assert serial == []
 
+
+def test_unconfirmed_prior_child_records_refusal_and_aborts_consensus(world, tmp_path, monkeypatch):
+    store, ws, _, serial, _ = _rig(tmp_path, monkeypatch)
+    monkeypatch.setattr(GS, "_unconfirmed_draw_alive", lambda: True)
+    mapper = GS.concurrent_draw_mapper(store, "w", "s", ws.database_path,
+                                       _base(), seeds=(8, 9), keyframes=[])
+    plan = CP.ConsensusPlan(draws=3, seed=7, map_draw=mapper)
+    try:
+        with pytest.raises(CP.ConsensusAuditError, match="earlier consensus child"):
+            CP.gate_by_consensus(_Store(), "w1", SID, _candidate(tuple(PIECES)), plan=plan,
+                                 database_path="db", keyframes=world.keyframes)
+    finally:
+        mapper.close()
+    journal = json.loads((ws.root / "consensus_concurrent.jsonl").read_text())
+    assert journal["reason"] == "unconfirmed-prior-child"
+    assert journal["seed"] == 8
+    assert serial == []
+
+
+@pytest.mark.parametrize("stage", ["scratch-sweep", "ram-probe"])
+def test_preflight_io_error_is_recorded_and_aborts_consensus(world, tmp_path, monkeypatch, stage):
+    store, ws, _, serial, _ = _rig(tmp_path, monkeypatch)
+
+    def fail(*args, **kwargs):
+        raise OSError("probe unavailable")
+
+    monkeypatch.setattr(GS, "_sweep_draw_root" if stage == "scratch-sweep" else "_draw_free_ram",
+                        fail)
+    mapper = GS.concurrent_draw_mapper(store, "w", "s", ws.database_path,
+                                       _base(), seeds=(8, 9), keyframes=[])
+    plan = CP.ConsensusPlan(draws=3, seed=7, map_draw=mapper)
+    try:
+        with pytest.raises(CP.ConsensusAuditError, match="preflight"):
+            CP.gate_by_consensus(_Store(), "w1", SID, _candidate(tuple(PIECES)), plan=plan,
+                                 database_path="db", keyframes=world.keyframes)
+    finally:
+        mapper.close()
+    journal = json.loads((ws.root / "consensus_concurrent.jsonl").read_text())
+    assert journal["reason"] == f"preflight-{stage}-OSError"
+    assert journal["seed"] == 8
+    assert serial == []
+
+
+def test_unconfirmed_child_stop_is_visible_when_mapper_closes(tmp_path, monkeypatch):
+    store, ws, _, _, _ = _rig(tmp_path, monkeypatch)
+    mapper = GS.concurrent_draw_mapper(store, "w", "s", ws.database_path,
+                                       _base(), seeds=(4, 5), keyframes=[])
+    mapper(4)  # a sibling is still owned by the mapper
+    monkeypatch.setattr(GS, "_stop_draw_children", lambda children: False)
+    with pytest.raises(CP.ConsensusAuditError, match="could not be confirmed stopped"):
+        mapper.close()
+    assert (ws.root / "sparse-draws").exists()  # do not delete an unconfirmed child's DB
+    with pytest.raises(CP.ConsensusAuditError, match="could not be confirmed stopped"):
+        mapper.close()
+
+
 def test_parent_thread_counts_are_untouched(tmp_path, monkeypatch):
     import torch
 

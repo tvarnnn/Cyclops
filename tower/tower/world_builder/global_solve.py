@@ -1958,6 +1958,7 @@ def concurrent_draw_mapper(store, world_id: str, session_id: str, database_path,
     launched = False
     fallback = False
     closed = False
+    close_error = None
     owns_root = False
 
     def record(reason, seed):
@@ -1997,22 +1998,49 @@ def concurrent_draw_mapper(store, world_id: str, session_id: str, database_path,
     def launch():
         nonlocal expected, launched, owns_root
         launched = True
-        if _unconfirmed_draw_alive():
-            raise RuntimeError("an earlier consensus child still owns draw scratch")
-        if not _sweep_draw_root(root):
-            record("draw-scratch-owned", seeds[0])
-            raise RuntimeError("another consensus writer still owns draw scratch")
-        frame_count = len(keyframes) if keyframes is not None else len(
-            store.read_keyframes(world_id, session_id))
+
+        def preflight_abort(stage, exc):
+            record(f"preflight-{stage}-{type(exc).__name__}", seeds[0])
+            raise coherence_publish.ConsensusAuditError(
+                f"consensus preflight {stage} failed") from exc
+
         try:
-            image_count = _draw_image_count(source)
-        except (OSError, sqlite3.Error):
-            image_count = frame_count
-        budget = _draw_commit_budget(frame_count, image_count)
-        if _draw_free_ram() < (len(seeds) + 1) * budget:
+            prior_child_alive = _unconfirmed_draw_alive()
+        except Exception as exc:
+            preflight_abort("child-status", exc)
+        if prior_child_alive:
+            record("unconfirmed-prior-child", seeds[0])
+            raise coherence_publish.ConsensusAuditError(
+                "an earlier consensus child still owns draw scratch")
+        try:
+            scratch_clear = _sweep_draw_root(root)
+        except Exception as exc:
+            preflight_abort("scratch-sweep", exc)
+        if not scratch_clear:
+            record("draw-scratch-owned", seeds[0])
+            raise coherence_publish.ConsensusAuditError(
+                "another consensus writer still owns draw scratch")
+        try:
+            frame_count = len(keyframes) if keyframes is not None else len(
+                store.read_keyframes(world_id, session_id))
+            try:
+                image_count = _draw_image_count(source)
+            except (OSError, sqlite3.Error):
+                image_count = frame_count
+            budget = _draw_commit_budget(frame_count, image_count)
+        except Exception as exc:
+            preflight_abort("resource-budget", exc)
+        try:
+            free_ram = _draw_free_ram()
+        except Exception as exc:
+            preflight_abort("ram-probe", exc)
+        if free_ram < (len(seeds) + 1) * budget:
             use_serial("ram-refusal", seeds[0])
             return
-        expected = (database_digest(source) or {}).get("content")
+        try:
+            expected = (database_digest(source) or {}).get("content")
+        except Exception as exc:
+            preflight_abort("source-digest", exc)
         if expected is None:
             use_serial("database-digest-unavailable", seeds[0])
             return
@@ -2119,12 +2147,23 @@ def concurrent_draw_mapper(store, world_id: str, session_id: str, database_path,
         return candidate
 
     def close():
-        nonlocal closed
+        nonlocal closed, close_error
+        if close_error is not None:
+            raise close_error
         if not closed:
             closed = True
-            gone = _stop_draw_children(children)
+            try:
+                gone = _stop_draw_children(children)
+            except Exception as exc:
+                close_error = coherence_publish.ConsensusAuditError(
+                    "a consensus child stop failed")
+                raise close_error from exc
+            if not gone:
+                close_error = coherence_publish.ConsensusAuditError(
+                    "a consensus child could not be confirmed stopped")
+                raise close_error
             children.clear()
-            if gone and owns_root:
+            if owns_root:
                 try:
                     _sweep_draw_root(root, owned=True)
                 except OSError:
