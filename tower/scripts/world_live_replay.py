@@ -161,7 +161,7 @@ STREAMING_FILES = ("world_live_replay.py", "world_live_replay_run.py")
 # and every report, so which harness made a run is self-evident (manager 154
 # §2: proof sets run only on a pin that passed the C24x2 re-verify). Change it
 # with every change to the harness.
-HARNESS_VERSION = "c22-harness/F9 (guard handoff and journal binding)"
+HARNESS_VERSION = "c22-harness/F10 (complete frame-path proof)"
 
 # Leaf keys copied out of each World Builder status push to show what the
 # phone was being told, and when. Generic on purpose: the payload is large

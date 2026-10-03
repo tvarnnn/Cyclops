@@ -3265,7 +3265,7 @@ def test_the_keyframe_rows_are_a_selection_sequence_and_an_accepted_keyframe_lag
 def test_the_harness_pin_and_its_version_are_in_every_record_and_report(lifecycle, tmp_path):
     # a committed, clean pin, whether or not these scripts sit in a checkout right now
     identity = {**replay.harness_identity(), "git_head": "f" * 40, "git_dirty": []}
-    assert identity["version"] == replay.HARNESS_VERSION and "F9" in replay.HARNESS_VERSION
+    assert identity["version"] == replay.HARNESS_VERSION and "F10" in replay.HARNESS_VERSION
     pin = replay.harness_pin(identity)
     assert pin["version"] == replay.HARNESS_VERSION and pin["git_head"] == identity.get("git_head")
     assert set(pin["streaming_sha1"]) == set(replay.STREAMING_FILES) == set(report.STREAMING_HARNESS_FILES)

@@ -2712,8 +2712,9 @@ def run_validity(run: dict) -> dict:
     """Is a run valid as proof? Only a replay-fidelity PASS is (manager 142:
     "every proof-set run must pass it, or it is discarded and re-run").
 
-    A replay-fidelity FAIL, or an Environment FAIL (review C22 round 3 L-f: a
-    contended run widens the old path's noise), makes a run INVALID. So does
+    A replay-fidelity FAIL, live-safety failure, incomplete frame path, or an
+    Environment FAIL (review C22 round 3 L-f: a contended run widens the old
+    path's noise), makes a run INVALID. So does
     NOT-PROOF (review C24 HIGH-3: made without the :8000 guard, or declared
     `--not-a-proof-run`). A fidelity verdict that is n/a, or absent (a report
     rendered before the bar), is NOT a pass either (review C22 round 4 M-1):
