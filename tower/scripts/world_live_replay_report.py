@@ -2996,7 +2996,8 @@ def render_compare(result: dict) -> str:
         if result["candidate"]:
             counted_text += f", {result.get('candidates_counted')} of {len(result['candidate'])} candidate(s)"
         lines.append("**Fewer than 3 valid runs on a side: this is not a noise estimate (C19 F8 asks for N >= 3; "
-                     f"only a replay-fidelity PASS counts, manager 142): {counted_text}.**")
+                     "each counted run also needs full-walk, safety, client-photo, environment and proof evidence "
+                     f"plus replay-fidelity PASS): {counted_text}.**")
     comparability = result.get("comparability") or {}
     if comparability:
         lines.append("")
@@ -3083,7 +3084,8 @@ def render_compare(result: dict) -> str:
     lines.append("")
     lines.append("A candidate value outside the baseline's [min, max] is flagged; a candidate with no value "
                  "where the baseline has one is flagged MISSING. The spread is max - min over the baseline "
-                 "runs COUNTED (replay fidelity PASS, no Environment FAIL, proof-eligible, comparable): the old "
+                 "runs COUNTED (full-walk and safety evidence, replay fidelity and environment PASS, "
+                 "client-photo proof, comparable): the old "
                  "path's own noise. A baseline run excluded above is not in the mean, min, max or spread; an "
                  "INVALID candidate's value is marked. `keyframe_accept_lag_s` is over ACCEPTED keyframes only; "
                  "`recorder_stamp_*` are the recorder's post-reply stamps, not arrivals.")
