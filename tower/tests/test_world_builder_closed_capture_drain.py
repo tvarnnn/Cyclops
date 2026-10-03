@@ -322,7 +322,10 @@ def test_recorder_and_supervisor_drain_late_builder_after_normal_stop(tmp_path):
             observed_at_stop = events_path.read_text(
                 encoding="utf-8"
             ).count('"frame_rejected"')
-            assert 805 <= observed_at_stop < 3197
+            # Keep the reproducer close to the field's 805/3,197 split:
+            # at least 2,000 journal entries must still be unobserved when
+            # the normal close and stdin soft stop happen.
+            assert 805 <= observed_at_stop <= 1197, observed_at_stop
             recorder.stop()
             supervisor.capture_closed(capture_id)
             assert supervisor.request_stop("world-build-session") == 1
