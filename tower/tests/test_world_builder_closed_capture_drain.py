@@ -10,6 +10,8 @@ import pytest
 
 import tower.capture as capture_module
 from scripts.world_build_session import StopRequest, first_observed_frame, follow_capture
+from tower.capture import CaptureRecorder
+from tower.capture_workers import CaptureWorkerSupervisor, WorkerSpec
 from tower.world_builder.store import WorldStore
 
 
@@ -243,3 +245,112 @@ def test_builder_process_records_every_frame_after_normal_close_and_soft_stop(
     )
     assert events.count('"frame_rejected"') == 3197
     assert json.loads(events.splitlines()[-1])["kind"] == "session_stopped"
+
+
+def test_recorder_and_supervisor_drain_late_builder_after_normal_stop(tmp_path):
+    """Exercise the real journal writer, close manifest, worker, and soft stop.
+
+    Malformed image bytes avoid decoding, mapping, and GPU work. The recorder
+    still fsyncs each frame and atomically closes the same manifest used by
+    the WebSocket stream path. The supervisor owns the subprocess and closes
+    its stdin exactly as a World Builder session Stop does.
+    """
+    recorder = CaptureRecorder(tmp_path / "recordings")
+    capture_id = recorder.start()
+    payload = b"synthetic-frame"
+    source_seq = lambda index: 1 + (index * 6476 // 3196)
+    # A late attach sees an existing backlog. The writer is complete, but
+    # the manifest remains open until the user ends the capture below.
+    for index in range(3197):
+        assert recorder.write_frame(payload, source_seq=source_seq(index))
+
+    capture_dir = recorder.capture_dir(capture_id)
+    root = tmp_path / "worlds"
+    tower_dir = Path(__file__).parents[1]
+    processes = []
+    worker_log = tmp_path / "worker.log"
+
+    with worker_log.open("wb") as output:
+        def spawn(argv, **kwargs):
+            kwargs["stdout"] = output
+            kwargs["stderr"] = output
+            process = subprocess.Popen(argv, **kwargs)
+            processes.append(process)
+            return process
+
+        supervisor = CaptureWorkerSupervisor(
+            WorkerSpec(
+                argv=(
+                    sys.executable,
+                    str(tower_dir / "scripts" / "world_build_session.py"),
+                    "--follow-capture", "{capture_dir}",
+                    "--root", str(root),
+                    "--poll-seconds", "0.01",
+                    "--max-idle-polls", "10000",
+                    "--stop-on-stdin-close",
+                ),
+                cwd=str(tower_dir),
+                name="world-build-session",
+                stop_via_stdin=True,
+            ),
+            spawn=spawn,
+        )
+        assert supervisor.attach("world-build-session", capture_id, capture_dir)
+        assert len(processes) == 1
+        process = processes[0]
+        store = WorldStore(root)
+        try:
+            deadline = time.monotonic() + 60
+            while time.monotonic() < deadline:
+                worlds = store.list_world_ids()
+                if len(worlds) == 1:
+                    sessions = store.list_session_ids(worlds[0])
+                    if len(sessions) == 1:
+                        events_path = store.events_path(worlds[0], sessions[0])
+                        if events_path.exists() and events_path.read_text(
+                            encoding="utf-8"
+                        ).count('"frame_rejected"') >= 805:
+                            break
+                if process.poll() is not None:
+                    raise AssertionError("builder exited before the capture closed")
+                time.sleep(0.05)
+            else:
+                raise AssertionError("builder did not observe the first 805 frames")
+
+            assert recorder.status.frames_written == 3197
+            assert process.poll() is None
+            observed_at_stop = events_path.read_text(
+                encoding="utf-8"
+            ).count('"frame_rejected"')
+            assert 805 <= observed_at_stop < 3197
+            recorder.stop()
+            supervisor.capture_closed(capture_id)
+            assert supervisor.request_stop("world-build-session") == 1
+            process.wait(timeout=90)
+            assert process.returncode == 0, worker_log.read_text(
+                encoding="utf-8", errors="replace"
+            )[-3000:]
+        finally:
+            if process.poll() is None:
+                process.kill()
+                process.wait(timeout=10)
+            supervisor.reap()
+
+    manifest = recorder.manifest(capture_id)
+    assert manifest["end_reason"] == "stop"
+    assert manifest["frames_written"] == 3197
+    assert [row["source_seq"] for row in recorder.read_frames(capture_id)][-1] == 6477
+    worlds = store.list_world_ids()
+    assert len(worlds) == 1
+    sessions = store.list_session_ids(worlds[0])
+    assert len(sessions) == 1
+    session = store.read_session(worlds[0], sessions[0])
+    assert session.frames_observed == 3197
+    assert session.end_reason == "stop"
+    assert session.finalization["state"] == "complete"
+    events = store.events_path(worlds[0], sessions[0]).read_text(encoding="utf-8")
+    assert events.count('"frame_rejected"') == 3197
+    assert json.loads(events.splitlines()[-1])["kind"] == "session_stopped"
+    assert "stop requested (soft, stdin-closed) after the capture closed" in (
+        worker_log.read_text(encoding="utf-8", errors="replace")
+    )
