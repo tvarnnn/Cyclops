@@ -223,6 +223,7 @@ def test_builder_process_records_every_frame_after_normal_close_and_soft_stop(
         process.stdin = None
         stdout, stderr = process.communicate(timeout=90)
         assert process.returncode == 0, stderr[-2000:]
+        assert "stop requested (soft, stdin-closed) after the capture closed" in stderr
     finally:
         if process.poll() is None:
             process.kill()
