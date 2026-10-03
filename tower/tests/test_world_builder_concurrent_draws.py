@@ -2,6 +2,8 @@
 
 import hashlib
 import ctypes
+import dataclasses
+import json
 import os
 import pickle
 import subprocess
@@ -14,10 +16,13 @@ import pytest
 
 from tower.config import world_solve_consensus_concurrent_setting
 from tower.world_builder import global_solve as GS
+from tower.world_builder import coherence_publish as CP
 from tower.world_builder import stage_timing
 from tower.world_builder.store import WorldStore
 from tests.test_world_builder_reproducible_finish import engines, walk  # noqa: F401
 from tests.test_world_builder_solve_masks import colmap  # noqa: F401
+from tests.test_world_builder_solve_consensus import (  # noqa: F401
+    PIECES, SID, _candidate, _Store, world)
 
 
 def _base():
@@ -33,7 +38,7 @@ def _base():
 
 
 class _Process:
-    def wait(self):
+    def wait(self, timeout=None):
         return 0
 
     def poll(self):
@@ -138,12 +143,12 @@ def test_resource_or_digest_refusal_uses_serial(tmp_path, monkeypatch, cause):
                                        _base(), seeds=(4, 5), keyframes=[])
     assert mapper(4).solve["seed"] == 3  # sentinel from the unchanged serial mapper
     assert serial == [4]
-    assert events and "mismatch" in events[-1] if cause != "ram" else events == ["ram-refusal"]
+    assert events and "mismatch" in events[-1] if cause != "ram" else events == ["ram-refusal:seed-4"]
     assert launched == [] if cause != "child" else len(launched) == 2
     mapper.close()
 
 
-def test_soft_stop_terminates_children_before_serial_record(tmp_path, monkeypatch):
+def test_child_timeout_uses_serial_even_with_soft_stop(tmp_path, monkeypatch):
     store, ws, launched, serial, events = _rig(tmp_path, monkeypatch)
     stopped = []
 
@@ -170,24 +175,28 @@ def test_soft_stop_terminates_children_before_serial_record(tmp_path, monkeypatc
                                        seeds=(4, 5), keyframes=[], should_stop=should_stop)
     assert mapper(4).solve["seed"] == 3
     assert serial == [4] and launched == [4, 5]
-    assert stopped == [(4, 5)] and events == ["after-draw-0", "stop-during-map"]
+    assert stopped == [(4, 5)] and events == ["after-draw-0", "child-timeout:seed-4"]
+    assert calls == []  # ordinary soft stop does not kill a running draw
     mapper.close()
 
 
-def test_child_crash_raises_mapping_failure(tmp_path, monkeypatch):
-    store, ws, launched, serial, _ = _rig(tmp_path, monkeypatch)
+def test_child_crash_remaps_same_seed_serially(tmp_path, monkeypatch):
+    store, ws, launched, serial, events = _rig(tmp_path, monkeypatch)
 
     class Crashed(_Process):
-        def wait(self):
+        def wait(self, timeout=None):
             return 7
 
     monkeypatch.setattr(GS, "_launch_draw_child",
                         lambda *args: (Crashed(), _Job()))
     mapper = GS.concurrent_draw_mapper(store, "w", "s", ws.database_path,
                                        _base(), seeds=(4, 5), keyframes=[])
-    with pytest.raises(RuntimeError, match="exited 7"):
-        mapper(4)
-    assert serial == []
+    assert mapper(4).solve["seed"] == 3
+    assert serial == [4]
+    assert events[-1] == "child-exit-7:seed-4"
+    assert not (ws.root / "sparse-draws").exists()
+    journal = json.loads((ws.root / "consensus_concurrent.jsonl").read_text())
+    assert journal["seed"] == 4 and journal["reason"] == "child-exit-7"
     mapper.close()
 
 
@@ -259,3 +268,235 @@ def test_job_object_kills_draw_child_when_parent_exits(tmp_path):
     while psutil.pid_exists(int(pid)) and time.monotonic() < deadline:
         time.sleep(0.05)
     assert not psutil.pid_exists(int(pid))
+
+
+@pytest.mark.slow
+def test_real_child_maps_full_schema_database_like_serial(tmp_path, monkeypatch):
+    import pycolmap
+
+    store = WorldStore(tmp_path)
+    ws = GS.workspace_for(store, "w", "s")
+    ws.root.mkdir(parents=True)
+    ws.images_dir.mkdir(parents=True)
+    # pycolmap creates its complete current schema, so its mapper cannot
+    # silently add tables and trip the after-digest check.
+    with pycolmap.Database.open(str(ws.database_path)):
+        pass
+    events = []
+    monkeypatch.setattr(GS, "_draw_free_ram", lambda: 32 * 1024**3)
+    monkeypatch.setattr(stage_timing, "concurrent_draw_event", events.append)
+    order = []
+    from tower import process_ownership
+    assign = process_ownership.assign_to_job
+    resume = GS._resume_draw_child
+    monkeypatch.setattr(process_ownership, "assign_to_job",
+                        lambda proc: order.append("assigned") or assign(proc))
+    monkeypatch.setattr(GS, "_resume_draw_child",
+                        lambda proc: order.append("resumed") or resume(proc))
+    mapper = GS.concurrent_draw_mapper(store, "w", "s", ws.database_path,
+                                       _base(), seeds=(4,), keyframes=[])
+    try:
+        concurrent = mapper(4)
+    finally:
+        mapper.close()
+    assert events == ["after-draw-0"]
+    assert order == ["assigned", "resumed"]
+    assert not (ws.root / "sparse-draws").exists()
+    serial = GS.frozen_draw_mapper(store, "w", "s", ws.database_path,
+                                   _base(), keyframes=[])(4)
+    for field in dataclasses.fields(serial):
+        if field.name in ("solved_at", "timing"):
+            continue
+        left, right = getattr(serial, field.name), getattr(concurrent, field.name)
+        if isinstance(left, np.ndarray):
+            assert left.dtype == right.dtype and left.shape == right.shape
+            assert left.tobytes() == right.tobytes(), field.name
+        else:
+            assert left == right, field.name
+
+
+def test_child_exit_preserves_three_voter_published_room(world, tmp_path, monkeypatch):
+    draws = [(), ("A",), ()]
+
+    def candidate(seed):
+        return _candidate(tuple(PIECES), rotated=draws[seed - 7])
+
+    def publish(plan):
+        result = CP.gate_by_consensus(
+            _Store(), "w1", SID, candidate(7), plan=plan,
+            database_path="db", keyframes=world.keyframes)
+        return (result.record["consensus"]["state"],
+                result.record["consensus"]["votes"]["draws"],
+                sorted(k for k, p in result.solution.poses.items()
+                       if p["component"] == 0))
+
+    serial = publish(CP.ConsensusPlan(draws=3, seed=7, map_draw=candidate))
+    store = WorldStore(tmp_path)
+    ws = GS.workspace_for(store, "w1", SID)
+    ws.root.mkdir(parents=True)
+    ws.database_path.write_bytes(b"db")
+    digest = lambda p: {"content": hashlib.sha1(Path(p).read_bytes()).hexdigest()}
+    monkeypatch.setattr(GS, "database_digest", digest)
+    monkeypatch.setattr(GS, "_private_draw_database",
+                        lambda s, d: Path(d).write_bytes(Path(s).read_bytes()))
+    monkeypatch.setattr(GS, "_draw_free_ram", lambda: 64 * 1024**3)
+    monkeypatch.setattr(GS, "frozen_draw_mapper",
+                        lambda *a, **kw: candidate)
+
+    def launch(context, database, seed, sparse, output, expected):
+        with Path(output).open("wb") as handle:
+            pickle.dump({"before": expected, "after": expected,
+                         "map_ms": 1.0, "candidate": candidate(seed)}, handle)
+        return _ExitProcess(1 if seed == 9 else 0), _Job()
+
+    monkeypatch.setattr(GS, "_launch_draw_child", launch)
+    base = candidate(7)
+    base.solve = {"seed": 7}
+    mapper = GS.concurrent_draw_mapper(store, "w1", SID, ws.database_path,
+                                       base, seeds=(8, 9), keyframes=[])
+    try:
+        concurrent = publish(CP.ConsensusPlan(draws=3, seed=7, map_draw=mapper))
+    finally:
+        mapper.close()
+    assert concurrent == serial
+    assert concurrent[0] == CP.CONSENSUS_APPLIED
+    assert concurrent[1] == 3 and len(concurrent[2]) == 90
+    assert not (ws.root / "sparse-draws").exists()
+    journal = (ws.root / "consensus_concurrent.jsonl").read_text()
+    assert "child-exit-1" in journal and '"seed": 9' in journal
+
+
+class _ExitProcess(_Process):
+    def __init__(self, code):
+        self.code = code
+
+    def wait(self, timeout=None):
+        return self.code
+
+    def poll(self):
+        return self.code
+
+
+@pytest.mark.slow
+def test_child_script_uses_requested_seed_one_thread_and_after_digest(tmp_path):
+    import pycolmap
+
+    store = WorldStore(tmp_path)
+    ws = GS.workspace_for(store, "w", "s")
+    ws.root.mkdir(parents=True)
+    ws.images_dir.mkdir(parents=True)
+    with pycolmap.Database.open(str(ws.database_path)):
+        pass
+    context = tmp_path / "context.pkl"
+    with context.open("wb") as handle:
+        pickle.dump((ws, [], GS.PinholeCamera.from_json_dict(_base().camera),
+                     "input", GS.MIN_IMAGE_OBSERVATIONS), handle)
+    expected = GS.database_digest(ws.database_path)["content"]
+    shim = tmp_path / "shim"
+    shim.mkdir()
+    observed = tmp_path / "observed.json"
+    (shim / "sitecustomize.py").write_text(
+        "import json, os, sqlite3\n"
+        "from pathlib import Path\n"
+        "from tower.world_builder import global_solve as GS\n"
+        "def mapped(*args, **kwargs):\n"
+        "    Path(os.environ['W01_OBSERVED']).write_text(json.dumps("
+        "{'seed': kwargs['seed'], 'threads': kwargs['threads']}))\n"
+        "    db = sqlite3.connect(str(args[1]))\n"
+        "    db.execute('create table after_probe (id integer)')\n"
+        "    db.commit(); db.close()\n"
+        "    return None\n"
+        "GS._map_candidate = mapped\n", encoding="utf-8")
+    env = dict(os.environ, W01_OBSERVED=str(observed), CUDA_VISIBLE_DEVICES="-1",
+               PYTHONDONTWRITEBYTECODE="1",
+               PYTHONPATH=str(shim) + os.pathsep + str(Path(GS.__file__).parents[2]))
+    output = tmp_path / "candidate.pkl"
+    script = Path(GS.__file__).parents[2] / "scripts" / "world_solve_draw.py"
+    result = subprocess.run([
+        sys.executable, str(script), "--context", str(context),
+        "--database", str(ws.database_path), "--seed", "17",
+        "--sparse", str(tmp_path / "sparse"), "--output", str(output),
+        "--expected-digest", expected], env=env, capture_output=True, text=True,
+        timeout=30)
+    assert result.returncode == 0, result.stderr
+    assert json.loads(observed.read_text()) == {"seed": 17, "threads": 1}
+    with output.open("rb") as handle:
+        child = pickle.load(handle)
+    assert child["before"] == expected
+    assert child["after"] != expected
+
+
+def test_switch_off_does_not_write_concurrent_i0_key(tmp_path, monkeypatch):
+    monkeypatch.setenv("TOWER_WORLD_STAGE_TIMING", "on")
+    monkeypatch.setenv("TOWER_WORLD_SOLVE_CONSENSUS_CONCURRENT", "off")
+    store = WorldStore(tmp_path)
+    store.session_dir("w", "s").mkdir(parents=True)
+
+    @stage_timing.timed("solve")
+    def solve(store, world_id, session_id):
+        return None
+
+    solve(store, "w", "s")
+    record = json.loads((store.session_dir("w", "s") /
+                         stage_timing.FILENAME).read_text())["finishes"][0]["stages"]["solve"][0]
+    assert "consensus_concurrent" not in record
+
+
+def test_soft_stop_during_successful_child_wait_keeps_child(tmp_path, monkeypatch):
+    store, ws, launched, serial, events = _rig(tmp_path, monkeypatch)
+    stopped = []
+    monkeypatch.setattr(GS, "_stop_draw_children",
+                        lambda children: stopped.append(tuple(children)) or True)
+    mapper = GS.concurrent_draw_mapper(store, "w", "s", ws.database_path,
+                                       _base(), seeds=(4, 5), keyframes=[],
+                                       should_stop=lambda: True)
+    assert mapper(4).solve["seed"] == 4
+    assert serial == [] and events == ["after-draw-0"]
+    assert stopped == []
+    mapper.close()
+    assert stopped == [(5,)]
+
+
+def test_stale_writer_swept_but_live_writer_preserved(tmp_path, monkeypatch):
+    import psutil
+
+    store, ws, _, _, _ = _rig(tmp_path, monkeypatch)
+    root = ws.root / "sparse-draws"
+    root.mkdir()
+    (root / "writer.json").write_text(json.dumps(
+        {"pid": 99999999, "created_at": 1.0}))
+    (root / "stale.bin").write_bytes(b"stale")
+    mapper = GS.concurrent_draw_mapper(store, "w", "s", ws.database_path,
+                                       _base(), seeds=(4,), keyframes=[])
+    mapper(4)
+    mapper.close()
+    assert not root.exists()
+
+    root.mkdir()
+    (root / "writer.json").write_text(json.dumps(
+        {"pid": os.getpid(), "created_at": psutil.Process().create_time()}))
+    (root / "live.bin").write_bytes(b"live")
+    mapper = GS.concurrent_draw_mapper(store, "w", "s", ws.database_path,
+                                       _base(), seeds=(4,), keyframes=[])
+    with pytest.raises(RuntimeError, match="another consensus writer"):
+        mapper(4)
+    mapper.close()
+    assert (root / "live.bin").read_bytes() == b"live"
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows Job Object ownership")
+def test_product_launcher_job_and_stop_end_real_child(tmp_path, monkeypatch):
+    import psutil
+    from tower import process_ownership
+
+    monkeypatch.setattr(process_ownership, "interpreter_argv",
+                        lambda *args: [sys.executable, "-c", "import time; time.sleep(30)"])
+    output = tmp_path / "seed" / "candidate.pkl"
+    output.parent.mkdir()
+    process, job = GS._launch_draw_child(tmp_path / "context", tmp_path / "db", 4,
+                                         tmp_path / "sparse", output, "digest")
+    try:
+        assert job is not None and psutil.pid_exists(process.pid)
+    finally:
+        assert GS._stop_draw_children({4: (process, job)})
+    assert process.poll() is not None

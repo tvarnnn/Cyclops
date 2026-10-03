@@ -26,6 +26,7 @@ sys.path.insert(0, str(REPO / "tower"))
 import numpy as np  # noqa: E402
 from tower.world_builder import global_solve as GS  # noqa: E402
 from tower.world_builder.store import WorldStore  # noqa: E402
+from tower.world_builder import stage_timing  # noqa: E402
 
 
 def _digest_candidate(candidate):
@@ -87,26 +88,28 @@ def _direct(source, out, session, seed):
                 mapper = GS.frozen_draw_mapper(store, world_id, session, database,
                                                base, keyframes=keyframes)
             else:
+                budget = GS._draw_commit_budget(len(keyframes), GS._draw_image_count(database))
+                if GS._draw_free_ram() < 3 * budget:
+                    raise RuntimeError(f"insufficient free RAM for two children: {arm}-{repeat}")
                 mapper = GS.concurrent_draw_mapper(store, world_id, session, database, base,
                                                    seeds=(seed + 1, seed + 2), keyframes=keyframes)
+            events = []
+            previous_event = stage_timing.concurrent_draw_event
+            stage_timing.concurrent_draw_event = events.append
             try:
                 pair = {str(s): _digest_candidate(mapper(s)) for s in (seed + 1, seed + 2)}
             finally:
+                stage_timing.concurrent_draw_event = previous_event
                 close = getattr(mapper, "close", None)
                 if close:
                     close()
             if (GS.database_digest(database) or {}).get("content") != expected:
                 raise RuntimeError(f"mapped source database changed: {arm}-{repeat}")
             if arm == "new":
-                for s in (seed + 1, seed + 2):
-                    private = workspace.root / "sparse-draws" / f"seed-{s}" / "database.db"
-                    if (GS.database_digest(private) or {}).get("content") != expected:
-                        raise RuntimeError(f"private database missing or changed: {arm}-{repeat}-{s}")
-                    with private.with_name("candidate.pkl").open("rb") as handle:
-                        child = pickle.load(handle)
-                    if (child.get("before") != expected or child.get("after") != expected or
-                            child.get("candidate") is None):
-                        raise RuntimeError(f"child map did not complete on the private database: {arm}-{repeat}-{s}")
+                if events != ["after-draw-0"]:
+                    raise RuntimeError(f"direct concurrent path fell back: {arm}-{repeat}: {events}")
+                if (workspace.root / "sparse-draws").exists():
+                    raise RuntimeError(f"private scratch left after direct draw: {arm}-{repeat}")
             hashes[f"{arm}-{repeat}"] = pair
             print(f"direct {arm}-{repeat}: mapped and digest checked", flush=True)
     reference = hashes["old-1"]
@@ -129,7 +132,9 @@ def _env_file(path):
     env["PYTHONPATH"] = str(REPO / "tower")
     env["PYTHONDONTWRITEBYTECODE"] = "1"
     env["TOWER_WORLD_SOLVE_CONSENSUS"] = "3"
-    env["TOWER_WORLD_APPEARANCE_DETERMINISTIC_GAINS"] = "on"
+    if any("TOWER_WORLD_APPEARANCE_DETERMINISTIC_GAINS" in p.read_text(encoding="utf-8")
+           for p in (REPO / "tower" / "tower").rglob("*.py")):
+        env["TOWER_WORLD_APPEARANCE_DETERMINISTIC_GAINS"] = "on"
     env["TOWER_WORLD_STAGE_TIMING"] = "on"
     return env
 
@@ -152,13 +157,13 @@ def _pairs(world, session):
     return result
 
 
-def _compare_published(compare_path, world_a, world_b, session, report):
+def _compare_published(compare_path, world_a, world_b, session, report, *, by_design):
     """C18 spec with one I0-only provenance key excluded in memory."""
     spec = importlib.util.spec_from_file_location("w0_compare_identity", compare_path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     module.VOLATILE_KEYS.add("consensus_concurrent")
-    result = module.compare(world_a, world_b, session=session)
+    result = module.compare(world_a, world_b, session=session, by_design=by_design)
     report.write_text(json.dumps(result, indent=2), encoding="utf-8")
     lines = [f"{name}: {record['status']}" for name, record in result["artifacts"].items()]
     for name in result["differs"]:
@@ -170,14 +175,29 @@ def _compare_published(compare_path, world_a, world_b, session, report):
 
 def _full(source, out, session, seed, env_file, compare_w0):
     env = _env_file(env_file)
+    by_design = "TOWER_WORLD_APPEARANCE_DETERMINISTIC_GAINS" not in env
+    shim = out / "proof-shim"
+    shim.mkdir()
+    shutil.copyfile(Path(__file__).with_name("draw_dump_sitecustomize.py"),
+                    shim / "sitecustomize.py")
+    env["PYTHONPATH"] = str(shim) + os.pathsep + env["PYTHONPATH"]
     worlds = {}
     pair_hashes = {}
+    draw_hashes = {}
     for arm in ("old", "new"):
         for repeat in range(1, 4):
             root = out / "full" / f"{arm}-{repeat}"
             world = _copy_world(source, root, omit_pair_cache=True)
             local_env = dict(env, TOWER_WORLD_SOLVE_CONSENSUS_CONCURRENT=(
                 "off" if arm == "old" else "after-draw-0"))
+            dump = root / "draw-dumps"
+            local_env["TOWER_W01_DRAW_DUMP"] = str(dump)
+            if arm == "new":
+                _, _, _, database, _ = _load(root, source.name, session, seed)
+                count = len(WorldStore(root).read_keyframes(source.name, session))
+                budget = GS._draw_commit_budget(count, GS._draw_image_count(database))
+                if GS._draw_free_ram() < 3 * budget:
+                    raise RuntimeError(f"insufficient free RAM for two children: {arm}-{repeat}")
             command = [sys.executable, str(REPO / "tower" / "scripts" / "world_refinish.py"),
                        "--root", str(root), "--world", source.name,
                        "--session", session, "--seed", str(seed), "--format", "json"]
@@ -200,6 +220,16 @@ def _full(source, out, session, seed, env_file, compare_w0):
             mode = solves[-1].get("consensus_concurrent")
             if mode != (None if arm == "old" else "after-draw-0"):
                 raise RuntimeError(f"concurrent draw stage did not run as intended: {arm}-{repeat}, {mode}")
+            if (world / "solve" / session / "sparse-draws").exists():
+                raise RuntimeError(f"private draw scratch remained: {arm}-{repeat}")
+            per_seed = {}
+            for draw_seed in (seed, seed + 1, seed + 2):
+                files = sorted(dump.glob(f"seed-{draw_seed}-pid-*.json"))
+                if len(files) != 1:
+                    raise RuntimeError(f"expected one in-process dump for seed {draw_seed}: "
+                                       f"{arm}-{repeat}: {files}")
+                per_seed[str(draw_seed)] = json.loads(files[0].read_text(encoding="utf-8"))
+            draw_hashes[f"{arm}-{repeat}"] = per_seed
             worlds[f"{arm}-{repeat}"] = world
             pair_hashes[f"{arm}-{repeat}"] = _pairs(world, session)
             print(f"full {arm}-{repeat}: refinish and P4 checked", flush=True)
@@ -207,14 +237,20 @@ def _full(source, out, session, seed, env_file, compare_w0):
     for name, pair in pair_hashes.items():
         if pair != reference:
             raise RuntimeError(f"P4 pair arrays or similarity differ: old-1 vs {name}")
+    reference_draws = draw_hashes["old-1"]
+    for name, draws in draw_hashes.items():
+        if draws != reference_draws:
+            raise RuntimeError(f"per-draw candidate differs inside finalize: old-1 vs {name}")
     for name, world in worlds.items():
         if name == "old-1":
             continue
         report = out / f"compare-old-1-vs-{name}.json"
-        result = _compare_published(compare_w0, worlds["old-1"], world, session, report)
+        result = _compare_published(compare_w0, worlds["old-1"], world, session, report,
+                                    by_design=by_design)
         if result["verdict"] != "IDENTICAL":
             raise RuntimeError(f"published world differs: old-1 vs {name}; see {report}")
-    return pair_hashes
+    return {"pairs": pair_hashes, "draws": draw_hashes,
+            "appearance_by_design": by_design}
 
 
 def main(argv=None):
