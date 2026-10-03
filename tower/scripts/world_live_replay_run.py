@@ -124,6 +124,7 @@ IDLE_WAIT_S = 120.0
 # client watches it during the stream.
 LIVE_WATCH_EVERY_S = 10.0
 PREFLIGHT_WATCH_EVERY_S = 0.5
+PREFLIGHT_WATCH_MAX_GAP_S = 10.0
 AFTER_STOP_S = 2.0
 
 
@@ -306,6 +307,10 @@ class StartupLiveWatch:
         self._reason = None
         self._preflight = True
         self.last_state = guard.at_start
+        self._last_background_at = clock()
+        self._background_polls = 0
+        self._background_max_gap_s = 0.0
+        self._first_background = threading.Event()
 
     def start(self) -> None:
         self._thread = threading.Thread(target=self._observe_background,
@@ -329,22 +334,41 @@ class StartupLiveWatch:
                 state = "unknown"
             self._observe(state)
             with self._lock:
+                now = self._clock()
+                gap = now - self._last_background_at
+                self._background_max_gap_s = max(self._background_max_gap_s, gap)
+                self._last_background_at = now
+                self._background_polls += 1
+                if gap > PREFLIGHT_WATCH_MAX_GAP_S and self._reason is None:
+                    self._reason = f":8000 preflight live watcher missed {gap:.1f} s of coverage"
                 aborted = self._reason is not None
+            self._first_background.set()
             if aborted:
                 return
 
-    def close(self) -> None:
+    def close(self, *, require_join: bool = False) -> None:
         self._stop.set()
         if self._thread is not None:
             self._thread.join(timeout=6.0)
+            if require_join and self._thread.is_alive():
+                raise LiveTowerAbort(":8000 preflight live watcher did not stop at handoff")
 
-    def check(self, force: bool = False) -> str:
+    def check_latched(self) -> None:
+        with self._lock:
+            reason = self._reason
+        if reason:
+            raise LiveTowerAbort(reason)
+
+    def check(self, force: bool = False, require_background: bool = False) -> str:
         """Read :8000 when the interval is due, or now when `force` (the
         hand-off to the client: review C24 HIGH-3, no unwatched gap)."""
         with self._lock:
             reason = self._reason
         if reason:
             raise LiveTowerAbort(reason)
+        if require_background:
+            self._first_background.wait(PREFLIGHT_WATCH_MAX_GAP_S)
+        self._check_background()
         now = self._clock()
         if now >= self._next or force:
             self._next = now + self.every
@@ -353,7 +377,27 @@ class StartupLiveWatch:
             reason, state = self._reason, self.last_state
         if reason:
             raise LiveTowerAbort(reason)
+        self._check_background()
         return state
+
+    def _check_background(self) -> None:
+        with self._lock:
+            reason = self._reason
+            age = self._clock() - self._last_background_at
+            polls = self._background_polls
+        if reason:
+            raise LiveTowerAbort(reason)
+        if not self._stop.is_set() and (self._thread is None or not self._thread.is_alive()):
+            raise LiveTowerAbort(":8000 preflight live watcher stopped unexpectedly")
+        if age > PREFLIGHT_WATCH_MAX_GAP_S:
+            raise LiveTowerAbort(f":8000 preflight live watcher missed {age:.1f} s of coverage")
+        if polls == 0 and self._first_background.is_set():
+            raise LiveTowerAbort(":8000 preflight live watcher produced no completed observation")
+
+    def summary(self) -> dict:
+        with self._lock:
+            return {**self.guard.summary(), "background_poll_count": self._background_polls,
+                    "background_max_gap_s": round(self._background_max_gap_s, 3)}
 
 
 def main(argv=None) -> int:
@@ -581,16 +625,17 @@ def main(argv=None) -> int:
 
         # The hand-off: read :8000 once more, now, so the gap to the client's
         # own first read is the client's start-up alone (review C24 HIGH-3).
-        watch.check(force=True)
+        watch.check(force=True, require_background=True)
 
         def handoff_live_watch() -> None:
             # The client calls this after arming its own guard and before any
             # proof traffic. Catch an unsafe state latched in the hand-off
             # interval, then stop the faster preflight observer.
             try:
-                watch.check(force=True)
+                watch.check(force=True, require_background=True)
             finally:
-                watch.close()
+                watch.close(require_join=True)
+            watch.check_latched()
 
         options = options_from_args(args, port=args.port, out=out, world_root=world_root,
                                     tower_pid=process.pid, on_abort=kill_tower_now,
@@ -633,7 +678,7 @@ def main(argv=None) -> int:
                 run["guard_aborted_after_the_fault"] = {**saved["aborted"], "raised": repr(exc)}
     finally:
         watch.close()
-        run["live_tower_watch_startup"] = watch.guard.summary()
+        run["live_tower_watch_startup"] = watch.summary()
         if process is not None:
             _log(out, f"stopping the test Tower pid {process.pid}")
             terminate_tree(process, job=job, timeout=30.0, hard=True)

@@ -1162,6 +1162,12 @@ def _fake_run(directory, *, photos, lag_p95, sequence, horizons=(52,), fidelity=
     image = source_root / CAP / "frames" / "00000001.jpg"
     image.parent.mkdir(parents=True)
     image.write_bytes(jpeg_bytes)
+    capture_bytes = json.dumps({"capture_id": CAP}, sort_keys=True).encode("utf-8")
+    journal_bytes = json.dumps({"frame": 1, "variant": journal or "baseline"}, sort_keys=True).encode("utf-8")
+    (image.parent.parent / "capture.json").write_bytes(capture_bytes)
+    (image.parent.parent / "frames.jsonl").write_bytes(journal_bytes)
+    actual_journal = {CAP: {"capture.json": report.hashlib.sha256(capture_bytes).hexdigest(),
+                            "frames.jsonl": report.hashlib.sha256(journal_bytes).hexdigest()}}
     entry = {"capture_id": CAP, "relpath": "frames/00000001.jpg", "wire_seq": 1,
              "bytes": image.stat().st_size, "sha256": report.hashlib.sha256(image.read_bytes()).hexdigest()}
     image_digest = replay.input_list_sha256([entry])
@@ -1182,6 +1188,7 @@ def _fake_run(directory, *, photos, lag_p95, sequence, horizons=(52,), fidelity=
               "stream": {"frames_sent": 4005}, "live_tower_watch": {"states_seen": ["idle"]},
               "source_images": {"planned": [entry], "planned_sha256": image_digest, "sent": [entry],
                                 "sent_sha256": image_digest, "verified": True},
+              "source_journals": actual_journal,
               "calibration_check": {"expected": calibration, "before_stream": calibration,
                                     "after_stream": calibration, "verified": True},
               **({"started_at": client_started} if client_started is not None else {})}
@@ -1189,7 +1196,7 @@ def _fake_run(directory, *, photos, lag_p95, sequence, horizons=(52,), fidelity=
         **({"replay_fidelity": verdict} if fidelity is not None else {}),
         "run": run, "client": client,
         "proof": {"proof": not not_proof, "not_proof_reasons": [not_proof] if not_proof else []},
-        "tower_side_pacing": {"computable": True, "source_sha256": journal or FAKE_JOURNAL,
+        "tower_side_pacing": {"computable": True, "source_sha256": actual_journal,
                               "source_capture_root": str(source_root)},
         "label": directory.name,
         "verdict": {"basis": "phone", "stop_to_room_with_photos_min": photos, "stop_to_phone_photos_min": photos,
@@ -1517,7 +1524,12 @@ def test_an_isolated_unknown_from_8000_is_tolerated_and_shown(tmp_path):
         {"t": 1.0, "state": "idle"}, {"t": 2.0, "state": "unknown"}, {"t": 3.0, "state": "idle"},
         {"t": 4.0, "state": "unknown"}, {"t": 5.0, "state": "idle"}]}
     built = report.build_report(tower_log=log, world_root=tmp_path / "root",
-                                client=_clean_client(live_tower_watch=watch))
+                                client=_clean_client(live_tower_watch=watch),
+                                run={"live_tower_watch_startup": {"states_seen": ["idle"],
+                                                                  "history": [{"t": 0.0, "state": "idle"}],
+                                                                  "poll_count": 1,
+                                                                  "background_poll_count": 1,
+                                                                  "background_max_gap_s": 0.1}})
     environment = built["live_safety"]["environment"]
     row = environment["rows"][0]
     assert row["check"] == ":8000 during the run" and row["result"] == "PASS"
@@ -1549,7 +1561,9 @@ def test_the_runners_startup_watch_is_an_environment_row(tmp_path):
     log = tmp_path / "tower.err.log"
     log.write_text(_walk_log(BASE), encoding="utf-8")
     run = {"live_tower_watch_startup": {"states_seen": ["idle", "unknown"], "history": [
-        {"t": 1.0, "state": "idle"}, {"t": 2.0, "state": "unknown"}, {"t": 3.0, "state": "idle"}]}}
+        {"t": 1.0, "state": "idle"}, {"t": 2.0, "state": "unknown"}, {"t": 3.0, "state": "idle"}],
+                                       "poll_count": 3, "background_poll_count": 2,
+                                       "background_max_gap_s": 0.5}}
     watch = {"states_seen": ["idle"], "history": [{"t": 4.0, "state": "idle"}]}
     built = report.build_report(tower_log=log, client=_clean_client(live_tower_watch=watch), run=run)
     rows = {r["check"]: r for r in built["live_safety"]["environment"]["rows"]}
@@ -2755,7 +2769,10 @@ def _keyed_render(root):
     (cal_root / "360x640.json").write_bytes(b'{"fx": 1}')
     calibration = replay.calibration_digests(cal_root)
     run.update(switches=dict(FAKE_SWITCHES), code=dict(FAKE_CODE), harness=FAKE_HARNESS,
-               intrinsics_copied=["360x640.json"], intrinsics_sha256=calibration, started_at=BEFORE)
+               intrinsics_copied=["360x640.json"], intrinsics_sha256=calibration, started_at=BEFORE,
+               live_tower_watch_startup={"states_seen": ["idle"],
+                                         "history": [{"t": BEFORE, "state": "idle"}], "poll_count": 1,
+                                         "background_poll_count": 1, "background_max_gap_s": 0.1})
     (run_dir / "run.json").write_text(json.dumps(run), encoding="utf-8")
     client = json.loads((run_dir / "client.json").read_text(encoding="utf-8"))
     source = Path(client["capture_root"])
@@ -2764,6 +2781,7 @@ def _keyed_render(root):
     digest = replay.input_list_sha256(planned)
     client.update(after_stop="stay", live_tower_watch={"states_seen": ["idle"]}, live_guard=True,
                   not_a_proof_run=False,
+                  source_journals={c.capture_id: c.source_sha256 for c in walk},
                   source_images={"planned": planned, "planned_sha256": digest, "sent": planned,
                                  "sent_sha256": digest, "verified": True},
                   calibration_check={"expected": calibration, "before_stream": calibration,
@@ -2923,7 +2941,8 @@ def test_an_unguarded_or_undeclared_stream_is_not_proof_and_its_environment_fail
     log = tmp_path / "tower.err.log"
     log.write_text(_walk_log(BASE), encoding="utf-8")
     watched = {"states_seen": ["idle"], "history": [{"t": 1.0, "state": "idle"}]}
-    run = {"live_tower_watch_startup": watched}   # the runner's startup watch PASSES...
+    run = {"live_tower_watch_startup": {**watched, "poll_count": 1,
+                                        "background_poll_count": 1, "background_max_gap_s": 0.1}}
     unguarded = report.build_report(tower_log=log, client=_clean_client(live_guard=False), run=run)
     rows = {r["check"]: r for r in unguarded["live_safety"]["environment"]["rows"]}
     assert rows[":8000 during the run"]["result"] == "FAIL"               # ...but the stream was not watched
@@ -2960,7 +2979,8 @@ def test_a_render_made_before_f7_is_judged_not_proof_from_its_own_client_record(
     assert report.proof_status(client=streamed_unwatched["client"], run={})["not_proof_reasons"] == [
         "it streamed with no :8000 watch on record"]
     watched = {"stream": {"frames_sent": 4005}, "live_tower_watch": {"states_seen": ["idle"]}}
-    assert report.proof_status(client=watched, run={})["proof"] is True
+    assert report.proof_status(client=watched, run={})["not_proof_reasons"] == [
+        "no completed :8000 startup/preflight watch on record"]
 
 
 def test_the_runner_re_reads_8000_right_before_the_spawn(lifecycle, monkeypatch):
@@ -2976,6 +2996,34 @@ def test_the_runner_re_reads_8000_right_before_the_spawn(lifecycle, monkeypatch)
     assert order == ["live", "import", "live"]
     assert lifecycle["calls"]["spawn"] == [] and lifecycle["calls"]["terminate"] == []
     assert "became recording during the preflight" in (lifecycle["out"] / "runner.log").read_text(encoding="utf-8")
+
+
+def test_dead_background_preflight_watcher_refuses_before_spawn(lifecycle, monkeypatch):
+    import threading
+
+    import_entered = threading.Event()
+    watches = []
+    original_start = runner.StartupLiveWatch.start
+
+    def start(watch):
+        watches.append(watch)
+        original_start(watch)
+
+    def dead_background(_watch):
+        assert import_entered.wait(2)
+
+    def blocked_import(tower_dir, env):
+        import_entered.set()
+        watches[0]._thread.join(2)
+        assert not watches[0]._thread.is_alive()
+        return str(tower_dir / "tower" / "__init__.py")
+
+    monkeypatch.setattr(runner.StartupLiveWatch, "start", start)
+    monkeypatch.setattr(runner.StartupLiveWatch, "_observe_background", dead_background)
+    monkeypatch.setattr(runner, "probe_import", blocked_import)
+    assert runner.main(lifecycle["argv"]) == runner.EXIT_ABORTED
+    assert lifecycle["calls"]["spawn"] == []
+    assert "live watcher stopped unexpectedly" in (lifecycle["out"] / "runner.log").read_text(encoding="utf-8")
 
 
 def test_the_runner_reads_8000_at_the_hand_off_even_when_its_watch_is_not_due(lifecycle, monkeypatch):
@@ -3191,7 +3239,7 @@ def test_the_keyframe_rows_are_a_selection_sequence_and_an_accepted_keyframe_lag
 def test_the_harness_pin_and_its_version_are_in_every_record_and_report(lifecycle, tmp_path):
     # a committed, clean pin, whether or not these scripts sit in a checkout right now
     identity = {**replay.harness_identity(), "git_head": "f" * 40, "git_dirty": []}
-    assert identity["version"] == replay.HARNESS_VERSION and "F8" in replay.HARNESS_VERSION
+    assert identity["version"] == replay.HARNESS_VERSION and "F9" in replay.HARNESS_VERSION
     pin = replay.harness_pin(identity)
     assert pin["version"] == replay.HARNESS_VERSION and pin["git_head"] == identity.get("git_head")
     assert set(pin["streaming_sha1"]) == set(replay.STREAMING_FILES) == set(report.STREAMING_HARNESS_FILES)
@@ -3254,7 +3302,8 @@ def test_send_lateness_includes_integrity_read_after_pacing_wait(tmp_path, monke
     assert record["stream"]["late_over_50ms"] >= 1
 
 
-def test_client_guard_first_probe_completes_before_handoff_or_traffic(tmp_path, monkeypatch):
+@pytest.mark.parametrize("first_state", ["recording", "busy", "unknown"])
+def test_client_guard_first_probe_completes_before_handoff_or_traffic(tmp_path, monkeypatch, first_state):
     import threading
     import websockets
 
@@ -3274,6 +3323,7 @@ def test_client_guard_first_probe_completes_before_handoff_or_traffic(tmp_path, 
         if n == 2:
             entered.set()
             assert release.wait(2), "first guard probe was not released"
+            return first_state
         return "recording"
 
     monkeypatch.setattr(replay, "live_tower_state", live)
@@ -3335,6 +3385,66 @@ def test_missing_harness_version_cannot_make_missing_inputs_proof(tmp_path):
     assert built["comparability_key"]["source_jpegs_sha256"] is None
     assert built["proof"]["proof"] is False
     assert "source_jpegs_sha256" in built["proof"]["not_proof_reasons"][-1]
+
+
+def test_missing_startup_watch_cannot_render_or_compare_as_proof(tmp_path):
+    root = _beyond_max_path(tmp_path)
+    original = _keyed_render(root)
+    assert original["proof"]["proof"] is True
+    run_dir = root / "run"
+    run = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
+    run.pop("live_tower_watch_startup")
+    (run_dir / "run.json").write_text(json.dumps(run), encoding="utf-8")
+    bad_out = root / "rerender-missing-startup"
+    assert report.main(["--run-dir", str(run_dir), "--out", str(bad_out)]) == 0
+    built = json.loads((bad_out / "report.json").read_text(encoding="utf-8"))
+    assert built["proof"]["proof"] is False
+    assert "startup/preflight watch" in built["proof"]["not_proof_reasons"][-1]
+    assert built["live_safety"]["environment"]["result"] == "FAIL"
+    compared = report.compare_runs([bad_out])
+    assert compared["baseline_counted"] == 0
+    assert any("NOT-PROOF" in reason for reason in compared["excluded_from_baseline"][0]["reasons"])
+
+
+def test_changed_source_journal_cannot_relabel_stream_at_render_or_compare(tmp_path):
+    root = _beyond_max_path(tmp_path)
+    original = _keyed_render(root)
+    assert original["proof"]["proof"] is True
+    journal = root / "snap" / "captures" / A / "frames.jsonl"
+    journal.write_bytes(journal.read_bytes() + b"\n")
+    rerender = root / "rerender-changed-journal"
+    assert report.main(["--run-dir", str(root / "run"), "--out", str(rerender)]) == 0
+    built = json.loads((rerender / "report.json").read_text(encoding="utf-8"))
+    assert built["comparability_key"]["source_journal_sha256"] is None
+    assert built["proof"]["proof"] is False
+    assert "source_journal_sha256" in built["proof"]["not_proof_reasons"][-1]
+    comparison = report.compare_runs([root / "out"])
+    assert comparison["baseline_counted"] == 0
+    assert report._load_run(root / "out")["key"]["source_journal_sha256"] is None
+
+
+def test_source_journal_hash_is_of_the_bytes_used_for_fidelity(tmp_path, monkeypatch):
+    root = _beyond_max_path(tmp_path)
+    _keyed_render(root)
+    journal = root / "snap" / "captures" / A / "frames.jsonl"
+    pinned_bytes = journal.read_bytes()
+    journal.write_bytes(pinned_bytes + b"\n")
+    real_read = report.read_capture_journal
+
+    def read_then_restore(directory):
+        parsed = real_read(directory)
+        if Path(directory).name == A:
+            journal.write_bytes(pinned_bytes)
+        return parsed
+
+    monkeypatch.setattr(report, "read_capture_journal", read_then_restore)
+    out = root / "rerender-journal-race"
+    assert report.main(["--run-dir", str(root / "run"), "--out", str(out)]) == 0
+    built = json.loads((out / "report.json").read_text(encoding="utf-8"))
+    assert report.journal_sha256(journal.parent) == built["client"]["source_journals"][A]
+    assert built["tower_side_pacing"]["source_sha256"][A] != built["client"]["source_journals"][A]
+    assert built["comparability_key"]["source_journal_sha256"] is None
+    assert built["proof"]["proof"] is False
 
 
 def test_missing_jpeg_is_refused_before_any_proof_traffic(tmp_path, monkeypatch):
@@ -3481,3 +3591,43 @@ def test_runner_handoff_rechecks_a_latched_live_change_before_client_traffic(lif
     assert len(lifecycle["calls"]["spawn"]) == 1
     assert len(lifecycle["calls"]["terminate"]) == 1
     assert _run_json(lifecycle)["aborted"]["during"] == "startup"
+
+
+def test_handoff_refuses_background_recording_seen_while_joining(lifecycle, monkeypatch):
+    import threading
+
+    in_probe = threading.Event()
+    release = threading.Event()
+    handoff = threading.Event()
+    background_reads = 0
+    original_close = runner.StartupLiveWatch.close
+
+    def live(url=None, timeout=None):
+        nonlocal background_reads
+        if threading.current_thread().name == "c22-preflight-live-watch":
+            background_reads += 1
+            if background_reads >= 2:
+                in_probe.set()
+                assert release.wait(2)
+                return "recording"
+        return "idle"
+
+    def close(watch, *, require_join=False):
+        if handoff.is_set():
+            release.set()
+        return original_close(watch, require_join=require_join)
+
+    def during_handoff(options):
+        assert in_probe.wait(2)
+        handoff.set()
+        options.on_guard_armed()
+        raise AssertionError("the handoff must refuse before proof traffic")
+
+    monkeypatch.setattr(runner, "live_tower_state", live)
+    monkeypatch.setattr(runner, "PREFLIGHT_WATCH_EVERY_S", 0.01)
+    monkeypatch.setattr(runner.StartupLiveWatch, "close", close)
+    lifecycle["state"]["replay"] = during_handoff
+    assert runner.main(lifecycle["argv"]) == runner.EXIT_ABORTED
+    assert len(lifecycle["calls"]["spawn"]) == 1
+    assert len(lifecycle["calls"]["terminate"]) == 1
+    assert "became recording during the preflight" in _run_json(lifecycle)["aborted"]["reason"]

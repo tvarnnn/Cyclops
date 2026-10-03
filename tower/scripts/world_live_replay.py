@@ -161,7 +161,7 @@ STREAMING_FILES = ("world_live_replay.py", "world_live_replay_run.py")
 # and every report, so which harness made a run is self-evident (manager 154
 # §2: proof sets run only on a pin that passed the C24x2 re-verify). Change it
 # with every change to the harness.
-HARNESS_VERSION = "c22-harness/F8 (input binding and preflight watch)"
+HARNESS_VERSION = "c22-harness/F9 (guard handoff and journal binding)"
 
 # Leaf keys copied out of each World Builder status push to show what the
 # phone was being told, and when. Generic on purpose: the payload is large
@@ -198,6 +198,7 @@ class CaptureRecord:
     end_reason: str | None
     continues: str | None
     frames: list = field(default_factory=list)
+    source_sha256: dict = field(default_factory=dict)
 
     @property
     def recorded_seconds(self) -> float:
@@ -230,8 +231,10 @@ def read_capture(directory: Path) -> CaptureRecord:
     measures a different walk.
     """
     directory = Path(directory)
-    manifest = json.loads((directory / "capture.json").read_text(encoding="utf-8"))
-    lines = (directory / "frames.jsonl").read_text(encoding="utf-8").splitlines()
+    manifest_bytes = (directory / "capture.json").read_bytes()
+    journal_bytes = (directory / "frames.jsonl").read_bytes()
+    manifest = json.loads(manifest_bytes.decode("utf-8"))
+    lines = journal_bytes.decode("utf-8").splitlines()
     frames = []
     for number, line in enumerate(lines, 1):
         if not line.strip():
@@ -253,6 +256,8 @@ def read_capture(directory: Path) -> CaptureRecord:
         end_reason=manifest.get("end_reason"),
         continues=manifest.get("continues_capture"),
         frames=frames,
+        source_sha256={"capture.json": hashlib.sha256(manifest_bytes).hexdigest(),
+                       "frames.jsonl": hashlib.sha256(journal_bytes).hexdigest()},
     )
 
 
@@ -1507,6 +1512,9 @@ async def _guard_live(options: ReplayOptions, abort: asyncio.Event, record: dict
                 await refuse(reason)
                 return
             if first_observation is not None:
+                if state not in ("idle", "down"):
+                    await refuse(f":8000 first client guard observation was {state}; refusing handoff")
+                    return
                 first_observation.set()
             with contextlib.suppress(asyncio.TimeoutError):
                 await asyncio.wait_for(stop.wait(), options.live_guard_every)
@@ -1634,6 +1642,7 @@ async def run_replay(options: ReplayOptions) -> dict:
         return record
 
     walk = load_walk(options.capture_root, options.captures, follow_chain=options.follow_chain)
+    record["source_journals"] = {c.capture_id: c.source_sha256 for c in walk}
     schedule = build_schedule(walk, speed=options.speed, first_seconds=options.first_seconds,
                               end_with_stop=options.end_with_stop)
     record["walk"] = [{

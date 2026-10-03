@@ -668,18 +668,40 @@ def keyframe_facts(session_dir) -> dict | None:
 
 def read_capture_journal(directory) -> dict | None:
     """A capture's `capture.json` `started_at` and its `frames.jsonl` rows
-    (`wire_seq`, `received_at`), in journal order. Reads only."""
+    (`wire_seq`, `received_at`), in journal order. Hash the bytes parsed."""
     directory = Path(directory)
-    manifest = _read_json(directory / "capture.json")
-    rows = [row for row in read_jsonl(directory / "frames.jsonl")
-            if isinstance(row.get("wire_seq"), int) and isinstance(row.get("received_at"), (int, float))]
+    try:
+        manifest_bytes = (directory / "capture.json").read_bytes()
+        manifest = json.loads(manifest_bytes.decode("utf-8"))
+    except (OSError, UnicodeDecodeError, ValueError):
+        manifest_bytes, manifest = None, None
+    try:
+        journal_bytes = (directory / "frames.jsonl").read_bytes()
+        lines = journal_bytes.decode("utf-8").splitlines()
+    except (OSError, UnicodeDecodeError):
+        journal_bytes, lines = None, []
+    rows = []
+    for number, line in enumerate(lines, 1):
+        if not line.strip():
+            continue
+        try:
+            row = json.loads(line)
+        except ValueError:
+            if number == len(lines):
+                break
+            continue
+        if isinstance(row, dict) and isinstance(row.get("wire_seq"), int) and \
+                isinstance(row.get("received_at"), (int, float)):
+            rows.append(row)
     if not isinstance(manifest, dict) and not rows:
         return None
     started = manifest.get("started_at") if isinstance(manifest, dict) else None
     if not isinstance(started, (int, float)):
         started = rows[0]["received_at"] if rows else None
     return {"capture_id": directory.name, "started_at": started,
-            "frames": [(row["wire_seq"], row["received_at"]) for row in rows]}
+            "frames": [(row["wire_seq"], row["received_at"]) for row in rows],
+            "sha256": {"capture.json": hashlib.sha256(manifest_bytes).hexdigest() if manifest_bytes else None,
+                       "frames.jsonl": hashlib.sha256(journal_bytes).hexdigest() if journal_bytes else None}}
 
 
 def journal_sha256(directory) -> dict:
@@ -897,7 +919,7 @@ def tower_side_pacing(*, client: dict, data_root, capture_root, capture_root_fro
         # did not send (the `first_seconds` cut) are source-only by design.
         "source_frames": sum(len({seq for seq, _ in source["frames"]}) for source in sources),
         "source_duplicate_seq": duplicates,
-        "source_sha256": {cid: journal_sha256(Path(capture_root) / cid) for cid in source_ids},
+        "source_sha256": {cid: source["sha256"] for cid, source in zip(source_ids, sources)},
         "captures_paired": min(len(sources), len(replays)),
         "offset_error_ms": signed_distribution(offsets_ms),
         # Fidelity bar v3 (manager 149 §2): the offset's median (the constant
@@ -1588,6 +1610,16 @@ def _streamed(client: dict) -> bool:
     return isinstance(sent, int) and not isinstance(sent, bool) and sent > 0
 
 
+def _startup_watch_complete(run: dict | None) -> bool:
+    watch = (run or {}).get("live_tower_watch_startup")
+    polls = watch.get("poll_count") if isinstance(watch, dict) else None
+    background = watch.get("background_poll_count") if isinstance(watch, dict) else None
+    gap = watch.get("background_max_gap_s") if isinstance(watch, dict) else None
+    return (isinstance(polls, int) and not isinstance(polls, bool) and polls > 0
+            and isinstance(background, int) and not isinstance(background, bool) and background > 0
+            and isinstance(gap, (int, float)) and not isinstance(gap, bool) and 0 <= gap <= 10.0)
+
+
 def proof_status(*, client: dict, run: dict | None) -> dict:
     """Can this run be proof at all? (review C24 HIGH-3.) NOT-PROOF when it
     was declared so (`--not-a-proof-run`), when the :8000 guard was off
@@ -1608,6 +1640,8 @@ def proof_status(*, client: dict, run: dict | None) -> dict:
         reasons.append("it streamed with no :8000 watch on record")
     if client.get("live_guard_error"):
         reasons.append("the :8000 guard failed: " + str(client["live_guard_error"]))
+    if not reasons and not _startup_watch_complete(run):
+        reasons.append("no completed :8000 startup/preflight watch on record")
     return {"proof": not reasons, "not_proof_reasons": reasons}
 
 
@@ -1631,10 +1665,14 @@ def live_environment(*, client: dict, run: dict | None) -> dict:
     else:
         rows = [_guard_row(":8000 during the run", watch, client.get("aborted"))]
     startup = (run or {}).get("live_tower_watch_startup")
-    if startup:
+    if _startup_watch_complete(run):
         aborted = (run or {}).get("aborted")
         rows.append(_guard_row(":8000 during the test Tower's startup", startup,
                                aborted if (aborted or {}).get("during") == "startup" else None))
+    elif _streamed(client):
+        rows.append({"check": ":8000 during the test Tower's startup",
+                     "value": "NOT WATCHED: no completed background startup/preflight poll or bounded cadence on record",
+                     "required": "background startup/preflight polls with <=10 s maximum gap", "result": "FAIL"})
     judged = [r["result"] for r in rows if r["result"] in ("PASS", "FAIL")]
     return {"result": "FAIL" if "FAIL" in judged else ("PASS" if judged else "n/a"), "rows": rows}
 
@@ -1927,7 +1965,7 @@ def build_report(*, tower_log, tower_out_log=None, world_root=None, capture_id=N
         "solve_draw_0": zero,
         "live_surfaces_latency": surfaces,
         "client": {k: client.get(k) for k in ("outcome", "speed", "first_seconds", "after_stop", "options",
-                                              "capture_root", "walk", "schedule", "source_images",
+                                              "capture_root", "walk", "schedule", "source_images", "source_journals",
                                               "calibration_check",
                                               "stream", "phone_fetches", "handshake", "session_start",
                                               "live_tower_at_start", "live_tower_watch", "target_listener",
@@ -1979,7 +2017,7 @@ def build_report(*, tower_log, tower_out_log=None, world_root=None, capture_id=N
     # A malformed or absent version cannot exempt a proof-labelled render
     # from the input evidence this harness promises. Comparison also rejects
     # incomplete keys, but a standalone report must fail closed on its own.
-    missing_input = [name for name in ("source_jpegs_sha256", "calibration")
+    missing_input = [name for name in ("source_journal_sha256", "source_jpegs_sha256", "calibration")
                      if built["comparability_key"].get(name) is None]
     if built["proof"]["proof"] and missing_input:
         built["proof"]["proof"] = False
@@ -2463,6 +2501,29 @@ def _verified_source_jpegs(client: dict, pacing: dict) -> str | None:
     return digest
 
 
+def _verified_source_journals(client: dict, pacing: dict) -> dict | None:
+    """The journals joined at render/compare must be the bytes that built the stream schedule."""
+    pinned = client.get("source_journals")
+    joined = pacing.get("source_sha256")
+    root_name = pacing.get("source_capture_root")
+    if not isinstance(pinned, dict) or not pinned or pinned != joined or not root_name:
+        return None
+    root = Path(root_name).resolve()
+    if set(pinned) != {c.get("capture_id") for c in client.get("walk") or [] if isinstance(c, dict)}:
+        return None
+    for capture_id, expected in pinned.items():
+        if not isinstance(expected, dict) or set(expected) != {"capture.json", "frames.jsonl"}:
+            return None
+        directory = (root / str(capture_id)).resolve()
+        try:
+            directory.relative_to(root)
+        except ValueError:
+            return None
+        if journal_sha256(directory) != expected:
+            return None
+    return dict(sorted(pinned.items()))
+
+
 def _verified_calibration(run: dict, client: dict) -> dict | None:
     """Bind the copied files the test Tower actually used, not their names alone."""
     expected = run.get("intrinsics_sha256")
@@ -2518,10 +2579,7 @@ def comparability_key(report: dict) -> dict:
     code = run.get("code") if isinstance(run.get("code"), dict) else {}
     walk = [capture for capture in client.get("walk") or [] if isinstance(capture, dict)]
     schedule = client.get("schedule") if isinstance(client.get("schedule"), dict) else {}
-    journals = pacing.get("source_sha256") if isinstance(pacing.get("source_sha256"), dict) else None
-    if journals is not None and not all(isinstance(d, dict) and d.get("capture.json") and d.get("frames.jsonl")
-                                        for d in journals.values()):
-        journals = None
+    journals = _verified_source_journals(client, pacing)
     speed = client.get("speed")
     replay = None
     if isinstance(speed, (int, float)) and client.get("after_stop") and schedule.get("frames") is not None:
@@ -2532,7 +2590,7 @@ def comparability_key(report: dict) -> dict:
     version = fidelity_version(run_started_at(report.get("run"), report.get("client"))[0])[0]
     return {
         "source_captures": [capture.get("capture_id") for capture in walk] or None,
-        "source_journal_sha256": journals or None,
+        "source_journal_sha256": journals,
         "source_jpegs_sha256": _verified_source_jpegs(client, pacing),
         "switches": dict(sorted(run["switches"].items())) if isinstance(run.get("switches"), dict) else None,
         "code": ({"py_fingerprint": code["py_fingerprint"], "tower_dir": code["tower_dir"]}
