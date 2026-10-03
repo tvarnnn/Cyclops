@@ -299,6 +299,106 @@ def test_unconfirmed_child_stop_is_visible_when_mapper_closes(tmp_path, monkeypa
         mapper.close()
 
 
+@pytest.mark.parametrize("fault,reason", [
+    ("wait", "postlaunch-child-wait-OSError"),
+    ("job-close", "postlaunch-job-close-OSError"),
+    ("pickle", "postlaunch-child-result-ModuleNotFoundError"),
+    ("timing", "postlaunch-child-timing-OSError"),
+])
+def test_unexpected_postlaunch_error_is_recorded_and_aborts_consensus(
+        world, tmp_path, monkeypatch, fault, reason):
+    store, ws, _, serial, _ = _rig(tmp_path, monkeypatch)
+    if fault == "wait":
+        class BadWait(_Process):
+            def wait(self, timeout=None):
+                raise OSError("process handle unreadable")
+        monkeypatch.setattr(GS, "_launch_draw_child", lambda *args: (BadWait(), _Job()))
+    elif fault == "job-close":
+        class FlakyJob(_Job):
+            calls = 0
+            def close(self):
+                self.calls += 1
+                if self.calls == 1:
+                    raise OSError("job handle unreadable")
+        monkeypatch.setattr(GS, "_launch_draw_child",
+                            lambda *args: (_Process(), FlakyJob() if args[2] == 8 else _Job()))
+    elif fault == "pickle":
+        monkeypatch.setattr(GS.pickle, "load",
+                            lambda *args: (_ for _ in ()).throw(ModuleNotFoundError("old class")))
+    else:
+        monkeypatch.setattr(stage_timing, "child_draw_timing",
+                            lambda *args: (_ for _ in ()).throw(OSError("timing unavailable")))
+    mapper = GS.concurrent_draw_mapper(store, "w", "s", ws.database_path,
+                                       _base(), seeds=(8, 9), keyframes=[])
+    plan = CP.ConsensusPlan(draws=3, seed=7, map_draw=mapper)
+    try:
+        with pytest.raises(CP.ConsensusAuditError, match="postlaunch"):
+            CP.gate_by_consensus(_Store(), "w1", SID, _candidate(tuple(PIECES)), plan=plan,
+                                 database_path="db", keyframes=world.keyframes)
+    finally:
+        mapper.close()
+    journal = json.loads((ws.root / "consensus_concurrent.jsonl").read_text())
+    assert journal["reason"] == reason and journal["seed"] == 8
+    assert serial == []
+    assert not (ws.root / "sparse-draws").exists()
+
+
+def test_missing_owned_child_aborts_instead_of_reducing_votes(tmp_path, monkeypatch):
+    store, ws, _, serial, _ = _rig(tmp_path, monkeypatch)
+    mapper = GS.concurrent_draw_mapper(store, "w", "s", ws.database_path,
+                                       _base(), seeds=(4, 5), keyframes=[])
+    mapper(4)
+    with pytest.raises(CP.ConsensusAuditError, match="postlaunch"):
+        mapper(4)
+    journal = json.loads((ws.root / "consensus_concurrent.jsonl").read_text())
+    assert journal["reason"] == "postlaunch-child-missing-ValueError"
+    assert serial == []
+    assert not (ws.root / "sparse-draws").exists()
+    mapper.close()
+
+
+def test_journal_and_child_stop_failure_still_raise_audit_error(tmp_path, monkeypatch):
+    store, ws, _, serial, _ = _rig(tmp_path, monkeypatch)
+    monkeypatch.setattr(GS, "_draw_free_ram", lambda: 0)
+    monkeypatch.setattr(GS, "append_jsonl",
+                        lambda *args: (_ for _ in ()).throw(OSError("disk full")))
+    monkeypatch.setattr(GS, "_stop_draw_children",
+                        lambda children: (_ for _ in ()).throw(OSError("stop unavailable")))
+    mapper = GS.concurrent_draw_mapper(store, "w", "s", ws.database_path,
+                                       _base(), seeds=(4, 5), keyframes=[])
+    with pytest.raises(CP.ConsensusAuditError):
+        mapper(4)
+    assert serial == []
+
+def test_child_poll_error_retains_unconfirmed_ownership(tmp_path, monkeypatch):
+    from tower import process_ownership
+
+    store, ws, _, _, _ = _rig(tmp_path, monkeypatch)
+    original_launch = GS._launch_draw_child
+
+    class BadPoll(_Process):
+        def poll(self):
+            raise OSError("process handle unreadable")
+
+    def launch(*args):
+        process, job = original_launch(*args)
+        return (BadPoll() if args[2] == 5 else process), job
+
+    monkeypatch.setattr(GS, "_launch_draw_child", launch)
+    monkeypatch.setattr(process_ownership, "terminate_tree", lambda *args, **kwargs: False)
+    mapper = GS.concurrent_draw_mapper(store, "w", "s", ws.database_path,
+                                       _base(), seeds=(4, 5), keyframes=[])
+    mapper(4)
+    before = len(GS._UNCONFIRMED_DRAW_CHILDREN)
+    try:
+        with pytest.raises(CP.ConsensusAuditError):
+            mapper.close()
+        assert len(GS._UNCONFIRMED_DRAW_CHILDREN) == before + 1
+        assert (ws.root / "sparse-draws").exists()
+    finally:
+        del GS._UNCONFIRMED_DRAW_CHILDREN[before:]
+
+
 def test_parent_thread_counts_are_untouched(tmp_path, monkeypatch):
     import torch
 

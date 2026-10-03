@@ -1901,14 +1901,30 @@ def _stop_draw_children(children) -> bool:
 
     all_gone = True
     for process, job in children.values():
-        if process.poll() is None:
-            gone = process_ownership.terminate_tree(process, job=job, timeout=5, hard=True)
+        try:
+            alive = process.poll() is None
+        except Exception:  # a broken handle cannot prove the child stopped
+            logger.warning("consensus child poll failed during stop", exc_info=True)
+            alive = True
+        if alive:
+            try:
+                gone = process_ownership.terminate_tree(process, job=job, timeout=5, hard=True)
+            except Exception:
+                logger.warning("consensus child terminate failed", exc_info=True)
+                gone = False
             if not gone:
-                _UNCONFIRMED_DRAW_CHILDREN.append((process, job))
+                if not any(owned is process for owned, _ in _UNCONFIRMED_DRAW_CHILDREN):
+                    _UNCONFIRMED_DRAW_CHILDREN.append((process, job))
                 all_gone = False
                 continue
         if job is not None:
-            job.close()
+            try:
+                job.close()
+            except Exception:
+                logger.warning("consensus child job close failed", exc_info=True)
+                if not any(owned is process for owned, _ in _UNCONFIRMED_DRAW_CHILDREN):
+                    _UNCONFIRMED_DRAW_CHILDREN.append((process, job))
+                all_gone = False
     return all_gone
 
 
@@ -1973,27 +1989,43 @@ def concurrent_draw_mapper(store, world_id: str, session_id: str, database_path,
             raise coherence_publish.ConsensusAuditError(
                 "consensus draw fallback journal write failed") from exc
 
+    def stop_owned_children():
+        try:
+            gone = _stop_draw_children(children)
+        except Exception as exc:
+            raise coherence_publish.ConsensusAuditError(
+                "a consensus child stop failed") from exc
+        if not gone:
+            raise coherence_publish.ConsensusAuditError(
+                "a consensus child could not be confirmed stopped")
+        children.clear()
+        if owns_root:
+            try:
+                _sweep_draw_root(root, owned=True)
+            except OSError:
+                logger.warning("consensus draw scratch cleanup failed before serial map: %s",
+                               root, exc_info=True)
+
     def use_serial(reason, seed):
         nonlocal fallback, serial
         try:
             record(reason, seed)
         finally:
             # Even an unwritable journal must not leave a child or private DB running.
-            if not _stop_draw_children(children):
-                raise coherence_publish.ConsensusAuditError(
-                    "a consensus child could not be confirmed stopped")
-            children.clear()
-            if owns_root:
-                try:
-                    _sweep_draw_root(root, owned=True)
-                except OSError:
-                    logger.warning("consensus draw scratch cleanup failed before serial map: %s",
-                                   root, exc_info=True)
+            stop_owned_children()
         if serial is None:
             serial = frozen_draw_mapper(store, world_id, session_id, database_path, base,
                                         keyframes=keyframes,
                                         min_image_observations=min_image_observations)
         fallback = True
+
+    def audit_postlaunch(stage, seed, exc):
+        try:
+            record(f"postlaunch-{stage}-{type(exc).__name__}", seed)
+        finally:
+            stop_owned_children()
+        raise coherence_publish.ConsensusAuditError(
+            f"consensus postlaunch {stage} failed") from exc
 
     def launch():
         nonlocal expected, launched, owns_root
@@ -2098,9 +2130,13 @@ def concurrent_draw_mapper(store, world_id: str, session_id: str, database_path,
             launch()
         if fallback:
             return serial(seed)
-        draw_seed = int(seed)
+        try:
+            draw_seed = int(seed)
+        except Exception as exc:
+            audit_postlaunch("seed", seeds[0], exc)
         if draw_seed not in children:
-            raise ValueError(f"unexpected consensus seed {draw_seed}")
+            audit_postlaunch("child-missing", draw_seed,
+                             ValueError(f"unexpected consensus seed {draw_seed}"))
         process, job = children[draw_seed]
         # Ordinary end-of-walk stop does not cancel a nearly finished child.
         # Hard cancellation closes the mapper in the caller's finally block.
@@ -2109,11 +2145,19 @@ def concurrent_draw_mapper(store, world_id: str, session_id: str, database_path,
         except subprocess.TimeoutExpired:
             use_serial("child-timeout", draw_seed)
             return serial(seed)
+        except Exception as exc:
+            audit_postlaunch("child-wait", draw_seed, exc)
         if job is not None:
-            job.close()
+            try:
+                job.close()
+            except Exception as exc:
+                audit_postlaunch("job-close", draw_seed, exc)
         del children[draw_seed]
         if return_code:
-            stage_timing.child_draw_timing(draw_seed, 0, "raised")
+            try:
+                stage_timing.child_draw_timing(draw_seed, 0, "raised")
+            except Exception as exc:
+                audit_postlaunch("child-timing", draw_seed, exc)
             use_serial(f"child-exit-{return_code}", draw_seed)
             return serial(seed)
         private_root = root / f"seed-{draw_seed}"
@@ -2127,18 +2171,28 @@ def concurrent_draw_mapper(store, world_id: str, session_id: str, database_path,
         except (OSError, ValueError, TypeError, EOFError, pickle.PickleError) as exc:
             use_serial(f"child-result-{type(exc).__name__}", draw_seed)
             return serial(seed)
+        except Exception as exc:
+            audit_postlaunch("child-result", draw_seed, exc)
         try:
             after = (database_digest(private_root / "database.db") or {}).get("content")
         except (OSError, sqlite3.Error):
             after = None
+        except Exception as exc:
+            audit_postlaunch("child-digest", draw_seed, exc)
         if result.get("before") != expected or result.get("after") != expected or after != expected:
             use_serial("database-child-digest-mismatch", draw_seed)
             return serial(seed)
-        stage_timing.child_draw_timing(draw_seed, result["map_ms"])
-        candidate = result["candidate"]
-        candidate.transients = base.transients
-        candidate.solve = None if base.solve is None else dict(base.solve, seed=draw_seed)
-        candidate.timing = dict(base.timing or {}, map_s=round(result["map_ms"] / 1000, 3))
+        try:
+            stage_timing.child_draw_timing(draw_seed, result["map_ms"])
+        except Exception as exc:
+            audit_postlaunch("child-timing", draw_seed, exc)
+        try:
+            candidate = result["candidate"]
+            candidate.transients = base.transients
+            candidate.solve = None if base.solve is None else dict(base.solve, seed=draw_seed)
+            candidate.timing = dict(base.timing or {}, map_s=round(result["map_ms"] / 1000, 3))
+        except Exception as exc:
+            audit_postlaunch("candidate-adapt", draw_seed, exc)
         try:
             shutil.rmtree(private_root)
         except OSError:
