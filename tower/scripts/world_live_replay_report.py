@@ -71,6 +71,7 @@ import csv
 import datetime
 import hashlib
 import json
+import math
 import os
 import re
 import sys
@@ -513,7 +514,8 @@ def window_totals(summaries: list) -> dict | None:
                     "end_reasons": [s.get("end_reason") for s in summaries]}
     for key in WINDOW_SUM_KEYS:
         values = [s.get(key) for s in summaries if isinstance(s.get(key), (int, float))]
-        totals[key] = sum(values) if values else None
+        # A missing counter in any window is unknown, not an implicit zero.
+        totals[key] = sum(values) if len(values) == len(summaries) else None
     peaks = [s.get("receive_to_result_ms_max") for s in summaries
              if isinstance(s.get("receive_to_result_ms_max"), (int, float))]
     totals["receive_to_result_ms_max"] = max(peaks) if peaks else None
@@ -2691,12 +2693,24 @@ def _load_run(run_dir) -> dict:
     proof = report.get("proof") if isinstance(report.get("proof"), dict) else proof_status(
         client=report.get("client") or {}, run=report.get("run"))
     return {"dir": str(run_dir), "label": report.get("label"), "report": report,
-            "metrics": comparable_metrics(report), "sequence": keyframes.get("sequence"),
+             "metrics": comparable_metrics(report), "sequence": keyframes.get("sequence"),
             "sha256": keyframes.get("sha256") or (report.get("keyframes") or {}).get("sha256"),
             "horizons": [s.get("keyframes") for s in (report.get("tower_walk") or {}).get("background_solves")
                          or []],
-            "live_safety": (report.get("live_safety") or {}).get("result"),
-            "environment": ((report.get("live_safety") or {}).get("environment") or {}).get("result"),
+             "live_safety": (report.get("live_safety") or {}).get("result"),
+             "environment": ((report.get("live_safety") or {}).get("environment") or {}).get("result"),
+             "tower_windows": (report.get("tower_walk") or {}).get("windows"),
+             "client_first_seconds": (report.get("client") or {}).get("first_seconds"),
+             "scheduled_frames": ((report.get("client") or {}).get("schedule") or {}).get("frames"),
+             "source_frames": (report.get("tower_side_pacing") or {}).get("source_frames"),
+             "pacing_matched": (report.get("tower_side_pacing") or {}).get("matched"),
+             "pacing_source_only": (report.get("tower_side_pacing") or {}).get("source_only"),
+             "pacing_replay_only": (report.get("tower_side_pacing") or {}).get("replay_only"),
+             "pacing_duplicate_seq": (report.get("tower_side_pacing") or {}).get("source_duplicate_seq"),
+             "client_unanswered": (((report.get("client") or {}).get("stream") or {}).get("unanswered")),
+             "client_frame_errors": (((report.get("client") or {}).get("stream") or {}).get("frame_errors")),
+             "phone_basis": (report.get("verdict") or {}).get("basis"),
+             "phone_photos_minutes": (report.get("verdict") or {}).get("stop_to_phone_photos_min"),
             # None: a report rendered before the bar existed.
             "fidelity": fidelity.get("result"),
             "fidelity_tower_side_only": bool(fidelity.get("tower_side_only")),
@@ -2744,8 +2758,8 @@ def run_validity(run: dict) -> dict:
     elif run.get("fidelity") != "PASS":
         unjudged.append("replay fidelity " + ("not in this render (re-render it)" if run.get("fidelity") is None
                                               else str(run.get("fidelity"))) + ": not judged, not counted")
-    if run.get("environment") == "FAIL":
-        invalid.append("Environment (:8000) FAIL")
+    if run.get("environment") != "PASS":
+        invalid.append(f"Environment (:8000) {run.get('environment') or 'not judged'}")
     if run.get("live_safety") != "PASS":
         invalid.append(f"live safety {run.get('live_safety') or 'not judged'}")
     metrics = run.get("metrics") or {}
@@ -2761,8 +2775,48 @@ def run_validity(run: dict) -> dict:
         invalid.append(
             f"incomplete frame path: sent={sent}, received={received}, builder_observed={observed}"
         )
+    zero_keys = ("tx_seq_gap_total", "backpressure_drops", "frames_rejected", "frame_processing_errors")
+    for key in zero_keys:
+        value = metrics.get(key)
+        if type(value) is not int or value != 0:
+            invalid.append(f"Tower {key} must be observed zero; got {value}")
+    windows = run.get("tower_windows")
+    if not isinstance(windows, list) or not windows:
+        invalid.append("Tower measurement windows missing")
+    else:
+        for index, window in enumerate(windows):
+            if not isinstance(window, dict):
+                invalid.append(f"Tower window {index} missing")
+                continue
+            for key in zero_keys:
+                value = window.get(key)
+                if type(value) is not int or value != 0:
+                    invalid.append(f"Tower window {index} {key} must be observed zero; got {value}")
+        window_received = [window.get("frames_received") for window in windows if isinstance(window, dict)]
+        if len(window_received) != len(windows) or any(type(value) is not int or value < 0
+                                                     for value in window_received) or sum(window_received) != received:
+            invalid.append("Tower window frame counts do not sum to frames received")
+    source = run.get("source_frames")
+    scheduled = run.get("scheduled_frames")
+    matched = run.get("pacing_matched")
+    if run.get("client_first_seconds") is not None:
+        invalid.append("first_seconds cut is not a full-walk proof")
+    if any(type(value) is not int or value <= 0 for value in (source, scheduled, matched)) or not (
+        source == scheduled == sent == matched
+    ):
+        invalid.append(f"incomplete source schedule: source={source}, scheduled={scheduled}, "
+                       f"sent={sent}, matched={matched}")
+    for key in ("pacing_source_only", "pacing_replay_only", "pacing_duplicate_seq", "client_unanswered"):
+        value = run.get(key)
+        if type(value) is not int or value != 0:
+            invalid.append(f"{key} must be observed zero; got {value}")
+    if run.get("client_frame_errors") != {}:
+        invalid.append("client frame errors must be observed empty")
+    photos = run.get("phone_photos_minutes")
+    if run.get("phone_basis") != "phone" or type(photos) not in (int, float) or not math.isfinite(photos) or photos < 0:
+        invalid.append("client phone-photo receipt is missing")
     proof = run.get("proof") or {}
-    if proof and not proof.get("proof", True):
+    if proof.get("proof") is not True:
         invalid.append("NOT-PROOF: " + "; ".join(proof.get("not_proof_reasons") or ["declared"]))
     return {"invalid": invalid, "not_a_pass": unjudged, "counted": not invalid and not unjudged}
 
@@ -2790,8 +2844,9 @@ def parse_switches(items) -> dict:
 def compare_runs(baseline_dirs, candidate_dirs=(), candidate_switches=None) -> dict:
     """Per-metric spread over the COUNTED baseline runs, and each candidate
     run against that spread; keyframe-sequence identity to the first counted
-    baseline run. Counted means valid as proof (`run_validity`: replay
-    fidelity PASS, no Environment FAIL, not NOT-PROOF) AND comparable with
+    baseline run. Counted means valid as full-walk proof (`run_validity`:
+    complete source and frame path, known-zero safety counters, client photo
+    receipt, fidelity/environment PASS and explicit proof) AND comparable with
     the baseline's key (review C24 HIGH-2): a candidate may differ from it
     only in `candidate_switches`, the switches under test."""
     baseline = [_load_run(d) for d in baseline_dirs]

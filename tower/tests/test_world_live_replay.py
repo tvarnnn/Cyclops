@@ -1183,9 +1183,10 @@ def _fake_run(directory, *, photos, lag_p95, sequence, horizons=(52,), fidelity=
            "intrinsics_sha256": calibration, "data_root": str(directory / "data"),
            **({"started_at": run_started} if run_started is not None else {})}
     client = {"walk": [{"capture_id": CAP}], "speed": speed, "first_seconds": None, "after_stop": "stay",
-              "schedule": {"frames": 1, "captures": 1, "stop_at_s": 335.861, "ends_with": "stream_stop",
-                           "reconnects": 0},
-              "stream": {"frames_sent": 4005}, "live_tower_watch": {"states_seen": ["idle"]},
+               "schedule": {"frames": 1, "captures": 1, "stop_at_s": 335.861, "ends_with": "stream_stop",
+                            "reconnects": 0},
+               "stream": {"frames_sent": 1, "unanswered": 0, "frame_errors": {}},
+               "live_tower_watch": {"states_seen": ["idle"]},
               "source_images": {"planned": [entry], "planned_sha256": image_digest, "sent": [entry],
                                 "sent_sha256": image_digest, "verified": True},
               "source_journals": actual_journal,
@@ -1196,14 +1197,21 @@ def _fake_run(directory, *, photos, lag_p95, sequence, horizons=(52,), fidelity=
         **({"replay_fidelity": verdict} if fidelity is not None else {}),
         "run": run, "client": client,
         "proof": {"proof": not not_proof, "not_proof_reasons": [not_proof] if not_proof else []},
-        "tower_side_pacing": {"computable": True, "source_sha256": actual_journal,
-                              "source_capture_root": str(source_root)},
+         "tower_side_pacing": {"computable": True, "source_sha256": actual_journal,
+                               "source_capture_root": str(source_root), "source_frames": 1,
+                               "matched": 1, "source_only": 0, "replay_only": 0,
+                               "source_duplicate_seq": 0},
         "label": directory.name,
         "verdict": {"basis": "phone", "stop_to_room_with_photos_min": photos, "stop_to_phone_photos_min": photos,
                     "stop_to_store_photos_min": round(photos - 0.25, 2) if store_photos is None else store_photos,
                     "stop_to_settled_min": photos + 7},
-        "tower_walk": {"totals": {"frames_received": 4005, "tx_seq_gap_total": 0},
-                       "frames_observed": 4005, "rebuilds": {"count": 201, "seconds": {"p95": 1.1, "max": 1.9}},
+         "tower_walk": {"totals": {"frames_received": 1, "tx_seq_gap_total": 0,
+                                    "backpressure_drops": 0, "frames_rejected": 0,
+                                    "frame_processing_errors": 0},
+                        "windows": [{"frames_received": 1, "tx_seq_gap_total": 0,
+                                     "backpressure_drops": 0, "frames_rejected": 0,
+                                     "frame_processing_errors": 0}],
+                        "frames_observed": 1, "rebuilds": {"count": 201, "seconds": {"p95": 1.1, "max": 1.9}},
                        "background_solves": [{"keyframes": k} for k in horizons]},
         "keyframes": {"sha256": sha, "observe_lag_s": {"p50": 2.0, "p95": lag_p95, "p99": 7.0, "max": 7.2}},
         "waterfall": [{"n": "3", "minutes": photos - 13, "child": False}],
@@ -2691,6 +2699,61 @@ def test_partial_or_unverified_builder_frames_cannot_count_as_fast_proof(tmp_pat
     assert [item["dir"] for item in compared["invalid_candidates"]] == [str(candidate)]
 
 
+@pytest.mark.parametrize("missing_scope", ["all", "one_window"])
+def test_missing_zero_required_tower_counter_cannot_count_as_proof(tmp_path, missing_scope):
+    same = [[1, 0], [10, 0]]
+    for index, photos in enumerate((47.0, 47.5, 46.8)):
+        _fake_run(tmp_path / f"old{index}", photos=photos, lag_p95=6.8, sequence=same)
+    candidate = tmp_path / "new0"
+    _fake_run(candidate, photos=8.0, lag_p95=6.8, sequence=same)
+    path = candidate / "report.json"
+    record = json.loads(path.read_text(encoding="utf-8"))
+    if missing_scope == "all":
+        for key in ("tx_seq_gap_total", "backpressure_drops", "frames_rejected", "frame_processing_errors"):
+            record["tower_walk"]["totals"].pop(key)
+            record["tower_walk"]["windows"][0].pop(key)
+    else:
+        complete = record["tower_walk"]["windows"][0]
+        record["tower_walk"]["windows"] = [complete, {**complete, "frames_received": 0}]
+        record["tower_walk"]["windows"][1].pop("frame_processing_errors")
+    path.write_text(json.dumps(record), encoding="utf-8")
+
+    assert report.run_validity(report._load_run(candidate))["counted"] is False
+    compared = report.compare_runs([tmp_path / f"old{i}" for i in range(3)], [candidate])
+    assert compared["baseline_counted"] == 3
+    assert compared["candidates_counted"] == 0
+    assert [item["dir"] for item in compared["invalid_candidates"]] == [str(candidate)]
+
+
+@pytest.mark.parametrize("intentional_cut", [True, False])
+def test_short_source_schedule_cannot_count_as_full_walk_proof(tmp_path, intentional_cut):
+    same = [[1, 0], [10, 0]]
+    for index, photos in enumerate((47.0, 47.5, 46.8)):
+        _fake_run(tmp_path / f"old{index}", photos=photos, lag_p95=6.8, sequence=same)
+    candidate = tmp_path / "new0"
+    _fake_run(candidate, photos=8.0, lag_p95=6.8, sequence=same)
+    path = candidate / "report.json"
+    record = json.loads(path.read_text(encoding="utf-8"))
+    cut_frames = 1
+    source_frames = 2
+    record["client"]["first_seconds"] = 0.15 if intentional_cut else None
+    record["client"]["schedule"]["frames"] = cut_frames
+    record["client"]["stream"]["frames_sent"] = cut_frames
+    record["tower_walk"]["totals"]["frames_received"] = cut_frames
+    record["tower_walk"]["windows"][0]["frames_received"] = cut_frames
+    record["tower_walk"]["frames_observed"] = cut_frames
+    record["tower_side_pacing"]["matched"] = cut_frames
+    record["tower_side_pacing"]["source_frames"] = source_frames
+    record["tower_side_pacing"]["source_only"] = source_frames - cut_frames
+    path.write_text(json.dumps(record), encoding="utf-8")
+
+    assert report.run_validity(report._load_run(candidate))["counted"] is False
+    compared = report.compare_runs([tmp_path / f"old{i}" for i in range(3)], [candidate])
+    assert compared["baseline_counted"] == 3
+    assert compared["candidates_counted"] == 0
+    assert [item["dir"] for item in compared["invalid_candidates"]] == [str(candidate)]
+
+
 @pytest.mark.parametrize("why", list(NOT_VALID))
 def test_the_keyframe_identity_reference_is_a_counted_baseline_run(tmp_path, why):
     """Round 4, mutant C08: the first baseline run is not valid as proof (and
@@ -3265,7 +3328,7 @@ def test_the_keyframe_rows_are_a_selection_sequence_and_an_accepted_keyframe_lag
 def test_the_harness_pin_and_its_version_are_in_every_record_and_report(lifecycle, tmp_path):
     # a committed, clean pin, whether or not these scripts sit in a checkout right now
     identity = {**replay.harness_identity(), "git_head": "f" * 40, "git_dirty": []}
-    assert identity["version"] == replay.HARNESS_VERSION and "F10" in replay.HARNESS_VERSION
+    assert identity["version"] == replay.HARNESS_VERSION and "F11" in replay.HARNESS_VERSION
     pin = replay.harness_pin(identity)
     assert pin["version"] == replay.HARNESS_VERSION and pin["git_head"] == identity.get("git_head")
     assert set(pin["streaming_sha1"]) == set(replay.STREAMING_FILES) == set(report.STREAMING_HARNESS_FILES)
