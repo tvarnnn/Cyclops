@@ -579,7 +579,7 @@ class CaptureFollower:
         """True once the recorder has written an end reason."""
         return self.end_reason() is not None
 
-    def end_reason(self) -> str | None:
+    def end_reason(self, *, retries: int = 0) -> str | None:
         """WHY the capture ended, or None while it is still open.
 
         Carried rather than collapsed into `is_closed`, because the three
@@ -588,20 +588,26 @@ class CaptureFollower:
         ITSELF at a configured bound while the wearer is very likely still
         walking -- and a builder that treats that as an ordinary end
         finalises a world at the bound and says nothing.
+
+        The default never waits. A caller deciding whether a soft stop may
+        discard a recorded backlog can retry a transient manifest replace.
+        A readable open manifest still returns immediately.
         """
         path = self._directory / CAPTURE_FILENAME
-        if not path.exists():
-            return None
-        try:
-            manifest = read_json_closed(path)
-        except (OSError, ValueError):
-            # A manifest caught mid-replace is not an ended capture. Say
-            # "still open" and re-read next poll rather than truncating
-            # the session on a transient read.
-            return None
-        if manifest.get("ended_at") is None:
-            return None
-        return manifest.get("end_reason") or END_REASON_STOP
+        retries = max(0, retries)
+        for attempt in range(retries + 1):
+            try:
+                manifest = read_json_closed(path)
+            except (OSError, ValueError):
+                if attempt == retries:
+                    # An unreadable manifest is not proof of a closed capture.
+                    return None
+                time.sleep(0.01)
+                continue
+            if manifest.get("ended_at") is None:
+                return None
+            return manifest.get("end_reason") or END_REASON_STOP
+        return None
 
     def follow(self, *, max_idle_polls: int | None = None, should_stop=None):
         """Frames, until the capture ends, the idle bound expires, or a

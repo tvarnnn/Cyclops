@@ -456,6 +456,7 @@ class StopRequest:
         self.level: str | None = None
         self.source: str | None = None
         self._lock = threading.Lock()
+        self._draining_closed_capture = False
 
     def install(self, *, watch_stdin: bool = False) -> None:
         if watch_stdin:
@@ -497,8 +498,18 @@ class StopRequest:
             return True
         if not self.asked:
             return False
+        if self._draining_closed_capture:
+            return False
         follower = handle.get("follower")
-        return follower is None or follower.end_reason() != END_REASON_CAPTURE_STOP
+        if (
+            follower is not None
+            and follower.end_reason(retries=2) == END_REASON_CAPTURE_STOP
+        ):
+            # Normal close cannot reconnect. Keep draining even if a later
+            # manifest read is transiently unavailable.
+            self._draining_closed_capture = True
+            return False
+        return True
 
     def hard_asked_for(self) -> bool:
         return self.level == self.HARD
