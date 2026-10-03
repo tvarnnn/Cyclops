@@ -1945,6 +1945,8 @@ def concurrent_draw_mapper(store, world_id: str, session_id: str, database_path,
     before asking for the next. Resource or child failure selects the original
     serial mapper. No child sees the parent database.
     """
+    from tower.world_builder import coherence_publish  # noqa: PLC0415
+
     seeds = tuple(int(s) for s in seeds)
     serial = None
     workspace = workspace_for(store, world_id, session_id)
@@ -1966,21 +1968,26 @@ def concurrent_draw_mapper(store, world_id: str, session_id: str, database_path,
                 "record": "consensus-concurrent/1", "at": time.time(),
                 "pid": os.getpid(), "seed": int(seed), "reason": reason,
             })
-        except OSError:
-            logger.warning("consensus draw fallback journal write failed", exc_info=True)
+        except OSError as exc:
+            raise coherence_publish.ConsensusAuditError(
+                "consensus draw fallback journal write failed") from exc
 
     def use_serial(reason, seed):
         nonlocal fallback, serial
-        record(reason, seed)
-        if not _stop_draw_children(children):
-            raise RuntimeError("a consensus child could not be confirmed stopped")
-        children.clear()
-        if owns_root:
-            try:
-                _sweep_draw_root(root, owned=True)
-            except OSError:
-                logger.warning("consensus draw scratch cleanup failed before serial map: %s",
-                               root, exc_info=True)
+        try:
+            record(reason, seed)
+        finally:
+            # Even an unwritable journal must not leave a child or private DB running.
+            if not _stop_draw_children(children):
+                raise coherence_publish.ConsensusAuditError(
+                    "a consensus child could not be confirmed stopped")
+            children.clear()
+            if owns_root:
+                try:
+                    _sweep_draw_root(root, owned=True)
+                except OSError:
+                    logger.warning("consensus draw scratch cleanup failed before serial map: %s",
+                                   root, exc_info=True)
         if serial is None:
             serial = frozen_draw_mapper(store, world_id, session_id, database_path, base,
                                         keyframes=keyframes,

@@ -200,6 +200,49 @@ def test_child_crash_remaps_same_seed_serially(tmp_path, monkeypatch):
     mapper.close()
 
 
+@pytest.mark.parametrize("cause", ["ram", "child"])
+def test_unwritable_fallback_journal_prevents_serial_publish(tmp_path, monkeypatch, cause):
+    store, ws, _, serial, events = _rig(tmp_path, monkeypatch)
+    if cause == "ram":
+        monkeypatch.setattr(GS, "_draw_free_ram", lambda: 0)
+    else:
+        class Crashed(_Process):
+            def wait(self, timeout=None):
+                return 7
+        monkeypatch.setattr(GS, "_launch_draw_child", lambda *args: (Crashed(), _Job()))
+
+    def fail_write(*args, **kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(GS, "append_jsonl", fail_write)
+    mapper = GS.concurrent_draw_mapper(store, "w", "s", ws.database_path,
+                                       _base(), seeds=(4, 5), keyframes=[])
+    with pytest.raises(RuntimeError, match="fallback journal write failed"):
+        mapper(4)
+    assert serial == []
+    assert any("refusal" in event or "child-exit" in event for event in events)
+    assert not (ws.root / "sparse-draws").exists()
+    mapper.close()
+
+def test_unwritable_fallback_journal_aborts_consensus(world, tmp_path, monkeypatch):
+    store, ws, _, serial, _ = _rig(tmp_path, monkeypatch)
+    monkeypatch.setattr(GS, "_draw_free_ram", lambda: 0)
+
+    def fail_write(*args, **kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(GS, "append_jsonl", fail_write)
+    mapper = GS.concurrent_draw_mapper(store, "w", "s", ws.database_path,
+                                       _base(), seeds=(8, 9), keyframes=[])
+    plan = CP.ConsensusPlan(draws=3, seed=7, map_draw=mapper)
+    try:
+        with pytest.raises(RuntimeError, match="fallback journal write failed"):
+            CP.gate_by_consensus(_Store(), "w1", SID, _candidate(tuple(PIECES)), plan=plan,
+                                 database_path="db", keyframes=world.keyframes)
+    finally:
+        mapper.close()
+    assert serial == []
+
 def test_parent_thread_counts_are_untouched(tmp_path, monkeypatch):
     import torch
 

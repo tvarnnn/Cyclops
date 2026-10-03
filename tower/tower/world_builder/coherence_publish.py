@@ -893,6 +893,10 @@ def _no_vote() -> dict:
     return {"groups": [], "pieces": [], "detached": [], "ambiguous": [], "held_against_majority": 0}
 
 
+class ConsensusAuditError(RuntimeError):
+    """A required consensus safety record or child stop could not be confirmed."""
+
+
 @dataclasses.dataclass
 class ConsensusPlan:
     """What `gate_by_consensus` is asked for. `map_draw(seed)` maps one further draw -- the same database,
@@ -1242,6 +1246,8 @@ def gate_by_consensus(store, world_id: str, session_id: str, solution, *, plan: 
         t = time.perf_counter()
         try:
             candidate = plan.map_draw(seeds[k])
+        except ConsensusAuditError:
+            raise
         except Exception as exc:  # noqa: BLE001 -- a draw that cannot be mapped does not vote
             logger.exception("[Tower][WorldBuilder] consensus draw %d of %s/%s could not be mapped",
                              k, world_id, session_id)
