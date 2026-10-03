@@ -1864,6 +1864,33 @@ def _draw_free_ram() -> int:
     return int(psutil.virtual_memory().available)
 
 
+def _remember_unconfirmed_draw_child(process, job) -> None:
+    if not any(owned is process for owned, _ in _UNCONFIRMED_DRAW_CHILDREN):
+        _UNCONFIRMED_DRAW_CHILDREN.append((process, job))
+
+
+def _stop_spawned_draw_child(process, job) -> bool:
+    # Keep ownership if any post-Popen cleanup cannot prove the child stopped.
+    from tower import process_ownership  # noqa: PLC0415
+
+    try:
+        gone = process_ownership.terminate_tree(process, job=job, timeout=5, hard=True)
+    except BaseException:
+        logger.warning("consensus spawned child terminate failed", exc_info=True)
+        gone = False
+    if not gone:
+        _remember_unconfirmed_draw_child(process, job)
+        return False
+    if job is not None:
+        try:
+            job.close()
+        except BaseException:
+            logger.warning("consensus spawned child job close failed", exc_info=True)
+            _remember_unconfirmed_draw_child(process, job)
+            return False
+    return True
+
+
 def _launch_draw_child(context, database, seed, sparse, output, expected_digest):
     from tower import process_ownership  # noqa: PLC0415
 
@@ -1872,28 +1899,30 @@ def _launch_draw_child(context, database, seed, sparse, output, expected_digest)
         script, "--context", context, "--database", database, "--seed", str(seed),
         "--sparse", sparse, "--output", output,
         "--expected-digest", expected_digest)
-    with (Path(output).parent / "child.log").open("wb") as log:
-        process = subprocess.Popen(args, stdin=subprocess.DEVNULL, stdout=log,
-                                   stderr=subprocess.STDOUT,
-                                   env=process_ownership.interpreter_environment(),
-                                   creationflags=(subprocess.BELOW_NORMAL_PRIORITY_CLASS | 0x00000004
-                                                  if os.name == "nt" else 0))
+    process = None
+    job = None
+    stop_attempted = False
     try:
+        with (Path(output).parent / "child.log").open("wb") as log:
+            process = subprocess.Popen(args, stdin=subprocess.DEVNULL, stdout=log,
+                                       stderr=subprocess.STDOUT,
+                                       env=process_ownership.interpreter_environment(),
+                                       creationflags=(subprocess.BELOW_NORMAL_PRIORITY_CLASS | 0x00000004
+                                                      if os.name == "nt" else 0))
         job = process_ownership.assign_to_job(process)
-    except BaseException as exc:
-        if not process_ownership.terminate_tree(process, timeout=5, hard=True):
-            _UNCONFIRMED_DRAW_CHILDREN.append((process, None))
-            raise RuntimeError("a consensus child could not be confirmed stopped") from exc
-        raise
-    if os.name == "nt" and job is None:
-        process_ownership.terminate_tree(process, timeout=5, hard=True)
+        if os.name == "nt" and job is None:
+            stop_attempted = True
+            if not _stop_spawned_draw_child(process, job):
+                raise RuntimeError("a consensus child could not be confirmed stopped")
+            return process, job
+        if not _resume_draw_child(process):
+            raise RuntimeError("a consensus child could not be resumed")
         return process, job
-    if not _resume_draw_child(process):
-        if not process_ownership.terminate_tree(process, job=job, timeout=5, hard=True):
-            _UNCONFIRMED_DRAW_CHILDREN.append((process, job))
-            raise RuntimeError("a consensus child could not be confirmed stopped")
-        raise RuntimeError("a consensus child could not be resumed")
-    return process, job
+    except BaseException as exc:
+        if process is not None and not stop_attempted:
+            if not _stop_spawned_draw_child(process, job):
+                raise RuntimeError("a consensus child could not be confirmed stopped") from exc
+        raise
 
 
 def _stop_draw_children(children) -> bool:
@@ -1913,8 +1942,7 @@ def _stop_draw_children(children) -> bool:
                 logger.warning("consensus child terminate failed", exc_info=True)
                 gone = False
             if not gone:
-                if not any(owned is process for owned, _ in _UNCONFIRMED_DRAW_CHILDREN):
-                    _UNCONFIRMED_DRAW_CHILDREN.append((process, job))
+                _remember_unconfirmed_draw_child(process, job)
                 all_gone = False
                 continue
         if job is not None:
@@ -1922,8 +1950,7 @@ def _stop_draw_children(children) -> bool:
                 job.close()
             except Exception:
                 logger.warning("consensus child job close failed", exc_info=True)
-                if not any(owned is process for owned, _ in _UNCONFIRMED_DRAW_CHILDREN):
-                    _UNCONFIRMED_DRAW_CHILDREN.append((process, job))
+                _remember_unconfirmed_draw_child(process, job)
                 all_gone = False
     return all_gone
 
@@ -1989,7 +2016,7 @@ def concurrent_draw_mapper(store, world_id: str, session_id: str, database_path,
             raise coherence_publish.ConsensusAuditError(
                 "consensus draw fallback journal write failed") from exc
 
-    def stop_owned_children():
+    def stop_owned_children(*, sweep=True):
         try:
             gone = _stop_draw_children(children)
         except Exception as exc:
@@ -1999,7 +2026,7 @@ def concurrent_draw_mapper(store, world_id: str, session_id: str, database_path,
             raise coherence_publish.ConsensusAuditError(
                 "a consensus child could not be confirmed stopped")
         children.clear()
-        if owns_root:
+        if sweep and owns_root:
             try:
                 _sweep_draw_root(root, owned=True)
             except OSError:
@@ -2028,7 +2055,7 @@ def concurrent_draw_mapper(store, world_id: str, session_id: str, database_path,
             f"consensus postlaunch {stage} failed") from exc
 
     def launch():
-        nonlocal expected, launched, owns_root
+        nonlocal expected, launched, owns_root, close_error
         launched = True
 
         def preflight_abort(stage, exc):
@@ -2106,6 +2133,16 @@ def concurrent_draw_mapper(store, world_id: str, session_id: str, database_path,
                         context, private_root / "database.db", draw_seed,
                         private_root / "sparse", private_root / "candidate.pkl", expected)
                 except RuntimeError as exc:
+                    if _UNCONFIRMED_DRAW_CHILDREN:
+                        close_error = coherence_publish.ConsensusAuditError(
+                            "a launched consensus child could not be confirmed stopped")
+                        try:
+                            record("child-launch-unconfirmed", draw_seed)
+                        finally:
+                            # The spawned child is absent from children. Stop earlier
+                            # siblings, but retain scratch until ownership is proven.
+                            stop_owned_children(sweep=False)
+                        raise close_error from exc
                     use_serial(f"child-launch-{type(exc).__name__}", draw_seed)
                     return
                 children[draw_seed] = (process, job)
@@ -2117,7 +2154,8 @@ def concurrent_draw_mapper(store, world_id: str, session_id: str, database_path,
             stage_timing.concurrent_draw_event("after-draw-0")
         except FileExistsError:
             record("draw-scratch-owned", seeds[0])
-            raise RuntimeError("another consensus writer still owns draw scratch")
+            raise coherence_publish.ConsensusAuditError(
+                "another consensus writer still owns draw scratch")
         except (OSError, sqlite3.Error, ValueError, TypeError,
                 pickle.PickleError, MemoryError) as exc:
             use_serial(f"launch-refusal:{type(exc).__name__}", seeds[0])

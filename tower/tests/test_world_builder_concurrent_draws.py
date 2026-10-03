@@ -399,6 +399,118 @@ def test_child_poll_error_retains_unconfirmed_ownership(tmp_path, monkeypatch):
         del GS._UNCONFIRMED_DRAW_CHILDREN[before:]
 
 
+def test_unconfirmed_new_child_aborts_without_serial_or_scratch_sweep(
+        world, tmp_path, monkeypatch):
+    store, ws, _, serial, _ = _rig(tmp_path, monkeypatch)
+
+    class Alive(_Process):
+        def poll(self):
+            return None
+
+    def launch(*args):
+        GS._UNCONFIRMED_DRAW_CHILDREN.append((Alive(), None))
+        raise RuntimeError("a consensus child could not be confirmed stopped")
+
+    monkeypatch.setattr(GS, "_launch_draw_child", launch)
+    mapper = GS.concurrent_draw_mapper(store, "w", "s", ws.database_path,
+                                       _base(), seeds=(8, 9), keyframes=[])
+    plan = CP.ConsensusPlan(draws=3, seed=7, map_draw=mapper)
+    before = len(GS._UNCONFIRMED_DRAW_CHILDREN)
+    try:
+        with pytest.raises(CP.ConsensusAuditError, match="launched consensus child"):
+            CP.gate_by_consensus(_Store(), "w1", SID, _candidate(tuple(PIECES)), plan=plan,
+                                 database_path="db", keyframes=world.keyframes)
+        with pytest.raises(CP.ConsensusAuditError):
+            mapper.close()
+        assert len(GS._UNCONFIRMED_DRAW_CHILDREN) == before + 1
+        assert (ws.root / "sparse-draws").exists()
+        journal = json.loads((ws.root / "consensus_concurrent.jsonl").read_text())
+        assert journal["reason"] == "child-launch-unconfirmed"
+        assert serial == []
+    finally:
+        del GS._UNCONFIRMED_DRAW_CHILDREN[before:]
+
+
+def test_scratch_create_race_aborts_consensus_after_recording(world, tmp_path, monkeypatch):
+    store, ws, _, serial, _ = _rig(tmp_path, monkeypatch)
+    root = ws.root / "sparse-draws"
+    root.mkdir()
+    monkeypatch.setattr(GS, "_sweep_draw_root", lambda *args, **kwargs: True)
+    mapper = GS.concurrent_draw_mapper(store, "w", "s", ws.database_path,
+                                       _base(), seeds=(8, 9), keyframes=[])
+    plan = CP.ConsensusPlan(draws=3, seed=7, map_draw=mapper)
+    with pytest.raises(CP.ConsensusAuditError, match="writer still owns draw scratch"):
+        CP.gate_by_consensus(_Store(), "w1", SID, _candidate(tuple(PIECES)), plan=plan,
+                             database_path="db", keyframes=world.keyframes)
+    journal = json.loads((ws.root / "consensus_concurrent.jsonl").read_text())
+    assert journal["reason"] == "draw-scratch-owned"
+    assert root.exists() and serial == []
+    mapper.close()
+
+
+@pytest.mark.parametrize("fault", ["assign-raises", "job-none", "resume-raises"])
+def test_post_spawn_stop_uncertainty_retains_global_child(tmp_path, monkeypatch, fault):
+    from tower import process_ownership
+
+    class Spawned:
+        pass
+
+    spawned = Spawned()
+    monkeypatch.setattr(GS.subprocess, "Popen", lambda *args, **kwargs: spawned)
+    if fault == "assign-raises":
+        monkeypatch.setattr(process_ownership, "assign_to_job",
+                            lambda process: (_ for _ in ()).throw(RuntimeError("assign failed")))
+        monkeypatch.setattr(process_ownership, "terminate_tree",
+                            lambda *args, **kwargs: (_ for _ in ()).throw(OSError("stop failed")))
+    else:
+        monkeypatch.setattr(process_ownership, "assign_to_job",
+                            lambda process: None if fault == "job-none" else _Job())
+        monkeypatch.setattr(process_ownership, "terminate_tree", lambda *args, **kwargs: False)
+        if fault == "resume-raises":
+            monkeypatch.setattr(GS, "_resume_draw_child",
+                                lambda process: (_ for _ in ()).throw(OSError("resume failed")))
+    before = len(GS._UNCONFIRMED_DRAW_CHILDREN)
+    try:
+        with pytest.raises(RuntimeError, match="could not be confirmed stopped"):
+            GS._launch_draw_child(tmp_path / "context.pkl", tmp_path / "db", 4,
+                                  tmp_path / "sparse", tmp_path / "candidate.pkl", "digest")
+        assert len(GS._UNCONFIRMED_DRAW_CHILDREN) == before + 1
+        assert GS._UNCONFIRMED_DRAW_CHILDREN[-1][0] is spawned
+    finally:
+        del GS._UNCONFIRMED_DRAW_CHILDREN[before:]
+
+@pytest.mark.parametrize("fault", ["assign-runtime", "resume-oserror"])
+def test_confirmed_post_spawn_stop_uses_recorded_serial(tmp_path, monkeypatch, fault):
+    from tower import process_ownership
+
+    original_launch = GS._launch_draw_child
+    store, ws, _, serial, _ = _rig(tmp_path, monkeypatch)
+    monkeypatch.setattr(GS, "_launch_draw_child", original_launch)
+    monkeypatch.setattr(GS.subprocess, "Popen", lambda *args, **kwargs: _Process())
+    stopped = []
+    monkeypatch.setattr(process_ownership, "terminate_tree",
+                        lambda *args, **kwargs: stopped.append(1) or True)
+    if fault == "assign-runtime":
+        monkeypatch.setattr(process_ownership, "assign_to_job",
+                            lambda process: (_ for _ in ()).throw(RuntimeError("assign failed")))
+    else:
+        monkeypatch.setattr(process_ownership, "assign_to_job", lambda process: _Job())
+        monkeypatch.setattr(GS, "_resume_draw_child",
+                            lambda process: (_ for _ in ()).throw(OSError("resume failed")))
+    before = len(GS._UNCONFIRMED_DRAW_CHILDREN)
+    mapper = GS.concurrent_draw_mapper(store, "w", "s", ws.database_path,
+                                       _base(), seeds=(4, 5), keyframes=[])
+    assert mapper(4).solve["seed"] == 3
+    assert serial == [4] and stopped == [1]
+    assert len(GS._UNCONFIRMED_DRAW_CHILDREN) == before
+    assert not (ws.root / "sparse-draws").exists()
+    journal = json.loads((ws.root / "consensus_concurrent.jsonl").read_text())
+    assert journal["reason"] == (
+        "child-launch-RuntimeError" if fault == "assign-runtime"
+        else "launch-refusal:OSError")
+    mapper.close()
+
+
 def test_parent_thread_counts_are_untouched(tmp_path, monkeypatch):
     import torch
 
