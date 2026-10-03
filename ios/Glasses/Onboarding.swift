@@ -196,6 +196,9 @@ nonisolated struct OnboardingCard: Identifiable, Equatable, Sendable {
     let symbol: String
     let title: String
     let lead: String
+    /// A complete first-viewport thought at accessibility text sizes. The
+    /// point rows below carry the full explanation in both presentations.
+    let compactLead: String
     let points: [OnboardingPoint]
 }
 
@@ -212,6 +215,7 @@ nonisolated enum OnboardingText {
             symbol: "eyeglasses",
             title: "Welcome to Glasses",
             lead: "Walk through your home wearing the camera glasses. Your computer, called the Tower, builds a 3D world from what they saw, and you can go back to it on your phone.",
+            compactLead: "Walk with the glasses. Explore the 3D world on your phone.",
             points: [
                 OnboardingPoint(
                     symbol: "figure.walk",
@@ -235,6 +239,7 @@ nonisolated enum OnboardingText {
             symbol: "checklist",
             title: "What you need",
             lead: "Two things, each set up once.",
+            compactLead: "Two things, each set up once.",
             points: [
                 OnboardingPoint(
                     symbol: "eyeglasses",
@@ -255,6 +260,7 @@ nonisolated enum OnboardingText {
             symbol: "figure.walk",
             title: "How to walk",
             lead: "For a good world, move gently. Fast movement blurs what the glasses see, and blur breaks a world apart.",
+            compactLead: "Move gently. Blurry frames can break your world apart.",
             points: [
                 OnboardingPoint(
                     symbol: "iphone.slash",
@@ -283,6 +289,7 @@ nonisolated enum OnboardingText {
             symbol: "cube.transparent",
             title: "What you’ll see",
             lead: "After your walk, the Tower takes a little while to finish the world. Then you’ll find it in World Builder, under Saved worlds.",
+            compactLead: "After the Tower finishes, find your world in World Builder’s Saved worlds.",
             points: [
                 OnboardingPoint(
                     symbol: "house",

@@ -105,7 +105,7 @@ final class WorldBuilderSessionController: ObservableObject {
         start()
     }
 
-    /// One line for under the capture control. Every sentence is a claim the
+    /// One status line on the capture screen. Every sentence is a claim the
     /// phone can support from what it sent and what came back.
     var footnote: String { Self.footnote(for: status) }
 

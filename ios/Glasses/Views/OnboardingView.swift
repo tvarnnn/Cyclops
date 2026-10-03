@@ -163,21 +163,25 @@ private struct OnboardingCardView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
-                Image(systemName: card.symbol)
-                    .font(.system(size: min(symbolSize, 72)))
-                    .foregroundStyle(.tint)
-                    .accessibilityHidden(true)
+                // The symbol is decorative. At AX sizes its height pushes the
+                // lead below the first viewport without adding information.
+                if !dynamicTypeSize.isAccessibilitySize {
+                    Image(systemName: card.symbol)
+                        .font(.system(size: min(symbolSize, 72)))
+                        .foregroundStyle(.tint)
+                        .accessibilityHidden(true)
+                }
 
                 VStack(alignment: .leading, spacing: 10) {
                     Text(card.title)
-                        .font(.largeTitle.bold())
+                        .font(dynamicTypeSize.isAccessibilitySize ? .title.bold() : .largeTitle.bold())
                         .accessibilityAddTraits(.isHeader)
                         .accessibilityFocused(focusedTitle, equals: card.id)
                         .accessibilityIdentifier("onboarding-title-\(card.id.slug)")
 
                     // The label colour: secondary grey on the grouped
                     // background is under 4.5:1 at this size.
-                    Text(card.lead)
+                    Text(dynamicTypeSize.isAccessibilitySize ? card.compactLead : card.lead)
                         .font(.body)
                 }
                 .fixedSize(horizontal: false, vertical: true)

@@ -301,7 +301,7 @@ final class OnboardingTextTests: XCTestCase {
 
     private var everySentence: [String] {
         cards.flatMap { card in
-            [card.title, card.lead] + card.points.flatMap { [$0.title, $0.text] }
+            [card.title, card.lead, card.compactLead] + card.points.flatMap { [$0.title, $0.text] }
         } + [
             OnboardingText.continueButton, OnboardingText.openConnections, OnboardingText.openConnectionsHint,
             OnboardingText.openSettings, OnboardingText.openSettingsHint, OnboardingText.closeHint,
@@ -318,6 +318,20 @@ final class OnboardingTextTests: XCTestCase {
             XCTAssertFalse(card.points.isEmpty, "\(card.id)")
             XCTAssertLessThanOrEqual(card.points.count, 4, "\(card.id): short cards")
         }
+    }
+
+    func testAccessibilityLeadsKeepTheFourCardsMeaningful() {
+        for card in cards {
+            XCTAssertFalse(card.compactLead.isEmpty, "\(card.id)")
+            XCTAssertLessThanOrEqual(card.compactLead.count, card.lead.count, "\(card.id)")
+        }
+        let leads = cards.map { $0.compactLead.lowercased() }
+        for word in ["glasses", "3d world", "phone"] {
+            XCTAssertTrue(leads[0].contains(word), word)
+        }
+        XCTAssertTrue(leads[1].contains("set up"))
+        XCTAssertTrue(leads[2].contains("gently") && leads[2].contains("blurry"))
+        XCTAssertTrue(leads[3].contains("world builder") && leads[3].contains("saved worlds"))
     }
 
     private func text(of id: OnboardingCard.ID) -> String {

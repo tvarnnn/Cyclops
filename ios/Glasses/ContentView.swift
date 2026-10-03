@@ -131,6 +131,16 @@ struct ContentView: View {
             }
             .background(Color(.systemGroupedBackground))
             .scrollBounceBehavior(.basedOnSize)
+            #if DEBUG
+            // Keep the active capture's one Stop control in reach at every
+            // text size. An inset gives the canvas room to scroll above it;
+            // the connection is observed only by this small leaf, not here.
+            .safeAreaInset(edge: .bottom, spacing: 0) {
+                if selectedCartridge?.workspace == .worldBuilder {
+                    WorldBuilderStopBar(glasses: project.glassesConnection)
+                }
+            }
+            #endif
             // Connect and Settings for every "Not connected" panel in the
             // workspace below (U0.8 F03). Actions only: the root still does
             // not observe the Tower; the buttons' own leaf does.
@@ -518,6 +528,34 @@ extension ContentView {
             .eraseToAnyPublisher()
     }
 }
+
+#if DEBUG
+/// The World Builder capture's persistent Stop control. The scrolling
+/// workspace retains Start and its explanation; this is the only Stop button.
+private struct WorldBuilderStopBar: View {
+    @ObservedObject var glasses: GlassesConnection
+
+    var body: some View {
+        if glasses.captureClaim != .unclaimed {
+            Button {
+                glasses.stopCameraSession()
+            } label: {
+                Label("Stop capture", systemImage: "stop.fill")
+                    .font(.headline)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 6)
+            }
+            .readableBorderedButton()
+            .disabled(glasses.captureClaim == .ending)
+            .accessibilityHint("Stops the glasses camera capture.")
+            .accessibilitySortPriority(1)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 8)
+            .background(Color(.systemGroupedBackground))
+        }
+    }
+}
+#endif
 
 /// Presents `GlassesConnection.errorMessage` as an alert.
 ///

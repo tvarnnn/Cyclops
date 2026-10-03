@@ -564,7 +564,13 @@ final class DeadEndsUITests: XCTestCase {
     func testTheLeavePromptShowsBothChoicesAtTheLargestTextSize() throws {
         try startCaptureWithTheTowerOnline(
             args: ["-UIPreferredContentSizeCategoryName", "UICTContentSizeCategoryAccessibilityXXXL"])
-        XCTAssertTrue(app.buttons["Stop capture"].waitForExistence(timeout: 15), "the capture started")
+        let stop = app.buttons["Stop capture"]
+        XCTAssertTrue(stop.waitForExistence(timeout: 15), "the capture started")
+        // Start was below the canvas. Return to the top: Stop must remain
+        // tappable there, without a second copy in the scrolling workspace.
+        for _ in 0..<12 { app.swipeDown() }
+        XCTAssertEqual(app.buttons.matching(NSPredicate(format: "label == %@", "Stop capture")).count, 1)
+        XCTAssertTrue(stop.isHittable, "Stop stays in reach at AX5 after scrolling to the top")
         failIfTheGlassesAlertIsUp("after Start capture", wait: 5)
 
         tapHomeInTheDrawer()

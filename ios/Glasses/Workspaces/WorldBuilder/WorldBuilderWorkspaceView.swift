@@ -171,8 +171,8 @@ struct WorldBuilderWorkspaceView: View {
             HelperText("Capture is not available in this build.")
             #endif
 
-            // Under the capture control in both configurations: the Tower's
-            // gate applies to a Release phone's neighbour as much as to a
+            // The Tower's status line in both configurations: its gate
+            // applies to a Release phone's neighbour as much as to a
             // DEBUG phone's own capture. One line, worded as what was asked
             // for — `active` is intent, and whether a builder attached is the
             // canvas's report, not this line's. A failed or refused request
@@ -465,20 +465,14 @@ private extension WorldBuilderWorkspaceView {
     @ViewBuilder
     var captureControl: some View {
         VStack(spacing: 8) {
-            if controlMode != .start {
+            if glasses.captureClaim != .unclaimed {
                 // A capture the glasses paused is still a capture: a Start
                 // then would be refused and do nothing observable (U0.8 F06).
-                Button {
-                    glasses.stopCameraSession()
-                } label: {
-                    Label("Stop capture", systemImage: "stop.fill")
-                        .font(.headline)
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 6)
-                }
-                .readableBorderedButton()
-                .disabled(glasses.cameraStreamState == .stopping)
-                if controlMode == .stopWhilePaused {
+                // The single Stop control is pinned by ContentView below the
+                // scroll view, where it stays reachable above the canvas.
+                if glasses.captureClaim == .ending {
+                    HelperText("Stopping capture…")
+                } else if controlMode == .stopWhilePaused {
                     HelperText(ViewfinderText.pausedControlLine(stopTitle: "Stop capture"))
                         .accessibilityIdentifier("capture-paused-line")
                 }

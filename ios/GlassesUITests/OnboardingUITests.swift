@@ -152,6 +152,27 @@ final class OnboardingUITests: XCTestCase {
         app.terminate()
     }
 
+    func testAccessibilityLeadsFitAboveTheFooterBeforeScrolling() throws {
+        let leads = [
+            "Walk with the glasses. Explore the 3D world on your phone.",
+            "Two things, each set up once.",
+            "Move gently. Blurry frames can break your world apart.",
+            "After the Tower finishes, find your world in World Builder’s Saved worlds.",
+        ]
+        let app = launch(reset: true, contentSize: "UICTContentSizeCategoryAccessibilityXXXL")
+        XCTAssertTrue(waitForPage(app, 1))
+        for number in 1...4 {
+            let lead = app.staticTexts[leads[number - 1]]
+            let primary = app.buttons[number == 4 ? "onboarding-finish" : "onboarding-continue"]
+            XCTAssertTrue(lead.exists, "card \(number)'s compact lead")
+            XCTAssertTrue(primary.exists, "card \(number)'s footer")
+            XCTAssertLessThanOrEqual(lead.frame.maxY, primary.frame.minY,
+                                     "card \(number)'s lead is readable before the footer")
+            if number < 4 { XCTAssertTrue(next(app, to: number + 1)) }
+        }
+        app.terminate()
+    }
+
     /// What VoiceOver meets, in order: the card's title (a header), its
     /// words, each point as one element that says both its title and its
     /// sentence, then where you are ("Card, 1 of 4"), then Continue, then Skip.
@@ -204,11 +225,11 @@ final class OnboardingUITests: XCTestCase {
         XCTAssertEqual(found, [], found.joined(separator: "\n"))
     }
 
-    private func launch(reset: Bool, skip: Bool = false) -> XCUIApplication {
+    private func launch(reset: Bool, skip: Bool = false, contentSize: String? = nil) -> XCUIApplication {
         let app = XCUIApplication()
         if reset { app.launchArguments.append("-UITestResetOnboarding") }
         if skip { app.launchArguments.append("-UITestSkipOnboarding") }
-        if let size = env("U03_CONTENT_SIZE") {
+        if let size = contentSize ?? env("U03_CONTENT_SIZE") {
             app.launchArguments += ["-UIPreferredContentSizeCategoryName", size]
         }
         app.launchEnvironment["GLASSES_TOWER_AUTHORITY"] = closedAuthority

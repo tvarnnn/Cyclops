@@ -950,7 +950,7 @@ enum WorldCanvasText {
         case .none, .bound:
             return "No world update has arrived in \(seconds) seconds. The connection to the Tower is open; this screen cannot see why nothing has arrived."
         case .awaiting:
-            return "The Tower has not started a world from these frames in \(seconds) seconds. The line under the capture button says whether World Builder is active there."
+            return "The Tower has not started a world from these frames in \(seconds) seconds. The World Builder status line says whether it is active there."
         case .foreign:
             return "After \(seconds) seconds the Tower is still reporting a world this phone cannot match to this capture. Stopping and starting capture begins a new one."
         }
