@@ -571,6 +571,9 @@ final class DeadEndsUITests: XCTestCase {
         for _ in 0..<12 { app.swipeDown() }
         XCTAssertEqual(app.buttons.matching(NSPredicate(format: "label == %@", "Stop capture")).count, 1)
         XCTAssertTrue(stop.isHittable, "Stop stays in reach at AX5 after scrolling to the top")
+        for _ in 0..<12 { app.swipeUp() }
+        XCTAssertEqual(app.buttons.matching(NSPredicate(format: "label == %@", "Stop capture")).count, 1)
+        XCTAssertTrue(stop.isHittable, "Stop stays in reach at AX5 after scrolling to the bottom")
         failIfTheGlassesAlertIsUp("after Start capture", wait: 5)
 
         tapHomeInTheDrawer()

@@ -166,6 +166,9 @@ final class OnboardingUITests: XCTestCase {
             let primary = app.buttons[number == 4 ? "onboarding-finish" : "onboarding-continue"]
             XCTAssertTrue(lead.exists, "card \(number)'s compact lead")
             XCTAssertTrue(primary.exists, "card \(number)'s footer")
+            XCTAssertTrue(lead.isHittable, "card \(number)'s lead is visible without scrolling")
+            XCTAssertGreaterThanOrEqual(lead.frame.minY, app.windows.firstMatch.frame.minY,
+                                        "card \(number)'s lead has not scrolled above the window")
             XCTAssertLessThanOrEqual(lead.frame.maxY, primary.frame.minY,
                                      "card \(number)'s lead is readable before the footer")
             if number < 4 { XCTAssertTrue(next(app, to: number + 1)) }
