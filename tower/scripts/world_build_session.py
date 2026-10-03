@@ -484,6 +484,22 @@ class StopRequest:
         """A callable for `CaptureFollower.follow(should_stop=...)`."""
         return self.level is not None
 
+    def asked_for_capture(self, handle: dict) -> bool:
+        """Soft stop ends an open capture; a normally closed one drains first.
+
+        A late-attached builder may still be reading thousands of frames from
+        the journal when the wearer closes the capture and leaves the screen.
+        Those frames are already recorded, and an ordinary capture stop
+        should not discard them. A disconnect remains stoppable so the
+        reconnect wait is not prolonged.
+        """
+        if self.hard:
+            return True
+        if not self.asked:
+            return False
+        follower = handle.get("follower")
+        return follower is None or follower.end_reason() != END_REASON_CAPTURE_STOP
+
     def hard_asked_for(self) -> bool:
         return self.level == self.HARD
 
@@ -522,16 +538,18 @@ class StopRequest:
             name="world-builder-stop-watch",
         )
 
-    def bounded(self, frames):
-        """`frames`, ending at the next frame after a stop was asked for.
+    def bounded(self, frames, *, should_stop=None):
+        """`frames`, ending at the next frame when the stop policy says so.
 
         The follower's poll loop is the primary check on the live path;
         this is the only one a `--frames` replay has, and it is what keeps
         a live stop from being missed by the one frame the follower had
-        already yielded.
+        already yielded. A followed, normally closed capture may drain its
+        recorded backlog after a soft request.
         """
+        stop = should_stop or self.asked_for
         for frame in frames:
-            if self.asked:
+            if stop():
                 return
             yield frame
 
@@ -1962,6 +1980,7 @@ def main(argv=None) -> int:
     capture_id = None
     synthetic_intrinsics = None
     capture_handle: dict = {}
+    capture_should_stop = lambda: stop_request.asked_for_capture(capture_handle)
     if args.follow_capture:
         frames = follow_capture(
             args.follow_capture,
@@ -1969,7 +1988,7 @@ def main(argv=None) -> int:
             max_idle_polls=args.max_idle_polls,
             # Asked inside the poll loop, which is where this process
             # spends a quiet walk. See `StopRequest`.
-            should_stop=stop_request.asked_for,
+            should_stop=capture_should_stop,
             handle=capture_handle,
         )
         frame_source = "live-capture"
@@ -2182,7 +2201,9 @@ def main(argv=None) -> int:
     # record a fresh `pending` block, so there is no older notice here to keep.
     finalization_notice_text = None
     try:
-        for frame in stop_request.bounded(frames):
+        for frame in stop_request.bounded(
+            frames, should_stop=capture_should_stop if args.follow_capture else None
+        ):
             outcome = engine.observe(
                 frame.payload,
                 received_at=frame.received_at,
