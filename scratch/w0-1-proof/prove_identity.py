@@ -62,8 +62,11 @@ def _load(root, world_id, session, expected_seed):
     base = GS.load_solution(store, world_id, session)
     if base is None or (base.solve or {}).get("matching") != "frozen":
         raise RuntimeError("source solve is absent or its matching is not frozen")
-    if base.solve.get("seed") != expected_seed:
-        raise RuntimeError(f"frozen solve seed is {base.solve.get('seed')}, expected {expected_seed}")
+    # Consensus may publish draw 1 or 2 while the frozen matcher still used seed 0.
+    verification_seed = base.solve.get("verification_seed")
+    if verification_seed != expected_seed:
+        raise RuntimeError(
+            f"frozen verification seed is {verification_seed}, expected {expected_seed}")
     database = workspace.root / base.solve["database"]
     digest = (GS.database_digest(database) or {}).get("content")
     if not digest:
