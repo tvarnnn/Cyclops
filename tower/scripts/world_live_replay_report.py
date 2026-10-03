@@ -2745,6 +2745,21 @@ def run_validity(run: dict) -> dict:
                                               else str(run.get("fidelity"))) + ": not judged, not counted")
     if run.get("environment") == "FAIL":
         invalid.append("Environment (:8000) FAIL")
+    if run.get("live_safety") != "PASS":
+        invalid.append(f"live safety {run.get('live_safety') or 'not judged'}")
+    metrics = run.get("metrics") or {}
+    sent = metrics.get("frames_sent")
+    received = metrics.get("frames_received")
+    observed = metrics.get("frames_observed")
+    # The safety table can be PASS with an n/a row when a counter is absent.
+    # A partial world can finish quickly, so proof requires positive, equal
+    # client, recorder, and builder counts even if the timing bar is met.
+    if any(type(value) is not int or value <= 0 for value in (sent, received, observed)) or not (
+        sent == received == observed
+    ):
+        invalid.append(
+            f"incomplete frame path: sent={sent}, received={received}, builder_observed={observed}"
+        )
     proof = run.get("proof") or {}
     if proof and not proof.get("proof", True):
         invalid.append("NOT-PROOF: " + "; ".join(proof.get("not_proof_reasons") or ["declared"]))

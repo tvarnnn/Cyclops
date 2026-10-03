@@ -2665,6 +2665,32 @@ def test_a_candidate_that_is_not_valid_is_invalid_and_not_counted_toward_n_3(tmp
     assert new2.endswith(" (INVALID) |") and "| **NO**: " in new2
 
 
+@pytest.mark.parametrize(
+    ("observed", "safety"),
+    [(805, "FAIL"), (None, "PASS")],
+)
+def test_partial_or_unverified_builder_frames_cannot_count_as_fast_proof(tmp_path, observed, safety):
+    """A fast replay does not count when the builder skipped recorded frames."""
+    same = [[1, 0], [10, 0]]
+    for index, photos in enumerate((47.0, 47.5, 46.8)):
+        _fake_run(tmp_path / f"old{index}", photos=photos, lag_p95=6.8, sequence=same)
+    candidate = tmp_path / "new0"
+    _fake_run(candidate, photos=8.0, lag_p95=6.8, sequence=same)
+    path = candidate / "report.json"
+    record = json.loads(path.read_text(encoding="utf-8"))
+    record["tower_walk"]["frames_observed"] = observed
+    record["live_safety"]["result"] = safety
+    path.write_text(json.dumps(record), encoding="utf-8")
+
+    compared = report.compare_runs(
+        [tmp_path / f"old{index}" for index in range(3)], [candidate]
+    )
+    assert compared["baseline_counted"] == 3
+    assert compared["candidates_counted"] == 0
+    assert compared["enough_runs"] is False
+    assert [item["dir"] for item in compared["invalid_candidates"]] == [str(candidate)]
+
+
 @pytest.mark.parametrize("why", list(NOT_VALID))
 def test_the_keyframe_identity_reference_is_a_counted_baseline_run(tmp_path, why):
     """Round 4, mutant C08: the first baseline run is not valid as proof (and
