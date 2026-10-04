@@ -503,7 +503,9 @@ class StopRequest:
         follower = handle.get("follower")
         if (
             follower is not None
-            and follower.end_reason(retries=2) == END_REASON_CAPTURE_STOP
+            and follower.end_reason(
+                retries=2, raise_on_unreadable=True
+            ) == END_REASON_CAPTURE_STOP
         ):
             # Normal close cannot reconnect. Keep draining even if a later
             # manifest read is transiently unavailable.

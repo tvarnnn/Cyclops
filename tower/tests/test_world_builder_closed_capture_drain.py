@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 import tower.capture as capture_module
+import scripts.world_build_session as builder_script
 from scripts.world_build_session import StopRequest, first_observed_frame, follow_capture
 from tower.capture import CaptureRecorder
 from tower.capture_workers import CaptureWorkerSupervisor, WorkerSpec
@@ -159,6 +160,74 @@ def test_transient_manifest_read_at_soft_stop_does_not_truncate(
     assert not should_stop()
     stop.request(StopRequest.HARD, "test-hard-stop")
     assert should_stop()
+
+
+@pytest.mark.parametrize("read_error", [OSError, ValueError])
+def test_persistent_manifest_read_failure_cannot_publish_partial_complete(
+    recorded_capture, tmp_path, monkeypatch, read_error
+):
+    """A healed post-loop read must not turn a truncated run into Saved."""
+    manifest = recorded_capture / "capture.json"
+    manifest.write_text(
+        json.dumps({"ended_at": None, "end_reason": None}), encoding="utf-8"
+    )
+    original_read = capture_module.read_json_closed
+    fault = {"armed": False, "remaining": 3}
+
+    def read_with_three_failures(path):
+        if path == manifest and fault["armed"] and fault["remaining"]:
+            fault["remaining"] -= 1
+            raise read_error("closed manifest temporarily unreadable")
+        return original_read(path)
+
+    monkeypatch.setattr(capture_module, "read_json_closed", read_with_three_failures)
+    stop_holder = {}
+    monkeypatch.setattr(
+        builder_script.StopRequest,
+        "install",
+        lambda self, **_kwargs: stop_holder.setdefault("request", self),
+    )
+    original_observe = builder_script.WorldBuilderEngine.observe
+    observed = 0
+
+    def observe_and_close(self, *args, **kwargs):
+        nonlocal observed
+        outcome = original_observe(self, *args, **kwargs)
+        observed += 1
+        if observed == 805:
+            manifest.write_text(
+                json.dumps({"ended_at": 3197.0, "end_reason": "stop"}),
+                encoding="utf-8",
+            )
+            fault["armed"] = True
+            stop_holder["request"].request(StopRequest.SOFT, "test-soft-stop")
+        return outcome
+
+    monkeypatch.setattr(builder_script.WorldBuilderEngine, "observe", observe_and_close)
+    root = tmp_path / "worlds"
+    exit_code = builder_script.main(
+        [
+            "--follow-capture", str(recorded_capture),
+            "--root", str(root),
+            "--poll-seconds", "0.01",
+            "--max-idle-polls", "10000",
+            "--format", "json",
+        ]
+    )
+
+    assert observed == 805
+    assert fault["remaining"] == 0
+    # The manifest is healthy again. The old post-loop read used this to
+    # relabel 805/3197 observations as an ordinary, complete capture stop.
+    assert capture_module.read_json_closed(manifest)["end_reason"] == "stop"
+    assert exit_code == 1
+    store = WorldStore(root)
+    world_id = store.list_world_ids()[0]
+    session_id = store.list_session_ids(world_id)[0]
+    session = store.read_session(world_id, session_id)
+    assert session.frames_observed == 805
+    assert session.end_reason == "error"
+    assert session.finalization["state"] == "interrupted"
 
 
 def test_builder_process_records_every_frame_after_normal_close_and_soft_stop(

@@ -579,7 +579,9 @@ class CaptureFollower:
         """True once the recorder has written an end reason."""
         return self.end_reason() is not None
 
-    def end_reason(self, *, retries: int = 0) -> str | None:
+    def end_reason(
+        self, *, retries: int = 0, raise_on_unreadable: bool = False
+    ) -> str | None:
         """WHY the capture ended, or None while it is still open.
 
         Carried rather than collapsed into `is_closed`, because the three
@@ -591,7 +593,9 @@ class CaptureFollower:
 
         The default never waits. A caller deciding whether a soft stop may
         discard a recorded backlog can retry a transient manifest replace.
-        A readable open manifest still returns immediately.
+        A readable open manifest still returns immediately. A caller making
+        a soft-stop decision may ask to raise after the retries: otherwise a
+        read failure is indistinguishable from a still-open capture.
         """
         path = self._directory / CAPTURE_FILENAME
         retries = max(0, retries)
@@ -600,6 +604,8 @@ class CaptureFollower:
                 manifest = read_json_closed(path)
             except (OSError, ValueError):
                 if attempt == retries:
+                    if raise_on_unreadable:
+                        raise
                     # An unreadable manifest is not proof of a closed capture.
                     return None
                 time.sleep(0.01)
