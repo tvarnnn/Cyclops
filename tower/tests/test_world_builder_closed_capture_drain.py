@@ -885,6 +885,52 @@ def test_records_appended_past_the_read_position_are_unobserved(tmp_path):
     assert follower.unobserved_records() == 3
 
 
+def _land_with_the_close(directory, start, stop):
+    """Frames the recorder appends just before its close manifest: the
+    follower meets them in its one journal read AFTER seeing the close."""
+    with (directory / "frames.jsonl").open("a", encoding="utf-8") as out:
+        out.write(_journal_rows(stop, start=start))
+    _write_manifest(directory, "stop")
+
+
+def test_frames_that_land_with_the_close_are_accounted(tmp_path):
+    directory = _small_closed_capture(tmp_path)
+    _write_manifest(directory, None)
+    follower = CaptureFollower(directory, poll_seconds=0)
+    frames = follower.follow(max_idle_polls=5)
+    for _ in range(10):
+        next(frames)
+    _land_with_the_close(directory, 10, 13)
+
+    next(frames)
+    # The eleventh, received but not yet released, and the two behind it.
+    assert follower.unobserved_records() == 3
+    assert len(list(frames)) == 2
+    assert follower.unobserved_records() == 0
+
+
+def test_a_drain_whose_frames_land_with_the_close_is_still_stop(
+    recorded_capture, tmp_path, monkeypatch
+):
+    """The 2,392-frame tail arrives in the follower's post-close read."""
+    journal = recorded_capture / "frames.jsonl"
+    journal.write_text(_journal_rows(805), encoding="utf-8")
+    _write_manifest(recorded_capture, None)
+
+    def on_observe(n, stop):
+        if n == 805:
+            _land_with_the_close(recorded_capture, 805, TOTAL)
+            stop.request(StopRequest.SOFT, "test")
+
+    _hook(monkeypatch, on_observe)
+    exit_code, session = _run_session(recorded_capture, tmp_path / "worlds")
+
+    assert exit_code == 0
+    assert session.frames_observed == TOTAL
+    assert session.end_reason == "stop"
+    assert session.finalization["state"] == "complete"
+
+
 def test_a_journal_that_cannot_be_measured_is_not_a_finished_walk(
     recorded_capture, tmp_path, monkeypatch, caplog
 ):
