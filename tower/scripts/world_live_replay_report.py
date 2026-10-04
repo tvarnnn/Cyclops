@@ -2569,9 +2569,17 @@ def comparable_metrics(report: dict) -> dict:
     return metrics
 
 
-# THE COMPARABILITY KEY (review C24 HIGH-2), field by field.
+# THE COMPARABILITY KEY (review C24 HIGH-2), field by field. `timing_env` and
+# `interpreter` are review F11 MED-2's.
 KEY_FIELDS = ("source_captures", "source_journal_sha256", "source_jpegs_sha256", "switches", "code", "harness", "replay",
-              "calibration", "fidelity_family")
+              "calibration", "fidelity_family", "timing_env", "interpreter")
+# The timing variables the runner records in run.json `timing_env`
+# (`world_live_replay_run.TIMING_ENV_KEYS` at 807054d): inherited from the
+# launcher's shell, not scrubbed, and each changes the test Tower's speed.
+# Every one must be on record (None = unset, which is not ""). A runner that
+# records more has every one it records bound too.
+TIMING_ENV_REQUIRED = ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS", "CUDA_VISIBLE_DEVICES",
+                       "PYTORCH_CUDA_ALLOC_CONF")
 # The harness that STREAMED the run. The report script is not part of the
 # pin: a re-render reads, it does not stream.
 STREAMING_HARNESS_FILES = ("world_live_replay.py", "world_live_replay_run.py")
@@ -2657,6 +2665,44 @@ def _verified_calibration(run: dict, client: dict) -> dict | None:
     return dict(sorted(expected.items())) if actual == expected else None
 
 
+def timing_env_key(run: dict) -> dict | None:
+    """run.json `timing_env`, every variable it records (review F11 MED-2),
+    or None when it lacks one of `TIMING_ENV_REQUIRED` or a value is neither
+    a string nor None (unset)."""
+    env = run.get("timing_env") if isinstance(run, dict) else None
+    if not isinstance(env, dict) or any(name not in env for name in TIMING_ENV_REQUIRED):
+        return None
+    if any(value is not None and not isinstance(value, str) for value in env.values()):
+        return None
+    return dict(sorted(env.items()))
+
+
+def interpreter_key(run: dict) -> dict | None:
+    """The interpreter and venv the test Tower ran under (review F11 MED-2),
+    from run.json:
+      executable      `command[0]`: on Windows the venv's BASE interpreter
+                      (`process_ownership.interpreter_executable`), e.g.
+                      ...\\Python312\\python.exe, whose directory names its
+                      major.minor version;
+      venv_launcher   `effective_tower_env.__PYVENV_LAUNCHER__`: the venv's
+                      python, which is what makes it the venv's (None when the
+                      runner ran outside a venv);
+      recorded        run.json `interpreter`, when a runner records one (the
+                      807054d runner does not; see the F12 report's OPEN items).
+    None when run.json records no command or no effective environment."""
+    if not isinstance(run, dict):
+        return None
+    command = run.get("command")
+    effective = run.get("effective_tower_env")
+    if not isinstance(command, list) or not command or not isinstance(command[0], str) or not command[0] \
+            or not isinstance(effective, dict):
+        return None
+    key = {"executable": command[0], "venv_launcher": effective.get("__PYVENV_LAUNCHER__")}
+    if isinstance(run.get("interpreter"), dict):
+        key["recorded"] = dict(sorted(run["interpreter"].items()))
+    return key
+
+
 def comparability_key(report: dict) -> dict:
     """What a run must share with every run `--compare` sets it against
     (review C24 HIGH-2). Two walks can each pass fidelity against their OWN
@@ -2680,7 +2726,12 @@ def comparability_key(report: dict) -> dict:
                              fresh root and checked during streaming;
       fidelity_family        the family of the run's OWN fidelity bar version
                              (the one in force when it started): v1 and v3
-                             are one family, `FIDELITY_FAMILY`.
+                             are one family, `FIDELITY_FAMILY`;
+      timing_env             run.json's inherited timing variables
+                             (`timing_env_key`: CUDA_VISIBLE_DEVICES, OMP/MKL/
+                             OPENBLAS_NUM_THREADS, PYTORCH_CUDA_ALLOC_CONF);
+      interpreter            the base interpreter and the venv the test Tower
+                             ran under (`interpreter_key`).
     """
     run = report.get("run") if isinstance(report.get("run"), dict) else {}
     client = report.get("client") if isinstance(report.get("client"), dict) else {}
@@ -2712,6 +2763,8 @@ def comparability_key(report: dict) -> dict:
         "replay": replay,
         "calibration": _verified_calibration(run, client),
         "fidelity_family": FIDELITY_FAMILY.get(version),
+        "timing_env": timing_env_key(run),
+        "interpreter": interpreter_key(run),
     }
 
 
@@ -3259,6 +3312,9 @@ def _key_text(key: dict | None) -> list:
         + ", ".join(f"{k}={v}" for k, v in (key.get("switches") or {}).items()),
         f"- replay: {_short(key.get('replay'))}",
         f"- calibration: {key.get('calibration')}; fidelity family: {key.get('fidelity_family')}",
+        "- timing environment (run.json timing_env; None = unset): "
+        + ", ".join(f"{k}={v!r}" for k, v in (key.get("timing_env") or {}).items()),
+        f"- interpreter: {_short(key.get('interpreter'))}",
     ]
 
 

@@ -2931,6 +2931,8 @@ def _keyed_render(root):
     calibration = replay.calibration_digests(cal_root)
     run.update(switches=dict(FAKE_SWITCHES), code=dict(FAKE_CODE), harness=FAKE_HARNESS,
                intrinsics_copied=["360x640.json"], intrinsics_sha256=calibration, started_at=BEFORE,
+               timing_env=dict(FAKE_TIMING_ENV), command=list(FAKE_COMMAND),
+               effective_tower_env={"__PYVENV_LAUNCHER__": FAKE_VENV},
                live_tower_watch_startup={"states_seen": ["idle"],
                                          "history": [{"t": BEFORE, "state": "idle"}], "poll_count": 1,
                                          "background_poll_count": 1, "background_max_gap_s": 0.1})
@@ -2977,7 +2979,12 @@ KEY_BREAKS = {
     "code": {"code": {**FAKE_CODE, "py_fingerprint": "0000000000000000"}},
     "code path": {"code": {**FAKE_CODE, "tower_dir": "C:\\\\elsewhere\\\\tower"}},
     "harness": {"harness": {"files_sha1": {**FAKE_HARNESS["files_sha1"], "world_live_replay.py": "d" * 40}}},
-    "replay": {"speed": 2.0},
+    "replay": {"after_stop": "disconnect"},
+    # Review F11 MED-2: the inherited timing environment and the interpreter/venv.
+    "timing_env": {"timing_env": {**FAKE_TIMING_ENV, "CUDA_VISIBLE_DEVICES": "-1"}},
+    "timing_env threads": {"timing_env": {**FAKE_TIMING_ENV, "OMP_NUM_THREADS": "1"}},
+    "interpreter": {"command": ["C:\\Python313\\python.exe", *FAKE_COMMAND[1:]]},
+    "interpreter venv": {"venv": "C:\\other\\.venv\\Scripts\\python.exe"},
 }
 
 
@@ -3950,3 +3957,55 @@ def test_a_run_whose_records_or_render_were_edited_is_not_counted(tmp_path, edit
     assert result["baseline_counted"] == 2
     assert any(reason.startswith(why) for reason in _reasons(result, bad)), _reasons(result, bad)
     assert next(item for item in result["evidence_seals"] if item["dir"] == str(bad))["counted"] is False
+
+
+# MED-2: the key binds the inherited timing environment and the interpreter/venv.
+
+
+def test_cpu_only_and_gpu_runs_do_not_compare(tmp_path):
+    """F11 MED-2 (both reviews): CUDA_VISIBLE_DEVICES=-1 with thread caps against unset, and
+    another interpreter, shared one key and both counted."""
+    olds = _three_old(tmp_path)
+    cpu = {**FAKE_TIMING_ENV, "OMP_NUM_THREADS": "1", "MKL_NUM_THREADS": "1", "OPENBLAS_NUM_THREADS": "1",
+           "CUDA_VISIBLE_DEVICES": "-1"}
+    _fake_run(tmp_path / "new-cpu", photos=40.0, lag_p95=6.8, sequence=SAME, timing_env=cpu)
+    _fake_run(tmp_path / "new-empty", photos=40.0, lag_p95=6.8, sequence=SAME,
+              timing_env={**FAKE_TIMING_ENV, "CUDA_VISIBLE_DEVICES": ""})        # "" is not unset
+    _fake_run(tmp_path / "new-python", photos=40.0, lag_p95=6.8, sequence=SAME,
+              command=["C:\\other\\python.exe", *FAKE_COMMAND[1:]])
+    _fake_run(tmp_path / "new-no-venv", photos=40.0, lag_p95=6.8, sequence=SAME, venv=None)
+    _fake_run(tmp_path / "new-same", photos=40.0, lag_p95=6.8, sequence=SAME)
+    names = ("new-cpu", "new-empty", "new-python", "new-no-venv", "new-same")
+    result = report.compare_runs(olds, [tmp_path / name for name in names])
+    assert result["candidates_counted"] == 1
+    invalid = {Path(item["dir"]).name: item["reasons"][0] for item in result["invalid_candidates"]}
+    assert set(invalid) == {"new-cpu", "new-empty", "new-python", "new-no-venv"}
+    assert invalid["new-cpu"].startswith("not comparable: timing_env differs")
+    assert invalid["new-empty"].startswith("not comparable: timing_env differs")
+    assert invalid["new-python"].startswith("not comparable: interpreter differs")
+    assert invalid["new-no-venv"].startswith("not comparable: interpreter differs")
+    key = result["comparability"]["reference_key"]
+    assert key["timing_env"] == FAKE_TIMING_ENV
+    assert key["interpreter"] == {"executable": FAKE_COMMAND[0], "venv_launcher": FAKE_VENV}
+    markdown = report.render_compare(result)
+    assert "- timing environment (run.json timing_env; None = unset): CUDA_VISIBLE_DEVICES=None" in markdown
+
+
+@pytest.mark.parametrize("run, complete", [
+    ({"timing_env": dict(FAKE_TIMING_ENV), "command": FAKE_COMMAND, "effective_tower_env": {}}, True),
+    ({"timing_env": {**FAKE_TIMING_ENV, "NUMEXPR_NUM_THREADS": "4"}, "command": FAKE_COMMAND,
+      "effective_tower_env": {}, "interpreter": {"version": "3.12.5"}}, True),
+    ({"command": FAKE_COMMAND, "effective_tower_env": {}}, False),                      # no timing_env
+    ({"timing_env": {k: v for k, v in FAKE_TIMING_ENV.items() if k != "CUDA_VISIBLE_DEVICES"},
+      "command": FAKE_COMMAND, "effective_tower_env": {}}, False),                      # one variable missing
+    ({"timing_env": {**FAKE_TIMING_ENV, "OMP_NUM_THREADS": 4}, "command": FAKE_COMMAND,
+      "effective_tower_env": {}}, False),                                                # not a string
+    ({"timing_env": dict(FAKE_TIMING_ENV), "effective_tower_env": {}}, False),          # no command
+    ({"timing_env": dict(FAKE_TIMING_ENV), "command": FAKE_COMMAND}, False),             # no effective env
+])
+def test_the_timing_and_interpreter_key_fields_fail_closed(run, complete):
+    present = report.timing_env_key(run) is not None and report.interpreter_key(run) is not None
+    assert present is complete
+    if complete and "interpreter" in run:   # a runner that records more has all of it bound
+        assert report.timing_env_key(run)["NUMEXPR_NUM_THREADS"] == "4"
+        assert report.interpreter_key(run)["recorded"] == {"version": "3.12.5"}
