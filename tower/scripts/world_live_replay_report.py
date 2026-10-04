@@ -1063,7 +1063,52 @@ def fidelity_version(started_at) -> tuple:
     return "v1", f"the run started {when}, at or before v3's cut-off ({FIDELITY_V3_APPLIES_AFTER_TEXT})"
 
 
-def replay_fidelity(*, pacing: dict | None, client: dict, run: dict | None = None) -> dict:
+# A run's recorded start precedes the test Tower's own stream_start by the
+# Tower's startup (about 21 s for the OLD runs); an hour is generous.
+START_EVIDENCE_MAX_LEAD_S = 3600.0
+
+
+def start_evidence(run: dict | None, client: dict | None, tower_stream_start) -> dict:
+    """Which fidelity bar a run is judged by, CORROBORATED by the test Tower's
+    own log (review F11 LOW-8: an edited run.json `started_at` bought the v1
+    bar). The Tower's `stream_start` line decides; every recorded start
+    (run.json, client.json) must precede it by 0 to `START_EVIDENCE_MAX_LEAD_S`
+    seconds and fall under the same version. Without the Tower's stamp the
+    recorded start decides as before (`run_started_at`), uncorroborated, and
+    --compare does not judge such a run.
+
+    No run was made between 16:55 and 17:25 EDT on 2026-09-28 (the v3
+    cut-off's window), so no real run straddles it."""
+    started, source = run_started_at(run, client)
+    version, why = fidelity_version(started)
+    evidence = {"started_at": started, "from": source, "version": version, "why": why,
+                "tower_stream_start": tower_stream_start, "corroborated": False}
+    if not isinstance(tower_stream_start, (int, float)) or isinstance(tower_stream_start, bool):
+        evidence["corroboration"] = "the test Tower's log holds no stream_start for this walk"
+        return evidence
+    tower_version, tower_why = fidelity_version(tower_stream_start)
+    problems = []
+    for name, record in (("run.json started_at", run), ("client.json started_at", client)):
+        value = record.get("started_at") if isinstance(record, dict) else None
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            lead = tower_stream_start - value
+            if not 0 <= lead <= START_EVIDENCE_MAX_LEAD_S:
+                problems.append(f"{name} is {lead:+.1f} s before the test Tower's own stream_start; it must precede "
+                                f"it by 0 to {START_EVIDENCE_MAX_LEAD_S:.0f} s")
+    if started is not None and tower_version != version:
+        problems.append(f"the recorded start's bar {version} is not the bar in force at the test Tower's own "
+                        f"stream_start ({tower_version})")
+    if started is None:
+        evidence.update(version=tower_version,
+                        why="no recorded start, so the test Tower's own stream_start decides: " + tower_why)
+    evidence["tower_version"] = tower_version
+    evidence["corroborated"] = not problems
+    evidence["corroboration"] = "; ".join(problems) or "the recorded start agrees with the test Tower's stream_start"
+    return evidence
+
+
+def replay_fidelity(*, pacing: dict | None, client: dict, run: dict | None = None,
+                    tower_stream_start=None) -> dict:
     """Did the replay reproduce the recorded pace well enough to be PROOF?
     Judged against `FIDELITY_BAR`, in the version in force when the run
     started (`fidelity_version`; the start from `run` -- `run.json` -- else
@@ -1098,13 +1143,25 @@ def replay_fidelity(*, pacing: dict | None, client: dict, run: dict | None = Non
     """
     started_at, started_from = run_started_at(run, client)
     version, version_why = fidelity_version(started_at)
+    evidence = None
+    if tower_stream_start is not None:
+        # Review F11 LOW-8: the version is corroborated by the Tower's own log.
+        evidence = start_evidence(run, client, tower_stream_start)
+        version, version_why = evidence["version"], evidence["why"]
     bar = FIDELITY_BAR[version]
     result: dict = {"result": "n/a", "version": version, "version_why": version_why,
                     "family": FIDELITY_FAMILY[version], "measures": FIDELITY_MEASURES,
                     "started_at": started_at, "started_at_from": started_from,
                     "ruling": bar["ruling"], "bar": dict(bar), "rows": []}
+    if evidence is not None:
+        result["start_evidence"] = evidence
     if not pacing or not pacing.get("computable"):
         result["why"] = (pacing or {}).get("why") or "no Tower-side pacing"
+        result["note"] = FIDELITY_NA_NOTE
+        return result
+    if evidence is not None and not evidence["corroborated"]:
+        result["why"] = ("the run's recorded start is not corroborated by the test Tower's own log, so its bar "
+                         "version is unknown (review F11 LOW-8): " + evidence["corroboration"])
         result["note"] = FIDELITY_NA_NOTE
         return result
     rows = result["rows"]
@@ -2150,7 +2207,8 @@ def build_report(*, tower_log, tower_out_log=None, world_root=None, capture_id=N
     pacing = tower_side_pacing(client=client, data_root=data_root, capture_root=capture_root,
                                capture_root_from=capture_root_from) if client else {
         "computable": False, "why": "no client record (a real walk's log has none)"}
-    fidelity = replay_fidelity(pacing=pacing, client=client, run=run)
+    fidelity = replay_fidelity(pacing=pacing, client=client, run=run,
+                               tower_stream_start=_t(timeline.get("stream_start")))
     appearance_stage = stages.get("appearance") if facts.get("available") else None
     photos_told = phone_photos(client.get("phone_view") or {}, t0, appearance_stage)
     # Review F11 MED-3: a photos-ready time counts only with the store's room
@@ -3156,7 +3214,13 @@ def _load_run(run_dir) -> dict:
     # as the report kept them). A verdict rendered before the bar was versioned
     # (no `version`) was judged by v1's numbers, the only ones there were; one
     # rendered under the withdrawn v2 is never a run's own bar (re-render it).
-    own_version, own_why = fidelity_version(run_started_at(report.get("run"), report.get("client"))[0])
+    # ...CORROBORATED by the test Tower's own log, from the run's sealed
+    # records (review F11 LOW-8): an uncorroborated run is not judged.
+    evidence = compare_evidence(report)
+    start = start_evidence(evidence.get("run"), evidence.get("client"), evidence.get("stream_start_t"))
+    own_version = start["version"] if start["corroborated"] else None
+    own_why = start["why"] if start["corroborated"] else (
+        "not corroborated by the test Tower's own log: " + start["corroboration"])
     judged_by = fidelity.get("version") or ("v1" if fidelity.get("result") is not None else None)
     # A render made before C22-F7 has no `proof`: it is worked out from the
     # record the report kept (review C24 HIGH-3).
@@ -3191,7 +3255,7 @@ def _load_run(run_dir) -> dict:
             # Recomputed from the report, never trusted from it (review C24 HIGH-2).
             "key": comparability_key(report),
             # Re-derived from the run's sealed records (review F11 MED-1, LOW-9).
-            "evidence": compare_evidence(report),
+            "evidence": evidence, "start_evidence": start,
             "rendered_by": report.get("rendered_by")}
 
 
@@ -3220,7 +3284,10 @@ def run_validity(run: dict) -> dict:
     code under test's own frame path rather than a bad replay."""
     invalid, unjudged = [], []
     own, judged_by = run.get("fidelity_version"), run.get("fidelity_judged_by")
-    if run.get("fidelity") is not None and own and judged_by and judged_by != own:
+    if not own:
+        unjudged.append(f"replay fidelity {run.get('fidelity')}, but this run's own bar version is unknown "
+                        f"({run.get('fidelity_version_why')}): not judged, not counted")
+    elif run.get("fidelity") is not None and judged_by and judged_by != own:
         unjudged.append(f"replay fidelity {run.get('fidelity')} under bar {judged_by}, but this run's own bar is "
                         f"{own} ({run.get('fidelity_version_why')}): not judged, not counted (re-render it)")
     elif run.get("fidelity") == "FAIL":

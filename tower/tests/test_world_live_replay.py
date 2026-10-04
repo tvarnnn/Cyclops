@@ -1183,7 +1183,7 @@ def _fake_run(directory, *, photos, lag_p95, sequence, horizons=(52,), fidelity=
     tower_capture = report.hashlib.md5(str(directory).encode("utf-8")).hexdigest()
     if run_started is None and client_started is None:
         run_started = BASE - 60.0
-    base = (run_started if run_started is not None else client_started) + 60.0
+    base = _log_base(run_started if run_started is not None else client_started)
     source_root = directory / "source-captures"
     image = source_root / CAP / "frames" / "00000001.jpg"
     image.parent.mkdir(parents=True)
@@ -2108,20 +2108,28 @@ def test_no_source_journal_is_n_a_and_says_n_a_is_not_a_pass(tmp_path):
     assert "replay fidelity **n/a** (n/a is NOT a pass for a proof set)" in markdown
 
 
-def _pinned_run(tmp_path, *, late_ms=(1.0, 2.0), capture_root=None):
+def _log_base(start):
+    """Where a run's Tower log begins: 60 s after its recorded start, unless that crosses v3's
+    cut-off -- then at the start itself. The Tower's own stream_start corroborates the recorded start
+    (review F11 LOW-8), as every real run's does."""
+    later = start + 60.0
+    return later if report.fidelity_version(later)[0] == report.fidelity_version(start)[0] else start
+
+
+def _pinned_run(tmp_path, *, late_ms=(1.0, 2.0), capture_root=None, base=BASE):
     """A finished 10976c6-style run: its client.json names NO capture_root. The
     source journal is in a snapshot directory; the test Tower's re-recording is
-    `late_ms` behind it."""
+    `late_ms` behind it. `base`: when the test Tower's log begins."""
     run_dir = tmp_path / "run"
     run_dir.mkdir()
     log = run_dir / "tower-8031-x.err.log"
-    log.write_text(_walk_log(BASE), encoding="utf-8")
+    log.write_text(_walk_log(base), encoding="utf-8")
     snapshot = _capture(tmp_path / "snap", A, started=1000.0, frames=[(1, 1001.0), (3, 1001.1)],
                         ended=1002.0).parent
     kept = tmp_path / "data"
     _capture(kept, CAP, started=5000.0, frames=[(1, 5001.0 + late_ms[0] / 1000), (3, 5001.1 + late_ms[1] / 1000)],
              ended=5002.0)
-    _world(kept / "world_builder", BASE, appearance_end=BASE + 700)
+    _world(kept / "world_builder", base, appearance_end=base + 700)
     (run_dir / "run.json").write_text(json.dumps({"err_log": str(log), "data_root": str(kept)}), encoding="utf-8")
     client = {**_clean_client(), "schedule": {"frames": 2},
               "stream": {"frames_sent": 2, "unanswered": 0, "frame_errors": {}, "lateness_ms": {"p95": 1.2},
@@ -2405,7 +2413,8 @@ def test_the_jitter_is_absolute_so_an_early_tail_counts_as_much_as_a_late_one(tm
 
 
 def _started_run(root, *, started, late_ms):
-    run_dir, _snapshot = _pinned_run(root, late_ms=late_ms, capture_root=root / "snap" / "captures")
+    run_dir, _snapshot = _pinned_run(root, late_ms=late_ms, capture_root=root / "snap" / "captures",
+                                     base=_log_base(started))
     run = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
     run["started_at"] = started
     (run_dir / "run.json").write_text(json.dumps(run), encoding="utf-8")
@@ -2458,7 +2467,8 @@ def test_a_run_started_after_16_55_with_a_constant_bias_fails_v3_on_that_clause_
 def test_a_render_keeps_the_client_s_start_so_compare_judges_it_by_its_own_version(tmp_path):
     """A run without the runner's run.json start: the client record's decides, in the render and in --compare."""
     root = _beyond_max_path(tmp_path)
-    run_dir, _snapshot = _pinned_run(root, late_ms=(7.0, 7.0), capture_root=root / "snap" / "captures")
+    run_dir, _snapshot = _pinned_run(root, late_ms=(7.0, 7.0), capture_root=root / "snap" / "captures",
+                                     base=_log_base(AFTER))
     client = json.loads((run_dir / "client.json").read_text(encoding="utf-8"))
     (run_dir / "client.json").write_text(json.dumps({**client, "started_at": AFTER}), encoding="utf-8")
     assert report.main(["--run-dir", str(run_dir), "--out", str(root / "out")]) == 0
@@ -2930,7 +2940,7 @@ def _keyed_render(root):
     (cal_root / "360x640.json").write_bytes(b'{"fx": 1}')
     calibration = replay.calibration_digests(cal_root)
     run.update(switches=dict(FAKE_SWITCHES), code=dict(FAKE_CODE), harness=FAKE_HARNESS,
-               intrinsics_copied=["360x640.json"], intrinsics_sha256=calibration, started_at=BEFORE,
+               intrinsics_copied=["360x640.json"], intrinsics_sha256=calibration, started_at=BASE - 60.0,
                timing_env=dict(FAKE_TIMING_ENV), command=list(FAKE_COMMAND),
                effective_tower_env={"__PYVENV_LAUNCHER__": FAKE_VENV},
                live_tower_watch_startup={"states_seen": ["idle"],
@@ -4251,3 +4261,53 @@ def test_a_stop_line_far_from_the_clients_stop_is_not_proof(tmp_path):
            "the W0 origin is not the wearer's Stop")
     assert built["proof"]["proof"] is False and why in built["proof"]["not_proof_reasons"]
     assert why in _counted(run_dir)["invalid"]
+
+
+# LOW-8: the bar version is corroborated by the test Tower's own log, never an editable start alone.
+
+
+def _v1_pass_v3_fail_offsets():
+    """0 ms, with +/-48 ms on ~14 % of the frames each: v3's jitter p95 48 > 45 FAILS, v1 PASSES."""
+    offsets = [0.0] * N_WALK
+    for k in range(0, N_WALK, 7):
+        offsets[k] = -48.0
+    for k in range(3, N_WALK, 7):
+        offsets[k] = 48.0
+    return offsets
+
+
+def test_a_start_time_edited_before_the_cut_off_does_not_buy_the_v1_bar(tmp_path):
+    """F11 LOW-8 (adversarial): run.json started_at moved before 16:55 judged a v3-failing run by v1,
+    and compare counted it."""
+    honest = _coherent_run(tmp_path / "honest", offsets_ms=_v1_pass_v3_fail_offsets())
+    assert (_built(honest)["replay_fidelity"]["version"], _built(honest)["replay_fidelity"]["result"]) == ("v3", "FAIL")
+    spoofed = _coherent_run(tmp_path / "spoofed", offsets_ms=_v1_pass_v3_fail_offsets(),
+                            started_at=V3_APPLIES_AFTER - 60.0)
+    fidelity = _built(spoofed)["replay_fidelity"]
+    assert fidelity["result"] == "n/a" and fidelity["start_evidence"]["corroborated"] is False
+    assert fidelity["why"].startswith("the run's recorded start is not corroborated by the test Tower's own log")
+    assert "the recorded start's bar v1 is not the bar in force at the test Tower's own stream_start (v3)" in \
+        fidelity["why"]
+    loaded = report._load_run(spoofed)
+    assert loaded["fidelity_version"] is None
+    validity = report.run_validity(loaded)
+    assert validity["counted"] is False
+    assert validity["not_a_pass"][0].startswith("replay fidelity n/a, but this run's own bar version is unknown "
+                                                "(not corroborated by the test Tower's own log: ")
+
+
+@pytest.mark.parametrize("run_start, client_start, tower, expected", [
+    (AFTER, AFTER + 30, AFTER + 60, ("v3", True)),
+    (BEFORE - 60, BEFORE - 10, BEFORE, ("v1", True)),
+    (None, None, AFTER + 60, ("v3", True)),                 # no recorded start: the Tower's own stamp decides
+    (None, None, BEFORE, ("v1", True)),
+    (BEFORE, None, AFTER + 60, ("v1", False)),              # the recorded start says v1, the Tower's log v3
+    (AFTER + 3600, None, AFTER + 7300, ("v3", False)),      # over an hour before the stream: not this run's start
+    (AFTER + 120, None, AFTER + 60, ("v3", False)),         # after the stream it started
+    (AFTER, AFTER + 4000, AFTER + 60, ("v3", False)),       # the client's start after the stream
+    (AFTER, None, None, ("v3", False)),                     # no Tower stamp: uncorroborated
+])
+def test_the_bar_version_is_corroborated_by_the_towers_own_stream_start(run_start, client_start, tower, expected):
+    evidence = report.start_evidence({} if run_start is None else {"started_at": run_start},
+                                     {} if client_start is None else {"started_at": client_start}, tower)
+    assert (evidence["version"], evidence["corroborated"]) == expected, evidence
