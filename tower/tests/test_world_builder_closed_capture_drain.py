@@ -1239,3 +1239,119 @@ def test_a_real_lock_longer_than_the_budget_ends_honestly(
     assert session.end_reason == "error"
     assert session.finalization["state"] == "interrupted"
     assert not _labelled_finished(session)
+
+
+# ---------------------------------------------------------------------------
+# The surviving mutants of both reviews of 8ede341, killed: standard M06 /
+# adversarial M3 (a `bounded_limit` or `disconnect` close remembered as
+# `stop`), adversarial M17 (a remembered `stop` overriding a readable
+# manifest) and standard M10 (the drain re-reading the manifest per frame).
+# Standard/adversarial M15 is killed by the parametrized pre-first-frame
+# test above, and adversarial M2 by the backoff bound in
+# `test_strict_read_waits_out_a_short_lock_with_backoff`.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("reason", ["bounded_limit", "disconnect"])
+def test_only_a_normal_close_answers_a_later_unreadable_read(
+    tmp_path, monkeypatch, reason
+):
+    """Standard review M06 / adversarial M3: a `bounded_limit` or
+    `disconnect` close read once must not come back as `stop` when the
+    manifest later cannot be read. That turns an honest `interrupted`
+    (bounded) into an ordinary finish."""
+    directory = _closed_directory(tmp_path, reason)
+    follower = CaptureFollower(directory)
+    assert follower.end_reason() == reason
+
+    monkeypatch.setattr(capture_module, "MANIFEST_READ_BUDGET_S", 0.05)
+    fault = _unreadable_for(monkeypatch, directory / "capture.json", 60.0)
+    fault["arm"]()
+    assert follower.end_reason() is None
+    with pytest.raises(OSError):
+        follower.end_reason(strict=True)
+
+
+def test_a_remembered_normal_close_never_overrides_a_readable_manifest(tmp_path):
+    """Adversarial M17: the remembered `stop` answers an UNREADABLE read
+    only. A readable manifest is always what the follower reports."""
+    directory = _closed_directory(tmp_path, "stop")
+    follower = CaptureFollower(directory)
+    assert follower.end_reason() == "stop"
+
+    _write_manifest(directory, "disconnect")
+    assert follower.end_reason() == "disconnect"
+    assert follower.end_reason(strict=True) == "disconnect"
+
+
+def test_a_bounded_close_read_once_then_unreadable_is_still_interrupted(
+    recorded_capture, tmp_path, monkeypatch
+):
+    """Standard M06 / adversarial M3, end to end: the bound is read once at
+    the close, every later read fails, and a soft stop came after the
+    builder caught up. The session must stay `interrupted`."""
+    manifest = recorded_capture / "capture.json"
+    _write_manifest(recorded_capture, None)
+    original_read = capture_module.read_json_closed
+    state = {"closed_read": False}
+
+    def read_once_closed(path):
+        if path == manifest and state["closed_read"]:
+            raise OSError("manifest unavailable after the bound was read")
+        payload = original_read(path)
+        if path == manifest and payload.get("ended_at") is not None:
+            state["closed_read"] = True
+        return payload
+
+    monkeypatch.setattr(capture_module, "read_json_closed", read_once_closed)
+
+    def on_observe(n, stop):
+        if n == TOTAL:
+            _write_manifest(recorded_capture, "bounded_limit")
+            stop.request(StopRequest.SOFT, "test")
+
+    _hook(monkeypatch, on_observe)
+    exit_code, session = _run_session(recorded_capture, tmp_path / "worlds")
+
+    assert state["closed_read"]
+    assert exit_code == 0
+    assert session.frames_observed == TOTAL
+    assert session.end_reason == "interrupted"
+
+
+def test_a_drain_does_not_reread_the_manifest_per_frame(
+    recorded_capture, tmp_path, monkeypatch
+):
+    """Standard M10: once a normal close is verified, the drain stops asking.
+
+    Without the `StopRequest` latch every remaining frame re-reads
+    `capture.json` (the suite measured 76 s instead of 22 s). The answer
+    cannot change -- a closed capture stays closed -- so the reads are pure
+    cost on the path that is already the slow one.
+    """
+    manifest = recorded_capture / "capture.json"
+    _write_manifest(recorded_capture, None)
+    original_read = capture_module.read_json_closed
+    reads = {"armed": False, "count": 0}
+
+    def counting_read(path):
+        if reads["armed"] and path == manifest:
+            reads["count"] += 1
+        return original_read(path)
+
+    monkeypatch.setattr(capture_module, "read_json_closed", counting_read)
+
+    def on_observe(n, stop):
+        if n == 805:
+            _write_manifest(recorded_capture, "stop")
+            reads["armed"] = True
+            stop.request(StopRequest.SOFT, "test")
+
+    _hook(monkeypatch, on_observe)
+    exit_code, session = _run_session(recorded_capture, tmp_path / "worlds")
+
+    assert exit_code == 0
+    assert session.frames_observed == TOTAL
+    assert session.end_reason == "stop"
+    # 2,392 frames drained; the manifest is read a handful of times.
+    assert reads["count"] <= 10, reads["count"]
