@@ -775,10 +775,10 @@ def _summary(frames, end_reason, **extra):
     return "[Tower][Session] final summary: " + repr(fields)
 
 
-def _walk_log(base, *, reconnect=False, processing_errors=0, capture=CAP):
+def _walk_log(base, *, reconnect=False, processing_errors=0, capture=CAP, frames=1200):
     """A Tower log in the real line formats (walk 5's), 100 s walk, then the settle.
     `reconnect`: the walk is two captures, the first ended by disconnect. `capture`: the id
-    the test Tower minted for the walk's (first) capture."""
+    the test Tower minted for the walk's (first) capture; `frames`, how many it received."""
     wb = "tower.world_build_session"
     ws = "tower.routes.ws"
     CAP = capture  # noqa: N806 -- the walk's capture, as the log names it
@@ -808,9 +808,9 @@ def _walk_log(base, *, reconnect=False, processing_errors=0, capture=CAP):
     lines += [
         _line(base + 99.0, wb, "[Tower][WorldBuilder] rebuild 3: 12 keyframes -> 10 positioned poses, "
                                "1823 points, 2 segments in 1.08s"),
-        _line(base + 100.0, ws, _summary(700 if reconnect else 1200, "stream_stop",
+        _line(base + 100.0, ws, _summary(700 if reconnect else frames, "stream_stop",
                                          frame_processing_errors=processing_errors)),
-        _line(base + 100.002, ws, f"[Tower][Capture] recording stopped (stop): {700 if reconnect else 1200} "
+        _line(base + 100.002, ws, f"[Tower][Capture] recording stopped (stop): {700 if reconnect else frames} "
                                   "frames, 900 bytes"),
         _line(base + 101.5, wb, "[Tower][WorldBuilder] rebuild 4: 16 keyframes -> 12 positioned poses, "
                                 "2000 points, 3 segments in 1.21s"),
@@ -819,7 +819,7 @@ def _walk_log(base, *, reconnect=False, processing_errors=0, capture=CAP):
         _line(base + 224.1, wb, "[Tower][WorldBuilder] final global solve launched (pid 34464)"),
         _line(base + 400.0, wb, "[Tower][WorldBuilder] final global solve: solved=True solver=glomap "
                                 "posed=15/16 components=2 in 175.90s"),
-        _line(base + 401.0, wb, f"[Tower][WorldBuilder] session {S} finished: 1200 frames, 16 keyframes, "
+        _line(base + 401.0, wb, f"[Tower][WorldBuilder] session {S} finished: {frames} frames, 16 keyframes, "
                                 "3 segments, backend=classical-sfm (downgraded_from=None), 15 solved poses, "
                                 "2000 points, scale=unknown, final build 1.00s"),
         _line(base + 460.0, "tower.world_builder.transients",
@@ -849,12 +849,12 @@ def _walk_log(base, *, reconnect=False, processing_errors=0, capture=CAP):
 KEYFRAMES = [(1, 0, 10.0, 10.5), (10, 0, 11.0, 13.0), (54, 1, 12.0, 12.25), (80, 1, 20.0, 27.0)]
 
 
-def _world(root, base, *, appearance_end, draw0_map=None):
+def _world(root, base, *, appearance_end, draw0_map=None, frames=1200):
     world = root / "worlds" / W
     (world / "sessions" / S).mkdir(parents=True)
     (world / "sessions" / S / "session.json").write_text(json.dumps({
         "session_id": S, "world_id": W, "capture_id": CAP, "ended_at": base + 104.0,
-        "frames_observed": 1200, "keyframes_accepted": 4,
+        "frames_observed": frames, "keyframes_accepted": 4,
         "finalization": {"state": "complete", "final_solve": "solved", "started_at": base + 104.0,
                          "updated_at": base + 401.0},
         "stages": {"surface": {"state": "ok", "started_at": base + 401.0, "updated_at": base + 500.0},
@@ -4029,7 +4029,7 @@ def test_the_timing_and_interpreter_key_fields_fail_closed(run, complete):
 # after v3's cut-off and its recorded starts precede it, its records are sealed, it streams the
 # whole walk, the store writes the room appearance before the push, the client's Stop is the
 # Tower's, and the client's guard polled through the settle. Synthetic bytes only.
-N_WALK = 1200                                     # `_walk_log`'s frame count
+N_WALK = 120                                      # the coherent fixture's walk (`_walk_log(frames=...)`)
 BASE3 = time.mktime(time.strptime("2026-10-01 10:00:00", "%Y-%m-%d %H:%M:%S"))
 STOP3 = BASE3 + 100.0 + 2 / 1000.0                # its "recording stopped (stop)" line, as the report parses it
 GOOD_WATCH_STARTUP = {"at_start": "idle", "history": [{"t": 1.0, "state": "idle"}], "busy_since": None,
@@ -4055,13 +4055,14 @@ def _coherent_run(root, *, photos_s=480.0, offsets_ms=None, started_at=None, tim
     run_dir = root / "run"
     run_dir.mkdir()
     log = run_dir / "tower-8031-x.err.log"
-    log.write_text(_walk_log(base), encoding="utf-8")
+    log.write_text(_walk_log(base, frames=N_WALK), encoding="utf-8")
     stop = report.walk_timeline(report.scan_log(log), CAP)["stop"]["t"]
     offsets = offsets_ms if offsets_ms is not None else [1.0] * N_WALK
     data = root / "data"
     rerecorded = [(i, 5000.0 + (t - 1000.0) / speed + offsets[k] / 1000.0) for k, (i, t) in enumerate(frames)]
     _capture(data, CAP, started=5000.0, frames=rerecorded, ended=rerecorded[-1][1] + 0.1)
-    _world(data / "world_builder", base, appearance_end=stop + photos_s - 5.0 if store_ok_at is None else store_ok_at)
+    _world(data / "world_builder", base, appearance_end=stop + photos_s - 5.0 if store_ok_at is None else store_ok_at,
+           frames=N_WALK)
     if not appearance:
         path = data / "world_builder" / "worlds" / W / "sessions" / S / "session.json"
         session = json.loads(path.read_text(encoding="utf-8"))
@@ -4188,14 +4189,14 @@ def test_the_store_backs_a_time_only_at_or_before_it():
 
 def test_a_truncated_source_copy_is_not_a_full_walk(tmp_path):
     """F11 MED-4 (adversarial): capture.json says the walk wrote 4005 frames; this copy's journal
-    holds 1200, every one streamed. Counted as a full walk at 807054d."""
+    holds fewer (here 120), every one streamed. Counted as a full walk at 807054d."""
     run_dir = _coherent_run(tmp_path / "r", frames_written=4005)
     built = _built(run_dir)
     assert built["full_walk"]["full"] is False and built["proof"]["proof"] is False
     reasons = _counted(run_dir)["invalid"]
-    assert f"capture {A}: 1200 frame(s) of 9600 bytes streamed, but its capture.json records frames_written 4005, " \
-           "bytes_written 9600" in reasons
-    assert "1200 frame(s) streamed (1200 scheduled, 1200 in the sent list) is not the recorded walk's " \
+    assert f"capture {A}: 120 frame(s) of 960 bytes streamed, but its capture.json records frames_written 4005, " \
+           "bytes_written 960" in reasons
+    assert "120 frame(s) streamed (120 scheduled, 120 in the sent list) is not the recorded walk's " \
            "frames_written 4005" in reasons
 
 
@@ -4691,3 +4692,46 @@ def test_the_handoff_refuses_a_preflight_watcher_that_will_not_stop(lifecycle, m
     lifecycle["state"]["replay"] = replay_after_handoff
     assert runner.main(lifecycle["argv"]) == runner.EXIT_ABORTED
     assert _run_json(lifecycle)["aborted"]["reason"] == ":8000 preflight live watcher did not stop at handoff"
+
+
+# The rest of the adversarial attack suite (rv-f11-adv test_rv_adv_attacks.py), on the coherent fixture.
+
+
+def test_an_edited_client_json_re_rendered_into_a_fast_run_is_not_counted(tmp_path):
+    """F11 adversarial LOW-9: the phone word moved from +12 to +8 min in client.json, then a clean
+    re-render: counted at 807054d with 8.0 min."""
+    run_dir = _coherent_run(tmp_path / "r", photos_s=720.0)
+    client = json.loads((run_dir / "client.json").read_text(encoding="utf-8"))
+    client["phone_view"]["photographic"][-1]["t"] = STOP3 + 480.0
+    (run_dir / "client.json").write_text(json.dumps(client), encoding="utf-8")
+    assert report.main(["--run-dir", str(run_dir), "--out", str(tmp_path / "rerender")]) == 0
+    assert _built(tmp_path / "rerender")["verdict"]["stop_to_phone_photos_min"] == 8.0
+    reasons = _counted(tmp_path / "rerender")["invalid"]
+    assert any(reason.startswith("evidence: the run's records changed since run time (client.json") for reason in reasons)
+
+
+def test_the_adversarial_defenses_still_hold(tmp_path):
+    """rv-f11-adv's DEFENSE tests, on the coherent fixture: a run never told is no time; a subset,
+    a superset and an empty or single compare are refused."""
+    never = _coherent_run(tmp_path / "never", words=[])
+    assert _built(never)["verdict"]["result"] == "NOT REACHED"
+    assert "client phone-photo receipt is missing" in _counted(never)["invalid"]
+    subset = _coherent_run(tmp_path / "subset")
+    doc = _built(subset)
+    doc["client"]["stream"]["frames_sent"] = N_WALK - 1
+    doc["client"]["source_images"]["sent"] = doc["client"]["source_images"]["sent"][:-1]
+    (subset / "report.json").write_text(json.dumps(doc), encoding="utf-8")
+    loaded = report._load_run(subset)
+    assert loaded["key"]["source_jpegs_sha256"] is None and report.run_validity(loaded)["counted"] is False
+    superset = _coherent_run(tmp_path / "superset")
+    journal = tmp_path / "superset" / "data" / "captures" / CAP / "frames.jsonl"
+    row = json.loads(journal.read_text(encoding="utf-8").splitlines()[-1])
+    row.update(wire_seq=N_WALK + 1, source_seq=N_WALK + 1, received_at=row["received_at"] + 0.08)
+    journal.write_text(journal.read_text(encoding="utf-8") + json.dumps(row) + "\n", encoding="utf-8")
+    assert report.main(["--run-dir", str(superset), "--out", str(tmp_path / "superset-rerender")]) == 0
+    assert _built(tmp_path / "superset-rerender")["tower_side_pacing"]["replay_only"] == 1
+    assert _counted(tmp_path / "superset-rerender")["counted"] is False
+    assert report.compare_runs([])["enough_runs"] is False
+    single = report.compare_runs([_coherent_run(tmp_path / "single")])
+    assert (single["enough_runs"], single["baseline_counted"], single["walk6_gate"]["result"]) == \
+        (False, 1, "NOT EVALUATED")
