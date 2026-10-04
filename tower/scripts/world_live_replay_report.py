@@ -35,7 +35,12 @@ THE W0 VERDICT (review C24 HIGH-1) is Stop -> `phone_photos_at`, when the
 replay CLIENT received the push saying the room's photos were ready. The
 store's `updated_at` for the room appearance is INFO. A report with no client
 record (a real walk's log) can only give the store time, and says so: that is
-NOT the client measure. Neither is a phone rendering the photos.
+NOT the client measure. Neither is a phone rendering the photos. A run's own
+PASS/FAIL is against the 10-min HARD MAXIMUM, judged in seconds; it is never
+the Walk 6 gate (>= 5 NEW distinct runs, raw and preselection-normalized max
+<= 9.0 min), which only `--compare`'s WALK6-GATE section judges -- and which
+says NOT EVALUATED while no normalization method is ratified (review F11
+MED-5).
 
 THE PACING CLOCK (review C24 HIGH-4). `frames.jsonl` `received_at` is the
 capture recorder's stamp, taken when `ws.py` hands it the frame AFTER parsing,
@@ -95,7 +100,21 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from tower.artifact_paths import artifact_root_arg  # noqa: E402
 
 HARD_MAX_MINUTES = 10.0
+# The per-run hard maximum, judged in SECONDS (review F11 MED-5).
+HARD_MAX_S = HARD_MAX_MINUTES * 60.0
 CHORE_CHAIN_GAP_S = 90.0
+# THE WALK 6 GATE (manager rulings), judged ONLY in --compare's WALK6-GATE
+# section (`walk6_gate`): >= 5 NEW distinct quiet replays, every one replay
+# fidelity bar v3 PASS, the metric Stop -> the client's `phone_photos_at`,
+# raw AND preselection-normalized MAX <= 9.0 min, against an OLD baseline with
+# the same comparability key. No preselection-normalization method has been
+# ratified, so the normalized max is NOT COMPUTED and the gate is NOT EVALUATED.
+WALK6_GATE_MAX_S = 9.0 * 60.0
+WALK6_GATE_MIN_NEW_RUNS = 5
+WALK6_GATE_FIDELITY_VERSION = "v3"
+WALK6_NORMALIZED_NOT_COMPUTED = "normalized: NOT COMPUTED (method not ratified)"
+WALK6_PER_RUN_NOTE = ("<= 10-min hard max, judged in seconds; NOT the Walk 6 gate (>= 5 NEW runs, raw and "
+                      "normalized max <= 9.0 min), which only --compare's WALK6-GATE section judges")
 # The report script's own version. The STREAMING harness's version
 # (`world_live_replay.HARNESS_VERSION`) is unchanged by a report-only round:
 # C22-F12 left both streaming scripts byte-identical to 807054d.
@@ -2226,8 +2245,11 @@ def build_report(*, tower_log, tower_out_log=None, world_root=None, capture_id=N
     phone_minutes = _minutes(t0, milestones.get("phone_photos_at"))
     has_client = client_recorded(client)
     photos_minutes = phone_minutes if has_client else store_minutes
-    verdict = ("PASS" if photos_minutes is not None and photos_minutes <= HARD_MAX_MINUTES
-               else "FAIL" if photos_minutes is not None else "NOT REACHED")
+    # Judged in seconds, never on the 0.01-min rounding (review F11 MED-5).
+    photos_seconds = _seconds(t0, milestones.get("phone_photos_at") if has_client
+                              else milestones.get("room_appearance_ok"))
+    verdict = ("PASS" if photos_seconds is not None and photos_seconds <= HARD_MAX_S
+               else "FAIL" if photos_seconds is not None else "NOT REACHED")
     not_reached_why = None
     if verdict == "NOT REACHED":
         not_reached_why = ((photos_told.get("why") or "no push after Stop told the client the room's photos were "
@@ -2253,6 +2275,10 @@ def build_report(*, tower_log, tower_out_log=None, world_root=None, capture_id=N
         "verdict": {"basis": "phone" if has_client else "store",
                     "measure": BASIS_PHONE if has_client else BASIS_STORE,
                     "stop_to_room_with_photos_min": photos_minutes, "result": verdict,
+                    # The bar this verdict is judged against: the per-run hard
+                    # maximum, never the Walk 6 gate (review F11 MED-5).
+                    "stop_to_room_with_photos_s": photos_seconds, "hard_max_s": HARD_MAX_S,
+                    "judges": WALK6_PER_RUN_NOTE,
                     "not_reached_why": not_reached_why,
                     # How `phone_photos_at` was read: INFERRED for a client that
                     # recorded no `scope` (made before C22-F2).
@@ -2434,17 +2460,22 @@ def render_markdown(report: dict) -> str:
                      "this run (review C24 HIGH-3).")
         lines.append("")
     photos = verdict.get("stop_to_room_with_photos_min")
-    shown = f"{photos} min" if photos is not None else f"not reached ({verdict.get('not_reached_why')})"
+    seconds = verdict.get("stop_to_room_with_photos_s")
+    shown = ((f"{photos} min" + (f" ({seconds} s)" if seconds is not None else "")) if photos is not None
+             else f"not reached ({verdict.get('not_reached_why')})")
     store = verdict.get("stop_to_store_photos_min")
+    # The per-run verdict says which bar it is (review F11 MED-5): the 10-min
+    # hard maximum, never the Walk 6 gate.
+    judged = f" ({WALK6_PER_RUN_NOTE})" if verdict.get("result") in ("PASS", "FAIL") else ""
     if verdict.get("basis") == "store":
         lines.append(f"1. **Stop to room with photos: {shown} -- the STORE's `updated_at`, NOT the client "
                      f"measure** (no client record: a real walk's log) against the "
-                     f"{report['hard_max_minutes']:.0f}-min hard maximum: **{verdict.get('result')}**.")
+                     f"{report['hard_max_minutes']:.0f}-min hard maximum: **{verdict.get('result')}**{judged}.")
     else:
         lines.append(f"1. **Stop to room with photos, as the replay client received it (`phone_photos_at`): "
                      f"{shown}** against the {report['hard_max_minutes']:.0f}-min hard maximum: "
-                     f"**{verdict.get('result')}**. This is the replay client's receipt of the status push, not "
-                     "photos rendered on a phone."
+                     f"**{verdict.get('result')}**{judged}. This is the replay client's receipt of the status push, "
+                     "not photos rendered on a phone."
                      + (" **The client's time is INFERRED**: this client did not record the word's `scope` (a "
                         "record made before C22-F2), so the move to an area is read from its stage."
                         if str(verdict.get("phone_photos_how") or "").startswith("INFERRED") else "")
@@ -2482,7 +2513,8 @@ def render_markdown(report: dict) -> str:
                  f"**{fidelity_head.get('result')}**"
                  + (" (n/a is NOT a pass for a proof set)" if fidelity_head.get("result") == "n/a" else "")
                  + (f", judged by fidelity bar {fidelity_head['version']}" if fidelity_head.get("version") else "")
-                 + ". Proof: " + ("**NOT-PROOF**" if proof and not proof.get("proof") else "eligible") + ".")
+                 + ". Proof: " + ("**NOT-PROOF**" if proof and not proof.get("proof") else
+                                  "eligible to be counted by --compare (not a Walk 6 verdict)") + ".")
     if client.get("aborted"):
         lines.append(f"6. **Aborted** at {_clock(client['aborted'].get('t'))}: {client['aborted'].get('reason')}.")
     lines.append("")
@@ -2766,6 +2798,8 @@ def comparable_metrics(report: dict) -> dict:
     metrics: dict = {}
     verdict = report.get("verdict") or {}
     metrics[W0_TIMING_METRIC] = verdict.get("stop_to_phone_photos_min")
+    # The same in seconds: the unit every bar is judged in (review F11 MED-5).
+    metrics["stop_to_phone_photos_s"] = verdict.get("stop_to_phone_photos_s")
     metrics["stop_to_store_photos_min"] = (verdict.get("stop_to_store_photos_min") if "basis" in verdict
                                            else verdict.get("stop_to_room_with_photos_min"))
     for key in ("stop_to_finalization_min", "stop_to_settled_min"):
@@ -3395,6 +3429,50 @@ def parse_switches(items) -> dict:
     return switches
 
 
+def walk6_gate(candidate: list, baseline_counted: int) -> dict:
+    """THE WALK 6 GATE (manager rulings; review F11 MED-5), the only Walk 6
+    verdict this harness prints. Over the COUNTED, distinct NEW runs:
+      * at least `WALK6_GATE_MIN_NEW_RUNS` of them;
+      * an OLD baseline with the same comparability key (counted runs);
+      * every one judged by fidelity bar v3 (its own, corroborated) and PASS;
+      * the raw max of Stop -> the client's `phone_photos_at`, in SECONDS from
+        the run's sealed records (`compare_evidence`), <= 540.0 s;
+      * the preselection-normalized max <= 540.0 s: NOT COMPUTED, because no
+        normalization method has been ratified;
+      * QUIET-TOWER: the launcher's evidence lies outside the run's records,
+        so it is NOT CHECKED here.
+    With the normalized max not computed the result is NOT EVALUATED, always:
+    this function never says PASS -- on fewer than 5 runs or otherwise -- and a
+    ratified method needs its own reviewed change to make it able to."""
+    counted = [run for run in candidate if run["validity"]["counted"]]
+    v3 = [run for run in counted if run.get("fidelity") == "PASS" and run.get("fidelity_version") ==
+          WALK6_GATE_FIDELITY_VERSION and run.get("fidelity_judged_by") == WALK6_GATE_FIDELITY_VERSION]
+    raw = [((run.get("evidence") or {}).get("w0_seconds"), run["dir"]) for run in counted]
+    known = [(seconds, directory) for seconds, directory in raw if isinstance(seconds, (int, float))]
+    raw_max_s, raw_max_dir = max(known) if known else (None, None)
+    components = [
+        {"check": f"NEW distinct counted runs (>= {WALK6_GATE_MIN_NEW_RUNS} required)", "value": len(counted),
+         "met": len(counted) >= WALK6_GATE_MIN_NEW_RUNS},
+        {"check": "an OLD baseline with the same comparability key (counted, distinct runs)",
+         "value": baseline_counted, "met": baseline_counted >= 1},
+        {"check": f"every counted NEW run judged by fidelity bar {WALK6_GATE_FIDELITY_VERSION} and PASS",
+         "value": f"{len(v3)} of {len(counted)}", "met": bool(counted) and len(v3) == len(counted)},
+        {"check": f"raw max, Stop -> client phone_photos_at (<= {WALK6_GATE_MAX_S:.1f} s = 9.0 min)",
+         "value": None if raw_max_s is None else f"{raw_max_s:.3f} s = {raw_max_s / 60.0:.4f} min ({raw_max_dir})",
+         "value_s": raw_max_s, "run": raw_max_dir,
+         "met": None if raw_max_s is None or len(known) != len(counted) else raw_max_s <= WALK6_GATE_MAX_S},
+        {"check": f"preselection-normalized max (<= {WALK6_GATE_MAX_S:.1f} s = 9.0 min)",
+         "value": WALK6_NORMALIZED_NOT_COMPUTED, "met": None},
+        {"check": "every NEW run a QUIET-TOWER replay",
+         "value": "NOT CHECKED by this harness (each run's .quiet.txt is outside its records)", "met": None},
+    ]
+    missing = [component["check"] for component in components if component["met"] is False]
+    return {"result": "NOT EVALUATED", "normalized": WALK6_NORMALIZED_NOT_COMPUTED,
+            "why": [WALK6_NORMALIZED_NOT_COMPUTED] + [f"not met: {check}" for check in missing],
+            "raw_max_s": raw_max_s, "raw_max_run": raw_max_dir, "new_counted": len(counted),
+            "components": components}
+
+
 def mark_duplicates(baseline: list, candidate: list) -> list:
     """Every argument that is a streamed run already given (review F11
     MED-1): it shares a stream-identity component (`compare_evidence`) with
@@ -3470,6 +3548,10 @@ def compare_runs(baseline_dirs, candidate_dirs=(), candidate_switches=None) -> d
         cand = [run["metrics"].get(name) for run in candidate]
         known = [v for v, counted in zip(base, in_range) if counted and isinstance(v, (int, float))]
         item = {"metric": name, "baseline": base, "baseline_in_range": in_range, "candidate": cand}
+        # The NEW arm's own max, over its COUNTED runs (review F11 MED-5: the
+        # only "max" was the OLD baseline's).
+        new_known = [v for v, run in zip(cand, candidate) if run["validity"]["counted"] and isinstance(v, (int, float))]
+        item["candidate_max"] = max(new_known) if new_known else None
         if known:
             low, high = min(known), max(known)
             item.update({"mean": round(sum(known) / len(known), 4), "min": low, "max": high,
@@ -3549,7 +3631,10 @@ def compare_runs(baseline_dirs, candidate_dirs=(), candidate_switches=None) -> d
         "fidelity_not_judged": flagged(baseline + candidate, "not_a_pass"),
         "baseline_counted": len(counted),
         "candidates_counted": len(valid_candidates),
+        # C19 F8's noise estimate (N >= 3 a side). NOT the Walk 6 gate, which
+        # is `walk6_gate` alone (review F11 MED-5).
         "enough_runs": len(counted) >= 3 and (not candidate or len(valid_candidates) >= 3),
+        "walk6_gate": walk6_gate(candidate, len(counted)),
         # Per candidate run, every metric the baseline has and it lacks.
         # Not passing: a candidate is never judged on the metrics it is
         # missing.
@@ -3595,6 +3680,25 @@ def render_compare(result: dict) -> str:
     lines.append(f"**The W0 timing metric is `{result.get('w0_timing_metric', W0_TIMING_METRIC)}`**: Stop to the "
                  "replay client's receipt of the room's photos (`phone_photos_at`, review C24 HIGH-1). "
                  "`stop_to_store_photos_min`, the store's `updated_at`, is INFO.")
+    gate = result.get("walk6_gate")
+    if isinstance(gate, dict):
+        # THE ONLY place a Walk 6 gate verdict appears (review F11 MED-5).
+        lines.append("")
+        lines.append("## WALK6-GATE")
+        lines.append("")
+        lines.append("The only Walk 6 verdict this harness prints (manager rulings): >= 5 NEW distinct quiet replays, "
+                     "every one replay fidelity bar v3 PASS, the metric Stop -> the client's `phone_photos_at`, raw "
+                     "AND preselection-normalized MAX <= 9.0 min, against an OLD baseline with the same comparability "
+                     "key. Judged in seconds from each run's sealed records. Nothing else here is this gate: not "
+                     "`enough_runs` (C19 F8's N >= 3 noise estimate), not the OLD range, not a REPORT.md's 10-min "
+                     "PASS.")
+        lines.append("")
+        for component in gate.get("components") or []:
+            met = {True: "MET", False: "NOT MET", None: "-"}[component.get("met")]
+            lines.append(f"- {component['check']}: {component.get('value')}: {met}")
+        lines.append(f"- {gate.get('normalized')}")
+        lines.append("")
+        lines.append(f"**WALK6 GATE: {gate.get('result')}** -- " + "; ".join(gate.get("why") or []) + ".")
     if not result["enough_runs"]:
         lines.append("")
         counted_text = f"{result.get('baseline_counted')} of {len(result['baseline'])} baseline run(s) valid"
@@ -3602,7 +3706,7 @@ def render_compare(result: dict) -> str:
             counted_text += f", {result.get('candidates_counted')} of {len(result['candidate'])} candidate(s)"
         lines.append("**Fewer than 3 valid runs on a side: this is not a noise estimate (C19 F8 asks for N >= 3; "
                      "each counted run also needs full-walk, safety, client-photo, environment and proof evidence "
-                     f"plus replay-fidelity PASS): {counted_text}.**")
+                     f"plus replay-fidelity PASS): {counted_text}.** (The noise estimate's N, not the Walk 6 gate.)")
     duplicates = result.get("duplicates") or []
     if duplicates:
         lines.append("")
@@ -3713,10 +3817,13 @@ def render_compare(result: dict) -> str:
                  "client-photo proof, comparable): the old "
                  "path's own noise. A baseline run excluded above is not in the mean, min, max or spread; an "
                  "INVALID candidate's value is marked. `keyframe_accept_lag_s` is over ACCEPTED keyframes only; "
-                 "`recorder_stamp_*` are the recorder's post-reply stamps, not arrivals.")
+                 "`recorder_stamp_*` are the recorder's post-reply stamps, not arrivals. Columns are labelled by "
+                 "arm (review F11 MED-5): OLD = the counted baseline, NEW = the candidates; `NEW max` is over the "
+                 "COUNTED candidates. Neither is the Walk 6 gate (WALK6-GATE, above).")
     lines.append("")
-    lines.append("| Metric | Baseline mean | min | max | spread | Excluded baseline value(s) | Candidate | Flag |")
-    lines.append("|---|---|---|---|---|---|---|---|")
+    lines.append("| Metric | OLD (baseline) mean | OLD min | OLD max | OLD spread | Excluded OLD value(s) | "
+                 "NEW (candidate) values | NEW max (counted) | Flag |")
+    lines.append("|---|---|---|---|---|---|---|---|---|")
     invalid_dirs = {item["dir"] for item in invalid}
     w0_metric = result.get("w0_timing_metric", W0_TIMING_METRIC)
     for item in result["metrics"]:
@@ -3731,8 +3838,10 @@ def render_compare(result: dict) -> str:
         values = ", ".join(str(v) + (" (INVALID)" if directory in invalid_dirs else "")
                            for v, directory in zip(item["candidate"], result["candidate"]))
         name = f"{item['metric']} **(W0 timing)**" if item["metric"] == w0_metric else item["metric"]
+        new_max = item.get("candidate_max")
         lines.append(f"| {name} | {item.get('mean', '')} | {item.get('min', '')} | "
-                     f"{item.get('max', '')} | {item.get('spread', '')} | {dropped} | {values} | {flag} |")
+                     f"{item.get('max', '')} | {item.get('spread', '')} | {dropped} | {values} | "
+                     f"{'' if new_max is None else new_max} | {flag} |")
     lines.append("")
     return "\n".join(lines)
 
@@ -3801,7 +3910,9 @@ def main(argv=None) -> int:
         out.mkdir(parents=True, exist_ok=True)
         (out / "compare.json").write_text(json.dumps(result, indent=2, default=str), encoding="utf-8")
         (out / "COMPARE.md").write_text(render_compare(result), encoding="utf-8")
-        print(json.dumps({"compare": str(out / "compare.json"), "enough_runs": result["enough_runs"],
+        print(json.dumps({"compare": str(out / "compare.json"),
+                          "walk6_gate": f"WALK6 GATE: {result['walk6_gate']['result']} (COMPARE.md, WALK6-GATE)",
+                          "enough_runs": result["enough_runs"],
                           "not_comparable": result["comparability"]["not_comparable"],
                           "candidates_complete": result["candidates_complete"],
                           "excluded_from_baseline": result["excluded_from_baseline"],

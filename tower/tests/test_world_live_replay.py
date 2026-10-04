@@ -1255,8 +1255,8 @@ def _fake_run(directory, *, photos, lag_p95, sequence, horizons=(52,), fidelity=
                                "matched": 1, "source_only": 0, "replay_only": 0,
                                "source_duplicate_seq": 0},
         "label": directory.name,
-        "verdict": {"basis": "phone", "stop_to_room_with_photos_min": photos, "stop_to_phone_photos_min": photos,
-                    "stop_to_phone_photos_s": round(photos * 60, 3),
+        "verdict": {"basis": "phone", "stop_to_room_with_photos_min": round(photos, 2),
+                    "stop_to_phone_photos_min": round(photos, 2), "stop_to_phone_photos_s": round(photos * 60, 3),
                     "stop_to_store_photos_min": store_minutes,
                     "stop_to_settled_min": photos + 7},
          "tower_walk": {"captures": [tower_capture], "stop": timeline["stop"],
@@ -1479,8 +1479,11 @@ def test_phone_photos_at_is_the_clients_receive_time_not_the_stores(tmp_path):
     assert (metrics["stop_to_phone_photos_min"], metrics["stop_to_store_photos_min"]) == (10.08, 10.0)
     assert "stop_to_room_with_photos_min" not in metrics
     markdown = report.render_markdown(built)
-    assert ("1. **Stop to room with photos, as the replay client received it (`phone_photos_at`): 10.08 min** "
-            "against the 10-min hard maximum: **FAIL**.") in markdown
+    # F11 MED-5: the per-run verdict says which bar it is, in seconds, and that it is not the Walk 6 gate.
+    assert ("1. **Stop to room with photos, as the replay client received it (`phone_photos_at`): 10.08 min "
+            "(604.998 s)** against the 10-min hard maximum: **FAIL** (<= 10-min hard max, judged in seconds; NOT the "
+            "Walk 6 gate (>= 5 NEW runs, raw and normalized max <= 9.0 min), which only --compare's WALK6-GATE "
+            "section judges).") in markdown
     assert "INFO: the store wrote the room appearance `ok` at +10.0 min (not the W0 measure)" in markdown
 
 
@@ -4311,3 +4314,99 @@ def test_the_bar_version_is_corroborated_by_the_towers_own_stream_start(run_star
     evidence = report.start_evidence({} if run_start is None else {"started_at": run_start},
                                      {} if client_start is None else {"started_at": client_start}, tower)
     assert (evidence["version"], evidence["corroborated"]) == expected, evidence
+
+
+# MED-5: the WALK6-GATE section is the only Walk 6 verdict; bars are judged in seconds.
+
+
+def _new_v3(tmp_path, minutes):
+    names = []
+    for index, value in enumerate(minutes):
+        _fake_run(tmp_path / f"new{index}", photos=value, lag_p95=6.8, sequence=SAME, version="v3",
+                  run_started=AFTER + index)
+        names.append(tmp_path / f"new{index}")
+    return names
+
+
+def _gate(result) -> dict:
+    return {component["check"].split(" (")[0]: component for component in result["walk6_gate"]["components"]}
+
+
+def test_three_counted_new_runs_are_not_a_walk6_go_and_the_gate_says_not_evaluated(tmp_path):
+    """F11 MED-5 (both reviews): `enough_runs` turned true at 3 and nothing printed the gate."""
+    olds = _three_old(tmp_path)
+    out = tmp_path / "cmp"
+    assert report.main(["--out", str(out), "--compare", *map(str, olds),
+                        "--candidate", *map(str, _new_v3(tmp_path, (8.0, 8.5, 8.9)))]) == 0
+    result = json.loads((out / "compare.json").read_text(encoding="utf-8"))
+    assert result["enough_runs"] is True and result["walk6_gate"]["result"] == "NOT EVALUATED"
+    gate = _gate(result)
+    assert (gate["NEW distinct counted runs"]["value"], gate["NEW distinct counted runs"]["met"]) == (3, False)
+    assert gate["every counted NEW run judged by fidelity bar v3 and PASS"]["met"] is True
+    assert gate["raw max, Stop -> client phone_photos_at"]["value_s"] == 534.0
+    markdown = (out / "COMPARE.md").read_text(encoding="utf-8")
+    assert "## WALK6-GATE" in markdown and "- normalized: NOT COMPUTED (method not ratified)" in markdown
+    assert ("**WALK6 GATE: NOT EVALUATED** -- normalized: NOT COMPUTED (method not ratified); not met: NEW distinct "
+            "counted runs (>= 5 required).") in markdown
+    assert markdown.count("WALK6 GATE:") == 1 and markdown.index("## WALK6-GATE") < markdown.index("## Metrics")
+
+
+def test_five_good_new_runs_still_do_not_pass_the_gate_without_a_normalization_method(tmp_path):
+    """Never PASS without the normalized max: five NEW v3 PASS runs under 9.0 min raw are NOT EVALUATED."""
+    olds = _three_old(tmp_path)
+    result = report.compare_runs(olds, _new_v3(tmp_path, (8.0, 8.2, 8.4, 8.6, 8.8)))
+    gate = result["walk6_gate"]
+    assert result["candidates_counted"] == 5 and gate["result"] == "NOT EVALUATED"
+    assert [component["met"] for component in gate["components"]] == [True, True, True, True, None, None]
+    assert gate["why"] == ["normalized: NOT COMPUTED (method not ratified)"]
+    assert "**WALK6 GATE: NOT EVALUATED** -- normalized: NOT COMPUTED (method not ratified)." in \
+        report.render_compare(result)
+
+
+def test_the_gate_counts_a_new_run_once_and_judges_v3_only(tmp_path):
+    olds = _three_old(tmp_path)
+    news = _new_v3(tmp_path, (8.0, 8.1, 8.2, 8.3))
+    _fake_run(tmp_path / "new-v1", photos=8.4, lag_p95=6.8, sequence=SAME, version="v1", run_started=BEFORE)
+    result = report.compare_runs(olds, [*news, news[0], tmp_path / "new-v1"])     # 6 arguments, 5 distinct
+    gate = _gate(result)
+    assert gate["NEW distinct counted runs"]["value"] == 5
+    assert gate["every counted NEW run judged by fidelity bar v3 and PASS"]["value"] == "4 of 5"
+    assert gate["every counted NEW run judged by fidelity bar v3 and PASS"]["met"] is False
+
+
+def test_the_raw_max_is_judged_in_seconds_not_rounded_minutes(tmp_path):
+    """F11 MED-5 (adversarial): 540.25 s read 9.0 min after the 0.01-min rounding."""
+    olds = _three_old(tmp_path)
+    result = report.compare_runs(olds, _new_v3(tmp_path, (8.0, 540.25 / 60.0)))
+    photos = {m["metric"]: m for m in result["metrics"]}[report.W0_TIMING_METRIC]
+    assert photos["candidate_max"] == 9.0                                     # the minutes column rounds...
+    raw = _gate(result)["raw max, Stop -> client phone_photos_at"]
+    assert raw["value_s"] == 540.25 and raw["met"] is False                   # ...the gate does not
+    assert raw["value"].startswith("540.250 s = 9.0042 min")
+
+
+def test_the_per_run_hard_maximum_is_judged_in_seconds_and_names_its_bar(tmp_path):
+    """A 600.25 s run read 10.0 min and PASSED the 10-min hard maximum; a 9.5-min run's PASS read like
+    the Walk 6 GO."""
+    over = _built(_coherent_run(tmp_path / "over", photos_s=600.25))
+    assert over["verdict"]["stop_to_phone_photos_min"] == 10.0 and over["verdict"]["result"] == "FAIL"
+    assert over["verdict"]["stop_to_room_with_photos_s"] == 600.25 and over["verdict"]["hard_max_s"] == 600.0
+    run_dir = _coherent_run(tmp_path / "nine-and-a-half", photos_s=570.0)
+    markdown = (run_dir / "REPORT.md").read_text(encoding="utf-8")
+    assert ("9.5 min (570.0 s)** against the 10-min hard maximum: **PASS** (<= 10-min hard max, judged in "
+            "seconds; NOT the Walk 6 gate") in markdown
+    assert "Proof: eligible to be counted by --compare (not a Walk 6 verdict)." in markdown
+    assert "WALK6 GATE" not in markdown
+
+
+def test_the_compare_max_columns_are_labelled_by_arm(tmp_path):
+    """F11 MED-5 (adversarial): with OLD at 47.0-47.2 and NEW at 8, 9, 10 min the only max printed was 47.2."""
+    olds = _three_old(tmp_path, photos=(47.0, 47.1, 47.2))
+    result = report.compare_runs(olds, _new_v3(tmp_path, (8.0, 9.0, 10.0)))
+    photos = {m["metric"]: m for m in result["metrics"]}[report.W0_TIMING_METRIC]
+    assert (photos["max"], photos["candidate_max"]) == (47.2, 10.0)
+    markdown = report.render_compare(result)
+    assert ("| Metric | OLD (baseline) mean | OLD min | OLD max | OLD spread | Excluded OLD value(s) | "
+            "NEW (candidate) values | NEW max (counted) | Flag |") in markdown
+    assert "| stop_to_phone_photos_min **(W0 timing)** | 47.1 | 47.0 | 47.2 | 0.2 |  | 8.0, 9.0, 10.0 | 10.0 |" \
+        in markdown
