@@ -35,6 +35,9 @@ import time
 from dataclasses import dataclass, field
 
 from tower.storage import (
+    REPLACE_BACKOFF_MAX_S,
+    REPLACE_BACKOFF_S,
+    REPLACE_BUDGET_S,
     append_jsonl,
     new_id,
     read_json_closed,
@@ -92,6 +95,30 @@ DEFAULT_FOLLOW_POLL_SECONDS = 0.25
 DEFAULT_MAX_IDLE_POLLS = int(
     IDLE_FOLLOW_TIMEOUT_SECONDS / DEFAULT_FOLLOW_POLL_SECONDS
 )
+
+# How long a STRICT manifest read -- a soft-stop decision about whether a
+# recorded backlog may be discarded -- keeps retrying an unreadable
+# `capture.json` before it gives up and raises, and how it paces the tries.
+#
+# 2 s with 5 ms -> 50 ms doubling backoff: the WRITER's numbers for this very
+# file, on purpose. The recorder closes a capture with `write_json_atomic`,
+# whose `replace_with_retry` already waits up to `REPLACE_BUDGET_S` for a
+# reader to let go of the destination (`storage.py`, sized from the
+# 2026-09-06 field failure: a reader descheduled under solver load held a
+# file well past 60 ms). A reader that gave up sooner than the writer would
+# wait on the same file is the asymmetric one. The adversarial review of
+# 8ede341 (MED-1) measured what the old 3 x 10 ms (~20 ms) cost: a real
+# 150 ms Windows sharing violation on the closed manifest -- the shape of an
+# AV scanner or indexer opening a freshly replaced file -- turned a normal
+# close into an `error` world with 2,392 recorded frames never built.
+#
+# Only the soft-stop decision waits: a hard stop never reads the manifest,
+# and a readable manifest returns on the first try. There is no field
+# measurement of how long such a lock lasts; 2 s is the Tower's existing
+# bound for this lock class, not a new number.
+MANIFEST_READ_BUDGET_S = REPLACE_BUDGET_S
+MANIFEST_READ_BACKOFF_S = REPLACE_BACKOFF_S
+MANIFEST_READ_BACKOFF_MAX_S = REPLACE_BACKOFF_MAX_S
 
 logger = logging.getLogger(__name__)
 
@@ -629,9 +656,7 @@ class CaptureFollower:
         """True once the recorder has written an end reason."""
         return self.end_reason() is not None
 
-    def end_reason(
-        self, *, retries: int = 0, raise_on_unreadable: bool = False
-    ) -> str | None:
+    def end_reason(self, *, strict: bool = False) -> str | None:
         """WHY the capture ended, or None while it is still open.
 
         Carried rather than collapsed into `is_closed`, because the three
@@ -641,26 +666,48 @@ class CaptureFollower:
         walking -- and a builder that treats that as an ordinary end
         finalises a world at the bound and says nothing.
 
-        The default never waits. A caller deciding whether a soft stop may
-        discard a recorded backlog can retry a transient manifest replace.
-        A readable open manifest still returns immediately. A caller making
-        a soft-stop decision may ask to raise after the retries: otherwise a
-        read failure is indistinguishable from a still-open capture.
+        The default never waits: an unreadable manifest is "still open",
+        and the next poll asks again.
+
+        `strict` is for a caller deciding whether a soft stop may discard a
+        recorded backlog. An unreadable manifest is retried, with backoff,
+        for `MANIFEST_READ_BUDGET_S` -- a budget of TIME, not of attempts,
+        because what it waits out is a lock held for a duration -- and then
+        RAISES: otherwise a read failure is indistinguishable from a
+        still-open capture, and the backlog would be cut on a guess. A
+        readable manifest, open or closed, returns on the first read.
+
+        A verified normal close is remembered for this directory and
+        answers a LATER unreadable read, never a readable one: the manifest
+        on disk always wins when it can be read.
+
+        A MISSING manifest is not retried and does not raise. The recorder
+        writes one before its first frame and only ever replaces it
+        atomically, so the name never goes absent mid-write: a directory
+        without one is not a Tower recording, and reads as "still open",
+        exactly as it did before 8ede341.
         """
         path = self._directory / CAPTURE_FILENAME
-        retries = max(0, retries)
-        for attempt in range(retries + 1):
+        deadline = None
+        backoff = MANIFEST_READ_BACKOFF_S
+        while True:
             try:
                 manifest = read_json_closed(path)
+            except FileNotFoundError:
+                return END_REASON_STOP if self._confirmed_normal_stop else None
             except (OSError, ValueError):
-                if attempt == retries:
-                    if self._confirmed_normal_stop:
-                        return END_REASON_STOP
-                    if raise_on_unreadable:
-                        raise
+                if self._confirmed_normal_stop:
+                    return END_REASON_STOP
+                if not strict:
                     # An unreadable manifest is not proof of a closed capture.
                     return None
-                time.sleep(0.01)
+                now = time.monotonic()
+                if deadline is None:
+                    deadline = now + MANIFEST_READ_BUDGET_S
+                if now >= deadline:
+                    raise
+                time.sleep(min(backoff, deadline - now))
+                backoff = min(backoff * 2, MANIFEST_READ_BACKOFF_MAX_S)
                 continue
             if manifest.get("ended_at") is None:
                 return None
@@ -668,7 +715,6 @@ class CaptureFollower:
             if reason == END_REASON_STOP:
                 self._confirmed_normal_stop = True
             return reason
-        return None
 
     def unobserved_records(self) -> int | None:
         """Recorded frames of the bound capture its consumer never took.

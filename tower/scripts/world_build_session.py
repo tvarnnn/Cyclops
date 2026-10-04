@@ -494,6 +494,10 @@ class StopRequest:
         should not discard them. A disconnect remains stoppable so the
         reconnect wait is not prolonged; a backlog it leaves unread is
         labelled `interrupted` after the loop, not drained (see `main`).
+
+        The manifest read is strict: an unreadable `capture.json` is waited
+        out for `MANIFEST_READ_BUDGET_S` and then raises, rather than being
+        taken for an open capture and cutting the backlog on a guess.
         """
         if self.hard:
             return True
@@ -504,9 +508,7 @@ class StopRequest:
         follower = handle.get("follower")
         if (
             follower is not None
-            and follower.end_reason(
-                retries=2, raise_on_unreadable=True
-            ) == END_REASON_CAPTURE_STOP
+            and follower.end_reason(strict=True) == END_REASON_CAPTURE_STOP
         ):
             # Normal close cannot reconnect. Keep draining even if a later
             # manifest read is transiently unavailable.

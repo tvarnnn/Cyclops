@@ -2,8 +2,10 @@
 
 import json
 import logging
+import os
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -15,6 +17,41 @@ from scripts.world_build_session import StopRequest, first_observed_frame, follo
 from tower.capture import CaptureFollower, CaptureRecorder
 from tower.capture_workers import CaptureWorkerSupervisor, WorkerSpec
 from tower.world_builder.store import WorldStore
+
+# A short budget for the fault-injection tests, so a fault that outlasts it
+# costs a fraction of a second. The tests with a REAL lock use the shipped
+# `MANIFEST_READ_BUDGET_S`.
+SHORT_BUDGET_S = 0.25
+
+
+def _unreadable_for(monkeypatch, path, seconds, error=OSError):
+    """Make `path` unreadable for `seconds` of wall time once armed.
+
+    A lock is held for a DURATION, so the fault is one: it says nothing
+    about how many reads a reader makes in that time, and a reader that
+    retries more or less often meets the same fault (adversarial review
+    LOW-3: the old "fail the first 3 reads" broke on a more tolerant policy
+    and let a reader that never backed off pass).
+    """
+    original_read = capture_module.read_json_closed
+    fault = {"until": None, "failures": 0}
+
+    def arm():
+        fault["until"] = time.monotonic() + seconds
+
+    def read(candidate):
+        if (
+            candidate == path
+            and fault["until"] is not None
+            and time.monotonic() < fault["until"]
+        ):
+            fault["failures"] += 1
+            raise error(f"{candidate.name} is held by another process")
+        return original_read(candidate)
+
+    monkeypatch.setattr(capture_module, "read_json_closed", read)
+    fault["arm"] = arm
+    return fault
 
 
 @pytest.fixture
@@ -119,16 +156,8 @@ def test_transient_manifest_read_at_soft_stop_does_not_truncate(
     manifest.write_text(
         json.dumps({"ended_at": None, "end_reason": None}), encoding="utf-8"
     )
-    original_read = capture_module.read_json_closed
-    fault = {"armed": False, "raised": False}
-
-    def read_with_one_replace_failure(path):
-        if path == manifest and fault["armed"] and not fault["raised"]:
-            fault["raised"] = True
-            raise ValueError("manifest caught during atomic replacement")
-        return original_read(path)
-
-    monkeypatch.setattr(capture_module, "read_json_closed", read_with_one_replace_failure)
+    # Unreadable for 100 ms from the soft stop: well inside the budget.
+    fault = _unreadable_for(monkeypatch, manifest, 0.1, error=ValueError)
     stop = StopRequest()
     handle = {}
     should_stop = lambda: stop.asked_for_capture(handle)
@@ -150,10 +179,10 @@ def test_transient_manifest_read_at_soft_stop_does_not_truncate(
                 json.dumps({"ended_at": 3197.0, "end_reason": "stop"}),
                 encoding="utf-8",
             )
-            fault["armed"] = True
+            fault["arm"]()
             stop.request(StopRequest.SOFT, "test-stdin-close")
 
-    assert fault["raised"]
+    assert fault["failures"] >= 1
     assert len(observed) == 3197
     assert observed[-1] == 6477
 
@@ -171,21 +200,19 @@ def test_transient_manifest_read_at_soft_stop_does_not_truncate(
 def test_persistent_manifest_read_failure_cannot_publish_partial_complete(
     recorded_capture, tmp_path, monkeypatch, read_error
 ):
-    """A healed post-loop read must not turn a truncated run into Saved."""
+    """A healed post-loop read must not turn a truncated run into Saved.
+
+    The manifest stays unreadable for longer than the read budget and then
+    heals, so the post-loop read sees a clean `stop`.
+    """
     manifest = recorded_capture / "capture.json"
     manifest.write_text(
         json.dumps({"ended_at": None, "end_reason": None}), encoding="utf-8"
     )
-    original_read = capture_module.read_json_closed
-    fault = {"armed": False, "remaining": 3}
-
-    def read_with_three_failures(path):
-        if path == manifest and fault["armed"] and fault["remaining"]:
-            fault["remaining"] -= 1
-            raise read_error("closed manifest temporarily unreadable")
-        return original_read(path)
-
-    monkeypatch.setattr(capture_module, "read_json_closed", read_with_three_failures)
+    monkeypatch.setattr(capture_module, "MANIFEST_READ_BUDGET_S", SHORT_BUDGET_S)
+    fault = _unreadable_for(
+        monkeypatch, manifest, SHORT_BUDGET_S + 0.5, error=read_error
+    )
     stop_holder = {}
     monkeypatch.setattr(
         builder_script.StopRequest,
@@ -204,7 +231,7 @@ def test_persistent_manifest_read_failure_cannot_publish_partial_complete(
                 json.dumps({"ended_at": 3197.0, "end_reason": "stop"}),
                 encoding="utf-8",
             )
-            fault["armed"] = True
+            fault["arm"]()
             stop_holder["request"].request(StopRequest.SOFT, "test-soft-stop")
         return outcome
 
@@ -221,7 +248,8 @@ def test_persistent_manifest_read_failure_cannot_publish_partial_complete(
     )
 
     assert observed == 805
-    assert fault["remaining"] == 0
+    assert fault["failures"] >= 2
+    time.sleep(max(0.0, fault["until"] - time.monotonic()))
     # The manifest is healthy again. The old post-loop read used this to
     # relabel 805/3197 observations as an ordinary, complete capture stop.
     assert capture_module.read_json_closed(manifest)["end_reason"] == "stop"
@@ -235,40 +263,43 @@ def test_persistent_manifest_read_failure_cannot_publish_partial_complete(
     assert session.finalization["state"] == "interrupted"
 
 
+@pytest.mark.parametrize("read_error", [OSError, ValueError])
 def test_manifest_failure_before_first_frame_records_error_session(
-    recorded_capture, tmp_path, monkeypatch
+    recorded_capture, tmp_path, monkeypatch, caplog, read_error
 ):
+    """Both read errors, because both are caught (standard review M15).
+
+    A `ValueError` is a manifest parsed as truncated JSON; narrowing the
+    catch to `OSError` let it escape `main()` before any session existed --
+    the very bug 8ede341 fixed for `OSError`.
+    """
     manifest = recorded_capture / "capture.json"
     manifest.write_text(
         json.dumps({"ended_at": 3197.0, "end_reason": "stop"}), encoding="utf-8"
     )
-    original_read = capture_module.read_json_closed
-    fault = {"remaining": 3}
-
-    def read_with_three_failures(path):
-        if path == manifest and fault["remaining"]:
-            fault["remaining"] -= 1
-            raise OSError("normal-close manifest temporarily unavailable")
-        return original_read(path)
-
-    monkeypatch.setattr(capture_module, "read_json_closed", read_with_three_failures)
+    monkeypatch.setattr(capture_module, "MANIFEST_READ_BUDGET_S", SHORT_BUDGET_S)
+    fault = _unreadable_for(
+        monkeypatch, manifest, SHORT_BUDGET_S + 0.5, error=read_error
+    )
+    fault["arm"]()
 
     def install_and_stop(self, **_kwargs):
         self.request(StopRequest.SOFT, "test-pre-first-frame-stop")
 
     monkeypatch.setattr(builder_script.StopRequest, "install", install_and_stop)
     root = tmp_path / "worlds"
-    exit_code = builder_script.main(
-        [
-            "--follow-capture", str(recorded_capture),
-            "--root", str(root),
-            "--poll-seconds", "0.01",
-            "--max-idle-polls", "2",
-            "--format", "json",
-        ]
-    )
+    with caplog.at_level(logging.INFO, logger="tower.world_build_session"):
+        exit_code = builder_script.main(
+            [
+                "--follow-capture", str(recorded_capture),
+                "--root", str(root),
+                "--poll-seconds", "0.01",
+                "--max-idle-polls", "2",
+                "--format", "json",
+            ]
+        )
 
-    assert fault["remaining"] == 0
+    assert fault["failures"] >= 2
     assert exit_code == 1
     store = WorldStore(root)
     world_id = store.list_world_ids()[0]
@@ -277,6 +308,7 @@ def test_manifest_failure_before_first_frame_records_error_session(
     assert session.frames_observed == 0
     assert session.end_reason == "error"
     assert session.finalization["state"] == "interrupted"
+    assert "failed before its first frame" in caplog.text
 
 
 def test_verified_normal_close_finishes_when_later_manifest_reads_fail(
@@ -998,3 +1030,212 @@ def test_caught_up_stop_orders_are_unchanged_from_the_base(
     if expected_log is not None:
         assert expected_log in caplog.text
     assert "were never observed" not in caplog.text
+
+
+# ---------------------------------------------------------------------------
+# The read budget is TIME, not attempts (adversarial review MED-1, LOW-3).
+# ---------------------------------------------------------------------------
+
+
+def _closed_directory(tmp_path, end_reason="stop", name="unit"):
+    directory = tmp_path / name
+    directory.mkdir()
+    _write_manifest(directory, end_reason)
+    return directory
+
+
+def test_strict_read_waits_out_a_short_lock_with_backoff(tmp_path, monkeypatch):
+    directory = _closed_directory(tmp_path)
+    fault = _unreadable_for(monkeypatch, directory / "capture.json", 0.15)
+    follower = CaptureFollower(directory)
+    fault["arm"]()
+    started = time.monotonic()
+
+    assert follower.end_reason(strict=True) == "stop"
+    assert time.monotonic() - started >= 0.15
+    # Backed off, not spinning: 5 ms doubling to 50 ms is ~7 reads in
+    # 150 ms. A reader with no sleep makes thousands against the same lock.
+    assert 2 <= fault["failures"] <= 20, fault["failures"]
+
+
+def test_strict_read_gives_up_after_its_time_budget(tmp_path, monkeypatch):
+    directory = _closed_directory(tmp_path)
+    monkeypatch.setattr(capture_module, "MANIFEST_READ_BUDGET_S", 0.3)
+    fault = _unreadable_for(monkeypatch, directory / "capture.json", 60.0)
+    follower = CaptureFollower(directory)
+    fault["arm"]()
+    started = time.monotonic()
+
+    with pytest.raises(OSError):
+        follower.end_reason(strict=True)
+    elapsed = time.monotonic() - started
+    assert 0.3 <= elapsed < 0.8, elapsed
+    assert fault["failures"] <= 30, fault["failures"]
+
+
+def test_default_read_never_waits(tmp_path, monkeypatch):
+    directory = _closed_directory(tmp_path)
+    fault = _unreadable_for(monkeypatch, directory / "capture.json", 60.0)
+    follower = CaptureFollower(directory)
+    fault["arm"]()
+    started = time.monotonic()
+
+    assert follower.end_reason() is None
+    assert time.monotonic() - started < 0.05
+    assert fault["failures"] == 1
+
+
+def test_a_missing_manifest_reads_as_open_without_waiting(tmp_path):
+    """Standard LOW-2 / adversarial LOW-1: no `capture.json` is not a
+    capture caught mid-replace (the recorder writes one first and replaces
+    it atomically), so it is "still open", as before 8ede341 -- no wait, no
+    raise."""
+    directory = tmp_path / "bare"
+    directory.mkdir()
+    started = time.monotonic()
+
+    assert CaptureFollower(directory).end_reason(strict=True) is None
+    assert time.monotonic() - started < 0.05
+
+
+def test_soft_stop_on_a_directory_without_a_manifest_is_interrupted_not_error(
+    recorded_capture, tmp_path, monkeypatch
+):
+    assert not (recorded_capture / "capture.json").exists()
+    _hook(
+        monkeypatch,
+        lambda n, stop: stop.request(StopRequest.SOFT, "test") if n == 805 else None,
+    )
+    exit_code, session = _run_session(
+        recorded_capture, tmp_path / "worlds", max_idle_polls="5"
+    )
+
+    assert exit_code == 0
+    assert session.frames_observed == 805
+    assert session.end_reason == "interrupted"
+
+
+# ---------------------------------------------------------------------------
+# A REAL lock, not a monkeypatch: what an AV scanner or the indexer does to
+# a freshly replaced file. The adversarial review's P6 held one for 150 ms
+# and 8ede341 ended in `error` with 2,392 recorded frames never built.
+# ---------------------------------------------------------------------------
+
+GENERIC_READ = 0x80000000
+OPEN_EXISTING = 3
+
+
+def _hold(path, seconds, kind):
+    """Hold `path` for real for `seconds`; returns the releasing timer."""
+    if kind == "exclusive-open":
+        import ctypes
+        from ctypes import wintypes
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.CreateFileW.restype = wintypes.HANDLE
+        kernel32.CreateFileW.argtypes = [
+            wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, wintypes.LPVOID,
+            wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE,
+        ]
+        kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+        # Share mode 0: nobody else may open it at all.
+        handle = kernel32.CreateFileW(
+            str(path), GENERIC_READ, 0, None, OPEN_EXISTING, 0, None
+        )
+        if handle in (None, wintypes.HANDLE(-1).value):
+            raise OSError(ctypes.get_last_error(), "could not take the lock")
+
+        def release():
+            kernel32.CloseHandle(handle)
+    else:
+        import msvcrt
+
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_BINARY", 0))
+        length = max(1, os.fstat(fd).st_size)
+        msvcrt.locking(fd, msvcrt.LK_NBLCK, length)
+
+        def release():
+            os.lseek(fd, 0, os.SEEK_SET)
+            msvcrt.locking(fd, msvcrt.LK_UNLCK, length)
+            os.close(fd)
+
+    timer = threading.Timer(seconds, release)
+    timer.start()
+    return timer
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows sharing and lock semantics")
+@pytest.mark.parametrize("kind", ["exclusive-open", "byte-range-lock"])
+def test_a_real_300ms_lock_at_soft_stop_still_drains(
+    recorded_capture, tmp_path, monkeypatch, kind
+):
+    manifest = recorded_capture / "capture.json"
+    _write_manifest(recorded_capture, None)
+    original_read = capture_module.read_json_closed
+    attempts = {"during_hold": 0, "errors": []}
+    held = {"timer": None}
+
+    def counting_read(path):
+        timer = held["timer"]
+        if path == manifest and timer is not None and timer.is_alive():
+            attempts["during_hold"] += 1
+        try:
+            return original_read(path)
+        except OSError as exc:
+            attempts["errors"].append(type(exc).__name__)
+            raise
+
+    monkeypatch.setattr(capture_module, "read_json_closed", counting_read)
+
+    def on_observe(n, stop):
+        if n == 805:
+            _write_manifest(recorded_capture, "stop")
+            held["timer"] = _hold(manifest, 0.3, kind)
+            with pytest.raises(PermissionError):
+                original_read(manifest)
+            stop.request(StopRequest.SOFT, "test")
+
+    _hook(monkeypatch, on_observe)
+    try:
+        exit_code, session = _run_session(recorded_capture, tmp_path / "worlds")
+    finally:
+        held["timer"].join()
+
+    assert "PermissionError" in attempts["errors"]
+    assert attempts["during_hold"] <= 20, attempts
+    assert exit_code == 0
+    assert session.frames_observed == TOTAL
+    assert session.end_reason == "stop"
+    assert session.finalization["state"] == "complete"
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows sharing semantics")
+def test_a_real_lock_longer_than_the_budget_ends_honestly(
+    recorded_capture, tmp_path, monkeypatch
+):
+    """Held past the shipped `MANIFEST_READ_BUDGET_S`: fail closed."""
+    manifest = recorded_capture / "capture.json"
+    _write_manifest(recorded_capture, None)
+    held = {"timer": None}
+
+    def on_observe(n, stop):
+        if n == 805:
+            _write_manifest(recorded_capture, "stop")
+            held["timer"] = _hold(
+                manifest, capture_module.MANIFEST_READ_BUDGET_S + 0.5, "exclusive-open"
+            )
+            stop.request(StopRequest.SOFT, "test")
+
+    _hook(monkeypatch, on_observe)
+    started = time.monotonic()
+    try:
+        exit_code, session = _run_session(recorded_capture, tmp_path / "worlds")
+    finally:
+        held["timer"].join()
+
+    assert time.monotonic() - started >= capture_module.MANIFEST_READ_BUDGET_S
+    assert exit_code == 1
+    assert session.frames_observed == 805
+    assert session.end_reason == "error"
+    assert session.finalization["state"] == "interrupted"
+    assert not _labelled_finished(session)
