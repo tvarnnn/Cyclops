@@ -2086,9 +2086,16 @@ def main(argv=None) -> int:
                 else "an unreadable size",
                 first.source_seq,
             )
-        intrinsics = resolve_intrinsics(
-            intrinsics_store, observed_size, frame_source=frame_source
-        )
+        if capture_start_error is not None:
+            # The session below opens only to record the error durably.
+            # `resolve_intrinsics` would add a warning about the frame size
+            # and the unposed backend, and neither applies to a session
+            # that will never observe a frame (standard review, LOW-4).
+            intrinsics = CameraIntrinsics.unknown()
+        else:
+            intrinsics = resolve_intrinsics(
+                intrinsics_store, observed_size, frame_source=frame_source
+            )
     else:
         observed_size = observed_size_from_frames(args.frames)
         intrinsics = resolve_intrinsics(

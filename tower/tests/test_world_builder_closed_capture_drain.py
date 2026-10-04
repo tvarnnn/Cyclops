@@ -308,7 +308,10 @@ def test_manifest_failure_before_first_frame_records_error_session(
     assert session.frames_observed == 0
     assert session.end_reason == "error"
     assert session.finalization["state"] == "interrupted"
+    # The error is what the log says, not a frame-size miss (standard review
+    # LOW-4): no lookup was made, because no frame was ever going to come.
     assert "failed before its first frame" in caplog.text
+    assert "could not observe the frame resolution" not in caplog.text
 
 
 def test_verified_normal_close_finishes_when_later_manifest_reads_fail(
