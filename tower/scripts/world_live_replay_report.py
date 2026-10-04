@@ -1933,6 +1933,51 @@ def _streamed(client: dict) -> bool:
     return isinstance(sent, int) and not isinstance(sent, bool) and sent > 0
 
 
+def _guard_cadence() -> tuple:
+    """(every, timeout) of the client's :8000 guard: `ReplayOptions.live_guard_every`
+    (no CLI changes it) and `LIVE_GUARD_TIMEOUT_S`."""
+    from scripts.world_live_replay import LIVE_GUARD_TIMEOUT_S, ReplayOptions  # noqa: PLC0415
+
+    return ReplayOptions.live_guard_every, LIVE_GUARD_TIMEOUT_S
+
+
+# Slack on top of one guard interval (every + timeout) before a poll is late.
+GUARD_SLACK_S = 5.0
+
+
+def guard_coverage(client: dict) -> dict | None:
+    """Did the client's :8000 guard keep polling from its start through the
+    settle (review F11 adversarial LOW-7)? Its record keeps the poll count and
+    the last probe (F11); a guard that stopped after its first read rendered
+    Environment PASS. Judged for a settled stream only (nothing else is proof):
+      * the last probe at most one interval (every + timeout + slack) before
+        the settle ended (`settle.settled_at`);
+      * at least one poll per interval from the client's start to that probe.
+    The record keeps state CHANGES, not every poll time, so a stall that the
+    count still covers on average is not visible here; the guard itself aborts
+    the run on a live walk."""
+    if client.get("outcome") != "settled" or not _streamed(client) or client.get("live_guard") is False:
+        return None
+    every, timeout = _guard_cadence()
+    interval = every + timeout + GUARD_SLACK_S
+    watch = client.get("live_tower_watch") if isinstance(client.get("live_tower_watch"), dict) else {}
+    polls, last = watch.get("poll_count"), watch.get("last_probe_at")
+    started = client.get("started_at")
+    settled = (client.get("settle") or {}).get("settled_at") if isinstance(client.get("settle"), dict) else None
+    check = ":8000 guard coverage (client): polls from its start through the settle"
+    required = f"a poll at least every {interval:g} s on average, the last within {interval:g} s of the settle"
+    numbers = (last, started, settled)
+    if type(polls) is not int or not all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in numbers):
+        return {"check": check, "required": required, "result": "FAIL",
+                "value": "NOT ON RECORD: the client's poll_count, last_probe_at, started_at or settle.settled_at"}
+    needed = max(1, int((last - started) // interval))
+    tail = settled - last
+    value = (f"{polls} poll(s) from {_clock(started)} to {_clock(last)} (at least {needed} needed); the last "
+             f"{tail:.1f} s before the settle")
+    return {"check": check, "value": value, "required": required,
+            "result": "PASS" if polls >= needed and tail <= interval else "FAIL"}
+
+
 def _startup_watch_complete(run: dict | None) -> bool:
     watch = (run or {}).get("live_tower_watch_startup")
     polls = watch.get("poll_count") if isinstance(watch, dict) else None
@@ -1987,6 +2032,9 @@ def live_environment(*, client: dict, run: dict | None) -> dict:
                  "required": "idle or down throughout; an isolated unknown tolerated", "result": "FAIL"}]
     else:
         rows = [_guard_row(":8000 during the run", watch, client.get("aborted"))]
+    coverage = guard_coverage(client)
+    if coverage is not None:
+        rows.append(coverage)
     startup = (run or {}).get("live_tower_watch_startup")
     if _startup_watch_complete(run):
         aborted = (run or {}).get("aborted")

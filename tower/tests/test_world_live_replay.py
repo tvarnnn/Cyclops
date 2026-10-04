@@ -4410,3 +4410,284 @@ def test_the_compare_max_columns_are_labelled_by_arm(tmp_path):
             "NEW (candidate) values | NEW max (counted) | Flag |") in markdown
     assert "| stop_to_phone_photos_min **(W0 timing)** | 47.1 | 47.0 | 47.2 | 0.2 |  | 8.0, 9.0, 10.0 | 10.0 |" \
         in markdown
+
+
+# Adversarial LOW-7: the client guard's coverage is judged.
+
+
+@pytest.mark.parametrize("polls, last_before_settle, result", [
+    (None, None, "PASS"),          # the fixture's: every ~10 s, the last 4 s before the settle
+    (1, None, "FAIL"),             # one poll for the whole run
+    (None, 30.0, "FAIL"),          # stopped 30 s before the settle
+])
+def test_a_client_guard_that_stopped_polling_fails_the_environment(tmp_path, polls, last_before_settle, result):
+    """F11 adversarial LOW-7: poll_count 1 and last_probe_at at the client's start rendered
+    Environment PASS and counted."""
+    settled = STOP3 + 480.0 + 120.0
+    run_dir = _coherent_run(tmp_path / "r", guard_polls=polls,
+                            guard_last=None if last_before_settle is None else settled - last_before_settle)
+    environment = _built(run_dir)["live_safety"]["environment"]
+    row = next(r for r in environment["rows"] if r["check"].startswith(":8000 guard coverage (client)"))
+    assert row["result"] == result and environment["result"] == result
+    assert _counted(run_dir)["counted"] is (result == "PASS")
+
+
+def test_guard_coverage_is_judged_only_for_a_settled_guarded_stream():
+    base = {"outcome": "settled", "stream": {"frames_sent": 3}, "started_at": 0.0, "settle": {"settled_at": 100.0},
+            "live_tower_watch": {"poll_count": 10, "last_probe_at": 96.0}}
+    assert report.guard_coverage(base)["result"] == "PASS"
+    assert report.guard_coverage({**base, "outcome": "not-settled"}) is None
+    assert report.guard_coverage({**base, "live_guard": False}) is None
+    assert report.guard_coverage({**base, "live_tower_watch": {"poll_count": 10}})["result"] == "FAIL"
+    assert report.guard_coverage({**base, "settle": {}})["result"] == "FAIL"
+
+
+# The surviving mutants both reviews flag as real gaps (std LOW-4, adversarial LOW-11).
+
+
+def test_a_not_settled_outcome_is_not_proof():
+    """std M21 / adv M06: the outcome reason of proof_status had no direct test."""
+    client = {"tool": "world_live_replay", "outcome": "not-settled", "stream": {"frames_sent": 3},
+              "live_tower_watch": {"states_seen": ["idle"]}}
+    status = report.proof_status(client=client, run={"live_tower_watch_startup": GOOD_WATCH_STARTUP})
+    assert status == {"proof": False, "not_proof_reasons": ["replay outcome was not-settled, not settled"]}
+
+
+def test_a_replay_that_did_not_settle_never_verifies_its_streamed_images(tmp_path, monkeypatch):
+    """adv M12: `source_images.verified` requires the settled outcome (with M06, both layers went at once)."""
+    _capture(tmp_path, A, started=0.0, frames=[(1, 0.05), (2, 0.10)], ended=0.15)
+    record = _serve_and_replay(monkeypatch, FakeTower([C1]), lambda port: replay.ReplayOptions(
+        port=port, captures=[A], capture_root=tmp_path / "captures", out=tmp_path / "out",
+        live_guard=False, phone_fetches=False, session_lead=0.0, sample_seconds=60.0,
+        settle_timeout_min=0.0, poll_seconds=0.05))
+    assert record["outcome"] == "not-settled" and record["stream"]["frames_sent"] == 2
+    images = record["source_images"]
+    assert images["sent_sha256"] == images["planned_sha256"] and images["verified"] is False
+
+
+def test_a_replay_whose_sent_digest_differs_never_verifies(tmp_path, monkeypatch):
+    """std M04: `verified` compares the sent digest with the planned one."""
+    _capture(tmp_path, A, started=0.0, frames=[(1, 0.05), (2, 0.10)], ended=0.15)
+    real, calls = replay.input_list_sha256, []
+
+    def digest(entries):
+        calls.append(len(entries))
+        return real(entries) if len(calls) == 1 else "0" * 64     # the planned digest, then a different one
+
+    monkeypatch.setattr(replay, "input_list_sha256", digest)
+    record = _serve_and_replay(monkeypatch, FakeTower([C1]), lambda port: replay.ReplayOptions(
+        port=port, captures=[A], capture_root=tmp_path / "captures", out=tmp_path / "out",
+        live_guard=False, phone_fetches=False, session_lead=0.0, sample_seconds=60.0,
+        settle_timeout_min=0.5, poll_seconds=0.05))
+    assert record["outcome"] == "settled" and record["source_images"]["verified"] is False
+
+
+def test_a_jpeg_changed_after_the_pin_is_refused_before_it_is_encoded(tmp_path, monkeypatch):
+    """std M01: the encode-time check alone catches a file that changed BEFORE its frame was read
+    (the post-wait recheck compares the disk with the bytes just read, which agree)."""
+    capture = _capture(tmp_path, A, started=0.0, frames=[(1, 0.05), (2, 0.2)], ended=0.3)
+    real_pin = replay.pin_frame_inputs
+
+    def pin_then_change(walk, schedule):
+        pinned = real_pin(walk, schedule)
+        (capture / "frames" / "00000002.jpg").write_bytes(b"changed-before-its-encode")
+        return pinned
+
+    monkeypatch.setattr(replay, "pin_frame_inputs", pin_then_change)
+    tower = FakeTower([C1])
+    with pytest.raises(RuntimeError, match="source JPEG changed during the stream"):
+        _serve_and_replay(monkeypatch, tower, lambda port: replay.ReplayOptions(
+            port=port, captures=[A], capture_root=tmp_path / "captures", out=tmp_path / "out",
+            live_guard=False, phone_fetches=False, session_lead=0.0, sample_seconds=60.0))
+    assert tower.frames == 1
+
+
+def _two_frame_evidence(tmp_path):
+    capture = _capture(tmp_path / "src", A, started=0.0, frames=[(1, 0.1), (2, 0.2)], ended=0.3)
+    walk = replay.load_walk(capture.parent, [A])
+    planned = replay.pin_frame_inputs(walk, replay.build_schedule(walk))
+    return planned, {"source_capture_root": str(capture.parent)}
+
+
+def test_the_report_refuses_a_partial_or_miscounted_sent_list(tmp_path):
+    """std M05/M36 and adv M23: `_verified_source_jpegs` alone, with a forged `verified`."""
+    planned, pacing = _two_frame_evidence(tmp_path)
+    digest = replay.input_list_sha256(planned)
+    good = {"source_images": {"planned": planned, "planned_sha256": digest, "sent": planned, "sent_sha256": digest,
+                              "verified": True}, "schedule": {"frames": 2}}
+    assert report._verified_source_jpegs(good, pacing) == digest
+    partial = {**good, "source_images": {**good["source_images"], "sent": planned[:1]}}
+    assert report._verified_source_jpegs(partial, pacing) is None
+    miscounted = {**good, "schedule": {"frames": 3}}
+    assert report._verified_source_jpegs(miscounted, pacing) is None
+    other_digest = {**good, "source_images": {**good["source_images"], "sent_sha256": "0" * 64}}
+    assert report._verified_source_jpegs(other_digest, pacing) is None
+
+
+def test_window_totals_are_unknown_when_any_window_lacks_a_counter():
+    """std M20 / adv M04: a counter missing in ONE window is unknown, never the other windows' sum."""
+    complete = {"frames_received": 5, "tx_seq_gap_total": 0, "backpressure_drops": 0, "frame_processing_errors": 0,
+                "frames_rejected": 0, "bytes_received": 9}
+    totals = report.window_totals([complete, {"frames_received": 3}])
+    assert totals["frames_received"] == 8 and totals["frame_processing_errors"] is None
+
+
+@pytest.mark.parametrize("edit, why", [
+    ("environment n/a", "Environment (:8000) n/a"),                       # std M17 / adv M09
+    ("live safety n/a", "live safety n/a"),                               # adv M28
+    ("store basis", "client phone-photo receipt is missing"),             # std M24
+    ("observed", "incomplete frame path: sent=1, received=1, builder_observed=2"),   # std M25
+    ("no frame_errors map", "client frame errors must be observed empty"),           # adv M21
+])
+def test_each_compare_admission_check_refuses_a_run_on_its_own(tmp_path, edit, why):
+    """A coherent, sealed run that differs in ONE thing compare must check itself."""
+    olds = _three_old(tmp_path)
+    bad = olds[2]
+    doc = _built(bad)
+    if edit == "environment n/a":
+        doc["live_safety"]["environment"]["result"] = "n/a"
+    elif edit == "live safety n/a":
+        doc["live_safety"]["result"] = "n/a"
+    elif edit == "store basis":
+        doc["verdict"]["basis"] = "store"
+    elif edit == "observed":
+        doc["tower_walk"]["frames_observed"] = 2
+    elif edit == "no frame_errors map":
+        client = json.loads((bad / "client.json").read_text(encoding="utf-8"))
+        client["stream"].pop("frame_errors")
+        (bad / "client.json").write_text(json.dumps(client), encoding="utf-8")
+        doc["client"]["stream"].pop("frame_errors")
+    (bad / "report.json").write_text(json.dumps(doc), encoding="utf-8")
+    _reseal(bad)
+    result = report.compare_runs(olds)
+    assert result["baseline_counted"] == 2
+    assert _reasons(result, bad) == [why]
+
+
+@pytest.mark.parametrize("gap, complete", [(10.0, True), (10.5, False)])
+def test_a_preflight_watch_with_a_gap_over_ten_seconds_is_not_proof(gap, complete):
+    """adv M05 (and M05+M15): no test had a preflight gap over 10 s, in the report or the runner."""
+    run = {"live_tower_watch_startup": {**GOOD_WATCH_STARTUP, "background_max_gap_s": gap}}
+    assert report._startup_watch_complete(run) is complete
+    assert report._startup_watch_complete({"live_tower_watch_startup": {**GOOD_WATCH_STARTUP,
+                                                                        "background_poll_count": 0}}) is False
+
+
+class _AliveThread:
+    """A background watcher thread that never stops (a probe stuck past the join)."""
+
+    def join(self, timeout=None):
+        return None
+
+    def is_alive(self):
+        return True
+
+
+def test_the_runner_thread_latches_a_preflight_gap_over_ten_seconds(monkeypatch):
+    """adv M15 / std M34: the background thread's own gap latch. The age check alone does not
+    see a gap that is over by the time the runner next looks."""
+    import threading
+
+    now = {"t": 0.0}
+    polled = threading.Event()
+
+    def live(url=None, timeout=None):
+        polled.set()
+        return "idle"
+
+    monkeypatch.setattr(runner, "live_tower_state", live)
+    monkeypatch.setattr(runner, "PREFLIGHT_WATCH_EVERY_S", 0.01)
+    watch = runner.StartupLiveWatch(runner.LiveGuard("idle"), clock=lambda: now["t"])
+    now["t"] = 11.0                                       # the first background poll lands 11 s late
+    watch.start()
+    try:
+        assert polled.wait(2.0) and watch._first_background.wait(2.0)
+        time.sleep(0.05)
+        with pytest.raises(runner.LiveTowerAbort, match=r"missed 11\.0 s of coverage"):
+            watch.check()
+    finally:
+        watch.close()
+
+
+def test_the_runner_refuses_a_preflight_watcher_that_stopped_reporting(monkeypatch):
+    """std M34: a watcher thread alive but silent for over 10 s (the age check)."""
+    now = {"t": 0.0}
+    watch = runner.StartupLiveWatch(runner.LiveGuard("idle"), clock=lambda: now["t"])
+    watch._thread = _AliveThread()
+    now["t"] = 10.5
+    with pytest.raises(runner.LiveTowerAbort, match=r"missed 10\.5 s of coverage"):
+        watch.check()
+
+
+@pytest.mark.parametrize("state", ["busy", "unknown"])
+def test_the_preflight_latches_a_busy_or_unknown_8000_not_only_recording(lifecycle, monkeypatch, state):
+    """std M29: one `busy` or `unknown` from :8000 during the preflight refuses the run (a test Tower
+    must not start while :8000 finishes a world), even when the next read is idle again."""
+    import threading
+
+    in_import, observed = threading.Event(), threading.Event()
+
+    def live(url=None, timeout=None):
+        if in_import.is_set() and threading.current_thread().name == "c22-preflight-live-watch" \
+                and not observed.is_set():
+            observed.set()
+            return state
+        return "idle"
+
+    def blocked_probe(tower_dir, env):
+        in_import.set()
+        assert observed.wait(2.0), "the background watcher did not read :8000"
+        time.sleep(0.05)                                       # an idle read follows
+        in_import.clear()
+        return str(tower_dir / "tower" / "__init__.py")
+
+    monkeypatch.setattr(runner, "live_tower_state", live)
+    monkeypatch.setattr(runner, "probe_import", blocked_probe)
+    monkeypatch.setattr(runner, "PREFLIGHT_WATCH_EVERY_S", 0.01)
+    assert runner.main(lifecycle["argv"]) == runner.EXIT_ABORTED
+    assert lifecycle["calls"]["spawn"] == []
+    assert f":8000 became {state} during the preflight" in (lifecycle["out"] / "runner.log").read_text(
+        encoding="utf-8")
+
+
+@pytest.mark.parametrize("when", ["during the import probe", "just before the spawn"])
+def test_the_runner_rechecks_the_copied_calibration_before_it_spawns(lifecycle, monkeypatch, when):
+    """std M32 / adv M22: each of the runner's two calibration rechecks, on its own."""
+    copied = Path(lifecycle["argv"][lifecycle["argv"].index("--data-root") + 1]) / "world_builder" / "intrinsics"
+    if when == "during the import probe":
+        def probe(tower_dir, env):
+            (copied / "360x640.json").write_bytes(b'{"fx": 2}')
+            return str(tower_dir / "tower" / "__init__.py")
+
+        monkeypatch.setattr(runner, "probe_import", probe)
+    else:
+        real_log = runner._log
+
+        def log(out, text):
+            if text.startswith("starting the test Tower"):
+                (copied / "360x640.json").write_bytes(b'{"fx": 2}')
+            real_log(out, text)
+
+        monkeypatch.setattr(runner, "_log", log)
+    with pytest.raises(SystemExit, match="copied calibration changed before the test Tower started"):
+        runner.main(lifecycle["argv"])
+    assert lifecycle["calls"]["spawn"] == []
+
+
+def test_the_handoff_refuses_a_preflight_watcher_that_will_not_stop(lifecycle, monkeypatch):
+    """std M35: the hand-off requires the faster preflight watcher to have stopped."""
+    def stuck_start(watch):
+        watch._thread = _AliveThread()
+        with watch._lock:
+            watch._background_polls = 1
+            watch._last_background_at = watch._clock()
+        watch._first_background.set()
+
+    def replay_after_handoff(options):
+        options.on_guard_armed()
+        return {"tool": "world_live_replay", "outcome": "settled", "tower_captures": []}
+
+    monkeypatch.setattr(runner.StartupLiveWatch, "start", stuck_start)
+    lifecycle["state"]["replay"] = replay_after_handoff
+    assert runner.main(lifecycle["argv"]) == runner.EXIT_ABORTED
+    assert _run_json(lifecycle)["aborted"]["reason"] == ":8000 preflight live watcher did not stop at handoff"
