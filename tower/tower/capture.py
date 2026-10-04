@@ -555,6 +555,9 @@ class CaptureFollower:
         # Set when a stop arrives WHILE waiting out a reconnect. See
         # `stopped_awaiting_successor`.
         self._stopped_awaiting_successor = False
+        # A normal close is final for this directory. Keep the verified
+        # answer if a later atomic-replace read becomes unavailable.
+        self._confirmed_normal_stop = False
         # Skip whatever the journal already holds, and yield only frames
         # recorded from now on.
         #
@@ -604,6 +607,8 @@ class CaptureFollower:
                 manifest = read_json_closed(path)
             except (OSError, ValueError):
                 if attempt == retries:
+                    if self._confirmed_normal_stop:
+                        return END_REASON_STOP
                     if raise_on_unreadable:
                         raise
                     # An unreadable manifest is not proof of a closed capture.
@@ -612,7 +617,10 @@ class CaptureFollower:
                 continue
             if manifest.get("ended_at") is None:
                 return None
-            return manifest.get("end_reason") or END_REASON_STOP
+            reason = manifest.get("end_reason") or END_REASON_STOP
+            if reason == END_REASON_STOP:
+                self._confirmed_normal_stop = True
+            return reason
         return None
 
     def follow(self, *, max_idle_polls: int | None = None, should_stop=None):
@@ -687,6 +695,7 @@ class CaptureFollower:
                     successor.name,
                 )
                 self._directory = successor
+                self._confirmed_normal_stop = False
                 tail = _JournalTail(self._directory / FRAMES_FILENAME)
                 idle_polls = 0
                 continue

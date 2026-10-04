@@ -230,6 +230,116 @@ def test_persistent_manifest_read_failure_cannot_publish_partial_complete(
     assert session.finalization["state"] == "interrupted"
 
 
+def test_manifest_failure_before_first_frame_records_error_session(
+    recorded_capture, tmp_path, monkeypatch
+):
+    manifest = recorded_capture / "capture.json"
+    manifest.write_text(
+        json.dumps({"ended_at": 3197.0, "end_reason": "stop"}), encoding="utf-8"
+    )
+    original_read = capture_module.read_json_closed
+    fault = {"remaining": 3}
+
+    def read_with_three_failures(path):
+        if path == manifest and fault["remaining"]:
+            fault["remaining"] -= 1
+            raise OSError("normal-close manifest temporarily unavailable")
+        return original_read(path)
+
+    monkeypatch.setattr(capture_module, "read_json_closed", read_with_three_failures)
+
+    def install_and_stop(self, **_kwargs):
+        self.request(StopRequest.SOFT, "test-pre-first-frame-stop")
+
+    monkeypatch.setattr(builder_script.StopRequest, "install", install_and_stop)
+    root = tmp_path / "worlds"
+    exit_code = builder_script.main(
+        [
+            "--follow-capture", str(recorded_capture),
+            "--root", str(root),
+            "--poll-seconds", "0.01",
+            "--max-idle-polls", "2",
+            "--format", "json",
+        ]
+    )
+
+    assert fault["remaining"] == 0
+    assert exit_code == 1
+    store = WorldStore(root)
+    world_id = store.list_world_ids()[0]
+    session_id = store.list_session_ids(world_id)[0]
+    session = store.read_session(world_id, session_id)
+    assert session.frames_observed == 0
+    assert session.end_reason == "error"
+    assert session.finalization["state"] == "interrupted"
+
+
+def test_verified_normal_close_finishes_when_later_manifest_reads_fail(
+    recorded_capture, tmp_path, monkeypatch
+):
+    manifest = recorded_capture / "capture.json"
+    manifest.write_text(
+        json.dumps({"ended_at": None, "end_reason": None}), encoding="utf-8"
+    )
+    original_read = capture_module.read_json_closed
+    fault = {"armed": False, "verified": False, "later_failures": 0}
+
+    def read_once_after_close(path):
+        if path == manifest and fault["armed"]:
+            if not fault["verified"]:
+                fault["verified"] = True
+            else:
+                fault["later_failures"] += 1
+                raise OSError("manifest unavailable after verified normal close")
+        return original_read(path)
+
+    monkeypatch.setattr(capture_module, "read_json_closed", read_once_after_close)
+    stop_holder = {}
+    monkeypatch.setattr(
+        builder_script.StopRequest,
+        "install",
+        lambda self, **_kwargs: stop_holder.setdefault("request", self),
+    )
+    original_observe = builder_script.WorldBuilderEngine.observe
+    observed = 0
+
+    def observe_and_close(self, *args, **kwargs):
+        nonlocal observed
+        outcome = original_observe(self, *args, **kwargs)
+        observed += 1
+        if observed == 805:
+            manifest.write_text(
+                json.dumps({"ended_at": 3197.0, "end_reason": "stop"}),
+                encoding="utf-8",
+            )
+            fault["armed"] = True
+            stop_holder["request"].request(StopRequest.SOFT, "test-soft-stop")
+        return outcome
+
+    monkeypatch.setattr(builder_script.WorldBuilderEngine, "observe", observe_and_close)
+    root = tmp_path / "worlds"
+    exit_code = builder_script.main(
+        [
+            "--follow-capture", str(recorded_capture),
+            "--root", str(root),
+            "--poll-seconds", "0.01",
+            "--max-idle-polls", "2",
+            "--format", "json",
+        ]
+    )
+
+    assert fault["verified"]
+    assert fault["later_failures"] > 0
+    assert exit_code == 0
+    store = WorldStore(root)
+    world_id = store.list_world_ids()[0]
+    session_id = store.list_session_ids(world_id)[0]
+    session = store.read_session(world_id, session_id)
+    assert session.frames_observed == 3197
+    assert session.end_reason == "stop"
+    assert session.finalization["state"] == "complete"
+
+
 def test_builder_process_records_every_frame_after_normal_close_and_soft_stop(
     recorded_capture, tmp_path
 ):

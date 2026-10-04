@@ -1992,6 +1992,7 @@ def main(argv=None) -> int:
 
     capture_id = None
     synthetic_intrinsics = None
+    capture_start_error: OSError | ValueError | None = None
     capture_handle: dict = {}
     capture_should_stop = lambda: stop_request.asked_for_capture(capture_handle)
     if args.follow_capture:
@@ -2045,17 +2046,30 @@ def main(argv=None) -> int:
         observed_size = declared_size
         consulted = "not consulted (the synthetic renderer supplies its own)"
     elif args.follow_capture:
-        first, frames = first_observed_frame(frames)
+        try:
+            first, frames = first_observed_frame(frames)
+        except (OSError, ValueError) as exc:
+            # A strict soft-stop manifest read can fail before there is a
+            # session to unwind. Open the honest empty session below, then
+            # raise inside its lifecycle so the error is durable.
+            capture_start_error = exc
+            first, frames = None, iter(())
         if first is None:
-            # The capture closed, or gave up, without a single frame.
-            # Not an error: it is a phone that connected and dropped. The
-            # session still opens, honestly empty.
-            logger.warning(
-                "[Tower][WorldBuilder] capture %s delivered no frames, so no "
-                "resolution was ever observed and no calibration was looked "
-                "up. This session will be empty.",
-                capture_id,
-            )
+            if capture_start_error is None:
+                # A phone can connect and drop without a frame. The session
+                # still opens, honestly empty.
+                logger.warning(
+                    "[Tower][WorldBuilder] capture %s delivered no frames, so no "
+                    "resolution was ever observed and no calibration was looked "
+                    "up. This session will be empty.",
+                    capture_id,
+                )
+            else:
+                logger.error(
+                    "[Tower][WorldBuilder] capture %s failed before its first "
+                    "frame: %s: %s; opening an error session",
+                    capture_id, type(capture_start_error).__name__, capture_start_error,
+                )
             observed_size = None
         else:
             observed_size = observed_size_of(first)
@@ -2214,6 +2228,8 @@ def main(argv=None) -> int:
     # record a fresh `pending` block, so there is no older notice here to keep.
     finalization_notice_text = None
     try:
+        if capture_start_error is not None:
+            raise capture_start_error
         for frame in stop_request.bounded(
             frames, should_stop=capture_should_stop if args.follow_capture else None
         ):
