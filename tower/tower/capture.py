@@ -495,6 +495,45 @@ class _JournalTail:
                 logger.warning("[Tower][Capture] skipping an unreadable journal line")
         return records
 
+    def records_not_yet_read(self) -> int | None:
+        """How many journal records lie past what this tail has read.
+
+        Asked of a CLOSED capture, whose journal can no longer grow: the
+        recorder appends a frame's line before it writes the close manifest,
+        and `write_frame` refuses once the capture is closed. Costs one stat
+        when the answer is zero, which is every caught-up follower; the
+        bytes are read only when there is something left to count.
+
+        A trailing piece with no newline is not counted. Once the journal
+        is closed it can never be finished, so it is a torn write, not a
+        frame -- the same call `read_new` makes when it skips it.
+
+        None means the journal could not be measured. A caller deciding
+        whether a walk was read to its end must treat that as "not shown",
+        never as zero.
+        """
+        try:
+            size = self._path.stat().st_size
+        except FileNotFoundError:
+            # A capture that never recorded a frame has no journal.
+            return 0
+        except OSError:
+            return None
+        if size == self._offset:
+            return 0
+        if size < self._offset:
+            # Replaced under the reader. Not something a recorder does.
+            return None
+        try:
+            with self._path.open("rb") as handle:
+                handle.seek(self._offset)
+                chunk = handle.read()
+        except OSError:
+            return None
+        lines = (self._remainder + chunk).split(b"\n")
+        lines.pop()
+        return sum(1 for line in lines if line.strip())
+
 
 @dataclass(frozen=True)
 class FollowedFrame:
@@ -558,6 +597,14 @@ class CaptureFollower:
         # A normal close is final for this directory. Keep the verified
         # answer if a later atomic-replace read becomes unavailable.
         self._confirmed_normal_stop = False
+        # What this follower has READ of the directory it is bound to, so a
+        # caller can ask afterwards whether anything recorded was left
+        # unread. `_tail` is the journal position; `_in_hand` counts records
+        # already read off disk that the consumer has not yet taken -- the
+        # rest of a batch, plus the frame currently yielded. See
+        # `unobserved_records`.
+        self._tail: _JournalTail | None = None
+        self._in_hand = 0
         # Skip whatever the journal already holds, and yield only frames
         # recorded from now on.
         #
@@ -623,6 +670,46 @@ class CaptureFollower:
             return reason
         return None
 
+    def unobserved_records(self) -> int | None:
+        """Recorded frames of the bound capture its consumer never took.
+
+        The question a builder must ask before it calls a walk finished,
+        and the one the end reason cannot answer: `stop` says how the
+        capture ENDED, not whether this follower READ it. Every stop order
+        that cut a closed capture short -- a hard stop mid-drain, a soft
+        stop decided a moment before the close, a soft stop in a
+        disconnected backlog, a stop before the first frame -- reads `stop`
+        or `disconnect` afterwards, and each of them used to be published as
+        a finished walk.
+
+        THE AUTHORITY IS THE CAPTURE'S OWN JOURNAL, `frames.jsonl`: the
+        recorder appends one line per recorded frame, before the close
+        manifest, and nothing after it. The answer is the records this
+        follower read off disk but never handed on (`_in_hand`) plus the
+        complete records past its read position. A record is taken when the
+        consumer asks for the NEXT one, which a driver does only after it
+        has finished with this one -- so a frame pulled and then dropped by
+        a stop check is counted as unread, as it should be.
+
+        Only the bound directory is counted. The follower rebinds to a
+        successor only after it has handed on its predecessor's last
+        record, so an earlier capture in the lineage is never left part-read.
+
+        Zero, after one stat, for a follower that is caught up. None if the
+        journal cannot be measured: "not shown", never zero.
+        """
+        tail = self._tail
+        if tail is None:
+            # `follow()` never ran, so nothing was read: measure from where
+            # it WOULD have started.
+            tail = _JournalTail(
+                self._directory / FRAMES_FILENAME, start_at_end=self._start_at_end
+            )
+        beyond = tail.records_not_yet_read()
+        if beyond is None:
+            return None
+        return self._in_hand + beyond
+
     def follow(self, *, max_idle_polls: int | None = None, should_stop=None):
         """Frames, until the capture ends, the idle bound expires, or a
         caller says stop.
@@ -640,7 +727,8 @@ class CaptureFollower:
         another frame the person had already asked not to be remembered.
         """
         journal = self._directory / FRAMES_FILENAME
-        tail = _JournalTail(journal, start_at_end=self._start_at_end)
+        tail = self._tail = _JournalTail(journal, start_at_end=self._start_at_end)
+        self._in_hand = 0
         idle_polls = 0
         # Per FOLLOW, not per follower: a generator re-entered would
         # otherwise carry the previous run's answer forward.
@@ -651,20 +739,28 @@ class CaptureFollower:
                 return
             fresh = tail.read_new()
 
+            # `_in_hand` drops only AFTER the yield returns, i.e. when the
+            # consumer comes back for the next frame. A consumer that stops
+            # leaves this frame, and the rest of the batch, counted.
+            self._in_hand = len(fresh)
             for record in fresh:
                 frame = self._load(record)
                 if frame is not None:
                     yield frame
+                self._in_hand -= 1
 
             # Journal first, manifest second, then ONE more journal read.
             # The recorder appends a line and only later rewrites the
             # manifest, so a follower that stopped the instant it saw an
             # end reason would drop whatever landed in between.
             if self.is_closed():
-                for record in tail.read_new():
+                closing = tail.read_new()
+                self._in_hand = len(closing)
+                for record in closing:
                     frame = self._load(record)
                     if frame is not None:
                         yield frame
+                    self._in_hand -= 1
 
                 successor = self._await_successor(should_stop=should_stop)
                 if successor is None:
@@ -696,7 +792,7 @@ class CaptureFollower:
                 )
                 self._directory = successor
                 self._confirmed_normal_stop = False
-                tail = _JournalTail(self._directory / FRAMES_FILENAME)
+                tail = self._tail = _JournalTail(self._directory / FRAMES_FILENAME)
                 idle_polls = 0
                 continue
 

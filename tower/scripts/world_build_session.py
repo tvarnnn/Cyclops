@@ -492,7 +492,8 @@ class StopRequest:
         the journal when the wearer closes the capture and leaves the screen.
         Those frames are already recorded, and an ordinary capture stop
         should not discard them. A disconnect remains stoppable so the
-        reconnect wait is not prolonged.
+        reconnect wait is not prolonged; a backlog it leaves unread is
+        labelled `interrupted` after the loop, not drained (see `main`).
         """
         if self.hard:
             return True
@@ -2371,7 +2372,35 @@ def main(argv=None) -> int:
             capture_end in (END_REASON_CAPTURE_STOP, END_REASON_CAPTURE_DISCONNECT)
             and not abandoned_reconnect
         )
-        if stop_request.asked and not capture_finished:
+        # AND WAS IT READ TO THE END? A capture that ENDED is not a capture
+        # this session OBSERVED, and the two lines above only ask the first.
+        # Both reviews of the closed-capture drain reproduced the gap from
+        # four directions -- a hard stop (Tower shutdown) during the drain,
+        # a soft stop decided a moment before the recorder's close landed, a
+        # soft stop in a backlog the link left behind (with and without a
+        # reconnect), a hard stop before the first frame -- and every one
+        # published part of a walk as `stop` / `complete`: the incident's
+        # failure, by another door. So the follower is asked how many of the
+        # frames the capture recorded its journal still holds unread, and
+        # any at all -- or an answer it cannot give -- is not a finished
+        # walk. A caught-up follower answers 0 after one stat, and that path
+        # is untouched: same label, same log, nothing new written.
+        #
+        # A disconnected backlog is labelled here, NOT drained: draining it
+        # would wait out the successor grace with the stop suppressed (the
+        # standard review's M16 hung the suite that way).
+        unobserved = follower.unobserved_records() if capture_finished else 0
+        if capture_finished and unobserved != 0:
+            end_reason = END_REASON_INTERRUPTED
+            logger.warning(
+                "[Tower][WorldBuilder] capture %s ended (%s), but %s of the frames "
+                "it recorded were never observed by this session (stop requested: "
+                "%s, %s); the session ends as %r, not as a finished walk",
+                follower.directory.name, capture_end,
+                "an unknown number" if unobserved is None else unobserved,
+                stop_request.level, stop_request.source, end_reason,
+            )
+        elif stop_request.asked and not capture_finished:
             # Now it means what it says: frames were still coming and
             # somebody asked this process to go.
             end_reason = END_REASON_INTERRUPTED

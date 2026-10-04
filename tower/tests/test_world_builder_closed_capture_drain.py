@@ -1,6 +1,7 @@
 """A late World Builder follower drains a normally closed capture on soft stop."""
 
 import json
+import logging
 import subprocess
 import sys
 import time
@@ -11,7 +12,7 @@ import pytest
 import tower.capture as capture_module
 import scripts.world_build_session as builder_script
 from scripts.world_build_session import StopRequest, first_observed_frame, follow_capture
-from tower.capture import CaptureRecorder
+from tower.capture import CaptureFollower, CaptureRecorder
 from tower.capture_workers import CaptureWorkerSupervisor, WorkerSpec
 from tower.world_builder.store import WorldStore
 
@@ -48,6 +49,10 @@ def recorded_capture(tmp_path):
 def test_recorded_backlog_stop_policy(
     recorded_capture, end_reason, stop_level, expected_count
 ):
+    # Follower level: how many frames each order reads. What each one is
+    # LABELLED is asserted on the stored session, through `main()`, in
+    # `test_stop_policy_labels_the_stored_session` below.
+    #
     # The worker attaches late while the capture is still open. Its first
     # journal read sees a backlog; the recorder closes while it processes it.
     manifest = recorded_capture / "capture.json"
@@ -536,3 +541,460 @@ def test_recorder_and_supervisor_drain_late_builder_after_normal_stop(tmp_path):
     assert "stop requested (soft, stdin-closed) after the capture closed" in (
         worker_log.read_text(encoding="utf-8", errors="replace")
     )
+
+
+# ---------------------------------------------------------------------------
+# A PARTIAL WORLD IS NEVER `stop` / `complete`.
+#
+# The drain above fixes one stop order. These are the others both reviews of
+# 8ede341 reproduced (STD HIGH-1/MED-1, ADV HIGH-1 P1-P4): every one of them
+# left recorded frames unread and still published the session as an ordinary
+# finished walk, because the label asked the manifest how the capture ENDED
+# and never asked whether the builder had READ it. Each drives `main()`, so
+# the assertion is on the stored session, not on a follower count.
+# ---------------------------------------------------------------------------
+
+TOTAL = 3197
+
+
+def _write_manifest(directory, end_reason, **extra):
+    (directory / "capture.json").write_text(
+        json.dumps(
+            {
+                "ended_at": None if end_reason is None else 3197.0,
+                "end_reason": end_reason,
+                **extra,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
+def _journal_rows(count, start=0):
+    return "".join(
+        json.dumps(
+            {
+                "source_seq": 1 + (index * 6476 // 3196),
+                "received_at": float(index),
+                "relpath": "frame.jpg",
+            }
+        )
+        + "\n"
+        for index in range(start, count)
+    )
+
+
+def _hook(monkeypatch, on_observe=None, *, install_level=None):
+    """Capture the session's StopRequest and call `on_observe(n, stop)`."""
+    holder = {"observed": 0}
+
+    def install(self, **_kwargs):
+        holder["stop"] = self
+        if install_level is not None:
+            self.request(install_level, "test-install")
+
+    monkeypatch.setattr(builder_script.StopRequest, "install", install)
+    original_observe = builder_script.WorldBuilderEngine.observe
+
+    def observe(self, *args, **kwargs):
+        outcome = original_observe(self, *args, **kwargs)
+        holder["observed"] += 1
+        if on_observe is not None:
+            on_observe(holder["observed"], holder["stop"])
+        return outcome
+
+    monkeypatch.setattr(builder_script.WorldBuilderEngine, "observe", observe)
+    return holder
+
+
+def _run_session(capture_dir, root, *, max_idle_polls="10000"):
+    exit_code = builder_script.main(
+        [
+            "--follow-capture", str(capture_dir),
+            "--root", str(root),
+            "--poll-seconds", "0.01",
+            "--max-idle-polls", max_idle_polls,
+            "--format", "json",
+        ]
+    )
+    store = WorldStore(root)
+    world_id = store.list_world_ids()[0]
+    session = store.read_session(world_id, store.list_session_ids(world_id)[0])
+    return exit_code, session
+
+
+def _labelled_finished(session):
+    return session.end_reason == "stop" and session.finalization["state"] == "complete"
+
+
+@pytest.mark.parametrize(
+    ("close_reason", "stops", "expected_observed", "expected_end"),
+    [
+        # The fix 8ede341 made: a soft stop on a normal close drains.
+        pytest.param("stop", {805: "soft"}, TOTAL, "stop", id="normal-close-soft-drains"),
+        # Frames were still coming: unchanged since 44fbd13.
+        pytest.param(None, {805: "soft"}, 805, "interrupted", id="open-soft"),
+        # Tower shutdown at the moment of the close.
+        pytest.param("stop", {805: "hard"}, 805, "interrupted", id="normal-close-hard"),
+        # STD MED-1 / ADV P1: the Tower shuts down WHILE the drain runs.
+        pytest.param(
+            "stop", {805: "soft", 1500: "hard"}, 1500, "interrupted",
+            id="hard-stop-during-drain-1500",
+        ),
+        # STD HIGH-1 R1 / ADV P3: the link died with a backlog, then a soft
+        # stop (ws.py's deferred stop after the resume grace). The backlog is
+        # NOT drained -- M16 showed that waits out the successor grace -- but
+        # it is not labelled a finished walk either.
+        pytest.param(
+            "disconnect", {805: "soft"}, 805, "interrupted",
+            id="disconnect-backlog-soft-805",
+        ),
+    ],
+)
+def test_stop_policy_labels_the_stored_session(
+    recorded_capture, tmp_path, monkeypatch,
+    close_reason, stops, expected_observed, expected_end,
+):
+    _write_manifest(recorded_capture, None)
+
+    def on_observe(n, stop):
+        level = stops.get(n)
+        if level is None:
+            return
+        if n == 805 and close_reason is not None:
+            _write_manifest(recorded_capture, close_reason)
+        stop.request(StopRequest.SOFT if level == "soft" else StopRequest.HARD, "test")
+
+    _hook(monkeypatch, on_observe)
+    exit_code, session = _run_session(recorded_capture, tmp_path / "worlds")
+
+    assert exit_code == 0
+    assert session.frames_observed == expected_observed
+    assert session.end_reason == expected_end
+    assert session.finalization["state"] == "complete"
+    if expected_observed < TOTAL:
+        assert not _labelled_finished(session)
+
+
+def test_soft_stop_decided_just_before_the_close_is_interrupted(
+    recorded_capture, tmp_path, monkeypatch
+):
+    """ADV P2: `session/stop` (HTTP) can beat `stream_stop` (WS).
+
+    The builder asks while the manifest is still open, decides to stop, and
+    the recorder's normal close lands before the post-loop re-read. 8ede341
+    then read `stop` and published 805 of 3,197 as a finished walk.
+    """
+    _write_manifest(recorded_capture, None)
+    _hook(
+        monkeypatch,
+        lambda n, stop: stop.request(StopRequest.SOFT, "test") if n == 805 else None,
+    )
+    original_bounded = builder_script.StopRequest.bounded
+
+    def bounded_then_recorder_closes(self, frames, **kwargs):
+        yield from original_bounded(self, frames, **kwargs)
+        if self.asked:
+            _write_manifest(recorded_capture, "stop")
+
+    monkeypatch.setattr(
+        builder_script.StopRequest, "bounded", bounded_then_recorder_closes
+    )
+    exit_code, session = _run_session(recorded_capture, tmp_path / "worlds")
+
+    assert capture_module.read_json_closed(recorded_capture / "capture.json")[
+        "end_reason"
+    ] == "stop"
+    assert exit_code == 0
+    assert session.frames_observed == 805
+    assert session.end_reason == "interrupted"
+    assert not _labelled_finished(session)
+
+
+def test_soft_stop_in_a_disconnected_backlog_across_a_reconnect_is_interrupted(
+    tmp_path, monkeypatch
+):
+    """STD HIGH-1 R3: 805 of 3,697 recorded frames, across a reconnect.
+
+    Capture A ends `disconnect` with a backlog; successor B continues it and
+    closes normally; the wearer's Stop lands while the builder is still in
+    A's backlog. Nothing of A's tail or of B was observed.
+    """
+    captures = tmp_path / "captures"
+    captures.mkdir()
+    first = captures / ("a" * 32)
+    first.mkdir()
+    (first / "frame.jpg").write_bytes(b"synthetic-frame")
+    (first / "frames.jsonl").write_text(_journal_rows(TOTAL), encoding="utf-8")
+    _write_manifest(first, None)
+
+    def on_observe(n, stop):
+        if n != 805:
+            return
+        _write_manifest(first, "disconnect")
+        successor = captures / ("b" * 32)
+        successor.mkdir()
+        (successor / "frame.jpg").write_bytes(b"synthetic-frame")
+        (successor / "frames.jsonl").write_text(
+            _journal_rows(TOTAL + 500, start=TOTAL), encoding="utf-8"
+        )
+        _write_manifest(successor, "stop", continues_capture=first.name)
+        stop.request(StopRequest.SOFT, "test")
+
+    _hook(monkeypatch, on_observe)
+    exit_code, session = _run_session(first, tmp_path / "worlds")
+
+    assert exit_code == 0
+    assert session.frames_observed == 805
+    assert session.end_reason == "interrupted"
+    assert not _labelled_finished(session)
+
+
+def test_hard_stop_before_the_first_frame_of_a_closed_capture_is_interrupted(
+    recorded_capture, tmp_path, monkeypatch
+):
+    """ADV P4: 0 of 3,197 observed, and 8ede341 stored it `stop`/`complete`."""
+    _write_manifest(recorded_capture, "stop")
+    _hook(monkeypatch, install_level=StopRequest.HARD)
+    exit_code, session = _run_session(recorded_capture, tmp_path / "worlds")
+
+    assert exit_code == 0
+    assert session.frames_observed == 0
+    assert session.end_reason == "interrupted"
+    assert not _labelled_finished(session)
+
+
+def test_a_closed_capture_whose_last_journal_read_failed_is_not_finished(
+    recorded_capture, tmp_path, monkeypatch
+):
+    """No stop at all, and still part of a walk.
+
+    The follower's one journal read after the close comes back empty --
+    which is what `_JournalTail.read_new` returns on an `OSError`, e.g. a
+    sharing violation on `frames.jsonl` -- so the follower returns with the
+    last 2,392 recorded frames unread. The label must not call that a
+    finished walk; 8ede341 did.
+    """
+    journal = recorded_capture / "frames.jsonl"
+    lines = journal.read_text(encoding="utf-8").splitlines(keepends=True)
+    journal.write_text("".join(lines[:805]), encoding="utf-8")
+    _write_manifest(recorded_capture, None)
+    fail_next = {"armed": False, "failed": 0}
+    original_read_new = capture_module._JournalTail.read_new
+
+    def read_new(self):
+        if fail_next["armed"]:
+            fail_next["armed"] = False
+            fail_next["failed"] += 1
+            return []
+        return original_read_new(self)
+
+    monkeypatch.setattr(capture_module._JournalTail, "read_new", read_new)
+
+    def on_observe(n, _stop):
+        if n == 805:
+            with journal.open("a", encoding="utf-8") as out:
+                out.writelines(lines[805:])
+            _write_manifest(recorded_capture, "stop")
+            fail_next["armed"] = True
+
+    _hook(monkeypatch, on_observe)
+    exit_code, session = _run_session(recorded_capture, tmp_path / "worlds")
+
+    assert fail_next["failed"] == 1
+    assert exit_code == 0
+    assert session.frames_observed == 805
+    assert session.end_reason == "interrupted"
+
+
+# ---------------------------------------------------------------------------
+# What the follower counts as unread.
+# ---------------------------------------------------------------------------
+
+
+def _small_closed_capture(tmp_path, count=10):
+    directory = tmp_path / "small"
+    directory.mkdir()
+    (directory / "frame.jpg").write_bytes(b"synthetic-frame")
+    (directory / "frames.jsonl").write_text(_journal_rows(count), encoding="utf-8")
+    _write_manifest(directory, "stop")
+    return directory
+
+
+def test_a_follower_read_to_the_end_has_nothing_unobserved(tmp_path):
+    follower = CaptureFollower(_small_closed_capture(tmp_path), poll_seconds=0)
+    assert len(list(follower.follow(max_idle_polls=1))) == 10
+    assert follower.unobserved_records() == 0
+
+
+def test_a_frame_is_taken_only_when_the_consumer_asks_for_the_next(tmp_path):
+    follower = CaptureFollower(_small_closed_capture(tmp_path), poll_seconds=0)
+    frames = follower.follow(max_idle_polls=1)
+    for _ in range(4):
+        next(frames)
+    # Six never handed on, plus the fourth: received, but a consumer that
+    # stops here may have dropped it, as `StopRequest.bounded` does.
+    assert follower.unobserved_records() == 7
+    next(frames)
+    assert follower.unobserved_records() == 6
+
+
+def test_records_appended_past_the_read_position_are_unobserved(tmp_path):
+    directory = _small_closed_capture(tmp_path)
+    follower = CaptureFollower(directory, poll_seconds=0)
+    assert len(list(follower.follow(max_idle_polls=1))) == 10
+    with (directory / "frames.jsonl").open("a", encoding="utf-8") as out:
+        out.write(_journal_rows(13, start=10))
+        out.write('{"torn": ')
+    # Three complete records; the torn trailing piece is not a frame.
+    assert follower.unobserved_records() == 3
+
+
+def test_a_journal_that_cannot_be_measured_is_not_a_finished_walk(
+    recorded_capture, tmp_path, monkeypatch, caplog
+):
+    """None from the journal is "not shown", never zero."""
+    _write_manifest(recorded_capture, "stop")
+    monkeypatch.setattr(
+        capture_module._JournalTail, "records_not_yet_read", lambda self: None
+    )
+    _hook(monkeypatch)
+    with caplog.at_level(logging.WARNING, logger="tower.world_build_session"):
+        exit_code, session = _run_session(recorded_capture, tmp_path / "worlds")
+
+    assert exit_code == 0
+    assert session.frames_observed == TOTAL
+    assert session.end_reason == "interrupted"
+    assert "an unknown number of the frames" in caplog.text
+
+
+@pytest.mark.parametrize(("start_at_end", "expected"), [(False, 10), (True, 0)])
+def test_a_follower_that_never_started_measures_from_where_it_would_have(
+    tmp_path, start_at_end, expected
+):
+    follower = CaptureFollower(
+        _small_closed_capture(tmp_path), start_at_end=start_at_end
+    )
+    assert follower.unobserved_records() == expected
+
+
+# ---------------------------------------------------------------------------
+# NO BIG BANG: caught up at Stop, the path is exactly 44fbd13's.
+#
+# Every order below leaves nothing recorded unread, so the guard answers 0
+# and must change nothing: the same label, the same report keys, the same
+# events, the same log line, and no new one. This test runs unchanged
+# against 44fbd13 (it uses only `main()` and `StopRequest.request`), which
+# is how the A/B was taken; see the fix report.
+# ---------------------------------------------------------------------------
+
+CAUGHT_UP_FRAMES = 48
+BASE_REPORT_KEYS = {
+    "world_id", "session_id", "frame_source", "end_reason", "finalization",
+    "frames_observed", "keyframes_accepted", "rejected_by_reason", "segments",
+    "rebuilds", "backend_id", "downgraded_from", "poses_solved", "poses_refused",
+    "points", "scale_state", "observe_ms_per_frame", "build_seconds",
+}
+
+
+@pytest.mark.parametrize(
+    ("order", "expected_observed", "expected_end", "expected_log"),
+    [
+        pytest.param(
+            "closed-before-start-no-stop", 48, "stop", None,
+            id="closed-before-start-no-stop",
+        ),
+        pytest.param(
+            "close-then-soft", 48, "stop", "after the capture closed (stop)",
+            id="close-then-soft",
+        ),
+        pytest.param(
+            "soft-while-open-then-close", 48, "stop", "after the capture closed (stop)",
+            id="soft-while-open-then-close",
+        ),
+        pytest.param("close-then-hard", 48, "stop", None, id="close-then-hard"),
+        pytest.param(
+            "disconnect-then-soft", 48, "stop", "after the capture closed (disconnect)",
+            id="disconnect-then-soft",
+        ),
+        pytest.param(
+            "open-soft", 30, "interrupted", "while the capture was still open",
+            id="open-soft",
+        ),
+    ],
+)
+def test_caught_up_stop_orders_are_unchanged_from_the_base(
+    tmp_path, monkeypatch, capsys, caplog,
+    order, expected_observed, expected_end, expected_log,
+):
+    capture = tmp_path / "captures" / ("c" * 32)
+    capture.mkdir(parents=True)
+    (capture / "frame.jpg").write_bytes(b"synthetic-frame")
+    (capture / "frames.jsonl").write_text(
+        _journal_rows(CAUGHT_UP_FRAMES), encoding="utf-8"
+    )
+    _write_manifest(capture, "stop" if order == "closed-before-start-no-stop" else None)
+
+    def on_observe(n, stop):
+        if order == "open-soft" and n == 30:
+            stop.request(StopRequest.SOFT, "stdin-closed")
+        if n != CAUGHT_UP_FRAMES:
+            return
+        if order == "close-then-soft":
+            _write_manifest(capture, "stop")
+            stop.request(StopRequest.SOFT, "stdin-closed")
+        elif order == "soft-while-open-then-close":
+            stop.request(StopRequest.SOFT, "stdin-closed")
+        elif order == "close-then-hard":
+            _write_manifest(capture, "stop")
+            stop.request(StopRequest.HARD, "SIGBREAK")
+        elif order == "disconnect-then-soft":
+            _write_manifest(capture, "disconnect")
+            stop.request(StopRequest.SOFT, "stdin-closed")
+
+    _hook(monkeypatch, on_observe)
+    if order == "soft-while-open-then-close":
+        # Decided while open; the close lands before the post-loop read,
+        # and nothing was recorded in between.
+        original_bounded = builder_script.StopRequest.bounded
+
+        def bounded_then_close(self, frames, **kwargs):
+            yield from original_bounded(self, frames, **kwargs)
+            _write_manifest(capture, "stop")
+
+        monkeypatch.setattr(builder_script.StopRequest, "bounded", bounded_then_close)
+
+    root = tmp_path / "worlds"
+    with caplog.at_level(logging.INFO, logger="tower.world_build_session"):
+        exit_code = builder_script.main(
+            [
+                "--follow-capture", str(capture),
+                "--root", str(root),
+                "--poll-seconds", "0.01",
+                "--max-idle-polls", "50",
+                "--format", "json",
+            ]
+        )
+    report = json.loads(capsys.readouterr().out)
+    store = WorldStore(root)
+    session = store.read_session(report["world_id"], report["session_id"])
+    events = [
+        json.loads(line)
+        for line in store.events_path(report["world_id"], report["session_id"])
+        .read_text(encoding="utf-8")
+        .splitlines()
+    ]
+
+    assert exit_code == 0
+    assert set(report) == BASE_REPORT_KEYS
+    assert report["frames_observed"] == session.frames_observed == expected_observed
+    assert report["end_reason"] == session.end_reason == expected_end
+    assert report["finalization"] == session.finalization["state"] == "complete"
+    kinds = [event["kind"] for event in events]
+    assert kinds.count("frame_rejected") == expected_observed
+    assert kinds[-1] == "session_stopped"
+    assert set(kinds) == {"session_started", "frame_rejected", "session_stopped"}
+    assert events[-1]["payload"]["end_reason"] == expected_end
+    if expected_log is not None:
+        assert expected_log in caplog.text
+    assert "were never observed" not in caplog.text
