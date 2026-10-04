@@ -82,9 +82,12 @@ def _capture(tmp_path, capture_id, *, started, frames, ended, end_reason="stop",
                                 "relpath": relpath, "byte_count": len(jpeg) + 1,
                                 "width": 360, "height": 640}))
     (directory / "frames.jsonl").write_text("\n".join(rows) + "\n", encoding="utf-8")
+    # `frames_written` / `bytes_written` as the Tower's recorder counts them
+    # (`tower/capture.py`): every JPEG it wrote, and their bytes.
     (directory / "capture.json").write_text(json.dumps({
         "schema_version": 1, "capture_id": capture_id, "started_at": started, "ended_at": ended,
-        "end_reason": end_reason, "continues_capture": continues, "frames_written": len(frames)}),
+        "end_reason": end_reason, "continues_capture": continues, "frames_written": len(frames),
+        "bytes_written": len(frames) * (len(jpeg) + 1)}),
         encoding="utf-8")
     return directory
 
@@ -772,11 +775,13 @@ def _summary(frames, end_reason, **extra):
     return "[Tower][Session] final summary: " + repr(fields)
 
 
-def _walk_log(base, *, reconnect=False, processing_errors=0):
+def _walk_log(base, *, reconnect=False, processing_errors=0, capture=CAP):
     """A Tower log in the real line formats (walk 5's), 100 s walk, then the settle.
-    `reconnect`: the walk is two captures, the first ended by disconnect."""
+    `reconnect`: the walk is two captures, the first ended by disconnect. `capture`: the id
+    the test Tower minted for the walk's (first) capture."""
     wb = "tower.world_build_session"
     ws = "tower.routes.ws"
+    CAP = capture  # noqa: N806 -- the walk's capture, as the log names it
     lines = [
         "INFO:     Started server process [1]",
         _line(base - 2, "tower.cartridge_session", "[Tower][Session] world_builder start -> state=active"),
@@ -1147,22 +1152,44 @@ FAKE_HARNESS = {"sha1": "h" * 40, "files_sha1": {"world_live_replay.py": "a" * 4
                                                  "world_live_replay_run.py": "b" * 40,
                                                  "world_live_replay_report.py": "c" * 40}}
 FAKE_JOURNAL = {CAP: {"capture.json": "1" * 64, "frames.jsonl": "2" * 64}}
+# What a runner's run.json records about the interpreter and the inherited timing variables
+# (`world_live_replay_run.TIMING_ENV_KEYS`; None is unset). Review F11 MED-2: part of the key.
+FAKE_TIMING_ENV = {"OMP_NUM_THREADS": None, "MKL_NUM_THREADS": None, "OPENBLAS_NUM_THREADS": None,
+                   "CUDA_VISIBLE_DEVICES": None, "PYTORCH_CUDA_ALLOC_CONF": None}
+FAKE_COMMAND = ["C:\\Python312\\python.exe", "-m", "uvicorn", "tower.main:app", "--port", "8031"]
+FAKE_VENV = "C:\\code\\.venv\\Scripts\\python.exe"
+# The client keys a render keeps (`build_report`'s "client" block) that _fake_run embeds.
+FAKE_EMBEDDED_CLIENT = ("outcome", "speed", "first_seconds", "after_stop", "options", "walk", "schedule",
+                        "source_images", "source_journals", "calibration_check", "stream", "live_tower_watch",
+                        "live_guard", "not_a_proof_run", "started_at")
 
 
 def _fake_run(directory, *, photos, lag_p95, sequence, horizons=(52,), fidelity="PASS", environment="PASS",
               version=None, run_started=None, client_started=None, switches=None, code=None, harness=None,
               journal=None, not_proof=None, store_photos=None, speed=1.0, tower_side_only=False,
-              jpeg_bytes=b"proof-fixture-jpeg", calibration_bytes=b'{"fx": 1}'):
-    """`version` None: a verdict rendered before the bar was versioned (C22-F5). `run_started` /
-    `client_started`: the run's recorded start, as the report keeps run.json and the client record.
-    By default a proof-eligible run whose comparability key is `FAKE_*` (C24 HIGH-2/3); `photos` is
-    the W0 timing, Stop to `phone_photos_at` (C24 HIGH-1)."""
+              jpeg_bytes=b"proof-fixture-jpeg", calibration_bytes=b'{"fx": 1}', after_stop="stay",
+              timing_env=None, command=None, venv=FAKE_VENV, live_safety="PASS"):
+    """A runner's RUN DIRECTORY as --compare reads it: run.json, client.json and the test Tower's
+    log, a data root (the store's session and the re-recorded capture) and a source root, and a
+    hand-made report.json beside them -- the run-time render, sealed (review F11 LOW-9).
+
+    `version` None: a verdict rendered before the bar was versioned (C22-F5). `run_started` /
+    `client_started`: the run's recorded start (run.json / client.json); the test Tower's log starts
+    60 s later. With neither, run.json says BASE - 60 (bar v1). By default a proof-eligible run whose
+    comparability key is `FAKE_*` (C24 HIGH-2/3); `photos` is the W0 timing, Stop to
+    `phone_photos_at` (C24 HIGH-1), and the store wrote the room appearance 0.25 min before it.
+    Each call is its own streamed run: its Tower-minted capture id is unique (review F11 MED-1)."""
     directory.mkdir(parents=True)
+    tower_capture = report.hashlib.md5(str(directory).encode("utf-8")).hexdigest()
+    if run_started is None and client_started is None:
+        run_started = BASE - 60.0
+    base = (run_started if run_started is not None else client_started) + 60.0
     source_root = directory / "source-captures"
     image = source_root / CAP / "frames" / "00000001.jpg"
     image.parent.mkdir(parents=True)
     image.write_bytes(jpeg_bytes)
-    capture_bytes = json.dumps({"capture_id": CAP}, sort_keys=True).encode("utf-8")
+    capture_bytes = json.dumps({"capture_id": CAP, "frames_written": 1, "bytes_written": len(jpeg_bytes),
+                                "end_reason": "stop", "continues_capture": None}, sort_keys=True).encode("utf-8")
     journal_bytes = json.dumps({"frame": 1, "variant": journal or "baseline"}, sort_keys=True).encode("utf-8")
     (image.parent.parent / "capture.json").write_bytes(capture_bytes)
     (image.parent.parent / "frames.jsonl").write_bytes(journal_bytes)
@@ -1171,31 +1198,57 @@ def _fake_run(directory, *, photos, lag_p95, sequence, horizons=(52,), fidelity=
     entry = {"capture_id": CAP, "relpath": "frames/00000001.jpg", "wire_seq": 1,
              "bytes": image.stat().st_size, "sha256": report.hashlib.sha256(image.read_bytes()).hexdigest()}
     image_digest = replay.input_list_sha256([entry])
-    cal_root = directory / "data" / "world_builder" / "intrinsics"
+    data = directory / "data"
+    cal_root = data / "world_builder" / "intrinsics"
     cal_root.mkdir(parents=True)
     (cal_root / "360x640.json").write_bytes(calibration_bytes)
     calibration = replay.calibration_digests(cal_root)
+    log = directory / "tower-8031-x.err.log"
+    log.write_text(_walk_log(base, capture=tower_capture), encoding="utf-8")
+    timeline = report.walk_timeline(report.scan_log(log), tower_capture)
+    stop = timeline["stop"]["t"]
+    store_minutes = round(photos - 0.25, 2) if store_photos is None else store_photos
+    _world(data / "world_builder", base, appearance_end=stop + store_minutes * 60)
+    _capture(data, tower_capture, started=base, frames=[(1, base + 1.0)], ended=base + 2.0)
     sha = report.hashlib.sha256(json.dumps(sequence, separators=(",", ":")).encode()).hexdigest()
     verdict = {"result": fidelity, **({"version": version} if version is not None else {}),
                **({"tower_side_only": True} if tower_side_only else {})}
-    run = {"switches": FAKE_SWITCHES if switches is None else switches, "code": code or FAKE_CODE,
-           "harness": harness or FAKE_HARNESS, "intrinsics_copied": ["360x640.json"],
-           "intrinsics_sha256": calibration, "data_root": str(directory / "data"),
+    run = {"tool": "world_live_replay_run", "switches": FAKE_SWITCHES if switches is None else switches,
+           "code": code or FAKE_CODE, "harness": harness or FAKE_HARNESS, "intrinsics_copied": ["360x640.json"],
+           "intrinsics_sha256": calibration, "data_root": str(data), "err_log": str(log),
+           "timing_env": dict(FAKE_TIMING_ENV if timing_env is None else timing_env),
+           "command": list(FAKE_COMMAND if command is None else command),
+           "effective_tower_env": {"PYTHONPATH": "C:\\code\\tower", **({"__PYVENV_LAUNCHER__": venv} if venv else {})},
            **({"started_at": run_started} if run_started is not None else {})}
-    client = {"walk": [{"capture_id": CAP}], "speed": speed, "first_seconds": None, "after_stop": "stay",
-               "schedule": {"frames": 1, "captures": 1, "stop_at_s": 335.861, "ends_with": "stream_stop",
-                            "reconnects": 0},
-               "stream": {"frames_sent": 1, "unanswered": 0, "frame_errors": {}},
-               "live_tower_watch": {"states_seen": ["idle"]},
+    words = [{"t": stop + photos * 60, "seq": 9, "state": "complete", "stage": "appearance", "scope": None,
+              "scope_present": False}]
+    client = {"tool": "world_live_replay", "outcome": "settled",
+              "walk": [{"capture_id": CAP, "frames": 1, "end_reason": "stop", "continues": None,
+                        "recorded_seconds": 1.0, "recorded_fps": 1.0}],
+              "speed": speed, "first_seconds": None, "after_stop": after_stop,
+              "options": {"end_with_stop": False, "follow_chain": True, "subscribe": True, "phone_fetches": True,
+                          "start_session": True, "session_lead": 2.0},
+              "schedule": {"frames": 1, "captures": 1, "stop_at_s": 335.861, "ends_with": "stream_stop",
+                           "reconnects": 0},
+              "stream": {"frames_sent": 1, "unanswered": 0, "frame_errors": {}},
+              "live_tower_watch": {"states_seen": ["idle"]}, "live_guard": True, "not_a_proof_run": False,
               "source_images": {"planned": [entry], "planned_sha256": image_digest, "sent": [entry],
                                 "sent_sha256": image_digest, "verified": True},
               "source_journals": actual_journal,
               "calibration_check": {"expected": calibration, "before_stream": calibration,
                                     "after_stream": calibration, "verified": True},
+              "tower_captures": [tower_capture],
+              "phone_view": {"pushes": 1, "transitions": [], "photographic": words},
+              "events": [{"t": round(stop - 0.002, 3), "kind": "stream_stop", "capture": 0, "late_s": 0.0}],
               **({"started_at": client_started} if client_started is not None else {})}
+    (directory / "run.json").write_text(json.dumps(run), encoding="utf-8")
+    (directory / "client.json").write_text(json.dumps(client), encoding="utf-8")
+    seal = {**report.evidence_seal(directory, run, timeline), "at": "run time"}
     (directory / "report.json").write_text(json.dumps({
         **({"replay_fidelity": verdict} if fidelity is not None else {}),
-        "run": run, "client": client,
+        "inputs": {"tower_log": str(log), "run_dir": str(directory)},
+        "run": run, "client": {key: client[key] for key in FAKE_EMBEDDED_CLIENT if key in client},
+        "phone_view": client["phone_view"],
         "proof": {"proof": not not_proof, "not_proof_reasons": [not_proof] if not_proof else []},
          "tower_side_pacing": {"computable": True, "source_sha256": actual_journal,
                                "source_capture_root": str(source_root), "source_frames": 1,
@@ -1203,9 +1256,12 @@ def _fake_run(directory, *, photos, lag_p95, sequence, horizons=(52,), fidelity=
                                "source_duplicate_seq": 0},
         "label": directory.name,
         "verdict": {"basis": "phone", "stop_to_room_with_photos_min": photos, "stop_to_phone_photos_min": photos,
-                    "stop_to_store_photos_min": round(photos - 0.25, 2) if store_photos is None else store_photos,
+                    "stop_to_phone_photos_s": round(photos * 60, 3),
+                    "stop_to_store_photos_min": store_minutes,
                     "stop_to_settled_min": photos + 7},
-         "tower_walk": {"totals": {"frames_received": 1, "tx_seq_gap_total": 0,
+         "tower_walk": {"captures": [tower_capture], "stop": timeline["stop"],
+                        "stream_start": timeline["stream_start"],
+                        "totals": {"frames_received": 1, "tx_seq_gap_total": 0,
                                     "backpressure_drops": 0, "frames_rejected": 0,
                                     "frame_processing_errors": 0},
                         "windows": [{"frames_received": 1, "tx_seq_gap_total": 0,
@@ -1213,10 +1269,26 @@ def _fake_run(directory, *, photos, lag_p95, sequence, horizons=(52,), fidelity=
                                      "frame_processing_errors": 0}],
                         "frames_observed": 1, "rebuilds": {"count": 201, "seconds": {"p95": 1.1, "max": 1.9}},
                        "background_solves": [{"keyframes": k} for k in horizons]},
+        "store": {"available": True, "world_dir": str(data / "world_builder" / "worlds" / W), "session_id": S,
+                  "session": {"stages": json.loads((data / "world_builder" / "worlds" / W / "sessions" / S
+                                                    / "session.json").read_text(encoding="utf-8"))["stages"]}},
         "keyframes": {"sha256": sha, "observe_lag_s": {"p50": 2.0, "p95": lag_p95, "p99": 7.0, "max": 7.2}},
         "waterfall": [{"n": "3", "minutes": photos - 13, "child": False}],
-        "live_safety": {"result": "PASS", "environment": {"result": environment}}}), encoding="utf-8")
+        "rendered_by": report.rendered_by(), "evidence_seal": seal,
+        "live_safety": {"result": live_safety, "environment": {"result": environment}}}), encoding="utf-8")
     (directory / "keyframes.json").write_text(json.dumps({"sha256": sha, "sequence": sequence}), encoding="utf-8")
+
+
+def _reseal(directory):
+    """Re-record a fake run's run-time evidence seal after its sealed records were edited on
+    purpose: a run that is COHERENT, differing only where the test says."""
+    path = directory / "report.json"
+    doc = json.loads(path.read_text(encoding="utf-8"))
+    run = json.loads((directory / "run.json").read_text(encoding="utf-8"))
+    client = json.loads((directory / "client.json").read_text(encoding="utf-8"))
+    timeline = report.walk_timeline(report.scan_log(run["err_log"]), client["tower_captures"][0])
+    doc["evidence_seal"] = {**report.evidence_seal(directory, run, timeline), "at": "run time"}
+    path.write_text(json.dumps(doc), encoding="utf-8")
 
 
 def test_compare_gives_the_baseline_spread_and_flags_a_candidate_outside_it(tmp_path):
@@ -2429,7 +2501,7 @@ def test_compare_judges_each_run_by_its_own_bar_version(tmp_path):
     assert report.main(["--out", str(out), "--compare", *(str(tmp_path / n) for n in olds),
                         "--candidate", str(tmp_path / "new-v3"), str(tmp_path / "new-wrong-bar")]) == 0
     result = json.loads((out / "compare.json").read_text(encoding="utf-8"))
-    assert result["compare"] == "c22-live-replay-compare/6"
+    assert result["compare"] == "c22-live-replay-compare/7"
     assert "v1: manager 142" in result["fidelity_ruling"] and "v3: manager 149" in result["fidelity_ruling"]
     photos = {m["metric"]: m for m in result["metrics"]}["stop_to_phone_photos_min"]
     assert photos["baseline_in_range"] == [True, True, True, False, False, False, False, False]
@@ -3633,8 +3705,9 @@ def test_f8_rerender_marks_changed_image_not_proof(tmp_path):
 def test_different_but_self_consistent_jpeg_and_calibration_inputs_do_not_compare(tmp_path):
     for name in ("old0", "old1", "old2"):
         _fake_run(tmp_path / name, photos=47.0, lag_p95=6.8, sequence=[[1, 0]])
+    # The same length as the default bytes, so capture.json's bytes_written (F12) is unchanged too.
     _fake_run(tmp_path / "other-jpeg", photos=40.0, lag_p95=6.8, sequence=[[1, 0]],
-              jpeg_bytes=b"different-valid-jpeg")
+              jpeg_bytes=b"proof-fixture-JPEG")
     _fake_run(tmp_path / "other-cal", photos=40.0, lag_p95=6.8, sequence=[[1, 0]],
               calibration_bytes=b'{"fx": 2}')
     result = report.compare_runs([tmp_path / n for n in ("old0", "old1", "old2")],
@@ -3720,3 +3793,160 @@ def test_handoff_refuses_background_recording_seen_while_joining(lifecycle, monk
     assert len(lifecycle["calls"]["spawn"]) == 1
     assert len(lifecycle["calls"]["terminate"]) == 1
     assert "became recording during the preflight" in _run_json(lifecycle)["aborted"]["reason"]
+
+
+# -- C22-F12: the two Claude reviews of F11 (807054d) ----------------------------------------------
+
+SAME = [[1, 0], [10, 0]]
+
+
+def _three_old(tmp_path, photos=(47.0, 47.5, 46.8)):
+    for index, minutes in enumerate(photos):
+        _fake_run(tmp_path / f"old{index}", photos=minutes, lag_p95=6.8, sequence=SAME)
+    return [tmp_path / f"old{index}" for index in range(len(photos))]
+
+
+def _reasons(result, directory):
+    rows = result["excluded_from_baseline"] + result["invalid_candidates"]
+    return [reason for item in rows if item["dir"] == str(directory) for reason in item["reasons"]]
+
+
+# MED-1: --compare counts DISTINCT streamed runs.
+
+
+def test_one_run_listed_eight_times_counts_once_and_says_so(tmp_path):
+    """F11 MED-1 (both reviews): the same directory 3 + 5 times read as 3 baseline + 5 NEW."""
+    (only,) = _three_old(tmp_path, photos=(47.0,))
+    result = report.compare_runs([only] * 3, [only] * 5)
+    assert (result["baseline_counted"], result["candidates_counted"], result["enough_runs"]) == (1, 0, False)
+    assert len(result["duplicates"]) == 7
+    assert {item["of"] for item in result["duplicates"]} == {str(only)}
+    reasons = result["excluded_from_baseline"][0]["reasons"]
+    assert reasons[-1].startswith(f"duplicate of baseline `{only}`: the same streamed run (Tower capture ")
+    markdown = report.render_compare(result)
+    assert "**DUPLICATE RUNS: 7 argument(s) repeat a streamed run already given, and are not counted" in markdown
+
+
+def test_re_renders_and_copies_of_one_run_count_once(tmp_path):
+    """F11 MED-1: four re-renders (each a new --out) and a resealed copy are the SAME streamed run:
+    the Tower-minted capture id, the run directory, the data root and client.json's sha256 say so."""
+    (run_dir,) = _three_old(tmp_path, photos=(47.0,))
+    renders = []
+    for n in range(4):
+        assert report.main(["--run-dir", str(run_dir), "--out", str(tmp_path / f"rerender-{n}")]) == 0
+        renders.append(tmp_path / f"rerender-{n}")
+    copy = tmp_path / "copy"
+    import shutil
+
+    shutil.copytree(run_dir, copy)
+    doc = json.loads((copy / "report.json").read_text(encoding="utf-8"))
+    doc["inputs"]["run_dir"] = str(copy)
+    (copy / "report.json").write_text(json.dumps(doc), encoding="utf-8")
+    _reseal(copy)
+    result = report.compare_runs([run_dir, renders[0], renders[1]], [renders[2], renders[3], copy])
+    assert result["baseline_counted"] == 1 and result["candidates_counted"] == 0
+    shared = {item["dir"]: [name for name, _ in item["shared"]] for item in result["duplicates"]}
+    assert set(shared) == {str(path) for path in (*renders, copy)}
+    assert "run directory" in shared[str(renders[0])] and "data root" in shared[str(renders[0])]
+    assert shared[str(copy)][0] == "Tower capture" and "client.json sha256" in shared[str(copy)]
+
+
+def test_a_duplicate_never_swings_the_reference_key(tmp_path):
+    """F11 MED-1 (adversarial): one foreign-key run listed three times made ITS key the reference
+    and excluded both genuine runs. Counted once, it is the odd one out."""
+    good = _three_old(tmp_path, photos=(47.0, 47.5))
+    _fake_run(tmp_path / "other", photos=30.0, lag_p95=6.8, sequence=SAME,
+              code={**FAKE_CODE, "py_fingerprint": "ffffffffffffffff"})
+    other = tmp_path / "other"
+    result = report.compare_runs([*good, other, other, other])
+    assert result["comparability"]["reference_from"] == str(good[0])
+    assert result["baseline_counted"] == 2
+    assert [item["dir"] for item in result["comparability"]["not_comparable"]] == [str(other)]
+    assert [item["dir"] for item in result["duplicates"]] == [str(other), str(other)]
+
+
+def test_the_same_run_on_both_sides_is_counted_on_the_baseline_only(tmp_path):
+    (run_dir,) = _three_old(tmp_path, photos=(47.0,))
+    result = report.compare_runs([run_dir], [run_dir])
+    assert (result["baseline_counted"], result["candidates_counted"]) == (1, 0)
+    assert result["duplicates"][0]["side"] == "candidate" and result["duplicates"][0]["of_side"] == "baseline"
+
+
+def test_a_run_whose_stream_identity_cannot_be_established_is_not_counted(tmp_path):
+    olds = _three_old(tmp_path)
+    client_path = olds[2] / "client.json"
+    client = json.loads(client_path.read_text(encoding="utf-8"))
+    client["tower_captures"] = ["0" * 32]           # not the capture the test Tower's own log minted
+    client_path.write_text(json.dumps(client), encoding="utf-8")
+    _reseal(olds[2])
+    result = report.compare_runs(olds)
+    assert result["baseline_counted"] == 2
+    assert any(reason.startswith("stream identity: the test Tower's own log and client.json do not name")
+               for reason in _reasons(result, olds[2]))
+
+
+# LOW-9: the run's records are sealed at run time; compare checks the render against them.
+
+
+def test_the_runner_seals_its_records_at_run_time_and_prints_the_seal(lifecycle, capsys):
+    assert runner.main(lifecycle["argv"]) == 0
+    built = json.loads((lifecycle["out"] / "report.json").read_text(encoding="utf-8"))
+    seal = built["evidence_seal"]
+    assert seal["at"] == "run time" and len(seal["seal"]) == 64
+    assert set(seal["files"]) >= {"client.json", "run.json", "samples.csv", "err_log", "out_log", "session.json"}
+    assert seal["files"]["run.json"] == report.hashlib.sha256((lifecycle["out"] / "run.json").read_bytes()).hexdigest()
+    assert f"[report] evidence seal {seal['seal']} for " in capsys.readouterr().err
+
+
+def test_a_re_render_is_sealed_as_a_render_and_names_the_same_seal(tmp_path, capsys):
+    (run_dir,) = _three_old(tmp_path, photos=(47.0,))
+    capsys.readouterr()
+    assert report.main(["--run-dir", str(run_dir), "--out", str(tmp_path / "rerender")]) == 0
+    built = json.loads((tmp_path / "rerender" / "report.json").read_text(encoding="utf-8"))
+    run_time = json.loads((run_dir / "report.json").read_text(encoding="utf-8"))["evidence_seal"]
+    assert built["evidence_seal"]["at"] == "render" and built["evidence_seal"]["seal"] == run_time["seal"]
+    assert "evidence seal" not in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("edit, why", [
+    ("client.json", "evidence: the run's records changed since run time (client.json no longer hash"),
+    ("err_log", "evidence: the run's records changed since run time (err_log no longer hash"),
+    ("session.json", "evidence: the run's records changed since run time (session.json no longer hash"),
+    ("report minutes", "evidence: the render's W0 time (8.5 min, 2808.0 s) is not the one the run's sealed records "
+                       "give (46.8 min, 2808.0 s)"),
+    ("report client", "evidence: the render's embedded records differ from the run's sealed records (client.stream)"),
+    ("no run-time seal", "evidence: the run directory holds no evidence seal recorded at run time"),
+    ("no run dir", "evidence: the render names no run directory"),
+    ("another report script", "rendered by another report script (report sha1 0000"),
+])
+def test_a_run_whose_records_or_render_were_edited_is_not_counted(tmp_path, edit, why):
+    """F11 LOW-9 (adversarial): an edited report.json W0 number, an edited client.json re-rendered
+    into a fast run, and every other record the verdicts are read from, are refused."""
+    olds = _three_old(tmp_path)
+    bad = olds[2]
+    doc = json.loads((bad / "report.json").read_text(encoding="utf-8"))
+    if edit == "client.json":
+        client = json.loads((bad / "client.json").read_text(encoding="utf-8"))
+        client["phone_view"]["photographic"][-1]["t"] -= 60.0
+        (bad / "client.json").write_text(json.dumps(client), encoding="utf-8")
+    elif edit == "err_log":
+        log = Path(doc["run"]["err_log"])
+        log.write_text(log.read_text(encoding="utf-8") + "\n", encoding="utf-8")
+    elif edit == "session.json":
+        path = bad / "data" / "world_builder" / "worlds" / W / "sessions" / S / "session.json"
+        path.write_text(path.read_text(encoding="utf-8") + " ", encoding="utf-8")
+    elif edit == "report minutes":
+        doc["verdict"]["stop_to_phone_photos_min"] = 8.5
+    elif edit == "report client":
+        doc["client"]["stream"]["frames_sent"] = 2
+    elif edit == "no run-time seal":
+        doc["evidence_seal"]["at"] = "render"
+    elif edit == "no run dir":
+        doc["inputs"].pop("run_dir")
+    elif edit == "another report script":
+        doc["rendered_by"]["report_sha1"] = "0" * 40
+    (bad / "report.json").write_text(json.dumps(doc), encoding="utf-8")
+    result = report.compare_runs(olds)
+    assert result["baseline_counted"] == 2
+    assert any(reason.startswith(why) for reason in _reasons(result, bad)), _reasons(result, bad)
+    assert next(item for item in result["evidence_seals"] if item["dir"] == str(bad))["counted"] is False
