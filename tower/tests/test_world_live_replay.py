@@ -3885,6 +3885,17 @@ def test_a_duplicate_never_swings_the_reference_key(tmp_path):
     assert [item["dir"] for item in result["duplicates"]] == [str(other), str(other)]
 
 
+def test_a_duplicate_never_becomes_even_the_fallback_reference(tmp_path):
+    """With no baseline run counted, the reference falls back to the most common complete key among
+    the baseline: a run listed three times is still one run there."""
+    _fake_run(tmp_path / "a", photos=47.0, lag_p95=6.8, sequence=SAME, fidelity="FAIL")
+    _fake_run(tmp_path / "b", photos=47.0, lag_p95=6.8, sequence=SAME, fidelity="FAIL",
+              code={**FAKE_CODE, "py_fingerprint": "ffffffffffffffff"})
+    result = report.compare_runs([tmp_path / "a", tmp_path / "b", tmp_path / "b", tmp_path / "b"])
+    assert result["baseline_counted"] == 0
+    assert result["comparability"]["reference_from"] == str(tmp_path / "a")      # a tie: the earliest given
+
+
 def test_the_same_run_on_both_sides_is_counted_on_the_baseline_only(tmp_path):
     (run_dir,) = _three_old(tmp_path, photos=(47.0,))
     result = report.compare_runs([run_dir], [run_dir])
