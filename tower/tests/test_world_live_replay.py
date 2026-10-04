@@ -4009,3 +4009,245 @@ def test_the_timing_and_interpreter_key_fields_fail_closed(run, complete):
     if complete and "interpreter" in run:   # a runner that records more has all of it bound
         assert report.timing_env_key(run)["NUMEXPR_NUM_THREADS"] == "4"
         assert report.interpreter_key(run)["recorded"] == {"version": "3.12.5"}
+
+
+# A coherent finished runner run, rendered AT RUN TIME into its own directory as the runner does.
+# The adversarial review's attack fixture (rv-f11-adv `make_run`), made coherent for F12: its log is
+# after v3's cut-off and its recorded starts precede it, its records are sealed, it streams the
+# whole walk, the store writes the room appearance before the push, the client's Stop is the
+# Tower's, and the client's guard polled through the settle. Synthetic bytes only.
+N_WALK = 1200                                     # `_walk_log`'s frame count
+BASE3 = time.mktime(time.strptime("2026-10-01 10:00:00", "%Y-%m-%d %H:%M:%S"))
+STOP3 = BASE3 + 100.0 + 2 / 1000.0                # its "recording stopped (stop)" line, as the report parses it
+GOOD_WATCH_STARTUP = {"at_start": "idle", "history": [{"t": 1.0, "state": "idle"}], "busy_since": None,
+                      "states_seen": ["idle"], "poll_count": 3, "last_probe_at": 3.0,
+                      "background_poll_count": 400, "background_max_gap_s": 0.6}
+
+
+def _coherent_run(root, *, photos_s=480.0, offsets_ms=None, started_at=None, timing_env=None, frames_written=None,
+                  speed=1.0, store_ok_at=None, appearance=True, client_stop_t=None, words=None, guard_polls=None,
+                  guard_last=None, base=BASE3):
+    """`root`/run: run.json, client.json, the test Tower's log and the run-time render (report.json,
+    sealed); `root`/data: the test Tower's root; `root`/src: the source captures. Returns the run dir."""
+    root = Path(root)
+    root.mkdir(parents=True)
+    frames = [(i, 1000.0 + 0.08 * i) for i in range(1, N_WALK + 1)]
+    _capture(root / "src", A, started=1000.0, frames=frames, ended=1000.0 + 0.08 * N_WALK + 0.1,
+             jpeg=b"\xff\xd8adv\xff\xd9")
+    src_root = root / "src" / "captures"
+    if frames_written is not None:
+        manifest = json.loads((src_root / A / "capture.json").read_text(encoding="utf-8"))
+        manifest["frames_written"] = frames_written
+        (src_root / A / "capture.json").write_text(json.dumps(manifest), encoding="utf-8")
+    run_dir = root / "run"
+    run_dir.mkdir()
+    log = run_dir / "tower-8031-x.err.log"
+    log.write_text(_walk_log(base), encoding="utf-8")
+    stop = report.walk_timeline(report.scan_log(log), CAP)["stop"]["t"]
+    offsets = offsets_ms if offsets_ms is not None else [1.0] * N_WALK
+    data = root / "data"
+    rerecorded = [(i, 5000.0 + (t - 1000.0) / speed + offsets[k] / 1000.0) for k, (i, t) in enumerate(frames)]
+    _capture(data, CAP, started=5000.0, frames=rerecorded, ended=rerecorded[-1][1] + 0.1)
+    _world(data / "world_builder", base, appearance_end=stop + photos_s - 5.0 if store_ok_at is None else store_ok_at)
+    if not appearance:
+        path = data / "world_builder" / "worlds" / W / "sessions" / S / "session.json"
+        session = json.loads(path.read_text(encoding="utf-8"))
+        session["stages"].pop("appearance")
+        path.write_text(json.dumps(session), encoding="utf-8")
+    cal_root = data / "world_builder" / "intrinsics"
+    cal_root.mkdir(parents=True)
+    (cal_root / "360x640.json").write_bytes(b'{"fx": 438.0}')
+    calibration = replay.calibration_digests(cal_root)
+    walk = replay.load_walk(src_root, [A])
+    schedule = replay.build_schedule(walk, speed=speed)
+    planned = replay.pin_frame_inputs(walk, schedule)
+    digest = replay.input_list_sha256(planned)
+    if words is None:
+        words = _phone_view([_told(stop + 60.0, state="running", stage="surface"),
+                             _told(stop + photos_s, state="complete", stage="appearance")]).photographic
+    settled_at = round(stop + photos_s + 120.0, 3)
+    client = {
+        "tool": "world_live_replay", "label": root.name, "port": 8031, "captures_replayed": [A],
+        "capture_root": str(src_root), "speed": speed, "first_seconds": None, "after_stop": "stay",
+        "options": {"end_with_stop": False, "follow_chain": True, "subscribe": True, "phone_fetches": True,
+                    "start_session": True, "session_lead": 2.0},
+        "live_guard": True, "not_a_proof_run": False, "started_at": base - 5.0, "t0": base - 0.5,
+        "outcome": "settled", "live_tower_at_start": "idle",
+        "live_tower_watch": {"at_start": "idle", "history": [{"t": base - 5.0, "state": "idle"}], "busy_since": None,
+                             "states_seen": ["idle"],
+                             "poll_count": int((settled_at - base) / 10.0) if guard_polls is None else guard_polls,
+                             "last_probe_at": settled_at - 4.0 if guard_last is None else guard_last},
+        "walk": [{"capture_id": c.capture_id, "started_at": c.started_at, "ended_at": c.ended_at,
+                  "end_reason": c.end_reason, "continues": c.continues, "frames": len(c.frames),
+                  "recorded_seconds": round(c.recorded_seconds, 3),
+                  "recorded_fps": round(len(c.frames) / c.recorded_seconds, 3)} for c in walk],
+        "schedule": replay.schedule_summary(schedule),
+        "source_journals": {c.capture_id: c.source_sha256 for c in walk},
+        "source_images": {"planned": planned, "planned_sha256": digest, "sent": planned, "sent_sha256": digest,
+                          "verified": True},
+        "calibration_check": {"expected": calibration, "before_stream": calibration, "after_stream": calibration,
+                              "verified": True},
+        "stream": {"frames_sent": len(planned), "unanswered": 0, "frame_errors": {}, "lateness_ms": {"p95": 1.0},
+                   "late_over_50ms": 0},
+        "tower_captures": [CAP],
+        "phone_view": {"pushes": len(words), "target": None, "transitions": [], "photographic": words},
+        "events": [{"t": round(stop - 0.002 if client_stop_t is None else client_stop_t, 3), "kind": "stream_stop",
+                    "capture": 0, "late_s": 0.0}],
+        "stopped_at": round(stop - 0.002, 3),
+        "settle": {"settled": True, "settled_at": settled_at, "timed_out": False},
+        "ended_at": round(settled_at + 3.0, 3),
+    }
+    run = {"tool": "world_live_replay_run", "label": root.name,
+           "started_at": base - 60.0 if started_at is None else started_at,
+           "harness": FAKE_HARNESS, "code": dict(FAKE_CODE), "switches": dict(FAKE_SWITCHES),
+           "timing_env": dict(FAKE_TIMING_ENV if timing_env is None else timing_env), "command": list(FAKE_COMMAND),
+           "effective_tower_env": {"__PYVENV_LAUNCHER__": FAKE_VENV},
+           "data_root": str(data), "intrinsics_copied": ["360x640.json"], "intrinsics_sha256": calibration,
+           "err_log": str(log), "live_guard": True, "not_a_proof_run": False,
+           "live_tower_watch_startup": dict(GOOD_WATCH_STARTUP)}
+    (run_dir / "client.json").write_text(json.dumps(client), encoding="utf-8")
+    (run_dir / "run.json").write_text(json.dumps(run), encoding="utf-8")
+    built = report.build_report(tower_log=log, world_root=data / "world_builder", capture_id=CAP, client=client,
+                                run_dir=run_dir, data_root=data, capture_root=src_root, run=run,
+                                capture_root_from="the runner's --capture-root (the replay streamed from it)")
+    built["run"] = run
+    report.write_report(run_dir, built)
+    return run_dir
+
+
+def _built(run_dir) -> dict:
+    return json.loads((Path(run_dir) / "report.json").read_text(encoding="utf-8"))
+
+
+def _counted(run_dir) -> dict:
+    return report.run_validity(report._load_run(run_dir))
+
+
+def test_the_coherent_run_fixture_is_a_counted_proof_run(tmp_path):
+    run_dir = _coherent_run(tmp_path / "r")
+    built = _built(run_dir)
+    assert (built["replay_fidelity"]["result"], built["replay_fidelity"]["version"]) == ("PASS", "v3")
+    assert built["live_safety"]["result"] == "PASS" and built["live_safety"]["environment"]["result"] == "PASS"
+    assert built["proof"] == {"proof": True, "not_proof_reasons": []}
+    assert all(built["comparability_key"][name] is not None for name in report.KEY_FIELDS)
+    assert built["verdict"]["stop_to_phone_photos_min"] == 8.0 and built["verdict"]["stop_to_phone_photos_s"] == 480.0
+    assert built["full_walk"]["full"] is True and built["full_walk"]["frames_written"] == N_WALK
+    assert built["phone_photos"]["store_backing"] == {"backed": True, "store_to_phone_s": 5.0}
+    assert built["stop_agreement"]["agrees"] is True and built["evidence_seal"]["at"] == "run time"
+    assert _counted(run_dir) == {"invalid": [], "not_a_pass": [], "counted": True}
+
+
+# MED-3: a client photos-ready time counts only with the store's room appearance behind it.
+
+
+@pytest.mark.parametrize("how, why", [
+    ("told first", "store backing: the client was told 300.000 s BEFORE the store wrote the room appearance ok"),
+    ("no stage", "store backing: the world has no room-appearance stage (session.json stages.appearance)"),
+])
+def test_a_photos_ready_time_the_store_does_not_back_is_not_proof(tmp_path, how, why):
+    """F11 MED-3 (adversarial): the phone told at +5 min while the store wrote the photos at +10;
+    and a world with no appearance stage at all. Both counted at 807054d."""
+    if how == "told first":
+        run_dir = _coherent_run(tmp_path / "r", photos_s=300.0, store_ok_at=STOP3 + 600.0)
+    else:
+        run_dir = _coherent_run(tmp_path / "r", photos_s=240.0, appearance=False)
+    built = _built(run_dir)
+    assert built["proof"]["proof"] is False and why in built["proof"]["not_proof_reasons"]
+    assert built["phone_photos"]["store_backing"]["backed"] is False
+    assert "**The client's photos-ready time is NOT backed by the store**" in (run_dir / "REPORT.md").read_text(
+        encoding="utf-8")
+    validity = _counted(run_dir)
+    assert validity["counted"] is False and why in validity["invalid"]
+
+
+def test_the_store_backs_a_time_only_at_or_before_it():
+    ok = {"state": "ok", "updated_at": 100.0}
+    assert report.photos_store_backing(100.0, ok)["backed"] is True
+    assert report.photos_store_backing(99.9996, ok)["backed"] is True          # the client stamp's rounding
+    assert report.photos_store_backing(99.999, ok)["backed"] is False
+    assert report.photos_store_backing(101.0, {"state": "failed", "updated_at": 100.0})["backed"] is False
+    assert report.photos_store_backing(101.0, {"state": "ok"})["backed"] is False
+    assert report.photos_store_backing(None, ok)["backed"] is None
+
+
+# MED-4: "full walk" is the source captures' own frames_written, at exactly 1.0.
+
+
+def test_a_truncated_source_copy_is_not_a_full_walk(tmp_path):
+    """F11 MED-4 (adversarial): capture.json says the walk wrote 4005 frames; this copy's journal
+    holds 1200, every one streamed. Counted as a full walk at 807054d."""
+    run_dir = _coherent_run(tmp_path / "r", frames_written=4005)
+    built = _built(run_dir)
+    assert built["full_walk"]["full"] is False and built["proof"]["proof"] is False
+    reasons = _counted(run_dir)["invalid"]
+    assert f"capture {A}: 1200 frame(s) of 9600 bytes streamed, but its capture.json records frames_written 4005, " \
+           "bytes_written 9600" in reasons
+    assert "1200 frame(s) streamed (1200 scheduled, 1200 in the sent list) is not the recorded walk's " \
+           "frames_written 4005" in reasons
+
+
+def test_double_speed_replays_are_not_full_walks(tmp_path):
+    runs = [_coherent_run(tmp_path / f"x2-{n}", speed=2.0, photos_s=400.0 + n) for n in range(4)]
+    result = report.compare_runs(runs[:2], runs[2:])
+    assert (result["baseline_counted"], result["candidates_counted"]) == (0, 0)
+    assert "speed 2.0 is not the recorded pace (exactly 1.0)" in _reasons(result, runs[0])
+
+
+def test_a_first_seconds_cut_is_not_a_full_walk(tmp_path):
+    olds = _three_old(tmp_path)
+    client = json.loads((olds[2] / "client.json").read_text(encoding="utf-8"))
+    client["first_seconds"] = 999.0                    # a cut after the walk's end: nothing was dropped
+    (olds[2] / "client.json").write_text(json.dumps(client), encoding="utf-8")
+    doc = _built(olds[2])
+    doc["client"]["first_seconds"] = 999.0
+    (olds[2] / "report.json").write_text(json.dumps(doc), encoding="utf-8")
+    _reseal(olds[2])
+    result = report.compare_runs(olds)
+    assert result["baseline_counted"] == 2
+    assert "first_seconds cut is not a full-walk proof" in _reasons(result, olds[2])
+
+
+def _manifested(tmp_path, captures):
+    """Source captures (id, end_reason, continues, frames) and a client record that streamed them all."""
+    root = tmp_path / "src"
+    sent = []
+    for capture_id, end_reason, continues, frames in captures:
+        _capture(root, capture_id, started=0.0, frames=[(i, 0.1 * i) for i in range(1, frames + 1)], ended=1.0,
+                 end_reason=end_reason, continues=continues)
+        sent += [{"capture_id": capture_id, "relpath": f"frames/{i:08d}.jpg", "wire_seq": i,
+                  "bytes": len(b"\xff\xd8fake-jpeg\xff\xd9") + 1, "sha256": "x"} for i in range(1, frames + 1)]
+    client = {"speed": 1.0, "first_seconds": None, "walk": [{"capture_id": c[0]} for c in captures],
+              "source_journals": {c[0]: report.journal_sha256(root / "captures" / c[0]) for c in captures},
+              "source_images": {"sent": sent}, "stream": {"frames_sent": len(sent)}, "schedule": {"frames": len(sent)}}
+    return client, {"source_capture_root": str(root / "captures")}
+
+
+@pytest.mark.parametrize("captures, problem", [
+    ([(A, "disconnect", None, 2), (B, "stop", A, 3)], None),
+    ([(A, "stop", B, 2)], "the walk begins mid-chain"),
+    ([(A, "disconnect", None, 2), (B, "stop", None, 3)], f"capture {B} does not continue {A}"),
+    ([(A, "disconnect", None, 2)], "the walk's last capture ended by 'disconnect'"),
+])
+def test_a_full_walk_is_a_closed_chain_of_whole_captures(tmp_path, captures, problem):
+    client, pacing = _manifested(tmp_path, captures)
+    walk = report.full_walk_evidence(client, pacing)
+    if problem is None:
+        assert walk == {"full": True, "problems": [], "frames_written": 5, "speed": 1.0}
+    else:
+        assert walk["full"] is False and any(p.startswith(problem) for p in walk["problems"]), walk
+    # A capture.json that is not the one the stream pinned is no evidence at all.
+    (tmp_path / "src" / "captures" / A / "capture.json").write_text("{}", encoding="utf-8")
+    assert report.source_manifests(client, pacing) is None
+    assert not report.full_walk_evidence(client, pacing)["full"]
+
+
+# Adversarial LOW-6: the W0 origin is the wearer's Stop, not a Stop line the code under test delays.
+
+
+def test_a_stop_line_far_from_the_clients_stop_is_not_proof(tmp_path):
+    run_dir = _coherent_run(tmp_path / "r", photos_s=520.0, client_stop_t=STOP3 - 40.0)
+    built = _built(run_dir)
+    why = ("Stop: the test Tower logged Stop +40.000 s from the client's stream_stop send (more than 1 s): "
+           "the W0 origin is not the wearer's Stop")
+    assert built["proof"]["proof"] is False and why in built["proof"]["not_proof_reasons"]
+    assert why in _counted(run_dir)["invalid"]

@@ -1412,6 +1412,162 @@ def phone_photos(phone_view: dict, t0, room_appearance: dict | None) -> dict:
     return result
 
 
+# The client's receive stamps are rounded to the millisecond (`PhoneView`):
+# a store write within half of that before the receipt is "at or before".
+PHONE_STAMP_TOLERANCE_S = 0.0005
+# The test Tower's Stop line against the client's own stream_stop send. Seven
+# OLD runs measured 0.001-0.082 s (review F11 adversarial LOW-6).
+STOP_AGREEMENT_S = 1.0
+
+
+def photos_store_backing(phone_photos_at, appearance) -> dict:
+    """Is the client's photos-ready time backed by the STORE (review F11
+    MED-3)? Only when the world has a room-appearance stage, the store says
+    `ok`, and it wrote it at or before the client was told (to the client
+    stamp's rounding). A push that runs ahead of the store -- or a world with
+    no appearance stage at all -- is a time with no room photos behind it.
+    `backed` is None when there is no client time to back."""
+    if phone_photos_at is None:
+        return {"backed": None, "why": "no client photos-ready time to back"}
+    if not isinstance(appearance, dict):
+        return {"backed": False,
+                "why": "the world has no room-appearance stage (session.json stages.appearance)"}
+    state, stored = appearance.get("state"), appearance.get("updated_at")
+    if state != "ok":
+        return {"backed": False, "why": f"the store's room appearance is {state!r}, not ok"}
+    if not isinstance(stored, (int, float)) or isinstance(stored, bool):
+        return {"backed": False, "why": "the store's room appearance has no updated_at"}
+    if stored > phone_photos_at + PHONE_STAMP_TOLERANCE_S:
+        return {"backed": False, "store_to_phone_s": round(phone_photos_at - stored, 3),
+                "why": f"the client was told {stored - phone_photos_at:.3f} s BEFORE the store wrote the room "
+                       "appearance ok"}
+    return {"backed": True, "store_to_phone_s": round(phone_photos_at - stored, 3)}
+
+
+def source_manifests(client: dict, pacing: dict | None) -> dict | None:
+    """Each source capture's `capture.json`, read from the source root the
+    run is joined to and checked against the sha256 the stream pinned
+    (client.json `source_journals`): {capture id: manifest}, or None."""
+    pinned = client.get("source_journals") if isinstance(client, dict) else None
+    root_name = pacing.get("source_capture_root") if isinstance(pacing, dict) else None
+    if not isinstance(pinned, dict) or not pinned or not root_name:
+        return None
+    root = Path(root_name).resolve()
+    manifests = {}
+    for capture_id, expected in pinned.items():
+        if not isinstance(expected, dict):
+            return None
+        directory = (root / str(capture_id)).resolve()
+        try:
+            directory.relative_to(root)
+            data = (directory / "capture.json").read_bytes()
+            manifest = json.loads(data.decode("utf-8"))
+        except (ValueError, OSError, UnicodeDecodeError):
+            return None
+        if hashlib.sha256(data).hexdigest() != expected.get("capture.json") or not isinstance(manifest, dict):
+            return None
+        manifests[str(capture_id)] = manifest
+    return manifests
+
+
+def full_walk_evidence(client: dict, pacing: dict | None) -> dict:
+    """Did the run stream the WHOLE recorded walk at the recorded pace
+    (review F11 MED-4)? "Full" is not relative to whatever journal the run
+    was given: it is the source captures' OWN manifests (`capture.json`,
+    hash-checked by `source_manifests`) that say how much was recorded.
+      * speed exactly 1.0, and no `first_seconds` cut;
+      * the walk is a closed chain: its first capture continues nothing,
+        each next one continues the one before, and the last ended by the
+        wearer's Stop (a successor exists only after a disconnect);
+      * per capture, the frames streamed are `frames_written` of them and
+        their bytes `bytes_written` (Walk 5: 4005 frames, 75241745 bytes);
+        and in all, frames streamed = scheduled = the sent list = the walk's
+        `frames_written`.
+    Anything else is NOT-PROOF against the absolute 9.0-min bar."""
+    client = client if isinstance(client, dict) else {}
+    problems = []
+    speed = client.get("speed")
+    if not isinstance(speed, (int, float)) or isinstance(speed, bool) or speed != 1.0:
+        problems.append(f"speed {speed!r} is not the recorded pace (exactly 1.0)")
+    if client.get("first_seconds") is not None:
+        problems.append("first_seconds cut is not a full-walk proof")
+    walk = [capture for capture in client.get("walk") or [] if isinstance(capture, dict)]
+    ids = [str(capture.get("capture_id")) for capture in walk]
+    manifests = source_manifests(client, pacing)
+    images = client.get("source_images") if isinstance(client.get("source_images"), dict) else {}
+    sent = images.get("sent")
+    frames_sent = (client.get("stream") or {}).get("frames_sent") if isinstance(client.get("stream"), dict) else None
+    scheduled = (client.get("schedule") or {}).get("frames") if isinstance(client.get("schedule"), dict) else None
+    written = None
+    if not ids or manifests is None or set(manifests) != set(ids):
+        problems.append("the source captures' capture.json cannot be read and matched to the sha256 the stream "
+                        "pinned, so the recorded walk's frames_written is unknown")
+    elif not isinstance(sent, list) or not all(isinstance(entry, dict) for entry in sent):
+        problems.append("no list of the frames sent (client.json source_images.sent)")
+    else:
+        if manifests[ids[0]].get("continues_capture") is not None:
+            problems.append(f"the walk begins mid-chain: capture {ids[0]} continues "
+                            f"{manifests[ids[0]].get('continues_capture')}")
+        for before, after in zip(ids, ids[1:]):
+            if manifests[after].get("continues_capture") != before:
+                problems.append(f"capture {after} does not continue {before}")
+        if manifests[ids[-1]].get("end_reason") != "stop":
+            problems.append(f"the walk's last capture ended by {manifests[ids[-1]].get('end_reason')!r}, not the "
+                            "wearer's Stop: the walk goes on in a capture this run did not stream")
+        written = 0
+        for capture_id in ids:
+            manifest = manifests[capture_id]
+            frames_written, bytes_written = manifest.get("frames_written"), manifest.get("bytes_written")
+            mine = [entry for entry in sent if str(entry.get("capture_id")) == capture_id]
+            mine_bytes = sum(entry["bytes"] for entry in mine if type(entry.get("bytes")) is int)
+            if type(frames_written) is not int or type(bytes_written) is not int:
+                problems.append(f"capture {capture_id}'s capture.json records no frames_written / bytes_written")
+                written = None
+                continue
+            if written is not None:
+                written += frames_written
+            if frames_written != len(mine) or bytes_written != mine_bytes:
+                problems.append(f"capture {capture_id}: {len(mine)} frame(s) of {mine_bytes} bytes streamed, but its "
+                                f"capture.json records frames_written {frames_written}, bytes_written {bytes_written}")
+        if written is not None and not (written == frames_sent == scheduled == len(sent)):
+            problems.append(f"{frames_sent} frame(s) streamed ({scheduled} scheduled, {len(sent)} in the sent list) "
+                            f"is not the recorded walk's frames_written {written}")
+    return {"full": not problems, "problems": problems, "frames_written": written, "speed": speed}
+
+
+def client_stop_agreement(client: dict, tower_stop) -> dict:
+    """Is the W0 origin the wearer's Stop (review F11 adversarial LOW-6)? The
+    origin is the test Tower's own `recording stopped (stop)` line; it must be
+    within `STOP_AGREEMENT_S` of the client's own stream_stop send, or work the
+    code under test adds before its Stop line is off the clock."""
+    events = client.get("events") if isinstance(client, dict) and isinstance(client.get("events"), list) else []
+    sends = [event.get("t") for event in events if isinstance(event, dict) and event.get("kind") == "stream_stop"
+             and isinstance(event.get("t"), (int, float))]
+    sent = sends[-1] if sends else None
+    if sent is None or not isinstance(tower_stop, (int, float)):
+        return {"agrees": False, "client_stop": sent, "tower_stop": tower_stop,
+                "why": "no client stream_stop send, or no Tower Stop line, to set the W0 origin against"}
+    gap = round(tower_stop - sent, 3)
+    if abs(gap) > STOP_AGREEMENT_S:
+        return {"agrees": False, "client_stop": sent, "tower_stop": tower_stop, "tower_minus_client_s": gap,
+                "why": f"the test Tower logged Stop {gap:+.3f} s from the client's stream_stop send (more than "
+                       f"{STOP_AGREEMENT_S:g} s): the W0 origin is not the wearer's Stop"}
+    return {"agrees": True, "client_stop": sent, "tower_stop": tower_stop, "tower_minus_client_s": gap}
+
+
+def admission_problems(*, phone_photos_at, backing: dict, walk: dict | None, stop: dict) -> list:
+    """Why a run's W0 time cannot be proof for the absolute bar (review F11
+    MED-3, MED-4, adversarial LOW-6): the render's NOT-PROOF reasons, and
+    --compare's, from the run's sealed records."""
+    problems = list((walk or {}).get("problems") or [])
+    if phone_photos_at is not None:
+        if backing.get("backed") is False:
+            problems.append("store backing: " + backing["why"])
+        if not stop.get("agrees"):
+            problems.append("Stop: " + stop["why"])
+    return problems
+
+
 def summarize_stage_timing(doc) -> dict | None:
     """`stage_timing.json` (TOWER_WORLD_STAGE_TIMING=on), per finish and stage."""
     if not isinstance(doc, dict) or not isinstance(doc.get("finishes"), list):
@@ -1995,8 +2151,11 @@ def build_report(*, tower_log, tower_out_log=None, world_root=None, capture_id=N
                                capture_root_from=capture_root_from) if client else {
         "computable": False, "why": "no client record (a real walk's log has none)"}
     fidelity = replay_fidelity(pacing=pacing, client=client, run=run)
-    photos_told = phone_photos(client.get("phone_view") or {}, t0,
-                               stages.get("appearance") if facts.get("available") else None)
+    appearance_stage = stages.get("appearance") if facts.get("available") else None
+    photos_told = phone_photos(client.get("phone_view") or {}, t0, appearance_stage)
+    # Review F11 MED-3: a photos-ready time counts only with the store's room
+    # appearance `ok` written at or before it.
+    photos_told["store_backing"] = photos_store_backing(photos_told.get("phone_photos_at"), appearance_stage)
     if photos_told.get("phone_photos_at") is not None:
         milestones["phone_photos_at"] = photos_told["phone_photos_at"]
     if photos_told.get("photographic_complete_at") is not None:
@@ -2054,6 +2213,10 @@ def build_report(*, tower_log, tower_out_log=None, world_root=None, capture_id=N
         # Apart from the code's verdict and the Environment's (manager 142).
         "replay_fidelity": fidelity,
         "tower_side_pacing": pacing,
+        # Review F11 MED-4: the whole recorded walk, at the recorded pace, by
+        # the source captures' own manifests; and LOW-6: the W0 origin.
+        "full_walk": full_walk_evidence(client, pacing) if has_client else None,
+        "stop_agreement": client_stop_agreement(client, t0) if has_client else None,
         "phone_photos": photos_told,
         "keyframes": keyframes,
         "solve_draw_0": zero,
@@ -2121,6 +2284,16 @@ def build_report(*, tower_log, tower_out_log=None, world_root=None, capture_id=N
         built["proof"]["proof"] = False
         built["proof"]["not_proof_reasons"].append(
             "input evidence missing or changed: " + ", ".join(missing_input))
+    # Review F11 MED-3, MED-4, adversarial LOW-6: a W0 time with no room
+    # photos in the store behind it, a run that is not the whole recorded walk
+    # at the recorded pace, or one whose Stop line is not the client's Stop, is
+    # not proof against the absolute bar.
+    admission = admission_problems(phone_photos_at=photos_told.get("phone_photos_at"),
+                                   backing=photos_told["store_backing"], walk=built["full_walk"],
+                                   stop=built["stop_agreement"] or {})
+    if built["proof"]["proof"] and admission:
+        built["proof"]["proof"] = False
+        built["proof"]["not_proof_reasons"].extend(admission)
     return built
 
 
@@ -2333,6 +2506,24 @@ def render_markdown(report: dict) -> str:
                         if photos.get("store_to_phone_s") is not None else "")
                      + (f"; every photographic stage complete: {_clock(photos.get('photographic_complete_at'))}"
                         if photos.get("photographic_complete_at") else "") + ".")
+    backing = photos.get("store_backing") or {}
+    if backing.get("backed") is False:
+        lines.append("")
+        lines.append(f"**The client's photos-ready time is NOT backed by the store** (review F11 MED-3): "
+                     f"{backing.get('why')}. NOT-PROOF.")
+    walk_check = report.get("full_walk")
+    if isinstance(walk_check, dict):
+        lines.append("")
+        lines.append("Full walk at the recorded pace, by the source captures' own capture.json (review F11 MED-4): "
+                     + ("yes" if walk_check.get("full") else
+                        "**NO** (NOT-PROOF for the absolute bar): " + "; ".join(walk_check.get("problems") or []))
+                     + f" (frames_written {walk_check.get('frames_written')}, speed {walk_check.get('speed')}).")
+    stop_check = report.get("stop_agreement")
+    if isinstance(stop_check, dict) and stop_check.get("tower_minus_client_s") is not None:
+        lines.append("")
+        lines.append(f"W0 origin: the test Tower's Stop line is {stop_check['tower_minus_client_s']:+.3f} s from the "
+                     f"client's stream_stop send"
+                     + (" (within 1 s)." if stop_check.get("agrees") else f": **{stop_check.get('why')}**."))
     zero = report.get("solve_draw_0")
     if zero:
         lines.append("")
@@ -2941,6 +3132,14 @@ def compare_evidence(report: dict) -> dict:
     if not same_s or rendered_min != expected_min:
         problems.append(f"evidence: the render's W0 time ({rendered_min} min, {rendered_s} s) is not the one the "
                         f"run's sealed records give ({expected_min} min, {evidence['w0_seconds']} s)")
+    # 5. Admission against the absolute bar (review F11 MED-3, MED-4,
+    #    adversarial LOW-6), from the sealed records and the pinned sources.
+    evidence["store_backing"] = photos_store_backing(told.get("phone_photos_at"), appearance)
+    evidence["full_walk"] = full_walk_evidence(client, report.get("tower_side_pacing"))
+    evidence["stop_agreement"] = client_stop_agreement(client, evidence["stop_t"])
+    problems.extend(admission_problems(phone_photos_at=told.get("phone_photos_at"),
+                                       backing=evidence["store_backing"], walk=evidence["full_walk"],
+                                       stop=evidence["stop_agreement"]))
     return evidence
 
 
@@ -3073,8 +3272,9 @@ def run_validity(run: dict) -> dict:
     source = run.get("source_frames")
     scheduled = run.get("scheduled_frames")
     matched = run.get("pacing_matched")
-    if run.get("client_first_seconds") is not None:
-        invalid.append("first_seconds cut is not a full-walk proof")
+    # A `first_seconds` cut, another speed, or fewer frames than the source
+    # captures' own frames_written: `full_walk_evidence`, from the sealed
+    # client.json (review F11 MED-4), among the evidence problems below.
     if any(type(value) is not int or value <= 0 for value in (source, scheduled, matched)) or not (
         source == scheduled == sent == matched
     ):
