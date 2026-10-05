@@ -109,34 +109,98 @@ final class CaptureHealthUITests: XCTestCase {
         shoot("capture-health-\(name)-on")
     }
 
-    /// Spec test 6's Stop: a capture running on mock glasses, the panel up,
-    /// and Stop on the screen at the default size -- above the panel, which
-    /// never pushes it down.
-    func testStopStaysOnTheScreenWithThePanelUp() throws {
-        mock.setRoute(Self.sessionStart, status: 200, body: DeadEndsUITests.session(state: "active"))
-        mock.setRoute(Self.sessionStop, status: 200, body: DeadEndsUITests.session(state: "stopped"))
+    // MARK: Stop, with the panel up (spec test 6; the lead's ruling)
+
+    /// Stop sits below the fold (ruled acceptable for the demo). What these
+    /// claim, and no more: the panel never moves Stop, and from the top of
+    /// the screen ONE scroll brings Stop and the panel's first row on screen
+    /// together, with Stop tappable. Neither claims Stop is visible at first.
+    func testThePanelNeverMovesStopAndOneScrollShowsBothAtTheDefaultSize() throws {
+        try assertStopWithThePanel(size: nil, name: "default", oneScroll: true)
+    }
+
+    /// At AX5 the capture control is screens down, panel or not: only that
+    /// the panel never moves it is claimed.
+    func testThePanelNeverMovesStopAtAX5() throws {
+        try assertStopWithThePanel(size: Self.ax5, name: "ax5", oneScroll: false)
+    }
+
+    /// The same capture twice: with the panel held off (a DEBUG-only launch
+    /// flag -- Stop exists only while a capture runs, and a capture always
+    /// shows the panel, so this is the only "without"), then with it. Stop
+    /// is measured from the top of the screen's content (the header's Saved
+    /// worlds button), so a scroll changes neither figure.
+    private func assertStopWithThePanel(size: String?, name: String, oneScroll: Bool) throws {
+        let off = try startCapture(size: size, hidePanel: true)
+        XCTAssertFalse(element("capture-health").exists, "the panel is held off")
+        let without = off.stop.frame.minY - off.top.frame.minY
+        let heightWithout = off.stop.frame.height
+        shoot("capture-health-stop-\(name)-off")
+        app.terminate()
+
+        let on = try startCapture(size: size, hidePanel: false)
+        let stop = on.stop
+        let panel = element("capture-health")
+        XCTAssertTrue(panel.exists, "a capture: the panel")
+        let with = stop.frame.minY - on.top.frame.minY
+        let window = app.windows.firstMatch.frame
+        print("U2D0-STOP|\(name)|window=\(Int(window.width))x\(Int(window.height))|without=\(Int(without))"
+              + "|with=\(Int(with))|stop-h=\(Int(stop.frame.height))|panel-below-by=\(Int(panel.frame.minY - stop.frame.maxY))")
+        XCTAssertEqual(with, without, accuracy: 0.5, "the panel moved Stop")
+        XCTAssertEqual(stop.frame.height, heightWithout, accuracy: 0.5)
+        XCTAssertGreaterThanOrEqual(panel.frame.minY, stop.frame.maxY - 0.5, "the panel is below Stop")
+        shoot("capture-health-stop-\(name)-on")
+        guard oneScroll else { return }
+
+        // The screen as the operator meets it: scrolled to the top.
+        let top = on.top
+        for _ in 0..<6 where abs(top.frame.minY - on.topAtFirst) > 0.5 { app.swipeDown(velocity: .fast) }
+        XCTAssertTrue(waitFor(timeout: 5) { abs(top.frame.minY - on.topAtFirst) <= 0.5 }, "back at the top")
+        Thread.sleep(forTimeInterval: 1)
+        let first = element("capture-health-link")
+        print("U2D0-STOP|\(name)|at-top|stop-hittable=\(stop.isHittable)|first-row-hittable=\(first.isHittable)")
+
+        // ONE scroll: a drag up most of the window, held so nothing coasts.
+        let from = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.88))
+        let to = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.12))
+        from.press(forDuration: 0.1, thenDragTo: to, withVelocity: .slow, thenHoldForDuration: 0.5)
+        Thread.sleep(forTimeInterval: 1)
+        print("U2D0-STOP|\(name)|one-scroll|stop=\(Int(stop.frame.minY))-\(Int(stop.frame.maxY))"
+              + "|first-row=\(Int(first.frame.minY))-\(Int(first.frame.maxY))|window-h=\(Int(window.height))")
+        XCTAssertTrue(stop.isHittable, "one scroll: Stop can be tapped")
+        XCTAssertTrue(first.isHittable, "one scroll: the panel's first row is on the screen with Stop")
+        XCTAssertGreaterThanOrEqual(stop.frame.minY, window.minY)
+        XCTAssertLessThanOrEqual(first.frame.maxY, window.maxY)
+        shoot("capture-health-stop-\(name)-one-scroll")
+        stop.tap()
+        XCTAssertTrue(app.buttons["Start capture"].waitForExistence(timeout: 15), "Stop stopped the capture")
+    }
+
+    /// No World Builder session, mock glasses, a capture started; settled
+    /// once the viewfinder has frames. The first update's bound is pushed out
+    /// so the canvas above Stop cannot change between the two launches.
+    private func startCapture(size: String?, hidePanel: Bool) throws
+        -> (stop: XCUIElement, top: XCUIElement, topAtFirst: CGFloat) {
+        mock.setRoute(Self.sessionStart, status: 404, body: #"{"detail":"Not Found"}"#)
         scriptSocket()
-        launch(size: nil, mockGlasses: true)
+        launch(size: size, mockGlasses: true, hidePanel: hidePanel)
         open(cartridge: "World Builder")
         let start = app.buttons["Start capture"]
         guard waitFor(timeout: 15, { start.exists && start.isEnabled }) else {
             throw XCTSkip("Mock Device Kit gave no active device in this Simulator")
         }
-        XCTAssertTrue(reveal(start), "Start capture is on the screen")
+        let top = app.buttons["Saved worlds"]
+        XCTAssertTrue(top.exists, "the header, the top of the content")
+        let topAtFirst = top.frame.minY
+        XCTAssertTrue(reveal(start), "Start capture can be reached")
         start.tap()
         let stop = app.buttons["Stop capture"]
         XCTAssertTrue(stop.waitForExistence(timeout: 15), "the capture started")
-        let panel = element("capture-health")
-        XCTAssertTrue(panel.waitForExistence(timeout: 10), "a capture: the panel")
-        Thread.sleep(forTimeInterval: 2)
-        let window = app.windows.firstMatch.frame
-        print("U2D0-STOP|window=\(Int(window.width))x\(Int(window.height))|stop=\(Int(stop.frame.minY))-\(Int(stop.frame.maxY))"
-              + "|panel=\(Int(panel.frame.minY))")
-        XCTAssertTrue(stop.isHittable, "Stop can be tapped")
-        XCTAssertLessThanOrEqual(stop.frame.maxY, window.maxY, "Stop is on the screen")
-        XCTAssertLessThanOrEqual(stop.frame.maxY, panel.frame.minY + 0.5, "Stop is above the panel")
-        shoot("capture-health-stop")
-        stop.tap()
+        if !hidePanel {
+            XCTAssertTrue(element("capture-health").waitForExistence(timeout: 10), "a capture: the panel")
+        }
+        Thread.sleep(forTimeInterval: 3)
+        return (stop, top, topAtFirst)
     }
 
     // MARK: The mock
@@ -198,11 +262,13 @@ final class CaptureHealthUITests: XCTestCase {
         }
     }
 
-    private func launch(size: String?, mockGlasses: Bool) {
+    private func launch(size: String?, mockGlasses: Bool, hidePanel: Bool = false) {
         let app = XCUIApplication()
         app.launchArguments = ["-UITestSkipOnboarding", "-UITestResetTowerAddress"]
         if let size { app.launchArguments += ["-UIPreferredContentSizeCategoryName", size] }
+        if hidePanel { app.launchArguments.append("-UITestHideCaptureHealth") }
         if mockGlasses {
+            app.launchEnvironment["GLASSES_UITEST_AWAITING_BOUND_SECONDS"] = "600"
             app.launchArguments.append("-UITestMockGlasses")
             switch DeadEndsUITests.cameraFeed {
             case .success(let feed): app.launchEnvironment["GLASSES_UITEST_MOCK_CAMERA_FEED"] = feed.path

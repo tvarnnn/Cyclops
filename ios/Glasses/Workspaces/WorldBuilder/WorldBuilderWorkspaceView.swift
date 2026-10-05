@@ -432,7 +432,9 @@ private extension WorldBuilderWorkspaceView {
 
     /// The capture-health panel is for a walk: a World Builder session the
     /// Tower honoured, or a capture running on this phone.
-    var showsCaptureHealth: Bool { session.status == .active || isRunning }
+    var showsCaptureHealth: Bool {
+        (session.status == .active || isRunning) && !UITestHooks.hidesCaptureHealth
+    }
 
     /// What the wearer currently sees.
     @ViewBuilder
