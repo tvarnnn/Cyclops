@@ -1237,6 +1237,21 @@ def world_pose_quarantine_setting() -> frozenset:
     return frozenset()
 
 
+# U1.1 native chrome (WORLD-BUILDER-WORLDS.md §4c; manager 167/181): on a page request
+# carrying `wb-chrome=native`, the APPEARANCE page is served with five insertions that
+# let the phone draw its chrome (`world_builder/native_chrome.py`). Read by the render
+# adapter per request, so flipping it needs no restart and replaces no page already open.
+# Unset, blank, `0` and every other spelling `_flag` reads as false are OFF, and off is
+# today exactly: every response, whatever the query, is byte for byte the one before
+# (tests/golden/world_builder_native_chrome_dc35d51.json).
+WORLD_NATIVE_CHROME_ENV = "TOWER_WORLD_NATIVE_CHROME"
+
+
+def world_native_chrome_setting() -> bool:
+    """`TOWER_WORLD_NATIVE_CHROME`: honour `wb-chrome=native` on the appearance page. Off."""
+    return _flag(WORLD_NATIVE_CHROME_ENV, default=False)
+
+
 def _torch_threads(value: str | None) -> int | str:
     """"auto", or a non-negative integer. Garbage is "auto", not a crash.
 

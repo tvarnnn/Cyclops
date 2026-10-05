@@ -264,6 +264,12 @@ def world_render(
     # and was served a page that could fetch nothing. Comma-separated tokens;
     # unknown ones are ignored, never a 422.
     viewer: str | None = Query(default=None),
+    # U1.1 native chrome (WORLD-BUILDER-WORLDS.md §4c): `native` asks the
+    # appearance page to hand its chrome to the phone. Passed through as it came:
+    # the adapter decides, behind TOWER_WORLD_NATIVE_CHROME (off), and every other
+    # value -- and every other rung -- is the page without it. No pattern, so it is
+    # never a 422. The revision routes do not declare it (§4a).
+    wb_chrome: str | None = Query(default=None, alias="wb-chrome"),
 ) -> HTMLResponse:
     """The interactive viewer of one saved world, as a self-contained page.
 
@@ -281,7 +287,7 @@ def world_render(
         html = build_world_render(
             _store(request), world_id, session_id, max_points=max_points,
             view=view, representation=representation, transport=transport,
-            viewer=viewer,
+            viewer=viewer, chrome=wb_chrome,
         )
     except WorldRenderUnavailable as exc:
         raise HTTPException(status_code=404, detail=exc.reason) from None
@@ -338,6 +344,8 @@ def area_render(
     # Accepted and ignored, never a 422 (§5.1): every client that can name this
     # route postdates the scheme handler, so `auto` offers the appearance rung.
     viewer: str | None = Query(default=None),
+    # As on the room's page route (WORLD-BUILDER-COMPONENTS.md §5.1, WORLDS §4c).
+    wb_chrome: str | None = Query(default=None, alias="wb-chrome"),
 ) -> HTMLResponse:
     """The area's viewer page (§5.1): the room's page programs, fed the area's own
     artifacts, in the area's own levelled frame, never composited with the room."""
@@ -345,6 +353,7 @@ def area_render(
         html = build_area_render(
             _store(request), world_id, session_id, area_id, max_points=max_points,
             representation=representation, transport=transport, viewer=viewer,
+            chrome=wb_chrome,
         )
     except AreaUnavailable as exc:
         raise HTTPException(status_code=404, detail=exc.reason) from None

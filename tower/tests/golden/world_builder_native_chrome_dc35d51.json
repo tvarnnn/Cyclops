@@ -1,0 +1,3775 @@
+{
+ "fastapi": "0.141.1",
+ "numpy": "2.5.2",
+ "outputs": {
+  "area-pinned-appearance/app?wb-chrome=''": {
+   "headers": [
+    [
+     "cache-control",
+     "no-store"
+    ],
+    [
+     "content-length",
+     "<len(body)>"
+    ],
+    [
+     "content-security-policy",
+     "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src glasses-world:"
+    ],
+    [
+     "content-type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "length": 283993,
+   "sha256": "c6b859e506515a9e32b97d4fa7c55e5e60c50f4f0d4f5c0d4fb8377d51eed393",
+   "status": 200
+  },
+  "area-pinned-appearance/app?wb-chrome='NATIVE'": {
+   "headers": [
+    [
+     "cache-control",
+     "no-store"
+    ],
+    [
+     "content-length",
+     "<len(body)>"
+    ],
+    [
+     "content-security-policy",
+     "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src glasses-world:"
+    ],
+    [
+     "content-type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "length": 283993,
+   "sha256": "c6b859e506515a9e32b97d4fa7c55e5e60c50f4f0d4f5c0d4fb8377d51eed393",
+   "status": 200
+  },
+  "area-pinned-appearance/app?wb-chrome='native'": {
+   "headers": [
+    [
+     "cache-control",
+     "no-store"
+    ],
+    [
+     "content-length",
+     "<len(body)>"
+    ],
+    [
+     "content-security-policy",
+     "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src glasses-world:"
+    ],
+    [
+     "content-type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "length": 283993,
+   "sha256": "c6b859e506515a9e32b97d4fa7c55e5e60c50f4f0d4f5c0d4fb8377d51eed393",
+   "status": 200
+  },
+  "area-pinned-appearance/app?wb-chrome='web'": {
+   "headers": [
+    [
+     "cache-control",
+     "no-store"
+    ],
+    [
+     "content-length",
+     "<len(body)>"
+    ],
+    [
+     "content-security-policy",
+     "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src glasses-world:"
+    ],
+    [
+     "content-type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "length": 283993,
+   "sha256": "c6b859e506515a9e32b97d4fa7c55e5e60c50f4f0d4f5c0d4fb8377d51eed393",
+   "status": 200
+  },
+  "area-pinned-appearance/app?wb-chrome='x'": {
+   "headers": [
+    [
+     "cache-control",
+     "no-store"
+    ],
+    [
+     "content-length",
+     "<len(body)>"
+    ],
+    [
+     "content-security-policy",
+     "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src glasses-world:"
+    ],
+    [
+     "content-type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "length": 283993,
+   "sha256": "c6b859e506515a9e32b97d4fa7c55e5e60c50f4f0d4f5c0d4fb8377d51eed393",
+   "status": 200
+  },
+  "area-pinned-appearance/app?wb-chrome=<absent>": {
+   "headers": [
+    [
+     "cache-control",
+     "no-store"
+    ],
+    [
+     "content-length",
+     "<len(body)>"
+    ],
+    [
+     "content-security-policy",
+     "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src glasses-world:"
+    ],
+    [
+     "content-type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "length": 283993,
+   "sha256": "c6b859e506515a9e32b97d4fa7c55e5e60c50f4f0d4f5c0d4fb8377d51eed393",
+   "status": 200
+  },
+  "area-pinned-appearance/tower?wb-chrome=''": {
+   "headers": [
+    [
+     "cache-control",
+     "no-store"
+    ],
+    [
+     "content-length",
+     "<len(body)>"
+    ],
+    [
+     "content-security-policy",
+     "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'"
+    ],
+    [
+     "content-type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "length": 283966,
+   "sha256": "cdb707771a696dc00f40c32b14b273c3b9d67616625626d766051ca4999e52f4",
+   "status": 200
+  },
+  "area-pinned-appearance/tower?wb-chrome='NATIVE'": {
+   "headers": [
+    [
+     "cache-control",
+     "no-store"
+    ],
+    [
+     "content-length",
+     "<len(body)>"
+    ],
+    [
+     "content-security-policy",
+     "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'"
+    ],
+    [
+     "content-type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "length": 283966,
+   "sha256": "cdb707771a696dc00f40c32b14b273c3b9d67616625626d766051ca4999e52f4",
+   "status": 200
+  },
+  "area-pinned-appearance/tower?wb-chrome='native'": {
+   "headers": [
+    [
+     "cache-control",
+     "no-store"
+    ],
+    [
+     "content-length",
+     "<len(body)>"
+    ],
+    [
+     "content-security-policy",
+     "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'"
+    ],
+    [
+     "content-type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "length": 283966,
+   "sha256": "cdb707771a696dc00f40c32b14b273c3b9d67616625626d766051ca4999e52f4",
+   "status": 200
+  },
+  "area-pinned-appearance/tower?wb-chrome='web'": {
+   "headers": [
+    [
+     "cache-control",
+     "no-store"
+    ],
+    [
+     "content-length",
+     "<len(body)>"
+    ],
+    [
+     "content-security-policy",
+     "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'"
+    ],
+    [
+     "content-type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "length": 283966,
+   "sha256": "cdb707771a696dc00f40c32b14b273c3b9d67616625626d766051ca4999e52f4",
+   "status": 200
+  },
+  "area-pinned-appearance/tower?wb-chrome='x'": {
+   "headers": [
+    [
+     "cache-control",
+     "no-store"
+    ],
+    [
+     "content-length",
+     "<len(body)>"
+    ],
+    [
+     "content-security-policy",
+     "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'"
+    ],
+    [
+     "content-type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "length": 283966,
+   "sha256": "cdb707771a696dc00f40c32b14b273c3b9d67616625626d766051ca4999e52f4",
+   "status": 200
+  },
+  "area-pinned-appearance/tower?wb-chrome=<absent>": {
+   "headers": [
+    [
+     "cache-control",
+     "no-store"
+    ],
+    [
+     "content-length",
+     "<len(body)>"
+    ],
+    [
+     "content-security-policy",
+     "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'"
+    ],
+    [
+     "content-type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "length": 283966,
+   "sha256": "cdb707771a696dc00f40c32b14b273c3b9d67616625626d766051ca4999e52f4",
+   "status": 200
+  },
+  "area-pinned-surface/app?wb-chrome=''": {
+   "headers": [
+    [
+     "cache-control",
+     "no-store"
+    ],
+    [
+     "content-length",
+     "<len(body)>"
+    ],
+    [
+     "content-security-policy",
+     "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'"
+    ],
+    [
+     "content-type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "length": 51454,
+   "sha256": "ec60e91da5dca9866c0a7d0524d273c325ac0821a1d5ec4e2ad79622014e4d07",
+   "status": 200
+  },
+  "area-pinned-surface/app?wb-chrome='NATIVE'": {
+   "headers": [
+    [
+     "cache-control",
+     "no-store"
+    ],
+    [
+     "content-length",
+     "<len(body)>"
+    ],
+    [
+     "content-security-policy",
+     "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'"
+    ],
+    [
+     "content-type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "length": 51454,
+   "sha256": "ec60e91da5dca9866c0a7d0524d273c325ac0821a1d5ec4e2ad79622014e4d07",
+   "status": 200
+  },
+  "area-pinned-surface/app?wb-chrome='native'": {
+   "headers": [
+    [
+     "cache-control",
+     "no-store"
+    ],
+    [
+     "content-length",
+     "<len(body)>"
+    ],
+    [
+     "content-security-policy",
+     "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'"
+    ],
+    [
+     "content-type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "length": 51454,
+   "sha256": "ec60e91da5dca9866c0a7d0524d273c325ac0821a1d5ec4e2ad79622014e4d07",
+   "status": 200
+  },
+  "area-pinned-surface/app?wb-chrome='web'": {
+   "headers": [
+    [
+     "cache-control",
+     "no-store"
+    ],
+    [
+     "content-length",
+     "<len(body)>"
+    ],
+    [
+     "content-security-policy",
+     "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'"
+    ],
+    [
+     "content-type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "length": 51454,
+   "sha256": "ec60e91da5dca9866c0a7d0524d273c325ac0821a1d5ec4e2ad79622014e4d07",
+   "status": 200
+  },
+  "area-pinned-surface/app?wb-chrome='x'": {
+   "headers": [
+    [
+     "cache-control",
+     "no-store"
+    ],
+    [
+     "content-length",
+     "<len(body)>"
+    ],
+    [
+     "content-security-policy",
+     "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'"
+    ],
+    [
+     "content-type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "length": 51454,
+   "sha256": "ec60e91da5dca9866c0a7d0524d273c325ac0821a1d5ec4e2ad79622014e4d07",
+   "status": 200
+  },
+  "area-pinned-surface/app?wb-chrome=<absent>": {
+   "headers": [
+    [
+     "cache-control",
+     "no-store"
+    ],
+    [
+     "content-length",
+     "<len(body)>"
+    ],
+    [
+     "content-security-policy",
+     "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'"
+    ],
+    [
+     "content-type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "length": 51454,
+   "sha256": "ec60e91da5dca9866c0a7d0524d273c325ac0821a1d5ec4e2ad79622014e4d07",
+   "status": 200
+  },
+  "area-pinned-surface/tower?wb-chrome=''": {
+   "headers": [
+    [
+     "cache-control",
+     "no-store"
+    ],
+    [
+     "content-length",
+     "<len(body)>"
+    ],
+    [
+     "content-security-policy",
+     "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'"
+    ],
+    [
+     "content-type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "length": 51454,
+   "sha256": "ec60e91da5dca9866c0a7d0524d273c325ac0821a1d5ec4e2ad79622014e4d07",
+   "status": 200
+  },
+  "area-pinned-surface/tower?wb-chrome='NATIVE'": {
+   "headers": [
+    [
+     "cache-control",
+     "no-store"
+    ],
+    [
+     "content-length",
+     "<len(body)>"
+    ],
+    [
+     "content-security-policy",
+     "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'"
+    ],
+    [
+     "content-type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "length": 51454,
+   "sha256": "ec60e91da5dca9866c0a7d0524d273c325ac0821a1d5ec4e2ad79622014e4d07",
+   "status": 200
+  },
+  "area-pinned-surface/tower?wb-chrome='native'": {
+   "headers": [
+    [
+     "cache-control",
+     "no-store"
+    ],
+    [
+     "content-length",
+     "<len(body)>"
+    ],
+    [
+     "content-security-policy",
+     "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'"
+    ],
+    [
+     "content-type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "length": 51454,
+   "sha256": "ec60e91da5dca9866c0a7d0524d273c325ac0821a1d5ec4e2ad79622014e4d07",
+   "status": 200
+  },
+  "area-pinned-surface/tower?wb-chrome='web'": {
+   "headers": [
+    [
+     "cache-control",
+     "no-store"
+    ],
+    [
+     "content-length",
+     "<len(body)>"
+    ],
+    [
+     "content-security-policy",
+     "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'"
+    ],
+    [
+     "content-type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "length": 51454,
+   "sha256": "ec60e91da5dca9866c0a7d0524d273c325ac0821a1d5ec4e2ad79622014e4d07",
+   "status": 200
+  },
+  "area-pinned-surface/tower?wb-chrome='x'": {
+   "headers": [
+    [
+     "cache-control",
+     "no-store"
+    ],
+    [
+     "content-length",
+     "<len(body)>"
+    ],
+    [
+     "content-security-policy",
+     "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'"
+    ],
+    [
+     "content-type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "length": 51454,
+   "sha256": "ec60e91da5dca9866c0a7d0524d273c325ac0821a1d5ec4e2ad79622014e4d07",
+   "status": 200
+  },
+  "area-pinned-surface/tower?wb-chrome=<absent>": {
+   "headers": [
+    [
+     "cache-control",
+     "no-store"
+    ],
+    [
+     "content-length",
+     "<len(body)>"
+    ],
+    [
+     "content-security-policy",
+     "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'"
+    ],
+    [
+     "content-type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "length": 51454,
+   "sha256": "ec60e91da5dca9866c0a7d0524d273c325ac0821a1d5ec4e2ad79622014e4d07",
+   "status": 200
+  },
+  "area-revision?wb-chrome=''": {
+   "headers": [
+    [
+     "cache-control",
+     "no-store"
+    ],
+    [
+     "content-length",
+     "<len(body)>"
+    ],
+    [
+     "content-type",
+     "application/json"
+    ]
+   ],
+   "length": 281,
+   "sha256": "33e7e4c244d47581996c2a147a3dfec063876e0ff5aa0230b869aa3d5af9390f",
+   "status": 200
+  },
+  "area-revision?wb-chrome='NATIVE'": {
+   "headers": [
+    [
+     "cache-control",
+     "no-store"
+    ],
+    [
+     "content-length",
+     "<len(body)>"
+    ],
+    [
+     "content-type",
+     "application/json"
+    ]
+   ],
+   "length": 281,
+   "sha256": "33e7e4c244d47581996c2a147a3dfec063876e0ff5aa0230b869aa3d5af9390f",
+   "status": 200
+  },
+  "area-revision?wb-chrome='native'": {
+   "headers": [
+    [
+     "cache-control",
+     "no-store"
+    ],
+    [
+     "content-length",
+     "<len(body)>"
+    ],
+    [
+     "content-type",
+     "application/json"
+    ]
+   ],
+   "length": 281,
+   "sha256": "33e7e4c244d47581996c2a147a3dfec063876e0ff5aa0230b869aa3d5af9390f",
+   "status": 200
+  },
+  "area-revision?wb-chrome='web'": {
+   "headers": [
+    [
+     "cache-control",
+     "no-store"
+    ],
+    [
+     "content-length",
+     "<len(body)>"
+    ],
+    [
+     "content-type",
+     "application/json"
+    ]
+   ],
+   "length": 281,
+   "sha256": "33e7e4c244d47581996c2a147a3dfec063876e0ff5aa0230b869aa3d5af9390f",
+   "status": 200
+  },
+  "area-revision?wb-chrome='x'": {
+   "headers": [
+    [
+     "cache-control",
+     "no-store"
+    ],
+    [
+     "content-length",
+     "<len(body)>"
+    ],
+    [
+     "content-type",
+     "application/json"
+    ]
+   ],
+   "length": 281,
+   "sha256": "33e7e4c244d47581996c2a147a3dfec063876e0ff5aa0230b869aa3d5af9390f",
+   "status": 200
+  },
+  "area-revision?wb-chrome=<absent>": {
+   "headers": [
+    [
+     "cache-control",
+     "no-store"
+    ],
+    [
+     "content-length",
+     "<len(body)>"
+    ],
+    [
+     "content-type",
+     "application/json"
+    ]
+   ],
+   "length": 281,
+   "sha256": "33e7e4c244d47581996c2a147a3dfec063876e0ff5aa0230b869aa3d5af9390f",
+   "status": 200
+  },
+  "area/app?wb-chrome=''": {
+   "headers": [
+    [
+     "cache-control",
+     "no-store"
+    ],
+    [
+     "content-length",
+     "<len(body)>"
+    ],
+    [
+     "content-security-policy",
+     "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src glasses-world:"
+    ],
+    [
+     "content-type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "length": 283993,
+   "sha256": "c6b859e506515a9e32b97d4fa7c55e5e60c50f4f0d4f5c0d4fb8377d51eed393",
+   "status": 200
+  },
+  "area/app?wb-chrome='NATIVE'": {
+   "headers": [
+    [
+     "cache-control",
+     "no-store"
+    ],
+    [
+     "content-length",
+     "<len(body)>"
+    ],
+    [
+     "content-security-policy",
+     "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src glasses-world:"
+    ],
+    [
+     "content-type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "length": 283993,
+   "sha256": "c6b859e506515a9e32b97d4fa7c55e5e60c50f4f0d4f5c0d4fb8377d51eed393",
+   "status": 200
+  },
+  "area/app?wb-chrome='native'": {
+   "headers": [
+    [
+     "cache-control",
+     "no-store"
+    ],
+    [
+     "content-length",
+     "<len(body)>"
+    ],
+    [
+     "content-security-policy",
+     "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src glasses-world:"
+    ],
+    [
+     "content-type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "length": 283993,
+   "sha256": "c6b859e506515a9e32b97d4fa7c55e5e60c50f4f0d4f5c0d4fb8377d51eed393",
+   "status": 200
+  },
+  "area/app?wb-chrome='web'": {
+   "headers": [
+    [
+     "cache-control",
+     "no-store"
+    ],
+    [
+     "content-length",
+     "<len(body)>"
+    ],
+    [
+     "content-security-policy",
+     "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src glasses-world:"
+    ],
+    [
+     "content-type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "length": 283993,
+   "sha256": "c6b859e506515a9e32b97d4fa7c55e5e60c50f4f0d4f5c0d4fb8377d51eed393",
+   "status": 200
+  },
+  "area/app?wb-chrome='x'": {
+   "headers": [
+    [
+     "cache-control",
+     "no-store"
+    ],
+    [
+     "content-length",
+     "<len(body)>"
+    ],
+    [
+     "content-security-policy",
+     "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src glasses-world:"
+    ],
+    [
+     "content-type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "length": 283993,
+   "sha256": "c6b859e506515a9e32b97d4fa7c55e5e60c50f4f0d4f5c0d4fb8377d51eed393",
+   "status": 200
+  },
+  "area/app?wb-chrome=<absent>": {
+   "headers": [
+    [
+     "cache-control",
+     "no-store"
+    ],
+    [
+     "content-length",
+     "<len(body)>"
+    ],
+    [
+     "content-security-policy",
+     "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src glasses-world:"
+    ],
+    [
+     "content-type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "length": 283993,
+   "sha256": "c6b859e506515a9e32b97d4fa7c55e5e60c50f4f0d4f5c0d4fb8377d51eed393",
+   "status": 200
+  },
+  "area/tower?wb-chrome=''": {
+   "headers": [
+    [
+     "cache-control",
+     "no-store"
+    ],
+    [
+     "content-length",
+     "<len(body)>"
+    ],
+    [
+     "content-security-policy",
+     "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'"
+    ],
+    [
+     "content-type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "length": 283966,
+   "sha256": "cdb707771a696dc00f40c32b14b273c3b9d67616625626d766051ca4999e52f4",
+   "status": 200
+  },
+  "area/tower?wb-chrome='NATIVE'": {
+   "headers": [
+    [
+     "cache-control",
+     "no-store"
+    ],
+    [
+     "content-length",
+     "<len(body)>"
+    ],
+    [
+     "content-security-policy",
+     "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'"
+    ],
+    [
+     "content-type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "length": 283966,
+   "sha256": "cdb707771a696dc00f40c32b14b273c3b9d67616625626d766051ca4999e52f4",
+   "status": 200
+  },
+  "area/tower?wb-chrome='native'": {
+   "headers": [
+    [
+     "cache-control",
+     "no-store"
+    ],
+    [
+     "content-length",
+     "<len(body)>"
+    ],
+    [
+     "content-security-policy",
+     "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'"
+    ],
+    [
+     "content-type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "length": 283966,
+   "sha256": "cdb707771a696dc00f40c32b14b273c3b9d67616625626d766051ca4999e52f4",
+   "status": 200
+  },
+  "area/tower?wb-chrome='web'": {
+   "headers": [
+    [
+     "cache-control",
+     "no-store"
+    ],
+    [
+     "content-length",
+     "<len(body)>"
+    ],
+    [
+     "content-security-policy",
+     "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'"
+    ],
+    [
+     "content-type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "length": 283966,
+   "sha256": "cdb707771a696dc00f40c32b14b273c3b9d67616625626d766051ca4999e52f4",
+   "status": 200
+  },
+  "area/tower?wb-chrome='x'": {
+   "headers": [
+    [
+     "cache-control",
+     "no-store"
+    ],
+    [
+     "content-length",
+     "<len(body)>"
+    ],
+    [
+     "content-security-policy",
+     "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'"
+    ],
+    [
+     "content-type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "length": 283966,
+   "sha256": "cdb707771a696dc00f40c32b14b273c3b9d67616625626d766051ca4999e52f4",
+   "status": 200
+  },
+  "area/tower?wb-chrome=<absent>": {
+   "headers": [
+    [
+     "cache-control",
+     "no-store"
+    ],
+    [
+     "content-length",
+     "<len(body)>"
+    ],
+    [
+     "content-security-policy",
+     "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'"
+    ],
+    [
+     "content-type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "length": 283966,
+   "sha256": "cdb707771a696dc00f40c32b14b273c3b9d67616625626d766051ca4999e52f4",
+   "status": 200
+  },
+  "diagnostics/app?wb-chrome=''": {
+   "headers": [
+    [
+     "cache-control",
+     "no-store"
+    ],
+    [
+     "content-length",
+     "<len(body)>"
+    ],
+    [
+     "content-security-policy",
+     "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'"
+    ],
+    [
+     "content-type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "length": 16386,
+   "sha256": "5053b11356f2c26d899612e44e8c4fcd73e9798b0347ea28b7dde948aeb5d66c",
+   "status": 200
+  },
+  "diagnostics/app?wb-chrome='NATIVE'": {
+   "headers": [
+    [
+     "cache-control",
+     "no-store"
+    ],
+    [
+     "content-length",
+     "<len(body)>"
+    ],
+    [
+     "content-security-policy",
+     "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'"
+    ],
+    [
+     "content-type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "length": 16386,
+   "sha256": "5053b11356f2c26d899612e44e8c4fcd73e9798b0347ea28b7dde948aeb5d66c",
+   "status": 200
+  },
+  "diagnostics/app?wb-chrome='native'": {
+   "headers": [
+    [
+     "cache-control",
+     "no-store"
+    ],
+    [
+     "content-length",
+     "<len(body)>"
+    ],
+    [
+     "content-security-policy",
+     "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'"
+    ],
+    [
+     "content-type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "length": 16386,
+   "sha256": "5053b11356f2c26d899612e44e8c4fcd73e9798b0347ea28b7dde948aeb5d66c",
+   "status": 200
+  },
+  "diagnostics/app?wb-chrome='web'": {
+   "headers": [
+    [
+     "cache-control",
+     "no-store"
+    ],
+    [
+     "content-length",
+     "<len(body)>"
+    ],
+    [
+     "content-security-policy",
+     "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'"
+    ],
+    [
+     "content-type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "length": 16386,
+   "sha256": "5053b11356f2c26d899612e44e8c4fcd73e9798b0347ea28b7dde948aeb5d66c",
+   "status": 200
+  },
+  "diagnostics/app?wb-chrome='x'": {
+   "headers": [
+    [
+     "cache-control",
+     "no-store"
+    ],
+    [
+     "content-length",
+     "<len(body)>"
+    ],
+    [
+     "content-security-policy",
+     "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'"
+    ],
+    [
+     "content-type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "length": 16386,
+   "sha256": "5053b11356f2c26d899612e44e8c4fcd73e9798b0347ea28b7dde948aeb5d66c",
+   "status": 200
+  },
+  "diagnostics/app?wb-chrome=<absent>": {
+   "headers": [
+    [
+     "cache-control",
+     "no-store"
+    ],
+    [
+     "content-length",
+     "<len(body)>"
+    ],
+    [
+     "content-security-policy",
+     "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'"
+    ],
+    [
+     "content-type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "length": 16386,
+   "sha256": "5053b11356f2c26d899612e44e8c4fcd73e9798b0347ea28b7dde948aeb5d66c",
+   "status": 200
+  },
+  "diagnostics/tower?wb-chrome=''": {
+   "headers": [
+    [
+     "cache-control",
+     "no-store"
+    ],
+    [
+     "content-length",
+     "<len(body)>"
+    ],
+    [
+     "content-security-policy",
+     "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'"
+    ],
+    [
+     "content-type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "length": 16386,
+   "sha256": "5053b11356f2c26d899612e44e8c4fcd73e9798b0347ea28b7dde948aeb5d66c",
+   "status": 200
+  },
+  "diagnostics/tower?wb-chrome='NATIVE'": {
+   "headers": [
+    [
+     "cache-control",
+     "no-store"
+    ],
+    [
+     "content-length",
+     "<len(body)>"
+    ],
+    [
+     "content-security-policy",
+     "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'"
+    ],
+    [
+     "content-type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "length": 16386,
+   "sha256": "5053b11356f2c26d899612e44e8c4fcd73e9798b0347ea28b7dde948aeb5d66c",
+   "status": 200
+  },
+  "diagnostics/tower?wb-chrome='native'": {
+   "headers": [
+    [
+     "cache-control",
+     "no-store"
+    ],
+    [
+     "content-length",
+     "<len(body)>"
+    ],
+    [
+     "content-security-policy",
+     "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'"
+    ],
+    [
+     "content-type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "length": 16386,
+   "sha256": "5053b11356f2c26d899612e44e8c4fcd73e9798b0347ea28b7dde948aeb5d66c",
+   "status": 200
+  },
+  "diagnostics/tower?wb-chrome='web'": {
+   "headers": [
+    [
+     "cache-control",
+     "no-store"
+    ],
+    [
+     "content-length",
+     "<len(body)>"
+    ],
+    [
+     "content-security-policy",
+     "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'"
+    ],
+    [
+     "content-type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "length": 16386,
+   "sha256": "5053b11356f2c26d899612e44e8c4fcd73e9798b0347ea28b7dde948aeb5d66c",
+   "status": 200
+  },
+  "diagnostics/tower?wb-chrome='x'": {
+   "headers": [
+    [
+     "cache-control",
+     "no-store"
+    ],
+    [
+     "content-length",
+     "<len(body)>"
+    ],
+    [
+     "content-security-policy",
+     "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'"
+    ],
+    [
+     "content-type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "length": 16386,
+   "sha256": "5053b11356f2c26d899612e44e8c4fcd73e9798b0347ea28b7dde948aeb5d66c",
+   "status": 200
+  },
+  "diagnostics/tower?wb-chrome=<absent>": {
+   "headers": [
+    [
+     "cache-control",
+     "no-store"
+    ],
+    [
+     "content-length",
+     "<len(body)>"
+    ],
+    [
+     "content-security-policy",
+     "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'"
+    ],
+    [
+     "content-type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "length": 16386,
+   "sha256": "5053b11356f2c26d899612e44e8c4fcd73e9798b0347ea28b7dde948aeb5d66c",
+   "status": 200
+  },
+  "no-appearance/app?wb-chrome=''": {
+   "headers": [
+    [
+     "cache-control",
+     "no-store"
+    ],
+    [
+     "content-length",
+     "<len(body)>"
+    ],
+    [
+     "content-security-policy",
+     "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'"
+    ],
+    [
+     "content-type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "length": 51117,
+   "sha256": "19f9a321ece15b4438176af2c08dea4c55c4e54602b9ae16e2e0a23c98563f66",
+   "status": 200
+  },
+  "no-appearance/app?wb-chrome='NATIVE'": {
+   "headers": [
+    [
+     "cache-control",
+     "no-store"
+    ],
+    [
+     "content-length",
+     "<len(body)>"
+    ],
+    [
+     "content-security-policy",
+     "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'"
+    ],
+    [
+     "content-type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "length": 51117,
+   "sha256": "19f9a321ece15b4438176af2c08dea4c55c4e54602b9ae16e2e0a23c98563f66",
+   "status": 200
+  },
+  "no-appearance/app?wb-chrome='native'": {
+   "headers": [
+    [
+     "cache-control",
+     "no-store"
+    ],
+    [
+     "content-length",
+     "<len(body)>"
+    ],
+    [
+     "content-security-policy",
+     "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'"
+    ],
+    [
+     "content-type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "length": 51117,
+   "sha256": "19f9a321ece15b4438176af2c08dea4c55c4e54602b9ae16e2e0a23c98563f66",
+   "status": 200
+  },
+  "no-appearance/app?wb-chrome='web'": {
+   "headers": [
+    [
+     "cache-control",
+     "no-store"
+    ],
+    [
+     "content-length",
+     "<len(body)>"
+    ],
+    [
+     "content-security-policy",
+     "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'"
+    ],
+    [
+     "content-type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "length": 51117,
+   "sha256": "19f9a321ece15b4438176af2c08dea4c55c4e54602b9ae16e2e0a23c98563f66",
+   "status": 200
+  },
+  "no-appearance/app?wb-chrome='x'": {
+   "headers": [
+    [
+     "cache-control",
+     "no-store"
+    ],
+    [
+     "content-length",
+     "<len(body)>"
+    ],
+    [
+     "content-security-policy",
+     "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'"
+    ],
+    [
+     "content-type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "length": 51117,
+   "sha256": "19f9a321ece15b4438176af2c08dea4c55c4e54602b9ae16e2e0a23c98563f66",
+   "status": 200
+  },
+  "no-appearance/app?wb-chrome=<absent>": {
+   "headers": [
+    [
+     "cache-control",
+     "no-store"
+    ],
+    [
+     "content-length",
+     "<len(body)>"
+    ],
+    [
+     "content-security-policy",
+     "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'"
+    ],
+    [
+     "content-type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "length": 51117,
+   "sha256": "19f9a321ece15b4438176af2c08dea4c55c4e54602b9ae16e2e0a23c98563f66",
+   "status": 200
+  },
+  "no-appearance/tower?wb-chrome=''": {
+   "headers": [
+    [
+     "cache-control",
+     "no-store"
+    ],
+    [
+     "content-length",
+     "<len(body)>"
+    ],
+    [
+     "content-security-policy",
+     "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'"
+    ],
+    [
+     "content-type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "length": 51117,
+   "sha256": "19f9a321ece15b4438176af2c08dea4c55c4e54602b9ae16e2e0a23c98563f66",
+   "status": 200
+  },
+  "no-appearance/tower?wb-chrome='NATIVE'": {
+   "headers": [
+    [
+     "cache-control",
+     "no-store"
+    ],
+    [
+     "content-length",
+     "<len(body)>"
+    ],
+    [
+     "content-security-policy",
+     "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'"
+    ],
+    [
+     "content-type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "length": 51117,
+   "sha256": "19f9a321ece15b4438176af2c08dea4c55c4e54602b9ae16e2e0a23c98563f66",
+   "status": 200
+  },
+  "no-appearance/tower?wb-chrome='native'": {
+   "headers": [
+    [
+     "cache-control",
+     "no-store"
+    ],
+    [
+     "content-length",
+     "<len(body)>"
+    ],
+    [
+     "content-security-policy",
+     "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'"
+    ],
+    [
+     "content-type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "length": 51117,
+   "sha256": "19f9a321ece15b4438176af2c08dea4c55c4e54602b9ae16e2e0a23c98563f66",
+   "status": 200
+  },
+  "no-appearance/tower?wb-chrome='web'": {
+   "headers": [
+    [
+     "cache-control",
+     "no-store"
+    ],
+    [
+     "content-length",
+     "<len(body)>"
+    ],
+    [
+     "content-security-policy",
+     "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'"
+    ],
+    [
+     "content-type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "length": 51117,
+   "sha256": "19f9a321ece15b4438176af2c08dea4c55c4e54602b9ae16e2e0a23c98563f66",
+   "status": 200
+  },
+  "no-appearance/tower?wb-chrome='x'": {
+   "headers": [
+    [
+     "cache-control",
+     "no-store"
+    ],
+    [
+     "content-length",
+     "<len(body)>"
+    ],
+    [
+     "content-security-policy",
+     "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'"
+    ],
+    [
+     "content-type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "length": 51117,
+   "sha256": "19f9a321ece15b4438176af2c08dea4c55c4e54602b9ae16e2e0a23c98563f66",
+   "status": 200
+  },
+  "no-appearance/tower?wb-chrome=<absent>": {
+   "headers": [
+    [
+     "cache-control",
+     "no-store"
+    ],
+    [
+     "content-length",
+     "<len(body)>"
+    ],
+    [
+     "content-security-policy",
+     "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'"
+    ],
+    [
+     "content-type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "length": 51117,
+   "sha256": "19f9a321ece15b4438176af2c08dea4c55c4e54602b9ae16e2e0a23c98563f66",
+   "status": 200
+  },
+  "research-revision?wb-chrome=''": {
+   "headers": [
+    [
+     "cache-control",
+     "no-store"
+    ],
+    [
+     "content-length",
+     "<len(body)>"
+    ],
+    [
+     "content-type",
+     "application/json"
+    ]
+   ],
+   "length": 226,
+   "sha256": "3de99169ad073cc5696be880790308c816d53728632e032ce04ca08d4fe1b934",
+   "status": 200
+  },
+  "research-revision?wb-chrome='NATIVE'": {
+   "headers": [
+    [
+     "cache-control",
+     "no-store"
+    ],
+    [
+     "content-length",
+     "<len(body)>"
+    ],
+    [
+     "content-type",
+     "application/json"
+    ]
+   ],
+   "length": 226,
+   "sha256": "3de99169ad073cc5696be880790308c816d53728632e032ce04ca08d4fe1b934",
+   "status": 200
+  },
+  "research-revision?wb-chrome='native'": {
+   "headers": [
+    [
+     "cache-control",
+     "no-store"
+    ],
+    [
+     "content-length",
+     "<len(body)>"
+    ],
+    [
+     "content-type",
+     "application/json"
+    ]
+   ],
+   "length": 226,
+   "sha256": "3de99169ad073cc5696be880790308c816d53728632e032ce04ca08d4fe1b934",
+   "status": 200
+  },
+  "research-revision?wb-chrome='web'": {
+   "headers": [
+    [
+     "cache-control",
+     "no-store"
+    ],
+    [
+     "content-length",
+     "<len(body)>"
+    ],
+    [
+     "content-type",
+     "application/json"
+    ]
+   ],
+   "length": 226,
+   "sha256": "3de99169ad073cc5696be880790308c816d53728632e032ce04ca08d4fe1b934",
+   "status": 200
+  },
+  "research-revision?wb-chrome='x'": {
+   "headers": [
+    [
+     "cache-control",
+     "no-store"
+    ],
+    [
+     "content-length",
+     "<len(body)>"
+    ],
+    [
+     "content-type",
+     "application/json"
+    ]
+   ],
+   "length": 226,
+   "sha256": "3de99169ad073cc5696be880790308c816d53728632e032ce04ca08d4fe1b934",
+   "status": 200
+  },
+  "research-revision?wb-chrome=<absent>": {
+   "headers": [
+    [
+     "cache-control",
+     "no-store"
+    ],
+    [
+     "content-length",
+     "<len(body)>"
+    ],
+    [
+     "content-type",
+     "application/json"
+    ]
+   ],
+   "length": 226,
+   "sha256": "3de99169ad073cc5696be880790308c816d53728632e032ce04ca08d4fe1b934",
+   "status": 200
+  },
+  "research/app?wb-chrome=''": {
+   "headers": [
+    [
+     "cache-control",
+     "no-store"
+    ],
+    [
+     "content-length",
+     "<len(body)>"
+    ],
+    [
+     "content-security-policy",
+     "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src glasses-world:"
+    ],
+    [
+     "content-type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "length": 283429,
+   "sha256": "3a01be508428f3289b49ac48af9d86226570aaa8553e33d550ac3d7813bbfde2",
+   "status": 200
+  },
+  "research/app?wb-chrome='NATIVE'": {
+   "headers": [
+    [
+     "cache-control",
+     "no-store"
+    ],
+    [
+     "content-length",
+     "<len(body)>"
+    ],
+    [
+     "content-security-policy",
+     "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src glasses-world:"
+    ],
+    [
+     "content-type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "length": 283429,
+   "sha256": "3a01be508428f3289b49ac48af9d86226570aaa8553e33d550ac3d7813bbfde2",
+   "status": 200
+  },
+  "research/app?wb-chrome='native'": {
+   "headers": [
+    [
+     "cache-control",
+     "no-store"
+    ],
+    [
+     "content-length",
+     "<len(body)>"
+    ],
+    [
+     "content-security-policy",
+     "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src glasses-world:"
+    ],
+    [
+     "content-type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "length": 283429,
+   "sha256": "3a01be508428f3289b49ac48af9d86226570aaa8553e33d550ac3d7813bbfde2",
+   "status": 200
+  },
+  "research/app?wb-chrome='web'": {
+   "headers": [
+    [
+     "cache-control",
+     "no-store"
+    ],
+    [
+     "content-length",
+     "<len(body)>"
+    ],
+    [
+     "content-security-policy",
+     "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src glasses-world:"
+    ],
+    [
+     "content-type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "length": 283429,
+   "sha256": "3a01be508428f3289b49ac48af9d86226570aaa8553e33d550ac3d7813bbfde2",
+   "status": 200
+  },
+  "research/app?wb-chrome='x'": {
+   "headers": [
+    [
+     "cache-control",
+     "no-store"
+    ],
+    [
+     "content-length",
+     "<len(body)>"
+    ],
+    [
+     "content-security-policy",
+     "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src glasses-world:"
+    ],
+    [
+     "content-type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "length": 283429,
+   "sha256": "3a01be508428f3289b49ac48af9d86226570aaa8553e33d550ac3d7813bbfde2",
+   "status": 200
+  },
+  "research/app?wb-chrome=<absent>": {
+   "headers": [
+    [
+     "cache-control",
+     "no-store"
+    ],
+    [
+     "content-length",
+     "<len(body)>"
+    ],
+    [
+     "content-security-policy",
+     "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src glasses-world:"
+    ],
+    [
+     "content-type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "length": 283429,
+   "sha256": "3a01be508428f3289b49ac48af9d86226570aaa8553e33d550ac3d7813bbfde2",
+   "status": 200
+  },
+  "research/tower?wb-chrome=''": {
+   "headers": [
+    [
+     "cache-control",
+     "no-store"
+    ],
+    [
+     "content-length",
+     "<len(body)>"
+    ],
+    [
+     "content-security-policy",
+     "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'"
+    ],
+    [
+     "content-type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "length": 283402,
+   "sha256": "4396261532b0f190f486d66ee4ac25296b07c56a5ec64332f700b37614544197",
+   "status": 200
+  },
+  "research/tower?wb-chrome='NATIVE'": {
+   "headers": [
+    [
+     "cache-control",
+     "no-store"
+    ],
+    [
+     "content-length",
+     "<len(body)>"
+    ],
+    [
+     "content-security-policy",
+     "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'"
+    ],
+    [
+     "content-type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "length": 283402,
+   "sha256": "4396261532b0f190f486d66ee4ac25296b07c56a5ec64332f700b37614544197",
+   "status": 200
+  },
+  "research/tower?wb-chrome='native'": {
+   "headers": [
+    [
+     "cache-control",
+     "no-store"
+    ],
+    [
+     "content-length",
+     "<len(body)>"
+    ],
+    [
+     "content-security-policy",
+     "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'"
+    ],
+    [
+     "content-type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "length": 283402,
+   "sha256": "4396261532b0f190f486d66ee4ac25296b07c56a5ec64332f700b37614544197",
+   "status": 200
+  },
+  "research/tower?wb-chrome='web'": {
+   "headers": [
+    [
+     "cache-control",
+     "no-store"
+    ],
+    [
+     "content-length",
+     "<len(body)>"
+    ],
+    [
+     "content-security-policy",
+     "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'"
+    ],
+    [
+     "content-type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "length": 283402,
+   "sha256": "4396261532b0f190f486d66ee4ac25296b07c56a5ec64332f700b37614544197",
+   "status": 200
+  },
+  "research/tower?wb-chrome='x'": {
+   "headers": [
+    [
+     "cache-control",
+     "no-store"
+    ],
+    [
+     "content-length",
+     "<len(body)>"
+    ],
+    [
+     "content-security-policy",
+     "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'"
+    ],
+    [
+     "content-type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "length": 283402,
+   "sha256": "4396261532b0f190f486d66ee4ac25296b07c56a5ec64332f700b37614544197",
+   "status": 200
+  },
+  "research/tower?wb-chrome=<absent>": {
+   "headers": [
+    [
+     "cache-control",
+     "no-store"
+    ],
+    [
+     "content-length",
+     "<len(body)>"
+    ],
+    [
+     "content-security-policy",
+     "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'"
+    ],
+    [
+     "content-type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "length": 283402,
+   "sha256": "4396261532b0f190f486d66ee4ac25296b07c56a5ec64332f700b37614544197",
+   "status": 200
+  },
+  "room-no-viewer/app?wb-chrome=''": {
+   "headers": [
+    [
+     "cache-control",
+     "no-store"
+    ],
+    [
+     "content-length",
+     "<len(body)>"
+    ],
+    [
+     "content-security-policy",
+     "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'"
+    ],
+    [
+     "content-type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "length": 51117,
+   "sha256": "19f9a321ece15b4438176af2c08dea4c55c4e54602b9ae16e2e0a23c98563f66",
+   "status": 200
+  },
+  "room-no-viewer/app?wb-chrome='NATIVE'": {
+   "headers": [
+    [
+     "cache-control",
+     "no-store"
+    ],
+    [
+     "content-length",
+     "<len(body)>"
+    ],
+    [
+     "content-security-policy",
+     "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'"
+    ],
+    [
+     "content-type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "length": 51117,
+   "sha256": "19f9a321ece15b4438176af2c08dea4c55c4e54602b9ae16e2e0a23c98563f66",
+   "status": 200
+  },
+  "room-no-viewer/app?wb-chrome='native'": {
+   "headers": [
+    [
+     "cache-control",
+     "no-store"
+    ],
+    [
+     "content-length",
+     "<len(body)>"
+    ],
+    [
+     "content-security-policy",
+     "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'"
+    ],
+    [
+     "content-type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "length": 51117,
+   "sha256": "19f9a321ece15b4438176af2c08dea4c55c4e54602b9ae16e2e0a23c98563f66",
+   "status": 200
+  },
+  "room-no-viewer/app?wb-chrome='web'": {
+   "headers": [
+    [
+     "cache-control",
+     "no-store"
+    ],
+    [
+     "content-length",
+     "<len(body)>"
+    ],
+    [
+     "content-security-policy",
+     "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'"
+    ],
+    [
+     "content-type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "length": 51117,
+   "sha256": "19f9a321ece15b4438176af2c08dea4c55c4e54602b9ae16e2e0a23c98563f66",
+   "status": 200
+  },
+  "room-no-viewer/app?wb-chrome='x'": {
+   "headers": [
+    [
+     "cache-control",
+     "no-store"
+    ],
+    [
+     "content-length",
+     "<len(body)>"
+    ],
+    [
+     "content-security-policy",
+     "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'"
+    ],
+    [
+     "content-type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "length": 51117,
+   "sha256": "19f9a321ece15b4438176af2c08dea4c55c4e54602b9ae16e2e0a23c98563f66",
+   "status": 200
+  },
+  "room-no-viewer/app?wb-chrome=<absent>": {
+   "headers": [
+    [
+     "cache-control",
+     "no-store"
+    ],
+    [
+     "content-length",
+     "<len(body)>"
+    ],
+    [
+     "content-security-policy",
+     "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'"
+    ],
+    [
+     "content-type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "length": 51117,
+   "sha256": "19f9a321ece15b4438176af2c08dea4c55c4e54602b9ae16e2e0a23c98563f66",
+   "status": 200
+  },
+  "room-no-viewer/tower?wb-chrome=''": {
+   "headers": [
+    [
+     "cache-control",
+     "no-store"
+    ],
+    [
+     "content-length",
+     "<len(body)>"
+    ],
+    [
+     "content-security-policy",
+     "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'"
+    ],
+    [
+     "content-type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "length": 51117,
+   "sha256": "19f9a321ece15b4438176af2c08dea4c55c4e54602b9ae16e2e0a23c98563f66",
+   "status": 200
+  },
+  "room-no-viewer/tower?wb-chrome='NATIVE'": {
+   "headers": [
+    [
+     "cache-control",
+     "no-store"
+    ],
+    [
+     "content-length",
+     "<len(body)>"
+    ],
+    [
+     "content-security-policy",
+     "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'"
+    ],
+    [
+     "content-type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "length": 51117,
+   "sha256": "19f9a321ece15b4438176af2c08dea4c55c4e54602b9ae16e2e0a23c98563f66",
+   "status": 200
+  },
+  "room-no-viewer/tower?wb-chrome='native'": {
+   "headers": [
+    [
+     "cache-control",
+     "no-store"
+    ],
+    [
+     "content-length",
+     "<len(body)>"
+    ],
+    [
+     "content-security-policy",
+     "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'"
+    ],
+    [
+     "content-type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "length": 51117,
+   "sha256": "19f9a321ece15b4438176af2c08dea4c55c4e54602b9ae16e2e0a23c98563f66",
+   "status": 200
+  },
+  "room-no-viewer/tower?wb-chrome='web'": {
+   "headers": [
+    [
+     "cache-control",
+     "no-store"
+    ],
+    [
+     "content-length",
+     "<len(body)>"
+    ],
+    [
+     "content-security-policy",
+     "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'"
+    ],
+    [
+     "content-type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "length": 51117,
+   "sha256": "19f9a321ece15b4438176af2c08dea4c55c4e54602b9ae16e2e0a23c98563f66",
+   "status": 200
+  },
+  "room-no-viewer/tower?wb-chrome='x'": {
+   "headers": [
+    [
+     "cache-control",
+     "no-store"
+    ],
+    [
+     "content-length",
+     "<len(body)>"
+    ],
+    [
+     "content-security-policy",
+     "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'"
+    ],
+    [
+     "content-type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "length": 51117,
+   "sha256": "19f9a321ece15b4438176af2c08dea4c55c4e54602b9ae16e2e0a23c98563f66",
+   "status": 200
+  },
+  "room-no-viewer/tower?wb-chrome=<absent>": {
+   "headers": [
+    [
+     "cache-control",
+     "no-store"
+    ],
+    [
+     "content-length",
+     "<len(body)>"
+    ],
+    [
+     "content-security-policy",
+     "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'"
+    ],
+    [
+     "content-type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "length": 51117,
+   "sha256": "19f9a321ece15b4438176af2c08dea4c55c4e54602b9ae16e2e0a23c98563f66",
+   "status": 200
+  },
+  "room-pinned-appearance/app?wb-chrome=''": {
+   "headers": [
+    [
+     "cache-control",
+     "no-store"
+    ],
+    [
+     "content-length",
+     "<len(body)>"
+    ],
+    [
+     "content-security-policy",
+     "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src glasses-world:"
+    ],
+    [
+     "content-type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "length": 283445,
+   "sha256": "61f8ae08ee40c6ed1b10c16edb8da695c26bb0f7fcafcd8402587f0a4e5fa906",
+   "status": 200
+  },
+  "room-pinned-appearance/app?wb-chrome='NATIVE'": {
+   "headers": [
+    [
+     "cache-control",
+     "no-store"
+    ],
+    [
+     "content-length",
+     "<len(body)>"
+    ],
+    [
+     "content-security-policy",
+     "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src glasses-world:"
+    ],
+    [
+     "content-type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "length": 283445,
+   "sha256": "61f8ae08ee40c6ed1b10c16edb8da695c26bb0f7fcafcd8402587f0a4e5fa906",
+   "status": 200
+  },
+  "room-pinned-appearance/app?wb-chrome='native'": {
+   "headers": [
+    [
+     "cache-control",
+     "no-store"
+    ],
+    [
+     "content-length",
+     "<len(body)>"
+    ],
+    [
+     "content-security-policy",
+     "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src glasses-world:"
+    ],
+    [
+     "content-type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "length": 283445,
+   "sha256": "61f8ae08ee40c6ed1b10c16edb8da695c26bb0f7fcafcd8402587f0a4e5fa906",
+   "status": 200
+  },
+  "room-pinned-appearance/app?wb-chrome='web'": {
+   "headers": [
+    [
+     "cache-control",
+     "no-store"
+    ],
+    [
+     "content-length",
+     "<len(body)>"
+    ],
+    [
+     "content-security-policy",
+     "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src glasses-world:"
+    ],
+    [
+     "content-type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "length": 283445,
+   "sha256": "61f8ae08ee40c6ed1b10c16edb8da695c26bb0f7fcafcd8402587f0a4e5fa906",
+   "status": 200
+  },
+  "room-pinned-appearance/app?wb-chrome='x'": {
+   "headers": [
+    [
+     "cache-control",
+     "no-store"
+    ],
+    [
+     "content-length",
+     "<len(body)>"
+    ],
+    [
+     "content-security-policy",
+     "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src glasses-world:"
+    ],
+    [
+     "content-type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "length": 283445,
+   "sha256": "61f8ae08ee40c6ed1b10c16edb8da695c26bb0f7fcafcd8402587f0a4e5fa906",
+   "status": 200
+  },
+  "room-pinned-appearance/app?wb-chrome=<absent>": {
+   "headers": [
+    [
+     "cache-control",
+     "no-store"
+    ],
+    [
+     "content-length",
+     "<len(body)>"
+    ],
+    [
+     "content-security-policy",
+     "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src glasses-world:"
+    ],
+    [
+     "content-type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "length": 283445,
+   "sha256": "61f8ae08ee40c6ed1b10c16edb8da695c26bb0f7fcafcd8402587f0a4e5fa906",
+   "status": 200
+  },
+  "room-pinned-appearance/tower?wb-chrome=''": {
+   "headers": [
+    [
+     "cache-control",
+     "no-store"
+    ],
+    [
+     "content-length",
+     "<len(body)>"
+    ],
+    [
+     "content-security-policy",
+     "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'"
+    ],
+    [
+     "content-type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "length": 283418,
+   "sha256": "cc8ac45394aca3ae93a621e8a6fc1c625c906442cc533f293d7033da52e82bd9",
+   "status": 200
+  },
+  "room-pinned-appearance/tower?wb-chrome='NATIVE'": {
+   "headers": [
+    [
+     "cache-control",
+     "no-store"
+    ],
+    [
+     "content-length",
+     "<len(body)>"
+    ],
+    [
+     "content-security-policy",
+     "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'"
+    ],
+    [
+     "content-type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "length": 283418,
+   "sha256": "cc8ac45394aca3ae93a621e8a6fc1c625c906442cc533f293d7033da52e82bd9",
+   "status": 200
+  },
+  "room-pinned-appearance/tower?wb-chrome='native'": {
+   "headers": [
+    [
+     "cache-control",
+     "no-store"
+    ],
+    [
+     "content-length",
+     "<len(body)>"
+    ],
+    [
+     "content-security-policy",
+     "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'"
+    ],
+    [
+     "content-type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "length": 283418,
+   "sha256": "cc8ac45394aca3ae93a621e8a6fc1c625c906442cc533f293d7033da52e82bd9",
+   "status": 200
+  },
+  "room-pinned-appearance/tower?wb-chrome='web'": {
+   "headers": [
+    [
+     "cache-control",
+     "no-store"
+    ],
+    [
+     "content-length",
+     "<len(body)>"
+    ],
+    [
+     "content-security-policy",
+     "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'"
+    ],
+    [
+     "content-type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "length": 283418,
+   "sha256": "cc8ac45394aca3ae93a621e8a6fc1c625c906442cc533f293d7033da52e82bd9",
+   "status": 200
+  },
+  "room-pinned-appearance/tower?wb-chrome='x'": {
+   "headers": [
+    [
+     "cache-control",
+     "no-store"
+    ],
+    [
+     "content-length",
+     "<len(body)>"
+    ],
+    [
+     "content-security-policy",
+     "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'"
+    ],
+    [
+     "content-type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "length": 283418,
+   "sha256": "cc8ac45394aca3ae93a621e8a6fc1c625c906442cc533f293d7033da52e82bd9",
+   "status": 200
+  },
+  "room-pinned-appearance/tower?wb-chrome=<absent>": {
+   "headers": [
+    [
+     "cache-control",
+     "no-store"
+    ],
+    [
+     "content-length",
+     "<len(body)>"
+    ],
+    [
+     "content-security-policy",
+     "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'"
+    ],
+    [
+     "content-type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "length": 283418,
+   "sha256": "cc8ac45394aca3ae93a621e8a6fc1c625c906442cc533f293d7033da52e82bd9",
+   "status": 200
+  },
+  "room-pinned-surface/app?wb-chrome=''": {
+   "headers": [
+    [
+     "cache-control",
+     "no-store"
+    ],
+    [
+     "content-length",
+     "<len(body)>"
+    ],
+    [
+     "content-security-policy",
+     "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'"
+    ],
+    [
+     "content-type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "length": 51117,
+   "sha256": "19f9a321ece15b4438176af2c08dea4c55c4e54602b9ae16e2e0a23c98563f66",
+   "status": 200
+  },
+  "room-pinned-surface/app?wb-chrome='NATIVE'": {
+   "headers": [
+    [
+     "cache-control",
+     "no-store"
+    ],
+    [
+     "content-length",
+     "<len(body)>"
+    ],
+    [
+     "content-security-policy",
+     "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'"
+    ],
+    [
+     "content-type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "length": 51117,
+   "sha256": "19f9a321ece15b4438176af2c08dea4c55c4e54602b9ae16e2e0a23c98563f66",
+   "status": 200
+  },
+  "room-pinned-surface/app?wb-chrome='native'": {
+   "headers": [
+    [
+     "cache-control",
+     "no-store"
+    ],
+    [
+     "content-length",
+     "<len(body)>"
+    ],
+    [
+     "content-security-policy",
+     "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'"
+    ],
+    [
+     "content-type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "length": 51117,
+   "sha256": "19f9a321ece15b4438176af2c08dea4c55c4e54602b9ae16e2e0a23c98563f66",
+   "status": 200
+  },
+  "room-pinned-surface/app?wb-chrome='web'": {
+   "headers": [
+    [
+     "cache-control",
+     "no-store"
+    ],
+    [
+     "content-length",
+     "<len(body)>"
+    ],
+    [
+     "content-security-policy",
+     "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'"
+    ],
+    [
+     "content-type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "length": 51117,
+   "sha256": "19f9a321ece15b4438176af2c08dea4c55c4e54602b9ae16e2e0a23c98563f66",
+   "status": 200
+  },
+  "room-pinned-surface/app?wb-chrome='x'": {
+   "headers": [
+    [
+     "cache-control",
+     "no-store"
+    ],
+    [
+     "content-length",
+     "<len(body)>"
+    ],
+    [
+     "content-security-policy",
+     "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'"
+    ],
+    [
+     "content-type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "length": 51117,
+   "sha256": "19f9a321ece15b4438176af2c08dea4c55c4e54602b9ae16e2e0a23c98563f66",
+   "status": 200
+  },
+  "room-pinned-surface/app?wb-chrome=<absent>": {
+   "headers": [
+    [
+     "cache-control",
+     "no-store"
+    ],
+    [
+     "content-length",
+     "<len(body)>"
+    ],
+    [
+     "content-security-policy",
+     "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'"
+    ],
+    [
+     "content-type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "length": 51117,
+   "sha256": "19f9a321ece15b4438176af2c08dea4c55c4e54602b9ae16e2e0a23c98563f66",
+   "status": 200
+  },
+  "room-pinned-surface/tower?wb-chrome=''": {
+   "headers": [
+    [
+     "cache-control",
+     "no-store"
+    ],
+    [
+     "content-length",
+     "<len(body)>"
+    ],
+    [
+     "content-security-policy",
+     "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'"
+    ],
+    [
+     "content-type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "length": 51117,
+   "sha256": "19f9a321ece15b4438176af2c08dea4c55c4e54602b9ae16e2e0a23c98563f66",
+   "status": 200
+  },
+  "room-pinned-surface/tower?wb-chrome='NATIVE'": {
+   "headers": [
+    [
+     "cache-control",
+     "no-store"
+    ],
+    [
+     "content-length",
+     "<len(body)>"
+    ],
+    [
+     "content-security-policy",
+     "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'"
+    ],
+    [
+     "content-type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "length": 51117,
+   "sha256": "19f9a321ece15b4438176af2c08dea4c55c4e54602b9ae16e2e0a23c98563f66",
+   "status": 200
+  },
+  "room-pinned-surface/tower?wb-chrome='native'": {
+   "headers": [
+    [
+     "cache-control",
+     "no-store"
+    ],
+    [
+     "content-length",
+     "<len(body)>"
+    ],
+    [
+     "content-security-policy",
+     "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'"
+    ],
+    [
+     "content-type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "length": 51117,
+   "sha256": "19f9a321ece15b4438176af2c08dea4c55c4e54602b9ae16e2e0a23c98563f66",
+   "status": 200
+  },
+  "room-pinned-surface/tower?wb-chrome='web'": {
+   "headers": [
+    [
+     "cache-control",
+     "no-store"
+    ],
+    [
+     "content-length",
+     "<len(body)>"
+    ],
+    [
+     "content-security-policy",
+     "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'"
+    ],
+    [
+     "content-type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "length": 51117,
+   "sha256": "19f9a321ece15b4438176af2c08dea4c55c4e54602b9ae16e2e0a23c98563f66",
+   "status": 200
+  },
+  "room-pinned-surface/tower?wb-chrome='x'": {
+   "headers": [
+    [
+     "cache-control",
+     "no-store"
+    ],
+    [
+     "content-length",
+     "<len(body)>"
+    ],
+    [
+     "content-security-policy",
+     "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'"
+    ],
+    [
+     "content-type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "length": 51117,
+   "sha256": "19f9a321ece15b4438176af2c08dea4c55c4e54602b9ae16e2e0a23c98563f66",
+   "status": 200
+  },
+  "room-pinned-surface/tower?wb-chrome=<absent>": {
+   "headers": [
+    [
+     "cache-control",
+     "no-store"
+    ],
+    [
+     "content-length",
+     "<len(body)>"
+    ],
+    [
+     "content-security-policy",
+     "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'"
+    ],
+    [
+     "content-type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "length": 51117,
+   "sha256": "19f9a321ece15b4438176af2c08dea4c55c4e54602b9ae16e2e0a23c98563f66",
+   "status": 200
+  },
+  "room-revision?wb-chrome=''": {
+   "headers": [
+    [
+     "cache-control",
+     "no-store"
+    ],
+    [
+     "content-length",
+     "<len(body)>"
+    ],
+    [
+     "content-type",
+     "application/json"
+    ]
+   ],
+   "length": 226,
+   "sha256": "3de99169ad073cc5696be880790308c816d53728632e032ce04ca08d4fe1b934",
+   "status": 200
+  },
+  "room-revision?wb-chrome='NATIVE'": {
+   "headers": [
+    [
+     "cache-control",
+     "no-store"
+    ],
+    [
+     "content-length",
+     "<len(body)>"
+    ],
+    [
+     "content-type",
+     "application/json"
+    ]
+   ],
+   "length": 226,
+   "sha256": "3de99169ad073cc5696be880790308c816d53728632e032ce04ca08d4fe1b934",
+   "status": 200
+  },
+  "room-revision?wb-chrome='native'": {
+   "headers": [
+    [
+     "cache-control",
+     "no-store"
+    ],
+    [
+     "content-length",
+     "<len(body)>"
+    ],
+    [
+     "content-type",
+     "application/json"
+    ]
+   ],
+   "length": 226,
+   "sha256": "3de99169ad073cc5696be880790308c816d53728632e032ce04ca08d4fe1b934",
+   "status": 200
+  },
+  "room-revision?wb-chrome='web'": {
+   "headers": [
+    [
+     "cache-control",
+     "no-store"
+    ],
+    [
+     "content-length",
+     "<len(body)>"
+    ],
+    [
+     "content-type",
+     "application/json"
+    ]
+   ],
+   "length": 226,
+   "sha256": "3de99169ad073cc5696be880790308c816d53728632e032ce04ca08d4fe1b934",
+   "status": 200
+  },
+  "room-revision?wb-chrome='x'": {
+   "headers": [
+    [
+     "cache-control",
+     "no-store"
+    ],
+    [
+     "content-length",
+     "<len(body)>"
+    ],
+    [
+     "content-type",
+     "application/json"
+    ]
+   ],
+   "length": 226,
+   "sha256": "3de99169ad073cc5696be880790308c816d53728632e032ce04ca08d4fe1b934",
+   "status": 200
+  },
+  "room-revision?wb-chrome=<absent>": {
+   "headers": [
+    [
+     "cache-control",
+     "no-store"
+    ],
+    [
+     "content-length",
+     "<len(body)>"
+    ],
+    [
+     "content-type",
+     "application/json"
+    ]
+   ],
+   "length": 226,
+   "sha256": "3de99169ad073cc5696be880790308c816d53728632e032ce04ca08d4fe1b934",
+   "status": 200
+  },
+  "room-with-areas-revision?wb-chrome=''": {
+   "headers": [
+    [
+     "cache-control",
+     "no-store"
+    ],
+    [
+     "content-length",
+     "<len(body)>"
+    ],
+    [
+     "content-type",
+     "application/json"
+    ]
+   ],
+   "length": 1415,
+   "sha256": "4cbb7d4d929821e07dcb11d668c668f0b629608dac4fed809e4e903bc2e521d0",
+   "status": 200
+  },
+  "room-with-areas-revision?wb-chrome='NATIVE'": {
+   "headers": [
+    [
+     "cache-control",
+     "no-store"
+    ],
+    [
+     "content-length",
+     "<len(body)>"
+    ],
+    [
+     "content-type",
+     "application/json"
+    ]
+   ],
+   "length": 1415,
+   "sha256": "4cbb7d4d929821e07dcb11d668c668f0b629608dac4fed809e4e903bc2e521d0",
+   "status": 200
+  },
+  "room-with-areas-revision?wb-chrome='native'": {
+   "headers": [
+    [
+     "cache-control",
+     "no-store"
+    ],
+    [
+     "content-length",
+     "<len(body)>"
+    ],
+    [
+     "content-type",
+     "application/json"
+    ]
+   ],
+   "length": 1415,
+   "sha256": "4cbb7d4d929821e07dcb11d668c668f0b629608dac4fed809e4e903bc2e521d0",
+   "status": 200
+  },
+  "room-with-areas-revision?wb-chrome='web'": {
+   "headers": [
+    [
+     "cache-control",
+     "no-store"
+    ],
+    [
+     "content-length",
+     "<len(body)>"
+    ],
+    [
+     "content-type",
+     "application/json"
+    ]
+   ],
+   "length": 1415,
+   "sha256": "4cbb7d4d929821e07dcb11d668c668f0b629608dac4fed809e4e903bc2e521d0",
+   "status": 200
+  },
+  "room-with-areas-revision?wb-chrome='x'": {
+   "headers": [
+    [
+     "cache-control",
+     "no-store"
+    ],
+    [
+     "content-length",
+     "<len(body)>"
+    ],
+    [
+     "content-type",
+     "application/json"
+    ]
+   ],
+   "length": 1415,
+   "sha256": "4cbb7d4d929821e07dcb11d668c668f0b629608dac4fed809e4e903bc2e521d0",
+   "status": 200
+  },
+  "room-with-areas-revision?wb-chrome=<absent>": {
+   "headers": [
+    [
+     "cache-control",
+     "no-store"
+    ],
+    [
+     "content-length",
+     "<len(body)>"
+    ],
+    [
+     "content-type",
+     "application/json"
+    ]
+   ],
+   "length": 1415,
+   "sha256": "4cbb7d4d929821e07dcb11d668c668f0b629608dac4fed809e4e903bc2e521d0",
+   "status": 200
+  },
+  "room-with-areas/app?wb-chrome=''": {
+   "headers": [
+    [
+     "cache-control",
+     "no-store"
+    ],
+    [
+     "content-length",
+     "<len(body)>"
+    ],
+    [
+     "content-security-policy",
+     "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src glasses-world:"
+    ],
+    [
+     "content-type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "length": 283489,
+   "sha256": "1ac4ff3f33a44af1cb04dc0bc9f01841a16a5acd967b4973be315660c3c0f43f",
+   "status": 200
+  },
+  "room-with-areas/app?wb-chrome='NATIVE'": {
+   "headers": [
+    [
+     "cache-control",
+     "no-store"
+    ],
+    [
+     "content-length",
+     "<len(body)>"
+    ],
+    [
+     "content-security-policy",
+     "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src glasses-world:"
+    ],
+    [
+     "content-type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "length": 283489,
+   "sha256": "1ac4ff3f33a44af1cb04dc0bc9f01841a16a5acd967b4973be315660c3c0f43f",
+   "status": 200
+  },
+  "room-with-areas/app?wb-chrome='native'": {
+   "headers": [
+    [
+     "cache-control",
+     "no-store"
+    ],
+    [
+     "content-length",
+     "<len(body)>"
+    ],
+    [
+     "content-security-policy",
+     "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src glasses-world:"
+    ],
+    [
+     "content-type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "length": 283489,
+   "sha256": "1ac4ff3f33a44af1cb04dc0bc9f01841a16a5acd967b4973be315660c3c0f43f",
+   "status": 200
+  },
+  "room-with-areas/app?wb-chrome='web'": {
+   "headers": [
+    [
+     "cache-control",
+     "no-store"
+    ],
+    [
+     "content-length",
+     "<len(body)>"
+    ],
+    [
+     "content-security-policy",
+     "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src glasses-world:"
+    ],
+    [
+     "content-type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "length": 283489,
+   "sha256": "1ac4ff3f33a44af1cb04dc0bc9f01841a16a5acd967b4973be315660c3c0f43f",
+   "status": 200
+  },
+  "room-with-areas/app?wb-chrome='x'": {
+   "headers": [
+    [
+     "cache-control",
+     "no-store"
+    ],
+    [
+     "content-length",
+     "<len(body)>"
+    ],
+    [
+     "content-security-policy",
+     "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src glasses-world:"
+    ],
+    [
+     "content-type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "length": 283489,
+   "sha256": "1ac4ff3f33a44af1cb04dc0bc9f01841a16a5acd967b4973be315660c3c0f43f",
+   "status": 200
+  },
+  "room-with-areas/app?wb-chrome=<absent>": {
+   "headers": [
+    [
+     "cache-control",
+     "no-store"
+    ],
+    [
+     "content-length",
+     "<len(body)>"
+    ],
+    [
+     "content-security-policy",
+     "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src glasses-world:"
+    ],
+    [
+     "content-type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "length": 283489,
+   "sha256": "1ac4ff3f33a44af1cb04dc0bc9f01841a16a5acd967b4973be315660c3c0f43f",
+   "status": 200
+  },
+  "room-with-areas/tower?wb-chrome=''": {
+   "headers": [
+    [
+     "cache-control",
+     "no-store"
+    ],
+    [
+     "content-length",
+     "<len(body)>"
+    ],
+    [
+     "content-security-policy",
+     "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'"
+    ],
+    [
+     "content-type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "length": 283462,
+   "sha256": "312ba47e03c30c46ef169a26b232bec08800d2e0ee2ba3ee57bdf159eb0f9710",
+   "status": 200
+  },
+  "room-with-areas/tower?wb-chrome='NATIVE'": {
+   "headers": [
+    [
+     "cache-control",
+     "no-store"
+    ],
+    [
+     "content-length",
+     "<len(body)>"
+    ],
+    [
+     "content-security-policy",
+     "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'"
+    ],
+    [
+     "content-type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "length": 283462,
+   "sha256": "312ba47e03c30c46ef169a26b232bec08800d2e0ee2ba3ee57bdf159eb0f9710",
+   "status": 200
+  },
+  "room-with-areas/tower?wb-chrome='native'": {
+   "headers": [
+    [
+     "cache-control",
+     "no-store"
+    ],
+    [
+     "content-length",
+     "<len(body)>"
+    ],
+    [
+     "content-security-policy",
+     "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'"
+    ],
+    [
+     "content-type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "length": 283462,
+   "sha256": "312ba47e03c30c46ef169a26b232bec08800d2e0ee2ba3ee57bdf159eb0f9710",
+   "status": 200
+  },
+  "room-with-areas/tower?wb-chrome='web'": {
+   "headers": [
+    [
+     "cache-control",
+     "no-store"
+    ],
+    [
+     "content-length",
+     "<len(body)>"
+    ],
+    [
+     "content-security-policy",
+     "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'"
+    ],
+    [
+     "content-type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "length": 283462,
+   "sha256": "312ba47e03c30c46ef169a26b232bec08800d2e0ee2ba3ee57bdf159eb0f9710",
+   "status": 200
+  },
+  "room-with-areas/tower?wb-chrome='x'": {
+   "headers": [
+    [
+     "cache-control",
+     "no-store"
+    ],
+    [
+     "content-length",
+     "<len(body)>"
+    ],
+    [
+     "content-security-policy",
+     "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'"
+    ],
+    [
+     "content-type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "length": 283462,
+   "sha256": "312ba47e03c30c46ef169a26b232bec08800d2e0ee2ba3ee57bdf159eb0f9710",
+   "status": 200
+  },
+  "room-with-areas/tower?wb-chrome=<absent>": {
+   "headers": [
+    [
+     "cache-control",
+     "no-store"
+    ],
+    [
+     "content-length",
+     "<len(body)>"
+    ],
+    [
+     "content-security-policy",
+     "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'"
+    ],
+    [
+     "content-type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "length": 283462,
+   "sha256": "312ba47e03c30c46ef169a26b232bec08800d2e0ee2ba3ee57bdf159eb0f9710",
+   "status": 200
+  },
+  "room/app?wb-chrome=''": {
+   "headers": [
+    [
+     "cache-control",
+     "no-store"
+    ],
+    [
+     "content-length",
+     "<len(body)>"
+    ],
+    [
+     "content-security-policy",
+     "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src glasses-world:"
+    ],
+    [
+     "content-type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "length": 283445,
+   "sha256": "61f8ae08ee40c6ed1b10c16edb8da695c26bb0f7fcafcd8402587f0a4e5fa906",
+   "status": 200
+  },
+  "room/app?wb-chrome='NATIVE'": {
+   "headers": [
+    [
+     "cache-control",
+     "no-store"
+    ],
+    [
+     "content-length",
+     "<len(body)>"
+    ],
+    [
+     "content-security-policy",
+     "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src glasses-world:"
+    ],
+    [
+     "content-type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "length": 283445,
+   "sha256": "61f8ae08ee40c6ed1b10c16edb8da695c26bb0f7fcafcd8402587f0a4e5fa906",
+   "status": 200
+  },
+  "room/app?wb-chrome='native'": {
+   "headers": [
+    [
+     "cache-control",
+     "no-store"
+    ],
+    [
+     "content-length",
+     "<len(body)>"
+    ],
+    [
+     "content-security-policy",
+     "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src glasses-world:"
+    ],
+    [
+     "content-type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "length": 283445,
+   "sha256": "61f8ae08ee40c6ed1b10c16edb8da695c26bb0f7fcafcd8402587f0a4e5fa906",
+   "status": 200
+  },
+  "room/app?wb-chrome='web'": {
+   "headers": [
+    [
+     "cache-control",
+     "no-store"
+    ],
+    [
+     "content-length",
+     "<len(body)>"
+    ],
+    [
+     "content-security-policy",
+     "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src glasses-world:"
+    ],
+    [
+     "content-type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "length": 283445,
+   "sha256": "61f8ae08ee40c6ed1b10c16edb8da695c26bb0f7fcafcd8402587f0a4e5fa906",
+   "status": 200
+  },
+  "room/app?wb-chrome='x'": {
+   "headers": [
+    [
+     "cache-control",
+     "no-store"
+    ],
+    [
+     "content-length",
+     "<len(body)>"
+    ],
+    [
+     "content-security-policy",
+     "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src glasses-world:"
+    ],
+    [
+     "content-type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "length": 283445,
+   "sha256": "61f8ae08ee40c6ed1b10c16edb8da695c26bb0f7fcafcd8402587f0a4e5fa906",
+   "status": 200
+  },
+  "room/app?wb-chrome=<absent>": {
+   "headers": [
+    [
+     "cache-control",
+     "no-store"
+    ],
+    [
+     "content-length",
+     "<len(body)>"
+    ],
+    [
+     "content-security-policy",
+     "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src glasses-world:"
+    ],
+    [
+     "content-type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "length": 283445,
+   "sha256": "61f8ae08ee40c6ed1b10c16edb8da695c26bb0f7fcafcd8402587f0a4e5fa906",
+   "status": 200
+  },
+  "room/tower?wb-chrome=''": {
+   "headers": [
+    [
+     "cache-control",
+     "no-store"
+    ],
+    [
+     "content-length",
+     "<len(body)>"
+    ],
+    [
+     "content-security-policy",
+     "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'"
+    ],
+    [
+     "content-type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "length": 283418,
+   "sha256": "cc8ac45394aca3ae93a621e8a6fc1c625c906442cc533f293d7033da52e82bd9",
+   "status": 200
+  },
+  "room/tower?wb-chrome='NATIVE'": {
+   "headers": [
+    [
+     "cache-control",
+     "no-store"
+    ],
+    [
+     "content-length",
+     "<len(body)>"
+    ],
+    [
+     "content-security-policy",
+     "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'"
+    ],
+    [
+     "content-type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "length": 283418,
+   "sha256": "cc8ac45394aca3ae93a621e8a6fc1c625c906442cc533f293d7033da52e82bd9",
+   "status": 200
+  },
+  "room/tower?wb-chrome='native'": {
+   "headers": [
+    [
+     "cache-control",
+     "no-store"
+    ],
+    [
+     "content-length",
+     "<len(body)>"
+    ],
+    [
+     "content-security-policy",
+     "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'"
+    ],
+    [
+     "content-type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "length": 283418,
+   "sha256": "cc8ac45394aca3ae93a621e8a6fc1c625c906442cc533f293d7033da52e82bd9",
+   "status": 200
+  },
+  "room/tower?wb-chrome='web'": {
+   "headers": [
+    [
+     "cache-control",
+     "no-store"
+    ],
+    [
+     "content-length",
+     "<len(body)>"
+    ],
+    [
+     "content-security-policy",
+     "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'"
+    ],
+    [
+     "content-type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "length": 283418,
+   "sha256": "cc8ac45394aca3ae93a621e8a6fc1c625c906442cc533f293d7033da52e82bd9",
+   "status": 200
+  },
+  "room/tower?wb-chrome='x'": {
+   "headers": [
+    [
+     "cache-control",
+     "no-store"
+    ],
+    [
+     "content-length",
+     "<len(body)>"
+    ],
+    [
+     "content-security-policy",
+     "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'"
+    ],
+    [
+     "content-type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "length": 283418,
+   "sha256": "cc8ac45394aca3ae93a621e8a6fc1c625c906442cc533f293d7033da52e82bd9",
+   "status": 200
+  },
+  "room/tower?wb-chrome=<absent>": {
+   "headers": [
+    [
+     "cache-control",
+     "no-store"
+    ],
+    [
+     "content-length",
+     "<len(body)>"
+    ],
+    [
+     "content-security-policy",
+     "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'"
+    ],
+    [
+     "content-type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "length": 283418,
+   "sha256": "cc8ac45394aca3ae93a621e8a6fc1c625c906442cc533f293d7033da52e82bd9",
+   "status": 200
+  },
+  "sparse/app?wb-chrome=''": {
+   "headers": [
+    [
+     "cache-control",
+     "no-store"
+    ],
+    [
+     "content-length",
+     "<len(body)>"
+    ],
+    [
+     "content-security-policy",
+     "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'"
+    ],
+    [
+     "content-type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "length": 16387,
+   "sha256": "67c7dc9399ed0f26a640c78285b8afe74c8c175d1dc8775cb5f75cfe8483cb86",
+   "status": 200
+  },
+  "sparse/app?wb-chrome='NATIVE'": {
+   "headers": [
+    [
+     "cache-control",
+     "no-store"
+    ],
+    [
+     "content-length",
+     "<len(body)>"
+    ],
+    [
+     "content-security-policy",
+     "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'"
+    ],
+    [
+     "content-type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "length": 16387,
+   "sha256": "67c7dc9399ed0f26a640c78285b8afe74c8c175d1dc8775cb5f75cfe8483cb86",
+   "status": 200
+  },
+  "sparse/app?wb-chrome='native'": {
+   "headers": [
+    [
+     "cache-control",
+     "no-store"
+    ],
+    [
+     "content-length",
+     "<len(body)>"
+    ],
+    [
+     "content-security-policy",
+     "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'"
+    ],
+    [
+     "content-type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "length": 16387,
+   "sha256": "67c7dc9399ed0f26a640c78285b8afe74c8c175d1dc8775cb5f75cfe8483cb86",
+   "status": 200
+  },
+  "sparse/app?wb-chrome='web'": {
+   "headers": [
+    [
+     "cache-control",
+     "no-store"
+    ],
+    [
+     "content-length",
+     "<len(body)>"
+    ],
+    [
+     "content-security-policy",
+     "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'"
+    ],
+    [
+     "content-type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "length": 16387,
+   "sha256": "67c7dc9399ed0f26a640c78285b8afe74c8c175d1dc8775cb5f75cfe8483cb86",
+   "status": 200
+  },
+  "sparse/app?wb-chrome='x'": {
+   "headers": [
+    [
+     "cache-control",
+     "no-store"
+    ],
+    [
+     "content-length",
+     "<len(body)>"
+    ],
+    [
+     "content-security-policy",
+     "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'"
+    ],
+    [
+     "content-type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "length": 16387,
+   "sha256": "67c7dc9399ed0f26a640c78285b8afe74c8c175d1dc8775cb5f75cfe8483cb86",
+   "status": 200
+  },
+  "sparse/app?wb-chrome=<absent>": {
+   "headers": [
+    [
+     "cache-control",
+     "no-store"
+    ],
+    [
+     "content-length",
+     "<len(body)>"
+    ],
+    [
+     "content-security-policy",
+     "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'"
+    ],
+    [
+     "content-type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "length": 16387,
+   "sha256": "67c7dc9399ed0f26a640c78285b8afe74c8c175d1dc8775cb5f75cfe8483cb86",
+   "status": 200
+  },
+  "sparse/tower?wb-chrome=''": {
+   "headers": [
+    [
+     "cache-control",
+     "no-store"
+    ],
+    [
+     "content-length",
+     "<len(body)>"
+    ],
+    [
+     "content-security-policy",
+     "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'"
+    ],
+    [
+     "content-type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "length": 16387,
+   "sha256": "67c7dc9399ed0f26a640c78285b8afe74c8c175d1dc8775cb5f75cfe8483cb86",
+   "status": 200
+  },
+  "sparse/tower?wb-chrome='NATIVE'": {
+   "headers": [
+    [
+     "cache-control",
+     "no-store"
+    ],
+    [
+     "content-length",
+     "<len(body)>"
+    ],
+    [
+     "content-security-policy",
+     "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'"
+    ],
+    [
+     "content-type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "length": 16387,
+   "sha256": "67c7dc9399ed0f26a640c78285b8afe74c8c175d1dc8775cb5f75cfe8483cb86",
+   "status": 200
+  },
+  "sparse/tower?wb-chrome='native'": {
+   "headers": [
+    [
+     "cache-control",
+     "no-store"
+    ],
+    [
+     "content-length",
+     "<len(body)>"
+    ],
+    [
+     "content-security-policy",
+     "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'"
+    ],
+    [
+     "content-type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "length": 16387,
+   "sha256": "67c7dc9399ed0f26a640c78285b8afe74c8c175d1dc8775cb5f75cfe8483cb86",
+   "status": 200
+  },
+  "sparse/tower?wb-chrome='web'": {
+   "headers": [
+    [
+     "cache-control",
+     "no-store"
+    ],
+    [
+     "content-length",
+     "<len(body)>"
+    ],
+    [
+     "content-security-policy",
+     "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'"
+    ],
+    [
+     "content-type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "length": 16387,
+   "sha256": "67c7dc9399ed0f26a640c78285b8afe74c8c175d1dc8775cb5f75cfe8483cb86",
+   "status": 200
+  },
+  "sparse/tower?wb-chrome='x'": {
+   "headers": [
+    [
+     "cache-control",
+     "no-store"
+    ],
+    [
+     "content-length",
+     "<len(body)>"
+    ],
+    [
+     "content-security-policy",
+     "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'"
+    ],
+    [
+     "content-type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "length": 16387,
+   "sha256": "67c7dc9399ed0f26a640c78285b8afe74c8c175d1dc8775cb5f75cfe8483cb86",
+   "status": 200
+  },
+  "sparse/tower?wb-chrome=<absent>": {
+   "headers": [
+    [
+     "cache-control",
+     "no-store"
+    ],
+    [
+     "content-length",
+     "<len(body)>"
+    ],
+    [
+     "content-security-policy",
+     "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'"
+    ],
+    [
+     "content-type",
+     "text/html; charset=utf-8"
+    ]
+   ],
+   "length": 16387,
+   "sha256": "67c7dc9399ed0f26a640c78285b8afe74c8c175d1dc8775cb5f75cfe8483cb86",
+   "status": 200
+  }
+ },
+ "recorded_by": "tests/wb_native_chrome_fixtures.py"
+}
