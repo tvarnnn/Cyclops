@@ -316,6 +316,16 @@ final class WorldChromeTests: XCTestCase {
         XCTAssertNil(other.caption)
         XCTAssertNil(other.ring.lit)
         XCTAssertEqual(other.ring.sense, -1)
+        // Every string at its bound, eight sections: well over the first
+        // draft's 24 KiB, and within the 64 KiB the Tower asks for.
+        guard case .success = Self.decode(Self.stateBody(seq: 1, nonce: "N1") {
+            $0["status"] = String(repeating: "s", count: 200)
+            $0["message"] = NSNull()
+            $0["caption"] = ["head": String(repeating: "h", count: 300), "line": String(repeating: "l", count: 600),
+                             "sections": Array(repeating: ["title": String(repeating: "t", count: 80),
+                                                           "body": String(repeating: "b", count: 1600)], count: 8),
+                             "tail": String(repeating: "t", count: 200)]
+        }) else { return XCTFail("a state at every bound decodes") }
 
         func over(_ n: Int) -> String { String(repeating: "s", count: n + 1) }
         func caption(_ edit: (inout [String: Any]) -> Void) -> [String: Any] {
@@ -363,7 +373,7 @@ final class WorldChromeTests: XCTestCase {
             ("drawn as a number", Self.stateBody(seq: 1, nonce: "N1") { $0["drawn"] = 1 }, .missing("drawn")),
             ("no nonce", Self.stateBody(seq: 1, nonce: "N1") { $0["nonce"] = nil }, .missing("nonce")),
             ("nonce 129", Self.stateBody(seq: 1, nonce: String(repeating: "n", count: 129)), .tooLong("nonce")),
-            ("too large", Self.stateBody(seq: 1, nonce: "N1") { $0["pad"] = String(repeating: "p", count: 25_000) },
+            ("too large", Self.stateBody(seq: 1, nonce: "N1") { $0["pad"] = String(repeating: "p", count: 66_000) },
              .tooLarge(0)),
         ]
         for (name, body, expected) in cases {

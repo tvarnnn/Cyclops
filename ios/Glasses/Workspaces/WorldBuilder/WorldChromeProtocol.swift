@@ -206,7 +206,10 @@ nonisolated enum WorldChromeLimits {
     static let protocolVersion = 1
 
     static let helloBytes = 32 * 1024
-    static let stateBytes = 24 * 1024
+    /// Not the draft's first 24 KiB: the WORLDS v5 draft sizes `state` by its
+    /// UTF-16 string bounds, and the Tower (886eed0) asks for no cap below
+    /// 64 KiB.
+    static let stateBytes = 64 * 1024
     static let viewBytes = 512
     static let awaitBytes = 256
 
