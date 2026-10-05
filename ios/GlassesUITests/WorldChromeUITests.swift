@@ -241,6 +241,8 @@ final class WorldChromeUITests: XCTestCase {
         let share = canvasShare("default-room")
         let window = app.windows.firstMatch.frame
         XCTAssertGreaterThanOrEqual(share, window.height >= 800 ? 0.80 : 0.60)
+        XCTAssertLessThanOrEqual(element("world-chrome-head").frame.maxY, app.webViews.firstMatch.frame.minY + 1,
+                                 "the head is whole above the canvas")
         shoot("u6-share-default")
     }
 
@@ -254,6 +256,14 @@ final class WorldChromeUITests: XCTestCase {
         let share = canvasShare("ax5-room")
         XCTAssertGreaterThanOrEqual(share, 0.60)
         assertTheBarIsReachable(twoRows: true)
+        // The band's words scroll in their own 18 % at AX5, whole, above the
+        // canvas -- never one line with the canvas laid over the rest.
+        let scroller = app.scrollViews.containing(.any, identifier: "world-chrome-head").firstMatch
+        XCTAssertTrue(scroller.exists, "the words scroll at AX5")
+        let web = app.webViews.firstMatch.frame
+        print("U11-WORDS|scroller=\(Int(scroller.frame.minY))-\(Int(scroller.frame.maxY))|web=\(Int(web.minY))")
+        XCTAssertGreaterThan(scroller.frame.height, 60, "more than one line of words at AX5")
+        XCTAssertLessThanOrEqual(scroller.frame.maxY, web.minY + 1, "the words end above the canvas")
         shoot("u7-share-ax5")
     }
 
@@ -429,26 +439,35 @@ final class WorldChromeUITests: XCTestCase {
     }
 
     /// R2: the cold open says what it is doing, before any bar, head or ring.
+    /// One snapshot of the tree per pass, so a short pre-draw window is not
+    /// missed between separate queries.
     func testTheColdOpenSaysWhatItIsDoing() throws {
         try openRealWorld()
-        let status = element("world-chrome-status")
-        let head = element("world-chrome-head")
-        var sawStatus: String?
-        var chromeBeforeStatus = false
+        let watched = ["world-chrome-status", "world-chrome-best", "world-chrome-head", "world-chrome-ring"]
+        var coldStatus: String?
+        var headFirstSeenWithoutAColdStatus = false
         let deadline = Date().addingTimeInterval(90)
         while Date() < deadline {
-            if status.exists, sawStatus == nil {
-                sawStatus = status.label
-                chromeBeforeStatus = element("world-chrome-best").exists || head.exists
-                    || element("world-chrome-ring").exists
+            guard let snapshot = try? app.snapshot() else { continue }
+            var seen: [String: String] = [:]
+            func visit(_ node: XCUIElementSnapshot) {
+                if watched.contains(node.identifier) { seen[node.identifier] = node.label }
+                node.children.forEach(visit)
+            }
+            visit(snapshot)
+            if coldStatus == nil, let status = seen["world-chrome-status"], seen["world-chrome-best"] == nil,
+               seen["world-chrome-head"] == nil, seen["world-chrome-ring"] == nil {
+                coldStatus = status
                 shoot("r2-cold-open")
             }
-            if head.exists { break }
-            Thread.sleep(forTimeInterval: 0.1)
+            if seen["world-chrome-head"] != nil {
+                headFirstSeenWithoutAColdStatus = coldStatus == nil
+                break
+            }
         }
-        print("U11-R2|status=\(sawStatus ?? "none")|chromeBefore=\(chromeBeforeStatus)")
-        XCTAssertNotNil(sawStatus, "a status sentence showed natively before the first frame")
-        XCTAssertFalse(chromeBeforeStatus, "no bar, head or ring before the picture")
+        print("U11-R2|coldStatus=\(coldStatus ?? "none")|headFirst=\(headFirstSeenWithoutAColdStatus)")
+        XCTAssertNotNil(coldStatus, "a status sentence showed natively, alone, before the first frame")
+        XCTAssertFalse(headFirstSeenWithoutAColdStatus, "no bar, head or ring before the picture")
     }
 
     /// R3: the canvas share on the real page, default and AX5.

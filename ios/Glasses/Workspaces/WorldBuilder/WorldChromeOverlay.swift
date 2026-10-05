@@ -211,22 +211,24 @@ struct WorldChromeTopBand: View {
             // system's dark title on dark.
             .background(WorldChromeStyle.plate(contrast), ignoresSafeAreaEdges: [])
         }
+        // Its own height, always. The web view below has the layout priority,
+        // so the stack offers this band its minimum, and `minHeight: 44` then
+        // reported 44 pt whatever the words needed: the canvas was laid over
+        // the rest of them (a second line of words, a notice).
+        .fixedSize(horizontal: false, vertical: true)
     }
 
-    /// The words at their own height, or -- at the accessibility sizes, when
-    /// taller than `wordsCap` -- scrolling in exactly `wordsCap`. Chosen by
-    /// `ViewThatFits`, with no measured state: a measured height fed back
-    /// into its own frame left the words one line tall at AX5.
+    /// The words at their own height (default sizes), or -- at the
+    /// accessibility sizes -- scrolling in exactly `wordsCap`. A fixed height,
+    /// not a measured one: the web view's layout priority squeezes anything
+    /// flexible here to its minimum (the words were one line tall at AX5),
+    /// and a fixed band also keeps the canvas still when the head arrives.
     @ViewBuilder
     private var cappedWords: some View {
         if wordsCap > 0 {
-            ViewThatFits(in: .vertical) {
-                words
-                ScrollView { words }
-                    .frame(height: wordsCap)
-                    .scrollBounceBehavior(.basedOnSize)
-            }
-            .frame(maxHeight: wordsCap, alignment: .top)
+            ScrollView { words }
+                .frame(height: wordsCap)
+                .scrollBounceBehavior(.basedOnSize)
         } else {
             words
         }
@@ -337,6 +339,8 @@ struct WorldChromeBar: View {
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
         .frame(maxWidth: .infinity)
+        // Its own height, for the band's reason: never squeezed by the canvas.
+        .fixedSize(horizontal: false, vertical: true)
         .background(WorldChromeStyle.plate(contrast).ignoresSafeArea(edges: .bottom))
     }
 
@@ -625,19 +629,22 @@ struct WorldChromeRingView: View {
                 .frame(width: WorldChromeRingGeometry.size, height: WorldChromeRingGeometry.size)
                 .contentShape(Circle())
                 .onTapGesture { if canFace { face() } }
-            Text(verbatim: labels.ringLabel)
-                .font(.caption2)
-                .foregroundStyle(WorldChromeStyle.text)
-                .opacity(0.8)
-                .multilineTextAlignment(.center)
-                // Its two lines, never hyphenated down the canvas: it is
-                // hidden from VoiceOver (the ring carries the name), so it
-                // shrinks rather than grows past them.
-                .lineLimit(2)
-                .minimumScaleFactor(0.5)
-                .frame(width: 62)
-                .dynamicTypeSize(...DynamicTypeSize.accessibility1)
-                .allowsHitTesting(false)
+            // The page's lines (`\n` between them), each kept to one line and
+            // shrunk to the ring's width rather than hyphenated down the
+            // canvas: it is hidden from VoiceOver, the ring carries the name.
+            VStack(spacing: 0) {
+                ForEach(Array(labels.ringLabel.split(separator: "\n").enumerated()), id: \.offset) { _, line in
+                    Text(verbatim: String(line))
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.4)
+                }
+            }
+            .font(.caption2)
+            .foregroundStyle(WorldChromeStyle.text)
+            .opacity(0.8)
+            .frame(width: 62)
+            .dynamicTypeSize(...DynamicTypeSize.accessibility1)
+            .allowsHitTesting(false)
         }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(Text(verbatim: labels.ringName))
