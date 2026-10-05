@@ -19,6 +19,7 @@
 > v9 (2026-09-24): four closed-set sentences revised; `detail` client-safe (§3.1).
 > v10 (2026-09-24, after physical-test walk 1): the look-back prompt is SHOWN with one haptic, never spoken; a prompt arriving while the app is inactive is held, not consumed; the banner lasts the window left at delivery (§6.5, §6.6, §8, M3). Nothing on the wire changes (Mac draft 054a; iOS `a72e366`).
 > v11 (2026-09-28, manager 130; C7 B1): §4's example caption follows WORLDS v4's words (*… · 128 of 128 images loaded · 2 more areas shown separately*); the suffix rule is unchanged. Nothing on the wire changes.
+> v12 (2026-10-04, managers 163 §2 and 167 §1, U-PARTIAL; PROPOSED, behind `TOWER_WORLD_PARTIAL_STATE`, default off): a world the Tower finished from only part of its walk carries `finalization.walk`, its notice opens with one of two new closed-set sentences, and it is never reported `ready` or `complete` (§3.1a; WORLDS v5). With the setting off, every payload is byte for byte as before. No identifier moves (§9).
 > Every "OPEN" reference in the text is a question
 > the drafter could not settle: M-numbers are addressed to the Mac (§10),
 > T-numbers to the Tower lane, P3.2 (§11).
@@ -222,10 +223,13 @@ and only when that solve took a fail-safe or owes work. It holds one sentence pe
 in the order masks, scale, gate, and each sentence says who can fix it: an owner, an operator, the idle
 Tower, or a new walk. It is absent on every older session and whenever nothing is owed, so those rows
 are byte for byte as before (§7 rule 1). It **replaces nothing**: `finalization.detail` keeps its own
-meaning. `detail` can carry an error string; `notice` never does.
+meaning. `detail` can carry an error string; `notice` never does. (v12: with `TOWER_WORLD_PARTIAL_STATE`
+on, the Tower also sends a notice for a world it finished from only part of its walk, whether or not its
+solve was gated. That sentence comes first. See §3.1a.)
 
 **The closed set (v8, review V9 M-4, manager 025).** The Tower writes `notice` ONLY from these sentences,
-joined by `"; "` when several causes apply (masks first, then scale or the gate). The fields are
+joined by `"; "` when several causes apply (masks first, then scale or the gate; v12: a walk sentence of
+§3.1a comes before all of them). The fields are
 the only variable text: `{unmasked}`, `{images}` and `{excluded}` are integer image counts, `{attempts}` is an integer, and
 `{what}` is one of the gate clauses of this table (the `gate-failed*`, `depth-*`, `scale-short` and
 `consensus-deferred` sentences up to their first `;`). No exception text, path, username or measured
@@ -272,6 +276,82 @@ to its exception line, at most about 200 characters of reason; `lifecycle.reason
 
 The key is removed when the owed work is done (for example after a re-gate in place succeeds). The
 listing's `contract` identifier does not move, for the reason above.
+
+### 3.1a `finalization.walk` — a world finished from part of its walk (v12, U-PARTIAL; PROPOSED)
+
+**Why.** A session can end `interrupted` or `error` and still have a final solve that succeeds. That
+happens when the wearer leaves World Builder while the camera is still recording, when the recorder
+stops itself at its bound, when a reconnect is abandoned, when frames recorded by the stop are never
+read (the closed-capture drain guard), or when the builder fails mid-walk. Until v12 the Tower reported
+such a session `ready` / `complete` (*"…the world was finished afterwards and is complete"*), and the
+phone showed **Saved** over part of a walk. A world the Tower finished from part of its walk must never
+look complete.
+
+**The key.** With `TOWER_WORLD_PARTIAL_STATE` on (default off), the `finalization` object gains `walk` for
+every session the Tower judges partial. That object is on the `GET /worlds` row (WORLDS §2) and is the
+status channel's `lifecycle.finalization` (`tower/docs/contracts/CARTRIDGE-RESULTS.md` §10.1).
+
+| Field | Type | Meaning |
+|---|---|---|
+| `saved` | string | `"part"`: this world was finished from only part of its walk. It is the only word v12 sends. A client treats any other word as "not said" |
+| `reason` | string | Why the Tower says so: `session-interrupted` (the record says `end_reason: "interrupted"`), `session-error` (`end_reason: "error"`), or `frames-not-read` (the record says `"stop"`, but the walk's capture recorded more frames than the session looked at; only with `TOWER_WORLD_PARTIAL_FRAMES` on). Diagnostic: a client never shows it, and branches on nothing but `saved` |
+
+The key is **absent** (never `null`, never a "whole" word) in three cases: on every other session, on
+every session while the setting is off, and on every older Tower. **Absent does not mean the walk is
+whole.** It means only that the Tower does not say it was saved in part.
+
+**When the Tower says it.** The rule applies to a session whose record is closed (`ended_at` set) and
+whose `finalization.state` is `"complete"`. It is exactly this:
+
+1. **The record says so.** `end_reason` is `"interrupted"` or `"error"`, and `finalization.final_solve`
+   is `"solved"`. `reason` is then `session-interrupted` or `session-error`.
+2. **The capture says so.** This applies only with `TOWER_WORLD_PARTIAL_FRAMES` also on, and every
+   condition must hold:
+   - `end_reason` is `"stop"`;
+   - the session names a `capture_id`;
+   - that capture's `capture.json`, under the Tower's capture root (`<TOWER_CAPTURE_ROOT>/captures/<id>/`),
+     is readable, names the same id, is closed (`ended_at` is a number) and has an integer `frames_written`;
+   - the session's `frames_observed` is an integer **below** `frames_written`.
+
+   `reason` is then `frames-not-read`. A capture manifest that is unreadable, open or absent decides
+   nothing: that is the old world, never an error. Only the session's own capture is read. So a walk that
+   reconnected into later captures is judged by its first capture alone, and a shortfall in a later
+   capture is not seen.
+
+The rule reads the session record and nothing else, plus one capture manifest for rule 2. The row and the
+status channel use the same function, so they cannot disagree. It writes nothing: the record on disk is
+unchanged, and `walk` exists only in what the Tower sends.
+
+**What it changes.** Where the Tower would have reported the session `ready` (status) or `complete`
+(row), it reports `interrupted` instead. `lifecycle.reason`, and so `model_state_reason`, is the walk's
+notice sentence below. No other state changes:
+
+- a world still finishing its photographic room stays `finalizing`;
+- a session that is already `interrupted` stays `interrupted`, and its reason is unchanged.
+
+`model_state` is therefore `interrupted`, a word every phone has decoded since
+`world_builder.status/2026-09-06`.
+
+**The notice.** The walk's sentence comes first in `finalization.notice`. If the record has its own
+notice, `"; "` and that notice follow. The Tower composes this when it builds the payload; the record
+keeps its own notice. Both sentences are closed-set members like every other:
+
+| Cause | Sentence |
+|---|---|
+| `walk-ended-early` (reasons `session-interrupted`, `session-error`) | *only part of this walk is in this world: the Tower stopped before it had looked at all of the walk; an owner can re-capture this walk* |
+| `walk-frames-not-read` (reason `frames-not-read`) | *only part of this walk is in this world: the Tower looked at {observed} of the {recorded} frames it recorded for the walk; an owner can re-capture this walk* |
+
+- **The fields.** `{observed}` is the session's `frames_observed` and `{recorded}` is the capture's
+  `frames_written`. Both are integer frame counts, written as plain digits.
+- **The phone's guard.** Both sentences pass the phone's text guard verbatim.
+- **Length.** The longest composition is 560 characters, under the 700 bound. It is a walk sentence with
+  999,999 in each field, before the longest existing composition (410 characters).
+- **Export.** The Tower exports the set as `tower/results/world_builder_partial.WALK_NOTICE_SENTENCES`,
+  beside `coherence_publish.NOTICE_SENTENCES` and the finisher's three sentences.
+
+**Who can fix it.** Nothing the Tower runs adds the missing part. A re-finish (§7 rule 4) rebuilds from
+the session's own keyframes, and frames the session never looked at have none. So the sentence names an
+owner re-capturing the walk.
 
 ### 3.2 On `GET /worlds/{w}/render/revision` — additive
 
@@ -768,6 +848,13 @@ relocalizer costs 0.3–0.8 of one core, only while an episode is open.
    stage (§3.4).
 6. The listing's and the status channel's identifiers, and every existing
    route, are unchanged.
+7. **v12, a walk saved in part (§3.1a).**
+   - **Setting off:** `finalization.walk` is absent on every session, and every row and status payload is
+     byte for byte as before.
+   - **Setting on:** only the sessions §3.1a names change. On the live Windows store (read-only census,
+     2026-10-04), rule 1 changes none of 81 sessions. Rule 2 changes one: world `b08c294b…`, session
+     `8140a195…`, the 2026-10-02 field incident (805 of 3,197 frames looked at, recorded `stop`).
+   - **The record:** nothing on disk is rewritten.
 
 ## 8. What the phone shows
 
@@ -792,6 +879,17 @@ verbatim below the room caption, as a plain note rather than an error. Show noth
 It says what the Tower could not do for this walk and who can fix it (§3.1). It is independent of
 `components`. A gated session whose gate failed has `components: null` and can still carry a notice.
 
+**A walk saved in part** (v12, §3.1a): when `finalization.walk.saved` is `"part"` and the session has
+something to open, the phone never says *Saved* or *Complete*. It shows:
+
+- **the world screen:** the headline *Saved part of this walk*;
+- **the Saved Worlds row:** the badge *Part saved* and the caption *Only part of this walk was saved.*;
+- **the room:** the notice, verbatim, as for every notice.
+
+With nothing to open, the walk reads *Needs retry*, as an interrupted walk does today. An app without v12
+ignores `walk` and hears `interrupted`. So it shows *Interrupted* with the Tower's sentence and the notice.
+That is also true, and it is never *Saved*.
+
 **The area viewer:** the header and captions of §5.4, and *Back to the room*.
 No arrow toward the room, no distance, no size, no name, no position — none of
 them is known.
@@ -814,6 +912,11 @@ back; this part may be shown as a separate area.*
   here is an additive key in a payload whose own identifier governs it, and
   every iOS reader of those payloads ignores keys it does not know; the area
   routes are new paths an older app never requests.
+- **v12 (§3.1a) moves no identifier either.** `finalization.walk` and the two walk sentences are additive
+  in the same way. The one value that changes is `ready`/`complete` becoming `interrupted` for a walk saved
+  in part. That moves a session to a word every installed app already decodes and draws as not finished.
+  WORLDS §2a set the precedent without a bump, when `photographic` moved a false `complete` to
+  `finalizing`. A bump would make every installed app refuse World Builder until it is rebuilt.
 - `world_builder.components/2026-09-23` names this document's agreement. It is
   not on the wire in this proposal. An incompatible change later adds new keys
   or paths rather than repurposing these (OPEN M10: whether the Mac wants the id

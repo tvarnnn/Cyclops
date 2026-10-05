@@ -95,7 +95,7 @@ Verdicts: **CLEAN** (1:1), **ADAPTER** (small mapping, no duplicated state),
 | `receiving` | `.receiving(snapshot)` | ADAPTER | With `world_snapshot: null` → `.awaitingFirstUpdate`. Unreachable in practice; a live session implies a world |
 | `finalizing` | `.finalizing(snapshot)` | ADAPTER | **Read the caveat in §3.** Since 2026-09-06 `lifecycle.build_in_progress == true` means a live process is finishing and the phone may say so |
 | `finalized` | `.finalized(snapshot)` | CLEAN | |
-| `interrupted` | `.interrupted(snapshot, reason:)` | CLEAN | New at `/2026-09-06`. The session ended abnormally (builder died, was asked to stop mid-walk, recorded an error, or finalization was left unfinished); the snapshot and the geometry still describe what exists. Rendered with its own headline, the Tower's reason, the figures, the fragments and the Picture — never as `.failed`, never as `.finalized` |
+| `interrupted` | `.interrupted(snapshot, reason:)` | CLEAN | New at `/2026-09-06`. The session ended abnormally (builder died, was asked to stop mid-walk, recorded an error, or finalization was left unfinished); the snapshot and the geometry still describe what exists. Rendered with its own headline, the Tower's reason, the figures, the fragments and the Picture — never as `.failed`, never as `.finalized`. **U-PARTIAL (PROPOSED, 2026-10-04; Tower setting `TOWER_WORLD_PARTIAL_STATE`, default off):** this also covers a world the Tower finished from only part of its walk. `lifecycle.finalization.walk` marks it (§3b) |
 | `failed` | `.failed(.towerReportedFailure)` | CLEAN | Attribution matters: the Tower reported it, so it is not `.transport` and not `.notSupported`. No disk state maps to it since `/2026-09-06`; still decoded |
 | *(never sent)* | `.awaitingFirstUpdate` | IOS-ONLY | Subscribed, not yet answered. Only the phone can know this, which is why Tower does not send it |
 | unknown word | `.failed(.undecodableResponse)` | ADAPTER | A disagreement discovered on arrival, not an empty world |
@@ -267,6 +267,34 @@ appearance build while the manifest is refused and the render revision reports
 `appearance.state: withdrawn`. Decide what to DRAW from `appearance.state` on
 `/worlds/{id}/render/revision`, exactly as today; `photographic.state` decides
 what to SAY about whether the world is finished.
+
+## 3b. `finalization.walk` — a world finished from part of its walk (U-PARTIAL; PROPOSED 2026-10-04)
+
+`WORLD-BUILDER-COMPONENTS.md` §3.1a has the whole rule. With the Tower setting
+`TOWER_WORLD_PARTIAL_STATE` on, a session the Tower finished from only part of
+its walk changes in three ways:
+
+- it is sent as `model_state: "interrupted"`, where it used to be a false
+  `finalized`;
+- its `model_state_reason` is the walk's sentence;
+- its `lifecycle.finalization` (and the row's `finalization`) carries
+  `walk: {saved: "part", reason}`, with the walk's sentence first in `notice`.
+
+**So an app that ignores `walk` still behaves correctly.** It hears
+`interrupted`, a word it already decodes, and shows *Interrupted*, the Tower's
+sentence and the Picture. It never shows *Saved*.
+
+What reading the key adds is the right word:
+
+| Swift | Rule |
+|---|---|
+| `WorldFinalizationReport.walk: WorldWalkReport?` | decoded from `finalization["walk"]` on both channels. `nil` when the key is absent, not an object, or has no string `saved` |
+| `WorldStage.savedPart` | `.interrupted` or `.finalized`, with `walk.saved == "part"` and real geometry. Label *Saved part of this walk*, not still changing |
+| row badge | *Part saved*, and the caption *Only part of this walk was saved.* |
+| room | the notice, verbatim, as for every notice; no extra note |
+
+Without geometry, the walk stays *Needs retry*. `reason` is never shown and
+never branched on.
 
 ## 3.1 `selection`: whose world is on the wire
 
