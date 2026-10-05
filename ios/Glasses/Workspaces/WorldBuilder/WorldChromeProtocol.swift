@@ -765,8 +765,12 @@ nonisolated struct WorldChromeSession: Sendable {
         switch message {
         case .hello(let hello, let seq):
             // One hello per page load; a second one is a page this screen did
-            // not see arrive.
-            guard pageID == nil, mode == .pending, hello.kind == kind else { return refuse(id: id, isHello: true) }
+            // not see arrive. Its `seq` is 0: the page numbers its messages
+            // "from 0 at `hello`" (WORLDS §4c), so any other number is an
+            // invalid hello, declined like the rest (spec C15r §3.1).
+            guard pageID == nil, mode == .pending, hello.kind == kind, seq == 0 else {
+                return refuse(id: id, isHello: true)
+            }
             let nonce = makeNonce()
             pageID = hello.pageID
             self.nonce = nonce

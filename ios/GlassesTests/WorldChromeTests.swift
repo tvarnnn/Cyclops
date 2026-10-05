@@ -608,6 +608,40 @@ final class WorldChromeTests: XCTestCase {
         XCTAssertEqual(stray.effects, [.reply(id: stray.id, .decline)])
     }
 
+    /// `seq` is 0 at `hello` (WORLDS §4c: "rising by one per page message,
+    /// from 0 at `hello`"). A first `hello` with any other number is an
+    /// invalid `hello`: declined, and the screen keeps the page's own chrome
+    /// (spec C15r §3.1: "pending | an invalid hello | Reply .decline.
+    /// refuseForScreen, setMode(.legacy)").
+    func testAHelloThatDoesNotStartAtSeqZeroIsDeclined() {
+        let driver = Driver()
+        driver.input(.pageWillLoad(echo: true))
+        let hello = driver.send(Self.helloBody(seq: 1))
+        XCTAssertEqual(hello.effects, [.reply(id: hello.id, .decline), .refuseForScreen, .setMode(.legacy),
+                                       .cancel(.noHello)])
+        XCTAssertEqual(driver.session.mode, .legacy)
+        XCTAssertTrue(driver.session.refusedForScreen)
+        // For the life of the screen: a later hello, from 0, is declined too.
+        let again = driver.send(Self.helloBody(pageID: "secondpage123456", seq: 0))
+        XCTAssertEqual(again.effects, [.reply(id: again.id, .decline)])
+        XCTAssertTrue(driver.input(.pageWillLoad(echo: true)).contains(.setMode(.legacy)))
+
+        for seq in [2, 41, 1_000_000] {
+            let other = Driver()
+            other.input(.pageWillLoad(echo: true))
+            let refused = other.send(Self.helloBody(seq: seq))
+            XCTAssertEqual(refused.effects.first, .reply(id: refused.id, .decline), "seq \(seq)")
+            XCTAssertTrue(other.session.refusedForScreen, "seq \(seq)")
+        }
+        // From 0 it is welcomed, and the next message is 1.
+        let good = Driver()
+        good.input(.pageWillLoad(echo: true))
+        let welcomed = good.send(Self.helloBody(seq: 0))
+        XCTAssertEqual(welcomed.effects.first, .reply(id: welcomed.id, .welcome(nonce: "N1")))
+        let state = good.send(Self.stateBody(seq: 1, nonce: "N1"))
+        XCTAssertTrue(state.effects.contains(.setMode(.native)))
+    }
+
     // MARK: I10: a refusal after activation
 
     func testARefusalAfterActivationDeactivatesAndFallsBackForTheScreen() {
