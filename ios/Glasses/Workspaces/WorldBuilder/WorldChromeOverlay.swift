@@ -70,11 +70,6 @@ enum WorldChromePanelKind: Equatable {
     case caption, areas
 }
 
-/// Where VoiceOver focus goes when the caption panel opens and closes.
-enum WorldChromeFocus: Hashable {
-    case panel, toggle
-}
-
 // MARK: - The research band
 
 /// APPEARANCE §6.6's marker, drawn by the phone above everything. Never
@@ -91,7 +86,9 @@ struct WorldChromeResearchBand: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal, 16)
             .padding(.vertical, 4)
-            .background(WorldChromeStyle.researchBack)
+            // Not under the navigation bar: its title keeps the system's
+            // own background and contrast.
+            .background(WorldChromeStyle.researchBack, ignoresSafeAreaEdges: [])
             .overlay(alignment: .bottom) {
                 WorldChromeStyle.researchRule.frame(height: 1)
             }
@@ -175,7 +172,6 @@ struct WorldChromeTopBand: View {
     let wordsCap: CGFloat
     let backToRoom: (() -> Void)?
     @Binding var panel: WorldChromePanelKind?
-    var focus: AccessibilityFocusState<WorldChromeFocus?>.Binding
 
     @Environment(\.colorSchemeContrast) private var contrast
 
@@ -202,9 +198,7 @@ struct WorldChromeTopBand: View {
                     }
                     Spacer(minLength: 0)
                 } else {
-                    // A scroll view is an accessibility container: the words
-                    // are ordered inside it, and it is ordered here (90-88).
-                    CappedScroll(cap: wordsCap) { words }
+                    cappedWords
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .accessibilitySortPriority(90)
                 }
@@ -213,8 +207,29 @@ struct WorldChromeTopBand: View {
             .frame(minHeight: 44, alignment: .top)
             .padding(.horizontal, 16)
             .padding(.vertical, 4)
+            // Not under the navigation bar: a dark plate there left the
+            // system's dark title on dark.
+            .background(WorldChromeStyle.plate(contrast), ignoresSafeAreaEdges: [])
         }
-        .background(WorldChromeStyle.plate(contrast))
+    }
+
+    /// The words at their own height, or -- at the accessibility sizes, when
+    /// taller than `wordsCap` -- scrolling in exactly `wordsCap`. Chosen by
+    /// `ViewThatFits`, with no measured state: a measured height fed back
+    /// into its own frame left the words one line tall at AX5.
+    @ViewBuilder
+    private var cappedWords: some View {
+        if wordsCap > 0 {
+            ViewThatFits(in: .vertical) {
+                words
+                ScrollView { words }
+                    .frame(height: wordsCap)
+                    .scrollBounceBehavior(.basedOnSize)
+            }
+            .frame(maxHeight: wordsCap, alignment: .top)
+        } else {
+            words
+        }
     }
 
     private var words: some View {
@@ -256,22 +271,8 @@ struct WorldChromeTopBand: View {
                 .accessibilitySortPriority(86)
             }
             if chrome.isDrawingNative, toggleShown, let labels = chrome.hello?.labels {
-                let open = panel == .caption
-                WorldChromeButton(word: open ? labels.aboutClose : labels.aboutOpen,
-                                  identifier: "world-chrome-about") {
-                    if panel == .caption {
-                        panel = nil
-                        focus.wrappedValue = .toggle
-                    } else {
-                        panel = .caption
-                        Task { @MainActor in
-                            try? await Task.sleep(for: .milliseconds(150))
-                            focus.wrappedValue = .panel
-                        }
-                    }
-                }
-                .accessibilityFocused(focus, equals: .toggle)
-                .accessibilitySortPriority(85)
+                WorldChromeToggle(labels: labels, panel: $panel)
+                    .accessibilitySortPriority(85)
             }
         }
         .dynamicTypeSize(...DynamicTypeSize.accessibility1)
@@ -282,6 +283,27 @@ struct WorldChromeTopBand: View {
     private var toggleShown: Bool {
         guard let state = chrome.state else { return false }
         return state.drawn && state.message == nil && state.phase != .failed && state.caption != nil
+    }
+}
+
+/// The caption panel's toggle: the page's two words, the native form of
+/// `aria-expanded`. Closing the panel brings VoiceOver focus back here (the
+/// panel takes it on opening). Its own focus state, bound to itself, so no
+/// focus state outlives the element it points at.
+struct WorldChromeToggle: View {
+    let labels: WorldChromeLabels
+    @Binding var panel: WorldChromePanelKind?
+    @AccessibilityFocusState private var focused: Bool
+
+    var body: some View {
+        let open = panel == .caption
+        WorldChromeButton(word: open ? labels.aboutClose : labels.aboutOpen, identifier: "world-chrome-about") {
+            panel = open ? nil : .caption
+        }
+        .accessibilityFocused($focused)
+        .onChange(of: open) { wasOpen, isOpen in
+            if wasOpen, !isOpen { focused = true }
+        }
     }
 }
 
@@ -382,7 +404,6 @@ struct WorldChromeBar: View {
 struct WorldChromeCanvasLayer<Banner: View, AreasPanel: View, Details: View>: View {
     @ObservedObject var chrome: WorldChromeModel
     @Binding var panel: WorldChromePanelKind?
-    var focus: AccessibilityFocusState<WorldChromeFocus?>.Binding
     let onAction: (WorldChromeAction) -> Void
     let onFirstStateDrawn: () -> Void
     @ViewBuilder let banner: () -> Banner
@@ -489,7 +510,7 @@ struct WorldChromeCanvasLayer<Banner: View, AreasPanel: View, Details: View>: Vi
             switch kind {
             case .caption:
                 if let caption = state.caption {
-                    WorldChromeCaptionPanel(caption: caption, focus: focus, details: details)
+                    WorldChromeCaptionPanel(caption: caption, details: details)
                 }
             case .areas:
                 areas()
@@ -533,8 +554,10 @@ struct WorldChromePosition: View {
 
 // MARK: - Notices
 
-/// The hint and the dark line, stacked: they never overlap each other or the
-/// status line, at any text size (the page lets them share one slot).
+/// The dark line and the hint, stacked: they never overlap each other or the
+/// status line, at any text size (the page lets them share one slot). The
+/// dark line is on top so that reading order, top to bottom, is §3.6's
+/// VoiceOver order (dark line, then hint) as well as its sort priority.
 struct WorldChromeNotices: View {
     let hint: WorldChromeHint?
     /// The labels when the dark line is shown, else `nil`.
@@ -545,14 +568,6 @@ struct WorldChromeNotices: View {
 
     var body: some View {
         VStack(spacing: 6) {
-            if let hint {
-                WorldChromePill(text: hint.text, font: .caption, colour: WorldChromeStyle.text)
-                    .opacity(max(0.4, hint.opacity))
-                    .multilineTextAlignment(.center)
-                    .dynamicTypeSize(...DynamicTypeSize.accessibility2)
-                    .accessibilitySortPriority(55)
-                    .accessibilityIdentifier("world-chrome-hint")
-            }
             if let dark {
                 Button(action: face) {
                     VStack(spacing: 2) {
@@ -579,6 +594,14 @@ struct WorldChromeNotices: View {
                 }
                 .accessibilitySortPriority(60)
                 .accessibilityIdentifier("world-chrome-dark")
+            }
+            if let hint {
+                WorldChromePill(text: hint.text, font: .caption, colour: WorldChromeStyle.text)
+                    .opacity(max(0.4, hint.opacity))
+                    .multilineTextAlignment(.center)
+                    .dynamicTypeSize(...DynamicTypeSize.accessibility2)
+                    .accessibilitySortPriority(55)
+                    .accessibilityIdentifier("world-chrome-hint")
             }
         }
     }
@@ -607,7 +630,11 @@ struct WorldChromeRingView: View {
                 .foregroundStyle(WorldChromeStyle.text)
                 .opacity(0.8)
                 .multilineTextAlignment(.center)
-                .fixedSize(horizontal: false, vertical: true)
+                // Its two lines, never hyphenated down the canvas: it is
+                // hidden from VoiceOver (the ring carries the name), so it
+                // shrinks rather than grows past them.
+                .lineLimit(2)
+                .minimumScaleFactor(0.5)
                 .frame(width: 62)
                 .dynamicTypeSize(...DynamicTypeSize.accessibility1)
                 .allowsHitTesting(false)
@@ -753,8 +780,10 @@ struct WorldChromePanel<Content: View>: View {
 /// and the tail; then the phone's own Details.
 struct WorldChromeCaptionPanel<Details: View>: View {
     let caption: WorldChromeCaption
-    var focus: AccessibilityFocusState<WorldChromeFocus?>.Binding
     @ViewBuilder let details: () -> Details
+    /// Opening moves VoiceOver focus into the panel (the native
+    /// `aria-expanded`); the toggle takes it back on closing.
+    @AccessibilityFocusState private var headFocused: Bool
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -762,7 +791,7 @@ struct WorldChromeCaptionPanel<Details: View>: View {
                 .font(.footnote.bold())
                 .foregroundStyle(WorldChromeStyle.text)
                 .fixedSize(horizontal: false, vertical: true)
-                .accessibilityFocused(focus, equals: .panel)
+                .accessibilityFocused($headFocused)
             if let line = caption.line {
                 Text(verbatim: line)
                     .font(.caption)
@@ -776,12 +805,12 @@ struct WorldChromeCaptionPanel<Details: View>: View {
                         .foregroundStyle(WorldChromeStyle.sectionTitle)
                         .accessibilityAddTraits(.isHeader)
                         .accessibilityLabel(Text(verbatim: section.title))
+                        .accessibilityIdentifier("world-chrome-section")
                     Text(verbatim: section.body)
                         .font(.footnote)
                         .foregroundStyle(WorldChromeStyle.sectionBody)
                 }
                 .fixedSize(horizontal: false, vertical: true)
-                .accessibilityIdentifier("world-chrome-section")
             }
             if let tail = caption.tail {
                 Text(verbatim: tail)
@@ -791,6 +820,10 @@ struct WorldChromeCaptionPanel<Details: View>: View {
             }
             Divider().overlay(WorldChromeStyle.panelBorder)
             details()
+        }
+        .task {
+            try? await Task.sleep(for: .milliseconds(150))
+            headFocused = true
         }
     }
 }

@@ -2141,10 +2141,11 @@ struct WorldRenderScene: View {
     /// *Back to the room*, for an area viewer.
     private let backToRoom: (() -> Void)?
 
-    /// U1.1: the one panel open over the canvas under native chrome, and
-    /// where VoiceOver focus goes when the caption panel opens and closes.
+    /// U1.1: the one panel open over the canvas under native chrome.
+    /// VoiceOver focus for it is kept by the panel and its toggle
+    /// (`WorldChromeCaptionPanel`, `WorldChromeToggle`), each bound to its own
+    /// element, so no focus state here outlives what it points at.
     @State private var chromePanel: WorldChromePanelKind?
-    @AccessibilityFocusState private var chromeFocus: WorldChromeFocus?
 
     /// U1.1 (WORLDS §4c): whether this screen is laid out for native chrome.
     /// From the moment a page that echoes `wb-chrome=native` arrives -- so the
@@ -2199,7 +2200,7 @@ struct WorldRenderScene: View {
                     showsAreas: !(model.components?.areas.isEmpty ?? true),
                     wordsCap: captionShare.map { screenHeight * $0 } ?? 0,
                     backToRoom: model.target.isArea ? backToRoom : nil,
-                    panel: $chromePanel, focus: $chromeFocus
+                    panel: $chromePanel
                 )
                 .tint(Color.readableTint)
                 .environment(\.colorScheme, .dark)
@@ -2238,7 +2239,14 @@ struct WorldRenderScene: View {
                 .tint(Color.readableTint)
             }
         }
-        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { screenHeight = $0 }
+        // Written only when it moved by half a point or more. The caps above
+        // are fractions of this height, and at AX5 a sub-pixel difference fed
+        // back through them: the push of this screen re-ran its layout
+        // without end, `_screenHeight changed` 23,030 times in 30 s, every
+        // value printing as 708 pt (U1.1 U7; 0f1249e hangs the same way).
+        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { height in
+            if abs(screenHeight - height) >= 0.5 { screenHeight = height }
+        }
         .navigationTitle(screenTitle)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
@@ -2496,7 +2504,7 @@ struct WorldRenderScene: View {
     /// U1.1: everything the phone draws over the canvas under native chrome.
     private var chromeCanvasLayer: some View {
         WorldChromeCanvasLayer(
-            chrome: model.chrome, panel: $chromePanel, focus: $chromeFocus,
+            chrome: model.chrome, panel: $chromePanel,
             onAction: { model.bridge.receive(.tapped($0)) },
             onFirstStateDrawn: { model.bridge.receive(.firstStateDrawn) },
             banner: { chromeBanner },
@@ -2734,7 +2742,11 @@ struct CappedScroll<Content: View>: View {
     var body: some View {
         ScrollView {
             content
-                .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { contentHeight = $0 }
+                // Half a point or more, for the reason `WorldRenderScene`
+                // gives: a sub-pixel change must not feed back into a cap.
+                .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { height in
+                    if abs(contentHeight - height) >= 0.5 { contentHeight = height }
+                }
         }
         .scrollBounceBehavior(.basedOnSize)
         // When the words outgrow the cap, say so: the indicator shows once
