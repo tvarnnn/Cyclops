@@ -921,6 +921,24 @@ drop what they hold — and no depth prediction is reused across it
 (`reusable_predictions`), because a frame the redactor found nothing in has an
 identical hash and may still have been inpainted.
 
+**The read-path allowlist (`TOWER_WORLD_RAW_IMAGERY_WORLDS`, manager 201 §1).**
+A comma-separated list of whole world ids. On a Tower serving the product
+(`TOWER_WORLD_RAW_IMAGERY` off), the serving gate accepts a raw-local-research
+artifact for a listed world, and for no other: `raw_imagery.reader_imagery_source(world_id,
+imagery_source_of(manifest))` is the one place every reader (the room's routes,
+the area twins, the viewer config, the listing) learns which imagery it serves.
+It widens the imagery check only: a listed raw artifact is still held to the
+label, the keyframe set and the purge, and it is served under its marker in
+every place above, because every one of them reads the same `imagery_source`.
+A listed world's redacted artifact is still served: whichever artifact the
+manifest holds, raw only if listed. **Builds never read the list**, so a walk
+built while it is set is redacted. Unset or exactly empty changes nothing. Any
+other value must be distinct ids of 32 lowercase hex characters with no spaces
+or empty entries, or the whole list is refused — nothing is served raw — and
+logged once. On a research Tower (`TOWER_WORLD_RAW_IMAGERY` on) the list is not
+consulted. It does not touch the surface or dense pages, which carry no imagery
+gate.
+
 **Absent means `redacted`.** Every manifest, align record and surface manifest
 written before this section existed reads as the product, because it was.
 Every cache key written for a redacted build is byte-identical to the key it
