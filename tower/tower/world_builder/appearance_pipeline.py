@@ -1214,7 +1214,9 @@ def may_serve(store, world_id: str, session_id: str, manifest: dict,
     """
     if imagery_source is None:
         imagery_source = RAWIMG.imagery_source_from_env()
-    if label_matches(store, world_id, session_id, manifest, imagery_source=imagery_source):
+    # Positional, so a test that stands `label_matches` in with `lambda *a`
+    # (tests/test_world_builder_fixture_a_camera_path.py) still reaches it.
+    if label_matches(store, world_id, session_id, manifest, imagery_source):
         return True
     if not imagery_matches(manifest, imagery_source):
         return False
