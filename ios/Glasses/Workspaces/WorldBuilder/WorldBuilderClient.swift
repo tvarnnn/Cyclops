@@ -158,8 +158,10 @@ protocol WorldBuilderClient: CartridgeClient {
     /// One `CaptureHealthSample` per report the Tower sends -- heartbeats
     /// included, unlike `stateUpdates` -- for the capture-health panel
     /// (U2-D0), which differences the counters on the phone's clock and needs
-    /// to know a report arrived even when nothing in it changed.
-    var healthSamples: AnyPublisher<CaptureHealthSample, Never> { get }
+    /// to know a report arrived even when nothing in it changed. `nil` when
+    /// what the panel holds stopped being live: the socket dropped, the
+    /// subscription restarted, the screen pinned a saved world.
+    var healthSamples: AnyPublisher<CaptureHealthSample?, Never> { get }
 
     /// Pin the world subscription to a stored world, and optionally to one of
     /// its sessions. A no-op for a client with no transport.
@@ -244,7 +246,7 @@ extension WorldBuilderClient {
     }
 
     /// No Tower, no reports: the panel reads "—".
-    var healthSamples: AnyPublisher<CaptureHealthSample, Never> {
+    var healthSamples: AnyPublisher<CaptureHealthSample?, Never> {
         Empty(completeImmediately: false).eraseToAnyPublisher()
     }
 

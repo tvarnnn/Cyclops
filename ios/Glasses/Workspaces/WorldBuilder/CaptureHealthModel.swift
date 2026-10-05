@@ -11,8 +11,9 @@
 //  the phone's own clock.
 //
 //  Honest about absence and age: a missing input reads "—", and so does
-//  every figure once the Tower link is down or the last report is older than
-//  `staleAfter` -- a number is never shown as live when it is not.
+//  every figure once the Tower link is down, the last report is older than
+//  `staleAfter`, or the subscription that sent it is gone -- a number is
+//  never shown as live when it is not, and another walk's never as this one's.
 //
 
 import Combine
@@ -56,20 +57,33 @@ nonisolated struct CaptureHealthSample: Equatable, Sendable {
     var trackingRestarts: Int?
     var recovery: WorldRecoveryReport?
     var mapLag: WorldMapLag?
+    /// The walk these figures are about: `world_snapshot.world_id` and
+    /// `session.session_id`, as reported. The counters are differenced only
+    /// within one walk; another walk's counters are another series, whether
+    /// or not they happen to be lower.
+    var worldID: String?
+    var sessionID: String?
 
     static let empty = CaptureHealthSample()
 
     /// The live walk's figures from a report whose presented `state` is
     /// `receiving`; `empty` for every other state.
-    static func live(state: WorldModelState, recovery: WorldRecoveryReport?, payload: [String: Any])
-        -> CaptureHealthSample {
+    static func live(state: WorldModelState, recovery: WorldRecoveryReport?, worldID: String?, sessionID: String?,
+                     payload: [String: Any]) -> CaptureHealthSample {
         guard case .receiving(let snapshot) = state else { return .empty }
         return CaptureHealthSample(
             keyframeCount: snapshot.keyframeCount,
             trackingRestarts: snapshot.trajectory.trackingRestarts,
             recovery: recovery,
-            mapLag: WorldMapLag(geometry: payload["geometry"])
+            mapLag: WorldMapLag(geometry: payload["geometry"]),
+            worldID: worldID,
+            sessionID: sessionID
         )
+    }
+
+    /// Whether `other` is about the same walk: the same world and session.
+    func isSameWalk(as other: CaptureHealthSample) -> Bool {
+        worldID == other.worldID && sessionID == other.sessionID
     }
 }
 
@@ -129,7 +143,22 @@ nonisolated struct CaptureHealthHistory: Equatable, Sendable {
 
     init() {}
 
+    /// What was held is no longer live -- the socket dropped, the
+    /// subscription restarted, the screen pinned a saved world -- so it is
+    /// forgotten at once, not 5 s later: every figure reads "—" until the next
+    /// report, as for an old one.
+    mutating func invalidate() {
+        self = CaptureHealthHistory()
+    }
+
     mutating func record(_ sample: CaptureHealthSample, at now: Instant) {
+        if let last, !sample.isSameWalk(as: last) {
+            // Another walk, or none: nothing seen so far is about it -- not
+            // its pace, not its breaks, not how long since its last keyframe.
+            keyframes = []
+            restarts = []
+            lastKeyframeIncrease = nil
+        }
         lastSampleAt = now
         last = sample
         if let count = sample.keyframeCount {
@@ -297,6 +326,9 @@ final class CaptureHealthModel: ObservableObject {
     init(client: any WorldBuilderClient) {
         cancellable = client.healthSamples
             .receive(on: DispatchQueue.main)
-            .sink { [weak self] sample in self?.history.record(sample, at: .now) }
+            .sink { [weak self] sample in
+                guard let self else { return }
+                if let sample { history.record(sample, at: .now) } else { history.invalidate() }
+            }
     }
 }

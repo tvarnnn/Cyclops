@@ -18,8 +18,9 @@ final class CaptureHealthTests: XCTestCase {
     private func at(_ seconds: Double) -> ContinuousClock.Instant { t0 + .milliseconds(Int(seconds * 1000)) }
 
     private func sample(keyframes: Int? = nil, restarts: Int? = nil, recovery: WorldRecoveryReport? = nil,
-                        lag: WorldMapLag? = nil) -> CaptureHealthSample {
-        CaptureHealthSample(keyframeCount: keyframes, trackingRestarts: restarts, recovery: recovery, mapLag: lag)
+                        lag: WorldMapLag? = nil, world: String? = nil, session: String? = nil) -> CaptureHealthSample {
+        CaptureHealthSample(keyframeCount: keyframes, trackingRestarts: restarts, recovery: recovery, mapLag: lag,
+                            worldID: world, sessionID: session)
     }
 
     private func readout(_ history: CaptureHealthHistory, _ seconds: Double, linked: Bool = true,
@@ -66,6 +67,44 @@ final class CaptureHealthTests: XCTestCase {
         XCTAssertNil(readout(history, 12).stalled, "a new walk has not stalled")
         history.record(sample(keyframes: 8), at: at(22))
         XCTAssertEqual(readout(history, 22).pace, "42 keyframes/min", "7 in 10 s")
+    }
+
+    /// Review HIGH 1: another walk whose counters did NOT fall -- the same
+    /// keyframe count, more restarts -- is still another walk. Its identity
+    /// (world, session) says so, and every figure starts again: the pace
+    /// warms up from "—", no breaks are inherited, and the stall clock is
+    /// its own.
+    func testANewWalkWhoseCountersDoNotFallStartsEveryFigureAgain() {
+        var history = CaptureHealthHistory()
+        // Walk w1/s1: 20 keyframes in 40 s, 2 breaks at 20 s, then 8 s stalled.
+        for second in stride(from: 0, through: 48, by: 2) {
+            history.record(sample(keyframes: min(second, 40) / 2, restarts: second >= 20 ? 2 : 0,
+                                  world: "w1", session: "s1"), at: at(Double(second)))
+        }
+        XCTAssertEqual(readout(history, 48).pace, "25 keyframes/min")
+        XCTAssertEqual(readout(history, 48).breaks, "Breaks in the last 30 s: 2")
+        XCTAssertEqual(readout(history, 48).stalled, "Stalled — no new keyframe for 8 s")
+
+        // Walk w1/s2 starts at the same count, with more restarts.
+        history.record(sample(keyframes: 20, restarts: 3, world: "w1", session: "s2"), at: at(50))
+        let first = readout(history, 50)
+        XCTAssertEqual(first.pace, "— keyframes/min", "the new walk's pace warms up from its own first sample")
+        XCTAssertEqual(first.breaks, "Breaks in the last 30 s: —", "no break of the last walk is the new one's")
+        XCTAssertNil(first.breaksCount)
+        XCTAssertNil(first.stalled, "the last walk's stall is not the new one's")
+
+        for second in stride(from: 52, through: 60, by: 2) {
+            history.record(sample(keyframes: 20 + (second - 50) / 2, restarts: 3, world: "w1", session: "s2"),
+                           at: at(Double(second)))
+        }
+        XCTAssertEqual(readout(history, 60).pace, "30 keyframes/min", "5 in its own 10 s, not the last walk's minute")
+        XCTAssertEqual(readout(history, 60).breaks, "Breaks in the last 30 s: —", "no rise in the new walk")
+        XCTAssertNil(readout(history, 60).stalled)
+
+        // Another world, same session id and higher counters: another walk too.
+        history.record(sample(keyframes: 30, restarts: 4, world: "w2", session: "s2"), at: at(61))
+        XCTAssertEqual(readout(history, 61).pace, "— keyframes/min")
+        XCTAssertEqual(readout(history, 61).breaks, "Breaks in the last 30 s: —")
     }
 
     // MARK: 2. Breaks in the last 30 s
