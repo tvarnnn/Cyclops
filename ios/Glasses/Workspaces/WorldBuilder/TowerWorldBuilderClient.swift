@@ -704,6 +704,11 @@ final class TowerWorldBuilderClient: WorldBuilderClient {
     private let photographicSubject = PassthroughSubject<WorldPhotographicReport?, Never>()
     private let recoverySubject = PassthroughSubject<WorldRecoveryReport?, Never>()
     private let lookBackBannerSubject = PassthroughSubject<WorldLookBackBanner?, Never>()
+    private let healthSubject = PassthroughSubject<CaptureHealthSample, Never>()
+
+    var healthSamples: AnyPublisher<CaptureHealthSample, Never> {
+        healthSubject.eraseToAnyPublisher()
+    }
     /// The geometry address carried by every snapshot that has one — the
     /// heartbeat's included.
     ///
@@ -1374,6 +1379,7 @@ final class TowerWorldBuilderClient: WorldBuilderClient {
         // suggest anything was missed. Refusing costs one comparison; not
         // refusing costs a wrong answer that looks like a right one.
         guard envelope.isSnapshot else {
+            healthSubject.send(.empty)
             lastReport = nil
             sessionBinding = bindingWithNoReport
             state = .failed(
@@ -1395,6 +1401,7 @@ final class TowerWorldBuilderClient: WorldBuilderClient {
             // ownership — there is nothing to judge — so the gate is bypassed
             // and the last report is cleared rather than left to be re-judged
             // against a bracket change later.
+            healthSubject.send(.empty)
             lastReport = nil
             sessionBinding = bindingWithNoReport
             state = .failed(
@@ -1426,6 +1433,14 @@ final class TowerWorldBuilderClient: WorldBuilderClient {
             recovery: WorldBuilderResultDecoder.recovery(from: payload)
         )
         publishLastReport()
+
+        // The capture-health panel's sample (U2-D0), on every report, the
+        // heartbeat included: from the state as presented -- so a report the
+        // session gate held back says nothing -- and only while following the
+        // live walk, never a pinned saved world's figures.
+        healthSubject.send(pinned == nil
+            ? CaptureHealthSample.live(state: state, recovery: lastReport?.recovery, payload: payload)
+            : .empty)
 
         // The look-back prompt: only here, on a report the Tower just sent --
         // never on a bracket change, which re-judges an old report -- and only

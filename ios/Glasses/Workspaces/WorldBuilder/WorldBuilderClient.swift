@@ -155,6 +155,12 @@ protocol WorldBuilderClient: CartridgeClient {
     /// built.
     var recentWorldUpdates: AnyPublisher<WorldRecentReference?, Never> { get }
 
+    /// One `CaptureHealthSample` per report the Tower sends -- heartbeats
+    /// included, unlike `stateUpdates` -- for the capture-health panel
+    /// (U2-D0), which differences the counters on the phone's clock and needs
+    /// to know a report arrived even when nothing in it changed.
+    var healthSamples: AnyPublisher<CaptureHealthSample, Never> { get }
+
     /// Pin the world subscription to a stored world, and optionally to one of
     /// its sessions. A no-op for a client with no transport.
     func inspect(worldID: String, sessionID: String?)
@@ -234,6 +240,11 @@ extension WorldBuilderClient {
     }
 
     var recentWorldUpdates: AnyPublisher<WorldRecentReference?, Never> {
+        Empty(completeImmediately: false).eraseToAnyPublisher()
+    }
+
+    /// No Tower, no reports: the panel reads "—".
+    var healthSamples: AnyPublisher<CaptureHealthSample, Never> {
         Empty(completeImmediately: false).eraseToAnyPublisher()
     }
 

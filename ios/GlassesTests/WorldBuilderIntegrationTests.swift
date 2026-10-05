@@ -654,6 +654,85 @@ final class TowerWorldBuilderClientTests: XCTestCase {
         tower.disconnect()
     }
 
+    /// U2-D0: every report feeds the capture-health panel -- the heartbeat
+    /// too, which `stateUpdates` does not announce -- with the live walk's
+    /// counter, restarts, relocalizer counts and map lag; and a report about
+    /// anything but a live walk this screen follows (finalizing, a pinned
+    /// saved world) feeds it nothing to show.
+    func testEveryReportFeedsTheCaptureHealthPanelAndOnlyTheLiveWalkHasFigures() async throws {
+        let server = try MockTowerServer()
+        let port = try await server.start()
+        serve(server)
+        defer { server.stop() }
+
+        let tower = TowerClient(metrics: SenderMetrics())
+        let client = TowerWorldBuilderClient(tower: tower)
+        var samples: [CaptureHealthSample] = []
+        let cancellable = client.healthSamples.sink { samples.append($0) }
+        defer { cancellable.cancel() }
+
+        func report(seq: Int, modelState: String = "receiving", keyframes: Int, restarts: Int, revision: String,
+                    changed: Bool = true, subscription: String = "sub-1") -> String {
+            """
+            {"type":"cartridge_result",
+             "envelope_contract":"cartridge_results.envelope/2026-08-23",
+             "subscription_id":"\(subscription)","cartridge":"world_builder","result_type":"status",
+             "contract":"\(Self.contract)","seq":\(seq),"revision":"\(revision)",
+             "revision_changed":\(changed),"coalesced":0,"cursor_status":null,
+             "snapshot":true,"tower_sent_at":1787463092.9,"time_basis":"tower-receipt",
+             "payload":{"model_state":"\(modelState)","model_state_reason":null,
+               "world_snapshot":{"name":"Probe Room","world_id":"w1",
+                 "keyframe_count":\(keyframes),"revision":"\(revision)",
+                 "tracking":"good","scale":"relative","mapping_seconds":12.5,
+                 "calibration":"calibrated",
+                 "geometry":{"representation":"sparse point cloud","element_count":1360,
+                             "is_incremental":false},
+                 "trajectory":{"pose_count":\(keyframes),"path_length":2.85,
+                               "path_length_unit":"world units","scale":"relative"},
+                 "persistence":{"state":"saved","revision":"p1"}},
+               "geometry":{"available":true,"current":false,"built_from_keyframes":\(keyframes - 3),
+                           "keyframes_now":\(keyframes),"revision":"g1"},
+               "trajectory":{"tracking_restarts":\(restarts),"chain_breaks":0,"segments":2},
+               "tracking":{"recovery":{"state":"recovered","episode":2,"prompts_enabled":true,"prompt":null,
+                 "counts":{"episodes":3,"recovered":2,"recovered_after_prompt":1,"timed_out":1,
+                           "prompts":1,"withheld_by_limiter":0,"withheld_disabled":0}}}}}
+            """
+        }
+
+        tower.connect(to: url(port: port))
+        await expect { client.state == .awaitingFirstUpdate }
+        server.send(text: report(seq: 1, keyframes: 20, restarts: 1, revision: "r1"))
+        await expect { samples.count == 1 }
+        XCTAssertEqual(samples.last, CaptureHealthSample(
+            keyframeCount: 20, trackingRestarts: 1,
+            recovery: WorldRecoveryReport(state: .recovered, episode: 2, promptsEnabled: true,
+                                          counts: WorldRecoveryCounts(recovered: 2, timedOut: 1)),
+            mapLag: WorldMapLag(builtFromKeyframes: 17, keyframesNow: 20)))
+
+        // The heartbeat: nothing changed, and the panel still hears it.
+        var states = 0
+        let stateCount = client.stateUpdates.sink { _ in states += 1 }
+        defer { stateCount.cancel() }
+        server.send(text: report(seq: 2, keyframes: 20, restarts: 1, revision: "r1", changed: false))
+        await expect { samples.count == 2 }
+        XCTAssertEqual(states, 0, "the heartbeat changed no state")
+        XCTAssertEqual(samples[1], samples[0])
+
+        // Not a live walk: nothing to show.
+        server.send(text: report(seq: 3, modelState: "finalizing", keyframes: 20, restarts: 1, revision: "r2"))
+        await expect { samples.count == 3 }
+        XCTAssertEqual(samples.last, .empty)
+
+        // A pinned saved world: never its figures as the live walk's.
+        client.inspect(worldID: "w1", sessionID: "s1")
+        await expect { client.inspection.isInspecting }
+        server.send(text: report(seq: 4, keyframes: 30, restarts: 4, revision: "r3", subscription: "sub-2"))
+        await expect { samples.count == 4 }
+        XCTAssertEqual(samples.last, .empty)
+
+        tower.disconnect()
+    }
+
     /// The wait for `result_subscribed` is bounded, and ends in a state a
     /// person can read.
     ///
