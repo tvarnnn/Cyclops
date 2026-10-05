@@ -1144,6 +1144,14 @@ def read_appearance_file(store, world_id: str, session_id: str, kind: str, diges
     size = servable_size(root, name, manifest)
     if size is None:
         return None
+    if name not in named_files(manifest) and not label_matches(
+            store, world_id, session_id, manifest, imagery_source_of(manifest)):
+        # A manifest served by the carry-over (`may_serve`) lends nothing: a
+        # superseded entry does not record which redactor made its files, so
+        # the lend could hand out an unlisted redactor's chunks after Stop
+        # (review rv-pas LOW-3). Its own files are served; a page missing one
+        # refetches the manifest, as for any 404.
+        return None
     try:
         data = (root / name).read_bytes()
     except OSError:
@@ -1210,7 +1218,12 @@ def may_serve(store, world_id: str, session_id: str, manifest: dict,
     The imagery check runs first, unchanged. A purged world (or one whose
     record cannot be read) never rides the carry-over either: every caller
     already refuses a purged world, but `build_appearance_config` does not, and
-    the carry-over must not be the thing that lets it.
+    the carry-over must not be the thing that lets it. And it FAILS CLOSED
+    (`_carry_over_metadata_whole`, review rv-pas MED-1 / LOW-2): the session
+    record and any re-redaction pointer must read, the session's label now must
+    be on the allowlist, and the provenance must state every field compared.
+    Under the carry-over nothing is lent from a superseded build
+    (`read_appearance_file`, LOW-3).
     """
     if imagery_source is None:
         imagery_source = RAWIMG.imagery_source_from_env()
@@ -1225,7 +1238,59 @@ def may_serve(store, world_id: str, session_id: str, manifest: dict,
             return False
     except Exception:  # noqa: BLE001 -- unreadable never widens the gate
         return False
+    if not _carry_over_metadata_whole(store, world_id, session_id, manifest):
+        return False
     return withdrawal_state(store, world_id, session_id, manifest) == REBUILDING
+
+
+# What a walk build's provenance must STATE, not merely imply by absence, before
+# it may ride the carry-over: `textures_carry_over` reads a missing key as None
+# (the capture's own keyframe set) or `redacted`, which is right for an open
+# page's question and wrong for a new reader's (review rv-pas MED-1).
+CARRY_OVER_PROVENANCE_KEYS = ("session_redaction", "keyframe_image_set", "imagery_source",
+                              "redactor_applied_here", "label_trusted")
+
+
+def _carry_over_metadata_whole(store, world_id: str, session_id: str, manifest: dict) -> bool:
+    """FAIL CLOSED for the carry-over (review rv-pas MED-1, LOW-2). Every record
+    the decision rests on must read, and say what it says outright:
+
+    - `session.json` reads and passes its schema check. `keyframe_set_identity`
+      and `keyframe_image_set` read an unreadable record as "no label, no
+      switch", which is the token a walk build on the capture's own keyframes
+      also records -- so without this an unreadable record looked like "the
+      same set" and the walk build was served;
+    - a re-redaction pointer, if one is on disk, reads as a JSON object (an
+      unreadable one also reads as "no switch");
+    - the session's label NOW is on the allowlist: the ordinary Stop writes
+      the real, trusted label. A Stop to a label off the allowlist (or to
+      none at all) is not newly served -- it is refused exactly as before;
+    - the manifest's provenance states every field the carry-over compares,
+      with `label_trusted` exactly False and `imagery_source` exactly
+      `redacted`.
+
+    Each refusal here leaves the route answering as `dc35d51` did (404, and the
+    revision's `state` from the unchanged `withdrawal_state`)."""
+    try:
+        store.read_session(world_id, session_id)
+    except Exception:  # noqa: BLE001 -- unreadable never widens the gate
+        return False
+    try:
+        pointer = store.redaction_set_path(world_id, session_id)
+        if pointer.exists() and not isinstance(
+                json.loads(pointer.read_text(encoding="utf-8")), dict):
+            return False
+    except Exception:  # noqa: BLE001
+        return False
+    label, _image_set = A.keyframe_set_identity(store, world_id, session_id)
+    if not A.label_is_trusted(label):
+        return False
+    prov = manifest.get("appearance_provenance") if isinstance(manifest, dict) else None
+    if not isinstance(prov, dict) or not all(k in prov for k in CARRY_OVER_PROVENANCE_KEYS):
+        return False
+    if prov.get("label_trusted") is not False:
+        return False
+    return prov.get("imagery_source") == RAWIMG.IMAGERY_REDACTED
 
 
 def appearance_currency(store, world_id: str, session_id: str, manifest: dict | None) -> dict:

@@ -358,3 +358,158 @@ class TestAnArea:
         rev = client.get(_area_url(area, "render/revision")).json()
         assert rev["appearance"] == {"revision": None, "current": False,
                                      "state": AP.WITHDRAWN, "epoch": None}
+
+
+# ---------------------------------------------------------------------------
+# fix round 1 (review rv-pas): fail closed on unreadable or partial metadata
+# (MED-1), no new serving for a Stop to a label off the allowlist (LOW-2), and
+# no superseded-file lending under the carry-over (LOW-3). Each refusal must be
+# exactly dc35d51's answer: 404 on every route, `state: rebuilding`.
+# ---------------------------------------------------------------------------
+
+
+def _as_dc35d51(w, man):
+    client = _client(w.root)
+    m = client.get(f"/worlds/{WORLD}/appearance/{SESSION}/manifest")
+    assert m.status_code == 404 and m.json()["detail"] == AP.STALE_LABEL_DETAIL
+    for chunk in man["chunks"]:
+        assert client.get(
+            f"/worlds/{WORLD}/appearance/{SESSION}/chunk/{chunk['digest']}").status_code == 404
+    rev = _revision(client)
+    assert rev["appearance"] == {"revision": None, "current": False,
+                                 "state": AP.REBUILDING, "epoch": None}
+    assert rev["representation"] == "surface"
+    if hasattr(AP, "may_serve"):          # absent on dc35d51, where the routes run alone
+        assert not AP.may_serve(w.store, WORLD, SESSION, man)
+
+
+class TestFailClosed:
+
+    def test_an_unreadable_session_record(self, tmp_path):
+        w = _walk(tmp_path)
+        man = w.manifest()
+        _stop(w)
+        w.store.session_path(WORLD, SESSION).write_text("{not json", encoding="utf-8")
+        _as_dc35d51(w, man)
+
+    def test_a_session_record_of_another_schema(self, tmp_path):
+        w = _walk(tmp_path)
+        man = w.manifest()
+        _stop(w)
+        p = w.store.session_path(WORLD, SESSION)
+        doc = json.loads(p.read_text(encoding="utf-8"))
+        doc["schema_version"] = 999
+        p.write_text(json.dumps(doc), encoding="utf-8")
+        _as_dc35d51(w, man)
+
+    @pytest.mark.parametrize("drop", ["session_redaction", "keyframe_image_set",
+                                      "imagery_source", "label_trusted", "all-but-redactor"])
+    def test_a_partial_provenance(self, tmp_path, drop):
+        w = _walk(tmp_path)
+        root = AP.appearance_dir(w.store, WORLD, SESSION)
+        doc = json.loads((root / "manifest.json").read_text())
+        prov = doc["appearance_provenance"]
+        keys = ([k for k in list(prov) if k != "redactor_applied_here"]
+                if drop == "all-but-redactor" else [drop])
+        for k in keys:
+            prov.pop(k, None)
+        doc.pop("imagery_source", None) if drop in ("imagery_source", "all-but-redactor") else None
+        (root / "manifest.json").write_text(json.dumps(doc))
+        _stop(w)
+        _as_dc35d51(w, w.manifest())
+
+    @pytest.mark.parametrize("value", [None, 0, "false"])
+    def test_a_provenance_whose_trust_flag_is_not_exactly_false(self, tmp_path, value):
+        w = _walk(tmp_path)
+        root = AP.appearance_dir(w.store, WORLD, SESSION)
+        doc = json.loads((root / "manifest.json").read_text())
+        doc["appearance_provenance"]["label_trusted"] = value
+        (root / "manifest.json").write_text(json.dumps(doc))
+        _stop(w)
+        assert not AP.may_serve(w.store, WORLD, SESSION, w.manifest())
+
+    def test_an_unreadable_world_record(self, tmp_path):
+        """Review mutant R1: the world record must read, or nothing rides the
+        carry-over -- including `build_appearance_config`, which has no purge
+        check of its own."""
+        from tower.world_builder.appearance_render import (
+            AppearanceViewerUnavailable,
+            build_appearance_config,
+        )
+
+        w = _walk(tmp_path)
+        man = w.manifest()
+        _stop(w)
+        assert AP.may_serve(w.store, WORLD, SESSION, man)
+        w.store.world_path(WORLD).write_text("{torn", encoding="utf-8")
+        assert not AP.may_serve(w.store, WORLD, SESSION, man)
+        with pytest.raises(AppearanceViewerUnavailable):
+            build_appearance_config(w.store, WORLD, SESSION)
+
+    def test_an_unreadable_reredaction_pointer(self, tmp_path):
+        w = _walk(tmp_path)
+        man = w.manifest()
+        _stop(w)
+        w.store.redaction_set_path(WORLD, SESSION).write_text("{torn", encoding="utf-8")
+        assert w.store.keyframe_image_set(WORLD, SESSION).cache_token is None, (
+            "the store reads a torn pointer as no switch -- which is why the gate must not")
+        _as_dc35d51(w, man)
+
+
+class TestAStopToALabelOffTheAllowlist:
+
+    @pytest.mark.parametrize("label", [
+        "faces-detected-and-filled/yunet-2023mar@0.50",
+        "faces-detected-and-filled/yunet-2023mar@0.30+plausibility2",   # RERUN, not trusted
+        "x", "", "none"])
+    def test_is_not_newly_served(self, tmp_path, label):
+        w = _walk(tmp_path)
+        man = w.manifest()
+        _stop(w, label)
+        if label == "none":
+            # Not a label change at all, so `label_matches` still serves it, as
+            # during the walk and on dc35d51.
+            assert AP.label_matches(w.store, WORLD, SESSION, man)
+            return
+        _as_dc35d51(w, man)
+
+    @pytest.mark.parametrize("label", [TRUSTED, UNGATED,
+                                       "faces-detected-and-filled/yunet-2023mar@0.30+plausibility1"])
+    def test_every_allowlisted_label_is(self, tmp_path, label):
+        w = _walk(tmp_path)
+        _stop(w, label)
+        _served_everything(_client(w.root), w.manifest())
+
+
+class TestNoLendingUnderTheCarryOver:
+
+    def test_an_unlisted_redactors_superseded_chunks_are_not_served_after_stop(self, tmp_path):
+        class _Unlisted(_FakeRedactor):
+            label = "faces-blurred/some-other-detector"
+
+        w = World(tmp_path, label="none")
+        _records_carry(w, _Unlisted())
+        assert w.build(params=A.AppearanceParams.live(selection_samples=3000,
+                                                       transient_detector="off"),
+                       redactor_factory=_Unlisted).state == AP.STATE_OK
+        m1 = w.manifest()
+        _records_carry(w, _FakeRedactor())
+        assert w.build(params=A.AppearanceParams.live(selection_samples=3001,
+                                                       transient_detector="off"),
+                       redactor_factory=_FakeRedactor).state == AP.STATE_OK
+        m2 = w.manifest()
+        old = [c["digest"] for c in m1["chunks"]
+               if c["digest"] not in {x["digest"] for x in m2["chunks"]}]
+        assert old, "the two builds share every chunk; the test would prove nothing"
+        client = _client(w.root)
+        # during the walk the lend works, as on dc35d51 (same label, same set)
+        assert all(client.get(f"/worlds/{WORLD}/appearance/{SESSION}/chunk/{d}").status_code
+                   == 200 for d in old)
+        _stop(w)
+        client = _client(w.root)
+        assert client.get(f"/worlds/{WORLD}/appearance/{SESSION}/manifest").status_code == 200
+        assert all(client.get(f"/worlds/{WORLD}/appearance/{SESSION}/chunk/{d}").status_code
+                   == 404 for d in old)
+        for c in m2["chunks"]:
+            assert client.get(
+                f"/worlds/{WORLD}/appearance/{SESSION}/chunk/{c['digest']}").status_code == 200

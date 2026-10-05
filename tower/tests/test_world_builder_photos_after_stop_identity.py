@@ -382,6 +382,24 @@ def _walk(tmp_path, log, redactor=_FakeRedactor):
     return w
 
 
+def _walk_with_a_fill_mask(tmp_path, log):
+    """A walk whose depth stage recorded a NON-EMPTY fill mask on every frame
+    (review rv-pas LOW-4, mutant R12): the re-run path ORs the stored fill into
+    the re-redaction's own, and with all-zero masks nothing could see it."""
+    import numpy as np
+
+    w = World(tmp_path, label="none")
+    for i in range(len(w.kids)):
+        mask = np.zeros((119, 159), bool)
+        mask[30:60, 40 + 5 * i:90 + 5 * i] = True
+        w.set_fill(i, mask)
+    _records_carry(w, _FakeRedactor())
+    r = w.build(params=A.AppearanceParams.live(selection_samples=3000, transient_detector="off"),
+                redactor_factory=_recording(_FakeRedactor, log))
+    assert r.state == AP.STATE_OK, r.detail
+    return w
+
+
 def _trusted(tmp_path):
     w = World(tmp_path)
     assert w.build(redactor_factory=_never_redact).state == AP.STATE_OK
@@ -514,6 +532,7 @@ SCENARIOS = {
     "walk_reredaction_switch_after_stop": (_reredaction_switch, False),
     "walk_raw_manifest_after_stop": (_raw_manifest, False),
     "walk_then_final_build": (_final_after_stop, False),
+    "walk_with_a_fill_mask_during_walk": (_walk_with_a_fill_mask, False),
     # areas (the intended change, a walk-time area after Stop, is excluded)
     "area_trusted_served": (_with_area(lambda t, lg: _trusted(t)), False),
     "area_trusted_relabelled_none": (
@@ -576,4 +595,4 @@ def test_the_golden_file_itself_is_the_recorded_bytes():
     assert _sha(data) == GOLDEN_SHA256, _sha(data)
 
 
-GOLDEN_SHA256 = "d68e8357043b23f9bbc3cc89fc559ad241520e3dd5dbdd6b5d6543d7fe6a35d5"
+GOLDEN_SHA256 = "8a6312756520dad72099e53749b4bc7241cfb045c6206ffaaec5b426c71cb6ae"

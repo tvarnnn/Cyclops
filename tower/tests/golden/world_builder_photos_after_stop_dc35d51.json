@@ -10472,6 +10472,488 @@
     "void_wide_fade": 0.2,
     "world_id": "w1"
    }
+  },
+  "walk_with_a_fill_mask_during_walk": {
+   "chunk_deflate": {
+    "headers": {
+     "cache-control": "no-store",
+     "content-encoding": "deflate",
+     "content-type": "application/octet-stream",
+     "pragma": "no-cache",
+     "vary": "Accept-Encoding",
+     "x-content-type-options": "nosniff",
+     "x-world-imagery": "redacted",
+     "x-world-redaction": "none&faces-detected-and-filled/yunet-2023mar@0.30+plausibility3"
+    },
+    "status": 200,
+    "wire_bytes": 49268,
+    "wire_sha256": "cb931488115c511af3299d7302b6fa9921cc5df860386d28b0efadefcbe01d1f"
+   },
+   "chunk_gzip": {
+    "headers": {
+     "cache-control": "no-store",
+     "content-encoding": "gzip",
+     "content-type": "application/octet-stream",
+     "pragma": "no-cache",
+     "vary": "Accept-Encoding",
+     "x-content-type-options": "nosniff",
+     "x-world-imagery": "redacted",
+     "x-world-redaction": "none&faces-detected-and-filled/yunet-2023mar@0.30+plausibility3"
+    },
+    "status": 200,
+    "wire_bytes": 49280,
+    "wire_sha256": "dee4f2be8f67063570c6653dfb027d0186a0e8779710314c94eaa6036bfe7be9"
+   },
+   "chunks": [
+    {
+     "body_sha256": "a3296e38f58bc2ca9613022cea73619a2a1af9f14808d349b69f5a2cc1dbbe89",
+     "bytes": 69216,
+     "headers": {
+      "cache-control": "no-store",
+      "content-encoding": "gzip",
+      "content-type": "application/octet-stream",
+      "pragma": "no-cache",
+      "vary": "Accept-Encoding",
+      "x-content-type-options": "nosniff",
+      "x-world-imagery": "redacted",
+      "x-world-redaction": "none&faces-detected-and-filled/yunet-2023mar@0.30+plausibility3"
+     },
+     "status": 200
+    },
+    {
+     "body_sha256": "95416c20ff7f10f8a5e1eb06510f89f056bd971367bc1da54df7674bbe3f889a",
+     "bytes": 9658,
+     "headers": {
+      "cache-control": "no-store",
+      "content-encoding": "gzip",
+      "content-type": "application/octet-stream",
+      "pragma": "no-cache",
+      "vary": "Accept-Encoding",
+      "x-content-type-options": "nosniff",
+      "x-world-imagery": "redacted",
+      "x-world-redaction": "none&faces-detected-and-filled/yunet-2023mar@0.30+plausibility3"
+     },
+     "status": 200
+    }
+   ],
+   "files": {
+    "c.95416c20ff7f10f8a5e1eb06510f89f0.bin": "95416c20ff7f10f8a5e1eb06510f89f056bd971367bc1da54df7674bbe3f889a",
+    "c.a3296e38f58bc2ca9613022cea73619a.bin": "a3296e38f58bc2ca9613022cea73619a2a1af9f14808d349b69f5a2cc1dbbe89",
+    "p.3d26902e2d2c0fde0a5d7e20f0a19b43.bin": "3d26902e2d2c0fde0a5d7e20f0a19b434afc4d3de23e27b7a4336eaf8dddf072"
+   },
+   "listing_appearance": [
+    {
+     "bytes": 92656,
+     "format": "wb-appearance-keyframes/1",
+     "imagery": "first-person keyframe imagery of a private space; best-effort face redaction with measured false negatives; not anonymised; screens, documents and bodies are not redacted",
+     "imagery_source": "redacted",
+     "keyframe_image_set": null,
+     "keyframes": 8,
+     "keyframes_phone": 8,
+     "label_trusted": false,
+     "privacy_safe": true,
+     "privacy_tags": [
+      "raw-imagery",
+      "first-person"
+     ],
+     "quality": "live",
+     "redaction": "none",
+     "redaction_effective": "none&faces-detected-and-filled/yunet-2023mar@0.30+plausibility3",
+     "retains_raw_imagery": true,
+     "retention": "kept with the world under appearance/<session>/ until the session is rebuilt or the world is purged; derived from the session keyframes, so it is deleted and rebuilt, never edited",
+     "state": "served"
+    }
+   ],
+   "manifest": {
+    "body": {
+     "appearance_provenance": {
+      "alpha_ring_px": 7,
+      "fill_rule": 2,
+      "frames": {
+       "refused": {},
+       "used": 8
+      },
+      "imagery_source": "redacted",
+      "keyframe_image_set": null,
+      "label_trusted": false,
+      "note": "best-effort face redaction with measured false negatives; not anonymised; screens, documents and bodies are not redacted",
+      "per_frame_sha1_digest": "f406a691227576bb52c863f2b6252faa49063108",
+      "privacy_safe": true,
+      "privacy_tags": [
+       "raw-imagery",
+       "first-person"
+      ],
+      "raw_imagery_frames_missing": null,
+      "raw_imagery_set": null,
+      "redaction_consensus": {
+       "mode": "off",
+       "rule": "off"
+      },
+      "redaction_effective": "none&faces-detected-and-filled/yunet-2023mar@0.30+plausibility3",
+      "redactor_applied_here": "faces-detected-and-filled/yunet-2023mar@0.30+plausibility3",
+      "retains_raw_imagery": true,
+      "session_redaction": "none",
+      "source": "session-keyframes",
+      "unobserved_rule": "fill2|nearblack6open16|dilate2"
+     },
+     "chunks": 2,
+     "currency": {
+      "current": true,
+      "present": true,
+      "reason": null
+     },
+     "imagery_source": "redacted",
+     "keyframes": 8,
+     "keys": [
+      "appearance_provenance",
+      "build_id",
+      "built_at",
+      "camera",
+      "chunks",
+      "currency",
+      "encoding_notes",
+      "encodings",
+      "epoch",
+      "excluded",
+      "exposure",
+      "format",
+      "imagery_source",
+      "input_digest",
+      "keyframes",
+      "occluders",
+      "params",
+      "params_digest",
+      "privacy_safe",
+      "proxy",
+      "quality",
+      "scale",
+      "schema_version",
+      "seconds",
+      "selection",
+      "transients"
+     ],
+     "privacy_safe": true,
+     "sha256": "84f5f994e592b20f6c463eeb2a8532c6771a6e7948e562f021245a8236799e7b"
+    },
+    "headers": {
+     "cache-control": "no-store",
+     "content-encoding": "gzip",
+     "content-type": "application/json",
+     "pragma": "no-cache",
+     "vary": "Accept-Encoding",
+     "x-content-type-options": "nosniff",
+     "x-world-imagery": "redacted",
+     "x-world-redaction": "none&faces-detected-and-filled/yunet-2023mar@0.30+plausibility3"
+    },
+    "status": 200
+   },
+   "manifest_on_disk": {
+    "appearance_provenance": {
+     "alpha_ring_px": 7,
+     "fill_rule": 2,
+     "frames": {
+      "refused": {},
+      "used": 8
+     },
+     "imagery_source": "redacted",
+     "keyframe_image_set": null,
+     "label_trusted": false,
+     "note": "best-effort face redaction with measured false negatives; not anonymised; screens, documents and bodies are not redacted",
+     "per_frame_sha1_digest": "f406a691227576bb52c863f2b6252faa49063108",
+     "privacy_safe": true,
+     "privacy_tags": [
+      "raw-imagery",
+      "first-person"
+     ],
+     "raw_imagery_frames_missing": null,
+     "raw_imagery_set": null,
+     "redaction_consensus": {
+      "mode": "off",
+      "rule": "off"
+     },
+     "redaction_effective": "none&faces-detected-and-filled/yunet-2023mar@0.30+plausibility3",
+     "redactor_applied_here": "faces-detected-and-filled/yunet-2023mar@0.30+plausibility3",
+     "retains_raw_imagery": true,
+     "session_redaction": "none",
+     "source": "session-keyframes",
+     "unobserved_rule": "fill2|nearblack6open16|dilate2"
+    },
+    "chunks": 2,
+    "currency": null,
+    "imagery_source": "redacted",
+    "keyframes": 8,
+    "keys": [
+     "appearance_provenance",
+     "build_id",
+     "built_at",
+     "camera",
+     "chunks",
+     "encoding_notes",
+     "encodings",
+     "epoch",
+     "excluded",
+     "exposure",
+     "format",
+     "imagery_source",
+     "input_digest",
+     "keyframes",
+     "occluders",
+     "params",
+     "params_digest",
+     "privacy_safe",
+     "proxy",
+     "quality",
+     "scale",
+     "schema_version",
+     "seconds",
+     "selection",
+     "transients"
+    ],
+    "privacy_safe": true,
+    "sha256": "56393afaf515c837f4b6b2237a504c65991bb8efb357c8f2400d62fede741e52"
+   },
+   "page": {
+    "body_sha256": "6ab122232f97f2eab10fc7eac1300c88809e47c9af0e0ed88dab6a26e0788117",
+    "representation": "appearance",
+    "status": 200
+   },
+   "proxy": {
+    "body_sha256": "3d26902e2d2c0fde0a5d7e20f0a19b434afc4d3de23e27b7a4336eaf8dddf072",
+    "bytes": 13782,
+    "headers": {
+     "cache-control": "no-store",
+     "content-encoding": "gzip",
+     "content-type": "application/octet-stream",
+     "pragma": "no-cache",
+     "vary": "Accept-Encoding",
+     "x-content-type-options": "nosniff",
+     "x-world-imagery": "redacted",
+     "x-world-redaction": "none&faces-detected-and-filled/yunet-2023mar@0.30+plausibility3"
+    },
+    "status": 200
+   },
+   "redactions": [
+    {
+     "in": "a6e0044073dd1516c73b5c6b388cc10808fe01dc3fd817d1170e0a9cacc87b73",
+     "label": "faces-detected-and-filled/yunet-2023mar@0.30+plausibility3",
+     "out": "9a090bafcb9f57fd5fa17bb24cf27f6f62c7dba5c72fe4a39f67d48573583a8d",
+     "regions": 1
+    },
+    {
+     "in": "a946a48808bc240303e051ff73500ff2f34a7429f0e17f08c959826c0f9daa7c",
+     "label": "faces-detected-and-filled/yunet-2023mar@0.30+plausibility3",
+     "out": "d09c0217e255e0f08f4d399631d8acfba028dfffdaec6a1f4e76233d17e254e9",
+     "regions": 1
+    },
+    {
+     "in": "d6cbbd8729f25216a661b45105853d241b37df2699148518e69b99d1e6f8032c",
+     "label": "faces-detected-and-filled/yunet-2023mar@0.30+plausibility3",
+     "out": "e8d6d434f84a5ad9ff2407c8ab577770d0cebe31245bc0b5deb2780b22c9766f",
+     "regions": 1
+    },
+    {
+     "in": "925655b47c64bfc189ec6cc414f236ede3d14b72fe01b8c5789b5b3eb220f7d9",
+     "label": "faces-detected-and-filled/yunet-2023mar@0.30+plausibility3",
+     "out": "e2b96e125b9c4cc1adaa9991b53f07b041f72fd947ba323f8593d108e7011e02",
+     "regions": 1
+    },
+    {
+     "in": "6e847605ed9047479fac4a52245d9ceb2eb7ac46977892b784664292a6004834",
+     "label": "faces-detected-and-filled/yunet-2023mar@0.30+plausibility3",
+     "out": "00166af143592c46a6cc4349a63c058ee4e24a1473504faa6fd6b9c8506a0222",
+     "regions": 1
+    },
+    {
+     "in": "58ef9a856f2ebcfd570b213c4b48880201acb8da7540cb55213bab71861f1822",
+     "label": "faces-detected-and-filled/yunet-2023mar@0.30+plausibility3",
+     "out": "c18ba5a8ed01d112990b8e69a512927e0227dfe59a0be1dbbef3d8eee7dbc3a7",
+     "regions": 1
+    },
+    {
+     "in": "de3a3c9023d1e3217378dc7204fbb209031d2fe8b768795a7fc311a43521fb16",
+     "label": "faces-detected-and-filled/yunet-2023mar@0.30+plausibility3",
+     "out": "e4cc4cdca9edd3d04c549e5431dadd940485d02d0372e41dffdcfb909b84d1cd",
+     "regions": 1
+    },
+    {
+     "in": "b7754fd9e6b26c113c484e59797d26673284185e5a25a9792098f9a7cb37957f",
+     "label": "faces-detected-and-filled/yunet-2023mar@0.30+plausibility3",
+     "out": "f5a96e9c8d105f7904b4b95f1c2a0c560fd1d89df807ee41a87ff78c38017c87",
+     "regions": 1
+    }
+   ],
+   "revision_plain": {
+    "body": {
+     "appearance": {
+      "current": true,
+      "epoch": "<v0>",
+      "revision": "s1/appearance:<v0>",
+      "state": "served"
+     },
+     "components": null,
+     "live": false,
+     "representation": "surface",
+     "revision": "s1/surface:<t>",
+     "session_id": "s1"
+    },
+    "headers": {
+     "cache-control": "no-store",
+     "content-type": "application/json"
+    },
+    "status": 200
+   },
+   "revision_viewer": {
+    "body": {
+     "appearance": {
+      "current": true,
+      "epoch": "<v0>",
+      "revision": "s1/appearance:<v0>",
+      "state": "served"
+     },
+     "components": null,
+     "live": false,
+     "representation": "appearance",
+     "revision": "s1/appearance:1@<v0>",
+     "session_id": "s1"
+    },
+    "headers": {
+     "cache-control": "no-store",
+     "content-type": "application/json"
+    },
+    "status": 200
+   },
+   "rules": {
+    "consensus_rule_of": "off",
+    "imagery_matches[raw-local-research]": false,
+    "imagery_matches[redacted]": true,
+    "imagery_source_of": "redacted",
+    "keyframe_set_identity": [
+     "none",
+     null
+    ],
+    "label_is_trusted": false,
+    "label_matches[env]": true,
+    "label_matches[raw-local-research]": false,
+    "label_matches[redacted]": true,
+    "pixel_trust_token": "rerun:none&faces-detected-and-filled/yunet-2023mar@0.30+plausibility3",
+    "withdrawal_state": "rebuilding"
+   },
+   "viewer_config": {
+    "appearance_revision": null,
+    "astc_layer_cap": 192,
+    "base": "glasses-world://tower",
+    "blend_temperature": 0.07,
+    "border_feather_px": 80,
+    "build_id": "<v0>",
+    "cameras": [
+     [
+      -0.6,
+      -0.0,
+      0.0,
+      0.11913,
+      -0.01655,
+      0.99274
+     ],
+     [
+      -0.42857,
+      0.05,
+      0.0,
+      0.0854,
+      0.0,
+      0.99635
+     ],
+     [
+      -0.25714,
+      0.1,
+      0.0,
+      0.0513,
+      -0.04987,
+      0.99744
+     ],
+     [
+      -0.08571,
+      -0.0,
+      0.0,
+      0.01714,
+      0.01666,
+      0.99971
+     ],
+     [
+      0.08571,
+      0.05,
+      0.0,
+      -0.01713,
+      -0.03331,
+      0.9993
+     ],
+     [
+      0.25714,
+      0.1,
+      0.0,
+      -0.05135,
+      -0.01664,
+      0.99854
+     ],
+     [
+      0.42857,
+      0.0,
+      0.0,
+      -0.08539,
+      -0.0166,
+      0.99621
+     ],
+     [
+      0.6,
+      0.05,
+      0.0,
+      -0.11915,
+      0.0,
+      0.99288
+     ]
+    ],
+    "confidence_hi": 0.3058823529411765,
+    "confidence_lo": 0.09411764705882353,
+    "consensus": 1.0,
+    "crack_fill_px": 4,
+    "currency_reason": null,
+    "current": true,
+    "edge_fade_px": 8,
+    "exposure": 1.0,
+    "gamma": 1.0,
+    "imagery_source": "redacted",
+    "k": 4,
+    "keyframes_phone": 8,
+    "keyframes_total": 8,
+    "median_scene_depth": 3.0059,
+    "privacy_safe": true,
+    "proxy_faces": 1200,
+    "quality": "live",
+    "redaction_effective": "none&faces-detected-and-filled/yunet-2023mar@0.30+plausibility3",
+    "rgba8_layer_cap": 48,
+    "routes": {
+     "chunk": "/worlds/w1/appearance/s1/chunk/",
+     "manifest": "/worlds/w1/appearance/s1/manifest",
+     "proxy": "/worlds/w1/appearance/s1/proxy/",
+     "revision": "/worlds/w1/render/revision?session_id=s1"
+    },
+    "scale_state": "unknown",
+    "session_id": "s1",
+    "source_fade_ms": 280,
+    "standoff": 0.6,
+    "tone_knee": 0.8,
+    "transport": "app",
+    "unseen_haze": 0.9,
+    "up": [
+     0.0,
+     -1.0,
+     0.0
+    ],
+    "view_margin": 1.4,
+    "view_margin_v": 1.15,
+    "void_fog": 0.35,
+    "void_wide_fade": 0.2,
+    "world_id": "w1"
+   }
   }
  },
  "truth_table": {
