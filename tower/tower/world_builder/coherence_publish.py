@@ -1254,6 +1254,10 @@ def gate_by_consensus(store, world_id: str, session_id: str, solution, *, plan: 
             draws.append({"draw": k, "seed": seeds[k], "failed": f"{type(exc).__name__}: {exc}"})
             continue
         map_s = round(time.perf_counter() - t, 3)
+        if getattr(plan.map_draw, "reports_map_s", False):
+            # A concurrent draw (W0-1) was mapped by a child while the earlier draws were gated:
+            # what this call waited is not its map, its own `timing.map_s` is (review W01F ADV LOW-4).
+            map_s = (getattr(candidate, "timing", None) or {}).get("map_s", map_s)
         result = gate(candidate)
         results.append(result)
         draws.append({"draw": k, "seed": seeds[k], "map_s": map_s, "gate_s": result.record.get("seconds")})

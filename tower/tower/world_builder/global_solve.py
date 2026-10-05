@@ -77,6 +77,7 @@ import pickle
 import shutil
 import sqlite3
 import subprocess
+import sys
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -1741,7 +1742,8 @@ def consensus_requested(*, final: bool, gated: bool, consensus: int | None = Non
 
 
 def frozen_draw_mapper(store, world_id: str, session_id: str, database_path, base: Solution, *,
-                       keyframes=None, min_image_observations: int = MIN_IMAGE_OBSERVATIONS):
+                       keyframes=None, min_image_observations: int = MIN_IMAGE_OBSERVATIONS,
+                       sweep: bool = True):
     """`seed -> candidate`: one further consensus draw on `database_path` -- the database the
     published solve mapped, frozen -- with every seed set and one mapper thread, exactly as
     the seeded final solve maps. The final solve and a re-gate in place both map their draws
@@ -1757,7 +1759,11 @@ def frozen_draw_mapper(store, world_id: str, session_id: str, database_path, bas
     nothing reads it again, so it is removed there and then (about 17 MB a draw, and it was
     never cleaned). `sparse-draws/` itself -- this module's own scratch inside the workspace --
     is cleared when a mapper is made, taking anything a killed consensus left behind. `sparse/`
-    keeps draw 0's model, as every solve's."""
+    keeps draw 0's model, as every solve's.
+
+    `sweep=False` skips only that clearing: W0-1's in-process re-map of ONE failed child's
+    seed while a sibling child still maps in its own `child-<k>/`, or beside a live
+    writer's root (`concurrent_draw_mapper`). Every caller but that one sweeps, as before."""
     import pycolmap  # noqa: PLC0415
 
     _quiet_pycolmap()
@@ -1767,7 +1773,8 @@ def frozen_draw_mapper(store, world_id: str, session_id: str, database_path, bas
     draw_root = workspace.root / CONSENSUS_SPARSE_DIRNAME
     if _unconfirmed_draw_alive():
         raise RuntimeError("an earlier consensus child still owns draw scratch")
-    shutil.rmtree(draw_root, ignore_errors=True)
+    if sweep:
+        shutil.rmtree(draw_root, ignore_errors=True)
 
     def map_draw(seed: int) -> Solution:
         sparse = draw_root / f"seed-{int(seed)}"
@@ -1795,19 +1802,87 @@ def frozen_draw_mapper(store, world_id: str, session_id: str, database_path, bas
 # A worker whose death could not be confirmed must remain owned and visible. Never
 # reuse its private database or sparse path for a replacement writer.
 _UNCONFIRMED_DRAW_CHILDREN = []
-# ADV review E2 measured 1.09 GiB peak commit at 398 keyframes. Allow 1.5x
-# for walk variation and reserve one further child-sized budget for the parent
-# while its serial gates run. This is a proxy until walk-5 peak commit is measured.
-_DRAW_MEASURED_COMMIT_BYTES = int(1.09 * 1024**3)
-_DRAW_MEASURED_KEYFRAMES = 398
-_DRAW_COMMIT_FACTOR = 1.5
-_DRAW_COMMIT_FLOOR_BYTES = int(1.5 * 1024**3)
+# The draw roots (`sparse-draws/`) an OPEN concurrent mapper of this process owns. A
+# marker naming this process but no open mapper is an earlier mapper's leftover whose
+# sweep failed, not a live writer (review W01F STD MED-2 / ADV MED-1).
+_LIVE_DRAW_ROOTS = set()
+# A child's private copy, context, candidate, model and log live in `child-<k>/`. NEVER
+# `seed-<k>/`: that is the serial mapper's sparse dir for seed k -- OFF's, and the in-process
+# re-map of a failed child's seed -- so a private root that could not be swept (a handle held
+# on its database) cannot make that re-map's `mkdir` fail and cost the draw its vote (review
+# W01F ADV LOW-2, STD LOW-4). SHORT ON PURPOSE: a child's deepest file, its staging
+# `candidate.pkl.p<pid>.<8 hex>.tmp`, is about 180 characters deep on the live store and about
+# 250 in a test's temporary world, against Windows' 260 (MAX_PATH): `private-seed-<k>` crossed
+# it there, and the child could not write its result.
+_DRAW_PRIVATE_PREFIX = "child-"
+# How much of a failed child's log the journal keeps (all of it goes to stderr).
+_CHILD_LOG_TAIL_CHARS = 2000
+
+# THE RAM GATE, FROM THE MEASURED CHILD (review W01F ADV MED-2, STD LOW-1). One real
+# `world_solve_draw.py` child -- one mapper thread, CPU, launched by `_launch_draw_child`
+# -- was measured twice:
+#   *  398 keyframes (the b2a75ab4 seed-0 frozen copy): peak private commit 1.09 GiB
+#      (claude-W0-1-REVIEW-ADV-20260928.md, E2);
+#   *  997 images (walk 5, da4ac2d3's mapped `database.masked.p34464.ef16a136.db`): OS
+#      PeakPagefileUsage 1,506,500,608 B = 1.403 GiB, peak working set 0.688 GiB, 397.2 s
+#      (claude-W01F-6b41add-REVIEW-ADV-20261004.md, section 0; rv-w01f-adv-ram\run-seed1).
+# A child's budget is the straight line through those two points -- a FLOOR (its
+# intercept: the interpreter, pycolmap and the mapper's fixed state) of 0.882 GiB plus a
+# PER-IMAGE factor of 0.535 MiB -- times a SAFETY MARGIN of 1.5 for walk-to-walk variation
+# (match density, components; each point is one sample). The line is exact at both
+# measurements; commit grew 29 % for 150 % more images, so past them it over-states unless
+# growth turns super-linear. The walk's size is `max(keyframes, images)`.
+# The gate asks for one budget per child PLUS ONE for the parent, which may re-map a
+# failed child's seed in-process while a sibling still runs: that map costs at most what a
+# child costs, and the parent's own resident set is already out of the `available` it
+# reads. Physical `available` against a commit budget is conservative: a child's working
+# set is half its commit.
+#   997 images, 2 children: 3 x 1.5 x 1.403 GiB = 6.31 GiB: admitted on the 10.9-11.9 GiB
+#   this host has free (it was refused at 12.29 GiB, 2.9x the measured child, before).
+#   398 keyframes: 3 x 1.5 x 1.09 GiB = 4.90 GiB. It refuses 997 images below 6.31 GiB
+#   free and, with 10.9 GiB free, any walk above about 2,950 images.
+_DRAW_COMMIT_MEASURED = ((398, int(1.09 * 1024**3)), (997, 1_506_500_608))
+_DRAW_COMMIT_PER_IMAGE_BYTES = ((_DRAW_COMMIT_MEASURED[1][1] - _DRAW_COMMIT_MEASURED[0][1])
+                                / (_DRAW_COMMIT_MEASURED[1][0] - _DRAW_COMMIT_MEASURED[0][0]))
+_DRAW_COMMIT_FLOOR_BYTES = (_DRAW_COMMIT_MEASURED[0][1]
+                            - _DRAW_COMMIT_MEASURED[0][0] * _DRAW_COMMIT_PER_IMAGE_BYTES)
+_DRAW_COMMIT_MARGIN = 1.5
+
+# THE CHILD WAIT, FROM THE MEASURED CHILD (review W01F ADV MED-3, STD LOW-2). A child's
+# map is about linear in the walk: 175.0 s at 398 keyframes (a loaded host; 146.1 s
+# in-process; claude-W0-1-REVIEW-ADV-20260928.md, E1) and 397.2 s at 997 images (a lone
+# child; W01F ADV section 0). The slower rate, 175.0 / 398 = 0.44 s an image, is the
+# PER-IMAGE factor; the bound is a MULTIPLE of 3 of it (two children at once, the parent
+# gating on every core, BELOW_NORMAL priority) with a FLOOR of 600 s, the old fixed bound,
+# for small walks. It runs from the child's LAUNCH, so a child the parent reaches late gets
+# no extra time; and only the child that overran is re-mapped: its siblings keep mapping.
+#   398: max(600, 525) = 600 s.  997: 1,315 s (3.3x the 397 s measured).  2,000: 2,638 s.
+_DRAW_WAIT_PER_IMAGE_S = 175.0 / 398
+_DRAW_WAIT_MULTIPLE = 3.0
+_DRAW_WAIT_FLOOR_S = 600.0
+# A child whose mapper raised (`world_solve_draw.py`): its seed is re-mapped in-process.
+DRAW_CHILD_MAPPER_RAISED_EXIT = 3
+
+
+def _draw_walk_size(keyframes: int, images: int) -> int:
+    return max(0, int(keyframes), int(images))
 
 
 def _draw_commit_budget(keyframes: int, images: int) -> int:
-    scale = max(_DRAW_MEASURED_KEYFRAMES, keyframes, images) / _DRAW_MEASURED_KEYFRAMES
-    return max(_DRAW_COMMIT_FLOOR_BYTES,
-               int(_DRAW_MEASURED_COMMIT_BYTES * _DRAW_COMMIT_FACTOR * scale))
+    """One child's commit budget in bytes: the measured line at this walk's size, x the margin."""
+    return int(_DRAW_COMMIT_MARGIN * (_DRAW_COMMIT_FLOOR_BYTES + _DRAW_COMMIT_PER_IMAGE_BYTES
+                                      * _draw_walk_size(keyframes, images)))
+
+
+def _draw_ram_needed(keyframes: int, images: int, children: int) -> int:
+    """The free physical memory the gate asks for: one budget per child, one for the parent."""
+    return (int(children) + 1) * _draw_commit_budget(keyframes, images)
+
+
+def _draw_wait_seconds(keyframes: int, images: int) -> float:
+    """How long a child may map, from its launch, before its seed is re-mapped in-process."""
+    return max(_DRAW_WAIT_FLOOR_S,
+               _DRAW_WAIT_MULTIPLE * _DRAW_WAIT_PER_IMAGE_S * _draw_walk_size(keyframes, images))
 
 
 def _draw_image_count(source: Path) -> int:
@@ -1955,27 +2030,87 @@ def _stop_draw_children(children) -> bool:
     return all_gone
 
 
+def _draw_root_key(root) -> str:
+    return os.path.normcase(os.path.abspath(root))
+
+
 def _draw_writer_live(marker: Path) -> bool:
-    """A missing or malformed marker is unsafe to sweep if scratch exists."""
+    """Whether the writer a `writer.json` names still owns its draw root. Gone, a reused pid
+    (another start time), or THIS process with no open mapper on that root: stale. A marker
+    that cannot be read or checked counts as live: never sweep what may be a live writer's."""
     import psutil  # noqa: PLC0415
     try:
         owner = read_json_closed(marker)
-        process = psutil.Process(int(owner["pid"]))
-        return abs(process.create_time() - float(owner["created_at"])) < 1
+        pid = int(owner["pid"])
+        process = psutil.Process(pid)
+        if abs(process.create_time() - float(owner["created_at"])) >= 1:
+            return False
     except psutil.NoSuchProcess:
         return False
     except (psutil.Error, OSError, ValueError, TypeError, KeyError):
         return True
+    return pid != os.getpid() or _draw_root_key(marker.parent) in _LIVE_DRAW_ROOTS
 
 
 def _sweep_draw_root(root: Path, *, owned: bool = False) -> bool:
+    """Remove `sparse-draws/` for a concurrent finish: False, untouched, if a live writer owns
+    it. A root WITHOUT a marker is stale and swept, as the serial mapper sweeps it (review
+    W01F STD MED-2 / ADV MED-1): every concurrent root carries its `writer.json` from its
+    creation, and the serial mapper -- OFF's, and every fallback's -- writes none, so a
+    markerless root is a hard-killed serial draw's or a failed sweep's leftover. Raises
+    OSError when it cannot be removed: the caller then maps serially, never fatally."""
     if not root.exists():
         return True
     marker = root / "writer.json"
-    if not owned and (not marker.exists() or _draw_writer_live(marker)):
+    if not owned and marker.exists() and _draw_writer_live(marker):
         return False
     shutil.rmtree(root)
     return True
+
+
+def _release_draw_root(root: Path) -> None:
+    """The end of an owned root: swept; if it cannot be (a handle held on a file), its marker
+    goes, so the leftover is stale to the next finish. Never fatal."""
+    try:
+        _sweep_draw_root(root, owned=True)
+    except OSError:
+        logger.warning("consensus draw scratch cleanup failed: %s", root, exc_info=True)
+        try:
+            (root / "writer.json").unlink()
+        except FileNotFoundError:
+            pass
+        except OSError:
+            logger.warning("consensus draw scratch marker could not be removed: %s", root,
+                           exc_info=True)
+    finally:
+        _LIVE_DRAW_ROOTS.discard(_draw_root_key(root))
+
+
+def _why(exc: BaseException) -> str:
+    """An exception as one bounded journal field: its type, message and its last frames."""
+    import traceback  # noqa: PLC0415
+    frames = traceback.extract_tb(exc.__traceback__)[-4:] if exc.__traceback__ else []
+    at = " < ".join(f"{Path(f.filename).name}:{f.lineno}" for f in reversed(frames))
+    return (f"{type(exc).__name__}: {exc}" + (f" at {at}" if at else ""))[:_CHILD_LOG_TAIL_CHARS]
+
+
+def _child_log(private_root: Path, seed: int) -> str | None:
+    """A child's own log -- its glog lines, any traceback -- copied to this process's stderr,
+    where the serial path's lines go (the final solve's `solve.log`), before its private root
+    is swept. Returns its tail for the journal (review W01F ADV LOW-3)."""
+    try:
+        text = (private_root / "child.log").read_bytes().decode("utf-8", "replace")
+    except OSError:
+        return None
+    if not text.strip():
+        return None
+    try:
+        sys.stderr.write(f"[consensus draw seed {seed}: child log]\n{text}"
+                         + ("" if text.endswith("\n") else "\n"))
+        sys.stderr.flush()
+    except Exception:  # noqa: BLE001 -- relaying a log never fails a draw
+        pass
+    return text[-_CHILD_LOG_TAIL_CHARS:]
 
 
 def concurrent_draw_mapper(store, world_id: str, session_id: str, database_path,
@@ -1985,100 +2120,161 @@ def concurrent_draw_mapper(store, world_id: str, session_id: str, database_path,
     """Launch private, seeded one-thread maps after draw 0 attaches.
 
     The consensus still calls this in seed order and gates each returned candidate
-    before asking for the next. Resource or child failure selects the original
-    serial mapper. No child sees the parent database.
+    before asking for the next. No child sees the parent database.
+
+    EVERY OUTCOME IS OFF'S (Tier A; review W01F). A child's candidate is used only when the
+    child exited 0, its result reads, its private database is unchanged by three digests (the
+    child's two and this process's own) and it posed something. Any other outcome for a
+    child -- a non-zero exit (a child whose mapper RAISED exits 3), its wait running out
+    (`_draw_wait_seconds`, from its launch), an unreadable or empty result, a changed
+    database -- re-maps THAT seed in-process with OFF's own mapper (`frozen_draw_mapper`),
+    while its siblings keep mapping. A refusal at launch -- the RAM gate (`_draw_ram_needed`),
+    a resource probe, a digest, scratch that cannot be swept or that a live writer owns --
+    maps every seed with OFF's mapper. Each is one line of `solve/<session>/
+    consensus_concurrent.jsonl` (`consensus-concurrent/1`), one log line and the I0 event,
+    and only with the switch on. The finish fails closed (`ConsensusAuditError`) only for a
+    hazard OFF cannot have: a child whose stop cannot be confirmed, or a journal that cannot
+    be written.
     """
     from tower.world_builder import coherence_publish  # noqa: PLC0415
 
     seeds = tuple(int(s) for s in seeds)
-    serial = None
     workspace = workspace_for(store, world_id, session_id)
     source = Path(database_path)
     root = workspace.root / CONSENSUS_SPARSE_DIRNAME
     context = root / "concurrent-context.pkl"
-    children = {}
+    children = {}            # seed -> (process, job): launched and not yet confirmed gone
+    deadlines = {}           # seed -> the monotonic time its map must have ended by
+    wait_s = _DRAW_WAIT_FLOOR_S
     expected = None
     launched = False
-    fallback = False
+    everything_serial = False
+    serial = None            # OFF's mapper, made once nothing of this mapper's still runs
+    beside = False           # a live writer owns `sparse-draws/`: never sweep it
     closed = False
     close_error = None
     owns_root = False
 
-    def record(reason, seed):
+    def private(draw_seed):
+        return root / f"{_DRAW_PRIVATE_PREFIX}{draw_seed}"
+
+    def record(reason, seed, *, outcome="serial", **detail):
         stage_timing.concurrent_draw_event(f"{reason}:seed-{seed}")
-        logger.warning("consensus draw serial fallback seed=%s reason=%s", seed, reason)
+        logger.warning("consensus draw %s seed=%s reason=%s",
+                       "serial fallback" if outcome == "serial" else "audit abort", seed, reason)
         try:
             append_jsonl(workspace.root / "consensus_concurrent.jsonl", {
                 "record": "consensus-concurrent/1", "at": time.time(),
                 "pid": os.getpid(), "seed": int(seed), "reason": reason,
+                "outcome": outcome, **detail,
             })
         except OSError as exc:
             raise coherence_publish.ConsensusAuditError(
                 "consensus draw fallback journal write failed") from exc
 
-    def stop_owned_children(*, sweep=True):
+    def abort(reason, seed, message, cause=None):
+        record(reason, seed, outcome="abort")
+        raise coherence_publish.ConsensusAuditError(message) from cause
+
+    def stop(owned):
+        """Stop `owned` (seed -> (process, job)); forget them only once confirmed gone."""
         try:
-            gone = _stop_draw_children(children)
+            gone = _stop_draw_children(owned)
         except Exception as exc:
             raise coherence_publish.ConsensusAuditError(
                 "a consensus child stop failed") from exc
         if not gone:
             raise coherence_publish.ConsensusAuditError(
                 "a consensus child could not be confirmed stopped")
-        children.clear()
-        if sweep and owns_root:
-            try:
-                _sweep_draw_root(root, owned=True)
-            except OSError:
-                logger.warning("consensus draw scratch cleanup failed before serial map: %s",
-                               root, exc_info=True)
+        for draw_seed in list(owned):
+            children.pop(draw_seed, None)
 
-    def use_serial(reason, seed):
-        nonlocal fallback, serial
+    def release():
+        nonlocal owns_root
+        if owns_root:
+            owns_root = False
+            _release_draw_root(root)
+
+    def sweep_private(draw_seed):
         try:
-            record(reason, seed)
-        finally:
-            # Even an unwritable journal must not leave a child or private DB running.
-            stop_owned_children()
+            shutil.rmtree(private(draw_seed))
+        except FileNotFoundError:
+            pass
+        except OSError:
+            logger.warning("consensus draw scratch cleanup failed: %s", private(draw_seed),
+                           exc_info=True)
+
+    def serial_map(seed):
+        nonlocal serial
+        if children or beside:
+            # A sibling still maps in its own private root, or a live writer owns
+            # `sparse-draws/`: OFF's mapper without its construction sweep.
+            return frozen_draw_mapper(store, world_id, session_id, database_path, base,
+                                      keyframes=keyframes,
+                                      min_image_observations=min_image_observations,
+                                      sweep=False)(seed)
+        release()
         if serial is None:
             serial = frozen_draw_mapper(store, world_id, session_id, database_path, base,
                                         keyframes=keyframes,
                                         min_image_observations=min_image_observations)
-        fallback = True
+        return serial(seed)
 
-    def audit_postlaunch(stage, seed, exc):
+    def fall_back(reason, seed, **detail):
+        """At launch: every seed maps in-process, with OFF's mapper. Children and private
+        databases go first, so even an unwritable journal leaves none running."""
+        nonlocal everything_serial
         try:
-            record(f"postlaunch-{stage}-{type(exc).__name__}", seed)
-        finally:
-            stop_owned_children()
-        raise coherence_publish.ConsensusAuditError(
-            f"consensus postlaunch {stage} failed") from exc
+            stop(dict(children))
+        except coherence_publish.ConsensusAuditError:
+            record(reason, seed, outcome="abort", **detail)
+            raise
+        release()
+        record(reason, seed, **detail)
+        everything_serial = True
+
+    def remap(seed, draw_seed, reason, **detail):
+        """Child `draw_seed` gave no usable candidate: stop it, keep its log, sweep its private
+        root, and map that seed in-process with OFF's mapper. Its siblings keep mapping."""
+        entry = children.get(draw_seed)
+        if entry is not None:
+            try:
+                stop({draw_seed: entry})
+            except coherence_publish.ConsensusAuditError:
+                record(reason, draw_seed, outcome="abort", **detail)
+                raise
+        tail = _child_log(private(draw_seed), draw_seed)
+        if tail:
+            detail["child_log_tail"] = tail
+        record(reason, draw_seed, **detail)
+        if draw_seed in deadlines:         # a child of this seed was launched
+            try:
+                stage_timing.child_draw_timing(draw_seed, 0, "raised")
+            except Exception:  # noqa: BLE001 -- I0 is evidence, never a reason
+                logger.warning("consensus child timing failed", exc_info=True)
+        sweep_private(draw_seed)
+        return serial_map(seed)
 
     def launch():
-        nonlocal expected, launched, owns_root, close_error
+        nonlocal expected, launched, owns_root, beside, close_error, wait_s
         launched = True
-
-        def preflight_abort(stage, exc):
-            record(f"preflight-{stage}-{type(exc).__name__}", seeds[0])
-            raise coherence_publish.ConsensusAuditError(
-                f"consensus preflight {stage} failed") from exc
-
         try:
             prior_child_alive = _unconfirmed_draw_alive()
         except Exception as exc:
-            preflight_abort("child-status", exc)
+            abort(f"preflight-child-status-{type(exc).__name__}", seeds[0],
+                  "consensus preflight child-status failed", exc)
         if prior_child_alive:
-            record("unconfirmed-prior-child", seeds[0])
-            raise coherence_publish.ConsensusAuditError(
-                "an earlier consensus child still owns draw scratch")
+            abort("unconfirmed-prior-child", seeds[0],
+                  "an earlier consensus child still owns draw scratch")
         try:
             scratch_clear = _sweep_draw_root(root)
-        except Exception as exc:
-            preflight_abort("scratch-sweep", exc)
+        except Exception as exc:  # noqa: BLE001 -- held open: OFF's mapper sweeps what it can
+            fall_back(f"preflight-scratch-sweep-{type(exc).__name__}", seeds[0], error=_why(exc))
+            return
         if not scratch_clear:
-            record("draw-scratch-owned", seeds[0])
-            raise coherence_publish.ConsensusAuditError(
-                "another consensus writer still owns draw scratch")
+            beside = True
+            fall_back("draw-scratch-owned", seeds[0])
+            return
         try:
             frame_count = len(keyframes) if keyframes is not None else len(
                 store.read_keyframes(world_id, session_id))
@@ -2086,26 +2282,41 @@ def concurrent_draw_mapper(store, world_id: str, session_id: str, database_path,
                 image_count = _draw_image_count(source)
             except (OSError, sqlite3.Error):
                 image_count = frame_count
-            budget = _draw_commit_budget(frame_count, image_count)
-        except Exception as exc:
-            preflight_abort("resource-budget", exc)
+            need = _draw_ram_needed(frame_count, image_count, len(seeds))
+            wait_s = _draw_wait_seconds(frame_count, image_count)
+        except Exception as exc:  # noqa: BLE001
+            fall_back(f"preflight-resource-budget-{type(exc).__name__}", seeds[0], error=_why(exc))
+            return
         try:
             free_ram = _draw_free_ram()
-        except Exception as exc:
-            preflight_abort("ram-probe", exc)
-        if free_ram < (len(seeds) + 1) * budget:
-            use_serial("ram-refusal", seeds[0])
+        except Exception as exc:  # noqa: BLE001
+            fall_back(f"preflight-ram-probe-{type(exc).__name__}", seeds[0], error=_why(exc))
+            return
+        if free_ram < need:
+            fall_back("ram-refusal", seeds[0], free_bytes=int(free_ram), need_bytes=int(need),
+                      walk_size=_draw_walk_size(frame_count, image_count), children=len(seeds))
             return
         try:
             expected = (database_digest(source) or {}).get("content")
-        except Exception as exc:
-            preflight_abort("source-digest", exc)
+        except Exception as exc:  # noqa: BLE001
+            fall_back(f"preflight-source-digest-{type(exc).__name__}", seeds[0], error=_why(exc))
+            return
         if expected is None:
-            use_serial("database-digest-unavailable", seeds[0])
+            fall_back("database-digest-unavailable", seeds[0])
             return
         try:
             root.mkdir(parents=True, exist_ok=False)
-            owns_root = True
+        except FileExistsError:
+            # Made since the sweep, by a writer this process cannot see: never swept.
+            beside = True
+            fall_back("draw-scratch-owned", seeds[0])
+            return
+        except OSError as exc:
+            fall_back(f"launch-refusal:{type(exc).__name__}", seeds[0], error=_why(exc))
+            return
+        owns_root = True
+        _LIVE_DRAW_ROOTS.add(_draw_root_key(root))
+        try:
             import psutil  # noqa: PLC0415
             write_json_atomic(root / "writer.json", {
                 "pid": os.getpid(), "created_at": psutil.Process().create_time()})
@@ -2116,18 +2327,17 @@ def concurrent_draw_mapper(store, world_id: str, session_id: str, database_path,
                              base.input_digest, min_image_observations), handle,
                             protocol=pickle.HIGHEST_PROTOCOL)
             for draw_seed in seeds:
-                private_root = root / f"seed-{draw_seed}"
+                private_root = private(draw_seed)
                 private_root.mkdir(parents=True, exist_ok=True)
-                private = private_root / "database.db"
-                _private_draw_database(source, private)
-                if (database_digest(private) or {}).get("content") != expected:
-                    use_serial("database-copy-digest-mismatch", draw_seed)
+                _private_draw_database(source, private_root / "database.db")
+                if (database_digest(private_root / "database.db") or {}).get("content") != expected:
+                    fall_back("database-copy-digest-mismatch", draw_seed)
                     return
             if (database_digest(source) or {}).get("content") != expected:
-                use_serial("database-source-digest-mismatch", seeds[0])
+                fall_back("database-source-digest-mismatch", seeds[0])
                 return
             for draw_seed in seeds:
-                private_root = root / f"seed-{draw_seed}"
+                private_root = private(draw_seed)
                 try:
                     process, job = _launch_draw_child(
                         context, private_root / "database.db", draw_seed,
@@ -2137,68 +2347,47 @@ def concurrent_draw_mapper(store, world_id: str, session_id: str, database_path,
                         close_error = coherence_publish.ConsensusAuditError(
                             "a launched consensus child could not be confirmed stopped")
                         try:
-                            record("child-launch-unconfirmed", draw_seed)
+                            record("child-launch-unconfirmed", draw_seed, outcome="abort")
                         finally:
                             # The spawned child is absent from children. Stop earlier
                             # siblings, but retain scratch until ownership is proven.
-                            stop_owned_children(sweep=False)
+                            stop(dict(children))
                         raise close_error from exc
-                    use_serial(f"child-launch-{type(exc).__name__}", draw_seed)
+                    fall_back(f"child-launch-{type(exc).__name__}", draw_seed, error=_why(exc))
                     return
                 children[draw_seed] = (process, job)
+                deadlines[draw_seed] = time.monotonic() + wait_s
                 # Ownership is mandatory on Windows: no orphan can remain after
                 # the final solve is hard-stopped.
                 if os.name == "nt" and job is None:
-                    use_serial("job-object-unavailable", draw_seed)
+                    fall_back("job-object-unavailable", draw_seed)
                     return
             stage_timing.concurrent_draw_event("after-draw-0")
-        except FileExistsError:
-            record("draw-scratch-owned", seeds[0])
-            raise coherence_publish.ConsensusAuditError(
-                "another consensus writer still owns draw scratch")
         except (OSError, sqlite3.Error, ValueError, TypeError,
                 pickle.PickleError, MemoryError) as exc:
-            use_serial(f"launch-refusal:{type(exc).__name__}", seeds[0])
+            fall_back(f"launch-refusal:{type(exc).__name__}", seeds[0], error=_why(exc))
 
-    def map_draw(seed: int) -> Solution:
-        nonlocal fallback
-        if closed:
-            raise RuntimeError("concurrent draw mapper is closed")
-        if not launched:
-            launch()
-        if fallback:
-            return serial(seed)
-        try:
-            draw_seed = int(seed)
-        except Exception as exc:
-            audit_postlaunch("seed", seeds[0], exc)
-        if draw_seed not in children:
-            audit_postlaunch("child-missing", draw_seed,
-                             ValueError(f"unexpected consensus seed {draw_seed}"))
+    def collect(draw_seed):
+        """`(candidate, None)`, or `(None, (reason, detail))`. A child leaves `children` only
+        once it is confirmed gone (exited, its Job closed)."""
         process, job = children[draw_seed]
-        # Ordinary end-of-walk stop does not cancel a nearly finished child.
-        # Hard cancellation closes the mapper in the caller's finally block.
+        # Ordinary end-of-walk stop does not cancel a nearly finished child (manager R1).
+        # Hard cancellation ends this process and its Jobs, or closes the mapper.
         try:
-            return_code = process.wait(timeout=600)
+            return_code = process.wait(timeout=max(0.0, deadlines[draw_seed] - time.monotonic()))
         except subprocess.TimeoutExpired:
-            use_serial("child-timeout", draw_seed)
-            return serial(seed)
-        except Exception as exc:
-            audit_postlaunch("child-wait", draw_seed, exc)
+            return None, ("child-timeout", {"wait_s": round(wait_s, 1)})
+        except Exception as exc:  # noqa: BLE001 -- the stop that follows proves it gone or fails
+            return None, (f"child-wait-{type(exc).__name__}", {"error": _why(exc)})
         if job is not None:
             try:
                 job.close()
-            except Exception as exc:
-                audit_postlaunch("job-close", draw_seed, exc)
+            except Exception as exc:  # noqa: BLE001
+                return None, (f"child-job-close-{type(exc).__name__}", {"error": _why(exc)})
         del children[draw_seed]
         if return_code:
-            try:
-                stage_timing.child_draw_timing(draw_seed, 0, "raised")
-            except Exception as exc:
-                audit_postlaunch("child-timing", draw_seed, exc)
-            use_serial(f"child-exit-{return_code}", draw_seed)
-            return serial(seed)
-        private_root = root / f"seed-{draw_seed}"
+            return None, (f"child-exit-{return_code}", {})
+        private_root = private(draw_seed)
         try:
             with (private_root / "candidate.pkl").open("rb") as handle:
                 result = pickle.load(handle)
@@ -2206,36 +2395,51 @@ def concurrent_draw_mapper(store, world_id: str, session_id: str, database_path,
                     not isinstance(result.get("candidate"), Solution) or
                     not isinstance(result.get("map_ms"), (int, float))):
                 raise ValueError("candidate missing")
-        except (OSError, ValueError, TypeError, EOFError, pickle.PickleError) as exc:
-            use_serial(f"child-result-{type(exc).__name__}", draw_seed)
-            return serial(seed)
-        except Exception as exc:
-            audit_postlaunch("child-result", draw_seed, exc)
+        except Exception as exc:  # noqa: BLE001 -- any unreadable result re-maps (ADV LOW-5)
+            return None, (f"child-result-{type(exc).__name__}", {"error": _why(exc)})
         try:
             after = (database_digest(private_root / "database.db") or {}).get("content")
-        except (OSError, sqlite3.Error):
+        except Exception:  # noqa: BLE001 -- a copy that cannot be read cannot be shown unchanged
             after = None
-        except Exception as exc:
-            audit_postlaunch("child-digest", draw_seed, exc)
         if result.get("before") != expected or result.get("after") != expected or after != expected:
-            use_serial("database-child-digest-mismatch", draw_seed)
-            return serial(seed)
+            return None, ("database-child-digest-mismatch", {})
+        candidate = result["candidate"]
+        if not candidate.poses:
+            # Nothing posed: OFF's own map of this seed decides, not the child's (review W01F
+            # STD MED-1; a child whose mapper raised exits 3 first). It costs only time.
+            return None, ("child-empty-candidate", {})
         try:
             stage_timing.child_draw_timing(draw_seed, result["map_ms"])
-        except Exception as exc:
-            audit_postlaunch("child-timing", draw_seed, exc)
+        except Exception:  # noqa: BLE001 -- I0 is evidence, never a reason to re-map
+            logger.warning("consensus child timing failed", exc_info=True)
         try:
-            candidate = result["candidate"]
             candidate.transients = base.transients
             candidate.solve = None if base.solve is None else dict(base.solve, seed=draw_seed)
             candidate.timing = dict(base.timing or {}, map_s=round(result["map_ms"] / 1000, 3))
-        except Exception as exc:
-            audit_postlaunch("candidate-adapt", draw_seed, exc)
+        except Exception as exc:  # noqa: BLE001
+            return None, (f"candidate-adapt-{type(exc).__name__}", {"error": _why(exc)})
+        _child_log(private_root, draw_seed)
+        sweep_private(draw_seed)
+        return candidate, None
+
+    def map_draw(seed: int) -> Solution:
+        if closed:
+            raise RuntimeError("concurrent draw mapper is closed")
+        if not launched:
+            launch()
+        if everything_serial:
+            return serial_map(seed)
         try:
-            shutil.rmtree(private_root)
-        except OSError:
-            logger.warning("consensus draw scratch cleanup failed: %s", private_root,
-                           exc_info=True)
+            draw_seed = int(seed)
+        except Exception:  # noqa: BLE001 -- OFF's mapper refuses it exactly as OFF does
+            return serial_map(seed)
+        if draw_seed not in children:
+            # Not a seed this mapper launched, or asked twice: OFF maps whatever it is asked.
+            return remap(seed, draw_seed, "child-missing")
+        candidate, failure = collect(draw_seed)
+        if failure is not None:
+            reason, detail = failure
+            return remap(seed, draw_seed, reason, **detail)
         return candidate
 
     def close():
@@ -2255,14 +2459,12 @@ def concurrent_draw_mapper(store, world_id: str, session_id: str, database_path,
                     "a consensus child could not be confirmed stopped")
                 raise close_error
             children.clear()
-            if owns_root:
-                try:
-                    _sweep_draw_root(root, owned=True)
-                except OSError:
-                    logger.warning("consensus draw scratch cleanup failed: %s", root,
-                                   exc_info=True)
+            release()
 
     map_draw.close = close
+    # Its candidates carry the child's own map time (`timing.map_s`): what the consensus
+    # waited for one is not its map (review W01F ADV LOW-4).
+    map_draw.reports_map_s = True
     return map_draw
 
 
