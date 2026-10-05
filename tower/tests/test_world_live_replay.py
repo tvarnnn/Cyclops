@@ -3903,11 +3903,15 @@ def test_the_same_run_on_both_sides_is_counted_on_the_baseline_only(tmp_path):
     assert result["duplicates"][0]["side"] == "candidate" and result["duplicates"][0]["of_side"] == "baseline"
 
 
-def test_a_run_whose_stream_identity_cannot_be_established_is_not_counted(tmp_path):
+@pytest.mark.parametrize("how", ["unknown to the log", "one more than the log"])
+def test_a_run_whose_stream_identity_cannot_be_established_is_not_counted(tmp_path, how):
     olds = _three_old(tmp_path)
     client_path = olds[2] / "client.json"
     client = json.loads(client_path.read_text(encoding="utf-8"))
-    client["tower_captures"] = ["0" * 32]           # not the capture the test Tower's own log minted
+    if how == "unknown to the log":
+        client["tower_captures"] = ["0" * 32]       # not the capture the test Tower's own log minted
+    else:
+        client["tower_captures"] = [*client["tower_captures"], "0" * 32]   # the log minted only the first
     client_path.write_text(json.dumps(client), encoding="utf-8")
     _reseal(olds[2])
     result = report.compare_runs(olds)
