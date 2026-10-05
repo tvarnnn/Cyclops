@@ -88,8 +88,8 @@ def _direct(source, out, session, seed):
                 mapper = GS.frozen_draw_mapper(store, world_id, session, database,
                                                base, keyframes=keyframes)
             else:
-                budget = GS._draw_commit_budget(len(keyframes), GS._draw_image_count(database))
-                if GS._draw_free_ram() < 3 * budget:
+                need = GS._draw_ram_needed(len(keyframes), GS._draw_image_count(database), 2)
+                if GS._draw_free_ram() < need:
                     raise RuntimeError(f"insufficient free RAM for two children: {arm}-{repeat}")
                 mapper = GS.concurrent_draw_mapper(store, world_id, session, database, base,
                                                    seeds=(seed + 1, seed + 2), keyframes=keyframes)
@@ -195,8 +195,8 @@ def _full(source, out, session, seed, env_file, compare_w0):
             if arm == "new":
                 _, _, _, database, _ = _load(root, source.name, session, seed)
                 count = len(WorldStore(root).read_keyframes(source.name, session))
-                budget = GS._draw_commit_budget(count, GS._draw_image_count(database))
-                if GS._draw_free_ram() < 3 * budget:
+                need = GS._draw_ram_needed(count, GS._draw_image_count(database), 2)
+                if GS._draw_free_ram() < need:
                     raise RuntimeError(f"insufficient free RAM for two children: {arm}-{repeat}")
             command = [sys.executable, str(REPO / "tower" / "scripts" / "world_refinish.py"),
                        "--root", str(root), "--world", source.name,
