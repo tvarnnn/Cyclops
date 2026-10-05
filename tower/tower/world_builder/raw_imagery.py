@@ -38,8 +38,12 @@ transmission.
 from __future__ import annotations
 
 import hashlib
+import logging
+import re
 from dataclasses import dataclass
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 # `params.imagery_source`, and the values it may take.
 IMAGERY_REDACTED = "redacted"
@@ -95,6 +99,85 @@ def imagery_source_from_env(environ=None) -> str:
         environ = os.environ
     value = str(environ.get(RAW_IMAGERY_ENV, "")).strip().lower()
     return IMAGERY_REDACTED if value in _FALSE else IMAGERY_RAW
+
+
+# THE READ-PATH ALLOWLIST (manager 201 section 1, option C). Home worlds are
+# shown raw while a live walk stays redacted: a Tower serving the product
+# (`TOWER_WORLD_RAW_IMAGERY` off) may serve a raw-local-research artifact for
+# exactly the world ids listed here, comma-separated, and for no other world.
+# It is consulted by READERS only (`reader_imagery_source`). No build reads it:
+# what a build reads is `imagery_source_from_env`, which this list never
+# changes, so a build with the list set is still a redacted build.
+#
+# Unset or exactly empty is the default and changes nothing. Anything else must
+# be a list of whole world ids -- 32 lowercase hex characters each, no spaces,
+# no empty entries, no repeats -- or the WHOLE list is refused: nothing is
+# served raw, and the refusal is logged once per distinct value.
+RAW_IMAGERY_WORLDS_ENV = "TOWER_WORLD_RAW_IMAGERY_WORLDS"
+_WORLD_ID = re.compile(r"[0-9a-f]{32}")
+_LOGGED: set = set()
+
+
+def _log_once(key, message: str, *args) -> None:
+    if key in _LOGGED:
+        return
+    _LOGGED.add(key)
+    logger.warning(message, *args)
+
+
+def raw_imagery_worlds_from_env(environ=None) -> frozenset:
+    """The world ids whose raw-local-research artifacts a reader may serve.
+
+    Empty unless the list is present, non-empty and well-formed throughout.
+    FAILS CLOSED: one bad entry -- a partial or non-hex id, upper case, a
+    space, an empty entry, a duplicate -- refuses every entry, because a list
+    an operator mistyped is not a list anyone meant.
+    """
+    import os  # noqa: PLC0415
+
+    if environ is None:
+        environ = os.environ
+    value = environ.get(RAW_IMAGERY_WORLDS_ENV)
+    if value is None or value == "":
+        return frozenset()
+    ids = str(value).split(",")
+    if len(set(ids)) != len(ids) or not all(_WORLD_ID.fullmatch(i) for i in ids):
+        _log_once(("malformed", str(value)),
+                  "[Tower][WorldBuilder] %s=%r is not a list of whole, distinct, "
+                  "lowercase world ids; it is refused and NO world is served raw",
+                  RAW_IMAGERY_WORLDS_ENV, str(value)[:200])
+        return frozenset()
+    return frozenset(ids)
+
+
+def reader_imagery_source(world_id, artifact_imagery: str, environ=None) -> str:
+    """THE ONE PLACE a reader learns which imagery it may serve for one world.
+
+    `artifact_imagery` is what the artifact says it is made of
+    (`appearance_pipeline.imagery_source_of`). The answer is:
+
+    - `TOWER_WORLD_RAW_IMAGERY` on (a research Tower): `raw-local-research`
+      for every world, exactly as before; the allowlist is not consulted;
+    - otherwise `raw-local-research` when, and only when, the artifact IS raw
+      and `world_id` is on the allowlist -- so a listed world's redacted
+      artifact is still served as redacted, never refused;
+    - otherwise `redacted`, the product.
+
+    A raw artifact served this way carries its marker everywhere a raw one
+    always has (headers, page, listing), because all of them read the same
+    `imagery_source` this decision was made on.
+    """
+    process = imagery_source_from_env(environ)
+    if process == IMAGERY_RAW:
+        return IMAGERY_RAW
+    if artifact_imagery != IMAGERY_RAW or not isinstance(world_id, str):
+        return IMAGERY_REDACTED
+    if world_id not in raw_imagery_worlds_from_env(environ):
+        return IMAGERY_REDACTED
+    _log_once(("served", world_id),
+              "[Tower][WorldBuilder] serving raw-local-research imagery for listed world %s "
+              "(%s); not privacy-safe", world_id, RAW_IMAGERY_WORLDS_ENV)
+    return IMAGERY_RAW
 
 
 class RawImageryUnavailable(RuntimeError):

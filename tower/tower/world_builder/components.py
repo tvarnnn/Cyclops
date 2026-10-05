@@ -733,7 +733,7 @@ def area_appearance_servable(store: WorldStore, world_id: str, session_id: str,
     manifest = AP.read_appearance_manifest(view, world_id, session_id)
     if manifest is None:
         return None, "no appearance for this area"
-    wanted = RAWIMG.imagery_source_from_env()
+    wanted = RAWIMG.reader_imagery_source(world_id, AP.imagery_source_of(manifest))
     if not AP.imagery_matches(manifest, wanted):
         return None, AP.imagery_mismatch_detail(manifest, wanted)
     if not AP.may_serve(view, world_id, session_id, manifest, imagery_source=wanted):

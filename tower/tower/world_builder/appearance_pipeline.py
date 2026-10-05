@@ -1200,10 +1200,12 @@ def label_matches(store, world_id: str, session_id: str, manifest: dict,
     the reader is serving. `imagery_source` defaults to this process's setting
     (`TOWER_WORLD_RAW_IMAGERY`, which is the product unless it is set), so a
     Tower that was not asked for raw research imagery will not hand any out,
-    and one that was will not quietly mix it with redacted chunks.
+    and one that was will not quietly mix it with redacted chunks. The one
+    exception is the read-path allowlist (`TOWER_WORLD_RAW_IMAGERY_WORLDS`,
+    `raw_imagery.reader_imagery_source`): a listed world's raw artifact.
     """
     if imagery_source is None:
-        imagery_source = RAWIMG.imagery_source_from_env()
+        imagery_source = RAWIMG.reader_imagery_source(world_id, imagery_source_of(manifest))
     if not imagery_matches(manifest, imagery_source):
         return False
     prov = manifest.get("appearance_provenance") or {}
@@ -1241,7 +1243,7 @@ def may_serve(store, world_id: str, session_id: str, manifest: dict,
     (`read_appearance_file`, LOW-3).
     """
     if imagery_source is None:
-        imagery_source = RAWIMG.imagery_source_from_env()
+        imagery_source = RAWIMG.reader_imagery_source(world_id, imagery_source_of(manifest))
     # Positional, so a test that stands `label_matches` in with `lambda *a`
     # (tests/test_world_builder_fixture_a_camera_path.py) still reaches it.
     if label_matches(store, world_id, session_id, manifest, imagery_source):
