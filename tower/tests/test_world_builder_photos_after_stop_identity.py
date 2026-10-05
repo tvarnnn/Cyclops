@@ -195,6 +195,16 @@ def _resp(r, norm, body="json"):
     return out
 
 
+def _wire(client, url, headers, norm):
+    """The bytes as sent, NOT as decoded: the test client undoes
+    `Content-Encoding`, so `.content` would hide the compressed stream."""
+    with client.stream("GET", url, headers=headers) as r:
+        raw = b"".join(r.iter_raw())
+        return {"status": r.status_code,
+                "headers": {h: norm.text(r.headers[h]) for h in HEADERS if h in r.headers},
+                "wire_sha256": _sha(raw), "wire_bytes": len(raw)}
+
+
 def _files(w, norm):
     root = AP.appearance_dir(w.store, WORLD, SESSION)
     if not root.is_dir():
@@ -225,9 +235,10 @@ def _observe(w, norm, redactions):
         out["chunks"] = [_resp(client.get(f"{base}/chunk/{c['digest']}"), norm, body="bytes")
                          for c in man.get("chunks") or []]
         if man.get("chunks"):
-            out["chunk_gzip"] = _resp(client.get(
-                f"{base}/chunk/{man['chunks'][0]['digest']}",
-                headers={"Accept-Encoding": "gzip"}), norm, body="bytes")
+            out["chunk_gzip"] = _wire(client, f"{base}/chunk/{man['chunks'][0]['digest']}",
+                                      {"Accept-Encoding": "gzip"}, norm)
+            out["chunk_deflate"] = _wire(client, f"{base}/chunk/{man['chunks'][0]['digest']}",
+                                         {"Accept-Encoding": "deflate"}, norm)
         out["proxy"] = _resp(client.get(f"{base}/proxy/{(man.get('proxy') or {}).get('digest')}"),
                              norm, body="bytes")
     page = client.get(f"/worlds/{WORLD}/render", params={"session_id": SESSION, "viewer": VIEWER})
@@ -565,4 +576,4 @@ def test_the_golden_file_itself_is_the_recorded_bytes():
     assert _sha(data) == GOLDEN_SHA256, _sha(data)
 
 
-GOLDEN_SHA256 = "3d22bdb1ff42bb313aa1fba92ebe3d6512d8fc89c95a363dba65d3867412d78c"
+GOLDEN_SHA256 = "d68e8357043b23f9bbc3cc89fc559ad241520e3dd5dbdd6b5d6543d7fe6a35d5"

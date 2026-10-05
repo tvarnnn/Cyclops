@@ -219,16 +219,27 @@
     ],
     "withdrawal_state": "rebuilding"
    },
-   "chunk_gzip": {
-    "body_sha256": "aae39aa15ba92e27c8e7d580c0be875f984b4adf897c48cbbe37748ab738c8d3",
-    "bytes": 42,
+   "chunk_deflate": {
     "headers": {
      "cache-control": "no-store",
      "content-type": "application/json",
      "pragma": "no-cache",
      "x-content-type-options": "nosniff"
     },
-    "status": 404
+    "status": 404,
+    "wire_bytes": 42,
+    "wire_sha256": "aae39aa15ba92e27c8e7d580c0be875f984b4adf897c48cbbe37748ab738c8d3"
+   },
+   "chunk_gzip": {
+    "headers": {
+     "cache-control": "no-store",
+     "content-type": "application/json",
+     "pragma": "no-cache",
+     "x-content-type-options": "nosniff"
+    },
+    "status": 404,
+    "wire_bytes": 42,
+    "wire_sha256": "aae39aa15ba92e27c8e7d580c0be875f984b4adf897c48cbbe37748ab738c8d3"
    },
    "chunks": [
     {
@@ -891,16 +902,27 @@
     ],
     "withdrawal_state": "withdrawn"
    },
-   "chunk_gzip": {
-    "body_sha256": "3f735fb12b940631e0501621542ae6d6072375a01396066504797c87b2131fd5",
-    "bytes": 71,
+   "chunk_deflate": {
     "headers": {
      "cache-control": "no-store",
      "content-type": "application/json",
      "pragma": "no-cache",
      "x-content-type-options": "nosniff"
     },
-    "status": 404
+    "status": 404,
+    "wire_bytes": 71,
+    "wire_sha256": "3f735fb12b940631e0501621542ae6d6072375a01396066504797c87b2131fd5"
+   },
+   "chunk_gzip": {
+    "headers": {
+     "cache-control": "no-store",
+     "content-type": "application/json",
+     "pragma": "no-cache",
+     "x-content-type-options": "nosniff"
+    },
+    "status": 404,
+    "wire_bytes": 71,
+    "wire_sha256": "3f735fb12b940631e0501621542ae6d6072375a01396066504797c87b2131fd5"
    },
    "chunks": [
     {
@@ -1534,9 +1556,22 @@
     ],
     "withdrawal_state": "rebuilding"
    },
+   "chunk_deflate": {
+    "headers": {
+     "cache-control": "no-store",
+     "content-encoding": "deflate",
+     "content-type": "application/octet-stream",
+     "pragma": "no-cache",
+     "vary": "Accept-Encoding",
+     "x-content-type-options": "nosniff",
+     "x-world-imagery": "redacted",
+     "x-world-redaction": "faces-detected-and-filled/yunet-2023mar@0.30+plausibility3"
+    },
+    "status": 200,
+    "wire_bytes": 59091,
+    "wire_sha256": "bc424df6b541225baab5310b7dda874a45587984213ade46a037cbea58a68b92"
+   },
    "chunk_gzip": {
-    "body_sha256": "65884d9505e65b56dbda5063312edc813b808e51098a9e4707ffdb330bebf193",
-    "bytes": 69216,
     "headers": {
      "cache-control": "no-store",
      "content-encoding": "gzip",
@@ -1547,7 +1582,9 @@
      "x-world-imagery": "redacted",
      "x-world-redaction": "faces-detected-and-filled/yunet-2023mar@0.30+plausibility3"
     },
-    "status": 200
+    "status": 200,
+    "wire_bytes": 59103,
+    "wire_sha256": "30293956eb80ebac9bd752b2b27af4923933ff49640b07640343a49d41bc7e8a"
    },
    "chunks": [
     {
@@ -2293,16 +2330,27 @@
     ],
     "withdrawal_state": "rebuilding"
    },
-   "chunk_gzip": {
-    "body_sha256": "aae39aa15ba92e27c8e7d580c0be875f984b4adf897c48cbbe37748ab738c8d3",
-    "bytes": 42,
+   "chunk_deflate": {
     "headers": {
      "cache-control": "no-store",
      "content-type": "application/json",
      "pragma": "no-cache",
      "x-content-type-options": "nosniff"
     },
-    "status": 404
+    "status": 404,
+    "wire_bytes": 42,
+    "wire_sha256": "aae39aa15ba92e27c8e7d580c0be875f984b4adf897c48cbbe37748ab738c8d3"
+   },
+   "chunk_gzip": {
+    "headers": {
+     "cache-control": "no-store",
+     "content-type": "application/json",
+     "pragma": "no-cache",
+     "x-content-type-options": "nosniff"
+    },
+    "status": 404,
+    "wire_bytes": 42,
+    "wire_sha256": "aae39aa15ba92e27c8e7d580c0be875f984b4adf897c48cbbe37748ab738c8d3"
    },
    "chunks": [
     {
@@ -2949,16 +2997,27 @@
     ],
     "withdrawal_state": "rebuilding"
    },
-   "chunk_gzip": {
-    "body_sha256": "3488c083e2cae1a4322ac0b2602406903dd8c554ec5243242ff86757d97999b5",
-    "bytes": 106,
+   "chunk_deflate": {
     "headers": {
      "cache-control": "no-store",
      "content-type": "application/json",
      "pragma": "no-cache",
      "x-content-type-options": "nosniff"
     },
-    "status": 404
+    "status": 404,
+    "wire_bytes": 106,
+    "wire_sha256": "3488c083e2cae1a4322ac0b2602406903dd8c554ec5243242ff86757d97999b5"
+   },
+   "chunk_gzip": {
+    "headers": {
+     "cache-control": "no-store",
+     "content-type": "application/json",
+     "pragma": "no-cache",
+     "x-content-type-options": "nosniff"
+    },
+    "status": 404,
+    "wire_bytes": 106,
+    "wire_sha256": "3488c083e2cae1a4322ac0b2602406903dd8c554ec5243242ff86757d97999b5"
    },
    "chunks": [
     {
@@ -3689,9 +3748,22 @@
     ],
     "withdrawal_state": "rebuilding"
    },
+   "chunk_deflate": {
+    "headers": {
+     "cache-control": "no-store",
+     "content-encoding": "deflate",
+     "content-type": "application/octet-stream",
+     "pragma": "no-cache",
+     "vary": "Accept-Encoding",
+     "x-content-type-options": "nosniff",
+     "x-world-imagery": "redacted",
+     "x-world-redaction": "none&faces-detected-and-filled/yunet-2023mar@0.30+plausibility3"
+    },
+    "status": 200,
+    "wire_bytes": 51181,
+    "wire_sha256": "2d1d3d6cfb64aa7be370c45e4e6a86d2eecf37040c264a3b030d36d9ffd1c60f"
+   },
    "chunk_gzip": {
-    "body_sha256": "f82b73806b9b28db4dec40e0f14847ef9a5661fcc5f6c4c0be82f03dd001416e",
-    "bytes": 69216,
     "headers": {
      "cache-control": "no-store",
      "content-encoding": "gzip",
@@ -3702,7 +3774,9 @@
      "x-world-imagery": "redacted",
      "x-world-redaction": "none&faces-detected-and-filled/yunet-2023mar@0.30+plausibility3"
     },
-    "status": 200
+    "status": 200,
+    "wire_bytes": 51193,
+    "wire_sha256": "5e9b3b78d98d8711eef693d51ec83726325d5ccf91b616e69990a4e7eb709a3c"
    },
    "chunks": [
     {
@@ -4545,16 +4619,27 @@
     ],
     "withdrawal_state": "withdrawn"
    },
-   "chunk_gzip": {
-    "body_sha256": "3f735fb12b940631e0501621542ae6d6072375a01396066504797c87b2131fd5",
-    "bytes": 71,
+   "chunk_deflate": {
     "headers": {
      "cache-control": "no-store",
      "content-type": "application/json",
      "pragma": "no-cache",
      "x-content-type-options": "nosniff"
     },
-    "status": 404
+    "status": 404,
+    "wire_bytes": 71,
+    "wire_sha256": "3f735fb12b940631e0501621542ae6d6072375a01396066504797c87b2131fd5"
+   },
+   "chunk_gzip": {
+    "headers": {
+     "cache-control": "no-store",
+     "content-type": "application/json",
+     "pragma": "no-cache",
+     "x-content-type-options": "nosniff"
+    },
+    "status": 404,
+    "wire_bytes": 71,
+    "wire_sha256": "3f735fb12b940631e0501621542ae6d6072375a01396066504797c87b2131fd5"
    },
    "chunks": [
     {
@@ -5052,16 +5137,27 @@
    }
   },
   "trusted_purged": {
-   "chunk_gzip": {
-    "body_sha256": "aae39aa15ba92e27c8e7d580c0be875f984b4adf897c48cbbe37748ab738c8d3",
-    "bytes": 42,
+   "chunk_deflate": {
     "headers": {
      "cache-control": "no-store",
      "content-type": "application/json",
      "pragma": "no-cache",
      "x-content-type-options": "nosniff"
     },
-    "status": 404
+    "status": 404,
+    "wire_bytes": 42,
+    "wire_sha256": "aae39aa15ba92e27c8e7d580c0be875f984b4adf897c48cbbe37748ab738c8d3"
+   },
+   "chunk_gzip": {
+    "headers": {
+     "cache-control": "no-store",
+     "content-type": "application/json",
+     "pragma": "no-cache",
+     "x-content-type-options": "nosniff"
+    },
+    "status": 404,
+    "wire_bytes": 42,
+    "wire_sha256": "aae39aa15ba92e27c8e7d580c0be875f984b4adf897c48cbbe37748ab738c8d3"
    },
    "chunks": [
     {
@@ -5383,16 +5479,27 @@
    }
   },
   "trusted_raw_env": {
-   "chunk_gzip": {
-    "body_sha256": "3488c083e2cae1a4322ac0b2602406903dd8c554ec5243242ff86757d97999b5",
-    "bytes": 106,
+   "chunk_deflate": {
     "headers": {
      "cache-control": "no-store",
      "content-type": "application/json",
      "pragma": "no-cache",
      "x-content-type-options": "nosniff"
     },
-    "status": 404
+    "status": 404,
+    "wire_bytes": 106,
+    "wire_sha256": "3488c083e2cae1a4322ac0b2602406903dd8c554ec5243242ff86757d97999b5"
+   },
+   "chunk_gzip": {
+    "headers": {
+     "cache-control": "no-store",
+     "content-type": "application/json",
+     "pragma": "no-cache",
+     "x-content-type-options": "nosniff"
+    },
+    "status": 404,
+    "wire_bytes": 106,
+    "wire_sha256": "3488c083e2cae1a4322ac0b2602406903dd8c554ec5243242ff86757d97999b5"
    },
    "chunks": [
     {
@@ -5601,16 +5708,27 @@
    }
   },
   "trusted_relabelled_none": {
-   "chunk_gzip": {
-    "body_sha256": "3f735fb12b940631e0501621542ae6d6072375a01396066504797c87b2131fd5",
-    "bytes": 71,
+   "chunk_deflate": {
     "headers": {
      "cache-control": "no-store",
      "content-type": "application/json",
      "pragma": "no-cache",
      "x-content-type-options": "nosniff"
     },
-    "status": 404
+    "status": 404,
+    "wire_bytes": 71,
+    "wire_sha256": "3f735fb12b940631e0501621542ae6d6072375a01396066504797c87b2131fd5"
+   },
+   "chunk_gzip": {
+    "headers": {
+     "cache-control": "no-store",
+     "content-type": "application/json",
+     "pragma": "no-cache",
+     "x-content-type-options": "nosniff"
+    },
+    "status": 404,
+    "wire_bytes": 71,
+    "wire_sha256": "3f735fb12b940631e0501621542ae6d6072375a01396066504797c87b2131fd5"
    },
    "chunks": [
     {
@@ -5819,16 +5937,27 @@
    }
   },
   "trusted_relabelled_ungated": {
-   "chunk_gzip": {
-    "body_sha256": "3f735fb12b940631e0501621542ae6d6072375a01396066504797c87b2131fd5",
-    "bytes": 71,
+   "chunk_deflate": {
     "headers": {
      "cache-control": "no-store",
      "content-type": "application/json",
      "pragma": "no-cache",
      "x-content-type-options": "nosniff"
     },
-    "status": 404
+    "status": 404,
+    "wire_bytes": 71,
+    "wire_sha256": "3f735fb12b940631e0501621542ae6d6072375a01396066504797c87b2131fd5"
+   },
+   "chunk_gzip": {
+    "headers": {
+     "cache-control": "no-store",
+     "content-type": "application/json",
+     "pragma": "no-cache",
+     "x-content-type-options": "nosniff"
+    },
+    "status": 404,
+    "wire_bytes": 71,
+    "wire_sha256": "3f735fb12b940631e0501621542ae6d6072375a01396066504797c87b2131fd5"
    },
    "chunks": [
     {
@@ -6037,9 +6166,22 @@
    }
   },
   "trusted_served": {
+   "chunk_deflate": {
+    "headers": {
+     "cache-control": "no-store",
+     "content-encoding": "deflate",
+     "content-type": "application/octet-stream",
+     "pragma": "no-cache",
+     "vary": "Accept-Encoding",
+     "x-content-type-options": "nosniff",
+     "x-world-imagery": "redacted",
+     "x-world-redaction": "faces-detected-and-filled/yunet-2023mar@0.30+plausibility3"
+    },
+    "status": 200,
+    "wire_bytes": 59091,
+    "wire_sha256": "bc424df6b541225baab5310b7dda874a45587984213ade46a037cbea58a68b92"
+   },
    "chunk_gzip": {
-    "body_sha256": "65884d9505e65b56dbda5063312edc813b808e51098a9e4707ffdb330bebf193",
-    "bytes": 69216,
     "headers": {
      "cache-control": "no-store",
      "content-encoding": "gzip",
@@ -6050,7 +6192,9 @@
      "x-world-imagery": "redacted",
      "x-world-redaction": "faces-detected-and-filled/yunet-2023mar@0.30+plausibility3"
     },
-    "status": 200
+    "status": 200,
+    "wire_bytes": 59103,
+    "wire_sha256": "30293956eb80ebac9bd752b2b27af4923933ff49640b07640343a49d41bc7e8a"
    },
    "chunks": [
     {
@@ -6455,9 +6599,22 @@
    }
   },
   "untrusted_label_served": {
+   "chunk_deflate": {
+    "headers": {
+     "cache-control": "no-store",
+     "content-encoding": "deflate",
+     "content-type": "application/octet-stream",
+     "pragma": "no-cache",
+     "vary": "Accept-Encoding",
+     "x-content-type-options": "nosniff",
+     "x-world-imagery": "redacted",
+     "x-world-redaction": "faces-detected-and-filled/yunet-2023mar@0.50&faces-detected-and-filled/yunet-2023mar@0.30+plausibility3"
+    },
+    "status": 200,
+    "wire_bytes": 51270,
+    "wire_sha256": "1ebab9d19d258b51fef22dd19046652d13ff6e657f709e3c17766db95b0ba41a"
+   },
    "chunk_gzip": {
-    "body_sha256": "c8cee3c139a071625371d6a4ba5e5c232e379b33ffa53ead2daa10ae952e3158",
-    "bytes": 69216,
     "headers": {
      "cache-control": "no-store",
      "content-encoding": "gzip",
@@ -6468,7 +6625,9 @@
      "x-world-imagery": "redacted",
      "x-world-redaction": "faces-detected-and-filled/yunet-2023mar@0.50&faces-detected-and-filled/yunet-2023mar@0.30+plausibility3"
     },
-    "status": 200
+    "status": 200,
+    "wire_bytes": 51282,
+    "wire_sha256": "03b99d66fe925191d526eb8f7c612dd8fa72477897a987793e0d576cd0bd2213"
    },
    "chunks": [
     {
@@ -6922,16 +7081,27 @@
    }
   },
   "walk_after_stop_purged": {
-   "chunk_gzip": {
-    "body_sha256": "aae39aa15ba92e27c8e7d580c0be875f984b4adf897c48cbbe37748ab738c8d3",
-    "bytes": 42,
+   "chunk_deflate": {
     "headers": {
      "cache-control": "no-store",
      "content-type": "application/json",
      "pragma": "no-cache",
      "x-content-type-options": "nosniff"
     },
-    "status": 404
+    "status": 404,
+    "wire_bytes": 42,
+    "wire_sha256": "aae39aa15ba92e27c8e7d580c0be875f984b4adf897c48cbbe37748ab738c8d3"
+   },
+   "chunk_gzip": {
+    "headers": {
+     "cache-control": "no-store",
+     "content-type": "application/json",
+     "pragma": "no-cache",
+     "x-content-type-options": "nosniff"
+    },
+    "status": 404,
+    "wire_bytes": 42,
+    "wire_sha256": "aae39aa15ba92e27c8e7d580c0be875f984b4adf897c48cbbe37748ab738c8d3"
    },
    "chunks": [
     {
@@ -7189,16 +7359,27 @@
    }
   },
   "walk_after_stop_raw_env": {
-   "chunk_gzip": {
-    "body_sha256": "3488c083e2cae1a4322ac0b2602406903dd8c554ec5243242ff86757d97999b5",
-    "bytes": 106,
+   "chunk_deflate": {
     "headers": {
      "cache-control": "no-store",
      "content-type": "application/json",
      "pragma": "no-cache",
      "x-content-type-options": "nosniff"
     },
-    "status": 404
+    "status": 404,
+    "wire_bytes": 106,
+    "wire_sha256": "3488c083e2cae1a4322ac0b2602406903dd8c554ec5243242ff86757d97999b5"
+   },
+   "chunk_gzip": {
+    "headers": {
+     "cache-control": "no-store",
+     "content-type": "application/json",
+     "pragma": "no-cache",
+     "x-content-type-options": "nosniff"
+    },
+    "status": 404,
+    "wire_bytes": 106,
+    "wire_sha256": "3488c083e2cae1a4322ac0b2602406903dd8c554ec5243242ff86757d97999b5"
    },
    "chunks": [
     {
@@ -7456,9 +7637,22 @@
    }
   },
   "walk_during_walk": {
+   "chunk_deflate": {
+    "headers": {
+     "cache-control": "no-store",
+     "content-encoding": "deflate",
+     "content-type": "application/octet-stream",
+     "pragma": "no-cache",
+     "vary": "Accept-Encoding",
+     "x-content-type-options": "nosniff",
+     "x-world-imagery": "redacted",
+     "x-world-redaction": "none&faces-detected-and-filled/yunet-2023mar@0.30+plausibility3"
+    },
+    "status": 200,
+    "wire_bytes": 51181,
+    "wire_sha256": "2d1d3d6cfb64aa7be370c45e4e6a86d2eecf37040c264a3b030d36d9ffd1c60f"
+   },
    "chunk_gzip": {
-    "body_sha256": "f82b73806b9b28db4dec40e0f14847ef9a5661fcc5f6c4c0be82f03dd001416e",
-    "bytes": 69216,
     "headers": {
      "cache-control": "no-store",
      "content-encoding": "gzip",
@@ -7469,7 +7663,9 @@
      "x-world-imagery": "redacted",
      "x-world-redaction": "none&faces-detected-and-filled/yunet-2023mar@0.30+plausibility3"
     },
-    "status": 200
+    "status": 200,
+    "wire_bytes": 51193,
+    "wire_sha256": "5e9b3b78d98d8711eef693d51ec83726325d5ccf91b616e69990a4e7eb709a3c"
    },
    "chunks": [
     {
@@ -7923,16 +8119,27 @@
    }
   },
   "walk_during_walk_raw_env": {
-   "chunk_gzip": {
-    "body_sha256": "3488c083e2cae1a4322ac0b2602406903dd8c554ec5243242ff86757d97999b5",
-    "bytes": 106,
+   "chunk_deflate": {
     "headers": {
      "cache-control": "no-store",
      "content-type": "application/json",
      "pragma": "no-cache",
      "x-content-type-options": "nosniff"
     },
-    "status": 404
+    "status": 404,
+    "wire_bytes": 106,
+    "wire_sha256": "3488c083e2cae1a4322ac0b2602406903dd8c554ec5243242ff86757d97999b5"
+   },
+   "chunk_gzip": {
+    "headers": {
+     "cache-control": "no-store",
+     "content-type": "application/json",
+     "pragma": "no-cache",
+     "x-content-type-options": "nosniff"
+    },
+    "status": 404,
+    "wire_bytes": 106,
+    "wire_sha256": "3488c083e2cae1a4322ac0b2602406903dd8c554ec5243242ff86757d97999b5"
    },
    "chunks": [
     {
@@ -8190,16 +8397,27 @@
    }
   },
   "walk_raw_manifest_after_stop": {
-   "chunk_gzip": {
-    "body_sha256": "a0838db42e642f87c13c5391b15337906b7c888814518ed6b1dc47f679921831",
-    "bytes": 106,
+   "chunk_deflate": {
     "headers": {
      "cache-control": "no-store",
      "content-type": "application/json",
      "pragma": "no-cache",
      "x-content-type-options": "nosniff"
     },
-    "status": 404
+    "status": 404,
+    "wire_bytes": 106,
+    "wire_sha256": "a0838db42e642f87c13c5391b15337906b7c888814518ed6b1dc47f679921831"
+   },
+   "chunk_gzip": {
+    "headers": {
+     "cache-control": "no-store",
+     "content-type": "application/json",
+     "pragma": "no-cache",
+     "x-content-type-options": "nosniff"
+    },
+    "status": 404,
+    "wire_bytes": 106,
+    "wire_sha256": "a0838db42e642f87c13c5391b15337906b7c888814518ed6b1dc47f679921831"
    },
    "chunks": [
     {
@@ -8457,16 +8675,27 @@
    }
   },
   "walk_reredaction_switch_after_stop": {
-   "chunk_gzip": {
-    "body_sha256": "3f735fb12b940631e0501621542ae6d6072375a01396066504797c87b2131fd5",
-    "bytes": 71,
+   "chunk_deflate": {
     "headers": {
      "cache-control": "no-store",
      "content-type": "application/json",
      "pragma": "no-cache",
      "x-content-type-options": "nosniff"
     },
-    "status": 404
+    "status": 404,
+    "wire_bytes": 71,
+    "wire_sha256": "3f735fb12b940631e0501621542ae6d6072375a01396066504797c87b2131fd5"
+   },
+   "chunk_gzip": {
+    "headers": {
+     "cache-control": "no-store",
+     "content-type": "application/json",
+     "pragma": "no-cache",
+     "x-content-type-options": "nosniff"
+    },
+    "status": 404,
+    "wire_bytes": 71,
+    "wire_sha256": "3f735fb12b940631e0501621542ae6d6072375a01396066504797c87b2131fd5"
    },
    "chunks": [
     {
@@ -8724,9 +8953,22 @@
    }
   },
   "walk_then_final_build": {
+   "chunk_deflate": {
+    "headers": {
+     "cache-control": "no-store",
+     "content-encoding": "deflate",
+     "content-type": "application/octet-stream",
+     "pragma": "no-cache",
+     "vary": "Accept-Encoding",
+     "x-content-type-options": "nosniff",
+     "x-world-imagery": "redacted",
+     "x-world-redaction": "faces-detected-and-filled/yunet-2023mar@0.30+plausibility3"
+    },
+    "status": 200,
+    "wire_bytes": 59091,
+    "wire_sha256": "bc424df6b541225baab5310b7dda874a45587984213ade46a037cbea58a68b92"
+   },
    "chunk_gzip": {
-    "body_sha256": "65884d9505e65b56dbda5063312edc813b808e51098a9e4707ffdb330bebf193",
-    "bytes": 69216,
     "headers": {
      "cache-control": "no-store",
      "content-encoding": "gzip",
@@ -8737,7 +8979,9 @@
      "x-world-imagery": "redacted",
      "x-world-redaction": "faces-detected-and-filled/yunet-2023mar@0.30+plausibility3"
     },
-    "status": 200
+    "status": 200,
+    "wire_bytes": 59103,
+    "wire_sha256": "30293956eb80ebac9bd752b2b27af4923933ff49640b07640343a49d41bc7e8a"
    },
    "chunks": [
     {
@@ -9193,16 +9437,27 @@
    }
   },
   "walk_unknown_redaction_after_stop": {
-   "chunk_gzip": {
-    "body_sha256": "3f735fb12b940631e0501621542ae6d6072375a01396066504797c87b2131fd5",
-    "bytes": 71,
+   "chunk_deflate": {
     "headers": {
      "cache-control": "no-store",
      "content-type": "application/json",
      "pragma": "no-cache",
      "x-content-type-options": "nosniff"
     },
-    "status": 404
+    "status": 404,
+    "wire_bytes": 71,
+    "wire_sha256": "3f735fb12b940631e0501621542ae6d6072375a01396066504797c87b2131fd5"
+   },
+   "chunk_gzip": {
+    "headers": {
+     "cache-control": "no-store",
+     "content-type": "application/json",
+     "pragma": "no-cache",
+     "x-content-type-options": "nosniff"
+    },
+    "status": 404,
+    "wire_bytes": 71,
+    "wire_sha256": "3f735fb12b940631e0501621542ae6d6072375a01396066504797c87b2131fd5"
    },
    "chunks": [
     {
@@ -9459,16 +9714,27 @@
    }
   },
   "walk_unlisted_redactor_after_stop": {
-   "chunk_gzip": {
-    "body_sha256": "3f735fb12b940631e0501621542ae6d6072375a01396066504797c87b2131fd5",
-    "bytes": 71,
+   "chunk_deflate": {
     "headers": {
      "cache-control": "no-store",
      "content-type": "application/json",
      "pragma": "no-cache",
      "x-content-type-options": "nosniff"
     },
-    "status": 404
+    "status": 404,
+    "wire_bytes": 71,
+    "wire_sha256": "3f735fb12b940631e0501621542ae6d6072375a01396066504797c87b2131fd5"
+   },
+   "chunk_gzip": {
+    "headers": {
+     "cache-control": "no-store",
+     "content-type": "application/json",
+     "pragma": "no-cache",
+     "x-content-type-options": "nosniff"
+    },
+    "status": 404,
+    "wire_bytes": 71,
+    "wire_sha256": "3f735fb12b940631e0501621542ae6d6072375a01396066504797c87b2131fd5"
    },
    "chunks": [
     {
@@ -9726,9 +9992,22 @@
    }
   },
   "walk_unlisted_redactor_during_walk": {
+   "chunk_deflate": {
+    "headers": {
+     "cache-control": "no-store",
+     "content-encoding": "deflate",
+     "content-type": "application/octet-stream",
+     "pragma": "no-cache",
+     "vary": "Accept-Encoding",
+     "x-content-type-options": "nosniff",
+     "x-world-imagery": "redacted",
+     "x-world-redaction": "none&faces-blurred/some-other-detector"
+    },
+    "status": 200,
+    "wire_bytes": 51181,
+    "wire_sha256": "2d1d3d6cfb64aa7be370c45e4e6a86d2eecf37040c264a3b030d36d9ffd1c60f"
+   },
    "chunk_gzip": {
-    "body_sha256": "f82b73806b9b28db4dec40e0f14847ef9a5661fcc5f6c4c0be82f03dd001416e",
-    "bytes": 69216,
     "headers": {
      "cache-control": "no-store",
      "content-encoding": "gzip",
@@ -9739,7 +10018,9 @@
      "x-world-imagery": "redacted",
      "x-world-redaction": "none&faces-blurred/some-other-detector"
     },
-    "status": 200
+    "status": 200,
+    "wire_bytes": 51193,
+    "wire_sha256": "5e9b3b78d98d8711eef693d51ec83726325d5ccf91b616e69990a4e7eb709a3c"
    },
    "chunks": [
     {
