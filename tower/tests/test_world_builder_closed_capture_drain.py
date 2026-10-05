@@ -1209,32 +1209,52 @@ CAUGHT_UP_FRAMES = 48
 
 
 # ---------------------------------------------------------------------------
-# ONLY WHAT WAS RECORDED BY THE STOP COUNTS (re-review MED-1, lead decision).
+# ONLY WHAT WAS RECORDED BY THE STOP COUNTS (re-review MED-1, lead decision),
+# AND A DRAIN BUILDS NOTHING RECORDED AFTER IT (Codex H1), ON A CLOCK NOBODY
+# CAN STEP (Codex H3).
 #
-# The guard compares each unread journal record's `received_at` with the
-# builder's `StopRequest.soft_requested_at`. Both are `time.time()` on the
-# Tower host: the recorder's clock when `write_frame` began, and this
-# process's when the first soft request was recorded. A frame received at or
-# before that moment and never observed still makes the walk `interrupted`;
-# one received after it is not part of the walk. A record that cannot say
-# when it arrived is counted. A hard stop alone counts everything.
+# The guard compares each unread journal record's `received_monotonic` with
+# the builder's `StopRequest.soft_requested_monotonic`. Both are
+# `time.monotonic()` on the Tower host: the recorder's when `write_frame`
+# began, and this process's when the first soft request was recorded. A frame
+# received at or before that moment and never observed still makes the walk
+# `interrupted`; one received after it is not part of the walk, and a drain
+# ends at the first of them. A record that cannot say when it arrived is
+# counted, and drained. A hard stop alone counts everything.
+#
+# Rows here carry both stamps, as the recorder writes them. Where the order
+# depends on what the recorder writes, the real `CaptureRecorder` writes it.
 # ---------------------------------------------------------------------------
 
 
-def _row(source_seq, received_at, **extra):
+def _row(source_seq, received_at, received_monotonic=None, **extra):
     record = {"source_seq": source_seq, "relpath": "frame.jpg", **extra}
     if received_at is not None:
         record["received_at"] = received_at
+    if received_monotonic is not None:
+        record["received_monotonic"] = received_monotonic
     return json.dumps(record) + "\n"
 
 
+def _now():
+    return {"at": time.time(), "mono": time.monotonic()}
+
+
+def _after_the_stop(stopped, count, first_seq):
+    """`count` rows received after the Stop, at 12 fps, on both clocks."""
+    return "".join(
+        _row(first_seq + i, stopped["at"] + (i + 1) / 12, stopped["mono"] + (i + 1) / 12)
+        for i in range(count)
+    )
+
+
 def _caught_up_stop_while_open(
-    tmp_path, monkeypatch, *, level, before=lambda now: "", after=lambda at: ""
+    tmp_path, monkeypatch, *, level, before=lambda now: "", after=lambda stopped: ""
 ):
     """Caught up at frame 48 of an open capture, `level` stop. `before(now)`
     is appended just BEFORE the request, so it is recorded before the stop
-    and never read; `after(stopped_at)` once the observe loop has ended,
-    then the recorder's normal close lands before the post-loop read."""
+    and never read; `after(stopped)` once the observe loop has ended, then
+    the recorder's normal close lands before the post-loop read."""
     capture = tmp_path / "captures" / ("c" * 32)
     capture.mkdir(parents=True)
     (capture / "frame.jpg").write_bytes(b"synthetic-frame")
@@ -1247,9 +1267,9 @@ def _caught_up_stop_while_open(
         if n != CAUGHT_UP_FRAMES:
             return
         with journal.open("a", encoding="utf-8") as out:
-            out.write(before(time.time()))
+            out.write(before(_now()))
         stop.request(level, "test")
-        stopped["at"] = time.time()
+        stopped.update(_now())
 
     _hook(monkeypatch, on_observe)
     original_bounded = builder_script.StopRequest.bounded
@@ -1257,7 +1277,7 @@ def _caught_up_stop_while_open(
     def bounded_then_record_then_close(self, frames, **kwargs):
         yield from original_bounded(self, frames, **kwargs)
         with journal.open("a", encoding="utf-8") as out:
-            out.write(after(stopped["at"]))
+            out.write(after(stopped))
         _write_manifest(capture, "stop")
 
     monkeypatch.setattr(
@@ -1266,8 +1286,8 @@ def _caught_up_stop_while_open(
     return _run_session(capture, tmp_path / "worlds", max_idle_polls="50")
 
 
-def _three_after(stopped_at):
-    return "".join(_row(49 + i, stopped_at + (i + 1) / 12) for i in range(3))
+def _three_after(stopped):
+    return _after_the_stop(stopped, 3, 49)
 
 
 def test_a_frame_recorded_before_the_soft_stop_and_never_read_still_counts(
@@ -1276,8 +1296,8 @@ def test_a_frame_recorded_before_the_soft_stop_and_never_read_still_counts(
     with caplog.at_level(logging.WARNING, logger="tower.world_build_session"):
         exit_code, session = _caught_up_stop_while_open(
             tmp_path, monkeypatch, level=StopRequest.SOFT,
-            before=lambda now: _row(49, now - 0.05),
-            after=lambda at: "".join(_row(50 + i, at + (i + 1) / 12) for i in range(3)),
+            before=lambda now: _row(49, now["at"] - 0.05, now["mono"] - 0.05),
+            after=lambda stopped: _after_the_stop(stopped, 3, 50),
         )
 
     assert exit_code == 0
@@ -1287,12 +1307,26 @@ def test_a_frame_recorded_before_the_soft_stop_and_never_read_still_counts(
     assert "1 of the frames recorded in this walk before the stop" in caplog.text
 
 
+_NOT_FINITE_ROW = (
+    '{"source_seq": 52, "relpath": "frame.jpg", "received_monotonic": Infinity}\n'
+)
+_UNPARSEABLE_ROW = '{"source_seq": 52, "received_monotonic": \n'
+
+
 @pytest.mark.parametrize(
     "odd_row",
     [
-        pytest.param(lambda: _row(52, None), id="no-received_at"),
-        pytest.param(lambda: _row(52, "soon"), id="received_at-not-a-number"),
-        pytest.param(lambda: '{"source_seq": 52, "received_at": \n', id="unparseable"),
+        # A journal written before the field existed, or by hand. Its WALL
+        # stamp says "after the Stop", and the wall clock decides nothing.
+        pytest.param(
+            lambda stopped: _row(52, stopped["at"] + 5.0), id="no-received_monotonic"
+        ),
+        pytest.param(
+            lambda stopped: _row(52, stopped["at"] + 5.0, "soon"),
+            id="received_monotonic-not-a-number",
+        ),
+        pytest.param(lambda stopped: _NOT_FINITE_ROW, id="received_monotonic-not-finite"),
+        pytest.param(lambda stopped: _UNPARSEABLE_ROW, id="unparseable"),
     ],
 )
 def test_an_unread_record_that_cannot_say_when_it_arrived_counts(
@@ -1301,7 +1335,7 @@ def test_an_unread_record_that_cannot_say_when_it_arrived_counts(
     with caplog.at_level(logging.WARNING, logger="tower.world_build_session"):
         exit_code, session = _caught_up_stop_while_open(
             tmp_path, monkeypatch, level=StopRequest.SOFT,
-            after=lambda at: _three_after(at) + odd_row(),
+            after=lambda stopped: _three_after(stopped) + odd_row(stopped),
         )
 
     assert exit_code == 0
@@ -1325,12 +1359,26 @@ def test_frames_recorded_after_a_hard_stop_still_count(tmp_path, monkeypatch, ca
     assert "3 of the frames recorded in this walk were never observed" in caplog.text
 
 
+def _past_the_stop(stop):
+    """Wait out the clock tick the soft request was stamped in.
+
+    `time.monotonic()` ticks every 15.625 ms on Windows; a frame received in
+    the Stop's own tick is stamped AT the Stop and counts as before it (the
+    conservative tie). A frame meant to be AFTER the Stop is received after,
+    on both clocks -- so this also runs on a tree that compared wall stamps.
+    """
+    mono = getattr(stop, "soft_requested_monotonic", None) or time.monotonic()
+    wall = getattr(stop, "soft_requested_at", None) or time.time()
+    while time.monotonic() <= mono or time.time() <= wall:
+        time.sleep(0.001)
+
+
 @pytest.mark.parametrize("before_stop", [0, 1], ids=["all-after-the-stop", "one-before-it"])
 def test_the_recorders_own_stamps_decide_what_was_after_the_stop(
     tmp_path, monkeypatch, caplog, before_stop
 ):
-    """The real `CaptureRecorder` stamps `received_at` with its own clock,
-    `time.time()`, so this pins the clock the cutoff is compared on."""
+    """The real `CaptureRecorder` stamps `received_monotonic` with its own
+    clock, so this pins the clock the cutoff is compared on."""
     recorder = CaptureRecorder(tmp_path / "recordings")
     capture_id = recorder.start()
     for index in range(45):
@@ -1350,10 +1398,7 @@ def test_the_recorders_own_stamps_decide_what_was_after_the_stop(
 
     def bounded_then_record_then_close(self, frames, **kwargs):
         yield from original_bounded(self, frames, **kwargs)
-        # The clock ticks every ~15.6 ms here; a frame in the stop's own tick
-        # would be stamped AT the stop and counted. Record after it.
-        while time.time() <= stop_holder["stop"].soft_requested_at:
-            time.sleep(0.001)
+        _past_the_stop(stop_holder["stop"])
         for index in range(3):
             assert recorder.write_frame(b"synthetic-frame", source_seq=50 + index)
         recorder.stop()
@@ -1366,6 +1411,8 @@ def test_the_recorders_own_stamps_decide_what_was_after_the_stop(
             recorder.capture_dir(capture_id), tmp_path / "worlds", max_idle_polls="50"
         )
 
+    rows = recorder.read_frames(capture_id)
+    assert all(isinstance(row["received_monotonic"], float) for row in rows)
     assert recorder.manifest(capture_id)["frames_written"] == 45 + before_stop + 3
     assert exit_code == 0
     assert session.frames_observed == 45
@@ -1378,40 +1425,116 @@ def test_the_recorders_own_stamps_decide_what_was_after_the_stop(
         assert "were never observed" not in caplog.text
 
 
+@pytest.mark.parametrize("step_back_s", [0.0, 3.0], ids=["no-step", "wall-clock-3s-back"])
+def test_a_backward_wall_clock_step_cannot_hide_a_frame_from_before_the_stop(
+    tmp_path, monkeypatch, caplog, step_back_s
+):
+    """Codex H3 (the re-review's `c2`, MED-2), through the real recorder.
+
+    Caught up at 48, then the link drops with a backlog: the recorder takes
+    10 more frames and closes `disconnect`. The host's wall clock is then
+    stepped BACK 3 s -- an NTP correction -- and the wearer's soft stop
+    lands. The 10 were received before the Stop and never observed. On the
+    wall clock their `received_at` read as after the request, the guard
+    counted none, and 6124de8 stored 48 of 58 as `stop` / `complete`."""
+    recorder = CaptureRecorder(tmp_path / "recordings")
+    capture_id = recorder.start()
+    for index in range(48):
+        assert recorder.write_frame(b"synthetic-frame", source_seq=index + 1)
+    real_time = time.time
+    holder = {}
+
+    def on_observe(n, stop):
+        if n != 48:
+            return
+        for index in range(10):
+            assert recorder.write_frame(b"synthetic-frame", source_seq=49 + index)
+        recorder.stop(capture_module.END_REASON_DISCONNECT)
+        if step_back_s:
+            monkeypatch.setattr(time, "time", lambda: real_time() - step_back_s)
+        stop.request(StopRequest.SOFT, "stdin-closed")
+        holder["stop"] = stop
+
+    _hook(monkeypatch, on_observe)
+    with caplog.at_level(logging.WARNING, logger="tower.world_build_session"):
+        exit_code, session = _run_session(
+            recorder.capture_dir(capture_id), tmp_path / "worlds", max_idle_polls="50"
+        )
+    monkeypatch.setattr(time, "time", real_time)
+
+    last_received_at = recorder.read_frames(capture_id)[-1]["received_at"]
+    assert exit_code == 0
+    assert session.frames_observed == 48
+    assert session.end_reason == "interrupted"
+    assert not _labelled_finished(session)
+    assert "10 of the frames recorded in this walk before the stop" in caplog.text
+    if step_back_s:
+        # The step really put the Stop "before" the backlog on the wall clock.
+        assert holder["stop"].soft_requested_at < last_received_at
+
+
+def _rows_on_both_clocks(directory, first, stop):
+    """Rows first..stop-1: received_at = index, received_monotonic = 100 + index."""
+    with (directory / "frames.jsonl").open("a", encoding="utf-8") as out:
+        out.write("".join(_row(1 + i, float(i), 100.0 + i) for i in range(first, stop)))
+
+
 def test_unobserved_records_counts_only_what_was_received_by_the_cutoff(tmp_path):
     """In hand and past the read position alike; AT the cutoff counts."""
-    directory = _small_closed_capture(tmp_path)  # received_at 0.0 .. 9.0
+    directory = tmp_path / "small"
+    directory.mkdir()
+    (directory / "frame.jpg").write_bytes(b"synthetic-frame")
+    _rows_on_both_clocks(directory, 0, 10)  # monotonic 100.0 .. 109.0
     _write_manifest(directory, None)
     follower = CaptureFollower(directory, poll_seconds=0)
     frames = follower.follow(max_idle_polls=1)
     for _ in range(4):
         next(frames)
-    # In hand: the fourth (3.0) and the six behind it (4.0 .. 9.0).
+    # In hand: the fourth (103.0) and the six behind it (104.0 .. 109.0).
     assert follower.unobserved_records() == 7
-    assert follower.unobserved_records(received_by=5.0) == 3
-    assert follower.unobserved_records(received_by=2.0) == 0
-    with (directory / "frames.jsonl").open("a", encoding="utf-8") as out:
-        out.write(_journal_rows(13, start=10))  # 10.0, 11.0, 12.0
+    assert follower.unobserved_records(received_by_monotonic=105.0) == 3
+    assert follower.unobserved_records(received_by_monotonic=102.0) == 0
+    _rows_on_both_clocks(directory, 10, 13)  # 110.0, 111.0, 112.0
     assert follower.unobserved_records() == 10
-    assert follower.unobserved_records(received_by=11.0) == 7 + 2
-    assert follower.unobserved_records(received_by=9.5) == 7
+    assert follower.unobserved_records(received_by_monotonic=111.0) == 7 + 2
+    assert follower.unobserved_records(received_by_monotonic=109.5) == 7
+    # The wall stamps (0.0 .. 12.0) decide nothing.
+    assert follower.unobserved_records(received_by_monotonic=10_000.0) == 10
 
 
 def test_only_the_first_soft_request_sets_the_cutoff():
     stop = StopRequest()
-    assert stop.soft_requested_at is None
+    assert stop.soft_requested_monotonic is None and stop.soft_requested_at is None
     stop.request(StopRequest.SOFT, "first")
-    first = stop.soft_requested_at
-    assert first is not None and abs(first - time.time()) < 5
+    first, first_at = stop.soft_requested_monotonic, stop.soft_requested_at
+    assert first is not None and abs(first - time.monotonic()) < 5
+    assert first_at is not None and abs(first_at - time.time()) < 5
     time.sleep(0.02)
     stop.request(StopRequest.SOFT, "again")
     stop.request(StopRequest.HARD, "SIGBREAK")
-    assert stop.soft_requested_at == first
+    assert stop.soft_requested_monotonic == first
+    assert stop.soft_requested_at == first_at
 
     hard_first = StopRequest()
     hard_first.request(StopRequest.HARD, "SIGBREAK")
     hard_first.request(StopRequest.SOFT, "ignored")
+    assert hard_first.soft_requested_monotonic is None
     assert hard_first.soft_requested_at is None
+
+
+def test_the_monotonic_clock_is_one_clock_across_processes():
+    """The cutoff compares the recorder's `time.monotonic()` (the Tower) with
+    the builder's (its child process). That is only meaningful if the clock
+    is system-wide, which Python does not promise and every platform the
+    Tower runs on provides (GetTickCount64, CLOCK_MONOTONIC). Pinned here so
+    a platform where it is not fails loudly instead of mislabelling walks."""
+    before = time.monotonic()
+    child = subprocess.run(
+        [sys.executable, "-c", "import time; print(repr(time.monotonic()))"],
+        capture_output=True, text=True, check=True, timeout=60,
+    )
+    after = time.monotonic()
+    assert before <= float(child.stdout) <= after
 
 
 # ---------------------------------------------------------------------------
@@ -1827,6 +1950,9 @@ def test_an_image_still_locked_after_the_budget_is_counted_not_skipped(
     assert seqs == [1, 2, 3, 5, 6, 7, 9, 10]
     assert 0.3 <= elapsed < 0.55, elapsed
     assert follower.unobserved_records() == 2
+    # Cut off before both were received (received_at 3.0 and 7.0; these rows
+    # carry no monotonic stamp, so nothing can show they came after): counted.
+    assert follower.unobserved_records(received_by_monotonic=0.0) == 2
 
 
 def test_an_unreadable_image_that_lands_with_the_close_is_counted(tmp_path, monkeypatch):

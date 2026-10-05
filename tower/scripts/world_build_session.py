@@ -440,9 +440,10 @@ class StopRequest:
       the final solve -- only a hard stop skips it -- and writes its final
       build. A builder
       already finalizing carries on: finalization is bounded and holds no
-      camera. The time of the FIRST soft request is kept
-      (`soft_requested_at`): frames the camera records after it are not
-      part of the walk.
+      camera. The moment of the FIRST soft request is kept, on the
+      monotonic clock the recorder stamps every frame with
+      (`soft_requested_monotonic`): frames the camera records after it are
+      not part of the walk.
     * **Hard** -- `SIGBREAK` / `SIGTERM` / `SIGINT`. It means "wrap up
       now": the Tower is shutting down. Any solve child is terminated,
       the session is closed if it is still open, the final build is
@@ -463,11 +464,23 @@ class StopRequest:
         self.source: str | None = None
         self._lock = threading.Lock()
         self._draining_closed_capture = False
-        # When the first SOFT request was recorded: `time.time()` in this
-        # process, the same host wall clock the recorder stamps every frame's
-        # `received_at` with (`CaptureRecorder`, `clock=time.time`). Never
-        # set by a hard request, nor by a soft one after a hard one, which
-        # `request` ignores. See the unobserved-frame guard in `main`.
+        # When the first SOFT request was recorded, twice over. Never set by
+        # a hard request, nor by a soft one after a hard one, which `request`
+        # ignores.
+        #
+        # `soft_requested_monotonic` is THE CUTOFF: `time.monotonic()` in
+        # this process, the clock the recorder stamps every frame's
+        # `received_monotonic` with in the Tower process -- one clock on one
+        # host, and nobody can step it. It decides which frames were
+        # recorded by the Stop, both for the drain (`bounded`) and for the
+        # unobserved-frame guard in `main`. It was the wall clock until the
+        # Codex review showed a 3 s backward step turning a frame received
+        # before the Stop into one "after" it, and a partial walk into
+        # `stop` / `complete` (tower.capture RECEIVED_MONOTONIC).
+        #
+        # `soft_requested_at` is the same moment on the wall clock, kept
+        # for people reading a log; it decides nothing.
+        self.soft_requested_monotonic: float | None = None
         self.soft_requested_at: float | None = None
 
     def install(self, *, watch_stdin: bool = False) -> None:
@@ -539,7 +552,8 @@ class StopRequest:
             # a hard one already recorded.
             if self.level == self.HARD:
                 return
-            if level == self.SOFT and self.soft_requested_at is None:
+            if level == self.SOFT and self.soft_requested_monotonic is None:
+                self.soft_requested_monotonic = time.monotonic()
                 self.soft_requested_at = time.time()
             self.level = level
             self.source = source
@@ -2425,9 +2439,12 @@ def main(argv=None) -> int:
         # while the camera still streams; frames recorded after that Stop are
         # not part of the walk, and counting them turned a builder that was
         # caught up when it was told to go into `interrupted` where 44fbd13
-        # said `stop`. The comparison is each journal record's `received_at`
-        # against `StopRequest.soft_requested_at`, both `time.time()` on this
-        # host. That moment is when THIS process recorded the request, up to
+        # said `stop`. The comparison is each journal record's
+        # `received_monotonic` against `StopRequest.soft_requested_monotonic`,
+        # both `time.monotonic()` on this host: a clock nobody can step, so a
+        # wall-clock correction between a frame's receipt and the Stop cannot
+        # move a frame from before the Stop to after it (Codex H3). That
+        # moment is when THIS process recorded the request, up to
         # `stdin_stop.PIPE_POLL_SECONDS` after the parent closed the pipe on
         # Windows; frames recorded in that lag are counted, which can only
         # say `interrupted`. A record that does not say when it arrived is
@@ -2439,7 +2456,7 @@ def main(argv=None) -> int:
         # journal that went missing (Codex H2). See `unobserved_records`.
         unobserved = (
             follower.unobserved_records(
-                received_by=stop_request.soft_requested_at,
+                received_by_monotonic=stop_request.soft_requested_monotonic,
                 cancel=stop_request.hard_asked_for,
             )
             if capture_finished

@@ -29,6 +29,7 @@ incidental capture, and it must never become the default path.
 
 import json
 import logging
+import math
 import os
 import pathlib
 import time
@@ -120,6 +121,30 @@ MANIFEST_READ_BUDGET_S = REPLACE_BUDGET_S
 MANIFEST_READ_BACKOFF_S = REPLACE_BACKOFF_S
 MANIFEST_READ_BACKOFF_MAX_S = REPLACE_BACKOFF_MAX_S
 
+# The journal field that says, on a clock that cannot step, when the Tower
+# received a frame: `time.monotonic()` in the recorder, taken with
+# `received_at` when `write_frame` began.
+#
+# It exists for ONE comparison, and `received_at` stays the clock every
+# reader presents (`time_basis: tower-receipt`). A builder told to stop keeps
+# the frames recorded up to the Stop and no later ones, so it compares each
+# frame's receipt with the moment it was asked to stop -- across two
+# processes. On the wall clock (`received_at` against the builder's
+# `time.time()`) a backward step between the two -- an NTP correction, a
+# manual change -- makes a frame received BEFORE the Stop read as after it,
+# and the walk was stored `stop` / `complete` with that frame never built
+# (Codex H3, reproduced by stepping the real `time.time` back 3 s). The
+# monotonic clock is never set or slewed by anyone, and it is the same clock
+# in every process on the host: GetTickCount64 on Windows, CLOCK_MONOTONIC on
+# Linux (measured and pinned: `test_the_monotonic_clock_is_one_clock_across_
+# processes`). The recorder and the builder always share a host -- the
+# builder is the Tower's own child process.
+#
+# A record WITHOUT it -- a journal written before this field existed, or by
+# hand -- cannot show it was received after a Stop, so it counts as before
+# it: the conservative answer, see `received_by_cutoff`.
+RECEIVED_MONOTONIC = "received_monotonic"
+
 logger = logging.getLogger(__name__)
 
 CAPTURE_FILENAME = "capture.json"
@@ -181,7 +206,13 @@ class CaptureRecorder:
     implementable.
     """
 
-    def __init__(self, root, limits: CaptureLimits | None = None, clock=time.time):
+    def __init__(
+        self,
+        root,
+        limits: CaptureLimits | None = None,
+        clock=time.time,
+        monotonic=time.monotonic,
+    ):
         self._owner = None
         # The last capture this recorder closed because a socket dropped,
         # and when. Only ever used to LINK a successor to it; never to
@@ -190,6 +221,8 @@ class CaptureRecorder:
         self._root = pathlib.Path(root)
         self._limits = limits or CaptureLimits()
         self._clock = clock
+        # Stamps each frame's `received_monotonic`. See RECEIVED_MONOTONIC.
+        self._monotonic = monotonic
         self._status: CaptureStatus | None = None
 
     @property
@@ -283,6 +316,7 @@ class CaptureRecorder:
 
         status = self._status
         now = self._clock()
+        received_monotonic = self._monotonic()
         if now - status.started_at >= self._limits.max_seconds:
             (
                 logger.warning(
@@ -326,6 +360,7 @@ class CaptureRecorder:
                 "wire_seq": wire_seq,
                 "tx_seq": tx_seq,
                 "received_at": now,
+                RECEIVED_MONOTONIC: received_monotonic,
                 "time_basis": TIME_BASIS,
                 "relpath": f"{FRAMES_DIRNAME}/{filename}",
                 "byte_count": len(raw_bytes),
@@ -530,7 +565,9 @@ class _JournalTail:
                 logger.warning("[Tower][Capture] skipping an unreadable journal line")
         return records
 
-    def records_not_yet_read(self, *, received_by: float | None = None) -> int | None:
+    def records_not_yet_read(
+        self, *, received_by_monotonic: float | None = None
+    ) -> int | None:
         """How many journal records lie past what this tail has read.
 
         Asked of a CLOSED capture, whose journal can no longer grow: the
@@ -543,8 +580,9 @@ class _JournalTail:
         is closed it can never be finished, so it is a torn write, not a
         frame -- the same call `read_new` makes when it skips it.
 
-        `received_by` counts only the records RECEIVED AT OR BEFORE that
-        time; `received_by_cutoff` below says which ones those are.
+        `received_by_monotonic` counts only the records RECEIVED AT OR
+        BEFORE that `time.monotonic()` reading; `received_by_cutoff` below
+        says which ones those are.
 
         None means the journal could not be measured. A caller deciding
         whether a walk was read to its end must treat that as "not shown",
@@ -583,7 +621,7 @@ class _JournalTail:
         lines = (self._remainder + chunk).split(b"\n")
         lines.pop()
         lines = [line for line in lines if line.strip()]
-        if received_by is None:
+        if received_by_monotonic is None:
             return len(lines)
         counted = 0
         for line in lines:
@@ -593,7 +631,7 @@ class _JournalTail:
                 # A complete line that cannot be parsed cannot say when it
                 # was received, so it cannot be shown to be after the stop.
                 record = None
-            if received_by_cutoff(record, received_by):
+            if received_by_cutoff(record, received_by_monotonic):
                 counted += 1
         return counted
 
@@ -610,20 +648,34 @@ class _JournalTail:
         return None
 
 
+def received_monotonic_of(record) -> float | None:
+    """A record's `received_monotonic`, or None when it carries no usable one."""
+    when = record.get(RECEIVED_MONOTONIC) if isinstance(record, dict) else None
+    if isinstance(when, bool) or not isinstance(when, (int, float)):
+        return None
+    if not math.isfinite(when):
+        return None
+    return float(when)
+
+
 def received_by_cutoff(record, cutoff: float) -> bool:
     """Whether a journal record counts as recorded at or before `cutoff`.
 
-    The field is the record's `received_at`: the recorder's `time.time()`
-    (Unix seconds, the Tower process's wall clock) taken when `write_frame`
-    began, before the image or the line was written. A record is AFTER the
-    cutoff only if it carries a number there and the number is greater.
-    Anything that cannot show that -- no `received_at`, a value that is not
-    a number, a line that did not parse -- counts as recorded by the cutoff:
-    the conservative answer, because counting it can only make a session
-    `interrupted`, never make a partial one finished.
+    `cutoff` is a `time.monotonic()` reading -- a builder passes the moment
+    of its first soft stop -- and the record's side is its
+    `received_monotonic`, the recorder's `time.monotonic()` when
+    `write_frame` began, before the image or the line was written. Same
+    clock, same host, and a clock nobody can step: see RECEIVED_MONOTONIC.
+
+    A record is AFTER the cutoff only if it carries a finite number there
+    and the number is greater. Anything that cannot show that -- no
+    `received_monotonic` (a journal written before the field existed), a
+    value that is not a number, a line that did not parse -- counts as
+    recorded by the cutoff: the conservative answer, because counting it can
+    only make a session `interrupted`, never make a partial one finished.
     """
-    when = record.get("received_at") if isinstance(record, dict) else None
-    if isinstance(when, bool) or not isinstance(when, (int, float)):
+    when = received_monotonic_of(record)
+    if when is None:
         return True
     return not when > cutoff
 
@@ -809,7 +861,7 @@ class CaptureFollower:
             return reason
 
     def unobserved_records(
-        self, *, received_by: float | None = None, cancel=None
+        self, *, received_by_monotonic: float | None = None, cancel=None
     ) -> int | None:
         """Recorded frames of this walk its consumer never took.
 
@@ -848,11 +900,11 @@ class CaptureFollower:
         read position moved past both, so without this nothing counted them
         (Codex H2).
 
-        `received_by` counts only records received at or before it (see
-        `received_by_cutoff`). A builder passes the time of its first SOFT
-        stop: frames the camera recorded after the wearer's Stop are not
-        part of the walk (lead decision on the re-review's MED-1). None
-        counts every record.
+        `received_by_monotonic` counts only records received at or before it
+        (see `received_by_cutoff`). A builder passes the `time.monotonic()`
+        of its first SOFT stop: frames the camera recorded after the
+        wearer's Stop are not part of the walk (lead decision on the
+        re-review's MED-1). None counts every record.
 
         An unmeasurable journal is measured again, with backoff, for up to
         `MANIFEST_READ_BUDGET_S` -- the same lock class, the same budget --
@@ -872,7 +924,7 @@ class CaptureFollower:
                     self._directory / FRAMES_FILENAME, start_at_end=self._start_at_end
                 )
             )
-        cutoff = received_by
+        cutoff = received_by_monotonic
         in_hand = self._batch[self._taken:] + self._unloaded
         held = (
             len(in_hand)
@@ -886,7 +938,7 @@ class CaptureFollower:
         while True:
             total = held
             for tail in tails:
-                beyond = tail.records_not_yet_read(received_by=cutoff)
+                beyond = tail.records_not_yet_read(received_by_monotonic=cutoff)
                 if beyond is None:
                     total = None
                     break
