@@ -1886,6 +1886,12 @@ struct WorldRenderWebView: UIViewRepresentable {
         /// black rectangle became a world.
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
             onEvent?(.rendered)
+            // After `.rendered`, which takes the opaque rendering panel off
+            // the canvas: the native chrome drawn under it is on screen from
+            // this turn's commit, so the page may now put its own chrome away
+            // (WORLDS §4c). Whatever the page draws in answer reaches the
+            // screen through a later turn of this main thread.
+            bridge.receive(.pageFinished)
         }
 
         /// The load failed after it had started.

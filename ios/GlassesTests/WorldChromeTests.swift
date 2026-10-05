@@ -15,6 +15,7 @@
 //  NSString, NSNull, CFBoolean).
 //
 
+import WebKit
 import XCTest
 
 @testable import Glasses
@@ -139,12 +140,14 @@ final class WorldChromeTests: XCTestCase {
             return (id, input(.message(id: id, frame: frame, body: WorldChromeTests.decode(body))))
         }
 
-        /// Echo, hello, a held await, the first state, drawn, activated.
+        /// Echo, hello, a held await, the first state, `didFinish`, drawn,
+        /// activated.
         func activate() {
             input(.pageWillLoad(echo: true))
             send(WorldChromeTests.helloBody())
             send(WorldChromeTests.stateBody(seq: 1, nonce: "N1"))
             send(WorldChromeTests.awaitBody(seq: 2, nonce: "N1"))
+            input(.pageFinished)
             input(.firstStateDrawn)
         }
     }
@@ -466,6 +469,7 @@ final class WorldChromeTests: XCTestCase {
         guard case .success(.hello(let decoded, _)) = Self.decode(Self.helloBody()) else { return XCTFail() }
         XCTAssertEqual(hello.effects, [.reply(id: hello.id, .welcome(nonce: "N1")), .publishHello(decoded),
                                        .cancel(.noHello), .arm(.noState)])
+        XCTAssertEqual(driver.input(.pageFinished), [], "didFinish alone: no state has been drawn")
         // The page awaits before any state: held, nothing to say yet.
         let firstAwait = driver.send(Self.awaitBody(seq: 1, nonce: "N1"))
         XCTAssertEqual(firstAwait.effects, [.hold(id: firstAwait.id)])
@@ -484,6 +488,87 @@ final class WorldChromeTests: XCTestCase {
         XCTAssertEqual(next.effects, [.hold(id: next.id)])
     }
 
+    /// The page posts `hello` while it is still being parsed, and its first
+    /// state can follow before `didFinish`. The overlay then draws that
+    /// state under the opaque rendering panel ("Drawing the world…"), so the
+    /// phone's chrome is not yet on screen and `activate` waits for
+    /// `didFinish` (WORLDS §4c: the page draws its own chrome until the phone
+    /// has drawn its own). Driven through the web view's coordinator, as
+    /// WebKit drives it.
+    func testActivationWaitsForDidFinishWhenTheStateArrivesWhileParsing() {
+        let model = WorldChromeModel()
+        let bridge = WorldChromeBridge(model: model, kind: .room, pageURL: Self.pageURL)
+        let target = WorldRenderTarget(worldID: "w1", sessionID: "s1")
+        let assets = WorldAssetSchemeHandler(worldID: "w1", scope: WorldAssetScope.of(target))
+        let coordinator = WorldRenderWebView.Coordinator(target: target, assets: assets, bridge: bridge)
+        var events: [WorldRenderPageEvent] = []
+        coordinator.onEvent = { events.append($0) }
+        var replies: [String: [String: Any]] = [:]
+        func post(_ name: String, _ body: [String: Any]) {
+            bridge.receive(body: Self.webKit(body), frame: Self.frame) { reply, _ in
+                replies[name] = reply as? [String: Any] ?? [:]
+            }
+        }
+        // The navigation was allowed; the page is being parsed.
+        bridge.receive(.pageWillLoad(echo: true))
+        post("hello", Self.helloBody())
+        let nonce = replies["hello"]?["nonce"] as? String ?? ""
+        XCTAssertFalse(nonce.isEmpty, "welcomed")
+        post("state", Self.stateBody(seq: 1, nonce: nonce))
+        post("await", Self.awaitBody(seq: 2, nonce: nonce))
+        XCTAssertEqual(model.mode, .native)
+        // The overlay has drawn the state, under the rendering panel.
+        bridge.receive(.firstStateDrawn)
+        XCTAssertNil(replies["await"], "no activate while the rendering panel covers the native chrome")
+        XCTAssertEqual(bridge.outstandingReplies, 1, "the await is held")
+
+        // didFinish, late: the panel goes, and the page may put its chrome away.
+        coordinator.webView(WKWebView(frame: .zero), didFinish: nil)
+        XCTAssertEqual(events, [.rendered])
+        XCTAssertEqual(replies["await"]?["type"] as? String, "activate")
+        XCTAssertEqual(bridge.outstandingReplies, 0)
+        bridge.receive(.teardown)
+    }
+
+    /// The reducer's half of the same rule: `activate` needs both the drawn
+    /// state and `didFinish`, in either order, once per page, and a new
+    /// document waits for its own `didFinish`.
+    func testActivationNeedsTheDrawnStateAndTheFinishedPageInEitherOrder() {
+        let driver = Driver()
+        driver.input(.pageWillLoad(echo: true))
+        driver.send(Self.helloBody())
+        driver.send(Self.stateBody(seq: 1, nonce: "N1"))
+        let held = driver.send(Self.awaitBody(seq: 2, nonce: "N1"))
+        XCTAssertEqual(driver.input(.firstStateDrawn), [], "drawn under the rendering panel")
+        XCTAssertEqual(driver.input(.pageFinished), [.reply(id: held.id, .activate)])
+        XCTAssertEqual(driver.input(.pageFinished), [], "once per page")
+        XCTAssertEqual(driver.input(.firstStateDrawn), [], "once per page")
+
+        // The page reloads: the last document's didFinish is not this one's.
+        let page = "secondpage123456"
+        driver.input(.pageWillLoad(echo: true))
+        driver.send(Self.helloBody(pageID: page, seq: 0))
+        driver.send(Self.stateBody(pageID: page, seq: 1, nonce: "N1"))
+        let second = driver.send(Self.awaitBody(pageID: page, seq: 2, nonce: "N1"))
+        XCTAssertEqual(driver.input(.firstStateDrawn), [], "this document has not finished")
+        XCTAssertEqual(driver.input(.pageFinished), [.reply(id: second.id, .activate)])
+
+        // didFinish before the state (the usual order on the Tower's page).
+        let usual = Driver()
+        usual.input(.pageWillLoad(echo: true))
+        usual.send(Self.helloBody())
+        XCTAssertEqual(usual.input(.pageFinished), [])
+        usual.send(Self.stateBody(seq: 1, nonce: "N1"))
+        let waiting = usual.send(Self.awaitBody(seq: 2, nonce: "N1"))
+        XCTAssertEqual(usual.input(.firstStateDrawn), [.reply(id: waiting.id, .activate)])
+        // Nothing for a page that fell back.
+        let fallen = Driver()
+        fallen.input(.pageWillLoad(echo: true))
+        fallen.input(.timer(.noHello))
+        XCTAssertEqual(fallen.input(.pageFinished), [])
+        XCTAssertEqual(fallen.input(.firstStateDrawn), [])
+    }
+
     // MARK: I8: every message answered exactly once
 
     func testEveryMessageIsAnsweredExactlyOnce() {
@@ -494,7 +579,7 @@ final class WorldChromeTests: XCTestCase {
             var seq = 0
             var page = Self.pageID
             for _ in 0..<40 {
-                switch Int.random(in: 0..<14, using: &rng) {
+                switch Int.random(in: 0..<15, using: &rng) {
                 case 0:
                     driver.input(.pageWillLoad(echo: Bool.random(using: &rng)))
                     seq = 0
@@ -521,6 +606,7 @@ final class WorldChromeTests: XCTestCase {
                 case 10: driver.input(.timer(.noHello))
                 case 11: driver.input(.timer(.noState))
                 case 12: driver.input(.timer(.noDeactivateConfirm))
+                case 13: driver.input(.pageFinished)
                 default: driver.input(.teardown)
                 }
             }
@@ -900,6 +986,7 @@ final class WorldChromeTests: XCTestCase {
         let driver = Driver()
         driver.input(.pageWillLoad(echo: true))
         driver.send(Self.helloBody())
+        driver.input(.pageFinished)
         XCTAssertEqual(driver.input(.tapped(.next)), [], "nothing before a state")
         driver.send(Self.stateBody(seq: 1, nonce: "N1", fields: Self.stateFields(
             buttons: ["best": false, "face": true, "previous": false, "next": true, "reset": true])))

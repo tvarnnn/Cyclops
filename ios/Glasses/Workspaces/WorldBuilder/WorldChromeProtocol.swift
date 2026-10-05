@@ -601,6 +601,10 @@ nonisolated struct WorldChromeSession: Sendable {
         case message(id: Int, frame: WorldChromeFrame, body: Result<WorldChromeMessage, WorldChromeRefusal>)
         /// The overlay committed its first frame with this page's state.
         case firstStateDrawn
+        /// `didFinish`: the page has loaded, and the opaque rendering panel
+        /// that covered the canvas -- and the native chrome drawn over it --
+        /// is gone.
+        case pageFinished
         /// Only from enabled controls.
         case tapped(WorldChromeAction)
         /// `.noHello` (5 s), `.noState` (5 s), `.noDeactivateConfirm` (2 s).
@@ -636,6 +640,10 @@ nonisolated struct WorldChromeSession: Sendable {
     private var queue: [WorldChromeCommand] = []
     private var lastState: WorldChromeState?
     private var activateQueued = false
+    /// This page's first state has been drawn by the overlay.
+    private var stateDrawn = false
+    /// This page has reported `didFinish`.
+    private var pageFinished = false
     private var awaitingConfirm = false
     private var reloadedForConfirm = false
     private var armed: Set<Input.Timer> = []
@@ -656,9 +664,12 @@ nonisolated struct WorldChromeSession: Sendable {
         case .message(let id, let frame, let body):
             return message(id: id, frame: frame, body: body)
         case .firstStateDrawn:
-            guard mode == .native, !activateQueued else { return [] }
-            activateQueued = true
-            return enqueue(.activate)
+            guard mode == .native else { return [] }
+            stateDrawn = true
+            return activateWhenShown()
+        case .pageFinished:
+            pageFinished = true
+            return activateWhenShown()
         case .tapped(let action):
             guard mode == .native, let state = lastState, state.drawn, state.message == nil,
                   state.phase != .failed, state.buttons.isEnabled(action)
@@ -853,6 +864,19 @@ nonisolated struct WorldChromeSession: Sendable {
         return effects
     }
 
+    /// `activate`, once per page, when the phone's chrome is on screen: the
+    /// overlay has drawn the page's first state AND the page has finished
+    /// loading. Until `didFinish` the opaque rendering panel covers the
+    /// canvas and the native chrome drawn over it, and the page keeps its own
+    /// chrome until the phone has drawn its own (WORLDS §4c, the handover).
+    /// A page can post its first state while it is still being parsed, so
+    /// either may come first.
+    private mutating func activateWhenShown() -> [Effect] {
+        guard mode == .native, stateDrawn, pageFinished, !activateQueued else { return [] }
+        activateQueued = true
+        return enqueue(.activate)
+    }
+
     /// Queue a command, and deliver it at once to a held `await`.
     private mutating func enqueue(_ command: WorldChromeCommand) -> [Effect] {
         queue.append(command)
@@ -880,5 +904,7 @@ nonisolated struct WorldChromeSession: Sendable {
         queue = []
         lastState = nil
         activateQueued = false
+        stateDrawn = false
+        pageFinished = false
     }
 }
