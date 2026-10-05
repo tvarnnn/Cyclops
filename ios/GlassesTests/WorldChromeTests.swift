@@ -907,11 +907,14 @@ final class WorldChromeTests: XCTestCase {
     func testTodaysScreenShowsTheResearchMarkerTheHeaderRaised() {
         let legacy = WorldChromeModel()
         XCTAssertNil(legacy.legacyResearchMarker)
+        XCTAssertFalse(legacy.imageryIsRaw)
         legacy.raiseResearch(headerWarning: "The header's sentence")
+        XCTAssertTrue(legacy.imageryIsRaw)
         XCTAssertEqual(legacy.mode, .legacy)
         XCTAssertFalse(legacy.everNative)
         XCTAssertEqual(legacy.legacyResearchMarker, "The header's sentence")
         legacy.viewerClosed()
+        XCTAssertFalse(legacy.imageryIsRaw)
         XCTAssertNil(legacy.legacyResearchMarker)
         XCTAssertFalse(legacy.rawByHeader)
 
@@ -925,9 +928,35 @@ final class WorldChromeTests: XCTestCase {
         XCTAssertEqual(model.mode, .legacy)
         XCTAssertFalse(model.everNative)
         XCTAssertNil(model.legacyResearchMarker, "the page never activated: its own marker is on it")
+        XCTAssertTrue(model.imageryIsRaw, "the page said its imagery is not redacted")
         model.raiseResearch(headerWarning: "The header's sentence")
         XCTAssertEqual(model.legacyResearchMarker, "The page's marker", "the header raised it; the page's words")
         bridge.receive(.teardown)
+    }
+
+    /// Today's caption claims faces were redacted only while nothing says
+    /// otherwise: with the imagery known not to be redacted, the room's and
+    /// an area's appearance sentences say so instead (APPEARANCE §6.6,
+    /// `raw-local-research/no-redaction`). The other rungs make no such claim
+    /// and are unchanged.
+    func testTodaysCaptionMakesNoRedactionClaimForRawImagery() {
+        let redacted = WorldRenderRepresentation.caption(for: .appearance)
+        XCTAssertTrue(redacted.contains("faces redacted"), redacted)
+        let raw = WorldRenderRepresentation.caption(for: .appearance, rawImagery: true)
+        XCTAssertFalse(raw.contains("faces redacted"), raw)
+        XCTAssertTrue(raw.hasPrefix("The camera's own images, not redacted, placed on the reconstructed room."), raw)
+        XCTAssertEqual(raw.replacingOccurrences(of: "not redacted", with: "faces redacted"), redacted,
+                       "only the claim changes")
+        for rung in [WorldRenderRepresentation.surface, .dense, .sparse] {
+            XCTAssertEqual(WorldRenderRepresentation.caption(for: rung, rawImagery: true),
+                           WorldRenderRepresentation.caption(for: rung))
+        }
+        let spans = [WorldCaptureSpan(start: 86.0, end: 109.0)]
+        let area = WorldComponentsPresentation.areaCaption(representation: .appearance, spans: spans, rawImagery: true)
+        XCTAssertTrue(area.hasPrefix("The camera's own images, not redacted, from 1:26 to 1:49 of this walk."), area)
+        XCTAssertFalse(area.contains("faces redacted"), area)
+        XCTAssertTrue(WorldComponentsPresentation.areaCaption(representation: .appearance, spans: spans)
+            .contains("faces redacted"))
     }
 
     // MARK: I13: the ring

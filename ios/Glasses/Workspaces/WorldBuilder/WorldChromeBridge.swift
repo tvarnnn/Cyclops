@@ -80,6 +80,11 @@ final class WorldChromeModel: ObservableObject {
     /// The overlay draws page-derived chrome only in this mode.
     var isDrawingNative: Bool { mode == .native && state != nil && hello != nil }
 
+    /// Whether this viewer knows its imagery is not redacted: the served
+    /// header said so, or the page raised its research marker. Sticky for the
+    /// viewer. Today's caption then makes no redaction claim.
+    var imageryIsRaw: Bool { rawByHeader || researchMarker != nil }
+
     /// The research marker on today's screen (legacy geometry): after a
     /// fallback from native chrome, and whenever the served header raised it.
     /// The header is the source that still speaks when the page's own marker

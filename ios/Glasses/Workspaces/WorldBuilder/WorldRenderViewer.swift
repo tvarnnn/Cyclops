@@ -568,8 +568,15 @@ nonisolated enum WorldRenderRepresentation: String, Equatable, Sendable {
     ///
     /// Every variant keeps "not to scale" in it, because the one claim no rung
     /// can make yet is a real-world size: scale is unknown on every world.
-    static func caption(for representation: WorldRenderRepresentation?) -> String {
+    ///
+    /// `rawImagery`: the viewer knows this imagery is NOT redacted (the served
+    /// `X-World-Imagery` header, or the page's own research marker:
+    /// APPEARANCE §6.6, `raw-local-research/no-redaction`). The appearance
+    /// sentence then says so instead of claiming faces were redacted.
+    static func caption(for representation: WorldRenderRepresentation?, rawImagery: Bool = false) -> String {
         switch representation {
+        case .appearance where rawImagery:
+            return "The camera's own images, not redacted, placed on the reconstructed room. Grey haze is where no kept image looked; only cracks a few pixels wide are filled, from the images beside them. Not to scale."
         case .appearance:
             // Agrees with the page's own caption and WORLD-BUILDER-WORLDS.md §4
             // ("what it draws"), which is where the page's drawing rules live.
@@ -2414,9 +2421,13 @@ struct WorldRenderScene: View {
     private var nativeCaption: String {
         if model.target.isArea {
             return WorldComponentsPresentation.areaCaption(
-                representation: model.state.representation, spans: area?.spans ?? [])
+                representation: model.state.representation, spans: area?.spans ?? [],
+                rawImagery: model.chrome.imageryIsRaw)
         }
-        return WorldRenderRepresentation.caption(for: model.state.representation)
+        // The same source as the research marker: no redaction claimed once
+        // the viewer knows the imagery is not redacted.
+        return WorldRenderRepresentation.caption(for: model.state.representation,
+                                                 rawImagery: model.chrome.imageryIsRaw)
             + (WorldComponentsPresentation.roomCaptionSuffix(model.components) ?? "")
     }
 

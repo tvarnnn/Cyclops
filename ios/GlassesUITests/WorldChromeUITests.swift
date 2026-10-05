@@ -204,6 +204,7 @@ final class WorldChromeUITests: XCTestCase {
     func testAPageWithoutTheEchoKeepsTodaysScreen() throws {
         openViewer(page: Page.html(steps: [.init(state: Page.state())], echo: false))
         XCTAssertTrue(legacyCaption.waitForExistence(timeout: 30), "today's caption line")
+        XCTAssertTrue(legacyCaption.label.contains("faces redacted"), "today's words: \(legacyCaption.label)")
         XCTAssertTrue(element("world-render-reload").exists)
         XCTAssertTrue(pageChrome.waitForExistence(timeout: 10), "the page's own chrome")
         Thread.sleep(forTimeInterval: 3)
@@ -227,6 +228,10 @@ final class WorldChromeUITests: XCTestCase {
         XCTAssertTrue(band.waitForExistence(timeout: 10), "the header's research marker on today's screen")
         XCTAssertTrue(band.label.contains(warning.uppercased()), band.label)
         XCTAssertLessThanOrEqual(band.frame.maxY, legacyCaption.frame.minY + 1, "above the caption")
+        // And the caption under it makes no redaction claim it cannot keep.
+        XCTAssertTrue(waitFor(timeout: 5) { self.legacyCaption.label.contains("not redacted") },
+                      "the caption says the imagery is not redacted: \(legacyCaption.label)")
+        XCTAssertFalse(legacyCaption.label.contains("faces redacted"), legacyCaption.label)
         XCTAssertTrue(pageChrome.exists, "the page keeps its own chrome")
         for id in ["world-chrome-best", "world-chrome-head", "world-chrome-status"] {
             XCTAssertFalse(element(id).exists, "\(id) on today's screen")
