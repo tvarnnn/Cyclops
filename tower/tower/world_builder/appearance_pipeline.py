@@ -1132,16 +1132,18 @@ def servable_size(root: Path, name: str, manifest: dict, now: float | None = Non
     return None
 
 
-def read_appearance_file(store, world_id: str, session_id: str, kind: str, digest: str,
-                         manifest: dict) -> bytes | None:
-    """The bytes of a file the manifest names (or a recently superseded one
-    under the same label names, `servable_size`), checked against its recorded
-    size and its content digest; None for anything else."""
+def file_size_under(store, world_id: str, session_id: str, kind: str, digest: str,
+                    manifest: dict) -> int | None:
+    """The recorded size of a file the routes may serve under `manifest`, or
+    None: named by it, or lent from a recently superseded build
+    (`servable_size`) -- and never lent to a manifest served by the carry-over.
+    No bytes are read. `read_appearance_file` uses it, and the file routes run
+    it again after the read against the manifest the gate serves THEN (fix
+    round 2, Codex LOW-3)."""
     if kind not in ("chunk", "proxy") or not is_digest(digest):
         return None
     name = _file_name(kind, digest)
-    root = appearance_dir(store, world_id, session_id)
-    size = servable_size(root, name, manifest)
+    size = servable_size(appearance_dir(store, world_id, session_id), name, manifest)
     if size is None:
         return None
     if name not in named_files(manifest) and not label_matches(
@@ -1152,6 +1154,19 @@ def read_appearance_file(store, world_id: str, session_id: str, kind: str, diges
         # (review rv-pas LOW-3). Its own files are served; a page missing one
         # refetches the manifest, as for any 404.
         return None
+    return size
+
+
+def read_appearance_file(store, world_id: str, session_id: str, kind: str, digest: str,
+                         manifest: dict) -> bytes | None:
+    """The bytes of a file the manifest names (or a recently superseded one
+    under the same label names, `servable_size`), checked against its recorded
+    size and its content digest; None for anything else."""
+    size = file_size_under(store, world_id, session_id, kind, digest, manifest)
+    if size is None:
+        return None
+    name = _file_name(kind, digest)
+    root = appearance_dir(store, world_id, session_id)
     try:
         data = (root / name).read_bytes()
     except OSError:

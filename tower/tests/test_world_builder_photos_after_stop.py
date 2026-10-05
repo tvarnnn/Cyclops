@@ -637,6 +637,59 @@ class TestTheGateIsCheckedAgainAfterTheRead:
             f"/worlds/{WORLD}/appearance/{SESSION}/proxy/{man['proxy']['digest']}")
         assert fired and r.status_code == 404
 
+    def test_a_final_build_publishing_between_the_gate_and_the_read(self, tmp_path,
+                                                                    monkeypatch):
+        """The walk build's chunk was authorised; the final build (trusted
+        label, stored bytes) publishes before the bytes leave. The final build
+        never lends the walk build's files (another label), so: 404."""
+        w = _walk(tmp_path)
+        man = w.manifest()
+        _stop(w)
+
+        def final_build():
+            _records_carry(w)
+            assert w.build(params=A.AppearanceParams(selection_samples=4000,
+                                                     transient_detector="off"),
+                           redactor_factory=_never_redact).state == AP.STATE_OK
+
+        fired = self._racing(monkeypatch, final_build)
+        digest = man["chunks"][0]["digest"]
+        r = _client(w.root).get(f"/worlds/{WORLD}/appearance/{SESSION}/chunk/{digest}")
+        assert fired and w.manifest()["build_id"] != man["build_id"]
+        assert digest not in {c["digest"] for c in w.manifest()["chunks"]}
+        assert r.status_code == 404
+
+    def test_a_live_publish_between_the_gate_and_the_read_still_lends(self, tmp_path,
+                                                                      monkeypatch):
+        """During the walk the same race is a live build replacing a live build
+        under the same label: the old chunk is lent through the grace, exactly
+        as on dc35d51."""
+        w = World(tmp_path, label="none")
+        _records_carry(w, _FakeRedactor())
+        params = A.AppearanceParams.live(selection_samples=3000, transient_detector="off")
+        assert w.build(params=params, redactor_factory=_FakeRedactor).state == AP.STATE_OK
+        man = w.manifest()
+
+        def next_live_build():
+            img = w.render(3)
+            img[10:30, 10:30] = (200, 40, 40)
+            w.set_image(3, img)
+            _records_carry(w, _FakeRedactor())
+            assert w.build(params=params, redactor_factory=_FakeRedactor).state == AP.STATE_OK
+
+        fired = self._racing(monkeypatch, next_live_build)
+        client = _client(w.root)
+        codes = {c["digest"]: client.get(
+            f"/worlds/{WORLD}/appearance/{SESSION}/chunk/{c['digest']}").status_code
+            for c in man["chunks"]}
+        new = {c["digest"] for c in w.manifest()["chunks"]}
+        gone = [d for d in codes if d not in new]
+        assert fired and w.manifest()["build_id"] != man["build_id"]
+        assert gone, "the rebuild replaced no chunk; the test would prove nothing"
+        # The first request raced the publish; whichever chunk it was, every
+        # old chunk -- including the ones only the grace lends -- is served.
+        assert set(codes.values()) == {200}, codes
+
     def test_no_change_still_serves(self, tmp_path, monkeypatch):
         w = _walk(tmp_path)
         man = w.manifest()

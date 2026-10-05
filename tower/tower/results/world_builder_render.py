@@ -1265,6 +1265,6 @@ def area_appearance_file(store: WorldStore, world_id: str, session_id: str, area
                                              area.area_id)
     if now is None:
         raise AppearanceNotServed(reason)
-    if now.get("build_id") != manifest.get("build_id"):
+    if AP.file_size_under(area.view, area.world_id, area.session_id, kind, digest, now) is None:
         raise AppearanceNotServed("no such appearance file")
     return data, _label(manifest), _imagery(manifest)
