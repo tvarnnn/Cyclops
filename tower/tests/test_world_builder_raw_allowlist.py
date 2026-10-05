@@ -156,6 +156,8 @@ def test_the_reader_answer_over_every_case():
     assert RAWIMG.reader_imagery_source(OTHER, RAW, listed) == RED
     assert RAWIMG.reader_imagery_source(HEX, RAW, {}) == RED
     assert RAWIMG.reader_imagery_source(None, RAW, listed) == RED
+    # a world id that is not a string is refused, never raised on
+    assert RAWIMG.reader_imagery_source([HEX], RAW, listed) == RED
     assert RAWIMG.reader_imagery_source(HEX[:8], RAW, listed) == RED
     # research Tower: unchanged, the list is not consulted
     for env in (research, dict(research, **listed), dict(research, **{ENV: "zz"})):
