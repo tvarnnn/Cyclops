@@ -78,7 +78,13 @@ def world_listing(request: Request) -> dict:
     the contract's word for "not established", which is what a
     non-finite number honestly is.
     """
-    return json_safe(build_world_listing(_store(request)))
+    # `capture_root` for U-PARTIAL's rule F only (`TOWER_WORLD_PARTIAL_FRAMES`,
+    # default off; WORLD-BUILDER-COMPONENTS.md §3.1a). Absent on an app that
+    # records nothing, which reads no capture manifest.
+    return json_safe(build_world_listing(
+        _store(request),
+        capture_root=getattr(request.app.state, "capture_root", None),
+    ))
 
 
 @router.get("/worlds/{world_id}/geometry/manifest")

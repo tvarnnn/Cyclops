@@ -41,6 +41,12 @@ from pathlib import Path
 from tower.logging_config import client_safe_reason
 from tower.results.contracts import TIME_BASIS
 from tower.results.world_builder_library import _sortable, lock_speaks_for
+from tower.results.world_builder_partial import (
+    partial_walk,
+    present_finalization,
+    recorded_frames,
+    capture_manifest_path,
+)
 from tower.storage import read_json_closed, read_raw_jsonl
 from tower.results.envelope import Snapshot, compute_revision
 from tower.world_builder.records import FINAL_SOLVE_SOLVED, format_distance
@@ -400,9 +406,13 @@ class _FileCache:
 class WorldBuilderStatusProducer:
     """Builds one status snapshot per call. Holds only a small cache."""
 
-    def __init__(self, world_root, clock) -> None:
+    def __init__(self, world_root, clock, capture_root=None) -> None:
         self._root = Path(world_root)
         self._clock = clock
+        # The capture recorder's root, for U-PARTIAL's rule F only
+        # (`TOWER_WORLD_PARTIAL_FRAMES`): a `stop` record is judged by its own
+        # capture's `frames_written`. None reads no manifest at all.
+        self._capture_root = capture_root
         self._files = _FileCache()
         # Path length needs the full poses file, which the manifest does
         # not summarise. Reading it on every poll would be the one
@@ -736,6 +746,29 @@ class WorldBuilderStatusProducer:
             "time_basis": TIME_BASIS,
         }
 
+    def _partial_walk(self, session):
+        """U-PARTIAL (WORLD-BUILDER-COMPONENTS.md §3.1a): the walk this world was finished from
+        only part of, or None. None without asking anything while `TOWER_WORLD_PARTIAL_STATE` is
+        off, so the switch off reads no file and changes no byte. Rule F's capture manifest is read
+        through the stat-gated cache, once per change of the file."""
+        from tower.config import (  # noqa: PLC0415
+            world_partial_frames_setting,
+            world_partial_state_setting,
+        )
+
+        if not world_partial_state_setting():
+            return None
+        recorded = None
+        if world_partial_frames_setting():
+            path = capture_manifest_path(self._capture_root, session)
+            if path is not None:
+                recorded = self._files.read(
+                    "capture-manifest",
+                    path,
+                    lambda: recorded_frames(self._capture_root, session),
+                )
+        return partial_walk(session, recorded=recorded)
+
     def _payload(self, store, world, session_id: str) -> dict:
         session = store.read_session(world.world_id, session_id)
         # A SUMMARY, not the parsed journal. Two reasons, both measured.
@@ -825,6 +858,7 @@ class WorldBuilderStatusProducer:
             if manifest is None and session_geometry
             else None
         )
+        walk = self._partial_walk(session)
         lifecycle = _lifecycle(
             # The WORLD's lock, only where it speaks for THIS session: a
             # finisher or a new walk holding it says nothing about a sibling
@@ -861,6 +895,9 @@ class WorldBuilderStatusProducer:
             store=store,
             world_id=world.world_id,
             session_id=session_id,
+            # U-PARTIAL: None unless TOWER_WORLD_PARTIAL_STATE is on and the
+            # Tower finished this world from only part of its walk.
+            walk=walk,
         )
         # Which counts are trustworthy is decided by whether the session
         # was ever STOPPED -- not by whether it is currently `receiving`.
@@ -1699,7 +1736,7 @@ def _still_building(base: dict, building: str | None,
 def _lifecycle(*, holder, stopped, session, geometry_current, has_manifest,
                has_session_geometry, has_readable_figures: bool = False,
                store=None, world_id: str | None = None,
-               session_id: str | None = None) -> dict:
+               session_id: str | None = None, walk: dict | None = None) -> dict:
     """What the Tower can SEE about whether a world is being built.
 
     Two readings, composed. `_lifecycle_from_the_record` answers from the
@@ -1732,6 +1769,28 @@ def _lifecycle(*, holder, stopped, session, geometry_current, has_manifest,
         has_session_geometry=has_session_geometry,
         has_readable_figures=has_readable_figures,
     )
+    if walk is not None:
+        # U-PARTIAL (WORLD-BUILDER-COMPONENTS.md §3.1a): a world the Tower
+        # finished from only PART of its walk is never `ready`. Only the READY
+        # word moves, to `interrupted` with the walk's sentence as the reason;
+        # every other arm keeps its word and its reason. `finalization` gains
+        # `walk` and the sentence first in its notice on every arm, the same
+        # object the `GET /worlds` row sends. `_still_building` below still
+        # runs, so an unsettled photographic room still reads `finalizing`.
+        finalization = present_finalization(base.get("finalization"), walk)
+        if base["state"] == LIFECYCLE_READY:
+            base = {
+                **base,
+                "state": LIFECYCLE_INTERRUPTED,
+                "evidence": (
+                    f"{base['evidence']}; this world was finished from part of "
+                    f"its walk ({walk['reason']})"
+                ),
+                "reason": walk["sentence"],
+                "finalization": finalization,
+            }
+        else:
+            base = {**base, "finalization": finalization}
     alive = holder is not None and holder["alive"]
     if alive or not stopped:
         return base

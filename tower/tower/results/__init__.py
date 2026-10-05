@@ -62,6 +62,7 @@ def make_snapshot_for(
     document_source=None,
     cv_lab=None,
     document_unavailable_reason=None,
+    capture_root=None,
 ):
     """A callable turning (cartridge, result_type, world, session) into a Snapshot.
 
@@ -87,6 +88,10 @@ def make_snapshot_for(
     All three are optional and default to None, which produces an
     explicit `unavailable` snapshot rather than an exception -- the same
     under-promise-on-omission rule `registry.declare` follows.
+
+    `capture_root` is the capture recorder's root, handed to the World
+    Builder producer for U-PARTIAL's rule F only (`TOWER_WORLD_PARTIAL_FRAMES`,
+    WORLD-BUILDER-COMPONENTS.md §3.1a). None reads no capture manifest.
     """
     producers: dict = {}
 
@@ -124,7 +129,9 @@ def make_snapshot_for(
             if producer is None:
                 from tower.results.world_builder import WorldBuilderStatusProducer
 
-                producer = WorldBuilderStatusProducer(world_root, clock)
+                producer = WorldBuilderStatusProducer(
+                    world_root, clock, capture_root=capture_root
+                )
                 producers[cartridge] = producer
             return producer.snapshot(world_id, session_id)
 
@@ -218,6 +225,7 @@ def build_hub(
     document_source=None,
     cv_lab=None,
     document_unavailable_reason=None,
+    capture_root=None,
 ) -> ResultHub:
     return ResultHub(
         make_snapshot_for(
@@ -228,6 +236,7 @@ def build_hub(
             document_source=document_source,
             cv_lab=cv_lab,
             document_unavailable_reason=document_unavailable_reason,
+            capture_root=capture_root,
         ),
         clock=clock,
     )

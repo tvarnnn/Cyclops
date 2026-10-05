@@ -149,6 +149,11 @@ _RESULT_CHANNEL_ADAPTERS = frozenset(
         # {session}/...), an adapter over the store named after the cartridge,
         # serving the redacted keyframe bundles the phone blends.
         TOWER / "results" / "world_builder_appearance.py",
+        # Added 2026-10-05 (U-PARTIAL): the one rule both World Builder
+        # adapters above ask whether a world was finished from part of its
+        # walk. Named after the cartridge, reads its record shape, sends
+        # nothing of its own.
+        TOWER / "results" / "world_builder_partial.py",
         TOWER / "results" / "__init__.py",
         # Added 2026-08-27 with the Scene Understanding and Document
         # Memory wire paths. Same shape, same rule: one adapter per

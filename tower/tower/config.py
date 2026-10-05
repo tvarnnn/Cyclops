@@ -1053,6 +1053,26 @@ def world_area_builds_setting() -> bool:
     return _flag(WORLD_AREA_BUILDS_ENV, default=False)
 
 
+# U-PARTIAL (WORLD-BUILDER-COMPONENTS.md §3.1a, WORLDS §3 rule 7): a world the Tower finished from only
+# part of its walk is presented `interrupted`, never `ready`/`complete`, and its `finalization` carries
+# `walk` (`tower/results/world_builder_partial.py`). Read at call time by the status producer and the
+# saved-worlds listing. Off: every payload byte for byte as before. `TOWER_WORLD_PARTIAL_FRAMES` (rule F:
+# also judge a `stop` record by its own capture's frame count) is ignored unless the first is on.
+WORLD_PARTIAL_STATE_ENV = "TOWER_WORLD_PARTIAL_STATE"
+WORLD_PARTIAL_FRAMES_ENV = "TOWER_WORLD_PARTIAL_FRAMES"
+
+
+def world_partial_state_setting() -> bool:
+    """`TOWER_WORLD_PARTIAL_STATE`: a world finished from part of its walk is `interrupted`. Off."""
+    return _flag(WORLD_PARTIAL_STATE_ENV, default=False)
+
+
+def world_partial_frames_setting() -> bool:
+    """`TOWER_WORLD_PARTIAL_FRAMES`: also judge a `stop` record by its capture's frame count. Off;
+    ignored unless TOWER_WORLD_PARTIAL_STATE is on."""
+    return _flag(WORLD_PARTIAL_FRAMES_ENV, default=False)
+
+
 WORLD_RELOCALIZER_ENV = "TOWER_WORLD_RELOCALIZER"
 
 

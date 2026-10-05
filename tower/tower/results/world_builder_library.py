@@ -40,6 +40,11 @@ from tower.world_builder.store import (
     manifest_describing,
     session_has_drawable_geometry,
 )
+from tower.results.world_builder_partial import (
+    partial_walk,
+    present_finalization,
+    recorded_frames,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -397,7 +402,31 @@ def _components_for_row(store: WorldStore, world_id: str, session_id: str, sessi
 
 def session_state(session, *, live: bool, has_geometry: bool, manifest=None,
                   still_building: bool = False,
-                  photographic: dict | None = None) -> str:
+                  photographic: dict | None = None,
+                  walk: dict | None = None) -> str:
+    """One word for what a session IS -- `_session_state_from_the_record`'s, with U-PARTIAL applied.
+
+    `walk` is `world_builder_partial.partial_walk`'s answer, or None (always None while
+    `TOWER_WORLD_PARTIAL_STATE` is off). A world the Tower finished from only PART of its walk is never
+    `complete`: that word, and only that word, becomes `interrupted` (WORLD-BUILDER-COMPONENTS.md
+    §3.1a; WORLDS §2). `finalizing` still wins for an unsettled photographic room, exactly as the
+    status producer's `_lifecycle` converts only its READY word."""
+    state = _session_state_from_the_record(
+        session,
+        live=live,
+        has_geometry=has_geometry,
+        manifest=manifest,
+        still_building=still_building,
+        photographic=photographic,
+    )
+    if walk is not None and state == SESSION_COMPLETE:
+        return SESSION_INTERRUPTED
+    return state
+
+
+def _session_state_from_the_record(session, *, live: bool, has_geometry: bool, manifest=None,
+                                   still_building: bool = False,
+                                   photographic: dict | None = None) -> str:
     """One word for what a session IS, from the record, the lock and the tree.
 
     Mirrors `_lifecycle` in the status producer for the facts a listing
@@ -669,7 +698,7 @@ def _is_timestamp(value) -> bool:
     return isinstance(value, float) and math.isfinite(value)
 
 
-def build_world_listing(store: WorldStore) -> dict:
+def build_world_listing(store: WorldStore, *, capture_root=None) -> dict:
     """Every world with a readable `world.json`, newest first, with its
     sessions oldest first. A world whose sessions cannot be read is listed
     with what could be read; a world that cannot be read at all is left out
@@ -677,7 +706,20 @@ def build_world_listing(store: WorldStore) -> dict:
 
     A record whose timestamps are not the numbers the contract promises
     counts as unreadable (see `_is_timestamp`): it is omitted, with a
-    warning naming it, rather than served raw for the phone to choke on."""
+    warning naming it, rather than served raw for the phone to choke on.
+
+    `capture_root` is the capture recorder's root, read by U-PARTIAL's rule F
+    only (`TOWER_WORLD_PARTIAL_FRAMES`); None reads no capture manifest."""
+    from tower.config import (  # noqa: PLC0415
+        world_partial_frames_setting,
+        world_partial_state_setting,
+    )
+
+    # U-PARTIAL (WORLD-BUILDER-COMPONENTS.md §3.1a). Read once per listing.
+    # Off, `walk` is None on every row, no capture manifest is read, and
+    # every row is byte for byte as before.
+    partial_on = world_partial_state_setting()
+    frames_on = partial_on and world_partial_frames_setting()
     worlds = []
     for world_id in store.list_world_ids():
         try:
@@ -743,6 +785,18 @@ def build_world_listing(store: WorldStore) -> dict:
                 store, world_id, session_id, session
             )
             appearance = _appearance_summary_or_none(store, world_id, session_id, world)
+            # The SAME function the status producer asks, so the row and the
+            # panel it opens cannot disagree about a walk saved in part.
+            walk = (
+                partial_walk(
+                    session,
+                    recorded=(
+                        recorded_frames(capture_root, session) if frames_on else None
+                    ),
+                )
+                if partial_on
+                else None
+            )
             sessions.append({
                 "session_id": session.session_id,
                 "started_at": session.started_at,
@@ -786,6 +840,7 @@ def build_world_listing(store: WorldStore) -> dict:
                         )
                     ),
                     photographic=photographic,
+                    walk=walk,
                 ),
                 # ADDITIVE, and the contract identifier deliberately does
                 # not move, for the reason `_dense_summary` gives above:
@@ -808,7 +863,13 @@ def build_world_listing(store: WorldStore) -> dict:
                 # a writer may have put raw exception text in `detail` (a
                 # `C:\Users\<user>\...` path, a traceback), or an old one in
                 # `notice`. See `_client_safe_finalization`.
-                "finalization": _client_safe_finalization(session.finalization),
+                # U-PARTIAL: plus `walk` and the walk's sentence first in
+                # `notice` for a walk saved in part -- the same object the
+                # status channel's `lifecycle.finalization` carries. With the
+                # switch off `walk` is None and this is the same object.
+                "finalization": present_finalization(
+                    _client_safe_finalization(session.finalization), walk
+                ),
                 # Additive, and null on every world built before the dense
                 # stage existed: what dense reconstruction this session holds.
                 "dense": _dense_summary(store, world_id, session_id),

@@ -1601,6 +1601,9 @@ def create_app() -> FastAPI:
         document_source=live.document,
         cv_lab=app.state.cv_lab,
         document_unavailable_reason=live.document_unavailable_reason,
+        # U-PARTIAL rule F (`TOWER_WORLD_PARTIAL_FRAMES`, default off): a
+        # `stop` session is judged by its own capture's frame count.
+        capture_root=settings.capture_root,
     )
     # Started here, not in `lifespan` above: TestClient(create_app()) used
     # without `with client:` (every pre-existing test in this repo) never
