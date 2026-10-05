@@ -432,11 +432,17 @@ class StopRequest:
 
     * **Soft** -- the parent closed this process's stdin. It means "you are
       no longer wanted for NEW frames": the wearer left World Builder, or
-      the cartridge was stopped. A builder still observing stops
-      observing, closes the session as `interrupted`, skips the final
-      solve (nobody is waiting for it) and writes its final build. A
-      builder already finalizing carries on: finalization is bounded and
-      holds no camera.
+      the cartridge was stopped. A builder still observing an OPEN capture
+      stops observing; one reading a capture the wearer closed normally
+      first reads every frame already recorded. The session ends
+      `interrupted` if the capture was still open, or if a frame recorded
+      by the stop was never observed (see `main`). Either way it still runs
+      the final solve -- only a hard stop skips it -- and writes its final
+      build. A builder
+      already finalizing carries on: finalization is bounded and holds no
+      camera. The time of the FIRST soft request is kept
+      (`soft_requested_at`): frames the camera records after it are not
+      part of the walk.
     * **Hard** -- `SIGBREAK` / `SIGTERM` / `SIGINT`. It means "wrap up
       now": the Tower is shutting down. Any solve child is terminated,
       the session is closed if it is still open, the final build is
@@ -457,6 +463,12 @@ class StopRequest:
         self.source: str | None = None
         self._lock = threading.Lock()
         self._draining_closed_capture = False
+        # When the first SOFT request was recorded: `time.time()` in this
+        # process, the same host wall clock the recorder stamps every frame's
+        # `received_at` with (`CaptureRecorder`, `clock=time.time`). Never
+        # set by a hard request, nor by a soft one after a hard one, which
+        # `request` ignores. See the unobserved-frame guard in `main`.
+        self.soft_requested_at: float | None = None
 
     def install(self, *, watch_stdin: bool = False) -> None:
         if watch_stdin:
@@ -508,7 +520,9 @@ class StopRequest:
         follower = handle.get("follower")
         if (
             follower is not None
-            and follower.end_reason(strict=True) == END_REASON_CAPTURE_STOP
+            # A hard stop that lands during the strict wait ends it at once.
+            and follower.end_reason(strict=True, cancel=self.hard_asked_for)
+            == END_REASON_CAPTURE_STOP
         ):
             # Normal close cannot reconnect. Keep draining even if a later
             # manifest read is transiently unavailable.
@@ -525,6 +539,8 @@ class StopRequest:
             # a hard one already recorded.
             if self.level == self.HARD:
                 return
+            if level == self.SOFT and self.soft_requested_at is None:
+                self.soft_requested_at = time.time()
             self.level = level
             self.source = source
 
@@ -2392,21 +2408,48 @@ def main(argv=None) -> int:
         # failure, by another door. So the follower is asked how many of the
         # frames the capture recorded its journal still holds unread, and
         # any at all -- or an answer it cannot give -- is not a finished
-        # walk. A caught-up follower answers 0 after one stat, and that path
-        # is untouched: same label, same log, nothing new written.
+        # walk. A caught-up follower answers 0 after one stat per capture,
+        # and that path is untouched: same label, same log, nothing new
+        # written.
         #
         # A disconnected backlog is labelled here, NOT drained: draining it
         # would wait out the successor grace with the stop suppressed (the
         # standard review's M16 hung the suite that way).
-        unobserved = follower.unobserved_records() if capture_finished else 0
+        #
+        # EVERY CAPTURE OF THE WALK is asked, not only the one the follower
+        # ended on: a reconnect whose read of the closed predecessor failed
+        # left that capture's tail unread (re-review of 40a4883, HIGH-1).
+        #
+        # ONLY FRAMES RECEIVED AT OR BEFORE THE FIRST SOFT STOP COUNT (lead
+        # decision on the re-review's MED-1). The wearer can leave the screen
+        # while the camera still streams; frames recorded after that Stop are
+        # not part of the walk, and counting them turned a builder that was
+        # caught up when it was told to go into `interrupted` where 44fbd13
+        # said `stop`. The comparison is each journal record's `received_at`
+        # against `StopRequest.soft_requested_at`, both `time.time()` on this
+        # host. That moment is when THIS process recorded the request, up to
+        # `stdin_stop.PIPE_POLL_SECONDS` after the parent closed the pipe on
+        # Windows; frames recorded in that lag are counted, which can only
+        # say `interrupted`. A record that does not say when it arrived is
+        # counted. A hard stop alone (the Tower shutting down mid-walk) and
+        # no stop at all count every record.
+        unobserved = (
+            follower.unobserved_records(
+                received_by=stop_request.soft_requested_at,
+                cancel=stop_request.hard_asked_for,
+            )
+            if capture_finished
+            else 0
+        )
         if capture_finished and unobserved != 0:
             end_reason = END_REASON_INTERRUPTED
             logger.warning(
                 "[Tower][WorldBuilder] capture %s ended (%s), but %s of the frames "
-                "it recorded were never observed by this session (stop requested: "
-                "%s, %s); the session ends as %r, not as a finished walk",
+                "recorded in this walk%s were never observed by this session (stop "
+                "requested: %s, %s); the session ends as %r, not as a finished walk",
                 follower.directory.name, capture_end,
                 "an unknown number" if unobserved is None else unobserved,
+                "" if stop_request.soft_requested_at is None else " before the stop",
                 stop_request.level, stop_request.source, end_reason,
             )
         elif stop_request.asked and not capture_finished:

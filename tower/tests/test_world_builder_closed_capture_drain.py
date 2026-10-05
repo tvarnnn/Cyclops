@@ -843,6 +843,193 @@ def test_a_closed_capture_whose_last_journal_read_failed_is_not_finished(
 
 
 # ---------------------------------------------------------------------------
+# EVERY CAPTURE OF THE WALK IS COUNTED (re-review of 40a4883, HIGH-1).
+#
+# The same failed post-close read, on a capture a reconnect then LEFT. The
+# follower rebinds to the successor anyway, reads all of it, and a guard that
+# asked only the capture it ended on saw nothing unread: 1,305 of 3,697
+# recorded frames stored `stop` / `complete`, with no stop at all. The
+# reviewer reproduced it with a real Windows sharing violation, and so does
+# the last test of this block.
+# ---------------------------------------------------------------------------
+
+
+def _capture_dir(directory, rows, end_reason=None, **extra):
+    directory.mkdir(parents=True)
+    (directory / "frame.jpg").write_bytes(b"synthetic-frame")
+    (directory / "frames.jsonl").write_text(rows, encoding="utf-8")
+    _write_manifest(directory, end_reason, **extra)
+    return directory
+
+
+def _lineage_whose_closing_read_fails(
+    tmp_path, monkeypatch, *, real_lock, soft_after_close=False
+):
+    """A (805 read of 3,197) ends `disconnect`; the one read of A after its
+    close fails; B (500) continues A and closes `stop`."""
+    captures = tmp_path / "captures"
+    first = _capture_dir(captures / ("a" * 32), _journal_rows(805))
+    state = {"armed": False, "failed": 0, "timer": None}
+    if not real_lock:
+        original_read_new = capture_module._JournalTail.read_new
+
+        def read_new(self):
+            if state["armed"]:
+                state["armed"] = False
+                state["failed"] += 1
+                return []
+            return original_read_new(self)
+
+        monkeypatch.setattr(capture_module._JournalTail, "read_new", read_new)
+
+    def on_observe(n, stop):
+        if n == 805:
+            with (first / "frames.jsonl").open("a", encoding="utf-8") as out:
+                out.write(_journal_rows(TOTAL, start=805))
+            _write_manifest(first, "disconnect")
+            state["second"] = _capture_dir(
+                captures / ("b" * 32),
+                _journal_rows(TOTAL + 500, start=TOTAL),
+                continues_capture=first.name,
+            )
+            if real_lock:
+                # Share mode 0 on A's journal from A's close: the follower's
+                # one read after the close meets a sharing violation.
+                state["timer"] = _hold(first / "frames.jsonl", 0.5, "exclusive-open")
+                with pytest.raises(PermissionError):
+                    (first / "frames.jsonl").open("rb")
+            else:
+                state["armed"] = True
+        if n == 805 + 500:
+            _write_manifest(state["second"], "stop", continues_capture=first.name)
+            if soft_after_close:
+                stop.request(StopRequest.SOFT, "test")
+
+    _hook(monkeypatch, on_observe)
+    try:
+        exit_code, session = _run_session(first, tmp_path / "worlds")
+    finally:
+        if state["timer"] is not None:
+            state["timer"].join()
+    return exit_code, session, state
+
+
+@pytest.mark.parametrize(
+    "soft_after_close", [False, True], ids=["no-stop", "soft-after-successor-close"]
+)
+def test_a_predecessor_whose_closing_read_failed_is_not_finished(
+    tmp_path, monkeypatch, caplog, soft_after_close
+):
+    with caplog.at_level(logging.WARNING, logger="tower.world_build_session"):
+        exit_code, session, state = _lineage_whose_closing_read_fails(
+            tmp_path, monkeypatch, real_lock=False, soft_after_close=soft_after_close
+        )
+
+    assert state["failed"] == 1
+    assert exit_code == 0
+    assert session.frames_observed == 805 + 500
+    assert session.end_reason == "interrupted"
+    assert not _labelled_finished(session)
+    # A's 2,392 unread rows, counted from the successor B the follower ended on.
+    assert "2392 of the frames recorded in this walk" in caplog.text
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows sharing semantics")
+def test_a_real_sharing_violation_on_a_predecessor_journal_is_not_finished(
+    tmp_path, monkeypatch
+):
+    exit_code, session, _state = _lineage_whose_closing_read_fails(
+        tmp_path, monkeypatch, real_lock=True
+    )
+
+    assert exit_code == 0
+    assert session.frames_observed == 805 + 500
+    assert session.end_reason == "interrupted"
+    assert not _labelled_finished(session)
+
+
+def test_a_successor_whose_closing_read_failed_is_not_finished(tmp_path, monkeypatch):
+    """The re-review's Q10, which kills its RV-M4: a rebind that left the
+    follower measuring the PREDECESSOR's journal made the successor's unread
+    tail invisible -- HIGH-1's twin on the other side of the reconnect."""
+    captures = tmp_path / "captures"
+    first = _capture_dir(captures / ("a" * 32), _journal_rows(24))
+    state = {"armed": False, "failed": 0}
+    original_read_new = capture_module._JournalTail.read_new
+
+    def read_new(self):
+        if state["armed"]:
+            state["armed"] = False
+            state["failed"] += 1
+            return []
+        return original_read_new(self)
+
+    monkeypatch.setattr(capture_module._JournalTail, "read_new", read_new)
+
+    def on_observe(n, _stop):
+        if n == 24:
+            _write_manifest(first, "disconnect")
+            state["second"] = _capture_dir(
+                captures / ("b" * 32),
+                _journal_rows(48, start=24),
+                continues_capture=first.name,
+            )
+        if n == 48:
+            with (state["second"] / "frames.jsonl").open("a", encoding="utf-8") as out:
+                out.write(_journal_rows(548, start=48))
+            _write_manifest(state["second"], "stop", continues_capture=first.name)
+            state["armed"] = True
+
+    _hook(monkeypatch, on_observe)
+    exit_code, session = _run_session(first, tmp_path / "worlds")
+
+    assert state["failed"] == 1
+    assert exit_code == 0
+    assert session.frames_observed == 48
+    assert session.end_reason == "interrupted"
+    assert not _labelled_finished(session)
+
+
+@pytest.mark.parametrize("stop_level", [None, StopRequest.SOFT], ids=["no-stop", "soft"])
+def test_a_capture_that_recorded_no_frame_has_no_journal_and_is_still_stop(
+    tmp_path, monkeypatch, stop_level
+):
+    """The re-review's Q9, which kills its RV-M1. The recorder writes no
+    `frames.jsonl` until its first frame, so a phone that connected and
+    dropped leaves a closed capture with NO journal. Nothing recorded is
+    unread: a finished, empty walk, on 44fbd13 and here."""
+    capture = tmp_path / "captures" / ("e" * 32)
+    capture.mkdir(parents=True)
+    _write_manifest(capture, "stop")
+    _hook(monkeypatch, install_level=stop_level)
+    exit_code, session = _run_session(capture, tmp_path / "worlds", max_idle_polls="5")
+
+    assert not (capture / "frames.jsonl").exists()
+    assert exit_code == 0
+    assert session.frames_observed == 0
+    assert session.end_reason == "stop"
+
+
+def test_a_journal_that_vanished_after_a_read_cannot_be_measured(tmp_path, monkeypatch):
+    """Re-review LOW-2: a missing journal is "nothing recorded" only while
+    nothing has been read from it. One that disappears after the follower
+    read part of it cannot say what lay past the read position."""
+    directory = _small_closed_capture(tmp_path)
+    _write_manifest(directory, None)
+    follower = CaptureFollower(directory, poll_seconds=0)
+    frames = follower.follow(max_idle_polls=1)
+    for _ in range(4):
+        next(frames)
+    assert follower.unobserved_records() == 7
+    os.replace(directory / "frames.jsonl", tmp_path / "moved.jsonl")
+
+    monkeypatch.setattr(capture_module, "MANIFEST_READ_BUDGET_S", 0.05)
+    assert follower.unobserved_records() is None
+    # A follower that never read anything still answers 0 for no journal.
+    assert CaptureFollower(directory).unobserved_records() == 0
+
+
+# ---------------------------------------------------------------------------
 # What the follower counts as unread.
 # ---------------------------------------------------------------------------
 
@@ -934,10 +1121,12 @@ def test_a_drain_whose_frames_land_with_the_close_is_still_stop(
 def test_a_journal_that_cannot_be_measured_is_not_a_finished_walk(
     recorded_capture, tmp_path, monkeypatch, caplog
 ):
-    """None from the journal is "not shown", never zero."""
+    """None from the journal is "not shown", never zero -- also after the
+    measurement has been retried for its whole budget."""
     _write_manifest(recorded_capture, "stop")
+    monkeypatch.setattr(capture_module, "MANIFEST_READ_BUDGET_S", SHORT_BUDGET_S)
     monkeypatch.setattr(
-        capture_module._JournalTail, "records_not_yet_read", lambda self: None
+        capture_module._JournalTail, "records_not_yet_read", lambda self, **_: None
     )
     _hook(monkeypatch)
     with caplog.at_level(logging.WARNING, logger="tower.world_build_session"):
@@ -962,11 +1151,13 @@ def test_a_follower_that_never_started_measures_from_where_it_would_have(
 # ---------------------------------------------------------------------------
 # NO BIG BANG: caught up at Stop, the path is exactly 44fbd13's.
 #
-# Every order below leaves nothing recorded unread, so the guard answers 0
-# and must change nothing: the same label, the same report keys, the same
-# events, the same log line, and no new one. This test runs unchanged
-# against 44fbd13 (it uses only `main()` and `StopRequest.request`), which
-# is how the A/B was taken; see the fix report.
+# Every order below leaves nothing unread that was recorded by the Stop, so
+# the guard answers 0 and must change nothing: the same label, the same
+# report keys, the same events, the same log line, and no new one. (The
+# `-N-after-stop-` orders leave N frames unread that were recorded AFTER it,
+# which the guard does not count -- the re-review's MED-1.) This test runs
+# unchanged against 44fbd13 and 8ede341 (it uses only `main()` and
+# `StopRequest.request`), which is how the A/B was taken; see the fix report.
 # ---------------------------------------------------------------------------
 
 CAUGHT_UP_FRAMES = 48
@@ -993,6 +1184,18 @@ BASE_REPORT_KEYS = {
             "soft-while-open-then-close", 48, "stop", "after the capture closed (stop)",
             id="soft-while-open-then-close",
         ),
+        # The re-review's MED-1 order: caught up at the soft stop, the camera
+        # goes on recording for a while, and the close lands before the
+        # post-loop read. Frames recorded after the Stop are not part of the
+        # walk (lead decision), so this stays 44fbd13's `stop`.
+        *(
+            pytest.param(
+                f"soft-while-open-{after}-after-stop-then-close", 48, "stop",
+                "after the capture closed (stop)",
+                id=f"soft-while-open-{after}-after-stop-then-close",
+            )
+            for after in (1, 3, 36)
+        ),
         pytest.param("close-then-hard", 48, "stop", None, id="close-then-hard"),
         pytest.param(
             "disconnect-then-soft", 48, "stop", "after the capture closed (disconnect)",
@@ -1016,6 +1219,8 @@ def test_caught_up_stop_orders_are_unchanged_from_the_base(
     )
     _write_manifest(capture, "stop" if order == "closed-before-start-no-stop" else None)
 
+    stopped = {}
+
     def on_observe(n, stop):
         if order == "open-soft" and n == 30:
             stop.request(StopRequest.SOFT, "stdin-closed")
@@ -1024,8 +1229,11 @@ def test_caught_up_stop_orders_are_unchanged_from_the_base(
         if order == "close-then-soft":
             _write_manifest(capture, "stop")
             stop.request(StopRequest.SOFT, "stdin-closed")
-        elif order == "soft-while-open-then-close":
+        elif order.startswith("soft-while-open-"):
             stop.request(StopRequest.SOFT, "stdin-closed")
+            # Read AFTER the request returns, on the clock the recorder
+            # stamps `received_at` with; frames come at 12 fps from here.
+            stopped["at"] = time.time()
         elif order == "close-then-hard":
             _write_manifest(capture, "stop")
             stop.request(StopRequest.HARD, "SIGBREAK")
@@ -1034,13 +1242,30 @@ def test_caught_up_stop_orders_are_unchanged_from_the_base(
             stop.request(StopRequest.SOFT, "stdin-closed")
 
     _hook(monkeypatch, on_observe)
-    if order == "soft-while-open-then-close":
-        # Decided while open; the close lands before the post-loop read,
-        # and nothing was recorded in between.
+    if order.startswith("soft-while-open-"):
+        # Decided while open; the close lands before the post-loop read.
+        # `soft-while-open-then-close` records nothing in between; the
+        # `-N-after-stop-` orders record N more frames first, each received
+        # after the Stop, exactly as a camera still streaming would.
+        after = 0 if order == "soft-while-open-then-close" else int(order.split("-")[3])
         original_bounded = builder_script.StopRequest.bounded
 
         def bounded_then_close(self, frames, **kwargs):
             yield from original_bounded(self, frames, **kwargs)
+            if after:
+                rows = "".join(
+                    json.dumps(
+                        {
+                            "source_seq": CAUGHT_UP_FRAMES + 1 + index,
+                            "received_at": stopped["at"] + (index + 1) / 12,
+                            "relpath": "frame.jpg",
+                        }
+                    )
+                    + "\n"
+                    for index in range(after)
+                )
+                with (capture / "frames.jsonl").open("a", encoding="utf-8") as out:
+                    out.write(rows)
             _write_manifest(capture, "stop")
 
         monkeypatch.setattr(builder_script.StopRequest, "bounded", bounded_then_close)
@@ -1079,6 +1304,212 @@ def test_caught_up_stop_orders_are_unchanged_from_the_base(
     if expected_log is not None:
         assert expected_log in caplog.text
     assert "were never observed" not in caplog.text
+
+
+# ---------------------------------------------------------------------------
+# ONLY WHAT WAS RECORDED BY THE STOP COUNTS (re-review MED-1, lead decision).
+#
+# The guard compares each unread journal record's `received_at` with the
+# builder's `StopRequest.soft_requested_at`. Both are `time.time()` on the
+# Tower host: the recorder's clock when `write_frame` began, and this
+# process's when the first soft request was recorded. A frame received at or
+# before that moment and never observed still makes the walk `interrupted`;
+# one received after it is not part of the walk. A record that cannot say
+# when it arrived is counted. A hard stop alone counts everything.
+# ---------------------------------------------------------------------------
+
+
+def _row(source_seq, received_at, **extra):
+    record = {"source_seq": source_seq, "relpath": "frame.jpg", **extra}
+    if received_at is not None:
+        record["received_at"] = received_at
+    return json.dumps(record) + "\n"
+
+
+def _caught_up_stop_while_open(
+    tmp_path, monkeypatch, *, level, before=lambda now: "", after=lambda at: ""
+):
+    """Caught up at frame 48 of an open capture, `level` stop. `before(now)`
+    is appended just BEFORE the request, so it is recorded before the stop
+    and never read; `after(stopped_at)` once the observe loop has ended,
+    then the recorder's normal close lands before the post-loop read."""
+    capture = tmp_path / "captures" / ("c" * 32)
+    capture.mkdir(parents=True)
+    (capture / "frame.jpg").write_bytes(b"synthetic-frame")
+    journal = capture / "frames.jsonl"
+    journal.write_text(_journal_rows(CAUGHT_UP_FRAMES), encoding="utf-8")
+    _write_manifest(capture, None)
+    stopped = {}
+
+    def on_observe(n, stop):
+        if n != CAUGHT_UP_FRAMES:
+            return
+        with journal.open("a", encoding="utf-8") as out:
+            out.write(before(time.time()))
+        stop.request(level, "test")
+        stopped["at"] = time.time()
+
+    _hook(monkeypatch, on_observe)
+    original_bounded = builder_script.StopRequest.bounded
+
+    def bounded_then_record_then_close(self, frames, **kwargs):
+        yield from original_bounded(self, frames, **kwargs)
+        with journal.open("a", encoding="utf-8") as out:
+            out.write(after(stopped["at"]))
+        _write_manifest(capture, "stop")
+
+    monkeypatch.setattr(
+        builder_script.StopRequest, "bounded", bounded_then_record_then_close
+    )
+    return _run_session(capture, tmp_path / "worlds", max_idle_polls="50")
+
+
+def _three_after(stopped_at):
+    return "".join(_row(49 + i, stopped_at + (i + 1) / 12) for i in range(3))
+
+
+def test_a_frame_recorded_before_the_soft_stop_and_never_read_still_counts(
+    tmp_path, monkeypatch, caplog
+):
+    with caplog.at_level(logging.WARNING, logger="tower.world_build_session"):
+        exit_code, session = _caught_up_stop_while_open(
+            tmp_path, monkeypatch, level=StopRequest.SOFT,
+            before=lambda now: _row(49, now - 0.05),
+            after=lambda at: "".join(_row(50 + i, at + (i + 1) / 12) for i in range(3)),
+        )
+
+    assert exit_code == 0
+    assert session.frames_observed == CAUGHT_UP_FRAMES
+    assert session.end_reason == "interrupted"
+    # One of the four unread: the three received after the Stop do not count.
+    assert "1 of the frames recorded in this walk before the stop" in caplog.text
+
+
+@pytest.mark.parametrize(
+    "odd_row",
+    [
+        pytest.param(lambda: _row(52, None), id="no-received_at"),
+        pytest.param(lambda: _row(52, "soon"), id="received_at-not-a-number"),
+        pytest.param(lambda: '{"source_seq": 52, "received_at": \n', id="unparseable"),
+    ],
+)
+def test_an_unread_record_that_cannot_say_when_it_arrived_counts(
+    tmp_path, monkeypatch, caplog, odd_row
+):
+    with caplog.at_level(logging.WARNING, logger="tower.world_build_session"):
+        exit_code, session = _caught_up_stop_while_open(
+            tmp_path, monkeypatch, level=StopRequest.SOFT,
+            after=lambda at: _three_after(at) + odd_row(),
+        )
+
+    assert exit_code == 0
+    assert session.frames_observed == CAUGHT_UP_FRAMES
+    assert session.end_reason == "interrupted"
+    assert "1 of the frames recorded in this walk before the stop" in caplog.text
+
+
+def test_frames_recorded_after_a_hard_stop_still_count(tmp_path, monkeypatch, caplog):
+    """A hard stop is the Tower shutting down mid-walk, not the wearer's
+    Stop: what the camera went on recording is still the walk, so nothing
+    is excluded (the re-review's design; the lead's decision is for SOFT)."""
+    with caplog.at_level(logging.WARNING, logger="tower.world_build_session"):
+        exit_code, session = _caught_up_stop_while_open(
+            tmp_path, monkeypatch, level=StopRequest.HARD, after=_three_after,
+        )
+
+    assert exit_code == 0
+    assert session.frames_observed == CAUGHT_UP_FRAMES
+    assert session.end_reason == "interrupted"
+    assert "3 of the frames recorded in this walk were never observed" in caplog.text
+
+
+@pytest.mark.parametrize("before_stop", [0, 1], ids=["all-after-the-stop", "one-before-it"])
+def test_the_recorders_own_stamps_decide_what_was_after_the_stop(
+    tmp_path, monkeypatch, caplog, before_stop
+):
+    """The real `CaptureRecorder` stamps `received_at` with its own clock,
+    `time.time()`, so this pins the clock the cutoff is compared on."""
+    recorder = CaptureRecorder(tmp_path / "recordings")
+    capture_id = recorder.start()
+    for index in range(45):
+        assert recorder.write_frame(b"synthetic-frame", source_seq=index + 1)
+    stop_holder = {}
+
+    def on_observe(n, stop):
+        if n != 45:
+            return
+        for index in range(before_stop):
+            assert recorder.write_frame(b"synthetic-frame", source_seq=46 + index)
+        stop.request(StopRequest.SOFT, "test")
+        stop_holder["stop"] = stop
+
+    _hook(monkeypatch, on_observe)
+    original_bounded = builder_script.StopRequest.bounded
+
+    def bounded_then_record_then_close(self, frames, **kwargs):
+        yield from original_bounded(self, frames, **kwargs)
+        # The clock ticks every ~15.6 ms here; a frame in the stop's own tick
+        # would be stamped AT the stop and counted. Record after it.
+        while time.time() <= stop_holder["stop"].soft_requested_at:
+            time.sleep(0.001)
+        for index in range(3):
+            assert recorder.write_frame(b"synthetic-frame", source_seq=50 + index)
+        recorder.stop()
+
+    monkeypatch.setattr(
+        builder_script.StopRequest, "bounded", bounded_then_record_then_close
+    )
+    with caplog.at_level(logging.INFO, logger="tower.world_build_session"):
+        exit_code, session = _run_session(
+            recorder.capture_dir(capture_id), tmp_path / "worlds", max_idle_polls="50"
+        )
+
+    assert recorder.manifest(capture_id)["frames_written"] == 45 + before_stop + 3
+    assert exit_code == 0
+    assert session.frames_observed == 45
+    if before_stop:
+        assert session.end_reason == "interrupted"
+        assert "1 of the frames recorded in this walk before the stop" in caplog.text
+    else:
+        assert session.end_reason == "stop"
+        assert "after the capture closed (stop)" in caplog.text
+        assert "were never observed" not in caplog.text
+
+
+def test_unobserved_records_counts_only_what_was_received_by_the_cutoff(tmp_path):
+    """In hand and past the read position alike; AT the cutoff counts."""
+    directory = _small_closed_capture(tmp_path)  # received_at 0.0 .. 9.0
+    _write_manifest(directory, None)
+    follower = CaptureFollower(directory, poll_seconds=0)
+    frames = follower.follow(max_idle_polls=1)
+    for _ in range(4):
+        next(frames)
+    # In hand: the fourth (3.0) and the six behind it (4.0 .. 9.0).
+    assert follower.unobserved_records() == 7
+    assert follower.unobserved_records(received_by=5.0) == 3
+    assert follower.unobserved_records(received_by=2.0) == 0
+    with (directory / "frames.jsonl").open("a", encoding="utf-8") as out:
+        out.write(_journal_rows(13, start=10))  # 10.0, 11.0, 12.0
+    assert follower.unobserved_records() == 10
+    assert follower.unobserved_records(received_by=11.0) == 7 + 2
+    assert follower.unobserved_records(received_by=9.5) == 7
+
+
+def test_only_the_first_soft_request_sets_the_cutoff():
+    stop = StopRequest()
+    assert stop.soft_requested_at is None
+    stop.request(StopRequest.SOFT, "first")
+    first = stop.soft_requested_at
+    assert first is not None and abs(first - time.time()) < 5
+    time.sleep(0.02)
+    stop.request(StopRequest.SOFT, "again")
+    stop.request(StopRequest.HARD, "SIGBREAK")
+    assert stop.soft_requested_at == first
+
+    hard_first = StopRequest()
+    hard_first.request(StopRequest.HARD, "SIGBREAK")
+    hard_first.request(StopRequest.SOFT, "ignored")
+    assert hard_first.soft_requested_at is None
 
 
 # ---------------------------------------------------------------------------
@@ -1162,6 +1593,89 @@ def test_soft_stop_on_a_directory_without_a_manifest_is_interrupted_not_error(
     assert exit_code == 0
     assert session.frames_observed == 805
     assert session.end_reason == "interrupted"
+
+
+def test_a_hard_stop_during_the_strict_wait_is_honoured_at_once(
+    recorded_capture, tmp_path, monkeypatch
+):
+    """Re-review LOW-3 (its Q6): a soft stop on a normal close meets a
+    manifest unreadable for 10 s, and a hard stop lands 0.2 s into the wait.
+    It used to be held for the whole 2 s budget and the session then ended
+    `error`, exit 1. Now the wait ends with the hard stop."""
+    manifest = recorded_capture / "capture.json"
+    _write_manifest(recorded_capture, None)
+    fault = _unreadable_for(monkeypatch, manifest, 10.0)
+    marks = {}
+
+    def on_observe(n, stop):
+        if n != 805:
+            return
+        _write_manifest(recorded_capture, "stop")
+        fault["arm"]()
+        stop.request(StopRequest.SOFT, "test")
+
+        def hard():
+            time.sleep(0.2)
+            marks["hard"] = time.monotonic()
+            stop.request(StopRequest.HARD, "SIGBREAK")
+
+        threading.Thread(target=hard, daemon=True).start()
+
+    _hook(monkeypatch, on_observe)
+    exit_code, session = _run_session(recorded_capture, tmp_path / "worlds")
+    done = time.monotonic()
+
+    assert fault["failures"] >= 2
+    assert done - marks["hard"] < capture_module.MANIFEST_READ_BUDGET_S / 2
+    assert exit_code == 0
+    assert session.frames_observed == 805
+    assert session.end_reason == "interrupted"
+    assert not _labelled_finished(session)
+
+
+def test_one_failed_journal_stat_after_the_loop_is_measured_again(tmp_path, monkeypatch):
+    """Re-review LOW-1 (its Q7): caught up, 48 of 48, and the guard's one
+    stat of the journal fails once. An unmeasurable journal is measured
+    again within the budget, so a transient fault does not relabel a
+    finished walk `interrupted`."""
+    capture = tmp_path / "captures" / ("h" * 32)
+    capture.mkdir(parents=True)
+    (capture / "frame.jpg").write_bytes(b"synthetic-frame")
+    journal = capture / "frames.jsonl"
+    journal.write_text(_journal_rows(CAUGHT_UP_FRAMES), encoding="utf-8")
+    _write_manifest(capture, None)
+    armed = {"on": False, "hits": 0}
+    path_type = type(journal)
+    original_stat = path_type.stat
+
+    def stat(self, *args, **kwargs):
+        if armed["on"] and self == journal:
+            armed["on"] = False
+            armed["hits"] += 1
+            raise PermissionError("transient")
+        return original_stat(self, *args, **kwargs)
+
+    def on_observe(n, stop):
+        if n == CAUGHT_UP_FRAMES:
+            _write_manifest(capture, "stop")
+            stop.request(StopRequest.SOFT, "test")
+
+    _hook(monkeypatch, on_observe)
+    original_bounded = builder_script.StopRequest.bounded
+
+    def bounded_then_arm(self, frames, **kwargs):
+        yield from original_bounded(self, frames, **kwargs)
+        armed["on"] = True
+
+    monkeypatch.setattr(builder_script.StopRequest, "bounded", bounded_then_arm)
+    monkeypatch.setattr(path_type, "stat", stat)
+    exit_code, session = _run_session(capture, tmp_path / "worlds", max_idle_polls="50")
+    monkeypatch.setattr(path_type, "stat", original_stat)
+
+    assert armed["hits"] == 1
+    assert exit_code == 0
+    assert session.frames_observed == CAUGHT_UP_FRAMES
+    assert session.end_reason == "stop"
 
 
 # ---------------------------------------------------------------------------
