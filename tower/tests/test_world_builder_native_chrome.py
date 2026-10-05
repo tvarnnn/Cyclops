@@ -326,11 +326,14 @@ def test_a_chrome_module_that_fails_serves_the_web_page(session, monkeypatch):
     assert native.status_code == 200 and native.content == web.content
 
 
-def test_the_bridge_is_never_able_to_end_its_script_early(tmp_path, monkeypatch):
+@pytest.mark.parametrize("closing", ["</script>", "</SCRIPT>", "</script >", "</Script/>"])
+def test_the_bridge_is_never_able_to_end_its_script_early(tmp_path, monkeypatch, closing):
+    # an HTML parser ends a script at `</script` in any case, followed by any of
+    # space, `/` or `>`: the guard refuses every form, not only `</script>`
     nc = _nc()
     assert "</script" not in _bridge_source().lower()
     bad = tmp_path / nc.BRIDGE_NAME
-    bad.write_text("const x = '</script>';", encoding="utf-8")
+    bad.write_text(f"const x = '{closing}';", encoding="utf-8")
     monkeypatch.setattr(nc, "bridge_path", lambda: bad)
     with pytest.raises(ValueError):
         nc._bridge_block()
@@ -526,6 +529,8 @@ for (const [id, spec] of Object.entries(MARKUP)){
 }
 const document = {body, getElementById: id => EL[id] || null, createElement: tag => mk(tag)};
 const settle = async (n = 6) => { for (let i = 0; i < n; i++) await new Promise(r => setTimeout(r, 0)); };
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+const VIEW_GAP = 40;          // past the bridge's 34 ms between two views
 const ascii = s => s.replace(/[^\x00-\x7e]/g, c => "\\u" + c.charCodeAt(0).toString(16).padStart(4, "0"));
 """
 
@@ -687,14 +692,14 @@ VIEW = {...VIEW, drawn: true, headingRad: 1.0};
 S.chromeFrame(); await settle();
 const v1 = of("view").length;
 answer("view"); await settle();                                   // the first lands
-VIEW = {...VIEW, headingRad: 1.0005}; S.chromeFrame(); await settle();
+VIEW = {...VIEW, headingRad: 1.0005}; S.chromeFrame(); await settle(); await sleep(VIEW_GAP);
 const vSmall = of("view").length - v1;
-VIEW = {...VIEW, headingRad: 1.2}; S.chromeFrame(); await settle();
+VIEW = {...VIEW, headingRad: 1.2}; S.chromeFrame(); await settle(); await sleep(VIEW_GAP);
 const vBig = of("view").length - v1;
 VIEW = {...VIEW, headingRad: 1.3}; S.chromeFrame(); await settle();
-VIEW = {...VIEW, headingRad: 1.4}; S.chromeFrame(); await settle();
+VIEW = {...VIEW, headingRad: 1.4}; S.chromeFrame(); await settle(); await sleep(VIEW_GAP);
 const vInFlight = of("view").length - v1;
-answer("view"); await settle();
+answer("view"); await settle(); await sleep(VIEW_GAP);
 const vAfter = {n: of("view").length - v1, heading: lastOf("view").headingRad};
 answer("view"); await settle();
 while (pending.state.length){ answer("state"); await settle(); }
@@ -713,15 +718,21 @@ const holdingState = lastOf("state").holding;
 // commands
 answer("await", {v: 1, type: "activate"}); await settle();
 const activated = body.classList.contains("wbnative");
+const bodyClasses = [...body.cls];
 while (pending.state.length){ answer("state"); await settle(); }
 const activeState = lastOf("state").active;
 const awaits1 = of("await").length;
 answer("await", {v: 1, type: "action", name: "best"}); await settle();
 answer("await", {v: 1, type: "action", name: "previous"}); await settle();   // disabled
 answer("await", {v: 1, type: "action", name: "toString"}); await settle();
+answer("await", {v: 1, type: "action", name: "face"}); await settle();
+answer("await", {v: 1, type: "action", name: "next"}); await settle();
+answer("await", {v: 1, type: "action", name: "reset"}); await settle();
 const clicks = {best: EL.bOverview.clicks, previous: EL.bPrev.clicks, face: EL.bBack.clicks,
   next: EL.bNext.clicks, reset: EL.bReset.clicks};
-answer("await", {v: 1, type: "frobnicate"}); await new Promise(r => setTimeout(r, 400));
+answer("await", {v: 1, type: "frobnicate"}); await settle();
+const awaitsAtOnce = of("await").length;          // an unknown reply: not re-polled at once
+await sleep(400);
 const awaits2 = of("await").length;
 while (pending.state.length){ answer("state"); await settle(); }
 answer("await", {v: 1, type: "deactivate"}); await settle();
@@ -735,8 +746,8 @@ const sizes = {};
 for (const m of posts){ const n = Buffer.byteLength(JSON.stringify(m), "utf8");
   sizes[m.type] = Math.max(sizes[m.type] || 0, n); }
 console.log(ascii(JSON.stringify({hello, first, steps, unchanged, inflight1, inflight2, coalesced,
-  vSmall, vBig, vInFlight, vAfter, drawnState, ringState, holdingState, activated, activeState, clicks,
-  awaitsAfterActions: awaits2 - awaits1, deactivated, postsAfterStop: posts.length - afterStop,
+  vSmall, vBig, vInFlight, vAfter, drawnState, ringState, holdingState, activated, bodyClasses,
+  activeState, clicks, awaitsAtOnce: awaitsAtOnce - awaits1, awaitsAfterActions: awaits2 - awaits1, deactivated, postsAfterStop: posts.length - afterStop,
   sizes, LIM})));
 """
 
@@ -798,8 +809,11 @@ def test_the_bridge_under_a_stub_dom(pages, tmp_path, kind):
     assert out["ringState"] == {"shown": True, "lit": [i / 35 for i in range(36)], "sense": -1}
     assert out["holdingState"] is True
     assert out["activated"] is True and out["activeState"] is True
-    assert out["clicks"] == {"best": 1, "previous": 0, "face": 0, "next": 0, "reset": 0}
-    assert out["awaitsAfterActions"] == 4
+    assert out["bodyClasses"] == ["wbnative"]          # activate adds that class, nothing else
+    # each action presses its own button (Table C), a disabled one does nothing
+    assert out["clicks"] == {"best": 1, "previous": 0, "face": 1, "next": 1, "reset": 1}
+    # an unknown reply is ignored and re-polled a quarter of a second later
+    assert out["awaitsAtOnce"] == 6 and out["awaitsAfterActions"] == 7
     d = out["deactivated"]
     assert d["wbnative"] is False and d["active"] is False and d["awaitsPending"] == 0
     assert d["frame"] == "undefined" and d["mo"] == 0 and d["bridge"]["dead"] is True
@@ -838,9 +852,13 @@ await settle();
 answer("await", {v: 1, type: "activate"}); await settle();
 while (pending.state.length){ answer("state"); await settle(); }
 const active = body.classList.contains("wbnative");
-pending.await.shift().rej(new Error("the app is gone")); await settle();
-console.log(JSON.stringify({active, after: body.classList.contains("wbnative"),
-  bridge: S.chromeBridge()}));
+if (WHICH === "state"){ EL.status.textContent = "a change"; await settle(); }
+if (WHICH === "view"){ VIEW = {...VIEW, drawn: true, headingRad: 2.5}; S.chromeFrame(); await settle(); }
+assert.strictEqual(pending[WHICH].length, 1, WHICH + " in flight");
+pending[WHICH].shift().rej(new Error("the app is gone")); await settle();
+const after = body.classList.contains("wbnative"), n = posts.length;
+EL.status.textContent = "after"; await settle();
+console.log(JSON.stringify({active, after, more: posts.length - n, bridge: S.chromeBridge()}));
 """
 
 
@@ -867,9 +885,176 @@ def test_close_stops_and_posts_nothing_more(pages, tmp_path):
     assert out["wbnative"] is True and out["bridge"]["dead"] is True
 
 
-def test_a_failed_reply_puts_the_page_chrome_back(pages, tmp_path):
-    out = _run_node(_program(pages["room"], _REJECTED), tmp_path, "rejected")
+@pytest.mark.parametrize("which", ["await", "state", "view"])
+def test_a_failed_reply_puts_the_page_chrome_back(pages, tmp_path, which):
+    """A rejected reply to any message ends the bridge on the page's OWN chrome
+    (review MED-3): never a page with `wbnative` set and nobody drawing."""
+    out = _run_node(_program(pages["room"], _REJECTED.replace("WHICH", json.dumps(which))),
+                    tmp_path, f"rejected-{which}")
     assert out["active"] is True and out["after"] is False and out["bridge"]["dead"] is True
+    assert out["more"] == 0
+
+
+_DEACTIVATE_FIRST = r"""
+await settle();
+while (pending.state.length){ answer("state"); await settle(); }   // the first state lands
+const before = of("state").length;
+answer("await", {v: 1, type: "deactivate"}); await settle();      // no activate was ever sent
+while (pending.state.length){ answer("state"); await settle(); }
+await sleep(300);
+console.log(JSON.stringify({after: of("state").slice(before).map(s => s.active),
+  wbnative: body.classList.contains("wbnative"), bridge: S.chromeBridge()}));
+"""
+
+
+def test_deactivate_before_activate_is_still_confirmed(pages, tmp_path):
+    """Review MED-1. A phone that gives up before it activated (an invalid first
+    `state`, its 5 s timeout) answers with `deactivate` and waits for the
+    `active:false` report -- which must come though nothing changed."""
+    out = _run_node(_program(pages["room"], _DEACTIVATE_FIRST), tmp_path, "deactivate-first")
+    assert out["after"] == [False]
+    assert out["wbnative"] is False and out["bridge"]["dead"] is True
+
+
+_LATE_COMMAND = r"""
+await settle();
+while (pending.state.length){ answer("state"); await settle(); }
+EL.status.textContent = "changed"; await settle();                       // a state in flight
+pending.state.shift().rej(new Error("invalid state")); await settle();    // the phone ends the bridge
+const n = posts.length;
+answer("await", {v: 1, type: "activate"}); await settle();                // a late reply to the held await
+console.log(JSON.stringify({wbnative: body.classList.contains("wbnative"), more: posts.length - n,
+  bridge: S.chromeBridge()}));
+"""
+
+
+def test_a_reply_after_the_bridge_ended_is_not_obeyed(pages, tmp_path):
+    """Review LOW-2: a late `activate` would hide the page's chrome for good."""
+    out = _run_node(_program(pages["room"], _LATE_COMMAND), tmp_path, "late")
+    assert out["wbnative"] is False and out["more"] == 0 and out["bridge"]["dead"] is True
+
+
+_PAGEHIDE = r"""
+await settle();
+answer("await", {v: 1, type: "activate"}); await settle();
+while (pending.state.length){ answer("state"); await settle(); }
+listeners.pagehide({persisted: false}); await settle();
+const n = posts.length;
+EL.status.textContent = "after"; if (S.chromeFrame) S.chromeFrame(); await sleep(1200);
+console.log(JSON.stringify({more: posts.length - n, frame: typeof S.chromeFrame, mo: moCallbacks.length,
+  bridge: S.chromeBridge()}));
+"""
+
+
+def test_pagehide_stops_the_bridge(pages, tmp_path):
+    out = _run_node(_program(pages["room"], _PAGEHIDE), tmp_path, "pagehide")
+    assert out["more"] == 0 and out["frame"] == "undefined" and out["mo"] == 0
+    assert out["bridge"]["dead"] is True
+
+
+_FIELDS = r"""
+await settle();
+while (pending.state.length){ answer("state"); await settle(); }
+const got = {};
+async function step(name, f){ f(); await settle(); while (pending.state.length){ answer("state"); await settle(); }
+  got[name] = lastOf("state"); }
+// the page clears `#msg.on` and keeps the words: no message on the phone
+await step("msgOn", () => { EL.msg.textContent = "The graphics context was taken away"; EL.msg.classList.add("on"); });
+await step("msgOff", () => { EL.msg.classList.remove("on"); });
+// a hint shown with no opacity of its own is shown at the page's 0.9
+await step("hint", () => { EL.hint.textContent = "Movement stops here"; EL.hint.classList.add("on"); });
+// `drawn` reaches the phone from the frame alone: no DOM change, nothing else moved
+S.chromeFrame(); await settle(); while (pending.state.length){ answer("state"); await settle(); }
+while (pending.view.length){ answer("view"); await settle(); }
+const beforeDrawn = lastOf("state").drawn, nStates = of("state").length;
+VIEW = {...VIEW, drawn: true}; S.chromeFrame(); await settle();
+while (pending.state.length){ answer("state"); await settle(); }
+got.drawn = {before: beforeDrawn, posted: of("state").length - nStates, now: lastOf("state").drawn};
+// a view the page could not stand behind is not posted
+await sleep(VIEW_GAP); while (pending.view.length){ answer("view"); await settle(); }
+const nv = of("view").length, bad = [];
+for (const v of [{headingRad: NaN, halfFovRad: 0.5}, {headingRad: Infinity, halfFovRad: 0.5},
+                 {headingRad: 3, halfFovRad: Math.PI / 2}, {headingRad: 3, halfFovRad: 2},
+                 {headingRad: 3, halfFovRad: 0}]){
+  VIEW = {...VIEW, ...v}; S.chromeFrame(); await settle(); await sleep(VIEW_GAP);
+  while (pending.view.length){ answer("view"); await settle(); }
+  bad.push(of("view").length - nv);
+}
+got.badViews = bad;
+console.log(ascii(JSON.stringify(got)));
+"""
+
+
+def test_the_reported_fields_follow_the_page(pages, tmp_path):
+    """Review LOW-4 / LOW-5 (R3, R14, R16, R1)."""
+    out = _run_node(_program(pages["room"], _FIELDS), tmp_path, "fields")
+    assert out["msgOn"]["message"] == "The graphics context was taken away"
+    assert out["msgOff"]["message"] is None
+    assert out["hint"]["hint"] == {"text": "Movement stops here", "opacity": 0.9}
+    assert out["drawn"] == {"before": False, "posted": 1, "now": True}
+    assert out["badViews"] == [0, 0, 0, 0, 0]
+
+
+# each message stamped with the time it was posted
+_STAMP = "const _post = handler.postMessage; handler.postMessage = msg => _post({...msg, _t: performance.now()});"
+
+_RATE = r"""
+await settle();
+while (pending.state.length){ answer("state"); await settle(); }
+VIEW = {...VIEW, drawn: true};
+// a drag at about 120 frames a second for a second, every reply at once
+const t0 = performance.now(); let i = 0;
+while (performance.now() - t0 < 1000){
+  VIEW = {...VIEW, headingRad: 0.01 * ++i}; S.chromeFrame();
+  const next = performance.now() + 8.3;       // the next frame, 8.3 ms on (setImmediate: no timer floor)
+  while (performance.now() < next){
+    await new Promise(r => setImmediate(r));
+    while (pending.view.length) answer("view");
+    while (pending.state.length) answer("state");
+  }
+}
+const ms = performance.now() - t0, frames = i, views = of("view").length;
+// the finger lifts: the last heading still arrives, after the gap
+await sleep(VIEW_GAP); await settle();
+while (pending.view.length){ answer("view"); await settle(); }
+console.log(JSON.stringify({ms, frames, views, lastAfter: lastOf("view").headingRad, last: 0.01 * i,
+  times: of("view").map(v => v._t)}));
+"""
+
+
+def test_view_keeps_under_thirty_a_second_at_any_frame_rate(pages, tmp_path):
+    """Review LOW-6: at 120 Hz with instant replies, `view` would be 120 a second;
+    spec §6 gates the bridge at 70 messages a second. The heading the drag ends
+    on still arrives."""
+    out = _run_node(_program(pages["room"], _RATE, prelude=_STAMP), tmp_path, "rate")
+    assert out["frames"] >= 100, out                           # the drag really ran fast
+    assert out["views"] <= out["ms"] / 34 + 2, out
+    gaps = [b - a for a, b in zip(out["times"], out["times"][1:])]
+    assert min(gaps) >= 33, gaps
+    assert out["lastAfter"] == pytest.approx(out["last"])
+
+
+_UNITS = r"""
+const pair = "😀";
+const clamped = [WB.clamp("a" + pair, 2), WB.clamp("ab" + pair, 3), WB.clamp(pair + "b", 2)];
+// a caption with nine titled sections: eight reach the phone
+const cap = document.createElement("div");
+const head = document.createElement("b"); head.textContent = "Head";
+const more = document.createElement("div"); more.cls.add("more");
+for (let i = 0; i < 9; i++){ const t = document.createElement("em"); t.textContent = "T" + i;
+  const b = document.createElement("span"); b.textContent = "B" + i; more.append(t, b); }
+cap.append(head, more);
+const c = WB.captionOf(cap);
+console.log(JSON.stringify({clamped: clamped.map(x => Array.from(x, ch => ch.codePointAt(0))),
+  sections: c.sections.map(x => x.title)}));
+"""
+
+
+def test_strings_are_never_cut_inside_a_pair_and_sections_are_capped(pages, tmp_path):
+    """Review LOW-5 (R2, R13)."""
+    out = _run_node(_program(pages["room"], _UNITS), tmp_path, "units")
+    assert out["clamped"] == [[ord("a")], [ord("a"), ord("b")], [0x1F600]]
+    assert out["sections"] == [f"T{i}" for i in range(8)]
 
 
 _MISSING_HOOKS = r"""
@@ -1112,3 +1297,183 @@ def test_the_bridge_in_a_browser(pages, session, tmp_path):
 def _room_web(session):
     _k, world, path, params, _kind, env = next(r for r in F.requests() if r[0] == "room/app")
     return world, path, params, env, "1"
+
+
+# ---------------------------------------------------------------------------
+# N14b -- the hooks against a page that really draws (review MED-2)
+# ---------------------------------------------------------------------------
+#
+# N14 loads the page from a file, where it can fetch nothing and so never draws:
+# it can say that the hooks exist, not that they are right. Here the fixture room
+# is served over HTTP (`transport=tower`, so the page fetches from its own
+# origin), the page draws its first frame and builds its support field, and a
+# handler shim records every message while it drives the page through the same
+# verification hooks a capture uses. Each hook value is checked against what the
+# page itself draws with: `S.camera()` for the field of view and the ring's
+# direction, the frame for `view`, a real WebGL context loss for `restoring`.
+
+_DRAW_SHIM = r"""<script>
+(function(){
+"use strict";
+const out = {posts: [], err: [], marks: {}};
+const waits = [];
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+window.webkit = {messageHandlers: {wbChromeV1: {postMessage(msg){
+  const m = JSON.parse(JSON.stringify(msg));
+  m._t = performance.now();
+  // the page's own hook at the moment the FIRST state is posted (before any frame)
+  if (m.type === "state" && !out.firstStateHook){
+    try { out.firstStateHook = window.__wbAppearance.chromeView(); } catch (e){ out.err.push(String(e)); }
+  }
+  out.posts.push(m);
+  if (m.type === "hello") return Promise.resolve({v: 1, type: "welcome", protocol: 1, nonce: "probe"});
+  if (m.type === "await") return new Promise(res => waits.push(res));
+  return new Promise(res => setTimeout(() => res(null), 2));
+}}}};
+const report = () => fetch("/__report", {method: "POST", body: JSON.stringify(out)});
+const count = t => out.posts.filter(p => p.type === t).length;
+addEventListener("load", async () => {
+  try {
+    const S = window.__wbAppearance;
+    for (let i = 0; i < 2400; i++){
+      const v = S.chromeView();
+      if (v.drawn && v.lit && S.navReady()) break;
+      await sleep(50);
+    }
+    out.marks.ready = S.chromeView();
+    if (waits.length) waits.shift()({v: 1, type: "activate"});
+    await sleep(100);
+    // the ring's direction: the camera at two headings, pitch level
+    const p0 = S.pose();
+    S.setPose({p: p0.p, yaw: p0.yaw, pitch: 0});
+    out.cam0 = S.camera(); out.hook0 = S.chromeView();
+    S.setPose({p: p0.p, yaw: p0.yaw + 0.05, pitch: 0});
+    out.cam1 = S.camera(); out.hook1 = S.chromeView();
+    await sleep(100);
+    // a scripted turn, frame by frame: every drawn frame calls the bridge
+    const before = count("view");
+    for (let i = 1; i <= 12; i++){ S.setPose({p: p0.p, yaw: p0.yaw + 0.15 * i, pitch: 0}); await sleep(50); }
+    await sleep(200);
+    out.marks.viewsInTurn = count("view") - before;
+    out.marks.turnEnd = {yaw: S.pose().yaw, hook: S.chromeView(), cam: S.camera(),
+                         view: out.posts.filter(p => p.type === "view").pop()};
+    // a real context loss: the page's own `restoring`
+    const gl = document.querySelector("canvas").getContext("webgl2");
+    gl.getExtension("WEBGL_lose_context").loseContext();
+    await sleep(300);
+    out.marks.lost = S.chromeView();
+  } catch (e){ out.err.push(String(e && e.stack || e)); }
+  out.bridge = window.__wbAppearance.chromeBridge();
+  report();
+});
+})();
+</script>"""
+
+
+def _serve_drawing_page(app, page: str):
+    """`app` on a free local port in a thread, plus `/__probe` (the page) and
+    `/__report` (the shim's results). Returns (url, reports, reported, stop)."""
+    import socket
+    import threading
+
+    import uvicorn
+    from fastapi.responses import HTMLResponse, JSONResponse
+
+    reports: list = []
+    got = threading.Event()
+    csp = re.search(r'<meta http-equiv="Content-Security-Policy" content="([^"]*)">', page).group(1)
+
+    @app.get("/__probe")
+    def probe():
+        return HTMLResponse(page, headers={"Content-Security-Policy": html_lib.unescape(csp),
+                                           "Cache-Control": "no-store"})
+
+    async def report(request):
+        reports.append(json.loads(await request.body()))
+        got.set()
+        return JSONResponse({})
+
+    app.add_route("/__report", report, methods=["POST"])
+
+    sock = socket.socket()
+    sock.bind(("127.0.0.1", 0))
+    port = sock.getsockname()[1]
+    server = uvicorn.Server(uvicorn.Config(app, log_level="warning", lifespan="off"))
+    thread = threading.Thread(target=server.run, kwargs={"sockets": [sock]}, daemon=True)
+    thread.start()
+
+    def stop():
+        server.should_exit = True
+        thread.join(timeout=10)
+        sock.close()
+
+    return f"http://127.0.0.1:{port}/__probe", reports, got, stop
+
+
+def _sense_of(cam0: dict, cam1: dict) -> int:
+    """The screen direction of a rising yaw, from the camera alone: the move of the
+    view direction, against the camera's right (`forward x up`)."""
+    f = [cam0["at"][i] - cam0["eye"][i] for i in range(3)]
+    g = [cam1["at"][i] - cam1["eye"][i] for i in range(3)]
+    up = cam0["up"]
+    right = [f[1] * up[2] - f[2] * up[1], f[2] * up[0] - f[0] * up[2], f[0] * up[1] - f[1] * up[0]]
+    return 1 if sum((g[i] - f[i]) * right[i] for i in range(3)) >= 0 else -1
+
+
+def _half_fov(cam: dict) -> float:
+    import math
+
+    return math.atan(math.tan(cam["fy"] / 2) * cam["aspect"])
+
+
+def test_the_hooks_on_a_page_that_draws(session, tmp_path):
+    """N14b (review MED-2): the per-frame call, `drawn`, the ring's `sense`, the
+    field of view and `restoring`, each against the page's own drawing."""
+    from tests.test_world_builder_appearance import _app
+
+    chrome = _chrome_binary()
+    _k, world, path, params, _kind, env = next(r for r in F.requests() if r[0] == "room/tower")
+    page = session.get(world, path, F.with_chrome(params, "native"), env, "1").text
+    assert _nc().ECHO in page
+    page = page.replace("<title>", _DRAW_SHIM + "<title>", 1)
+    url, reports, got, stop = _serve_drawing_page(_app(session.roots[world]), page)
+    proc = subprocess.Popen(
+        [chrome, "--headless=new", "--disable-gpu", "--enable-unsafe-swiftshader", "--use-gl=angle",
+         "--use-angle=swiftshader", "--no-first-run", "--no-default-browser-check",
+         "--disable-extensions", f"--user-data-dir={tmp_path / 'profile'}", "--window-size=390,844",
+         url], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    try:
+        assert got.wait(timeout=240), "the page reported nothing"
+    finally:
+        proc.kill()
+        proc.wait(timeout=30)
+        stop()
+    out = reports[0]
+    assert not out["err"], out["err"]
+    posts = out["posts"]
+    states = [p for p in posts if p["type"] == "state"]
+    ready = out["marks"]["ready"]
+    assert ready["drawn"] is True and ready["lit"] is not None, "the page never drew, or has no field"
+    # `drawn`: false when the bridge starts (no frame yet), true once a frame drew;
+    # the chrome never arrives before the picture
+    assert out["firstStateHook"]["drawn"] is False and states[0]["drawn"] is False
+    assert any(s["drawn"] for s in states)
+    # the per-frame call: a scripted turn posts `view`s, and the last one is the
+    # heading the page ended on
+    assert out["marks"]["viewsInTurn"] >= 2, out["marks"]
+    end = out["marks"]["turnEnd"]
+    assert end["view"]["headingRad"] == pytest.approx(end["yaw"], abs=1e-9)
+    assert end["hook"]["headingRad"] == pytest.approx(end["yaw"], abs=1e-9)
+    # the field of view is the horizontal half-angle the ring's wedge draws
+    for hook, cam in ((out["hook0"], out["cam0"]), (end["hook"], end["cam"])):
+        assert hook["halfFovRad"] == pytest.approx(_half_fov(cam), abs=1e-9)
+    assert end["view"]["halfFovRad"] == pytest.approx(_half_fov(end["cam"]), abs=1e-9)
+    assert abs(_half_fov(end["cam"]) - end["cam"]["fy"] / 2) > 0.01   # portrait: they differ
+    # the ring's direction is the camera's own
+    sense = _sense_of(out["cam0"], out["cam1"])
+    assert out["hook0"]["sense"] == sense and out["hook1"]["sense"] == sense
+    ringed = [s for s in states if s["ring"]["lit"] is not None]
+    assert ringed and all(s["ring"]["sense"] == sense for s in ringed)
+    # a real context loss is `restoring`, in the hook and in a state
+    assert out["marks"]["lost"]["restoring"] is True
+    assert any(s["restoring"] for s in states) and not states[0]["restoring"]

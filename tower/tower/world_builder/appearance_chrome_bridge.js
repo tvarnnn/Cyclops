@@ -38,6 +38,9 @@ const WBCHROME = (() => {
   const RING_CENTER = "YOU";              // g.fillText("YOU", c, c);
   const ABOUT_OPEN = "About", ABOUT_CLOSE = "Less";
   const VIEW_EPS = 1e-3;
+  // `view` at most every 34 ms (under 30 a second) at any frame rate, so the
+  // bridge stays inside spec §6's 70 messages a second on a 120 Hz screen
+  const VIEW_MIN_MS = 34;
 
   function clamp(text, n){
     if (text === null || text === undefined) return null;
@@ -206,7 +209,8 @@ const WBCHROME = (() => {
     const pageId = randomId();
     let seq = 0, nonce = null, dead = false, final = false, awaiting = false;
     let last = null, stateInFlight = false, dirty = false;
-    let lastView = null, latestView = null, viewInFlight = false;
+    let lastView = null, latestView = null, viewInFlight = false, viewTimer = null, lastViewAt = -Infinity;
+    const now = () => (typeof performance !== "undefined" && performance.now) ? performance.now() : Date.now();
     let frameKey = null, observer = null, scheduled = false, sweep = null;
     const posted = {hello: 0, state: 0, view: 0, await: 0};
 
@@ -227,6 +231,7 @@ const WBCHROME = (() => {
       dead = true;
       if (observer){ try { observer.disconnect(); } catch (_){ /* gone */ } observer = null; }
       if (sweep !== null){ clearInterval(sweep); sweep = null; }
+      if (viewTimer !== null){ clearTimeout(viewTimer); viewTimer = null; }
       if (S && S.chromeFrame === onFrame) S.chromeFrame = undefined;
       if (restore) doc.body.classList.remove("wbnative");
     }
@@ -244,9 +249,17 @@ const WBCHROME = (() => {
       stateInFlight = false;
       if (dirty){ dirty = false; flush(); }
     }
+    /* At most one `view` in flight, and at most one per VIEW_MIN_MS whatever the
+       display's frame rate (a 120 Hz screen draws 120 frames a second). A move
+       inside the gap is held, not dropped: the timer posts the latest heading. */
     function postView(){
-      if (dead || viewInFlight || !viewChanged(lastView, latestView)) return;
-      lastView = latestView; viewInFlight = true;
+      if (dead || viewInFlight || viewTimer !== null || !viewChanged(lastView, latestView)) return;
+      const wait = lastViewAt + VIEW_MIN_MS - now();
+      if (wait > 0){
+        viewTimer = setTimeout(() => { viewTimer = null; postView(); }, wait);
+        return;
+      }
+      lastView = latestView; viewInFlight = true; lastViewAt = now();
       post("view", lastView).then(() => { viewInFlight = false; postView(); },
                                   () => { viewInFlight = false; stop(true); });
     }
@@ -294,10 +307,14 @@ const WBCHROME = (() => {
         return true;
       }
       if (type === "deactivate"){
-        // the page's chrome back, `active:false` reported, then nothing more
+        // the page's chrome back, `active:false` reported, then nothing more.
+        // ALWAYS reported: a phone that deactivates before it ever activated
+        // (an invalid first `state`, its timeout) waits for this confirmation,
+        // and would otherwise reload the page for want of it.
         stop(false);
         final = true;
         doc.body.classList.remove("wbnative");
+        last = null;
         flush();
         return true;
       }
@@ -309,6 +326,10 @@ const WBCHROME = (() => {
       awaiting = true;
       post("await").then(reply => {
         awaiting = false;
+        // a reply that lands after the bridge has ended (a failed `state` or
+        // `view` stopped it) is not obeyed: a late `activate` would hide the
+        // page's chrome with no bridge left to draw it
+        if (dead) return;
         let known = false;
         try { known = command(reply); } catch (_){ /* a command never throws into the page */ }
         if (dead) return;
@@ -344,7 +365,7 @@ const WBCHROME = (() => {
     return {pageId};
   }
 
-  return {PROTOCOL, HANDLER, ACTIONS, LIMITS, RING_CENTER, ABOUT_OPEN, ABOUT_CLOSE,
+  return {PROTOCOL, HANDLER, ACTIONS, LIMITS, RING_CENTER, ABOUT_OPEN, ABOUT_CLOSE, VIEW_MIN_MS,
           clamp, labels, hello, snapshot, sameState, viewChanged, actionTarget, captionOf,
           domReader, start};
 })();
