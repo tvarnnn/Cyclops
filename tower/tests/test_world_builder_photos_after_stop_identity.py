@@ -159,6 +159,22 @@ class _Norm:
 # ---------------------------------------------------------------------------
 
 
+def _doc(v):
+    """A manifest, compactly but completely: the SHA-256 of its normalised
+    JSON (any byte of any field moves it), plus its provenance and counts in
+    the clear so a failure says what moved."""
+    if not isinstance(v, dict) or "appearance_provenance" not in v:
+        return v
+    return {"sha256": _sha(json.dumps(v, sort_keys=True).encode("utf-8")),
+            "appearance_provenance": v.get("appearance_provenance"),
+            "currency": v.get("currency"),
+            "imagery_source": v.get("imagery_source"),
+            "privacy_safe": v.get("privacy_safe"),
+            "keyframes": len(v.get("keyframes") or []),
+            "chunks": len(v.get("chunks") or []),
+            "keys": sorted(v)}
+
+
 def _client(root):
     from fastapi.testclient import TestClient
 
@@ -170,7 +186,7 @@ def _resp(r, norm, body="json"):
            "headers": {h: norm.text(r.headers[h]) for h in HEADERS if h in r.headers}}
     if body == "json":
         try:
-            out["body"] = norm.value(r.json())
+            out["body"] = _doc(norm.value(r.json()))
         except ValueError:
             out["body_sha256"] = _sha(r.content)
     else:
@@ -196,7 +212,8 @@ def _observe(w, norm, redactions):
     man = w.manifest()
     norm.learn(man)
     client = _client(w.root)
-    out = {"redactions": redactions, "manifest_on_disk": norm.value(man), "files": _files(w, norm)}
+    out = {"redactions": redactions, "manifest_on_disk": _doc(norm.value(man)),
+           "files": _files(w, norm)}
     base = f"/worlds/{WORLD}/appearance/{SESSION}"
     out["revision_viewer"] = _resp(client.get(
         f"/worlds/{WORLD}/render/revision", params={"session_id": SESSION, "viewer": VIEWER}),
@@ -243,7 +260,7 @@ def _observe_area(w, area, norm):
     client = _client(w.root)
     base = f"/worlds/{WORLD}/areas/{SESSION}/{area}"
     root = AP.appearance_dir(view, WORLD, SESSION)
-    out = {"manifest_on_disk": norm.value(man),
+    out = {"manifest_on_disk": _doc(norm.value(man)),
            "files": ({norm.text(p.name): _sha(p.read_bytes()) for p in sorted(root.iterdir())
                       if p.is_file() and p.name.endswith(".bin")} if root.is_dir() else {}),
            "revision": _resp(client.get(f"{base}/render/revision"), norm),
@@ -548,4 +565,4 @@ def test_the_golden_file_itself_is_the_recorded_bytes():
     assert _sha(data) == GOLDEN_SHA256, _sha(data)
 
 
-GOLDEN_SHA256 = "463a478bce4938733837816f858ecd92c8ec3ec664e5ee4e4fa42c480f45985f"
+GOLDEN_SHA256 = "3d22bdb1ff42bb313aa1fba92ebe3d6512d8fc89c95a363dba65d3867412d78c"
