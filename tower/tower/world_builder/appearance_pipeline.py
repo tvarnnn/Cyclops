@@ -1260,8 +1260,8 @@ def _carry_over_metadata_whole(store, world_id: str, session_id: str, manifest: 
       switch", which is the token a walk build on the capture's own keyframes
       also records -- so without this an unreadable record looked like "the
       same set" and the walk build was served;
-    - a re-redaction pointer, if one is on disk, reads as a JSON object (an
-      unreadable one also reads as "no switch");
+    - NO re-redaction pointer is on disk at all: a switch, its revert, and a
+      pointer the store does not honour all refuse (fix round 2);
     - the session's label NOW is on the allowlist: the ordinary Stop writes
       the real, trusted label. A Stop to a label off the allowlist (or to
       none at all) is not newly served -- it is refused exactly as before;
@@ -1276,9 +1276,13 @@ def _carry_over_metadata_whole(store, world_id: str, session_id: str, manifest: 
     except Exception:  # noqa: BLE001 -- unreadable never widens the gate
         return False
     try:
-        pointer = store.redaction_set_path(world_id, session_id)
-        if pointer.exists() and not isinstance(
-                json.loads(pointer.read_text(encoding="utf-8")), dict):
+        # ANY re-redaction pointer on disk (fix round 2, Codex MED-1/MED-2):
+        # the store reads a non-whole one -- `{}`, a missing directory or
+        # label, a path outside the session, a stale stored label -- and an
+        # explicit revert all as "no switch", which is the walk build's own
+        # token. A switch, or its revert, is a statement about the keyframes
+        # made AFTER the walk build; the carry-over never speaks past it.
+        if store.redaction_set_path(world_id, session_id).exists():
             return False
     except Exception:  # noqa: BLE001
         return False
