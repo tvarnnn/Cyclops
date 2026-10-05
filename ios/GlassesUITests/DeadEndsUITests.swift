@@ -698,7 +698,8 @@ final class DeadEndsUITests: XCTestCase {
     /// every stream at once with "Critical error, the stream should end",
     /// which the app shows as a glasses alert (U0.8 F15). Four minutes at
     /// 6 fps outlasts any capture here; each frame is a different grey.
-    private static let cameraFeed: Result<URL, FeedProblem> = {
+    /// Internal so `CaptureHealthUITests` streams the same clip.
+    static let cameraFeed: Result<URL, FeedProblem> = {
         do { return .success(try makeCameraFeed(seconds: 240, fps: 6)) } catch let problem as FeedProblem {
             return .failure(problem)
         } catch {

@@ -93,6 +93,11 @@ struct WorldBuilderWorkspaceView: View {
     /// `stop` on disappear comes from the same object that sent `start`.
     @StateObject private var session: WorldBuilderSessionController
 
+    #if DEBUG
+    /// The operator's capture-health panel (U2-D0), fed by the same client.
+    @StateObject private var health: CaptureHealthModel
+    #endif
+
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     /// Connect and Settings, from the root (U0.8 F03, D1). `nil` in previews.
@@ -112,6 +117,9 @@ struct WorldBuilderWorkspaceView: View {
         self.tower = tower
         _world = StateObject(wrappedValue: WorldBuilderViewModel(client: client))
         _session = StateObject(wrappedValue: session ?? WorldBuilderSessionController())
+        #if DEBUG
+        _health = StateObject(wrappedValue: CaptureHealthModel(client: client))
+        #endif
     }
 
     /// Connectivity reaches the view model as a value, never as an object.
@@ -167,6 +175,12 @@ struct WorldBuilderWorkspaceView: View {
 
             #if DEBUG
             captureControl
+            // Below the capture control, so it never pushes Stop down, and
+            // above the session line; only while a World Builder session is
+            // active or a capture runs (U2-D0).
+            if showsCaptureHealth {
+                CaptureHealthView(model: health, isLinked: isTowerReachable, isCapturing: isRunning)
+            }
             #else
             HelperText("Capture is not available in this build.")
             #endif
@@ -415,6 +429,10 @@ private extension WorldBuilderWorkspaceView {
     /// alone left a window in which a session existed but the control still
     /// read "Start", and a tap in it did nothing observable.
     var isRunning: Bool { glasses.isCaptureEngaged }
+
+    /// The capture-health panel is for a walk: a World Builder session the
+    /// Tower honoured, or a capture running on this phone.
+    var showsCaptureHealth: Bool { session.status == .active || isRunning }
 
     /// What the wearer currently sees.
     @ViewBuilder
