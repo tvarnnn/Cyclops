@@ -213,7 +213,9 @@ def test_t4_t6_processing_only_on_the_proved_cell_and_row_equals_panel(base_worl
         for lock in LOCKS:
             for phase in PHASES:
                 cell = f"{record}_{lock}_{phase}"
-                root, w, s = _make_cell(base_world, processes, tmp_path / cell, record, lock, phase)
+                # short directory names: Windows MAX_PATH (the world tree adds ~150 characters)
+                root, w, s = _make_cell(base_world, processes, tmp_path / f"c{len(seen)}",
+                                        record, lock, phase)
                 _off(monkeypatch)
                 off = _status(root, w, s)
                 off_row = _row(root, w, s)
@@ -788,7 +790,8 @@ def test_t11_surface_and_record_basis(base_world, processes, tmp_path):
     expected = {"open": "walk", "pending": "walk", "complete-solved": "final",
                 "complete-skipped": "walk", "interrupted": "walk", "closed-no-finalization": None}
     for record, want in expected.items():
-        root, w, s = _make_cell(base_world, processes, tmp_path / record, record, "none", "absent")
+        root, w, s = _make_cell(base_world, processes, tmp_path / f"r{list(expected).index(record)}",
+                                record, "none", "absent")
         store = WorldStore(root)
         assert served_basis(store, w, s, "sparse") == want, record
         assert served_basis(store, w, s, "dense") == want, record

@@ -249,7 +249,8 @@ def test_every_payload_is_5c0dc12s_with_both_switches_off(base_world, processes,
     norm = _Norm(processes)
     for record, lock, phase in itertools.product(RECORDS, LOCKS, PHASES):
         cell = f"{record}|{lock}|{phase}"
-        root, world_id, session_id = _make_cell(base_world, processes, tmp_path / cell.replace("|", "_"),
+        # A short directory per cell: Windows MAX_PATH (the world tree adds ~150 characters).
+        root, world_id, session_id = _make_cell(base_world, processes, tmp_path / f"c{len(observed)}",
                                                 record, lock, phase)
         raw = {}
         for spelling in OFF_SPELLINGS:
