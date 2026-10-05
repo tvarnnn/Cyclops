@@ -2411,6 +2411,15 @@ def test_a_lock_that_cannot_be_made_is_skipped_never_raised(tmp_path, monkeypatc
     assert not GS.session_writer_lock_held(root)
 
 
+def _release_later(release, seconds=10.0):
+    import threading
+
+    timer = threading.Timer(seconds, lambda: release.write_text("go"))
+    timer.daemon = True
+    timer.start()
+    return timer
+
+
 def test_a_stop_while_waiting_for_the_lock_ends_the_run_before_it_starts(tmp_path, monkeypatch):
     """ADV LOW-2. Another writer holds the session; a stop asked while this run waits ends it
     at the next poll, before anything ran: a final solve says it did not solve; a re-gate wrote
@@ -2432,6 +2441,7 @@ def test_a_stop_while_waiting_for_the_lock_ends_the_run_before_it_starts(tmp_pat
         return len(asked) >= 2
 
     holder, release = _hold_in_another_process(tmp_path, root)
+    safety = _release_later(release)                    # a wait deaf to the stop fails, never hangs
     try:
         started = time.monotonic()
         summary = GS.solve(store, "w7", "s7", final=True, should_stop=stop_on_second_ask)
@@ -2445,6 +2455,7 @@ def test_a_stop_while_waiting_for_the_lock_ends_the_run_before_it_starts(tmp_pat
         assert _regate_wrote_nothing(result)
         assert ran == [] and holder.poll() is None
     finally:
+        safety.cancel()
         release.write_text("go")
         holder.wait(10)
     assert GS.solve(store, "w7", "s7", final=True, should_stop=lambda: True) == {"solved": True}
@@ -2463,9 +2474,11 @@ def test_a_stopped_regate_at_the_lock_keeps_the_published_rows_sentence(tmp_path
     published = types.SimpleNamespace(gate=gate, transients={"state": "applied"})
     monkeypatch.setattr(GS, "load_solution", lambda *args: published)
     holder, release = _hold_in_another_process(tmp_path, root)
+    safety = _release_later(release)
     try:
         result = CP.regate_published(store, "w7", "s7", should_stop=lambda: True)
     finally:
+        safety.cancel()
         release.write_text("go")
         holder.wait(10)
     kept = {"gate": gate, "transients": published.transients}
