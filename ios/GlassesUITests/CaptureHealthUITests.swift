@@ -328,8 +328,18 @@ final class CaptureHealthUITests: XCTestCase {
             if isClear() { return true }
             let window = app.windows.firstMatch.frame
             let isAbove = element.exists && element.frame.midY < window.midY
-            let from = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: isAbove ? 0.4 : 0.7))
-            let to = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: isAbove ? 0.6 : 0.5))
+            // Half a window at a time while it is off the screen (at AX5 it
+            // is screens away), a fifth once it is close.
+            let isFar = element.exists && (element.frame.minY > window.maxY || element.frame.maxY < window.minY)
+            let step: (from: CGFloat, to: CGFloat)
+            switch (isAbove, isFar) {
+            case (true, true): step = (0.3, 0.8)
+            case (true, false): step = (0.4, 0.6)
+            case (false, true): step = (0.8, 0.3)
+            case (false, false): step = (0.7, 0.5)
+            }
+            let from = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: step.from))
+            let to = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: step.to))
             from.press(forDuration: 0.1, thenDragTo: to, withVelocity: .slow, thenHoldForDuration: 0.1)
         }
         return isClear()
