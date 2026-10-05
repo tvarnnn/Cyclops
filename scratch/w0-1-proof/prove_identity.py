@@ -84,25 +84,30 @@ def _direct(source, out, session, seed):
             _copy_world(source, root)
             store, workspace, base, database, expected = _load(root, world_id, session, seed)
             keyframes = store.read_keyframes(world_id, session)
-            if arm == "old":
-                mapper = GS.frozen_draw_mapper(store, world_id, session, database,
-                                               base, keyframes=keyframes)
-            else:
-                need = GS._draw_ram_needed(len(keyframes), GS._draw_image_count(database), 2)
-                if GS._draw_free_ram() < need:
-                    raise RuntimeError(f"insufficient free RAM for two children: {arm}-{repeat}")
-                mapper = GS.concurrent_draw_mapper(store, world_id, session, database, base,
-                                                   seeds=(seed + 1, seed + 2), keyframes=keyframes)
-            events = []
-            previous_event = stage_timing.concurrent_draw_event
-            stage_timing.concurrent_draw_event = events.append
-            try:
-                pair = {str(s): _digest_candidate(mapper(s)) for s in (seed + 1, seed + 2)}
-            finally:
-                stage_timing.concurrent_draw_event = previous_event
-                close = getattr(mapper, "close", None)
-                if close:
-                    close()
+            # Every final/consensus solve holds its session's writer lock (global_solve.solve,
+            # review W01F-FIX MED-2); the concurrent mapper only maps as the ON path instead of
+            # falling back when that lock is held (global_solve.py:2643, "session-lock-not-held").
+            # Take it here for both arms, exactly as the product's final-solve entry points do.
+            with GS.session_writer_lock(workspace.root):
+                if arm == "old":
+                    mapper = GS.frozen_draw_mapper(store, world_id, session, database,
+                                                   base, keyframes=keyframes)
+                else:
+                    need = GS._draw_ram_needed(len(keyframes), GS._draw_image_count(database), 2)
+                    if GS._draw_free_ram() < need:
+                        raise RuntimeError(f"insufficient free RAM for two children: {arm}-{repeat}")
+                    mapper = GS.concurrent_draw_mapper(store, world_id, session, database, base,
+                                                       seeds=(seed + 1, seed + 2), keyframes=keyframes)
+                events = []
+                previous_event = stage_timing.concurrent_draw_event
+                stage_timing.concurrent_draw_event = events.append
+                try:
+                    pair = {str(s): _digest_candidate(mapper(s)) for s in (seed + 1, seed + 2)}
+                finally:
+                    stage_timing.concurrent_draw_event = previous_event
+                    close = getattr(mapper, "close", None)
+                    if close:
+                        close()
             if (GS.database_digest(database) or {}).get("content") != expected:
                 raise RuntimeError(f"mapped source database changed: {arm}-{repeat}")
             if arm == "new":
