@@ -175,6 +175,17 @@ struct WorldChromeTopBand: View {
 
     @Environment(\.colorSchemeContrast) private var contrast
 
+    /// How many lines of the head's font the words keep for it, from the
+    /// moment the page arrives, at the sizes where the words take their own
+    /// height. The head is not known until the page's first drawn state, and
+    /// a band that grew when it came would shrink the canvas under a picture
+    /// already on screen: the first drawn frame must not resize the canvas
+    /// (spec C15r §3.5). Three is the longest head that spec's budget counts
+    /// (the room with areas, "the head wraps to 3 lines"). A longer head
+    /// scrolls in its place, whole.
+    static let reservedHeadLines = 3
+    static let headFont = Font.footnote.weight(.semibold)
+
     /// The page's head and toggle, only once there is something to see.
     private var head: (text: String, raw: Bool)? {
         guard chrome.isDrawingNative, let state = chrome.state, state.drawn, state.message == nil,
@@ -243,13 +254,12 @@ struct WorldChromeTopBand: View {
                     .fixedSize(horizontal: false, vertical: true)
                     .accessibilitySortPriority(90)
             }
-            if let head {
-                Text(verbatim: head.text)
-                    .font(.footnote.weight(.semibold))
-                    .foregroundStyle(head.raw ? WorldChromeStyle.rawHead : WorldChromeStyle.text)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .accessibilitySortPriority(89)
-                    .accessibilityIdentifier("world-chrome-head")
+            if wordsCap > 0 {
+                // The accessibility sizes: the words already scroll in a
+                // fixed height, which the head's arrival does not change.
+                if let head { headText(head) }
+            } else {
+                headPlace
             }
             if let notice {
                 Text(notice)
@@ -263,6 +273,40 @@ struct WorldChromeTopBand: View {
         .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
     }
 
+    private func headText(_ head: (text: String, raw: Bool)) -> some View {
+        Text(verbatim: head.text)
+            .font(Self.headFont)
+            .foregroundStyle(head.raw ? WorldChromeStyle.rawHead : WorldChromeStyle.text)
+            .fixedSize(horizontal: false, vertical: true)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .accessibilitySortPriority(89)
+            .accessibilityIdentifier("world-chrome-head")
+    }
+
+    /// `reservedHeadLines` of the head's font, kept whether or not the head
+    /// is shown (before the first frame, under a message), with the head
+    /// drawn in it: at its own height when it fits, else scrolling. The
+    /// overlay does not size the band; the hidden lines do.
+    private var headPlace: some View {
+        Text(verbatim: Array(repeating: "M", count: Self.reservedHeadLines).joined(separator: "\n"))
+            .font(Self.headFont)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .hidden()
+            .accessibilityHidden(true)
+            .overlay(alignment: .topLeading) {
+                if let head {
+                    ViewThatFits(in: .vertical) {
+                        headText(head)
+                        // Longer than its place: the indicator shows once
+                        // that there is more to read, as CappedScroll's does.
+                        ScrollView { headText(head) }
+                            .scrollBounceBehavior(.basedOnSize)
+                            .scrollIndicatorsFlash(onAppear: true)
+                    }
+                }
+            }
+    }
+
     @ViewBuilder
     private var trailing: some View {
         HStack(spacing: 6) {
@@ -272,12 +316,26 @@ struct WorldChromeTopBand: View {
                 }
                 .accessibilitySortPriority(86)
             }
-            if chrome.isDrawingNative, toggleShown, let labels = chrome.hello?.labels {
+            if let labels = chrome.hello?.labels {
+                togglePlace(labels)
+            }
+        }
+        .dynamicTypeSize(...DynamicTypeSize.accessibility1)
+    }
+
+    /// The caption toggle's place, from the page's `hello` on: as wide as the
+    /// wider of its two words, whether or not it is shown yet. The words
+    /// beside it keep their width when it arrives with the first drawn state
+    /// and when it changes word, so they do not re-wrap and move the canvas.
+    private func togglePlace(_ labels: WorldChromeLabels) -> some View {
+        ZStack(alignment: .trailing) {
+            WorldChromeButtonFace(text: labels.aboutOpen).hidden().accessibilityHidden(true)
+            WorldChromeButtonFace(text: labels.aboutClose).hidden().accessibilityHidden(true)
+            if chrome.isDrawingNative, toggleShown {
                 WorldChromeToggle(labels: labels, panel: $panel)
                     .accessibilitySortPriority(85)
             }
         }
-        .dynamicTypeSize(...DynamicTypeSize.accessibility1)
     }
 
     /// The toggle follows the head's rule, on the area viewer too, whose

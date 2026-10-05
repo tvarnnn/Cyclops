@@ -300,6 +300,54 @@ final class WorldChromeUITests: XCTestCase {
         shoot("u8-area-ax5")
     }
 
+    /// U11: the canvas stays where it first appeared when the page's head
+    /// arrives. Native geometry begins with the echo, before the page has
+    /// said its head; the band above the canvas must not grow when a head of
+    /// several lines arrives at the default size, nor when the caption
+    /// toggle arrives with it or changes its word, so the first drawn frame
+    /// does not resize the canvas (spec C15r §3.5). The walk carries a notice
+    /// long enough to wrap, so a narrower column of words would move the
+    /// canvas too.
+    func testTheCanvasStaysStillWhenAMultilineHeadArrives() throws {
+        let head = "Head T: captured images on reconstructed geometry, with the walk's other areas "
+            + "shown separately -- a head of several lines at the default size"
+        let notice = "Notice T: the Tower could not finish every pass this walk asked for, so some of "
+            + "the walls are drawn from fewer images than usual. An owner can run the walk again from "
+            + "the Tower, and the picture here changes when it does. Nothing else about the room is affected."
+        let steps: [Page.Step] = [
+            .init(state: Page.state(drawn: false, status: "Loading T"), after: 6000),
+            .init(state: Page.state(head: head)),
+        ]
+        openViewer(page: Page.html(steps: steps, labels: Page.realLabels(kind: "room")), notice: notice)
+        let web = app.webViews.firstMatch
+        XCTAssertTrue(web.waitForExistence(timeout: 30), "the canvas")
+        XCTAssertTrue(element("world-chrome-status").waitForExistence(timeout: 10), "native, before the first frame")
+        XCTAssertTrue(element("world-render-notice").exists, "the walk's notice is in the band")
+        let first = web.frame
+        let headElement = element("world-chrome-head")
+        XCTAssertFalse(headElement.exists, "measured before the head arrived")
+        shoot("u11-before-head")
+
+        XCTAssertTrue(headElement.waitForExistence(timeout: 20), "the head arrived")
+        XCTAssertEqual(headElement.label, head, "the whole head, verbatim")
+        let toggle = element("world-chrome-about")
+        XCTAssertTrue(toggle.waitForExistence(timeout: 5), "the caption toggle arrived with it")
+        Thread.sleep(forTimeInterval: 1)
+        print("U11-STILL|first=\(Int(first.minY))-\(Int(first.maxY))|drawn=\(Int(web.frame.minY))-\(Int(web.frame.maxY))"
+              + "|head=\(Int(headElement.frame.minY))-\(Int(headElement.frame.maxY))")
+        assertTheCanvas(web, isAt: first, "after the head and the toggle arrived")
+        shoot("u11-after-head")
+
+        // The toggle's two words differ in width: opening and closing the
+        // panel moves nothing either.
+        toggle.tap()
+        XCTAssertTrue(element("world-chrome-panel").waitForExistence(timeout: 5), "the caption panel")
+        assertTheCanvas(web, isAt: first, "with the panel open")
+        toggle.tap()
+        XCTAssertTrue(waitFor { !self.element("world-chrome-panel").exists }, "the panel closed")
+        assertTheCanvas(web, isAt: first, "with the panel closed again")
+    }
+
     // MARK: U9, U10: accessibility
 
     /// U9: XCUITest's audit, at the default size and at AX5. Every issue is
@@ -558,8 +606,19 @@ final class WorldChromeUITests: XCTestCase {
         return share
     }
 
-    private func openViewer(page: String, area: String? = nil, size: String? = nil) {
-        mock.setRoute("GET /worlds", status: 200, body: Page.listing(withArea: area != nil))
+    /// The canvas's frame is `frame`, to the half point.
+    private func assertTheCanvas(_ web: XCUIElement, isAt frame: CGRect, _ message: String,
+                                 file: StaticString = #filePath, line: UInt = #line) {
+        let now = web.frame
+        for (name, a, b) in [("minY", now.minY, frame.minY), ("maxY", now.maxY, frame.maxY),
+                             ("minX", now.minX, frame.minX), ("width", now.width, frame.width)] {
+            XCTAssertEqual(a, b, accuracy: 0.5, "the canvas \(name) moved \(message): \(frame) -> \(now)",
+                           file: file, line: line)
+        }
+    }
+
+    private func openViewer(page: String, area: String? = nil, size: String? = nil, notice: String? = nil) {
+        mock.setRoute("GET /worlds", status: 200, body: Page.listing(withArea: area != nil, notice: notice))
         mock.setRoute("GET /worlds/w1/render", status: 200, body: page)
         mock.setRoute("GET /worlds/w1/render/revision", status: 200, body: Page.revision(withArea: area != nil))
         if let area {

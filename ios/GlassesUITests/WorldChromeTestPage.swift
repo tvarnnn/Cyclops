@@ -83,14 +83,14 @@ enum WorldChromeTestPage {
                                                  "next": true, "reset": true],
                       walk: Any = "1 / 3", holding: Bool = false, phase: String? = nil,
                       raw: Bool = false, marker: Any = NSNull(),
-                      sections: Int = 2) -> [String: Any] {
+                      sections: Int = 2, head: String? = nil) -> [String: Any] {
         [
             "active": false, "phase": phase ?? (drawn ? "ready" : "loading"), "drawn": drawn,
             "holding": holding, "restoring": false, "status": status, "message": message, "hint": hint,
             "dark": dark, "edge": edge, "buttons": buttons, "walk": drawn ? walk : NSNull(),
             "ring": ["shown": drawn, "lit": (0..<36).map { i in Double(i % 9) / 8 }, "sense": 1],
             "caption": drawn ? [
-                "head": raw ? "RESEARCH T head line" : "Head T: captured images",
+                "head": head ?? (raw ? "RESEARCH T head line" : "Head T: captured images"),
                 "line": "Line T: 24 of 24 images",
                 "sections": (0..<sections).map { ["title": "Section \($0 + 1) T", "body": "Body \($0 + 1) T."] },
                 "tail": "Tail T",
@@ -183,10 +183,13 @@ enum WorldChromeTestPage {
     }
 
     /// The one-world listing (`w1`/`s1`, "Appearance fixture (Mac)"), with
-    /// one area that opens when `withArea`.
-    static func listing(withArea: Bool = false) -> String {
-        """
-        {"contract":"world_builder.worlds/2026-09-10","world_count":1,"worlds":[{"created_at":1790048283.193669,"display_name":"Appearance fixture (Mac)","live":false,"session_count":1,"sessions":[{"abandoned":false,"appearance":{"bytes":239242,"format":"wb-appearance-keyframes/1","imagery":"first-person keyframe imagery of a private space; best-effort face redaction with measured false negatives; not anonymised; screens, documents and bodies are not redacted","imagery_source":"redacted","keyframe_image_set":null,"keyframes":24,"keyframes_phone":24,"label_trusted":true,"privacy_safe":true,"privacy_tags":["raw-imagery","first-person"],"quality":"final","redaction":"faces-detected-and-filled/yunet-2023mar@0.30+plausibility3","redaction_effective":"faces-detected-and-filled/yunet-2023mar@0.30+plausibility3","retains_raw_imagery":true,"retention":"kept with the world","state":"served"},"capture_id":"appearance-fixture","dense":null,"end_reason":"stop","ended_at":1790048583.193669,"finalization":{"detail":null,"final_solve":"solved","started_at":1790048583.193669,"state":"complete","updated_at":1790048683.193669},"frame_source":"synthetic-fixture","has_geometry":true,"keyframes_accepted":24,"keyframes_journaled":0,"photographic":{"detail":"d","stage":"appearance","state":"complete"},"session_id":"s1","started_at":1790048283.193669,"state":"complete"\(withArea ? ",\"components\":\(components)" : "")}],"updated_at":1790048883.193669,"world_id":"w1"}]}
+    /// one area that opens when `withArea`, and the walk's
+    /// `finalization.notice` (COMPONENTS §8) when one is given. `notice` is
+    /// plain prose: no quotes or backslashes to escape.
+    static func listing(withArea: Bool = false, notice: String? = nil) -> String {
+        let noticeField = notice.map { #""notice":"\#($0)","# } ?? ""
+        return """
+        {"contract":"world_builder.worlds/2026-09-10","world_count":1,"worlds":[{"created_at":1790048283.193669,"display_name":"Appearance fixture (Mac)","live":false,"session_count":1,"sessions":[{"abandoned":false,"appearance":{"bytes":239242,"format":"wb-appearance-keyframes/1","imagery":"first-person keyframe imagery of a private space; best-effort face redaction with measured false negatives; not anonymised; screens, documents and bodies are not redacted","imagery_source":"redacted","keyframe_image_set":null,"keyframes":24,"keyframes_phone":24,"label_trusted":true,"privacy_safe":true,"privacy_tags":["raw-imagery","first-person"],"quality":"final","redaction":"faces-detected-and-filled/yunet-2023mar@0.30+plausibility3","redaction_effective":"faces-detected-and-filled/yunet-2023mar@0.30+plausibility3","retains_raw_imagery":true,"retention":"kept with the world","state":"served"},"capture_id":"appearance-fixture","dense":null,"end_reason":"stop","ended_at":1790048583.193669,"finalization":{"detail":null,"final_solve":"solved",\(noticeField)"started_at":1790048583.193669,"state":"complete","updated_at":1790048683.193669},"frame_source":"synthetic-fixture","has_geometry":true,"keyframes_accepted":24,"keyframes_journaled":0,"photographic":{"detail":"d","stage":"appearance","state":"complete"},"session_id":"s1","started_at":1790048283.193669,"state":"complete"\(withArea ? ",\"components\":\(components)" : "")}],"updated_at":1790048883.193669,"world_id":"w1"}]}
         """
     }
 
