@@ -133,8 +133,10 @@ def _servable_manifest(store: WorldStore, world_id: str, session_id: str):
     # §6.6, BEFORE the label check, so the reason names the real mismatch: an
     # artifact built from the original local capture is refused outright by a
     # Tower serving the product, and a product artifact is refused by a Tower
-    # asked for the research imagery. Neither is "stale".
-    wanted = RAWIMG.imagery_source_from_env()
+    # asked for the research imagery. Neither is "stale". A world on the
+    # read-path allowlist (`TOWER_WORLD_RAW_IMAGERY_WORLDS`) is the one case a
+    # product Tower serves a raw artifact (`reader_imagery_source`).
+    wanted = RAWIMG.reader_imagery_source(contained, AP.imagery_source_of(manifest))
     if not AP.imagery_matches(manifest, wanted):
         raise AppearanceNotServed(AP.imagery_mismatch_detail(manifest, wanted))
     if not AP.may_serve(store, contained, session_id, manifest,
