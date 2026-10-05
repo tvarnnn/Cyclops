@@ -57,12 +57,17 @@ may differ from the baseline only in the switches declared with
 `--compare` counts DISTINCT streamed runs (review F11 MED-1): an argument
 that shares a Tower-minted capture id, a run directory, a data root or a
 client.json with an earlier one is the same run again (a repeat, a
-re-render, a copy) and is not counted. And it reads every run's verdicts
-against the run's own records SEALED AT RUN TIME (review F11 LOW-9,
-`evidence_seal`): the runner's run-time render records the seal and prints
-it for the RUN ledger; a run whose records no longer hash to it, whose
-render embeds anything else, or that another report script rendered, is
-not counted.
+re-render, a copy) and is not counted. It never takes a verdict from a
+render (review F12 MED-1): it RE-RENDERS every run in memory from the
+run's own records SEALED AT RUN TIME (review F11 LOW-9, `evidence_seal`,
+`recompute_report`) -- the paths run.json names, never a render's
+--data-root -- and judges only that. The runner's run-time render records
+the seal and prints it for the RUN ledger; a run whose records no longer
+hash to it, whose render says anything the re-render does not, or that
+another report script rendered, is not counted. With `--ledger` a run
+counts only when its seal is one the RUN ledger holds (the run-time label
+can be applied by hand; the ledger is the out-of-band copy), and with
+`--expect-pin` only when the pinned harness streamed it.
 
 All of it is read AFTER the fact, so a finished run is re-reported without
 re-running it:
@@ -75,7 +80,8 @@ re-running it:
 and N runs are compared (old x N against new x N, per-metric spread):
 
     python scripts/world_live_replay_report.py --out <dir> --compare <old1> <old2> <old3> \
-        [--candidate <new1> <new2> <new3> [--candidate-switches KEY=VALUE ...]]
+        [--candidate <new1> <new2> <new3> [--candidate-switches KEY=VALUE ...]] \
+        [--ledger <RUN ledger> <runs-*.log> ...] [--expect-pin <40-hex commit>]
 """
 
 from __future__ import annotations
@@ -112,13 +118,24 @@ CHORE_CHAIN_GAP_S = 90.0
 WALK6_GATE_MAX_S = 9.0 * 60.0
 WALK6_GATE_MIN_NEW_RUNS = 5
 WALK6_GATE_FIDELITY_VERSION = "v3"
+# THE WALK the gate is about (review F12 LOW-3): Walk 5's one capture, by its
+# own manifest and journal. These digests were read on 2026-10-04 from the
+# live store, `RUN\experiments\C22-REPLAY\source-captures` and the private
+# copy `source-full-20261004\captures` (manager 163 §4), and agree in all
+# three; its capture.json records frames_written 4005, bytes_written
+# 75241745, end_reason "stop", continues_capture null.
+WALK5_SOURCE = {"capture_id": "b5750fa3271d4e80b959c628e3e82c94",
+                "capture.json": "52c29364f3f5324bb56b2539677c0d8b2528a60c760257b786402e252777a43a",
+                "frames.jsonl": "761765c857eb3c781065a23c8a85b10dd4daaea7e64fa4c3dccbaedabf63873b",
+                "frames_written": 4005}
 WALK6_NORMALIZED_NOT_COMPUTED = "normalized: NOT COMPUTED (method not ratified)"
 WALK6_PER_RUN_NOTE = ("<= 10-min hard max, judged in seconds; NOT the Walk 6 gate (>= 5 NEW runs, raw and "
                       "normalized max <= 9.0 min), which only --compare's WALK6-GATE section judges")
 # The report script's own version. The STREAMING harness's version
 # (`world_live_replay.HARNESS_VERSION`) is unchanged by a report-only round:
-# C22-F12 left both streaming scripts byte-identical to 807054d.
-REPORT_VERSION = "c22-report/F12 (distinct sealed runs, timing-env key, store-backed photos, full walk, Walk 6 gate)"
+# C22-F12 and C22-F13 left both streaming scripts byte-identical to 807054d.
+REPORT_VERSION = ("c22-report/F13 (compare re-renders the sealed records; seal c22-seal/2; ledger and pin; "
+                  "distinct sealed runs, timing-env key, store-backed photos, full walk, Walk 6 gate)")
 
 # The W0 timing measure (review C24 HIGH-1) and what each basis is.
 W0_TIMING_METRIC = "stop_to_phone_photos_min"
@@ -763,46 +780,107 @@ def _sha256_of(path) -> str | None:
         return None
 
 
-def evidence_seal(run_dir, run: dict | None, timeline: dict | None) -> dict:
-    """sha256 of every record a run's verdicts are read from (review F11 LOW-9).
+# The seal's FORMAT: its file list and the digest's shape (review F12 MED-1 and
+# its repin amendment 1). A run-time seal can never be recomputed by another
+# format, so a change to `sealed_paths` or to the digest voids every run sealed
+# before it: bump this, and pin again.
+SEAL_FORMAT = "c22-seal/2"
+# What the run-time render prints to stderr, which the quiet launcher's log
+# keeps outside the run directory (the RUN ledger's source). `--ledger` reads
+# any 64-hex digest from such a file.
+SEAL_LINE = "[report] evidence seal"
+_SEAL_HEX = re.compile(r"(?<![0-9a-f])[0-9a-f]{64}(?![0-9a-f])")
 
-    The runner renders its run's report at RUN TIME (`build_report` and
-    `write_report` of this script, into the run's own --out), after the test
-    Tower has stopped and every record below is final. That render keeps this
-    seal, and `write_report` prints it to stderr, which the quiet launcher's
-    log keeps OUTSIDE the run directory: copy it to the RUN ledger. `--compare`
-    recomputes it and counts a run only when its records still hash to the
-    seal its run-time render recorded, and when every record a render embeds
-    equals the sealed file.
+
+def sealed_paths(run_dir, run: dict | None, timeline: dict | None) -> dict:
+    """{name: path or None}: EVERY file a render of this run reads
+    (`build_report`, given the paths run.json names), so that a verdict
+    recomputed from them is a verdict of the sealed records (review F12
+    MED-1). Two kinds of input are bound otherwise, by content digests the
+    sealed records hold: the SOURCE captures (journals, capture.json and every
+    JPEG: client.json `source_journals` / `source_images`) and the copied
+    calibration (run.json `intrinsics_sha256`).
 
       client.json, run.json, samples.csv   the run directory's own records;
+      solution-snapshots/<file>            the client's solution.json snapshots;
       err_log, out_log                     the test Tower's logs (run.json);
-      session.json                         the walk's session in the test
-                                           Tower's store (the room appearance);
+      session.json, keyframes.jsonl, events.jsonl, stage_timing.json
+                                           the walk's session in the test
+                                           Tower's store (<data root>/world_builder);
+      solution.json, solve.log             its final solve;
+      surface status.json                  its room surface;
+      areas/<id>/record.json               every area record of the world;
       captures/<id>/capture.json, frames.jsonl   what the test Tower re-recorded.
 
-    A missing file is None, which a later seal must match exactly."""
+    Not sealed (a directory's mtime is no content): `solve/<s>/sparse`'s
+    mtime, read only by a draw-0 ESTIMATE for a run that kept no snapshot."""
     run = run if isinstance(run, dict) else {}
     timeline = timeline if isinstance(timeline, dict) else {}
     run_dir = Path(run_dir)
-    files = {name: _sha256_of(run_dir / name) for name in ("client.json", "run.json", "samples.csv")}
+    paths: dict = {name: run_dir / name for name in ("client.json", "run.json", "samples.csv")}
+    snapshots = run_dir / "solution-snapshots"
+    try:
+        for path in sorted(snapshots.iterdir()):
+            if path.is_file():
+                paths[f"solution-snapshots/{path.name}"] = path
+    except OSError:
+        pass
     for key in ("err_log", "out_log"):
-        files[key] = _sha256_of(run[key]) if run.get(key) else None
-    data_root = run.get("data_root")
+        paths[key] = Path(run[key]) if run.get(key) else None
+    data_root = Path(run["data_root"]) if run.get("data_root") else None
     world_id, session_id = timeline.get("world_id"), timeline.get("session_id")
-    files["session.json"] = (_sha256_of(Path(data_root) / "world_builder" / "worlds" / str(world_id) / "sessions"
-                                        / str(session_id) / "session.json")
-                             if data_root and world_id and session_id else None)
+    world = data_root / "world_builder" / "worlds" / str(world_id) if data_root and world_id else None
+    session = world / "sessions" / str(session_id) if world and session_id else None
+    for name in ("session.json", "keyframes.jsonl", "events.jsonl", "stage_timing.json"):
+        paths[name] = session / name if session else None
+    paths["solution.json"] = world / "solve" / str(session_id) / "solution.json" if world and session_id else None
+    paths["solve.log"] = world / "solve" / str(session_id) / "solve.log" if world and session_id else None
+    paths["surface status.json"] = world / "surface" / str(session_id) / "status.json" if world and session_id else None
+    if world is not None:
+        try:
+            for record in sorted((world / "areas").glob("*/record.json")):
+                paths[f"areas/{record.parent.name}/record.json"] = record
+        except OSError:
+            pass
     for capture_id in timeline.get("captures") or []:
         for name in ("capture.json", "frames.jsonl"):
-            files[f"captures/{capture_id}/{name}"] = (
-                _sha256_of(Path(data_root) / "captures" / str(capture_id) / name) if data_root else None)
-    digest = hashlib.sha256(json.dumps(files, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
-    return {"files": files, "seal": digest, "at": None}
+            paths[f"captures/{capture_id}/{name}"] = (data_root / "captures" / str(capture_id) / name
+                                                      if data_root else None)
+    return paths
+
+
+def evidence_seal(run_dir, run: dict | None, timeline: dict | None) -> dict:
+    """sha256 of every record a run's verdicts are read from (review F11 LOW-9;
+    the file list is `sealed_paths`, review F12 MED-1).
+
+    The runner renders its run's report at RUN TIME (`build_report` and
+    `write_report` of this script, into the run's own --out), after the test
+    Tower has stopped and every record is final. That render keeps this
+    seal, and `write_report` prints it to stderr, which the quiet launcher's
+    log keeps OUTSIDE the run directory: copy it to the RUN ledger. `--compare`
+    re-renders the run in memory from these files, judges only that, and
+    counts a run only when the files it read still hash to the seal its
+    run-time render recorded -- and, with `--ledger`, to a seal the ledger
+    holds.
+
+    A missing file is None, which a later seal must match exactly; a file
+    that appears later (a new area record, a snapshot) changes the seal too."""
+    files = {name: (_sha256_of(path) if path is not None else None)
+             for name, path in sealed_paths(run_dir, run, timeline).items()}
+    digest = hashlib.sha256(json.dumps({"format": SEAL_FORMAT, "files": files}, sort_keys=True,
+                                       separators=(",", ":")).encode()).hexdigest()
+    return {"format": SEAL_FORMAT, "files": files, "seal": digest, "at": None}
 
 
 def _norm_path(path) -> str:
-    return os.path.normcase(str(Path(path).resolve()))
+    """A path's identity: resolved and case-folded, and the same whether it is
+    spelled plainly or in Windows' extended-length form (`\\\\?\\C:\\...`)."""
+    text = str(Path(path).resolve())
+    if text.startswith("\\\\?\\UNC\\"):
+        text = "\\\\" + text[len("\\\\?\\UNC\\"):]
+    elif text.startswith("\\\\?\\"):
+        text = text[len("\\\\?\\"):]
+    return os.path.normcase(text)
 
 
 def session_appearance(run: dict | None, timeline: dict | None) -> dict | None:
@@ -1514,9 +1592,20 @@ def photos_store_backing(phone_photos_at, appearance) -> dict:
     if not isinstance(stored, (int, float)) or isinstance(stored, bool):
         return {"backed": False, "why": "the store's room appearance has no updated_at"}
     if stored > phone_photos_at + PHONE_STAMP_TOLERANCE_S:
-        return {"backed": False, "store_to_phone_s": round(phone_photos_at - stored, 3),
-                "why": f"the client was told {stored - phone_photos_at:.3f} s BEFORE the store wrote the room "
-                       "appearance ok"}
+        # The store keeps the stage's LAST write: every write re-stamps
+        # `updated_at` (`engine.mark_stage`), a re-gate included (review F12
+        # LOW-6). A stage that STARTED after the push cannot have been ok
+        # before it; one that started before may have been written ok first
+        # and re-stamped later, which this record cannot tell apart.
+        started = appearance.get("started_at")
+        began_before = (isinstance(started, (int, float)) and not isinstance(started, bool)
+                        and started <= phone_photos_at)
+        why = (f"the store's LAST room-appearance write (updated_at) is {stored - phone_photos_at:.3f} s after the "
+               "client was told, and the stage started before it: it was either told before the store wrote it, "
+               "or the stage was written ok and re-written later (a re-gate re-stamps updated_at); the store "
+               "cannot back the push either way" if began_before else
+               f"the client was told {stored - phone_photos_at:.3f} s BEFORE the store wrote the room appearance ok")
+        return {"backed": False, "store_to_phone_s": round(phone_photos_at - stored, 3), "why": why}
     return {"backed": True, "store_to_phone_s": round(phone_photos_at - stored, 3)}
 
 
@@ -2816,7 +2905,7 @@ def write_report(out_dir: Path, report: dict) -> tuple:
     tmp.write_text(json.dumps(report, indent=2, default=str), encoding="utf-8")
     os.replace(tmp, json_path)
     if isinstance(seal, dict) and seal["at"] == "run time":
-        print(f"[report] evidence seal {seal['seal']} for {run_dir}: copy this line to the RUN ledger "
+        print(f"{SEAL_LINE} {seal['seal']} for {run_dir}: copy this line to the RUN ledger "
               "(--compare counts the run only while its records still hash to it)", file=sys.stderr, flush=True)
     md_path.write_text(render_markdown(report), encoding="utf-8")
     keyframes = report.get("keyframes")
@@ -3219,6 +3308,9 @@ def compare_evidence(report: dict) -> dict:
     if not isinstance(run_time, dict) or run_time.get("at") != "run time":
         problems.append("evidence: the run directory holds no evidence seal recorded at run time (its run-time "
                         "render predates C22-F12, or is gone), so its records cannot be bound")
+    elif run_time.get("format") != SEAL_FORMAT:
+        problems.append(f"evidence: the run-time evidence seal is of format {run_time.get('format')!r}, not this "
+                        f"script's {SEAL_FORMAT!r} (another report script sealed it), so its records cannot be bound")
     elif run_time.get("seal") != now["seal"]:
         recorded = run_time.get("files") if isinstance(run_time.get("files"), dict) else {}
         changed = sorted(set(recorded) | set(now["files"]))
@@ -3283,22 +3375,163 @@ def compare_evidence(report: dict) -> dict:
     return evidence
 
 
+RECOMPUTED_FROM = "--compare's in-memory re-render of the run's sealed records (the runner's own call)"
+
+
+def recompute_report(given: dict, evidence: dict) -> dict | None:
+    """The run's report, re-rendered IN MEMORY from its SEALED records with
+    the code that renders a single report (review F12 MED-1): exactly the
+    runner's own call (`world_live_replay_run.py`, its last lines) --
+    `build_report` on run.json's test-Tower logs, run.json's data root (and
+    its `world_builder`), client.json's first Tower capture, the run
+    directory's client.json, samples.csv and snapshots, and run.json itself.
+    Nothing in the given render decides a verdict: not its --data-root,
+    --world-root or --tower-log, and not one field it holds. The one input
+    taken from it is where the SOURCE captures are (its
+    `tower_side_pacing.source_capture_root`, else client.json's): their
+    bytes are bound by the digests the sealed client.json pinned, wherever
+    they lie. JSON round-tripped, as `write_report` writes it. None when the
+    run's records cannot be read (`compare_evidence` already says why)."""
+    run, client, run_dir = evidence.get("run"), evidence.get("client"), evidence.get("run_dir")
+    if not isinstance(run, dict) or not isinstance(client, dict) or not run_dir or not run.get("err_log"):
+        return None
+    data_root = Path(run["data_root"]) if run.get("data_root") else None
+    pacing = given.get("tower_side_pacing") if isinstance(given.get("tower_side_pacing"), dict) else {}
+    source_root = pacing.get("source_capture_root") if isinstance(pacing.get("source_capture_root"), str) else None
+    captures = client.get("tower_captures") if isinstance(client.get("tower_captures"), list) else []
+    samples = Path(run_dir) / "samples.csv"
+    built = build_report(
+        tower_log=Path(run["err_log"]), tower_out_log=Path(run["out_log"]) if run.get("out_log") else None,
+        world_root=data_root / "world_builder" if data_root is not None else None,
+        capture_id=captures[0] if captures else None, client=client,
+        samples=samples if samples.exists() else None, label=given.get("label"), run_dir=Path(run_dir),
+        data_root=data_root, capture_root=Path(source_root) if source_root else None, run=run,
+        capture_root_from=("the render's source root (its bytes pinned by the sealed client.json)"
+                           if source_root else None))
+    built["run"] = run
+    built["recomputed_from"] = RECOMPUTED_FROM
+    return json.loads(json.dumps(built, default=str))
+
+
+def judged_fields(report: dict) -> dict:
+    """Everything `--compare` judges, counts or keys on in a render, flat
+    (review F12 MED-1): the verdicts (replay fidelity, live safety, the
+    Environment, proof, the per-run result), the admission evidence (full
+    walk, Stop agreement, store backing, settle), the comparability key, the
+    Tower's counters and windows, the pacing join's counts, the keyframe
+    sequence and horizons, and every compare metric. `--compare` takes each
+    from its own re-render of the sealed records and refuses a render whose
+    own differ."""
+    def block(name):
+        value = report.get(name)
+        return value if isinstance(value, dict) else {}
+
+    fidelity, safety, verdict = block("replay_fidelity"), block("live_safety"), block("verdict")
+    walk, pacing, keyframes = block("tower_walk"), block("tower_side_pacing"), block("keyframes")
+    environment = safety.get("environment") if isinstance(safety.get("environment"), dict) else {}
+    photos = block("phone_photos")
+    fields = {
+        "replay_fidelity.result": fidelity.get("result"), "replay_fidelity.version": fidelity.get("version"),
+        "replay_fidelity.tower_side_only": fidelity.get("tower_side_only"),
+        "live_safety.result": safety.get("result"), "live_safety.environment.result": environment.get("result"),
+        "proof": report.get("proof"), "verdict.result": verdict.get("result"), "verdict.basis": verdict.get("basis"),
+        "full_walk": report.get("full_walk"), "stop_agreement": report.get("stop_agreement"),
+        "phone_photos.store_backing": photos.get("store_backing"), "settle": report.get("settle"),
+        "comparability_key": report.get("comparability_key"),
+        "tower_walk.captures": walk.get("captures"), "tower_walk.windows": walk.get("windows"),
+        "tower_walk.totals": walk.get("totals"), "tower_walk.frames_observed": walk.get("frames_observed"),
+        "tower_walk.background_solves": walk.get("background_solves"),
+        "keyframes.sequence": keyframes.get("sequence"), "keyframes.sha256": keyframes.get("sha256"),
+    }
+    for name in ("source_frames", "matched", "source_only", "replay_only", "source_duplicate_seq"):
+        fields[f"tower_side_pacing.{name}"] = pacing.get(name)
+    for name, value in comparable_metrics(report).items():
+        fields[f"metric {name}"] = value
+    return fields
+
+
+def _ledger_seals(paths) -> tuple:
+    """The 64-hex digests in each `--ledger` file (the RUN ledger, or the quiet
+    launcher's `runs-<arm><N>.log` itself, in UTF-8 or Windows PowerShell's
+    UTF-16): (set of seals, [files read]). A file that cannot be read is an
+    error: a ledger that says nothing must not read as one that was checked."""
+    seals, read = set(), []
+    for path in paths or ():
+        try:
+            data = Path(path).read_bytes()
+        except OSError as exc:
+            raise SystemExit(f"--ledger {path} cannot be read: {exc}") from exc
+        if data.startswith((b"\xff\xfe", b"\xfe\xff")):
+            text = data.decode("utf-16", errors="replace")
+        else:
+            text = data.decode("utf-8-sig", errors="replace")
+        seals |= set(_SEAL_HEX.findall(text.lower()))
+        read.append(str(path))
+    return seals, read
+
+
+def provenance_problems(run: dict, ledger: set | None, expect_pin: str | None) -> list:
+    """What `--ledger` and `--expect-pin` add (review F12 LOW-2: the run-time
+    label is self-applied; only an out-of-band copy can tell a run-time seal
+    from one written by hand). With `--ledger`, the seal of the records the
+    re-render read must be one the RUN ledger holds -- a seal printed by the
+    runner at run time and copied there. With `--expect-pin`, the sealed
+    run.json's harness pin must be that commit, committed and clean."""
+    problems = []
+    evidence = run.get("evidence") if isinstance(run.get("evidence"), dict) else {}
+    if ledger is not None and evidence.get("seal") not in ledger:
+        problems.append(f"ledger: the seal of this run's records ({evidence.get('seal')}) is not in the RUN ledger "
+                        "(--ledger): only a seal the runner printed at run time, copied there, counts")
+    if expect_pin is not None:
+        sealed = evidence.get("run") if isinstance(evidence.get("run"), dict) else {}
+        pin = harness_pin_of(sealed.get("harness"))
+        if pin.get("git_head") != expect_pin or pin.get("committed_clean") is not True:
+            problems.append(f"pin: the sealed run.json says the harness was {pin.get('git_head')} (committed and "
+                            f"clean: {pin.get('committed_clean')}), not the pinned {expect_pin} (--expect-pin)")
+    return problems
+
+
 def _load_run(run_dir) -> dict:
+    """One `--compare` argument: a run directory, or a render of one. Every
+    verdict, metric and key field comes from `recompute_report` -- the run
+    re-rendered in memory from its sealed records -- never from the given
+    render (review F12 MED-1). The given render must say the same (else it is
+    not counted: re-render it), and the records the re-render read must hash
+    to the run-time seal. A run whose records cannot be read is shown from its
+    render and never counted."""
     run_dir = Path(run_dir)
-    report = _read_json(run_dir / "report.json")
-    if not isinstance(report, dict):
+    given = _read_json(run_dir / "report.json")
+    if not isinstance(given, dict):
         raise SystemExit(f"{run_dir} has no report.json; render it first "
                          "(world_live_replay_report.py --run-dir <run> --out <new-empty-dir>)")
-    keyframes = _read_json(run_dir / "keyframes.json") or {}
+    evidence = compare_evidence(given)
+    recomputed = recompute_report(given, evidence)
+    if recomputed is None:
+        report = given
+        if not evidence["problems"]:
+            evidence["problems"].append("evidence: the run's verdicts cannot be recomputed from its sealed records")
+    else:
+        report = recomputed
+        read = (recomputed.get("evidence_seal") or {}).get("seal")
+        if read != evidence.get("seal"):
+            evidence["problems"].append("evidence: the run's records changed while --compare read them (the "
+                                        "re-render's seal is not the records' seal)")
+        mine, theirs = judged_fields(given), judged_fields(recomputed)
+        differ = [name for name in sorted(set(mine) | set(theirs)) if mine.get(name) != theirs.get(name)]
+        if differ:
+            evidence["problems"].append(
+                "evidence: the render's verdicts are not the ones its run's sealed records give ("
+                + ", ".join(differ[:8]) + (f", and {len(differ) - 8} more" if len(differ) > 8 else "")
+                + "): --compare judges the sealed records only; re-render the run with this script")
+    evidence["recomputed"] = recomputed is not None
+    keyframes = report.get("keyframes") if isinstance(report.get("keyframes"), dict) else {}
     fidelity = report.get("replay_fidelity") or {}
     # EACH RUN'S OWN BAR (managers 148 and 149): the version in force when THIS
-    # run started, from its own recorded start (`run.json`, else `client.json`,
-    # as the report kept them). A verdict rendered before the bar was versioned
-    # (no `version`) was judged by v1's numbers, the only ones there were; one
-    # rendered under the withdrawn v2 is never a run's own bar (re-render it).
-    # ...CORROBORATED by the test Tower's own log, from the run's sealed
-    # records (review F11 LOW-8): an uncorroborated run is not judged.
-    evidence = compare_evidence(report)
+    # run started, from its own recorded start (`run.json`, else `client.json`),
+    # CORROBORATED by the test Tower's own log, from the run's sealed records
+    # (review F11 LOW-8): an uncorroborated run is not judged. The re-render
+    # judges by that bar; a run shown from its render alone (records
+    # unreadable) may say another, and is not counted either way.
     start = start_evidence(evidence.get("run"), evidence.get("client"), evidence.get("stream_start_t"))
     own_version = start["version"] if start["corroborated"] else None
     own_why = start["why"] if start["corroborated"] else (
@@ -3308,9 +3541,9 @@ def _load_run(run_dir) -> dict:
     # record the report kept (review C24 HIGH-3).
     proof = report.get("proof") if isinstance(report.get("proof"), dict) else proof_status(
         client=report.get("client") or {}, run=report.get("run"))
-    return {"dir": str(run_dir), "label": report.get("label"), "report": report,
-             "metrics": comparable_metrics(report), "sequence": keyframes.get("sequence"),
-            "sha256": keyframes.get("sha256") or (report.get("keyframes") or {}).get("sha256"),
+    return {"dir": str(run_dir), "label": given.get("label"), "report": report,
+            "metrics": comparable_metrics(report), "sequence": keyframes.get("sequence"),
+            "sha256": keyframes.get("sha256"),
             "horizons": [s.get("keyframes") for s in (report.get("tower_walk") or {}).get("background_solves")
                          or []],
              "live_safety": (report.get("live_safety") or {}).get("result"),
@@ -3334,11 +3567,14 @@ def _load_run(run_dir) -> dict:
             "fidelity_version": own_version, "fidelity_version_why": own_why,
             "fidelity_judged_by": judged_by,
             "proof": proof,
-            # Recomputed from the report, never trusted from it (review C24 HIGH-2).
-            "key": comparability_key(report),
+            # Recomputed with the re-render, never trusted from a render (review
+            # C24 HIGH-2, F12 MED-1).
+            "key": (recomputed.get("comparability_key") if recomputed is not None
+                    and isinstance(recomputed.get("comparability_key"), dict) else comparability_key(report)),
             # Re-derived from the run's sealed records (review F11 MED-1, LOW-9).
             "evidence": evidence, "start_evidence": start,
-            "rendered_by": report.get("rendered_by")}
+            # Which script rendered the GIVEN render (it must be this one).
+            "rendered_by": given.get("rendered_by")}
 
 
 def run_validity(run: dict) -> dict:
@@ -3446,9 +3682,9 @@ def run_validity(run: dict) -> dict:
     evidence = run.get("evidence") if isinstance(run.get("evidence"), dict) else {
         "problems": ["evidence: the run's sealed records were not read"]}
     invalid.extend(evidence.get("problems") or [])
-    # ONE report script judges the whole set: the verdict fields compare
-    # reads from a render (fidelity, safety, environment, proof) are this
-    # script's, or the render is re-rendered first (review F11 LOW-9).
+    # ONE report script for the whole set (review F11 LOW-9): compare judges
+    # its own re-render of every run (F12 MED-1), and a given render must be
+    # this script's too, so that "the render says the same" means something.
     mine = rendered_by().get("report_sha1")
     theirs = (run.get("rendered_by") or {}).get("report_sha1") if isinstance(run.get("rendered_by"), dict) else None
     if theirs != mine:
@@ -3477,7 +3713,22 @@ def parse_switches(items) -> dict:
     return switches
 
 
-def walk6_gate(candidate: list, baseline_counted: int) -> dict:
+def replays_walk5(run: dict) -> bool:
+    """Is this run a full replay of WALK 5 itself (review F12 LOW-3)? Its key's
+    source is Walk 5's one capture, whose capture.json and frames.jsonl the
+    stream pinned with `WALK5_SOURCE`'s digests (so its manifest's 4005
+    frames), and the re-render found the whole walk streamed."""
+    key = run.get("key") if isinstance(run.get("key"), dict) else {}
+    report = run.get("report") if isinstance(run.get("report"), dict) else {}
+    walk = report.get("full_walk") if isinstance(report.get("full_walk"), dict) else {}
+    expected = {WALK5_SOURCE["capture_id"]: {"capture.json": WALK5_SOURCE["capture.json"],
+                                            "frames.jsonl": WALK5_SOURCE["frames.jsonl"]}}
+    return (key.get("source_captures") == [WALK5_SOURCE["capture_id"]]
+            and key.get("source_journal_sha256") == expected
+            and walk.get("full") is True and walk.get("frames_written") == WALK5_SOURCE["frames_written"])
+
+
+def walk6_gate(candidate: list, baseline_counted: int, *, ledger_files=None, expect_pin=None) -> dict:
     """THE WALK 6 GATE (manager rulings; review F11 MED-5), the only Walk 6
     verdict this harness prints. Over the COUNTED, distinct NEW runs:
       * at least `WALK6_GATE_MIN_NEW_RUNS` of them;
@@ -3488,7 +3739,13 @@ def walk6_gate(candidate: list, baseline_counted: int) -> dict:
       * the preselection-normalized max <= 540.0 s: NOT COMPUTED, because no
         normalization method has been ratified;
       * QUIET-TOWER: the launcher's evidence lies outside the run's records,
-        so it is NOT CHECKED here.
+        so it is NOT CHECKED here;
+      * every one a full replay of WALK 5 itself (`replays_walk5`, review F12
+        LOW-3: nothing else binds the set to Walk 5);
+      * every run's seal in the RUN ledger (`--ledger`) and every run
+        streamed by the pinned harness (`--expect-pin`) (review F12 LOW-2):
+        NOT CHECKED unless given; when given, a run that fails either is not
+        counted at all.
     With the normalized max not computed the result is NOT EVALUATED, always:
     this function never says PASS -- on fewer than 5 runs or otherwise -- and a
     ratified method needs its own reviewed change to make it able to."""
@@ -3513,6 +3770,21 @@ def walk6_gate(candidate: list, baseline_counted: int) -> dict:
          "value": WALK6_NORMALIZED_NOT_COMPUTED, "met": None},
         {"check": "every NEW run a QUIET-TOWER replay",
          "value": "NOT CHECKED by this harness (each run's .quiet.txt is outside its records)", "met": None},
+        {"check": (f"every counted NEW run a full replay of Walk 5 (capture {WALK5_SOURCE['capture_id'][:8]}…, "
+                   f"capture.json {WALK5_SOURCE['capture.json'][:8]}…, frames.jsonl {WALK5_SOURCE['frames.jsonl'][:8]}…, "
+                   f"{WALK5_SOURCE['frames_written']} frames)"),
+         "value": f"{sum(1 for run in counted if replays_walk5(run))} of {len(counted)}",
+         "met": bool(counted) and all(replays_walk5(run) for run in counted)},
+        {"check": "every run's seal in the RUN ledger (--ledger)",
+         "value": ("NOT CHECKED: no --ledger given (the run-time label alone can be applied by hand)"
+                   if ledger_files is None else
+                   f"checked against {', '.join(ledger_files) or 'no file'}: a run whose seal is not there is not "
+                   "counted"),
+         "met": None if ledger_files is None else True},
+        {"check": "every run streamed by the pinned harness (--expect-pin)",
+         "value": ("NOT CHECKED: no --expect-pin given" if expect_pin is None else
+                   f"{expect_pin}, committed and clean: a run streamed by any other is not counted"),
+         "met": None if expect_pin is None else True},
     ]
     missing = [component["check"] for component in components if component["met"] is False]
     return {"result": "NOT EVALUATED", "normalized": WALK6_NORMALIZED_NOT_COMPUTED,
@@ -3523,48 +3795,81 @@ def walk6_gate(candidate: list, baseline_counted: int) -> dict:
 
 def mark_duplicates(baseline: list, candidate: list) -> list:
     """Every argument that is a streamed run already given (review F11
-    MED-1): it shares a stream-identity component (`compare_evidence`) with
-    an EARLIER argument, the baseline's before the candidates'. The first
-    stands for the run; each later one is not counted, whatever it is -- the
-    same directory again, a re-render, a copy -- and says which it repeats.
-    A run whose identity cannot be established is already not counted."""
-    seen: dict = {}
-    duplicates = []
-    for side, runs in (("baseline", baseline), ("candidate", candidate)):
-        for run in runs:
-            components = (run.get("evidence") or {}).get("identity")
-            if not components:
-                continue
-            shared = [component for component in components if component in seen]
-            if shared:
-                first = seen[shared[0]]
-                run["duplicate_of"] = first["dir"]
-                what = "; ".join(f"{name} {value}" for name, value in shared)
-                run["validity"]["invalid"].append(
-                    f"duplicate of {first['side']} `{first['dir']}`: the same streamed run ({what}) counts once")
-                run["validity"]["counted"] = False
-                duplicates.append({"dir": run["dir"], "side": side, "of": first["dir"], "of_side": first["side"],
-                                   "shared": [list(component) for component in shared]})
-                for component in components:
-                    seen.setdefault(component, first)
+    MED-1): arguments that share a stream-identity component
+    (`compare_evidence`), directly or through another argument, are ONE
+    streamed run. One of them stands for it: the first that is COUNTED on its
+    own (`run_validity`), else the first given -- the baseline's before the
+    candidates' (review F12 LOW-5: a stale render given first must not make
+    the run's good render the duplicate). Every other is not counted,
+    whatever it is -- the same directory again, a re-render, a copy -- and
+    says which it repeats and what it shares. A run whose identity cannot be
+    established is already not counted."""
+    runs = [("baseline", run) for run in baseline] + [("candidate", run) for run in candidate]
+    parent = list(range(len(runs)))
+
+    def find(index):
+        while parent[index] != index:
+            parent[index] = parent[parent[index]]
+            index = parent[index]
+        return index
+
+    owner: dict = {}
+    for index, (_side, run) in enumerate(runs):
+        for component in (run.get("evidence") or {}).get("identity") or []:
+            if component in owner:
+                parent[find(index)] = find(owner[component])
             else:
-                for component in components:
-                    seen[component] = {"dir": run["dir"], "side": side}
+                owner[component] = index
+    groups: dict = {}
+    for index, (_side, run) in enumerate(runs):
+        if (run.get("evidence") or {}).get("identity"):
+            groups.setdefault(find(index), []).append(index)
+    stands = {}
+    for members in groups.values():
+        stand = next((index for index in members if runs[index][1]["validity"]["counted"]), members[0])
+        for index in members:
+            stands[index] = stand
+    duplicates = []
+    for index, (side, run) in enumerate(runs):
+        stand = stands.get(index)
+        if stand is None or stand == index:
+            continue
+        first_side, first = runs[stand]
+        others = {component for member, (_s, other) in enumerate(runs) if member != index and stands.get(member) == stand
+                  for component in (other.get("evidence") or {}).get("identity") or []}
+        shared = [component for component in run["evidence"]["identity"] if component in others]
+        run["duplicate_of"] = first["dir"]
+        what = "; ".join(f"{name} {value}" for name, value in shared)
+        run["validity"]["invalid"].append(
+            f"duplicate of {first_side} `{first['dir']}`: the same streamed run ({what}) counts once")
+        run["validity"]["counted"] = False
+        duplicates.append({"dir": run["dir"], "side": side, "of": first["dir"], "of_side": first_side,
+                           "shared": [list(component) for component in shared]})
     return duplicates
 
 
-def compare_runs(baseline_dirs, candidate_dirs=(), candidate_switches=None) -> dict:
+def compare_runs(baseline_dirs, candidate_dirs=(), candidate_switches=None, *, ledger=None,
+                 expect_pin=None) -> dict:
     """Per-metric spread over the COUNTED baseline runs, and each candidate
     run against that spread; keyframe-sequence identity to the first counted
     baseline run. Counted means valid as full-walk proof (`run_validity`:
     complete source and frame path, known-zero safety counters, client photo
     receipt, fidelity/environment PASS and explicit proof) AND comparable with
     the baseline's key (review C24 HIGH-2): a candidate may differ from it
-    only in `candidate_switches`, the switches under test."""
+    only in `candidate_switches`, the switches under test. Every one of those
+    is judged on compare's own re-render of the run's sealed records (review
+    F12 MED-1). `ledger`: the `--ledger` files, whose seals a counted run's
+    must be among; `expect_pin`: the harness commit every run must have been
+    streamed by (review F12 LOW-2)."""
+    seals, ledger_files = _ledger_seals(ledger) if ledger is not None else (None, None)
     baseline = [_load_run(d) for d in baseline_dirs]
     candidate = [_load_run(d) for d in candidate_dirs]
     for run in baseline + candidate:
         run["validity"] = run_validity(run)
+        provenance = provenance_problems(run, seals, expect_pin)
+        if provenance:
+            run["validity"]["invalid"].extend(provenance)
+            run["validity"]["counted"] = False
     # One streamed run counts ONCE (review F11 MED-1), before anything is
     # counted or a reference chosen: a duplicate never becomes the reference.
     duplicates = mark_duplicates(baseline, candidate)
@@ -3649,7 +3954,9 @@ def compare_runs(baseline_dirs, candidate_dirs=(), candidate_switches=None) -> d
         #     phone_photos_at (review C24 HIGH-1..3).
         # /7: distinct streamed runs, the sealed evidence, the timing-env and
         #     interpreter key fields and the WALK6-GATE block (review F11).
-        "compare": "c22-live-replay-compare/7",
+        # /8: every verdict from compare's own re-render of the sealed records;
+        #     the ledger and pin checks; the Walk 5 gate component (review F12).
+        "compare": "c22-live-replay-compare/8",
         "generated_at": round(time.time(), 3),
         "rendered_by": rendered_by(),
         "baseline": [run["dir"] for run in baseline],
@@ -3682,7 +3989,9 @@ def compare_runs(baseline_dirs, candidate_dirs=(), candidate_switches=None) -> d
         # C19 F8's noise estimate (N >= 3 a side). NOT the Walk 6 gate, which
         # is `walk6_gate` alone (review F11 MED-5).
         "enough_runs": len(counted) >= 3 and (not candidate or len(valid_candidates) >= 3),
-        "walk6_gate": walk6_gate(candidate, len(counted)),
+        "walk6_gate": walk6_gate(candidate, len(counted), ledger_files=ledger_files, expect_pin=expect_pin),
+        # What bound the set beyond its own records (review F12 LOW-2).
+        "ledger": ledger_files, "expect_pin": expect_pin,
         # Per candidate run, every metric the baseline has and it lacks.
         # Not passing: a candidate is never judged on the metrics it is
         # missing.
@@ -3849,9 +4158,14 @@ def render_compare(result: dict) -> str:
         lines.append("")
         lines.append("## Evidence seals (review F11 LOW-9)")
         lines.append("")
-        lines.append("Each run's records, hashed now. A counted run's seal equals the one its run-time render "
-                     "recorded; check it against the `[report] evidence seal` line the runner printed into the quiet "
-                     "launcher's log, copied to the RUN ledger.")
+        lines.append("Each run's records, hashed now: the files --compare's own re-render read. A counted run's seal "
+                     "equals the one its run-time render recorded. That label can be applied by hand, so only the "
+                     "`[report] evidence seal` line the runner printed into the quiet launcher's log, copied to the "
+                     "RUN ledger, binds it: "
+                     + ("--ledger checked every run against " + ", ".join(f"`{name}`" for name in result["ledger"])
+                        + "." if result.get("ledger") is not None else
+                        "**no --ledger was given, so it was NOT checked here**: match each counted seal by hand, or "
+                        "compare again with --ledger."))
         lines.append("")
         for item in seals:
             lines.append(f"- {item['side']} `{item['dir']}`: `{item['seal']}`"
@@ -3874,6 +4188,11 @@ def render_compare(result: dict) -> str:
     lines.append("|---|---|---|---|---|---|---|---|---|")
     invalid_dirs = {item["dir"] for item in invalid}
     w0_metric = result.get("w0_timing_metric", W0_TIMING_METRIC)
+    # The W0 row's minutes are rounded to 0.01 for display; its NEW max names
+    # the raw seconds beside them, so 540.25 s never reads "9.0" (review F12
+    # LOW-4). The gate judges the seconds.
+    w0_seconds_max = next((item.get("candidate_max") for item in result["metrics"]
+                           if item["metric"] == "stop_to_phone_photos_s"), None)
     for item in result["metrics"]:
         flags = []
         if item.get("outside"):
@@ -3887,11 +4206,23 @@ def render_compare(result: dict) -> str:
                            for v, directory in zip(item["candidate"], result["candidate"]))
         name = f"{item['metric']} **(W0 timing)**" if item["metric"] == w0_metric else item["metric"]
         new_max = item.get("candidate_max")
+        new_cell = "" if new_max is None else str(new_max)
+        if item["metric"] == w0_metric and new_max is not None:
+            new_cell = (f"{new_max} min rounded = {w0_seconds_max:.3f} s raw (the gate judges seconds)"
+                        if isinstance(w0_seconds_max, (int, float)) else f"{new_max} min rounded (raw seconds unknown)")
         lines.append(f"| {name} | {item.get('mean', '')} | {item.get('min', '')} | "
                      f"{item.get('max', '')} | {item.get('spread', '')} | {dropped} | {values} | "
-                     f"{'' if new_max is None else new_max} | {flag} |")
+                     f"{new_cell} | {flag} |")
     lines.append("")
     return "\n".join(lines)
+
+
+def _git_sha(value: str) -> str:
+    """`--expect-pin`: a full 40-hex commit id (an abbreviation could match two)."""
+    text = str(value).strip().lower()
+    if not re.fullmatch(r"[0-9a-f]{40}", text):
+        raise argparse.ArgumentTypeError(f"--expect-pin wants a full 40-hex commit id, got {value!r}")
+    return text
 
 
 def _run_defaults(run_dir: Path) -> dict:
@@ -3946,6 +4277,13 @@ def main(argv=None) -> int:
                         help="With --candidate: the switches under test. A candidate is comparable only when "
                              "its switch set is the baseline's with exactly these laid over it, and its every "
                              "other key field equals the baseline's (review C24 HIGH-2).")
+    parser.add_argument("--ledger", type=Path, nargs="+", default=None, metavar="FILE",
+                        help="With --compare, READ: the RUN ledger and/or the quiet launcher's runs-<arm><N>.log "
+                             "files. A run counts only when the seal of its records is a 64-hex digest one of "
+                             "them holds -- the line the runner printed at run time (review F12 LOW-2).")
+    parser.add_argument("--expect-pin", type=_git_sha, default=None, metavar="SHA",
+                        help="With --compare: the 40-hex commit every run's harness must have been, committed "
+                             "and clean (the sealed run.json's harness pin).")
     args = parser.parse_args(argv)
     out = Path(args.out)
     # Nothing is written inside the live store (review C24 MED-6).
@@ -3954,7 +4292,8 @@ def main(argv=None) -> int:
     refuse_inside_live_store(out, "--out")
     refuse_non_empty_out(out)
     if args.compare:
-        result = compare_runs(args.compare, args.candidate, parse_switches(args.candidate_switches))
+        result = compare_runs(args.compare, args.candidate, parse_switches(args.candidate_switches),
+                              ledger=args.ledger, expect_pin=args.expect_pin)
         out.mkdir(parents=True, exist_ok=True)
         (out / "compare.json").write_text(json.dumps(result, indent=2, default=str), encoding="utf-8")
         (out / "COMPARE.md").write_text(render_compare(result), encoding="utf-8")
