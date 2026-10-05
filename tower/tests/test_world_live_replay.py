@@ -4426,6 +4426,12 @@ def test_the_compare_max_columns_are_labelled_by_arm(tmp_path):
             "NEW (candidate) values | NEW max (counted) | Flag |") in markdown
     assert "| stop_to_phone_photos_min **(W0 timing)** | 47.1 | 47.0 | 47.2 | 0.2 |  | 8.0, 9.0, 10.0 | 10.0 |" \
         in markdown
+    # The NEW max is over the COUNTED candidates: an invalid one's 12.0 is not it.
+    _fake_run(tmp_path / "new-unfaithful", photos=12.0, lag_p95=6.8, sequence=SAME, version="v3",
+              run_started=AFTER + 9, fidelity="FAIL")
+    mixed = report.compare_runs(olds, [tmp_path / "new0", tmp_path / "new-unfaithful"])
+    photos = {m["metric"]: m for m in mixed["metrics"]}[report.W0_TIMING_METRIC]
+    assert (photos["candidate"], photos["candidate_max"]) == ([8.0, 12.0], 8.0)
 
 
 # Adversarial LOW-7: the client guard's coverage is judged.
