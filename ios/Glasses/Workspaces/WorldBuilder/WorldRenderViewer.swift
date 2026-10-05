@@ -2251,7 +2251,7 @@ struct WorldRenderScene: View {
         // without end, `_screenHeight changed` 23,030 times in 30 s, every
         // value printing as 708 pt (U1.1 U7; 0f1249e hangs the same way).
         .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { height in
-            if abs(screenHeight - height) >= 0.5 { screenHeight = height }
+            if MeasuredHeight.moved(from: screenHeight, to: height) { screenHeight = height }
         }
         .navigationTitle(screenTitle)
         .navigationBarTitleDisplayMode(.inline)
@@ -2729,6 +2729,19 @@ enum WorldRenderOffer: Equatable {
     }
 }
 
+/// Whether a measured height is written back: only when it moved by half a
+/// point or more. The caps on the viewer are fractions of measured heights,
+/// and at AX5 a sub-pixel difference fed back through them re-ran the layout
+/// without end (U1.1 U7). What it ignores is under half a point (1.5 px at
+/// 3x): a stored height is never further than that from the real one.
+nonisolated enum MeasuredHeight {
+    static let threshold: CGFloat = 0.5
+
+    static func moved(from old: CGFloat, to new: CGFloat) -> Bool {
+        abs(new - old) >= threshold
+    }
+}
+
 /// Its content at its own height, up to `cap`, and scrolling beyond it.
 ///
 /// A plain `ScrollView` takes all the height it is offered, which would take
@@ -2751,7 +2764,7 @@ struct CappedScroll<Content: View>: View {
                 // Half a point or more, for the reason `WorldRenderScene`
                 // gives: a sub-pixel change must not feed back into a cap.
                 .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { height in
-                    if abs(contentHeight - height) >= 0.5 { contentHeight = height }
+                    if MeasuredHeight.moved(from: contentHeight, to: height) { contentHeight = height }
                 }
         }
         .scrollBounceBehavior(.basedOnSize)

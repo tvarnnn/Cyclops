@@ -826,6 +826,32 @@ final class WorldChromeTests: XCTestCase {
         XCTAssertTrue(model.refusedForScreen)
     }
 
+    // MARK: The half-point guards
+
+    /// The viewer's two height write-backs (its own height, and a capped
+    /// scroller's content) take a change of half a point or more, and
+    /// nothing smaller: the boundary, both ways.
+    func testAMeasuredHeightIsWrittenBackFromHalfAPoint() {
+        XCTAssertEqual(MeasuredHeight.threshold, 0.5)
+        XCTAssertFalse(MeasuredHeight.moved(from: 708, to: 708))
+        XCTAssertFalse(MeasuredHeight.moved(from: 708, to: 708.49))
+        XCTAssertFalse(MeasuredHeight.moved(from: 708, to: 707.51))
+        XCTAssertFalse(MeasuredHeight.moved(from: 708, to: 708 + 1.0 / 3), "a third of a point, one pixel at 3x")
+        XCTAssertTrue(MeasuredHeight.moved(from: 708, to: 708.5))
+        XCTAssertTrue(MeasuredHeight.moved(from: 708, to: 707.5))
+        XCTAssertTrue(MeasuredHeight.moved(from: 708, to: 708 + 2.0 / 3), "two pixels at 3x")
+        XCTAssertTrue(MeasuredHeight.moved(from: 0, to: 708), "the first measurement")
+        XCTAssertTrue(MeasuredHeight.moved(from: 52, to: 62), "a band that grew a line")
+        // Both write-backs go through it: no other half-point test remains.
+        let source = try? String(contentsOf: URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("Glasses/Workspaces/WorldBuilder/WorldRenderViewer.swift"), encoding: .utf8)
+        XCTAssertNotNil(source)
+        XCTAssertEqual(source?.components(separatedBy: "MeasuredHeight.moved(").count, 3,
+                       "the scene's height and CappedScroll's content height")
+        XCTAssertFalse(source?.contains(">= 0.5") ?? true)
+    }
+
     // MARK: I12: the research marker
 
     func testTheResearchMarkerIsStickyAndAlsoRaisedByTheHeader() {
