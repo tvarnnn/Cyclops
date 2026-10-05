@@ -2433,6 +2433,10 @@ def main(argv=None) -> int:
         # say `interrupted`. A record that does not say when it arrived is
         # counted. A hard stop alone (the Tower shutting down mid-walk) and
         # no stop at all count every record.
+        #
+        # A FRAME THAT WAS READ AND COULD NOT BE BUILT COUNTS TOO: an image
+        # unreadable past its budget, a journal line that did not parse, a
+        # journal that went missing (Codex H2). See `unobserved_records`.
         unobserved = (
             follower.unobserved_records(
                 received_by=stop_request.soft_requested_at,

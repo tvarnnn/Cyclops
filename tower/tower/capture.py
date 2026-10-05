@@ -464,7 +464,7 @@ class _JournalTail:
     whole-file read, and what this has to reproduce incrementally.
     """
 
-    __slots__ = ("_path", "_offset", "_remainder")
+    __slots__ = ("_path", "_offset", "_remainder", "unparseable")
 
     def __init__(self, path, *, start_at_end: bool = False) -> None:
         self._path = path
@@ -479,6 +479,11 @@ class _JournalTail:
             except OSError:
                 self._offset = 0
         self._remainder = b""
+        # Complete lines `read_new` read past and could not parse. Each is a
+        # frame the recorder wrote a line for -- one line per frame -- that
+        # nobody can now observe, so a caller asking what was left unread
+        # counts them (`CaptureFollower.unobserved_records`).
+        self.unparseable = 0
 
     def read_new(self) -> list:
         try:
@@ -518,7 +523,10 @@ class _JournalTail:
                 records.append(json.loads(line))
             except (ValueError, UnicodeDecodeError):
                 # A line that is complete and still unparseable is real
-                # corruption. Skipped, exactly as a whole-file read would.
+                # corruption. Skipped, exactly as a whole-file read would --
+                # but counted: the read position has moved past a recorded
+                # frame that will never be observed.
+                self.unparseable += 1
                 logger.warning("[Tower][Capture] skipping an unreadable journal line")
         return records
 
@@ -545,13 +553,20 @@ class _JournalTail:
         try:
             size = self._path.stat().st_size
         except FileNotFoundError:
-            # The recorder writes no journal before its first frame, so a
-            # capture that never recorded one -- a phone that connected and
-            # dropped -- has none, and nothing in it is unread. But a journal
-            # this tail has ALREADY read from has gone missing since, and
-            # what lay past the read position can no longer be counted:
-            # "not shown", never zero (re-review of 40a4883, LOW-2).
-            return 0 if self._offset == 0 and not self._remainder else None
+            # A journal this tail has ALREADY read from has gone missing
+            # since, and what lay past the read position can no longer be
+            # counted: "not shown", never zero (re-review of 40a4883, LOW-2).
+            if self._offset or self._remainder:
+                return None
+            # Nothing read and no journal. The recorder writes none before
+            # its first frame, so a capture that never recorded one -- a
+            # phone that connected and dropped -- has none and nothing in it
+            # is unread. But a journal that was moved or deleted looks the
+            # same from here, and answering 0 for it published a walk of
+            # recorded frames, none observed, as `stop` / `complete` (Codex
+            # H2; the re-review's h2c: 0 of 10). The capture's own manifest
+            # tells them apart: zero only if it says it wrote no frame.
+            return self._recorded_nothing()
         except OSError:
             return None
         if size == self._offset:
@@ -581,6 +596,18 @@ class _JournalTail:
             if received_by_cutoff(record, received_by):
                 counted += 1
         return counted
+
+    def _recorded_nothing(self) -> int | None:
+        """0 if this capture's manifest says it wrote no frame, else None."""
+        try:
+            manifest = read_json_closed(self._path.parent / CAPTURE_FILENAME)
+        except (OSError, ValueError):
+            return None
+        written = manifest.get("frames_written") if isinstance(manifest, dict) else None
+        if isinstance(written, int) and not isinstance(written, bool) and written == 0:
+            return 0
+        # Frames were written, or the manifest does not say: "not shown".
+        return None
 
 
 def received_by_cutoff(record, cutoff: float) -> bool:
@@ -675,6 +702,19 @@ class CaptureFollower:
         self._earlier: list[_JournalTail] = []
         self._batch: list = []
         self._taken = 0
+        # Records read off a journal whose IMAGE could not be read, in any
+        # capture of the walk: recorded, taken off the journal, never handed
+        # on. Counted by `unobserved_records` exactly like records in hand
+        # (Codex H2: `_load` skipped them and the read position moved on, so
+        # nothing counted them, and a walk with a frame never built was
+        # stored `stop` / `complete` -- the re-review reproduced it with a
+        # real Windows lock on one JPEG, 3,196 of 3,197).
+        self._unloaded: list = []
+        # Set once an image read has outlasted its whole budget. The walk is
+        # then partial whatever follows, so later failing reads are counted
+        # without being waited on: the extra time an unreadable capture can
+        # cost a follower is one budget, not one budget per frame.
+        self._image_budget_spent = False
         # Skip whatever the journal already holds, and yield only frames
         # recorded from now on.
         #
@@ -802,6 +842,12 @@ class CaptureFollower:
         records in hand -- the rebind happens only after its last read
         record was taken -- so for those only the journal is measured.
 
+        A RECORD READ BUT NEVER HANDED ON COUNTS TOO: one whose image could
+        not be read within its budget (`_unloaded`, see `_load`), and a
+        complete journal line that could not be parsed (`unparseable`). The
+        read position moved past both, so without this nothing counted them
+        (Codex H2).
+
         `received_by` counts only records received at or before it (see
         `received_by_cutoff`). A builder passes the time of its first SOFT
         stop: frames the camera recorded after the wearer's Stop are not
@@ -826,18 +872,21 @@ class CaptureFollower:
                     self._directory / FRAMES_FILENAME, start_at_end=self._start_at_end
                 )
             )
-        in_hand = self._batch[self._taken:]
+        cutoff = received_by
+        in_hand = self._batch[self._taken:] + self._unloaded
         held = (
             len(in_hand)
-            if received_by is None
-            else sum(1 for record in in_hand if received_by_cutoff(record, received_by))
+            if cutoff is None
+            else sum(1 for record in in_hand if received_by_cutoff(record, cutoff))
         )
+        # A line that did not parse cannot say when it was received.
+        held += sum(tail.unparseable for tail in tails)
         deadline = None
         backoff = MANIFEST_READ_BACKOFF_S
         while True:
             total = held
             for tail in tails:
-                beyond = tail.records_not_yet_read(received_by=received_by)
+                beyond = tail.records_not_yet_read(received_by=cutoff)
                 if beyond is None:
                     total = None
                     break
@@ -872,6 +921,8 @@ class CaptureFollower:
         tail = self._tail = _JournalTail(journal, start_at_end=self._start_at_end)
         self._earlier = []
         self._batch, self._taken = [], 0
+        self._unloaded = []
+        self._image_budget_spent = False
         idle_polls = 0
         # Per FOLLOW, not per follower: a generator re-entered would
         # otherwise carry the previous run's answer forward.
@@ -884,12 +935,16 @@ class CaptureFollower:
 
             # `_taken` moves only AFTER the yield returns, i.e. when the
             # consumer comes back for the next frame. A consumer that stops
-            # leaves this frame, and the rest of the batch, counted.
+            # leaves this frame, and the rest of the batch, counted. A record
+            # whose image could not be read is never yielded; it is kept in
+            # `_unloaded` and counted there instead.
             self._batch, self._taken = fresh, 0
             for record in fresh:
-                frame = self._load(record)
+                frame = self._load(record, cancel=should_stop)
                 if frame is not None:
                     yield frame
+                else:
+                    self._unloaded.append(record)
                 self._taken += 1
 
             # Journal first, manifest second, then ONE more journal read.
@@ -900,9 +955,11 @@ class CaptureFollower:
                 closing = tail.read_new()
                 self._batch, self._taken = closing, 0
                 for record in closing:
-                    frame = self._load(record)
+                    frame = self._load(record, cancel=should_stop)
                     if frame is not None:
                         yield frame
+                    else:
+                        self._unloaded.append(record)
                     self._taken += 1
 
                 successor = self._await_successor(should_stop=should_stop)
@@ -1123,19 +1180,59 @@ class CaptureFollower:
             self._sleep(self._poll_seconds)
         return None
 
-    def _load(self, record: dict) -> FollowedFrame | None:
+    def _load(self, record: dict, *, cancel=None) -> FollowedFrame | None:
+        """The frame a journal record points at, or None if it cannot be read.
+
+        None is never silent: `follow` keeps the record in `_unloaded`, and
+        `unobserved_records` counts it, so a walk with a frame that was
+        recorded and never built is not a finished walk (Codex H2).
+
+        AN IMAGE THAT CANNOT BE OPENED RIGHT NOW IS WAITED FOR, the way the
+        manifest and the journal are: retried with backoff for
+        `MANIFEST_READ_BUDGET_S`. The lock class is the same -- an AV scanner
+        or the indexer opening a freshly written file without read sharing,
+        which the re-review held on one JPEG for real -- so the budget is
+        the same. A frame read within it is built, not merely labelled.
+
+        What is not waited for: an image that does not exist (deleted, not
+        locked -- the recorder writes it before its journal line, so it never
+        appears late), any image once one has outlasted the whole budget
+        (the walk is partial already; see `_image_budget_spent`), and any
+        image after `cancel` -- the caller's stop check -- answers True,
+        so a Tower shutdown is not held up by a locked frame.
+        """
         relpath = record.get("relpath")
         if not relpath:
             return None
         path = self._directory / relpath
-        try:
-            raw_bytes = path.read_bytes()
-        except OSError:
-            # Should be impossible given the write ordering. A reader that
-            # trusted the invariant absolutely would turn one deleted file
-            # into a crash mid-session.
-            logger.warning("capture: journal references missing image %s", path)
-            return None
+        deadline = None
+        backoff = MANIFEST_READ_BACKOFF_S
+        while True:
+            try:
+                raw_bytes = path.read_bytes()
+                break
+            except FileNotFoundError:
+                # Should be impossible given the write ordering. A reader that
+                # trusted the invariant absolutely would turn one deleted file
+                # into a crash mid-session.
+                logger.warning("capture: journal references missing image %s", path)
+                return None
+            except OSError as exc:
+                now = time.monotonic()
+                if deadline is None:
+                    deadline = now + MANIFEST_READ_BUDGET_S
+                gave_up = self._image_budget_spent or now >= deadline
+                if gave_up or (cancel is not None and cancel()):
+                    if now >= deadline:
+                        self._image_budget_spent = True
+                    logger.warning(
+                        "capture: could not read image %s (%s: %s); the frame is "
+                        "recorded and was not observed",
+                        path, type(exc).__name__, exc,
+                    )
+                    return None
+                time.sleep(min(backoff, deadline - now))
+                backoff = min(backoff * 2, MANIFEST_READ_BACKOFF_MAX_S)
         return FollowedFrame(
             source_seq=record["source_seq"],
             received_at=record["received_at"],

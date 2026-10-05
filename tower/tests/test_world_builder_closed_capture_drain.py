@@ -996,11 +996,13 @@ def test_a_capture_that_recorded_no_frame_has_no_journal_and_is_still_stop(
 ):
     """The re-review's Q9, which kills its RV-M1. The recorder writes no
     `frames.jsonl` until its first frame, so a phone that connected and
-    dropped leaves a closed capture with NO journal. Nothing recorded is
-    unread: a finished, empty walk, on 44fbd13 and here."""
+    dropped leaves a closed capture with NO journal -- and a manifest that
+    says `frames_written: 0`, which is how that is told apart from a journal
+    that went missing (Codex H2). Nothing recorded is unread: a finished,
+    empty walk, on 44fbd13 and here."""
     capture = tmp_path / "captures" / ("e" * 32)
     capture.mkdir(parents=True)
-    _write_manifest(capture, "stop")
+    _write_manifest(capture, "stop", frames_written=0)
     _hook(monkeypatch, install_level=stop_level)
     exit_code, session = _run_session(capture, tmp_path / "worlds", max_idle_polls="5")
 
@@ -1008,6 +1010,47 @@ def test_a_capture_that_recorded_no_frame_has_no_journal_and_is_still_stop(
     assert exit_code == 0
     assert session.frames_observed == 0
     assert session.end_reason == "stop"
+
+
+def test_a_real_recording_with_no_frame_is_still_stop(tmp_path, monkeypatch):
+    """The same, written by the real recorder: start, then Stop, no frame."""
+    recorder = CaptureRecorder(tmp_path / "recordings")
+    capture_id = recorder.start()
+    recorder.stop()
+    _hook(monkeypatch, install_level=StopRequest.SOFT)
+    exit_code, session = _run_session(
+        recorder.capture_dir(capture_id), tmp_path / "worlds", max_idle_polls="5"
+    )
+
+    assert not (recorder.capture_dir(capture_id) / "frames.jsonl").exists()
+    assert recorder.manifest(capture_id)["frames_written"] == 0
+    assert exit_code == 0
+    assert session.end_reason == "stop"
+
+
+@pytest.mark.parametrize(
+    "manifest_says",
+    [pytest.param({"frames_written": 10}, id="frames_written-10"), pytest.param({}, id="silent")],
+)
+def test_a_capture_whose_journal_is_missing_before_the_first_read_is_not_finished(
+    tmp_path, monkeypatch, caplog, manifest_says
+):
+    """Codex H2's second form (the re-review's h2c): a closed capture whose
+    manifest says frames were written -- or does not say -- and whose journal
+    is gone before the builder read anything. 6124de8 answered "0 unread" and
+    stored 0 of 10 as `stop` / `complete`."""
+    capture = tmp_path / "captures" / ("e" * 32)
+    capture.mkdir(parents=True)
+    _write_manifest(capture, "stop", **manifest_says)
+    monkeypatch.setattr(capture_module, "MANIFEST_READ_BUDGET_S", SHORT_BUDGET_S)
+    _hook(monkeypatch)
+    with caplog.at_level(logging.WARNING, logger="tower.world_build_session"):
+        exit_code, session = _run_session(capture, tmp_path / "worlds", max_idle_polls="5")
+
+    assert exit_code == 0
+    assert session.frames_observed == 0
+    assert session.end_reason == "interrupted"
+    assert "an unknown number of the frames" in caplog.text
 
 
 def test_a_journal_that_vanished_after_a_read_cannot_be_measured(tmp_path, monkeypatch):
@@ -1025,7 +1068,11 @@ def test_a_journal_that_vanished_after_a_read_cannot_be_measured(tmp_path, monke
 
     monkeypatch.setattr(capture_module, "MANIFEST_READ_BUDGET_S", 0.05)
     assert follower.unobserved_records() is None
-    # A follower that never read anything still answers 0 for no journal.
+    # A follower that never read anything answers 0 for no journal only if
+    # the capture says it wrote no frame. This one wrote ten (Codex H2).
+    _write_manifest(directory, "stop", frames_written=10)
+    assert CaptureFollower(directory).unobserved_records() is None
+    _write_manifest(directory, "stop", frames_written=0)
     assert CaptureFollower(directory).unobserved_records() == 0
 
 
@@ -1844,6 +1891,254 @@ def test_a_real_lock_longer_than_the_budget_ends_honestly(
     assert session.end_reason == "error"
     assert session.finalization["state"] == "interrupted"
     assert not _labelled_finished(session)
+
+
+# ---------------------------------------------------------------------------
+# A FRAME THAT WAS RECORDED AND COULD NOT BE READ IS NEVER SKIPPED INTO A
+# FINISHED WALK (Codex H2, the re-review's HIGH-1).
+#
+# `_load` answered None on any OSError reading a JPEG, the read position moved
+# on, and nothing counted the frame: 47 of 48 stored `stop` / `complete` with
+# one injected PermissionError, 3,196 of 3,197 with a real Windows lock on one
+# JPEG during the drain. A complete journal line that did not parse was
+# skipped the same way. Now an image that cannot be opened is waited for,
+# within the manifest's budget, and built if it comes back; if it does not --
+# or the line cannot be parsed -- the frame is counted as recorded and not
+# observed, and the walk is `interrupted`.
+# ---------------------------------------------------------------------------
+
+
+def _distinct_frames(directory, count, end_reason="stop"):
+    """`count` frames, each in its own JPEG file, journalled; closed."""
+    directory.mkdir(parents=True)
+    rows = []
+    for index in range(count):
+        name = f"frame{index:04d}.jpg"
+        (directory / name).write_bytes(b"synthetic-frame")
+        rows.append(
+            json.dumps({"source_seq": index + 1, "received_at": float(index), "relpath": name})
+            + "\n"
+        )
+    (directory / "frames.jsonl").write_text("".join(rows), encoding="utf-8")
+    _write_manifest(directory, end_reason)
+    return directory
+
+
+def _image_unreadable_for(monkeypatch, names, seconds):
+    """The JPEGs called `names` raise PermissionError for `seconds` of time
+    from the first attempt to read each: a lock held for a DURATION."""
+    original = Path.read_bytes
+    fault = {"until": {}, "failures": 0}
+
+    def read_bytes(self):
+        if self.name in names:
+            now = time.monotonic()
+            until = fault["until"].setdefault(self.name, now + seconds)
+            if now < until:
+                fault["failures"] += 1
+                raise PermissionError(13, "held by another process", str(self))
+        return original(self)
+
+    monkeypatch.setattr(Path, "read_bytes", read_bytes)
+    return fault
+
+
+def test_an_image_locked_for_a_moment_is_waited_for_and_built(tmp_path, monkeypatch):
+    directory = _distinct_frames(tmp_path / "cap", 10)
+    fault = _image_unreadable_for(monkeypatch, {"frame0004.jpg"}, 0.15)
+    follower = CaptureFollower(directory, poll_seconds=0)
+
+    seqs = [frame.source_seq for frame in follower.follow(max_idle_polls=1)]
+
+    assert seqs == list(range(1, 11))
+    assert fault["failures"] >= 2
+    assert follower.unobserved_records() == 0
+
+
+def test_an_image_still_locked_after_the_budget_is_counted_not_skipped(
+    tmp_path, monkeypatch
+):
+    """And the budget is spent ONCE per follower: a second locked image is
+    counted at once rather than waited on for another whole budget."""
+    directory = _distinct_frames(tmp_path / "cap", 10)
+    monkeypatch.setattr(capture_module, "MANIFEST_READ_BUDGET_S", 0.3)
+    _image_unreadable_for(monkeypatch, {"frame0003.jpg", "frame0007.jpg"}, 60.0)
+    follower = CaptureFollower(directory, poll_seconds=0)
+    started = time.monotonic()
+
+    seqs = [frame.source_seq for frame in follower.follow(max_idle_polls=1)]
+
+    elapsed = time.monotonic() - started
+    assert seqs == [1, 2, 3, 5, 6, 7, 9, 10]
+    assert 0.3 <= elapsed < 0.55, elapsed
+    assert follower.unobserved_records() == 2
+
+
+def test_an_unreadable_image_that_lands_with_the_close_is_counted(tmp_path, monkeypatch):
+    """The follower's one journal read AFTER it sees the close has its own
+    loop; a frame it cannot read there is counted too."""
+    directory = _distinct_frames(tmp_path / "cap", 10, end_reason=None)
+    monkeypatch.setattr(capture_module, "MANIFEST_READ_BUDGET_S", 0.2)
+    follower = CaptureFollower(directory, poll_seconds=0)
+    frames = follower.follow(max_idle_polls=5)
+    for _ in range(10):
+        next(frames)
+    with (directory / "frames.jsonl").open("a", encoding="utf-8") as out:
+        for index in range(10, 13):
+            name = f"frame{index:04d}.jpg"
+            (directory / name).write_bytes(b"synthetic-frame")
+            out.write(
+                json.dumps({"source_seq": index + 1, "received_at": float(index), "relpath": name})
+                + "\n"
+            )
+    _write_manifest(directory, "stop")
+    _image_unreadable_for(monkeypatch, {"frame0011.jpg"}, 60.0)
+
+    assert [frame.source_seq for frame in frames] == [11, 13]
+    assert follower.unobserved_records() == 1
+
+
+def test_a_missing_image_and_a_record_without_one_are_counted_without_waiting(tmp_path):
+    directory = _distinct_frames(tmp_path / "cap", 10)
+    (directory / "frame0004.jpg").unlink()
+    with (directory / "frames.jsonl").open("a", encoding="utf-8") as out:
+        out.write(json.dumps({"source_seq": 11, "received_at": 10.0}) + "\n")
+    follower = CaptureFollower(directory, poll_seconds=0)
+    started = time.monotonic()
+
+    seqs = [frame.source_seq for frame in follower.follow(max_idle_polls=1)]
+
+    assert time.monotonic() - started < capture_module.MANIFEST_READ_BUDGET_S / 4
+    assert seqs == [1, 2, 3, 4, 6, 7, 8, 9, 10]
+    assert follower.unobserved_records() == 2
+
+
+@pytest.mark.parametrize(
+    ("locked_s", "expected_observed", "expected_end"),
+    [
+        pytest.param(0.1, 48, "stop", id="locked-within-the-budget-built"),
+        pytest.param(60.0, 47, "interrupted", id="locked-past-the-budget-counted"),
+    ],
+)
+def test_one_unreadable_image_is_never_a_finished_walk(
+    tmp_path, monkeypatch, caplog, locked_s, expected_observed, expected_end
+):
+    """The re-review's h2a, end to end: a capture closed normally before the
+    builder started, no stop at all; the 20th image cannot be read for
+    `locked_s`. 6124de8 stored 47 of 48 as `stop` / `complete`."""
+    capture = _distinct_frames(tmp_path / "captures" / ("a" * 32), 48)
+    monkeypatch.setattr(capture_module, "MANIFEST_READ_BUDGET_S", SHORT_BUDGET_S)
+    _image_unreadable_for(monkeypatch, {"frame0019.jpg"}, locked_s)
+    _hook(monkeypatch)
+    with caplog.at_level(logging.WARNING, logger="tower"):
+        exit_code, session = _run_session(capture, tmp_path / "worlds", max_idle_polls="5")
+
+    assert exit_code == 0
+    assert session.frames_observed == expected_observed
+    assert session.end_reason == expected_end
+    if expected_end == "interrupted":
+        assert "frame0019.jpg" in caplog.text
+        assert "1 of the frames recorded in this walk were never observed" in caplog.text
+    else:
+        assert "were never observed" not in caplog.text
+
+
+def test_a_journal_line_that_cannot_be_parsed_is_never_a_finished_walk(
+    tmp_path, monkeypatch, caplog
+):
+    """The same door through the journal: a complete line the follower read
+    and could not parse. Skipped, the read position moved past it, and
+    6124de8 stored 47 of 48 recorded frames as `stop` / `complete`."""
+    capture = _distinct_frames(tmp_path / "captures" / ("a" * 32), 48)
+    journal = capture / "frames.jsonl"
+    lines = journal.read_text(encoding="utf-8").splitlines(keepends=True)
+    lines[19] = lines[19][:25] + "\n"
+    journal.write_text("".join(lines), encoding="utf-8")
+    _hook(monkeypatch)
+    with caplog.at_level(logging.WARNING, logger="tower"):
+        exit_code, session = _run_session(capture, tmp_path / "worlds", max_idle_polls="5")
+
+    assert exit_code == 0
+    assert session.frames_observed == 47
+    assert session.end_reason == "interrupted"
+    assert "skipping an unreadable journal line" in caplog.text
+    assert "1 of the frames recorded in this walk were never observed" in caplog.text
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows sharing semantics")
+@pytest.mark.parametrize(
+    ("held_s", "expected_observed", "expected_end"),
+    [
+        pytest.param(0.3, 400, "stop", id="300ms-lock-waited-out-and-built"),
+        pytest.param(None, 399, "interrupted", id="lock-past-the-budget-counted"),
+    ],
+)
+def test_a_real_lock_on_one_image_during_the_drain(
+    tmp_path, monkeypatch, held_s, expected_observed, expected_end
+):
+    """The re-review's h2b at test scale, with a REAL Windows lock and no
+    product code patched: a late builder behind, the normal close, the soft
+    stop, and the drain meets one JPEG held with share mode 0 -- the AV
+    scanner or indexer shape. 6124de8: 3,196 of 3,197 `stop` / `complete`."""
+    capture = _distinct_frames(tmp_path / "captures" / ("a" * 32), 400, end_reason=None)
+    # The very next frame the drain reads, so the wait is always exercised.
+    locked = capture / "frame0100.jpg"
+    held = {"timer": None}
+
+    def on_observe(n, stop):
+        if n == 100:
+            _write_manifest(capture, "stop")
+            seconds = held_s or capture_module.MANIFEST_READ_BUDGET_S + 1.5
+            held["timer"] = _hold(locked, seconds, "exclusive-open")
+            with pytest.raises(PermissionError):
+                locked.open("rb")
+            stop.request(StopRequest.SOFT, "stdin-closed")
+
+    _hook(monkeypatch, on_observe)
+    try:
+        exit_code, session = _run_session(capture, tmp_path / "worlds")
+    finally:
+        if held["timer"] is not None:
+            held["timer"].join()
+
+    assert exit_code == 0
+    assert session.frames_observed == expected_observed
+    assert session.end_reason == expected_end
+    if expected_end != "stop":
+        assert not _labelled_finished(session)
+
+
+def test_a_hard_stop_while_an_image_is_waited_for_is_honoured_at_once(
+    tmp_path, monkeypatch
+):
+    """The wait for a locked image asks the stop check between tries, as the
+    strict manifest read does: a Tower shutting down is not held for the
+    budget by one frame."""
+    capture = _distinct_frames(tmp_path / "captures" / ("a" * 32), 48, end_reason=None)
+    _image_unreadable_for(monkeypatch, {"frame0029.jpg"}, 60.0)
+    marks = {}
+
+    def on_observe(n, stop):
+        if n != 20:
+            return
+        _write_manifest(capture, "stop")
+        stop.request(StopRequest.SOFT, "stdin-closed")
+
+        def hard():
+            time.sleep(0.2)
+            marks["hard"] = time.monotonic()
+            stop.request(StopRequest.HARD, "SIGBREAK")
+
+        threading.Thread(target=hard, daemon=True).start()
+
+    _hook(monkeypatch, on_observe)
+    exit_code, session = _run_session(capture, tmp_path / "worlds")
+    done = time.monotonic()
+
+    assert done - marks["hard"] < capture_module.MANIFEST_READ_BUDGET_S / 2
+    assert exit_code == 0
+    assert session.frames_observed == 29
+    assert session.end_reason == "interrupted"
 
 
 # ---------------------------------------------------------------------------
