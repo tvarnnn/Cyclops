@@ -589,6 +589,46 @@ def test_t8_the_builder_records_its_finish_and_clears_it_before_the_lock(rendere
     assert masked(final_off["argv"], tmp_path / "off") == masked(final["argv"], tmp_path / "on")
 
 
+@pytest.mark.parametrize("on", [False, True])
+def test_t8_off_the_final_solve_is_called_exactly_as_before(tmp_path, monkeypatch, on):
+    """Off, `run_final` is called with the keywords it always had -- a stand-in with the old
+    signature (as `test_world_builder_finalization_notice.py` installs) still works. On, the
+    token travels as `phase_env`. (The full suite caught the first version passing
+    `phase_env=None` unconditionally.)"""
+    import contextlib
+    import io
+
+    import scripts.world_build_session as wbs
+
+    if on:
+        _on(monkeypatch, basis=False)
+    else:
+        _off(monkeypatch)
+    calls = []
+    monkeypatch.setattr(wbs, "prewarm_world_builder", lambda *a, **k: ())
+    monkeypatch.setattr(wbs.StopRequest, "install", lambda self, **k: None)
+    if on:
+        monkeypatch.setattr(wbs.BackgroundSolver, "run_final",
+                            lambda self, store, sources, should_stop=None, phase_env=None:
+                            calls.append(phase_env) or {"attempted": True, "solved": False,
+                                                        "reason": "stub"})
+    else:
+        monkeypatch.setattr(wbs.BackgroundSolver, "run_final",
+                            lambda self, store, sources, should_stop=None:
+                            calls.append("old") or {"attempted": True, "solved": False,
+                                                    "reason": "stub"})
+    with contextlib.redirect_stdout(io.StringIO()):
+        code = wbs.main(["--synthetic", "--synthetic-frames", "10", "--root", str(tmp_path / "wb"),
+                         "--solve", "--solve-every", "0", "--format", "json"])
+    assert code == 0
+    if on:
+        (env,) = calls
+        assert list(env) == [FP.TOKEN_ENV]
+    else:
+        assert calls == ["old"]
+    assert not list(tmp_path.rglob(FP.FILENAME))
+
+
 def test_t8_a_hard_stop_says_assembling_and_clears(rendered, tmp_path, monkeypatch):
     marks, at_release, calls, left = _t8_run("hard", rendered, tmp_path / "hard", monkeypatch,
                                              on=True, background=False)

@@ -2600,11 +2600,14 @@ def main(argv=None) -> int:
                     f"final solve skipped: hard stop ({stop_request.source}) during finalization"
                 )
             else:
+                # The token goes to the final spawn only with the switch on; off, this is
+                # exactly the call it was (no `phase_env` keyword at all).
+                final_kw = {}
                 if phase is not None:
                     phase.mark(finish_phase.PREPARING)
+                    final_kw["phase_env"] = phase.child_environment()
                 solve_report = solver.run_final(
-                    store, sources, should_stop=stop_request.hard_asked_for,
-                    phase_env=phase.child_environment() if phase is not None else None,
+                    store, sources, should_stop=stop_request.hard_asked_for, **final_kw
                 )
                 if solve_report.get("solved"):
                     # Including a child a hard stop (or a crash) ended AFTER it had
