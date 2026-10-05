@@ -207,7 +207,7 @@ const WBCHROME = (() => {
       return caption;
     });
     const pageId = randomId();
-    let seq = 0, nonce = null, dead = false, final = false, awaiting = false;
+    let seq = 0, nonce = null, dead = false, awaiting = false;
     let last = null, stateInFlight = false, dirty = false;
     let lastView = null, latestView = null, viewInFlight = false, viewTimer = null, lastViewAt = -Infinity;
     const now = () => (typeof performance !== "undefined" && performance.now) ? performance.now() : Date.now();
@@ -236,14 +236,24 @@ const WBCHROME = (() => {
       if (restore) doc.body.classList.remove("wbnative");
     }
     function flush(){
-      // after a stop, only `deactivate`'s own report (`final`) is still sent
-      if (nonce === null || (dead && !final)) return;
+      if (nonce === null || dead) return;
       if (stateInFlight){ dirty = true; return; }
       let snap;
       try { snap = snapshot(reader); } catch (_){ return; }
       if (sameState(snap, last)) return;
       last = snap; stateInFlight = true;
       post("state", snap).then(landed, () => { stateInFlight = false; stop(true); });
+    }
+    /* `deactivate`'s report: `active:false`, posted at once and exactly once. It
+       waits on nothing -- not on a `state` whose reply is still pending (that
+       reply may hang, or be rejected), not on differing from the last one --
+       because the phone waits for it on every deactivate and reloads the page
+       without it. Nothing is posted after it. */
+    function confirmInactive(){
+      let snap;
+      try { snap = snapshot(reader); } catch (_){ return; }
+      last = snap;
+      post("state", snap).then(() => {}, () => {});
     }
     function landed(){
       stateInFlight = false;
@@ -312,10 +322,8 @@ const WBCHROME = (() => {
         // (an invalid first `state`, its timeout) waits for this confirmation,
         // and would otherwise reload the page for want of it.
         stop(false);
-        final = true;
         doc.body.classList.remove("wbnative");
-        last = null;
-        flush();
+        confirmInactive();
         return true;
       }
       if (type === "close"){ stop(false); return true; }
