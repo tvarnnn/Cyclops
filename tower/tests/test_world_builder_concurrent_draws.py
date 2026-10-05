@@ -2485,6 +2485,90 @@ def test_a_stopped_regate_at_the_lock_keeps_the_published_rows_sentence(tmp_path
     assert result == {"gate": gate, "publish": {"written": False, "why": CP.WHY_STOPPED_AT_SESSION_LOCK},
                       "stopped": True, "notice": CP.publish_notice(kept), "detail": CP.publish_detail(kept)}
 
+@pytest.mark.skipif(os.name != "nt", reason="LockFileEx")
+def test_a_real_lock_api_error_is_not_read_as_held(tmp_path, monkeypatch):
+    """ADV (4bdbeac) LOW-1. The REAL `_try_file_lock` on a handle `LockFileEx` refuses with an
+    error other than ERROR_LOCK_VIOLATION (a pipe) must raise, so the run fails open -- never
+    read it as "another writer holds it", which makes an OFF run poll for ever where the base
+    ran. Bounded: a wait is told to stop after 2 s, so a regression fails, never hangs."""
+    import threading
+
+    store = WorldStore(tmp_path / "store")
+    monkeypatch.setattr(GS, "_SESSION_LOCK_POLL_S", 0.05)
+    root = GS.workspace_for(store, "w7", "s7").root
+    real = GS._try_file_lock
+    calls, raised = [], []
+
+    def on_a_pipe(fd):
+        calls.append(fd)
+        read, write = os.pipe()
+        try:
+            return real(read)
+        except OSError as exc:
+            raised.append(exc)
+            raise
+        finally:
+            os.close(read)
+            os.close(write)
+
+    monkeypatch.setattr(GS, "_try_file_lock", on_a_pipe)
+    give_up = threading.Event()
+    timer = threading.Timer(2.0, give_up.set)
+    timer.daemon = True
+    timer.start()
+    seen = []
+    try:
+        def take(entered):
+            with GS.session_writer_lock(root, should_stop=give_up.is_set):
+                seen.append(GS.session_writer_lock_held(root))
+                entered.set()
+
+        thread, entered, done, errors = _enter_in_thread(take)
+        started = time.monotonic()
+        assert done.wait(10)
+        elapsed = time.monotonic() - started
+    finally:
+        timer.cancel()
+    assert errors == [] and entered.is_set()
+    assert elapsed < 1.0, elapsed                 # failed open at once; it did not wait
+    assert len(calls) == 1                        # asked once, never polled
+    assert len(raised) == 1 and raised[0].errno != 33   # a real API error, not a lock violation
+    assert seen == [False]                        # it ran, without the lock, as the base did
+    assert not GS.session_writer_lock_held(root)
+
+
+def test_a_stopped_regate_whose_published_solve_cannot_be_read_still_wrote_nothing(tmp_path, monkeypatch):
+    """ADV (4bdbeac) LOW-2. A stop while another writer holds the session, and the published solve
+    cannot be read (another writer is mid-way through it): the re-gate still returns "nothing
+    written, still owed" -- no gate, no sentence -- and does not raise, so the finisher puts the
+    room back and forgives the attempt rather than counting a failure."""
+    from scripts.world_finish_pending import _regate_wrote_nothing
+
+    store = WorldStore(tmp_path)
+    monkeypatch.setattr(GS, "_SESSION_LOCK_POLL_S", 0.05)
+    root = GS.workspace_for(store, "w7", "s7").root
+    read = []
+
+    def unreadable(*args):
+        read.append(args)
+        raise ValueError("half written")
+
+    monkeypatch.setattr(GS, "load_solution", unreadable)
+    ran = []
+    monkeypatch.setattr(CP, "_regate_published", lambda *args, **kwargs: ran.append(1) or {"regated": True})
+    holder, release = _hold_in_another_process(tmp_path, root)
+    safety = _release_later(release)
+    try:
+        result = CP.regate_published(store, "w7", "s7", should_stop=lambda: True)
+    finally:
+        safety.cancel()
+        release.write_text("go")
+        holder.wait(10)
+    assert read and ran == []
+    assert result == {"gate": None, "publish": {"written": False, "why": CP.WHY_STOPPED_AT_SESSION_LOCK},
+                      "stopped": True, "notice": None, "detail": None}
+    assert _regate_wrote_nothing(result)
+
 
 @pytest.mark.skipif(os.name != "nt", reason="directory junctions")
 def test_aliases_of_a_session_share_one_lock(tmp_path):
