@@ -20,6 +20,7 @@ import logging
 import math
 import os
 
+from tower.config import world_finish_stages_setting
 from tower.world_builder.records import (
     FINAL_SOLVE_SOLVED,
     FINALIZATION_COMPLETE,
@@ -679,6 +680,8 @@ def build_world_listing(store: WorldStore) -> dict:
     counts as unreadable (see `_is_timestamp`): it is omitted, with a
     warning naming it, rather than served raw for the phone to choke on."""
     worlds = []
+    # T-UX1 (WORLDS §2b): read once per listing. Off, no row reads a phase or probes a process.
+    finish_on = world_finish_stages_setting()
     for world_id in store.list_world_ids():
         try:
             world = store.read_world(world_id)
@@ -694,6 +697,7 @@ def build_world_listing(store: WorldStore) -> dict:
             )
             continue
         live = _world_is_live(store, world_id)
+        holder = store.lock_holder(world_id) if finish_on else None
         sessions = []
         for session_id in store.list_session_ids(world_id):
             try:
@@ -824,6 +828,17 @@ def build_world_listing(store: WorldStore) -> dict:
                     store, world_id, session_id, session, world,
                     has_geometry=has_geometry, appearance=appearance),
             })
+            if finish_on and sessions[-1]["state"] == SESSION_FINALIZING:
+                # The status channel's `lifecycle.processing`, from the same function, the same
+                # record and the same holder rule, so a row and its panel agree. The row's LAST key.
+                from tower.world_builder import finish_phase  # noqa: PLC0415
+
+                processing = finish_phase.project(
+                    finish_phase.read_phase(finish_phase.phase_path(store, world_id, session_id)),
+                    session_id=session_id, session=session,
+                    holder=holder if lock_speaks_for(session) else None)
+                if processing is not None:
+                    sessions[-1]["processing"] = processing
         # `_sortable` HERE TOO, and its absence here was the whole
         # argument for it thirty lines below.
         #

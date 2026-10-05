@@ -27,6 +27,7 @@ that produced it, so a stale derived tree is detected rather than trusted.
 
 import hashlib
 import json
+import math
 import os
 import re
 import time
@@ -1770,4 +1771,35 @@ def _holder_is_running(pid: int, created_at, lock_written_at=None) -> bool:
             return float(actual) <= float(lock_written_at) + _RECYCLED_PID_GRACE_S
         return True
     except Exception:  # pragma: no cover - psutil is a hard dependency
+        return False
+
+
+def process_identity(pid: int) -> dict:
+    """What a lock or a finish phase names a process by: `_lock_record(pid)`.
+
+    T-UX1 (`tower.world_builder.finish_phase`): the builder stamps its finish
+    phase with this, so a reader can tell the process that wrote it from any
+    process the OS later hands the same pid to."""
+    return _lock_record(pid)
+
+
+def process_is_running(identity) -> bool:
+    """Whether `identity` (as `process_identity` wrote it) names a process still running.
+
+    False for anything malformed, and -- stricter than the lock, which falls
+    back to the lock file's mtime -- for an identity with no finite numeric
+    `created_at`: a finish phase is only believed when the process that wrote
+    it can be named exactly. Never raises."""
+    try:
+        if not isinstance(identity, dict):
+            return False
+        pid = identity.get("pid")
+        created_at = identity.get("created_at")
+        if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0:
+            return False
+        if (not isinstance(created_at, (int, float)) or isinstance(created_at, bool)
+                or not math.isfinite(created_at)):
+            return False
+        return _holder_is_running(pid, float(created_at))
+    except Exception:  # noqa: BLE001 -- a probe that cannot tell answers "not running"
         return False

@@ -91,6 +91,7 @@ from tower.storage import (
     write_json_atomic,
 )
 from tower.world_builder.records import Keyframe, SegmentPlacement
+from tower.world_builder import finish_phase
 from tower.world_builder import stage_timing
 from tower.world_builder.schema import (
     DEGENERACY_NONE,
@@ -1268,6 +1269,11 @@ def solve(
     keyframes = store.read_keyframes(world_id, session_id)
     if len(keyframes) < 2:
         return {"solved": False, "reason": "fewer than two keyframes"}
+    # T-UX1 finish phase (WORLDS §2b). Every mark below is guarded on `final` and is a no-op
+    # unless the live builder's final-solve child installed a writer (`scripts/world_solve.py`):
+    # it replaces one side file and touches nothing this solve reads or writes.
+    if final:
+        finish_phase.mark(finish_phase.PREPARING)
     workspace = workspace_for(store, world_id, session_id)
     try:
         ambiguous_frames: list = []
@@ -1388,6 +1394,9 @@ def solve(
     extraction.num_threads = threads
     extraction.sift.max_num_features = MAX_FEATURES
     if not frozen:
+        if final:
+            # Never on the frozen path: a solve that did not match never says it did.
+            finish_phase.mark(finish_phase.MATCHING)
         pycolmap.extract_features(
             database_path, workspace.images_dir, image_names=present,
             camera_mode=pycolmap.CameraMode.SINGLE, reader_options=reader,
@@ -1433,6 +1442,8 @@ def solve(
             masking = _MASKING_REEXTRACTED
             walk_database = "filter-failed"
             imports_cleared += _clear_earlier_revisit_imports(database_path)
+            if final:
+                finish_phase.mark(finish_phase.MATCHING)
             pycolmap.extract_features(
                 database_path, workspace.images_dir, image_names=present,
                 camera_mode=pycolmap.CameraMode.SINGLE, reader_options=reader,
@@ -1454,6 +1465,8 @@ def solve(
         # (above), so a solve that imports nothing maps nothing imported, and one that
         # imports re-imports it under its own floor.
         if revisit_list:
+            if final:
+                finish_phase.mark(finish_phase.MATCHING)
             revisits = _import_revisit_pairs(
                 pycolmap, store, world_id, session_id, workspace, database_path, present,
                 revisit_list, matching=matching, verification=verification,
@@ -1486,6 +1499,8 @@ def solve(
 
     # ONE thread when seeded: GLOMAP is reproducible only then (D1 §2.4).
     map_threads = 1 if seeded else threads
+    if final:
+        finish_phase.mark(finish_phase.PLACING)
     solution = _map_candidate(
         pycolmap, database_path, workspace, workspace.sparse_dir, keyframes, seed=seed,
         threads=map_threads, input_digest=input_digest,
@@ -1587,6 +1602,11 @@ def solve(
             refusal=None if seeded else (
                 "the solve is not seeded (TOWER_WORLD_SOLVE_SEED): a consensus of mapper seeds "
                 "needs one"))
+    if final and gated:
+        # Pass 1 of N when the consensus will map further draws (each further pass is marked in
+        # `coherence_publish.gate_by_consensus`); a single-draw gated solve has no pass.
+        finish_phase.mark(finish_phase.CHECKING,
+                          (1, requested) if plan is not None and plan.map_draw is not None else None)
     if plan is not None and plan.map_draw is not None and gated:
         # A CONSENSUS THAT WILL MAP FURTHER DRAWS PUBLISHES DRAW 0 FIRST (review V10, MED-1(a)).
         solution = _publish_draw_0_first(

@@ -143,6 +143,32 @@ def _servable_manifest(store: WorldStore, world_id: str, session_id: str):
     return contained, manifest
 
 
+def appearance_basis(store: WorldStore, world_id: str, session_id: str) -> str | None:
+    """What the appearance this route would serve now was built from (WORLDS §4a `basis`):
+    `"final"`, `"walk"`, or None when it cannot tell or nothing is servable. Never raises.
+
+    `"walk"`: the manifest says `quality: "live"`, or its proxy was a live surface
+    (`proxy.source.surface_quality: "live"`) -- including the walk's photos a viewer is served
+    across Stop (APPEARANCE v3, manager 185 A). `"final"`: `quality: "final"` over a final
+    surface (or a manifest that does not say which surface). None: no `quality` (an older
+    manifest), or not servable."""
+    try:
+        _world, manifest = _servable_manifest(store, world_id, session_id)
+    except Exception:  # noqa: BLE001 -- not servable, or unreadable: cannot tell
+        return None
+    if not isinstance(manifest, dict):
+        return None
+    quality = manifest.get("quality")
+    proxy = manifest.get("proxy")
+    source = proxy.get("source") if isinstance(proxy, dict) else None
+    surface_quality = source.get("surface_quality") if isinstance(source, dict) else None
+    if quality == "live" or surface_quality == "live":
+        return "walk"
+    if quality == "final" and surface_quality in ("final", None):
+        return "final"
+    return None
+
+
 def _label(manifest: dict) -> str:
     value = (manifest.get("appearance_provenance") or {}).get("redaction_effective")
     # An absent label is not `None`, which reads like a redactor called None.

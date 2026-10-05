@@ -38,6 +38,7 @@ import math
 import time
 from pathlib import Path
 
+from tower.config import world_finish_stages_setting
 from tower.logging_config import client_safe_reason
 from tower.results.contracts import TIME_BASIS
 from tower.results.world_builder_library import _sortable, lock_speaks_for
@@ -862,6 +863,15 @@ class WorldBuilderStatusProducer:
             world_id=world.world_id,
             session_id=session_id,
         )
+        # T-UX1 (WORLDS §2b): what the builder is doing, on the one arm where a live builder of
+        # THIS session holds the lock. Off, or unproven, adds nothing: the lifecycle is byte for
+        # byte as before. Appended LAST, and with no timestamp, so it moves the revision exactly
+        # when the stage or the pass moves (CARTRIDGE-RESULTS §5).
+        if lifecycle.get("state") == LIFECYCLE_FINALIZING and world_finish_stages_setting():
+            processing = self._processing(store, world.world_id, session_id, session,
+                                          holder if lock_speaks_for(session) else None)
+            if processing is not None:
+                lifecycle["processing"] = processing
         # Which counts are trustworthy is decided by whether the session
         # was ever STOPPED -- not by whether it is currently `receiving`.
         #
@@ -911,6 +921,15 @@ class WorldBuilderStatusProducer:
             ),
             "time_basis": TIME_BASIS,
         }
+
+    def _processing(self, store, world_id, session_id, session, holder):
+        """`lifecycle.processing`, or None (`finish_phase.project`). The parse is cached on the
+        file's (size, mtime_ns); the two liveness probes run on every poll, never cached."""
+        from tower.world_builder import finish_phase as FP  # noqa: PLC0415,N812
+
+        path = FP.phase_path(store, world_id, session_id)
+        doc = self._files.read("finish-phase", path, lambda: FP.read_phase(path))
+        return FP.project(doc, session_id=session_id, session=session, holder=holder)
 
     def _trajectory_block(
         self, store, world, session_id, manifest, current, keyframes_now,
