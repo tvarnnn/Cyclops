@@ -604,7 +604,10 @@ def test_t8_off_the_final_solve_is_called_exactly_as_before(tmp_path, monkeypatc
         _on(monkeypatch, basis=False)
     else:
         _off(monkeypatch)
-    calls = []
+    calls, marks = [], []
+    real_mark = FP.PhaseWriter.mark
+    monkeypatch.setattr(FP.PhaseWriter, "mark",
+                        lambda self, stage, step=None: marks.append(stage) or real_mark(self, stage, step))
     monkeypatch.setattr(wbs, "prewarm_world_builder", lambda *a, **k: ())
     monkeypatch.setattr(wbs.StopRequest, "install", lambda self, **k: None)
     if on:
@@ -624,8 +627,10 @@ def test_t8_off_the_final_solve_is_called_exactly_as_before(tmp_path, monkeypatc
     if on:
         (env,) = calls
         assert list(env) == [FP.TOKEN_ENV]
+        # no background solve was running at Stop, so no `waiting`
+        assert marks == ["preparing", "assembling"]
     else:
-        assert calls == ["old"]
+        assert calls == ["old"] and marks == []
     assert not list(tmp_path.rglob(FP.FILENAME))
 
 
