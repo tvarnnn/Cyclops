@@ -692,6 +692,8 @@ class FollowedFrame:
     tx_seq: int | None = None
     width: int | None = None
     height: int | None = None
+    # See RECEIVED_MONOTONIC. None when the record carries no usable one.
+    received_monotonic: float | None = None
 
 
 class CaptureFollower:
@@ -1294,4 +1296,5 @@ class CaptureFollower:
             tx_seq=record.get("tx_seq"),
             width=record.get("width"),
             height=record.get("height"),
+            received_monotonic=received_monotonic_of(record),
         )

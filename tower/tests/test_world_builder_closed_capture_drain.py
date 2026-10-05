@@ -1425,6 +1425,84 @@ def test_the_recorders_own_stamps_decide_what_was_after_the_stop(
         assert "were never observed" not in caplog.text
 
 
+@pytest.mark.parametrize("observed_at_stop", [48, 20], ids=["caught-up", "behind"])
+def test_a_drain_ends_at_the_first_frame_recorded_after_the_stop(
+    tmp_path, monkeypatch, caplog, observed_at_stop
+):
+    """Codex H1 (the re-review's `pd`, MED-1), through the real recorder.
+
+    48 frames recorded; the soft stop lands with the builder at
+    `observed_at_stop`; the camera records 3 more frames AFTER the Stop and
+    the recorder's normal close lands, all before the builder's next stop
+    check. That check then reads a normal close and drains. 6124de8 drained
+    the 3 post-Stop frames into the world (51); 44fbd13 stopped where it was
+    (48 caught up -- byte for byte, see the identity test's
+    `soft-while-open-3-after-stop-close-before-next-check` -- and 20 behind,
+    stored as a finished walk). Now the drain builds every frame recorded up
+    to the Stop, in order, and none after it."""
+    recorder = CaptureRecorder(tmp_path / "recordings")
+    capture_id = recorder.start()
+    for index in range(48):
+        assert recorder.write_frame(b"synthetic-frame", source_seq=index + 1)
+    observed = []
+
+    def on_observe(n, stop):
+        if n != observed_at_stop:
+            return
+        stop.request(StopRequest.SOFT, "stdin-closed")
+        _past_the_stop(stop)
+        for index in range(3):
+            assert recorder.write_frame(b"synthetic-frame", source_seq=49 + index)
+        recorder.stop()
+
+    _hook(monkeypatch, on_observe)
+    original_observe = builder_script.WorldBuilderEngine.observe
+
+    def recording_observe(self, *args, **kwargs):
+        observed.append(kwargs.get("source_seq"))
+        return original_observe(self, *args, **kwargs)
+
+    monkeypatch.setattr(builder_script.WorldBuilderEngine, "observe", recording_observe)
+    with caplog.at_level(logging.INFO, logger="tower.world_build_session"):
+        exit_code, session = _run_session(
+            recorder.capture_dir(capture_id), tmp_path / "worlds", max_idle_polls="50"
+        )
+
+    assert recorder.manifest(capture_id)["frames_written"] == 51
+    assert exit_code == 0
+    assert session.frames_observed == 48
+    assert observed == list(range(1, 49))
+    assert session.end_reason == "stop"
+    assert "after the capture closed (stop)" in caplog.text
+    assert "were never observed" not in caplog.text
+
+
+def test_a_drain_ends_only_at_a_frame_stamped_after_the_stop():
+    """A tie with the Stop's own clock tick is before it (the guard counts it
+    the same way), a frame with no stamp is drained, and the check belongs
+    to a drain: before one is latched the stop policy alone decides."""
+
+    class ClosedNormally:
+        def end_reason(self, **_kwargs):
+            return "stop"
+
+    stop = StopRequest()
+    stop.request(StopRequest.SOFT, "stdin-closed")
+    at = stop.soft_requested_monotonic
+
+    def frame(received_monotonic):
+        return builder_script.ObservedFrame(
+            payload=b"", source_seq=1, received_monotonic=received_monotonic
+        )
+
+    assert not stop.recorded_after_the_stop(frame(at + 1.0))
+    assert stop.asked_for_capture({"follower": ClosedNormally()}) is False  # drains
+    assert not stop.recorded_after_the_stop(frame(at - 1.0))
+    assert not stop.recorded_after_the_stop(frame(at))
+    assert not stop.recorded_after_the_stop(frame(None))
+    assert stop.recorded_after_the_stop(frame(at + 0.001))
+
+
 @pytest.mark.parametrize("step_back_s", [0.0, 3.0], ids=["no-step", "wall-clock-3s-back"])
 def test_a_backward_wall_clock_step_cannot_hide_a_frame_from_before_the_stop(
     tmp_path, monkeypatch, caplog, step_back_s

@@ -170,6 +170,11 @@ class ObservedFrame:
     # copies (global_solve.py, ledger E6), and only the process that
     # observed the frame knows the path.
     source_path: Path | None = None
+    # The recorder's `time.monotonic()` at receipt (`tower.capture`
+    # RECEIVED_MONOTONIC), for a live capture whose journal carries it. Used
+    # only to end a soft-stop drain at the Stop (`StopRequest.bounded`);
+    # nothing is built from it.
+    received_monotonic: float | None = None
 
 
 def load_frames(directory: Path) -> list[ObservedFrame]:
@@ -382,6 +387,7 @@ def _follow_capture(directory: Path, *, poll_seconds: float, max_idle_polls,
             # COLMAP a DIFFERENT REAL PHOTOGRAPH under the right name, and
             # nothing anywhere would have noticed.
             source_path=follower.directory / frame.relpath,
+            received_monotonic=frame.received_monotonic,
         )
 
 
@@ -434,11 +440,11 @@ class StopRequest:
       no longer wanted for NEW frames": the wearer left World Builder, or
       the cartridge was stopped. A builder still observing an OPEN capture
       stops observing; one reading a capture the wearer closed normally
-      first reads every frame already recorded. The session ends
-      `interrupted` if the capture was still open, or if a frame recorded
-      by the stop was never observed (see `main`). Either way it still runs
-      the final solve -- only a hard stop skips it -- and writes its final
-      build. A builder
+      first reads every frame recorded up to the stop, in order, and no
+      frame recorded after it. The session ends `interrupted` if the
+      capture was still open, or if a frame recorded by the stop was never
+      observed (see `main`). Either way it still runs the final solve --
+      only a hard stop skips it -- and writes its final build. A builder
       already finalizing carries on: finalization is bounded and holds no
       camera. The moment of the FIRST soft request is kept, on the
       monotonic clock the recorder stamps every frame with
@@ -592,12 +598,35 @@ class StopRequest:
         a live stop from being missed by the one frame the follower had
         already yielded. A followed, normally closed capture may drain its
         recorded backlog after a soft request.
+
+        A DRAIN ENDS AT THE STOP. It reads what the camera recorded up to the
+        wearer's Stop and nothing after it: the first frame stamped later
+        than the first soft request ends it, so the frames behind that one
+        are not built either. 44fbd13 never built a frame after a soft
+        request, and this keeps a builder that was caught up at the Stop
+        exactly there even when the camera went on recording and the close
+        landed before its next stop check -- which drained the post-Stop
+        frames into the world (Codex H1; the re-review's `pd`: 51 built where
+        44fbd13 built 48). A frame that cannot show when it was received
+        (no `received_monotonic`) is drained, and the guard in `main` counts
+        any unread one, so ending a drain here can never hide an unread
+        frame from before the Stop.
         """
         stop = should_stop or self.asked_for
         for frame in frames:
             if stop():
                 return
+            if self.recorded_after_the_stop(frame):
+                return
             yield frame
+
+    def recorded_after_the_stop(self, frame) -> bool:
+        """Whether a DRAINING builder has reached the first post-Stop frame."""
+        if not self._draining_closed_capture:
+            return False
+        cutoff = self.soft_requested_monotonic
+        received = getattr(frame, "received_monotonic", None)
+        return cutoff is not None and received is not None and received > cutoff
 
 
 # How long a solve child gets after `terminate()` before it is killed, and
@@ -2086,6 +2115,15 @@ def main(argv=None) -> int:
             # session to unwind. Open the honest empty session below, then
             # raise inside its lifecycle so the error is durable.
             capture_start_error = exc
+            first, frames = None, iter(())
+        if first is not None and stop_request.recorded_after_the_stop(first):
+            # A soft stop before the first frame, then frames recorded after
+            # it and the close, all before the follower's next stop check:
+            # the first frame the drain finds is already past the Stop. It is
+            # not part of the walk, so it does not set this session's
+            # resolution either, and the session opens empty -- as 44fbd13's
+            # did, which stopped before reading it. The follower still counts
+            # what it holds, and none of it was recorded by the Stop.
             first, frames = None, iter(())
         if first is None:
             if capture_start_error is None:

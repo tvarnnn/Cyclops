@@ -370,3 +370,17 @@ def test_caught_up_stop_orders_build_what_44fbd13_built(
     else:
         _assert_valid_walk(observed, FRAMES, "stop")
     _check(order, observed)
+
+
+@pytest.mark.parametrize("order", POST_STOP_ORDERS)
+def test_frames_recorded_after_the_stop_are_not_built(
+    order, rendered, tmp_path, monkeypatch, caplog
+):
+    observed = _observed(*_run_order(order, rendered, tmp_path, monkeypatch, caplog), caplog)
+
+    if order == BEFORE_FIRST_FRAME_ORDER:
+        assert observed["report"]["frames_observed"] == 0
+        assert observed["report"]["end_reason"] == "stop"
+    else:
+        _assert_valid_walk(observed, FRAMES, "stop")
+    _check(order, observed)
