@@ -601,9 +601,10 @@ nonisolated struct WorldChromeSession: Sendable {
         case message(id: Int, frame: WorldChromeFrame, body: Result<WorldChromeMessage, WorldChromeRefusal>)
         /// The overlay committed its first frame with this page's state.
         case firstStateDrawn
-        /// `didFinish`: the page has loaded, and the opaque rendering panel
-        /// that covered the canvas -- and the native chrome drawn over it --
-        /// is gone.
+        /// After `didFinish`: the page has loaded, and the commit that took
+        /// away the opaque rendering panel -- which covered the canvas and
+        /// the native chrome drawn over it -- has been made
+        /// (`WorldRenderCover`).
         case pageFinished
         /// Only from enabled controls.
         case tapped(WorldChromeAction)

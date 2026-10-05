@@ -15,6 +15,7 @@
 //  NSString, NSNull, CFBoolean).
 //
 
+import SwiftUI
 import WebKit
 import XCTest
 
@@ -522,12 +523,79 @@ final class WorldChromeTests: XCTestCase {
         XCTAssertNil(replies["await"], "no activate while the rendering panel covers the native chrome")
         XCTAssertEqual(bridge.outstandingReplies, 1, "the await is held")
 
-        // didFinish, late: the panel goes, and the page may put its chrome away.
+        // didFinish, late: it asks for the panel to go. The panel is still
+        // on screen in this turn, so nothing is sent from the callback.
         coordinator.webView(WKWebView(frame: .zero), didFinish: nil)
         XCTAssertEqual(events, [.rendered])
+        XCTAssertNil(replies["await"], "no activate in didFinish's own turn: the panel is still up")
+        XCTAssertEqual(bridge.outstandingReplies, 1)
+        // The commit that removed the panel is made (`WorldRenderCover`):
+        // now the page may put its chrome away.
+        bridge.receive(.pageFinished)
         XCTAssertEqual(replies["await"]?["type"] as? String, "activate")
         XCTAssertEqual(bridge.outstandingReplies, 0)
         bridge.receive(.teardown)
+    }
+
+    /// The same rule, in a real SwiftUI hierarchy: `activate` reaches the
+    /// page only once the "Drawing the world…" panel has left the hierarchy
+    /// (`WorldRenderCover`), never while it is still in it. The panel here is
+    /// a probe that records SwiftUI's own appear and disappear.
+    func testActivateIsNotSentWhileTheRenderingPanelIsInTheHierarchy() async throws {
+        let model = WorldChromeModel()
+        let bridge = WorldChromeBridge(model: model, kind: .room, pageURL: Self.pageURL)
+        let life = CoverProbe.Life()
+        var activated: Bool?
+        var panelInHierarchyAtActivate: Bool?
+        var nonce = ""
+        func post(_ name: String, _ body: [String: Any]) {
+            bridge.receive(body: Self.webKit(body), frame: Self.frame) { reply, _ in
+                let reply = reply as? [String: Any] ?? [:]
+                if name == "hello" { nonce = reply["nonce"] as? String ?? "" }
+                if name == "await" {
+                    activated = reply["type"] as? String == "activate"
+                    panelInHierarchyAtActivate = life.inHierarchy
+                }
+            }
+        }
+        let page = CoverProbe.Page()
+        let host = UIHostingController(rootView: CoverProbe(page: page, life: life) {
+            bridge.receive(.pageFinished)
+        })
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.first as? UIWindowScene)
+        let window = UIWindow(windowScene: scene)
+        window.frame = CGRect(x: 0, y: 0, width: 200, height: 200)
+        window.rootViewController = host
+        window.makeKeyAndVisible()
+        defer {
+            window.isHidden = true
+            window.rootViewController = nil
+            bridge.receive(.teardown)
+        }
+        func waitUntil(_ condition: () -> Bool) async throws {
+            for _ in 0..<300 where !condition() { try await Task.sleep(for: .milliseconds(10)) }
+        }
+        try await waitUntil { life.inHierarchy }
+        XCTAssertTrue(life.inHierarchy, "the panel is up while the page renders")
+
+        // The page posts while it is parsed; the state is drawn under the panel.
+        bridge.receive(.pageWillLoad(echo: true))
+        post("hello", Self.helloBody())
+        post("state", Self.stateBody(seq: 1, nonce: nonce))
+        post("await", Self.awaitBody(seq: 2, nonce: nonce))
+        bridge.receive(.firstStateDrawn)
+        XCTAssertNil(activated, "held: the panel covers the native chrome")
+
+        // didFinish: the viewer goes ready, as `pageEvent(.rendered)` does.
+        page.isRendering = false
+        page.finished += 1
+        XCTAssertNil(activated, "not in the didFinish turn")
+        XCTAssertTrue(life.inHierarchy, "SwiftUI has not committed the removal yet")
+
+        try await waitUntil { activated != nil }
+        XCTAssertEqual(activated, true)
+        XCTAssertEqual(panelInHierarchyAtActivate, false,
+                       "activate was sent while the rendering panel was still in the hierarchy")
     }
 
     /// The reducer's half of the same rule: `activate` needs both the drawn
@@ -1172,5 +1240,32 @@ struct SeededGenerator: RandomNumberGenerator {
         z = (z ^ (z >> 30)) &* 0xBF58_476D_1CE4_E5B9
         z = (z ^ (z >> 27)) &* 0x94D0_49BB_1331_11EB
         return z ^ (z >> 31)
+    }
+}
+
+
+/// `WorldRenderCover` over a stand-in canvas, with a panel that records
+/// whether SwiftUI has it in the hierarchy.
+private struct CoverProbe: View {
+    @MainActor final class Page: ObservableObject {
+        @Published var isRendering = true
+        @Published var finished = 0
+    }
+
+    @MainActor final class Life {
+        var inHierarchy = false
+    }
+
+    @ObservedObject var page: Page
+    let life: Life
+    let onGone: @MainActor @Sendable () -> Void
+
+    var body: some View {
+        Color.red.modifier(WorldRenderCover(isRendering: page.isRendering, finished: page.finished,
+                                            onGone: { onGone() }) {
+            Color.black
+                .onAppear { life.inHierarchy = true }
+                .onDisappear { life.inHierarchy = false }
+        })
     }
 }

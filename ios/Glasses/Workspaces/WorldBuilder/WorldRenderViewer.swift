@@ -778,6 +778,11 @@ final class WorldRenderViewerModel: ObservableObject {
     /// string is identical and reloading it is the entire point.
     @Published private(set) var renderAttempt = 0
 
+    /// Bumped by each `didFinish` that leaves the page `.ready`. The view
+    /// answers it with `renderingPanelGone()` once the commit that took the
+    /// rendering panel away is on screen (`WorldRenderCover`).
+    @Published private(set) var pageFinishedToken = 0
+
     /// Which content-process-kill budget the page on screen is under.
     ///
     /// Separate from `renderAttempt` because the two questions came apart
@@ -1463,12 +1468,25 @@ final class WorldRenderViewerModel: ObservableObject {
         }
     }
 
+    /// The rendering panel that `.rendered` took away has left the screen:
+    /// the native chrome under it is visible, and the page may now be told
+    /// to put its own away (WORLDS §4c). Not if the page went back to a
+    /// bounded wait in the meantime -- that is a new page, with its own
+    /// `didFinish` to come.
+    func renderingPanelGone() {
+        guard case .ready = state else { return }
+        bridge.receive(.pageFinished)
+    }
+
     /// What the page did. The only route from the web view into this model.
     func pageEvent(_ event: WorldRenderPageEvent) {
         renderWatchdog?.cancel()
         renderWatchdog = nil
         switch event {
         case .rendered:
+            // The panel goes with this turn's state; the chrome hears of it
+            // after the commit (`renderingPanelGone`).
+            defer { if case .ready = state { pageFinishedToken += 1 } }
             // Only from `.rendering`. A `didFinish` that arrives after a
             // timeout already reported failure must not quietly un-fail the
             // screen underneath a reader who has started reading the message.
@@ -1892,13 +1910,13 @@ struct WorldRenderWebView: UIViewRepresentable {
         /// The page loaded and its script ran. The one signal that says the
         /// black rectangle became a world.
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+            // `.rendered` asks for the opaque rendering panel to go. It is
+            // still on screen in this turn: SwiftUI removes it with its next
+            // commit, so the chrome is told the page finished only after that
+            // (`WorldRenderCover`), never from here. Told now, `activate` could
+            // reach the page -- and the page hide its own chrome -- while the
+            // native chrome under the panel is still covered (WORLDS §4c).
             onEvent?(.rendered)
-            // After `.rendered`, which takes the opaque rendering panel off
-            // the canvas: the native chrome drawn under it is on screen from
-            // this turn's commit, so the page may now put its own chrome away
-            // (WORLDS §4c). Whatever the page draws in answer reaches the
-            // screen through a later turn of this main thread.
-            bridge.receive(.pageFinished)
         }
 
         /// The load failed after it had started.
@@ -2510,7 +2528,11 @@ struct WorldRenderScene: View {
                 // U1.1: the native chrome over the canvas. It never resizes
                 // the web view; the rendering overlay stays outermost.
                 .overlay { if usesNativeChrome { chromeCanvasLayer } }
-                .overlay { renderingOverlay }
+                .modifier(WorldRenderCover(isRendering: model.state.isRendering,
+                                           finished: model.pageFinishedToken,
+                                           onGone: { model.renderingPanelGone() }) {
+                    WorldRenderLoadingPanel(sentence: "Drawing the world…", step: 2, since: waitingSince)
+                })
         } else if model.state.failureMessage != nil {
             failureView
         } else {
@@ -2567,19 +2589,6 @@ struct WorldRenderScene: View {
             }
             .padding(8)
             .background(RoundedRectangle(cornerRadius: 8).fill(WorldChromeStyle.pill))
-        }
-    }
-
-    /// Over the web view while the page has not reported finishing.
-    ///
-    /// Opaque on purpose: a half-transparent spinner over an unpainted page
-    /// reads as a stuck page rather than as a page arriving. It disappears on
-    /// `didFinish`, and if that never comes the watchdog replaces the whole
-    /// thing with a sentence.
-    @ViewBuilder
-    private var renderingOverlay: some View {
-        if model.state.isRendering {
-            WorldRenderLoadingPanel(sentence: "Drawing the world…", step: 2, since: waitingSince)
         }
     }
 
@@ -2683,6 +2692,40 @@ struct WorldRenderScene: View {
 /// this screen existed.) The panel says which of the two it is, as a step of
 /// two, and how long that step has taken once it is more than a moment:
 /// 6–11 s on the real Tower, with nothing moving but a spinner, read as stuck.
+/// The "Drawing the world…" panel over the web view while the page has not
+/// reported finishing, and the hand-over that follows it.
+///
+/// Opaque on purpose: a half-transparent spinner over an unpainted page
+/// reads as a stuck page rather than as a page arriving. It disappears on
+/// `didFinish`, and if that never comes the watchdog replaces the whole
+/// thing with a sentence.
+///
+/// It also covers the native chrome, which is drawn under it (U1.1). So
+/// `onGone` -- the chrome's `pageFinished`, which may send the page
+/// `activate` -- runs only after the commit that removed the panel: from a
+/// task SwiftUI starts in that update, one main-actor turn later, once per
+/// `finished` (the same yield as the chrome's first drawn state). The
+/// `didFinish` callback that asked for the removal is too early: the panel
+/// is still on screen in its turn (WORLDS §4c).
+struct WorldRenderCover<Panel: View>: ViewModifier {
+    let isRendering: Bool
+    /// Bumped by each `didFinish` that leaves the page ready.
+    let finished: Int
+    let onGone: @MainActor () -> Void
+    @ViewBuilder let panel: () -> Panel
+
+    func body(content: Content) -> some View {
+        content
+            .overlay { if isRendering { panel() } }
+            .task(id: finished) {
+                guard finished > 0 else { return }
+                await Task.yield()
+                guard !Task.isCancelled else { return }
+                onGone()
+            }
+    }
+}
+
 struct WorldRenderLoadingPanel: View {
     let sentence: String
     let step: Int
