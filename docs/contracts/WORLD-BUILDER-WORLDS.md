@@ -5,7 +5,7 @@
 | | |
 |---|---|
 | Contract | `world_builder.worlds/2026-09-10` |
-| Document version | **v6** (2026-10-05): a walk's photos stay served across Stop, so a viewer opened after Stop is given the appearance rung (manager 185 A; §4 *Live*, §4a, §4b; `WORLD-BUILDER-APPEARANCE.md` v4). v5 (2026-10-05): native chrome. On request, and only behind the Tower's `TOWER_WORLD_NATIVE_CHROME` setting (off by default), the appearance page hands its chrome to the phone (§4c; the §4 query table, *Controls* and rule 6; §4a rule 3), manager 167. v4 (2026-09-28): the About panel's *The walk* no longer describes one capture, and the caption line's words are plain (*N of M images loaded*; the compact image format; `encoding_notes` never shown), manager 130 (§4). v3 (2026-09-28): the viewer's accessibility fixes from the O1 viewer check (iOS Simulator), manager 115 (§4). v2 (2026-09-27): viewer honesty, manager 106 (§4). See the change log at the end. The wire identifier above does **not** move: no payload changes, and the iOS decoder compares it for equality |
+| Document version | **vNEXT** (2026-10-05, PROPOSED; T-UX1 + U0.6, managers 142 §2, 167, 183 and 195 §2): what the builder is doing between Stop and the end of its final solve, as `processing` on a finalizing row (§2, new §2b; Tower setting `TOWER_WORLD_FINISH_STAGES`, off by default), and whether the served picture was built from the final pass, as `basis` on the render revision, with the PREVIEW rule (§4a rule 8; `TOWER_WORLD_PICTURE_BASIS`, off by default). **v6** (2026-10-05): a walk's photos stay served across Stop, so a viewer opened after Stop is given the appearance rung (manager 185 A; §4 *Live*, §4a, §4b; `WORLD-BUILDER-APPEARANCE.md` v4). v5 (2026-10-05): native chrome. On request, and only behind the Tower's `TOWER_WORLD_NATIVE_CHROME` setting (off by default), the appearance page hands its chrome to the phone (§4c; the §4 query table, *Controls* and rule 6; §4a rule 3), manager 167. v4 (2026-09-28): the About panel's *The walk* no longer describes one capture, and the caption line's words are plain (*N of M images loaded*; the compact image format; `encoding_notes` never shown), manager 130 (§4). v3 (2026-09-28): the viewer's accessibility fixes from the O1 viewer check (iOS Simulator), manager 115 (§4). v2 (2026-09-27): viewer honesty, manager 106 (§4). See the change log at the end. The wire identifier above does **not** move: no payload changes, and the iOS decoder compares it for equality |
 | Transport | HTTP `GET /worlds`, same origin and same rules as the geometry routes (`WORLD-BUILDER-GEOMETRY.md` §1) |
 | Tower producer | `tower/tower/results/world_builder_library.py` |
 | Tower route | `tower/tower/routes/geometry.py` |
@@ -60,6 +60,7 @@ Per session:
 | `appearance` | object \| null | **The appearance artifact, reported as the imagery it is** (additive, 2026-09-17, review 1 m6): `{format, state: served\|rebuilding\|withdrawn, quality, keyframes, keyframes_phone, bytes, redaction, redaction_effective, label_trusted, keyframe_image_set, privacy_tags, retains_raw_imagery, imagery, retention}`. `state` is `APPEARANCE.md` §9's: whether the routes serve it now. `redaction` is the label it was built under and `redaction_effective` what was applied; `imagery` says *first-person keyframe imagery of a private space; best-effort face redaction with measured false negatives; not anonymised*; `retention` says it is kept with the world until rebuilt or purged. No URL, id or path: the page reaches it through §4b only. `null` when the session has none |
 | `photographic` | object | **Where this session's photographic representation — the image-based room, which is the final user-facing output — has got to** (additive, 2026-09-22): `{state, stage: "surface"\|"appearance"\|null, detail}`. `state` is one word from a closed vocabulary: `complete`, `running`, `owed`, `failed`, `unattempted`, `never_recorded`, `unobservable`. The same block the status payload carries (`CARTRIDGE-RESULTS.md`, `lifecycle.photographic`), computed from the same helper, so a phone that reads the row and then opens the panel reads one fact and not two. §2a says what each word means, which of them move `state` and which do not, and why `failed` does not. **Always present on this listing**, unlike the status channel's `lifecycle.photographic`, which is null when the lifecycle was computed from the record alone: a row is built for every session, and a row with no answer is a row that keeps saying `complete`, which is the failure being fixed. A probe that cannot answer yields the `unobservable` WORD, never a missing block |
 | `components` | array \| null | **Implemented 2026-09-24 behind `TOWER_WORLD_SOLVE_GATE` (default off); reviewed by the Mac (C1); not yet validated.** The pieces of this walk's final solve after the evidence gate: exactly one `placed` (the room) first, then every piece the gate could not place, with `reason`, keyframes, capture spans, `shown_as` (`room` / `area` / `none`) and its own §2a block. No metric figure, no name. **`null` means not computed** — every world today — never "no areas". Additive; the contract identifier does not move. Specified in [`WORLD-BUILDER-COMPONENTS.md`](WORLD-BUILDER-COMPONENTS.md) §2–§3 |
+| `processing` | object, or **absent** | **What the builder is doing right now, between Stop and the end of its final solve and build** (vNEXT, PROPOSED, T-UX1; Tower setting `TOWER_WORLD_FINISH_STAGES`, off by default): `{stage, step?}`, §2b. Present only on a `finalizing` row whose own live builder holds the lock and when the Tower can prove which process wrote the stage. **Absent** on every other row, on every older Tower and with the setting off; absent never means "nothing is running". The same object as the status channel's `lifecycle.processing` (`CARTRIDGE-RESULTS.md` §10.1), from the same function. The row's last key |
 
 ## 2a. `photographic` — whether the room the wearer walked actually exists
 
@@ -152,6 +153,54 @@ hear a false `complete`. What the block adds is the ability to be specific,
 and the one case worth new copy is `failed`: *Saved — the photographic
 version could not be built*. `WORLD-BUILDER-IOS.md` §3a is the phone's side
 of the same block.
+
+## 2b. `processing` — what the builder is doing before the photographic stages (vNEXT, PROPOSED)
+
+Added 2026-10-05 (T-UX1, U0.6; managers 142, 167, 183 and 195 §2; Codex C10 and its
+review; `RUN\lead\specs\U06-TUX1-PROGRESS-SPEC-20261004.md`). Behind the Tower setting
+`TOWER_WORLD_FINISH_STAGES`, **off by default**; off, no row and no status payload carries
+it, and nothing is written.
+
+**Why.** After Stop the live builder keeps the world lock through the final solve and the
+final build — about 30 of the 45 minutes a long walk now waits — and until now nothing on
+the wire said what it was doing: the payload was byte-identical from the first second of
+that window to the last. `photographic` (§2a) covers the stages after the lock is released;
+this covers the window before it.
+
+| Field | Type | Meaning |
+|---|---|---|
+| `stage` | one word, below | what the builder is doing now |
+| `step` | `{n: int, of: int}`, **absent** unless `stage` is `checking` and the consensus maps further draws | which consensus pass: `1 ≤ n ≤ of ≤ 7` |
+
+| `stage` | What runs |
+|---|---|
+| `waiting` | the builder waits for the background solve that was still running at Stop (at most `--solve-wait-seconds`, 120 s by default; then it is ended) |
+| `preparing` | the final solve starts: the images are undistorted and the wearer's hands, arms and held phone are masked out of them |
+| `matching` | features are extracted and matched across the images. **Only when matching actually runs**: a solve whose matching was frozen and checked skips it, and then never says `matching` |
+| `placing` | where each image was taken is worked out (the global mapper, falling back to the incremental one) |
+| `checking` | the result is checked: depth, scale and the evidence gate, then — with a consensus — each further placement pass and its check, the vote, the anchor verification and the publish. Usually the longest stage. `step` names the pass |
+| `assembling` | the final build is assembled from the solve, and the builder hands over to the photographic stages (§2a) |
+
+**When it is present — the proof.** All of: the session's record is closed and its
+`finalization.state` is `pending`; the world's writer lock is held by a live process that is
+this session's builder; the stage was recorded by that builder, or by the final-solve child
+it launched, and that writer is still running (process identity is the pid **and** its start
+time); and the record's `finalization.started_at` is the one the stage was recorded under.
+Anything else — a child that died, a lock now held by another process (a finisher, a
+re-finish, a new walk), a finished record — and the field is **absent**. A client then says
+what it said before this field existed.
+
+**What it never covers.** The photographic stages and the areas (§2a: `photographic` and
+its `scope`); a re-finish; a hand-run `scripts/world_finalize.py`; the idle finisher's
+re-gate in place; dense reconstruction. Those are absent.
+
+**No time, no estimate.** The Tower sends no duration, percentage or estimate, and
+`processing` carries no timestamp: it changes the revision exactly when the stage or the pass
+changes.
+
+**Compatibility.** Additive and optional; `world_builder.worlds/2026-09-10` does not move. A
+phone reads row keys by name and never looks at one it does not know. A client must treat an
+unknown `stage` word as "not said" (and never as finished), and an invalid `step` as absent.
 
 ## 3. Rules
 
@@ -1263,7 +1312,8 @@ page to find out.
 | `view` | string, optional | as §4. `view=diagnostics` reports the **sparse** rung, because that is the page §4 serves for it. A client showing the diagnostics rendering has nothing to follow and should not ask (the iOS app does not) |
 | `viewer` | string, optional | as §4, and it must match the page request's: without `appearance-1` the rung reported is the one §4 would serve a client that cannot draw the appearance page (`surface` or lower). A poll that dropped it while an appearance page is on screen would be told `surface` and swap the page down. The iOS app sends it on its native poll, and its scheme handler adds it to the page's own proxied poll (`WORLD-BUILDER-IOS.md` §10). `appearance` in the body is reported either way |
 
-**200** `{"session_id": str, "representation": "appearance"|"surface"|"dense"|"sparse", "revision": str, "live": bool, "appearance": {"revision": str|null, "current": bool, "state": "served"|"rebuilding"|"withdrawn"|"absent"|"unavailable", "epoch": str|null}}`,
+**200** `{"session_id": str, "representation": "appearance"|"surface"|"dense"|"sparse", "revision": str, "live": bool, "appearance": {"revision": str|null, "current": bool, "state": "served"|"rebuilding"|"withdrawn"|"absent"|"unavailable", "epoch": str|null}, "components": [...]|null, "basis"?: "final"|"walk"|null}`
+(`basis` vNEXT, PROPOSED: the body's last key, present only with the Tower setting on),
 `Cache-Control: no-store`. **404** exactly when §4 would 404.
 
 `appearance` (additive, 2026-09-17) follows the session's appearance artifact
@@ -1303,6 +1353,23 @@ its §2 row, or `null` when not computed. **Not part of `revision`**: an area
 finishing never swaps the room page. Areas are not a rung and not a query
 parameter of §4; they have their own routes, `GET /worlds/{w}/areas/{s}/{a}/…`
 (`WORLD-BUILDER-COMPONENTS.md` §3.2 and §5).
+
+`basis` (vNEXT, PROPOSED; Tower setting `TOWER_WORLD_PICTURE_BASIS`, off by default;
+**absent** with it off and on every older Tower): what the picture §4 would serve now was
+built from. `"final"`: from the final pass — an appearance manifest with `quality: "final"`
+over a final surface (`WORLD-BUILDER-APPEARANCE.md` §7), a surface with
+`params.quality: "final"` (`WORLD-BUILDER-SURFACE.md`), or points or dense geometry of a
+session whose finalization is `complete` with `final_solve: "solved"`. `"walk"`: from the
+walk — a live appearance or surface (`quality: "live"`, or an appearance over a live surface),
+or points of a session that is still being finished or whose final pass did not succeed.
+**After Stop this is the normal answer for a while** (v6): the walk's photos stay served
+across Stop, so a viewer opened during the wait is given the appearance rung built during the
+walk, and `basis` is `"walk"` until the final appearance lands. `null`: the Tower cannot tell
+(an older artifact with no `quality`, a record from before 2026-09-06). Not part of
+`revision`. A settled world can be served a `walk` picture: when the final surface or
+appearance could not be built, the saved world keeps the last live artifact (SURFACE, "live or
+final"). The area route (`GET /worlds/{w}/areas/{s}/{a}/render/revision`) does not carry it: areas
+are built only after the final pass.
 
 Every page §4 serves carries the same two values in its head, within its first
 4096 characters:
@@ -1373,6 +1440,18 @@ Every page §4 serves carries the same two values in its head, within its first
    carries no `wb-revision` rather than a false one. A client that does not
    step down the ladder by itself (the iOS app neither swaps nor offers a worse rung,
    `WORLD-BUILDER-IOS.md` §10) sees nothing change.
+8. **A preview is never presented as the final world** (vNEXT, PROPOSED;
+   `WORLD-BUILDER-IOS.md` §3c). A picture of a session that is not settled — its row
+   `receiving` or `finalizing` other than an area still finishing — is a **preview**, whatever
+   `basis` says; so is any picture whose `basis` is `"walk"`. Since v6 the preview a viewer
+   opened after Stop is given is normally **the walk's photos** (the appearance rung, built
+   during the walk), not a bare surface: it looks like the room, which is exactly why it must
+   be labelled. A client labels a preview as one, and says the final world is on screen only
+   when what is on screen was built from the final pass: for the appearance page, the manifest
+   it loaded says `quality: "final"` (the page loads the final build in place, so the label
+   follows the manifest, not the page revision, which does not move at Stop); for any other
+   page, it was fetched after the route first answered `basis: "final"`. `null` or an absent
+   `basis` decides nothing either way.
 
 ## 4b. `GET /worlds/{world_id}/appearance/{session_id}/…` — the keyframes a phone blends
 
@@ -1522,3 +1601,4 @@ identifier unless it says so.
 | **v4** | 2026-09-28 | **Manager 130** (§3; the corrected first batch B1 of the C7 review, `cx-C7-tux2-plain-language-20260928-REVIEW.md`, F6e and F10) | §4: *Caption* (the caption line's words; the About panel's *The walk*) | **Plain words, copy only.** *The walk* no longer says *this wearer never stood back from the desk, so it is a view from the desk, not of the whole room*: that described one 2026-09 capture, from a template served for every walk and every area page. *Best view* is described by what it optimizes: the most nearly whole picture near the walked path, which is not always the widest. This supersedes v2, which kept the whole of *The walk* unchanged. The caption line reads *N of M images loaded* (was *keyframes shown*), and says which side cannot use the compact image format, so fewer images fit (was *reduced set: … compressed textures …*). `encoding_notes` is never shown, which also ends *([object Object])* on a Tower without the ASTC encoder. `PAGE_REVISION` stays `appearance:1`. The anchors, the research marker, *Best view*'s scorer, `NAV.MAX_SKIP`, every manifest key, the rendering and the camera path are unchanged | **Nothing.** `world_builder.worlds/2026-09-10` and every payload are unchanged. No iOS source reads any changed string. Every old and new B1 string has 0 hits in `ios/` under `git grep -F` and `git grep -i -F`: *keyframes shown*, *reduced set*, *compressed-texture*, *compressed textures*, `encoding_notes`, *never stood back*, *view from the desk*, *best-supported vantage*, *poses that render badly*, *images loaded*, *compact image format*, *fewer images fit*, *walked path*, *most nearly whole*, *views that render badly*, and each whole sentence. The trees are product `b417c9f` and the phone's branches `origin/ios/walk5-imu` (`d852770`), `world-builder/int-walk5-candidate` (`a4afea1`), `origin/ios/ux-v1` (`2ff0b0e`), `origin/ios/wb-coherence-areas-v1` (`a1f98d7`) and `origin/ios/ux-u05-a11y` (`089777f`). The same grep finds *masks were not applied* 31 times on each phone branch, so the zeros are not an empty tree (checked 2026-09-28) |
 | **v5** | 2026-10-05 | **Managers 124 / 161 / 167 / 181** (U1.1 / T-UX3; C15, its review and C15r; manager 183 #10 for the band) | §4: the query table (`wb-chrome`), *Controls* (native forms), rule 6 (the echo); new §4c; §4a rule 3 | **Native chrome, behind a default-off setting.** The phone asks with `wb-chrome=native`. A Tower with `TOWER_WORLD_NATIVE_CHROME` on serves the appearance page plus five insertions and echoes `wb-chrome`. The page then reports its chrome through protocol 1 (`hello`, `state`, `view`, `await`), and hides its own only after the phone has drawn it. The page stays the authority for every state. The phone draws only the page's words, and its top band keeps a line for U0.6. Off, and for every other request, the page is byte for byte the page before (`tower/tests/golden/world_builder_native_chrome_dc35d51.json`), with one documented exception: `/openapi.json` (see *On the wire*). `PAGE_REVISION` stays `appearance:1` and both variants share one revision. The rendering, the camera path, the thresholds, the haze and the research marker's rules are unchanged | **Nothing moves.** `world_builder.worlds/2026-09-10`, every payload and both revision routes are unchanged. **v3's change-log claim that `ios/` "runs no script in the page and reads nothing from it" becomes: it runs no script in the page, and reads only what the page posts to `wbChromeV1`**. The one response that differs with the setting off is `/openapi.json`, which declares the optional `wb-chrome` query parameter on the two page routes whatever the setting (no client reads it) |
 | **v6** | 2026-10-05 | **Manager 185 A** (owner-declared bug: walk photos unavailable to a viewer opened after Stop) | §4 *Live*, §4a (`appearance.revision` / `state`), §4b (the label re-check) | Across the ordinary Stop the walk's appearance build stays **served** (it was `rebuilding` with `revision: null`), so the render ladder gives a viewer opened after Stop the appearance rung, not the surface. Only a label change whose textures carry over is affected; every other refusal is unchanged (`WORLD-BUILDER-APPEARANCE.md` v4) | **No shape change.** In the Stop gap `representation` is `appearance` (was `surface`), `appearance.state` `served` (was `rebuilding`) and `appearance.revision` the walk build's (was `null`); the page revision does not move across Stop. The wire identifier does not move |
+| **vNEXT** | 2026-10-05 | **Managers 142 §2, 167, 183, 195 §2** (T-UX1 + U0.6; Codex C10 and its review, `cx-C10-tux1-stages-push-design-20260928-REVIEW.md`; `RUN\lead\specs\U06-TUX1-PROGRESS-SPEC-20261004.md`), PROPOSED | §2 (`processing`), new §2b, §4a (the `200` body, `basis`, rule 8) | **What the builder is doing after Stop, and the PREVIEW.** `processing: {stage, step?}` on a finalizing row while its own live builder is in the final solve or the final build, proved by the builder's and the writer's process identities and the finalization epoch; six stages, no time and no estimate. `basis: "final"\|"walk"\|null` on the render revision. A preview — any picture of an unsettled session, and any `walk` picture, which since v6 is normally the walk's photos — is labelled and never presented as final. The rendering, the rungs, every revision string, every artifact and every other key are unchanged | **Additive, behind two default-off settings.** Off: every row and revision body byte for byte as before (`tower/tests/test_world_builder_finish_stages_identity.py`, golden recorded on `5c0dc12`). `world_builder.worlds/2026-09-10` does not move. `git grep` at `origin/ios/ux-v1` (`0f1249e`) and `codex/u09-stop-onboarding` (`fd9152b`): the only `lifecycle[` reads are `build_in_progress`, `finalization` and `photographic`; 0 hits for `"processing"`, `"basis"`, `"step"`, `finish_phase` (checked 2026-10-04, spec §5.9) |

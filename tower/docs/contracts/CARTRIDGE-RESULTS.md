@@ -268,6 +268,10 @@ time in the sensor sense. Render capture time as **unknown**.
   continuously while a session is live, and including it would make every
   poll look like a change — the exact failure `IOS-to-Tower.md` §1.2
   describes.
+- **`lifecycle.processing` is content, not volatile** (PROPOSED 2026-10-05, T-UX1, §10.1):
+  it carries no timestamp, so the revision changes exactly when the builder moves to another
+  stage or consensus pass, and two polls inside one stage share a revision. (So does
+  `world_snapshot.revision`, which is the envelope's.)
 - Because that field is excluded, it is refreshed by a **heartbeat**: an
   unchanged snapshot is re-sent about every 2 s while you are subscribed,
   carrying `revision_changed: false`. Use that flag to skip redraws.
@@ -767,6 +771,23 @@ one that survives the gaps between stages.
 > dictionaries and ignores unknown keys, so a client that does not read
 > `photographic` behaves exactly as it did before -- except that it now hears
 > `finalizing` where it used to hear a false `finalized`.
+
+**`lifecycle.processing`** — PROPOSED 2026-10-05 (T-UX1; Tower setting
+`TOWER_WORLD_FINISH_STAGES`, off by default). **Absent** — never `null` — except on the
+`finalizing` arm whose evidence is this session's live builder holding the writer lock, and
+there only when the Tower can prove which process recorded the stage
+(`docs/contracts/WORLD-BUILDER-WORLDS.md` §2b). The same object as the listing row's
+`processing`, from the same function. The last key of `lifecycle`.
+
+| Field | Type | Notes |
+|---|---|---|
+| `stage` | `"waiting"`, `"preparing"`, `"matching"`, `"placing"`, `"checking"`, `"assembling"` | WORLDS §2b says what each covers. A client treats an unknown word as "not said" |
+| `step` | `{n, of}`, or **absent** | only on `checking` with a consensus of `of` draws: the pass, `1 ≤ n ≤ of ≤ 7` |
+
+It says nothing about the photographic stages, which follow the lock's release and are
+`lifecycle.photographic`'s; and nothing about time: no duration or estimate is sent.
+`build_in_progress`, `reason`, `model_state` and the projection are unchanged by it (the
+envelope's revision, and with it `world_snapshot.revision`, moves with each stage, §5).
 
 **`progress`** — or `null` with no session.
 
@@ -2107,6 +2128,11 @@ identifier — the key set is unchanged apart from the added
 having read the paragraph above. That refusal is the point: this build
 serves a figure that means something different from what the old
 identifier promised.
+
+**PROPOSED 2026-10-05 (T-UX1), no identifier change.** `lifecycle.processing` (§10.1) is
+additive and optional, behind a default-off Tower setting (`TOWER_WORLD_FINISH_STAGES`); a
+client that does not read it behaves exactly as before. Off, every payload is byte for byte
+as at `5c0dc12` (`tests/test_world_builder_finish_stages_identity.py`).
 
 ---
 

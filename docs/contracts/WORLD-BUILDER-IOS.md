@@ -157,6 +157,7 @@ cannot carry:
 | `progress.frames_observed` | Null while live and genuinely unknowable — an ordinary rejected frame writes no journal event |
 | `lifecycle.build_in_progress` | Null means **unobservable**, not `false`. (Corrected 2026-09-23, C1 E10: it is not "null in every stopped state" — an owed or failed photographic stage answers `false`; and under the PROPOSED components contract it is `true` whenever `photographic.state` is `running`, room or area, `WORLD-BUILDER-COMPONENTS.md` §3.4) |
 | `lifecycle.photographic` | Added `2026-09-22`. **To be READ** (corrected 2026-09-23, C1 E8/E10): showing plain "Saved" for a failed photographic build is the T3 defect (§3a), so this block is not optional; with the PROPOSED `scope` (`WORLD-BUILDER-COMPONENTS.md` §3.4) it also says whether an Improving world is still making its room or only an area. §3a |
+| `lifecycle.processing` | PROPOSED 2026-10-05 (T-UX1; Tower setting `TOWER_WORLD_FINISH_STAGES`, off by default). **To be READ** for the stage line under a finalizing world (§3c); absent means "say nothing more specific", never "nothing is running". Decoded into its own type beside `finalization` and `photographic`, never projected into `world_snapshot` |
 | `tracking.recovery` | PROPOSED 2026-09-23 (`WORLD-BUILDER-COMPONENTS.md` §6): the THIRD read exception (C1 M5/E8), decoded from `payload["tracking"]["recovery"]` into its own type beside `selection` and `finalization`, never projected into `world_snapshot` |
 | `artifacts.*`, `session.retains_raw_imagery` | Real and honest, but no iOS surface asks the question yet. See §6 |
 
@@ -176,6 +177,9 @@ stored figures are not the final figures"**, `build_in_progress` is `null`, and
 the phone keeps the guarded sentence. `WorldModelState.finalizing` carries
 `buildInProgress: Bool?` so the two copies are chosen from the payload, not
 guessed.
+
+**What the builder is doing, and since when** (PROPOSED 2026-10-05, T-UX1 + U0.6): §3c.
+The stage word stays the same; one stage line and one elapsed line are added under it.
 
 **Since 2026-09-10, `stopped_unbuilt` does not always project to
 `finalizing`.** It carries two states and only one of them means wait:
@@ -267,6 +271,55 @@ appearance build while the manifest is refused and the render revision reports
 `appearance.state: withdrawn`. Decide what to DRAW from `appearance.state` on
 `/worlds/{id}/render/revision`, exactly as today; `photographic.state` decides
 what to SAY about whether the world is finished.
+
+## 3c. The wait after Stop: the stage line, the elapsed time and the PREVIEW (PROPOSED 2026-10-05)
+
+T-UX1 + U0.6 (managers 142 §2, 167, 183, 195 §2). Nothing here changes `model_state`, the
+stage words of §3/§3a, or any decoder. Manager 183's rulings apply: no auto-open at Stop;
+the copy below as written; the fallback is *Placing and checking images* (not "Solving");
+the pass is shown; the elapsed clock is the phone's; the finisher's re-gate is not covered;
+no Saved Worlds row caption.
+
+**The stage line.** Under a `finalizing` world the phone shows at most one line, chosen in
+this order:
+1. the room is settled and only an area is finishing (`photographic.scope: "area"`) — no line;
+2. `lifecycle.processing.stage` is a word this build knows — its line (WORLDS §2b), with the
+   pass for `checking`;
+3. `photographic.state` is `running` for the room — *Building surfaces* (`stage: "surface"`),
+   *Adding photos* (`"appearance"`), else *Building the photographic version*;
+4. `photographic` is `owed`, `unobservable` or `failed` — no line (§3a's sentences stand);
+5. `final_solve` is `pending` and `build_in_progress` is `true` — *Placing and checking
+   images*;
+6. otherwise no line.
+
+An unknown `processing.stage` word falls through to 3; it never reads as finished, because
+the stage word comes from `model_state`.
+
+**The elapsed line.** *N min since you stopped*, on the phone's monotonic clock, from the
+first report in which the walk this phone followed live was no longer `receiving`. Shown while
+the world is unsettled; hidden after a relaunch, for any walk this phone did not follow live,
+and once the room settles. Never the Tower's clock, never an estimate.
+
+**The PREVIEW** (WORLDS §4a rule 8). Every picture of an unsettled world is a preview: the
+world screen's control reads *Open the preview* and its note begins *Preview —*; the 3D viewer
+shows the same note with the live stage and elapsed lines. **Since WORLDS v6 the preview a
+viewer opened after Stop shows is normally the walk's photos** (the appearance rung, built
+during the walk, served across Stop; its manifest says `quality: "live"`, and the revision
+route says `basis: "walk"`), not a bare surface. It looks like the room, so the label carries
+the whole weight: the note never says or implies that the photographic room is missing, and
+it says the final world *will look different* rather than that photos are coming. When the
+room settles, a viewer opened on a preview says *Your final world is ready. If this picture
+does not change, tap Reload.* until what it shows is known to be final — the appearance
+manifest it loaded says `quality: "final"` (the page loads the final build in place without a
+page-revision change, so the label follows the manifest the scheme handler last served, not
+the revision), or another page was fetched after the revision route first said
+`basis: "final"` — and then *This is your final world.* A settled world whose picture is
+`basis: "walk"` says *This picture was made during the walk, not from the final pass.* The
+phone never says a picture is final on the strength of the status channel alone.
+
+**The foreground banner.** When the walk this phone followed settles while the app is in the
+background, the World Builder screen shows *While you were away, your walk finished:
+<headline>.* once, with an OK. There is no push notification.
 
 ## 3.1 `selection`: whose world is on the wire
 
@@ -724,6 +777,7 @@ stamped into the page (`wb-revision`) and with the last revision it acted on:
 | a new revision of a **worse rung** | nothing: not swapped, and not offered as "newer" |
 | a revision whose page could not be drawn on this phone | never swaps it in or offers it again, except once: a revision refused while the Tower said its build was **live** is tried again when the Tower reports **the same revision** finished (`live: false`). The appearance page revision (`…@<epoch>`) survives the ordinary Stop, so without this one walk-time appearance page that could not be drawn refused the finished world's page too, and once the Stop gap's surface drew, nothing on screen said so (2026-09-22 Mac validation). A revision refused when it was already finished is not retried |
 | any revision of a rung that **two refreshes up to it** failed to draw on this screen | not fetched, swapped or offered, except that a **finished** build (`live: false`) of that rung is tried **once** per screen. A failure of the rung already on screen does not count (that rung drew here, so its rebuild failing is memory pressure), and a refresh of the rung that draws forgets its failures |
+| `basis` (PROPOSED 2026-10-05, WORLDS §4a; Tower setting `TOWER_WORLD_PICTURE_BASIS`, off by default), decoded as `WorldRenderRevision.basis` | nothing about the swap. It decides only the label (§3c): `"walk"` names a walk-time picture (after Stop, normally the walk's photos); `"final"` lets the label say final once the page on screen was fetched after it, or — for the appearance page — once the manifest the scheme handler last served to it says `quality: "final"` (`WorldAssetSchemeHandler.servedAppearanceBasis`) |
 
 "The same walk" means the screen was opened on a named session, or the
 revision's session (the part before `/`, §4a) is the session of the page on
