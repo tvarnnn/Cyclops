@@ -1587,9 +1587,21 @@ def regate_refusal(store, world_id: str, session_id: str) -> str | None:
     return None
 
 
-@stage_timing.timed("regate")
 def regate_published(store, world_id: str, session_id: str, *, should_stop=None,
                      gate_runner: Callable | None = None) -> dict:
+    """`_regate_published` under the session writer lock (`global_solve.session_writer_lock`;
+    review W01F-FIX MED-2): a re-gate maps its consensus draws in the same `sparse-draws/` a
+    final solve of this session maps in, so it never runs beside one."""
+    from tower.world_builder.global_solve import session_writer_lock, workspace_for  # noqa: PLC0415
+
+    with session_writer_lock(workspace_for(store, world_id, session_id).root):
+        return _regate_published(store, world_id, session_id, should_stop=should_stop,
+                                 gate_runner=gate_runner)
+
+
+@stage_timing.timed("regate")
+def _regate_published(store, world_id: str, session_id: str, *, should_stop=None,
+                      gate_runner: Callable | None = None) -> dict:
     """Depth stage + metric scale + gate again, IN PLACE, on the published solve: nothing is
     moved aside, the solve itself is not redone. The caller holds the world's writer lock.
     Publishes the relabelled solution and its components record (or retires the record if

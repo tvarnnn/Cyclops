@@ -79,9 +79,12 @@ def main(argv=None) -> int:
         return global_solve.DRAW_CHILD_MAPPER_RAISED_EXIT
     map_ms = round((time.perf_counter() - started) * 1000, 3)
     after = (global_solve.database_digest(args.database) or {}).get("content")
+    # Only here -- the mapper returned, none raised -- is the result `complete`
+    # (`global_solve._child_partial`; review W01F-FIX Codex M5).
+    result = global_solve.draw_child_result(candidate, seed=args.seed, before=before,
+                                            after=after, map_ms=map_ms)
     write_bytes_atomic(args.output, lambda handle: pickle.dump(
-        {"before": before, "after": after, "map_ms": map_ms, "candidate": candidate},
-        handle, protocol=pickle.HIGHEST_PROTOCOL))
+        result, handle, protocol=pickle.HIGHEST_PROTOCOL))
     return 0
 
 

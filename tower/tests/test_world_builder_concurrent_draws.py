@@ -2,6 +2,7 @@
 fail. Every outcome must publish what the switch OFF publishes (Tier A); the real-child tests
 map a small synthetic full-schema COLMAP database (no imagery) on CPU."""
 
+import contextlib
 import hashlib
 import ctypes
 import dataclasses
@@ -33,6 +34,30 @@ from tests.test_world_builder_solve_consensus import (  # noqa: F401
 GIB = 1024 ** 3
 
 
+_HELD = []
+
+
+@pytest.fixture(autouse=True)
+def _session_writer(tmp_path):
+    """Every final solve holds its session's writer lock (`GS.session_writer_lock`, review
+    W01F-FIX MED-2), and the concurrent mapper runs only under it. These tests drive the mapper
+    directly, as such a solve does, so they hold it (`_hold`) for the sessions they use, until
+    the test ends."""
+    with contextlib.ExitStack() as stack:
+        _HELD.append(stack)
+        try:
+            store = WorldStore(tmp_path)
+            for world_id, session_id in (("w", "s"), ("w1", SID)):
+                _hold(store, world_id, session_id)
+            yield
+        finally:
+            _HELD.remove(stack)
+
+
+def _hold(store, world_id, session_id):
+    _HELD[-1].enter_context(GS.session_writer_lock(GS.workspace_for(store, world_id, session_id).root))
+
+
 def _base():
     return GS.Solution(
         solver="glomap", solved_at=1.0, input_digest="input", keyframe_ids=[],
@@ -48,6 +73,8 @@ def _base():
 def _posed():
     """A child's candidate that posed something (an empty one is re-mapped: STD MED-1)."""
     candidate = _base()
+    candidate.keyframe_ids = ["k0"]
+    candidate.components = [{"index": 0, "images": 1, "images_supported": 1, "points": 0}]
     candidate.poses = {"k0": {"component": 0, "rotation": [1.0, 0, 0, 0, 1.0, 0, 0, 0, 1.0],
                               "translation": [0.0, 0.0, 0.0], "observations": 40}}
     return candidate
@@ -86,6 +113,7 @@ def _journal(ws):
 def _rig(tmp_path, monkeypatch, *, bad_copy=False, bad_child=False, tamper=False,
          empty=False, no_result=False, source_changes=False):
     store = WorldStore(tmp_path)
+    _hold(store, "w", "s")
     ws = GS.workspace_for(store, "w", "s")
     ws.root.mkdir(parents=True)
     ws.database_path.write_bytes(b"db")
@@ -114,8 +142,9 @@ def _rig(tmp_path, monkeypatch, *, bad_copy=False, bad_child=False, tamper=False
             with Path(output).open("wb") as handle:
                 candidate = _base() if empty else _posed()
                 candidate.solve = {"child_seed": seed}
-                pickle.dump({"before": content, "after": "bad" if bad_child else content,
-                             "map_ms": 1250, "candidate": candidate}, handle)
+                pickle.dump(GS.draw_child_result(candidate, seed=seed, before=content,
+                                                 after="bad" if bad_child else content,
+                                                 map_ms=1250), handle)
         if tamper:   # the child reports an unchanged copy, but it changed (only the parent's own digest sees it)
             with Path(database).open("ab") as handle:
                 handle.write(b"migrated")
@@ -134,6 +163,7 @@ def _rig(tmp_path, monkeypatch, *, bad_copy=False, bad_child=False, tamper=False
     monkeypatch.setattr(GS, "_private_draw_database", copy)
     monkeypatch.setattr(GS, "_launch_draw_child", launch)
     monkeypatch.setattr(GS, "_draw_free_ram", lambda: 32 * GIB)
+    monkeypatch.setattr(GS, "_draw_free_commit", lambda: 32 * GIB)
     monkeypatch.setattr(GS, "frozen_draw_mapper", frozen)
     monkeypatch.setattr(stage_timing, "concurrent_draw_event", events.append)
     rig = types.SimpleNamespace(store=store, ws=ws, launched=launched, serial=serial,
@@ -310,7 +340,8 @@ def test_resource_digest_or_result_refusal_uses_serial(tmp_path, monkeypatch, ca
     assert not (ws.root / GS.CONSENSUS_SPARSE_DIRNAME).exists()
 
 
-@pytest.mark.parametrize("stage", ["scratch-sweep", "resource-budget", "ram-probe", "source-digest"])
+@pytest.mark.parametrize("stage", ["scratch-sweep", "resource-budget", "ram-probe", "commit-probe",
+                                   "source-digest"])
 def test_preflight_error_is_recorded_and_maps_serially(tmp_path, monkeypatch, stage):
     """Not an ownership hazard, so not fatal: OFF's mapper maps every seed (STD LOW-3)."""
     store, ws, launched, serial, _, rig = _rig(tmp_path, monkeypatch)
@@ -319,7 +350,8 @@ def test_preflight_error_is_recorded_and_maps_serially(tmp_path, monkeypatch, st
         raise OSError("probe unavailable")
 
     target = {"scratch-sweep": "_sweep_draw_root", "resource-budget": "_draw_ram_needed",
-              "ram-probe": "_draw_free_ram", "source-digest": "database_digest"}[stage]
+              "ram-probe": "_draw_free_ram", "commit-probe": "_draw_free_commit",
+              "source-digest": "database_digest"}[stage]
     monkeypatch.setattr(GS, target, fail)
     mapper = _mapper(store, ws, seeds=(8, 9))
     assert mapper(8).solve["seed"] == 3 and mapper(9).solve["seed"] == 3
@@ -415,6 +447,31 @@ def test_child_wait_is_the_derived_bound_from_launch(tmp_path, monkeypatch):
     mapper.close()
 
 
+def test_child_wait_runs_from_each_childs_own_launch(tmp_path, monkeypatch):
+    """W01F-FIX ADV LOW-4 (R04 survived): exactly, on a clock the test drives -- child 4
+    launched (its launch returning) at 1100 s, child 5 at 1200 s, collected at 1200 s and
+    1500 s."""
+    store, ws, _, _, _, rig = _rig(tmp_path, monkeypatch)
+    clock = {"now": 1000.0}
+    monkeypatch.setattr(GS.time, "monotonic", lambda: clock["now"])
+    real_launch = GS._launch_draw_child
+
+    def launch(*args):
+        launched = real_launch(*args)
+        clock["now"] += 100.0
+        return launched
+
+    monkeypatch.setattr(GS, "_launch_draw_child", launch)
+    mapper = _mapper(store, ws, keyframes=[None] * 997)
+    bound = GS._draw_wait_seconds(997, 997)
+    mapper(4)                                   # collected at 1200
+    clock["now"] = 1500.0
+    mapper(5)
+    mapper.close()
+    assert rig.processes[4].timeouts == [pytest.approx(bound - 100.0)]
+    assert rig.processes[5].timeouts == [pytest.approx(bound - 300.0)]
+
+
 def test_child_timeout_remaps_only_that_seed_and_keeps_its_sibling(tmp_path, monkeypatch):
     store, ws, launched, serial, events, _ = _rig(tmp_path, monkeypatch)
     stopped = []
@@ -431,7 +488,7 @@ def test_child_timeout_remaps_only_that_seed_and_keeps_its_sibling(tmp_path, mon
         process, job = real_launch(context, database, seed, sparse, output, expected_digest)
         return (Blocking() if seed == 4 else process), job
 
-    def stop(children):
+    def stop(children, root=None):
         stopped.append(tuple(children))
         return True
 
@@ -459,7 +516,7 @@ def test_soft_stop_during_successful_child_wait_keeps_child(tmp_path, monkeypatc
     store, ws, launched, serial, events, _ = _rig(tmp_path, monkeypatch)
     stopped = []
     monkeypatch.setattr(GS, "_stop_draw_children",
-                        lambda children: stopped.append(tuple(children)) or True)
+                        lambda children, root=None: stopped.append(tuple(children)) or True)
     mapper = _mapper(store, ws, should_stop=lambda: True)
     assert mapper(4).solve["seed"] == 4
     assert serial == [] and events == ["after-draw-0"]
@@ -661,11 +718,17 @@ def test_a_launch_fallback_stops_the_children_already_launched(tmp_path, monkeyp
         return process, (None if fault == "job" and seed == 5 else job)
 
     monkeypatch.setattr(GS, "_launch_draw_child", launch)
+    order = []
     monkeypatch.setattr(GS, "_stop_draw_children",
-                        lambda children: stopped.append(sorted(children)) or real_stop(children))
+                        lambda children, root=None: stopped.append(sorted(children))
+                        or order.append("stop") or real_stop(children, root))
+    real_release = GS._release_draw_root
+    monkeypatch.setattr(GS, "_release_draw_root",
+                        lambda root: order.append("sweep") or real_release(root))
     mapper = _mapper(store, ws)
     assert mapper(4).solve["seed"] == 3
     assert stopped == [[4] if fault == "launch" else [4, 5]]   # at once, not at close()
+    assert order == ["stop", "sweep"]          # never a root swept under a running child (R06)
     # Nothing of it still runs, so the seed maps with OFF's mapper exactly (it sweeps first).
     assert serial == [4] and rig.sweeps == [True]
     assert not (ws.root / "sparse-draws").exists()
@@ -735,41 +798,71 @@ def test_unwritable_fallback_journal_aborts_consensus(world, tmp_path, monkeypat
     assert serial == []
 
 
-def test_unconfirmed_prior_child_records_refusal_and_aborts_consensus(world, tmp_path, monkeypatch):
-    store, ws, _, serial, _, _ = _rig(tmp_path, monkeypatch)
-    monkeypatch.setattr(GS, "_unconfirmed_draw_alive", lambda: True)
-    mapper = GS.concurrent_draw_mapper(store, "w", "s", ws.database_path,
-                                       _base(), seeds=(8, 9), keyframes=[])
-    plan = CP.ConsensusPlan(draws=3, seed=7, map_draw=mapper)
+class _Alive(_Process):
+    def poll(self):
+        return None
+
+
+def test_unconfirmed_prior_child_of_this_root_maps_every_seed_beside_it(world, tmp_path, monkeypatch):
+    """W01F-FIX ADV MED-1, the ON side. An earlier ON finish of THIS session could not confirm
+    a child stopped: it aborted the next finish. Now OFF's mapper maps every seed, without its
+    sweep, so the child's `child-<k>/` is untouched and the consensus is OFF's."""
+    store, ws, launched, serial, _, rig = _rig(tmp_path, monkeypatch)
+    root = ws.root / GS.CONSENSUS_SPARSE_DIRNAME
+    (root / "child-8").mkdir(parents=True)
+    (root / "child-8" / "database.db").write_bytes(b"the unconfirmed child's")
+    before = len(GS._UNCONFIRMED_DRAW_CHILDREN)
+    GS._UNCONFIRMED_DRAW_CHILDREN.append((_Alive(), None, GS._draw_root_key(root)))
     try:
-        with pytest.raises(CP.ConsensusAuditError, match="earlier consensus child"):
+        mapper = GS.concurrent_draw_mapper(store, "w", "s", ws.database_path,
+                                           _base(), seeds=(8, 9), keyframes=[])
+        plan = CP.ConsensusPlan(draws=3, seed=7, map_draw=mapper)
+        try:
             CP.gate_by_consensus(_Store(), "w1", SID, _candidate(tuple(PIECES)), plan=plan,
                                  database_path="db", keyframes=world.keyframes)
+        finally:
+            mapper.close()
+        (entry,) = _journal(ws)
+        assert (entry["reason"], entry["outcome"], entry["seed"]) == (
+            "unconfirmed-prior-child", "serial", 8)
+        assert serial == [8, 9] and launched == [] and rig.sweeps == [False, False]
+        assert (root / "child-8" / "database.db").read_bytes() == b"the unconfirmed child's"
     finally:
+        del GS._UNCONFIRMED_DRAW_CHILDREN[before:]
+
+
+def test_another_roots_unconfirmed_child_does_not_hold_this_finish_back(tmp_path, monkeypatch):
+    """Keyed by root (W01F-FIX ADV MED-1): another world's unstoppable child says nothing about
+    this session's scratch, so this finish maps concurrently."""
+    store, ws, launched, serial, events, _ = _rig(tmp_path, monkeypatch)
+    before = len(GS._UNCONFIRMED_DRAW_CHILDREN)
+    GS._UNCONFIRMED_DRAW_CHILDREN.append(
+        (_Alive(), None, GS._draw_root_key(tmp_path / "another-world" / "sparse-draws")))
+    try:
+        mapper = _mapper(store, ws)
+        assert mapper(4).solve["seed"] == 4
         mapper.close()
-    (entry,) = _journal(ws)
-    assert entry["reason"] == "unconfirmed-prior-child" and entry["outcome"] == "abort"
-    assert entry["seed"] == 8
-    assert serial == []
+        assert events == ["after-draw-0"] and [s for s, _ in launched] == [4, 5] and serial == []
+    finally:
+        del GS._UNCONFIRMED_DRAW_CHILDREN[before:]
 
 
-def test_off_mapper_refuses_while_an_unconfirmed_child_lives(tmp_path, monkeypatch):
-    """`frozen_draw_mapper` never sweeps `sparse-draws/` under a child it could not stop (M17)."""
+def test_off_mapper_is_the_base_even_while_an_unconfirmed_child_lives(tmp_path, monkeypatch):
+    """W01F-FIX ADV MED-1 / Codex M4: OFF's mapper never reads the unconfirmed registry. With an
+    earlier ON finish's child still alive -- of this root, of another, of none known -- it is made
+    without raising and sweeps `sparse-draws/` exactly as the base's (44fbd13) does."""
     store = WorldStore(tmp_path)
     ws = GS.workspace_for(store, "w", "s")
-    leftover = ws.root / GS.CONSENSUS_SPARSE_DIRNAME / "child-4"
-    leftover.mkdir(parents=True)
-
-    class Alive(_Process):
-        def poll(self):
-            return None
-
+    root = ws.root / GS.CONSENSUS_SPARSE_DIRNAME
     before = len(GS._UNCONFIRMED_DRAW_CHILDREN)
-    GS._UNCONFIRMED_DRAW_CHILDREN.append((Alive(), None))
+    for key in (GS._draw_root_key(root), "another-root"):
+        GS._UNCONFIRMED_DRAW_CHILDREN.append((_Alive(), None, key))
+    GS._UNCONFIRMED_DRAW_CHILDREN.append((_Alive(), None))
     try:
-        with pytest.raises(RuntimeError, match="earlier consensus child"):
-            GS.frozen_draw_mapper(store, "w", "s", ws.database_path, _base(), keyframes=[])
-        assert leftover.exists()
+        (root / "seed-4" / "0").mkdir(parents=True)
+        (root / "seed-4" / "0" / "cameras.bin").write_bytes(b"a killed serial draw's")
+        mapper = GS.frozen_draw_mapper(store, "w", "s", ws.database_path, _base(), keyframes=[])
+        assert callable(mapper) and not root.exists()
     finally:
         del GS._UNCONFIRMED_DRAW_CHILDREN[before:]
 
@@ -778,7 +871,7 @@ def test_unconfirmed_child_stop_is_visible_when_mapper_closes(tmp_path, monkeypa
     store, ws, _, _, _, _ = _rig(tmp_path, monkeypatch)
     mapper = _mapper(store, ws)
     mapper(4)  # a sibling is still owned by the mapper
-    monkeypatch.setattr(GS, "_stop_draw_children", lambda children: False)
+    monkeypatch.setattr(GS, "_stop_draw_children", lambda children, root=None: False)
     with pytest.raises(CP.ConsensusAuditError, match="could not be confirmed stopped"):
         mapper.close()
     assert (ws.root / "sparse-draws").exists()  # do not delete an unconfirmed child's DB
@@ -793,7 +886,7 @@ def test_journal_and_child_stop_failure_still_raise_audit_error(tmp_path, monkey
     monkeypatch.setattr(GS, "append_jsonl",
                         lambda *args: (_ for _ in ()).throw(OSError("disk full")))
     monkeypatch.setattr(GS, "_stop_draw_children",
-                        lambda children: (_ for _ in ()).throw(OSError("stop unavailable")))
+                        lambda children, root=None: (_ for _ in ()).throw(OSError("stop unavailable")))
     mapper = _mapper(store, ws)
     with pytest.raises(CP.ConsensusAuditError):
         mapper(4)
@@ -958,6 +1051,7 @@ def _draw_rig(tmp_path, monkeypatch, map_ms=1.0):
     """The real mappers (OFF's and the concurrent one) over a fake `_map_candidate`; the
     concurrent children run in-process from the private copy the parent made."""
     store = WorldStore(tmp_path)
+    _hold(store, "w1", SID)
     ws = GS.workspace_for(store, "w1", SID)
     ws.root.mkdir(parents=True)
     ws.database_path.write_bytes(b"db")
@@ -968,14 +1062,15 @@ def _draw_rig(tmp_path, monkeypatch, map_ms=1.0):
     monkeypatch.setattr(GS, "_private_draw_database",
                         lambda s, d: Path(d).write_bytes(Path(s).read_bytes()))
     monkeypatch.setattr(GS, "_draw_free_ram", lambda: 64 * GIB)
+    monkeypatch.setattr(GS, "_draw_free_commit", lambda: 64 * GIB)
     events = []
     monkeypatch.setattr(stage_timing, "concurrent_draw_event", events.append)
     exits = {}
 
     def launch(context, database, seed, sparse, output, expected):
         with Path(output).open("wb") as handle:
-            pickle.dump({"before": expected, "after": expected,
-                         "map_ms": map_ms, "candidate": _cand(seed)}, handle)
+            pickle.dump(GS.draw_child_result(_cand(seed), seed=seed, before=expected,
+                                             after=expected, map_ms=map_ms), handle)
         return _Process(exits.get(seed, 0)), _Job()
 
     monkeypatch.setattr(GS, "_launch_draw_child", launch)
@@ -1197,6 +1292,7 @@ def test_on_publishes_the_world_off_publishes_in_every_outcome(walk, engines, co
 
     monkeypatch.setattr(GS, "_launch_draw_child", launch)
     monkeypatch.setattr(GS, "_draw_free_ram", lambda: 64 * GIB)
+    monkeypatch.setattr(GS, "_draw_free_commit", lambda: 64 * GIB)
     events = []
     real_event = stage_timing.concurrent_draw_event
     monkeypatch.setattr(stage_timing, "concurrent_draw_event",
@@ -1237,7 +1333,7 @@ def test_on_publishes_the_world_off_publishes_in_every_outcome(walk, engines, co
     arm["exit"] = {}
     arm["raises"] = {1}
     outcomes["child 1's mapper raises"] = finish("after-draw-0")
-    assert events[-1] == "child-exit-3:seed-1"
+    assert events[-1] == f"child-exit-{GS.DRAW_CHILD_MAPPER_RAISED_EXIT}:seed-1"
     arm["raises"] = set()
     stale = walk.workspace.root / GS.CONSENSUS_SPARSE_DIRNAME / "seed-1" / "sparse" / "0"
     stale.mkdir(parents=True)
@@ -1248,12 +1344,25 @@ def test_on_publishes_the_world_off_publishes_in_every_outcome(walk, engines, co
     outcomes["the RAM gate refuses"] = finish("after-draw-0")
     assert events == ["ram-refusal:seed-1"]
     outcomes["OFF again"] = finish("off")
+    # An earlier ON finish in this interpreter could not confirm a child stopped (W01F-FIX ADV
+    # MED-1 / Codex M4): OFF is the base's (it raised), and ON maps beside the child.
+    before = len(GS._UNCONFIRMED_DRAW_CHILDREN)
+    GS._UNCONFIRMED_DRAW_CHILDREN.append(
+        (_Alive(), None, GS._draw_root_key(walk.workspace.root / GS.CONSENSUS_SPARSE_DIRNAME)))
+    try:
+        outcomes["OFF after an ON finish left an unconfirmed child"] = finish("off")
+        outcomes["ON while that child lives"] = finish("after-draw-0")
+        assert events == ["unconfirmed-prior-child:seed-1"]
+    finally:
+        del GS._UNCONFIRMED_DRAW_CHILDREN[before:]
     for name, files in outcomes.items():
         assert sorted(files) == sorted(off), name
         assert [k for k in off if files[k] != off[k]] == [], name
     reasons = [json.loads(line)["reason"] for line in
                (walk.workspace.root / "consensus_concurrent.jsonl").read_text().splitlines()]
-    assert reasons == ["child-exit-1", "child-exit-1", "child-exit-3", "ram-refusal"]
+    assert reasons == ["child-exit-1", "child-exit-1",
+                       f"child-exit-{GS.DRAW_CHILD_MAPPER_RAISED_EXIT}", "ram-refusal",
+                       "unconfirmed-prior-child"]
 
 
 # ---------------------------------------------------------------------------
@@ -1334,6 +1443,7 @@ def _real_rig(tmp_path, monkeypatch):
     keyframes = _synthetic_walk(ws.database_path)
     events = []
     monkeypatch.setattr(GS, "_draw_free_ram", lambda: 32 * GIB)
+    monkeypatch.setattr(GS, "_draw_free_commit", lambda: 32 * GIB)
     monkeypatch.setattr(stage_timing, "concurrent_draw_event", events.append)
     return store, ws, keyframes, events
 
@@ -1395,9 +1505,9 @@ def test_real_children_map_a_synthetic_walk_exactly_as_in_process(tmp_path, monk
 
 
 @pytest.mark.slow
-def test_real_child_whose_mapper_raises_exits_3_and_the_seed_is_remapped(tmp_path, monkeypatch):
+def test_real_child_whose_mapper_raises_exits_23_and_the_seed_is_remapped(tmp_path, monkeypatch):
     """STD MED-1: a child's pycolmap raising (here MemoryError, as commit exhaustion does)
-    used to be an empty candidate the parent accepted. Now the child exits 3 and the parent
+    used to be an empty candidate the parent accepted. Now the child exits 23 and the parent
     maps that seed itself, with OFF's mapper."""
     store, ws, keyframes, events = _real_rig(tmp_path, monkeypatch)
     shim = tmp_path / "shim"
@@ -1416,9 +1526,9 @@ def test_real_child_whose_mapper_raises_exits_3_and_the_seed_is_remapped(tmp_pat
         remapped = mapper(4)
     finally:
         mapper.close()
-    assert events == ["after-draw-0", "child-exit-3:seed-4"]
+    assert events == ["after-draw-0", "child-exit-23:seed-4"]
     (entry,) = _journal(ws)
-    assert entry["reason"] == "child-exit-3" and entry["outcome"] == "serial"
+    assert entry["reason"] == "child-exit-23" and entry["outcome"] == "serial"
     assert "MemoryError" in entry["child_log_tail"]
     assert len(remapped.poses) == 10
     serial = GS.frozen_draw_mapper(store, "w", "s", ws.database_path, base, keyframes=keyframes)
@@ -1502,7 +1612,8 @@ def test_child_script_never_maps_a_database_that_is_not_the_expected_one(tmp_pat
 
 
 @pytest.mark.slow
-def test_child_script_exits_3_when_the_mapper_raises(tmp_path):
+def test_child_script_exits_23_when_the_mapper_raises(tmp_path):
+    """23, not 3: a C-runtime abort() exits 3 too (review W01F-FIX ADV LOW-5)."""
     ws = _child_ws(tmp_path)
     expected = GS.database_digest(ws.database_path)["content"]
     result, output, _ = _run_child(tmp_path, ws, expected=expected, shim_code=(
@@ -1511,7 +1622,7 @@ def test_child_script_exits_3_when_the_mapper_raises(tmp_path):
         "    raise MemoryError('std::bad_alloc (injected)')\n"
         "pycolmap.global_mapping = boom\n"
         "pycolmap.incremental_mapping = boom\n"))
-    assert result.returncode == GS.DRAW_CHILD_MAPPER_RAISED_EXIT == 3
+    assert result.returncode == GS.DRAW_CHILD_MAPPER_RAISED_EXIT == 23
     assert "global_mapping: MemoryError" in result.stderr
     assert "incremental_mapping: MemoryError" in result.stderr
     assert not output.exists()
@@ -1710,6 +1821,7 @@ def test_cancel_during_the_wait_kills_real_children_and_sweeps(tmp_path, monkeyp
     monkeypatch.setattr(GS, "_private_draw_database",
                         lambda s, d: Path(d).write_bytes(Path(s).read_bytes()))
     monkeypatch.setattr(GS, "_draw_free_ram", lambda: 64 * GIB)
+    monkeypatch.setattr(GS, "_draw_free_commit", lambda: 64 * GIB)
     pids = []
     fired = []
     real_launch = GS._launch_draw_child
@@ -1739,3 +1851,392 @@ def test_cancel_during_the_wait_kills_real_children_and_sweeps(tmp_path, monkeyp
         time.sleep(0.05)
     assert len(pids) == 2 and not any(psutil.pid_exists(p) for p in pids)
     assert not (ws.root / "sparse-draws").exists()
+
+
+# ---------------------------------------------------------------------------
+# W01F-FIX4: the session writer lock (MED-2 / Codex H1, H2)
+# ---------------------------------------------------------------------------
+
+
+def _record_unlocked_solve(monkeypatch, seen, store):
+    def unlocked(store_, world_id, session_id, **options):
+        seen.append((world_id, session_id, options.get("final", False),
+                     GS.session_writer_lock_held(GS.workspace_for(store_, world_id, session_id).root)))
+        return {"solved": False}
+
+    monkeypatch.setattr(GS, "_solve_unlocked", unlocked)
+
+
+def test_every_final_solve_holds_its_sessions_writer_lock(tmp_path, monkeypatch):
+    """`solve(final=True)` -- and any solve asked for a consensus -- runs under the lock; a
+    background solve does not take it, and the lock is gone once the solve returns."""
+    store = WorldStore(tmp_path)
+    seen = []
+    _record_unlocked_solve(monkeypatch, seen, store)
+    GS.solve(store, "w7", "s7", final=True)
+    GS.solve(store, "w7", "s7", final=False, consensus=3)
+    GS.solve(store, "w7", "s7", final=False)
+    assert seen == [("w7", "s7", True, True), ("w7", "s7", False, True), ("w7", "s7", False, False)]
+    assert not GS.session_writer_lock_held(GS.workspace_for(store, "w7", "s7").root)
+
+
+def test_world_solve_script_and_the_builders_final_solve_take_the_lock(tmp_path, monkeypatch):
+    """The entry points the review named: a hand-run `world_solve.py --final` (it took no lock
+    at all) and the live builder's in-process `solve_session`. The finisher and `world_finalize.py`
+    call the same `global_solve.solve(final=True)`."""
+    import importlib.util
+
+    store = WorldStore(tmp_path)
+    seen = []
+    _record_unlocked_solve(monkeypatch, seen, store)
+    scripts = Path(GS.__file__).resolve().parents[2] / "scripts"
+    spec = importlib.util.spec_from_file_location("fix4_world_solve", scripts / "world_solve.py")
+    world_solve = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(world_solve)
+    monkeypatch.setattr(world_solve, "global_solve", GS)
+    assert world_solve.main(["--root", str(tmp_path), "--world", "w7", "--session", "s7",
+                             "--final"]) == 0
+    assert world_solve.main(["--root", str(tmp_path), "--world", "w7", "--session", "s7"]) == 0
+    spec = importlib.util.spec_from_file_location("fix4_build_session", scripts / "world_build_session.py")
+    build_session = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(build_session)
+    monkeypatch.setattr(GS, "write_sources", lambda *args, **kwargs: None)
+    build_session.solve_session(store, "w7", "s8", capture_dirs=[], sources={})
+    assert [(w, s, final, held) for w, s, final, held in seen] == [
+        ("w7", "s7", True, True), ("w7", "s7", False, False), ("w7", "s8", True, True)]
+
+
+def test_a_regate_in_place_holds_the_session_writer_lock(tmp_path, monkeypatch):
+    store = WorldStore(tmp_path)
+    seen = []
+
+    def regate(store_, world_id, session_id, **kwargs):
+        seen.append(GS.session_writer_lock_held(GS.workspace_for(store_, world_id, session_id).root))
+        return {"regated": True}
+
+    monkeypatch.setattr(CP, "_regate_published", regate)
+    assert CP.regate_published(store, "w7", "s7") == {"regated": True}
+    assert seen == [True]
+    assert not GS.session_writer_lock_held(GS.workspace_for(store, "w7", "s7").root)
+
+
+_HOLDER = (
+    "import sys, time\n"
+    "from pathlib import Path\n"
+    "from tower.world_builder import global_solve as GS\n"
+    "with GS.session_writer_lock(Path(sys.argv[1])):\n"
+    "    print('held', flush=True)\n"
+    "    release = Path(sys.argv[2])\n"
+    "    while not release.exists():\n"
+    "        time.sleep(0.05)\n")
+
+
+def _hold_in_another_process(tmp_path, root):
+    release = tmp_path / "release-the-lock"
+    env = dict(os.environ, PYTHONDONTWRITEBYTECODE="1", CUDA_VISIBLE_DEVICES="-1",
+               PYTHONPATH=str(Path(GS.__file__).resolve().parents[2]))
+    holder = subprocess.Popen([sys.executable, "-c", _HOLDER, str(root), str(release)],
+                              stdout=subprocess.PIPE, text=True, env=env)
+    assert holder.stdout.readline().strip() == "held"
+    return holder, release
+
+
+def _enter_in_thread(fn):
+    import threading
+
+    entered = threading.Event()
+    done = threading.Event()
+    errors = []
+
+    def run():
+        try:
+            fn(entered)
+        except BaseException as exc:  # noqa: BLE001
+            errors.append(exc)
+        finally:
+            done.set()
+
+    thread = threading.Thread(target=run, daemon=True)
+    thread.start()
+    return thread, entered, done, errors
+
+
+def test_a_second_final_solve_of_the_session_waits_for_the_first(tmp_path, monkeypatch):
+    """Codex H1/H2's precondition, removed: run B (a final solve here) cannot start while run A
+    (another process: a builder's final solve, a hand-run `world_solve.py --final`) holds the
+    session, so it can never map in, sweep or close A's live `sparse-draws/`. Another session
+    of the same world is not held back."""
+    store = WorldStore(tmp_path)
+    monkeypatch.setattr(GS, "_SESSION_LOCK_POLL_S", 0.05)
+    root = GS.workspace_for(store, "w7", "s7").root
+    holder, release = _hold_in_another_process(tmp_path, root)
+    try:
+        def final_solve(world_id, session_id):
+            def run(entered):
+                monkeypatch.setattr(GS, "_solve_unlocked",
+                                    lambda *args, **kwargs: entered.set() or {"solved": False})
+                GS.solve(store, world_id, session_id, final=True)
+            return run
+
+        other = _enter_in_thread(final_solve("w7", "another-session"))
+        assert other[1].wait(10)                        # another session: not held back
+        other[0].join(10)
+        thread, entered, done, errors = _enter_in_thread(final_solve("w7", "s7"))
+        assert not entered.wait(1.5)                    # A holds the session: B waits
+        release.write_text("go")
+        assert holder.wait(10) == 0
+        assert entered.wait(10) and done.wait(10) and errors == []
+    finally:
+        release.write_text("go")
+        if holder.poll() is None:
+            holder.kill()
+        holder.wait()
+
+
+def test_a_killed_holder_never_strands_the_session(tmp_path, monkeypatch):
+    """The builder hard-kills a solve child that outstays its stop budget: the OS frees its
+    lock, so the next final solve of the session is not left waiting on a dead process."""
+    store = WorldStore(tmp_path)
+    monkeypatch.setattr(GS, "_SESSION_LOCK_POLL_S", 0.05)
+    root = GS.workspace_for(store, "w7", "s7").root
+    holder, release = _hold_in_another_process(tmp_path, root)
+    holder.kill()
+    holder.wait()
+
+    def take(entered):
+        with GS.session_writer_lock(root):
+            entered.set()
+
+    thread, entered, done, errors = _enter_in_thread(take)
+    assert entered.wait(10) and done.wait(10) and errors == []
+
+
+def test_another_thread_of_this_process_waits_too_and_the_lock_is_reentrant(tmp_path, monkeypatch):
+    store = WorldStore(tmp_path)
+    monkeypatch.setattr(GS, "_SESSION_LOCK_POLL_S", 0.05)
+    root = GS.workspace_for(store, "w7", "s7").root
+
+    def take(entered):
+        with GS.session_writer_lock(root):
+            entered.set()
+
+    with GS.session_writer_lock(root):
+        with GS.session_writer_lock(root):              # a re-gate inside this thread's solve
+            assert GS.session_writer_lock_held(root)
+        assert GS.session_writer_lock_held(root)
+        thread, entered, done, errors = _enter_in_thread(take)
+        assert not entered.wait(1.0)
+    assert entered.wait(10) and done.wait(10) and errors == []
+    assert not GS.session_writer_lock_held(root)
+
+
+def test_without_the_session_lock_the_concurrent_mapper_is_offs(tmp_path, monkeypatch):
+    """W01F-FIX MED-2's minimum: outside the session writer lock nothing of W0-1 runs -- no
+    child, no marker, no ON sweep: OFF's own mapper, which sweeps as the base does, maps every
+    seed. (The lock is this thread's; another thread does not hold it.)"""
+    store, ws, launched, serial, events, rig = _rig(tmp_path, monkeypatch)
+    results = []
+
+    def run(entered):
+        mapper = _mapper(store, ws)
+        results.extend([mapper(4).solve["seed"], mapper(5).solve["seed"]])
+        mapper.close()
+        entered.set()
+
+    thread, entered, done, errors = _enter_in_thread(run)
+    assert done.wait(30) and errors == []
+    assert results == [3, 3] and serial == [4, 5] and launched == [] and rig.sweeps == [True]
+    assert events == ["session-lock-not-held:seed-4"]
+    (entry,) = _journal(ws)
+    assert (entry["reason"], entry["outcome"]) == ("session-lock-not-held", "serial")
+
+
+# ---------------------------------------------------------------------------
+# W01F-FIX4: the commit gate (Codex H3 / ADV LOW-2)
+# ---------------------------------------------------------------------------
+
+
+def test_commit_refusal_is_journaled_with_its_numbers(tmp_path, monkeypatch):
+    """Ample free RAM, too little commit: the children would fail to allocate where a serial
+    OFF draw fits. Refused, and every seed maps with OFF's mapper."""
+    store, ws, launched, serial, events, _ = _rig(tmp_path, monkeypatch)
+    monkeypatch.setattr(GS, "_draw_free_ram", lambda: 64 * GIB)
+    need = GS._draw_ram_needed(997, 997, 2)
+    monkeypatch.setattr(GS, "_draw_free_commit", lambda: need - 1)
+    mapper = _mapper(store, ws, keyframes=[None] * 997)
+    assert mapper(4).solve["seed"] == 3 and mapper(5).solve["seed"] == 3
+    mapper.close()
+    assert launched == [] and serial == [4, 5] and events == ["commit-refusal:seed-4"]
+    (entry,) = _journal(ws)
+    assert entry["reason"] == "commit-refusal" and entry["outcome"] == "serial"
+    assert (entry["free_commit_bytes"], entry["need_bytes"], entry["walk_size"],
+            entry["children"]) == (need - 1, need, 997, 2)
+    monkeypatch.setattr(GS, "_draw_free_commit", lambda: need)          # exactly enough
+    events.clear()
+    again = _mapper(store, ws, keyframes=[None] * 997)
+    again(4)
+    again.close()
+    assert events == ["after-draw-0"]
+
+
+@pytest.mark.skipif(os.name != "nt", reason="GlobalMemoryStatusEx")
+def test_free_commit_is_the_systems_commit_headroom():
+    import psutil
+
+    commit = GS._draw_free_commit()
+    assert isinstance(commit, int) and commit > 0
+    # The commit limit is physical memory plus the page files: its headroom is at most that.
+    assert commit <= psutil.virtual_memory().total + psutil.swap_memory().total + GIB
+
+
+# ---------------------------------------------------------------------------
+# W01F-FIX4: a partial child Solution never votes (Codex M5)
+# ---------------------------------------------------------------------------
+
+
+def _partial(fault, candidate, result):
+    if fault == "not-complete":
+        result.pop("complete")
+    elif fault == "complete-false":
+        result["complete"] = False
+    elif fault == "another-seed":
+        result["seed"] = 99
+    elif fault == "another-walk":
+        candidate.input_digest = "another walk"
+        result["fingerprint"] = GS._candidate_fingerprint(candidate)
+    elif fault == "changed-after-attest":
+        candidate.poses = dict(candidate.poses, k1=dict(candidate.poses["k0"]))
+        candidate.keyframe_ids = ["k0", "k1"]
+    elif fault == "pose-off-the-walk":
+        candidate.poses = dict(candidate.poses, stranger=dict(candidate.poses["k0"]))
+        result["fingerprint"] = GS._candidate_fingerprint(candidate)
+    elif fault == "missing-component":
+        candidate.poses = {"k0": dict(candidate.poses["k0"], component=1)}
+        result["fingerprint"] = GS._candidate_fingerprint(candidate)
+    elif fault == "torn-arrays":
+        candidate.xyz = np.zeros((3, 3), np.float32)
+        result["fingerprint"] = GS._candidate_fingerprint(candidate)
+    elif fault == "unknown-solver":
+        candidate.solver = "half-a-mapper"
+        result["fingerprint"] = GS._candidate_fingerprint(candidate)
+
+
+@pytest.mark.parametrize("fault,reason", [
+    ("not-complete", "child-incomplete"),
+    ("complete-false", "child-incomplete"),
+    ("another-seed", "child-seed-mismatch"),
+    ("another-walk", "child-candidate-walk"),
+    ("changed-after-attest", "child-candidate-fingerprint"),
+    ("pose-off-the-walk", "child-candidate-poses"),
+    ("missing-component", "child-candidate-components"),
+    ("torn-arrays", "child-candidate-arrays"),
+    ("unknown-solver", "child-candidate-solver"),
+])
+def test_a_partial_child_solution_never_votes(tmp_path, monkeypatch, fault, reason):
+    """Codex M5: a non-empty candidate votes only as the whole of a map that RETURNED, for its
+    seed, of this walk, internally whole. Anything else re-maps that seed with OFF's mapper;
+    its sibling's whole candidate is still used."""
+    store, ws, launched, serial, events, _ = _rig(tmp_path, monkeypatch)
+    real_launch = GS._launch_draw_child
+
+    def launch(context, database, seed, sparse, output, expected):
+        process, job = real_launch(context, database, seed, sparse, output, expected)
+        if seed == 4:
+            with Path(output).open("rb") as handle:
+                result = pickle.load(handle)
+            _partial(fault, result["candidate"], result)
+            with Path(output).open("wb") as handle:
+                pickle.dump(result, handle)
+        return process, job
+
+    monkeypatch.setattr(GS, "_launch_draw_child", launch)
+    mapper = _mapper(store, ws)
+    assert mapper(4).solve["seed"] == 3                 # OFF's mapper's sentinel
+    assert mapper(5).solve["seed"] == 5                 # the whole sibling votes
+    mapper.close()
+    assert serial == [4] and events == ["after-draw-0", f"{reason}:seed-4"]
+    (entry,) = _journal(ws)
+    assert (entry["reason"], entry["seed"], entry["outcome"]) == (reason, 4, "serial")
+
+
+def test_a_whole_child_result_is_attested_by_the_child():
+    candidate = _posed()
+    result = GS.draw_child_result(candidate, seed=4, before="d", after="d", map_ms=1.0)
+    assert result["complete"] is True and result["seed"] == 4
+    assert GS._child_partial(result, candidate, seed=4, input_digest="input") is None
+    assert GS.draw_child_result(None, seed=4, before="d", after="d", map_ms=1.0)["complete"] is False
+
+
+# ---------------------------------------------------------------------------
+# W01F-FIX4: what the fix-round mutant pass left unpinned (ADV LOW-3, LOW-4)
+# ---------------------------------------------------------------------------
+
+
+def test_a_reused_pid_is_no_live_writer(tmp_path):
+    """R02: the marker names a LIVE process, but one started at another time: stale."""
+    import psutil
+
+    other = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+    try:
+        marker = tmp_path / "sparse-draws" / "writer.json"
+        marker.parent.mkdir()
+        started = psutil.Process(other.pid).create_time()
+        marker.write_text(json.dumps({"pid": other.pid, "created_at": started}))
+        assert GS._draw_writer_live(marker)
+        marker.write_text(json.dumps({"pid": other.pid, "created_at": started - 5.0}))
+        assert not GS._draw_writer_live(marker)
+    finally:
+        other.kill()
+        other.wait()
+
+
+def test_an_open_mappers_own_root_is_live_until_it_closes(tmp_path, monkeypatch):
+    """R10 / R13: an OPEN concurrent mapper registers its root, so its own marker is live to
+    this process -- never swept under its running children -- and stale once it closes."""
+    store, ws, _, _, _, _ = _rig(tmp_path, monkeypatch)
+    root = ws.root / GS.CONSENSUS_SPARSE_DIRNAME
+    mapper = _mapper(store, ws)
+    mapper(4)                                           # child 5 still "running"
+    assert GS._draw_writer_live(root / "writer.json")
+    assert GS._sweep_draw_root(root) is False and (root / "child-5").exists()
+    mapper.close()
+    assert not root.exists()
+    root.mkdir()
+    (root / "writer.json").write_text(json.dumps(
+        {"pid": os.getpid(), "created_at": __import__("psutil").Process().create_time()}))
+    assert not GS._draw_writer_live(root / "writer.json")
+
+
+def test_an_unreadable_marker_is_stale_under_the_session_lock(tmp_path, monkeypatch):
+    """ADV LOW-3: under the session writer lock no live writer's marker can be unreadable, so it
+    no longer makes every later ON finish map beside it: it is swept, and the draws are
+    concurrent."""
+    store, ws, launched, serial, events, _ = _rig(tmp_path, monkeypatch)
+    root = ws.root / GS.CONSENSUS_SPARSE_DIRNAME
+    root.mkdir()
+    (root / "writer.json").write_text("{torn")
+    mapper = _mapper(store, ws)
+    mapper(4)
+    mapper.close()
+    assert events == ["after-draw-0"] and serial == [] and not root.exists()
+
+
+def test_a_parent_digest_that_raises_is_not_an_unchanged_database(tmp_path, monkeypatch):
+    """R08: the parent's own (third) digest of a child's private copy raising cannot show the
+    copy unchanged: that seed is re-mapped."""
+    store, ws, _, serial, events, _ = _rig(tmp_path, monkeypatch)
+    real_digest = GS.database_digest
+    calls = {}
+
+    def digest(path):
+        if Path(path).name == "database.db" and Path(path).parent.name == "child-4":
+            calls[path] = calls.get(path, 0) + 1
+            if calls[path] == 2:                        # the copy check passed; then collection
+                raise OSError("the private copy cannot be read")
+        return real_digest(path)
+
+    monkeypatch.setattr(GS, "database_digest", digest)
+    mapper = _mapper(store, ws)
+    assert mapper(4).solve["seed"] == 3 and serial == [4]
+    mapper.close()
+    assert events == ["after-draw-0", "database-child-digest-mismatch:seed-4"]

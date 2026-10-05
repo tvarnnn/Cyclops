@@ -68,7 +68,10 @@ Builder behaves exactly as before, and the manifest says why.
 
 from __future__ import annotations
 
+import contextlib
 import dataclasses
+import functools
+import hashlib
 import io
 import json
 import logging
@@ -78,6 +81,8 @@ import shutil
 import sqlite3
 import subprocess
 import sys
+import tempfile
+import threading
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -246,6 +251,144 @@ def workspace_for(store, world_id: str, session_id: str) -> SolveWorkspace:
     (undistorted frames, the feature database, COLMAP's own model files).
     """
     return SolveWorkspace(store.world_dir(world_id) / "solve" / session_id)
+
+
+# ---------------------------------------------------------------------------
+# THE SESSION WRITER LOCK (review W01F-FIX ADV MED-2 / Codex H1, H2; manager 166 section 2)
+# ---------------------------------------------------------------------------
+#
+# Two final solves of one session could overlap: the world writer lock is per world and taken
+# by the builder and the finisher, but `scripts/world_solve.py --final` -- run by hand against a
+# live world, "an ordinary operator action" (`storage.staging_path`) -- took none. Both then own
+# `solve/<session>/sparse-draws/`: one sweeps or closes the other's live draw, and that draw
+# loses its vote. So EVERY final solve takes this lock for its whole run -- `solve(final=True)`
+# (the builder's `world_solve.py` child, a hand-run `world_solve.py --final`, the builder's
+# in-process `solve_session`, `world_finalize.py`, the finisher), and every re-gate in place
+# (`coherence_publish.regate_published`), the other writer of that scratch. A second one WAITS
+# for the first; it never maps beside it.
+#
+# AN OS LOCK, NOT A FILE IN THE WORLD. A named mutex on Windows (the `Local` namespace: this logon session),
+# `flock` on a file in the OS temp directory elsewhere. The OS frees it when its holder dies --
+# the builder hard-kills a solve child on every stop that outstays its budget -- so there is no
+# stale lock to judge, and nothing is written under the world: a solve that never overlaps
+# another writes exactly the files it wrote before (NO BIG BANG). Re-entrant in one thread
+# (a finish that re-gates inside its own solve); another thread of the same process waits, as
+# another process does.
+_SESSION_LOCKS = threading.local()
+_SESSION_LOCK_POLL_S = 1.0
+
+
+def _session_lock_key(root) -> str:
+    path = os.path.normcase(os.path.abspath(os.path.realpath(str(root))))
+    return hashlib.sha256(path.encode("utf-8")).hexdigest()[:32]
+
+
+def _session_locks_held() -> dict:
+    held = getattr(_SESSION_LOCKS, "held", None)
+    if held is None:
+        held = _SESSION_LOCKS.held = {}
+    return held
+
+
+def session_writer_lock_held(root) -> bool:
+    """Whether THIS thread holds the session writer lock of the workspace at `root`."""
+    return _session_lock_key(root) in _session_locks_held()
+
+
+def _os_session_lock(key: str, root) -> callable:
+    """Take the OS lock named by `key`, waiting as long as another holder has it; returns its
+    release. One log line when it has to wait, one when it gets it."""
+    waited = time.monotonic()
+    announced = False
+
+    def waiting():
+        nonlocal announced
+        if not announced:
+            announced = True
+            logger.warning("[Tower][WorldBuilder] another final solve or re-gate of %s holds its "
+                           "session writer lock; waiting for it", root)
+
+    if os.name == "nt":
+        import ctypes  # noqa: PLC0415
+        from ctypes import wintypes  # noqa: PLC0415
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.CreateMutexW.argtypes = [ctypes.c_void_p, wintypes.BOOL, wintypes.LPCWSTR]
+        kernel32.CreateMutexW.restype = wintypes.HANDLE
+        kernel32.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+        kernel32.WaitForSingleObject.restype = wintypes.DWORD
+        kernel32.ReleaseMutex.argtypes = [wintypes.HANDLE]
+        kernel32.ReleaseMutex.restype = wintypes.BOOL
+        kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+        kernel32.CloseHandle.restype = wintypes.BOOL
+        handle = kernel32.CreateMutexW(None, False, f"Local\\GlassesWorldSolveSession-{key}")
+        if not handle:
+            raise OSError(ctypes.get_last_error(), "the session writer lock could not be made")
+        try:
+            while True:
+                state = kernel32.WaitForSingleObject(handle, int(_SESSION_LOCK_POLL_S * 1000))
+                if state in (0x0, 0x80):          # WAIT_OBJECT_0, WAIT_ABANDONED (holder died)
+                    break
+                if state != 0x102:                # anything but WAIT_TIMEOUT
+                    raise OSError(ctypes.get_last_error(),
+                                  "the session writer lock could not be waited for")
+                waiting()
+        except BaseException:
+            kernel32.CloseHandle(handle)
+            raise
+
+        def release():
+            try:
+                kernel32.ReleaseMutex(handle)
+            finally:
+                kernel32.CloseHandle(handle)
+    else:
+        import fcntl  # noqa: PLC0415
+
+        path = Path(tempfile.gettempdir()) / f"glasses-world-solve-session-{key}.lock"
+        handle = open(path, "a+b")  # noqa: SIM115 -- held until release
+        try:
+            while True:
+                try:
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except BlockingIOError:
+                    waiting()
+                    time.sleep(_SESSION_LOCK_POLL_S)
+        except BaseException:
+            handle.close()
+            raise
+
+        def release():
+            try:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+            finally:
+                handle.close()
+    if announced:
+        logger.warning("[Tower][WorldBuilder] session writer lock of %s taken after %.1f s",
+                       root, time.monotonic() - waited)
+    return release
+
+
+@contextlib.contextmanager
+def session_writer_lock(root):
+    """Hold the session writer lock of the solve workspace at `root` (see above)."""
+    key = _session_lock_key(root)
+    held = _session_locks_held()
+    if key in held:
+        held[key] += 1
+        try:
+            yield
+        finally:
+            held[key] -= 1
+        return
+    release = _os_session_lock(key, root)
+    held[key] = 1
+    try:
+        yield
+    finally:
+        del held[key]
+        release()
 
 
 def keyframe_image_name(keyframe: Keyframe) -> str:
@@ -1183,7 +1326,7 @@ def resolve_run_options(*, final: bool, masks: bool | None, seed) -> tuple[bool,
 
 
 @stage_timing.timed("solve", final_only=True)
-def solve(
+def _solve_unlocked(
     store,
     world_id: str,
     session_id: str,
@@ -1475,8 +1618,9 @@ def solve(
     if frozen and final and seeded:
         # THE WINDOW BETWEEN THE FREEZE CHECK AND WHAT IS MAPPED (review V9 Q1). The check
         # read the walk database's digest before extraction; the mask filter copies it (or,
-        # unmasked, the mapper reads it) later, and a hand-run `world_solve.py --final` takes
-        # no writer lock, so it can extract or match into it in between. The walk database is
+        # unmasked, the mapper reads it) later, and a background `world_solve.py` takes no
+        # writer lock (a final one takes only its session's, `session_writer_lock`), so it can
+        # extract or match into it in between. The walk database is
         # read again -- about 0.5 s at 690 keyframes (RUN P3-SOL, `q3_configs.py`) -- and a
         # solve whose copy may hold another solve's writes does not call itself frozen.
         #
@@ -1633,6 +1777,18 @@ def solve(
     }
 
 
+@functools.wraps(_solve_unlocked)
+def solve(store, world_id: str, session_id: str, **options) -> dict:
+    # EVERY FINAL SOLVE HOLDS ITS SESSION'S WRITER LOCK (`session_writer_lock`; review
+    # W01F-FIX MED-2): so does any solve asked for a consensus, the other user of
+    # `sparse-draws/`. Every other solve -- the builder's background solves -- is unchanged.
+    consensus = options.get("consensus")
+    if not (options.get("final", False) or (consensus is not None and int(consensus) >= 2)):
+        return _solve_unlocked(store, world_id, session_id, **options)
+    with session_writer_lock(workspace_for(store, world_id, session_id).root):
+        return _solve_unlocked(store, world_id, session_id, **options)
+
+
 def _loop_detection_wanted(loop_detection) -> bool:
     """Whether this solve's sequential matching runs loop detection.
 
@@ -1771,8 +1927,10 @@ def frozen_draw_mapper(store, world_id: str, session_id: str, database_path, bas
     keyframes = keyframes if keyframes is not None else store.read_keyframes(world_id, session_id)
     camera = PinholeCamera.from_json_dict(base.camera or read_json_closed(workspace.camera_path))
     draw_root = workspace.root / CONSENSUS_SPARSE_DIRNAME
-    if _unconfirmed_draw_alive():
-        raise RuntimeError("an earlier consensus child still owns draw scratch")
+    # NOTHING OF W0-1 RUNS HERE (review W01F-FIX ADV MED-1 / Codex M4): this is OFF's mapper,
+    # and OFF -- even after a failed ON run in this interpreter -- is the base's, byte for byte.
+    # A concurrent child whose stop could not be confirmed maps in `child-<k>/`, never in the
+    # `seed-<k>/` this maps in, and its result is never read: the base's sweep cannot hurt it.
     if sweep:
         shutil.rmtree(draw_root, ignore_errors=True)
 
@@ -1800,7 +1958,11 @@ def frozen_draw_mapper(store, world_id: str, session_id: str, database_path, bas
 
 
 # A worker whose death could not be confirmed must remain owned and visible. Never
-# reuse its private database or sparse path for a replacement writer.
+# reuse its private database or sparse path for a replacement writer. Each entry is
+# `(process, job, root key)`: the `sparse-draws/` it maps in (`_draw_root_key`; None when
+# unknown, which matches every root). KEYED BY ROOT (review W01F-FIX ADV MED-1): a child
+# another world's finish could not stop says nothing about this world's scratch. Only the
+# concurrent mapper (ON) reads it; OFF's mapper never does.
 _UNCONFIRMED_DRAW_CHILDREN = []
 # The draw roots (`sparse-draws/`) an OPEN concurrent mapper of this process owns. A
 # marker naming this process but no open mapper is an earlier mapper's leftover whose
@@ -1837,6 +1999,12 @@ _CHILD_LOG_TAIL_CHARS = 2000
 # child costs, and the parent's own resident set is already out of the `available` it
 # reads. Physical `available` against a commit budget is conservative: a child's working
 # set is half its commit.
+# AND THE SAME NEED IN COMMIT (review W01F-FIX Codex H3 / ADV LOW-2). The budget IS peak
+# commit, and a Windows process that cannot commit fails its allocation however much RAM is
+# free: the gate also asks the system's free commit (`ullAvailPageFile`: the commit limit less
+# what is committed) for it. On this host commit headroom was 18.71 GiB against 10.03 GiB of
+# physical (ADV, 2026-10-04), so physical binds first here; a host whose pagefile is small
+# meets commit first.
 #   997 images, 2 children: 3 x 1.5 x 1.403 GiB = 6.31 GiB: admitted on the 10.9-11.9 GiB
 #   this host has free (it was refused at 12.29 GiB, 2.9x the measured child, before).
 #   398 keyframes: 3 x 1.5 x 1.09 GiB = 4.90 GiB. It refuses 997 images below 6.31 GiB
@@ -1860,8 +2028,73 @@ _DRAW_COMMIT_MARGIN = 1.5
 _DRAW_WAIT_PER_IMAGE_S = 175.0 / 398
 _DRAW_WAIT_MULTIPLE = 3.0
 _DRAW_WAIT_FLOOR_S = 600.0
-# A child whose mapper raised (`world_solve_draw.py`): its seed is re-mapped in-process.
-DRAW_CHILD_MAPPER_RAISED_EXIT = 3
+# A child whose mapper raised (`world_solve_draw.py`): its seed is re-mapped in-process. NOT
+# 3, which a C-runtime `abort()` -- a glog CHECK in COLMAP -- also exits with (review W01F-FIX
+# ADV LOW-5): every non-zero exit re-maps alike, but the journal's `child-exit-<code>` now says
+# which it was.
+DRAW_CHILD_MAPPER_RAISED_EXIT = 23
+
+
+def _candidate_fingerprint(candidate) -> str:
+    """A digest of everything a candidate votes with: its records and every array."""
+    digest = hashlib.sha256(json.dumps({
+        "solver": candidate.solver, "input_digest": candidate.input_digest,
+        "keyframe_ids": list(candidate.keyframe_ids), "poses": candidate.poses,
+        "components": candidate.components}, sort_keys=True, default=str).encode("utf-8"))
+    for name in ("xyz", "rgb", "component", "first_keyframe", "track_length", "error",
+                 "observations", "observation_xy"):
+        array = np.ascontiguousarray(getattr(candidate, name))
+        digest.update(f"|{name}:{array.dtype.str}:{array.shape}|".encode("utf-8"))
+        digest.update(array.tobytes())
+    return digest.hexdigest()
+
+
+def draw_child_result(candidate, *, seed: int, before, after, map_ms) -> dict:
+    """What a draw child (`world_solve_draw.py`) writes once `_map_candidate` RETURNED with no
+    mapper raising: `complete` and the candidate's `fingerprint`, taken there and then, attest
+    that `candidate` is the whole of what that map returned, for `seed` (`_child_partial`)."""
+    whole = isinstance(candidate, Solution)
+    return {"before": before, "after": after, "map_ms": map_ms, "candidate": candidate,
+            "seed": int(seed), "complete": whole,
+            "fingerprint": _candidate_fingerprint(candidate) if whole else None}
+
+
+def _child_partial(result: dict, candidate, *, seed: int, input_digest) -> str | None:
+    """Why a child's non-empty candidate must not vote, or None (review W01F-FIX Codex M5).
+
+    A candidate votes only as the WHOLE of a normal map of this walk with this seed: the child
+    attests its mapper returned (`complete`, written only after `_map_candidate` returned and
+    no mapper raised), for this seed, and its fingerprint matches what it reads as; it is this
+    walk's (`input_digest`); and it is internally whole, as every `_solution_from_reconstructions`
+    result is -- every posed keyframe is the walk's, every pose's component exists, every point
+    array has one row a point, the components' points add up to them, and every observation has
+    its pixel. Anything else re-maps the seed with OFF's mapper. What no one can see -- a mapper
+    that RETURNS a partial model without raising -- the in-process map (OFF) would vote too."""
+    if result.get("complete") is not True:
+        return "child-incomplete"
+    if result.get("seed") != seed:
+        return "child-seed-mismatch"
+    if candidate.input_digest != input_digest:
+        return "child-candidate-walk"
+    try:
+        if result.get("fingerprint") != _candidate_fingerprint(candidate):
+            return "child-candidate-fingerprint"
+        if candidate.solver not in (SOLVER_GLOMAP, SOLVER_INCREMENTAL):
+            return "child-candidate-solver"
+        if not set(candidate.poses) <= set(candidate.keyframe_ids):
+            return "child-candidate-poses"
+        components = len(candidate.components)
+        if any(not 0 <= int(pose["component"]) < components for pose in candidate.poses.values()):
+            return "child-candidate-components"
+        points = len(candidate.xyz)
+        if (any(len(getattr(candidate, name)) != points for name in
+                ("rgb", "component", "first_keyframe", "track_length", "error"))
+                or sum(int(c.get("points", 0)) for c in candidate.components) != points
+                or len(candidate.observations) != len(candidate.observation_xy)):
+            return "child-candidate-arrays"
+    except Exception:  # noqa: BLE001 -- a candidate that cannot be checked cannot vote
+        return "child-candidate-unreadable"
+    return None
 
 
 def _draw_walk_size(keyframes: int, images: int) -> int:
@@ -1893,19 +2126,33 @@ def _draw_image_count(source: Path) -> int:
         connection.close()
 
 
-def _unconfirmed_draw_alive() -> bool:
+def _unconfirmed_entry_root(entry):
+    return entry[2] if len(entry) > 2 else None
+
+
+def _unconfirmed_draw_alive(root=None) -> bool:
+    """Whether an unconfirmed child still lives: any (`root` None), or one of `root`'s. Reaps
+    the ones that have exited, every root's."""
     survivors = []
-    for process, job in _UNCONFIRMED_DRAW_CHILDREN:
+    for entry in _UNCONFIRMED_DRAW_CHILDREN:
+        process, job = entry[0], entry[1]
         try:
             alive = process.poll() is None
         except Exception:
             alive = True
         if alive:
-            survivors.append((process, job))
+            survivors.append(entry)
         elif job is not None:
             job.close()
     _UNCONFIRMED_DRAW_CHILDREN[:] = survivors
-    return bool(survivors)
+    key = None if root is None else _draw_root_key(root)
+    return any(key is None or _unconfirmed_entry_root(entry) in (None, key) for entry in survivors)
+
+
+def _unconfirmed_draw_owned(root) -> bool:
+    """Whether `root` has an unconfirmed child on record (no polling)."""
+    key = _draw_root_key(root)
+    return any(_unconfirmed_entry_root(entry) in (None, key) for entry in _UNCONFIRMED_DRAW_CHILDREN)
 
 
 def _private_draw_database(source: Path, destination: Path) -> None:
@@ -1939,12 +2186,36 @@ def _draw_free_ram() -> int:
     return int(psutil.virtual_memory().available)
 
 
-def _remember_unconfirmed_draw_child(process, job) -> None:
-    if not any(owned is process for owned, _ in _UNCONFIRMED_DRAW_CHILDREN):
-        _UNCONFIRMED_DRAW_CHILDREN.append((process, job))
+def _draw_free_commit() -> int:
+    """The memory the system can still commit, in bytes: Windows' `ullAvailPageFile`
+    (`GlobalMemoryStatusEx`: the commit limit less the committed total); elsewhere free
+    physical memory plus free swap."""
+    if os.name != "nt":
+        import psutil  # noqa: PLC0415
+        return int(psutil.virtual_memory().available + psutil.swap_memory().free)
+    import ctypes  # noqa: PLC0415
+    from ctypes import wintypes  # noqa: PLC0415
+
+    class MemoryStatusEx(ctypes.Structure):
+        _fields_ = [("dwLength", wintypes.DWORD), ("dwMemoryLoad", wintypes.DWORD),
+                    ("ullTotalPhys", ctypes.c_ulonglong), ("ullAvailPhys", ctypes.c_ulonglong),
+                    ("ullTotalPageFile", ctypes.c_ulonglong), ("ullAvailPageFile", ctypes.c_ulonglong),
+                    ("ullTotalVirtual", ctypes.c_ulonglong), ("ullAvailVirtual", ctypes.c_ulonglong),
+                    ("ullAvailExtendedVirtual", ctypes.c_ulonglong)]
+
+    status = MemoryStatusEx()
+    status.dwLength = ctypes.sizeof(MemoryStatusEx)
+    if not ctypes.WinDLL("kernel32", use_last_error=True).GlobalMemoryStatusEx(ctypes.byref(status)):
+        raise OSError(ctypes.get_last_error(), "GlobalMemoryStatusEx failed")
+    return int(status.ullAvailPageFile)
 
 
-def _stop_spawned_draw_child(process, job) -> bool:
+def _remember_unconfirmed_draw_child(process, job, root_key=None) -> None:
+    if not any(entry[0] is process for entry in _UNCONFIRMED_DRAW_CHILDREN):
+        _UNCONFIRMED_DRAW_CHILDREN.append((process, job, root_key))
+
+
+def _stop_spawned_draw_child(process, job, root_key=None) -> bool:
     # Keep ownership if any post-Popen cleanup cannot prove the child stopped.
     from tower import process_ownership  # noqa: PLC0415
 
@@ -1954,14 +2225,14 @@ def _stop_spawned_draw_child(process, job) -> bool:
         logger.warning("consensus spawned child terminate failed", exc_info=True)
         gone = False
     if not gone:
-        _remember_unconfirmed_draw_child(process, job)
+        _remember_unconfirmed_draw_child(process, job, root_key)
         return False
     if job is not None:
         try:
             job.close()
         except BaseException:
             logger.warning("consensus spawned child job close failed", exc_info=True)
-            _remember_unconfirmed_draw_child(process, job)
+            _remember_unconfirmed_draw_child(process, job, root_key)
             return False
     return True
 
@@ -1977,6 +2248,8 @@ def _launch_draw_child(context, database, seed, sparse, output, expected_digest)
     process = None
     job = None
     stop_attempted = False
+    # `output` is `<root>/child-<k>/candidate.pkl`: an unconfirmed child is kept under its root.
+    root_key = _draw_root_key(Path(output).parent.parent)
     try:
         with (Path(output).parent / "child.log").open("wb") as log:
             process = subprocess.Popen(args, stdin=subprocess.DEVNULL, stdout=log,
@@ -1987,7 +2260,7 @@ def _launch_draw_child(context, database, seed, sparse, output, expected_digest)
         job = process_ownership.assign_to_job(process)
         if os.name == "nt" and job is None:
             stop_attempted = True
-            if not _stop_spawned_draw_child(process, job):
+            if not _stop_spawned_draw_child(process, job, root_key):
                 raise RuntimeError("a consensus child could not be confirmed stopped")
             return process, job
         if not _resume_draw_child(process):
@@ -1995,14 +2268,15 @@ def _launch_draw_child(context, database, seed, sparse, output, expected_digest)
         return process, job
     except BaseException as exc:
         if process is not None and not stop_attempted:
-            if not _stop_spawned_draw_child(process, job):
+            if not _stop_spawned_draw_child(process, job, root_key):
                 raise RuntimeError("a consensus child could not be confirmed stopped") from exc
         raise
 
 
-def _stop_draw_children(children) -> bool:
+def _stop_draw_children(children, root=None) -> bool:
     from tower import process_ownership  # noqa: PLC0415
 
+    root_key = None if root is None else _draw_root_key(root)
     all_gone = True
     for process, job in children.values():
         try:
@@ -2017,7 +2291,7 @@ def _stop_draw_children(children) -> bool:
                 logger.warning("consensus child terminate failed", exc_info=True)
                 gone = False
             if not gone:
-                _remember_unconfirmed_draw_child(process, job)
+                _remember_unconfirmed_draw_child(process, job, root_key)
                 all_gone = False
                 continue
         if job is not None:
@@ -2025,7 +2299,7 @@ def _stop_draw_children(children) -> bool:
                 job.close()
             except Exception:
                 logger.warning("consensus child job close failed", exc_info=True)
-                _remember_unconfirmed_draw_child(process, job)
+                _remember_unconfirmed_draw_child(process, job, root_key)
                 all_gone = False
     return all_gone
 
@@ -2036,8 +2310,12 @@ def _draw_root_key(root) -> str:
 
 def _draw_writer_live(marker: Path) -> bool:
     """Whether the writer a `writer.json` names still owns its draw root. Gone, a reused pid
-    (another start time), or THIS process with no open mapper on that root: stale. A marker
-    that cannot be read or checked counts as live: never sweep what may be a live writer's."""
+    (another start time), or THIS process with no open mapper on that root: stale. Asked only
+    under the session writer lock (`concurrent_draw_mapper`), which every final solve and
+    re-gate of the session holds for its whole run: so a marker that cannot be read or checked
+    is no live writer's either, and is stale (review W01F-FIX ADV LOW-3: it made every later ON
+    finish map beside it). A live, checkable foreign marker can only be a writer that does not
+    take the lock (an older build): it is never swept."""
     import psutil  # noqa: PLC0415
     try:
         owner = read_json_closed(marker)
@@ -2048,17 +2326,19 @@ def _draw_writer_live(marker: Path) -> bool:
     except psutil.NoSuchProcess:
         return False
     except (psutil.Error, OSError, ValueError, TypeError, KeyError):
-        return True
+        return False
     return pid != os.getpid() or _draw_root_key(marker.parent) in _LIVE_DRAW_ROOTS
 
 
 def _sweep_draw_root(root: Path, *, owned: bool = False) -> bool:
     """Remove `sparse-draws/` for a concurrent finish: False, untouched, if a live writer owns
     it. A root WITHOUT a marker is stale and swept, as the serial mapper sweeps it (review
-    W01F STD MED-2 / ADV MED-1): every concurrent root carries its `writer.json` from its
-    creation, and the serial mapper -- OFF's, and every fallback's -- writes none, so a
-    markerless root is a hard-killed serial draw's or a failed sweep's leftover. Raises
-    OSError when it cannot be removed: the caller then maps serially, never fatally."""
+    W01F STD MED-2 / ADV MED-1). Called only under the session writer lock: every writer of
+    this scratch -- a final solve's mappers, OFF's and ON's, and a re-gate's -- holds that lock
+    for its whole run, so a markerless root here is a dead writer's leftover (a hard-killed
+    serial draw, a failed sweep), never a live one's (review W01F-FIX MED-2 / Codex H2: before
+    the lock, a live serial writer's root was markerless too). Raises OSError when it cannot be
+    removed: the caller then maps serially, never fatally."""
     if not root.exists():
         return True
     marker = root / "writer.json"
@@ -2124,8 +2404,9 @@ def concurrent_draw_mapper(store, world_id: str, session_id: str, database_path,
 
     EVERY OUTCOME IS OFF'S (Tier A; review W01F). A child's candidate is used only when the
     child exited 0, its result reads, its private database is unchanged by three digests (the
-    child's two and this process's own) and it posed something. Any other outcome for a
-    child -- a non-zero exit (a child whose mapper RAISED exits 3), its wait running out
+    child's two and this process's own), it posed something, and it is the whole of a map
+    that returned (`_child_partial`). Any other outcome for a child -- a non-zero exit (a
+    child whose mapper RAISED exits `DRAW_CHILD_MAPPER_RAISED_EXIT`), its wait running out
     (`_draw_wait_seconds`, from its launch), an unreadable or empty result, a changed
     database -- re-maps THAT seed in-process with OFF's own mapper (`frozen_draw_mapper`),
     while its siblings keep mapping. A refusal at launch -- the RAM gate (`_draw_ram_needed`),
@@ -2135,6 +2416,11 @@ def concurrent_draw_mapper(store, world_id: str, session_id: str, database_path,
     and only with the switch on. The finish fails closed (`ConsensusAuditError`) only for a
     hazard OFF cannot have: a child whose stop cannot be confirmed, or a journal that cannot
     be written.
+
+    ONLY UNDER THE SESSION WRITER LOCK (`session_writer_lock`; review W01F-FIX MED-2). Every
+    final solve and re-gate of the session holds it for its whole run, so no other writer's
+    `sparse-draws/` can be live while this sweeps or maps there. Called without it, every seed
+    maps with OFF's mapper (`session-lock-not-held`).
     """
     from tower.world_builder import coherence_publish  # noqa: PLC0415
 
@@ -2150,7 +2436,8 @@ def concurrent_draw_mapper(store, world_id: str, session_id: str, database_path,
     launched = False
     everything_serial = False
     serial = None            # OFF's mapper, made once nothing of this mapper's still runs
-    beside = False           # a live writer owns `sparse-draws/`: never sweep it
+    beside = False           # `sparse-draws/` is not ours to sweep: a foreign live marker, a root
+    #                          made since the sweep, or an unconfirmed child of an earlier finish
     closed = False
     close_error = None
     owns_root = False
@@ -2179,7 +2466,7 @@ def concurrent_draw_mapper(store, world_id: str, session_id: str, database_path,
     def stop(owned):
         """Stop `owned` (seed -> (process, job)); forget them only once confirmed gone."""
         try:
-            gone = _stop_draw_children(owned)
+            gone = _stop_draw_children(owned, root)
         except Exception as exc:
             raise coherence_publish.ConsensusAuditError(
                 "a consensus child stop failed") from exc
@@ -2258,14 +2545,26 @@ def concurrent_draw_mapper(store, world_id: str, session_id: str, database_path,
     def launch():
         nonlocal expected, launched, owns_root, beside, close_error, wait_s
         launched = True
+        if not session_writer_lock_held(workspace.root):
+            # NOT THIS SESSION'S WRITER (review W01F-FIX MED-2): nothing proves `sparse-draws/`
+            # is not another final solve's, so nothing of W0-1 runs -- OFF's own mapper, sweep
+            # and all, maps every seed. Every final solve holds the lock (`solve`), so this is
+            # a caller outside one.
+            fall_back("session-lock-not-held", seeds[0])
+            return
         try:
-            prior_child_alive = _unconfirmed_draw_alive()
+            prior_child_alive = _unconfirmed_draw_alive(root)
         except Exception as exc:
             abort(f"preflight-child-status-{type(exc).__name__}", seeds[0],
                   "consensus preflight child-status failed", exc)
         if prior_child_alive:
-            abort("unconfirmed-prior-child", seeds[0],
-                  "an earlier consensus child still owns draw scratch")
+            # An earlier ON finish of THIS session could not confirm a child stopped, and it
+            # still maps in its `child-<k>/`. OFF's mapper maps every seed in `seed-<k>/`
+            # beside it, without the sweep: OFF's result, nothing of the child's touched
+            # (review W01F-FIX ADV MED-1 -- it aborted the finish).
+            beside = True
+            fall_back("unconfirmed-prior-child", seeds[0])
+            return
         try:
             scratch_clear = _sweep_draw_root(root)
         except Exception as exc:  # noqa: BLE001 -- held open: OFF's mapper sweeps what it can
@@ -2295,6 +2594,16 @@ def concurrent_draw_mapper(store, world_id: str, session_id: str, database_path,
         if free_ram < need:
             fall_back("ram-refusal", seeds[0], free_bytes=int(free_ram), need_bytes=int(need),
                       walk_size=_draw_walk_size(frame_count, image_count), children=len(seeds))
+            return
+        try:
+            free_commit = _draw_free_commit()
+        except Exception as exc:  # noqa: BLE001
+            fall_back(f"preflight-commit-probe-{type(exc).__name__}", seeds[0], error=_why(exc))
+            return
+        if free_commit < need:
+            fall_back("commit-refusal", seeds[0], free_commit_bytes=int(free_commit),
+                      need_bytes=int(need), walk_size=_draw_walk_size(frame_count, image_count),
+                      children=len(seeds))
             return
         try:
             expected = (database_digest(source) or {}).get("content")
@@ -2343,7 +2652,7 @@ def concurrent_draw_mapper(store, world_id: str, session_id: str, database_path,
                         context, private_root / "database.db", draw_seed,
                         private_root / "sparse", private_root / "candidate.pkl", expected)
                 except RuntimeError as exc:
-                    if _UNCONFIRMED_DRAW_CHILDREN:
+                    if _unconfirmed_draw_owned(root):
                         close_error = coherence_publish.ConsensusAuditError(
                             "a launched consensus child could not be confirmed stopped")
                         try:
@@ -2406,8 +2715,11 @@ def concurrent_draw_mapper(store, world_id: str, session_id: str, database_path,
         candidate = result["candidate"]
         if not candidate.poses:
             # Nothing posed: OFF's own map of this seed decides, not the child's (review W01F
-            # STD MED-1; a child whose mapper raised exits 3 first). It costs only time.
+            # STD MED-1; a child whose mapper raised exits first). It costs only time.
             return None, ("child-empty-candidate", {})
+        partial = _child_partial(result, candidate, seed=draw_seed, input_digest=base.input_digest)
+        if partial is not None:
+            return None, (partial, {})
         try:
             stage_timing.child_draw_timing(draw_seed, result["map_ms"])
         except Exception:  # noqa: BLE001 -- I0 is evidence, never a reason to re-map
@@ -2449,7 +2761,7 @@ def concurrent_draw_mapper(store, world_id: str, session_id: str, database_path,
         if not closed:
             closed = True
             try:
-                gone = _stop_draw_children(children)
+                gone = _stop_draw_children(children, root)
             except Exception as exc:
                 close_error = coherence_publish.ConsensusAuditError(
                     "a consensus child stop failed")

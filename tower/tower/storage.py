@@ -42,7 +42,9 @@ def staging_path(path: Path) -> Path:
 
     Nothing in this Tower serialises writers of `solution.npz`:
     `acquire_writer_lock` is per-world and taken only by the engine, and
-    `scripts/world_solve.py` takes no lock at all. A hand-run solve against a
+    `scripts/world_solve.py` takes no world lock (a `--final` one takes only
+    its session's, `global_solve.session_writer_lock`, which serialises
+    final solves of one session, not writers). A hand-run solve against a
     world with a live builder is two writers, and that is an ordinary
     operator action -- it is how the 2026-09-09 artifact was recovered.
 
