@@ -178,7 +178,7 @@ def _appearance_summary(store: WorldStore, world_id: str, session_id: str, world
     prov = manifest.get("appearance_provenance") or {}
     if getattr(world, "images_purged", False):
         state = AP.WITHDRAWN
-    elif AP.label_matches(store, world_id, session_id, manifest):
+    elif AP.may_serve(store, world_id, session_id, manifest):
         state = AP.SERVED
     else:
         state = AP.withdrawal_state(store, world_id, session_id, manifest)

@@ -1189,6 +1189,43 @@ def label_matches(store, world_id: str, session_id: str, manifest: dict,
             and prov.get("keyframe_image_set") == image_set)
 
 
+def may_serve(store, world_id: str, session_id: str, manifest: dict,
+              imagery_source: str | None = None) -> bool:
+    """Whether the routes may serve this manifest now: THE serving gate.
+
+    `label_matches`, unchanged -- or the ordinary Stop (owner, manager 185 A:
+    "Stop should end capture, not make already-captured walk imagery
+    unavailable"). A walk's builds re-redact every keyframe under `none`; at
+    Stop the label becomes the real one and `label_matches` refuses them,
+    although an open page is told `rebuilding` and keeps drawing the very same
+    textures. A viewer opened after Stop was given the surface instead.
+
+    So a manifest whose label no longer matches is served exactly when an open
+    page may already keep it -- `withdrawal_state` is `rebuilding`, i.e.
+    `textures_carry_over` from its provenance to the keyframe set as it is now:
+    the same keyframe set, the same imagery source, and every frame re-redacted
+    by a redactor whose own label is on the allowlist. Nothing else rides it: a
+    stored-bytes build after a relabel, a build by an unlisted or unknown
+    redactor, a re-redaction switch, a raw research build -- all still refused.
+    The imagery check runs first, unchanged. A purged world (or one whose
+    record cannot be read) never rides the carry-over either: every caller
+    already refuses a purged world, but `build_appearance_config` does not, and
+    the carry-over must not be the thing that lets it.
+    """
+    if imagery_source is None:
+        imagery_source = RAWIMG.imagery_source_from_env()
+    if label_matches(store, world_id, session_id, manifest, imagery_source=imagery_source):
+        return True
+    if not imagery_matches(manifest, imagery_source):
+        return False
+    try:
+        if getattr(store.read_world(world_id), "images_purged", True):
+            return False
+    except Exception:  # noqa: BLE001 -- unreadable never widens the gate
+        return False
+    return withdrawal_state(store, world_id, session_id, manifest) == REBUILDING
+
+
 def appearance_currency(store, world_id: str, session_id: str, manifest: dict | None) -> dict:
     """Contract §8: reported, not enforced (the label is enforced elsewhere)."""
     from tower.world_builder.global_solve import load_solution  # noqa: PLC0415

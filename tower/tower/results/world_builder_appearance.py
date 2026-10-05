@@ -137,7 +137,7 @@ def _servable_manifest(store: WorldStore, world_id: str, session_id: str):
     wanted = RAWIMG.imagery_source_from_env()
     if not AP.imagery_matches(manifest, wanted):
         raise AppearanceNotServed(AP.imagery_mismatch_detail(manifest, wanted))
-    if not AP.label_matches(store, contained, session_id, manifest,
+    if not AP.may_serve(store, contained, session_id, manifest,
                             imagery_source=wanted):
         raise AppearanceNotServed(AP.STALE_LABEL_DETAIL)
     return contained, manifest
@@ -221,9 +221,12 @@ def appearance_revision(store: WorldStore, world_id: str, session_id: str) -> di
     what an open page should do with what it already drew:
 
     - `rebuilding`: the label changed in a way its textures carry over
-      (`appearance_pipeline.textures_carry_over`; the ordinary Stop, `none` ->
-      the real label, over a walk-time build that re-redacted every frame). Keep
-      drawing, keep asking; the next build is expected.
+      (`appearance_pipeline.textures_carry_over`) and yet the routes do not
+      serve it. Keep drawing, keep asking; the next build is expected. The
+      ordinary Stop (`none` -> the real label, over a walk-time build that
+      re-redacted every frame) used to land here; since manager 185 A it is
+      SERVED (`appearance_pipeline.may_serve`), so a viewer opened after Stop
+      gets the walk's photos too. Kept for the wire, and for an older Tower.
     - `withdrawn`: the label changed any other way, or the imagery was purged.
       Drop the textures now; keep asking.
     - `absent`: there is no appearance (never built, or the world is gone).
