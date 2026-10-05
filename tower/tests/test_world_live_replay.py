@@ -3948,6 +3948,126 @@ def test_re_renders_and_copies_of_one_run_count_once(tmp_path):
     assert shared[str(copy)][0] == "Tower capture" and "client.json sha256" in shared[str(copy)]
 
 
+# F13 review MED-NEW-1: a render is bound to the directory --compare was given.
+
+SUBSTITUTED = "evidence: the render in "
+
+
+def test_another_runs_render_copied_into_a_run_directory_judges_nothing(tmp_path):
+    """F13 review MED-NEW-1: run A's report.json copied over run B's made --compare judge slot B on
+    A's records -- counted, no problem, and COMPARE.md listed A's seal under B's name. The render's
+    `inputs.run_dir` is now cross-checked against the directory given: B is not counted, nothing of
+    A's is read for it, and the honest A is untouched."""
+    import shutil
+
+    a, b = _three_old(tmp_path, photos=(47.0, 47.5))[:2]
+    a_seal = report._load_run(a)["evidence"]["seal"]
+    shutil.copyfile(Path(_beyond_max_path(a)) / "report.json", Path(_beyond_max_path(b)) / "report.json")
+    loaded = report._load_run(b)
+    evidence = loaded["evidence"]
+    (problem,) = evidence["problems"]
+    assert problem.startswith(SUBSTITUTED) and "is a run directory itself (it holds run.json and client.json)" in problem
+    assert (evidence["seal"], evidence["identity"], evidence["run"], evidence["recomputed"]) == (None, None, None, False)
+    assert report.run_validity(loaded)["counted"] is False
+    for order in ([a, b], [b, a]):
+        result = report.compare_runs(order)
+        assert result["baseline_counted"] == 1 and result["duplicates"] == []
+        excluded = {item["dir"]: item["reasons"] for item in result["excluded_from_baseline"]}
+        assert list(excluded) == [str(b)] and any(reason.startswith(SUBSTITUTED) for reason in excluded[str(b)])
+        seals = {item["dir"]: item["seal"] for item in result["evidence_seals"]}
+        assert (seals[str(a)], seals[str(b)]) == (a_seal, None)
+        assert f"`{b}`: `{a_seal}`" not in report.render_compare(result)
+
+
+def test_an_out_of_place_render_copied_into_a_run_directory_is_refused_too(tmp_path):
+    """The same substitution with a `render`-labelled render of A (made with --run-dir/--out): B
+    still holds its own run records, so the render is not B's."""
+    import shutil
+
+    a, b = _three_old(tmp_path, photos=(47.0, 47.5))[:2]
+    assert report.main(["--run-dir", str(a), "--out", str(tmp_path / "render-a")]) == 0
+    shutil.copyfile(tmp_path / "render-a" / "report.json", Path(_beyond_max_path(b)) / "report.json")
+    (problem,) = report._load_run(b)["evidence"]["problems"]
+    assert problem.startswith(SUBSTITUTED) and "is a run directory itself" in problem
+
+
+def test_a_run_time_render_copied_out_of_its_run_directory_is_refused(tmp_path):
+    """A `run time` render lives only in its own run directory: one found anywhere else is a copy."""
+    import shutil
+
+    (a,) = _three_old(tmp_path, photos=(47.0,))
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    shutil.copyfile(Path(_beyond_max_path(a)) / "report.json", elsewhere / "report.json")
+    loaded = report._load_run(elsewhere)
+    (problem,) = loaded["evidence"]["problems"]
+    assert problem.startswith(SUBSTITUTED + f"{elsewhere} is labelled a run-time render of ")
+    assert loaded["evidence"]["seal"] is None and report.run_validity(loaded)["counted"] is False
+
+
+def test_an_out_of_place_render_is_still_judged_and_names_whose_records_it_read(tmp_path):
+    """The legitimate case the cross-check keeps: a render made with --run-dir/--out is a render of
+    its run directory, judged from that directory's sealed records; COMPARE.md says so."""
+    (a,) = _three_old(tmp_path, photos=(47.0,))
+    render = tmp_path / "render-a"
+    assert report.main(["--run-dir", str(a), "--out", str(render)]) == 0
+    loaded = report._load_run(render)
+    assert loaded["evidence"]["problems"] == [] and report.run_validity(loaded)["counted"] is True
+    assert loaded["evidence"]["rendered_in"] == str(render)
+    result = report.compare_runs([render])
+    (item,) = result["evidence_seals"]
+    assert report._norm_path(item["records_dir"]) == report._norm_path(a)
+    assert f"- baseline `{render}` (a render of `{item['records_dir']}`, whose records these are): " \
+           f"`{item['seal']}`" in report.render_compare(result)
+    direct = report.render_compare(report.compare_runs([a]))
+    assert "(a render of " not in direct
+
+
+# F13 review LOW-NEW-1: every field judged_fields names is one a tampered render is refused for.
+
+JUDGED_PATHS = [
+    "replay_fidelity.result", "replay_fidelity.version", "replay_fidelity.tower_side_only",
+    "live_safety.result", "live_safety.environment.result", "proof", "verdict.result", "verdict.basis",
+    "full_walk", "stop_agreement", "phone_photos.store_backing", "settle", "comparability_key",
+    "tower_walk.captures", "tower_walk.windows", "tower_walk.totals", "tower_walk.frames_observed",
+    "tower_walk.background_solves", "keyframes.sequence", "keyframes.sha256",
+    "tower_side_pacing.source_frames", "tower_side_pacing.matched", "tower_side_pacing.source_only",
+    "tower_side_pacing.replay_only", "tower_side_pacing.source_duplicate_seq",
+]
+
+
+def _tamper(doc: dict, dotted: str) -> None:
+    *parents, leaf = dotted.split(".")
+    node = doc
+    for name in parents:
+        if not isinstance(node.get(name), dict):
+            node[name] = {}
+        node = node[name]
+    node[leaf] = [{"tampered": dotted}] if leaf == "background_solves" else {"tampered": dotted}
+
+
+@pytest.mark.parametrize("dotted", JUDGED_PATHS)
+def test_every_judged_field_is_compared_against_the_re_render(dotted):
+    """F13 review LOW-NEW-1: dropping `live_safety.environment.result` from `judged_fields` survived
+    the suite. Each field compare judges must tell a tampered render from the honest one."""
+    honest = {"inputs": {}, "live_safety": {"environment": {}}}
+    tampered = json.loads(json.dumps(honest))
+    _tamper(tampered, dotted)
+    assert report.judged_fields(honest).get(dotted) != report.judged_fields(tampered).get(dotted)
+
+
+def test_a_render_whose_environment_verdict_was_edited_is_refused(tmp_path):
+    """LOW-NEW-1 end to end: an Environment FAIL edited to PASS in the render alone is refused by
+    name, and the run is judged by its sealed records' FAIL."""
+    _fake_run(tmp_path / "busy", photos=47.0, lag_p95=6.8, sequence=SAME, environment="FAIL")
+    _stale_render(_beyond_max_path(tmp_path / "busy"),
+                  lambda doc: doc["live_safety"]["environment"].update(result="PASS"))
+    loaded = report._load_run(tmp_path / "busy")
+    assert loaded["environment"] == "FAIL"
+    assert any(problem.startswith(STALE_RENDER + "live_safety.environment.result)")
+               for problem in loaded["evidence"]["problems"])
+
+
 def test_a_duplicate_never_swings_the_reference_key(tmp_path):
     """F11 MED-1 (adversarial): one foreign-key run listed three times made ITS key the reference
     and excluded both genuine runs. Counted once, it is the odd one out."""

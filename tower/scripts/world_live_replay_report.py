@@ -3260,11 +3260,19 @@ def _number(value) -> bool:
     return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
 
 
-def compare_evidence(report: dict) -> dict:
+def compare_evidence(report: dict, given_dir=None) -> dict:
     """What `--compare` re-derives from the run's own SEALED records, never
     from the render alone (review F11 MED-1, LOW-9).
 
-    The render names its run directory (`inputs.run_dir`). From there:
+    The render names its run directory (`inputs.run_dir`). With `given_dir`
+    (the directory `--compare` was given, which holds the render), that name
+    is first CROSS-CHECKED against it (review F13 MED-NEW-1): it must be the
+    directory given, or the given directory must be an out-of-place render of
+    it -- one that holds no run records of its own (run.json, client.json)
+    and whose render is not labelled `run time` (the runner writes a run-time
+    render only into its own run directory). Anything else is a render moved
+    or copied out of the run it describes: nothing is read from the directory
+    it names, and the argument is not counted. From there:
       1. the seal: the run's records must still hash to the evidence seal its
          run-time render recorded (`<run dir>/report.json`), and to the one
          this render recorded;
@@ -3289,6 +3297,24 @@ def compare_evidence(report: dict) -> dict:
         return evidence
     run_dir = Path(inputs["run_dir"])
     evidence["run_dir"] = str(run_dir)
+    if given_dir is not None and _norm_path(given_dir) != _norm_path(run_dir):
+        given_dir = Path(given_dir)
+        seal_label = (report.get("evidence_seal") or {}).get("at") if isinstance(report.get("evidence_seal"),
+                                                                                  dict) else None
+        own = [name for name in ("run.json", "client.json") if (given_dir / name).exists()]
+        if own:
+            problems.append(f"evidence: the render in {given_dir} names another run directory, {run_dir} "
+                            f"(inputs.run_dir), but {given_dir} is a run directory itself (it holds "
+                            f"{' and '.join(own)}): a render copied or moved out of the run it describes. "
+                            "--compare judges no directory by another's records; re-render the run in place")
+            return evidence
+        if seal_label == "run time":
+            problems.append(f"evidence: the render in {given_dir} is labelled a run-time render of {run_dir} "
+                            "(inputs.run_dir), which the runner writes only into that run directory: a copy, "
+                            "not a render made here. --compare judges no directory by another's records; give "
+                            "the run directory itself, or a render made with --run-dir/--out")
+            return evidence
+        evidence["rendered_in"] = str(given_dir)
     run, client = _read_json(run_dir / "run.json"), _read_json(run_dir / "client.json")
     if not isinstance(run, dict) or not isinstance(client, dict):
         problems.append(f"evidence: the run directory {run_dir} has no readable run.json and client.json")
@@ -3504,7 +3530,7 @@ def _load_run(run_dir) -> dict:
     if not isinstance(given, dict):
         raise SystemExit(f"{run_dir} has no report.json; render it first "
                          "(world_live_replay_report.py --run-dir <run> --out <new-empty-dir>)")
-    evidence = compare_evidence(given)
+    evidence = compare_evidence(given, run_dir)
     recomputed = recompute_report(given, evidence)
     if recomputed is None:
         report = given
@@ -3969,6 +3995,7 @@ def compare_runs(baseline_dirs, candidate_dirs=(), candidate_switches=None, *, l
         # Each argument's evidence seal, recomputed now: match a counted run's
         # against the line its run-time render printed (the RUN ledger).
         "evidence_seals": [{"dir": run["dir"], "side": side, "seal": (run.get("evidence") or {}).get("seal"),
+                            "records_dir": (run.get("evidence") or {}).get("run_dir"),
                             "counted": run["validity"]["counted"]}
                            for side, runs in (("baseline", baseline), ("candidate", candidate)) for run in runs],
         # What every counted run shares (review C24 HIGH-2).
@@ -4168,8 +4195,11 @@ def render_compare(result: dict) -> str:
                         "compare again with --ledger."))
         lines.append("")
         for item in seals:
-            lines.append(f"- {item['side']} `{item['dir']}`: `{item['seal']}`"
-                         + ("" if item.get("counted") else " (not counted)"))
+            records = item.get("records_dir")
+            elsewhere = bool(records) and _norm_path(records) != _norm_path(item["dir"])
+            lines.append(f"- {item['side']} `{item['dir']}`"
+                         + (f" (a render of `{records}`, whose records these are)" if elsewhere else "")
+                         + f": `{item['seal']}`" + ("" if item.get("counted") else " (not counted)"))
     lines.append("")
     lines.append("## Metrics")
     lines.append("")
