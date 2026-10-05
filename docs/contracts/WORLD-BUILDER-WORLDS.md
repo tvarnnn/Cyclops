@@ -1382,9 +1382,10 @@ short:
   world with `images_purged` -- **except** (v5, 2026-10-05, manager 185 A) a
   label change the artifact's textures carry over to the keyframe set now: the
   same set, the same imagery source, every frame re-redacted by a redactor on
-  the allowlist (the ordinary Stop over a walk build), with every record that
-  decision rests on readable, the new label itself on the allowlist and the
-  provenance stating every field compared. That stays served, with
+  the allowlist (the ordinary Stop over a walk build), with the world and
+  session records readable, no re-redaction pointer on disk, the new label
+  itself on the allowlist and the provenance stating the five keys
+  `WORLD-BUILDER-APPEARANCE.md` §9 names. That stays served, with
   `X-World-Redaction` the label actually applied (`none&<redactor label>`), so
   a viewer opened after Stop gets the walk's photos
   (`WORLD-BUILDER-APPEARANCE.md` v3 §9).

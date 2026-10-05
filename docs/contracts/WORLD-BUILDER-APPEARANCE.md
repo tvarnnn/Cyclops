@@ -1056,19 +1056,27 @@ handler gives WebKit the decoded bytes with no `Content-Encoding`
   over** to the keyframe set as it is now (below: the same keyframe set, the
   same imagery source, every frame re-redacted by a redactor whose own label is
   on the allowlist; the ordinary Stop), and the world is not purged, **and**
-  (fix round 1, 2026-10-05) every record that decision rests on reads and
-  states it outright: the world record and `session.json` read and pass their
-  schema, a re-redaction pointer on disk parses, the session's label now is
-  itself on the allowlist, and the provenance states `session_redaction`,
-  `keyframe_image_set`, `imagery_source` (`redacted`), `redactor_applied_here`
-  and `label_trusted` (`false`) -- anything unreadable, partial or off the
-  allowlist is refused exactly as before
+  (fix rounds 1 and 2, 2026-10-05) exactly these hold: the world record reads
+  and is not purged; `session.json` reads and passes its schema check; **no
+  re-redaction pointer (`redaction_set.json`) is on disk at all** -- a switch,
+  its revert, and a pointer the store does not honour each keep the walk build
+  off the carry-over; the session's label now is itself on the allowlist; and
+  the provenance is an object that contains all five keys `session_redaction`,
+  `keyframe_image_set`, `imagery_source`, `redactor_applied_here` and
+  `label_trusted`, with `label_trusted` exactly `false` and `imagery_source`
+  exactly `redacted`. When any of these fails, the build is refused exactly as
+  before. Nothing else in the manifest is checked for completeness by this
+  rule (`appearance_pipeline._carry_over_metadata_whole`)
   ("appearance is stale against the session's redaction record");
 - for a file, the manifest (or a superseded one, above) names it and its bytes
   on disk have the recorded size and content digest ("no such appearance file").
   A manifest served by the carry-over lends **nothing** from a superseded
   build: a superseded entry does not record which redactor made its files
-  (fix round 1, 2026-10-05).
+  (fix round 1, 2026-10-05). After the bytes are read the file routes run the
+  whole gate again and answer 404 if it no longer holds or now names another
+  build, so a switch, relabel or purge that lands between the gate and the read
+  does not let them out (fix round 2); one that lands after that second check
+  is a request that completed first.
 
 The label is re-checked on every request, so a relabelled session stops
 serving its old textures immediately: the routes 404 at once, an open page
@@ -1107,11 +1115,15 @@ surface. `X-World-Redaction` stays the label actually applied to those pixels
 (`none&<redactor label>`), never the new session label. Nothing else is
 widened: a build that used the stored bytes under a label that then changed, a
 build by a redactor that is not on the allowlist or whose redactor is unknown,
-a re-redaction switch or revert (§6.5), a raw research build (§6.6), a
-purged world, a Stop to a label that is not itself on the allowlist, an
-unreadable or wrong-schema world or session record, an unreadable
-re-redaction pointer, a provenance that does not state every field compared,
-and a superseded build's files are all refused exactly as before. The redaction itself, the label
+a build whose keyframe set a re-redaction switch changed (§6.5), a walk
+build while any re-redaction pointer is on disk (a switch, its revert, or one
+the store does not honour), a raw research build (§6.6), a purged world, a
+Stop to a label that is not itself on the allowlist, an unreadable or
+wrong-schema world or session record, a provenance that lacks one of the five
+keys above or states `label_trusted` other than `false` or `imagery_source`
+other than `redacted`, and a superseded build's files are all refused exactly
+as before. A build whose own label and keyframe set match the session's now is
+served by `label_matches`, unchanged, whatever pointer is on disk. The redaction itself, the label
 rule (`label_matches`), the imagery checks and the carry-over rule
 (`textures_carry_over`) are unchanged; only the serving gate (`may_serve`)
 consults the carry-over. The final build replaces the walk build in place (its
