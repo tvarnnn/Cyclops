@@ -578,6 +578,143 @@ def test_recorder_and_supervisor_drain_late_builder_after_normal_stop(tmp_path):
     )
 
 
+# The builder at a pace the field's late builder kept on Oct 2 or slower:
+# every observe padded, so it is provably still behind 11 s after the close.
+_PACED_BUILDER = """
+import sys, time
+import scripts.world_build_session as builder
+_observe = builder.WorldBuilderEngine.observe
+def _paced(self, *args, **kwargs):
+    outcome = _observe(self, *args, **kwargs)
+    time.sleep(%r)
+    return outcome
+builder.WorldBuilderEngine.observe = _paced
+sys.exit(builder.main(sys.argv[1:]))
+"""
+OCT2_PACE_S = 0.006
+
+
+def test_the_oct2_order_close_then_a_disconnect_stop_11s_later_then_a_reconnect(
+    tmp_path,
+):
+    """The Oct 2 incident's exact order (manager 164), end to end.
+
+    A late builder is attached to a 3,197-frame capture and is still BEHIND
+    when the wearer's Stop closes it (`stop`) at 805 observed. 11 s later the
+    last client disconnects: `ws.py` stops the cartridge session, the World
+    Builder's stop policy is `request`, and the supervisor closes the
+    builder's stdin -- the soft stop. 0.9 s after that the phone reconnects
+    and the workspace re-sends `session/start`; nothing is recording, so
+    nothing attaches. 44fbd13 stopped at the soft request and stored about
+    1,392 of 3,197 as `stop` / `complete`. Now the builder reads every frame
+    the capture recorded -- all of them were recorded before the Stop.
+
+    Real recorder, real supervisor, real `CartridgeSession`, a builder
+    SUBPROCESS with its real stdin watcher; malformed frames, so no image
+    work. The builder is padded to `OCT2_PACE_S` per frame, so at the soft
+    stop it has read at most 805 + 11 / OCT2_PACE_S < 3,197.
+    """
+    from tower.cartridge_session import CartridgeSession
+
+    recorder = CaptureRecorder(tmp_path / "recordings")
+    capture_id = recorder.start()
+    for index in range(TOTAL):
+        assert recorder.write_frame(
+            b"synthetic-frame", source_seq=1 + (index * 6476 // 3196)
+        )
+    root = tmp_path / "worlds"
+    tower_dir = Path(__file__).parents[1]
+    worker_log = tmp_path / "worker.log"
+    processes = []
+    timeline = {}
+
+    def open_capture():
+        status = recorder.status
+        if status is None or not status.is_open:
+            return None
+        return status.capture_id, recorder.capture_dir(status.capture_id)
+
+    def observed(store):
+        worlds = store.list_world_ids()
+        if len(worlds) != 1 or len(store.list_session_ids(worlds[0])) != 1:
+            return 0
+        events = store.events_path(worlds[0], store.list_session_ids(worlds[0])[0])
+        if not events.exists():
+            return 0
+        return events.read_text(encoding="utf-8").count('"frame_rejected"')
+
+    with worker_log.open("wb") as output:
+        def spawn(argv, **kwargs):
+            kwargs["stdout"] = output
+            kwargs["stderr"] = output
+            process = subprocess.Popen(argv, **kwargs)
+            processes.append(process)
+            return process
+
+        supervisor = CaptureWorkerSupervisor(
+            WorkerSpec(
+                argv=(
+                    sys.executable, "-c", _PACED_BUILDER % OCT2_PACE_S,
+                    "--follow-capture", "{capture_dir}",
+                    "--root", str(root),
+                    "--max-idle-polls", "3600",
+                    "--stop-on-stdin-close",
+                ),
+                cwd=str(tower_dir),
+                name="world-build-session",
+                stop_via_stdin=True,
+                stop_grace_seconds=60.0,
+            ),
+            spawn=spawn,
+        )
+        session = CartridgeSession(
+            cartridge="world_builder",
+            worker="world-build-session",
+            supervisor=supervisor,
+            open_capture=open_capture,
+            clock=time.time,
+            stop_policy="request",
+        )
+        assert session.start()["attached_capture_id"] == capture_id
+        assert len(processes) == 1
+        process = processes[0]
+        store = WorldStore(root)
+        try:
+            deadline = time.monotonic() + 120
+            while observed(store) < 805:
+                assert process.poll() is None, worker_log.read_text(errors="replace")[-3000:]
+                assert time.monotonic() < deadline, "the builder never reached 805"
+                time.sleep(0.02)
+            timeline["at_close"] = observed(store)
+            recorder.stop()  # the wearer's Stop: the capture closes `stop`
+            supervisor.capture_closed(capture_id)
+            time.sleep(11.0)  # +11 s: the last client disconnects
+            timeline["at_soft_stop"] = observed(store)
+            session.stop()  # `_stop_cartridge_sessions` -> stdin closed
+            time.sleep(0.9)  # +0.9 s: the phone reconnects
+            timeline["reattached"] = session.start().get("attached_capture_id")
+            process.wait(timeout=180)
+        finally:
+            if process.poll() is None:
+                process.kill()
+                process.wait(timeout=10)
+            supervisor.reap()
+
+    log = worker_log.read_text(encoding="utf-8", errors="replace")
+    assert process.returncode == 0, log[-3000:]
+    assert 805 <= timeline["at_close"] < 1000, timeline
+    assert timeline["at_soft_stop"] < TOTAL, timeline  # still behind
+    assert timeline["reattached"] is None, timeline
+    assert len(processes) == 1
+    assert recorder.manifest(capture_id)["frames_written"] == TOTAL
+    worlds = store.list_world_ids()
+    record = store.read_session(worlds[0], store.list_session_ids(worlds[0])[0])
+    outcome = (record.frames_observed, record.end_reason, record.finalization["state"])
+    assert outcome == (TOTAL, "stop", "complete"), (outcome, timeline)
+    assert "stop requested (soft, stdin-closed) after the capture closed (stop)" in log
+    assert "were never observed" not in log
+
+
 # ---------------------------------------------------------------------------
 # A PARTIAL WORLD IS NEVER `stop` / `complete`.
 #
