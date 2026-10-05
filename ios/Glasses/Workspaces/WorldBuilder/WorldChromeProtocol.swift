@@ -793,8 +793,10 @@ nonisolated struct WorldChromeSession: Sendable {
         case .state(_, let pageID, let seq, let nonce),
              .view(_, let pageID, let seq, let nonce),
              .await(let pageID, let seq, let nonce):
+            // `seq` rises by exactly one per page message (WORLDS §4c): a
+            // gap or a repeat is an invalid message, refused like the rest.
             guard let current = self.pageID, pageID == current, nonce == self.nonce,
-                  seq > (lastSeq ?? -1)
+                  let last = lastSeq, seq - 1 == last
             else { return refuse(id: id, isHello: false) }
             lastSeq = seq
         }

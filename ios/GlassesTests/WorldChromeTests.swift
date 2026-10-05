@@ -728,6 +728,55 @@ final class WorldChromeTests: XCTestCase {
         XCTAssertTrue(state.effects.contains(.setMode(.native)))
     }
 
+    /// `seq` rises by exactly ONE per page message (WORLDS §4c). A message
+    /// that skips a number is an invalid message: refused like any other
+    /// ("On any invalid message ... the phone removes its chrome and sends
+    /// `deactivate`"), and today's screen for the life of the screen.
+    func testASeqThatSkipsANumberIsRefused() {
+        // Before the first state (hello is 0, so 2 skips 1): never native.
+        let early = Driver()
+        early.input(.pageWillLoad(echo: true))
+        early.send(Self.helloBody())
+        let skipped = early.send(Self.stateBody(seq: 2, nonce: "N1"))
+        XCTAssertEqual(skipped.effects.first, .reply(id: skipped.id, nil))
+        XCTAssertFalse(skipped.effects.contains(.setMode(.native)))
+        XCTAssertTrue(skipped.effects.contains(.setMode(.legacy)))
+        XCTAssertTrue(early.session.refusedForScreen)
+        XCTAssertEqual(early.session.mode, .legacy)
+        // After activation (0, 1, 2): 4 skips 3, and the page is deactivated.
+        let late = Driver()
+        late.activate()
+        let gap = late.send(Self.awaitBody(seq: 4, nonce: "N1"))
+        XCTAssertEqual(gap.effects, [.reply(id: gap.id, nil), .refuseForScreen, .setMode(.legacy),
+                                     .arm(.noDeactivateConfirm)])
+        XCTAssertTrue(late.session.refusedForScreen)
+        // The next number is taken.
+        let next = Driver()
+        next.activate()
+        let taken = next.send(Self.awaitBody(seq: 3, nonce: "N1"))
+        XCTAssertEqual(taken.effects, [.hold(id: taken.id)])
+        XCTAssertFalse(next.session.refusedForScreen)
+    }
+
+    /// A repeated `seq` is refused the same way: `hello`'s own 0 again, or
+    /// the last number again after activation.
+    func testARepeatedSeqIsRefused() {
+        let early = Driver()
+        early.input(.pageWillLoad(echo: true))
+        early.send(Self.helloBody())
+        let again = early.send(Self.stateBody(seq: 0, nonce: "N1"))
+        XCTAssertEqual(again.effects.first, .reply(id: again.id, nil))
+        XCTAssertFalse(again.effects.contains(.setMode(.native)))
+        XCTAssertTrue(early.session.refusedForScreen)
+        // After activation (0, 1, 2): 2 again.
+        let late = Driver()
+        late.activate()
+        let repeated = late.send(Self.awaitBody(seq: 2, nonce: "N1"))
+        XCTAssertEqual(repeated.effects, [.reply(id: repeated.id, nil), .refuseForScreen, .setMode(.legacy),
+                                          .arm(.noDeactivateConfirm)])
+        XCTAssertTrue(late.session.refusedForScreen)
+    }
+
     // MARK: I10: a refusal after activation
 
     func testARefusalAfterActivationDeactivatesAndFallsBackForTheScreen() {
