@@ -972,17 +972,6 @@ WORLD_SOLVE_CONSENSUS_ENV = "TOWER_WORLD_SOLVE_CONSENSUS"
 # most 7, so a typo (30 for 3: about 2 h under the lock) cannot multiply a finish. The
 # cap is a bound on the cost, not a measured optimum; the run measured 3 (manager 025).
 WORLD_SOLVE_CONSENSUS_VALUES = (1, 3, 5, 7)
-WORLD_SOLVE_CONSENSUS_CONCURRENT_ENV = "TOWER_WORLD_SOLVE_CONSENSUS_CONCURRENT"
-
-
-def world_solve_consensus_concurrent_setting() -> str:
-    """Further final consensus draws: off (default) or after-draw-0."""
-    value = os.environ.get(WORLD_SOLVE_CONSENSUS_CONCURRENT_ENV, "off").strip().lower()
-    if value in ("off", "after-draw-0"):
-        return value
-    logger.warning("[Tower][Config] %s=%r is invalid; treating it as off",
-                   WORLD_SOLVE_CONSENSUS_CONCURRENT_ENV, value)
-    return "off"
 
 
 def world_solve_consensus_setting() -> int:
@@ -1007,6 +996,22 @@ def world_solve_consensus_setting() -> int:
         ", ".join(str(v) for v in WORLD_SOLVE_CONSENSUS_VALUES),
     )
     return 1
+
+
+# W0-1: the consensus's further draws (1..N-1) of a gated, seeded final solve mapped by
+# private child processes once draw 0 has attached (`global_solve.concurrent_draw_mapper`),
+# or not. `off` -- the default -- maps them one after another in the solve, exactly as before.
+WORLD_SOLVE_CONSENSUS_CONCURRENT_ENV = "TOWER_WORLD_SOLVE_CONSENSUS_CONCURRENT"
+
+
+def world_solve_consensus_concurrent_setting() -> str:
+    """Further final consensus draws: off (default) or after-draw-0."""
+    value = os.environ.get(WORLD_SOLVE_CONSENSUS_CONCURRENT_ENV, "off").strip().lower()
+    if value in ("off", "after-draw-0"):
+        return value
+    logger.warning("[Tower][Config] %s=%r is invalid; treating it as off",
+                   WORLD_SOLVE_CONSENSUS_CONCURRENT_ENV, value)
+    return "off"
 
 
 # THE ANCHOR VERIFICATION (`world_builder/anchor_verify.py`; RUN P4-IV RULE.md, digest
