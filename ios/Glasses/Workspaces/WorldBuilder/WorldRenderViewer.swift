@@ -2211,9 +2211,10 @@ struct WorldRenderScene: View {
                 .tint(Color.readableTint)
                 .environment(\.colorScheme, .dark)
             } else {
-                // After a fallback from native chrome the research marker
-                // stays (IOS §10); otherwise this is today's screen.
-                if model.chrome.everNative, let marker = model.chrome.researchMarker {
+                // The research marker: after a fallback from native chrome,
+                // or raised by the served header (IOS §10); otherwise this is
+                // today's screen.
+                if let marker = model.chrome.legacyResearchMarker {
                     WorldChromeResearchBand(marker: marker)
                         .environment(\.colorScheme, .dark)
                 }

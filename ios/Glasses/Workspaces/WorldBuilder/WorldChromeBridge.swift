@@ -60,6 +60,9 @@ final class WorldChromeModel: ObservableObject {
     /// Whether this screen ever drew native chrome (keeps the marker band
     /// after a fallback).
     @Published private(set) var everNative = false
+    /// Whether the served header said this viewer's imagery is not redacted
+    /// (`X-World-Imagery`, APPEARANCE §9). Sticky, like the marker.
+    @Published private(set) var rawByHeader = false
     /// The screen fell back to today's chrome, for good.
     @Published private(set) var refusedForScreen = false
     /// Per frame; only `WorldChromeRing` observes it.
@@ -76,6 +79,17 @@ final class WorldChromeModel: ObservableObject {
 
     /// The overlay draws page-derived chrome only in this mode.
     var isDrawingNative: Bool { mode == .native && state != nil && hello != nil }
+
+    /// The research marker on today's screen (legacy geometry): after a
+    /// fallback from native chrome, and whenever the served header raised it.
+    /// The header is the source that still speaks when the page's own marker
+    /// does not -- a Tower serving no native chrome, a page that fell back
+    /// before its first state -- so it is shown there too (IOS §10, spec
+    /// C15r §3.7). The page's own marker may show beside it.
+    var legacyResearchMarker: String? {
+        guard everNative || rawByHeader else { return nil }
+        return researchMarker
+    }
 
     // MARK: Effects from the bridge
 
@@ -122,6 +136,7 @@ final class WorldChromeModel: ObservableObject {
     /// `warning` is `X-World-Imagery-Warning`, verbatim; iOS writes no words
     /// of its own here.
     func raiseResearch(headerWarning warning: String?) {
+        if !rawByHeader { rawByHeader = true }
         guard !markerFromPage, researchMarker == nil, let warning, !warning.isEmpty else { return }
         researchMarker = warning
         announce(.research, warning)
@@ -133,6 +148,7 @@ final class WorldChromeModel: ObservableObject {
         researchMarker = nil
         markerFromPage = false
         everNative = false
+        rawByHeader = false
         lastAnnounced = [:]
     }
 

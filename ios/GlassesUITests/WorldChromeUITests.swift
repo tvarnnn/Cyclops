@@ -212,6 +212,28 @@ final class WorldChromeUITests: XCTestCase {
         shoot("u4-legacy")
     }
 
+    /// On today's screen -- a page without the echo, as a Tower that serves
+    /// no native chrome sends -- the research marker the served header
+    /// raised is drawn above the caption: the header is the source that
+    /// still speaks when the page's own marker does not (IOS §10, spec C15r
+    /// §3.7). The page's own chrome stays.
+    func testTheHeadersResearchMarkerIsOnTodaysScreen() throws {
+        let warning = "Research T: unredacted imagery, from the header"
+        mock.setRoute("GET /worlds/w1/appearance/s1/manifest", status: 200, body: "{}",
+                      headers: ["X-World-Imagery": "raw", "X-World-Imagery-Warning": warning])
+        openViewer(page: Page.html(steps: [.init(state: Page.state())], echo: false, fetchManifest: true))
+        XCTAssertTrue(legacyCaption.waitForExistence(timeout: 30), "today's caption line")
+        let band = element("world-chrome-research")
+        XCTAssertTrue(band.waitForExistence(timeout: 10), "the header's research marker on today's screen")
+        XCTAssertTrue(band.label.contains(warning.uppercased()), band.label)
+        XCTAssertLessThanOrEqual(band.frame.maxY, legacyCaption.frame.minY + 1, "above the caption")
+        XCTAssertTrue(pageChrome.exists, "the page keeps its own chrome")
+        for id in ["world-chrome-best", "world-chrome-head", "world-chrome-status"] {
+            XCTAssertFalse(element(id).exists, "\(id) on today's screen")
+        }
+        shoot("u4b-legacy-research")
+    }
+
     /// U5: a bad hello, or a page that says nothing, falls back to the web
     /// chrome for the screen.
     func testABadHelloOrASilentPageFallsBackToTheWebChrome() throws {

@@ -899,6 +899,37 @@ final class WorldChromeTests: XCTestCase {
         return state
     }
 
+    /// Today's screen shows the marker the served header raised, whether or
+    /// not the screen ever drew native chrome: a Tower that serves no native
+    /// chrome, and a page that fell back before its first state. The page's
+    /// marker alone is shown there only after a fallback from native (the
+    /// page never activated, so its own marker is still on it).
+    func testTodaysScreenShowsTheResearchMarkerTheHeaderRaised() {
+        let legacy = WorldChromeModel()
+        XCTAssertNil(legacy.legacyResearchMarker)
+        legacy.raiseResearch(headerWarning: "The header's sentence")
+        XCTAssertEqual(legacy.mode, .legacy)
+        XCTAssertFalse(legacy.everNative)
+        XCTAssertEqual(legacy.legacyResearchMarker, "The header's sentence")
+        legacy.viewerClosed()
+        XCTAssertNil(legacy.legacyResearchMarker)
+        XCTAssertFalse(legacy.rawByHeader)
+
+        // A hello with the page's marker, then no state: back to today's screen.
+        let model = WorldChromeModel()
+        let bridge = WorldChromeBridge(model: model, kind: .room, pageURL: Self.pageURL)
+        bridge.receive(.pageWillLoad(echo: true))
+        bridge.receive(body: Self.webKit(Self.helloBody(raw: true, marker: "The page's marker")),
+                       frame: Self.frame) { _, _ in }
+        bridge.receive(.timer(.noState))
+        XCTAssertEqual(model.mode, .legacy)
+        XCTAssertFalse(model.everNative)
+        XCTAssertNil(model.legacyResearchMarker, "the page never activated: its own marker is on it")
+        model.raiseResearch(headerWarning: "The header's sentence")
+        XCTAssertEqual(model.legacyResearchMarker, "The page's marker", "the header raised it; the page's words")
+        bridge.receive(.teardown)
+    }
+
     // MARK: I13: the ring
 
     func testRingBinAnglesAndColoursAreThePagesRule() {

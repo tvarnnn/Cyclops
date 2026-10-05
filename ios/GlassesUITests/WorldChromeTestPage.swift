@@ -99,8 +99,12 @@ enum WorldChromeTestPage {
         ]
     }
 
+    /// `fetchManifest` has the page ask for its appearance manifest
+    /// (proxied by the scheme handler) as it loads, as the real page does,
+    /// so the served `X-World-Imagery` headers reach the app.
     static func html(steps: [Step], kind: String = "room", echo: Bool = true, hello: Hello = .valid,
-                     labels: [String: Any]? = nil, raw: Bool = false, marker: Any = NSNull()) -> String {
+                     labels: [String: Any]? = nil, raw: Bool = false, marker: Any = NSNull(),
+                     fetchManifest: Bool = false) -> String {
         let stepsJSON = json(steps.map { step -> [String: Any] in
             var entry: [String: Any] = ["state": step.state]
             if let after = step.after { entry["after"] = after }
@@ -133,6 +137,7 @@ enum WorldChromeTestPage {
           const STEPS = \(stepsJSON);
           const HELLO = \(helloJSON);
           const MODE = "\(hello == .silent ? "silent" : "talk")";
+          if (\(fetchManifest)) fetch("glasses-world://tower/worlds/w1/appearance/s1/manifest").catch(() => {});
           const h = window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.wbChromeV1;
           if (!h || MODE === "silent") return;
           const pageId = "testpage" + Math.random().toString(36).slice(2, 10).replace(/[^a-z0-9]/g, "0");
