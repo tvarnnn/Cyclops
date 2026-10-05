@@ -686,9 +686,12 @@ answer("state"); await settle();
 VIEW = {...VIEW, drawn: true, headingRad: 1.0};
 S.chromeFrame(); await settle();
 const v1 = of("view").length;
+answer("view"); await settle();                                   // the first lands
 VIEW = {...VIEW, headingRad: 1.0005}; S.chromeFrame(); await settle();
 const vSmall = of("view").length - v1;
 VIEW = {...VIEW, headingRad: 1.2}; S.chromeFrame(); await settle();
+const vBig = of("view").length - v1;
+VIEW = {...VIEW, headingRad: 1.3}; S.chromeFrame(); await settle();
 VIEW = {...VIEW, headingRad: 1.4}; S.chromeFrame(); await settle();
 const vInFlight = of("view").length - v1;
 answer("view"); await settle();
@@ -732,10 +735,17 @@ const sizes = {};
 for (const m of posts){ const n = Buffer.byteLength(JSON.stringify(m), "utf8");
   sizes[m.type] = Math.max(sizes[m.type] || 0, n); }
 console.log(ascii(JSON.stringify({hello, first, steps, unchanged, inflight1, inflight2, coalesced,
-  vSmall, vInFlight, vAfter, drawnState, ringState, holdingState, activated, activeState, clicks,
+  vSmall, vBig, vInFlight, vAfter, drawnState, ringState, holdingState, activated, activeState, clicks,
   awaitsAfterActions: awaits2 - awaits1, deactivated, postsAfterStop: posts.length - afterStop,
   sizes, LIM})));
 """
+
+
+# WORLDS §4c Tables H and S, written out here, not read from the bridge.
+TABLE_BOUNDS = {"text": 40, "name": 120, "ringName": 120, "ringLabel": 60, "center": 8,
+                "darkTitle": 80, "darkTap": 80, "darkName": 160, "edge": 80, "about": 20,
+                "marker": 200, "status": 200, "message": 800, "hint": 200, "walk": 24,
+                "head": 300, "line": 600, "title": 80, "body": 1600, "tail": 200, "sections": 8}
 
 
 def _check_strings(state, lim):
@@ -775,14 +785,15 @@ def test_the_bridge_under_a_stub_dom(pages, tmp_path, kind):
     assert s["disabled"]["buttons"]["previous"] is False and s["disabled"]["buttons"]["next"] is True
     assert s["pos"]["walk"] == "3 / 8"
     assert s["msg"]["message"] == "The graphics context was taken away"
-    assert s["long"]["status"] == "x" * out["LIM"]["status"]
+    assert out["LIM"] == TABLE_BOUNDS
+    assert s["long"]["status"] == "x" * TABLE_BOUNDS["status"]
     assert out["unchanged"] == 0
     assert out["inflight1"] == 1 and out["inflight2"] == 1
     assert out["coalesced"] == {"posted": 1, "status": "c"}
-    # the first view went at once; a move under 1e-3 is not one; two moves while it
-    # was in flight post nothing, and its reply posts the latest
-    assert out["vSmall"] == 0 and out["vInFlight"] == 0
-    assert out["vAfter"] == {"n": 1, "heading": 1.4}
+    # a move under 1e-3 is not one, a bigger one is; two moves while it is in
+    # flight post nothing, and its reply posts the latest
+    assert out["vSmall"] == 0 and out["vBig"] == 1 and out["vInFlight"] == 1
+    assert out["vAfter"] == {"n": 2, "heading": 1.4}
     assert out["drawnState"]["drawn"] is True
     assert out["ringState"] == {"shown": True, "lit": [i / 35 for i in range(36)], "sense": -1}
     assert out["holdingState"] is True
@@ -794,7 +805,7 @@ def test_the_bridge_under_a_stub_dom(pages, tmp_path, kind):
     assert d["frame"] == "undefined" and d["mo"] == 0 and d["bridge"]["dead"] is True
     assert out["postsAfterStop"] == 0
     for state in [out["first"], *out["steps"].values(), out["drawnState"]]:
-        _check_strings(state, out["LIM"])
+        _check_strings(state, TABLE_BOUNDS)
     sizes = out["sizes"]
     assert sizes["hello"] <= 32 * 1024 and sizes["state"] <= 24 * 1024
     assert sizes["view"] <= 512 and sizes["await"] <= 256
