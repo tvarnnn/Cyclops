@@ -33,7 +33,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from tower.artifact_paths import artifact_root_arg  # noqa: E402
-from tower.world_builder import global_solve  # noqa: E402
+from tower.world_builder import finish_phase, global_solve  # noqa: E402
 from tower.world_builder.store import WorldStore, compute_input_digest  # noqa: E402
 
 
@@ -62,15 +62,24 @@ def main(argv=None) -> int:
     store = WorldStore(Path(args.root))
     keyframes = store.read_keyframes(args.world, args.session)
     threads = args.threads if args.threads is not None else (-1 if args.final else background_threads())
-    summary = global_solve.solve(
-        store, args.world, args.session,
-        capture_dirs=[Path(d) for d in args.capture_dir],
-        final=args.final,
-        num_threads=threads,
-        min_image_observations=args.min_image_observations,
-        loop_detection=args.loop_detection,
-        input_digest=compute_input_digest(keyframes),
-    )
+    # T-UX1: the finish phase, only for the final solve the live builder launched with its
+    # token (`finish_phase.writer_from_environment`); every other run installs None, and
+    # every `finish_phase.mark` in the solve is then a no-op.
+    phase = (finish_phase.writer_from_environment(store, args.world, args.session)
+             if args.final else None)
+    token = finish_phase.install(phase)
+    try:
+        summary = global_solve.solve(
+            store, args.world, args.session,
+            capture_dirs=[Path(d) for d in args.capture_dir],
+            final=args.final,
+            num_threads=threads,
+            min_image_observations=args.min_image_observations,
+            loop_detection=args.loop_detection,
+            input_digest=compute_input_digest(keyframes),
+        )
+    finally:
+        finish_phase.uninstall(token)
     if args.format == "json":
         print(json.dumps(summary, indent=2))
     else:

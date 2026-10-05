@@ -128,6 +128,7 @@ from tower.process_ownership import (  # noqa: E402
 )
 from tower.world_builder.store import WorldStore  # noqa: E402
 from tower.world_builder import stage_timing  # noqa: E402
+from tower.world_builder import finish_phase  # noqa: E402
 
 DEFAULT_ROOT = Path("data/world_builder")
 TOWER_ROOT = Path(__file__).resolve().parents[1]
@@ -991,7 +992,8 @@ class BackgroundSolver:
         finally:
             self._reap()
 
-    def run_final(self, store: WorldStore, sources: dict, *, should_stop=None) -> dict:
+    def run_final(self, store: WorldStore, sources: dict, *, should_stop=None,
+                  phase_env: dict | None = None) -> dict:
         """The finalization solve, as a child, until it ends or a stop arrives.
 
         Returns the child's own summary (`solved`, `solver`, `components`,
@@ -1035,9 +1037,13 @@ class BackgroundSolver:
             # own startup, which queries its fd 0, blocks until the pipe
             # closes. Measured: a final solve child sat at 0.02 s of CPU for
             # 90 s and started the instant stdin was closed.
+            # `phase_env` (T-UX1): the finish-phase token, ONLY on this spawn and only
+            # with `TOWER_WORLD_FINISH_STAGES` on. None leaves the environment as it was.
             self._child = self._spawn(
                 self._argv(final=True), cwd=str(TOWER_ROOT), stdout=subprocess.PIPE,
-                stderr=self._log, env=child_environment(), stdin=subprocess.DEVNULL,
+                stderr=self._log,
+                env=child_environment() if not phase_env else {**child_environment(), **phase_env},
+                stdin=subprocess.DEVNULL,
             )
         except Exception as error:  # noqa: BLE001 -- see the docstring
             logger.warning(
@@ -2305,6 +2311,9 @@ def main(argv=None) -> int:
     # published and owes something; None writes no key. `stop_session` has just given the
     # record a fresh `pending` block, so there is no older notice here to keep.
     finalization_notice_text = None
+    # T-UX1 (WORLDS §2b): `finish_phase.PhaseWriter`, or None -- always None with
+    # `TOWER_WORLD_FINISH_STAGES` off, so nothing below writes a byte. Here so `finally` sees it.
+    phase = None
     try:
         if capture_start_error is not None:
             raise capture_start_error
@@ -2548,6 +2557,10 @@ def main(argv=None) -> int:
         summary = engine.stop_session(
             end_reason, hold_lock=True, capture_end_reason=capture_end
         )
+        if solver is not None:
+            # What this builder is doing from here to the lock's release, for the phone
+            # (T-UX1). Stamped with this process and the `pending` block just written.
+            phase = finish_phase.PhaseWriter.for_builder(store, world_id, session_id)
 
         # -- finalization: the lock is still held, the record says pending --
         if solver is None:
@@ -2578,6 +2591,8 @@ def main(argv=None) -> int:
             # A background solve still running at Stop is given a bounded
             # wait and then TERMINATED, never abandoned: the final solve is
             # about to reuse its workspace.
+            if phase is not None and solver.running:
+                phase.mark(finish_phase.WAITING)
             solver.wait(args.solve_wait_seconds, should_stop=stop_request.hard_asked_for)
             if stop_request.hard:
                 final_solve_state = FINAL_SOLVE_SKIPPED
@@ -2585,8 +2600,14 @@ def main(argv=None) -> int:
                     f"final solve skipped: hard stop ({stop_request.source}) during finalization"
                 )
             else:
+                # The token goes to the final spawn only with the switch on; off, this is
+                # exactly the call it was (no `phase_env` keyword at all).
+                final_kw = {}
+                if phase is not None:
+                    phase.mark(finish_phase.PREPARING)
+                    final_kw["phase_env"] = phase.child_environment()
                 solve_report = solver.run_final(
-                    store, sources, should_stop=stop_request.hard_asked_for
+                    store, sources, should_stop=stop_request.hard_asked_for, **final_kw
                 )
                 if solve_report.get("solved"):
                     # Including a child a hard stop (or a crash) ended AFTER it had
@@ -2629,6 +2650,8 @@ def main(argv=None) -> int:
             solve_report["background_launches"] = solver.launches
             solve_report["final_solve"] = final_solve_state
 
+        if phase is not None:
+            phase.mark(finish_phase.ASSEMBLING)
         built = time.perf_counter()
         result = engine.build(world_id, session_id)
         build_seconds = time.perf_counter() - built
@@ -2735,6 +2758,10 @@ def main(argv=None) -> int:
                     "photographic stages are owed"
                 )
 
+        # The finish phase goes BEFORE the lock: once released, nothing may say this
+        # builder is still at work (T-UX1; the record is no longer `pending` either).
+        if phase is not None:
+            phase.clear()
         engine.release_world(world_id)
 
     if result is None or summary is None:

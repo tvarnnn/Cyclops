@@ -1,0 +1,5378 @@
+{
+ "builder:hard": {
+  "events": [
+   {
+    "event_id": 0,
+    "kind": "session_started",
+    "payload": {
+     "frame_source": "live-capture"
+    },
+    "schema_version": 1,
+    "time_basis": "tower-receipt"
+   },
+   {
+    "event_id": 1,
+    "kind": "keyframe_accepted",
+    "payload": {
+     "keyframe_id": "00000000000000000000000000000002:00000001",
+     "reason": "session_seed",
+     "segment_index": 0
+    },
+    "schema_version": 1,
+    "time_basis": "tower-receipt"
+   },
+   {
+    "event_id": 2,
+    "kind": "keyframe_accepted",
+    "payload": {
+     "keyframe_id": "00000000000000000000000000000002:00000004",
+     "reason": "parallax",
+     "segment_index": 0
+    },
+    "schema_version": 1,
+    "time_basis": "tower-receipt"
+   },
+   {
+    "event_id": 3,
+    "kind": "keyframe_accepted",
+    "payload": {
+     "keyframe_id": "00000000000000000000000000000002:00000007",
+     "reason": "parallax",
+     "segment_index": 0
+    },
+    "schema_version": 1,
+    "time_basis": "tower-receipt"
+   },
+   {
+    "event_id": 4,
+    "kind": "keyframe_accepted",
+    "payload": {
+     "keyframe_id": "00000000000000000000000000000002:00000010",
+     "reason": "parallax",
+     "segment_index": 0
+    },
+    "schema_version": 1,
+    "time_basis": "tower-receipt"
+   },
+   {
+    "event_id": 5,
+    "kind": "session_stopped",
+    "payload": {
+     "capture_end_reason": "stop",
+     "end_reason": "stop"
+    },
+    "schema_version": 1,
+    "time_basis": "tower-receipt"
+   }
+  ],
+  "exit": 0,
+  "files": {
+   "intrinsics/480x360.json": "8fafa229f28445ac85b2fbb4b8d0167f288f31a15a7718c4368bc53754dc0143",
+   "worlds/00000000000000000000000000000001/derived/00000000000000000000000000000002/manifest.json": "18b16142bac29b88309290691ac3b972f1a92ebafcecc55eb0453f733cc2689b",
+   "worlds/00000000000000000000000000000001/derived/00000000000000000000000000000002/points.json": "7d62ac337f26c85c7fd0858bb34e3869bbc653eca4374b17f779faa1715e7538",
+   "worlds/00000000000000000000000000000001/derived/00000000000000000000000000000002/poses.json": "636f1f2880c8f11adfd76f52c51f30889c5556fdd629487c446b7a988b649005",
+   "worlds/00000000000000000000000000000001/derived/00000000000000000000000000000002/support.json": "8d9cc1368ef6c1b291985abd8b3e6638b8beb1c9223849fd68fe3934e492ca8c",
+   "worlds/00000000000000000000000000000001/derived/manifest.json": "18b16142bac29b88309290691ac3b972f1a92ebafcecc55eb0453f733cc2689b",
+   "worlds/00000000000000000000000000000001/sessions/00000000000000000000000000000002/edges.jsonl": "c4eed82d12eaf8f9198d6866fad0df0e4040e4e5d8a71271cd9ab5cbeffe9d26",
+   "worlds/00000000000000000000000000000001/sessions/00000000000000000000000000000002/events.jsonl": "52704449e2b2ca72149e1d16673c75e0f8c75232db140be0622ab50bfefff0d1",
+   "worlds/00000000000000000000000000000001/sessions/00000000000000000000000000000002/images/00000001.jpg": "a59a421bdba15ecfbe41c49077d10eefe1bdc05f31aa8a4c7bc4e7f7010b5fa9",
+   "worlds/00000000000000000000000000000001/sessions/00000000000000000000000000000002/images/00000004.jpg": "df049d926a0309ebb026ea75cae57950e761b178d8d113dc13baafff8dbc3b1d",
+   "worlds/00000000000000000000000000000001/sessions/00000000000000000000000000000002/images/00000007.jpg": "1d64c88ffdbfe48e173596e41f519e01e048fb2b6f83f87b7bb960d9120d856c",
+   "worlds/00000000000000000000000000000001/sessions/00000000000000000000000000000002/images/00000010.jpg": "d3933a46f89f7e9a60e9373ae23b466c8c5752485c9caf7916efdc597a8990a7",
+   "worlds/00000000000000000000000000000001/sessions/00000000000000000000000000000002/keyframes.jsonl": "dcbfced2d7da383e6a092ec6dfb5b47800c5cd45576e3c6d211a0df11c92685f",
+   "worlds/00000000000000000000000000000001/sessions/00000000000000000000000000000002/session.json": "a690bd919f05a2e31621744fec62782f8631979c75da16d810bf07215448bea9",
+   "worlds/00000000000000000000000000000001/world.json": "137577c4210cfee8f1db48272dff7020f7148cbfab26a0c85df00ab96197c5f2"
+  },
+  "report": {
+   "backend_id": "classical-sfm",
+   "build_seconds": "<T>",
+   "downgraded_from": null,
+   "end_reason": "stop",
+   "finalization": "complete",
+   "frame_source": "live-capture",
+   "frames_observed": 12,
+   "global_solve": {
+    "attempted": false,
+    "background_launches": 0,
+    "final_solve": "skipped",
+    "solved": false
+   },
+   "keyframes_accepted": 4,
+   "observe_ms_per_frame": "<T>",
+   "points": 1347,
+   "poses_refused": 0,
+   "poses_solved": 3,
+   "rebuilds": 1,
+   "rejected_by_reason": {
+    "insufficient_motion": 8
+   },
+   "scale_state": "relative",
+   "segments": 1,
+   "session_id": "00000000000000000000000000000002",
+   "world_id": "00000000000000000000000000000001"
+  },
+  "solve_calls": []
+ },
+ "builder:soft": {
+  "events": [
+   {
+    "event_id": 0,
+    "kind": "session_started",
+    "payload": {
+     "frame_source": "live-capture"
+    },
+    "schema_version": 1,
+    "time_basis": "tower-receipt"
+   },
+   {
+    "event_id": 1,
+    "kind": "keyframe_accepted",
+    "payload": {
+     "keyframe_id": "00000000000000000000000000000002:00000001",
+     "reason": "session_seed",
+     "segment_index": 0
+    },
+    "schema_version": 1,
+    "time_basis": "tower-receipt"
+   },
+   {
+    "event_id": 2,
+    "kind": "keyframe_accepted",
+    "payload": {
+     "keyframe_id": "00000000000000000000000000000002:00000004",
+     "reason": "parallax",
+     "segment_index": 0
+    },
+    "schema_version": 1,
+    "time_basis": "tower-receipt"
+   },
+   {
+    "event_id": 3,
+    "kind": "keyframe_accepted",
+    "payload": {
+     "keyframe_id": "00000000000000000000000000000002:00000007",
+     "reason": "parallax",
+     "segment_index": 0
+    },
+    "schema_version": 1,
+    "time_basis": "tower-receipt"
+   },
+   {
+    "event_id": 4,
+    "kind": "keyframe_accepted",
+    "payload": {
+     "keyframe_id": "00000000000000000000000000000002:00000010",
+     "reason": "parallax",
+     "segment_index": 0
+    },
+    "schema_version": 1,
+    "time_basis": "tower-receipt"
+   },
+   {
+    "event_id": 5,
+    "kind": "session_stopped",
+    "payload": {
+     "capture_end_reason": "stop",
+     "end_reason": "stop"
+    },
+    "schema_version": 1,
+    "time_basis": "tower-receipt"
+   }
+  ],
+  "exit": 0,
+  "files": {
+   "intrinsics/480x360.json": "8fafa229f28445ac85b2fbb4b8d0167f288f31a15a7718c4368bc53754dc0143",
+   "worlds/00000000000000000000000000000001/derived/00000000000000000000000000000002/manifest.json": "18b16142bac29b88309290691ac3b972f1a92ebafcecc55eb0453f733cc2689b",
+   "worlds/00000000000000000000000000000001/derived/00000000000000000000000000000002/points.json": "7d62ac337f26c85c7fd0858bb34e3869bbc653eca4374b17f779faa1715e7538",
+   "worlds/00000000000000000000000000000001/derived/00000000000000000000000000000002/poses.json": "636f1f2880c8f11adfd76f52c51f30889c5556fdd629487c446b7a988b649005",
+   "worlds/00000000000000000000000000000001/derived/00000000000000000000000000000002/support.json": "8d9cc1368ef6c1b291985abd8b3e6638b8beb1c9223849fd68fe3934e492ca8c",
+   "worlds/00000000000000000000000000000001/derived/manifest.json": "18b16142bac29b88309290691ac3b972f1a92ebafcecc55eb0453f733cc2689b",
+   "worlds/00000000000000000000000000000001/sessions/00000000000000000000000000000002/edges.jsonl": "c4eed82d12eaf8f9198d6866fad0df0e4040e4e5d8a71271cd9ab5cbeffe9d26",
+   "worlds/00000000000000000000000000000001/sessions/00000000000000000000000000000002/events.jsonl": "52704449e2b2ca72149e1d16673c75e0f8c75232db140be0622ab50bfefff0d1",
+   "worlds/00000000000000000000000000000001/sessions/00000000000000000000000000000002/images/00000001.jpg": "a59a421bdba15ecfbe41c49077d10eefe1bdc05f31aa8a4c7bc4e7f7010b5fa9",
+   "worlds/00000000000000000000000000000001/sessions/00000000000000000000000000000002/images/00000004.jpg": "df049d926a0309ebb026ea75cae57950e761b178d8d113dc13baafff8dbc3b1d",
+   "worlds/00000000000000000000000000000001/sessions/00000000000000000000000000000002/images/00000007.jpg": "1d64c88ffdbfe48e173596e41f519e01e048fb2b6f83f87b7bb960d9120d856c",
+   "worlds/00000000000000000000000000000001/sessions/00000000000000000000000000000002/images/00000010.jpg": "d3933a46f89f7e9a60e9373ae23b466c8c5752485c9caf7916efdc597a8990a7",
+   "worlds/00000000000000000000000000000001/sessions/00000000000000000000000000000002/keyframes.jsonl": "dcbfced2d7da383e6a092ec6dfb5b47800c5cd45576e3c6d211a0df11c92685f",
+   "worlds/00000000000000000000000000000001/sessions/00000000000000000000000000000002/session.json": "2581adaf23ad2280bb0891d09208baa271280e6c1eaf26470a1fe0995651984e",
+   "worlds/00000000000000000000000000000001/solve/00000000000000000000000000000002/solve.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+   "worlds/00000000000000000000000000000001/solve/00000000000000000000000000000002/sources.json": "d5dc30987ce8d06d89a22774c517737368415a1ca947dff4099825693cc394fc",
+   "worlds/00000000000000000000000000000001/world.json": "137577c4210cfee8f1db48272dff7020f7148cbfab26a0c85df00ab96197c5f2"
+  },
+  "report": {
+   "backend_id": "classical-sfm",
+   "build_seconds": "<T>",
+   "downgraded_from": null,
+   "end_reason": "stop",
+   "finalization": "complete",
+   "frame_source": "live-capture",
+   "frames_observed": 12,
+   "global_solve": {
+    "attempted": true,
+    "background_launches": 0,
+    "final_solve": "unavailable",
+    "reason": "stub",
+    "seconds": "<T>",
+    "solved": false
+   },
+   "keyframes_accepted": 4,
+   "observe_ms_per_frame": "<T>",
+   "points": 1347,
+   "poses_refused": 0,
+   "poses_solved": 3,
+   "rebuilds": 1,
+   "rejected_by_reason": {
+    "insufficient_motion": 8
+   },
+   "scale_state": "relative",
+   "segments": 1,
+   "session_id": "00000000000000000000000000000002",
+   "world_id": "00000000000000000000000000000001"
+  },
+  "solve_calls": [
+   {
+    "argv": [
+     "--root",
+     "<WD>\\worlds",
+     "--world",
+     "00000000000000000000000000000001",
+     "--session",
+     "00000000000000000000000000000002",
+     "--capture-dir",
+     "<WD>\\captures\\dddddddddddddddddddddddddddddddd",
+     "--loop-detection",
+     "--final"
+    ],
+    "env_added": [],
+    "env_changed": [],
+    "env_removed": []
+   }
+  ]
+ },
+ "payloads": {
+  "closed-no-finalization|dead|absent": {
+   "lifecycle": {
+    "build_in_progress": false,
+    "build_in_progress_unavailable_reason": null,
+    "evidence": "the writer lock is held by pid <pid>, which is no longer running, and session_stopped was written",
+    "finalization": null,
+    "photographic": {
+     "detail": "this session has no finished global solve to build a photographic room from",
+     "stage": null,
+     "state": "unattempted"
+    },
+    "reason": "the process finalizing this world exited before it finished; the geometry stored is the last build it completed",
+    "state": "interrupted"
+   },
+   "revision": {
+    "revision:None": {
+     "appearance": {
+      "current": false,
+      "epoch": null,
+      "revision": null,
+      "state": "absent"
+     },
+     "components": null,
+     "live": false,
+     "representation": "sparse",
+     "revision": "<rev0>",
+     "session_id": "00000000000000000000000000000002"
+    },
+    "revision:appearance-1": {
+     "appearance": {
+      "current": false,
+      "epoch": null,
+      "revision": null,
+      "state": "absent"
+     },
+     "components": null,
+     "live": false,
+     "representation": "sparse",
+     "revision": "<rev0>",
+     "session_id": "00000000000000000000000000000002"
+    }
+   },
+   "row": [
+    {
+     "keys": [
+      "abandoned",
+      "appearance",
+      "capture_id",
+      "components",
+      "dense",
+      "end_reason",
+      "ended_at",
+      "finalization",
+      "frame_source",
+      "has_geometry",
+      "keyframes_accepted",
+      "keyframes_journaled",
+      "photographic",
+      "session_id",
+      "started_at",
+      "state"
+     ],
+     "state": "complete"
+    }
+   ],
+   "sha256": "bc27f9006c3ba9b26f91ebdd3574f7bd19828f220b42de813b007419fed8dad5",
+   "status_revision": "<rev15>"
+  },
+  "closed-no-finalization|dead|foreign-owner": {
+   "lifecycle": {
+    "build_in_progress": false,
+    "build_in_progress_unavailable_reason": null,
+    "evidence": "the writer lock is held by pid <pid>, which is no longer running, and session_stopped was written",
+    "finalization": null,
+    "photographic": {
+     "detail": "this session has no finished global solve to build a photographic room from",
+     "stage": null,
+     "state": "unattempted"
+    },
+    "reason": "the process finalizing this world exited before it finished; the geometry stored is the last build it completed",
+    "state": "interrupted"
+   },
+   "revision": {
+    "revision:None": {
+     "appearance": {
+      "current": false,
+      "epoch": null,
+      "revision": null,
+      "state": "absent"
+     },
+     "components": null,
+     "live": false,
+     "representation": "sparse",
+     "revision": "<rev0>",
+     "session_id": "00000000000000000000000000000002"
+    },
+    "revision:appearance-1": {
+     "appearance": {
+      "current": false,
+      "epoch": null,
+      "revision": null,
+      "state": "absent"
+     },
+     "components": null,
+     "live": false,
+     "representation": "sparse",
+     "revision": "<rev0>",
+     "session_id": "00000000000000000000000000000002"
+    }
+   },
+   "row": [
+    {
+     "keys": [
+      "abandoned",
+      "appearance",
+      "capture_id",
+      "components",
+      "dense",
+      "end_reason",
+      "ended_at",
+      "finalization",
+      "frame_source",
+      "has_geometry",
+      "keyframes_accepted",
+      "keyframes_journaled",
+      "photographic",
+      "session_id",
+      "started_at",
+      "state"
+     ],
+     "state": "complete"
+    }
+   ],
+   "sha256": "bc27f9006c3ba9b26f91ebdd3574f7bd19828f220b42de813b007419fed8dad5",
+   "status_revision": "<rev15>"
+  },
+  "closed-no-finalization|dead|stale-epoch": {
+   "lifecycle": {
+    "build_in_progress": false,
+    "build_in_progress_unavailable_reason": null,
+    "evidence": "the writer lock is held by pid <pid>, which is no longer running, and session_stopped was written",
+    "finalization": null,
+    "photographic": {
+     "detail": "this session has no finished global solve to build a photographic room from",
+     "stage": null,
+     "state": "unattempted"
+    },
+    "reason": "the process finalizing this world exited before it finished; the geometry stored is the last build it completed",
+    "state": "interrupted"
+   },
+   "revision": {
+    "revision:None": {
+     "appearance": {
+      "current": false,
+      "epoch": null,
+      "revision": null,
+      "state": "absent"
+     },
+     "components": null,
+     "live": false,
+     "representation": "sparse",
+     "revision": "<rev0>",
+     "session_id": "00000000000000000000000000000002"
+    },
+    "revision:appearance-1": {
+     "appearance": {
+      "current": false,
+      "epoch": null,
+      "revision": null,
+      "state": "absent"
+     },
+     "components": null,
+     "live": false,
+     "representation": "sparse",
+     "revision": "<rev0>",
+     "session_id": "00000000000000000000000000000002"
+    }
+   },
+   "row": [
+    {
+     "keys": [
+      "abandoned",
+      "appearance",
+      "capture_id",
+      "components",
+      "dense",
+      "end_reason",
+      "ended_at",
+      "finalization",
+      "frame_source",
+      "has_geometry",
+      "keyframes_accepted",
+      "keyframes_journaled",
+      "photographic",
+      "session_id",
+      "started_at",
+      "state"
+     ],
+     "state": "complete"
+    }
+   ],
+   "sha256": "bc27f9006c3ba9b26f91ebdd3574f7bd19828f220b42de813b007419fed8dad5",
+   "status_revision": "<rev15>"
+  },
+  "closed-no-finalization|dead|valid": {
+   "lifecycle": {
+    "build_in_progress": false,
+    "build_in_progress_unavailable_reason": null,
+    "evidence": "the writer lock is held by pid <pid>, which is no longer running, and session_stopped was written",
+    "finalization": null,
+    "photographic": {
+     "detail": "this session has no finished global solve to build a photographic room from",
+     "stage": null,
+     "state": "unattempted"
+    },
+    "reason": "the process finalizing this world exited before it finished; the geometry stored is the last build it completed",
+    "state": "interrupted"
+   },
+   "revision": {
+    "revision:None": {
+     "appearance": {
+      "current": false,
+      "epoch": null,
+      "revision": null,
+      "state": "absent"
+     },
+     "components": null,
+     "live": false,
+     "representation": "sparse",
+     "revision": "<rev0>",
+     "session_id": "00000000000000000000000000000002"
+    },
+    "revision:appearance-1": {
+     "appearance": {
+      "current": false,
+      "epoch": null,
+      "revision": null,
+      "state": "absent"
+     },
+     "components": null,
+     "live": false,
+     "representation": "sparse",
+     "revision": "<rev0>",
+     "session_id": "00000000000000000000000000000002"
+    }
+   },
+   "row": [
+    {
+     "keys": [
+      "abandoned",
+      "appearance",
+      "capture_id",
+      "components",
+      "dense",
+      "end_reason",
+      "ended_at",
+      "finalization",
+      "frame_source",
+      "has_geometry",
+      "keyframes_accepted",
+      "keyframes_journaled",
+      "photographic",
+      "session_id",
+      "started_at",
+      "state"
+     ],
+     "state": "complete"
+    }
+   ],
+   "sha256": "bc27f9006c3ba9b26f91ebdd3574f7bd19828f220b42de813b007419fed8dad5",
+   "status_revision": "<rev15>"
+  },
+  "closed-no-finalization|live|absent": {
+   "lifecycle": {
+    "build_in_progress": true,
+    "build_in_progress_unavailable_reason": null,
+    "evidence": "a live process (pid <pid>) holds the writer lock and session_stopped was written",
+    "finalization": null,
+    "reason": "the builder is finishing this world: the final solve and the final build run after the session stops, and the lock is released when they are done",
+    "state": "finalizing"
+   },
+   "revision": {
+    "revision:None": {
+     "appearance": {
+      "current": false,
+      "epoch": null,
+      "revision": null,
+      "state": "absent"
+     },
+     "components": null,
+     "live": false,
+     "representation": "sparse",
+     "revision": "<rev0>",
+     "session_id": "00000000000000000000000000000002"
+    },
+    "revision:appearance-1": {
+     "appearance": {
+      "current": false,
+      "epoch": null,
+      "revision": null,
+      "state": "absent"
+     },
+     "components": null,
+     "live": false,
+     "representation": "sparse",
+     "revision": "<rev0>",
+     "session_id": "00000000000000000000000000000002"
+    }
+   },
+   "row": [
+    {
+     "keys": [
+      "abandoned",
+      "appearance",
+      "capture_id",
+      "components",
+      "dense",
+      "end_reason",
+      "ended_at",
+      "finalization",
+      "frame_source",
+      "has_geometry",
+      "keyframes_accepted",
+      "keyframes_journaled",
+      "photographic",
+      "session_id",
+      "started_at",
+      "state"
+     ],
+     "state": "finalizing"
+    }
+   ],
+   "sha256": "d573c89b2c4419f4cf5424e60eefd4449b61c21434835a5989620f181dbd09e8",
+   "status_revision": "<rev14>"
+  },
+  "closed-no-finalization|live|foreign-owner": {
+   "lifecycle": {
+    "build_in_progress": true,
+    "build_in_progress_unavailable_reason": null,
+    "evidence": "a live process (pid <pid>) holds the writer lock and session_stopped was written",
+    "finalization": null,
+    "reason": "the builder is finishing this world: the final solve and the final build run after the session stops, and the lock is released when they are done",
+    "state": "finalizing"
+   },
+   "revision": {
+    "revision:None": {
+     "appearance": {
+      "current": false,
+      "epoch": null,
+      "revision": null,
+      "state": "absent"
+     },
+     "components": null,
+     "live": false,
+     "representation": "sparse",
+     "revision": "<rev0>",
+     "session_id": "00000000000000000000000000000002"
+    },
+    "revision:appearance-1": {
+     "appearance": {
+      "current": false,
+      "epoch": null,
+      "revision": null,
+      "state": "absent"
+     },
+     "components": null,
+     "live": false,
+     "representation": "sparse",
+     "revision": "<rev0>",
+     "session_id": "00000000000000000000000000000002"
+    }
+   },
+   "row": [
+    {
+     "keys": [
+      "abandoned",
+      "appearance",
+      "capture_id",
+      "components",
+      "dense",
+      "end_reason",
+      "ended_at",
+      "finalization",
+      "frame_source",
+      "has_geometry",
+      "keyframes_accepted",
+      "keyframes_journaled",
+      "photographic",
+      "session_id",
+      "started_at",
+      "state"
+     ],
+     "state": "finalizing"
+    }
+   ],
+   "sha256": "d573c89b2c4419f4cf5424e60eefd4449b61c21434835a5989620f181dbd09e8",
+   "status_revision": "<rev14>"
+  },
+  "closed-no-finalization|live|stale-epoch": {
+   "lifecycle": {
+    "build_in_progress": true,
+    "build_in_progress_unavailable_reason": null,
+    "evidence": "a live process (pid <pid>) holds the writer lock and session_stopped was written",
+    "finalization": null,
+    "reason": "the builder is finishing this world: the final solve and the final build run after the session stops, and the lock is released when they are done",
+    "state": "finalizing"
+   },
+   "revision": {
+    "revision:None": {
+     "appearance": {
+      "current": false,
+      "epoch": null,
+      "revision": null,
+      "state": "absent"
+     },
+     "components": null,
+     "live": false,
+     "representation": "sparse",
+     "revision": "<rev0>",
+     "session_id": "00000000000000000000000000000002"
+    },
+    "revision:appearance-1": {
+     "appearance": {
+      "current": false,
+      "epoch": null,
+      "revision": null,
+      "state": "absent"
+     },
+     "components": null,
+     "live": false,
+     "representation": "sparse",
+     "revision": "<rev0>",
+     "session_id": "00000000000000000000000000000002"
+    }
+   },
+   "row": [
+    {
+     "keys": [
+      "abandoned",
+      "appearance",
+      "capture_id",
+      "components",
+      "dense",
+      "end_reason",
+      "ended_at",
+      "finalization",
+      "frame_source",
+      "has_geometry",
+      "keyframes_accepted",
+      "keyframes_journaled",
+      "photographic",
+      "session_id",
+      "started_at",
+      "state"
+     ],
+     "state": "finalizing"
+    }
+   ],
+   "sha256": "d573c89b2c4419f4cf5424e60eefd4449b61c21434835a5989620f181dbd09e8",
+   "status_revision": "<rev14>"
+  },
+  "closed-no-finalization|live|valid": {
+   "lifecycle": {
+    "build_in_progress": true,
+    "build_in_progress_unavailable_reason": null,
+    "evidence": "a live process (pid <pid>) holds the writer lock and session_stopped was written",
+    "finalization": null,
+    "reason": "the builder is finishing this world: the final solve and the final build run after the session stops, and the lock is released when they are done",
+    "state": "finalizing"
+   },
+   "revision": {
+    "revision:None": {
+     "appearance": {
+      "current": false,
+      "epoch": null,
+      "revision": null,
+      "state": "absent"
+     },
+     "components": null,
+     "live": false,
+     "representation": "sparse",
+     "revision": "<rev0>",
+     "session_id": "00000000000000000000000000000002"
+    },
+    "revision:appearance-1": {
+     "appearance": {
+      "current": false,
+      "epoch": null,
+      "revision": null,
+      "state": "absent"
+     },
+     "components": null,
+     "live": false,
+     "representation": "sparse",
+     "revision": "<rev0>",
+     "session_id": "00000000000000000000000000000002"
+    }
+   },
+   "row": [
+    {
+     "keys": [
+      "abandoned",
+      "appearance",
+      "capture_id",
+      "components",
+      "dense",
+      "end_reason",
+      "ended_at",
+      "finalization",
+      "frame_source",
+      "has_geometry",
+      "keyframes_accepted",
+      "keyframes_journaled",
+      "photographic",
+      "session_id",
+      "started_at",
+      "state"
+     ],
+     "state": "finalizing"
+    }
+   ],
+   "sha256": "d573c89b2c4419f4cf5424e60eefd4449b61c21434835a5989620f181dbd09e8",
+   "status_revision": "<rev14>"
+  },
+  "closed-no-finalization|none|absent": {
+   "lifecycle": {
+    "build_in_progress": null,
+    "build_in_progress_unavailable_reason": "the writer lock is released before build() is called, and build() emits no event and writes nothing until it finishes, so a build in progress is indistinguishable on disk from one that never started and from one that crashed",
+    "evidence": "capture ended and the stored geometry matches the keyframes",
+    "finalization": null,
+    "photographic": {
+     "detail": "this session has no finished global solve to build a photographic room from",
+     "stage": null,
+     "state": "unattempted"
+    },
+    "reason": null,
+    "state": "ready"
+   },
+   "revision": {
+    "revision:None": {
+     "appearance": {
+      "current": false,
+      "epoch": null,
+      "revision": null,
+      "state": "absent"
+     },
+     "components": null,
+     "live": false,
+     "representation": "sparse",
+     "revision": "<rev0>",
+     "session_id": "00000000000000000000000000000002"
+    },
+    "revision:appearance-1": {
+     "appearance": {
+      "current": false,
+      "epoch": null,
+      "revision": null,
+      "state": "absent"
+     },
+     "components": null,
+     "live": false,
+     "representation": "sparse",
+     "revision": "<rev0>",
+     "session_id": "00000000000000000000000000000002"
+    }
+   },
+   "row": [
+    {
+     "keys": [
+      "abandoned",
+      "appearance",
+      "capture_id",
+      "components",
+      "dense",
+      "end_reason",
+      "ended_at",
+      "finalization",
+      "frame_source",
+      "has_geometry",
+      "keyframes_accepted",
+      "keyframes_journaled",
+      "photographic",
+      "session_id",
+      "started_at",
+      "state"
+     ],
+     "state": "complete"
+    }
+   ],
+   "sha256": "eb43a2f6f26f7339c9a2481f86f502b03a29681f270834eb09f3068be2aeb342",
+   "status_revision": "<rev13>"
+  },
+  "closed-no-finalization|none|foreign-owner": {
+   "lifecycle": {
+    "build_in_progress": null,
+    "build_in_progress_unavailable_reason": "the writer lock is released before build() is called, and build() emits no event and writes nothing until it finishes, so a build in progress is indistinguishable on disk from one that never started and from one that crashed",
+    "evidence": "capture ended and the stored geometry matches the keyframes",
+    "finalization": null,
+    "photographic": {
+     "detail": "this session has no finished global solve to build a photographic room from",
+     "stage": null,
+     "state": "unattempted"
+    },
+    "reason": null,
+    "state": "ready"
+   },
+   "revision": {
+    "revision:None": {
+     "appearance": {
+      "current": false,
+      "epoch": null,
+      "revision": null,
+      "state": "absent"
+     },
+     "components": null,
+     "live": false,
+     "representation": "sparse",
+     "revision": "<rev0>",
+     "session_id": "00000000000000000000000000000002"
+    },
+    "revision:appearance-1": {
+     "appearance": {
+      "current": false,
+      "epoch": null,
+      "revision": null,
+      "state": "absent"
+     },
+     "components": null,
+     "live": false,
+     "representation": "sparse",
+     "revision": "<rev0>",
+     "session_id": "00000000000000000000000000000002"
+    }
+   },
+   "row": [
+    {
+     "keys": [
+      "abandoned",
+      "appearance",
+      "capture_id",
+      "components",
+      "dense",
+      "end_reason",
+      "ended_at",
+      "finalization",
+      "frame_source",
+      "has_geometry",
+      "keyframes_accepted",
+      "keyframes_journaled",
+      "photographic",
+      "session_id",
+      "started_at",
+      "state"
+     ],
+     "state": "complete"
+    }
+   ],
+   "sha256": "eb43a2f6f26f7339c9a2481f86f502b03a29681f270834eb09f3068be2aeb342",
+   "status_revision": "<rev13>"
+  },
+  "closed-no-finalization|none|stale-epoch": {
+   "lifecycle": {
+    "build_in_progress": null,
+    "build_in_progress_unavailable_reason": "the writer lock is released before build() is called, and build() emits no event and writes nothing until it finishes, so a build in progress is indistinguishable on disk from one that never started and from one that crashed",
+    "evidence": "capture ended and the stored geometry matches the keyframes",
+    "finalization": null,
+    "photographic": {
+     "detail": "this session has no finished global solve to build a photographic room from",
+     "stage": null,
+     "state": "unattempted"
+    },
+    "reason": null,
+    "state": "ready"
+   },
+   "revision": {
+    "revision:None": {
+     "appearance": {
+      "current": false,
+      "epoch": null,
+      "revision": null,
+      "state": "absent"
+     },
+     "components": null,
+     "live": false,
+     "representation": "sparse",
+     "revision": "<rev0>",
+     "session_id": "00000000000000000000000000000002"
+    },
+    "revision:appearance-1": {
+     "appearance": {
+      "current": false,
+      "epoch": null,
+      "revision": null,
+      "state": "absent"
+     },
+     "components": null,
+     "live": false,
+     "representation": "sparse",
+     "revision": "<rev0>",
+     "session_id": "00000000000000000000000000000002"
+    }
+   },
+   "row": [
+    {
+     "keys": [
+      "abandoned",
+      "appearance",
+      "capture_id",
+      "components",
+      "dense",
+      "end_reason",
+      "ended_at",
+      "finalization",
+      "frame_source",
+      "has_geometry",
+      "keyframes_accepted",
+      "keyframes_journaled",
+      "photographic",
+      "session_id",
+      "started_at",
+      "state"
+     ],
+     "state": "complete"
+    }
+   ],
+   "sha256": "eb43a2f6f26f7339c9a2481f86f502b03a29681f270834eb09f3068be2aeb342",
+   "status_revision": "<rev13>"
+  },
+  "closed-no-finalization|none|valid": {
+   "lifecycle": {
+    "build_in_progress": null,
+    "build_in_progress_unavailable_reason": "the writer lock is released before build() is called, and build() emits no event and writes nothing until it finishes, so a build in progress is indistinguishable on disk from one that never started and from one that crashed",
+    "evidence": "capture ended and the stored geometry matches the keyframes",
+    "finalization": null,
+    "photographic": {
+     "detail": "this session has no finished global solve to build a photographic room from",
+     "stage": null,
+     "state": "unattempted"
+    },
+    "reason": null,
+    "state": "ready"
+   },
+   "revision": {
+    "revision:None": {
+     "appearance": {
+      "current": false,
+      "epoch": null,
+      "revision": null,
+      "state": "absent"
+     },
+     "components": null,
+     "live": false,
+     "representation": "sparse",
+     "revision": "<rev0>",
+     "session_id": "00000000000000000000000000000002"
+    },
+    "revision:appearance-1": {
+     "appearance": {
+      "current": false,
+      "epoch": null,
+      "revision": null,
+      "state": "absent"
+     },
+     "components": null,
+     "live": false,
+     "representation": "sparse",
+     "revision": "<rev0>",
+     "session_id": "00000000000000000000000000000002"
+    }
+   },
+   "row": [
+    {
+     "keys": [
+      "abandoned",
+      "appearance",
+      "capture_id",
+      "components",
+      "dense",
+      "end_reason",
+      "ended_at",
+      "finalization",
+      "frame_source",
+      "has_geometry",
+      "keyframes_accepted",
+      "keyframes_journaled",
+      "photographic",
+      "session_id",
+      "started_at",
+      "state"
+     ],
+     "state": "complete"
+    }
+   ],
+   "sha256": "eb43a2f6f26f7339c9a2481f86f502b03a29681f270834eb09f3068be2aeb342",
+   "status_revision": "<rev13>"
+  },
+  "complete-skipped|dead|absent": {
+   "lifecycle": {
+    "build_in_progress": false,
+    "build_in_progress_unavailable_reason": null,
+    "evidence": "session_stopped was written, the finalization record is complete, the lock was released and the derived tree is there",
+    "finalization": {
+     "detail": null,
+     "final_solve": "skipped",
+     "started_at": "<time>",
+     "state": "complete",
+     "updated_at": "<time>"
+    },
+    "photographic": {
+     "detail": "this session has no finished global solve to build a photographic room from",
+     "stage": null,
+     "state": "unattempted"
+    },
+    "reason": null,
+    "state": "ready"
+   },
+   "revision": {
+    "revision:None": {
+     "appearance": {
+      "current": false,
+      "epoch": null,
+      "revision": null,
+      "state": "absent"
+     },
+     "components": null,
+     "live": false,
+     "representation": "sparse",
+     "revision": "<rev0>",
+     "session_id": "00000000000000000000000000000002"
+    },
+    "revision:appearance-1": {
+     "appearance": {
+      "current": false,
+      "epoch": null,
+      "revision": null,
+      "state": "absent"
+     },
+     "components": null,
+     "live": false,
+     "representation": "sparse",
+     "revision": "<rev0>",
+     "session_id": "00000000000000000000000000000002"
+    }
+   },
+   "row": [
+    {
+     "keys": [
+      "abandoned",
+      "appearance",
+      "capture_id",
+      "components",
+      "dense",
+      "end_reason",
+      "ended_at",
+      "finalization",
+      "frame_source",
+      "has_geometry",
+      "keyframes_accepted",
+      "keyframes_journaled",
+      "photographic",
+      "session_id",
+      "started_at",
+      "state"
+     ],
+     "state": "complete"
+    }
+   ],
+   "sha256": "070f31b980e1037a214349a1d48b74bcb4a5736813e2157024c056852a2b23f3",
+   "status_revision": "<rev11>"
+  },
+  "complete-skipped|dead|foreign-owner": {
+   "lifecycle": {
+    "build_in_progress": false,
+    "build_in_progress_unavailable_reason": null,
+    "evidence": "session_stopped was written, the finalization record is complete, the lock was released and the derived tree is there",
+    "finalization": {
+     "detail": null,
+     "final_solve": "skipped",
+     "started_at": "<time>",
+     "state": "complete",
+     "updated_at": "<time>"
+    },
+    "photographic": {
+     "detail": "this session has no finished global solve to build a photographic room from",
+     "stage": null,
+     "state": "unattempted"
+    },
+    "reason": null,
+    "state": "ready"
+   },
+   "revision": {
+    "revision:None": {
+     "appearance": {
+      "current": false,
+      "epoch": null,
+      "revision": null,
+      "state": "absent"
+     },
+     "components": null,
+     "live": false,
+     "representation": "sparse",
+     "revision": "<rev0>",
+     "session_id": "00000000000000000000000000000002"
+    },
+    "revision:appearance-1": {
+     "appearance": {
+      "current": false,
+      "epoch": null,
+      "revision": null,
+      "state": "absent"
+     },
+     "components": null,
+     "live": false,
+     "representation": "sparse",
+     "revision": "<rev0>",
+     "session_id": "00000000000000000000000000000002"
+    }
+   },
+   "row": [
+    {
+     "keys": [
+      "abandoned",
+      "appearance",
+      "capture_id",
+      "components",
+      "dense",
+      "end_reason",
+      "ended_at",
+      "finalization",
+      "frame_source",
+      "has_geometry",
+      "keyframes_accepted",
+      "keyframes_journaled",
+      "photographic",
+      "session_id",
+      "started_at",
+      "state"
+     ],
+     "state": "complete"
+    }
+   ],
+   "sha256": "070f31b980e1037a214349a1d48b74bcb4a5736813e2157024c056852a2b23f3",
+   "status_revision": "<rev11>"
+  },
+  "complete-skipped|dead|stale-epoch": {
+   "lifecycle": {
+    "build_in_progress": false,
+    "build_in_progress_unavailable_reason": null,
+    "evidence": "session_stopped was written, the finalization record is complete, the lock was released and the derived tree is there",
+    "finalization": {
+     "detail": null,
+     "final_solve": "skipped",
+     "started_at": "<time>",
+     "state": "complete",
+     "updated_at": "<time>"
+    },
+    "photographic": {
+     "detail": "this session has no finished global solve to build a photographic room from",
+     "stage": null,
+     "state": "unattempted"
+    },
+    "reason": null,
+    "state": "ready"
+   },
+   "revision": {
+    "revision:None": {
+     "appearance": {
+      "current": false,
+      "epoch": null,
+      "revision": null,
+      "state": "absent"
+     },
+     "components": null,
+     "live": false,
+     "representation": "sparse",
+     "revision": "<rev0>",
+     "session_id": "00000000000000000000000000000002"
+    },
+    "revision:appearance-1": {
+     "appearance": {
+      "current": false,
+      "epoch": null,
+      "revision": null,
+      "state": "absent"
+     },
+     "components": null,
+     "live": false,
+     "representation": "sparse",
+     "revision": "<rev0>",
+     "session_id": "00000000000000000000000000000002"
+    }
+   },
+   "row": [
+    {
+     "keys": [
+      "abandoned",
+      "appearance",
+      "capture_id",
+      "components",
+      "dense",
+      "end_reason",
+      "ended_at",
+      "finalization",
+      "frame_source",
+      "has_geometry",
+      "keyframes_accepted",
+      "keyframes_journaled",
+      "photographic",
+      "session_id",
+      "started_at",
+      "state"
+     ],
+     "state": "complete"
+    }
+   ],
+   "sha256": "070f31b980e1037a214349a1d48b74bcb4a5736813e2157024c056852a2b23f3",
+   "status_revision": "<rev11>"
+  },
+  "complete-skipped|dead|valid": {
+   "lifecycle": {
+    "build_in_progress": false,
+    "build_in_progress_unavailable_reason": null,
+    "evidence": "session_stopped was written, the finalization record is complete, the lock was released and the derived tree is there",
+    "finalization": {
+     "detail": null,
+     "final_solve": "skipped",
+     "started_at": "<time>",
+     "state": "complete",
+     "updated_at": "<time>"
+    },
+    "photographic": {
+     "detail": "this session has no finished global solve to build a photographic room from",
+     "stage": null,
+     "state": "unattempted"
+    },
+    "reason": null,
+    "state": "ready"
+   },
+   "revision": {
+    "revision:None": {
+     "appearance": {
+      "current": false,
+      "epoch": null,
+      "revision": null,
+      "state": "absent"
+     },
+     "components": null,
+     "live": false,
+     "representation": "sparse",
+     "revision": "<rev0>",
+     "session_id": "00000000000000000000000000000002"
+    },
+    "revision:appearance-1": {
+     "appearance": {
+      "current": false,
+      "epoch": null,
+      "revision": null,
+      "state": "absent"
+     },
+     "components": null,
+     "live": false,
+     "representation": "sparse",
+     "revision": "<rev0>",
+     "session_id": "00000000000000000000000000000002"
+    }
+   },
+   "row": [
+    {
+     "keys": [
+      "abandoned",
+      "appearance",
+      "capture_id",
+      "components",
+      "dense",
+      "end_reason",
+      "ended_at",
+      "finalization",
+      "frame_source",
+      "has_geometry",
+      "keyframes_accepted",
+      "keyframes_journaled",
+      "photographic",
+      "session_id",
+      "started_at",
+      "state"
+     ],
+     "state": "complete"
+    }
+   ],
+   "sha256": "070f31b980e1037a214349a1d48b74bcb4a5736813e2157024c056852a2b23f3",
+   "status_revision": "<rev11>"
+  },
+  "complete-skipped|live|absent": {
+   "lifecycle": {
+    "build_in_progress": false,
+    "build_in_progress_unavailable_reason": null,
+    "evidence": "session_stopped was written, the finalization record is complete, the lock was released and the derived tree is there",
+    "finalization": {
+     "detail": null,
+     "final_solve": "skipped",
+     "started_at": "<time>",
+     "state": "complete",
+     "updated_at": "<time>"
+    },
+    "photographic": {
+     "detail": "this session has no finished global solve to build a photographic room from",
+     "stage": null,
+     "state": "unattempted"
+    },
+    "reason": null,
+    "state": "ready"
+   },
+   "revision": {
+    "revision:None": {
+     "appearance": {
+      "current": false,
+      "epoch": null,
+      "revision": null,
+      "state": "absent"
+     },
+     "components": null,
+     "live": false,
+     "representation": "sparse",
+     "revision": "<rev0>",
+     "session_id": "00000000000000000000000000000002"
+    },
+    "revision:appearance-1": {
+     "appearance": {
+      "current": false,
+      "epoch": null,
+      "revision": null,
+      "state": "absent"
+     },
+     "components": null,
+     "live": false,
+     "representation": "sparse",
+     "revision": "<rev0>",
+     "session_id": "00000000000000000000000000000002"
+    }
+   },
+   "row": [
+    {
+     "keys": [
+      "abandoned",
+      "appearance",
+      "capture_id",
+      "components",
+      "dense",
+      "end_reason",
+      "ended_at",
+      "finalization",
+      "frame_source",
+      "has_geometry",
+      "keyframes_accepted",
+      "keyframes_journaled",
+      "photographic",
+      "session_id",
+      "started_at",
+      "state"
+     ],
+     "state": "complete"
+    }
+   ],
+   "sha256": "070f31b980e1037a214349a1d48b74bcb4a5736813e2157024c056852a2b23f3",
+   "status_revision": "<rev11>"
+  },
+  "complete-skipped|live|foreign-owner": {
+   "lifecycle": {
+    "build_in_progress": false,
+    "build_in_progress_unavailable_reason": null,
+    "evidence": "session_stopped was written, the finalization record is complete, the lock was released and the derived tree is there",
+    "finalization": {
+     "detail": null,
+     "final_solve": "skipped",
+     "started_at": "<time>",
+     "state": "complete",
+     "updated_at": "<time>"
+    },
+    "photographic": {
+     "detail": "this session has no finished global solve to build a photographic room from",
+     "stage": null,
+     "state": "unattempted"
+    },
+    "reason": null,
+    "state": "ready"
+   },
+   "revision": {
+    "revision:None": {
+     "appearance": {
+      "current": false,
+      "epoch": null,
+      "revision": null,
+      "state": "absent"
+     },
+     "components": null,
+     "live": false,
+     "representation": "sparse",
+     "revision": "<rev0>",
+     "session_id": "00000000000000000000000000000002"
+    },
+    "revision:appearance-1": {
+     "appearance": {
+      "current": false,
+      "epoch": null,
+      "revision": null,
+      "state": "absent"
+     },
+     "components": null,
+     "live": false,
+     "representation": "sparse",
+     "revision": "<rev0>",
+     "session_id": "00000000000000000000000000000002"
+    }
+   },
+   "row": [
+    {
+     "keys": [
+      "abandoned",
+      "appearance",
+      "capture_id",
+      "components",
+      "dense",
+      "end_reason",
+      "ended_at",
+      "finalization",
+      "frame_source",
+      "has_geometry",
+      "keyframes_accepted",
+      "keyframes_journaled",
+      "photographic",
+      "session_id",
+      "started_at",
+      "state"
+     ],
+     "state": "complete"
+    }
+   ],
+   "sha256": "070f31b980e1037a214349a1d48b74bcb4a5736813e2157024c056852a2b23f3",
+   "status_revision": "<rev11>"
+  },
+  "complete-skipped|live|stale-epoch": {
+   "lifecycle": {
+    "build_in_progress": false,
+    "build_in_progress_unavailable_reason": null,
+    "evidence": "session_stopped was written, the finalization record is complete, the lock was released and the derived tree is there",
+    "finalization": {
+     "detail": null,
+     "final_solve": "skipped",
+     "started_at": "<time>",
+     "state": "complete",
+     "updated_at": "<time>"
+    },
+    "photographic": {
+     "detail": "this session has no finished global solve to build a photographic room from",
+     "stage": null,
+     "state": "unattempted"
+    },
+    "reason": null,
+    "state": "ready"
+   },
+   "revision": {
+    "revision:None": {
+     "appearance": {
+      "current": false,
+      "epoch": null,
+      "revision": null,
+      "state": "absent"
+     },
+     "components": null,
+     "live": false,
+     "representation": "sparse",
+     "revision": "<rev0>",
+     "session_id": "00000000000000000000000000000002"
+    },
+    "revision:appearance-1": {
+     "appearance": {
+      "current": false,
+      "epoch": null,
+      "revision": null,
+      "state": "absent"
+     },
+     "components": null,
+     "live": false,
+     "representation": "sparse",
+     "revision": "<rev0>",
+     "session_id": "00000000000000000000000000000002"
+    }
+   },
+   "row": [
+    {
+     "keys": [
+      "abandoned",
+      "appearance",
+      "capture_id",
+      "components",
+      "dense",
+      "end_reason",
+      "ended_at",
+      "finalization",
+      "frame_source",
+      "has_geometry",
+      "keyframes_accepted",
+      "keyframes_journaled",
+      "photographic",
+      "session_id",
+      "started_at",
+      "state"
+     ],
+     "state": "complete"
+    }
+   ],
+   "sha256": "070f31b980e1037a214349a1d48b74bcb4a5736813e2157024c056852a2b23f3",
+   "status_revision": "<rev11>"
+  },
+  "complete-skipped|live|valid": {
+   "lifecycle": {
+    "build_in_progress": false,
+    "build_in_progress_unavailable_reason": null,
+    "evidence": "session_stopped was written, the finalization record is complete, the lock was released and the derived tree is there",
+    "finalization": {
+     "detail": null,
+     "final_solve": "skipped",
+     "started_at": "<time>",
+     "state": "complete",
+     "updated_at": "<time>"
+    },
+    "photographic": {
+     "detail": "this session has no finished global solve to build a photographic room from",
+     "stage": null,
+     "state": "unattempted"
+    },
+    "reason": null,
+    "state": "ready"
+   },
+   "revision": {
+    "revision:None": {
+     "appearance": {
+      "current": false,
+      "epoch": null,
+      "revision": null,
+      "state": "absent"
+     },
+     "components": null,
+     "live": false,
+     "representation": "sparse",
+     "revision": "<rev0>",
+     "session_id": "00000000000000000000000000000002"
+    },
+    "revision:appearance-1": {
+     "appearance": {
+      "current": false,
+      "epoch": null,
+      "revision": null,
+      "state": "absent"
+     },
+     "components": null,
+     "live": false,
+     "representation": "sparse",
+     "revision": "<rev0>",
+     "session_id": "00000000000000000000000000000002"
+    }
+   },
+   "row": [
+    {
+     "keys": [
+      "abandoned",
+      "appearance",
+      "capture_id",
+      "components",
+      "dense",
+      "end_reason",
+      "ended_at",
+      "finalization",
+      "frame_source",
+      "has_geometry",
+      "keyframes_accepted",
+      "keyframes_journaled",
+      "photographic",
+      "session_id",
+      "started_at",
+      "state"
+     ],
+     "state": "complete"
+    }
+   ],
+   "sha256": "070f31b980e1037a214349a1d48b74bcb4a5736813e2157024c056852a2b23f3",
+   "status_revision": "<rev11>"
+  },
+  "complete-skipped|none|absent": {
+   "lifecycle": {
+    "build_in_progress": false,
+    "build_in_progress_unavailable_reason": null,
+    "evidence": "session_stopped was written, the finalization record is complete, the lock was released and the derived tree is there",
+    "finalization": {
+     "detail": null,
+     "final_solve": "skipped",
+     "started_at": "<time>",
+     "state": "complete",
+     "updated_at": "<time>"
+    },
+    "photographic": {
+     "detail": "this session has no finished global solve to build a photographic room from",
+     "stage": null,
+     "state": "unattempted"
+    },
+    "reason": null,
+    "state": "ready"
+   },
+   "revision": {
+    "revision:None": {
+     "appearance": {
+      "current": false,
+      "epoch": null,
+      "revision": null,
+      "state": "absent"
+     },
+     "components": null,
+     "live": false,
+     "representation": "sparse",
+     "revision": "<rev0>",
+     "session_id": "00000000000000000000000000000002"
+    },
+    "revision:appearance-1": {
+     "appearance": {
+      "current": false,
+      "epoch": null,
+      "revision": null,
+      "state": "absent"
+     },
+     "components": null,
+     "live": false,
+     "representation": "sparse",
+     "revision": "<rev0>",
+     "session_id": "00000000000000000000000000000002"
+    }
+   },
+   "row": [
+    {
+     "keys": [
+      "abandoned",
+      "appearance",
+      "capture_id",
+      "components",
+      "dense",
+      "end_reason",
+      "ended_at",
+      "finalization",
+      "frame_source",
+      "has_geometry",
+      "keyframes_accepted",
+      "keyframes_journaled",
+      "photographic",
+      "session_id",
+      "started_at",
+      "state"
+     ],
+     "state": "complete"
+    }
+   ],
+   "sha256": "070f31b980e1037a214349a1d48b74bcb4a5736813e2157024c056852a2b23f3",
+   "status_revision": "<rev11>"
+  },
+  "complete-skipped|none|foreign-owner": {
+   "lifecycle": {
+    "build_in_progress": false,
+    "build_in_progress_unavailable_reason": null,
+    "evidence": "session_stopped was written, the finalization record is complete, the lock was released and the derived tree is there",
+    "finalization": {
+     "detail": null,
+     "final_solve": "skipped",
+     "started_at": "<time>",
+     "state": "complete",
+     "updated_at": "<time>"
+    },
+    "photographic": {
+     "detail": "this session has no finished global solve to build a photographic room from",
+     "stage": null,
+     "state": "unattempted"
+    },
+    "reason": null,
+    "state": "ready"
+   },
+   "revision": {
+    "revision:None": {
+     "appearance": {
+      "current": false,
+      "epoch": null,
+      "revision": null,
+      "state": "absent"
+     },
+     "components": null,
+     "live": false,
+     "representation": "sparse",
+     "revision": "<rev0>",
+     "session_id": "00000000000000000000000000000002"
+    },
+    "revision:appearance-1": {
+     "appearance": {
+      "current": false,
+      "epoch": null,
+      "revision": null,
+      "state": "absent"
+     },
+     "components": null,
+     "live": false,
+     "representation": "sparse",
+     "revision": "<rev0>",
+     "session_id": "00000000000000000000000000000002"
+    }
+   },
+   "row": [
+    {
+     "keys": [
+      "abandoned",
+      "appearance",
+      "capture_id",
+      "components",
+      "dense",
+      "end_reason",
+      "ended_at",
+      "finalization",
+      "frame_source",
+      "has_geometry",
+      "keyframes_accepted",
+      "keyframes_journaled",
+      "photographic",
+      "session_id",
+      "started_at",
+      "state"
+     ],
+     "state": "complete"
+    }
+   ],
+   "sha256": "070f31b980e1037a214349a1d48b74bcb4a5736813e2157024c056852a2b23f3",
+   "status_revision": "<rev11>"
+  },
+  "complete-skipped|none|stale-epoch": {
+   "lifecycle": {
+    "build_in_progress": false,
+    "build_in_progress_unavailable_reason": null,
+    "evidence": "session_stopped was written, the finalization record is complete, the lock was released and the derived tree is there",
+    "finalization": {
+     "detail": null,
+     "final_solve": "skipped",
+     "started_at": "<time>",
+     "state": "complete",
+     "updated_at": "<time>"
+    },
+    "photographic": {
+     "detail": "this session has no finished global solve to build a photographic room from",
+     "stage": null,
+     "state": "unattempted"
+    },
+    "reason": null,
+    "state": "ready"
+   },
+   "revision": {
+    "revision:None": {
+     "appearance": {
+      "current": false,
+      "epoch": null,
+      "revision": null,
+      "state": "absent"
+     },
+     "components": null,
+     "live": false,
+     "representation": "sparse",
+     "revision": "<rev0>",
+     "session_id": "00000000000000000000000000000002"
+    },
+    "revision:appearance-1": {
+     "appearance": {
+      "current": false,
+      "epoch": null,
+      "revision": null,
+      "state": "absent"
+     },
+     "components": null,
+     "live": false,
+     "representation": "sparse",
+     "revision": "<rev0>",
+     "session_id": "00000000000000000000000000000002"
+    }
+   },
+   "row": [
+    {
+     "keys": [
+      "abandoned",
+      "appearance",
+      "capture_id",
+      "components",
+      "dense",
+      "end_reason",
+      "ended_at",
+      "finalization",
+      "frame_source",
+      "has_geometry",
+      "keyframes_accepted",
+      "keyframes_journaled",
+      "photographic",
+      "session_id",
+      "started_at",
+      "state"
+     ],
+     "state": "complete"
+    }
+   ],
+   "sha256": "070f31b980e1037a214349a1d48b74bcb4a5736813e2157024c056852a2b23f3",
+   "status_revision": "<rev11>"
+  },
+  "complete-skipped|none|valid": {
+   "lifecycle": {
+    "build_in_progress": false,
+    "build_in_progress_unavailable_reason": null,
+    "evidence": "session_stopped was written, the finalization record is complete, the lock was released and the derived tree is there",
+    "finalization": {
+     "detail": null,
+     "final_solve": "skipped",
+     "started_at": "<time>",
+     "state": "complete",
+     "updated_at": "<time>"
+    },
+    "photographic": {
+     "detail": "this session has no finished global solve to build a photographic room from",
+     "stage": null,
+     "state": "unattempted"
+    },
+    "reason": null,
+    "state": "ready"
+   },
+   "revision": {
+    "revision:None": {
+     "appearance": {
+      "current": false,
+      "epoch": null,
+      "revision": null,
+      "state": "absent"
+     },
+     "components": null,
+     "live": false,
+     "representation": "sparse",
+     "revision": "<rev0>",
+     "session_id": "00000000000000000000000000000002"
+    },
+    "revision:appearance-1": {
+     "appearance": {
+      "current": false,
+      "epoch": null,
+      "revision": null,
+      "state": "absent"
+     },
+     "components": null,
+     "live": false,
+     "representation": "sparse",
+     "revision": "<rev0>",
+     "session_id": "00000000000000000000000000000002"
+    }
+   },
+   "row": [
+    {
+     "keys": [
+      "abandoned",
+      "appearance",
+      "capture_id",
+      "components",
+      "dense",
+      "end_reason",
+      "ended_at",
+      "finalization",
+      "frame_source",
+      "has_geometry",
+      "keyframes_accepted",
+      "keyframes_journaled",
+      "photographic",
+      "session_id",
+      "started_at",
+      "state"
+     ],
+     "state": "complete"
+    }
+   ],
+   "sha256": "070f31b980e1037a214349a1d48b74bcb4a5736813e2157024c056852a2b23f3",
+   "status_revision": "<rev11>"
+  },
+  "complete-solved|dead|absent": {
+   "lifecycle": {
+    "build_in_progress": false,
+    "build_in_progress_unavailable_reason": null,
+    "evidence": "session_stopped was written, the finalization record is complete, the lock was released and the derived tree is there",
+    "finalization": {
+     "detail": null,
+     "final_solve": "solved",
+     "started_at": "<time>",
+     "state": "complete",
+     "updated_at": "<time>"
+    },
+    "photographic": {
+     "detail": "no Tower ever ran a photographic stage for this session, which is not the same as one that tried and failed",
+     "stage": null,
+     "state": "never_recorded"
+    },
+    "reason": null,
+    "state": "ready"
+   },
+   "revision": {
+    "revision:None": {
+     "appearance": {
+      "current": false,
+      "epoch": null,
+      "revision": null,
+      "state": "absent"
+     },
+     "components": null,
+     "live": false,
+     "representation": "sparse",
+     "revision": "<rev0>",
+     "session_id": "00000000000000000000000000000002"
+    },
+    "revision:appearance-1": {
+     "appearance": {
+      "current": false,
+      "epoch": null,
+      "revision": null,
+      "state": "absent"
+     },
+     "components": null,
+     "live": false,
+     "representation": "sparse",
+     "revision": "<rev0>",
+     "session_id": "00000000000000000000000000000002"
+    }
+   },
+   "row": [
+    {
+     "keys": [
+      "abandoned",
+      "appearance",
+      "capture_id",
+      "components",
+      "dense",
+      "end_reason",
+      "ended_at",
+      "finalization",
+      "frame_source",
+      "has_geometry",
+      "keyframes_accepted",
+      "keyframes_journaled",
+      "photographic",
+      "session_id",
+      "started_at",
+      "state"
+     ],
+     "state": "complete"
+    }
+   ],
+   "sha256": "f72baaced99c4c69bc05ad807358f2126eaa23d888737ab24870b027e790c355",
+   "status_revision": "<rev10>"
+  },
+  "complete-solved|dead|foreign-owner": {
+   "lifecycle": {
+    "build_in_progress": false,
+    "build_in_progress_unavailable_reason": null,
+    "evidence": "session_stopped was written, the finalization record is complete, the lock was released and the derived tree is there",
+    "finalization": {
+     "detail": null,
+     "final_solve": "solved",
+     "started_at": "<time>",
+     "state": "complete",
+     "updated_at": "<time>"
+    },
+    "photographic": {
+     "detail": "no Tower ever ran a photographic stage for this session, which is not the same as one that tried and failed",
+     "stage": null,
+     "state": "never_recorded"
+    },
+    "reason": null,
+    "state": "ready"
+   },
+   "revision": {
+    "revision:None": {
+     "appearance": {
+      "current": false,
+      "epoch": null,
+      "revision": null,
+      "state": "absent"
+     },
+     "components": null,
+     "live": false,
+     "representation": "sparse",
+     "revision": "<rev0>",
+     "session_id": "00000000000000000000000000000002"
+    },
+    "revision:appearance-1": {
+     "appearance": {
+      "current": false,
+      "epoch": null,
+      "revision": null,
+      "state": "absent"
+     },
+     "components": null,
+     "live": false,
+     "representation": "sparse",
+     "revision": "<rev0>",
+     "session_id": "00000000000000000000000000000002"
+    }
+   },
+   "row": [
+    {
+     "keys": [
+      "abandoned",
+      "appearance",
+      "capture_id",
+      "components",
+      "dense",
+      "end_reason",
+      "ended_at",
+      "finalization",
+      "frame_source",
+      "has_geometry",
+      "keyframes_accepted",
+      "keyframes_journaled",
+      "photographic",
+      "session_id",
+      "started_at",
+      "state"
+     ],
+     "state": "complete"
+    }
+   ],
+   "sha256": "f72baaced99c4c69bc05ad807358f2126eaa23d888737ab24870b027e790c355",
+   "status_revision": "<rev10>"
+  },
+  "complete-solved|dead|stale-epoch": {
+   "lifecycle": {
+    "build_in_progress": false,
+    "build_in_progress_unavailable_reason": null,
+    "evidence": "session_stopped was written, the finalization record is complete, the lock was released and the derived tree is there",
+    "finalization": {
+     "detail": null,
+     "final_solve": "solved",
+     "started_at": "<time>",
+     "state": "complete",
+     "updated_at": "<time>"
+    },
+    "photographic": {
+     "detail": "no Tower ever ran a photographic stage for this session, which is not the same as one that tried and failed",
+     "stage": null,
+     "state": "never_recorded"
+    },
+    "reason": null,
+    "state": "ready"
+   },
+   "revision": {
+    "revision:None": {
+     "appearance": {
+      "current": false,
+      "epoch": null,
+      "revision": null,
+      "state": "absent"
+     },
+     "components": null,
+     "live": false,
+     "representation": "sparse",
+     "revision": "<rev0>",
+     "session_id": "00000000000000000000000000000002"
+    },
+    "revision:appearance-1": {
+     "appearance": {
+      "current": false,
+      "epoch": null,
+      "revision": null,
+      "state": "absent"
+     },
+     "components": null,
+     "live": false,
+     "representation": "sparse",
+     "revision": "<rev0>",
+     "session_id": "00000000000000000000000000000002"
+    }
+   },
+   "row": [
+    {
+     "keys": [
+      "abandoned",
+      "appearance",
+      "capture_id",
+      "components",
+      "dense",
+      "end_reason",
+      "ended_at",
+      "finalization",
+      "frame_source",
+      "has_geometry",
+      "keyframes_accepted",
+      "keyframes_journaled",
+      "photographic",
+      "session_id",
+      "started_at",
+      "state"
+     ],
+     "state": "complete"
+    }
+   ],
+   "sha256": "f72baaced99c4c69bc05ad807358f2126eaa23d888737ab24870b027e790c355",
+   "status_revision": "<rev10>"
+  },
+  "complete-solved|dead|valid": {
+   "lifecycle": {
+    "build_in_progress": false,
+    "build_in_progress_unavailable_reason": null,
+    "evidence": "session_stopped was written, the finalization record is complete, the lock was released and the derived tree is there",
+    "finalization": {
+     "detail": null,
+     "final_solve": "solved",
+     "started_at": "<time>",
+     "state": "complete",
+     "updated_at": "<time>"
+    },
+    "photographic": {
+     "detail": "no Tower ever ran a photographic stage for this session, which is not the same as one that tried and failed",
+     "stage": null,
+     "state": "never_recorded"
+    },
+    "reason": null,
+    "state": "ready"
+   },
+   "revision": {
+    "revision:None": {
+     "appearance": {
+      "current": false,
+      "epoch": null,
+      "revision": null,
+      "state": "absent"
+     },
+     "components": null,
+     "live": false,
+     "representation": "sparse",
+     "revision": "<rev0>",
+     "session_id": "00000000000000000000000000000002"
+    },
+    "revision:appearance-1": {
+     "appearance": {
+      "current": false,
+      "epoch": null,
+      "revision": null,
+      "state": "absent"
+     },
+     "components": null,
+     "live": false,
+     "representation": "sparse",
+     "revision": "<rev0>",
+     "session_id": "00000000000000000000000000000002"
+    }
+   },
+   "row": [
+    {
+     "keys": [
+      "abandoned",
+      "appearance",
+      "capture_id",
+      "components",
+      "dense",
+      "end_reason",
+      "ended_at",
+      "finalization",
+      "frame_source",
+      "has_geometry",
+      "keyframes_accepted",
+      "keyframes_journaled",
+      "photographic",
+      "session_id",
+      "started_at",
+      "state"
+     ],
+     "state": "complete"
+    }
+   ],
+   "sha256": "f72baaced99c4c69bc05ad807358f2126eaa23d888737ab24870b027e790c355",
+   "status_revision": "<rev10>"
+  },
+  "complete-solved|live|absent": {
+   "lifecycle": {
+    "build_in_progress": false,
+    "build_in_progress_unavailable_reason": null,
+    "evidence": "session_stopped was written, the finalization record is complete, the lock was released and the derived tree is there",
+    "finalization": {
+     "detail": null,
+     "final_solve": "solved",
+     "started_at": "<time>",
+     "state": "complete",
+     "updated_at": "<time>"
+    },
+    "photographic": {
+     "detail": "no Tower ever ran a photographic stage for this session, which is not the same as one that tried and failed",
+     "stage": null,
+     "state": "never_recorded"
+    },
+    "reason": null,
+    "state": "ready"
+   },
+   "revision": {
+    "revision:None": {
+     "appearance": {
+      "current": false,
+      "epoch": null,
+      "revision": null,
+      "state": "absent"
+     },
+     "components": null,
+     "live": false,
+     "representation": "sparse",
+     "revision": "<rev0>",
+     "session_id": "00000000000000000000000000000002"
+    },
+    "revision:appearance-1": {
+     "appearance": {
+      "current": false,
+      "epoch": null,
+      "revision": null,
+      "state": "absent"
+     },
+     "components": null,
+     "live": false,
+     "representation": "sparse",
+     "revision": "<rev0>",
+     "session_id": "00000000000000000000000000000002"
+    }
+   },
+   "row": [
+    {
+     "keys": [
+      "abandoned",
+      "appearance",
+      "capture_id",
+      "components",
+      "dense",
+      "end_reason",
+      "ended_at",
+      "finalization",
+      "frame_source",
+      "has_geometry",
+      "keyframes_accepted",
+      "keyframes_journaled",
+      "photographic",
+      "session_id",
+      "started_at",
+      "state"
+     ],
+     "state": "complete"
+    }
+   ],
+   "sha256": "f72baaced99c4c69bc05ad807358f2126eaa23d888737ab24870b027e790c355",
+   "status_revision": "<rev10>"
+  },
+  "complete-solved|live|foreign-owner": {
+   "lifecycle": {
+    "build_in_progress": false,
+    "build_in_progress_unavailable_reason": null,
+    "evidence": "session_stopped was written, the finalization record is complete, the lock was released and the derived tree is there",
+    "finalization": {
+     "detail": null,
+     "final_solve": "solved",
+     "started_at": "<time>",
+     "state": "complete",
+     "updated_at": "<time>"
+    },
+    "photographic": {
+     "detail": "no Tower ever ran a photographic stage for this session, which is not the same as one that tried and failed",
+     "stage": null,
+     "state": "never_recorded"
+    },
+    "reason": null,
+    "state": "ready"
+   },
+   "revision": {
+    "revision:None": {
+     "appearance": {
+      "current": false,
+      "epoch": null,
+      "revision": null,
+      "state": "absent"
+     },
+     "components": null,
+     "live": false,
+     "representation": "sparse",
+     "revision": "<rev0>",
+     "session_id": "00000000000000000000000000000002"
+    },
+    "revision:appearance-1": {
+     "appearance": {
+      "current": false,
+      "epoch": null,
+      "revision": null,
+      "state": "absent"
+     },
+     "components": null,
+     "live": false,
+     "representation": "sparse",
+     "revision": "<rev0>",
+     "session_id": "00000000000000000000000000000002"
+    }
+   },
+   "row": [
+    {
+     "keys": [
+      "abandoned",
+      "appearance",
+      "capture_id",
+      "components",
+      "dense",
+      "end_reason",
+      "ended_at",
+      "finalization",
+      "frame_source",
+      "has_geometry",
+      "keyframes_accepted",
+      "keyframes_journaled",
+      "photographic",
+      "session_id",
+      "started_at",
+      "state"
+     ],
+     "state": "complete"
+    }
+   ],
+   "sha256": "f72baaced99c4c69bc05ad807358f2126eaa23d888737ab24870b027e790c355",
+   "status_revision": "<rev10>"
+  },
+  "complete-solved|live|stale-epoch": {
+   "lifecycle": {
+    "build_in_progress": false,
+    "build_in_progress_unavailable_reason": null,
+    "evidence": "session_stopped was written, the finalization record is complete, the lock was released and the derived tree is there",
+    "finalization": {
+     "detail": null,
+     "final_solve": "solved",
+     "started_at": "<time>",
+     "state": "complete",
+     "updated_at": "<time>"
+    },
+    "photographic": {
+     "detail": "no Tower ever ran a photographic stage for this session, which is not the same as one that tried and failed",
+     "stage": null,
+     "state": "never_recorded"
+    },
+    "reason": null,
+    "state": "ready"
+   },
+   "revision": {
+    "revision:None": {
+     "appearance": {
+      "current": false,
+      "epoch": null,
+      "revision": null,
+      "state": "absent"
+     },
+     "components": null,
+     "live": false,
+     "representation": "sparse",
+     "revision": "<rev0>",
+     "session_id": "00000000000000000000000000000002"
+    },
+    "revision:appearance-1": {
+     "appearance": {
+      "current": false,
+      "epoch": null,
+      "revision": null,
+      "state": "absent"
+     },
+     "components": null,
+     "live": false,
+     "representation": "sparse",
+     "revision": "<rev0>",
+     "session_id": "00000000000000000000000000000002"
+    }
+   },
+   "row": [
+    {
+     "keys": [
+      "abandoned",
+      "appearance",
+      "capture_id",
+      "components",
+      "dense",
+      "end_reason",
+      "ended_at",
+      "finalization",
+      "frame_source",
+      "has_geometry",
+      "keyframes_accepted",
+      "keyframes_journaled",
+      "photographic",
+      "session_id",
+      "started_at",
+      "state"
+     ],
+     "state": "complete"
+    }
+   ],
+   "sha256": "f72baaced99c4c69bc05ad807358f2126eaa23d888737ab24870b027e790c355",
+   "status_revision": "<rev10>"
+  },
+  "complete-solved|live|valid": {
+   "lifecycle": {
+    "build_in_progress": false,
+    "build_in_progress_unavailable_reason": null,
+    "evidence": "session_stopped was written, the finalization record is complete, the lock was released and the derived tree is there",
+    "finalization": {
+     "detail": null,
+     "final_solve": "solved",
+     "started_at": "<time>",
+     "state": "complete",
+     "updated_at": "<time>"
+    },
+    "photographic": {
+     "detail": "no Tower ever ran a photographic stage for this session, which is not the same as one that tried and failed",
+     "stage": null,
+     "state": "never_recorded"
+    },
+    "reason": null,
+    "state": "ready"
+   },
+   "revision": {
+    "revision:None": {
+     "appearance": {
+      "current": false,
+      "epoch": null,
+      "revision": null,
+      "state": "absent"
+     },
+     "components": null,
+     "live": false,
+     "representation": "sparse",
+     "revision": "<rev0>",
+     "session_id": "00000000000000000000000000000002"
+    },
+    "revision:appearance-1": {
+     "appearance": {
+      "current": false,
+      "epoch": null,
+      "revision": null,
+      "state": "absent"
+     },
+     "components": null,
+     "live": false,
+     "representation": "sparse",
+     "revision": "<rev0>",
+     "session_id": "00000000000000000000000000000002"
+    }
+   },
+   "row": [
+    {
+     "keys": [
+      "abandoned",
+      "appearance",
+      "capture_id",
+      "components",
+      "dense",
+      "end_reason",
+      "ended_at",
+      "finalization",
+      "frame_source",
+      "has_geometry",
+      "keyframes_accepted",
+      "keyframes_journaled",
+      "photographic",
+      "session_id",
+      "started_at",
+      "state"
+     ],
+     "state": "complete"
+    }
+   ],
+   "sha256": "f72baaced99c4c69bc05ad807358f2126eaa23d888737ab24870b027e790c355",
+   "status_revision": "<rev10>"
+  },
+  "complete-solved|none|absent": {
+   "lifecycle": {
+    "build_in_progress": false,
+    "build_in_progress_unavailable_reason": null,
+    "evidence": "session_stopped was written, the finalization record is complete, the lock was released and the derived tree is there",
+    "finalization": {
+     "detail": null,
+     "final_solve": "solved",
+     "started_at": "<time>",
+     "state": "complete",
+     "updated_at": "<time>"
+    },
+    "photographic": {
+     "detail": "no Tower ever ran a photographic stage for this session, which is not the same as one that tried and failed",
+     "stage": null,
+     "state": "never_recorded"
+    },
+    "reason": null,
+    "state": "ready"
+   },
+   "revision": {
+    "revision:None": {
+     "appearance": {
+      "current": false,
+      "epoch": null,
+      "revision": null,
+      "state": "absent"
+     },
+     "components": null,
+     "live": false,
+     "representation": "sparse",
+     "revision": "<rev0>",
+     "session_id": "00000000000000000000000000000002"
+    },
+    "revision:appearance-1": {
+     "appearance": {
+      "current": false,
+      "epoch": null,
+      "revision": null,
+      "state": "absent"
+     },
+     "components": null,
+     "live": false,
+     "representation": "sparse",
+     "revision": "<rev0>",
+     "session_id": "00000000000000000000000000000002"
+    }
+   },
+   "row": [
+    {
+     "keys": [
+      "abandoned",
+      "appearance",
+      "capture_id",
+      "components",
+      "dense",
+      "end_reason",
+      "ended_at",
+      "finalization",
+      "frame_source",
+      "has_geometry",
+      "keyframes_accepted",
+      "keyframes_journaled",
+      "photographic",
+      "session_id",
+      "started_at",
+      "state"
+     ],
+     "state": "complete"
+    }
+   ],
+   "sha256": "f72baaced99c4c69bc05ad807358f2126eaa23d888737ab24870b027e790c355",
+   "status_revision": "<rev10>"
+  },
+  "complete-solved|none|foreign-owner": {
+   "lifecycle": {
+    "build_in_progress": false,
+    "build_in_progress_unavailable_reason": null,
+    "evidence": "session_stopped was written, the finalization record is complete, the lock was released and the derived tree is there",
+    "finalization": {
+     "detail": null,
+     "final_solve": "solved",
+     "started_at": "<time>",
+     "state": "complete",
+     "updated_at": "<time>"
+    },
+    "photographic": {
+     "detail": "no Tower ever ran a photographic stage for this session, which is not the same as one that tried and failed",
+     "stage": null,
+     "state": "never_recorded"
+    },
+    "reason": null,
+    "state": "ready"
+   },
+   "revision": {
+    "revision:None": {
+     "appearance": {
+      "current": false,
+      "epoch": null,
+      "revision": null,
+      "state": "absent"
+     },
+     "components": null,
+     "live": false,
+     "representation": "sparse",
+     "revision": "<rev0>",
+     "session_id": "00000000000000000000000000000002"
+    },
+    "revision:appearance-1": {
+     "appearance": {
+      "current": false,
+      "epoch": null,
+      "revision": null,
+      "state": "absent"
+     },
+     "components": null,
+     "live": false,
+     "representation": "sparse",
+     "revision": "<rev0>",
+     "session_id": "00000000000000000000000000000002"
+    }
+   },
+   "row": [
+    {
+     "keys": [
+      "abandoned",
+      "appearance",
+      "capture_id",
+      "components",
+      "dense",
+      "end_reason",
+      "ended_at",
+      "finalization",
+      "frame_source",
+      "has_geometry",
+      "keyframes_accepted",
+      "keyframes_journaled",
+      "photographic",
+      "session_id",
+      "started_at",
+      "state"
+     ],
+     "state": "complete"
+    }
+   ],
+   "sha256": "f72baaced99c4c69bc05ad807358f2126eaa23d888737ab24870b027e790c355",
+   "status_revision": "<rev10>"
+  },
+  "complete-solved|none|stale-epoch": {
+   "lifecycle": {
+    "build_in_progress": false,
+    "build_in_progress_unavailable_reason": null,
+    "evidence": "session_stopped was written, the finalization record is complete, the lock was released and the derived tree is there",
+    "finalization": {
+     "detail": null,
+     "final_solve": "solved",
+     "started_at": "<time>",
+     "state": "complete",
+     "updated_at": "<time>"
+    },
+    "photographic": {
+     "detail": "no Tower ever ran a photographic stage for this session, which is not the same as one that tried and failed",
+     "stage": null,
+     "state": "never_recorded"
+    },
+    "reason": null,
+    "state": "ready"
+   },
+   "revision": {
+    "revision:None": {
+     "appearance": {
+      "current": false,
+      "epoch": null,
+      "revision": null,
+      "state": "absent"
+     },
+     "components": null,
+     "live": false,
+     "representation": "sparse",
+     "revision": "<rev0>",
+     "session_id": "00000000000000000000000000000002"
+    },
+    "revision:appearance-1": {
+     "appearance": {
+      "current": false,
+      "epoch": null,
+      "revision": null,
+      "state": "absent"
+     },
+     "components": null,
+     "live": false,
+     "representation": "sparse",
+     "revision": "<rev0>",
+     "session_id": "00000000000000000000000000000002"
+    }
+   },
+   "row": [
+    {
+     "keys": [
+      "abandoned",
+      "appearance",
+      "capture_id",
+      "components",
+      "dense",
+      "end_reason",
+      "ended_at",
+      "finalization",
+      "frame_source",
+      "has_geometry",
+      "keyframes_accepted",
+      "keyframes_journaled",
+      "photographic",
+      "session_id",
+      "started_at",
+      "state"
+     ],
+     "state": "complete"
+    }
+   ],
+   "sha256": "f72baaced99c4c69bc05ad807358f2126eaa23d888737ab24870b027e790c355",
+   "status_revision": "<rev10>"
+  },
+  "complete-solved|none|valid": {
+   "lifecycle": {
+    "build_in_progress": false,
+    "build_in_progress_unavailable_reason": null,
+    "evidence": "session_stopped was written, the finalization record is complete, the lock was released and the derived tree is there",
+    "finalization": {
+     "detail": null,
+     "final_solve": "solved",
+     "started_at": "<time>",
+     "state": "complete",
+     "updated_at": "<time>"
+    },
+    "photographic": {
+     "detail": "no Tower ever ran a photographic stage for this session, which is not the same as one that tried and failed",
+     "stage": null,
+     "state": "never_recorded"
+    },
+    "reason": null,
+    "state": "ready"
+   },
+   "revision": {
+    "revision:None": {
+     "appearance": {
+      "current": false,
+      "epoch": null,
+      "revision": null,
+      "state": "absent"
+     },
+     "components": null,
+     "live": false,
+     "representation": "sparse",
+     "revision": "<rev0>",
+     "session_id": "00000000000000000000000000000002"
+    },
+    "revision:appearance-1": {
+     "appearance": {
+      "current": false,
+      "epoch": null,
+      "revision": null,
+      "state": "absent"
+     },
+     "components": null,
+     "live": false,
+     "representation": "sparse",
+     "revision": "<rev0>",
+     "session_id": "00000000000000000000000000000002"
+    }
+   },
+   "row": [
+    {
+     "keys": [
+      "abandoned",
+      "appearance",
+      "capture_id",
+      "components",
+      "dense",
+      "end_reason",
+      "ended_at",
+      "finalization",
+      "frame_source",
+      "has_geometry",
+      "keyframes_accepted",
+      "keyframes_journaled",
+      "photographic",
+      "session_id",
+      "started_at",
+      "state"
+     ],
+     "state": "complete"
+    }
+   ],
+   "sha256": "f72baaced99c4c69bc05ad807358f2126eaa23d888737ab24870b027e790c355",
+   "status_revision": "<rev10>"
+  },
+  "interrupted|dead|absent": {
+   "lifecycle": {
+    "build_in_progress": false,
+    "build_in_progress_unavailable_reason": null,
+    "evidence": "session_stopped was written and the finalization record is 'interrupted' with no process holding the lock",
+    "finalization": {
+     "detail": null,
+     "final_solve": "pending",
+     "started_at": "<time>",
+     "state": "interrupted",
+     "updated_at": "<time>"
+    },
+    "photographic": {
+     "detail": "this session has no finished global solve to build a photographic room from",
+     "stage": null,
+     "state": "unattempted"
+    },
+    "reason": "finalization did not complete; the geometry stored is the last build that finished",
+    "state": "interrupted"
+   },
+   "revision": {
+    "revision:None": {
+     "appearance": {
+      "current": false,
+      "epoch": null,
+      "revision": null,
+      "state": "absent"
+     },
+     "components": null,
+     "live": false,
+     "representation": "sparse",
+     "revision": "<rev0>",
+     "session_id": "00000000000000000000000000000002"
+    },
+    "revision:appearance-1": {
+     "appearance": {
+      "current": false,
+      "epoch": null,
+      "revision": null,
+      "state": "absent"
+     },
+     "components": null,
+     "live": false,
+     "representation": "sparse",
+     "revision": "<rev0>",
+     "session_id": "00000000000000000000000000000002"
+    }
+   },
+   "row": [
+    {
+     "keys": [
+      "abandoned",
+      "appearance",
+      "capture_id",
+      "components",
+      "dense",
+      "end_reason",
+      "ended_at",
+      "finalization",
+      "frame_source",
+      "has_geometry",
+      "keyframes_accepted",
+      "keyframes_journaled",
+      "photographic",
+      "session_id",
+      "started_at",
+      "state"
+     ],
+     "state": "interrupted"
+    }
+   ],
+   "sha256": "b62cf67ed615606b59070e7b611863c48b3484d5f284b0e815e7c992f64f665f",
+   "status_revision": "<rev12>"
+  },
+  "interrupted|dead|foreign-owner": {
+   "lifecycle": {
+    "build_in_progress": false,
+    "build_in_progress_unavailable_reason": null,
+    "evidence": "session_stopped was written and the finalization record is 'interrupted' with no process holding the lock",
+    "finalization": {
+     "detail": null,
+     "final_solve": "pending",
+     "started_at": "<time>",
+     "state": "interrupted",
+     "updated_at": "<time>"
+    },
+    "photographic": {
+     "detail": "this session has no finished global solve to build a photographic room from",
+     "stage": null,
+     "state": "unattempted"
+    },
+    "reason": "finalization did not complete; the geometry stored is the last build that finished",
+    "state": "interrupted"
+   },
+   "revision": {
+    "revision:None": {
+     "appearance": {
+      "current": false,
+      "epoch": null,
+      "revision": null,
+      "state": "absent"
+     },
+     "components": null,
+     "live": false,
+     "representation": "sparse",
+     "revision": "<rev0>",
+     "session_id": "00000000000000000000000000000002"
+    },
+    "revision:appearance-1": {
+     "appearance": {
+      "current": false,
+      "epoch": null,
+      "revision": null,
+      "state": "absent"
+     },
+     "components": null,
+     "live": false,
+     "representation": "sparse",
+     "revision": "<rev0>",
+     "session_id": "00000000000000000000000000000002"
+    }
+   },
+   "row": [
+    {
+     "keys": [
+      "abandoned",
+      "appearance",
+      "capture_id",
+      "components",
+      "dense",
+      "end_reason",
+      "ended_at",
+      "finalization",
+      "frame_source",
+      "has_geometry",
+      "keyframes_accepted",
+      "keyframes_journaled",
+      "photographic",
+      "session_id",
+      "started_at",
+      "state"
+     ],
+     "state": "interrupted"
+    }
+   ],
+   "sha256": "b62cf67ed615606b59070e7b611863c48b3484d5f284b0e815e7c992f64f665f",
+   "status_revision": "<rev12>"
+  },
+  "interrupted|dead|stale-epoch": {
+   "lifecycle": {
+    "build_in_progress": false,
+    "build_in_progress_unavailable_reason": null,
+    "evidence": "session_stopped was written and the finalization record is 'interrupted' with no process holding the lock",
+    "finalization": {
+     "detail": null,
+     "final_solve": "pending",
+     "started_at": "<time>",
+     "state": "interrupted",
+     "updated_at": "<time>"
+    },
+    "photographic": {
+     "detail": "this session has no finished global solve to build a photographic room from",
+     "stage": null,
+     "state": "unattempted"
+    },
+    "reason": "finalization did not complete; the geometry stored is the last build that finished",
+    "state": "interrupted"
+   },
+   "revision": {
+    "revision:None": {
+     "appearance": {
+      "current": false,
+      "epoch": null,
+      "revision": null,
+      "state": "absent"
+     },
+     "components": null,
+     "live": false,
+     "representation": "sparse",
+     "revision": "<rev0>",
+     "session_id": "00000000000000000000000000000002"
+    },
+    "revision:appearance-1": {
+     "appearance": {
+      "current": false,
+      "epoch": null,
+      "revision": null,
+      "state": "absent"
+     },
+     "components": null,
+     "live": false,
+     "representation": "sparse",
+     "revision": "<rev0>",
+     "session_id": "00000000000000000000000000000002"
+    }
+   },
+   "row": [
+    {
+     "keys": [
+      "abandoned",
+      "appearance",
+      "capture_id",
+      "components",
+      "dense",
+      "end_reason",
+      "ended_at",
+      "finalization",
+      "frame_source",
+      "has_geometry",
+      "keyframes_accepted",
+      "keyframes_journaled",
+      "photographic",
+      "session_id",
+      "started_at",
+      "state"
+     ],
+     "state": "interrupted"
+    }
+   ],
+   "sha256": "b62cf67ed615606b59070e7b611863c48b3484d5f284b0e815e7c992f64f665f",
+   "status_revision": "<rev12>"
+  },
+  "interrupted|dead|valid": {
+   "lifecycle": {
+    "build_in_progress": false,
+    "build_in_progress_unavailable_reason": null,
+    "evidence": "session_stopped was written and the finalization record is 'interrupted' with no process holding the lock",
+    "finalization": {
+     "detail": null,
+     "final_solve": "pending",
+     "started_at": "<time>",
+     "state": "interrupted",
+     "updated_at": "<time>"
+    },
+    "photographic": {
+     "detail": "this session has no finished global solve to build a photographic room from",
+     "stage": null,
+     "state": "unattempted"
+    },
+    "reason": "finalization did not complete; the geometry stored is the last build that finished",
+    "state": "interrupted"
+   },
+   "revision": {
+    "revision:None": {
+     "appearance": {
+      "current": false,
+      "epoch": null,
+      "revision": null,
+      "state": "absent"
+     },
+     "components": null,
+     "live": false,
+     "representation": "sparse",
+     "revision": "<rev0>",
+     "session_id": "00000000000000000000000000000002"
+    },
+    "revision:appearance-1": {
+     "appearance": {
+      "current": false,
+      "epoch": null,
+      "revision": null,
+      "state": "absent"
+     },
+     "components": null,
+     "live": false,
+     "representation": "sparse",
+     "revision": "<rev0>",
+     "session_id": "00000000000000000000000000000002"
+    }
+   },
+   "row": [
+    {
+     "keys": [
+      "abandoned",
+      "appearance",
+      "capture_id",
+      "components",
+      "dense",
+      "end_reason",
+      "ended_at",
+      "finalization",
+      "frame_source",
+      "has_geometry",
+      "keyframes_accepted",
+      "keyframes_journaled",
+      "photographic",
+      "session_id",
+      "started_at",
+      "state"
+     ],
+     "state": "interrupted"
+    }
+   ],
+   "sha256": "b62cf67ed615606b59070e7b611863c48b3484d5f284b0e815e7c992f64f665f",
+   "status_revision": "<rev12>"
+  },
+  "interrupted|live|absent": {
+   "lifecycle": {
+    "build_in_progress": false,
+    "build_in_progress_unavailable_reason": null,
+    "evidence": "session_stopped was written and the finalization record is 'interrupted' with no process holding the lock",
+    "finalization": {
+     "detail": null,
+     "final_solve": "pending",
+     "started_at": "<time>",
+     "state": "interrupted",
+     "updated_at": "<time>"
+    },
+    "photographic": {
+     "detail": "this session has no finished global solve to build a photographic room from",
+     "stage": null,
+     "state": "unattempted"
+    },
+    "reason": "finalization did not complete; the geometry stored is the last build that finished",
+    "state": "interrupted"
+   },
+   "revision": {
+    "revision:None": {
+     "appearance": {
+      "current": false,
+      "epoch": null,
+      "revision": null,
+      "state": "absent"
+     },
+     "components": null,
+     "live": false,
+     "representation": "sparse",
+     "revision": "<rev0>",
+     "session_id": "00000000000000000000000000000002"
+    },
+    "revision:appearance-1": {
+     "appearance": {
+      "current": false,
+      "epoch": null,
+      "revision": null,
+      "state": "absent"
+     },
+     "components": null,
+     "live": false,
+     "representation": "sparse",
+     "revision": "<rev0>",
+     "session_id": "00000000000000000000000000000002"
+    }
+   },
+   "row": [
+    {
+     "keys": [
+      "abandoned",
+      "appearance",
+      "capture_id",
+      "components",
+      "dense",
+      "end_reason",
+      "ended_at",
+      "finalization",
+      "frame_source",
+      "has_geometry",
+      "keyframes_accepted",
+      "keyframes_journaled",
+      "photographic",
+      "session_id",
+      "started_at",
+      "state"
+     ],
+     "state": "interrupted"
+    }
+   ],
+   "sha256": "b62cf67ed615606b59070e7b611863c48b3484d5f284b0e815e7c992f64f665f",
+   "status_revision": "<rev12>"
+  },
+  "interrupted|live|foreign-owner": {
+   "lifecycle": {
+    "build_in_progress": false,
+    "build_in_progress_unavailable_reason": null,
+    "evidence": "session_stopped was written and the finalization record is 'interrupted' with no process holding the lock",
+    "finalization": {
+     "detail": null,
+     "final_solve": "pending",
+     "started_at": "<time>",
+     "state": "interrupted",
+     "updated_at": "<time>"
+    },
+    "photographic": {
+     "detail": "this session has no finished global solve to build a photographic room from",
+     "stage": null,
+     "state": "unattempted"
+    },
+    "reason": "finalization did not complete; the geometry stored is the last build that finished",
+    "state": "interrupted"
+   },
+   "revision": {
+    "revision:None": {
+     "appearance": {
+      "current": false,
+      "epoch": null,
+      "revision": null,
+      "state": "absent"
+     },
+     "components": null,
+     "live": false,
+     "representation": "sparse",
+     "revision": "<rev0>",
+     "session_id": "00000000000000000000000000000002"
+    },
+    "revision:appearance-1": {
+     "appearance": {
+      "current": false,
+      "epoch": null,
+      "revision": null,
+      "state": "absent"
+     },
+     "components": null,
+     "live": false,
+     "representation": "sparse",
+     "revision": "<rev0>",
+     "session_id": "00000000000000000000000000000002"
+    }
+   },
+   "row": [
+    {
+     "keys": [
+      "abandoned",
+      "appearance",
+      "capture_id",
+      "components",
+      "dense",
+      "end_reason",
+      "ended_at",
+      "finalization",
+      "frame_source",
+      "has_geometry",
+      "keyframes_accepted",
+      "keyframes_journaled",
+      "photographic",
+      "session_id",
+      "started_at",
+      "state"
+     ],
+     "state": "interrupted"
+    }
+   ],
+   "sha256": "b62cf67ed615606b59070e7b611863c48b3484d5f284b0e815e7c992f64f665f",
+   "status_revision": "<rev12>"
+  },
+  "interrupted|live|stale-epoch": {
+   "lifecycle": {
+    "build_in_progress": false,
+    "build_in_progress_unavailable_reason": null,
+    "evidence": "session_stopped was written and the finalization record is 'interrupted' with no process holding the lock",
+    "finalization": {
+     "detail": null,
+     "final_solve": "pending",
+     "started_at": "<time>",
+     "state": "interrupted",
+     "updated_at": "<time>"
+    },
+    "photographic": {
+     "detail": "this session has no finished global solve to build a photographic room from",
+     "stage": null,
+     "state": "unattempted"
+    },
+    "reason": "finalization did not complete; the geometry stored is the last build that finished",
+    "state": "interrupted"
+   },
+   "revision": {
+    "revision:None": {
+     "appearance": {
+      "current": false,
+      "epoch": null,
+      "revision": null,
+      "state": "absent"
+     },
+     "components": null,
+     "live": false,
+     "representation": "sparse",
+     "revision": "<rev0>",
+     "session_id": "00000000000000000000000000000002"
+    },
+    "revision:appearance-1": {
+     "appearance": {
+      "current": false,
+      "epoch": null,
+      "revision": null,
+      "state": "absent"
+     },
+     "components": null,
+     "live": false,
+     "representation": "sparse",
+     "revision": "<rev0>",
+     "session_id": "00000000000000000000000000000002"
+    }
+   },
+   "row": [
+    {
+     "keys": [
+      "abandoned",
+      "appearance",
+      "capture_id",
+      "components",
+      "dense",
+      "end_reason",
+      "ended_at",
+      "finalization",
+      "frame_source",
+      "has_geometry",
+      "keyframes_accepted",
+      "keyframes_journaled",
+      "photographic",
+      "session_id",
+      "started_at",
+      "state"
+     ],
+     "state": "interrupted"
+    }
+   ],
+   "sha256": "b62cf67ed615606b59070e7b611863c48b3484d5f284b0e815e7c992f64f665f",
+   "status_revision": "<rev12>"
+  },
+  "interrupted|live|valid": {
+   "lifecycle": {
+    "build_in_progress": false,
+    "build_in_progress_unavailable_reason": null,
+    "evidence": "session_stopped was written and the finalization record is 'interrupted' with no process holding the lock",
+    "finalization": {
+     "detail": null,
+     "final_solve": "pending",
+     "started_at": "<time>",
+     "state": "interrupted",
+     "updated_at": "<time>"
+    },
+    "photographic": {
+     "detail": "this session has no finished global solve to build a photographic room from",
+     "stage": null,
+     "state": "unattempted"
+    },
+    "reason": "finalization did not complete; the geometry stored is the last build that finished",
+    "state": "interrupted"
+   },
+   "revision": {
+    "revision:None": {
+     "appearance": {
+      "current": false,
+      "epoch": null,
+      "revision": null,
+      "state": "absent"
+     },
+     "components": null,
+     "live": false,
+     "representation": "sparse",
+     "revision": "<rev0>",
+     "session_id": "00000000000000000000000000000002"
+    },
+    "revision:appearance-1": {
+     "appearance": {
+      "current": false,
+      "epoch": null,
+      "revision": null,
+      "state": "absent"
+     },
+     "components": null,
+     "live": false,
+     "representation": "sparse",
+     "revision": "<rev0>",
+     "session_id": "00000000000000000000000000000002"
+    }
+   },
+   "row": [
+    {
+     "keys": [
+      "abandoned",
+      "appearance",
+      "capture_id",
+      "components",
+      "dense",
+      "end_reason",
+      "ended_at",
+      "finalization",
+      "frame_source",
+      "has_geometry",
+      "keyframes_accepted",
+      "keyframes_journaled",
+      "photographic",
+      "session_id",
+      "started_at",
+      "state"
+     ],
+     "state": "interrupted"
+    }
+   ],
+   "sha256": "b62cf67ed615606b59070e7b611863c48b3484d5f284b0e815e7c992f64f665f",
+   "status_revision": "<rev12>"
+  },
+  "interrupted|none|absent": {
+   "lifecycle": {
+    "build_in_progress": false,
+    "build_in_progress_unavailable_reason": null,
+    "evidence": "session_stopped was written and the finalization record is 'interrupted' with no process holding the lock",
+    "finalization": {
+     "detail": null,
+     "final_solve": "pending",
+     "started_at": "<time>",
+     "state": "interrupted",
+     "updated_at": "<time>"
+    },
+    "photographic": {
+     "detail": "this session has no finished global solve to build a photographic room from",
+     "stage": null,
+     "state": "unattempted"
+    },
+    "reason": "finalization did not complete; the geometry stored is the last build that finished",
+    "state": "interrupted"
+   },
+   "revision": {
+    "revision:None": {
+     "appearance": {
+      "current": false,
+      "epoch": null,
+      "revision": null,
+      "state": "absent"
+     },
+     "components": null,
+     "live": false,
+     "representation": "sparse",
+     "revision": "<rev0>",
+     "session_id": "00000000000000000000000000000002"
+    },
+    "revision:appearance-1": {
+     "appearance": {
+      "current": false,
+      "epoch": null,
+      "revision": null,
+      "state": "absent"
+     },
+     "components": null,
+     "live": false,
+     "representation": "sparse",
+     "revision": "<rev0>",
+     "session_id": "00000000000000000000000000000002"
+    }
+   },
+   "row": [
+    {
+     "keys": [
+      "abandoned",
+      "appearance",
+      "capture_id",
+      "components",
+      "dense",
+      "end_reason",
+      "ended_at",
+      "finalization",
+      "frame_source",
+      "has_geometry",
+      "keyframes_accepted",
+      "keyframes_journaled",
+      "photographic",
+      "session_id",
+      "started_at",
+      "state"
+     ],
+     "state": "interrupted"
+    }
+   ],
+   "sha256": "b62cf67ed615606b59070e7b611863c48b3484d5f284b0e815e7c992f64f665f",
+   "status_revision": "<rev12>"
+  },
+  "interrupted|none|foreign-owner": {
+   "lifecycle": {
+    "build_in_progress": false,
+    "build_in_progress_unavailable_reason": null,
+    "evidence": "session_stopped was written and the finalization record is 'interrupted' with no process holding the lock",
+    "finalization": {
+     "detail": null,
+     "final_solve": "pending",
+     "started_at": "<time>",
+     "state": "interrupted",
+     "updated_at": "<time>"
+    },
+    "photographic": {
+     "detail": "this session has no finished global solve to build a photographic room from",
+     "stage": null,
+     "state": "unattempted"
+    },
+    "reason": "finalization did not complete; the geometry stored is the last build that finished",
+    "state": "interrupted"
+   },
+   "revision": {
+    "revision:None": {
+     "appearance": {
+      "current": false,
+      "epoch": null,
+      "revision": null,
+      "state": "absent"
+     },
+     "components": null,
+     "live": false,
+     "representation": "sparse",
+     "revision": "<rev0>",
+     "session_id": "00000000000000000000000000000002"
+    },
+    "revision:appearance-1": {
+     "appearance": {
+      "current": false,
+      "epoch": null,
+      "revision": null,
+      "state": "absent"
+     },
+     "components": null,
+     "live": false,
+     "representation": "sparse",
+     "revision": "<rev0>",
+     "session_id": "00000000000000000000000000000002"
+    }
+   },
+   "row": [
+    {
+     "keys": [
+      "abandoned",
+      "appearance",
+      "capture_id",
+      "components",
+      "dense",
+      "end_reason",
+      "ended_at",
+      "finalization",
+      "frame_source",
+      "has_geometry",
+      "keyframes_accepted",
+      "keyframes_journaled",
+      "photographic",
+      "session_id",
+      "started_at",
+      "state"
+     ],
+     "state": "interrupted"
+    }
+   ],
+   "sha256": "b62cf67ed615606b59070e7b611863c48b3484d5f284b0e815e7c992f64f665f",
+   "status_revision": "<rev12>"
+  },
+  "interrupted|none|stale-epoch": {
+   "lifecycle": {
+    "build_in_progress": false,
+    "build_in_progress_unavailable_reason": null,
+    "evidence": "session_stopped was written and the finalization record is 'interrupted' with no process holding the lock",
+    "finalization": {
+     "detail": null,
+     "final_solve": "pending",
+     "started_at": "<time>",
+     "state": "interrupted",
+     "updated_at": "<time>"
+    },
+    "photographic": {
+     "detail": "this session has no finished global solve to build a photographic room from",
+     "stage": null,
+     "state": "unattempted"
+    },
+    "reason": "finalization did not complete; the geometry stored is the last build that finished",
+    "state": "interrupted"
+   },
+   "revision": {
+    "revision:None": {
+     "appearance": {
+      "current": false,
+      "epoch": null,
+      "revision": null,
+      "state": "absent"
+     },
+     "components": null,
+     "live": false,
+     "representation": "sparse",
+     "revision": "<rev0>",
+     "session_id": "00000000000000000000000000000002"
+    },
+    "revision:appearance-1": {
+     "appearance": {
+      "current": false,
+      "epoch": null,
+      "revision": null,
+      "state": "absent"
+     },
+     "components": null,
+     "live": false,
+     "representation": "sparse",
+     "revision": "<rev0>",
+     "session_id": "00000000000000000000000000000002"
+    }
+   },
+   "row": [
+    {
+     "keys": [
+      "abandoned",
+      "appearance",
+      "capture_id",
+      "components",
+      "dense",
+      "end_reason",
+      "ended_at",
+      "finalization",
+      "frame_source",
+      "has_geometry",
+      "keyframes_accepted",
+      "keyframes_journaled",
+      "photographic",
+      "session_id",
+      "started_at",
+      "state"
+     ],
+     "state": "interrupted"
+    }
+   ],
+   "sha256": "b62cf67ed615606b59070e7b611863c48b3484d5f284b0e815e7c992f64f665f",
+   "status_revision": "<rev12>"
+  },
+  "interrupted|none|valid": {
+   "lifecycle": {
+    "build_in_progress": false,
+    "build_in_progress_unavailable_reason": null,
+    "evidence": "session_stopped was written and the finalization record is 'interrupted' with no process holding the lock",
+    "finalization": {
+     "detail": null,
+     "final_solve": "pending",
+     "started_at": "<time>",
+     "state": "interrupted",
+     "updated_at": "<time>"
+    },
+    "photographic": {
+     "detail": "this session has no finished global solve to build a photographic room from",
+     "stage": null,
+     "state": "unattempted"
+    },
+    "reason": "finalization did not complete; the geometry stored is the last build that finished",
+    "state": "interrupted"
+   },
+   "revision": {
+    "revision:None": {
+     "appearance": {
+      "current": false,
+      "epoch": null,
+      "revision": null,
+      "state": "absent"
+     },
+     "components": null,
+     "live": false,
+     "representation": "sparse",
+     "revision": "<rev0>",
+     "session_id": "00000000000000000000000000000002"
+    },
+    "revision:appearance-1": {
+     "appearance": {
+      "current": false,
+      "epoch": null,
+      "revision": null,
+      "state": "absent"
+     },
+     "components": null,
+     "live": false,
+     "representation": "sparse",
+     "revision": "<rev0>",
+     "session_id": "00000000000000000000000000000002"
+    }
+   },
+   "row": [
+    {
+     "keys": [
+      "abandoned",
+      "appearance",
+      "capture_id",
+      "components",
+      "dense",
+      "end_reason",
+      "ended_at",
+      "finalization",
+      "frame_source",
+      "has_geometry",
+      "keyframes_accepted",
+      "keyframes_journaled",
+      "photographic",
+      "session_id",
+      "started_at",
+      "state"
+     ],
+     "state": "interrupted"
+    }
+   ],
+   "sha256": "b62cf67ed615606b59070e7b611863c48b3484d5f284b0e815e7c992f64f665f",
+   "status_revision": "<rev12>"
+  },
+  "open|dead|absent": {
+   "lifecycle": {
+    "build_in_progress": false,
+    "build_in_progress_unavailable_reason": null,
+    "evidence": "the writer lock is held by pid <pid>, which is no longer running, and session_stopped was written",
+    "finalization": null,
+    "photographic": {
+     "detail": "this session has no finished global solve to build a photographic room from",
+     "stage": null,
+     "state": "unattempted"
+    },
+    "reason": "the process finalizing this world exited before it finished; the geometry stored is the last build it completed",
+    "state": "interrupted"
+   },
+   "revision": {
+    "revision:None": {
+     "appearance": {
+      "current": false,
+      "epoch": null,
+      "revision": null,
+      "state": "absent"
+     },
+     "components": null,
+     "live": false,
+     "representation": "sparse",
+     "revision": "<rev0>",
+     "session_id": "00000000000000000000000000000002"
+    },
+    "revision:appearance-1": {
+     "appearance": {
+      "current": false,
+      "epoch": null,
+      "revision": null,
+      "state": "absent"
+     },
+     "components": null,
+     "live": false,
+     "representation": "sparse",
+     "revision": "<rev0>",
+     "session_id": "00000000000000000000000000000002"
+    }
+   },
+   "row": [
+    {
+     "keys": [
+      "abandoned",
+      "appearance",
+      "capture_id",
+      "components",
+      "dense",
+      "end_reason",
+      "ended_at",
+      "finalization",
+      "frame_source",
+      "has_geometry",
+      "keyframes_accepted",
+      "keyframes_journaled",
+      "photographic",
+      "session_id",
+      "started_at",
+      "state"
+     ],
+     "state": "interrupted"
+    }
+   ],
+   "sha256": "af9febde4e0e49909db073b458e17c68715ebba087c7eccc39a947b9b2f7b6a8",
+   "status_revision": "<rev6>"
+  },
+  "open|dead|foreign-owner": {
+   "lifecycle": {
+    "build_in_progress": false,
+    "build_in_progress_unavailable_reason": null,
+    "evidence": "the writer lock is held by pid <pid>, which is no longer running, and session_stopped was written",
+    "finalization": null,
+    "photographic": {
+     "detail": "this session has no finished global solve to build a photographic room from",
+     "stage": null,
+     "state": "unattempted"
+    },
+    "reason": "the process finalizing this world exited before it finished; the geometry stored is the last build it completed",
+    "state": "interrupted"
+   },
+   "revision": {
+    "revision:None": {
+     "appearance": {
+      "current": false,
+      "epoch": null,
+      "revision": null,
+      "state": "absent"
+     },
+     "components": null,
+     "live": false,
+     "representation": "sparse",
+     "revision": "<rev0>",
+     "session_id": "00000000000000000000000000000002"
+    },
+    "revision:appearance-1": {
+     "appearance": {
+      "current": false,
+      "epoch": null,
+      "revision": null,
+      "state": "absent"
+     },
+     "components": null,
+     "live": false,
+     "representation": "sparse",
+     "revision": "<rev0>",
+     "session_id": "00000000000000000000000000000002"
+    }
+   },
+   "row": [
+    {
+     "keys": [
+      "abandoned",
+      "appearance",
+      "capture_id",
+      "components",
+      "dense",
+      "end_reason",
+      "ended_at",
+      "finalization",
+      "frame_source",
+      "has_geometry",
+      "keyframes_accepted",
+      "keyframes_journaled",
+      "photographic",
+      "session_id",
+      "started_at",
+      "state"
+     ],
+     "state": "interrupted"
+    }
+   ],
+   "sha256": "af9febde4e0e49909db073b458e17c68715ebba087c7eccc39a947b9b2f7b6a8",
+   "status_revision": "<rev6>"
+  },
+  "open|dead|stale-epoch": {
+   "lifecycle": {
+    "build_in_progress": false,
+    "build_in_progress_unavailable_reason": null,
+    "evidence": "the writer lock is held by pid <pid>, which is no longer running, and session_stopped was written",
+    "finalization": null,
+    "photographic": {
+     "detail": "this session has no finished global solve to build a photographic room from",
+     "stage": null,
+     "state": "unattempted"
+    },
+    "reason": "the process finalizing this world exited before it finished; the geometry stored is the last build it completed",
+    "state": "interrupted"
+   },
+   "revision": {
+    "revision:None": {
+     "appearance": {
+      "current": false,
+      "epoch": null,
+      "revision": null,
+      "state": "absent"
+     },
+     "components": null,
+     "live": false,
+     "representation": "sparse",
+     "revision": "<rev0>",
+     "session_id": "00000000000000000000000000000002"
+    },
+    "revision:appearance-1": {
+     "appearance": {
+      "current": false,
+      "epoch": null,
+      "revision": null,
+      "state": "absent"
+     },
+     "components": null,
+     "live": false,
+     "representation": "sparse",
+     "revision": "<rev0>",
+     "session_id": "00000000000000000000000000000002"
+    }
+   },
+   "row": [
+    {
+     "keys": [
+      "abandoned",
+      "appearance",
+      "capture_id",
+      "components",
+      "dense",
+      "end_reason",
+      "ended_at",
+      "finalization",
+      "frame_source",
+      "has_geometry",
+      "keyframes_accepted",
+      "keyframes_journaled",
+      "photographic",
+      "session_id",
+      "started_at",
+      "state"
+     ],
+     "state": "interrupted"
+    }
+   ],
+   "sha256": "af9febde4e0e49909db073b458e17c68715ebba087c7eccc39a947b9b2f7b6a8",
+   "status_revision": "<rev6>"
+  },
+  "open|dead|valid": {
+   "lifecycle": {
+    "build_in_progress": false,
+    "build_in_progress_unavailable_reason": null,
+    "evidence": "the writer lock is held by pid <pid>, which is no longer running, and session_stopped was written",
+    "finalization": null,
+    "photographic": {
+     "detail": "this session has no finished global solve to build a photographic room from",
+     "stage": null,
+     "state": "unattempted"
+    },
+    "reason": "the process finalizing this world exited before it finished; the geometry stored is the last build it completed",
+    "state": "interrupted"
+   },
+   "revision": {
+    "revision:None": {
+     "appearance": {
+      "current": false,
+      "epoch": null,
+      "revision": null,
+      "state": "absent"
+     },
+     "components": null,
+     "live": false,
+     "representation": "sparse",
+     "revision": "<rev0>",
+     "session_id": "00000000000000000000000000000002"
+    },
+    "revision:appearance-1": {
+     "appearance": {
+      "current": false,
+      "epoch": null,
+      "revision": null,
+      "state": "absent"
+     },
+     "components": null,
+     "live": false,
+     "representation": "sparse",
+     "revision": "<rev0>",
+     "session_id": "00000000000000000000000000000002"
+    }
+   },
+   "row": [
+    {
+     "keys": [
+      "abandoned",
+      "appearance",
+      "capture_id",
+      "components",
+      "dense",
+      "end_reason",
+      "ended_at",
+      "finalization",
+      "frame_source",
+      "has_geometry",
+      "keyframes_accepted",
+      "keyframes_journaled",
+      "photographic",
+      "session_id",
+      "started_at",
+      "state"
+     ],
+     "state": "interrupted"
+    }
+   ],
+   "sha256": "af9febde4e0e49909db073b458e17c68715ebba087c7eccc39a947b9b2f7b6a8",
+   "status_revision": "<rev6>"
+  },
+  "open|live|absent": {
+   "lifecycle": {
+    "build_in_progress": true,
+    "build_in_progress_unavailable_reason": null,
+    "evidence": "a live process (pid <pid>) holds the writer lock and session_stopped was written",
+    "finalization": null,
+    "reason": "the builder is finishing this world: the final solve and the final build run after the session stops, and the lock is released when they are done",
+    "state": "finalizing"
+   },
+   "revision": {
+    "revision:None": {
+     "appearance": {
+      "current": false,
+      "epoch": null,
+      "revision": null,
+      "state": "absent"
+     },
+     "components": null,
+     "live": true,
+     "representation": "sparse",
+     "revision": "<rev0>",
+     "session_id": "00000000000000000000000000000002"
+    },
+    "revision:appearance-1": {
+     "appearance": {
+      "current": false,
+      "epoch": null,
+      "revision": null,
+      "state": "absent"
+     },
+     "components": null,
+     "live": true,
+     "representation": "sparse",
+     "revision": "<rev0>",
+     "session_id": "00000000000000000000000000000002"
+    }
+   },
+   "row": [
+    {
+     "keys": [
+      "abandoned",
+      "appearance",
+      "capture_id",
+      "components",
+      "dense",
+      "end_reason",
+      "ended_at",
+      "finalization",
+      "frame_source",
+      "has_geometry",
+      "keyframes_accepted",
+      "keyframes_journaled",
+      "photographic",
+      "session_id",
+      "started_at",
+      "state"
+     ],
+     "state": "receiving"
+    }
+   ],
+   "sha256": "a6bd49dd95a46397b9f0d88d890067b46279e11fb3704ae8acf309035c1bcd14",
+   "status_revision": "<rev5>"
+  },
+  "open|live|foreign-owner": {
+   "lifecycle": {
+    "build_in_progress": true,
+    "build_in_progress_unavailable_reason": null,
+    "evidence": "a live process (pid <pid>) holds the writer lock and session_stopped was written",
+    "finalization": null,
+    "reason": "the builder is finishing this world: the final solve and the final build run after the session stops, and the lock is released when they are done",
+    "state": "finalizing"
+   },
+   "revision": {
+    "revision:None": {
+     "appearance": {
+      "current": false,
+      "epoch": null,
+      "revision": null,
+      "state": "absent"
+     },
+     "components": null,
+     "live": true,
+     "representation": "sparse",
+     "revision": "<rev0>",
+     "session_id": "00000000000000000000000000000002"
+    },
+    "revision:appearance-1": {
+     "appearance": {
+      "current": false,
+      "epoch": null,
+      "revision": null,
+      "state": "absent"
+     },
+     "components": null,
+     "live": true,
+     "representation": "sparse",
+     "revision": "<rev0>",
+     "session_id": "00000000000000000000000000000002"
+    }
+   },
+   "row": [
+    {
+     "keys": [
+      "abandoned",
+      "appearance",
+      "capture_id",
+      "components",
+      "dense",
+      "end_reason",
+      "ended_at",
+      "finalization",
+      "frame_source",
+      "has_geometry",
+      "keyframes_accepted",
+      "keyframes_journaled",
+      "photographic",
+      "session_id",
+      "started_at",
+      "state"
+     ],
+     "state": "receiving"
+    }
+   ],
+   "sha256": "a6bd49dd95a46397b9f0d88d890067b46279e11fb3704ae8acf309035c1bcd14",
+   "status_revision": "<rev5>"
+  },
+  "open|live|stale-epoch": {
+   "lifecycle": {
+    "build_in_progress": true,
+    "build_in_progress_unavailable_reason": null,
+    "evidence": "a live process (pid <pid>) holds the writer lock and session_stopped was written",
+    "finalization": null,
+    "reason": "the builder is finishing this world: the final solve and the final build run after the session stops, and the lock is released when they are done",
+    "state": "finalizing"
+   },
+   "revision": {
+    "revision:None": {
+     "appearance": {
+      "current": false,
+      "epoch": null,
+      "revision": null,
+      "state": "absent"
+     },
+     "components": null,
+     "live": true,
+     "representation": "sparse",
+     "revision": "<rev0>",
+     "session_id": "00000000000000000000000000000002"
+    },
+    "revision:appearance-1": {
+     "appearance": {
+      "current": false,
+      "epoch": null,
+      "revision": null,
+      "state": "absent"
+     },
+     "components": null,
+     "live": true,
+     "representation": "sparse",
+     "revision": "<rev0>",
+     "session_id": "00000000000000000000000000000002"
+    }
+   },
+   "row": [
+    {
+     "keys": [
+      "abandoned",
+      "appearance",
+      "capture_id",
+      "components",
+      "dense",
+      "end_reason",
+      "ended_at",
+      "finalization",
+      "frame_source",
+      "has_geometry",
+      "keyframes_accepted",
+      "keyframes_journaled",
+      "photographic",
+      "session_id",
+      "started_at",
+      "state"
+     ],
+     "state": "receiving"
+    }
+   ],
+   "sha256": "a6bd49dd95a46397b9f0d88d890067b46279e11fb3704ae8acf309035c1bcd14",
+   "status_revision": "<rev5>"
+  },
+  "open|live|valid": {
+   "lifecycle": {
+    "build_in_progress": true,
+    "build_in_progress_unavailable_reason": null,
+    "evidence": "a live process (pid <pid>) holds the writer lock and session_stopped was written",
+    "finalization": null,
+    "reason": "the builder is finishing this world: the final solve and the final build run after the session stops, and the lock is released when they are done",
+    "state": "finalizing"
+   },
+   "revision": {
+    "revision:None": {
+     "appearance": {
+      "current": false,
+      "epoch": null,
+      "revision": null,
+      "state": "absent"
+     },
+     "components": null,
+     "live": true,
+     "representation": "sparse",
+     "revision": "<rev0>",
+     "session_id": "00000000000000000000000000000002"
+    },
+    "revision:appearance-1": {
+     "appearance": {
+      "current": false,
+      "epoch": null,
+      "revision": null,
+      "state": "absent"
+     },
+     "components": null,
+     "live": true,
+     "representation": "sparse",
+     "revision": "<rev0>",
+     "session_id": "00000000000000000000000000000002"
+    }
+   },
+   "row": [
+    {
+     "keys": [
+      "abandoned",
+      "appearance",
+      "capture_id",
+      "components",
+      "dense",
+      "end_reason",
+      "ended_at",
+      "finalization",
+      "frame_source",
+      "has_geometry",
+      "keyframes_accepted",
+      "keyframes_journaled",
+      "photographic",
+      "session_id",
+      "started_at",
+      "state"
+     ],
+     "state": "receiving"
+    }
+   ],
+   "sha256": "a6bd49dd95a46397b9f0d88d890067b46279e11fb3704ae8acf309035c1bcd14",
+   "status_revision": "<rev5>"
+  },
+  "open|none|absent": {
+   "lifecycle": {
+    "build_in_progress": null,
+    "build_in_progress_unavailable_reason": "the writer lock is released before build() is called, and build() emits no event and writes nothing until it finishes, so a build in progress is indistinguishable on disk from one that never started and from one that crashed",
+    "evidence": "capture ended and the stored geometry matches the keyframes",
+    "finalization": null,
+    "photographic": {
+     "detail": "this session has no finished global solve to build a photographic room from",
+     "stage": null,
+     "state": "unattempted"
+    },
+    "reason": null,
+    "state": "ready"
+   },
+   "revision": {
+    "revision:None": {
+     "appearance": {
+      "current": false,
+      "epoch": null,
+      "revision": null,
+      "state": "absent"
+     },
+     "components": null,
+     "live": false,
+     "representation": "sparse",
+     "revision": "<rev0>",
+     "session_id": "00000000000000000000000000000002"
+    },
+    "revision:appearance-1": {
+     "appearance": {
+      "current": false,
+      "epoch": null,
+      "revision": null,
+      "state": "absent"
+     },
+     "components": null,
+     "live": false,
+     "representation": "sparse",
+     "revision": "<rev0>",
+     "session_id": "00000000000000000000000000000002"
+    }
+   },
+   "row": [
+    {
+     "keys": [
+      "abandoned",
+      "appearance",
+      "capture_id",
+      "components",
+      "dense",
+      "end_reason",
+      "ended_at",
+      "finalization",
+      "frame_source",
+      "has_geometry",
+      "keyframes_accepted",
+      "keyframes_journaled",
+      "photographic",
+      "session_id",
+      "started_at",
+      "state"
+     ],
+     "state": "interrupted"
+    }
+   ],
+   "sha256": "351d06b60714ef0797b4a3fd3d56c5693225986db231b2a00beab5fe22d4fd52",
+   "status_revision": "<rev4>"
+  },
+  "open|none|foreign-owner": {
+   "lifecycle": {
+    "build_in_progress": null,
+    "build_in_progress_unavailable_reason": "the writer lock is released before build() is called, and build() emits no event and writes nothing until it finishes, so a build in progress is indistinguishable on disk from one that never started and from one that crashed",
+    "evidence": "capture ended and the stored geometry matches the keyframes",
+    "finalization": null,
+    "photographic": {
+     "detail": "this session has no finished global solve to build a photographic room from",
+     "stage": null,
+     "state": "unattempted"
+    },
+    "reason": null,
+    "state": "ready"
+   },
+   "revision": {
+    "revision:None": {
+     "appearance": {
+      "current": false,
+      "epoch": null,
+      "revision": null,
+      "state": "absent"
+     },
+     "components": null,
+     "live": false,
+     "representation": "sparse",
+     "revision": "<rev0>",
+     "session_id": "00000000000000000000000000000002"
+    },
+    "revision:appearance-1": {
+     "appearance": {
+      "current": false,
+      "epoch": null,
+      "revision": null,
+      "state": "absent"
+     },
+     "components": null,
+     "live": false,
+     "representation": "sparse",
+     "revision": "<rev0>",
+     "session_id": "00000000000000000000000000000002"
+    }
+   },
+   "row": [
+    {
+     "keys": [
+      "abandoned",
+      "appearance",
+      "capture_id",
+      "components",
+      "dense",
+      "end_reason",
+      "ended_at",
+      "finalization",
+      "frame_source",
+      "has_geometry",
+      "keyframes_accepted",
+      "keyframes_journaled",
+      "photographic",
+      "session_id",
+      "started_at",
+      "state"
+     ],
+     "state": "interrupted"
+    }
+   ],
+   "sha256": "351d06b60714ef0797b4a3fd3d56c5693225986db231b2a00beab5fe22d4fd52",
+   "status_revision": "<rev4>"
+  },
+  "open|none|stale-epoch": {
+   "lifecycle": {
+    "build_in_progress": null,
+    "build_in_progress_unavailable_reason": "the writer lock is released before build() is called, and build() emits no event and writes nothing until it finishes, so a build in progress is indistinguishable on disk from one that never started and from one that crashed",
+    "evidence": "capture ended and the stored geometry matches the keyframes",
+    "finalization": null,
+    "photographic": {
+     "detail": "this session has no finished global solve to build a photographic room from",
+     "stage": null,
+     "state": "unattempted"
+    },
+    "reason": null,
+    "state": "ready"
+   },
+   "revision": {
+    "revision:None": {
+     "appearance": {
+      "current": false,
+      "epoch": null,
+      "revision": null,
+      "state": "absent"
+     },
+     "components": null,
+     "live": false,
+     "representation": "sparse",
+     "revision": "<rev0>",
+     "session_id": "00000000000000000000000000000002"
+    },
+    "revision:appearance-1": {
+     "appearance": {
+      "current": false,
+      "epoch": null,
+      "revision": null,
+      "state": "absent"
+     },
+     "components": null,
+     "live": false,
+     "representation": "sparse",
+     "revision": "<rev0>",
+     "session_id": "00000000000000000000000000000002"
+    }
+   },
+   "row": [
+    {
+     "keys": [
+      "abandoned",
+      "appearance",
+      "capture_id",
+      "components",
+      "dense",
+      "end_reason",
+      "ended_at",
+      "finalization",
+      "frame_source",
+      "has_geometry",
+      "keyframes_accepted",
+      "keyframes_journaled",
+      "photographic",
+      "session_id",
+      "started_at",
+      "state"
+     ],
+     "state": "interrupted"
+    }
+   ],
+   "sha256": "351d06b60714ef0797b4a3fd3d56c5693225986db231b2a00beab5fe22d4fd52",
+   "status_revision": "<rev4>"
+  },
+  "open|none|valid": {
+   "lifecycle": {
+    "build_in_progress": null,
+    "build_in_progress_unavailable_reason": "the writer lock is released before build() is called, and build() emits no event and writes nothing until it finishes, so a build in progress is indistinguishable on disk from one that never started and from one that crashed",
+    "evidence": "capture ended and the stored geometry matches the keyframes",
+    "finalization": null,
+    "photographic": {
+     "detail": "this session has no finished global solve to build a photographic room from",
+     "stage": null,
+     "state": "unattempted"
+    },
+    "reason": null,
+    "state": "ready"
+   },
+   "revision": {
+    "revision:None": {
+     "appearance": {
+      "current": false,
+      "epoch": null,
+      "revision": null,
+      "state": "absent"
+     },
+     "components": null,
+     "live": false,
+     "representation": "sparse",
+     "revision": "<rev0>",
+     "session_id": "00000000000000000000000000000002"
+    },
+    "revision:appearance-1": {
+     "appearance": {
+      "current": false,
+      "epoch": null,
+      "revision": null,
+      "state": "absent"
+     },
+     "components": null,
+     "live": false,
+     "representation": "sparse",
+     "revision": "<rev0>",
+     "session_id": "00000000000000000000000000000002"
+    }
+   },
+   "row": [
+    {
+     "keys": [
+      "abandoned",
+      "appearance",
+      "capture_id",
+      "components",
+      "dense",
+      "end_reason",
+      "ended_at",
+      "finalization",
+      "frame_source",
+      "has_geometry",
+      "keyframes_accepted",
+      "keyframes_journaled",
+      "photographic",
+      "session_id",
+      "started_at",
+      "state"
+     ],
+     "state": "interrupted"
+    }
+   ],
+   "sha256": "351d06b60714ef0797b4a3fd3d56c5693225986db231b2a00beab5fe22d4fd52",
+   "status_revision": "<rev4>"
+  },
+  "pending|dead|absent": {
+   "lifecycle": {
+    "build_in_progress": false,
+    "build_in_progress_unavailable_reason": null,
+    "evidence": "the writer lock is held by pid <pid>, which is no longer running, and session_stopped was written",
+    "finalization": {
+     "detail": null,
+     "final_solve": "pending",
+     "started_at": "<time>",
+     "state": "pending",
+     "updated_at": "<time>"
+    },
+    "photographic": {
+     "detail": "this session has no finished global solve to build a photographic room from",
+     "stage": null,
+     "state": "unattempted"
+    },
+    "reason": "the process finalizing this world exited before it finished; the geometry stored is the last build it completed",
+    "state": "interrupted"
+   },
+   "revision": {
+    "revision:None": {
+     "appearance": {
+      "current": false,
+      "epoch": null,
+      "revision": null,
+      "state": "absent"
+     },
+     "components": null,
+     "live": false,
+     "representation": "sparse",
+     "revision": "<rev0>",
+     "session_id": "00000000000000000000000000000002"
+    },
+    "revision:appearance-1": {
+     "appearance": {
+      "current": false,
+      "epoch": null,
+      "revision": null,
+      "state": "absent"
+     },
+     "components": null,
+     "live": false,
+     "representation": "sparse",
+     "revision": "<rev0>",
+     "session_id": "00000000000000000000000000000002"
+    }
+   },
+   "row": [
+    {
+     "keys": [
+      "abandoned",
+      "appearance",
+      "capture_id",
+      "components",
+      "dense",
+      "end_reason",
+      "ended_at",
+      "finalization",
+      "frame_source",
+      "has_geometry",
+      "keyframes_accepted",
+      "keyframes_journaled",
+      "photographic",
+      "session_id",
+      "started_at",
+      "state"
+     ],
+     "state": "interrupted"
+    }
+   ],
+   "sha256": "9f01bdc910d84b92927ef01b129fe37befe47d9ec78edbe5921987ca8f8c1ef4",
+   "status_revision": "<rev9>"
+  },
+  "pending|dead|foreign-owner": {
+   "lifecycle": {
+    "build_in_progress": false,
+    "build_in_progress_unavailable_reason": null,
+    "evidence": "the writer lock is held by pid <pid>, which is no longer running, and session_stopped was written",
+    "finalization": {
+     "detail": null,
+     "final_solve": "pending",
+     "started_at": "<time>",
+     "state": "pending",
+     "updated_at": "<time>"
+    },
+    "photographic": {
+     "detail": "this session has no finished global solve to build a photographic room from",
+     "stage": null,
+     "state": "unattempted"
+    },
+    "reason": "the process finalizing this world exited before it finished; the geometry stored is the last build it completed",
+    "state": "interrupted"
+   },
+   "revision": {
+    "revision:None": {
+     "appearance": {
+      "current": false,
+      "epoch": null,
+      "revision": null,
+      "state": "absent"
+     },
+     "components": null,
+     "live": false,
+     "representation": "sparse",
+     "revision": "<rev0>",
+     "session_id": "00000000000000000000000000000002"
+    },
+    "revision:appearance-1": {
+     "appearance": {
+      "current": false,
+      "epoch": null,
+      "revision": null,
+      "state": "absent"
+     },
+     "components": null,
+     "live": false,
+     "representation": "sparse",
+     "revision": "<rev0>",
+     "session_id": "00000000000000000000000000000002"
+    }
+   },
+   "row": [
+    {
+     "keys": [
+      "abandoned",
+      "appearance",
+      "capture_id",
+      "components",
+      "dense",
+      "end_reason",
+      "ended_at",
+      "finalization",
+      "frame_source",
+      "has_geometry",
+      "keyframes_accepted",
+      "keyframes_journaled",
+      "photographic",
+      "session_id",
+      "started_at",
+      "state"
+     ],
+     "state": "interrupted"
+    }
+   ],
+   "sha256": "9f01bdc910d84b92927ef01b129fe37befe47d9ec78edbe5921987ca8f8c1ef4",
+   "status_revision": "<rev9>"
+  },
+  "pending|dead|stale-epoch": {
+   "lifecycle": {
+    "build_in_progress": false,
+    "build_in_progress_unavailable_reason": null,
+    "evidence": "the writer lock is held by pid <pid>, which is no longer running, and session_stopped was written",
+    "finalization": {
+     "detail": null,
+     "final_solve": "pending",
+     "started_at": "<time>",
+     "state": "pending",
+     "updated_at": "<time>"
+    },
+    "photographic": {
+     "detail": "this session has no finished global solve to build a photographic room from",
+     "stage": null,
+     "state": "unattempted"
+    },
+    "reason": "the process finalizing this world exited before it finished; the geometry stored is the last build it completed",
+    "state": "interrupted"
+   },
+   "revision": {
+    "revision:None": {
+     "appearance": {
+      "current": false,
+      "epoch": null,
+      "revision": null,
+      "state": "absent"
+     },
+     "components": null,
+     "live": false,
+     "representation": "sparse",
+     "revision": "<rev0>",
+     "session_id": "00000000000000000000000000000002"
+    },
+    "revision:appearance-1": {
+     "appearance": {
+      "current": false,
+      "epoch": null,
+      "revision": null,
+      "state": "absent"
+     },
+     "components": null,
+     "live": false,
+     "representation": "sparse",
+     "revision": "<rev0>",
+     "session_id": "00000000000000000000000000000002"
+    }
+   },
+   "row": [
+    {
+     "keys": [
+      "abandoned",
+      "appearance",
+      "capture_id",
+      "components",
+      "dense",
+      "end_reason",
+      "ended_at",
+      "finalization",
+      "frame_source",
+      "has_geometry",
+      "keyframes_accepted",
+      "keyframes_journaled",
+      "photographic",
+      "session_id",
+      "started_at",
+      "state"
+     ],
+     "state": "interrupted"
+    }
+   ],
+   "sha256": "9f01bdc910d84b92927ef01b129fe37befe47d9ec78edbe5921987ca8f8c1ef4",
+   "status_revision": "<rev9>"
+  },
+  "pending|dead|valid": {
+   "lifecycle": {
+    "build_in_progress": false,
+    "build_in_progress_unavailable_reason": null,
+    "evidence": "the writer lock is held by pid <pid>, which is no longer running, and session_stopped was written",
+    "finalization": {
+     "detail": null,
+     "final_solve": "pending",
+     "started_at": "<time>",
+     "state": "pending",
+     "updated_at": "<time>"
+    },
+    "photographic": {
+     "detail": "this session has no finished global solve to build a photographic room from",
+     "stage": null,
+     "state": "unattempted"
+    },
+    "reason": "the process finalizing this world exited before it finished; the geometry stored is the last build it completed",
+    "state": "interrupted"
+   },
+   "revision": {
+    "revision:None": {
+     "appearance": {
+      "current": false,
+      "epoch": null,
+      "revision": null,
+      "state": "absent"
+     },
+     "components": null,
+     "live": false,
+     "representation": "sparse",
+     "revision": "<rev0>",
+     "session_id": "00000000000000000000000000000002"
+    },
+    "revision:appearance-1": {
+     "appearance": {
+      "current": false,
+      "epoch": null,
+      "revision": null,
+      "state": "absent"
+     },
+     "components": null,
+     "live": false,
+     "representation": "sparse",
+     "revision": "<rev0>",
+     "session_id": "00000000000000000000000000000002"
+    }
+   },
+   "row": [
+    {
+     "keys": [
+      "abandoned",
+      "appearance",
+      "capture_id",
+      "components",
+      "dense",
+      "end_reason",
+      "ended_at",
+      "finalization",
+      "frame_source",
+      "has_geometry",
+      "keyframes_accepted",
+      "keyframes_journaled",
+      "photographic",
+      "session_id",
+      "started_at",
+      "state"
+     ],
+     "state": "interrupted"
+    }
+   ],
+   "sha256": "9f01bdc910d84b92927ef01b129fe37befe47d9ec78edbe5921987ca8f8c1ef4",
+   "status_revision": "<rev9>"
+  },
+  "pending|live|absent": {
+   "lifecycle": {
+    "build_in_progress": true,
+    "build_in_progress_unavailable_reason": null,
+    "evidence": "a live process (pid <pid>) holds the writer lock and session_stopped was written",
+    "finalization": {
+     "detail": null,
+     "final_solve": "pending",
+     "started_at": "<time>",
+     "state": "pending",
+     "updated_at": "<time>"
+    },
+    "reason": "the builder is finishing this world: the final solve and the final build run after the session stops, and the lock is released when they are done",
+    "state": "finalizing"
+   },
+   "revision": {
+    "revision:None": {
+     "appearance": {
+      "current": false,
+      "epoch": null,
+      "revision": null,
+      "state": "absent"
+     },
+     "components": null,
+     "live": true,
+     "representation": "sparse",
+     "revision": "<rev0>",
+     "session_id": "00000000000000000000000000000002"
+    },
+    "revision:appearance-1": {
+     "appearance": {
+      "current": false,
+      "epoch": null,
+      "revision": null,
+      "state": "absent"
+     },
+     "components": null,
+     "live": true,
+     "representation": "sparse",
+     "revision": "<rev0>",
+     "session_id": "00000000000000000000000000000002"
+    }
+   },
+   "row": [
+    {
+     "keys": [
+      "abandoned",
+      "appearance",
+      "capture_id",
+      "components",
+      "dense",
+      "end_reason",
+      "ended_at",
+      "finalization",
+      "frame_source",
+      "has_geometry",
+      "keyframes_accepted",
+      "keyframes_journaled",
+      "photographic",
+      "session_id",
+      "started_at",
+      "state"
+     ],
+     "state": "finalizing"
+    }
+   ],
+   "sha256": "8e69425275520a9b11a3326777dac2a8709752ba620b340e42214321c5f8b75e",
+   "status_revision": "<rev8>"
+  },
+  "pending|live|foreign-owner": {
+   "lifecycle": {
+    "build_in_progress": true,
+    "build_in_progress_unavailable_reason": null,
+    "evidence": "a live process (pid <pid>) holds the writer lock and session_stopped was written",
+    "finalization": {
+     "detail": null,
+     "final_solve": "pending",
+     "started_at": "<time>",
+     "state": "pending",
+     "updated_at": "<time>"
+    },
+    "reason": "the builder is finishing this world: the final solve and the final build run after the session stops, and the lock is released when they are done",
+    "state": "finalizing"
+   },
+   "revision": {
+    "revision:None": {
+     "appearance": {
+      "current": false,
+      "epoch": null,
+      "revision": null,
+      "state": "absent"
+     },
+     "components": null,
+     "live": true,
+     "representation": "sparse",
+     "revision": "<rev0>",
+     "session_id": "00000000000000000000000000000002"
+    },
+    "revision:appearance-1": {
+     "appearance": {
+      "current": false,
+      "epoch": null,
+      "revision": null,
+      "state": "absent"
+     },
+     "components": null,
+     "live": true,
+     "representation": "sparse",
+     "revision": "<rev0>",
+     "session_id": "00000000000000000000000000000002"
+    }
+   },
+   "row": [
+    {
+     "keys": [
+      "abandoned",
+      "appearance",
+      "capture_id",
+      "components",
+      "dense",
+      "end_reason",
+      "ended_at",
+      "finalization",
+      "frame_source",
+      "has_geometry",
+      "keyframes_accepted",
+      "keyframes_journaled",
+      "photographic",
+      "session_id",
+      "started_at",
+      "state"
+     ],
+     "state": "finalizing"
+    }
+   ],
+   "sha256": "8e69425275520a9b11a3326777dac2a8709752ba620b340e42214321c5f8b75e",
+   "status_revision": "<rev8>"
+  },
+  "pending|live|stale-epoch": {
+   "lifecycle": {
+    "build_in_progress": true,
+    "build_in_progress_unavailable_reason": null,
+    "evidence": "a live process (pid <pid>) holds the writer lock and session_stopped was written",
+    "finalization": {
+     "detail": null,
+     "final_solve": "pending",
+     "started_at": "<time>",
+     "state": "pending",
+     "updated_at": "<time>"
+    },
+    "reason": "the builder is finishing this world: the final solve and the final build run after the session stops, and the lock is released when they are done",
+    "state": "finalizing"
+   },
+   "revision": {
+    "revision:None": {
+     "appearance": {
+      "current": false,
+      "epoch": null,
+      "revision": null,
+      "state": "absent"
+     },
+     "components": null,
+     "live": true,
+     "representation": "sparse",
+     "revision": "<rev0>",
+     "session_id": "00000000000000000000000000000002"
+    },
+    "revision:appearance-1": {
+     "appearance": {
+      "current": false,
+      "epoch": null,
+      "revision": null,
+      "state": "absent"
+     },
+     "components": null,
+     "live": true,
+     "representation": "sparse",
+     "revision": "<rev0>",
+     "session_id": "00000000000000000000000000000002"
+    }
+   },
+   "row": [
+    {
+     "keys": [
+      "abandoned",
+      "appearance",
+      "capture_id",
+      "components",
+      "dense",
+      "end_reason",
+      "ended_at",
+      "finalization",
+      "frame_source",
+      "has_geometry",
+      "keyframes_accepted",
+      "keyframes_journaled",
+      "photographic",
+      "session_id",
+      "started_at",
+      "state"
+     ],
+     "state": "finalizing"
+    }
+   ],
+   "sha256": "8e69425275520a9b11a3326777dac2a8709752ba620b340e42214321c5f8b75e",
+   "status_revision": "<rev8>"
+  },
+  "pending|live|valid": {
+   "lifecycle": {
+    "build_in_progress": true,
+    "build_in_progress_unavailable_reason": null,
+    "evidence": "a live process (pid <pid>) holds the writer lock and session_stopped was written",
+    "finalization": {
+     "detail": null,
+     "final_solve": "pending",
+     "started_at": "<time>",
+     "state": "pending",
+     "updated_at": "<time>"
+    },
+    "reason": "the builder is finishing this world: the final solve and the final build run after the session stops, and the lock is released when they are done",
+    "state": "finalizing"
+   },
+   "revision": {
+    "revision:None": {
+     "appearance": {
+      "current": false,
+      "epoch": null,
+      "revision": null,
+      "state": "absent"
+     },
+     "components": null,
+     "live": true,
+     "representation": "sparse",
+     "revision": "<rev0>",
+     "session_id": "00000000000000000000000000000002"
+    },
+    "revision:appearance-1": {
+     "appearance": {
+      "current": false,
+      "epoch": null,
+      "revision": null,
+      "state": "absent"
+     },
+     "components": null,
+     "live": true,
+     "representation": "sparse",
+     "revision": "<rev0>",
+     "session_id": "00000000000000000000000000000002"
+    }
+   },
+   "row": [
+    {
+     "keys": [
+      "abandoned",
+      "appearance",
+      "capture_id",
+      "components",
+      "dense",
+      "end_reason",
+      "ended_at",
+      "finalization",
+      "frame_source",
+      "has_geometry",
+      "keyframes_accepted",
+      "keyframes_journaled",
+      "photographic",
+      "session_id",
+      "started_at",
+      "state"
+     ],
+     "state": "finalizing"
+    }
+   ],
+   "sha256": "8e69425275520a9b11a3326777dac2a8709752ba620b340e42214321c5f8b75e",
+   "status_revision": "<rev8>"
+  },
+  "pending|none|absent": {
+   "lifecycle": {
+    "build_in_progress": false,
+    "build_in_progress_unavailable_reason": null,
+    "evidence": "session_stopped was written and the finalization record is 'pending' with no process holding the lock",
+    "finalization": {
+     "detail": null,
+     "final_solve": "pending",
+     "started_at": "<time>",
+     "state": "pending",
+     "updated_at": "<time>"
+    },
+    "photographic": {
+     "detail": "this session has no finished global solve to build a photographic room from",
+     "stage": null,
+     "state": "unattempted"
+    },
+    "reason": "finalization did not complete; the geometry stored is the last build that finished",
+    "state": "interrupted"
+   },
+   "revision": {
+    "revision:None": {
+     "appearance": {
+      "current": false,
+      "epoch": null,
+      "revision": null,
+      "state": "absent"
+     },
+     "components": null,
+     "live": false,
+     "representation": "sparse",
+     "revision": "<rev0>",
+     "session_id": "00000000000000000000000000000002"
+    },
+    "revision:appearance-1": {
+     "appearance": {
+      "current": false,
+      "epoch": null,
+      "revision": null,
+      "state": "absent"
+     },
+     "components": null,
+     "live": false,
+     "representation": "sparse",
+     "revision": "<rev0>",
+     "session_id": "00000000000000000000000000000002"
+    }
+   },
+   "row": [
+    {
+     "keys": [
+      "abandoned",
+      "appearance",
+      "capture_id",
+      "components",
+      "dense",
+      "end_reason",
+      "ended_at",
+      "finalization",
+      "frame_source",
+      "has_geometry",
+      "keyframes_accepted",
+      "keyframes_journaled",
+      "photographic",
+      "session_id",
+      "started_at",
+      "state"
+     ],
+     "state": "interrupted"
+    }
+   ],
+   "sha256": "ba83981a2b63d0c9d3bdffb10635c734f1f2a8e2a5e274816da5df4f1ab49574",
+   "status_revision": "<rev7>"
+  },
+  "pending|none|foreign-owner": {
+   "lifecycle": {
+    "build_in_progress": false,
+    "build_in_progress_unavailable_reason": null,
+    "evidence": "session_stopped was written and the finalization record is 'pending' with no process holding the lock",
+    "finalization": {
+     "detail": null,
+     "final_solve": "pending",
+     "started_at": "<time>",
+     "state": "pending",
+     "updated_at": "<time>"
+    },
+    "photographic": {
+     "detail": "this session has no finished global solve to build a photographic room from",
+     "stage": null,
+     "state": "unattempted"
+    },
+    "reason": "finalization did not complete; the geometry stored is the last build that finished",
+    "state": "interrupted"
+   },
+   "revision": {
+    "revision:None": {
+     "appearance": {
+      "current": false,
+      "epoch": null,
+      "revision": null,
+      "state": "absent"
+     },
+     "components": null,
+     "live": false,
+     "representation": "sparse",
+     "revision": "<rev0>",
+     "session_id": "00000000000000000000000000000002"
+    },
+    "revision:appearance-1": {
+     "appearance": {
+      "current": false,
+      "epoch": null,
+      "revision": null,
+      "state": "absent"
+     },
+     "components": null,
+     "live": false,
+     "representation": "sparse",
+     "revision": "<rev0>",
+     "session_id": "00000000000000000000000000000002"
+    }
+   },
+   "row": [
+    {
+     "keys": [
+      "abandoned",
+      "appearance",
+      "capture_id",
+      "components",
+      "dense",
+      "end_reason",
+      "ended_at",
+      "finalization",
+      "frame_source",
+      "has_geometry",
+      "keyframes_accepted",
+      "keyframes_journaled",
+      "photographic",
+      "session_id",
+      "started_at",
+      "state"
+     ],
+     "state": "interrupted"
+    }
+   ],
+   "sha256": "ba83981a2b63d0c9d3bdffb10635c734f1f2a8e2a5e274816da5df4f1ab49574",
+   "status_revision": "<rev7>"
+  },
+  "pending|none|stale-epoch": {
+   "lifecycle": {
+    "build_in_progress": false,
+    "build_in_progress_unavailable_reason": null,
+    "evidence": "session_stopped was written and the finalization record is 'pending' with no process holding the lock",
+    "finalization": {
+     "detail": null,
+     "final_solve": "pending",
+     "started_at": "<time>",
+     "state": "pending",
+     "updated_at": "<time>"
+    },
+    "photographic": {
+     "detail": "this session has no finished global solve to build a photographic room from",
+     "stage": null,
+     "state": "unattempted"
+    },
+    "reason": "finalization did not complete; the geometry stored is the last build that finished",
+    "state": "interrupted"
+   },
+   "revision": {
+    "revision:None": {
+     "appearance": {
+      "current": false,
+      "epoch": null,
+      "revision": null,
+      "state": "absent"
+     },
+     "components": null,
+     "live": false,
+     "representation": "sparse",
+     "revision": "<rev0>",
+     "session_id": "00000000000000000000000000000002"
+    },
+    "revision:appearance-1": {
+     "appearance": {
+      "current": false,
+      "epoch": null,
+      "revision": null,
+      "state": "absent"
+     },
+     "components": null,
+     "live": false,
+     "representation": "sparse",
+     "revision": "<rev0>",
+     "session_id": "00000000000000000000000000000002"
+    }
+   },
+   "row": [
+    {
+     "keys": [
+      "abandoned",
+      "appearance",
+      "capture_id",
+      "components",
+      "dense",
+      "end_reason",
+      "ended_at",
+      "finalization",
+      "frame_source",
+      "has_geometry",
+      "keyframes_accepted",
+      "keyframes_journaled",
+      "photographic",
+      "session_id",
+      "started_at",
+      "state"
+     ],
+     "state": "interrupted"
+    }
+   ],
+   "sha256": "ba83981a2b63d0c9d3bdffb10635c734f1f2a8e2a5e274816da5df4f1ab49574",
+   "status_revision": "<rev7>"
+  },
+  "pending|none|valid": {
+   "lifecycle": {
+    "build_in_progress": false,
+    "build_in_progress_unavailable_reason": null,
+    "evidence": "session_stopped was written and the finalization record is 'pending' with no process holding the lock",
+    "finalization": {
+     "detail": null,
+     "final_solve": "pending",
+     "started_at": "<time>",
+     "state": "pending",
+     "updated_at": "<time>"
+    },
+    "photographic": {
+     "detail": "this session has no finished global solve to build a photographic room from",
+     "stage": null,
+     "state": "unattempted"
+    },
+    "reason": "finalization did not complete; the geometry stored is the last build that finished",
+    "state": "interrupted"
+   },
+   "revision": {
+    "revision:None": {
+     "appearance": {
+      "current": false,
+      "epoch": null,
+      "revision": null,
+      "state": "absent"
+     },
+     "components": null,
+     "live": false,
+     "representation": "sparse",
+     "revision": "<rev0>",
+     "session_id": "00000000000000000000000000000002"
+    },
+    "revision:appearance-1": {
+     "appearance": {
+      "current": false,
+      "epoch": null,
+      "revision": null,
+      "state": "absent"
+     },
+     "components": null,
+     "live": false,
+     "representation": "sparse",
+     "revision": "<rev0>",
+     "session_id": "00000000000000000000000000000002"
+    }
+   },
+   "row": [
+    {
+     "keys": [
+      "abandoned",
+      "appearance",
+      "capture_id",
+      "components",
+      "dense",
+      "end_reason",
+      "ended_at",
+      "finalization",
+      "frame_source",
+      "has_geometry",
+      "keyframes_accepted",
+      "keyframes_journaled",
+      "photographic",
+      "session_id",
+      "started_at",
+      "state"
+     ],
+     "state": "interrupted"
+    }
+   ],
+   "sha256": "ba83981a2b63d0c9d3bdffb10635c734f1f2a8e2a5e274816da5df4f1ab49574",
+   "status_revision": "<rev7>"
+  }
+ }
+}

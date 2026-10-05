@@ -25,7 +25,7 @@ import logging
 import re
 from html import escape as html_escape
 
-from tower.config import world_native_chrome_setting
+from tower.config import world_native_chrome_setting, world_picture_basis_setting
 from tower.results.world_builder_geometry import contained_world_id
 from tower.world_builder.render import (
     DEFAULT_MAX_POINTS,
@@ -420,7 +420,7 @@ def build_render_revision(store: WorldStore, world_id: str,
         rung = REPRESENTATION_SPARSE
     if rung not in (REPRESENTATION_SURFACE, REPRESENTATION_APPEARANCE):
         revision = render_revision(store, world_id, chosen, rung)
-    return {"session_id": chosen, "representation": rung,
+    body = {"session_id": chosen, "representation": rung,
             # The session is in the revision, so an open picture whose session
             # the Tower chose notices when the Tower would choose a newer one.
             "revision": f"{chosen}/{revision}",
@@ -436,6 +436,59 @@ def build_render_revision(store: WorldStore, world_id: str,
             # its build state moving, does not change the room page and must not
             # swap it. The phone compares it by value to keep its areas row current.
             "components": _components_or_none(store, world_id, chosen)}
+    if world_picture_basis_setting():
+        # WORLDS §4a `basis` (the PREVIEW, rule 8): what the picture served now was built
+        # from. The body's LAST key, and NOT part of `revision`. Off: no key at all.
+        body["basis"] = served_basis(store, world_id, chosen, rung)
+    return body
+
+
+BASIS_FINAL, BASIS_WALK = "final", "walk"
+
+
+def served_basis(store: WorldStore, world_id: str, session_id: str, rung: str) -> str | None:
+    """What the picture the Tower would serve now on `rung` was built from (WORLDS §4a
+    `basis`): `"final"`, `"walk"`, or None when it cannot tell. Never raises.
+
+    - appearance: the servable manifest's `quality` (`appearance_basis`);
+    - surface: the surface manifest's `params.quality`;
+    - dense, sparse (and `view=diagnostics`): the session record -- `"final"` only for a
+      finalization `complete` with `final_solve: "solved"`; `"walk"` for an open record, a
+      finalization `pending` or `interrupted`, or a final solve that did not succeed; None for
+      a closed record with no finalization (before 2026-09-06).
+    """
+    try:
+        if rung == REPRESENTATION_APPEARANCE:
+            from tower.results.world_builder_appearance import (  # noqa: PLC0415
+                appearance_basis,
+            )
+
+            return appearance_basis(store, world_id, session_id)
+        if rung == REPRESENTATION_SURFACE:
+            from tower.world_builder.store import _read_json_past_a_replace  # noqa: PLC0415
+
+            path = store.world_dir(world_id) / "surface" / session_id / "manifest.json"
+            manifest = _read_json_past_a_replace(path) if path.is_file() else None
+            params = manifest.get("params") if isinstance(manifest, dict) else None
+            quality = params.get("quality") if isinstance(params, dict) else None
+            return {"final": BASIS_FINAL, "live": BASIS_WALK}.get(quality)                 if isinstance(quality, str) else None
+        from tower.world_builder.records import (  # noqa: PLC0415
+            FINAL_SOLVE_SOLVED,
+            FINALIZATION_COMPLETE,
+        )
+
+        session = store.read_session(world_id, session_id)
+        if session.ended_at is None:
+            return BASIS_WALK
+        finalization = session.finalization
+        if not isinstance(finalization, dict) or not finalization:
+            return None
+        if (finalization.get("state") == FINALIZATION_COMPLETE
+                and finalization.get("final_solve") == FINAL_SOLVE_SOLVED):
+            return BASIS_FINAL
+        return BASIS_WALK
+    except Exception:  # noqa: BLE001 -- a probe that cannot tell answers None
+        return None
 
 
 def _room_captions(store: WorldStore, world_id: str, session_id: str) -> dict | None:

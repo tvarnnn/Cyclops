@@ -1053,6 +1053,28 @@ def world_area_builds_setting() -> bool:
     return _flag(WORLD_AREA_BUILDS_ENV, default=False)
 
 
+# T-UX1 (WORLD-BUILDER-WORLDS.md §2b; CARTRIDGE-RESULTS.md §10.1 `lifecycle.processing`). Read at call
+# time by the builder (whether to record its finish phase) and by the status producer and the saved-
+# worlds listing (whether to project it). Off: nothing is written, nothing is read, and every payload
+# and every solve output is byte for byte as before.
+WORLD_FINISH_STAGES_ENV = "TOWER_WORLD_FINISH_STAGES"
+
+
+def world_finish_stages_setting() -> bool:
+    """`TOWER_WORLD_FINISH_STAGES`: record and report what the builder is doing after Stop. Off."""
+    return _flag(WORLD_FINISH_STAGES_ENV, default=False)
+
+
+# The PREVIEW (WORLD-BUILDER-WORLDS.md §4a `basis`, rule 8). Read per request by the render revision
+# route. Off: the revision body is byte for byte as before (no `basis` key).
+WORLD_PICTURE_BASIS_ENV = "TOWER_WORLD_PICTURE_BASIS"
+
+
+def world_picture_basis_setting() -> bool:
+    """`TOWER_WORLD_PICTURE_BASIS`: say whether the served picture was built from the final pass. Off."""
+    return _flag(WORLD_PICTURE_BASIS_ENV, default=False)
+
+
 WORLD_RELOCALIZER_ENV = "TOWER_WORLD_RELOCALIZER"
 
 

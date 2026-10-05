@@ -1239,6 +1239,11 @@ def gate_by_consensus(store, world_id: str, session_id: str, solution, *, plan: 
             draws.append({"draw": k, "seed": seeds[k], "skipped": "a stop was asked for"})
             stop_cost_a_vote = True
             break
+        # T-UX1: pass k+1 of N. A no-op without the builder's final-solve writer installed --
+        # the finisher's `regate_published` reaches this loop with none.
+        from tower.world_builder import finish_phase  # noqa: PLC0415
+
+        finish_phase.mark(finish_phase.CHECKING, (k + 1, requested))
         t = time.perf_counter()
         try:
             candidate = plan.map_draw(seeds[k])
