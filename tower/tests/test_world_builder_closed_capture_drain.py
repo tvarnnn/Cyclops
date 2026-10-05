@@ -1127,6 +1127,59 @@ def test_a_successor_whose_closing_read_failed_is_not_finished(tmp_path, monkeyp
     assert not _labelled_finished(session)
 
 
+def test_the_first_of_three_captures_whose_closing_read_failed_is_not_finished(
+    tmp_path, monkeypatch, caplog
+):
+    """The re-review's L3, which kills its RV2-M2 and RV2-M3 (measuring, or
+    keeping, only the LATEST predecessor). A (805 read of 3,197; its one read
+    after the close fails) -> B (100, `disconnect`) -> C (100, `stop`). Only
+    the FIRST predecessor is short, two reconnects back."""
+    captures = tmp_path / "captures"
+    first = _capture_dir(captures / ("a" * 32), _journal_rows(805))
+    state = {"armed": False, "failed": 0}
+    original_read_new = capture_module._JournalTail.read_new
+
+    def read_new(self):
+        if state["armed"]:
+            state["armed"] = False
+            state["failed"] += 1
+            return []
+        return original_read_new(self)
+
+    monkeypatch.setattr(capture_module._JournalTail, "read_new", read_new)
+
+    def on_observe(n, _stop):
+        if n == 805:
+            with (first / "frames.jsonl").open("a", encoding="utf-8") as out:
+                out.write(_journal_rows(TOTAL, start=805))
+            _write_manifest(first, "disconnect")
+            state["b"] = _capture_dir(
+                captures / ("b" * 32),
+                _journal_rows(TOTAL + 100, start=TOTAL),
+                continues_capture=first.name,
+            )
+            state["armed"] = True
+        if n == 805 + 100:
+            _write_manifest(state["b"], "disconnect", continues_capture=first.name)
+            state["c"] = _capture_dir(
+                captures / ("c" * 32),
+                _journal_rows(TOTAL + 200, start=TOTAL + 100),
+                continues_capture=state["b"].name,
+            )
+        if n == 805 + 200:
+            _write_manifest(state["c"], "stop", continues_capture=state["b"].name)
+
+    _hook(monkeypatch, on_observe)
+    with caplog.at_level(logging.WARNING, logger="tower.world_build_session"):
+        exit_code, session = _run_session(first, tmp_path / "worlds")
+
+    assert state["failed"] == 1
+    assert exit_code == 0
+    assert session.frames_observed == 805 + 200
+    assert session.end_reason == "interrupted"
+    assert "2392 of the frames recorded in this walk" in caplog.text
+
+
 @pytest.mark.parametrize("stop_level", [None, StopRequest.SOFT], ids=["no-stop", "soft"])
 def test_a_capture_that_recorded_no_frame_has_no_journal_and_is_still_stop(
     tmp_path, monkeypatch, stop_level
@@ -1686,6 +1739,47 @@ def test_a_backward_wall_clock_step_cannot_hide_a_frame_from_before_the_stop(
     if step_back_s:
         # The step really put the Stop "before" the backlog on the wall clock.
         assert holder["stop"].soft_requested_at < last_received_at
+
+
+def test_a_hard_stop_after_a_soft_one_keeps_the_soft_cutoff(tmp_path, monkeypatch):
+    """The re-review's S6, which kills its RV2-M6. The stated policy: the
+    first soft stop's moment is the cutoff even if a hard stop follows.
+    Caught up at 48 of an open capture, soft stop; 3 frames recorded AFTER
+    it; then a hard stop; then the close before the post-loop read. The 3
+    are not part of the walk, so the session is `stop`."""
+    recorder = CaptureRecorder(tmp_path / "recordings")
+    capture_id = recorder.start()
+    for index in range(48):
+        assert recorder.write_frame(b"synthetic-frame", source_seq=index + 1)
+    holder = {}
+
+    def on_observe(n, stop):
+        if n == 48:
+            stop.request(StopRequest.SOFT, "stdin-closed")
+            holder["stop"] = stop
+
+    _hook(monkeypatch, on_observe)
+    original_bounded = builder_script.StopRequest.bounded
+
+    def bounded_then_record_then_hard_then_close(self, frames, **kwargs):
+        yield from original_bounded(self, frames, **kwargs)
+        _past_the_stop(holder["stop"])
+        for index in range(3):
+            assert recorder.write_frame(b"synthetic-frame", source_seq=49 + index)
+        holder["stop"].request(StopRequest.HARD, "SIGBREAK")
+        recorder.stop()
+
+    monkeypatch.setattr(
+        builder_script.StopRequest, "bounded", bounded_then_record_then_hard_then_close
+    )
+    exit_code, session = _run_session(
+        recorder.capture_dir(capture_id), tmp_path / "worlds", max_idle_polls="50"
+    )
+
+    assert holder["stop"].hard
+    assert exit_code == 0
+    assert session.frames_observed == 48
+    assert session.end_reason == "stop"
 
 
 def _rows_on_both_clocks(directory, first, stop):
