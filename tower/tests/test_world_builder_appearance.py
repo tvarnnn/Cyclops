@@ -1477,7 +1477,8 @@ class TestTheStopTransition:
         assert live.state == AP.STATE_OK, live.detail
         return w, TestClient(_app(w.root))
 
-    def test_stop_reports_rebuilding_and_the_final_build_keeps_the_epoch(self, tmp_path):
+    def test_stop_keeps_serving_the_walk_build_and_the_final_build_keeps_the_epoch(
+            self, tmp_path):
         w, client = self._walk(tmp_path)
         walking = _revision(client)
         assert walking["representation"] == "appearance"
@@ -1487,12 +1488,20 @@ class TestTheStopTransition:
 
         w.set_label(TRUSTED)                                   # Stop
         gap = _revision(client)
-        assert gap["appearance"]["revision"] is None
-        assert gap["appearance"]["state"] == AP.REBUILDING, "not a withdrawal: keep drawing"
-        assert gap["representation"] == "surface"
-        # still not SERVED to anyone during the gap: the label check stands
+        # Owner, manager 185 A: Stop ends capture, it does not make the walk's
+        # photos unavailable. The walk build re-redacted every frame with an
+        # allowlisted redactor, so its textures carry over -- and what an open
+        # page may keep, a viewer opened in the gap is served
+        # (`appearance_pipeline.may_serve`; tests/test_world_builder_photos_after_stop.py).
+        # It was `rebuilding` with `revision: null` and the surface rung.
+        assert gap["appearance"]["state"] == AP.SERVED, "not a withdrawal: keep drawing"
+        assert gap["appearance"]["revision"] == walking["appearance"]["revision"]
+        assert gap["representation"] == "appearance"
+        assert gap["revision"] == walking["revision"]
         r = client.get(f"/worlds/{WORLD}/appearance/{SESSION}/manifest")
-        assert r.status_code == 404 and r.json()["detail"] == AP.STALE_LABEL_DETAIL
+        assert r.status_code == 200 and r.headers["x-world-redaction"] == f"none&{TRUSTED}"
+        assert not AP.label_matches(w.store, WORLD, SESSION, w.manifest()), (
+            "the label rule itself is unchanged")
 
         _records_carry(w)                                      # the final depth stage
         final = w.build(params=A.AppearanceParams(selection_samples=4000,

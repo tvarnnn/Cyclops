@@ -887,11 +887,15 @@ let r = FOLLOW.decide({ok: T.walking}, page);
 assert.strictEqual(r.action, "load");
 page.revision = r.revision;
 assert.strictEqual(FOLLOW.decide({ok: T.walking}, page).action, "none");
+// Owner, manager 185 A: the walk's re-redacted build stays SERVED across Stop
+// (it was `rebuilding`, revision null, which a page held through and a viewer
+// opened in the gap never got). The open page keeps what it drew: nothing to do.
 r = FOLLOW.decide({ok: T.gap}, page);
-assert.strictEqual(r.action, "hold", "Stop must not drop the page: " + JSON.stringify(T.gap));
-assert.strictEqual(FOLLOW.nextDelay(r, 80000), FOLLOW.BASE_MS, "and it keeps asking at the base rate");
-page.holdingSince = 0; page.now = 60000;
-assert.strictEqual(FOLLOW.decide({ok: T.gap}, page).action, "hold");
+assert.strictEqual(r.action, "none", "Stop must not drop the page: " + JSON.stringify(T.gap));
+assert.strictEqual(T.gap.appearance.state, "served");
+assert.strictEqual(T.gap.appearance.revision, T.walking.appearance.revision);
+page.now = 60000;
+assert.strictEqual(FOLLOW.decide({ok: T.gap}, page).action, "none");
 r = FOLLOW.decide({ok: T.done}, page);
 assert.strictEqual(r.action, "load");
 assert.notStrictEqual(r.revision, page.revision);

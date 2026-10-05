@@ -238,7 +238,7 @@ def build_appearance_config(store, world_id: str, session_id: str, *,
     manifest = AP.read_appearance_manifest(store, world_id, session_id)
     if manifest is None:
         raise AppearanceViewerUnavailable("this session has no appearance artifact")
-    if not AP.label_matches(store, world_id, session_id, manifest):
+    if not AP.may_serve(store, world_id, session_id, manifest):
         raise AppearanceViewerUnavailable(AP.STALE_LABEL_DETAIL)
     phone = [k for k in (manifest.get("keyframes") or []) if k.get("tier") == "phone"]
     if not phone:

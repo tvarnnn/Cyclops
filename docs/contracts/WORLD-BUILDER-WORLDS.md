@@ -5,7 +5,7 @@
 | | |
 |---|---|
 | Contract | `world_builder.worlds/2026-09-10` |
-| Document version | **v5** (2026-10-05): native chrome. On request, and only behind the Tower's `TOWER_WORLD_NATIVE_CHROME` setting (off by default), the appearance page hands its chrome to the phone (§4c; the §4 query table, *Controls* and rule 6; §4a rule 3), manager 167. v4 (2026-09-28): the About panel's *The walk* no longer describes one capture, and the caption line's words are plain (*N of M images loaded*; the compact image format; `encoding_notes` never shown), manager 130 (§4). v3 (2026-09-28): the viewer's accessibility fixes from the O1 viewer check (iOS Simulator), manager 115 (§4). v2 (2026-09-27): viewer honesty, manager 106 (§4). See the change log at the end. The wire identifier above does **not** move: no payload changes, and the iOS decoder compares it for equality |
+| Document version | **v6** (2026-10-05): a walk's photos stay served across Stop, so a viewer opened after Stop is given the appearance rung (manager 185 A; §4 *Live*, §4a, §4b; `WORLD-BUILDER-APPEARANCE.md` v4). v5 (2026-10-05): native chrome. On request, and only behind the Tower's `TOWER_WORLD_NATIVE_CHROME` setting (off by default), the appearance page hands its chrome to the phone (§4c; the §4 query table, *Controls* and rule 6; §4a rule 3), manager 167. v4 (2026-09-28): the About panel's *The walk* no longer describes one capture, and the caption line's words are plain (*N of M images loaded*; the compact image format; `encoding_notes` never shown), manager 130 (§4). v3 (2026-09-28): the viewer's accessibility fixes from the O1 viewer check (iOS Simulator), manager 115 (§4). v2 (2026-09-27): viewer honesty, manager 106 (§4). See the change log at the end. The wire identifier above does **not** move: no payload changes, and the iOS decoder compares it for equality |
 | Transport | HTTP `GET /worlds`, same origin and same rules as the geometry routes (`WORLD-BUILDER-GEOMETRY.md` §1) |
 | Tower producer | `tower/tower/results/world_builder_library.py` |
 | Tower route | `tower/tower/routes/geometry.py` |
@@ -1058,9 +1058,17 @@ enforced).
   (a keyframe that left the phone tier frees its layer), renders source depth
   for moved or new layers, and keeps the camera: no navigation, no reload —
   **unless the new manifest's `epoch` differs from the one on screen**, when every
-  texture is dropped first. `appearance.state: rebuilding` (the ordinary Stop)
+  texture is dropped first. Across the ordinary Stop the walk build stays
+  `served` (v6, `WORLD-BUILDER-APPEARANCE.md` v4), so the page has nothing to
+  do and a page opened after Stop draws the walk's photos. **Known, open:** it
+  then captions the walk build *still building as you walk* (its `quality` is
+  `live`), which is false after Stop, until the final build lands; the copy fix
+  is deferred to a page revision of its own because the page bytes are pinned
+  by the photos-after-Stop byte-identity golden.
+  `appearance.state: rebuilding` (an older Tower's ordinary Stop)
   keeps the textures, keeps polling at 10 s and captions *finishing the world*;
-  after 20 minutes without a served build the page drops them and says so.
+  after 45 minutes (`HOLD_MAX_MS`; this said 20 until 2026-10-05, which the page
+  never did) without a served build the page drops them and says so.
   `withdrawn`, `absent`, `unavailable`, an old Tower's bare `null`, or a
   revision 404 naming a world or session that is gone (m3) deletes every texture
   at once and says why —
@@ -1263,11 +1271,14 @@ page to find out.
 `<session_id>/appearance:<build_id>` exactly when
 `GET /worlds/{id}/appearance/{session_id}/manifest` would answer 200, and `null`
 otherwise — no artifact, a purged world, **a session whose redaction label no
-longer matches the one the artifact was built under**, or the Tower's own
+longer matches the one the artifact was built under** (unless its textures
+carry over: the ordinary Stop over a walk build that re-redacted every frame
+with an allowlisted redactor stays served, v6, `WORLD-BUILDER-APPEARANCE.md`
+v3 §9), or the Tower's own
 appearance code having raised (`unavailable`, 2026-09-17: a crash is not a
 privacy event and must not be reported as one). `state` says which, and
 what a page holding textures does (`WORLD-BUILDER-APPEARANCE.md` §9): keep them
-through `rebuilding` (the ordinary Stop), drop them on `withdrawn`, `absent` or
+through `rebuilding` (an older Tower's ordinary Stop), drop them on `withdrawn`, `absent` or
 `unavailable`, and in every case keep asking. `epoch` changes exactly when an open page must
 drop its textures before drawing the served build. `current` is false when the artifact
 was built from an earlier solve or on an earlier surface. It is opaque, compared
@@ -1384,7 +1395,15 @@ short:
   under (including a re-redaction switch or its revert,
   `WORLD-BUILDER-APPEARANCE.md` §6.5) answers 404
   ("appearance is stale against the session's redaction record"), as does a
-  world with `images_purged`.
+  world with `images_purged` -- **except** (v6, 2026-10-05, manager 185 A) a
+  label change the artifact's textures carry over to the keyframe set now: the
+  same set, the same imagery source, every frame re-redacted by a redactor on
+  the allowlist (the ordinary Stop over a walk build), with every record that
+  decision rests on readable, the new label itself on the allowlist and the
+  provenance stating every field compared. That stays served, with
+  `X-World-Redaction` the label actually applied (`none&<redactor label>`), so
+  a viewer opened after Stop gets the walk's photos
+  (`WORLD-BUILDER-APPEARANCE.md` v4 §9).
 - `digest` is 32 lower-hex and must be named by the current manifest, or by one
   it superseded less than 120 s ago under the same label and keyframe set
   (APPEARANCE §9, review 1 M4). URLs carry no path, file name or capture
@@ -1501,3 +1520,4 @@ identifier unless it says so.
 | **v3** | 2026-09-28 | **Manager 115** (T-UX0b; from the O1 viewer check of `9bb9727` in the iOS 26.5 Simulator: SE (3rd gen), 17e, 17 Pro, 17 Pro Max; accessibility snapshots, nothing heard spoken) | §4: *Navigation* (the dark state: hidden from assistive technology when not shown; the headline on one line), *Where the room is* (the notices clear the status line), *Controls* (`#dark` joins the closed name table as a button; no empty status element in the accessibility tree; the *About* / *Less* toggle is a 44 × 44 target) | **Viewer accessibility, presentation only.** Assistive technology is no longer given a dark line or edge hint that is not shown. The dark line is a named button. The notices no longer overlap the status line. The dark headline no longer wraps at 375 / 390 px. The toggle's exemption ends: it is 44 × 44 like the bar. No visible text changes; the one new string is `#dark`'s accessible name, its two visible lines joined. `PAGE_REVISION` stays `appearance:1`. The trigger, the thresholds, what a tap does, the rendering and the camera path are unchanged. The page's fixed-px fonts ignoring the phone's text size (O1 item 6) are NOT addressed here: they go to U1.1 (native chrome) | **Nothing.** `world_builder.worlds/2026-09-10` and every payload are unchanged. No iOS source reads any changed string, id or selector: *Not reconstructed from here*, *Tap to turn back*, *Movement stops here*, *Placing images*, `bInfo` and `#dark` have 0 hits in `ios/`, and `ios/` runs no script in the page and reads nothing from it (no `evaluateJavaScript`, `WKUserScript` or script message handler) (checked 2026-09-28 with `git grep -F` and `git grep -i -F` against product `0636fce` and the O1 app `2ff0b0e`) |
 | **v4** | 2026-09-28 | **Manager 130** (§3; the corrected first batch B1 of the C7 review, `cx-C7-tux2-plain-language-20260928-REVIEW.md`, F6e and F10) | §4: *Caption* (the caption line's words; the About panel's *The walk*) | **Plain words, copy only.** *The walk* no longer says *this wearer never stood back from the desk, so it is a view from the desk, not of the whole room*: that described one 2026-09 capture, from a template served for every walk and every area page. *Best view* is described by what it optimizes: the most nearly whole picture near the walked path, which is not always the widest. This supersedes v2, which kept the whole of *The walk* unchanged. The caption line reads *N of M images loaded* (was *keyframes shown*), and says which side cannot use the compact image format, so fewer images fit (was *reduced set: … compressed textures …*). `encoding_notes` is never shown, which also ends *([object Object])* on a Tower without the ASTC encoder. `PAGE_REVISION` stays `appearance:1`. The anchors, the research marker, *Best view*'s scorer, `NAV.MAX_SKIP`, every manifest key, the rendering and the camera path are unchanged | **Nothing.** `world_builder.worlds/2026-09-10` and every payload are unchanged. No iOS source reads any changed string. Every old and new B1 string has 0 hits in `ios/` under `git grep -F` and `git grep -i -F`: *keyframes shown*, *reduced set*, *compressed-texture*, *compressed textures*, `encoding_notes`, *never stood back*, *view from the desk*, *best-supported vantage*, *poses that render badly*, *images loaded*, *compact image format*, *fewer images fit*, *walked path*, *most nearly whole*, *views that render badly*, and each whole sentence. The trees are product `b417c9f` and the phone's branches `origin/ios/walk5-imu` (`d852770`), `world-builder/int-walk5-candidate` (`a4afea1`), `origin/ios/ux-v1` (`2ff0b0e`), `origin/ios/wb-coherence-areas-v1` (`a1f98d7`) and `origin/ios/ux-u05-a11y` (`089777f`). The same grep finds *masks were not applied* 31 times on each phone branch, so the zeros are not an empty tree (checked 2026-09-28) |
 | **v5** | 2026-10-05 | **Managers 124 / 161 / 167 / 181** (U1.1 / T-UX3; C15, its review and C15r; manager 183 #10 for the band) | §4: the query table (`wb-chrome`), *Controls* (native forms), rule 6 (the echo); new §4c; §4a rule 3 | **Native chrome, behind a default-off setting.** The phone asks with `wb-chrome=native`. A Tower with `TOWER_WORLD_NATIVE_CHROME` on serves the appearance page plus five insertions and echoes `wb-chrome`. The page then reports its chrome through protocol 1 (`hello`, `state`, `view`, `await`), and hides its own only after the phone has drawn it. The page stays the authority for every state. The phone draws only the page's words, and its top band keeps a line for U0.6. Off, and for every other request, the page is byte for byte the page before (`tower/tests/golden/world_builder_native_chrome_dc35d51.json`). `PAGE_REVISION` stays `appearance:1` and both variants share one revision. The rendering, the camera path, the thresholds, the haze and the research marker's rules are unchanged | **Nothing moves.** `world_builder.worlds/2026-09-10`, every payload and both revision routes are unchanged. **v3's change-log claim that `ios/` "runs no script in the page and reads nothing from it" becomes: it runs no script in the page, and reads only what the page posts to `wbChromeV1`**. The one response that differs with the setting off is `/openapi.json`, which declares the optional `wb-chrome` query parameter on the two page routes whatever the setting (no client reads it) |
+| **v6** | 2026-10-05 | **Manager 185 A** (owner-declared bug: walk photos unavailable to a viewer opened after Stop) | §4 *Live*, §4a (`appearance.revision` / `state`), §4b (the label re-check) | Across the ordinary Stop the walk's appearance build stays **served** (it was `rebuilding` with `revision: null`), so the render ladder gives a viewer opened after Stop the appearance rung, not the surface. Only a label change whose textures carry over is affected; every other refusal is unchanged (`WORLD-BUILDER-APPEARANCE.md` v4) | **No shape change.** In the Stop gap `representation` is `appearance` (was `surface`), `appearance.state` `served` (was `rebuilding`) and `appearance.revision` the walk build's (was `null`); the page revision does not move across Stop. The wire identifier does not move |
