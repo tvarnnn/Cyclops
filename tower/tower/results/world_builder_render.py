@@ -25,6 +25,7 @@ import logging
 import re
 from html import escape as html_escape
 
+from tower.config import world_native_chrome_setting
 from tower.results.world_builder_geometry import contained_world_id
 from tower.world_builder.render import (
     DEFAULT_MAX_POINTS,
@@ -242,6 +243,35 @@ def viewer_capabilities(viewer: str | None) -> frozenset:
 def viewer_draws_appearance(viewer: str | None) -> bool:
     """Whether the client can load the appearance page (§4 `viewer`)."""
     return VIEWER_APPEARANCE in viewer_capabilities(viewer)
+
+
+# U1.1 native chrome (WORLD-BUILDER-WORLDS.md §4c). The phone asks with
+# `wb-chrome=native` on the PAGE request; the route passes the value through
+# untouched, and the adapter decides here -- the route may not import the
+# cartridge, so the switch is read on this side. Exactly `native` and the switch
+# on; `NATIVE`, `web`, `""` and anything else mean "not asked".
+CHROME_NATIVE = "native"
+
+
+def wants_native_chrome(chrome: str | None) -> bool:
+    """Whether this page request gets the native-chrome variant, if it is an
+    appearance page (`TOWER_WORLD_NATIVE_CHROME`, read per request)."""
+    return chrome == CHROME_NATIVE and world_native_chrome_setting()
+
+
+def _compose_native_chrome(page: str) -> str:
+    """The appearance page plus the five native-chrome insertions, or the page
+    unchanged: on an anchor miss (`native_chrome.compose` logs it at ERROR) and on
+    a module that will not import, the web page is served, never a lower rung."""
+    try:
+        from tower.world_builder import native_chrome  # noqa: PLC0415
+
+        composed = native_chrome.compose(page)
+    except Exception:  # noqa: BLE001 -- never lose the page to the chrome
+        logger.exception("[Tower][WorldBuilder][chrome] native chrome unavailable; "
+                         "serving the web page")
+        return page
+    return page if composed is None else composed
 
 
 # Transports of the appearance page (`appearance_render.TRANSPORTS`), named
@@ -466,13 +496,16 @@ def _components_or_none(store: WorldStore, world_id: str, session_id: str):
 
 def _appearance_page(store: WorldStore, world_id: str, session_id: str, revisions: dict,
                      transport: str, *, pinned: bool,
-                     captions: dict | None = None) -> str | None:
+                     captions: dict | None = None, native: bool = False) -> str | None:
     """The appearance page, or None to walk on down the ladder.
 
     Served exactly when the appearance routes would serve -- the same probe
     the revision route uses -- so the rung a page declares and the rung §4a
     reports agree. A pinned `representation=appearance` that cannot be served
     is a 404, like every other pinned rung.
+
+    `native` (WORLDS §4c): compose the native-chrome variant -- the same page plus
+    five insertions, stamped with the same revision. False is today's page exactly.
     """
     appearance = _appearance_revision(store, world_id, session_id)
     if appearance.get("revision") is None:
@@ -494,6 +527,8 @@ def _appearance_page(store: WorldStore, world_id: str, session_id: str, revision
         page = build_appearance_page(store, world_id, session_id, transport=transport,
                                      appearance_revision=appearance["revision"],
                                      **({"captions": captions} if captions else {}))
+        if native:
+            page = _compose_native_chrome(page)
         return _stamp_revision(store, world_id, session_id, page, revisions)
     except AppearanceViewerUnavailable as exc:
         if pinned:
@@ -669,7 +704,8 @@ def build_world_render(store: WorldStore, world_id: str, session_id: str | None,
                        view: str | None = None,
                        representation: str = REPRESENTATION_AUTO,
                        transport: str = TRANSPORT_APP,
-                       viewer: str | None = None) -> str:
+                       viewer: str | None = None,
+                       chrome: str | None = None) -> str:
     """The viewer page for one session of one world, or
     `WorldRenderUnavailable` naming what is missing.
 
@@ -683,7 +719,11 @@ def build_world_render(store: WorldStore, world_id: str, session_id: str | None,
     `auto` starts at the appearance rung only for a client that declared it,
     and at the surface otherwise; a PINNED `representation=appearance` is served
     regardless, because a caller that names the rung is asking for that page.
+
+    `chrome` is the page request's `wb-chrome` (WORLDS §4c). It reaches the
+    appearance page only; every lower rung is served exactly as without it.
     """
+    native = wants_native_chrome(chrome)
     contained = contained_world_id(store, world_id)
     if contained is None:
         raise WorldRenderUnavailable(f"no world {_clip(world_id)!r}")
@@ -717,7 +757,7 @@ def build_world_render(store: WorldStore, world_id: str, session_id: str | None,
     if start <= REPRESENTATION_LADDER.index(REPRESENTATION_APPEARANCE):
         page = _appearance_page(store, world_id, chosen, revisions, transport,
                                 pinned=representation == REPRESENTATION_APPEARANCE,
-                                captions=room_captions)
+                                captions=room_captions, native=native)
         if page is not None:
             return page
 
@@ -1088,9 +1128,10 @@ def _area_caption_info(area: _Area) -> dict:
             "levelled": _area_levelled(area)}
 
 
-def _area_appearance_page(area: _Area, appearance: dict, transport: str) -> str | None:
+def _area_appearance_page(area: _Area, appearance: dict, transport: str, *,
+                          native: bool = False) -> str | None:
     """The room's appearance page program, fed the area's artifacts, addresses and
-    captions. None to fall to the surface rung."""
+    captions. None to fall to the surface rung. `native` as in `_appearance_page`."""
     try:
         from tower.world_builder import appearance_render as AR  # noqa: PLC0415
     except Exception:  # noqa: BLE001
@@ -1109,6 +1150,8 @@ def _area_appearance_page(area: _Area, appearance: dict, transport: str) -> str 
                        "be composed (%s); falling back", area.world_id, area.session_id,
                        area.area_id, getattr(exc, "reason", type(exc).__name__))
         return None
+    if native:
+        page = _compose_native_chrome(page)
     return _stamp_area(page, _area_page_revision(area, appearance), area.area_id)
 
 
@@ -1129,16 +1172,19 @@ def build_area_render(store: WorldStore, world_id: str, session_id: str, area_id
                       max_points: int | None = None,
                       representation: str = REPRESENTATION_AUTO,
                       transport: str = TRANSPORT_APP,
-                      viewer: str | None = None) -> str:
+                      viewer: str | None = None,
+                      chrome: str | None = None) -> str:
     """`GET /worlds/{w}/areas/{s}/{a}/render` (§5.1): the area's page, or
     `AreaUnavailable`.
 
     The ladder is the room's, shortened to the two rungs an area is built as:
     appearance, then surface. `viewer` is accepted and ignored -- `auto` offers the
     appearance rung unconditionally, because every client that can name this route
-    postdates the scheme handler (§5.1, OPEN M12).
+    postdates the scheme handler (§5.1, OPEN M12). `chrome` as in
+    `build_world_render`: the appearance rung only.
     """
     del viewer  # accepted, ignored (§5.1)
+    native = wants_native_chrome(chrome)
     from tower.world_builder import components as C  # noqa: PLC0415
 
     area = resolve_area(store, world_id, session_id, area_id)
@@ -1147,7 +1193,7 @@ def build_area_render(store: WorldStore, world_id: str, session_id: str, area_id
     if representation in (REPRESENTATION_AUTO, REPRESENTATION_APPEARANCE):
         appearance = _area_appearance_revision(store, area)
         if appearance.get("revision") is not None:
-            page = _area_appearance_page(area, appearance, transport)
+            page = _area_appearance_page(area, appearance, transport, native=native)
             if page is not None:
                 return page
         if representation == REPRESENTATION_APPEARANCE:

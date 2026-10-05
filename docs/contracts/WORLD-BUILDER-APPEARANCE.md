@@ -2,7 +2,7 @@
 
 Contract identifier: `wb-appearance-keyframes/1`.
 
-Document version: **v2** (2026-09-27): §4.2b's wording about the capture, manager 106. See the change log at the end. The identifier above does **not** move: the artifact, the manifest and every route are unchanged.
+Document version: **v3** (2026-10-05): §6.6 and §9: under native chrome (WORLDS §4c) the phone draws the research marker and keeps it, manager 167. v2 (2026-09-27): §4.2b's wording about the capture, manager 106. See the change log at the end. The identifier above does **not** move: the artifact, the manifest and every route are unchanged.
 
 **Living document.** Added 2026-09-17 (fix-it campaign, appearance stage). §6.5 (re-redaction) added 2026-09-17. §5.3b (the cross-frame redaction consensus) added 2026-09-21.
 
@@ -904,7 +904,12 @@ reader needs only one of them:
 - the served headers `X-World-Imagery` and `X-World-Imagery-Warning`
   (§9), beside the existing `X-World-Redaction`;
 - the page's headline, its About panel and a marker across the top of the
-  screen that cannot be dismissed;
+  screen that cannot be dismissed. **Under native chrome (WORLDS §4c, v3) the
+  phone draws all three from the page's own words** (`hello.research`,
+  `state.caption`), keeps the marker above everything (the message and panels
+  included) for the life of the viewer, and also raises it from the served
+  `X-World-Imagery` header. The page hides its own marker only after the phone
+  has drawn one;
 - the surface manifest's own `imagery_source` / `privacy_safe`.
 
 **How a reader refuses.** `appearance_pipeline.imagery_matches(manifest,
@@ -1030,7 +1035,9 @@ path, file name or sequence number.
 `Vary: Accept-Encoding`. `X-World-Redaction` is `unknown` when the manifest
 names no effective label -- never the string `None`. The serving gate refuses,
 with a 404 that names both sides, an artifact whose imagery is not this
-Tower's (§6.6).
+Tower's (§6.6). The phone reads `X-World-Imagery` and `X-World-Imagery-Warning`
+from its proxied responses to raise its research marker (v3;
+WORLD-BUILDER-IOS §10). It still gives WebKit none of the Tower's headers.
 
 **Compression** (2026-09-17). A 200 of at least 1 KiB is sent
 `Content-Encoding: gzip` when the request's `Accept-Encoding` accepts gzip
@@ -1235,3 +1242,4 @@ versions from v2 on. **v1** is everything up to 2026-09-26.
 | Version | Date | Asked for by | Sections | Change | On the wire |
 |---|---|---|---|---|---|
 | **v2** | 2026-09-27 | **Manager 106** (T-UX0; from manager 096 §1, after walk 4 `c81766a3`) | §4.2b | The heading reads *A place no kept frame saw* (was *A place nobody photographed*). *Nobody ever photographed* becomes *no kept frame saw*. A new last sentence in the first paragraph says a fragment no kept frame saw may still have been captured, and that the haze never says *nobody photographed this*. Every number, constant and rule in §4.2b is unchanged, and so is the haze. The page's copy is amended in `WORLD-BUILDER-WORLDS.md` v2 (§4). The page version `PAGE_REVISION` stays `1` (§9; WORLDS §4a rule 3) | **Nothing.** `wb-appearance-keyframes/1`, the manifest and the routes are unchanged |
+| **v3** | 2026-10-05 | **Manager 167** (U1.1) | §6.6, §9 | Under native chrome the phone draws the research marker, headline and About panel from the page's words, keeps the marker for the life of the viewer, and raises it from `X-World-Imagery` too. §4.2b (the haze) is unchanged: its explanation stays in the page's *The flat grey patches* section, which the phone shows verbatim | **Nothing.** `wb-appearance-keyframes/1`, the manifest and the routes are unchanged |
