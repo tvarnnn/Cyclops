@@ -4550,6 +4550,8 @@ def test_window_totals_are_unknown_when_any_window_lacks_a_counter():
     ("store basis", "client phone-photo receipt is missing"),             # std M24
     ("observed", "incomplete frame path: sent=1, received=1, builder_observed=2"),   # std M25
     ("no frame_errors map", "client frame errors must be observed empty"),           # adv M21
+    ("matched", "incomplete source schedule: source=1, scheduled=1, sent=1, matched=2"),  # adv M01
+    ("replay only", "pacing_replay_only must be observed zero; got 1"),               # adv M24
 ])
 def test_each_compare_admission_check_refuses_a_run_on_its_own(tmp_path, edit, why):
     """A coherent, sealed run that differs in ONE thing compare must check itself."""
@@ -4564,6 +4566,10 @@ def test_each_compare_admission_check_refuses_a_run_on_its_own(tmp_path, edit, w
         doc["verdict"]["basis"] = "store"
     elif edit == "observed":
         doc["tower_walk"]["frames_observed"] = 2
+    elif edit == "matched":
+        doc["tower_side_pacing"]["matched"] = 2
+    elif edit == "replay only":
+        doc["tower_side_pacing"]["replay_only"] = 1
     elif edit == "no frame_errors map":
         client = json.loads((bad / "client.json").read_text(encoding="utf-8"))
         client["stream"].pop("frame_errors")
