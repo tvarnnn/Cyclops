@@ -378,7 +378,7 @@ final class WorldChromeUITests: XCTestCase {
                       "world-chrome-research", "world-chrome-ring", "world-render-newer-picture",
                       "world-render-retry-refused"]
         let cappedWords = ["Not reconstructed from here", "Tap to turn back", "reconstructed\nfrom here",
-                           "Movement stops here", "1 / 3"]
+                           "reconstructed", "from here", "Movement stops here", "1 / 3"]
         if issue.auditType == .dynamicType || issue.auditType == .textClipped,
            capped.contains(identifier) || cappedWords.contains(label) {
             return "capped at AX1/AX2 with the large content viewer (§3.5, Q3)"
