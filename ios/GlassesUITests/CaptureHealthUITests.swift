@@ -314,17 +314,25 @@ final class CaptureHealthUITests: XCTestCase {
         Int(label.prefix { $0.isNumber })
     }
 
+    /// Scrolls until the whole of `element` is on the screen, clear of the
+    /// bars: `isHittable` alone passes a 151 pt AX5 button whose centre is
+    /// below the window, and the tap then lands on nothing.
     @discardableResult
     private func reveal(_ element: XCUIElement, attempts: Int = 12) -> Bool {
+        func isClear() -> Bool {
+            let window = app.windows.firstMatch.frame
+            return element.exists && element.isHittable
+                && element.frame.minY >= window.minY + 100 && element.frame.maxY <= window.maxY - 40
+        }
         for _ in 0..<attempts {
-            if element.exists && element.isHittable { return true }
+            if isClear() { return true }
             let window = app.windows.firstMatch.frame
             let isAbove = element.exists && element.frame.midY < window.midY
             let from = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: isAbove ? 0.4 : 0.7))
             let to = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: isAbove ? 0.6 : 0.5))
             from.press(forDuration: 0.1, thenDragTo: to, withVelocity: .slow, thenHoldForDuration: 0.1)
         }
-        return element.exists && element.isHittable
+        return isClear()
     }
 
     @discardableResult
