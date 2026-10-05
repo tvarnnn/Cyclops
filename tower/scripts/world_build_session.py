@@ -170,6 +170,11 @@ class ObservedFrame:
     # copies (global_solve.py, ledger E6), and only the process that
     # observed the frame knows the path.
     source_path: Path | None = None
+    # The recorder's `time.monotonic()` at receipt (`tower.capture`
+    # RECEIVED_MONOTONIC), for a live capture whose journal carries it. Used
+    # only to end a soft-stop drain at the Stop (`StopRequest.bounded`);
+    # nothing is built from it.
+    received_monotonic: float | None = None
 
 
 def load_frames(directory: Path) -> list[ObservedFrame]:
@@ -382,6 +387,7 @@ def _follow_capture(directory: Path, *, poll_seconds: float, max_idle_polls,
             # COLMAP a DIFFERENT REAL PHOTOGRAPH under the right name, and
             # nothing anywhere would have noticed.
             source_path=follower.directory / frame.relpath,
+            received_monotonic=frame.received_monotonic,
         )
 
 
@@ -432,11 +438,18 @@ class StopRequest:
 
     * **Soft** -- the parent closed this process's stdin. It means "you are
       no longer wanted for NEW frames": the wearer left World Builder, or
-      the cartridge was stopped. A builder still observing stops
-      observing, closes the session as `interrupted`, skips the final
-      solve (nobody is waiting for it) and writes its final build. A
-      builder already finalizing carries on: finalization is bounded and
-      holds no camera.
+      the cartridge was stopped. A builder still observing an OPEN capture
+      stops observing; one reading a capture the wearer closed normally
+      first reads every frame recorded up to the stop, in order, and no
+      frame recorded after it. The session ends `interrupted` if the
+      capture was still open, or if a frame recorded by the stop was never
+      observed (see `main`). Either way it still runs the final solve --
+      only a hard stop skips it -- and writes its final build. A builder
+      already finalizing carries on: finalization is bounded and holds no
+      camera. The moment of the FIRST soft request is kept, on the
+      monotonic clock the recorder stamps every frame with
+      (`soft_requested_monotonic`): frames the camera records after it are
+      not part of the walk.
     * **Hard** -- `SIGBREAK` / `SIGTERM` / `SIGINT`. It means "wrap up
       now": the Tower is shutting down. Any solve child is terminated,
       the session is closed if it is still open, the final build is
@@ -456,6 +469,25 @@ class StopRequest:
         self.level: str | None = None
         self.source: str | None = None
         self._lock = threading.Lock()
+        self._draining_closed_capture = False
+        # When the first SOFT request was recorded, twice over. Never set by
+        # a hard request, nor by a soft one after a hard one, which `request`
+        # ignores.
+        #
+        # `soft_requested_monotonic` is THE CUTOFF: `time.monotonic()` in
+        # this process, the clock the recorder stamps every frame's
+        # `received_monotonic` with in the Tower process -- one clock on one
+        # host, and nobody can step it. It decides which frames were
+        # recorded by the Stop, both for the drain (`bounded`) and for the
+        # unobserved-frame guard in `main`. It was the wall clock until the
+        # Codex review showed a 3 s backward step turning a frame received
+        # before the Stop into one "after" it, and a partial walk into
+        # `stop` / `complete` (tower.capture RECEIVED_MONOTONIC).
+        #
+        # `soft_requested_at` is the same moment on the wall clock, kept
+        # for people reading a log; it decides nothing.
+        self.soft_requested_monotonic: float | None = None
+        self.soft_requested_at: float | None = None
 
     def install(self, *, watch_stdin: bool = False) -> None:
         if watch_stdin:
@@ -484,6 +516,39 @@ class StopRequest:
         """A callable for `CaptureFollower.follow(should_stop=...)`."""
         return self.level is not None
 
+    def asked_for_capture(self, handle: dict) -> bool:
+        """Soft stop ends an open capture; a normally closed one drains first.
+
+        A late-attached builder may still be reading thousands of frames from
+        the journal when the wearer closes the capture and leaves the screen.
+        Those frames are already recorded, and an ordinary capture stop
+        should not discard them. A disconnect remains stoppable so the
+        reconnect wait is not prolonged; a backlog it leaves unread is
+        labelled `interrupted` after the loop, not drained (see `main`).
+
+        The manifest read is strict: an unreadable `capture.json` is waited
+        out for `MANIFEST_READ_BUDGET_S` and then raises, rather than being
+        taken for an open capture and cutting the backlog on a guess.
+        """
+        if self.hard:
+            return True
+        if not self.asked:
+            return False
+        if self._draining_closed_capture:
+            return False
+        follower = handle.get("follower")
+        if (
+            follower is not None
+            # A hard stop that lands during the strict wait ends it at once.
+            and follower.end_reason(strict=True, cancel=self.hard_asked_for)
+            == END_REASON_CAPTURE_STOP
+        ):
+            # Normal close cannot reconnect. Keep draining even if a later
+            # manifest read is transiently unavailable.
+            self._draining_closed_capture = True
+            return False
+        return True
+
     def hard_asked_for(self) -> bool:
         return self.level == self.HARD
 
@@ -493,6 +558,9 @@ class StopRequest:
             # a hard one already recorded.
             if self.level == self.HARD:
                 return
+            if level == self.SOFT and self.soft_requested_monotonic is None:
+                self.soft_requested_monotonic = time.monotonic()
+                self.soft_requested_at = time.time()
             self.level = level
             self.source = source
 
@@ -522,18 +590,43 @@ class StopRequest:
             name="world-builder-stop-watch",
         )
 
-    def bounded(self, frames):
-        """`frames`, ending at the next frame after a stop was asked for.
+    def bounded(self, frames, *, should_stop=None):
+        """`frames`, ending at the next frame when the stop policy says so.
 
         The follower's poll loop is the primary check on the live path;
         this is the only one a `--frames` replay has, and it is what keeps
         a live stop from being missed by the one frame the follower had
-        already yielded.
+        already yielded. A followed, normally closed capture may drain its
+        recorded backlog after a soft request.
+
+        A DRAIN ENDS AT THE STOP. It reads what the camera recorded up to the
+        wearer's Stop and nothing after it: the first frame stamped later
+        than the first soft request ends it, so the frames behind that one
+        are not built either. 44fbd13 never built a frame after a soft
+        request, and this keeps a builder that was caught up at the Stop
+        exactly there even when the camera went on recording and the close
+        landed before its next stop check -- which drained the post-Stop
+        frames into the world (Codex H1; the re-review's `pd`: 51 built where
+        44fbd13 built 48). A frame that cannot show when it was received
+        (no `received_monotonic`) is drained, and the guard in `main` counts
+        any unread one, so ending a drain here can never hide an unread
+        frame from before the Stop.
         """
+        stop = should_stop or self.asked_for
         for frame in frames:
-            if self.asked:
+            if stop():
+                return
+            if self.recorded_after_the_stop(frame):
                 return
             yield frame
+
+    def recorded_after_the_stop(self, frame) -> bool:
+        """Whether a DRAINING builder has reached the first post-Stop frame."""
+        if not self._draining_closed_capture:
+            return False
+        cutoff = self.soft_requested_monotonic
+        received = getattr(frame, "received_monotonic", None)
+        return cutoff is not None and received is not None and received > cutoff
 
 
 # How long a solve child gets after `terminate()` before it is killed, and
@@ -1961,7 +2054,9 @@ def main(argv=None) -> int:
 
     capture_id = None
     synthetic_intrinsics = None
+    capture_start_error: OSError | ValueError | None = None
     capture_handle: dict = {}
+    capture_should_stop = lambda: stop_request.asked_for_capture(capture_handle)
     if args.follow_capture:
         frames = follow_capture(
             args.follow_capture,
@@ -1969,7 +2064,7 @@ def main(argv=None) -> int:
             max_idle_polls=args.max_idle_polls,
             # Asked inside the poll loop, which is where this process
             # spends a quiet walk. See `StopRequest`.
-            should_stop=stop_request.asked_for,
+            should_stop=capture_should_stop,
             handle=capture_handle,
         )
         frame_source = "live-capture"
@@ -2013,17 +2108,39 @@ def main(argv=None) -> int:
         observed_size = declared_size
         consulted = "not consulted (the synthetic renderer supplies its own)"
     elif args.follow_capture:
-        first, frames = first_observed_frame(frames)
+        try:
+            first, frames = first_observed_frame(frames)
+        except (OSError, ValueError) as exc:
+            # A strict soft-stop manifest read can fail before there is a
+            # session to unwind. Open the honest empty session below, then
+            # raise inside its lifecycle so the error is durable.
+            capture_start_error = exc
+            first, frames = None, iter(())
+        if first is not None and stop_request.recorded_after_the_stop(first):
+            # A soft stop before the first frame, then frames recorded after
+            # it and the close, all before the follower's next stop check:
+            # the first frame the drain finds is already past the Stop. It is
+            # not part of the walk, so it does not set this session's
+            # resolution either, and the session opens empty -- as 44fbd13's
+            # did, which stopped before reading it. The follower still counts
+            # what it holds, and none of it was recorded by the Stop.
+            first, frames = None, iter(())
         if first is None:
-            # The capture closed, or gave up, without a single frame.
-            # Not an error: it is a phone that connected and dropped. The
-            # session still opens, honestly empty.
-            logger.warning(
-                "[Tower][WorldBuilder] capture %s delivered no frames, so no "
-                "resolution was ever observed and no calibration was looked "
-                "up. This session will be empty.",
-                capture_id,
-            )
+            if capture_start_error is None:
+                # A phone can connect and drop without a frame. The session
+                # still opens, honestly empty.
+                logger.warning(
+                    "[Tower][WorldBuilder] capture %s delivered no frames, so no "
+                    "resolution was ever observed and no calibration was looked "
+                    "up. This session will be empty.",
+                    capture_id,
+                )
+            else:
+                logger.error(
+                    "[Tower][WorldBuilder] capture %s failed before its first "
+                    "frame: %s: %s; opening an error session",
+                    capture_id, type(capture_start_error).__name__, capture_start_error,
+                )
             observed_size = None
         else:
             observed_size = observed_size_of(first)
@@ -2037,9 +2154,16 @@ def main(argv=None) -> int:
                 else "an unreadable size",
                 first.source_seq,
             )
-        intrinsics = resolve_intrinsics(
-            intrinsics_store, observed_size, frame_source=frame_source
-        )
+        if capture_start_error is not None:
+            # The session below opens only to record the error durably.
+            # `resolve_intrinsics` would add a warning about the frame size
+            # and the unposed backend, and neither applies to a session
+            # that will never observe a frame (standard review, LOW-4).
+            intrinsics = CameraIntrinsics.unknown()
+        else:
+            intrinsics = resolve_intrinsics(
+                intrinsics_store, observed_size, frame_source=frame_source
+            )
     else:
         observed_size = observed_size_from_frames(args.frames)
         intrinsics = resolve_intrinsics(
@@ -2182,7 +2306,11 @@ def main(argv=None) -> int:
     # record a fresh `pending` block, so there is no older notice here to keep.
     finalization_notice_text = None
     try:
-        for frame in stop_request.bounded(frames):
+        if capture_start_error is not None:
+            raise capture_start_error
+        for frame in stop_request.bounded(
+            frames, should_stop=capture_should_stop if args.follow_capture else None
+        ):
             outcome = engine.observe(
                 frame.payload,
                 received_at=frame.received_at,
@@ -2321,7 +2449,69 @@ def main(argv=None) -> int:
             capture_end in (END_REASON_CAPTURE_STOP, END_REASON_CAPTURE_DISCONNECT)
             and not abandoned_reconnect
         )
-        if stop_request.asked and not capture_finished:
+        # AND WAS IT READ TO THE END? A capture that ENDED is not a capture
+        # this session OBSERVED, and the two lines above only ask the first.
+        # Both reviews of the closed-capture drain reproduced the gap from
+        # four directions -- a hard stop (Tower shutdown) during the drain,
+        # a soft stop decided a moment before the recorder's close landed, a
+        # soft stop in a backlog the link left behind (with and without a
+        # reconnect), a hard stop before the first frame -- and every one
+        # published part of a walk as `stop` / `complete`: the incident's
+        # failure, by another door. So the follower is asked how many of the
+        # frames the capture recorded its journal still holds unread, and
+        # any at all -- or an answer it cannot give -- is not a finished
+        # walk. A caught-up follower answers 0 after one stat per capture,
+        # and that path is untouched: same label, same log, nothing new
+        # written.
+        #
+        # A disconnected backlog is labelled here, NOT drained: draining it
+        # would wait out the successor grace with the stop suppressed (the
+        # standard review's M16 hung the suite that way).
+        #
+        # EVERY CAPTURE OF THE WALK is asked, not only the one the follower
+        # ended on: a reconnect whose read of the closed predecessor failed
+        # left that capture's tail unread (re-review of 40a4883, HIGH-1).
+        #
+        # ONLY FRAMES RECEIVED AT OR BEFORE THE FIRST SOFT STOP COUNT (lead
+        # decision on the re-review's MED-1). The wearer can leave the screen
+        # while the camera still streams; frames recorded after that Stop are
+        # not part of the walk, and counting them turned a builder that was
+        # caught up when it was told to go into `interrupted` where 44fbd13
+        # said `stop`. The comparison is each journal record's
+        # `received_monotonic` against `StopRequest.soft_requested_monotonic`,
+        # both `time.monotonic()` on this host: a clock nobody can step, so a
+        # wall-clock correction between a frame's receipt and the Stop cannot
+        # move a frame from before the Stop to after it (Codex H3). That
+        # moment is when THIS process recorded the request, up to
+        # `stdin_stop.PIPE_POLL_SECONDS` after the parent closed the pipe on
+        # Windows; frames recorded in that lag are counted, which can only
+        # say `interrupted`. A record that does not say when it arrived is
+        # counted. A hard stop alone (the Tower shutting down mid-walk) and
+        # no stop at all count every record.
+        #
+        # A FRAME THAT WAS READ AND COULD NOT BE BUILT COUNTS TOO: an image
+        # unreadable past its budget, a journal line that did not parse, a
+        # journal that went missing (Codex H2). See `unobserved_records`.
+        unobserved = (
+            follower.unobserved_records(
+                received_by_monotonic=stop_request.soft_requested_monotonic,
+                cancel=stop_request.hard_asked_for,
+            )
+            if capture_finished
+            else 0
+        )
+        if capture_finished and unobserved != 0:
+            end_reason = END_REASON_INTERRUPTED
+            logger.warning(
+                "[Tower][WorldBuilder] capture %s ended (%s), but %s of the frames "
+                "recorded in this walk%s were never observed by this session (stop "
+                "requested: %s, %s); the session ends as %r, not as a finished walk",
+                follower.directory.name, capture_end,
+                "an unknown number" if unobserved is None else unobserved,
+                "" if stop_request.soft_requested_at is None else " before the stop",
+                stop_request.level, stop_request.source, end_reason,
+            )
+        elif stop_request.asked and not capture_finished:
             # Now it means what it says: frames were still coming and
             # somebody asked this process to go.
             end_reason = END_REASON_INTERRUPTED

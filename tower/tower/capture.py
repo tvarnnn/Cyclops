@@ -29,12 +29,16 @@ incidental capture, and it must never become the default path.
 
 import json
 import logging
+import math
 import os
 import pathlib
 import time
 from dataclasses import dataclass, field
 
 from tower.storage import (
+    REPLACE_BACKOFF_MAX_S,
+    REPLACE_BACKOFF_S,
+    REPLACE_BUDGET_S,
     append_jsonl,
     new_id,
     read_json_closed,
@@ -92,6 +96,54 @@ DEFAULT_FOLLOW_POLL_SECONDS = 0.25
 DEFAULT_MAX_IDLE_POLLS = int(
     IDLE_FOLLOW_TIMEOUT_SECONDS / DEFAULT_FOLLOW_POLL_SECONDS
 )
+
+# How long a STRICT manifest read -- a soft-stop decision about whether a
+# recorded backlog may be discarded -- keeps retrying an unreadable
+# `capture.json` before it gives up and raises, and how it paces the tries.
+#
+# 2 s with 5 ms -> 50 ms doubling backoff: the WRITER's numbers for this very
+# file, on purpose. The recorder closes a capture with `write_json_atomic`,
+# whose `replace_with_retry` already waits up to `REPLACE_BUDGET_S` for a
+# reader to let go of the destination (`storage.py`, sized from the
+# 2026-09-06 field failure: a reader descheduled under solver load held a
+# file well past 60 ms). A reader that gave up sooner than the writer would
+# wait on the same file is the asymmetric one. The adversarial review of
+# 8ede341 (MED-1) measured what the old 3 x 10 ms (~20 ms) cost: a real
+# 150 ms Windows sharing violation on the closed manifest -- the shape of an
+# AV scanner or indexer opening a freshly replaced file -- turned a normal
+# close into an `error` world with 2,392 recorded frames never built.
+#
+# Only the soft-stop decision waits: a hard stop never reads the manifest,
+# and a readable manifest returns on the first try. There is no field
+# measurement of how long such a lock lasts; 2 s is the Tower's existing
+# bound for this lock class, not a new number.
+MANIFEST_READ_BUDGET_S = REPLACE_BUDGET_S
+MANIFEST_READ_BACKOFF_S = REPLACE_BACKOFF_S
+MANIFEST_READ_BACKOFF_MAX_S = REPLACE_BACKOFF_MAX_S
+
+# The journal field that says, on a clock that cannot step, when the Tower
+# received a frame: `time.monotonic()` in the recorder, taken with
+# `received_at` when `write_frame` began.
+#
+# It exists for ONE comparison, and `received_at` stays the clock every
+# reader presents (`time_basis: tower-receipt`). A builder told to stop keeps
+# the frames recorded up to the Stop and no later ones, so it compares each
+# frame's receipt with the moment it was asked to stop -- across two
+# processes. On the wall clock (`received_at` against the builder's
+# `time.time()`) a backward step between the two -- an NTP correction, a
+# manual change -- makes a frame received BEFORE the Stop read as after it,
+# and the walk was stored `stop` / `complete` with that frame never built
+# (Codex H3, reproduced by stepping the real `time.time` back 3 s). The
+# monotonic clock is never set or slewed by anyone, and it is the same clock
+# in every process on the host: GetTickCount64 on Windows, CLOCK_MONOTONIC on
+# Linux (measured and pinned: `test_the_monotonic_clock_is_one_clock_across_
+# processes`). The recorder and the builder always share a host -- the
+# builder is the Tower's own child process.
+#
+# A record WITHOUT it -- a journal written before this field existed, or by
+# hand -- cannot show it was received after a Stop, so it counts as before
+# it: the conservative answer, see `received_by_cutoff`.
+RECEIVED_MONOTONIC = "received_monotonic"
 
 logger = logging.getLogger(__name__)
 
@@ -154,7 +206,13 @@ class CaptureRecorder:
     implementable.
     """
 
-    def __init__(self, root, limits: CaptureLimits | None = None, clock=time.time):
+    def __init__(
+        self,
+        root,
+        limits: CaptureLimits | None = None,
+        clock=time.time,
+        monotonic=time.monotonic,
+    ):
         self._owner = None
         # The last capture this recorder closed because a socket dropped,
         # and when. Only ever used to LINK a successor to it; never to
@@ -163,6 +221,8 @@ class CaptureRecorder:
         self._root = pathlib.Path(root)
         self._limits = limits or CaptureLimits()
         self._clock = clock
+        # Stamps each frame's `received_monotonic`. See RECEIVED_MONOTONIC.
+        self._monotonic = monotonic
         self._status: CaptureStatus | None = None
 
     @property
@@ -256,6 +316,7 @@ class CaptureRecorder:
 
         status = self._status
         now = self._clock()
+        received_monotonic = self._monotonic()
         if now - status.started_at >= self._limits.max_seconds:
             (
                 logger.warning(
@@ -299,6 +360,7 @@ class CaptureRecorder:
                 "wire_seq": wire_seq,
                 "tx_seq": tx_seq,
                 "received_at": now,
+                RECEIVED_MONOTONIC: received_monotonic,
                 "time_basis": TIME_BASIS,
                 "relpath": f"{FRAMES_DIRNAME}/{filename}",
                 "byte_count": len(raw_bytes),
@@ -437,7 +499,7 @@ class _JournalTail:
     whole-file read, and what this has to reproduce incrementally.
     """
 
-    __slots__ = ("_path", "_offset", "_remainder")
+    __slots__ = ("_path", "_offset", "_remainder", "unparseable")
 
     def __init__(self, path, *, start_at_end: bool = False) -> None:
         self._path = path
@@ -452,6 +514,11 @@ class _JournalTail:
             except OSError:
                 self._offset = 0
         self._remainder = b""
+        # Complete lines `read_new` read past and could not parse. Each is a
+        # frame the recorder wrote a line for -- one line per frame -- that
+        # nobody can now observe, so a caller asking what was left unread
+        # counts them (`CaptureFollower.unobserved_records`).
+        self.unparseable = 0
 
     def read_new(self) -> list:
         try:
@@ -491,9 +558,126 @@ class _JournalTail:
                 records.append(json.loads(line))
             except (ValueError, UnicodeDecodeError):
                 # A line that is complete and still unparseable is real
-                # corruption. Skipped, exactly as a whole-file read would.
+                # corruption. Skipped, exactly as a whole-file read would --
+                # but counted: the read position has moved past a recorded
+                # frame that will never be observed.
+                self.unparseable += 1
                 logger.warning("[Tower][Capture] skipping an unreadable journal line")
         return records
+
+    def records_not_yet_read(
+        self, *, received_by_monotonic: float | None = None
+    ) -> int | None:
+        """How many journal records lie past what this tail has read.
+
+        Asked of a CLOSED capture, whose journal can no longer grow: the
+        recorder appends a frame's line before it writes the close manifest,
+        and `write_frame` refuses once the capture is closed. Costs one stat
+        when the answer is zero, which is every caught-up follower; the
+        bytes are read only when there is something left to count.
+
+        A trailing piece with no newline is not counted. Once the journal
+        is closed it can never be finished, so it is a torn write, not a
+        frame -- the same call `read_new` makes when it skips it.
+
+        `received_by_monotonic` counts only the records RECEIVED AT OR
+        BEFORE that `time.monotonic()` reading; `received_by_cutoff` below
+        says which ones those are.
+
+        None means the journal could not be measured. A caller deciding
+        whether a walk was read to its end must treat that as "not shown",
+        never as zero.
+        """
+        try:
+            size = self._path.stat().st_size
+        except FileNotFoundError:
+            # A journal this tail has ALREADY read from has gone missing
+            # since, and what lay past the read position can no longer be
+            # counted: "not shown", never zero (re-review of 40a4883, LOW-2).
+            if self._offset or self._remainder:
+                return None
+            # Nothing read and no journal. The recorder writes none before
+            # its first frame, so a capture that never recorded one -- a
+            # phone that connected and dropped -- has none and nothing in it
+            # is unread. But a journal that was moved or deleted looks the
+            # same from here, and answering 0 for it published a walk of
+            # recorded frames, none observed, as `stop` / `complete` (Codex
+            # H2; the re-review's h2c: 0 of 10). The capture's own manifest
+            # tells them apart: zero only if it says it wrote no frame.
+            return self._recorded_nothing()
+        except OSError:
+            return None
+        if size == self._offset:
+            return 0
+        if size < self._offset:
+            # Replaced under the reader. Not something a recorder does.
+            return None
+        try:
+            with self._path.open("rb") as handle:
+                handle.seek(self._offset)
+                chunk = handle.read()
+        except OSError:
+            return None
+        lines = (self._remainder + chunk).split(b"\n")
+        lines.pop()
+        lines = [line for line in lines if line.strip()]
+        if received_by_monotonic is None:
+            return len(lines)
+        counted = 0
+        for line in lines:
+            try:
+                record = json.loads(line)
+            except (ValueError, UnicodeDecodeError):
+                # A complete line that cannot be parsed cannot say when it
+                # was received, so it cannot be shown to be after the stop.
+                record = None
+            if received_by_cutoff(record, received_by_monotonic):
+                counted += 1
+        return counted
+
+    def _recorded_nothing(self) -> int | None:
+        """0 if this capture's manifest says it wrote no frame, else None."""
+        try:
+            manifest = read_json_closed(self._path.parent / CAPTURE_FILENAME)
+        except (OSError, ValueError):
+            return None
+        written = manifest.get("frames_written") if isinstance(manifest, dict) else None
+        if isinstance(written, int) and not isinstance(written, bool) and written == 0:
+            return 0
+        # Frames were written, or the manifest does not say: "not shown".
+        return None
+
+
+def received_monotonic_of(record) -> float | None:
+    """A record's `received_monotonic`, or None when it carries no usable one."""
+    when = record.get(RECEIVED_MONOTONIC) if isinstance(record, dict) else None
+    if isinstance(when, bool) or not isinstance(when, (int, float)):
+        return None
+    if not math.isfinite(when):
+        return None
+    return float(when)
+
+
+def received_by_cutoff(record, cutoff: float) -> bool:
+    """Whether a journal record counts as recorded at or before `cutoff`.
+
+    `cutoff` is a `time.monotonic()` reading -- a builder passes the moment
+    of its first soft stop -- and the record's side is its
+    `received_monotonic`, the recorder's `time.monotonic()` when
+    `write_frame` began, before the image or the line was written. Same
+    clock, same host, and a clock nobody can step: see RECEIVED_MONOTONIC.
+
+    A record is AFTER the cutoff only if it carries a finite number there
+    and the number is greater. Anything that cannot show that -- no
+    `received_monotonic` (a journal written before the field existed), a
+    value that is not a number, a line that did not parse -- counts as
+    recorded by the cutoff: the conservative answer, because counting it can
+    only make a session `interrupted`, never make a partial one finished.
+    """
+    when = received_monotonic_of(record)
+    if when is None:
+        return True
+    return not when > cutoff
 
 
 @dataclass(frozen=True)
@@ -508,6 +692,8 @@ class FollowedFrame:
     tx_seq: int | None = None
     width: int | None = None
     height: int | None = None
+    # See RECEIVED_MONOTONIC. None when the record carries no usable one.
+    received_monotonic: float | None = None
 
 
 class CaptureFollower:
@@ -555,6 +741,34 @@ class CaptureFollower:
         # Set when a stop arrives WHILE waiting out a reconnect. See
         # `stopped_awaiting_successor`.
         self._stopped_awaiting_successor = False
+        # A normal close is final for this directory. Keep the verified
+        # answer if a later atomic-replace read becomes unavailable.
+        self._confirmed_normal_stop = False
+        # What this follower has READ of every capture it followed, so a
+        # caller can ask afterwards whether anything recorded was left
+        # unread. `_tail` is the journal position in the directory it is
+        # bound to, and `_earlier` keeps the final position in each capture
+        # it followed BEFORE a reconnect rebound it. `_batch[_taken:]` are
+        # records already read off disk that the consumer has not yet taken
+        # -- the rest of a batch, plus the frame currently yielded. See
+        # `unobserved_records`.
+        self._tail: _JournalTail | None = None
+        self._earlier: list[_JournalTail] = []
+        self._batch: list = []
+        self._taken = 0
+        # Records read off a journal whose IMAGE could not be read, in any
+        # capture of the walk: recorded, taken off the journal, never handed
+        # on. Counted by `unobserved_records` exactly like records in hand
+        # (Codex H2: `_load` skipped them and the read position moved on, so
+        # nothing counted them, and a walk with a frame never built was
+        # stored `stop` / `complete` -- the re-review reproduced it with a
+        # real Windows lock on one JPEG, 3,196 of 3,197).
+        self._unloaded: list = []
+        # Set once an image read has outlasted its whole budget. The walk is
+        # then partial whatever follows, so later failing reads are counted
+        # without being waited on: the extra time an unreadable capture can
+        # cost a follower is one budget, not one budget per frame.
+        self._image_budget_spent = False
         # Skip whatever the journal already holds, and yield only frames
         # recorded from now on.
         #
@@ -579,7 +793,7 @@ class CaptureFollower:
         """True once the recorder has written an end reason."""
         return self.end_reason() is not None
 
-    def end_reason(self) -> str | None:
+    def end_reason(self, *, strict: bool = False, cancel=None) -> str | None:
         """WHY the capture ended, or None while it is still open.
 
         Carried rather than collapsed into `is_closed`, because the three
@@ -588,20 +802,158 @@ class CaptureFollower:
         ITSELF at a configured bound while the wearer is very likely still
         walking -- and a builder that treats that as an ordinary end
         finalises a world at the bound and says nothing.
+
+        The default never waits: an unreadable manifest is "still open",
+        and the next poll asks again.
+
+        `strict` is for a caller deciding whether a soft stop may discard a
+        recorded backlog. An unreadable manifest is retried, with backoff,
+        for `MANIFEST_READ_BUDGET_S` -- a budget of TIME, not of attempts,
+        because what it waits out is a lock held for a duration -- and then
+        RAISES: otherwise a read failure is indistinguishable from a
+        still-open capture, and the backlog would be cut on a guess. A
+        readable manifest, open or closed, returns on the first read.
+
+        A verified normal close is remembered for this directory and
+        answers a LATER unreadable read, never a readable one: the manifest
+        on disk always wins when it can be read.
+
+        A MISSING manifest is not retried and does not raise. The recorder
+        writes one before its first frame and only ever replaces it
+        atomically, so the name never goes absent mid-write: a directory
+        without one is not a Tower recording, and reads as "still open",
+        exactly as it did before 8ede341.
+
+        `cancel`, asked between strict retries, ends the wait early: when it
+        answers True the read gives up and answers None, as the default read
+        does. A builder passes its HARD stop, so a Tower shutdown that lands
+        while a soft-stop decision waits out a lock is honoured at once
+        rather than held for the whole budget and turned into an `error`
+        (re-review of 40a4883, LOW-3).
         """
         path = self._directory / CAPTURE_FILENAME
-        if not path.exists():
-            return None
-        try:
-            manifest = read_json_closed(path)
-        except (OSError, ValueError):
-            # A manifest caught mid-replace is not an ended capture. Say
-            # "still open" and re-read next poll rather than truncating
-            # the session on a transient read.
-            return None
-        if manifest.get("ended_at") is None:
-            return None
-        return manifest.get("end_reason") or END_REASON_STOP
+        deadline = None
+        backoff = MANIFEST_READ_BACKOFF_S
+        while True:
+            try:
+                manifest = read_json_closed(path)
+            except FileNotFoundError:
+                return END_REASON_STOP if self._confirmed_normal_stop else None
+            except (OSError, ValueError):
+                if self._confirmed_normal_stop:
+                    return END_REASON_STOP
+                if not strict:
+                    # An unreadable manifest is not proof of a closed capture.
+                    return None
+                now = time.monotonic()
+                if deadline is None:
+                    deadline = now + MANIFEST_READ_BUDGET_S
+                if now >= deadline:
+                    raise
+                if cancel is not None and cancel():
+                    return None
+                time.sleep(min(backoff, deadline - now))
+                backoff = min(backoff * 2, MANIFEST_READ_BACKOFF_MAX_S)
+                continue
+            if manifest.get("ended_at") is None:
+                return None
+            reason = manifest.get("end_reason") or END_REASON_STOP
+            if reason == END_REASON_STOP:
+                self._confirmed_normal_stop = True
+            return reason
+
+    def unobserved_records(
+        self, *, received_by_monotonic: float | None = None, cancel=None
+    ) -> int | None:
+        """Recorded frames of this walk its consumer never took.
+
+        The question a builder must ask before it calls a walk finished,
+        and the one the end reason cannot answer: `stop` says how the
+        capture ENDED, not whether this follower READ it. Every stop order
+        that cut a closed capture short -- a hard stop mid-drain, a soft
+        stop decided a moment before the close, a soft stop in a
+        disconnected backlog, a stop before the first frame -- reads `stop`
+        or `disconnect` afterwards, and each of them used to be published as
+        a finished walk.
+
+        THE AUTHORITY IS EACH CAPTURE'S OWN JOURNAL, `frames.jsonl`: the
+        recorder appends one line per recorded frame, before the close
+        manifest, and nothing after it. The answer is the records this
+        follower read off disk but never handed on, plus the complete
+        records past its read position. A record is taken when the consumer
+        asks for the NEXT one, which a driver does only after it has
+        finished with this one -- so a frame pulled and then dropped by a
+        stop check is counted as unread, as it should be.
+
+        EVERY CAPTURE THE FOLLOWER WAS BOUND TO IS COUNTED, not only the
+        last. A reconnect rebinds the follower after ONE journal read of the
+        closed predecessor, and that read answers nothing on a sharing
+        violation (`_JournalTail.read_new` returns [] on any `OSError`): the
+        follower then rebinds with the predecessor's tail unread. Counting
+        only the bound capture let a walk read 1,305 of 3,697 frames and be
+        stored `stop` / `complete` (re-review of 40a4883, HIGH-1, reproduced
+        with a real Windows lock). An earlier capture is never left holding
+        records in hand -- the rebind happens only after its last read
+        record was taken -- so for those only the journal is measured.
+
+        A RECORD READ BUT NEVER HANDED ON COUNTS TOO: one whose image could
+        not be read within its budget (`_unloaded`, see `_load`), and a
+        complete journal line that could not be parsed (`unparseable`). The
+        read position moved past both, so without this nothing counted them
+        (Codex H2).
+
+        `received_by_monotonic` counts only records received at or before it
+        (see `received_by_cutoff`). A builder passes the `time.monotonic()`
+        of its first SOFT stop: frames the camera recorded after the
+        wearer's Stop are not part of the walk (lead decision on the
+        re-review's MED-1). None counts every record.
+
+        An unmeasurable journal is measured again, with backoff, for up to
+        `MANIFEST_READ_BUDGET_S` -- the same lock class, the same budget --
+        unless `cancel` answers True between tries (re-review LOW-1).
+
+        Zero, after one stat per capture, for a follower that is caught up.
+        None if a journal still cannot be measured: "not shown", never zero.
+        """
+        tails = list(self._earlier)
+        if self._tail is not None:
+            tails.append(self._tail)
+        else:
+            # `follow()` never ran, so nothing was read: measure from where
+            # it WOULD have started.
+            tails.append(
+                _JournalTail(
+                    self._directory / FRAMES_FILENAME, start_at_end=self._start_at_end
+                )
+            )
+        cutoff = received_by_monotonic
+        in_hand = self._batch[self._taken:] + self._unloaded
+        held = (
+            len(in_hand)
+            if cutoff is None
+            else sum(1 for record in in_hand if received_by_cutoff(record, cutoff))
+        )
+        # A line that did not parse cannot say when it was received.
+        held += sum(tail.unparseable for tail in tails)
+        deadline = None
+        backoff = MANIFEST_READ_BACKOFF_S
+        while True:
+            total = held
+            for tail in tails:
+                beyond = tail.records_not_yet_read(received_by_monotonic=cutoff)
+                if beyond is None:
+                    total = None
+                    break
+                total += beyond
+            if total is not None:
+                return total
+            now = time.monotonic()
+            if deadline is None:
+                deadline = now + MANIFEST_READ_BUDGET_S
+            if now >= deadline or (cancel is not None and cancel()):
+                return None
+            time.sleep(min(backoff, deadline - now))
+            backoff = min(backoff * 2, MANIFEST_READ_BACKOFF_MAX_S)
 
     def follow(self, *, max_idle_polls: int | None = None, should_stop=None):
         """Frames, until the capture ends, the idle bound expires, or a
@@ -620,7 +972,11 @@ class CaptureFollower:
         another frame the person had already asked not to be remembered.
         """
         journal = self._directory / FRAMES_FILENAME
-        tail = _JournalTail(journal, start_at_end=self._start_at_end)
+        tail = self._tail = _JournalTail(journal, start_at_end=self._start_at_end)
+        self._earlier = []
+        self._batch, self._taken = [], 0
+        self._unloaded = []
+        self._image_budget_spent = False
         idle_polls = 0
         # Per FOLLOW, not per follower: a generator re-entered would
         # otherwise carry the previous run's answer forward.
@@ -631,20 +987,34 @@ class CaptureFollower:
                 return
             fresh = tail.read_new()
 
+            # `_taken` moves only AFTER the yield returns, i.e. when the
+            # consumer comes back for the next frame. A consumer that stops
+            # leaves this frame, and the rest of the batch, counted. A record
+            # whose image could not be read is never yielded; it is kept in
+            # `_unloaded` and counted there instead.
+            self._batch, self._taken = fresh, 0
             for record in fresh:
-                frame = self._load(record)
+                frame = self._load(record, cancel=should_stop)
                 if frame is not None:
                     yield frame
+                else:
+                    self._unloaded.append(record)
+                self._taken += 1
 
             # Journal first, manifest second, then ONE more journal read.
             # The recorder appends a line and only later rewrites the
             # manifest, so a follower that stopped the instant it saw an
             # end reason would drop whatever landed in between.
             if self.is_closed():
-                for record in tail.read_new():
-                    frame = self._load(record)
+                closing = tail.read_new()
+                self._batch, self._taken = closing, 0
+                for record in closing:
+                    frame = self._load(record, cancel=should_stop)
                     if frame is not None:
                         yield frame
+                    else:
+                        self._unloaded.append(record)
+                    self._taken += 1
 
                 successor = self._await_successor(should_stop=should_stop)
                 if successor is None:
@@ -674,8 +1044,13 @@ class CaptureFollower:
                     self._directory.name,
                     successor.name,
                 )
+                # The predecessor's tail is KEPT, not dropped: if the one
+                # read above failed, its unread records are still this
+                # walk's, and `unobserved_records` must count them.
+                self._earlier.append(tail)
                 self._directory = successor
-                tail = _JournalTail(self._directory / FRAMES_FILENAME)
+                self._confirmed_normal_stop = False
+                tail = self._tail = _JournalTail(self._directory / FRAMES_FILENAME)
                 idle_polls = 0
                 continue
 
@@ -859,19 +1234,59 @@ class CaptureFollower:
             self._sleep(self._poll_seconds)
         return None
 
-    def _load(self, record: dict) -> FollowedFrame | None:
+    def _load(self, record: dict, *, cancel=None) -> FollowedFrame | None:
+        """The frame a journal record points at, or None if it cannot be read.
+
+        None is never silent: `follow` keeps the record in `_unloaded`, and
+        `unobserved_records` counts it, so a walk with a frame that was
+        recorded and never built is not a finished walk (Codex H2).
+
+        AN IMAGE THAT CANNOT BE OPENED RIGHT NOW IS WAITED FOR, the way the
+        manifest and the journal are: retried with backoff for
+        `MANIFEST_READ_BUDGET_S`. The lock class is the same -- an AV scanner
+        or the indexer opening a freshly written file without read sharing,
+        which the re-review held on one JPEG for real -- so the budget is
+        the same. A frame read within it is built, not merely labelled.
+
+        What is not waited for: an image that does not exist (deleted, not
+        locked -- the recorder writes it before its journal line, so it never
+        appears late), any image once one has outlasted the whole budget
+        (the walk is partial already; see `_image_budget_spent`), and any
+        image after `cancel` -- the caller's stop check -- answers True,
+        so a Tower shutdown is not held up by a locked frame.
+        """
         relpath = record.get("relpath")
         if not relpath:
             return None
         path = self._directory / relpath
-        try:
-            raw_bytes = path.read_bytes()
-        except OSError:
-            # Should be impossible given the write ordering. A reader that
-            # trusted the invariant absolutely would turn one deleted file
-            # into a crash mid-session.
-            logger.warning("capture: journal references missing image %s", path)
-            return None
+        deadline = None
+        backoff = MANIFEST_READ_BACKOFF_S
+        while True:
+            try:
+                raw_bytes = path.read_bytes()
+                break
+            except FileNotFoundError:
+                # Should be impossible given the write ordering. A reader that
+                # trusted the invariant absolutely would turn one deleted file
+                # into a crash mid-session.
+                logger.warning("capture: journal references missing image %s", path)
+                return None
+            except OSError as exc:
+                now = time.monotonic()
+                if deadline is None:
+                    deadline = now + MANIFEST_READ_BUDGET_S
+                gave_up = self._image_budget_spent or now >= deadline
+                if gave_up or (cancel is not None and cancel()):
+                    if now >= deadline:
+                        self._image_budget_spent = True
+                    logger.warning(
+                        "capture: could not read image %s (%s: %s); the frame is "
+                        "recorded and was not observed",
+                        path, type(exc).__name__, exc,
+                    )
+                    return None
+                time.sleep(min(backoff, deadline - now))
+                backoff = min(backoff * 2, MANIFEST_READ_BACKOFF_MAX_S)
         return FollowedFrame(
             source_seq=record["source_seq"],
             received_at=record["received_at"],
@@ -881,4 +1296,5 @@ class CaptureFollower:
             tx_seq=record.get("tx_seq"),
             width=record.get("width"),
             height=record.get("height"),
+            received_monotonic=received_monotonic_of(record),
         )

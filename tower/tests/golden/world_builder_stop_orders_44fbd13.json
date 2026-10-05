@@ -1,0 +1,1834 @@
+{
+ "frames": 24,
+ "orders": {
+  "close-then-hard": {
+   "events": [
+    {
+     "event_id": 0,
+     "kind": "session_started",
+     "payload": {
+      "frame_source": "live-capture"
+     },
+     "schema_version": 1,
+     "time_basis": "tower-receipt"
+    },
+    {
+     "event_id": 1,
+     "kind": "keyframe_accepted",
+     "payload": {
+      "keyframe_id": "00000000000000000000000000000002:00000001",
+      "reason": "session_seed",
+      "segment_index": 0
+     },
+     "schema_version": 1,
+     "time_basis": "tower-receipt"
+    },
+    {
+     "event_id": 2,
+     "kind": "keyframe_accepted",
+     "payload": {
+      "keyframe_id": "00000000000000000000000000000002:00000004",
+      "reason": "parallax",
+      "segment_index": 0
+     },
+     "schema_version": 1,
+     "time_basis": "tower-receipt"
+    },
+    {
+     "event_id": 3,
+     "kind": "keyframe_accepted",
+     "payload": {
+      "keyframe_id": "00000000000000000000000000000002:00000007",
+      "reason": "parallax",
+      "segment_index": 0
+     },
+     "schema_version": 1,
+     "time_basis": "tower-receipt"
+    },
+    {
+     "event_id": 4,
+     "kind": "keyframe_accepted",
+     "payload": {
+      "keyframe_id": "00000000000000000000000000000002:00000010",
+      "reason": "parallax",
+      "segment_index": 0
+     },
+     "schema_version": 1,
+     "time_basis": "tower-receipt"
+    },
+    {
+     "event_id": 5,
+     "kind": "keyframe_accepted",
+     "payload": {
+      "keyframe_id": "00000000000000000000000000000002:00000013",
+      "reason": "parallax",
+      "segment_index": 0
+     },
+     "schema_version": 1,
+     "time_basis": "tower-receipt"
+    },
+    {
+     "event_id": 6,
+     "kind": "keyframe_accepted",
+     "payload": {
+      "keyframe_id": "00000000000000000000000000000002:00000016",
+      "reason": "parallax",
+      "segment_index": 0
+     },
+     "schema_version": 1,
+     "time_basis": "tower-receipt"
+    },
+    {
+     "event_id": 7,
+     "kind": "keyframe_accepted",
+     "payload": {
+      "keyframe_id": "00000000000000000000000000000002:00000019",
+      "reason": "parallax",
+      "segment_index": 0
+     },
+     "schema_version": 1,
+     "time_basis": "tower-receipt"
+    },
+    {
+     "event_id": 8,
+     "kind": "keyframe_accepted",
+     "payload": {
+      "keyframe_id": "00000000000000000000000000000002:00000022",
+      "reason": "parallax",
+      "segment_index": 0
+     },
+     "schema_version": 1,
+     "time_basis": "tower-receipt"
+    },
+    {
+     "event_id": 9,
+     "kind": "session_stopped",
+     "payload": {
+      "capture_end_reason": "stop",
+      "end_reason": "stop"
+     },
+     "schema_version": 1,
+     "time_basis": "tower-receipt"
+    }
+   ],
+   "exit": 0,
+   "files": {
+    "intrinsics/480x360.json": "8fafa229f28445ac85b2fbb4b8d0167f288f31a15a7718c4368bc53754dc0143",
+    "worlds/00000000000000000000000000000001/derived/00000000000000000000000000000002/manifest.json": "2b85738ee1d949983bf433357b1bb3feb780ce10eff1904a6aed00687e115b6f",
+    "worlds/00000000000000000000000000000001/derived/00000000000000000000000000000002/points.json": "98f1482f7cbd6e9606c3d3a2559c34024d7ec0c2edd4290a718917faacc87273",
+    "worlds/00000000000000000000000000000001/derived/00000000000000000000000000000002/poses.json": "e418bf465733ff7fc5942fa964fa676ffde2eccf34b466864603ca9d83a88d6c",
+    "worlds/00000000000000000000000000000001/derived/00000000000000000000000000000002/support.json": "62b1d51e8b17b5204f1e96e5fc5addb0ca765620968d9a04125709440862c330",
+    "worlds/00000000000000000000000000000001/derived/manifest.json": "2b85738ee1d949983bf433357b1bb3feb780ce10eff1904a6aed00687e115b6f",
+    "worlds/00000000000000000000000000000001/sessions/00000000000000000000000000000002/edges.jsonl": "197d5dc1fd9a3f8ea490da054f946761b9e646d844070c3f85b773112cca5fa5",
+    "worlds/00000000000000000000000000000001/sessions/00000000000000000000000000000002/events.jsonl": "4a64bf765db8b2abe14f557cb3c7b45e491a7875b6dc2f803a9ab587575f5434",
+    "worlds/00000000000000000000000000000001/sessions/00000000000000000000000000000002/images/00000001.jpg": "a59a421bdba15ecfbe41c49077d10eefe1bdc05f31aa8a4c7bc4e7f7010b5fa9",
+    "worlds/00000000000000000000000000000001/sessions/00000000000000000000000000000002/images/00000004.jpg": "df049d926a0309ebb026ea75cae57950e761b178d8d113dc13baafff8dbc3b1d",
+    "worlds/00000000000000000000000000000001/sessions/00000000000000000000000000000002/images/00000007.jpg": "1d64c88ffdbfe48e173596e41f519e01e048fb2b6f83f87b7bb960d9120d856c",
+    "worlds/00000000000000000000000000000001/sessions/00000000000000000000000000000002/images/00000010.jpg": "d3933a46f89f7e9a60e9373ae23b466c8c5752485c9caf7916efdc597a8990a7",
+    "worlds/00000000000000000000000000000001/sessions/00000000000000000000000000000002/images/00000013.jpg": "755bb6b287413e65f812a455fdf7e25185b4e4e91264e150e4c3fada42395808",
+    "worlds/00000000000000000000000000000001/sessions/00000000000000000000000000000002/images/00000016.jpg": "c1c1792630db13971041a81e668d3c8e2679400719a4a620cca09a256ea62577",
+    "worlds/00000000000000000000000000000001/sessions/00000000000000000000000000000002/images/00000019.jpg": "dd22f73bce5e6bfe9b06f802cdfea95d2183f912c14ca34baa57d6cc32b0b1d0",
+    "worlds/00000000000000000000000000000001/sessions/00000000000000000000000000000002/images/00000022.jpg": "fddea61e196fcd45663f2360eabd9d74edc0267ee509cf4d7c5c77383fd75908",
+    "worlds/00000000000000000000000000000001/sessions/00000000000000000000000000000002/keyframes.jsonl": "d7765944dfb88bc40ef9489f5fd9aabf1eaa592ebac2701845971d2436911b22",
+    "worlds/00000000000000000000000000000001/sessions/00000000000000000000000000000002/session.json": "1919f4054e6068ff9f199d2bfef9ebe731eeb47727d9faa4878bd24955e9a2b6",
+    "worlds/00000000000000000000000000000001/world.json": "137577c4210cfee8f1db48272dff7020f7148cbfab26a0c85df00ab96197c5f2"
+   },
+   "log": [
+    "INFO tower.world_build_session [Tower][WorldBuilder] world root <WD>\\worlds (cwd <CWD>) -- calibrations on file: 480x360",
+    "INFO tower.world_build_session [Tower][WorldBuilder] first frame of capture cccccccccccccccccccccccccccccccc observed at 480x360 (source_seq=1); resolving intrinsics against THAT, not against anything declared",
+    "INFO tower.world_build_session [Tower][WorldBuilder] session 00000000000000000000000000000002 in world 00000000000000000000000000000001: source=live-capture capture=cccccccccccccccccccccccccccccccc root=<WD>\\worlds observed=480x360 calibration=<WD>\\worlds\\intrinsics\\480x360.json intrinsics=self_calibrated backend=classical-sfm (requested auto) rebuild_every=4",
+    "INFO tower.world_build_session [Tower][WorldBuilder] rebuild 1: 4 keyframes -> 3 positioned poses, 1347 points, 1 segments in <T>",
+    "INFO tower.world_build_session [Tower][WorldBuilder] rebuild 2: 8 keyframes -> 7 positioned poses, 2106 points, 1 segments in <T>",
+    "INFO tower.world_build_session [Tower][WorldBuilder] stop requested (hard, SIGBREAK) after the capture closed (stop); this is an ordinary end and the session ends as 'stop'",
+    "INFO tower.world_build_session [Tower][WorldBuilder] session 00000000000000000000000000000002 finished: 24 frames, 8 keyframes, 1 segments, backend=classical-sfm (downgraded_from=None), 7 solved poses, 2106 points, scale=relative, final build <T>"
+   ],
+   "report": {
+    "backend_id": "classical-sfm",
+    "build_seconds": "<T>",
+    "downgraded_from": null,
+    "end_reason": "stop",
+    "finalization": "complete",
+    "frame_source": "live-capture",
+    "frames_observed": 24,
+    "keyframes_accepted": 8,
+    "observe_ms_per_frame": "<T>",
+    "points": 2106,
+    "poses_refused": 0,
+    "poses_solved": 7,
+    "rebuilds": 2,
+    "rejected_by_reason": {
+     "insufficient_motion": 16
+    },
+    "scale_state": "relative",
+    "segments": 1,
+    "session_id": "00000000000000000000000000000002",
+    "world_id": "00000000000000000000000000000001"
+   }
+  },
+  "close-then-soft": {
+   "events": [
+    {
+     "event_id": 0,
+     "kind": "session_started",
+     "payload": {
+      "frame_source": "live-capture"
+     },
+     "schema_version": 1,
+     "time_basis": "tower-receipt"
+    },
+    {
+     "event_id": 1,
+     "kind": "keyframe_accepted",
+     "payload": {
+      "keyframe_id": "00000000000000000000000000000002:00000001",
+      "reason": "session_seed",
+      "segment_index": 0
+     },
+     "schema_version": 1,
+     "time_basis": "tower-receipt"
+    },
+    {
+     "event_id": 2,
+     "kind": "keyframe_accepted",
+     "payload": {
+      "keyframe_id": "00000000000000000000000000000002:00000004",
+      "reason": "parallax",
+      "segment_index": 0
+     },
+     "schema_version": 1,
+     "time_basis": "tower-receipt"
+    },
+    {
+     "event_id": 3,
+     "kind": "keyframe_accepted",
+     "payload": {
+      "keyframe_id": "00000000000000000000000000000002:00000007",
+      "reason": "parallax",
+      "segment_index": 0
+     },
+     "schema_version": 1,
+     "time_basis": "tower-receipt"
+    },
+    {
+     "event_id": 4,
+     "kind": "keyframe_accepted",
+     "payload": {
+      "keyframe_id": "00000000000000000000000000000002:00000010",
+      "reason": "parallax",
+      "segment_index": 0
+     },
+     "schema_version": 1,
+     "time_basis": "tower-receipt"
+    },
+    {
+     "event_id": 5,
+     "kind": "keyframe_accepted",
+     "payload": {
+      "keyframe_id": "00000000000000000000000000000002:00000013",
+      "reason": "parallax",
+      "segment_index": 0
+     },
+     "schema_version": 1,
+     "time_basis": "tower-receipt"
+    },
+    {
+     "event_id": 6,
+     "kind": "keyframe_accepted",
+     "payload": {
+      "keyframe_id": "00000000000000000000000000000002:00000016",
+      "reason": "parallax",
+      "segment_index": 0
+     },
+     "schema_version": 1,
+     "time_basis": "tower-receipt"
+    },
+    {
+     "event_id": 7,
+     "kind": "keyframe_accepted",
+     "payload": {
+      "keyframe_id": "00000000000000000000000000000002:00000019",
+      "reason": "parallax",
+      "segment_index": 0
+     },
+     "schema_version": 1,
+     "time_basis": "tower-receipt"
+    },
+    {
+     "event_id": 8,
+     "kind": "keyframe_accepted",
+     "payload": {
+      "keyframe_id": "00000000000000000000000000000002:00000022",
+      "reason": "parallax",
+      "segment_index": 0
+     },
+     "schema_version": 1,
+     "time_basis": "tower-receipt"
+    },
+    {
+     "event_id": 9,
+     "kind": "session_stopped",
+     "payload": {
+      "capture_end_reason": "stop",
+      "end_reason": "stop"
+     },
+     "schema_version": 1,
+     "time_basis": "tower-receipt"
+    }
+   ],
+   "exit": 0,
+   "files": {
+    "intrinsics/480x360.json": "8fafa229f28445ac85b2fbb4b8d0167f288f31a15a7718c4368bc53754dc0143",
+    "worlds/00000000000000000000000000000001/derived/00000000000000000000000000000002/manifest.json": "2b85738ee1d949983bf433357b1bb3feb780ce10eff1904a6aed00687e115b6f",
+    "worlds/00000000000000000000000000000001/derived/00000000000000000000000000000002/points.json": "98f1482f7cbd6e9606c3d3a2559c34024d7ec0c2edd4290a718917faacc87273",
+    "worlds/00000000000000000000000000000001/derived/00000000000000000000000000000002/poses.json": "e418bf465733ff7fc5942fa964fa676ffde2eccf34b466864603ca9d83a88d6c",
+    "worlds/00000000000000000000000000000001/derived/00000000000000000000000000000002/support.json": "62b1d51e8b17b5204f1e96e5fc5addb0ca765620968d9a04125709440862c330",
+    "worlds/00000000000000000000000000000001/derived/manifest.json": "2b85738ee1d949983bf433357b1bb3feb780ce10eff1904a6aed00687e115b6f",
+    "worlds/00000000000000000000000000000001/sessions/00000000000000000000000000000002/edges.jsonl": "197d5dc1fd9a3f8ea490da054f946761b9e646d844070c3f85b773112cca5fa5",
+    "worlds/00000000000000000000000000000001/sessions/00000000000000000000000000000002/events.jsonl": "4a64bf765db8b2abe14f557cb3c7b45e491a7875b6dc2f803a9ab587575f5434",
+    "worlds/00000000000000000000000000000001/sessions/00000000000000000000000000000002/images/00000001.jpg": "a59a421bdba15ecfbe41c49077d10eefe1bdc05f31aa8a4c7bc4e7f7010b5fa9",
+    "worlds/00000000000000000000000000000001/sessions/00000000000000000000000000000002/images/00000004.jpg": "df049d926a0309ebb026ea75cae57950e761b178d8d113dc13baafff8dbc3b1d",
+    "worlds/00000000000000000000000000000001/sessions/00000000000000000000000000000002/images/00000007.jpg": "1d64c88ffdbfe48e173596e41f519e01e048fb2b6f83f87b7bb960d9120d856c",
+    "worlds/00000000000000000000000000000001/sessions/00000000000000000000000000000002/images/00000010.jpg": "d3933a46f89f7e9a60e9373ae23b466c8c5752485c9caf7916efdc597a8990a7",
+    "worlds/00000000000000000000000000000001/sessions/00000000000000000000000000000002/images/00000013.jpg": "755bb6b287413e65f812a455fdf7e25185b4e4e91264e150e4c3fada42395808",
+    "worlds/00000000000000000000000000000001/sessions/00000000000000000000000000000002/images/00000016.jpg": "c1c1792630db13971041a81e668d3c8e2679400719a4a620cca09a256ea62577",
+    "worlds/00000000000000000000000000000001/sessions/00000000000000000000000000000002/images/00000019.jpg": "dd22f73bce5e6bfe9b06f802cdfea95d2183f912c14ca34baa57d6cc32b0b1d0",
+    "worlds/00000000000000000000000000000001/sessions/00000000000000000000000000000002/images/00000022.jpg": "fddea61e196fcd45663f2360eabd9d74edc0267ee509cf4d7c5c77383fd75908",
+    "worlds/00000000000000000000000000000001/sessions/00000000000000000000000000000002/keyframes.jsonl": "d7765944dfb88bc40ef9489f5fd9aabf1eaa592ebac2701845971d2436911b22",
+    "worlds/00000000000000000000000000000001/sessions/00000000000000000000000000000002/session.json": "1919f4054e6068ff9f199d2bfef9ebe731eeb47727d9faa4878bd24955e9a2b6",
+    "worlds/00000000000000000000000000000001/world.json": "137577c4210cfee8f1db48272dff7020f7148cbfab26a0c85df00ab96197c5f2"
+   },
+   "log": [
+    "INFO tower.world_build_session [Tower][WorldBuilder] world root <WD>\\worlds (cwd <CWD>) -- calibrations on file: 480x360",
+    "INFO tower.world_build_session [Tower][WorldBuilder] first frame of capture cccccccccccccccccccccccccccccccc observed at 480x360 (source_seq=1); resolving intrinsics against THAT, not against anything declared",
+    "INFO tower.world_build_session [Tower][WorldBuilder] session 00000000000000000000000000000002 in world 00000000000000000000000000000001: source=live-capture capture=cccccccccccccccccccccccccccccccc root=<WD>\\worlds observed=480x360 calibration=<WD>\\worlds\\intrinsics\\480x360.json intrinsics=self_calibrated backend=classical-sfm (requested auto) rebuild_every=4",
+    "INFO tower.world_build_session [Tower][WorldBuilder] rebuild 1: 4 keyframes -> 3 positioned poses, 1347 points, 1 segments in <T>",
+    "INFO tower.world_build_session [Tower][WorldBuilder] rebuild 2: 8 keyframes -> 7 positioned poses, 2106 points, 1 segments in <T>",
+    "INFO tower.world_build_session [Tower][WorldBuilder] stop requested (soft, stdin-closed) after the capture closed (stop); this is an ordinary end and the session ends as 'stop'",
+    "INFO tower.world_build_session [Tower][WorldBuilder] session 00000000000000000000000000000002 finished: 24 frames, 8 keyframes, 1 segments, backend=classical-sfm (downgraded_from=None), 7 solved poses, 2106 points, scale=relative, final build <T>"
+   ],
+   "report": {
+    "backend_id": "classical-sfm",
+    "build_seconds": "<T>",
+    "downgraded_from": null,
+    "end_reason": "stop",
+    "finalization": "complete",
+    "frame_source": "live-capture",
+    "frames_observed": 24,
+    "keyframes_accepted": 8,
+    "observe_ms_per_frame": "<T>",
+    "points": 2106,
+    "poses_refused": 0,
+    "poses_solved": 7,
+    "rebuilds": 2,
+    "rejected_by_reason": {
+     "insufficient_motion": 16
+    },
+    "scale_state": "relative",
+    "segments": 1,
+    "session_id": "00000000000000000000000000000002",
+    "world_id": "00000000000000000000000000000001"
+   }
+  },
+  "closed-before-start-no-stop": {
+   "events": [
+    {
+     "event_id": 0,
+     "kind": "session_started",
+     "payload": {
+      "frame_source": "live-capture"
+     },
+     "schema_version": 1,
+     "time_basis": "tower-receipt"
+    },
+    {
+     "event_id": 1,
+     "kind": "keyframe_accepted",
+     "payload": {
+      "keyframe_id": "00000000000000000000000000000002:00000001",
+      "reason": "session_seed",
+      "segment_index": 0
+     },
+     "schema_version": 1,
+     "time_basis": "tower-receipt"
+    },
+    {
+     "event_id": 2,
+     "kind": "keyframe_accepted",
+     "payload": {
+      "keyframe_id": "00000000000000000000000000000002:00000004",
+      "reason": "parallax",
+      "segment_index": 0
+     },
+     "schema_version": 1,
+     "time_basis": "tower-receipt"
+    },
+    {
+     "event_id": 3,
+     "kind": "keyframe_accepted",
+     "payload": {
+      "keyframe_id": "00000000000000000000000000000002:00000007",
+      "reason": "parallax",
+      "segment_index": 0
+     },
+     "schema_version": 1,
+     "time_basis": "tower-receipt"
+    },
+    {
+     "event_id": 4,
+     "kind": "keyframe_accepted",
+     "payload": {
+      "keyframe_id": "00000000000000000000000000000002:00000010",
+      "reason": "parallax",
+      "segment_index": 0
+     },
+     "schema_version": 1,
+     "time_basis": "tower-receipt"
+    },
+    {
+     "event_id": 5,
+     "kind": "keyframe_accepted",
+     "payload": {
+      "keyframe_id": "00000000000000000000000000000002:00000013",
+      "reason": "parallax",
+      "segment_index": 0
+     },
+     "schema_version": 1,
+     "time_basis": "tower-receipt"
+    },
+    {
+     "event_id": 6,
+     "kind": "keyframe_accepted",
+     "payload": {
+      "keyframe_id": "00000000000000000000000000000002:00000016",
+      "reason": "parallax",
+      "segment_index": 0
+     },
+     "schema_version": 1,
+     "time_basis": "tower-receipt"
+    },
+    {
+     "event_id": 7,
+     "kind": "keyframe_accepted",
+     "payload": {
+      "keyframe_id": "00000000000000000000000000000002:00000019",
+      "reason": "parallax",
+      "segment_index": 0
+     },
+     "schema_version": 1,
+     "time_basis": "tower-receipt"
+    },
+    {
+     "event_id": 8,
+     "kind": "keyframe_accepted",
+     "payload": {
+      "keyframe_id": "00000000000000000000000000000002:00000022",
+      "reason": "parallax",
+      "segment_index": 0
+     },
+     "schema_version": 1,
+     "time_basis": "tower-receipt"
+    },
+    {
+     "event_id": 9,
+     "kind": "session_stopped",
+     "payload": {
+      "capture_end_reason": "stop",
+      "end_reason": "stop"
+     },
+     "schema_version": 1,
+     "time_basis": "tower-receipt"
+    }
+   ],
+   "exit": 0,
+   "files": {
+    "intrinsics/480x360.json": "8fafa229f28445ac85b2fbb4b8d0167f288f31a15a7718c4368bc53754dc0143",
+    "worlds/00000000000000000000000000000001/derived/00000000000000000000000000000002/manifest.json": "2b85738ee1d949983bf433357b1bb3feb780ce10eff1904a6aed00687e115b6f",
+    "worlds/00000000000000000000000000000001/derived/00000000000000000000000000000002/points.json": "98f1482f7cbd6e9606c3d3a2559c34024d7ec0c2edd4290a718917faacc87273",
+    "worlds/00000000000000000000000000000001/derived/00000000000000000000000000000002/poses.json": "e418bf465733ff7fc5942fa964fa676ffde2eccf34b466864603ca9d83a88d6c",
+    "worlds/00000000000000000000000000000001/derived/00000000000000000000000000000002/support.json": "62b1d51e8b17b5204f1e96e5fc5addb0ca765620968d9a04125709440862c330",
+    "worlds/00000000000000000000000000000001/derived/manifest.json": "2b85738ee1d949983bf433357b1bb3feb780ce10eff1904a6aed00687e115b6f",
+    "worlds/00000000000000000000000000000001/sessions/00000000000000000000000000000002/edges.jsonl": "197d5dc1fd9a3f8ea490da054f946761b9e646d844070c3f85b773112cca5fa5",
+    "worlds/00000000000000000000000000000001/sessions/00000000000000000000000000000002/events.jsonl": "4a64bf765db8b2abe14f557cb3c7b45e491a7875b6dc2f803a9ab587575f5434",
+    "worlds/00000000000000000000000000000001/sessions/00000000000000000000000000000002/images/00000001.jpg": "a59a421bdba15ecfbe41c49077d10eefe1bdc05f31aa8a4c7bc4e7f7010b5fa9",
+    "worlds/00000000000000000000000000000001/sessions/00000000000000000000000000000002/images/00000004.jpg": "df049d926a0309ebb026ea75cae57950e761b178d8d113dc13baafff8dbc3b1d",
+    "worlds/00000000000000000000000000000001/sessions/00000000000000000000000000000002/images/00000007.jpg": "1d64c88ffdbfe48e173596e41f519e01e048fb2b6f83f87b7bb960d9120d856c",
+    "worlds/00000000000000000000000000000001/sessions/00000000000000000000000000000002/images/00000010.jpg": "d3933a46f89f7e9a60e9373ae23b466c8c5752485c9caf7916efdc597a8990a7",
+    "worlds/00000000000000000000000000000001/sessions/00000000000000000000000000000002/images/00000013.jpg": "755bb6b287413e65f812a455fdf7e25185b4e4e91264e150e4c3fada42395808",
+    "worlds/00000000000000000000000000000001/sessions/00000000000000000000000000000002/images/00000016.jpg": "c1c1792630db13971041a81e668d3c8e2679400719a4a620cca09a256ea62577",
+    "worlds/00000000000000000000000000000001/sessions/00000000000000000000000000000002/images/00000019.jpg": "dd22f73bce5e6bfe9b06f802cdfea95d2183f912c14ca34baa57d6cc32b0b1d0",
+    "worlds/00000000000000000000000000000001/sessions/00000000000000000000000000000002/images/00000022.jpg": "fddea61e196fcd45663f2360eabd9d74edc0267ee509cf4d7c5c77383fd75908",
+    "worlds/00000000000000000000000000000001/sessions/00000000000000000000000000000002/keyframes.jsonl": "d7765944dfb88bc40ef9489f5fd9aabf1eaa592ebac2701845971d2436911b22",
+    "worlds/00000000000000000000000000000001/sessions/00000000000000000000000000000002/session.json": "1919f4054e6068ff9f199d2bfef9ebe731eeb47727d9faa4878bd24955e9a2b6",
+    "worlds/00000000000000000000000000000001/world.json": "137577c4210cfee8f1db48272dff7020f7148cbfab26a0c85df00ab96197c5f2"
+   },
+   "log": [
+    "INFO tower.world_build_session [Tower][WorldBuilder] world root <WD>\\worlds (cwd <CWD>) -- calibrations on file: 480x360",
+    "INFO tower.world_build_session [Tower][WorldBuilder] first frame of capture cccccccccccccccccccccccccccccccc observed at 480x360 (source_seq=1); resolving intrinsics against THAT, not against anything declared",
+    "INFO tower.world_build_session [Tower][WorldBuilder] session 00000000000000000000000000000002 in world 00000000000000000000000000000001: source=live-capture capture=cccccccccccccccccccccccccccccccc root=<WD>\\worlds observed=480x360 calibration=<WD>\\worlds\\intrinsics\\480x360.json intrinsics=self_calibrated backend=classical-sfm (requested auto) rebuild_every=4",
+    "INFO tower.world_build_session [Tower][WorldBuilder] rebuild 1: 4 keyframes -> 3 positioned poses, 1347 points, 1 segments in <T>",
+    "INFO tower.world_build_session [Tower][WorldBuilder] rebuild 2: 8 keyframes -> 7 positioned poses, 2106 points, 1 segments in <T>",
+    "INFO tower.world_build_session [Tower][WorldBuilder] session 00000000000000000000000000000002 finished: 24 frames, 8 keyframes, 1 segments, backend=classical-sfm (downgraded_from=None), 7 solved poses, 2106 points, scale=relative, final build <T>"
+   ],
+   "report": {
+    "backend_id": "classical-sfm",
+    "build_seconds": "<T>",
+    "downgraded_from": null,
+    "end_reason": "stop",
+    "finalization": "complete",
+    "frame_source": "live-capture",
+    "frames_observed": 24,
+    "keyframes_accepted": 8,
+    "observe_ms_per_frame": "<T>",
+    "points": 2106,
+    "poses_refused": 0,
+    "poses_solved": 7,
+    "rebuilds": 2,
+    "rejected_by_reason": {
+     "insufficient_motion": 16
+    },
+    "scale_state": "relative",
+    "segments": 1,
+    "session_id": "00000000000000000000000000000002",
+    "world_id": "00000000000000000000000000000001"
+   }
+  },
+  "disconnect-then-soft": {
+   "events": [
+    {
+     "event_id": 0,
+     "kind": "session_started",
+     "payload": {
+      "frame_source": "live-capture"
+     },
+     "schema_version": 1,
+     "time_basis": "tower-receipt"
+    },
+    {
+     "event_id": 1,
+     "kind": "keyframe_accepted",
+     "payload": {
+      "keyframe_id": "00000000000000000000000000000002:00000001",
+      "reason": "session_seed",
+      "segment_index": 0
+     },
+     "schema_version": 1,
+     "time_basis": "tower-receipt"
+    },
+    {
+     "event_id": 2,
+     "kind": "keyframe_accepted",
+     "payload": {
+      "keyframe_id": "00000000000000000000000000000002:00000004",
+      "reason": "parallax",
+      "segment_index": 0
+     },
+     "schema_version": 1,
+     "time_basis": "tower-receipt"
+    },
+    {
+     "event_id": 3,
+     "kind": "keyframe_accepted",
+     "payload": {
+      "keyframe_id": "00000000000000000000000000000002:00000007",
+      "reason": "parallax",
+      "segment_index": 0
+     },
+     "schema_version": 1,
+     "time_basis": "tower-receipt"
+    },
+    {
+     "event_id": 4,
+     "kind": "keyframe_accepted",
+     "payload": {
+      "keyframe_id": "00000000000000000000000000000002:00000010",
+      "reason": "parallax",
+      "segment_index": 0
+     },
+     "schema_version": 1,
+     "time_basis": "tower-receipt"
+    },
+    {
+     "event_id": 5,
+     "kind": "keyframe_accepted",
+     "payload": {
+      "keyframe_id": "00000000000000000000000000000002:00000013",
+      "reason": "parallax",
+      "segment_index": 0
+     },
+     "schema_version": 1,
+     "time_basis": "tower-receipt"
+    },
+    {
+     "event_id": 6,
+     "kind": "keyframe_accepted",
+     "payload": {
+      "keyframe_id": "00000000000000000000000000000002:00000016",
+      "reason": "parallax",
+      "segment_index": 0
+     },
+     "schema_version": 1,
+     "time_basis": "tower-receipt"
+    },
+    {
+     "event_id": 7,
+     "kind": "keyframe_accepted",
+     "payload": {
+      "keyframe_id": "00000000000000000000000000000002:00000019",
+      "reason": "parallax",
+      "segment_index": 0
+     },
+     "schema_version": 1,
+     "time_basis": "tower-receipt"
+    },
+    {
+     "event_id": 8,
+     "kind": "keyframe_accepted",
+     "payload": {
+      "keyframe_id": "00000000000000000000000000000002:00000022",
+      "reason": "parallax",
+      "segment_index": 0
+     },
+     "schema_version": 1,
+     "time_basis": "tower-receipt"
+    },
+    {
+     "event_id": 9,
+     "kind": "session_stopped",
+     "payload": {
+      "capture_end_reason": "disconnect",
+      "end_reason": "stop"
+     },
+     "schema_version": 1,
+     "time_basis": "tower-receipt"
+    }
+   ],
+   "exit": 0,
+   "files": {
+    "intrinsics/480x360.json": "8fafa229f28445ac85b2fbb4b8d0167f288f31a15a7718c4368bc53754dc0143",
+    "worlds/00000000000000000000000000000001/derived/00000000000000000000000000000002/manifest.json": "2b85738ee1d949983bf433357b1bb3feb780ce10eff1904a6aed00687e115b6f",
+    "worlds/00000000000000000000000000000001/derived/00000000000000000000000000000002/points.json": "98f1482f7cbd6e9606c3d3a2559c34024d7ec0c2edd4290a718917faacc87273",
+    "worlds/00000000000000000000000000000001/derived/00000000000000000000000000000002/poses.json": "e418bf465733ff7fc5942fa964fa676ffde2eccf34b466864603ca9d83a88d6c",
+    "worlds/00000000000000000000000000000001/derived/00000000000000000000000000000002/support.json": "62b1d51e8b17b5204f1e96e5fc5addb0ca765620968d9a04125709440862c330",
+    "worlds/00000000000000000000000000000001/derived/manifest.json": "2b85738ee1d949983bf433357b1bb3feb780ce10eff1904a6aed00687e115b6f",
+    "worlds/00000000000000000000000000000001/sessions/00000000000000000000000000000002/edges.jsonl": "197d5dc1fd9a3f8ea490da054f946761b9e646d844070c3f85b773112cca5fa5",
+    "worlds/00000000000000000000000000000001/sessions/00000000000000000000000000000002/events.jsonl": "fed56ac6a61ece62477c51562eaa8ed0aabd92007e15b8963b0cd233a5ead2ec",
+    "worlds/00000000000000000000000000000001/sessions/00000000000000000000000000000002/images/00000001.jpg": "a59a421bdba15ecfbe41c49077d10eefe1bdc05f31aa8a4c7bc4e7f7010b5fa9",
+    "worlds/00000000000000000000000000000001/sessions/00000000000000000000000000000002/images/00000004.jpg": "df049d926a0309ebb026ea75cae57950e761b178d8d113dc13baafff8dbc3b1d",
+    "worlds/00000000000000000000000000000001/sessions/00000000000000000000000000000002/images/00000007.jpg": "1d64c88ffdbfe48e173596e41f519e01e048fb2b6f83f87b7bb960d9120d856c",
+    "worlds/00000000000000000000000000000001/sessions/00000000000000000000000000000002/images/00000010.jpg": "d3933a46f89f7e9a60e9373ae23b466c8c5752485c9caf7916efdc597a8990a7",
+    "worlds/00000000000000000000000000000001/sessions/00000000000000000000000000000002/images/00000013.jpg": "755bb6b287413e65f812a455fdf7e25185b4e4e91264e150e4c3fada42395808",
+    "worlds/00000000000000000000000000000001/sessions/00000000000000000000000000000002/images/00000016.jpg": "c1c1792630db13971041a81e668d3c8e2679400719a4a620cca09a256ea62577",
+    "worlds/00000000000000000000000000000001/sessions/00000000000000000000000000000002/images/00000019.jpg": "dd22f73bce5e6bfe9b06f802cdfea95d2183f912c14ca34baa57d6cc32b0b1d0",
+    "worlds/00000000000000000000000000000001/sessions/00000000000000000000000000000002/images/00000022.jpg": "fddea61e196fcd45663f2360eabd9d74edc0267ee509cf4d7c5c77383fd75908",
+    "worlds/00000000000000000000000000000001/sessions/00000000000000000000000000000002/keyframes.jsonl": "d7765944dfb88bc40ef9489f5fd9aabf1eaa592ebac2701845971d2436911b22",
+    "worlds/00000000000000000000000000000001/sessions/00000000000000000000000000000002/session.json": "1919f4054e6068ff9f199d2bfef9ebe731eeb47727d9faa4878bd24955e9a2b6",
+    "worlds/00000000000000000000000000000001/world.json": "137577c4210cfee8f1db48272dff7020f7148cbfab26a0c85df00ab96197c5f2"
+   },
+   "log": [
+    "INFO tower.world_build_session [Tower][WorldBuilder] world root <WD>\\worlds (cwd <CWD>) -- calibrations on file: 480x360",
+    "INFO tower.world_build_session [Tower][WorldBuilder] first frame of capture cccccccccccccccccccccccccccccccc observed at 480x360 (source_seq=1); resolving intrinsics against THAT, not against anything declared",
+    "INFO tower.world_build_session [Tower][WorldBuilder] session 00000000000000000000000000000002 in world 00000000000000000000000000000001: source=live-capture capture=cccccccccccccccccccccccccccccccc root=<WD>\\worlds observed=480x360 calibration=<WD>\\worlds\\intrinsics\\480x360.json intrinsics=self_calibrated backend=classical-sfm (requested auto) rebuild_every=4",
+    "INFO tower.world_build_session [Tower][WorldBuilder] rebuild 1: 4 keyframes -> 3 positioned poses, 1347 points, 1 segments in <T>",
+    "INFO tower.world_build_session [Tower][WorldBuilder] rebuild 2: 8 keyframes -> 7 positioned poses, 2106 points, 1 segments in <T>",
+    "INFO tower.world_build_session [Tower][WorldBuilder] stop requested (soft, stdin-closed) after the capture closed (disconnect); this is an ordinary end and the session ends as 'stop'",
+    "INFO tower.world_build_session [Tower][WorldBuilder] session 00000000000000000000000000000002 finished: 24 frames, 8 keyframes, 1 segments, backend=classical-sfm (downgraded_from=None), 7 solved poses, 2106 points, scale=relative, final build <T>"
+   ],
+   "report": {
+    "backend_id": "classical-sfm",
+    "build_seconds": "<T>",
+    "downgraded_from": null,
+    "end_reason": "stop",
+    "finalization": "complete",
+    "frame_source": "live-capture",
+    "frames_observed": 24,
+    "keyframes_accepted": 8,
+    "observe_ms_per_frame": "<T>",
+    "points": 2106,
+    "poses_refused": 0,
+    "poses_solved": 7,
+    "rebuilds": 2,
+    "rejected_by_reason": {
+     "insufficient_motion": 16
+    },
+    "scale_state": "relative",
+    "segments": 1,
+    "session_id": "00000000000000000000000000000002",
+    "world_id": "00000000000000000000000000000001"
+   }
+  },
+  "oct2-close-then-disconnect-soft-then-reconnect": {
+   "events": [
+    {
+     "event_id": 0,
+     "kind": "session_started",
+     "payload": {
+      "frame_source": "live-capture"
+     },
+     "schema_version": 1,
+     "time_basis": "tower-receipt"
+    },
+    {
+     "event_id": 1,
+     "kind": "keyframe_accepted",
+     "payload": {
+      "keyframe_id": "00000000000000000000000000000002:00000001",
+      "reason": "session_seed",
+      "segment_index": 0
+     },
+     "schema_version": 1,
+     "time_basis": "tower-receipt"
+    },
+    {
+     "event_id": 2,
+     "kind": "keyframe_accepted",
+     "payload": {
+      "keyframe_id": "00000000000000000000000000000002:00000004",
+      "reason": "parallax",
+      "segment_index": 0
+     },
+     "schema_version": 1,
+     "time_basis": "tower-receipt"
+    },
+    {
+     "event_id": 3,
+     "kind": "keyframe_accepted",
+     "payload": {
+      "keyframe_id": "00000000000000000000000000000002:00000007",
+      "reason": "parallax",
+      "segment_index": 0
+     },
+     "schema_version": 1,
+     "time_basis": "tower-receipt"
+    },
+    {
+     "event_id": 4,
+     "kind": "keyframe_accepted",
+     "payload": {
+      "keyframe_id": "00000000000000000000000000000002:00000010",
+      "reason": "parallax",
+      "segment_index": 0
+     },
+     "schema_version": 1,
+     "time_basis": "tower-receipt"
+    },
+    {
+     "event_id": 5,
+     "kind": "keyframe_accepted",
+     "payload": {
+      "keyframe_id": "00000000000000000000000000000002:00000013",
+      "reason": "parallax",
+      "segment_index": 0
+     },
+     "schema_version": 1,
+     "time_basis": "tower-receipt"
+    },
+    {
+     "event_id": 6,
+     "kind": "keyframe_accepted",
+     "payload": {
+      "keyframe_id": "00000000000000000000000000000002:00000016",
+      "reason": "parallax",
+      "segment_index": 0
+     },
+     "schema_version": 1,
+     "time_basis": "tower-receipt"
+    },
+    {
+     "event_id": 7,
+     "kind": "keyframe_accepted",
+     "payload": {
+      "keyframe_id": "00000000000000000000000000000002:00000019",
+      "reason": "parallax",
+      "segment_index": 0
+     },
+     "schema_version": 1,
+     "time_basis": "tower-receipt"
+    },
+    {
+     "event_id": 8,
+     "kind": "keyframe_accepted",
+     "payload": {
+      "keyframe_id": "00000000000000000000000000000002:00000022",
+      "reason": "parallax",
+      "segment_index": 0
+     },
+     "schema_version": 1,
+     "time_basis": "tower-receipt"
+    },
+    {
+     "event_id": 9,
+     "kind": "session_stopped",
+     "payload": {
+      "capture_end_reason": "stop",
+      "end_reason": "stop"
+     },
+     "schema_version": 1,
+     "time_basis": "tower-receipt"
+    }
+   ],
+   "exit": 0,
+   "files": {
+    "intrinsics/480x360.json": "8fafa229f28445ac85b2fbb4b8d0167f288f31a15a7718c4368bc53754dc0143",
+    "worlds/00000000000000000000000000000001/derived/00000000000000000000000000000002/manifest.json": "2b85738ee1d949983bf433357b1bb3feb780ce10eff1904a6aed00687e115b6f",
+    "worlds/00000000000000000000000000000001/derived/00000000000000000000000000000002/points.json": "98f1482f7cbd6e9606c3d3a2559c34024d7ec0c2edd4290a718917faacc87273",
+    "worlds/00000000000000000000000000000001/derived/00000000000000000000000000000002/poses.json": "e418bf465733ff7fc5942fa964fa676ffde2eccf34b466864603ca9d83a88d6c",
+    "worlds/00000000000000000000000000000001/derived/00000000000000000000000000000002/support.json": "62b1d51e8b17b5204f1e96e5fc5addb0ca765620968d9a04125709440862c330",
+    "worlds/00000000000000000000000000000001/derived/manifest.json": "2b85738ee1d949983bf433357b1bb3feb780ce10eff1904a6aed00687e115b6f",
+    "worlds/00000000000000000000000000000001/sessions/00000000000000000000000000000002/edges.jsonl": "197d5dc1fd9a3f8ea490da054f946761b9e646d844070c3f85b773112cca5fa5",
+    "worlds/00000000000000000000000000000001/sessions/00000000000000000000000000000002/events.jsonl": "4a64bf765db8b2abe14f557cb3c7b45e491a7875b6dc2f803a9ab587575f5434",
+    "worlds/00000000000000000000000000000001/sessions/00000000000000000000000000000002/images/00000001.jpg": "a59a421bdba15ecfbe41c49077d10eefe1bdc05f31aa8a4c7bc4e7f7010b5fa9",
+    "worlds/00000000000000000000000000000001/sessions/00000000000000000000000000000002/images/00000004.jpg": "df049d926a0309ebb026ea75cae57950e761b178d8d113dc13baafff8dbc3b1d",
+    "worlds/00000000000000000000000000000001/sessions/00000000000000000000000000000002/images/00000007.jpg": "1d64c88ffdbfe48e173596e41f519e01e048fb2b6f83f87b7bb960d9120d856c",
+    "worlds/00000000000000000000000000000001/sessions/00000000000000000000000000000002/images/00000010.jpg": "d3933a46f89f7e9a60e9373ae23b466c8c5752485c9caf7916efdc597a8990a7",
+    "worlds/00000000000000000000000000000001/sessions/00000000000000000000000000000002/images/00000013.jpg": "755bb6b287413e65f812a455fdf7e25185b4e4e91264e150e4c3fada42395808",
+    "worlds/00000000000000000000000000000001/sessions/00000000000000000000000000000002/images/00000016.jpg": "c1c1792630db13971041a81e668d3c8e2679400719a4a620cca09a256ea62577",
+    "worlds/00000000000000000000000000000001/sessions/00000000000000000000000000000002/images/00000019.jpg": "dd22f73bce5e6bfe9b06f802cdfea95d2183f912c14ca34baa57d6cc32b0b1d0",
+    "worlds/00000000000000000000000000000001/sessions/00000000000000000000000000000002/images/00000022.jpg": "fddea61e196fcd45663f2360eabd9d74edc0267ee509cf4d7c5c77383fd75908",
+    "worlds/00000000000000000000000000000001/sessions/00000000000000000000000000000002/keyframes.jsonl": "d7765944dfb88bc40ef9489f5fd9aabf1eaa592ebac2701845971d2436911b22",
+    "worlds/00000000000000000000000000000001/sessions/00000000000000000000000000000002/session.json": "1919f4054e6068ff9f199d2bfef9ebe731eeb47727d9faa4878bd24955e9a2b6",
+    "worlds/00000000000000000000000000000001/world.json": "137577c4210cfee8f1db48272dff7020f7148cbfab26a0c85df00ab96197c5f2"
+   },
+   "log": [
+    "INFO tower.world_build_session [Tower][WorldBuilder] world root <WD>\\worlds (cwd <CWD>) -- calibrations on file: 480x360",
+    "INFO tower.world_build_session [Tower][WorldBuilder] first frame of capture cccccccccccccccccccccccccccccccc observed at 480x360 (source_seq=1); resolving intrinsics against THAT, not against anything declared",
+    "INFO tower.world_build_session [Tower][WorldBuilder] session 00000000000000000000000000000002 in world 00000000000000000000000000000001: source=live-capture capture=cccccccccccccccccccccccccccccccc root=<WD>\\worlds observed=480x360 calibration=<WD>\\worlds\\intrinsics\\480x360.json intrinsics=self_calibrated backend=classical-sfm (requested auto) rebuild_every=4",
+    "INFO tower.world_build_session [Tower][WorldBuilder] rebuild 1: 4 keyframes -> 3 positioned poses, 1347 points, 1 segments in <T>",
+    "INFO tower.world_build_session [Tower][WorldBuilder] rebuild 2: 8 keyframes -> 7 positioned poses, 2106 points, 1 segments in <T>",
+    "INFO tower.world_build_session [Tower][WorldBuilder] stop requested (soft, stdin-closed) after the capture closed (stop); this is an ordinary end and the session ends as 'stop'",
+    "INFO tower.world_build_session [Tower][WorldBuilder] session 00000000000000000000000000000002 finished: 24 frames, 8 keyframes, 1 segments, backend=classical-sfm (downgraded_from=None), 7 solved poses, 2106 points, scale=relative, final build <T>"
+   ],
+   "report": {
+    "backend_id": "classical-sfm",
+    "build_seconds": "<T>",
+    "downgraded_from": null,
+    "end_reason": "stop",
+    "finalization": "complete",
+    "frame_source": "live-capture",
+    "frames_observed": 24,
+    "keyframes_accepted": 8,
+    "observe_ms_per_frame": "<T>",
+    "points": 2106,
+    "poses_refused": 0,
+    "poses_solved": 7,
+    "rebuilds": 2,
+    "rejected_by_reason": {
+     "insufficient_motion": 16
+    },
+    "scale_state": "relative",
+    "segments": 1,
+    "session_id": "00000000000000000000000000000002",
+    "world_id": "00000000000000000000000000000001"
+   }
+  },
+  "open-soft": {
+   "events": [
+    {
+     "event_id": 0,
+     "kind": "session_started",
+     "payload": {
+      "frame_source": "live-capture"
+     },
+     "schema_version": 1,
+     "time_basis": "tower-receipt"
+    },
+    {
+     "event_id": 1,
+     "kind": "keyframe_accepted",
+     "payload": {
+      "keyframe_id": "00000000000000000000000000000002:00000001",
+      "reason": "session_seed",
+      "segment_index": 0
+     },
+     "schema_version": 1,
+     "time_basis": "tower-receipt"
+    },
+    {
+     "event_id": 2,
+     "kind": "keyframe_accepted",
+     "payload": {
+      "keyframe_id": "00000000000000000000000000000002:00000004",
+      "reason": "parallax",
+      "segment_index": 0
+     },
+     "schema_version": 1,
+     "time_basis": "tower-receipt"
+    },
+    {
+     "event_id": 3,
+     "kind": "keyframe_accepted",
+     "payload": {
+      "keyframe_id": "00000000000000000000000000000002:00000007",
+      "reason": "parallax",
+      "segment_index": 0
+     },
+     "schema_version": 1,
+     "time_basis": "tower-receipt"
+    },
+    {
+     "event_id": 4,
+     "kind": "keyframe_accepted",
+     "payload": {
+      "keyframe_id": "00000000000000000000000000000002:00000010",
+      "reason": "parallax",
+      "segment_index": 0
+     },
+     "schema_version": 1,
+     "time_basis": "tower-receipt"
+    },
+    {
+     "event_id": 5,
+     "kind": "keyframe_accepted",
+     "payload": {
+      "keyframe_id": "00000000000000000000000000000002:00000013",
+      "reason": "parallax",
+      "segment_index": 0
+     },
+     "schema_version": 1,
+     "time_basis": "tower-receipt"
+    },
+    {
+     "event_id": 6,
+     "kind": "session_stopped",
+     "payload": {
+      "end_reason": "interrupted"
+     },
+     "schema_version": 1,
+     "time_basis": "tower-receipt"
+    }
+   ],
+   "exit": 0,
+   "files": {
+    "intrinsics/480x360.json": "8fafa229f28445ac85b2fbb4b8d0167f288f31a15a7718c4368bc53754dc0143",
+    "worlds/00000000000000000000000000000001/derived/00000000000000000000000000000002/manifest.json": "6a76c22a6d8ca1e9cb519b30e9f68324fcc1f1f4fd4939371a3eff43ceb42eb1",
+    "worlds/00000000000000000000000000000001/derived/00000000000000000000000000000002/points.json": "2a4910395ab1371ffddc22fc2429e3e75be918f9add4167410bdb1cc94867fdf",
+    "worlds/00000000000000000000000000000001/derived/00000000000000000000000000000002/poses.json": "25ba4e9042b2620aacc8c2a33ffbce3f25ece92ca96774acc914c50917df8aa5",
+    "worlds/00000000000000000000000000000001/derived/00000000000000000000000000000002/support.json": "7455b43979b397945cf319da470e7f2f791d9793dfbdd46bfeb50d684ed0f4b0",
+    "worlds/00000000000000000000000000000001/derived/manifest.json": "6a76c22a6d8ca1e9cb519b30e9f68324fcc1f1f4fd4939371a3eff43ceb42eb1",
+    "worlds/00000000000000000000000000000001/sessions/00000000000000000000000000000002/edges.jsonl": "1649f4db0d8b0bc53501892c98a5282d1b21631ee9cf1f3e94b23c767b7b1b8e",
+    "worlds/00000000000000000000000000000001/sessions/00000000000000000000000000000002/events.jsonl": "66acd5effd92524d4bc8b66e28fa84d6923ec3556698f5770ee6d0587f1d6356",
+    "worlds/00000000000000000000000000000001/sessions/00000000000000000000000000000002/images/00000001.jpg": "a59a421bdba15ecfbe41c49077d10eefe1bdc05f31aa8a4c7bc4e7f7010b5fa9",
+    "worlds/00000000000000000000000000000001/sessions/00000000000000000000000000000002/images/00000004.jpg": "df049d926a0309ebb026ea75cae57950e761b178d8d113dc13baafff8dbc3b1d",
+    "worlds/00000000000000000000000000000001/sessions/00000000000000000000000000000002/images/00000007.jpg": "1d64c88ffdbfe48e173596e41f519e01e048fb2b6f83f87b7bb960d9120d856c",
+    "worlds/00000000000000000000000000000001/sessions/00000000000000000000000000000002/images/00000010.jpg": "d3933a46f89f7e9a60e9373ae23b466c8c5752485c9caf7916efdc597a8990a7",
+    "worlds/00000000000000000000000000000001/sessions/00000000000000000000000000000002/images/00000013.jpg": "755bb6b287413e65f812a455fdf7e25185b4e4e91264e150e4c3fada42395808",
+    "worlds/00000000000000000000000000000001/sessions/00000000000000000000000000000002/keyframes.jsonl": "dd5a8ae2faf2b0fd51b8750f14fda1cdd6af00be1a50f0a02428647fdb9c8c1d",
+    "worlds/00000000000000000000000000000001/sessions/00000000000000000000000000000002/session.json": "7e3683353614aa27116c92c99933b6e9cbf6fa92a7e8527d974b3a7462b0cffc",
+    "worlds/00000000000000000000000000000001/world.json": "137577c4210cfee8f1db48272dff7020f7148cbfab26a0c85df00ab96197c5f2"
+   },
+   "log": [
+    "INFO tower.world_build_session [Tower][WorldBuilder] world root <WD>\\worlds (cwd <CWD>) -- calibrations on file: 480x360",
+    "INFO tower.world_build_session [Tower][WorldBuilder] first frame of capture cccccccccccccccccccccccccccccccc observed at 480x360 (source_seq=1); resolving intrinsics against THAT, not against anything declared",
+    "INFO tower.world_build_session [Tower][WorldBuilder] session 00000000000000000000000000000002 in world 00000000000000000000000000000001: source=live-capture capture=cccccccccccccccccccccccccccccccc root=<WD>\\worlds observed=480x360 calibration=<WD>\\worlds\\intrinsics\\480x360.json intrinsics=self_calibrated backend=classical-sfm (requested auto) rebuild_every=4",
+    "INFO tower.world_build_session [Tower][WorldBuilder] rebuild 1: 4 keyframes -> 3 positioned poses, 1347 points, 1 segments in <T>",
+    "WARNING tower.world_build_session [Tower][WorldBuilder] stop requested (soft, stdin-closed) while the capture was still open; the session ends as 'interrupted'",
+    "INFO tower.world_build_session [Tower][WorldBuilder] session 00000000000000000000000000000002 finished: 15 frames, 5 keyframes, 1 segments, backend=classical-sfm (downgraded_from=None), 4 solved poses, 1552 points, scale=relative, final build <T>"
+   ],
+   "report": {
+    "backend_id": "classical-sfm",
+    "build_seconds": "<T>",
+    "downgraded_from": null,
+    "end_reason": "interrupted",
+    "finalization": "complete",
+    "frame_source": "live-capture",
+    "frames_observed": 15,
+    "keyframes_accepted": 5,
+    "observe_ms_per_frame": "<T>",
+    "points": 1552,
+    "poses_refused": 0,
+    "poses_solved": 4,
+    "rebuilds": 1,
+    "rejected_by_reason": {
+     "insufficient_motion": 10
+    },
+    "scale_state": "relative",
+    "segments": 1,
+    "session_id": "00000000000000000000000000000002",
+    "world_id": "00000000000000000000000000000001"
+   }
+  },
+  "soft-before-the-first-frame-then-3-after-stop-and-close": {
+   "events": [
+    {
+     "event_id": 0,
+     "kind": "session_started",
+     "payload": {
+      "frame_source": "live-capture"
+     },
+     "schema_version": 1,
+     "time_basis": "tower-receipt"
+    },
+    {
+     "event_id": 1,
+     "kind": "session_stopped",
+     "payload": {
+      "capture_end_reason": "stop",
+      "end_reason": "stop"
+     },
+     "schema_version": 1,
+     "time_basis": "tower-receipt"
+    }
+   ],
+   "exit": 0,
+   "files": {
+    "intrinsics/480x360.json": "8fafa229f28445ac85b2fbb4b8d0167f288f31a15a7718c4368bc53754dc0143",
+    "worlds/00000000000000000000000000000001/derived/00000000000000000000000000000002/manifest.json": "7a4138f3788cdfc12bbcc72ef681f1287c31c728afce4564119841f9accfc359",
+    "worlds/00000000000000000000000000000001/derived/00000000000000000000000000000002/points.json": "9b4e211ca94f7f7195d7938fb1ccf38d1f1ba5f07e1020c0a12fb1bc48c93aa5",
+    "worlds/00000000000000000000000000000001/derived/00000000000000000000000000000002/poses.json": "38faaebeed96ad66e102b32ea779ca46a902dd2212b591c182de3fd3874d3c16",
+    "worlds/00000000000000000000000000000001/derived/00000000000000000000000000000002/support.json": "72a6466cbe995a95e01a3062d9152a8a578f3d8aa962e548b94adbf0a447c32b",
+    "worlds/00000000000000000000000000000001/derived/manifest.json": "7a4138f3788cdfc12bbcc72ef681f1287c31c728afce4564119841f9accfc359",
+    "worlds/00000000000000000000000000000001/sessions/00000000000000000000000000000002/events.jsonl": "9c8e70dbf629420e9b9d44ff55a553a9e907930301f8999808f738085e1fd2f2",
+    "worlds/00000000000000000000000000000001/sessions/00000000000000000000000000000002/session.json": "3cdeac84efbf0f68c3ac59c82662dd6476af8722041658c330374e9714ef2256",
+    "worlds/00000000000000000000000000000001/world.json": "583f74a662133ee53ca3af154af36c8fe20fea59b23fbf37bf5cbff8b21e5f6a"
+   },
+   "log": [
+    "INFO tower.world_build_session [Tower][WorldBuilder] world root <WD>\\worlds (cwd <CWD>) -- calibrations on file: 480x360",
+    "WARNING tower.world_build_session [Tower][WorldBuilder] capture cccccccccccccccccccccccccccccccc delivered no frames, so no resolution was ever observed and no calibration was looked up. This session will be empty.",
+    "WARNING tower.world_build_session [Tower][WorldBuilder] could not observe the frame resolution of this live-capture source, so no calibration was looked up. Intrinsics stay unknown: expect the unposed backend, 0 poses and 0 points. Calibrations on file: 480x360",
+    "INFO tower.world_build_session [Tower][WorldBuilder] session 00000000000000000000000000000002 in world 00000000000000000000000000000001: source=live-capture capture=cccccccccccccccccccccccccccccccc root=<WD>\\worlds observed=UNOBSERVED calibration=not consulted (no resolution was ever observed) intrinsics=unknown backend=unposed (requested auto) rebuild_every=4",
+    "WARNING tower.world_build_session [Tower][WorldBuilder] backend downgraded from classical: no backend that solves poses can run without intrinsics, and this session's intrinsics are source='unknown'; the unposed backend will record keyframes and tracking but will produce no poses and no points",
+    "INFO tower.world_build_session [Tower][WorldBuilder] stop requested (soft, stdin-closed) after the capture closed (stop); this is an ordinary end and the session ends as 'stop'",
+    "INFO tower.world_build_session [Tower][WorldBuilder] session 00000000000000000000000000000002 finished: 0 frames, 0 keyframes, 0 segments, backend=unposed (downgraded_from=classical), 0 solved poses, 0 points, scale=unknown, final build <T>"
+   ],
+   "report": {
+    "backend_id": "unposed",
+    "build_seconds": "<T>",
+    "downgraded_from": "classical",
+    "end_reason": "stop",
+    "finalization": "complete",
+    "frame_source": "live-capture",
+    "frames_observed": 0,
+    "keyframes_accepted": 0,
+    "observe_ms_per_frame": "<T>",
+    "points": 0,
+    "poses_refused": 0,
+    "poses_solved": 0,
+    "rebuilds": 0,
+    "rejected_by_reason": {},
+    "scale_state": "unknown",
+    "segments": 0,
+    "session_id": "00000000000000000000000000000002",
+    "world_id": "00000000000000000000000000000001"
+   }
+  },
+  "soft-while-open-1-after-stop-then-close": {
+   "events": [
+    {
+     "event_id": 0,
+     "kind": "session_started",
+     "payload": {
+      "frame_source": "live-capture"
+     },
+     "schema_version": 1,
+     "time_basis": "tower-receipt"
+    },
+    {
+     "event_id": 1,
+     "kind": "keyframe_accepted",
+     "payload": {
+      "keyframe_id": "00000000000000000000000000000002:00000001",
+      "reason": "session_seed",
+      "segment_index": 0
+     },
+     "schema_version": 1,
+     "time_basis": "tower-receipt"
+    },
+    {
+     "event_id": 2,
+     "kind": "keyframe_accepted",
+     "payload": {
+      "keyframe_id": "00000000000000000000000000000002:00000004",
+      "reason": "parallax",
+      "segment_index": 0
+     },
+     "schema_version": 1,
+     "time_basis": "tower-receipt"
+    },
+    {
+     "event_id": 3,
+     "kind": "keyframe_accepted",
+     "payload": {
+      "keyframe_id": "00000000000000000000000000000002:00000007",
+      "reason": "parallax",
+      "segment_index": 0
+     },
+     "schema_version": 1,
+     "time_basis": "tower-receipt"
+    },
+    {
+     "event_id": 4,
+     "kind": "keyframe_accepted",
+     "payload": {
+      "keyframe_id": "00000000000000000000000000000002:00000010",
+      "reason": "parallax",
+      "segment_index": 0
+     },
+     "schema_version": 1,
+     "time_basis": "tower-receipt"
+    },
+    {
+     "event_id": 5,
+     "kind": "keyframe_accepted",
+     "payload": {
+      "keyframe_id": "00000000000000000000000000000002:00000013",
+      "reason": "parallax",
+      "segment_index": 0
+     },
+     "schema_version": 1,
+     "time_basis": "tower-receipt"
+    },
+    {
+     "event_id": 6,
+     "kind": "keyframe_accepted",
+     "payload": {
+      "keyframe_id": "00000000000000000000000000000002:00000016",
+      "reason": "parallax",
+      "segment_index": 0
+     },
+     "schema_version": 1,
+     "time_basis": "tower-receipt"
+    },
+    {
+     "event_id": 7,
+     "kind": "keyframe_accepted",
+     "payload": {
+      "keyframe_id": "00000000000000000000000000000002:00000019",
+      "reason": "parallax",
+      "segment_index": 0
+     },
+     "schema_version": 1,
+     "time_basis": "tower-receipt"
+    },
+    {
+     "event_id": 8,
+     "kind": "keyframe_accepted",
+     "payload": {
+      "keyframe_id": "00000000000000000000000000000002:00000022",
+      "reason": "parallax",
+      "segment_index": 0
+     },
+     "schema_version": 1,
+     "time_basis": "tower-receipt"
+    },
+    {
+     "event_id": 9,
+     "kind": "session_stopped",
+     "payload": {
+      "capture_end_reason": "stop",
+      "end_reason": "stop"
+     },
+     "schema_version": 1,
+     "time_basis": "tower-receipt"
+    }
+   ],
+   "exit": 0,
+   "files": {
+    "intrinsics/480x360.json": "8fafa229f28445ac85b2fbb4b8d0167f288f31a15a7718c4368bc53754dc0143",
+    "worlds/00000000000000000000000000000001/derived/00000000000000000000000000000002/manifest.json": "2b85738ee1d949983bf433357b1bb3feb780ce10eff1904a6aed00687e115b6f",
+    "worlds/00000000000000000000000000000001/derived/00000000000000000000000000000002/points.json": "98f1482f7cbd6e9606c3d3a2559c34024d7ec0c2edd4290a718917faacc87273",
+    "worlds/00000000000000000000000000000001/derived/00000000000000000000000000000002/poses.json": "e418bf465733ff7fc5942fa964fa676ffde2eccf34b466864603ca9d83a88d6c",
+    "worlds/00000000000000000000000000000001/derived/00000000000000000000000000000002/support.json": "62b1d51e8b17b5204f1e96e5fc5addb0ca765620968d9a04125709440862c330",
+    "worlds/00000000000000000000000000000001/derived/manifest.json": "2b85738ee1d949983bf433357b1bb3feb780ce10eff1904a6aed00687e115b6f",
+    "worlds/00000000000000000000000000000001/sessions/00000000000000000000000000000002/edges.jsonl": "197d5dc1fd9a3f8ea490da054f946761b9e646d844070c3f85b773112cca5fa5",
+    "worlds/00000000000000000000000000000001/sessions/00000000000000000000000000000002/events.jsonl": "4a64bf765db8b2abe14f557cb3c7b45e491a7875b6dc2f803a9ab587575f5434",
+    "worlds/00000000000000000000000000000001/sessions/00000000000000000000000000000002/images/00000001.jpg": "a59a421bdba15ecfbe41c49077d10eefe1bdc05f31aa8a4c7bc4e7f7010b5fa9",
+    "worlds/00000000000000000000000000000001/sessions/00000000000000000000000000000002/images/00000004.jpg": "df049d926a0309ebb026ea75cae57950e761b178d8d113dc13baafff8dbc3b1d",
+    "worlds/00000000000000000000000000000001/sessions/00000000000000000000000000000002/images/00000007.jpg": "1d64c88ffdbfe48e173596e41f519e01e048fb2b6f83f87b7bb960d9120d856c",
+    "worlds/00000000000000000000000000000001/sessions/00000000000000000000000000000002/images/00000010.jpg": "d3933a46f89f7e9a60e9373ae23b466c8c5752485c9caf7916efdc597a8990a7",
+    "worlds/00000000000000000000000000000001/sessions/00000000000000000000000000000002/images/00000013.jpg": "755bb6b287413e65f812a455fdf7e25185b4e4e91264e150e4c3fada42395808",
+    "worlds/00000000000000000000000000000001/sessions/00000000000000000000000000000002/images/00000016.jpg": "c1c1792630db13971041a81e668d3c8e2679400719a4a620cca09a256ea62577",
+    "worlds/00000000000000000000000000000001/sessions/00000000000000000000000000000002/images/00000019.jpg": "dd22f73bce5e6bfe9b06f802cdfea95d2183f912c14ca34baa57d6cc32b0b1d0",
+    "worlds/00000000000000000000000000000001/sessions/00000000000000000000000000000002/images/00000022.jpg": "fddea61e196fcd45663f2360eabd9d74edc0267ee509cf4d7c5c77383fd75908",
+    "worlds/00000000000000000000000000000001/sessions/00000000000000000000000000000002/keyframes.jsonl": "d7765944dfb88bc40ef9489f5fd9aabf1eaa592ebac2701845971d2436911b22",
+    "worlds/00000000000000000000000000000001/sessions/00000000000000000000000000000002/session.json": "1919f4054e6068ff9f199d2bfef9ebe731eeb47727d9faa4878bd24955e9a2b6",
+    "worlds/00000000000000000000000000000001/world.json": "137577c4210cfee8f1db48272dff7020f7148cbfab26a0c85df00ab96197c5f2"
+   },
+   "log": [
+    "INFO tower.world_build_session [Tower][WorldBuilder] world root <WD>\\worlds (cwd <CWD>) -- calibrations on file: 480x360",
+    "INFO tower.world_build_session [Tower][WorldBuilder] first frame of capture cccccccccccccccccccccccccccccccc observed at 480x360 (source_seq=1); resolving intrinsics against THAT, not against anything declared",
+    "INFO tower.world_build_session [Tower][WorldBuilder] session 00000000000000000000000000000002 in world 00000000000000000000000000000001: source=live-capture capture=cccccccccccccccccccccccccccccccc root=<WD>\\worlds observed=480x360 calibration=<WD>\\worlds\\intrinsics\\480x360.json intrinsics=self_calibrated backend=classical-sfm (requested auto) rebuild_every=4",
+    "INFO tower.world_build_session [Tower][WorldBuilder] rebuild 1: 4 keyframes -> 3 positioned poses, 1347 points, 1 segments in <T>",
+    "INFO tower.world_build_session [Tower][WorldBuilder] rebuild 2: 8 keyframes -> 7 positioned poses, 2106 points, 1 segments in <T>",
+    "INFO tower.world_build_session [Tower][WorldBuilder] stop requested (soft, stdin-closed) after the capture closed (stop); this is an ordinary end and the session ends as 'stop'",
+    "INFO tower.world_build_session [Tower][WorldBuilder] session 00000000000000000000000000000002 finished: 24 frames, 8 keyframes, 1 segments, backend=classical-sfm (downgraded_from=None), 7 solved poses, 2106 points, scale=relative, final build <T>"
+   ],
+   "report": {
+    "backend_id": "classical-sfm",
+    "build_seconds": "<T>",
+    "downgraded_from": null,
+    "end_reason": "stop",
+    "finalization": "complete",
+    "frame_source": "live-capture",
+    "frames_observed": 24,
+    "keyframes_accepted": 8,
+    "observe_ms_per_frame": "<T>",
+    "points": 2106,
+    "poses_refused": 0,
+    "poses_solved": 7,
+    "rebuilds": 2,
+    "rejected_by_reason": {
+     "insufficient_motion": 16
+    },
+    "scale_state": "relative",
+    "segments": 1,
+    "session_id": "00000000000000000000000000000002",
+    "world_id": "00000000000000000000000000000001"
+   }
+  },
+  "soft-while-open-3-after-stop-close-before-next-check": {
+   "events": [
+    {
+     "event_id": 0,
+     "kind": "session_started",
+     "payload": {
+      "frame_source": "live-capture"
+     },
+     "schema_version": 1,
+     "time_basis": "tower-receipt"
+    },
+    {
+     "event_id": 1,
+     "kind": "keyframe_accepted",
+     "payload": {
+      "keyframe_id": "00000000000000000000000000000002:00000001",
+      "reason": "session_seed",
+      "segment_index": 0
+     },
+     "schema_version": 1,
+     "time_basis": "tower-receipt"
+    },
+    {
+     "event_id": 2,
+     "kind": "keyframe_accepted",
+     "payload": {
+      "keyframe_id": "00000000000000000000000000000002:00000004",
+      "reason": "parallax",
+      "segment_index": 0
+     },
+     "schema_version": 1,
+     "time_basis": "tower-receipt"
+    },
+    {
+     "event_id": 3,
+     "kind": "keyframe_accepted",
+     "payload": {
+      "keyframe_id": "00000000000000000000000000000002:00000007",
+      "reason": "parallax",
+      "segment_index": 0
+     },
+     "schema_version": 1,
+     "time_basis": "tower-receipt"
+    },
+    {
+     "event_id": 4,
+     "kind": "keyframe_accepted",
+     "payload": {
+      "keyframe_id": "00000000000000000000000000000002:00000010",
+      "reason": "parallax",
+      "segment_index": 0
+     },
+     "schema_version": 1,
+     "time_basis": "tower-receipt"
+    },
+    {
+     "event_id": 5,
+     "kind": "keyframe_accepted",
+     "payload": {
+      "keyframe_id": "00000000000000000000000000000002:00000013",
+      "reason": "parallax",
+      "segment_index": 0
+     },
+     "schema_version": 1,
+     "time_basis": "tower-receipt"
+    },
+    {
+     "event_id": 6,
+     "kind": "keyframe_accepted",
+     "payload": {
+      "keyframe_id": "00000000000000000000000000000002:00000016",
+      "reason": "parallax",
+      "segment_index": 0
+     },
+     "schema_version": 1,
+     "time_basis": "tower-receipt"
+    },
+    {
+     "event_id": 7,
+     "kind": "keyframe_accepted",
+     "payload": {
+      "keyframe_id": "00000000000000000000000000000002:00000019",
+      "reason": "parallax",
+      "segment_index": 0
+     },
+     "schema_version": 1,
+     "time_basis": "tower-receipt"
+    },
+    {
+     "event_id": 8,
+     "kind": "keyframe_accepted",
+     "payload": {
+      "keyframe_id": "00000000000000000000000000000002:00000022",
+      "reason": "parallax",
+      "segment_index": 0
+     },
+     "schema_version": 1,
+     "time_basis": "tower-receipt"
+    },
+    {
+     "event_id": 9,
+     "kind": "session_stopped",
+     "payload": {
+      "capture_end_reason": "stop",
+      "end_reason": "stop"
+     },
+     "schema_version": 1,
+     "time_basis": "tower-receipt"
+    }
+   ],
+   "exit": 0,
+   "files": {
+    "intrinsics/480x360.json": "8fafa229f28445ac85b2fbb4b8d0167f288f31a15a7718c4368bc53754dc0143",
+    "worlds/00000000000000000000000000000001/derived/00000000000000000000000000000002/manifest.json": "2b85738ee1d949983bf433357b1bb3feb780ce10eff1904a6aed00687e115b6f",
+    "worlds/00000000000000000000000000000001/derived/00000000000000000000000000000002/points.json": "98f1482f7cbd6e9606c3d3a2559c34024d7ec0c2edd4290a718917faacc87273",
+    "worlds/00000000000000000000000000000001/derived/00000000000000000000000000000002/poses.json": "e418bf465733ff7fc5942fa964fa676ffde2eccf34b466864603ca9d83a88d6c",
+    "worlds/00000000000000000000000000000001/derived/00000000000000000000000000000002/support.json": "62b1d51e8b17b5204f1e96e5fc5addb0ca765620968d9a04125709440862c330",
+    "worlds/00000000000000000000000000000001/derived/manifest.json": "2b85738ee1d949983bf433357b1bb3feb780ce10eff1904a6aed00687e115b6f",
+    "worlds/00000000000000000000000000000001/sessions/00000000000000000000000000000002/edges.jsonl": "197d5dc1fd9a3f8ea490da054f946761b9e646d844070c3f85b773112cca5fa5",
+    "worlds/00000000000000000000000000000001/sessions/00000000000000000000000000000002/events.jsonl": "4a64bf765db8b2abe14f557cb3c7b45e491a7875b6dc2f803a9ab587575f5434",
+    "worlds/00000000000000000000000000000001/sessions/00000000000000000000000000000002/images/00000001.jpg": "a59a421bdba15ecfbe41c49077d10eefe1bdc05f31aa8a4c7bc4e7f7010b5fa9",
+    "worlds/00000000000000000000000000000001/sessions/00000000000000000000000000000002/images/00000004.jpg": "df049d926a0309ebb026ea75cae57950e761b178d8d113dc13baafff8dbc3b1d",
+    "worlds/00000000000000000000000000000001/sessions/00000000000000000000000000000002/images/00000007.jpg": "1d64c88ffdbfe48e173596e41f519e01e048fb2b6f83f87b7bb960d9120d856c",
+    "worlds/00000000000000000000000000000001/sessions/00000000000000000000000000000002/images/00000010.jpg": "d3933a46f89f7e9a60e9373ae23b466c8c5752485c9caf7916efdc597a8990a7",
+    "worlds/00000000000000000000000000000001/sessions/00000000000000000000000000000002/images/00000013.jpg": "755bb6b287413e65f812a455fdf7e25185b4e4e91264e150e4c3fada42395808",
+    "worlds/00000000000000000000000000000001/sessions/00000000000000000000000000000002/images/00000016.jpg": "c1c1792630db13971041a81e668d3c8e2679400719a4a620cca09a256ea62577",
+    "worlds/00000000000000000000000000000001/sessions/00000000000000000000000000000002/images/00000019.jpg": "dd22f73bce5e6bfe9b06f802cdfea95d2183f912c14ca34baa57d6cc32b0b1d0",
+    "worlds/00000000000000000000000000000001/sessions/00000000000000000000000000000002/images/00000022.jpg": "fddea61e196fcd45663f2360eabd9d74edc0267ee509cf4d7c5c77383fd75908",
+    "worlds/00000000000000000000000000000001/sessions/00000000000000000000000000000002/keyframes.jsonl": "d7765944dfb88bc40ef9489f5fd9aabf1eaa592ebac2701845971d2436911b22",
+    "worlds/00000000000000000000000000000001/sessions/00000000000000000000000000000002/session.json": "1919f4054e6068ff9f199d2bfef9ebe731eeb47727d9faa4878bd24955e9a2b6",
+    "worlds/00000000000000000000000000000001/world.json": "137577c4210cfee8f1db48272dff7020f7148cbfab26a0c85df00ab96197c5f2"
+   },
+   "log": [
+    "INFO tower.world_build_session [Tower][WorldBuilder] world root <WD>\\worlds (cwd <CWD>) -- calibrations on file: 480x360",
+    "INFO tower.world_build_session [Tower][WorldBuilder] first frame of capture cccccccccccccccccccccccccccccccc observed at 480x360 (source_seq=1); resolving intrinsics against THAT, not against anything declared",
+    "INFO tower.world_build_session [Tower][WorldBuilder] session 00000000000000000000000000000002 in world 00000000000000000000000000000001: source=live-capture capture=cccccccccccccccccccccccccccccccc root=<WD>\\worlds observed=480x360 calibration=<WD>\\worlds\\intrinsics\\480x360.json intrinsics=self_calibrated backend=classical-sfm (requested auto) rebuild_every=4",
+    "INFO tower.world_build_session [Tower][WorldBuilder] rebuild 1: 4 keyframes -> 3 positioned poses, 1347 points, 1 segments in <T>",
+    "INFO tower.world_build_session [Tower][WorldBuilder] rebuild 2: 8 keyframes -> 7 positioned poses, 2106 points, 1 segments in <T>",
+    "INFO tower.world_build_session [Tower][WorldBuilder] stop requested (soft, stdin-closed) after the capture closed (stop); this is an ordinary end and the session ends as 'stop'",
+    "INFO tower.world_build_session [Tower][WorldBuilder] session 00000000000000000000000000000002 finished: 24 frames, 8 keyframes, 1 segments, backend=classical-sfm (downgraded_from=None), 7 solved poses, 2106 points, scale=relative, final build <T>"
+   ],
+   "report": {
+    "backend_id": "classical-sfm",
+    "build_seconds": "<T>",
+    "downgraded_from": null,
+    "end_reason": "stop",
+    "finalization": "complete",
+    "frame_source": "live-capture",
+    "frames_observed": 24,
+    "keyframes_accepted": 8,
+    "observe_ms_per_frame": "<T>",
+    "points": 2106,
+    "poses_refused": 0,
+    "poses_solved": 7,
+    "rebuilds": 2,
+    "rejected_by_reason": {
+     "insufficient_motion": 16
+    },
+    "scale_state": "relative",
+    "segments": 1,
+    "session_id": "00000000000000000000000000000002",
+    "world_id": "00000000000000000000000000000001"
+   }
+  },
+  "soft-while-open-3-after-stop-then-close": {
+   "events": [
+    {
+     "event_id": 0,
+     "kind": "session_started",
+     "payload": {
+      "frame_source": "live-capture"
+     },
+     "schema_version": 1,
+     "time_basis": "tower-receipt"
+    },
+    {
+     "event_id": 1,
+     "kind": "keyframe_accepted",
+     "payload": {
+      "keyframe_id": "00000000000000000000000000000002:00000001",
+      "reason": "session_seed",
+      "segment_index": 0
+     },
+     "schema_version": 1,
+     "time_basis": "tower-receipt"
+    },
+    {
+     "event_id": 2,
+     "kind": "keyframe_accepted",
+     "payload": {
+      "keyframe_id": "00000000000000000000000000000002:00000004",
+      "reason": "parallax",
+      "segment_index": 0
+     },
+     "schema_version": 1,
+     "time_basis": "tower-receipt"
+    },
+    {
+     "event_id": 3,
+     "kind": "keyframe_accepted",
+     "payload": {
+      "keyframe_id": "00000000000000000000000000000002:00000007",
+      "reason": "parallax",
+      "segment_index": 0
+     },
+     "schema_version": 1,
+     "time_basis": "tower-receipt"
+    },
+    {
+     "event_id": 4,
+     "kind": "keyframe_accepted",
+     "payload": {
+      "keyframe_id": "00000000000000000000000000000002:00000010",
+      "reason": "parallax",
+      "segment_index": 0
+     },
+     "schema_version": 1,
+     "time_basis": "tower-receipt"
+    },
+    {
+     "event_id": 5,
+     "kind": "keyframe_accepted",
+     "payload": {
+      "keyframe_id": "00000000000000000000000000000002:00000013",
+      "reason": "parallax",
+      "segment_index": 0
+     },
+     "schema_version": 1,
+     "time_basis": "tower-receipt"
+    },
+    {
+     "event_id": 6,
+     "kind": "keyframe_accepted",
+     "payload": {
+      "keyframe_id": "00000000000000000000000000000002:00000016",
+      "reason": "parallax",
+      "segment_index": 0
+     },
+     "schema_version": 1,
+     "time_basis": "tower-receipt"
+    },
+    {
+     "event_id": 7,
+     "kind": "keyframe_accepted",
+     "payload": {
+      "keyframe_id": "00000000000000000000000000000002:00000019",
+      "reason": "parallax",
+      "segment_index": 0
+     },
+     "schema_version": 1,
+     "time_basis": "tower-receipt"
+    },
+    {
+     "event_id": 8,
+     "kind": "keyframe_accepted",
+     "payload": {
+      "keyframe_id": "00000000000000000000000000000002:00000022",
+      "reason": "parallax",
+      "segment_index": 0
+     },
+     "schema_version": 1,
+     "time_basis": "tower-receipt"
+    },
+    {
+     "event_id": 9,
+     "kind": "session_stopped",
+     "payload": {
+      "capture_end_reason": "stop",
+      "end_reason": "stop"
+     },
+     "schema_version": 1,
+     "time_basis": "tower-receipt"
+    }
+   ],
+   "exit": 0,
+   "files": {
+    "intrinsics/480x360.json": "8fafa229f28445ac85b2fbb4b8d0167f288f31a15a7718c4368bc53754dc0143",
+    "worlds/00000000000000000000000000000001/derived/00000000000000000000000000000002/manifest.json": "2b85738ee1d949983bf433357b1bb3feb780ce10eff1904a6aed00687e115b6f",
+    "worlds/00000000000000000000000000000001/derived/00000000000000000000000000000002/points.json": "98f1482f7cbd6e9606c3d3a2559c34024d7ec0c2edd4290a718917faacc87273",
+    "worlds/00000000000000000000000000000001/derived/00000000000000000000000000000002/poses.json": "e418bf465733ff7fc5942fa964fa676ffde2eccf34b466864603ca9d83a88d6c",
+    "worlds/00000000000000000000000000000001/derived/00000000000000000000000000000002/support.json": "62b1d51e8b17b5204f1e96e5fc5addb0ca765620968d9a04125709440862c330",
+    "worlds/00000000000000000000000000000001/derived/manifest.json": "2b85738ee1d949983bf433357b1bb3feb780ce10eff1904a6aed00687e115b6f",
+    "worlds/00000000000000000000000000000001/sessions/00000000000000000000000000000002/edges.jsonl": "197d5dc1fd9a3f8ea490da054f946761b9e646d844070c3f85b773112cca5fa5",
+    "worlds/00000000000000000000000000000001/sessions/00000000000000000000000000000002/events.jsonl": "4a64bf765db8b2abe14f557cb3c7b45e491a7875b6dc2f803a9ab587575f5434",
+    "worlds/00000000000000000000000000000001/sessions/00000000000000000000000000000002/images/00000001.jpg": "a59a421bdba15ecfbe41c49077d10eefe1bdc05f31aa8a4c7bc4e7f7010b5fa9",
+    "worlds/00000000000000000000000000000001/sessions/00000000000000000000000000000002/images/00000004.jpg": "df049d926a0309ebb026ea75cae57950e761b178d8d113dc13baafff8dbc3b1d",
+    "worlds/00000000000000000000000000000001/sessions/00000000000000000000000000000002/images/00000007.jpg": "1d64c88ffdbfe48e173596e41f519e01e048fb2b6f83f87b7bb960d9120d856c",
+    "worlds/00000000000000000000000000000001/sessions/00000000000000000000000000000002/images/00000010.jpg": "d3933a46f89f7e9a60e9373ae23b466c8c5752485c9caf7916efdc597a8990a7",
+    "worlds/00000000000000000000000000000001/sessions/00000000000000000000000000000002/images/00000013.jpg": "755bb6b287413e65f812a455fdf7e25185b4e4e91264e150e4c3fada42395808",
+    "worlds/00000000000000000000000000000001/sessions/00000000000000000000000000000002/images/00000016.jpg": "c1c1792630db13971041a81e668d3c8e2679400719a4a620cca09a256ea62577",
+    "worlds/00000000000000000000000000000001/sessions/00000000000000000000000000000002/images/00000019.jpg": "dd22f73bce5e6bfe9b06f802cdfea95d2183f912c14ca34baa57d6cc32b0b1d0",
+    "worlds/00000000000000000000000000000001/sessions/00000000000000000000000000000002/images/00000022.jpg": "fddea61e196fcd45663f2360eabd9d74edc0267ee509cf4d7c5c77383fd75908",
+    "worlds/00000000000000000000000000000001/sessions/00000000000000000000000000000002/keyframes.jsonl": "d7765944dfb88bc40ef9489f5fd9aabf1eaa592ebac2701845971d2436911b22",
+    "worlds/00000000000000000000000000000001/sessions/00000000000000000000000000000002/session.json": "1919f4054e6068ff9f199d2bfef9ebe731eeb47727d9faa4878bd24955e9a2b6",
+    "worlds/00000000000000000000000000000001/world.json": "137577c4210cfee8f1db48272dff7020f7148cbfab26a0c85df00ab96197c5f2"
+   },
+   "log": [
+    "INFO tower.world_build_session [Tower][WorldBuilder] world root <WD>\\worlds (cwd <CWD>) -- calibrations on file: 480x360",
+    "INFO tower.world_build_session [Tower][WorldBuilder] first frame of capture cccccccccccccccccccccccccccccccc observed at 480x360 (source_seq=1); resolving intrinsics against THAT, not against anything declared",
+    "INFO tower.world_build_session [Tower][WorldBuilder] session 00000000000000000000000000000002 in world 00000000000000000000000000000001: source=live-capture capture=cccccccccccccccccccccccccccccccc root=<WD>\\worlds observed=480x360 calibration=<WD>\\worlds\\intrinsics\\480x360.json intrinsics=self_calibrated backend=classical-sfm (requested auto) rebuild_every=4",
+    "INFO tower.world_build_session [Tower][WorldBuilder] rebuild 1: 4 keyframes -> 3 positioned poses, 1347 points, 1 segments in <T>",
+    "INFO tower.world_build_session [Tower][WorldBuilder] rebuild 2: 8 keyframes -> 7 positioned poses, 2106 points, 1 segments in <T>",
+    "INFO tower.world_build_session [Tower][WorldBuilder] stop requested (soft, stdin-closed) after the capture closed (stop); this is an ordinary end and the session ends as 'stop'",
+    "INFO tower.world_build_session [Tower][WorldBuilder] session 00000000000000000000000000000002 finished: 24 frames, 8 keyframes, 1 segments, backend=classical-sfm (downgraded_from=None), 7 solved poses, 2106 points, scale=relative, final build <T>"
+   ],
+   "report": {
+    "backend_id": "classical-sfm",
+    "build_seconds": "<T>",
+    "downgraded_from": null,
+    "end_reason": "stop",
+    "finalization": "complete",
+    "frame_source": "live-capture",
+    "frames_observed": 24,
+    "keyframes_accepted": 8,
+    "observe_ms_per_frame": "<T>",
+    "points": 2106,
+    "poses_refused": 0,
+    "poses_solved": 7,
+    "rebuilds": 2,
+    "rejected_by_reason": {
+     "insufficient_motion": 16
+    },
+    "scale_state": "relative",
+    "segments": 1,
+    "session_id": "00000000000000000000000000000002",
+    "world_id": "00000000000000000000000000000001"
+   }
+  },
+  "soft-while-open-36-after-stop-then-close": {
+   "events": [
+    {
+     "event_id": 0,
+     "kind": "session_started",
+     "payload": {
+      "frame_source": "live-capture"
+     },
+     "schema_version": 1,
+     "time_basis": "tower-receipt"
+    },
+    {
+     "event_id": 1,
+     "kind": "keyframe_accepted",
+     "payload": {
+      "keyframe_id": "00000000000000000000000000000002:00000001",
+      "reason": "session_seed",
+      "segment_index": 0
+     },
+     "schema_version": 1,
+     "time_basis": "tower-receipt"
+    },
+    {
+     "event_id": 2,
+     "kind": "keyframe_accepted",
+     "payload": {
+      "keyframe_id": "00000000000000000000000000000002:00000004",
+      "reason": "parallax",
+      "segment_index": 0
+     },
+     "schema_version": 1,
+     "time_basis": "tower-receipt"
+    },
+    {
+     "event_id": 3,
+     "kind": "keyframe_accepted",
+     "payload": {
+      "keyframe_id": "00000000000000000000000000000002:00000007",
+      "reason": "parallax",
+      "segment_index": 0
+     },
+     "schema_version": 1,
+     "time_basis": "tower-receipt"
+    },
+    {
+     "event_id": 4,
+     "kind": "keyframe_accepted",
+     "payload": {
+      "keyframe_id": "00000000000000000000000000000002:00000010",
+      "reason": "parallax",
+      "segment_index": 0
+     },
+     "schema_version": 1,
+     "time_basis": "tower-receipt"
+    },
+    {
+     "event_id": 5,
+     "kind": "keyframe_accepted",
+     "payload": {
+      "keyframe_id": "00000000000000000000000000000002:00000013",
+      "reason": "parallax",
+      "segment_index": 0
+     },
+     "schema_version": 1,
+     "time_basis": "tower-receipt"
+    },
+    {
+     "event_id": 6,
+     "kind": "keyframe_accepted",
+     "payload": {
+      "keyframe_id": "00000000000000000000000000000002:00000016",
+      "reason": "parallax",
+      "segment_index": 0
+     },
+     "schema_version": 1,
+     "time_basis": "tower-receipt"
+    },
+    {
+     "event_id": 7,
+     "kind": "keyframe_accepted",
+     "payload": {
+      "keyframe_id": "00000000000000000000000000000002:00000019",
+      "reason": "parallax",
+      "segment_index": 0
+     },
+     "schema_version": 1,
+     "time_basis": "tower-receipt"
+    },
+    {
+     "event_id": 8,
+     "kind": "keyframe_accepted",
+     "payload": {
+      "keyframe_id": "00000000000000000000000000000002:00000022",
+      "reason": "parallax",
+      "segment_index": 0
+     },
+     "schema_version": 1,
+     "time_basis": "tower-receipt"
+    },
+    {
+     "event_id": 9,
+     "kind": "session_stopped",
+     "payload": {
+      "capture_end_reason": "stop",
+      "end_reason": "stop"
+     },
+     "schema_version": 1,
+     "time_basis": "tower-receipt"
+    }
+   ],
+   "exit": 0,
+   "files": {
+    "intrinsics/480x360.json": "8fafa229f28445ac85b2fbb4b8d0167f288f31a15a7718c4368bc53754dc0143",
+    "worlds/00000000000000000000000000000001/derived/00000000000000000000000000000002/manifest.json": "2b85738ee1d949983bf433357b1bb3feb780ce10eff1904a6aed00687e115b6f",
+    "worlds/00000000000000000000000000000001/derived/00000000000000000000000000000002/points.json": "98f1482f7cbd6e9606c3d3a2559c34024d7ec0c2edd4290a718917faacc87273",
+    "worlds/00000000000000000000000000000001/derived/00000000000000000000000000000002/poses.json": "e418bf465733ff7fc5942fa964fa676ffde2eccf34b466864603ca9d83a88d6c",
+    "worlds/00000000000000000000000000000001/derived/00000000000000000000000000000002/support.json": "62b1d51e8b17b5204f1e96e5fc5addb0ca765620968d9a04125709440862c330",
+    "worlds/00000000000000000000000000000001/derived/manifest.json": "2b85738ee1d949983bf433357b1bb3feb780ce10eff1904a6aed00687e115b6f",
+    "worlds/00000000000000000000000000000001/sessions/00000000000000000000000000000002/edges.jsonl": "197d5dc1fd9a3f8ea490da054f946761b9e646d844070c3f85b773112cca5fa5",
+    "worlds/00000000000000000000000000000001/sessions/00000000000000000000000000000002/events.jsonl": "4a64bf765db8b2abe14f557cb3c7b45e491a7875b6dc2f803a9ab587575f5434",
+    "worlds/00000000000000000000000000000001/sessions/00000000000000000000000000000002/images/00000001.jpg": "a59a421bdba15ecfbe41c49077d10eefe1bdc05f31aa8a4c7bc4e7f7010b5fa9",
+    "worlds/00000000000000000000000000000001/sessions/00000000000000000000000000000002/images/00000004.jpg": "df049d926a0309ebb026ea75cae57950e761b178d8d113dc13baafff8dbc3b1d",
+    "worlds/00000000000000000000000000000001/sessions/00000000000000000000000000000002/images/00000007.jpg": "1d64c88ffdbfe48e173596e41f519e01e048fb2b6f83f87b7bb960d9120d856c",
+    "worlds/00000000000000000000000000000001/sessions/00000000000000000000000000000002/images/00000010.jpg": "d3933a46f89f7e9a60e9373ae23b466c8c5752485c9caf7916efdc597a8990a7",
+    "worlds/00000000000000000000000000000001/sessions/00000000000000000000000000000002/images/00000013.jpg": "755bb6b287413e65f812a455fdf7e25185b4e4e91264e150e4c3fada42395808",
+    "worlds/00000000000000000000000000000001/sessions/00000000000000000000000000000002/images/00000016.jpg": "c1c1792630db13971041a81e668d3c8e2679400719a4a620cca09a256ea62577",
+    "worlds/00000000000000000000000000000001/sessions/00000000000000000000000000000002/images/00000019.jpg": "dd22f73bce5e6bfe9b06f802cdfea95d2183f912c14ca34baa57d6cc32b0b1d0",
+    "worlds/00000000000000000000000000000001/sessions/00000000000000000000000000000002/images/00000022.jpg": "fddea61e196fcd45663f2360eabd9d74edc0267ee509cf4d7c5c77383fd75908",
+    "worlds/00000000000000000000000000000001/sessions/00000000000000000000000000000002/keyframes.jsonl": "d7765944dfb88bc40ef9489f5fd9aabf1eaa592ebac2701845971d2436911b22",
+    "worlds/00000000000000000000000000000001/sessions/00000000000000000000000000000002/session.json": "1919f4054e6068ff9f199d2bfef9ebe731eeb47727d9faa4878bd24955e9a2b6",
+    "worlds/00000000000000000000000000000001/world.json": "137577c4210cfee8f1db48272dff7020f7148cbfab26a0c85df00ab96197c5f2"
+   },
+   "log": [
+    "INFO tower.world_build_session [Tower][WorldBuilder] world root <WD>\\worlds (cwd <CWD>) -- calibrations on file: 480x360",
+    "INFO tower.world_build_session [Tower][WorldBuilder] first frame of capture cccccccccccccccccccccccccccccccc observed at 480x360 (source_seq=1); resolving intrinsics against THAT, not against anything declared",
+    "INFO tower.world_build_session [Tower][WorldBuilder] session 00000000000000000000000000000002 in world 00000000000000000000000000000001: source=live-capture capture=cccccccccccccccccccccccccccccccc root=<WD>\\worlds observed=480x360 calibration=<WD>\\worlds\\intrinsics\\480x360.json intrinsics=self_calibrated backend=classical-sfm (requested auto) rebuild_every=4",
+    "INFO tower.world_build_session [Tower][WorldBuilder] rebuild 1: 4 keyframes -> 3 positioned poses, 1347 points, 1 segments in <T>",
+    "INFO tower.world_build_session [Tower][WorldBuilder] rebuild 2: 8 keyframes -> 7 positioned poses, 2106 points, 1 segments in <T>",
+    "INFO tower.world_build_session [Tower][WorldBuilder] stop requested (soft, stdin-closed) after the capture closed (stop); this is an ordinary end and the session ends as 'stop'",
+    "INFO tower.world_build_session [Tower][WorldBuilder] session 00000000000000000000000000000002 finished: 24 frames, 8 keyframes, 1 segments, backend=classical-sfm (downgraded_from=None), 7 solved poses, 2106 points, scale=relative, final build <T>"
+   ],
+   "report": {
+    "backend_id": "classical-sfm",
+    "build_seconds": "<T>",
+    "downgraded_from": null,
+    "end_reason": "stop",
+    "finalization": "complete",
+    "frame_source": "live-capture",
+    "frames_observed": 24,
+    "keyframes_accepted": 8,
+    "observe_ms_per_frame": "<T>",
+    "points": 2106,
+    "poses_refused": 0,
+    "poses_solved": 7,
+    "rebuilds": 2,
+    "rejected_by_reason": {
+     "insufficient_motion": 16
+    },
+    "scale_state": "relative",
+    "segments": 1,
+    "session_id": "00000000000000000000000000000002",
+    "world_id": "00000000000000000000000000000001"
+   }
+  },
+  "soft-while-open-then-close": {
+   "events": [
+    {
+     "event_id": 0,
+     "kind": "session_started",
+     "payload": {
+      "frame_source": "live-capture"
+     },
+     "schema_version": 1,
+     "time_basis": "tower-receipt"
+    },
+    {
+     "event_id": 1,
+     "kind": "keyframe_accepted",
+     "payload": {
+      "keyframe_id": "00000000000000000000000000000002:00000001",
+      "reason": "session_seed",
+      "segment_index": 0
+     },
+     "schema_version": 1,
+     "time_basis": "tower-receipt"
+    },
+    {
+     "event_id": 2,
+     "kind": "keyframe_accepted",
+     "payload": {
+      "keyframe_id": "00000000000000000000000000000002:00000004",
+      "reason": "parallax",
+      "segment_index": 0
+     },
+     "schema_version": 1,
+     "time_basis": "tower-receipt"
+    },
+    {
+     "event_id": 3,
+     "kind": "keyframe_accepted",
+     "payload": {
+      "keyframe_id": "00000000000000000000000000000002:00000007",
+      "reason": "parallax",
+      "segment_index": 0
+     },
+     "schema_version": 1,
+     "time_basis": "tower-receipt"
+    },
+    {
+     "event_id": 4,
+     "kind": "keyframe_accepted",
+     "payload": {
+      "keyframe_id": "00000000000000000000000000000002:00000010",
+      "reason": "parallax",
+      "segment_index": 0
+     },
+     "schema_version": 1,
+     "time_basis": "tower-receipt"
+    },
+    {
+     "event_id": 5,
+     "kind": "keyframe_accepted",
+     "payload": {
+      "keyframe_id": "00000000000000000000000000000002:00000013",
+      "reason": "parallax",
+      "segment_index": 0
+     },
+     "schema_version": 1,
+     "time_basis": "tower-receipt"
+    },
+    {
+     "event_id": 6,
+     "kind": "keyframe_accepted",
+     "payload": {
+      "keyframe_id": "00000000000000000000000000000002:00000016",
+      "reason": "parallax",
+      "segment_index": 0
+     },
+     "schema_version": 1,
+     "time_basis": "tower-receipt"
+    },
+    {
+     "event_id": 7,
+     "kind": "keyframe_accepted",
+     "payload": {
+      "keyframe_id": "00000000000000000000000000000002:00000019",
+      "reason": "parallax",
+      "segment_index": 0
+     },
+     "schema_version": 1,
+     "time_basis": "tower-receipt"
+    },
+    {
+     "event_id": 8,
+     "kind": "keyframe_accepted",
+     "payload": {
+      "keyframe_id": "00000000000000000000000000000002:00000022",
+      "reason": "parallax",
+      "segment_index": 0
+     },
+     "schema_version": 1,
+     "time_basis": "tower-receipt"
+    },
+    {
+     "event_id": 9,
+     "kind": "session_stopped",
+     "payload": {
+      "capture_end_reason": "stop",
+      "end_reason": "stop"
+     },
+     "schema_version": 1,
+     "time_basis": "tower-receipt"
+    }
+   ],
+   "exit": 0,
+   "files": {
+    "intrinsics/480x360.json": "8fafa229f28445ac85b2fbb4b8d0167f288f31a15a7718c4368bc53754dc0143",
+    "worlds/00000000000000000000000000000001/derived/00000000000000000000000000000002/manifest.json": "2b85738ee1d949983bf433357b1bb3feb780ce10eff1904a6aed00687e115b6f",
+    "worlds/00000000000000000000000000000001/derived/00000000000000000000000000000002/points.json": "98f1482f7cbd6e9606c3d3a2559c34024d7ec0c2edd4290a718917faacc87273",
+    "worlds/00000000000000000000000000000001/derived/00000000000000000000000000000002/poses.json": "e418bf465733ff7fc5942fa964fa676ffde2eccf34b466864603ca9d83a88d6c",
+    "worlds/00000000000000000000000000000001/derived/00000000000000000000000000000002/support.json": "62b1d51e8b17b5204f1e96e5fc5addb0ca765620968d9a04125709440862c330",
+    "worlds/00000000000000000000000000000001/derived/manifest.json": "2b85738ee1d949983bf433357b1bb3feb780ce10eff1904a6aed00687e115b6f",
+    "worlds/00000000000000000000000000000001/sessions/00000000000000000000000000000002/edges.jsonl": "197d5dc1fd9a3f8ea490da054f946761b9e646d844070c3f85b773112cca5fa5",
+    "worlds/00000000000000000000000000000001/sessions/00000000000000000000000000000002/events.jsonl": "4a64bf765db8b2abe14f557cb3c7b45e491a7875b6dc2f803a9ab587575f5434",
+    "worlds/00000000000000000000000000000001/sessions/00000000000000000000000000000002/images/00000001.jpg": "a59a421bdba15ecfbe41c49077d10eefe1bdc05f31aa8a4c7bc4e7f7010b5fa9",
+    "worlds/00000000000000000000000000000001/sessions/00000000000000000000000000000002/images/00000004.jpg": "df049d926a0309ebb026ea75cae57950e761b178d8d113dc13baafff8dbc3b1d",
+    "worlds/00000000000000000000000000000001/sessions/00000000000000000000000000000002/images/00000007.jpg": "1d64c88ffdbfe48e173596e41f519e01e048fb2b6f83f87b7bb960d9120d856c",
+    "worlds/00000000000000000000000000000001/sessions/00000000000000000000000000000002/images/00000010.jpg": "d3933a46f89f7e9a60e9373ae23b466c8c5752485c9caf7916efdc597a8990a7",
+    "worlds/00000000000000000000000000000001/sessions/00000000000000000000000000000002/images/00000013.jpg": "755bb6b287413e65f812a455fdf7e25185b4e4e91264e150e4c3fada42395808",
+    "worlds/00000000000000000000000000000001/sessions/00000000000000000000000000000002/images/00000016.jpg": "c1c1792630db13971041a81e668d3c8e2679400719a4a620cca09a256ea62577",
+    "worlds/00000000000000000000000000000001/sessions/00000000000000000000000000000002/images/00000019.jpg": "dd22f73bce5e6bfe9b06f802cdfea95d2183f912c14ca34baa57d6cc32b0b1d0",
+    "worlds/00000000000000000000000000000001/sessions/00000000000000000000000000000002/images/00000022.jpg": "fddea61e196fcd45663f2360eabd9d74edc0267ee509cf4d7c5c77383fd75908",
+    "worlds/00000000000000000000000000000001/sessions/00000000000000000000000000000002/keyframes.jsonl": "d7765944dfb88bc40ef9489f5fd9aabf1eaa592ebac2701845971d2436911b22",
+    "worlds/00000000000000000000000000000001/sessions/00000000000000000000000000000002/session.json": "1919f4054e6068ff9f199d2bfef9ebe731eeb47727d9faa4878bd24955e9a2b6",
+    "worlds/00000000000000000000000000000001/world.json": "137577c4210cfee8f1db48272dff7020f7148cbfab26a0c85df00ab96197c5f2"
+   },
+   "log": [
+    "INFO tower.world_build_session [Tower][WorldBuilder] world root <WD>\\worlds (cwd <CWD>) -- calibrations on file: 480x360",
+    "INFO tower.world_build_session [Tower][WorldBuilder] first frame of capture cccccccccccccccccccccccccccccccc observed at 480x360 (source_seq=1); resolving intrinsics against THAT, not against anything declared",
+    "INFO tower.world_build_session [Tower][WorldBuilder] session 00000000000000000000000000000002 in world 00000000000000000000000000000001: source=live-capture capture=cccccccccccccccccccccccccccccccc root=<WD>\\worlds observed=480x360 calibration=<WD>\\worlds\\intrinsics\\480x360.json intrinsics=self_calibrated backend=classical-sfm (requested auto) rebuild_every=4",
+    "INFO tower.world_build_session [Tower][WorldBuilder] rebuild 1: 4 keyframes -> 3 positioned poses, 1347 points, 1 segments in <T>",
+    "INFO tower.world_build_session [Tower][WorldBuilder] rebuild 2: 8 keyframes -> 7 positioned poses, 2106 points, 1 segments in <T>",
+    "INFO tower.world_build_session [Tower][WorldBuilder] stop requested (soft, stdin-closed) after the capture closed (stop); this is an ordinary end and the session ends as 'stop'",
+    "INFO tower.world_build_session [Tower][WorldBuilder] session 00000000000000000000000000000002 finished: 24 frames, 8 keyframes, 1 segments, backend=classical-sfm (downgraded_from=None), 7 solved poses, 2106 points, scale=relative, final build <T>"
+   ],
+   "report": {
+    "backend_id": "classical-sfm",
+    "build_seconds": "<T>",
+    "downgraded_from": null,
+    "end_reason": "stop",
+    "finalization": "complete",
+    "frame_source": "live-capture",
+    "frames_observed": 24,
+    "keyframes_accepted": 8,
+    "observe_ms_per_frame": "<T>",
+    "points": 2106,
+    "poses_refused": 0,
+    "poses_solved": 7,
+    "rebuilds": 2,
+    "rejected_by_reason": {
+     "insufficient_motion": 16
+    },
+    "scale_state": "relative",
+    "segments": 1,
+    "session_id": "00000000000000000000000000000002",
+    "world_id": "00000000000000000000000000000001"
+   }
+  }
+ }
+}
