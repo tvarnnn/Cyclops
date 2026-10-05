@@ -2240,3 +2240,280 @@ def test_a_parent_digest_that_raises_is_not_an_unchanged_database(tmp_path, monk
     assert mapper(4).solve["seed"] == 3 and serial == [4]
     mapper.close()
     assert events == ["after-draw-0", "database-child-digest-mismatch:seed-4"]
+
+
+# ---------------------------------------------------------------------------
+# W01F-FIX5: the session writer lock is machine-wide (ADV MED-A), fails open (LOW-1), and its
+# wait yields to a stop (LOW-2); the f998b81 reviewer's killer probes (LOW-3)
+# ---------------------------------------------------------------------------
+
+
+def _expected_lock_path(store, root):
+    """The lock file, from the documented rule alone (no GS helper): `<store root>/.session-locks/
+    <sha256(normcase(realpath(root)))[:32]>.lock`."""
+    key = hashlib.sha256(os.path.normcase(os.path.abspath(os.path.realpath(str(root)))).encode("utf-8"))
+    return Path(os.path.realpath(str(store.root))) / ".session-locks" / f"{key.hexdigest()[:32]}.lock"
+
+
+# A writer that is NOT this Tower's code and not this session's: it locks byte 0 of the lock file
+# with the plain CRT/POSIX call, in a process whose environment (temp dir, profile) is another's.
+# A byte-range lock is the file's, so it binds a writer in any Windows logon session -- session 0's
+# Tower and session 1's shell alike -- where the old `Local\` mutex bound only its own session.
+_RAW_FILE_HOLDER = (
+    "import os, sys, time\n"
+    "from pathlib import Path\n"
+    "path, release = Path(sys.argv[1]), Path(sys.argv[2])\n"
+    "path.parent.mkdir(parents=True, exist_ok=True)\n"
+    "fd = os.open(str(path), os.O_RDWR | os.O_CREAT | getattr(os, 'O_BINARY', 0))\n"
+    "if os.name == 'nt':\n"
+    "    import msvcrt\n"
+    "    msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)\n"
+    "else:\n"
+    "    import fcntl\n"
+    "    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)\n"
+    "print('held', flush=True)\n"
+    "while not release.exists():\n"
+    "    time.sleep(0.05)\n")
+
+
+def _foreign_env(tmp_path):
+    other = tmp_path / "another-users-profile"
+    (other / "Temp").mkdir(parents=True, exist_ok=True)
+    env = dict(os.environ, PYTHONDONTWRITEBYTECODE="1", CUDA_VISIBLE_DEVICES="-1",
+               PYTHONPATH=str(Path(GS.__file__).resolve().parents[2]))
+    for name in ("TEMP", "TMP", "TMPDIR"):
+        env[name] = str(other / "Temp")
+    for name in ("USERPROFILE", "HOME", "LOCALAPPDATA", "APPDATA"):
+        env[name] = str(other)
+    return env
+
+
+def _spawn_holder(code, args, env):
+    holder = subprocess.Popen([sys.executable, "-c", code, *map(str, args)],
+                              stdout=subprocess.PIPE, text=True, env=env)
+    assert holder.stdout.readline().strip() == "held"
+    return holder
+
+
+def _end_holder(holder, release):
+    release.write_text("go")
+    if holder.poll() is None:
+        try:
+            holder.wait(10)
+        except subprocess.TimeoutExpired:
+            holder.kill()
+    holder.wait()
+
+
+def test_the_session_lock_is_a_file_lock_outside_the_world_that_any_session_sees(tmp_path, monkeypatch):
+    """ADV MED-A. A writer that holds the session's lock FILE -- here a foreign process using the
+    plain CRT lock, with another user's temp dir and profile, standing in for the session-0 Tower
+    a session-1 shell cannot see a `Local\\` mutex of -- holds a final solve back until it lets
+    go. On the `Local\\` mutex this solve entered at once (the reviewer's P2)."""
+    store = WorldStore(tmp_path / "store")
+    monkeypatch.setattr(GS, "_SESSION_LOCK_POLL_S", 0.05)
+    root = GS.workspace_for(store, "w7", "s7").root
+    path = _expected_lock_path(store, root)
+    assert Path(os.path.realpath(GS.session_lock_path(root))) == path
+    release = tmp_path / "release-the-file"
+    holder = _spawn_holder(_RAW_FILE_HOLDER, [path, release], _foreign_env(tmp_path))
+    try:
+        def final_solve(entered):
+            monkeypatch.setattr(GS, "_solve_unlocked",
+                                lambda *args, **kwargs: entered.set() or {"solved": False})
+            GS.solve(store, "w7", "s7", final=True)
+
+        thread, entered, done, errors = _enter_in_thread(final_solve)
+        assert not entered.wait(1.5)                    # the foreign holder has it: the solve waits
+        release.write_text("go")
+        assert holder.wait(10) == 0
+        assert entered.wait(10) and done.wait(10) and errors == []
+    finally:
+        _end_holder(holder, release)
+    # Nothing of the lock is in the world, and the lock file holds no byte.
+    assert path.is_file() and path.stat().st_size == 0
+    assert not store.world_dir("w7").exists()
+
+
+def test_a_holder_with_another_users_temp_dir_still_holds_the_session(tmp_path, monkeypatch):
+    """The lock file is found from the STORE, not from the environment: a final solve holding the
+    lock in a process whose temp dir and profile are another user's (the Tower's service account)
+    still holds back this process's solve, and this process's solve holds back its re-gate."""
+    store = WorldStore(tmp_path / "store")
+    monkeypatch.setattr(GS, "_SESSION_LOCK_POLL_S", 0.05)
+    root = GS.workspace_for(store, "w7", "s7").root
+    release = tmp_path / "release-the-lock"
+    holder = _spawn_holder(_HOLDER, [root, release], _foreign_env(tmp_path))
+    try:
+        def regate(entered):
+            monkeypatch.setattr(CP, "_regate_published",
+                                lambda *args, **kwargs: entered.set() or {"regated": True})
+            CP.regate_published(store, "w7", "s7")
+
+        thread, entered, done, errors = _enter_in_thread(regate)
+        assert not entered.wait(1.5)
+        release.write_text("go")
+        assert holder.wait(10) == 0
+        assert entered.wait(10) and done.wait(10) and errors == []
+    finally:
+        _end_holder(holder, release)
+
+
+def test_a_holder_killed_while_another_waits_hands_the_lock_over(tmp_path, monkeypatch):
+    """The f998b81 reviewer's P7, on the file lock: the waiter is already waiting when the holder
+    is killed (a hard-killed solve child), and the OS hands the lock over."""
+    store = WorldStore(tmp_path)
+    monkeypatch.setattr(GS, "_SESSION_LOCK_POLL_S", 0.05)
+    root = GS.workspace_for(store, "w7", "s7").root
+    holder, release = _hold_in_another_process(tmp_path, root)
+    try:
+        def take(entered):
+            with GS.session_writer_lock(root):
+                entered.set()
+
+        thread, entered, done, errors = _enter_in_thread(take)
+        assert not entered.wait(0.8)
+        holder.kill()
+        holder.wait(10)
+        assert entered.wait(5) and done.wait(5) and errors == []
+    finally:
+        release.write_text("go")
+        if holder.poll() is None:
+            holder.kill()
+        holder.wait()
+
+
+@pytest.mark.parametrize("switch", ["off", "after-draw-0"])
+@pytest.mark.parametrize("failure", ["cannot-open", "cannot-lock"])
+def test_a_lock_that_cannot_be_made_is_skipped_never_raised(tmp_path, monkeypatch, switch, failure):
+    """ADV LOW-1. The base ran a final solve and a re-gate without any lock; a lock that cannot be
+    made or waited for must not fail them now. Logged, skipped, and NOT held -- so with the switch
+    ON the concurrent mapper maps as OFF does (`session-lock-not-held`)."""
+    monkeypatch.setenv("TOWER_WORLD_SOLVE_CONSENSUS_CONCURRENT", switch)
+    store = WorldStore(tmp_path / "store")
+    root = GS.workspace_for(store, "w7", "s7").root
+    if failure == "cannot-open":
+        store.root.mkdir()
+        (store.root / GS.SESSION_LOCKS_DIRNAME).write_text("a file where the directory goes")
+    else:
+        def broken(fd):
+            raise OSError(5, "Access is denied")
+
+        monkeypatch.setattr(GS, "_try_file_lock", broken)
+    seen = []
+    _record_unlocked_solve(monkeypatch, seen, store)
+    monkeypatch.setattr(CP, "_regate_published", lambda store_, world_id, session_id, **kwargs: (
+        seen.append(("regate", GS.session_writer_lock_held(GS.workspace_for(store_, world_id, session_id).root)))
+        or {"regated": True}))
+    assert GS.solve(store, "w7", "s7", final=True) == {"solved": False}
+    assert CP.regate_published(store, "w7", "s7") == {"regated": True}
+    assert seen == [("w7", "s7", True, False), ("regate", False)]
+    assert not GS.session_writer_lock_held(root)
+
+
+def test_a_stop_while_waiting_for_the_lock_ends_the_run_before_it_starts(tmp_path, monkeypatch):
+    """ADV LOW-2. Another writer holds the session; a stop asked while this run waits ends it
+    at the next poll, before anything ran: a final solve says it did not solve; a re-gate wrote
+    nothing and is still owed, in the shape the finisher already puts back
+    (`_regate_wrote_nothing`). A stop asked while the lock is FREE does not touch the lock: the
+    run starts, as the base's did."""
+    from scripts.world_finish_pending import _regate_wrote_nothing
+
+    store = WorldStore(tmp_path)
+    monkeypatch.setattr(GS, "_SESSION_LOCK_POLL_S", 0.05)
+    root = GS.workspace_for(store, "w7", "s7").root
+    ran = []
+    monkeypatch.setattr(GS, "_solve_unlocked", lambda *args, **kwargs: ran.append("solve") or {"solved": True})
+    monkeypatch.setattr(CP, "_regate_published", lambda *args, **kwargs: ran.append("regate") or {"regated": True})
+    asked = []
+
+    def stop_on_second_ask():
+        asked.append(1)
+        return len(asked) >= 2
+
+    holder, release = _hold_in_another_process(tmp_path, root)
+    try:
+        started = time.monotonic()
+        summary = GS.solve(store, "w7", "s7", final=True, should_stop=stop_on_second_ask)
+        assert summary == {"solved": False, "reason": GS.SOLVE_STOPPED_AT_SESSION_LOCK, "stopped": True}
+        assert len(asked) == 2 and time.monotonic() - started < 5
+        asked.clear()
+        result = CP.regate_published(store, "w7", "s7", should_stop=stop_on_second_ask)
+        assert len(asked) == 2
+        assert result["stopped"] is True and result["publish"] == {
+            "written": False, "why": CP.WHY_STOPPED_AT_SESSION_LOCK}
+        assert _regate_wrote_nothing(result)
+        assert ran == [] and holder.poll() is None
+    finally:
+        release.write_text("go")
+        holder.wait(10)
+    assert GS.solve(store, "w7", "s7", final=True, should_stop=lambda: True) == {"solved": True}
+    assert CP.regate_published(store, "w7", "s7", should_stop=lambda: True) == {"regated": True}
+    assert ran == ["solve", "regate"]
+
+
+def test_a_stopped_regate_at_the_lock_keeps_the_published_rows_sentence(tmp_path, monkeypatch):
+    """The stopped re-gate returns the PUBLISHED solve's own gate summary, notice and detail --
+    the row is unchanged -- exactly as a stop at draw 0's depth stage does."""
+    store = WorldStore(tmp_path)
+    monkeypatch.setattr(GS, "_SESSION_LOCK_POLL_S", 0.05)
+    root = GS.workspace_for(store, "w7", "s7").root
+    gate = {"state": "applied", "retryable": True, "cause": "depth", "metric_available": False,
+            "attach": False, "components": []}
+    published = types.SimpleNamespace(gate=gate, transients={"state": "applied"})
+    monkeypatch.setattr(GS, "load_solution", lambda *args: published)
+    holder, release = _hold_in_another_process(tmp_path, root)
+    try:
+        result = CP.regate_published(store, "w7", "s7", should_stop=lambda: True)
+    finally:
+        release.write_text("go")
+        holder.wait(10)
+    kept = {"gate": gate, "transients": published.transients}
+    assert result == {"gate": gate, "publish": {"written": False, "why": CP.WHY_STOPPED_AT_SESSION_LOCK},
+                      "stopped": True, "notice": CP.publish_notice(kept), "detail": CP.publish_detail(kept)}
+
+
+@pytest.mark.skipif(os.name != "nt", reason="directory junctions")
+def test_aliases_of_a_session_share_one_lock(tmp_path):
+    """The f998b81 reviewer's P5b: the key -- and the lock file -- resolve a junction (`realpath`)
+    and case (`normcase`), so the Tower and a shell that name the store differently share one lock."""
+    real = tmp_path / "Store" / "worlds" / "w" / "solve" / "s"
+    real.mkdir(parents=True)
+    junction = tmp_path / "alias"
+    subprocess.run(["cmd", "/c", "mklink", "/J", str(junction), str(tmp_path / "Store")],
+                   check=True, capture_output=True)
+    try:
+        key = GS._session_lock_key(real)
+        aliased = junction / "worlds" / "w" / "solve" / "s"
+        assert GS._session_lock_key(aliased) == key
+        assert GS._session_lock_key(Path(str(real).upper())) == key
+        assert GS.session_lock_path(aliased) == GS.session_lock_path(real)
+    finally:
+        subprocess.run(["cmd", "/c", "rmdir", str(junction)], check=False, capture_output=True)
+
+
+def test_an_unconfirmed_launch_child_is_kept_under_its_root(tmp_path, monkeypatch):
+    """The f998b81 reviewer's P8: the real launch path registers a child it could not confirm
+    stopped under its `sparse-draws/` root's key, not its own directory's."""
+    from tower import process_ownership
+
+    root = tmp_path / "solve" / "s" / GS.CONSENSUS_SPARSE_DIRNAME
+    (root / "child-4").mkdir(parents=True)
+    monkeypatch.setattr(process_ownership, "assign_to_job", lambda process: None)
+    monkeypatch.setattr(process_ownership, "terminate_tree", lambda *args, **kwargs: False)
+    before = len(GS._UNCONFIRMED_DRAW_CHILDREN)
+    try:
+        with pytest.raises(RuntimeError):
+            GS._launch_draw_child(root / "ctx.pkl", root / "child-4" / "database.db", 4,
+                                  root / "child-4" / "sparse", root / "child-4" / "candidate.pkl", "x")
+        entry = GS._UNCONFIRMED_DRAW_CHILDREN[-1]
+        assert entry[2] == GS._draw_root_key(root)
+        assert GS._unconfirmed_draw_alive(root) or entry[0].poll() is not None
+    finally:
+        for entry in GS._UNCONFIRMED_DRAW_CHILDREN[before:]:
+            try:
+                entry[0].kill()
+                entry[0].wait(10)
+            except Exception:  # noqa: BLE001
+                pass
+        del GS._UNCONFIRMED_DRAW_CHILDREN[before:]

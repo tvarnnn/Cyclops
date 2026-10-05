@@ -1592,11 +1592,50 @@ def regate_published(store, world_id: str, session_id: str, *, should_stop=None,
     """`_regate_published` under the session writer lock (`global_solve.session_writer_lock`;
     review W01F-FIX MED-2): a re-gate maps its consensus draws in the same `sparse-draws/` a
     final solve of this session maps in, so it never runs beside one."""
-    from tower.world_builder.global_solve import session_writer_lock, workspace_for  # noqa: PLC0415
+    from tower.world_builder.global_solve import (  # noqa: PLC0415
+        SessionLockStopped, load_solution, session_writer_lock, workspace_for)
 
-    with session_writer_lock(workspace_for(store, world_id, session_id).root):
-        return _regate_published(store, world_id, session_id, should_stop=should_stop,
-                                 gate_runner=gate_runner)
+    # A stop asked while another writer of the session holds the lock (W01F-FIX5, ADV LOW-2) ends
+    # this re-gate before it starts: nothing is written, and the re-gate is still owed -- the
+    # shape a stop at draw 0's depth stage returns, so the finisher puts the room back and gives
+    # the attempt back as it does for that one.
+    entered = False
+    try:
+        with session_writer_lock(workspace_for(store, world_id, session_id).root, should_stop=should_stop):
+            entered = True
+            return _regate_published(store, world_id, session_id, should_stop=should_stop,
+                                     gate_runner=gate_runner)
+    except SessionLockStopped:
+        if entered:
+            raise
+        logger.info("[Tower][WorldBuilder] %s/%s: a stop came while another writer held the session writer "
+                    "lock; nothing is written, and the re-gate is still owed", world_id, session_id)
+        try:
+            solution = load_solution(store, world_id, session_id)
+        except Exception:  # noqa: BLE001 -- read while another writer works: the row is unread, not wrong
+            solution = None
+        return _nothing_written(solution, WHY_STOPPED_AT_SESSION_LOCK)
+
+
+WHY_STOPPED_AT_SESSION_LOCK = ("a stop came while another final solve or re-gate of this session held its writer "
+                               "lock, so nothing was published; the re-gate is still owed")
+
+
+def _nothing_written(solution, why: str) -> dict:
+    """The result of a re-gate that wrote nothing because a stop came: the published solve's own
+    gate summary, `notice` and `detail` (the row is unchanged), `stopped`, and `publish.written`
+    False (`world_finish_pending._regate_wrote_nothing`)."""
+    gate = getattr(solution, "gate", None)
+    if not isinstance(gate, dict):
+        return {"gate": None, "publish": {"written": False, "why": why}, "stopped": True,
+                "notice": None, "detail": None}
+    kept = {"gate": gate, "transients": solution.transients}
+    return {"gate": {k: gate.get(k) for k in ("state", "retryable", "cause", "metric_available",
+                                              "attach", "components")},
+            "publish": {"written": False, "why": why},
+            "stopped": True,
+            "notice": publish_notice(kept),
+            "detail": publish_detail(kept)}
 
 
 @stage_timing.timed("regate")
@@ -1645,13 +1684,7 @@ def _regate_published(store, world_id: str, session_id: str, *, should_stop=None
     if draw_0_stopped(result):
         logger.info("[Tower][WorldBuilder] %s/%s: a stop reached the re-gate's draw-0 depth stage; nothing "
                     "is written, and the re-gate is still owed", world_id, session_id)
-        kept = {"gate": solution.gate, "transients": solution.transients}
-        return {"gate": {k: solution.gate.get(k) for k in ("state", "retryable", "cause", "metric_available",
-                                                             "attach", "components")},
-                "publish": {"written": False, "why": WHY_KEPT_ON_STOP},
-                "stopped": True,
-                "notice": publish_notice(kept),
-                "detail": publish_detail(kept)}
+        return _nothing_written(solution, WHY_KEPT_ON_STOP)
     published = result.solution
     record = dict(result.record, regate={"at": time.time(), "previous": previous})
     published.gate = record

@@ -254,7 +254,8 @@ def workspace_for(store, world_id: str, session_id: str) -> SolveWorkspace:
 
 
 # ---------------------------------------------------------------------------
-# THE SESSION WRITER LOCK (review W01F-FIX ADV MED-2 / Codex H1, H2; manager 166 section 2)
+# THE SESSION WRITER LOCK (review W01F-FIX ADV MED-2 / Codex H1, H2; manager 166 section 2;
+# W01F-FIX5: machine-wide, fail-open, stop-aware)
 # ---------------------------------------------------------------------------
 #
 # Two final solves of one session could overlap: the world writer lock is per world and taken
@@ -267,20 +268,56 @@ def workspace_for(store, world_id: str, session_id: str) -> SolveWorkspace:
 # (`coherence_publish.regate_published`), the other writer of that scratch. A second one WAITS
 # for the first; it never maps beside it.
 #
-# AN OS LOCK, NOT A FILE IN THE WORLD. A named mutex on Windows (the `Local` namespace: this logon session),
-# `flock` on a file in the OS temp directory elsewhere. The OS frees it when its holder dies --
-# the builder hard-kills a solve child on every stop that outstays its budget -- so there is no
-# stale lock to judge, and nothing is written under the world: a solve that never overlaps
-# another writes exactly the files it wrote before (NO BIG BANG). Re-entrant in one thread
-# (a finish that re-gates inside its own solve); another thread of the same process waits, as
-# another process does.
+# A BYTE-RANGE LOCK ON A FILE OUTSIDE THE WORLD, MACHINE-WIDE (review W01F-FIX5, ADV MED-A). The
+# lock was a `Local\` named mutex, and `Local\` is per Windows logon session: the live Tower runs
+# in session 0 and an operator's shell in session 1, so each held "its" lock and both wrote. A
+# byte-range lock (`LockFileEx`; `flock` elsewhere) belongs to the FILE, which every session
+# and every user sees by the same path: `<store root>/.session-locks/<key>.lock`, beside
+# `worlds/` (as `.ab/` is), never inside a world -- the world's file set is unchanged, and the
+# lock file stays empty: no byte is ever written to it. The OS frees the lock when its holder
+# dies -- the builder hard-kills a solve child on every stop that outstays its budget -- so there
+# is no stale lock to judge. The file itself is never removed (one per session, empty): removed,
+# a waiter could lock the old file while a newcomer locks a new one.
+#
+# FAIL-OPEN (ADV LOW-1). A lock that cannot be made or waited for (the directory or the file
+# cannot be opened, the lock call fails for any reason but "held") is logged and SKIPPED: the
+# run proceeds exactly as the base did, without it. It is then not held, so the concurrent
+# mapper, which runs only under the lock, maps as OFF does (`session-lock-not-held`).
+#
+# STOP-AWARE (ADV LOW-2). The caller's `should_stop` is asked at every poll while another holder
+# has the lock; a stop there raises `SessionLockStopped` before anything ran, and `solve` and
+# `regate_published` return their "stopped, nothing written" shapes. A lock that is free is
+# taken without asking, so a run that overlaps nothing is the base's.
+#
+# Re-entrant in one thread (a finish that re-gates inside its own solve); another thread of the
+# same process waits, as another process does (two handles' byte-range locks conflict).
 _SESSION_LOCKS = threading.local()
 _SESSION_LOCK_POLL_S = 1.0
+SESSION_LOCKS_DIRNAME = ".session-locks"
+
+
+class SessionLockStopped(Exception):
+    """A stop was asked while this run waited for another holder of its session writer lock:
+    nothing of the run has started."""
 
 
 def _session_lock_key(root) -> str:
     path = os.path.normcase(os.path.abspath(os.path.realpath(str(root))))
     return hashlib.sha256(path.encode("utf-8")).hexdigest()[:32]
+
+
+def session_lock_path(root) -> Path:
+    """The lock file of the solve workspace at `root` (`<store>/worlds/<world>/solve/<session>`):
+    `<store>/.session-locks/<key>.lock`, outside every world. Resolved through junctions and
+    links, as the key is, so every alias of the store names one file. A root outside a store
+    (no caller has one) locks a file in the OS temp directory instead."""
+    real = Path(os.path.realpath(str(root)))
+    if (len(real.parents) >= 4 and real.parent.name.lower() == "solve"
+            and real.parents[2].name.lower() == "worlds"):
+        directory = real.parents[3] / SESSION_LOCKS_DIRNAME
+    else:
+        directory = Path(tempfile.gettempdir()) / "glasses-world-solve-session-locks"
+    return directory / f"{_session_lock_key(root)}.lock"
 
 
 def _session_locks_held() -> dict:
@@ -295,84 +332,122 @@ def session_writer_lock_held(root) -> bool:
     return _session_lock_key(root) in _session_locks_held()
 
 
-def _os_session_lock(key: str, root) -> callable:
-    """Take the OS lock named by `key`, waiting as long as another holder has it; returns its
-    release. One log line when it has to wait, one when it gets it."""
-    waited = time.monotonic()
-    announced = False
+_LOCKFILE_FAIL_IMMEDIATELY = 0x1
+_LOCKFILE_EXCLUSIVE_LOCK = 0x2
+_ERROR_LOCK_VIOLATION = 33
 
-    def waiting():
-        nonlocal announced
-        if not announced:
-            announced = True
-            logger.warning("[Tower][WorldBuilder] another final solve or re-gate of %s holds its "
-                           "session writer lock; waiting for it", root)
 
+def _file_lock_api():
+    """kernel32's LockFileEx / UnlockFileEx and an OVERLAPPED for byte 0 (Windows only)."""
+    import ctypes  # noqa: PLC0415
+    from ctypes import wintypes  # noqa: PLC0415
+
+    class Overlapped(ctypes.Structure):
+        _fields_ = [("Internal", ctypes.c_void_p), ("InternalHigh", ctypes.c_void_p),
+                    ("Offset", wintypes.DWORD), ("OffsetHigh", wintypes.DWORD),
+                    ("hEvent", wintypes.HANDLE)]
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.LockFileEx.argtypes = [wintypes.HANDLE, wintypes.DWORD, wintypes.DWORD, wintypes.DWORD,
+                                    wintypes.DWORD, ctypes.POINTER(Overlapped)]
+    kernel32.LockFileEx.restype = wintypes.BOOL
+    kernel32.UnlockFileEx.argtypes = [wintypes.HANDLE, wintypes.DWORD, wintypes.DWORD, wintypes.DWORD,
+                                      ctypes.POINTER(Overlapped)]
+    kernel32.UnlockFileEx.restype = wintypes.BOOL
+    return ctypes, kernel32, Overlapped
+
+
+def _try_file_lock(fd: int) -> bool:
+    """Take the exclusive lock on byte 0 of the open file `fd` without waiting: True taken, False
+    held by another handle (any process, any session, or another thread here). Any other failure
+    raises `OSError`."""
     if os.name == "nt":
-        import ctypes  # noqa: PLC0415
-        from ctypes import wintypes  # noqa: PLC0415
+        import msvcrt  # noqa: PLC0415
 
-        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-        kernel32.CreateMutexW.argtypes = [ctypes.c_void_p, wintypes.BOOL, wintypes.LPCWSTR]
-        kernel32.CreateMutexW.restype = wintypes.HANDLE
-        kernel32.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
-        kernel32.WaitForSingleObject.restype = wintypes.DWORD
-        kernel32.ReleaseMutex.argtypes = [wintypes.HANDLE]
-        kernel32.ReleaseMutex.restype = wintypes.BOOL
-        kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
-        kernel32.CloseHandle.restype = wintypes.BOOL
-        handle = kernel32.CreateMutexW(None, False, f"Local\\GlassesWorldSolveSession-{key}")
-        if not handle:
-            raise OSError(ctypes.get_last_error(), "the session writer lock could not be made")
-        try:
-            while True:
-                state = kernel32.WaitForSingleObject(handle, int(_SESSION_LOCK_POLL_S * 1000))
-                if state in (0x0, 0x80):          # WAIT_OBJECT_0, WAIT_ABANDONED (holder died)
-                    break
-                if state != 0x102:                # anything but WAIT_TIMEOUT
-                    raise OSError(ctypes.get_last_error(),
-                                  "the session writer lock could not be waited for")
-                waiting()
-        except BaseException:
-            kernel32.CloseHandle(handle)
-            raise
+        ctypes, kernel32, overlapped = _file_lock_api()
+        if kernel32.LockFileEx(msvcrt.get_osfhandle(fd),
+                               _LOCKFILE_EXCLUSIVE_LOCK | _LOCKFILE_FAIL_IMMEDIATELY, 0, 1, 0,
+                               ctypes.byref(overlapped())):
+            return True
+        error = ctypes.get_last_error()
+        if error == _ERROR_LOCK_VIOLATION:
+            return False
+        raise OSError(error, "the session writer lock could not be taken")
+    import fcntl  # noqa: PLC0415
 
-        def release():
-            try:
-                kernel32.ReleaseMutex(handle)
-            finally:
-                kernel32.CloseHandle(handle)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        return False
+    return True
+
+
+def _file_unlock(fd: int) -> None:
+    if os.name == "nt":
+        import msvcrt  # noqa: PLC0415
+
+        ctypes, kernel32, overlapped = _file_lock_api()
+        kernel32.UnlockFileEx(msvcrt.get_osfhandle(fd), 0, 1, 0, ctypes.byref(overlapped()))
     else:
         import fcntl  # noqa: PLC0415
 
-        path = Path(tempfile.gettempdir()) / f"glasses-world-solve-session-{key}.lock"
-        handle = open(path, "a+b")  # noqa: SIM115 -- held until release
-        try:
-            while True:
-                try:
-                    fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-                    break
-                except BlockingIOError:
-                    waiting()
-                    time.sleep(_SESSION_LOCK_POLL_S)
-        except BaseException:
-            handle.close()
-            raise
+        fcntl.flock(fd, fcntl.LOCK_UN)
 
-        def release():
-            try:
-                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
-            finally:
-                handle.close()
+
+def _os_session_lock(key: str, root, should_stop=None):
+    """Take the OS lock of the workspace at `root`, waiting as long as another holder has it,
+    asking `should_stop` at every poll while it waits (`SessionLockStopped`). Returns its
+    release, or None when the lock cannot be made or waited for (FAIL-OPEN: the caller runs
+    without it). One log line when it has to wait, one when it gets it."""
+    waited = time.monotonic()
+    announced = False
+    path = session_lock_path(root)
+    try:
+        # Its parents as the solve's own workspace makes them (`mkdir(parents=True)`): a store
+        # whose first solve this is has no `.session-locks/` yet.
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd = os.open(str(path), os.O_RDWR | os.O_CREAT | getattr(os, "O_BINARY", 0), 0o666)
+    except OSError as exc:
+        logger.warning("[Tower][WorldBuilder] the session writer lock of %s could not be made "
+                       "(%s: %s); running without it, as before the lock", root, type(exc).__name__, exc)
+        return None
+    try:
+        while not _try_file_lock(fd):
+            if not announced:
+                announced = True
+                logger.warning("[Tower][WorldBuilder] another final solve or re-gate of %s holds its "
+                               "session writer lock; waiting for it", root)
+            if should_stop is not None and should_stop():
+                raise SessionLockStopped(f"stopped while another writer held the session writer lock of {root}")
+            time.sleep(_SESSION_LOCK_POLL_S)
+    except OSError as exc:
+        os.close(fd)
+        logger.warning("[Tower][WorldBuilder] the session writer lock of %s could not be waited for "
+                       "(%s: %s); running without it, as before the lock", root, type(exc).__name__, exc)
+        return None
+    except BaseException:
+        os.close(fd)
+        raise
     if announced:
         logger.warning("[Tower][WorldBuilder] session writer lock of %s taken after %.1f s",
                        root, time.monotonic() - waited)
+
+    def release():
+        try:
+            _file_unlock(fd)
+        except OSError:  # closing the file releases it all the same
+            pass
+        finally:
+            os.close(fd)
+
     return release
 
 
 @contextlib.contextmanager
-def session_writer_lock(root):
-    """Hold the session writer lock of the solve workspace at `root` (see above)."""
+def session_writer_lock(root, *, should_stop=None):
+    """Hold the session writer lock of the solve workspace at `root` (see above). Raises
+    `SessionLockStopped` when `should_stop` says so while another holder has it; runs without it
+    (not held) when it cannot be made."""
     key = _session_lock_key(root)
     held = _session_locks_held()
     if key in held:
@@ -382,7 +457,10 @@ def session_writer_lock(root):
         finally:
             held[key] -= 1
         return
-    release = _os_session_lock(key, root)
+    release = _os_session_lock(key, root, should_stop)
+    if release is None:
+        yield
+        return
     held[key] = 1
     try:
         yield
@@ -1785,8 +1863,25 @@ def solve(store, world_id: str, session_id: str, **options) -> dict:
     consensus = options.get("consensus")
     if not (options.get("final", False) or (consensus is not None and int(consensus) >= 2)):
         return _solve_unlocked(store, world_id, session_id, **options)
-    with session_writer_lock(workspace_for(store, world_id, session_id).root):
-        return _solve_unlocked(store, world_id, session_id, **options)
+    # A stop asked while another final solve or re-gate of the session holds the lock ends this
+    # one before it starts (W01F-FIX5, ADV LOW-2): nothing is solved or written, as for any solve
+    # that found nothing to publish.
+    entered = False
+    try:
+        with session_writer_lock(workspace_for(store, world_id, session_id).root,
+                                 should_stop=options.get("should_stop")):
+            entered = True
+            return _solve_unlocked(store, world_id, session_id, **options)
+    except SessionLockStopped:
+        if entered:
+            raise
+        logger.info("[Tower][WorldBuilder] %s/%s: a stop came while another writer held the session "
+                    "writer lock; this final solve did not start", world_id, session_id)
+        return {"solved": False, "reason": SOLVE_STOPPED_AT_SESSION_LOCK, "stopped": True}
+
+
+SOLVE_STOPPED_AT_SESSION_LOCK = ("stopped while another final solve or re-gate of the session held its "
+                                 "writer lock; nothing was solved")
 
 
 def _loop_detection_wanted(loop_detection) -> bool:
