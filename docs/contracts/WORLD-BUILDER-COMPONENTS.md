@@ -19,6 +19,7 @@
 > v9 (2026-09-24): four closed-set sentences revised; `detail` client-safe (§3.1).
 > v10 (2026-09-24, after physical-test walk 1): the look-back prompt is SHOWN with one haptic, never spoken; a prompt arriving while the app is inactive is held, not consumed; the banner lasts the window left at delivery (§6.5, §6.6, §8, M3). Nothing on the wire changes (Mac draft 054a; iOS `a72e366`).
 > v11 (2026-09-28, manager 130; C7 B1): §4's example caption follows WORLDS v4's words (*… · 128 of 128 images loaded · 2 more areas shown separately*); the suffix rule is unchanged. Nothing on the wire changes.
+> v12 (2026-10-05, U1.1): an area page accepts `wb-chrome` like the room page (§5.1). The area revision route stays query-free (§5.2). Under native chrome the room's caption, notice and areas row are placed as §8 says. Nothing on the wire changes.
 > Every "OPEN" reference in the text is a question
 > the drafter could not settle: M-numbers are addressed to the Mac (§10),
 > T-numbers to the Tower lane, P3.2 (§11).
@@ -378,6 +379,7 @@ All `GET`, same origin, containment and rules as WORLDS §4 (`contained_world_id
 | `max_points` | int 1…200000, optional | as §4 for the surface rung (it selects the level-of-detail rung by page budget) |
 | `transport` | `app` \| `tower`, optional | as §4 |
 | `viewer` | string, optional | **accepted and ignored**, never a 422. `auto` offers the appearance rung unconditionally: the only clients that can name this route postdate the `glasses-world:` handler (IOS §10, 2026-09-17), so the old-app reason for the declaration cannot arise (OPEN M12) |
+| `wb-chrome` | `native`, optional | As WORLDS §4 and §4c (v12): the appearance page hands its chrome to the phone, only while the Tower's `TOWER_WORLD_NATIVE_CHROME` is on. Otherwise ignored, and the response is byte for byte the one without it. Never a 422 |
 
 `session_id` is in the path, never a query. There is no `view=diagnostics`.
 
@@ -411,7 +413,7 @@ Their text never changes without a contract change, and a Tower test pins it.
 
 ### 5.2 `GET /worlds/{world_id}/areas/{session_id}/{area_id}/render/revision`
 
-No query. **200** `{"session_id": str, "area_id": str, "representation":
+No query. **In particular no `wb-chrome`** (v12): the native and web variants of an area page carry the same revision (WORLDS §4a rule 3). **200** `{"session_id": str, "area_id": str, "representation":
 "appearance"|"surface", "revision": str, "live": bool, "appearance": {…}}`,
 `Cache-Control: no-store`. **404** exactly when §5.1 would.
 
@@ -490,6 +492,10 @@ page — fed the area's artifacts. No new renderer. What differs:
   walk* in place of the first clause. The page's *Scale is unknown, so distances
   are relative* section stays. The native caption line (IOS §10) says the same
   in one line when the page carries `wb-area`.
+- **Native chrome (v12).** The same five insertions and protocol as the room
+  (WORLDS §4c). `hello.kind` is `"area"`, and `labels.face` is *Face the area*.
+  The area header, the not-placed caption and *may look tilted* reach the phone
+  in `caption`, verbatim.
 - **Scale.** The area's surface manifest records `scale.state: "unknown"`
   against the world's unit: an area inherits no scale from the room, so it
   claims none (SURFACE §2 claim 7).
@@ -518,7 +524,9 @@ taken from the listing row, with `<a>` exactly 16 lower-hex (checked like
   teaches the handler its session through `wb-revision`.
 - The page itself is fetched natively over HTTP, with whatever query
   `WorldRenderClient` sends (§5.1), and loaded into the web view at the query-free
-  scheme URL — exactly as the room page is today.
+  scheme URL — exactly as the room page is today. The page request may carry
+  `wb-chrome=native` (v12). The web view still loads the query-free scheme URL,
+  so this whitelist is unchanged.
 - **Navigation policy:** the initial load of exactly the area page URL, and the
   page putting itself back (the same counted reload the room page has).
 - **Memory and authorisation** per (`<s>`, `<a>`): an area's manifest answered
@@ -806,6 +814,15 @@ following live and bound, never on a saved world):
 `searching` or `prompting` — *Finding where you are…*; `recovered` — *Linked
 back to what you saw before* (not "placed", §6.3); `timed_out` — *Could not link
 back; this part may be shown as a separate area.*
+
+**Under native chrome (v12; WORLDS §4c; IOS §10).**
+- The room caption is the top band's head line, from the page.
+- **The notice is shown verbatim directly below it, in the same band.**
+- The areas row (heading, entries and footer, unchanged words) is in a panel opened by the band's *Areas* control.
+- *· N more areas shown separately* stays in the head (it is the page's).
+- The area viewer's header is the navigation title, as today. *Back to the room* is in the top band.
+- The band keeps room for one more line under the ladder note, U0.6's progress line (manager 183 #10). It is the phone's own line, and nothing in the page's `hello` or `state` fills or constrains it.
+- Nothing else changes, and the phone's own words here stay the phone's.
 
 ## 9. Versioning — why no identifier moves
 

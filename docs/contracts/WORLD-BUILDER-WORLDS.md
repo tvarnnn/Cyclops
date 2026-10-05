@@ -5,7 +5,7 @@
 | | |
 |---|---|
 | Contract | `world_builder.worlds/2026-09-10` |
-| Document version | **v4** (2026-09-28): the About panel's *The walk* no longer describes one capture, and the caption line's words are plain (*N of M images loaded*; the compact image format; `encoding_notes` never shown), manager 130 (§4). v3 (2026-09-28): the viewer's accessibility fixes from the O1 viewer check (iOS Simulator), manager 115 (§4). v2 (2026-09-27): viewer honesty, manager 106 (§4). See the change log at the end. The wire identifier above does **not** move: no payload changes, and the iOS decoder compares it for equality |
+| Document version | **v5** (2026-10-05): native chrome. On request, and only behind the Tower's `TOWER_WORLD_NATIVE_CHROME` setting (off by default), the appearance page hands its chrome to the phone (§4c; the §4 query table, *Controls* and rule 6; §4a rule 3), manager 167. v4 (2026-09-28): the About panel's *The walk* no longer describes one capture, and the caption line's words are plain (*N of M images loaded*; the compact image format; `encoding_notes` never shown), manager 130 (§4). v3 (2026-09-28): the viewer's accessibility fixes from the O1 viewer check (iOS Simulator), manager 115 (§4). v2 (2026-09-27): viewer honesty, manager 106 (§4). See the change log at the end. The wire identifier above does **not** move: no payload changes, and the iOS decoder compares it for equality |
 | Transport | HTTP `GET /worlds`, same origin and same rules as the geometry routes (`WORLD-BUILDER-GEOMETRY.md` §1) |
 | Tower producer | `tower/tower/results/world_builder_library.py` |
 | Tower route | `tower/tower/routes/geometry.py` |
@@ -180,6 +180,7 @@ Added 2026-09-06 on the Mac integration branch, so a saved world can be
 | `transport` | `app` \| `tower`, optional | Where the **appearance** page fetches its imagery from; every other page fetches nothing and ignores it. `app` (default, and the only value the phone sends): `glasses-world://tower/…`, the app's private scheme, CSP `connect-src glasses-world:`. `tower`: a desktop debug mode, only when named, fetching from the Tower's own origin, CSP `connect-src 'self'`. **422** outside this set. See "The appearance page" below |
 | `viewer` | comma-separated capability tokens, optional | What the client can draw (added 2026-09-17). **`appearance-1`** declares a client that can load the appearance page — one with the `glasses-world:` scheme handler of `WORLD-BUILDER-IOS.md` §10. `representation=auto` offers the `appearance` rung **only** when it is declared; without it `auto` starts at `surface`, byte-for-byte the page served before the rung existed. The reason is old apps: an iOS build older than the appearance page loads every page with `loadHTMLString`, has no scheme handler, cannot fetch the imagery, and would show a broken page. A pinned `representation=appearance` is served regardless (a caller naming the rung is asking for it). Unknown tokens are ignored and no value is ever a 422, so a newer app talking to an older Tower still gets a picture (FastAPI ignores the parameter on a Tower older than it). The iOS app sends `viewer=appearance-1` on the page request and on both revision polls (§4a) |
 | `view` | `product` \| `diagnostics`, optional | Which rendering the **sparse** page opens in: the product view (default) or the solver's segment-coloured diagnostics view. Honoured server-side, because a `loadHTMLString` client has no `location.search`. An unrecognised value opens the product view, never a 422. **`view=diagnostics` with `representation=auto` serves the sparse page**, whatever other rungs the session has — only the sparse page has the diagnostics rendering, so starting the ladder at the surface (or the dense rung) would answer "open the solver's view" with a surface or dense points. A pinned `representation` still wins |
+| `wb-chrome` | `native`, optional | Asks the **appearance** page to hand its chrome to the phone (§4c, v5). Honoured only while the Tower's `TOWER_WORLD_NATIVE_CHROME` setting is on and the page served is the appearance page. Otherwise it is ignored, never a 422, and the response is byte for byte the one without it. Any value but exactly `native` is ignored. It never changes the rung, the session, the imagery, the revision or any header. The phone sends it on the page request only, never on a revision poll (§4a) |
 
 **200** `text/html`, `Cache-Control: no-store`. Every page but the appearance
 page is self-contained: no external script, stylesheet, image or fetch, so a
@@ -804,6 +805,15 @@ enforced).
     widths in the Simulator, and reading *Less* it is narrower still (about
     41–43 px by the page's CSS; computed, not measured). Its accessible name
     is its visible word (*About* or *Less*), and it keeps `aria-expanded`.
+
+    **Under native chrome (v5, §4c)** the page draws none of these controls.
+    The phone draws them from `hello.labels`, which carries this table's
+    visible words and names verbatim (*Face the area* in the same slot on an
+    area page). Every rule of this bullet binds the phone's controls instead:
+    44 pt targets, names that begin with the visible words, the dark line as a
+    named button that is absent from assistive technology when not shown, no
+    empty status element, and the *About* / *Less* toggle. The native forms
+    are in §4c.
   - **Stepping the walk glides**: eased position and the short way round in
     yaw, 400–2600 ms by distance and turn, instead of jumping (the walkthrough's
     worst flicker steps were path jumps). Any touch interrupts a glide. The cap
@@ -1230,7 +1240,7 @@ set.
 3. Composed on request, cached nowhere: a world under construction changes with every build, and the client bypasses its own cache for the same reason the geometry routes ask it to.
 4. `world_id` passes the same containment guard as the geometry routes (`contained_world_id`): an id that resolves outside the world root is "no world", and a non-canonical spelling is answered as the world it names.
 5. **One derived manifest per world, not per session.** `derived/manifest.json` records the digest of the *last* build, so in a world with two built sessions the older one's placements no longer bind to it: that session renders with every segment apart, labelled `unbound`, and the BEHIND caption — which is the truthful reading of a tree the current build did not produce, not a defect in the session. `GET /worlds` still answers `has_geometry: true` for it. A per-session manifest is the fix and belongs to the store, not to this route.
-6. The response carries `Content-Security-Policy: default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'` — the promise above, enforced by the browser as well as kept by the producer — **and every page carries the same policy as a `<meta http-equiv="Content-Security-Policy">` right after `<meta charset>`**, which is the only form a `loadHTMLString` client enforces: iOS drops the response headers, and its navigation policy sees navigations, not an `<img>` or a `fetch`. All three pages (sparse, dense, surface) carry it, and it never pushes `wb-representation` out of the first 4096 characters. **The appearance page is the one exception to the policy's content, not to the rule:** its header and its `<meta>` both read `… connect-src glasses-world:` (or `connect-src 'self'` under `transport=tower`), and the two are always equal.
+6. The response carries `Content-Security-Policy: default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'` — the promise above, enforced by the browser as well as kept by the producer — **and every page carries the same policy as a `<meta http-equiv="Content-Security-Policy">` right after `<meta charset>`**, which is the only form a `loadHTMLString` client enforces: iOS drops the response headers, and its navigation policy sees navigations, not an `<img>` or a `fetch`. All three pages (sparse, dense, surface) carry it, and it never pushes `wb-representation` out of the first 4096 characters. **The appearance page is the one exception to the policy's content, not to the rule:** its header and its `<meta>` both read `… connect-src glasses-world:` (or `connect-src 'self'` under `transport=tower`), and the two are always equal. A native-chrome appearance page (§4c, v5) also carries `<meta name="wb-chrome" content="native">` within its first 4096 characters.
 
 ## 4a. `GET /worlds/{world_id}/render/revision` — has a better picture been built?
 
@@ -1314,6 +1324,12 @@ Every page §4 serves carries the same two values in its head, within its first
    appearance page, and reset its camera, at the moment the Tower updates.
    v2's copy therefore ships under `appearance:1`. Bump it only when a Tower
    update needs pages that are already open to be replaced.
+   **Native chrome is not a page version** (v5). The two variants of the
+   appearance page (§4c) carry the same `wb-revision`, `PAGE_REVISION` stays
+   `appearance:1`, and this route takes no `wb-chrome`. A poll names one
+   revision for both, so a follower never reads a variant as a new picture.
+   Switching the Tower's setting replaces no page that is already open; the
+   next page opened is composed under the new setting.
    The sparse rung's revision is the constant `<session_id>/sparse`. The derived
    tree is rewritten every few keyframes during a walk, and a picture that
    reloaded on each of those would be unusable to look at; the step the wearer
@@ -1379,6 +1395,100 @@ short:
   transport §4 names (`glasses-world:` on the phone, the Tower's origin only
   under `transport=tower`). Every other page still loads nothing from anywhere.
 
+## 4c. Native chrome: the appearance page's chrome, drawn by the phone (v5)
+
+Added 2026-10-05 (U1.1 / T-UX3; managers 124, 161, 167, 181). **Scope: the appearance page only**, room (§4) and area (`WORLD-BUILDER-COMPONENTS.md` §5.1). The surface, dense and sparse pages keep their own chrome.
+
+**Asking.** The phone adds `wb-chrome=native` to the page request (§4 query table). The Tower honours it only while `TOWER_WORLD_NATIVE_CHROME` is on (off by default) and only for the appearance page. Otherwise the response is byte for byte the one without it.
+
+**What is served.** Today's page, unchanged, plus five insertions:
+- the echo `<meta name="wb-chrome" content="native">`;
+- one style block hiding the chrome while `body.wbnative` is set;
+- two read-only verification hooks in the page program (`S.chromeView`, `S.chromeWords`) and a one-line call at the end of each drawn frame;
+- one inline script, the bridge.
+
+The Tower inserts all five or none. **The echo is present only if every other insertion applied.** A page without the echo is the web page, and the phone uses the page's own chrome. The two variants carry the same `wb-revision` (§4a rule 3).
+
+**The bridge, protocol 1.**
+- The page posts to `window.webkit.messageHandlers.wbChromeV1` (a script message handler with replies, in the page's content world).
+- The phone runs no script in the page. It answers the page's messages, and it sends commands only as the reply to an `await` message the page keeps outstanding.
+- Every message is a JSON object with `v: 1`, `type`, `pageId` (8–64 of `[A-Za-z0-9_-]`, new for each page load; the page sends 16 of `[a-z0-9]`) and `seq` (an integer rising by one per page message, from 0 at `hello`). After `welcome`, it also carries `nonce` (the phone's, per load). The fields of Tables H, S and V are members of that same object, beside `type`.
+- Text is display text: never markup, never script. The page cuts every string to its bound below, counted in UTF-16 code units and never inside a surrogate pair, so a string within bounds is also within them counted as Unicode scalars or characters.
+
+**Table H: `hello`** (page → phone, once per load; at most 32 KiB):
+
+| Field | Type | Meaning |
+|---|---|---|
+| `protocol` | int[] | The versions the page speaks; `[1]` |
+| `kind` | `"room"` \| `"area"` | Which page this is |
+| `labels.best`, `.face`, `.previous`, `.next`, `.reset` | `{text ≤ 40, name ≤ 120}` | The bar's visible words and accessible names (§4 *Controls*) |
+| `labels.ring` | `{name ≤ 120, label ≤ 60, center ≤ 8}` | The ring's name, its label under it (`\n` between the lines), and its centre word |
+| `labels.dark` | `{title ≤ 80, tap ≤ 80, name ≤ 160}` | The dark line's two lines and its name |
+| `labels.edge` | string ≤ 80 | The edge hint's sentence |
+| `labels.about` | `{open ≤ 20, close ≤ 20}` | The toggle's two words |
+| `research` | `{raw: bool, marker: string ≤ 200 \| null}` | APPEARANCE §6.6: whether the imagery is unredacted, and the marker's words |
+
+`labels.dark` and `labels.edge` come from the page program's own hooks. A page whose program stopped before them (no WebGL 2) sends a `hello` without them, and the phone declines it.
+
+The reply is `{v:1, type:"welcome", protocol:1, nonce}` (accepted) or `{v:1, type:"decline"}` (the page keeps its own chrome for this load). The page treats any reply but a welcome with a non-empty `nonce` of at most 128 characters as a decline.
+
+**Table S: `state`** (page → phone; a **complete** snapshot of what the chrome shows, sent when it changes, at most one in flight; at most 24 KiB; reply empty):
+
+| Field | Type | Meaning |
+|---|---|---|
+| `active` | bool | The page has hidden its own chrome |
+| `phase` | `starting` \| `loading` \| `ready` \| `withdrawn` \| `failed` | The page's own phase (`__wbAppearance.phase`) |
+| `drawn` | bool | The first frame has been drawn. **Before it, the phone shows the status, the hint, the message and the research marker, and nothing else: the chrome does not arrive before the picture (§4)** |
+| `holding` | bool | Kept images while the finished build is awaited (`rebuilding`, §4 *Live*) |
+| `restoring` | bool | A lost graphics context not yet restored |
+| `status` | string ≤ 200 \| null | The status line, verbatim (*Loading the images…*, *Placing images n / N*, *Choosing where to open…*, *Preparing the view…*) |
+| `message` | string ≤ 800 \| null | The full-screen message, verbatim (withdrawn, failed, restoring, not served yet). While it is non-null the phone shows it in place of the picture and hides the bar, the head, the ring and the notices |
+| `hint` | `{text ≤ 200, opacity 0…1}` \| null | The hint while it is shown: *Movement stops here* (a resisted push; the end of the walk) **or** *One moment — you can look around as soon as it draws* (input before the first frame, §4). It is about movement, never a look, and it is separate from `edge` |
+| `dark` | bool | The dark line is shown (the page keeps the 0.07–0.25 band, `dark > 0.90` for 320 ms to show and `< 0.45` to clear) |
+| `edge` | `"left"` \| `"right"` \| null | The edge chevron's side (the page keeps its 0.60 / 0.25 / 0.35 thresholds and antipode rule) |
+| `buttons` | `{best, face, previous, next, reset}: bool` | Each control is enabled |
+| `walk` | string ≤ 24 \| null | The walk position as the page writes it (`n / N`) |
+| `ring` | `{shown: bool, lit: number[36] \| null, sense: 1 \| -1}` | `shown` from the first drawn frame. `lit[i]` is `smooth(0.08, T_HI, support_i)` for bin *i* (world yaw `i·2π/36`), and `null` before the support field exists (all bins dim). `sense` is the screen direction of a rising yaw |
+| `caption` | `{head ≤ 300, line ≤ 600 \| null, sections: [{title ≤ 80, body ≤ 1600}] (1–8), tail ≤ 200 \| null}` \| null | The caption, verbatim: the head line, then (in the About panel) the count line, the titled sections and the tail |
+| `research` | as in `hello` | Repeated in every state |
+
+**Table V: `view`** (page → phone; per drawn frame when either value moved by more than 0.001, at most one in flight, and the latest value is sent when the one in flight is answered; at most 512 B; reply empty): `{headingRad: finite, halfFovRad: (0, π/2)}`.
+
+**`await`** (page → phone; exactly one outstanding; at most 256 B). **Table C, the reply, one command:**
+
+| `type` | Fields | The page |
+|---|---|---|
+| `activate` | — | Hides its chrome (`body.wbnative`) |
+| `action` | `name`: `best` \| `face` \| `previous` \| `next` \| `reset` | Presses that control. A disabled control does nothing. The ring, the edge chevron and the dark line are `face` |
+| `deactivate` | — | Shows its chrome again, reports `active:false`, and stops |
+| `close` | — | Stops (the phone is leaving this page) |
+
+Any other reply is ignored, and the page posts its next `await` a quarter of a second later. A reply that fails (a rejected promise) ends the bridge for this load and shows the page's own chrome again, as does a failed `state` or `view`.
+
+**The ring's drawing rule.**
+- A 58 pt ring: a disc of radius 26, `rgba(8,10,13,.58)`; 36 arcs at radius 21, line width 5.5, butt caps.
+- Bin *i* is centred at the screen angle `−π/2 + sense·(i·2π/36 − headingRad)` (clockwise from +x, y down) and spans ±0.52 of a bin.
+- With `k = lit[i]` (0 when `lit` is null), the colour is `rgba(154,160,168,.14)` when `k ≤ 0.01`, else `rgba(120−20k, 180+30k, 200+55k, 0.2+0.7k)`.
+- The view's horizontal spread is a sector of radius 16.5 from `−π/2 − halfFovRad` to `−π/2 + halfFovRad`, `rgba(255,255,255,.10)`.
+- A pointer at the top: (c, c−26.5), (c−3.4, c−31.5), (c+3.4, c−31.5), `rgba(232,233,236,.9)`.
+- `labels.ring.center` at the centre, 7 pt semibold, `rgba(232,233,236,.62)`; `labels.ring.label` underneath.
+
+**The handover.**
+- The page draws its complete chrome until the phone has drawn its own from a valid `hello` and `state`, including the research marker. Only then does the phone send `activate`.
+- On any invalid message, timeout or teardown, the phone removes its chrome and sends `deactivate`. If the page cannot confirm, it reloads the page and declines its next `hello`.
+- A fresh page always starts with its own chrome showing.
+- **The page remains the only authority for when each state is true.** The phone draws only what `state` says, and computes no support, darkness or side of its own.
+
+**What the page stops drawing while active:** `#caption`, `#status`, `#bar` (with `#pos`), `#compass`, `#clabel`, `#back`, `#hint`, `#dark`, `#rawmark` and `#msg`. They leave the screen, hit-testing and the accessibility tree. **It keeps:** the canvas and everything drawn in it (the flat grey haze included: its explanation is *The flat grey patches* section, which reaches the phone in `caption`), every gesture, navigation, fetching and following.
+
+**The native forms of §4's rules.**
+- The bar's text follows Dynamic Type up to Accessibility 1. Above it, every bar control, the *About* toggle and the dark line show the system large content viewer on a long press. Visible words are kept at every size, so names still begin with them.
+- *About* opens a panel holding the head, the count line, the titled sections and the tail. Its toggle reads *About* / *Less*. Opening moves VoiceOver focus into the panel, and closing returns it to the toggle (the native `aria-expanded`).
+- The status line, the hint and the dark line never overlap one another or the bar, at any text size.
+- **The phone's top band keeps room for one more line under the ladder note** (manager 183 #10): U0.6's build-progress line. It is the phone's own line, not the page's: nothing in `hello` or `state` fills or constrains it, and a band budget for native chrome counts it.
+
+**The research marker** (APPEARANCE §6.6) is drawn by the phone above everything, including the message and the panel. It is never dismissible, and it stays for the life of the viewer once raised, whichever source raised it. The page hides its own `#rawmark` only after `activate`.
+
 ## Change log
 
 This document is dated inline wherever it changed. The table lists the numbered
@@ -1390,3 +1500,4 @@ identifier unless it says so.
 | **v2** | 2026-09-27 | **Manager 106** (T-UX0; from manager 096 §1, after walk 4 `c81766a3`) | §4: *Navigation* (the dark state, the edge hint, the settle), *Where the room is* (the ring's label, the notices' placement), the haze bullet, *Controls* (44 px targets and the accessible names), the cold-open window, *Caption* (the About panel's claims about the capture); §4a rule 3 | **Viewer honesty.** The dark state reads ***Not reconstructed from here*** / *Tap to turn back*, never *not photographed* or *never looked*. The edge hint reads ***Movement stops here***. The ring reads *reconstructed / from here*. The About panel stops claiming to know what the glasses saw. Every control has a 44 px target and an accessible name. The notices clear a wrapped bar. `PAGE_REVISION` stays `appearance:1`. The trigger, the thresholds, the haze, the research marker, the rendering and the camera path are unchanged | **Nothing.** `world_builder.worlds/2026-09-10` and every payload are unchanged. The page strings are Tower-served, and no iOS source reads any of them (checked 2026-09-27 against `wb-int-walk5`) |
 | **v3** | 2026-09-28 | **Manager 115** (T-UX0b; from the O1 viewer check of `9bb9727` in the iOS 26.5 Simulator: SE (3rd gen), 17e, 17 Pro, 17 Pro Max; accessibility snapshots, nothing heard spoken) | §4: *Navigation* (the dark state: hidden from assistive technology when not shown; the headline on one line), *Where the room is* (the notices clear the status line), *Controls* (`#dark` joins the closed name table as a button; no empty status element in the accessibility tree; the *About* / *Less* toggle is a 44 × 44 target) | **Viewer accessibility, presentation only.** Assistive technology is no longer given a dark line or edge hint that is not shown. The dark line is a named button. The notices no longer overlap the status line. The dark headline no longer wraps at 375 / 390 px. The toggle's exemption ends: it is 44 × 44 like the bar. No visible text changes; the one new string is `#dark`'s accessible name, its two visible lines joined. `PAGE_REVISION` stays `appearance:1`. The trigger, the thresholds, what a tap does, the rendering and the camera path are unchanged. The page's fixed-px fonts ignoring the phone's text size (O1 item 6) are NOT addressed here: they go to U1.1 (native chrome) | **Nothing.** `world_builder.worlds/2026-09-10` and every payload are unchanged. No iOS source reads any changed string, id or selector: *Not reconstructed from here*, *Tap to turn back*, *Movement stops here*, *Placing images*, `bInfo` and `#dark` have 0 hits in `ios/`, and `ios/` runs no script in the page and reads nothing from it (no `evaluateJavaScript`, `WKUserScript` or script message handler) (checked 2026-09-28 with `git grep -F` and `git grep -i -F` against product `0636fce` and the O1 app `2ff0b0e`) |
 | **v4** | 2026-09-28 | **Manager 130** (§3; the corrected first batch B1 of the C7 review, `cx-C7-tux2-plain-language-20260928-REVIEW.md`, F6e and F10) | §4: *Caption* (the caption line's words; the About panel's *The walk*) | **Plain words, copy only.** *The walk* no longer says *this wearer never stood back from the desk, so it is a view from the desk, not of the whole room*: that described one 2026-09 capture, from a template served for every walk and every area page. *Best view* is described by what it optimizes: the most nearly whole picture near the walked path, which is not always the widest. This supersedes v2, which kept the whole of *The walk* unchanged. The caption line reads *N of M images loaded* (was *keyframes shown*), and says which side cannot use the compact image format, so fewer images fit (was *reduced set: … compressed textures …*). `encoding_notes` is never shown, which also ends *([object Object])* on a Tower without the ASTC encoder. `PAGE_REVISION` stays `appearance:1`. The anchors, the research marker, *Best view*'s scorer, `NAV.MAX_SKIP`, every manifest key, the rendering and the camera path are unchanged | **Nothing.** `world_builder.worlds/2026-09-10` and every payload are unchanged. No iOS source reads any changed string. Every old and new B1 string has 0 hits in `ios/` under `git grep -F` and `git grep -i -F`: *keyframes shown*, *reduced set*, *compressed-texture*, *compressed textures*, `encoding_notes`, *never stood back*, *view from the desk*, *best-supported vantage*, *poses that render badly*, *images loaded*, *compact image format*, *fewer images fit*, *walked path*, *most nearly whole*, *views that render badly*, and each whole sentence. The trees are product `b417c9f` and the phone's branches `origin/ios/walk5-imu` (`d852770`), `world-builder/int-walk5-candidate` (`a4afea1`), `origin/ios/ux-v1` (`2ff0b0e`), `origin/ios/wb-coherence-areas-v1` (`a1f98d7`) and `origin/ios/ux-u05-a11y` (`089777f`). The same grep finds *masks were not applied* 31 times on each phone branch, so the zeros are not an empty tree (checked 2026-09-28) |
+| **v5** | 2026-10-05 | **Managers 124 / 161 / 167 / 181** (U1.1 / T-UX3; C15, its review and C15r; manager 183 #10 for the band) | §4: the query table (`wb-chrome`), *Controls* (native forms), rule 6 (the echo); new §4c; §4a rule 3 | **Native chrome, behind a default-off setting.** The phone asks with `wb-chrome=native`. A Tower with `TOWER_WORLD_NATIVE_CHROME` on serves the appearance page plus five insertions and echoes `wb-chrome`. The page then reports its chrome through protocol 1 (`hello`, `state`, `view`, `await`), and hides its own only after the phone has drawn it. The page stays the authority for every state. The phone draws only the page's words, and its top band keeps a line for U0.6. Off, and for every other request, the page is byte for byte the page before (`tower/tests/golden/world_builder_native_chrome_dc35d51.json`). `PAGE_REVISION` stays `appearance:1` and both variants share one revision. The rendering, the camera path, the thresholds, the haze and the research marker's rules are unchanged | **Nothing moves.** `world_builder.worlds/2026-09-10`, every payload and both revision routes are unchanged. **v3's change-log claim that `ios/` "runs no script in the page and reads nothing from it" becomes: it runs no script in the page, and reads only what the page posts to `wbChromeV1`** |
