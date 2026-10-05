@@ -1073,10 +1073,13 @@ handler gives WebKit the decoded bytes with no `Content-Encoding`
   A manifest served by the carry-over lends **nothing** from a superseded
   build: a superseded entry does not record which redactor made its files
   (fix round 1, 2026-10-05). After the bytes are read the file routes run the
-  whole gate again and answer 404 if it no longer holds or now names another
-  build, so a switch, relabel or purge that lands between the gate and the read
-  does not let them out (fix round 2); one that lands after that second check
-  is a request that completed first.
+  whole gate again and answer 404 unless it still holds and the file is still
+  named by, or lendable to (the rule above), the manifest it serves now --
+  so a switch, relabel or purge that lands between the gate and the read does
+  not let the bytes out, while a live build publishing in that window still
+  lends the previous build's file through the grace, as before (fix round 2,
+  `appearance_pipeline.file_size_under`). A change that lands after that second
+  check is a request that completed first.
 
 The label is re-checked on every request, so a relabelled session stops
 serving its old textures immediately: the routes 404 at once, an open page
