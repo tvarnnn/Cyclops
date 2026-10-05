@@ -1132,16 +1132,18 @@ def servable_size(root: Path, name: str, manifest: dict, now: float | None = Non
     return None
 
 
-def read_appearance_file(store, world_id: str, session_id: str, kind: str, digest: str,
-                         manifest: dict) -> bytes | None:
-    """The bytes of a file the manifest names (or a recently superseded one
-    under the same label names, `servable_size`), checked against its recorded
-    size and its content digest; None for anything else."""
+def file_size_under(store, world_id: str, session_id: str, kind: str, digest: str,
+                    manifest: dict) -> int | None:
+    """The recorded size of a file the routes may serve under `manifest`, or
+    None: named by it, or lent from a recently superseded build
+    (`servable_size`) -- and never lent to a manifest served by the carry-over.
+    No bytes are read. `read_appearance_file` uses it, and the file routes run
+    it again after the read against the manifest the gate serves THEN (fix
+    round 2, Codex LOW-3)."""
     if kind not in ("chunk", "proxy") or not is_digest(digest):
         return None
     name = _file_name(kind, digest)
-    root = appearance_dir(store, world_id, session_id)
-    size = servable_size(root, name, manifest)
+    size = servable_size(appearance_dir(store, world_id, session_id), name, manifest)
     if size is None:
         return None
     if name not in named_files(manifest) and not label_matches(
@@ -1152,6 +1154,19 @@ def read_appearance_file(store, world_id: str, session_id: str, kind: str, diges
         # (review rv-pas LOW-3). Its own files are served; a page missing one
         # refetches the manifest, as for any 404.
         return None
+    return size
+
+
+def read_appearance_file(store, world_id: str, session_id: str, kind: str, digest: str,
+                         manifest: dict) -> bytes | None:
+    """The bytes of a file the manifest names (or a recently superseded one
+    under the same label names, `servable_size`), checked against its recorded
+    size and its content digest; None for anything else."""
+    size = file_size_under(store, world_id, session_id, kind, digest, manifest)
+    if size is None:
+        return None
+    name = _file_name(kind, digest)
+    root = appearance_dir(store, world_id, session_id)
     try:
         data = (root / name).read_bytes()
     except OSError:
@@ -1260,8 +1275,8 @@ def _carry_over_metadata_whole(store, world_id: str, session_id: str, manifest: 
       switch", which is the token a walk build on the capture's own keyframes
       also records -- so without this an unreadable record looked like "the
       same set" and the walk build was served;
-    - a re-redaction pointer, if one is on disk, reads as a JSON object (an
-      unreadable one also reads as "no switch");
+    - NO re-redaction pointer is on disk at all: a switch, its revert, and a
+      pointer the store does not honour all refuse (fix round 2);
     - the session's label NOW is on the allowlist: the ordinary Stop writes
       the real, trusted label. A Stop to a label off the allowlist (or to
       none at all) is not newly served -- it is refused exactly as before;
@@ -1276,9 +1291,13 @@ def _carry_over_metadata_whole(store, world_id: str, session_id: str, manifest: 
     except Exception:  # noqa: BLE001 -- unreadable never widens the gate
         return False
     try:
-        pointer = store.redaction_set_path(world_id, session_id)
-        if pointer.exists() and not isinstance(
-                json.loads(pointer.read_text(encoding="utf-8")), dict):
+        # ANY re-redaction pointer on disk (fix round 2, Codex MED-1/MED-2):
+        # the store reads a non-whole one -- `{}`, a missing directory or
+        # label, a path outside the session, a stale stored label -- and an
+        # explicit revert all as "no switch", which is the walk build's own
+        # token. A switch, or its revert, is a statement about the keyframes
+        # made AFTER the walk build; the carry-over never speaks past it.
+        if store.redaction_set_path(world_id, session_id).exists():
             return False
     except Exception:  # noqa: BLE001
         return False

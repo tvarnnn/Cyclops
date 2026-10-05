@@ -531,3 +531,197 @@ def test_a_provenance_that_says_raw_under_a_redacted_top_level_is_refused(tmp_pa
     assert client.get(f"/worlds/{WORLD}/appearance/{SESSION}/manifest").status_code == 404
     assert _revision(client)["appearance"]["revision"] is None
     assert not AP.may_serve(w.store, WORLD, SESSION, w.manifest())
+
+
+# ---------------------------------------------------------------------------
+# fix round 2 (Codex cross-review MED-1/MED-2/LOW-3; re-check LOW-A/B): ANY
+# re-redaction pointer on disk keeps the walk build off the carry-over -- a
+# non-whole one, a revert, a switch -- and a pointer or label change between the
+# gate and the read is caught before the bytes leave.
+# ---------------------------------------------------------------------------
+
+
+def _pointer(w, doc):
+    w.store.redaction_set_path(WORLD, SESSION).write_text(
+        doc if isinstance(doc, str) else json.dumps(doc), encoding="utf-8")
+
+
+def _a_whole_switch(w, name="images.redacted-x"):
+    import shutil
+
+    sd = w.store.session_dir(WORLD, SESSION)
+    shutil.copytree(sd / "images", sd / name)
+    _pointer(w, {"active": name, "redaction": TRUSTED, "set_digest": "d1",
+                 "stored_redaction": TRUSTED})
+    assert w.store.keyframe_image_set(WORLD, SESSION).cache_token == f"{name}@d1"
+
+
+class TestAnyReredactionPointerAfterStop:
+
+    @pytest.mark.parametrize("doc", [
+        {},                                                                # empty object
+        {"active": None},                                                  # explicit revert
+        {"active": "images.redacted-gone", "redaction": TRUSTED,           # directory missing
+         "set_digest": "d1", "stored_redaction": TRUSTED},
+        {"active": "images.redacted-x", "set_digest": "d1",                # label missing
+         "stored_redaction": TRUSTED},
+        {"active": "../../../images", "redaction": TRUSTED,                # path traversal
+         "set_digest": "d1", "stored_redaction": TRUSTED},
+        {"active": "images.redacted-x", "redaction": TRUSTED,              # stale stored label
+         "set_digest": "d1", "stored_redaction": "none"},
+    ], ids=["empty", "revert", "dir-missing", "label-missing", "traversal", "stale-stored"])
+    def test_a_pointer_the_store_does_not_honour(self, tmp_path, doc):
+        import shutil
+
+        w = _walk(tmp_path)
+        man = w.manifest()
+        _stop(w)
+        sd = w.store.session_dir(WORLD, SESSION)
+        shutil.copytree(sd / "images", sd / "images.redacted-x")
+        _pointer(w, doc)
+        assert w.store.keyframe_image_set(WORLD, SESSION).cache_token is None, (
+            "the store reads every one of these as no switch -- the gate must not")
+        _as_dc35d51(w, man)
+
+    def test_a_switch_after_stop_then_its_revert(self, tmp_path):
+        """Codex MED-2: the revert returns the set token to None, the walk build's
+        own; dc35d51 still refuses it (its label differs), and so must we."""
+        w = _walk(tmp_path)
+        man = w.manifest()
+        _stop(w)
+        _a_whole_switch(w)
+        client = _client(w.root)
+        assert client.get(f"/worlds/{WORLD}/appearance/{SESSION}/manifest").status_code == 404
+        assert _revision(client)["appearance"]["state"] == AP.WITHDRAWN
+        _pointer(w, {"active": None})                                      # the revert
+        assert w.store.keyframe_image_set(WORLD, SESSION).cache_token is None
+        _as_dc35d51(w, man)
+
+
+class TestTheGateIsCheckedAgainAfterTheRead:
+    """Codex LOW-3: a set-pointer or label change after the gate authorised a
+    request but before the bytes were read. The file routes re-run the gate after
+    the read and answer 404 when it no longer holds (or names another build)."""
+
+    def _racing(self, monkeypatch, change):
+        real = AP.read_appearance_file
+        fired = []
+
+        def read_then_change(*a, **k):
+            data = real(*a, **k)
+            if not fired:
+                fired.append(True)
+                change()
+            return data
+
+        monkeypatch.setattr(AP, "read_appearance_file", read_then_change)
+        return fired
+
+    def test_a_switch_between_the_gate_and_the_read_of_a_walk_build(self, tmp_path, monkeypatch):
+        w = _walk(tmp_path)
+        man = w.manifest()
+        _stop(w)
+        fired = self._racing(monkeypatch, lambda: _a_whole_switch(w))
+        r = _client(w.root).get(
+            f"/worlds/{WORLD}/appearance/{SESSION}/chunk/{man['chunks'][0]['digest']}")
+        assert fired and r.status_code == 404
+        _assert_private(r)
+
+    def test_a_relabel_between_the_gate_and_the_read_of_a_trusted_build(self, tmp_path,
+                                                                       monkeypatch):
+        w = World(tmp_path)
+        assert w.build(redactor_factory=_never_redact).state == AP.STATE_OK
+        man = w.manifest()
+        fired = self._racing(monkeypatch, lambda: _stop(w, UNGATED))
+        r = _client(w.root).get(
+            f"/worlds/{WORLD}/appearance/{SESSION}/proxy/{man['proxy']['digest']}")
+        assert fired and r.status_code == 404
+
+    def test_a_final_build_publishing_between_the_gate_and_the_read(self, tmp_path,
+                                                                    monkeypatch):
+        """The walk build's chunk was authorised; the final build (trusted
+        label, stored bytes) publishes before the bytes leave. The final build
+        never lends the walk build's files (another label), so: 404."""
+        w = _walk(tmp_path)
+        man = w.manifest()
+        _stop(w)
+
+        def final_build():
+            _records_carry(w)
+            assert w.build(params=A.AppearanceParams(selection_samples=4000,
+                                                     transient_detector="off"),
+                           redactor_factory=_never_redact).state == AP.STATE_OK
+
+        fired = self._racing(monkeypatch, final_build)
+        digest = man["chunks"][0]["digest"]
+        r = _client(w.root).get(f"/worlds/{WORLD}/appearance/{SESSION}/chunk/{digest}")
+        assert fired and w.manifest()["build_id"] != man["build_id"]
+        assert digest not in {c["digest"] for c in w.manifest()["chunks"]}
+        assert r.status_code == 404
+
+    def test_a_live_publish_between_the_gate_and_the_read_still_lends(self, tmp_path,
+                                                                      monkeypatch):
+        """During the walk the same race is a live build replacing a live build
+        under the same label: the old chunk is lent through the grace, exactly
+        as on dc35d51."""
+        w = World(tmp_path, label="none")
+        _records_carry(w, _FakeRedactor())
+        params = A.AppearanceParams.live(selection_samples=3000, transient_detector="off")
+        assert w.build(params=params, redactor_factory=_FakeRedactor).state == AP.STATE_OK
+        man = w.manifest()
+
+        def next_live_build():
+            img = w.render(3)
+            img[10:30, 10:30] = (200, 40, 40)
+            w.set_image(3, img)
+            _records_carry(w, _FakeRedactor())
+            assert w.build(params=params, redactor_factory=_FakeRedactor).state == AP.STATE_OK
+
+        fired = self._racing(monkeypatch, next_live_build)
+        client = _client(w.root)
+        codes = {c["digest"]: client.get(
+            f"/worlds/{WORLD}/appearance/{SESSION}/chunk/{c['digest']}").status_code
+            for c in man["chunks"]}
+        new = {c["digest"] for c in w.manifest()["chunks"]}
+        gone = [d for d in codes if d not in new]
+        assert fired and w.manifest()["build_id"] != man["build_id"]
+        assert gone, "the rebuild replaced no chunk; the test would prove nothing"
+        # The first request raced the publish; whichever chunk it was, every
+        # old chunk -- including the ones only the grace lends -- is served.
+        assert set(codes.values()) == {200}, codes
+
+    def test_no_change_still_serves(self, tmp_path, monkeypatch):
+        w = _walk(tmp_path)
+        man = w.manifest()
+        _stop(w)
+        fired = self._racing(monkeypatch, lambda: None)
+        r = _client(w.root).get(
+            f"/worlds/{WORLD}/appearance/{SESSION}/chunk/{man['chunks'][0]['digest']}")
+        assert fired and r.status_code == 200
+
+    def test_an_area_switch_between_the_gate_and_the_read(self, tmp_path, monkeypatch):
+        from tests.test_world_builder_components_areas import _finalize
+        from tower.world_builder import components as C
+
+        w, area = _area_walk(tmp_path)
+        _stop(w)
+        _finalize(w)
+        man = AP.read_appearance_manifest(C.AreaStore(w.store, WORLD, SESSION, area),
+                                          WORLD, SESSION)
+        fired = self._racing(monkeypatch, lambda: _a_whole_switch(w))
+        r = _client(w.root).get(_area_url(area, f"appearance/chunk/{man['chunks'][0]['digest']}"))
+        assert fired and r.status_code == 404
+
+
+@pytest.mark.parametrize("value", [None, "", "garbage", "Redacted"])
+def test_a_provenance_imagery_source_that_is_not_exactly_redacted_is_refused(tmp_path, value):
+    """Re-check LOW-B: `imagery_source_of` reads None, "" or an unknown string as
+    `redacted`, so the carry-over's own comparison passes them; only the
+    provenance guard refuses them (mutant F6)."""
+    w = _walk(tmp_path)
+    root = AP.appearance_dir(w.store, WORLD, SESSION)
+    doc = json.loads((root / "manifest.json").read_text())
+    doc["appearance_provenance"]["imagery_source"] = value
+    (root / "manifest.json").write_text(json.dumps(doc))
+    _stop(w)
+    _as_dc35d51(w, w.manifest())

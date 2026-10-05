@@ -197,6 +197,14 @@ def appearance_file(store: WorldStore, world_id: str, session_id: str, kind: str
     data = AP.read_appearance_file(store, contained, session_id, kind, digest, manifest)
     if data is None:
         raise AppearanceNotServed("no such appearance file")
+    # The gate again, AFTER the read (fix round 2, Codex LOW-3): a re-redaction
+    # switch, a relabel or a purge that landed between the gate and the read
+    # must not let the bytes leave under the record as it is now.
+    # The file must still be servable under the manifest served NOW (the same
+    # one, or a build that published meanwhile and may lend it).
+    _again, now = _servable_manifest(store, world_id, session_id)
+    if AP.file_size_under(store, contained, session_id, kind, digest, now) is None:
+        raise AppearanceNotServed("no such appearance file")
     return data, _label(manifest), _imagery(manifest)
 
 

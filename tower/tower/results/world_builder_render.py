@@ -1306,4 +1306,11 @@ def area_appearance_file(store: WorldStore, world_id: str, session_id: str, area
                                    manifest)
     if data is None:
         raise AppearanceNotServed("no such appearance file")
+    # The gate again, after the read (fix round 2, Codex LOW-3), as the room's.
+    now, reason = C.area_appearance_servable(store, area.world_id, area.session_id,
+                                             area.area_id)
+    if now is None:
+        raise AppearanceNotServed(reason)
+    if AP.file_size_under(area.view, area.world_id, area.session_id, kind, digest, now) is None:
+        raise AppearanceNotServed("no such appearance file")
     return data, _label(manifest), _imagery(manifest)
