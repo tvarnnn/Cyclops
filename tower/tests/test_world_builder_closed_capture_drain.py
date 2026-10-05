@@ -1633,6 +1633,48 @@ def test_a_hard_stop_during_the_strict_wait_is_honoured_at_once(
     assert not _labelled_finished(session)
 
 
+def test_an_unmeasurable_journal_is_retried_for_the_budget_unless_cancelled(
+    tmp_path, monkeypatch
+):
+    """The re-measurement waits out the shipped budget, and a hard stop
+    (`cancel`) ends it at once -- the guard runs during a Tower shutdown
+    too, and an unmeasurable journal reads `interrupted` either way."""
+    follower = CaptureFollower(_small_closed_capture(tmp_path), poll_seconds=0)
+    monkeypatch.setattr(
+        capture_module._JournalTail, "records_not_yet_read", lambda self, **_: None
+    )
+    started = time.monotonic()
+    assert follower.unobserved_records(cancel=lambda: True) is None
+    assert time.monotonic() - started < capture_module.MANIFEST_READ_BUDGET_S / 4
+
+    monkeypatch.setattr(capture_module, "MANIFEST_READ_BUDGET_S", 0.2)
+    started = time.monotonic()
+    assert follower.unobserved_records(cancel=lambda: False) is None
+    assert time.monotonic() - started >= 0.2
+
+
+def test_a_hard_stop_does_not_wait_out_an_unmeasurable_journal(
+    recorded_capture, tmp_path, monkeypatch
+):
+    """The builder passes its hard stop to the guard's re-measurement: a
+    Tower shutting down measures once and moves on, labelled honestly."""
+    _write_manifest(recorded_capture, "stop")
+    monkeypatch.setattr(capture_module, "MANIFEST_READ_BUDGET_S", SHORT_BUDGET_S)
+    calls = {"n": 0}
+
+    def unmeasurable(self, **_kwargs):
+        calls["n"] += 1
+        return None
+
+    monkeypatch.setattr(capture_module._JournalTail, "records_not_yet_read", unmeasurable)
+    _hook(monkeypatch, install_level=StopRequest.HARD)
+    exit_code, session = _run_session(recorded_capture, tmp_path / "worlds")
+
+    assert calls["n"] == 1
+    assert exit_code == 0
+    assert session.end_reason == "interrupted"
+
+
 def test_one_failed_journal_stat_after_the_loop_is_measured_again(tmp_path, monkeypatch):
     """Re-review LOW-1 (its Q7): caught up, 48 of 48, and the guard's one
     stat of the journal fails once. An unmeasurable journal is measured
