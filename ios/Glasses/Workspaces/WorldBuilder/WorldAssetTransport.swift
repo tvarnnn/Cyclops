@@ -315,6 +315,12 @@ nonisolated struct WorldAssetResponse: Sendable, Equatable {
     let status: Int
     let mimeType: String
     let data: Data
+    /// `X-World-Imagery` (`WORLD-BUILDER-APPEARANCE.md` §9): which imagery an
+    /// appearance 200 carries, `redacted` for the product. Read for U1.1's
+    /// research marker (IOS §10); never handed to WebKit.
+    var imagery: String? = nil
+    /// `X-World-Imagery-Warning`: the Tower's sentence for a research build.
+    var imageryWarning: String? = nil
 }
 
 /// Proxies whitelisted requests to the Tower.
@@ -404,7 +410,9 @@ nonisolated struct WorldAssetClient {
         return WorldAssetResponse(
             status: http?.statusCode ?? 502,
             mimeType: http?.mimeType ?? "application/octet-stream",
-            data: data
+            data: data,
+            imagery: http?.value(forHTTPHeaderField: "X-World-Imagery"),
+            imageryWarning: http?.value(forHTTPHeaderField: "X-World-Imagery-Warning")
         )
     }
 }
@@ -574,6 +582,17 @@ final class WorldAssetSchemeHandler: NSObject, WKURLSchemeHandler {
     /// the next `makeUIView`, and after `tearDown()`.
     private(set) var isAttached = true
 
+    /// Called whenever a proxied response says its imagery is not
+    /// `redacted` (`X-World-Imagery`, with `X-World-Imagery-Warning`): the
+    /// second source of the native chrome's research marker (U1.1, IOS §10).
+    /// The headers themselves still never reach WebKit (`responseHeaders`).
+    var onImagery: ((String, String?) -> Void)?
+
+    private func reportImagery(_ response: WorldAssetResponse) {
+        guard let imagery = response.imagery, !imagery.isEmpty, imagery != "redacted" else { return }
+        onImagery?(imagery, response.imageryWarning)
+    }
+
     private var liveTasks: Set<ObjectIdentifier> = []
     private var inflight: [ObjectIdentifier: Task<Void, Never>] = [:]
 
@@ -718,6 +737,7 @@ final class WorldAssetSchemeHandler: NSObject, WKURLSchemeHandler {
             return
         }
         if case .serve(let hit) = memory.decision(for: asset, now: clock()) {
+            reportImagery(hit)
             respond(urlSchemeTask, status: hit.status, mimeType: hit.mimeType, data: hit.data)
             return
         }
@@ -739,6 +759,7 @@ final class WorldAssetSchemeHandler: NSObject, WKURLSchemeHandler {
             self.inflight[id] = nil
             switch result {
             case .success(let response):
+                self.reportImagery(response)
                 self.respond(urlSchemeTask, status: response.status, mimeType: response.mimeType,
                              data: response.data)
             case .failure(let error):

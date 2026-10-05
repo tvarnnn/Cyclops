@@ -610,13 +610,15 @@ final class WorldRenderViewAddressTests: XCTestCase {
         let url = WorldRenderClient.url(
             for: WorldRenderTarget(worldID: "w1", sessionID: "s1"), baseURL: Self.host
         )
+        // U1.1: the product page also asks for native chrome (WORLDS §4c).
         XCTAssertEqual(url?.absoluteString,
-                       "http://stub.invalid/worlds/w1/render?session_id=s1&viewer=appearance-1")
+                       "http://stub.invalid/worlds/w1/render?session_id=s1&viewer=appearance-1&wb-chrome=native")
 
         let unpinned = WorldRenderClient.url(
             for: WorldRenderTarget(worldID: "w1", sessionID: nil), baseURL: Self.host
         )
-        XCTAssertEqual(unpinned?.absoluteString, "http://stub.invalid/worlds/w1/render?viewer=appearance-1")
+        XCTAssertEqual(unpinned?.absoluteString,
+                       "http://stub.invalid/worlds/w1/render?viewer=appearance-1&wb-chrome=native")
     }
 
     func testTheDiagnosticsViewAsksForItByName() {

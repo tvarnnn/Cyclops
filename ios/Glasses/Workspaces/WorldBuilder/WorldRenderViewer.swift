@@ -337,7 +337,11 @@ nonisolated struct WorldRenderClient {
                 ? String(components.percentEncodedPath.dropLast())
                 : components.percentEncodedPath
             components.percentEncodedPath = "\(base)/worlds/\(world)/areas/\(session)/\(areaID)/render"
-            components.queryItems = nil
+            // U1.1 (COMPONENTS §5.1, WORLDS §4c): ask the appearance page to
+            // hand its chrome to the phone. An older Tower ignores it, and
+            // the revision poll drops every query (`revisionURL`).
+            components.queryItems = [URLQueryItem(name: WorldChromeEcho.queryName,
+                                                  value: WorldChromeEcho.queryValue)]
             return components.url
         }
         guard
@@ -364,6 +368,14 @@ nonisolated struct WorldRenderClient {
         // the parameter ignores it (FastAPI drops unknown query parameters).
         query.append(URLQueryItem(name: WorldAssetScheme.viewerQueryName,
                                   value: WorldAssetScheme.viewerCapability))
+        // U1.1 (WORLDS §4c): on the page request only, and only for the
+        // product view -- the diagnostics page is the sparse one, which keeps
+        // its own chrome. Not a capability declaration and decides no rung;
+        // `revisionURL` keeps only `session_id` and `viewer`, so the polls
+        // never carry it (IOS §10).
+        if target.view == .product {
+            query.append(URLQueryItem(name: WorldChromeEcho.queryName, value: WorldChromeEcho.queryValue))
+        }
         components.queryItems = query.isEmpty ? nil : query
         return components.url
     }
@@ -907,6 +919,15 @@ final class WorldRenderViewerModel: ObservableObject {
     /// follower stopped, and the scene offers the way back to the room.
     @Published private(set) var areaNoLongerServed = false
 
+    /// U1.1 native chrome (WORLDS §4c, IOS §10): what the phone draws in place
+    /// of the appearance page's own chrome, and the bridge that feeds it.
+    /// Owned here, like `assets`, so a "Try again" web view re-attaches the
+    /// same bridge (whose `pageWillLoad` resets it) and the research marker
+    /// lasts for the life of the viewer.
+    let chrome: WorldChromeModel
+    let bridge: WorldChromeBridge
+    private var chromeChanges: AnyCancellable?
+
     /// `assets` is injectable for the same reason `client` is: the follower's
     /// one piece of evidence about the page's own recovery comes through the
     /// handler, and a test needs to be able to put it there from a stubbed
@@ -920,8 +941,20 @@ final class WorldRenderViewerModel: ObservableObject {
         self.target = target
         self.components = target.isArea ? nil : components
         self.client = client
-        self.assets = assets
+        let assets = assets
             ?? WorldAssetSchemeHandler(worldID: target.worldID, scope: WorldAssetScope.of(target))
+        self.assets = assets
+        let chrome = WorldChromeModel()
+        self.chrome = chrome
+        self.bridge = WorldChromeBridge(
+            model: chrome, kind: target.isArea ? .area : .room,
+            pageURL: WorldAssetScheme.pageURL(worldID: target.worldID, scope: assets.scope))
+        // The second source of the research marker: the served header (§3.7).
+        assets.onImagery = { [weak chrome] _, warning in chrome?.raiseResearch(headerWarning: warning) }
+        // The scene lays itself out by the chrome's mode, so it re-renders
+        // when the chrome changes. The per-frame heading is a separate
+        // object and does not come through here.
+        chromeChanges = chrome.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }
     }
 
     /// The viewer closed. Drops the in-memory imagery and its authorisation,
@@ -931,6 +964,7 @@ final class WorldRenderViewerModel: ObservableObject {
     /// `WKWebView` teardown is exactly the place to linger in (review 2, M-4).
     func viewerClosed() {
         assets.tearDown()
+        chrome.viewerClosed()
     }
 
     /// Keep the areas row current from a revision the Tower sent (§3.2),
@@ -1537,6 +1571,8 @@ struct WorldRenderWebView: UIViewRepresentable {
     /// the imagery it holds outlives this web view and dies with the viewer;
     /// see `WorldRenderViewerModel.assets`.
     let assets: WorldAssetSchemeHandler
+    /// The native chrome's bridge (U1.1). Owned by the model, like `assets`.
+    let bridge: WorldChromeBridge
     /// Which `load()` this page belongs to. A retry of the **same** page after
     /// a render failure carries a new number, which is what makes the reload
     /// happen at all; see `WorldRenderViewerModel.renderAttempt`.
@@ -1552,11 +1588,11 @@ struct WorldRenderWebView: UIViewRepresentable {
     /// the main thread, and the model it calls is `@MainActor`.
     var onEvent: (@MainActor (WorldRenderPageEvent) -> Void)? = nil
 
-    func makeCoordinator() -> Coordinator { Coordinator(target: target, assets: assets) }
+    func makeCoordinator() -> Coordinator { Coordinator(target: target, assets: assets, bridge: bridge) }
 
     /// The configuration every viewer web view is built with. Split out so
     /// the data store and the scheme registration are tested without a view.
-    static func makeConfiguration(assets: WorldAssetSchemeHandler) -> WKWebViewConfiguration {
+    static func makeConfiguration(assets: WorldAssetSchemeHandler, bridge: WorldChromeBridge) -> WKWebViewConfiguration {
         let configuration = WKWebViewConfiguration()
         // Privacy §3.6: the default store is persistent; this one is memory only.
         configuration.websiteDataStore = .nonPersistent()
@@ -1566,11 +1602,21 @@ struct WorldRenderWebView: UIViewRepresentable {
         // detectors turning a coordinate into a phone number.
         configuration.dataDetectorTypes = []
         configuration.allowsInlineMediaPlayback = false
+        // U1.1 native chrome (WORLDS §4c): one script message handler WITH
+        // REPLIES, in the page's own content world. The app evaluates no
+        // script in the page. Registered here, before any load: the page
+        // posts `hello` while it is still being parsed. Installed for every
+        // viewer web view; a page without the echo never posts, and a stray
+        // post is declined. The proxy holds the bridge weakly, because the
+        // content controller retains its handlers.
+        configuration.userContentController.addScriptMessageHandler(
+            WorldChromeMessageProxy(bridge: bridge), contentWorld: .page, name: WorldChromeEcho.handlerName)
         return configuration
     }
 
     func makeUIView(context: Context) -> WKWebView {
-        let configuration = Self.makeConfiguration(assets: context.coordinator.assets)
+        let configuration = Self.makeConfiguration(assets: context.coordinator.assets,
+                                                   bridge: context.coordinator.bridge)
         let webView = WKWebView(frame: .zero, configuration: configuration)
         webView.navigationDelegate = context.coordinator
         webView.allowsBackForwardNavigationGestures = false
@@ -1591,6 +1637,11 @@ struct WorldRenderWebView: UIViewRepresentable {
         // A previous web view for this viewer may have been dismantled; the
         // handler is the model's and outlives both.
         assets.attach()
+        // A deactivation the page never confirmed reloads it once (§4c).
+        context.coordinator.bridge.reloadPage = { [weak coordinator = context.coordinator, weak webView] in
+            guard let coordinator, let webView else { return }
+            coordinator.reloadForTheChrome(webView)
+        }
         context.coordinator.load(html, attempt: attempt, budget: budgetToken, into: webView)
         return webView
     }
@@ -1622,6 +1673,12 @@ struct WorldRenderWebView: UIViewRepresentable {
         webView.navigationDelegate = nil
         coordinator.onEvent = nil
         coordinator.assets.detach()
+        // U1.1: the held `await` is answered (`close`) before its page goes,
+        // and the handler leaves with the web view (IOS §10, LOW-8).
+        coordinator.bridge.receive(.teardown)
+        coordinator.bridge.reloadPage = nil
+        webView.configuration.userContentController.removeScriptMessageHandler(
+            forName: WorldChromeEcho.handlerName, contentWorld: .page)
     }
 
     final class Coordinator: NSObject, WKNavigationDelegate {
@@ -1633,10 +1690,14 @@ struct WorldRenderWebView: UIViewRepresentable {
         let assets: WorldAssetSchemeHandler
         /// The one URL this web view may navigate to.
         let pageURL: URL?
+        /// The native chrome's bridge, reset on every allowed main-frame
+        /// navigation and every content-process kill.
+        let bridge: WorldChromeBridge
 
-        init(target: WorldRenderTarget, assets: WorldAssetSchemeHandler) {
+        init(target: WorldRenderTarget, assets: WorldAssetSchemeHandler, bridge: WorldChromeBridge) {
             self.target = target
             self.assets = assets
+            self.bridge = bridge
             // The room's page, or an area's (`WORLD-BUILDER-COMPONENTS.md`
             // §5.5): the navigation policy admits exactly this one URL.
             self.pageURL = WorldAssetScheme.pageURL(worldID: target.worldID, scope: assets.scope)
@@ -1751,6 +1812,20 @@ struct WorldRenderWebView: UIViewRepresentable {
             webView.load(URLRequest(url: pageURL))
         }
 
+        /// The page hid its chrome and never confirmed putting it back
+        /// (WORLDS §4c): load it again, once. The screen goes back to a
+        /// bounded wait, as for the page's own reload, and the reloaded
+        /// page's `hello` is declined.
+        func reloadForTheChrome(_ webView: WKWebView) {
+            onEvent?(.reloadingItself)
+            reload(into: webView)
+        }
+
+        /// Whether the page string on screen echoes `wb-chrome=native`.
+        private var offersNativeChrome: Bool {
+            loaded.map(WorldChromeEcho.isOffered(in:)) ?? false
+        }
+
         /// How many times the PAGE may put itself back, within the same window
         /// as the kill budget.
         ///
@@ -1792,6 +1867,9 @@ struct WorldRenderWebView: UIViewRepresentable {
             )
             if allowed {
                 hasDecidedInitialLoad = true
+                // A new document: the held `await` is answered, the overlay
+                // goes, and the next `hello` starts again (IOS §10).
+                bridge.receive(.pageWillLoad(echo: offersNativeChrome))
                 if isReload {
                     selfReloads = recent + [now]
                     // The page on screen is gone until this finishes, so the
@@ -1880,9 +1958,14 @@ struct WorldRenderWebView: UIViewRepresentable {
             terminationTimes.append(now)
             let terminations = terminationTimes.count
             guard terminations <= Self.reloadBudget else {
+                // The page is gone and is not coming back: its held `await`
+                // is answered, and nothing native is drawn over the failure.
+                bridge.receive(.pageWillLoad(echo: false))
                 onEvent?(.gaveUpAfterTerminations(terminations))
                 return
             }
+            // The page that held the chrome is gone (IOS §10).
+            bridge.receive(.pageWillLoad(echo: offersNativeChrome))
             // Announced before the reload, so the screen is back in a bounded
             // `.rendering` before the page has a chance to die again silently.
             onEvent?(.reloadingAfterTermination)
@@ -2058,6 +2141,25 @@ struct WorldRenderScene: View {
     /// *Back to the room*, for an area viewer.
     private let backToRoom: (() -> Void)?
 
+    /// U1.1: the one panel open over the canvas under native chrome, and
+    /// where VoiceOver focus goes when the caption panel opens and closes.
+    @State private var chromePanel: WorldChromePanelKind?
+    @AccessibilityFocusState private var chromeFocus: WorldChromeFocus?
+
+    /// U1.1 (WORLDS §4c): whether this screen is laid out for native chrome.
+    /// From the moment a page that echoes `wb-chrome=native` arrives -- so the
+    /// first drawn frame does not resize the canvas -- until the screen falls
+    /// back for good. Covers both `.pending` and `.native`; what is drawn
+    /// over the canvas is the chrome model's to say.
+    private var usesNativeChrome: Bool {
+        guard let html = model.state.html, !model.chrome.refusedForScreen else { return false }
+        return WorldChromeEcho.isOffered(in: html)
+    }
+
+    /// Why an area's picture stopped following, when the Tower says so (§5.2).
+    static let areaNoLongerServedSentence = "The Tower no longer serves this area -- the walk may have been "
+        + "finished again. The room's list of areas is current."
+
     init(
         target: WorldRenderTarget,
         title: String? = nil,
@@ -2087,26 +2189,54 @@ struct WorldRenderScene: View {
     }
 
     var body: some View {
+        let native = usesNativeChrome
         VStack(spacing: 0) {
-            // The words and the controls take the readable tint (U0.5 review
-            // F2): the system blue is about 4.0:1 on white, under the 4.5:1
-            // text needs, and "Details" and the offers are text. Not the
-            // picture: the loading panel's spinner keeps its own colour.
-            CappedScroll(cap: captionShare.map { screenHeight * $0 } ?? 0) {
-                caption
-            }
-            .tint(Color.readableTint)
-            controls
+            if native {
+                // U1.1: the research marker (when raised), then one row. The
+                // web view below is exactly the strip between this and the bar.
+                WorldChromeTopBand(
+                    chrome: model.chrome, isArea: model.target.isArea, note: note, notice: notice,
+                    showsAreas: !(model.components?.areas.isEmpty ?? true),
+                    wordsCap: captionShare.map { screenHeight * $0 } ?? 0,
+                    backToRoom: model.target.isArea ? backToRoom : nil,
+                    panel: $chromePanel, focus: $chromeFocus
+                )
                 .tint(Color.readableTint)
+                .environment(\.colorScheme, .dark)
+            } else {
+                // After a fallback from native chrome the research marker
+                // stays (IOS §10); otherwise this is today's screen.
+                if model.chrome.everNative, let marker = model.chrome.researchMarker {
+                    WorldChromeResearchBand(marker: marker)
+                        .environment(\.colorScheme, .dark)
+                }
+                // The words and the controls take the readable tint (U0.5 review
+                // F2): the system blue is about 4.0:1 on white, under the 4.5:1
+                // text needs, and "Details" and the offers are text. Not the
+                // picture: the loading panel's spinner keeps its own colour.
+                CappedScroll(cap: captionShare.map { screenHeight * $0 } ?? 0) {
+                    caption
+                }
+                .tint(Color.readableTint)
+                controls
+                    .tint(Color.readableTint)
+            }
+            // The SAME view in every mode (slot 2 of this stack), so SwiftUI
+            // keeps one `WKWebView` when the chrome's mode changes.
             content
                 .layoutPriority(1)
-            CappedScroll(cap: screenHeight * belowShare) {
-                VStack(spacing: 0) {
-                    if !model.target.isArea { areasRow }
-                    details
+            if native {
+                WorldChromeBar(chrome: model.chrome) { model.bridge.receive(.tapped($0)) }
+                    .environment(\.colorScheme, .dark)
+            } else {
+                CappedScroll(cap: screenHeight * belowShare) {
+                    VStack(spacing: 0) {
+                        if !model.target.isArea { areasRow }
+                        details
+                    }
                 }
+                .tint(Color.readableTint)
             }
-            .tint(Color.readableTint)
         }
         .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { screenHeight = $0 }
         .navigationTitle(screenTitle)
@@ -2194,8 +2324,7 @@ struct WorldRenderScene: View {
             // the picture stopped following. Words, so they scroll with the
             // words; *Back to the room* is pinned below them.
             if model.target.isArea, model.areaNoLongerServed {
-                Text("The Tower no longer serves this area -- the walk may have been finished again. "
-                     + "The room's list of areas is current.")
+                Text(Self.areaNoLongerServedSentence)
                     .font(.caption)
                     .foregroundStyle(.readableSecondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -2348,16 +2477,70 @@ struct WorldRenderScene: View {
     @ViewBuilder
     private var content: some View {
         if let html = model.state.html {
-            WorldRenderWebView(target: model.target, html: html, assets: model.assets,
+            WorldRenderWebView(target: model.target, html: html, assets: model.assets, bridge: model.bridge,
                                attempt: model.renderAttempt, budgetToken: model.renderBudgetToken,
                                onEvent: model.pageEvent)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
+                // U1.1: the native chrome over the canvas. It never resizes
+                // the web view; the rendering overlay stays outermost.
+                .overlay { if usesNativeChrome { chromeCanvasLayer } }
                 .overlay { renderingOverlay }
         } else if model.state.failureMessage != nil {
             failureView
         } else {
             WorldRenderLoadingPanel(sentence: "Fetching this world from the Tower…",
                                     step: 1, since: waitingSince)
+        }
+    }
+
+    /// U1.1: everything the phone draws over the canvas under native chrome.
+    private var chromeCanvasLayer: some View {
+        WorldChromeCanvasLayer(
+            chrome: model.chrome, panel: $chromePanel, focus: $chromeFocus,
+            onAction: { model.bridge.receive(.tapped($0)) },
+            onFirstStateDrawn: { model.bridge.receive(.firstStateDrawn) },
+            banner: { chromeBanner },
+            areas: { areasRow },
+            details: { details }
+        )
+        .tint(Color.readableTint)
+        .environment(\.colorScheme, .dark)
+    }
+
+    /// The phone's own offers over the canvas, one at a time, and why an
+    /// area stopped following. Floating: they never resize the canvas.
+    @ViewBuilder
+    private var chromeBanner: some View {
+        let offer = WorldRenderOffer.current(
+            newerPictureAvailable: model.newerPictureAvailable,
+            newerPictureRefused: model.newerPictureRefused
+        )
+        let areaGone = model.target.isArea && model.areaNoLongerServed
+        if offer != WorldRenderOffer.none || areaGone {
+            VStack(alignment: .leading, spacing: 6) {
+                if areaGone {
+                    Text(Self.areaNoLongerServedSentence)
+                        .font(.caption)
+                        .foregroundStyle(WorldChromeStyle.text)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                if offer == .newerPicture {
+                    WorldChromeButton(word: "A newer reconstruction is ready. Show it",
+                                      identifier: "world-render-newer-picture") {
+                        Task { await model.showNewerPicture() }
+                    }
+                    .dynamicTypeSize(...DynamicTypeSize.accessibility1)
+                }
+                if offer == .retryRefused {
+                    WorldChromeButton(word: "A newer reconstruction could not be drawn on this phone. Try again",
+                                      identifier: "world-render-retry-refused") {
+                        Task { await model.load() }
+                    }
+                    .dynamicTypeSize(...DynamicTypeSize.accessibility1)
+                }
+            }
+            .padding(8)
+            .background(RoundedRectangle(cornerRadius: 8).fill(WorldChromeStyle.pill))
         }
     }
 
