@@ -513,3 +513,21 @@ class TestNoLendingUnderTheCarryOver:
         for c in m2["chunks"]:
             assert client.get(
                 f"/worlds/{WORLD}/appearance/{SESSION}/chunk/{c['digest']}").status_code == 200
+
+
+def test_a_provenance_that_says_raw_under_a_redacted_top_level_is_refused(tmp_path):
+    """The top-level `imagery_source` is what `imagery_matches` reads; the
+    provenance's own must say `redacted` too, or nothing rides the carry-over.
+    Two guards hold this (`_carry_over_metadata_whole` and the carry-over's own
+    imagery comparison); this test is what notices if both go."""
+    w = _walk(tmp_path)
+    root = AP.appearance_dir(w.store, WORLD, SESSION)
+    doc = json.loads((root / "manifest.json").read_text())
+    assert doc["imagery_source"] == RAWIMG.IMAGERY_REDACTED
+    doc["appearance_provenance"]["imagery_source"] = RAWIMG.IMAGERY_RAW
+    (root / "manifest.json").write_text(json.dumps(doc))
+    _stop(w)
+    client = _client(w.root)
+    assert client.get(f"/worlds/{WORLD}/appearance/{SESSION}/manifest").status_code == 404
+    assert _revision(client)["appearance"]["revision"] is None
+    assert not AP.may_serve(w.store, WORLD, SESSION, w.manifest())
