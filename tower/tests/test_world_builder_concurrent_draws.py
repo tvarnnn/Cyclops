@@ -621,12 +621,12 @@ def test_consensus_record_takes_a_concurrent_draws_own_map_time(world):
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("cause", ["ram", "child"])
+@pytest.mark.parametrize("cause", ["ram", "copy", "child"])
 def test_unwritable_fallback_journal_prevents_serial_publish(tmp_path, monkeypatch, cause):
-    store, ws, _, serial, events, _ = _rig(tmp_path, monkeypatch)
+    store, ws, _, serial, events, _ = _rig(tmp_path, monkeypatch, bad_copy=cause == "copy")
     if cause == "ram":
         monkeypatch.setattr(GS, "_draw_free_ram", lambda: 0)
-    else:
+    elif cause == "child":
         monkeypatch.setattr(GS, "_launch_draw_child", lambda *args: (_Process(7), _Job()))
 
     def fail_write(*args, **kwargs):
@@ -637,9 +637,82 @@ def test_unwritable_fallback_journal_prevents_serial_publish(tmp_path, monkeypat
     with pytest.raises(RuntimeError, match="fallback journal write failed"):
         mapper(4)
     assert serial == []
-    assert any("refusal" in event or "child-exit" in event for event in events)
+    assert any(word in events[-1] for word in ("refusal", "mismatch", "child-exit"))
+    # A launch fallback sweeps its private copies BEFORE it journals, so even an unwritable
+    # journal leaves none behind; one child's re-map leaves its sibling's root to close().
+    assert (ws.root / "sparse-draws").exists() is (cause == "child")
     mapper.close()
     assert not (ws.root / "sparse-draws").exists()
+
+
+@pytest.mark.parametrize("fault", ["launch", "job"])
+def test_a_launch_fallback_stops_the_children_already_launched(tmp_path, monkeypatch, fault):
+    if fault == "job" and os.name != "nt":
+        pytest.skip("a Job is mandatory only on Windows")
+    store, ws, launched, serial, _, rig = _rig(tmp_path, monkeypatch)
+    real_launch = GS._launch_draw_child
+    real_stop = GS._stop_draw_children
+    stopped = []
+
+    def launch(context, database, seed, sparse, output, expected_digest):
+        if fault == "launch" and seed == 5:
+            raise RuntimeError("the second child could not be spawned")
+        process, job = real_launch(context, database, seed, sparse, output, expected_digest)
+        return process, (None if fault == "job" and seed == 5 else job)
+
+    monkeypatch.setattr(GS, "_launch_draw_child", launch)
+    monkeypatch.setattr(GS, "_stop_draw_children",
+                        lambda children: stopped.append(sorted(children)) or real_stop(children))
+    mapper = _mapper(store, ws)
+    assert mapper(4).solve["seed"] == 3
+    assert stopped == [[4] if fault == "launch" else [4, 5]]   # at once, not at close()
+    # Nothing of it still runs, so the seed maps with OFF's mapper exactly (it sweeps first).
+    assert serial == [4] and rig.sweeps == [True]
+    assert not (ws.root / "sparse-draws").exists()
+    mapper.close()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows delete semantics")
+def test_a_root_that_cannot_be_swept_loses_its_marker(tmp_path, monkeypatch):
+    """`close()` is never fatal for a sweep, and a leftover it could not sweep must not read as
+    a live writer's to the next finish (another process would see this pid alive)."""
+    store, ws, _, serial, events, _ = _rig(tmp_path, monkeypatch)
+    root = ws.root / "sparse-draws"
+    mapper = _mapper(store, ws)
+    mapper(4)
+    mapper(5)
+    held = open(root / "concurrent-context.pkl", "rb")
+    try:
+        mapper.close()
+        assert root.exists() and not (root / "writer.json").exists()
+        assert GS._draw_root_key(root) not in GS._LIVE_DRAW_ROOTS
+        events.clear()
+        again = _mapper(store, ws)
+        again(4)                                   # still held: OFF's mapper, not an abort
+        again.close()
+        assert events[0].startswith("preflight-scratch-sweep-PermissionError") and serial == [4]
+    finally:
+        held.close()
+    events.clear()
+    last = _mapper(store, ws)
+    last(4)
+    last.close()
+    assert events == ["after-draw-0"] and not root.exists()
+
+
+def test_a_concurrent_draws_map_time_in_the_record_is_the_childs(world, tmp_path, monkeypatch):
+    """ADV LOW-4 through the real concurrent mapper: draws[k].map_s is the child's map."""
+    rig = _draw_rig(tmp_path, monkeypatch, map_ms=4321.0)
+    on = GS.concurrent_draw_mapper(rig.store, "w1", SID, rig.ws.database_path, rig.base,
+                                   seeds=(8, 9), keyframes=[])
+    try:
+        result = CP.gate_by_consensus(_Store(), "w1", SID, _cand(7),
+                                      plan=CP.ConsensusPlan(draws=3, seed=7, map_draw=on),
+                                      database_path="db", keyframes=world.keyframes)
+    finally:
+        on.close()
+    assert rig.events == ["after-draw-0"]
+    assert [d["map_s"] for d in result.record["consensus"]["draws"][1:]] == [4.321, 4.321]
 
 
 def test_unwritable_fallback_journal_aborts_consensus(world, tmp_path, monkeypatch):
@@ -881,7 +954,7 @@ def _publish(plan, world_fixture):
             sorted(k for k, p in result.solution.poses.items() if p["component"] == 0))
 
 
-def _draw_rig(tmp_path, monkeypatch):
+def _draw_rig(tmp_path, monkeypatch, map_ms=1.0):
     """The real mappers (OFF's and the concurrent one) over a fake `_map_candidate`; the
     concurrent children run in-process from the private copy the parent made."""
     store = WorldStore(tmp_path)
@@ -902,7 +975,7 @@ def _draw_rig(tmp_path, monkeypatch):
     def launch(context, database, seed, sparse, output, expected):
         with Path(output).open("wb") as handle:
             pickle.dump({"before": expected, "after": expected,
-                         "map_ms": 1.0, "candidate": _cand(seed)}, handle)
+                         "map_ms": map_ms, "candidate": _cand(seed)}, handle)
         return _Process(exits.get(seed, 0)), _Job()
 
     monkeypatch.setattr(GS, "_launch_draw_child", launch)
