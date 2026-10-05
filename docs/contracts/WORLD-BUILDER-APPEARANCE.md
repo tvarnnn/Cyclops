@@ -1055,10 +1055,20 @@ handler gives WebKit the decoded bytes with no `Content-Encoding`
   2026-10-05, manager 185 A) the label changed in a way its textures **carry
   over** to the keyframe set as it is now (below: the same keyframe set, the
   same imagery source, every frame re-redacted by a redactor whose own label is
-  on the allowlist; the ordinary Stop), and the world is not purged
+  on the allowlist; the ordinary Stop), and the world is not purged, **and**
+  (fix round 1, 2026-10-05) every record that decision rests on reads and
+  states it outright: the world record and `session.json` read and pass their
+  schema, a re-redaction pointer on disk parses, the session's label now is
+  itself on the allowlist, and the provenance states `session_redaction`,
+  `keyframe_image_set`, `imagery_source` (`redacted`), `redactor_applied_here`
+  and `label_trusted` (`false`) -- anything unreadable, partial or off the
+  allowlist is refused exactly as before
   ("appearance is stale against the session's redaction record");
 - for a file, the manifest (or a superseded one, above) names it and its bytes
   on disk have the recorded size and content digest ("no such appearance file").
+  A manifest served by the carry-over lends **nothing** from a superseded
+  build: a superseded entry does not record which redactor made its files
+  (fix round 1, 2026-10-05).
 
 The label is re-checked on every request, so a relabelled session stops
 serving its old textures immediately: the routes 404 at once, an open page
@@ -1097,12 +1107,18 @@ surface. `X-World-Redaction` stays the label actually applied to those pixels
 (`none&<redactor label>`), never the new session label. Nothing else is
 widened: a build that used the stored bytes under a label that then changed, a
 build by a redactor that is not on the allowlist or whose redactor is unknown,
-a re-redaction switch or revert (§6.5), a raw research build (§6.6), and a
-purged world are all refused exactly as before. The redaction itself, the label
+a re-redaction switch or revert (§6.5), a raw research build (§6.6), a
+purged world, a Stop to a label that is not itself on the allowlist, an
+unreadable or wrong-schema world or session record, an unreadable
+re-redaction pointer, a provenance that does not state every field compared,
+and a superseded build's files are all refused exactly as before. The redaction itself, the label
 rule (`label_matches`), the imagery checks and the carry-over rule
 (`textures_carry_over`) are unchanged; only the serving gate (`may_serve`)
 consults the carry-over. The final build replaces the walk build in place (its
-epoch carries over), as before.
+epoch carries over), as before. **Known, open (page copy):** the page captions
+a `quality: live` build *still building as you walk*, which is false after
+Stop; the page bytes are pinned by the byte-identity golden, so the copy fix
+waits for a page revision of its own (`WORLD-BUILDER-WORLDS.md` §4 *Live*).
 
 Before v3 nothing was served during `rebuilding`, so a page that opened or
 restored in the gap got the surface (up to ~39 minutes after Stop on walk 5).
@@ -1259,5 +1275,5 @@ versions from v2 on. **v1** is everything up to 2026-09-26.
 
 | Version | Date | Asked for by | Sections | Change | On the wire |
 |---|---|---|---|---|---|
-| **v3** | 2026-10-05 | **Manager 185 A** (owner-declared bug: walk photos unavailable to a viewer opened after Stop) | §6.6 (*How a reader refuses*: the gate is `may_serve`), §9 (*Served only while*, the `rebuilding` row, *The walk's photos stay served across Stop*) | A build whose label no longer matches but whose textures carry over to the keyframe set now (same set, same imagery, every frame re-redacted by an allowlisted redactor; the ordinary Stop) is **served**, not `rebuilding`: a viewer opened after Stop gets the walk's photos. Nothing else is widened; the redaction, `label_matches`, the imagery checks and `textures_carry_over` are unchanged (byte-identity golden over every other payload, `tests/test_world_builder_photos_after_stop_identity.py`) | **Additive in effect, no new field.** `wb-appearance-keyframes/1`, the manifest and the routes' shapes are unchanged. In the Stop gap `appearance.state` reads `served` (was `rebuilding`) with the walk build's `revision` (was `null`), and the render ladder picks the appearance rung (was the surface); every client already handles `served` |
+| **v3** | 2026-10-05 | **Manager 185 A** (owner-declared bug: walk photos unavailable to a viewer opened after Stop) | §6.6 (*How a reader refuses*: the gate is `may_serve`), §9 (*Served only while*, the `rebuilding` row, *The walk's photos stay served across Stop*) | A build whose label no longer matches but whose textures carry over to the keyframe set now (same set, same imagery, every frame re-redacted by an allowlisted redactor; the ordinary Stop) is **served**, not `rebuilding`: a viewer opened after Stop gets the walk's photos. Fix round 1 (review rv-pas): the carry-over fails closed on an unreadable or wrong-schema world/session record, an unreadable re-redaction pointer, a partial provenance, and a session label off the allowlist; it lends no superseded file. Nothing else is widened; the redaction, `label_matches`, the imagery checks and `textures_carry_over` are unchanged (byte-identity golden over every other payload, `tests/test_world_builder_photos_after_stop_identity.py`) | **Additive in effect, no new field.** `wb-appearance-keyframes/1`, the manifest and the routes' shapes are unchanged. In the Stop gap `appearance.state` reads `served` (was `rebuilding`) with the walk build's `revision` (was `null`), and the render ladder picks the appearance rung (was the surface); every client already handles `served` |
 | **v2** | 2026-09-27 | **Manager 106** (T-UX0; from manager 096 §1, after walk 4 `c81766a3`) | §4.2b | The heading reads *A place no kept frame saw* (was *A place nobody photographed*). *Nobody ever photographed* becomes *no kept frame saw*. A new last sentence in the first paragraph says a fragment no kept frame saw may still have been captured, and that the haze never says *nobody photographed this*. Every number, constant and rule in §4.2b is unchanged, and so is the haze. The page's copy is amended in `WORLD-BUILDER-WORLDS.md` v2 (§4). The page version `PAGE_REVISION` stays `1` (§9; WORLDS §4a rule 3) | **Nothing.** `wb-appearance-keyframes/1`, the manifest and the routes are unchanged |

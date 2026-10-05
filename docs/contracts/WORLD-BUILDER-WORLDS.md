@@ -1050,10 +1050,15 @@ enforced).
   **unless the new manifest's `epoch` differs from the one on screen**, when every
   texture is dropped first. Across the ordinary Stop the walk build stays
   `served` (v5, `WORLD-BUILDER-APPEARANCE.md` v3), so the page has nothing to
-  do and a page opened after Stop draws the walk's photos.
+  do and a page opened after Stop draws the walk's photos. **Known, open:** it
+  then captions the walk build *still building as you walk* (its `quality` is
+  `live`), which is false after Stop, until the final build lands; the copy fix
+  is deferred to a page revision of its own because the page bytes are pinned
+  by the photos-after-Stop byte-identity golden.
   `appearance.state: rebuilding` (an older Tower's ordinary Stop)
   keeps the textures, keeps polling at 10 s and captions *finishing the world*;
-  after 20 minutes without a served build the page drops them and says so.
+  after 45 minutes (`HOLD_MAX_MS`; this said 20 until 2026-10-05, which the page
+  never did) without a served build the page drops them and says so.
   `withdrawn`, `absent`, `unavailable`, an old Tower's bare `null`, or a
   revision 404 naming a world or session that is gone (m3) deletes every texture
   at once and says why —
@@ -1377,7 +1382,9 @@ short:
   world with `images_purged` -- **except** (v5, 2026-10-05, manager 185 A) a
   label change the artifact's textures carry over to the keyframe set now: the
   same set, the same imagery source, every frame re-redacted by a redactor on
-  the allowlist (the ordinary Stop over a walk build). That stays served, with
+  the allowlist (the ordinary Stop over a walk build), with every record that
+  decision rests on readable, the new label itself on the allowlist and the
+  provenance stating every field compared. That stays served, with
   `X-World-Redaction` the label actually applied (`none&<redactor label>`), so
   a viewer opened after Stop gets the walk's photos
   (`WORLD-BUILDER-APPEARANCE.md` v3 §9).
