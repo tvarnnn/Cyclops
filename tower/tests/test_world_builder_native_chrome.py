@@ -10,6 +10,12 @@ on dc35d51 itself by `tests/wb_native_chrome_fixtures.py` (see its docstring).
 That golden is PERMANENT: re-record it only on a base commit whose page output
 legitimately changed, never from a tree whose chrome handling is under review.
 
+THE ONE DOCUMENTED EXCEPTION: `/openapi.json`. Declaring the `wb-chrome` query
+parameter (spec §2.1) puts it in the OpenAPI document of the two page routes
+whatever the switch, so that one response differs from dc35d51 even when off. It
+is not in the golden; `test_openapi_is_the_one_off_difference` pins exactly what
+it gains (WORLDS §4c *Asking*, the v5 change log).
+
 The tests are numbered as the spec numbers them (N1-N16). Node tests honour
 `WB_NODE_REQUIRED=1`; the browser test (N14) skips without Chrome unless
 `WB_CHROME_BROWSER_REQUIRED=1`.
@@ -168,6 +174,21 @@ def test_the_golden_was_recorded_by_the_fixtures_on_the_base():
 @pytest.mark.parametrize("switch", [None, "0"])
 def test_off_every_chrome_request_is_byte_identical(session, switch):
     assert _matrix(session, switch, native_on=False) == []
+
+
+@pytest.mark.parametrize("switch", [None, "0", "1"])
+def test_openapi_is_the_one_off_difference(session, switch):
+    """The documented exception to "off is dc35d51 byte for byte": the OpenAPI
+    document declares the optional `wb-chrome` on the two page routes, and on
+    nothing else, whatever the switch."""
+    doc = session.get("room", "/openapi.json", {}, {}, switch).json()
+    declared = {(path, method) for path, ops in doc["paths"].items() for method, op in ops.items()
+                for prm in op.get("parameters", []) if prm["name"] == "wb-chrome"}
+    assert declared == {("/worlds/{world_id}/render", "get"),
+                        ("/worlds/{world_id}/areas/{session_id}/{area_id}/render", "get")}
+    for path, method in declared:
+        prm = next(p for p in doc["paths"][path][method]["parameters"] if p["name"] == "wb-chrome")
+        assert prm["in"] == "query" and prm.get("required") is not True
 
 
 def test_on_only_exactly_native_changes_the_page(session):
@@ -913,6 +934,41 @@ def test_deactivate_before_activate_is_still_confirmed(pages, tmp_path):
     `active:false` report -- which must come though nothing changed."""
     out = _run_node(_program(pages["room"], _DEACTIVATE_FIRST), tmp_path, "deactivate-first")
     assert out["after"] == [False]
+    assert out["wbnative"] is False and out["bridge"]["dead"] is True
+
+
+_DEACTIVATE_PENDING = r"""
+await settle();
+while (pending.state.length){ answer("state"); await settle(); }
+answer("await", {v: 1, type: "activate"}); await settle();
+while (pending.state.length){ answer("state"); await settle(); }
+EL.status.textContent = "a change"; await settle();               // a state in flight ...
+assert.strictEqual(pending.state.length, 1, "one state in flight");
+const old = pending.state.shift();                                 // ... whose reply the phone holds
+const before = of("state").length;
+answer("await", {v: 1, type: "deactivate"}); await settle();
+const atOnce = of("state").slice(before).map(s => s.active);
+// then that old reply hangs for good, is rejected, or lands late
+if (THEN === "reject") old.rej(new Error("invalid state"));
+if (THEN === "land") old.res(null);
+await settle();
+while (pending.state.length){ answer("state"); await settle(); }
+EL.status.textContent = "after"; await sleep(1200);                // past the sweep: nothing more
+console.log(JSON.stringify({atOnce, after: of("state").slice(before).map(s => s.active),
+  wbnative: body.classList.contains("wbnative"), bridge: S.chromeBridge()}));
+"""
+
+
+@pytest.mark.parametrize("then", ["hang", "reject", "land"])
+def test_deactivate_is_confirmed_at_once_whatever_reply_is_pending(pages, tmp_path, then):
+    """Codex cross-review MED-2 (886eed0). `deactivate` while a `state` reply is
+    still pending: `active:false` is posted AT ONCE, not after that reply -- a reply
+    that hangs or is rejected would otherwise lose the confirmation the phone waits
+    for on every deactivate -- and exactly once, however the old reply ends."""
+    out = _run_node(_program(pages["room"], _DEACTIVATE_PENDING.replace("THEN", json.dumps(then))),
+                    tmp_path, f"deactivate-pending-{then}")
+    assert out["atOnce"] == [False], out
+    assert out["after"] == [False], out
     assert out["wbnative"] is False and out["bridge"]["dead"] is True
 
 

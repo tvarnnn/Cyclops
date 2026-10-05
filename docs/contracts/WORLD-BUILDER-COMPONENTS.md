@@ -379,7 +379,7 @@ All `GET`, same origin, containment and rules as WORLDS §4 (`contained_world_id
 | `max_points` | int 1…200000, optional | as §4 for the surface rung (it selects the level-of-detail rung by page budget) |
 | `transport` | `app` \| `tower`, optional | as §4 |
 | `viewer` | string, optional | **accepted and ignored**, never a 422. `auto` offers the appearance rung unconditionally: the only clients that can name this route postdate the `glasses-world:` handler (IOS §10, 2026-09-17), so the old-app reason for the declaration cannot arise (OPEN M12) |
-| `wb-chrome` | `native`, optional | As WORLDS §4 and §4c (v12): the appearance page hands its chrome to the phone, only while the Tower's `TOWER_WORLD_NATIVE_CHROME` is on. Otherwise ignored, and the response is byte for byte the one without it. Never a 422 |
+| `wb-chrome` | `native`, optional | As WORLDS §4 and §4c (v12): the appearance page hands its chrome to the phone, only while the Tower's `TOWER_WORLD_NATIVE_CHROME` is on. Otherwise ignored, and the response is byte for byte the one without it. Never a 422. The one exception, as in WORLDS §4c: `/openapi.json` declares the parameter whatever the setting |
 
 `session_id` is in the path, never a query. There is no `view=diagnostics`.
 
