@@ -704,6 +704,21 @@ final class TowerWorldBuilderClient: WorldBuilderClient {
     private let photographicSubject = PassthroughSubject<WorldPhotographicReport?, Never>()
     private let recoverySubject = PassthroughSubject<WorldRecoveryReport?, Never>()
     private let lookBackBannerSubject = PassthroughSubject<WorldLookBackBanner?, Never>()
+    private let healthSubject = PassthroughSubject<CaptureHealthSample?, Never>()
+
+    var healthSamples: AnyPublisher<CaptureHealthSample?, Never> {
+        healthSubject.eraseToAnyPublisher()
+    }
+
+    /// The capture-health panel's figures stop being live the moment the
+    /// subscription that produced them is gone -- a dropped socket, a
+    /// restarted subscription, a pin -- not 5 s later when they go stale: a
+    /// link back within that window would otherwise show the old walk's
+    /// figures as current. Only a fresh report from the current live
+    /// subscription brings figures back.
+    private func invalidateHealth() {
+        healthSubject.send(nil)
+    }
     /// The geometry address carried by every snapshot that has one — the
     /// heartbeat's included.
     ///
@@ -967,6 +982,7 @@ final class TowerWorldBuilderClient: WorldBuilderClient {
             disarmSubscribeTimeout()
             firstSnapshotRetry?.cancel()
             firstSnapshotRetry = nil
+            invalidateHealth()
             // `followedWalk` deliberately survives this; see its lifetime.
             return
         }
@@ -1012,6 +1028,7 @@ final class TowerWorldBuilderClient: WorldBuilderClient {
         // state it produced, so a bracket opening in the window before that
         // snapshot arrives cannot re-publish it over the wait.
         lastReport = nil
+        invalidateHealth()
         sessionBinding = bindingWithNoReport
         state = .awaitingFirstUpdate
         tower.subscribeToResults(
@@ -1091,6 +1108,7 @@ final class TowerWorldBuilderClient: WorldBuilderClient {
         firstSnapshotRetry?.cancel()
         firstSnapshotRetry = nil
         lastReport = nil
+        invalidateHealth()
         subscribeIfPossible()
     }
 
@@ -1144,6 +1162,7 @@ final class TowerWorldBuilderClient: WorldBuilderClient {
 
         isSubscribing = false
         lastReport = nil
+        invalidateHealth()
         sessionBinding = bindingWithNoReport
         // Asked again, within the same budget `channel_failed` spends, before
         // it becomes a failure. The Tower answers a subscribe only once it
@@ -1214,6 +1233,7 @@ final class TowerWorldBuilderClient: WorldBuilderClient {
         disarmSubscribeTimeout()
         guard resubscribesUsed < Self.resubscribeBudget else {
             lastReport = nil
+            invalidateHealth()
             sessionBinding = bindingWithNoReport
             state = .failed(
                 CartridgeFailure(
@@ -1231,6 +1251,7 @@ final class TowerWorldBuilderClient: WorldBuilderClient {
         }
         resubscribesUsed += 1
         lastReport = nil
+        invalidateHealth()
         sessionBinding = bindingWithNoReport
         state = .awaitingFirstUpdate
         let attempt = subscribeAttempt
@@ -1374,6 +1395,7 @@ final class TowerWorldBuilderClient: WorldBuilderClient {
         // suggest anything was missed. Refusing costs one comparison; not
         // refusing costs a wrong answer that looks like a right one.
         guard envelope.isSnapshot else {
+            invalidateHealth()
             lastReport = nil
             sessionBinding = bindingWithNoReport
             state = .failed(
@@ -1395,6 +1417,7 @@ final class TowerWorldBuilderClient: WorldBuilderClient {
             // ownership — there is nothing to judge — so the gate is bypassed
             // and the last report is cleared rather than left to be re-judged
             // against a bracket change later.
+            invalidateHealth()
             lastReport = nil
             sessionBinding = bindingWithNoReport
             state = .failed(
@@ -1426,6 +1449,16 @@ final class TowerWorldBuilderClient: WorldBuilderClient {
             recovery: WorldBuilderResultDecoder.recovery(from: payload)
         )
         publishLastReport()
+
+        // The capture-health panel's sample (U2-D0), on every report, the
+        // heartbeat included: from the state as presented -- so a report the
+        // session gate held back says nothing -- and only while following the
+        // live walk, never a pinned saved world's figures.
+        healthSubject.send(pinned == nil
+            ? CaptureHealthSample.live(state: state, recovery: lastReport?.recovery,
+                                       worldID: lastReport?.worldID, sessionID: lastReport?.sessionID,
+                                       payload: payload)
+            : .empty)
 
         // The look-back prompt: only here, on a report the Tower just sent --
         // never on a bracket change, which re-judges an old report -- and only

@@ -19,6 +19,7 @@
 		5C0A7E500000000000000003 /* WorldComponentsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5C0A7E500000000000000004 /* WorldComponentsTests.swift */; };
 		5C0A7E500000000000000007 /* WorldChromeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5C0A7E500000000000000008 /* WorldChromeTests.swift */; };
 		5C0A7E500000000000000001 /* WorldPhotographicTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5C0A7E500000000000000002 /* WorldPhotographicTests.swift */; };
+		2D0CA9E50000000000000001 /* CaptureHealthTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2D0CA9E50000000000000002 /* CaptureHealthTests.swift */; };
 		7F2D5E31A94C0B6683DF12A4 /* ObjectMemoryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C4A17E9B0D3F42A85B61E77C /* ObjectMemoryTests.swift */; };
 		9991A422AB42B22E2459E23D /* MWDATCore in Frameworks */ = {isa = PBXBuildFile; productRef = BC6D1772D314E7BCB789B652 /* MWDATCore */; };
 		D7881F047A369AE591F64541 /* CVLabContractTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3014A1C5D2A01699D4E7404 /* CVLabContractTests.swift */; };
@@ -59,6 +60,7 @@
 		5C0A7E500000000000000004 /* WorldComponentsTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = WorldComponentsTests.swift; sourceTree = "<group>"; };
 		5C0A7E500000000000000008 /* WorldChromeTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = WorldChromeTests.swift; sourceTree = "<group>"; };
 		5C0A7E500000000000000002 /* WorldPhotographicTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = WorldPhotographicTests.swift; sourceTree = "<group>"; };
+		2D0CA9E50000000000000002 /* CaptureHealthTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = CaptureHealthTests.swift; sourceTree = "<group>"; };
 		C4A17E9B0D3F42A85B61E77C /* ObjectMemoryTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ObjectMemoryTests.swift; sourceTree = "<group>"; };
 		6A04FA35303507A5001B7C01 /* Glasses.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Glasses.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		7687C89BFB8192F1673EBEB1 /* MockTowerServer.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = MockTowerServer.swift; sourceTree = "<group>"; };
@@ -180,6 +182,7 @@
 				5C0A7E500000000000000004 /* WorldComponentsTests.swift */,
 				5C0A7E500000000000000008 /* WorldChromeTests.swift */,
 				5C0A7E500000000000000002 /* WorldPhotographicTests.swift */,
+				2D0CA9E50000000000000002 /* CaptureHealthTests.swift */,
 			);
 			path = GlassesTests;
 			sourceTree = "<group>";
@@ -383,6 +386,7 @@
 				5C0A7E500000000000000003 /* WorldComponentsTests.swift in Sources */,
 				5C0A7E500000000000000007 /* WorldChromeTests.swift in Sources */,
 				5C0A7E500000000000000001 /* WorldPhotographicTests.swift in Sources */,
+				2D0CA9E50000000000000001 /* CaptureHealthTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

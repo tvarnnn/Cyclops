@@ -654,6 +654,240 @@ final class TowerWorldBuilderClientTests: XCTestCase {
         tower.disconnect()
     }
 
+    /// U2-D0: every report feeds the capture-health panel -- the heartbeat
+    /// too, which `stateUpdates` does not announce -- with the live walk's
+    /// counter, restarts, relocalizer counts and map lag; and a report about
+    /// anything but a live walk this screen follows (finalizing, a pinned
+    /// saved world) feeds it nothing to show.
+    func testEveryReportFeedsTheCaptureHealthPanelAndOnlyTheLiveWalkHasFigures() async throws {
+        let server = try MockTowerServer()
+        let port = try await server.start()
+        serve(server)
+        defer { server.stop() }
+
+        let tower = TowerClient(metrics: SenderMetrics())
+        let client = TowerWorldBuilderClient(tower: tower)
+        var samples: [CaptureHealthSample] = []
+        // The reports' samples only; the invalidations (`nil`) are the next
+        // tests' subject.
+        let cancellable = client.healthSamples.compactMap { $0 }.sink { samples.append($0) }
+        defer { cancellable.cancel() }
+
+        func report(seq: Int, modelState: String = "receiving", keyframes: Int, restarts: Int, revision: String,
+                    changed: Bool = true, subscription: String = "sub-1") -> String {
+            Self.healthReport(seq: seq, modelState: modelState, keyframes: keyframes, restarts: restarts,
+                              revision: revision, changed: changed, subscription: subscription)
+        }
+
+        tower.connect(to: url(port: port))
+        await expect { client.state == .awaitingFirstUpdate }
+        server.send(text: report(seq: 1, keyframes: 20, restarts: 1, revision: "r1"))
+        await expect { samples.count == 1 }
+        XCTAssertEqual(samples.last, CaptureHealthSample(
+            keyframeCount: 20, trackingRestarts: 1,
+            recovery: WorldRecoveryReport(state: .recovered, episode: 2, promptsEnabled: true,
+                                          counts: WorldRecoveryCounts(recovered: 2, timedOut: 1)),
+            mapLag: WorldMapLag(builtFromKeyframes: 17, keyframesNow: 20),
+            worldID: "w1", sessionID: "s1"))
+
+        // The heartbeat: nothing changed, and the panel still hears it.
+        var states = 0
+        let stateCount = client.stateUpdates.sink { _ in states += 1 }
+        defer { stateCount.cancel() }
+        server.send(text: report(seq: 2, keyframes: 20, restarts: 1, revision: "r1", changed: false))
+        await expect { samples.count == 2 }
+        XCTAssertEqual(states, 0, "the heartbeat changed no state")
+        XCTAssertEqual(samples[1], samples[0])
+
+        // Not a live walk: nothing to show.
+        server.send(text: report(seq: 3, modelState: "finalizing", keyframes: 20, restarts: 1, revision: "r2"))
+        await expect { samples.count == 3 }
+        XCTAssertEqual(samples.last, .empty)
+
+        // A pinned saved world: never its figures as the live walk's.
+        client.inspect(worldID: "w1", sessionID: "s1")
+        await expect { client.inspection.isInspecting }
+        server.send(text: report(seq: 4, keyframes: 30, restarts: 4, revision: "r3", subscription: "sub-2"))
+        await expect { samples.count == 4 }
+        XCTAssertEqual(samples.last, .empty)
+
+        tower.disconnect()
+    }
+
+    /// A `receiving` World Builder report with every input the capture-health
+    /// panel reads: the counter, restarts, the relocalizer's counts (2 linked
+    /// back, 1 not) and a map 3 keyframes behind.
+    private static func healthReport(
+        seq: Int, modelState: String = "receiving", keyframes: Int, restarts: Int, revision: String,
+        changed: Bool = true, subscription: String = "sub-1", session: String = "s1"
+    ) -> String {
+        """
+        {"type":"cartridge_result",
+         "envelope_contract":"cartridge_results.envelope/2026-08-23",
+         "subscription_id":"\(subscription)","cartridge":"world_builder","result_type":"status",
+         "contract":"\(contract)","seq":\(seq),"revision":"\(revision)",
+         "revision_changed":\(changed),"coalesced":0,"cursor_status":null,
+         "snapshot":true,"tower_sent_at":1787463092.9,"time_basis":"tower-receipt",
+         "payload":{"model_state":"\(modelState)","model_state_reason":null,
+           "session":{"session_id":"\(session)","started_at":1787463000.0},
+           "world_snapshot":{"name":"Probe Room","world_id":"w1",
+             "keyframe_count":\(keyframes),"revision":"\(revision)",
+             "tracking":"good","scale":"relative","mapping_seconds":12.5,
+             "calibration":"calibrated",
+             "geometry":{"representation":"sparse point cloud","element_count":1360,
+                         "is_incremental":false},
+             "trajectory":{"pose_count":\(keyframes),"path_length":2.85,
+                           "path_length_unit":"world units","scale":"relative"},
+             "persistence":{"state":"saved","revision":"p1"}},
+           "geometry":{"available":true,"current":false,"built_from_keyframes":\(keyframes - 3),
+                       "keyframes_now":\(keyframes),"revision":"g1"},
+           "trajectory":{"tracking_restarts":\(restarts),"chain_breaks":0,"segments":2},
+           "tracking":{"recovery":{"state":"recovered","episode":2,"prompts_enabled":true,"prompt":null,
+             "counts":{"episodes":3,"recovered":2,"recovered_after_prompt":1,"timed_out":1,
+                       "prompts":1,"withheld_by_limiter":0,"withheld_disabled":0}}}}}
+        """
+    }
+
+    /// The panel as the operator would read it now, with the link up: what
+    /// matters below is whether the held figures still show as live.
+    private func healthRows(_ model: CaptureHealthModel) -> CaptureHealthReadout {
+        model.history.readout(now: .now, isLinked: true, isCapturing: true)
+    }
+
+    /// Every figure "—": nothing is shown as live. The map row reads "—"
+    /// too, rather than vanishing, as for an old report.
+    private func assertNoLiveFigures(_ readout: CaptureHealthReadout, _ why: String,
+                                     file: StaticString = #filePath, line: UInt = #line) {
+        XCTAssertEqual(readout.pace, "— keyframes/min", why, file: file, line: line)
+        XCTAssertEqual(readout.breaks, "Breaks in the last 30 s: —", why, file: file, line: line)
+        XCTAssertEqual(readout.lookBackCounts, "Look-back: —", why, file: file, line: line)
+        XCTAssertNil(readout.lookBackLine, why, file: file, line: line)
+        XCTAssertEqual(readout.mapLag, "Map: —", why, file: file, line: line)
+    }
+
+    /// The fresh report's figures that need no warm-up.
+    private func hasFreshFigures(_ model: CaptureHealthModel) -> Bool {
+        let rows = healthRows(model)
+        return rows.lookBackCounts == "linked back 2 · could not link 1" && rows.mapLag == "Map: 3 keyframes behind"
+    }
+
+    /// U2-D0 (review HIGH 2): the socket drops and comes back within the
+    /// panel's 5 s. The figures the old socket's subscription produced are
+    /// not live any more, so until the new subscription's first report the
+    /// panel reads "—" -- not the old walk's numbers, still young enough to
+    /// pass for current.
+    func testAfterADropAndAQuickReconnectThePanelWaitsForAFreshReport() async throws {
+        let server = try MockTowerServer()
+        let port = try await server.start()
+        let recorder = MessageRecorder()
+        serve(server, recorder: recorder)
+        defer { server.stop() }
+
+        let tower = TowerClient(metrics: SenderMetrics(), autoReconnect: true)
+        let client = TowerWorldBuilderClient(tower: tower)
+        let model = CaptureHealthModel(client: client)
+        tower.connect(to: url(port: port))
+        await expect { client.state == .awaitingFirstUpdate }
+
+        server.send(text: Self.healthReport(seq: 1, keyframes: 20, restarts: 1, revision: "r1"))
+        await expect { self.hasFreshFigures(model) }
+        let reportAt = ContinuousClock.now
+
+        server.dropConnection()
+        await expect { tower.status != .online }
+        await expect(timeout: 4) { tower.status == .online }
+        await expect(timeout: 4) {
+            recorder.all.compactMap(self.decode).filter { $0["type"] as? String == "result_subscribe" }.count == 2
+        }
+        await expect { client.state == .awaitingFirstUpdate }
+        try await Task.sleep(for: .milliseconds(100))   // the model hears on the main queue
+        XCTAssertLessThan(ContinuousClock.now - reportAt, CaptureHealthHistory.staleAfter,
+                          "the link came back while the old report was still young enough to pass for live")
+        assertNoLiveFigures(healthRows(model), "linked again, and no report on the new subscription yet")
+
+        server.send(text: Self.healthReport(seq: 1, keyframes: 21, restarts: 1, revision: "r2", subscription: "sub-1"))
+        await expect("the new subscription's first report brings the figures back") { self.hasFreshFigures(model) }
+
+        tower.disconnect()
+    }
+
+    /// U2-D0 (review HIGH 2): the Tower closes the subscription and the
+    /// client opens another on the same socket. Until that one reports, the
+    /// panel has nothing live to show.
+    func testWhenTheSubscriptionRestartsThePanelWaitsForAFreshReport() async throws {
+        let server = try MockTowerServer()
+        let port = try await server.start()
+        let recorder = MessageRecorder()
+        serve(server, recorder: recorder)
+        defer { server.stop() }
+
+        let tower = TowerClient(metrics: SenderMetrics())
+        let client = TowerWorldBuilderClient(tower: tower)
+        let model = CaptureHealthModel(client: client)
+        tower.connect(to: url(port: port))
+        await expect { client.state == .awaitingFirstUpdate }
+
+        server.send(text: Self.healthReport(seq: 1, keyframes: 20, restarts: 1, revision: "r1"))
+        await expect { self.hasFreshFigures(model) }
+
+        server.send(text: """
+            {"type":"result_error","reason":"channel_failed","message":"The result channel failed.",
+             "cartridge":"world_builder","subscription_id":"sub-1","closes_subscription":true}
+            """)
+        await expect {
+            recorder.all.compactMap(self.decode).filter { $0["type"] as? String == "result_subscribe" }.count == 2
+        }
+        try await Task.sleep(for: .milliseconds(100))
+        assertNoLiveFigures(healthRows(model), "a new subscription, and no report on it yet")
+
+        server.send(text: Self.healthReport(seq: 1, keyframes: 21, restarts: 1, revision: "r2", subscription: "sub-2"))
+        await expect("the new subscription's first report brings the figures back") { self.hasFreshFigures(model) }
+
+        tower.disconnect()
+    }
+
+    /// U2-D0 (review HIGH 2): the screen pins a saved world. The live walk's
+    /// figures are gone at once -- not when the pinned report arrives, and
+    /// never shown beside the saved world -- and they come back only with a
+    /// report on the live subscription the screen returns to.
+    func testPinningASavedWorldClearsThePanelUntilALiveReport() async throws {
+        let server = try MockTowerServer()
+        let port = try await server.start()
+        serve(server)
+        defer { server.stop() }
+
+        let tower = TowerClient(metrics: SenderMetrics())
+        let client = TowerWorldBuilderClient(tower: tower)
+        let model = CaptureHealthModel(client: client)
+        tower.connect(to: url(port: port))
+        await expect { client.state == .awaitingFirstUpdate }
+
+        server.send(text: Self.healthReport(seq: 1, keyframes: 20, restarts: 1, revision: "r1"))
+        await expect { self.hasFreshFigures(model) }
+
+        client.inspect(worldID: "w0", sessionID: "s0")
+        await expect { client.inspection.isInspecting }
+        try await Task.sleep(for: .milliseconds(100))
+        assertNoLiveFigures(healthRows(model), "pinned, before the saved world's report")
+
+        // The saved world's report is not the live walk's.
+        server.send(text: Self.healthReport(seq: 1, keyframes: 40, restarts: 3, revision: "r9",
+                                            subscription: "sub-2", session: "s0"))
+        await expect { client.state.snapshot?.keyframeCount == 40 }
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertFalse(hasFreshFigures(model), "a pinned world's figures are not the live walk's")
+
+        // Back to live: still nothing until the live subscription reports.
+        client.followLive()
+        await expect { !client.inspection.isInspecting }
+        try await Task.sleep(for: .milliseconds(100))
+        assertNoLiveFigures(healthRows(model), "back to live, before the live report")
+        server.send(text: Self.healthReport(seq: 1, keyframes: 22, restarts: 1, revision: "r3", subscription: "sub-3"))
+        await expect("the live subscription's report brings the figures back") { self.hasFreshFigures(model) }
+
+        tower.disconnect()
+    }
+
     /// The wait for `result_subscribed` is bounded, and ends in a state a
     /// person can read.
     ///

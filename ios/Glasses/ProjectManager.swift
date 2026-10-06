@@ -311,6 +311,18 @@ enum UITestHooks {
     static let subscribeAckMillisecondsVariable = "GLASSES_UITEST_SUBSCRIBE_ACK_MS"
     static let awaitingBoundSecondsVariable = "GLASSES_UITEST_AWAITING_BOUND_SECONDS"
     static let mockCameraFeedVariable = "GLASSES_UITEST_MOCK_CAMERA_FEED"
+    /// The World Builder screen without its capture-health panel (U2-D0), so
+    /// a UI test can measure what the panel moves: Stop exists only while a
+    /// capture runs, and a capture always shows the panel.
+    static let hideCaptureHealthArgument = "-UITestHideCaptureHealth"
+
+    static var hidesCaptureHealth: Bool {
+        #if DEBUG
+        ProcessInfo.processInfo.arguments.contains(hideCaptureHealthArgument)
+        #else
+        false
+        #endif
+    }
 
     /// `GLASSES_UITEST_SUBSCRIBE_ACK_MS`, for `TowerWorldBuilderClient`;
     /// `nil` (the client's own default) otherwise, and always in Release.

@@ -65,9 +65,32 @@ nonisolated struct WorldLookBackPrompt: Equatable, Sendable {
     }
 }
 
-/// `tracking.recovery` (§6.2): the relocalizer's current or last episode, and
-/// the latest prompt. Only what the phone uses is decoded; `counts`, `limiter`
-/// and `acceptance` are the Tower's audit and stay on the wire.
+/// `tracking.recovery.counts` (§6.2): this session's episodes that linked
+/// back and that could not, for the capture-health panel (U2-D0). `nil` when
+/// the block or either count is absent -- "not recorded", never 0.
+nonisolated struct WorldRecoveryCounts: Equatable, Sendable {
+    let recovered: Int
+    let timedOut: Int
+
+    init(recovered: Int, timedOut: Int) {
+        self.recovered = recovered
+        self.timedOut = timedOut
+    }
+
+    init?(json: Any?) {
+        guard
+            let json = json as? [String: Any],
+            let recovered = json["recovered"] as? Int,
+            let timedOut = json["timed_out"] as? Int
+        else { return nil }
+        self.init(recovered: recovered, timedOut: timedOut)
+    }
+}
+
+/// `tracking.recovery` (§6.2): the relocalizer's current or last episode, the
+/// latest prompt, and two of its counts. Only what the phone uses is decoded;
+/// the other counts, `limiter` and `acceptance` are the Tower's audit and stay
+/// on the wire.
 ///
 /// **Read from the payload's `tracking` block, in its own type, never folded
 /// into `world_snapshot`** (C1 M5, `WORLD-BUILDER-IOS.md` §2.4): the snapshot
@@ -78,12 +101,16 @@ nonisolated struct WorldRecoveryReport: Equatable, Sendable {
     let episode: Int
     let promptsEnabled: Bool
     let prompt: WorldLookBackPrompt?
+    /// `counts.recovered` and `counts.timed_out`, or `nil` when not sent.
+    let counts: WorldRecoveryCounts?
 
-    init(state: WorldRecoveryState, episode: Int, promptsEnabled: Bool = true, prompt: WorldLookBackPrompt? = nil) {
+    init(state: WorldRecoveryState, episode: Int, promptsEnabled: Bool = true, prompt: WorldLookBackPrompt? = nil,
+         counts: WorldRecoveryCounts? = nil) {
         self.state = state
         self.episode = episode
         self.promptsEnabled = promptsEnabled
         self.prompt = prompt
+        self.counts = counts
     }
 
     /// `nil` for `null` -- "not recorded", never "no losses" (§6.2): every
@@ -100,6 +127,7 @@ nonisolated struct WorldRecoveryReport: Equatable, Sendable {
         // are on is not a block the phone speaks for.
         self.promptsEnabled = json["prompts_enabled"] as? Bool ?? false
         self.prompt = WorldLookBackPrompt(json: json["prompt"])
+        self.counts = WorldRecoveryCounts(json: json["counts"])
     }
 
     /// The world screen's line (§8, accepted by C1), or `nil` for no episode
