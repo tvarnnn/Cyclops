@@ -480,7 +480,11 @@ final class AccessibilityAuditUITests: XCTestCase {
         XCTAssertTrue(web.waitForExistence(timeout: 120), "the page was drawn")
 
         // An area that opens: the first enabled button in the areas row.
+        // Under native chrome (U1.1) the row is in a panel, opened by Areas.
+        let areasControl = element(app, "world-chrome-areas")
         let areas = element(app, "world-render-areas")
+        _ = waitFor(timeout: 30) { areas.exists || areasControl.exists }
+        if areasControl.exists, areasControl.isHittable { areasControl.tap() }
         guard areas.waitForExistence(timeout: 30) else {
             throw XCTSkip("the fixture world has no area that opens (no areas row)")
         }

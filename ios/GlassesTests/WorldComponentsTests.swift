@@ -380,7 +380,8 @@ final class WorldAreaWhitelistTests: XCTestCase {
             "/worlds/w1/areas/s1/\(V2.bedID)/render", "/worlds/w1/areas/s2/\(V2.bathroomID)/render",
             "/worlds/w2/areas/s1/\(V2.bathroomID)/render",
             // Any query, even the room's harmless ones.
-            "\(base)/render?viewer=appearance-1", "\(base)/render/revision?session_id=s1",
+            "\(base)/render?viewer=appearance-1", "\(base)/render?wb-chrome=native",
+            "\(base)/render/revision?session_id=s1",
             "\(base)/appearance/manifest?x=1",
             // Malformed or extra.
             "\(base)/appearance/chunk/NOTHEX", "\(base)/appearance/chunk/\(digest.uppercased())",
@@ -444,14 +445,16 @@ final class WorldAreaWhitelistTests: XCTestCase {
         XCTAssertEqual(handler.sessionID, "s1", "an area viewer's session is fixed at open, never taught by the page")
     }
 
-    /// The page and the native revision poll: the area paths, with no query
-    /// at all -- no `session_id` (it is in the path) and no `viewer` (C1 M12).
+    /// The page and the native revision poll: the area paths, with no
+    /// `session_id` (it is in the path) and no `viewer` (C1 M12). The page
+    /// asks for native chrome (U1.1); the poll has no query at all.
     func testTheAreaPageAndRevisionAddresses() {
         let host = URL(string: "http://tower.invalid:8000")!
         let target = WorldRenderTarget(worldID: "w1", sessionID: "s1", areaID: V2.bathroomID)
         let page = WorldRenderClient.url(for: target, baseURL: host)
         XCTAssertEqual(page?.path, "/worlds/w1/areas/s1/\(V2.bathroomID)/render")
-        XCTAssertNil(page?.query)
+        // U1.1: the page request asks for native chrome; the revision does not.
+        XCTAssertEqual(page?.query, "wb-chrome=native")
         let revision = WorldRenderClient.revisionURL(for: target, baseURL: host)
         XCTAssertEqual(revision?.path, "/worlds/w1/areas/s1/\(V2.bathroomID)/render/revision")
         XCTAssertNil(revision?.query)

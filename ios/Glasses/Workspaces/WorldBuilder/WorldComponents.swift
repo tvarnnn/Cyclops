@@ -315,12 +315,16 @@ nonisolated enum WorldComponentsPresentation {
     /// appearance rung names the imagery and when it was captured; the surface
     /// rung names the surfaces. Both say it is not placed and not comparable,
     /// and neither claims a scale.
+    /// `rawImagery`, as for the room's caption: the imagery is known not to be
+    /// redacted, and the sentence says so.
     static func areaCaption(
-        representation: WorldRenderRepresentation?, spans spanList: [WorldCaptureSpan], levelled: Bool? = nil
+        representation: WorldRenderRepresentation?, spans spanList: [WorldCaptureSpan], levelled: Bool? = nil,
+        rawImagery: Bool = false
     ) -> String {
         let when = envelopeInProse(spanList).map { " from \($0) of this walk" } ?? " of this walk"
         let first: String
         switch representation {
+        case .appearance where rawImagery: first = "The camera's own images, not redacted,\(when)."
         case .appearance: first = "The camera's own images, faces redacted,\(when)."
         case .surface: first = "Surfaces the Tower reconstructed from the walk,\(when)."
         default: first = "What the Tower reconstructed\(when)."

@@ -49,7 +49,7 @@ final class MockTowerHTTPServer: @unchecked Sendable {
 
     /// `"GET /worlds"` (the method, then the path without its query) →
     /// the answer. Looked up before the personality.
-    private var routes: [String: (status: Int, body: String)] = [:]
+    private var routes: [String: (status: Int, body: String, headers: [String: String])] = [:]
     private var acceptsWebSocketValue = false
     private var refusesSocketsValue = false
     private var onSocketTextValue: ((String) -> Void)?
@@ -105,9 +105,10 @@ final class MockTowerHTTPServer: @unchecked Sendable {
 
     /// Answers `methodAndPath` -- `"GET /worlds"`, the path without its
     /// query -- with `status` and `body`, ahead of the personality. Setting
-    /// it again replaces the answer for the next request.
-    func setRoute(_ methodAndPath: String, status: Int, body: String) {
-        queue.sync { routes[methodAndPath] = (status, body) }
+    /// it again replaces the answer for the next request. `headers` are sent
+    /// beside the usual ones.
+    func setRoute(_ methodAndPath: String, status: Int, body: String, headers: [String: String] = [:]) {
+        queue.sync { routes[methodAndPath] = (status, body, headers) }
     }
 
     private static func statusText(_ status: Int) -> String {
@@ -222,14 +223,17 @@ final class MockTowerHTTPServer: @unchecked Sendable {
     private func respond(on connection: NWConnection, to line: String) {
         let status: Int
         let body: String
+        var extra: [String: String] = [:]
         if let route = routes[Self.methodAndPath(line)] {
-            (status, body) = route
+            (status, body, extra) = route
         } else if personality == .tower && line.hasPrefix("GET /cartridges ") {
             (status, body) = (200, Self.declaration)
         } else {
             (status, body) = (404, #"{"detail":"Not Found"}"#)
         }
+        let headerLines = extra.sorted { $0.key < $1.key }.map { "\($0.key): \($0.value)\r\n" }.joined()
         let response = "HTTP/1.1 \(status) \(Self.statusText(status))\r\nContent-Type: application/json\r\n"
+            + headerLines
             + "Content-Length: \(body.utf8.count)\r\nConnection: close\r\n\r\n\(body)"
         connection.send(content: Data(response.utf8), completion: .contentProcessed { _ in
             connection.cancel()

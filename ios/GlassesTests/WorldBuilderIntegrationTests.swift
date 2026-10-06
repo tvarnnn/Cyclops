@@ -2543,12 +2543,13 @@ final class WorldRenderViewerTests: XCTestCase {
             for: WorldRenderTarget(worldID: "w1", sessionID: "s1"), baseURL: Self.host
         )
         XCTAssertEqual(pinned?.absoluteString,
-                       "http://stub.invalid/worlds/w1/render?session_id=s1&viewer=appearance-1")
+                       "http://stub.invalid/worlds/w1/render?session_id=s1&viewer=appearance-1&wb-chrome=native")
 
         let unpinned = WorldRenderClient.url(
             for: WorldRenderTarget(worldID: "w1", sessionID: nil), baseURL: Self.host
         )
-        XCTAssertEqual(unpinned?.absoluteString, "http://stub.invalid/worlds/w1/render?viewer=appearance-1")
+        XCTAssertEqual(unpinned?.absoluteString,
+                       "http://stub.invalid/worlds/w1/render?viewer=appearance-1&wb-chrome=native")
     }
 
     /// A wire-supplied id stays one path component. A `/` inside it must not
@@ -2559,7 +2560,7 @@ final class WorldRenderViewerTests: XCTestCase {
         )
         XCTAssertEqual(url?.path, "/worlds/a/b c/render")
         XCTAssertEqual(url?.absoluteString,
-                       "http://stub.invalid/worlds/a%2Fb%20c/render?session_id=s%261&viewer=appearance-1")
+                       "http://stub.invalid/worlds/a%2Fb%20c/render?session_id=s%261&viewer=appearance-1&wb-chrome=native")
     }
 
     func testAnEmptyIdIsRefusedRatherThanAddressed() {
@@ -6029,7 +6030,9 @@ final class WorldAssetTransportTests: XCTestCase {
     /// imagery does not outlive the viewer.
     func testTheViewerWebViewKeepsNothingAndRegistersTheScheme() {
         let assets = WorldAssetSchemeHandler(worldID: "w1")
-        let configuration = WorldRenderWebView.makeConfiguration(assets: assets)
+        let bridge = WorldChromeBridge(model: WorldChromeModel(), kind: .room,
+                                       pageURL: WorldAssetScheme.pageURL(worldID: "w1"))
+        let configuration = WorldRenderWebView.makeConfiguration(assets: assets, bridge: bridge)
         XCTAssertFalse(configuration.websiteDataStore.isPersistent,
                        "nothing the page stores outlives the viewer")
         XCTAssertTrue(configuration.urlSchemeHandler(forURLScheme: WorldAssetScheme.name) === assets)

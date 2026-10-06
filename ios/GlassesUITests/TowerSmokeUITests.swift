@@ -218,7 +218,9 @@ final class TowerSmokeUITests: XCTestCase {
         let caption = app.staticTexts.containing(
             NSPredicate(format: "label CONTAINS[c] %@", "not to scale")
         ).firstMatch
-        XCTAssertTrue(tap(complete, until: caption.exists),
+        // Or the web view itself: under native chrome (U1.1) the caption
+        // line is the page's own head, drawn natively once the page speaks.
+        XCTAssertTrue(tap(complete, until: caption.exists || app.webViews.firstMatch.exists),
                       "tapping a session opens its 3D world, with no further tap")
 
         // The page arrived and the web view drew it. Asserted on the presence
@@ -248,7 +250,18 @@ final class TowerSmokeUITests: XCTestCase {
             "The camera's own images", "Surfaces the Tower reconstructed",
             "Points the Tower measured densely", "Points the Tower measured from the walk"
         )).firstMatch
-        XCTAssertTrue(rungCaption.waitForExistence(timeout: 30), "the caption read the page's rung")
+        // U1.1: under native chrome (a Tower with TOWER_WORLD_NATIVE_CHROME
+        // on) the native caption line is replaced by the page's own head
+        // line, drawn by the phone. Its words are the page's, so only its
+        // presence is asserted, by the rule above.
+        let nativeHead = app.descendants(matching: .any).matching(identifier: "world-chrome-head").firstMatch
+        let deadline = Date().addingTimeInterval(60)
+        while Date() < deadline, !rungCaption.exists, !(nativeHead.exists && !nativeHead.label.isEmpty) {
+            Thread.sleep(forTimeInterval: 0.25)
+        }
+        XCTAssertTrue(rungCaption.exists || (nativeHead.exists && !nativeHead.label.isEmpty),
+                      "the caption read the page's rung, or the page's own head is drawn natively")
+        let isNative = nativeHead.exists
         attach("3d-world")
 
         // There is always a way to ask for the world again, whatever the page
@@ -266,11 +279,14 @@ final class TowerSmokeUITests: XCTestCase {
         webView.swipeLeft()
         webView.pinch(withScale: 1.5, velocity: 1)
         attach("3d-world-after-gestures")
-        XCTAssertTrue(caption.exists)
+        XCTAssertTrue(isNative ? nativeHead.exists : caption.exists)
 
         // Details holds what used to be in the caption: the identifiers, and
         // the switch to the Tower's diagnostics rendering. Both still
         // reachable, neither in the way.
+        // Under native chrome, Details is at the end of the caption panel.
+        let toggle = app.descendants(matching: .any).matching(identifier: "world-chrome-about").firstMatch
+        if toggle.exists, toggle.isHittable { toggle.tap() }
         let details = app.buttons["Details"].firstMatch
         if reveal(details, timeout: 4, settle: 1) {
             details.tap()
