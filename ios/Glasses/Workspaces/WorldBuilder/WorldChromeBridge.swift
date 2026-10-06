@@ -63,6 +63,14 @@ final class WorldChromeModel: ObservableObject {
     /// Whether the served header said this viewer's imagery is not redacted
     /// (`X-World-Imagery`, APPEARANCE §9). Sticky, like the marker.
     @Published private(set) var rawByHeader = false
+    /// What the LATEST served `X-World-Imagery` header said: `true` not
+    /// redacted, `false` redacted, `nil` nothing yet. Not sticky -- a later
+    /// build replaces it -- so it, not `rawByHeader`, feeds the caption.
+    @Published private(set) var headerSaysRaw: Bool?
+    /// What the page's own latest hello or state said (`research.raw`, or a
+    /// marker). The page's last word stands until it speaks again, a
+    /// fallback included. Not sticky across its own later words.
+    @Published private(set) var pageSaysRaw: Bool?
     /// The screen fell back to today's chrome, for good.
     @Published private(set) var refusedForScreen = false
     /// Per frame; only `WorldChromeRing` observes it.
@@ -80,10 +88,14 @@ final class WorldChromeModel: ObservableObject {
     /// The overlay draws page-derived chrome only in this mode.
     var isDrawingNative: Bool { mode == .native && state != nil && hello != nil }
 
-    /// Whether this viewer knows its imagery is not redacted: the served
-    /// header said so, or the page raised its research marker. Sticky for the
-    /// viewer. Today's caption then makes no redaction claim.
-    var imageryIsRaw: Bool { rawByHeader || researchMarker != nil }
+    /// Whether the CURRENT build's imagery is known not to be redacted: the
+    /// latest served header, or the page's latest word, says so. Today's
+    /// caption then makes no redaction claim. Unlike the research marker this
+    /// is NOT sticky: a raw page replaced by a redacted build in the same
+    /// viewer says "faces redacted" again once the header and the page both
+    /// say redacted (Codex MED, 2026-10-05). Either source saying raw wins,
+    /// so the caption never claims a redaction one of them denies.
+    var imageryIsRaw: Bool { headerSaysRaw == true || pageSaysRaw == true }
 
     /// The research marker on today's screen (legacy geometry): after a
     /// fallback from native chrome, and whenever the served header raised it.
@@ -123,11 +135,13 @@ final class WorldChromeModel: ObservableObject {
 
     func publishHello(_ hello: WorldChromeHello) {
         self.hello = hello
+        notePage(hello.research)
         raiseResearch(fromPage: hello.research)
     }
 
     func publishState(_ state: WorldChromeState) {
         let previous = self.state
+        notePage(state.research)
         raiseResearch(fromPage: state.research)
         if previous != state { self.state = state }
         announceChanges(from: previous, to: state)
@@ -137,11 +151,22 @@ final class WorldChromeModel: ObservableObject {
         heading.publish(view)
     }
 
+    /// A served `X-World-Imagery` header, whatever it said: `redacted` is
+    /// the product; anything else is not redacted and raises the marker.
+    func noteImagery(_ imagery: String, warning: String?) {
+        if imagery == "redacted" {
+            if headerSaysRaw != false { headerSaysRaw = false }
+        } else {
+            raiseResearch(headerWarning: warning)
+        }
+    }
+
     /// The `X-World-Imagery` header said the imagery is not redacted.
     /// `warning` is `X-World-Imagery-Warning`, verbatim; iOS writes no words
     /// of its own here.
     func raiseResearch(headerWarning warning: String?) {
         if !rawByHeader { rawByHeader = true }
+        if headerSaysRaw != true { headerSaysRaw = true }
         guard !markerFromPage, researchMarker == nil, let warning, !warning.isEmpty else { return }
         researchMarker = warning
         announce(.research, warning)
@@ -154,10 +179,17 @@ final class WorldChromeModel: ObservableObject {
         markerFromPage = false
         everNative = false
         rawByHeader = false
+        headerSaysRaw = nil
+        pageSaysRaw = nil
         lastAnnounced = [:]
     }
 
     // MARK: Private
+
+    private func notePage(_ research: WorldChromeResearch) {
+        let raw = research.raw || !(research.marker ?? "").isEmpty
+        if pageSaysRaw != raw { pageSaysRaw = raw }
+    }
 
     private func raiseResearch(fromPage research: WorldChromeResearch) {
         guard let marker = research.marker, !marker.isEmpty else { return }

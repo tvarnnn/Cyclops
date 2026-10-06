@@ -996,8 +996,8 @@ final class WorldChromeTests: XCTestCase {
         XCTAssertNil(model.researchMarker)
         XCTAssertFalse(model.everNative)
 
-        // The header's source, end to end: the scheme handler reports a
-        // non-redacted imagery, and never a redacted one.
+        // The header's source, end to end: the viewer wires the scheme
+        // handler's imagery report to its chrome.
         let handler = WorldAssetSchemeHandler(worldID: "w1")
         var reported: [String?] = []
         handler.onImagery = { _, warning in reported.append(warning) }
@@ -1049,6 +1049,46 @@ final class WorldChromeTests: XCTestCase {
         model.raiseResearch(headerWarning: "The header's sentence")
         XCTAssertEqual(model.legacyResearchMarker, "The page's marker", "the header raised it; the page's words")
         bridge.receive(.teardown)
+    }
+
+    /// Codex MED (2026-10-05): a raw page replaced by a redacted build in the
+    /// same viewer. The research MARKER stays for the life of the viewer
+    /// (IOS §10), but the caption's redaction wording follows the CURRENT
+    /// page and manifest: once the served header and the page both say the
+    /// new build is redacted, the caption says "faces redacted" again.
+    func testTheCaptionFollowsTheCurrentBuildFromRawToRedacted() {
+        func served(_ imagery: String, _ warning: String? = nil) -> WorldAssetResponse {
+            WorldAssetResponse(status: 200, mimeType: "application/json", data: Data(),
+                               imagery: imagery, imageryWarning: warning)
+        }
+        let handler = WorldAssetSchemeHandler(worldID: "w1")
+        let viewer = WorldRenderViewerModel(target: WorldRenderTarget(worldID: "w1", sessionID: "s1"),
+                                            assets: handler)
+        func caption() -> String {
+            WorldRenderRepresentation.caption(for: .appearance, rawImagery: viewer.chrome.imageryIsRaw)
+        }
+        // Today's screen (no native chrome): the served header is the only
+        // source, end to end through the scheme handler.
+        handler.reportImagery(served("raw-local", "Research build: unredacted"))
+        XCTAssertTrue(caption().contains("not redacted"), caption())
+        handler.reportImagery(served("redacted"))
+        XCTAssertTrue(caption().contains("faces redacted"), "the new build is redacted: \(caption())")
+        XCTAssertEqual(viewer.chrome.researchMarker, "Research build: unredacted", "the marker is sticky")
+        XCTAssertEqual(viewer.chrome.legacyResearchMarker, "Research build: unredacted")
+        handler.reportImagery(served("raw-local", "Research build: unredacted"))
+        XCTAssertTrue(caption().contains("not redacted"), "raw again: \(caption())")
+        viewer.viewerClosed()
+
+        // Native chrome: the page's own word, then the redacted build's
+        // manifest and the page's next state.
+        let model = WorldChromeModel()
+        model.publishState(Self.decodedState(Self.stateFields(raw: true, marker: "The page's marker")))
+        XCTAssertTrue(model.imageryIsRaw)
+        model.noteImagery("redacted", warning: nil)
+        XCTAssertTrue(model.imageryIsRaw, "the page has not spoken for the new build yet")
+        model.publishState(Self.decodedState(Self.stateFields(raw: false)))
+        XCTAssertFalse(model.imageryIsRaw, "the page and the manifest both say redacted")
+        XCTAssertEqual(model.researchMarker, "The page's marker", "the marker is sticky")
     }
 
     /// Today's caption claims faces were redacted only while nothing says

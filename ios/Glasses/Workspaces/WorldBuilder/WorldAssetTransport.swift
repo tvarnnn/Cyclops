@@ -582,14 +582,17 @@ final class WorldAssetSchemeHandler: NSObject, WKURLSchemeHandler {
     /// the next `makeUIView`, and after `tearDown()`.
     private(set) var isAttached = true
 
-    /// Called whenever a proxied response says its imagery is not
-    /// `redacted` (`X-World-Imagery`, with `X-World-Imagery-Warning`): the
-    /// second source of the native chrome's research marker (U1.1, IOS §10).
-    /// The headers themselves still never reach WebKit (`responseHeaders`).
+    /// Called whenever a proxied response carries `X-World-Imagery` (with
+    /// `X-World-Imagery-Warning`), `redacted` included: the second source of
+    /// the native chrome's research marker (U1.1, IOS §10), and what keeps
+    /// the caption's redaction wording on the CURRENT build when a raw build
+    /// is replaced by a redacted one. The headers themselves still never
+    /// reach WebKit (`responseHeaders`).
     var onImagery: ((String, String?) -> Void)?
 
-    private func reportImagery(_ response: WorldAssetResponse) {
-        guard let imagery = response.imagery, !imagery.isEmpty, imagery != "redacted" else { return }
+    /// Internal, not private, so a test can drive a served header end to end.
+    func reportImagery(_ response: WorldAssetResponse) {
+        guard let imagery = response.imagery, !imagery.isEmpty else { return }
         onImagery?(imagery, response.imageryWarning)
     }
 

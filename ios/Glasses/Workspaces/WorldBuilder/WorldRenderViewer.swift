@@ -569,8 +569,9 @@ nonisolated enum WorldRenderRepresentation: String, Equatable, Sendable {
     /// Every variant keeps "not to scale" in it, because the one claim no rung
     /// can make yet is a real-world size: scale is unknown on every world.
     ///
-    /// `rawImagery`: the viewer knows this imagery is NOT redacted (the served
-    /// `X-World-Imagery` header, or the page's own research marker:
+    /// `rawImagery`: the viewer knows the CURRENT build's imagery is NOT
+    /// redacted (the latest served `X-World-Imagery` header, or the page's
+    /// latest `research` word:
     /// APPEARANCE §6.6, `raw-local-research/no-redaction`). The appearance
     /// sentence then says so instead of claiming faces were redacted.
     static func caption(for representation: WorldRenderRepresentation?, rawImagery: Bool = false) -> String {
@@ -962,7 +963,7 @@ final class WorldRenderViewerModel: ObservableObject {
             model: chrome, kind: target.isArea ? .area : .room,
             pageURL: WorldAssetScheme.pageURL(worldID: target.worldID, scope: assets.scope))
         // The second source of the research marker: the served header (§3.7).
-        assets.onImagery = { [weak chrome] _, warning in chrome?.raiseResearch(headerWarning: warning) }
+        assets.onImagery = { [weak chrome] imagery, warning in chrome?.noteImagery(imagery, warning: warning) }
         // The scene lays itself out by the chrome's mode, so it re-renders
         // when the chrome changes. The per-frame heading is a separate
         // object and does not come through here.
