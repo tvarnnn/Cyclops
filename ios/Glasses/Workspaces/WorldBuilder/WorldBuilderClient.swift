@@ -138,6 +138,20 @@ protocol WorldBuilderClient: CartridgeClient {
     /// view model was built.
     var photographicUpdates: AnyPublisher<WorldPhotographicReport?, Never> { get }
 
+    /// `lifecycle.processing` from the last report (U0.6, T-UX1; WORLDS §2b),
+    /// or `nil`: what the builder is doing between Stop and the end of its
+    /// final solve. Published beside `photographic`, for the same reason.
+    var processing: WorldProcessingReport? { get }
+    var processingUpdates: AnyPublisher<WorldProcessingReport?, Never> { get }
+
+    /// When the walk this phone followed live stopped, and whether it
+    /// settled while the app was away (U0.6 §5.3). `.unknown` with no Tower.
+    var finishClock: WorldFinishClock { get }
+    var finishClockUpdates: AnyPublisher<WorldFinishClock, Never> { get }
+
+    /// The away banner was read.
+    func dismissFinishBanner()
+
     /// The live relocalizer's episode (`tracking.recovery`) for the walk this
     /// phone is streaming, or `nil` -- never for a saved or foreign world.
     var recovery: WorldRecoveryReport? { get }
@@ -226,6 +240,22 @@ extension WorldBuilderClient {
     var photographicUpdates: AnyPublisher<WorldPhotographicReport?, Never> {
         Empty(completeImmediately: false).eraseToAnyPublisher()
     }
+
+    /// No Tower, no stage.
+    var processing: WorldProcessingReport? { nil }
+
+    var processingUpdates: AnyPublisher<WorldProcessingReport?, Never> {
+        Empty(completeImmediately: false).eraseToAnyPublisher()
+    }
+
+    /// No Tower, no followed walk.
+    var finishClock: WorldFinishClock { .unknown }
+
+    var finishClockUpdates: AnyPublisher<WorldFinishClock, Never> {
+        Empty(completeImmediately: false).eraseToAnyPublisher()
+    }
+
+    func dismissFinishBanner() {}
 
     /// No live walk, no relocalizer.
     var recovery: WorldRecoveryReport? { nil }
@@ -419,6 +449,12 @@ final class WorldBuilderViewModel: ObservableObject {
     /// The look-back banner, republished from the client.
     @Published private(set) var lookBackBanner: WorldLookBackBanner?
 
+    /// `lifecycle.processing`, republished from the client (U0.6).
+    @Published private(set) var processing: WorldProcessingReport?
+
+    /// The followed walk's stop clock and away banner, republished (U0.6).
+    @Published private(set) var finishClock: WorldFinishClock
+
     /// The world whose interactive picture can be opened, or `nil` when none
     /// has been named yet.
     ///
@@ -577,6 +613,8 @@ final class WorldBuilderViewModel: ObservableObject {
         self.photographic = client.photographic
         self.recovery = client.recovery
         self.lookBackBanner = client.lookBackBanner
+        self.processing = client.processing
+        self.finishClock = client.finishClock
         self.geometry = geometry
         self.library = library
 
@@ -652,10 +690,29 @@ final class WorldBuilderViewModel: ObservableObject {
                 self.lookBackBanner = banner
             }
             .store(in: &cancellables)
+        client.processingUpdates
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] report in
+                guard let self, self.processing != report else { return }
+                self.processing = report
+            }
+            .store(in: &cancellables)
+        client.finishClockUpdates
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] clock in
+                guard let self, self.finishClock != clock else { return }
+                self.finishClock = clock
+            }
+            .store(in: &cancellables)
         client.geometryUpdates
             .receive(on: DispatchQueue.main)
             .sink { [weak self] coordinates in self?.fetchGeometry(at: coordinates) }
             .store(in: &cancellables)
+    }
+
+    /// The away banner's OK.
+    func dismissFinishBanner() {
+        client.dismissFinishBanner()
     }
 
     /// Republish the state, and forget the gallery when the state no longer
@@ -1393,8 +1450,28 @@ final class WorldBuilderViewModel: ObservableObject {
             recoverability: recoverability,
             photographic: photographic,
             recovery: recovery,
-            lookBackBanner: lookBackBanner
+            lookBackBanner: lookBackBanner,
+            processing: processing,
+            finishLine: finishLine,
+            finishClock: finishClock
         )
+    }
+
+    /// The stage line under a finalizing world (IOS §3c).
+    var finishLine: WorldFinishLine? {
+        guard case .finalizing(_, let buildInProgress) = state else { return nil }
+        return WorldFinishLine.line(isFinalizing: true, buildInProgress: buildInProgress,
+                                    finalSolve: finalSolve, photographic: photographic, processing: processing)
+    }
+
+    /// What the 3D viewer opened from this screen is told about the wait.
+    var viewerProgress: WorldViewerProgress {
+        let p = presentation
+        return WorldViewerProgress(
+            isPreview: p.isPreview,
+            walkEnded: p.stage == .improving || p.stage == .finalizing,
+            line: p.finishLine, stoppedAt: p.stoppedAt,
+            noteSaysWalkTime: p.stage == .partial)
     }
 
     /// Why the cartridge is or is not usable, given the current connection.

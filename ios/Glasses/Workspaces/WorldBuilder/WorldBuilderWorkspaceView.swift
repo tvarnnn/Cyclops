@@ -81,11 +81,21 @@ struct WorldBuilderWorkspaceView: View {
     /// first, and Connections opens once it has (U0.8 F09).
     @State private var opensConnectionsAfterWorlds = false
 
-    /// The world whose interactive picture is up, or `nil`. Captured from
-    /// `world.renderTarget` at the tap rather than read live, so a report
-    /// that renames the live world mid-look does not swap the sheet's content
-    /// under the reader.
-    @State private var viewerTarget: WorldRenderTarget?
+    /// The panel's one viewer model and web view, and the full-screen cover
+    /// that same web view moves into (U-INLINE §3). Every room viewer this
+    /// screen opens is the host's.
+    @StateObject private var host = WorldInlineHost()
+
+    /// A Saved worlds room row pinned a world: once the sheet has gone, the
+    /// panel is scrolled into view, once (U-INLINE §2.4).
+    @State private var scrollsToPanelAfterWorlds = false
+
+    /// Whether this workspace is on screen (a cartridge switch takes it away).
+    @State private var isOnScreen = false
+
+    @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.worldPanelViewport) private var viewport
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     /// Tells the Tower this workspace is on screen, so a builder may attach
     /// to a capture. View-owned on purpose — see the type's own doc comment
@@ -163,7 +173,7 @@ struct WorldBuilderWorkspaceView: View {
                 fragments: world.fragmentsModel,
                 geometryChunks: world.geometryChunks,
                 presentation: world.presentation,
-                openReconstruction: { target in viewerTarget = target },
+                openReconstruction: { target in expand(target) },
                 askAgain: { world.askTowerAgain() },
                 goToCapture: goToCapture,
                 awaitingIsOverdue: world.awaitingIsOverdue,
@@ -175,15 +185,14 @@ struct WorldBuilderWorkspaceView: View {
 
             #if DEBUG
             captureControl
-            // Below the capture control, so it never pushes Stop down, and
-            // above the session line; only while a World Builder session is
-            // active or a capture runs (U2-D0).
-            if showsCaptureHealth {
-                CaptureHealthView(model: health, isLinked: isTowerReachable, isCapturing: isRunning)
-            }
             #else
             HelperText("Capture is not available in this build.")
             #endif
+
+            // The one World Builder panel (U-INLINE §1.1), in Capture health's
+            // slot: below the capture control, so nothing it draws can move
+            // Stop, and above the session line.
+            panel
 
             // Under the capture control in both configurations: the Tower's
             // gate applies to a Release phone's neighbour as much as to a
@@ -210,6 +219,14 @@ struct WorldBuilderWorkspaceView: View {
                 opensConnectionsAfterWorlds = false
                 recovery?.openConnections()
             }
+            if scrollsToPanelAfterWorlds {
+                scrollsToPanelAfterWorlds = false
+                // Once, and animated only without Reduce Motion. Never
+                // otherwise: at Stop the panel is already under the thumb.
+                withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.3)) {
+                    viewport.scrollTo?(Self.panelID)
+                }
+            }
         }) {
             WorldPickerView(
                 world: world,
@@ -222,28 +239,43 @@ struct WorldBuilderWorkspaceView: View {
                 onGoToCapture: {
                     world.returnToLive()
                     isShowingWorlds = false
+                },
+                // A room row pins its world and dismisses: the panel then
+                // shows it, live inline (U-INLINE §2.4, manager 209).
+                onOpenRoom: {
+                    scrollsToPanelAfterWorlds = true
+                    isShowingWorlds = false
                 }
             )
         }
-        .sheet(item: $viewerTarget) { target in
-            // The title and the note come from the same `WorldPresentation`
-            // the canvas draws, so the sheet and the screen behind it cannot
-            // describe the same world differently.
-            WorldRenderViewerView(
-                target: target,
+        // The panel's web view, moved here: no reload, the pose kept, the
+        // bridge untouched (U-INLINE §3.2). The title, the note and the
+        // notice come from the same `WorldPresentation` the canvas draws.
+        .fullScreenCover(isPresented: $host.isExpanded) {
+            WorldInlineCover(
+                host: host,
                 title: world.state.snapshot?.name,
                 note: viewerNote,
                 // The status channel's `lifecycle.finalization` is the same
                 // record as the row's; when the Tower carries the v6 notice
                 // there too, the live screen's room shows it. `nil` otherwise.
-                notice: world.finalization?.notice
+                notice: world.finalization?.notice,
+                progress: world.viewerProgress
             )
         }
+        .onChange(of: hostInputs, initial: true) { _, inputs in host.update(inputs) }
         // The World Builder cartridge session: `start` on appearance and
         // whenever the socket comes back while on screen, `stop` on
         // disappearance. Nothing else on the phone starts or stops a builder.
-        .onAppear { session.workspaceDidAppear(isTowerReachable: isTowerReachable) }
-        .onDisappear { session.workspaceDidDisappear() }
+        .onAppear {
+            isOnScreen = true
+            session.workspaceDidAppear(isTowerReachable: isTowerReachable)
+        }
+        .onDisappear {
+            // The cover over this screen is not a cartridge switch.
+            if !host.coverIsUp { isOnScreen = false }
+            session.workspaceDidDisappear()
+        }
         .onChange(of: isTowerReachable) { _, isReachable in
             session.towerReachabilityChanged(isReachable: isReachable)
         }
@@ -308,7 +340,7 @@ struct WorldBuilderWorkspaceView: View {
     // truthfully.
     private var pictureButton: some View {
         Button {
-            viewerTarget = world.renderTarget
+            if let target = world.renderTarget { expand(target) }
         } label: {
             Label("Picture", systemImage: "cube.transparent")
                 .font(.subheadline)
@@ -377,10 +409,87 @@ struct WorldBuilderWorkspaceView: View {
     }
 
     /// The ladder's note for the world the viewer is about to show, so the
-    /// sheet says the same thing the card behind it says -- including, for a
+    /// cover says the same thing the card behind it says -- including, for a
     /// saved world whose photographic build failed, that it did.
     private var viewerNote: String? {
         world.presentation.viewerNote
+    }
+
+    // MARK: The panel (U-INLINE)
+
+    static let panelID = "wb-panel"
+
+    /// Whether a capture runs on this phone. Never in Release.
+    private var isCapturingNow: Bool {
+        #if DEBUG
+        isRunning
+        #else
+        false
+        #endif
+    }
+
+    private var panelPhase: WorldPanelPhase {
+        let presentation = world.presentation
+        return WorldPanelPhase.phase(
+            isCapturing: isCapturingNow,
+            sessionActive: session.status == .active,
+            towerReachable: isTowerReachable,
+            pageLoaded: host.model?.state.html != nil,
+            state: world.state,
+            stage: presentation.stage,
+            target: presentation.reconstruction.target,
+            needsRetrySentence: presentation.recoverability?.sentence,
+            hasMap: WorldPanelMap.fixtureEnabled)
+    }
+
+    private var hostInputs: WorldInlineHost.Inputs {
+        let phase = panelPhase
+        return WorldInlineHost.Inputs(
+            target: phase.target, isReady: phase.isReady, scenePhase: scenePhase,
+            pickerShown: isShowingWorlds, isOnScreen: isOnScreen)
+    }
+
+    private var buildInProgress: Bool? {
+        if case .finalizing(_, let buildInProgress) = world.state { return buildInProgress }
+        return nil
+    }
+
+    @ViewBuilder
+    private var panel: some View {
+        WorldInlinePanel(
+            phase: panelPhase,
+            presentation: world.presentation,
+            buildInProgress: buildInProgress,
+            isTowerReachable: isTowerReachable,
+            showsHealth: showsHealthInPanel,
+            hasMap: WorldPanelMap.fixtureEnabled,
+            host: host,
+            dismissBanner: { world.dismissFinishBanner() },
+            expand: { target in expand(target) }
+        ) {
+            #if DEBUG
+            CaptureHealthView(model: health, isLinked: isTowerReachable, isCapturing: isRunning)
+            #else
+            EmptyView()
+            #endif
+        }
+        .id(Self.panelID)
+    }
+
+    private var showsHealthInPanel: Bool {
+        #if DEBUG
+        showsCaptureHealth
+        #else
+        false
+        #endif
+    }
+
+    /// Full screen: the panel's web view moves into the cover (U-INLINE
+    /// §3.2). Reduce Motion: no slide.
+    private func expand(_ target: WorldRenderTarget) {
+        var transaction = Transaction()
+        transaction.disablesAnimations = reduceMotion
+        withTransaction(transaction) { host.expand(target) }
     }
 }
 

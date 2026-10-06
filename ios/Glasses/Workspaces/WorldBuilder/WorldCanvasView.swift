@@ -479,13 +479,17 @@ struct WorldCanvasView: View {
                 Button {
                     open(target)
                 } label: {
-                    Label(presentation.reconstruction.actionTitle, systemImage: "cube.transparent")
+                    // *Open the preview* while the world is unsettled (U0.6,
+                    // WORLDS §4a rule 8): never presented as the final world.
+                    Label(presentation.openTitle, systemImage: "cube.transparent")
                         .font(.headline)
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 6)
                 }
                 .buttonStyle(.borderedProminent)
-                .accessibilityLabel("Open the 3D world")
+                .accessibilityLabel(presentation.openTitle)
+                .accessibilityInputLabels([presentation.openTitle])
+                .accessibilityIdentifier("wb-open-3d")
                 if let note = reconstructionNote {
                     Text(note)
                         .font(.footnote)

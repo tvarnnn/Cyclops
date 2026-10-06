@@ -1362,3 +1362,152 @@ private struct CoverProbe: View {
         })
     }
 }
+
+// MARK: - U-INLINE: the bridge and the chrome when the web view moves
+
+extension WorldChromeTests {
+
+    /// P4: the owner builds the web view once and MOVES it: no reload, no
+    /// second web view; a stale release is a no-op; teardown answers the
+    /// bridge and lets the web view go.
+    func testTheOwnerMovesTheViewWithoutReloading() {
+        let target = WorldRenderTarget(worldID: "w1", sessionID: "s1")
+        let assets = WorldAssetSchemeHandler(worldID: "w1", scope: WorldAssetScope.of(target))
+        let bridge = WorldChromeBridge(model: WorldChromeModel(), kind: .room, pageURL: Self.pageURL)
+        let owner = WorldWebViewOwner(target: target, assets: assets, bridge: bridge)
+        let live = WorldWebViewOwner.liveCount
+        let a = UIView(frame: CGRect(x: 0, y: 0, width: 300, height: 200))
+        let b = UIView(frame: CGRect(x: 0, y: 0, width: 400, height: 800))
+        let html = "<!doctype html><title>t</title>"
+
+        owner.adopt(into: a, html: html, attempt: 1, budget: 1, onEvent: nil)
+        let web = owner.webView
+        XCTAssertNotNil(web)
+        XCTAssertTrue(web?.superview === a)
+        XCTAssertEqual(owner.coordinator.pageLoads, 1)
+        XCTAssertEqual(WorldWebViewOwner.liveCount, live + 1)
+        XCTAssertNotNil(bridge.reloadPage, "the web view is wired to the bridge")
+
+        owner.adopt(into: b, html: html, attempt: 1, budget: 1, onEvent: nil)
+        XCTAssertTrue(owner.webView === web, "the same instance")
+        XCTAssertTrue(web?.superview === b, "moved")
+        XCTAssertEqual(web?.frame, b.bounds)
+        XCTAssertEqual(owner.coordinator.pageLoads, 1, "a move never reloads")
+        XCTAssertEqual(WorldWebViewOwner.liveCount, live + 1, "no second web view")
+
+        owner.release(from: a)
+        XCTAssertTrue(web?.superview === b, "a container that gave it away releases nothing")
+        owner.release(from: b)
+        XCTAssertNil(web?.superview)
+        owner.adopt(into: a, html: html, attempt: 1, budget: 1, onEvent: nil)
+        XCTAssertTrue(owner.webView === web)
+        XCTAssertEqual(owner.coordinator.pageLoads, 1)
+
+        owner.tearDown()
+        XCTAssertNil(owner.webView)
+        XCTAssertNil(web?.superview)
+        XCTAssertNil(web?.navigationDelegate)
+        XCTAssertNil(bridge.reloadPage, "the handler leaves with the web view")
+        XCTAssertFalse(assets.isAttached, "no scheme task is answered after teardown")
+        XCTAssertEqual(WorldWebViewOwner.liveCount, live)
+        owner.tearDown()
+        XCTAssertEqual(WorldWebViewOwner.liveCount, live, "teardown is idempotent")
+
+        // A new web view after teardown loads its page again.
+        owner.adopt(into: a, html: html, attempt: 1, budget: 1, onEvent: nil)
+        XCTAssertFalse(owner.webView === web)
+        XCTAssertEqual(owner.coordinator.pageLoads, 2)
+        owner.tearDown()
+    }
+
+    /// P5: a reparent re-runs the overlay's first-state task and the cover's
+    /// `pageFinished`; neither resets nor reactivates the session. Teardown
+    /// answers the held `await` with exactly one `close`, and nothing on the
+    /// way sends `deactivate`.
+    func testAReparentNeitherResetsNorReactivatesTheBridge() {
+        let driver = Driver()
+        driver.input(.pageWillLoad(echo: true))
+        driver.send(Self.helloBody())
+        driver.send(Self.stateBody(seq: 1, nonce: "N1"))
+        let first = driver.send(Self.awaitBody(seq: 2, nonce: "N1")).id
+        driver.input(.firstStateDrawn)
+        driver.input(.pageFinished)
+        let activations = driver.log.filter { $0 == .reply(id: first, .activate) }
+        XCTAssertEqual(activations.count, 1, "activated once: \(driver.log)")
+
+        // The web view moves: the new canvas layer and the cover say so again.
+        XCTAssertEqual(driver.input(.firstStateDrawn), [], "no second activation")
+        XCTAssertEqual(driver.input(.pageFinished), [])
+        let held = driver.send(Self.awaitBody(seq: 3, nonce: "N1"))
+        XCTAssertEqual(held.effects, [.hold(id: held.id)], "the page's next await is held")
+
+        let teardown = driver.input(.teardown)
+        let replies = teardown.filter { if case .reply = $0 { return true } else { return false } }
+        XCTAssertEqual(replies, [.reply(id: held.id, .close)], "exactly one close")
+        XCTAssertFalse(teardown.contains { if case .arm = $0 { return true } else { return false } })
+        XCTAssertFalse(driver.log.contains { $0 == .reply(id: first, .deactivate) || $0 == .reply(id: held.id, .deactivate) },
+                       "the panel never sends deactivate")
+        XCTAssertEqual(driver.input(.firstStateDrawn), [], "a torn-down session draws nothing")
+    }
+
+    /// P7: the panel reads `researchMarker` directly, so a marker raised by
+    /// a page that then fell back -- which today's screen does not show --
+    /// and a marker raised by the header alone are both on the inline world.
+    func testTheInlineMarkerShowsInEveryMode() {
+        let model = WorldChromeModel()
+        let bridge = WorldChromeBridge(model: model, kind: .room, pageURL: Self.pageURL)
+        bridge.receive(.pageWillLoad(echo: true))
+        bridge.receive(body: Self.webKit(Self.helloBody(raw: true, marker: "The page's marker")),
+                       frame: Self.frame) { _, _ in }
+        bridge.receive(.timer(.noState))
+        XCTAssertEqual(model.mode, .legacy)
+        XCTAssertFalse(model.everNative)
+        XCTAssertFalse(model.rawByHeader)
+        XCTAssertNil(model.legacyResearchMarker, "today's screen hides it (the everNative MED)")
+        XCTAssertEqual(model.researchMarker, "The page's marker", "the panel's accessor shows it")
+        bridge.receive(.teardown)
+
+        let headerOnly = WorldChromeModel()
+        headerOnly.raiseResearch(headerWarning: "Research build: unredacted")
+        XCTAssertEqual(headerOnly.mode, .legacy)
+        XCTAssertEqual(headerOnly.researchMarker, "Research build: unredacted")
+    }
+
+    /// P8: the inline canvas draws the message, the hint and the dark line,
+    /// and lists the status (shown in the panel's footer) -- by Table S's
+    /// own rules -- and nothing else, for every combination of the fields
+    /// that decide them.
+    func testTheInlineChromeDrawsOnlyItsSubset() {
+        var checked = 0
+        for drawn in [false, true] {
+            for message in [NSNull(), "Loading T"] as [Any] {
+                for dark in [false, true] {
+                    for status in [NSNull(), "loads 1"] as [Any] {
+                        for hint in [NSNull(), ["text": "Drag to look", "opacity": 0.8]] as [Any] {
+                            for failed in [false, true] {
+                                var fields = Self.stateFields(drawn: drawn, status: status, message: message, dark: dark)
+                                fields["hint"] = hint
+                                if failed { fields["phase"] = "failed" }
+                                let state = Self.decodedState(fields)
+                                let elements = WorldChromeCanvasLayer<EmptyView, EmptyView, EmptyView>
+                                    .inlineElements(state)
+                                let blocked = state.message != nil || state.phase == .failed
+                                var expected: Set<WorldChromeInlineElement> = []
+                                if state.message != nil { expected.insert(.message) }
+                                if !blocked {
+                                    if state.hint != nil { expected.insert(.hint) }
+                                    if state.drawn, state.dark { expected.insert(.dark) }
+                                    if state.status != nil { expected.insert(.status) }
+                                }
+                                XCTAssertEqual(elements, expected, "\(fields)")
+                                XCTAssertTrue(elements.isSubset(of: Set(WorldChromeInlineElement.allCases)))
+                                checked += 1
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        XCTAssertEqual(checked, 64)
+    }
+}

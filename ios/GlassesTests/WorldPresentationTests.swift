@@ -1324,7 +1324,7 @@ final class WorldPickerOpenedNoteTests: XCTestCase {
         let note = WorldPickerView.note(
             forOpened: try session(state: "receiving"), target: target,
             pinnedStage: nil, pinnedReconstruction: nil)
-        XCTAssertEqual(note, "This world is still being built, so it will change.")
+        XCTAssertEqual(note, "Preview — this world is still being built, so it will change.")
     }
 
     /// Unchanged: a settled row says only what its final-pass record denies.

@@ -704,12 +704,19 @@ final class TowerWorldBuilderClientTests: XCTestCase {
         await expect { samples.count == 3 }
         XCTAssertEqual(samples.last, .empty)
 
-        // A pinned saved world: never its figures as the live walk's.
+        // A pinned saved world: never its figures as the live walk's. Its
+        // reports say "nothing live" (`nil`, as the pin itself does), not
+        // "a live report naming no walk", which forgets the walk (final-gate
+        // review of cb865eb, LOW).
+        var invalidations = 0
+        let nils = client.healthSamples.filter { $0 == nil }.sink { _ in invalidations += 1 }
+        defer { nils.cancel() }
         client.inspect(worldID: "w1", sessionID: "s1")
         await expect { client.inspection.isInspecting }
+        let afterPin = invalidations
         server.send(text: report(seq: 4, keyframes: 30, restarts: 4, revision: "r3", subscription: "sub-2"))
-        await expect { samples.count == 4 }
-        XCTAssertEqual(samples.last, .empty)
+        await expect { invalidations == afterPin + 1 }
+        XCTAssertEqual(samples.count, 3, "no figures from a pinned world")
 
         tower.disconnect()
     }
@@ -6619,5 +6626,87 @@ final class WorldAssetTransportTests: XCTestCase {
             StubbedGeometryProtocol.requestCount(for: Self.manifestPath),
             manifestsWhileFilling + 1,
             "eight stale hits revalidate once between them, not eight times")
+    }
+}
+
+// MARK: - U0.6 I7: the stop clock and the stage, end to end
+
+extension TowerWorldBuilderClientTests {
+
+    /// A status report carrying `lifecycle` as a T-UX1 Tower sends it.
+    private static func finishReport(seq: Int, modelState: String, processing: String? = nil,
+                                     buildInProgress: Bool? = true, finalSolve: String = "pending") -> String {
+        let processingField = processing.map { #","processing":\#($0)"# } ?? ""
+        let inProgress = buildInProgress.map { $0 ? "true" : "false" } ?? "null"
+        return """
+        {"type":"cartridge_result",
+         "envelope_contract":"cartridge_results.envelope/2026-08-23",
+         "subscription_id":"sub-1","cartridge":"world_builder","result_type":"status",
+         "contract":"\(contract)","seq":\(seq),"revision":"r\(seq)",
+         "revision_changed":true,"coalesced":0,"cursor_status":null,
+         "snapshot":true,"tower_sent_at":1787463092.9,"time_basis":"tower-receipt",
+         "payload":{"model_state":"\(modelState)","model_state_reason":null,
+           "session":{"session_id":"s1","started_at":1787463000.0},
+           "world_snapshot":{"name":"Probe Room","world_id":"w1","keyframe_count":40,"revision":"r\(seq)",
+             "tracking":"good","scale":"relative","mapping_seconds":12.5,"calibration":"calibrated",
+             "geometry":{"representation":"sparse point cloud","element_count":1360,"is_incremental":false},
+             "trajectory":{"pose_count":40,"path_length":2.85,"path_length_unit":"world units","scale":"relative"},
+             "persistence":{"state":"saved","revision":"p1"}},
+           "geometry":{"available":true,"current":true,"revision":"g1"},
+           "lifecycle":{"build_in_progress":\(inProgress),
+             "finalization":{"state":"\(modelState == "finalized" ? "complete" : "pending")",
+                             "final_solve":"\(modelState == "finalized" ? "solved" : finalSolve)"}\(processingField)}}}
+        """
+    }
+
+    /// I7: receiving → finalizing + placing → (the app goes away) →
+    /// finalizing + checking 2/3 → finalized publishes `processing`, the stop
+    /// instant (the injected clock's) and the away banner.
+    func testTheStageTheStopClockAndTheAwayBannerArePublished() async throws {
+        let server = try MockTowerServer()
+        let port = try await server.start()
+        serve(server)
+        defer { server.stop() }
+
+        let stoppedAt = ContinuousClock.now
+        let activity = PassthroughSubject<Bool, Never>()
+        let tower = TowerClient(metrics: SenderMetrics())
+        let client = TowerWorldBuilderClient(tower: tower, now: { stoppedAt },
+                                             appActivity: activity.eraseToAnyPublisher())
+        let model = WorldBuilderViewModel(client: client)
+        tower.connect(to: url(port: port))
+        await expect { client.state == .awaitingFirstUpdate }
+
+        server.send(text: Self.finishReport(seq: 1, modelState: "receiving"))
+        await expect { if case .receiving = client.state { return true } else { return false } }
+        XCTAssertNil(client.finishClock.stoppedAt, "still walking")
+
+        server.send(text: Self.finishReport(seq: 2, modelState: "finalizing", processing: #"{"stage":"placing"}"#))
+        await expect("the stage is published") { client.processing?.stage == .placing }
+        XCTAssertEqual(client.finishClock.stoppedAt, stoppedAt, "the first report after receiving")
+        await expect("the view model republishes it") { model.processing?.stage == .placing }
+        await expect { model.presentation.finishLine?.text == "Placing images" }
+        XCTAssertEqual(model.presentation.stoppedAt, stoppedAt)
+
+        activity.send(false)
+        server.send(text: Self.finishReport(seq: 3, modelState: "finalizing",
+                                            processing: #"{"stage":"checking","step":{"n":2,"of":3}}"#))
+        await expect { client.processing?.step == WorldProcessingStep(n: 2, of: 3) }
+        await expect { model.presentation.finishLine?.text == "Checking the placement · pass 2 of 3" }
+        XCTAssertFalse(client.finishClock.showsAwayBanner, "not settled yet")
+
+        server.send(text: Self.finishReport(seq: 4, modelState: "finalized"))
+        await expect("settled while away: the banner") { client.finishClock.showsAwayBanner }
+        XCTAssertNil(client.processing, "the settled report carries no stage")
+        await expect { model.finishClock.showsAwayBanner }
+        XCTAssertNil(model.presentation.stoppedAt, "settled: no elapsed line")
+        model.dismissFinishBanner()
+        await expect { !client.finishClock.showsAwayBanner }
+
+        // An older Tower: no `processing`, the final pass pending, a live build.
+        server.send(text: Self.finishReport(seq: 5, modelState: "finalizing"))
+        await expect { model.presentation.finishLine?.text == "Placing and checking images" }
+
+        tower.disconnect()
     }
 }

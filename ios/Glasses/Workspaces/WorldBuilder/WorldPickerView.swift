@@ -47,19 +47,23 @@ struct WorldPickerView: View {
     /// no button.
     var onGoToCapture: (() -> Void)? = nil
 
-    /// The world whose 3D reconstruction is pushed, or `nil`.
+    /// A room or session row was opened: the presenter dismisses this sheet,
+    /// and the World Builder panel shows the pinned world live inline, a tap
+    /// from full screen (U-INLINE §2.4, manager 209). `nil` dismisses here.
+    var onOpenRoom: (() -> Void)? = nil
+
+    /// The AREA whose 3D reconstruction is pushed, or `nil`.
     ///
-    /// ## Why a tap here goes straight to the 3D world
+    /// ## Rooms pin and dismiss; areas still push
     ///
-    /// It used to pin the world and dismiss, leaving the reader on the
-    /// workspace looking at a gallery of top-down sparse point clouds captioned
-    /// with the solver's registration vocabulary. The 3D reconstruction — the
-    /// thing they opened a saved world to see — was behind a small bordered
-    /// "Picture" button in the header, two taps and a scroll away.
-    ///
-    /// So the tap pushes it. The pin still happens, so the workspace behind is
-    /// showing the same world when Close is used, and the picker stays up
-    /// underneath so a person comparing two walks does not have to reopen it.
+    /// A room tap used to push the 3D world over this list, so a reader
+    /// comparing two walks did not have to reopen it. Since U-INLINE (manager
+    /// 209) the room is pinned and the sheet goes: the panel under the
+    /// capture control shows that world, live, and Full screen is one tap.
+    /// That deliberately gives up the comparison shortcut for one web view
+    /// and one place to look. An area has no panel of its own, so it is
+    /// still pushed here; the panel's web view is torn down while this sheet
+    /// is up, so one web view still holds.
     @State private var opened: WorldRenderTarget?
     /// For an opened AREA: its number, the walk's area count and its spans,
     /// from the row it was opened from. `nil` for a room.
@@ -139,9 +143,12 @@ struct WorldPickerView: View {
                         openedArea = opening
                         opened = area
                     },
+                    // The room is the panel's now (U-INLINE §2.4): back to
+                    // the room pins it and dismisses, as a room row does.
                     backToRoom: target.isArea ? {
                         openedArea = nil
-                        opened = target.room
+                        opened = nil
+                        open(worldID: target.worldID, sessionID: target.sessionID)
                     } : nil
                 )
                 // A new identity per target, so the room's `@StateObject`
@@ -569,19 +576,14 @@ struct WorldPickerView: View {
         }
     }
 
-    /// Pin the world for the workspace behind, and push its 3D reconstruction.
-    ///
-    /// Both, in that order. The pin is what makes the workspace describe this
-    /// world when the reader comes back to it, and what starts the geometry
-    /// fetch that fills Diagnostics; the push is what they came for.
-    ///
-    /// The picker is **not** dismissed. It was, and the effect was that opening
-    /// a world dropped the reader onto a workspace showing a sparse fragment
-    /// gallery, with the 3D world still two taps away.
+    /// Pin the world for the workspace behind, and dismiss: the World
+    /// Builder panel shows it, live inline, with Full screen one tap away
+    /// (U-INLINE §2.4). The pin is what makes the workspace describe this
+    /// world and what starts the geometry fetch that fills Diagnostics.
     private func open(worldID: String, sessionID: String?) {
         world.open(worldID: worldID, sessionID: sessionID)
         openedArea = nil
-        opened = WorldRenderTarget(worldID: worldID, sessionID: sessionID)
+        if let onOpenRoom { onOpenRoom() } else { dismiss() }
     }
 
     /// Pin the walk and push one of its areas (C1 E5: "areas open directly

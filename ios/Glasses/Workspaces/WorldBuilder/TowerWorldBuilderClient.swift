@@ -5,6 +5,7 @@
 
 import Combine
 import Foundation
+import UIKit
 
 // MARK: - The contract this build implements
 
@@ -294,6 +295,14 @@ enum WorldBuilderResultDecoder {
     /// recorded", never "no losses") and for a Tower without it
     /// (`WORLD-BUILDER-COMPONENTS.md` §6.2). The third block this decoder
     /// reads beside the projection (C1 M5): a prompt is not part of the world.
+    /// `lifecycle.processing` (WORLDS §2b, T-UX1), or `nil`: absent, `null`,
+    /// or not an object naming a stage. Read beside `finalization` and
+    /// `photographic`, never projected into `world_snapshot`.
+    static func processing(from payload: [String: Any]) -> WorldProcessingReport? {
+        let lifecycle = payload["lifecycle"] as? [String: Any] ?? [:]
+        return WorldProcessingReport(json: lifecycle["processing"])
+    }
+
     static func recovery(from payload: [String: Any]) -> WorldRecoveryReport? {
         let tracking = payload["tracking"] as? [String: Any] ?? [:]
         return WorldRecoveryReport(json: tracking["recovery"])
@@ -658,6 +667,44 @@ final class TowerWorldBuilderClient: WorldBuilderClient {
         photographicSubject.eraseToAnyPublisher()
     }
 
+    /// `lifecycle.processing` from the last report, or `nil` (U0.6, T-UX1).
+    /// Stored and published for `finalization`'s reason: the stage moves
+    /// while the snapshot stands still.
+    private(set) var processing: WorldProcessingReport? {
+        didSet {
+            guard processing != oldValue else { return }
+            processingSubject.send(processing)
+        }
+    }
+
+    var processingUpdates: AnyPublisher<WorldProcessingReport?, Never> {
+        processingSubject.eraseToAnyPublisher()
+    }
+
+    /// When the walk this phone followed live stopped, and whether it
+    /// settled while the app was away (U0.6 §5.3). Memory only: a relaunch
+    /// forgets it, and the elapsed line is then hidden.
+    private(set) var finishClock: WorldFinishClock = .unknown {
+        didSet {
+            guard finishClock != oldValue else { return }
+            finishClockSubject.send(finishClock)
+        }
+    }
+
+    var finishClockUpdates: AnyPublisher<WorldFinishClock, Never> {
+        finishClockSubject.eraseToAnyPublisher()
+    }
+
+    /// The banner was read: it does not return for this walk.
+    func dismissFinishBanner() {
+        finishWatch.dismissBanner()
+        publishFinishClock()
+    }
+
+    private var finishWatch = WorldFinishWatch()
+    private var isAppActive = true
+    private let now: @Sendable () -> ContinuousClock.Instant
+
     /// The live relocalizer's episode (`tracking.recovery`), **only while this
     /// phone follows the live session it is streaming to** -- unpinned and
     /// `.bound` -- and `nil` otherwise: the world screen shows it for the walk
@@ -702,6 +749,8 @@ final class TowerWorldBuilderClient: WorldBuilderClient {
     private let recentWorldSubject = PassthroughSubject<WorldRecentReference?, Never>()
     private let finalizationSubject = PassthroughSubject<WorldFinalizationReport?, Never>()
     private let photographicSubject = PassthroughSubject<WorldPhotographicReport?, Never>()
+    private let processingSubject = PassthroughSubject<WorldProcessingReport?, Never>()
+    private let finishClockSubject = PassthroughSubject<WorldFinishClock, Never>()
     private let recoverySubject = PassthroughSubject<WorldRecoveryReport?, Never>()
     private let lookBackBannerSubject = PassthroughSubject<WorldLookBackBanner?, Never>()
     private let healthSubject = PassthroughSubject<CaptureHealthSample?, Never>()
@@ -757,6 +806,8 @@ final class TowerWorldBuilderClient: WorldBuilderClient {
         var finalization: WorldFinalizationReport?
         /// `lifecycle.photographic`, or `nil` when the Tower sent none.
         var photographic: WorldPhotographicReport? = nil
+        /// `lifecycle.processing`, or `nil` when the Tower sent none.
+        var processing: WorldProcessingReport? = nil
         /// `world_snapshot.world_id` / `session.session_id`, as decoded — the
         /// same two strings `WorldGeometryCoordinates` is addressed by.
         var worldID: String?
@@ -796,6 +847,7 @@ final class TowerWorldBuilderClient: WorldBuilderClient {
             // unchanged finalization publishes nothing.
             finalization = lastReport?.finalization
             photographic = lastReport?.photographic
+            processing = lastReport?.processing
             if lastReport == nil { recovery = nil; lookBack.dismiss() }
         }
     }
@@ -910,8 +962,13 @@ final class TowerWorldBuilderClient: WorldBuilderClient {
 
     /// `lookBackCue` is injectable so a test records the haptic; the default
     /// is `WorldHapticLookBackCue`. There is no audio in either.
-    init(tower: TowerClient, subscribeAckTimeout: Duration? = nil, lookBackCue: WorldLookBackCue? = nil) {
+    init(
+        tower: TowerClient, subscribeAckTimeout: Duration? = nil, lookBackCue: WorldLookBackCue? = nil,
+        now: @escaping @Sendable () -> ContinuousClock.Instant = { ContinuousClock.now },
+        appActivity: AnyPublisher<Bool, Never>? = nil
+    ) {
         self.tower = tower
+        self.now = now
         self.subscribeAckTimeout = subscribeAckTimeout ?? Self.defaultSubscribeAckTimeout
         self.lookBack = WorldLookBackPrompter(cue: lookBackCue ?? WorldHapticLookBackCue())
 
@@ -954,6 +1011,58 @@ final class TowerWorldBuilderClient: WorldBuilderClient {
             .store(in: &cancellables)
 
         lookBack.onChange = { [weak self] banner in self?.lookBackBanner = banner }
+
+        // The foreground banner (U0.6 §2.6): whether the followed walk was
+        // still unsettled when the app went away. No new permission, no
+        // notification: only the app's own activity.
+        (appActivity ?? Self.defaultAppActivity)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] active in self?.appActivityChanged(active) }
+            .store(in: &cancellables)
+    }
+
+    static var defaultAppActivity: AnyPublisher<Bool, Never> {
+        NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification).map { _ in true }
+            .merge(with: NotificationCenter.default.publisher(for: UIApplication.didEnterBackgroundNotification)
+                .map { _ in false })
+            .eraseToAnyPublisher()
+    }
+
+    private func appActivityChanged(_ active: Bool) {
+        isAppActive = active
+        finishWatch.app(active: active, currentWalk: pinned == nil ? presentedWalk : nil,
+                        currentStanding: finishStanding)
+        publishFinishClock()
+    }
+
+    /// The walk the presented state describes: the last report's, when the
+    /// state carries a snapshot and the report named both ids.
+    private var presentedWalk: WorldFinishWalk? {
+        guard state.snapshot != nil, let worldID = lastReport?.worldID, let sessionID = lastReport?.sessionID
+        else { return nil }
+        return WorldFinishWalk(worldID: worldID, sessionID: sessionID)
+    }
+
+    /// The presented state, for the stop clock.
+    private var finishStanding: WorldFinishWatch.Standing {
+        switch state {
+        case .receiving:
+            return .receiving
+        case .failed(let failure):
+            return failure.kind == .towerReportedFailure ? .settled : .other
+        case .unsupported, .idle, .awaitingFirstUpdate:
+            return .other
+        case .finalizing, .finalized, .interrupted:
+            guard let stage = WorldStage.stage(
+                for: state, evidence: WorldEvidence(snapshot: state.snapshot),
+                finalization: lastReport?.finalization, photographic: lastReport?.photographic)
+            else { return .other }
+            return stage.isStillChanging ? .finishing : .settled
+        }
+    }
+
+    private func publishFinishClock() {
+        finishClock = finishWatch.clock(for: presentedWalk)
     }
 
     // MARK: Availability
@@ -1456,6 +1565,7 @@ final class TowerWorldBuilderClient: WorldBuilderClient {
             selection: selection,
             finalization: WorldBuilderResultDecoder.finalization(from: payload),
             photographic: WorldBuilderResultDecoder.photographic(from: payload),
+            processing: WorldBuilderResultDecoder.processing(from: payload),
             worldID: (payload["world_snapshot"] as? [String: Any])?["world_id"] as? String,
             sessionID: session?.sessionID,
             recentWorld: selection.isHistoryOfferedAsLive
@@ -1469,11 +1579,15 @@ final class TowerWorldBuilderClient: WorldBuilderClient {
         // heartbeat included: from the state as presented -- so a report the
         // session gate held back says nothing -- and only while following the
         // live walk, never a pinned saved world's figures.
+        // A pinned report is not a report about the live walk at all: it is
+        // sent as "nothing live" (`nil`, as for a pin), not as a live report
+        // that names no walk -- which, since the final-gate review of cb865eb
+        // (LOW), forgets the walk heard before.
         healthSubject.send(pinned == nil
             ? CaptureHealthSample.live(state: state, recovery: lastReport?.recovery,
                                        worldID: lastReport?.worldID, sessionID: lastReport?.sessionID,
                                        payload: payload)
-            : .empty)
+            : nil)
 
         // The look-back prompt: only here, on a report the Tower just sent --
         // never on a bracket change, which re-judges an old report -- and only
@@ -1486,6 +1600,12 @@ final class TowerWorldBuilderClient: WorldBuilderClient {
             worldID: lastReport?.worldID,
             sessionID: lastReport?.sessionID
         )
+
+        // The stop clock and the away banner (U0.6 §5.3): only here, on a
+        // report the Tower just sent, never on a bracket re-judge.
+        finishWatch.report(walk: presentedWalk, following: pinned == nil, standing: finishStanding,
+                           appActive: isAppActive, now: now())
+        publishFinishClock()
 
         // Sent whether or not the state changed, and whether or not the
         // geometry did. See `geometryUpdates` for why this one is not filtered
@@ -1586,6 +1706,7 @@ final class TowerWorldBuilderClient: WorldBuilderClient {
             recovery = nil
             lookBack.dismiss()
             state = WorldSessionGate.presented(.idle, binding: binding)
+            publishFinishClock()
             return
         }
         recentWorld = nil
@@ -1623,6 +1744,8 @@ final class TowerWorldBuilderClient: WorldBuilderClient {
         // unchanged snapshot to refresh the fields excluded from the revision
         // hash — from invalidating the view tree for nothing.
         state = WorldSessionGate.presented(report.state, binding: binding)
+        // Which walk the screen presents may have changed (a pin, a gate).
+        publishFinishClock()
     }
 
     /// One line per **change**, which at the channel's ~2 Hz ceiling and with

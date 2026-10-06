@@ -156,6 +156,10 @@ nonisolated struct WorldRenderRevision: Equatable, Sendable {
     /// `revision`: an area finishing never swaps the room page. The room
     /// screen uses it to keep its areas row current.
     var components: WorldComponents? = nil
+    /// What the picture §4 would serve now was built from (WORLDS §4a
+    /// `basis`, U0.6; absent with `TOWER_WORLD_PICTURE_BASIS` off). Decides
+    /// only the label, never a swap.
+    var basis: WorldPictureBasis? = nil
 }
 
 /// Fetches the viewer page over HTTP, as a string.
@@ -278,7 +282,8 @@ nonisolated struct WorldRenderClient {
             live: json["live"] as? Bool,
             appearance: (appearance?.isEmpty ?? true) ? nil : appearance,
             appearanceState: (appearanceState?.isEmpty ?? true) ? nil : appearanceState,
-            components: WorldComponents(json: json["components"])
+            components: WorldComponents(json: json["components"]),
+            basis: (json["basis"] as? String).flatMap { $0.isEmpty ? nil : WorldPictureBasis(rawValue: $0) }
         )
     }
 
@@ -752,7 +757,22 @@ nonisolated extension WorldRenderFetchError {
 /// it holds a string, not a connection, so losing it loses nothing.
 @MainActor
 final class WorldRenderViewerModel: ObservableObject {
-    @Published private(set) var state: WorldRenderViewerState = .fetching
+    @Published private(set) var state: WorldRenderViewerState = .fetching {
+        didSet {
+            // A failure view never keeps a dead web view alive (U-INLINE §3.1).
+            if case .failed = state { web.tearDown() }
+        }
+    }
+
+    /// What the picture on screen is known to be built from (U0.6, IOS §3c):
+    /// the label never runs ahead of the picture.
+    @Published private(set) var basisOnScreen: WorldPictureBasisOnScreen = .unknown
+    /// When the revision route first said `basis: "final"`, until it stops.
+    private var finalBasisSince: Date?
+    /// The last `basis` the revision route said.
+    private var polledBasis: WorldPictureBasis?
+    /// When the page on screen was FETCHED (not re-rendered).
+    private var pageFetchedAt: Date?
 
     /// The world, the session and which rendering was asked for. A `let`: this
     /// screen shows one page.
@@ -889,7 +909,7 @@ final class WorldRenderViewerModel: ObservableObject {
     /// -- returns to it instead of to a failure. `wasLive` is whether the
     /// Tower said the build being swapped IN was live, so a refusal can be
     /// told apart from one of a finished build (`refusedWhileLive`).
-    private var fallback: (html: String, revision: String?, wasLive: Bool)?
+    private var fallback: (html: String, revision: String?, wasLive: Bool, fetchedAt: Date?)?
 
     /// A newer build of the SAME rung, waiting for the reader to ask for it.
     ///
@@ -946,6 +966,10 @@ final class WorldRenderViewerModel: ObservableObject {
     let bridge: WorldChromeBridge
     private var chromeChanges: AnyCancellable?
 
+    /// The one web view, which can move between the panel and the cover
+    /// without a reload (U-INLINE §3.1).
+    let web: WorldWebViewOwner
+
     /// `assets` is injectable for the same reason `client` is: the follower's
     /// one piece of evidence about the page's own recovery comes through the
     /// handler, and a test needs to be able to put it there from a stubbed
@@ -967,12 +991,15 @@ final class WorldRenderViewerModel: ObservableObject {
         self.bridge = WorldChromeBridge(
             model: chrome, kind: target.isArea ? .area : .room,
             pageURL: WorldAssetScheme.pageURL(worldID: target.worldID, scope: assets.scope))
+        self.web = WorldWebViewOwner(target: target, assets: assets, bridge: bridge)
         // The second source of the research marker: the served header (§3.7).
         assets.onImagery = { [weak chrome] imagery, warning in chrome?.noteImagery(imagery, warning: warning) }
         // The scene lays itself out by the chrome's mode, so it re-renders
         // when the chrome changes. The per-frame heading is a separate
         // object and does not come through here.
         chromeChanges = chrome.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }
+        // The label follows the manifest the page was last served (U0.6).
+        assets.onAppearanceManifest = { [weak self] in self?.recomputeBasis() }
     }
 
     /// The viewer closed. Drops the in-memory imagery and its authorisation,
@@ -981,8 +1008,56 @@ final class WorldRenderViewerModel: ObservableObject {
     /// first-person room imagery was left to ARC releasing an object graph that
     /// `WKWebView` teardown is exactly the place to linger in (review 2, M-4).
     func viewerClosed() {
+        web.tearDown()
         assets.tearDown()
         chrome.viewerClosed()
+    }
+
+    /// U0.6 (IOS §3c, WORLDS §4a rule 8): what the picture on screen is known
+    /// to be built from. The appearance page loads the final build IN PLACE,
+    /// so its label follows the manifest the handler last served it; any
+    /// other page is final only when it was fetched after the route first
+    /// said `basis: "final"`. Pure; table-tested (I9).
+    nonisolated static func basisOnScreen(polled: WorldPictureBasis?, shownRung: WorldRenderRepresentation?,
+                                          servedAppearance: WorldPictureBasis?, finalSince: Date?,
+                                          pageFetchedAt: Date?) -> WorldPictureBasisOnScreen {
+        if shownRung == .appearance {
+            switch servedAppearance {
+            case .final?: return .final
+            case .walk?: return .walk
+            default: break
+            }
+            return polled == .final ? .finalArriving : .unknown
+        }
+        switch polled {
+        case .walk?: return .walk
+        case .final?:
+            if let since = finalSince, let at = pageFetchedAt, at > since { return .final }
+            return .finalArriving
+        default: return .unknown
+        }
+    }
+
+    /// Recompute the label from what is known now. Cheap; called on every
+    /// poll, every served manifest and every fetched page.
+    func recomputeBasis() {
+        let next = Self.basisOnScreen(polled: polledBasis, shownRung: state.representation,
+                                      servedAppearance: assets.servedAppearanceBasis,
+                                      finalSince: finalBasisSince, pageFetchedAt: pageFetchedAt)
+        if next != basisOnScreen { basisOnScreen = next }
+    }
+
+    /// The route said `basis`; `at` is when.
+    func noteBasis(_ basis: WorldPictureBasis?, at now: Date = Date()) {
+        polledBasis = basis
+        finalBasisSince = basis == .final ? (finalBasisSince ?? now) : nil
+        recomputeBasis()
+    }
+
+    /// A fetched page became the page on screen.
+    private func pageFetched(at now: Date = Date()) {
+        pageFetchedAt = now
+        recomputeBasis()
     }
 
     /// Keep the areas row current from a revision the Tower sent (§3.2),
@@ -1057,6 +1132,7 @@ final class WorldRenderViewerModel: ObservableObject {
             guard !Task.isCancelled else { return }
             guard let latest else { return }
             adoptComponents(latest.components)
+            noteBasis(latest.basis)
             // A revision refused while its build was LIVE gets one more try
             // when the Tower reports that same revision FINISHED -- the
             // per-revision form of `finishedBuildRetried`, and for the same
@@ -1321,8 +1397,9 @@ final class WorldRenderViewerModel: ObservableObject {
             // revert to and took a world off the screen that had been drawing a
             // moment earlier. Reverting to the same string is not a no-op: it
             // reloads it with a fresh kill budget and offers "Try again".
-            fallback = (html: current, revision: shownRevision, wasLive: live)
+            fallback = (html: current, revision: shownRevision, wasLive: live, fetchedAt: pageFetchedAt)
             shownRevision = stamped
+            pageFetched()
             // The identity changes so an identical string is loaded again; the
             // BUDGET token does not, because nobody asked for a fresh
             // content-process-kill budget (review 2, m-1).
@@ -1351,8 +1428,9 @@ final class WorldRenderViewerModel: ObservableObject {
         pendingRevision = nil
         newerPictureAvailable = false
         renderWatchdog?.cancel()
-        fallback = (html: current, revision: shownRevision, wasLive: live)
+        fallback = (html: current, revision: shownRevision, wasLive: live, fetchedAt: pageFetchedAt)
         shownRevision = stamped
+        pageFetched()
         state = .rendering(html: html)
         startRenderWatchdog()
         return true
@@ -1381,6 +1459,8 @@ final class WorldRenderViewerModel: ObservableObject {
         }
         newerPictureRefused = true
         shownRevision = previous.revision
+        pageFetchedAt = previous.fetchedAt
+        recomputeBasis()
         // A fresh kill budget for a page that already drew once on this phone.
         renderAttempt += 1
         renderBudgetToken += 1
@@ -1462,6 +1542,7 @@ final class WorldRenderViewerModel: ObservableObject {
             // Not `.ready`. The page has arrived; nothing has drawn it yet.
             state = .rendering(html: html)
             shownRevision = state.revision
+            pageFetched()
             startRenderWatchdog()
         } catch let error as WorldRenderFetchError {
             // A dismissed sheet cancels the task mid-fetch; that is not a
@@ -1588,22 +1669,188 @@ nonisolated enum WorldRenderNavigationPolicy {
     }
 }
 
-/// A `WKWebView` that shows one page and goes nowhere.
+/// The one `WKWebView` of one viewer, and the coordinator that drives it
+/// (U-INLINE §3.1). Owned by `WorldRenderViewerModel` as `web`, beside
+/// `assets`, `chrome` and `bridge`, so the web view can MOVE between
+/// containers -- the World Builder panel and the full-screen cover -- without
+/// a reload: the WebContent process, the WebGL context, the camera pose and
+/// the chrome bridge's session all survive a reparent, and a reparent sends
+/// the page nothing.
 ///
-/// The page is the string the model fetched, served by a
-/// `WorldAssetSchemeHandler` at `glasses-world://tower/worlds/<world>/render`,
-/// in a web view with a NON-PERSISTENT website data store: nothing the page
-/// does -- its fetched imagery, storage, caches -- outlives the viewer.
+/// The web view is a NON-PERSISTENT-store `WKWebView` serving the string the
+/// model fetched at `glasses-world://tower/worlds/<world>/render`; nothing
+/// the page does outlives the viewer.
+@MainActor
+final class WorldWebViewOwner {
+    let coordinator: WorldRenderWebView.Coordinator
+    private(set) var webView: WKWebView?
+
+    #if DEBUG
+    /// Every web view any owner holds now: the panel's memory rule is "at
+    /// most one" (U-INLINE §4), and the tests count it.
+    static var liveCount = 0
+    #endif
+
+    init(target: WorldRenderTarget, assets: WorldAssetSchemeHandler, bridge: WorldChromeBridge) {
+        coordinator = WorldRenderWebView.Coordinator(target: target, assets: assets, bridge: bridge)
+    }
+
+    /// Put the web view in `container` and hand it the page. The first call
+    /// builds the web view (what `makeUIView` used to do); a later call MOVES
+    /// it (`removeFromSuperview` + `addSubview`). Either way the coordinator
+    /// is asked to load, and it skips an identical page, so a move never
+    /// reloads.
+    func adopt(into container: UIView, html: String, attempt: Int, budget: Int,
+               onEvent: (@MainActor @Sendable (WorldRenderPageEvent) -> Void)?) {
+        let webView = self.webView ?? makeWebView()
+        // Re-assigned on every adoption: the closure captures the current
+        // model, while the coordinator persists.
+        coordinator.onEvent = onEvent
+        if webView.superview !== container {
+            webView.removeFromSuperview()
+            webView.frame = container.bounds
+            webView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+            container.addSubview(webView)
+        }
+        coordinator.load(html, attempt: attempt, budget: budget, into: webView)
+    }
+
+    /// `container` is going away. The web view leaves it only if it is still
+    /// there: a container that already gave it to another one releases
+    /// nothing.
+    func release(from container: UIView) {
+        guard let webView, webView.superview === container else { return }
+        webView.removeFromSuperview()
+    }
+
+    /// The web view is going away for good: the viewer closed, the page
+    /// failed, or the panel's memory rule took it (U-INLINE §4).
+    ///
+    /// There was **no teardown hook at all** before review 2 (M-3): no
+    /// `stopLoading()`, no delegate cleared, no scheme task cancelled,
+    /// nothing dropped. The last of those is the dangerous one -- a
+    /// `WKURLSchemeTask` answered after its web view is gone raises
+    /// `NSInternalInconsistencyException`, which Swift cannot catch. The
+    /// imagery is NOT dropped here; `viewerClosed()` drops it.
+    ///
+    /// The bridge's held `await` is answered with `close` (not `deactivate`),
+    /// its timers are cancelled, and its handler leaves with the web view
+    /// (IOS §10, LOW-8). The page dies with the view, so no `state` with
+    /// `active: false` is expected or waited for.
+    func tearDown() {
+        guard let webView else { return }
+        webView.stopLoading()
+        webView.navigationDelegate = nil
+        coordinator.onEvent = nil
+        coordinator.assets.detach()
+        coordinator.bridge.receive(.teardown)
+        coordinator.bridge.reloadPage = nil
+        webView.configuration.userContentController.removeScriptMessageHandler(
+            forName: WorldChromeEcho.handlerName, contentWorld: .page)
+        webView.removeFromSuperview()
+        coordinator.forgetThePage()
+        self.webView = nil
+        #if DEBUG
+        Self.liveCount -= 1
+        #endif
+    }
+
+    private func makeWebView() -> WKWebView {
+        let configuration = WorldRenderWebView.makeConfiguration(assets: coordinator.assets,
+                                                                 bridge: coordinator.bridge)
+        let webView = WKWebView(frame: .zero, configuration: configuration)
+        webView.navigationDelegate = coordinator
+        webView.allowsBackForwardNavigationGestures = false
+        webView.allowsLinkPreview = false
+        webView.isOpaque = false
+        // The page's own background, so nothing changes colour between the
+        // loading panel, the web view before the page paints, and the page.
+        webView.backgroundColor = WorldRenderLoadingPanel.pageBackground
+        // The page draws on a canvas that owns every touch (`touch-action:
+        // none`) and sets `overflow: hidden`; the scroll view underneath it
+        // would otherwise bounce on the first drag and steal the orbit.
+        webView.scrollView.isScrollEnabled = false
+        webView.scrollView.bounces = false
+        webView.scrollView.contentInsetAdjustmentBehavior = .never
+        // A previous web view for this viewer may have been torn down; the
+        // handler is the model's and outlives both.
+        coordinator.assets.attach()
+        // A deactivation the page never confirmed reloads it once (§4c).
+        coordinator.bridge.reloadPage = { [weak coordinator, weak webView] in
+            guard let coordinator, let webView else { return }
+            coordinator.reloadForTheChrome(webView)
+        }
+        self.webView = webView
+        #if DEBUG
+        Self.liveCount += 1
+        #endif
+        return webView
+    }
+}
+
+/// The container a `WorldWebViewOwner` puts its web view in. Inline in the
+/// World Builder screen's scroll view it carries the scroll gate (U-INLINE
+/// §3.3) and, under native chrome, the tap that expands the world.
+final class WorldWebContainerView: UIView {
+    weak var owner: WorldWebViewOwner?
+    /// Whether the web view outlives this container (the panel and its
+    /// cover). A screen that owns its own viewer tears the web view down
+    /// with it, as before.
+    var hosted = false
+    private var gate: WorldInlineScrollGate?
+    private var tap: UITapGestureRecognizer?
+    private var onTap: (() -> Void)?
+
+    func configure(inline: Bool, onTap: (() -> Void)?) {
+        self.onTap = onTap
+        if inline, gate == nil {
+            let gate = WorldInlineScrollGate()
+            addGestureRecognizer(gate)
+            self.gate = gate
+            gate.enclosingScrollView = enclosingScrollView
+        } else if !inline, let gate {
+            removeGestureRecognizer(gate)
+            self.gate = nil
+        }
+        if inline, onTap != nil, tap == nil {
+            let tap = UITapGestureRecognizer(target: self, action: #selector(tapped))
+            tap.cancelsTouchesInView = false
+            tap.delaysTouchesBegan = false
+            tap.delaysTouchesEnded = false
+            addGestureRecognizer(tap)
+            self.tap = tap
+        } else if !(inline && onTap != nil), let tap {
+            removeGestureRecognizer(tap)
+            self.tap = nil
+        }
+    }
+
+    @objc private func tapped() { onTap?() }
+
+    override func didMoveToWindow() {
+        super.didMoveToWindow()
+        gate?.enclosingScrollView = enclosingScrollView
+    }
+
+    /// The nearest scroll view above this container: the screen's own.
+    private var enclosingScrollView: UIScrollView? {
+        var view = superview
+        while let current = view {
+            if let scroll = current as? UIScrollView { return scroll }
+            view = current.superview
+        }
+        return nil
+    }
+}
+
+/// The SwiftUI side of a viewer's web view: an empty container that holds
+/// the owner's `WKWebView` while `isActive` (U-INLINE §3.1). Two containers
+/// can exist for one owner -- the panel's and the cover's -- and the active
+/// one adopts the web view; a container going away only releases it, unless
+/// the screen is not hosted, where it tears it down as before.
 struct WorldRenderWebView: UIViewRepresentable {
-    /// Which world's routes the page may reach through the scheme.
-    let target: WorldRenderTarget
+    let owner: WorldWebViewOwner
     let html: String
-    /// Serves the page and proxies this world's routes. Owned by the model, so
-    /// the imagery it holds outlives this web view and dies with the viewer;
-    /// see `WorldRenderViewerModel.assets`.
-    let assets: WorldAssetSchemeHandler
-    /// The native chrome's bridge (U1.1). Owned by the model, like `assets`.
-    let bridge: WorldChromeBridge
     /// Which `load()` this page belongs to. A retry of the **same** page after
     /// a render failure carries a new number, which is what makes the reload
     /// happen at all; see `WorldRenderViewerModel.renderAttempt`.
@@ -1611,15 +1858,19 @@ struct WorldRenderWebView: UIViewRepresentable {
     /// Which content-process-kill budget this page is under. A new value is a
     /// fresh budget; see `WorldRenderViewerModel.renderBudgetToken`.
     var budgetToken: Int = 0
+    /// Whether this container holds the web view now.
+    var isActive: Bool = true
+    /// The web view outlives this container (`WorldInlineHost`).
+    var hosted: Bool = false
+    /// Inside the World Builder screen's scroll view: the scroll gate.
+    var inline: Bool = false
+    /// A tap on the inline world (native chrome only): expand.
+    var onTap: (() -> Void)? = nil
     /// What the page did. No cycle: the coordinator holds this closure, the
     /// closure holds the model, and the model holds neither.
-    ///
-    /// `@MainActor` on the closure type, matching `decidePolicyFor`'s own
-    /// handler in this file: every `WKNavigationDelegate` callback arrives on
-    /// the main thread, and the model it calls is `@MainActor`.
-    var onEvent: (@MainActor (WorldRenderPageEvent) -> Void)? = nil
+    var onEvent: (@MainActor @Sendable (WorldRenderPageEvent) -> Void)? = nil
 
-    func makeCoordinator() -> Coordinator { Coordinator(target: target, assets: assets, bridge: bridge) }
+    func makeCoordinator() -> Coordinator { owner.coordinator }
 
     /// The configuration every viewer web view is built with. Split out so
     /// the data store and the scheme registration are tested without a view.
@@ -1645,71 +1896,36 @@ struct WorldRenderWebView: UIViewRepresentable {
         return configuration
     }
 
-    func makeUIView(context: Context) -> WKWebView {
-        let configuration = Self.makeConfiguration(assets: context.coordinator.assets,
-                                                   bridge: context.coordinator.bridge)
-        let webView = WKWebView(frame: .zero, configuration: configuration)
-        webView.navigationDelegate = context.coordinator
-        webView.allowsBackForwardNavigationGestures = false
-        webView.allowsLinkPreview = false
-        webView.isOpaque = false
-        // The page's own background, so nothing changes colour between the
-        // loading panel, the web view before the page paints, and the page.
-        webView.backgroundColor = WorldRenderLoadingPanel.pageBackground
-        // The page draws on a canvas that owns every touch (`touch-action:
-        // none`) and sets `overflow: hidden`; the scroll view underneath it
-        // would otherwise bounce on the first drag and steal the orbit.
-        webView.scrollView.isScrollEnabled = false
-        webView.scrollView.bounces = false
-        webView.scrollView.contentInsetAdjustmentBehavior = .never
-        // Assigned before the load, so an event from a page that fails
-        // immediately still has somewhere to go.
-        context.coordinator.onEvent = onEvent
-        // A previous web view for this viewer may have been dismantled; the
-        // handler is the model's and outlives both.
-        assets.attach()
-        // A deactivation the page never confirmed reloads it once (§4c).
-        context.coordinator.bridge.reloadPage = { [weak coordinator = context.coordinator, weak webView] in
-            guard let coordinator, let webView else { return }
-            coordinator.reloadForTheChrome(webView)
+    func makeUIView(context: Context) -> WorldWebContainerView {
+        let container = WorldWebContainerView()
+        container.backgroundColor = WorldRenderLoadingPanel.pageBackground
+        container.owner = owner
+        update(container)
+        return container
+    }
+
+    func updateUIView(_ container: WorldWebContainerView, context: Context) {
+        update(container)
+    }
+
+    private func update(_ container: WorldWebContainerView) {
+        container.owner = owner
+        container.hosted = hosted
+        container.configure(inline: inline, onTap: onTap)
+        guard isActive else { return }
+        owner.adopt(into: container, html: html, attempt: attempt, budget: budgetToken, onEvent: onEvent)
+    }
+
+    /// The container is going away. Hosted: the web view only leaves it (the
+    /// other container, or the host, decides its fate). Not hosted: the
+    /// screen that owned it is gone, and so is the web view.
+    static func dismantleUIView(_ container: WorldWebContainerView, coordinator: Coordinator) {
+        guard let owner = container.owner else { return }
+        if container.hosted {
+            owner.release(from: container)
+        } else {
+            owner.tearDown()
         }
-        context.coordinator.load(html, attempt: attempt, budget: budgetToken, into: webView)
-        return webView
-    }
-
-    func updateUIView(_ webView: WKWebView, context: Context) {
-        // Re-assigned on every update: this struct is rebuilt on every parent
-        // render and the closure it carries captures the current model, while
-        // the coordinator persists across all of them.
-        context.coordinator.onEvent = onEvent
-        context.coordinator.load(html, attempt: attempt, budget: budgetToken, into: webView)
-    }
-
-    /// The web view is going away. There was **no teardown hook at all** before
-    /// review 2 (M-3): no `stopLoading()`, no delegate cleared, no scheme task
-    /// cancelled, nothing dropped. The last of those is the dangerous one --
-    /// a `WKURLSchemeTask` answered after its web view is gone raises
-    /// `NSInternalInconsistencyException`, which Swift cannot catch -- and it
-    /// composes with the page's own worst case: the page has no fetch timeout,
-    /// so a task the handler silently dropped left the page waiting forever on
-    /// "Restoring…" (page review, P-1). Both ends are fixed; this is the end
-    /// the app owns.
-    ///
-    /// `static`, as `UIViewRepresentable` requires. The imagery is NOT dropped
-    /// here: the viewer may be about to build another web view (a "Try again",
-    /// a rung swap), and the copy belongs to the viewer. `viewerClosed()` drops
-    /// it.
-    static func dismantleUIView(_ webView: WKWebView, coordinator: Coordinator) {
-        webView.stopLoading()
-        webView.navigationDelegate = nil
-        coordinator.onEvent = nil
-        coordinator.assets.detach()
-        // U1.1: the held `await` is answered (`close`) before its page goes,
-        // and the handler leaves with the web view (IOS §10, LOW-8).
-        coordinator.bridge.receive(.teardown)
-        coordinator.bridge.reloadPage = nil
-        webView.configuration.userContentController.removeScriptMessageHandler(
-            forName: WorldChromeEcho.handlerName, contentWorld: .page)
     }
 
     final class Coordinator: NSObject, WKNavigationDelegate {
@@ -1791,6 +2007,19 @@ struct WorldRenderWebView: UIViewRepresentable {
             times.filter { now.timeIntervalSince($0) < window }
         }
 
+        /// How many times this coordinator has loaded a page into a web view.
+        /// A reparent must not change it (U-INLINE P4).
+        private(set) var pageLoads = 0
+
+        /// The web view went away (`WorldWebViewOwner.tearDown`): the next one
+        /// loads its page whatever was on the last.
+        func forgetThePage() {
+            loaded = nil
+            loadedAttempt = nil
+            loadedBudgetToken = nil
+            hasDecidedInitialLoad = false
+        }
+
         func load(_ html: String, attempt: Int, budget: Int, into webView: WKWebView) {
             guard loaded != html || loadedAttempt != attempt else { return }
             loaded = html
@@ -1840,6 +2069,7 @@ struct WorldRenderWebView: UIViewRepresentable {
             }
             assets.pageHTML = html
             assets.sessionID = session
+            pageLoads += 1
             webView.load(URLRequest(url: pageURL))
         }
 
@@ -2013,77 +2243,6 @@ struct WorldRenderWebView: UIViewRepresentable {
 
 // MARK: - The 3D world on screen
 
-/// The sheet form: a navigation stack of its own, and a Close that dismisses
-/// it. Presented from the World Builder workspace, which has no stack to push
-/// onto.
-///
-/// Split from `WorldRenderScene` because the saved-worlds picker **pushes** the
-/// same screen onto its own `NavigationStack`, and a `NavigationStack` nested
-/// inside another one breaks the back gesture, the title and the toolbar. The
-/// scene owns the model and the content; this owns the presentation.
-struct WorldRenderViewerView: View {
-    @Environment(\.dismiss) private var dismiss
-
-    private let target: WorldRenderTarget
-    private let title: String?
-    private let note: String?
-    /// The walk's `finalization.notice`, for the room (v6).
-    private let notice: String?
-    private let client: WorldRenderClient
-
-    init(
-        target: WorldRenderTarget,
-        title: String? = nil,
-        note: String? = nil,
-        notice: String? = nil,
-        client: WorldRenderClient = WorldRenderClient()
-    ) {
-        self.target = target
-        self.title = title
-        self.note = note
-        self.notice = notice
-        self.client = client
-    }
-
-    /// What the sheet shows now: the room it was opened for, or one of its
-    /// areas. Opening an area REPLACES the room's scene -- its own model, web
-    /// view and WebGL context go with it -- and *Back to the room* replaces it
-    /// again (`WORLD-BUILDER-COMPONENTS.md` §5.5, C1 E5). Never both at once.
-    @State private var shown: WorldRenderTarget?
-    @State private var shownArea: WorldAreaOpening?
-
-    var body: some View {
-        let current = shown ?? target
-        NavigationStack {
-            WorldRenderScene(
-                target: current,
-                title: current.isArea ? nil : title,
-                note: current.isArea ? nil : note,
-                client: client,
-                notice: current.isArea ? nil : notice,
-                area: current.isArea ? shownArea : nil,
-                openArea: { area, opening in
-                    shownArea = opening
-                    shown = area
-                },
-                backToRoom: current.isArea ? {
-                    shownArea = nil
-                    shown = target.room
-                } : nil
-            )
-            // A new identity per target: SwiftUI builds a new scene (and a new
-            // `@StateObject` model) rather than handing the room's model the
-            // area's target.
-            .id(current.id)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Close") { dismiss() }
-                }
-            }
-        }
-    }
-}
-
 /// The 3D world itself, without a stack around it. **The primary way a saved
 /// world is seen.**
 ///
@@ -2110,6 +2269,18 @@ struct WorldRenderViewerView: View {
 /// that are true of both of the Tower's renderings.
 struct WorldRenderScene: View {
     @StateObject private var model: WorldRenderViewerModel
+
+    /// Hosted by `WorldInlineHost` (U-INLINE §3.1): the host runs the model's
+    /// lifecycle and decides when it closes, so this screen does neither.
+    private let hosted: Bool
+    /// Whether this screen's container holds the web view now. Always for a
+    /// screen of its own; for the cover, once it has appeared.
+    private let webIsActive: Bool
+    /// What the workspace says about the wait (U0.6), or `nil` (an area).
+    private let progress: WorldViewerProgress?
+    /// This screen showed a preview at some point, so a settled world is
+    /// worth a word about whether the final picture is on screen yet.
+    @State private var openedOnPreview = false
 
     /// What to call this world on screen: the Tower's display name, or a dated
     /// title from the picker. `nil` falls back to "Saved world" — never to the
@@ -2207,10 +2378,14 @@ struct WorldRenderScene: View {
         notice: String? = nil,
         area: WorldAreaOpening? = nil,
         openArea: ((WorldRenderTarget, WorldAreaOpening) -> Void)? = nil,
-        backToRoom: (() -> Void)? = nil
+        backToRoom: (() -> Void)? = nil,
+        progress: WorldViewerProgress? = nil
     ) {
         _model = StateObject(wrappedValue: WorldRenderViewerModel(
             target: target, client: client, components: components))
+        self.hosted = false
+        self.webIsActive = true
+        self.progress = target.isArea ? nil : progress
         self.title = title
         self.note = note
         // Guarded (G1-F3): machine output never reaches the wearer verbatim.
@@ -2218,6 +2393,30 @@ struct WorldRenderScene: View {
         self.area = area
         self.openArea = openArea
         self.backToRoom = backToRoom
+    }
+
+    /// The screen over a model the World Builder panel's host owns (U-INLINE
+    /// §3.2): the same web view, moved here from the panel.
+    init(
+        model: WorldRenderViewerModel,
+        hosted: Bool,
+        webIsActive: Bool,
+        title: String? = nil,
+        note: String? = nil,
+        notice: String? = nil,
+        progress: WorldViewerProgress? = nil,
+        openArea: ((WorldRenderTarget, WorldAreaOpening) -> Void)? = nil
+    ) {
+        _model = StateObject(wrappedValue: model)
+        self.hosted = hosted
+        self.webIsActive = webIsActive
+        self.progress = model.target.isArea ? nil : progress
+        self.title = title
+        self.note = note
+        self.notice = model.target.isArea ? nil : WorldNoticeGuard.displayText(notice)
+        self.area = nil
+        self.openArea = openArea
+        self.backToRoom = nil
     }
 
     /// The area's header, or the host's title, or "Saved world".
@@ -2233,7 +2432,8 @@ struct WorldRenderScene: View {
                 // U1.1: the research marker (when raised), then one row. The
                 // web view below is exactly the strip between this and the bar.
                 WorldChromeTopBand(
-                    chrome: model.chrome, isArea: model.target.isArea, note: note, notice: notice,
+                    chrome: model.chrome, isArea: model.target.isArea, note: note,
+                    progress: progressLines(style: .band), notice: notice,
                     showsAreas: !(model.components?.areas.isEmpty ?? true),
                     wordsCap: captionShare.map { screenHeight * $0 } ?? 0,
                     backToRoom: model.target.isArea ? backToRoom : nil,
@@ -2304,9 +2504,15 @@ struct WorldRenderScene: View {
         // the same world is a second screen, and the page's own button switches
         // in place without fetching at all.
         .task {
+            // A hosted model's lifecycle is the host's (U-INLINE §3.1).
+            guard !hosted else { return }
             await model.load()
             await model.refreshComponents()
             await model.followRevisions()
+        }
+        .onAppear { if progress?.isPreview == true { openedOnPreview = true } }
+        .onChange(of: progress?.isPreview) { _, isPreview in
+            if isPreview == true { openedOnPreview = true }
         }
         .onChange(of: model.state.isFetching) { _, isFetching in
             if isFetching { waitingSince = .now }
@@ -2316,7 +2522,7 @@ struct WorldRenderScene: View {
         }
         // `PRIVACY.md` §3.6: in-memory reuse within one open viewer is fine;
         // drop it when the viewer closes. Nothing did (review 2, M-4).
-        .onDisappear { model.viewerClosed() }
+        .onDisappear { if !hosted { model.viewerClosed() } }
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
                 // ## Why there is always a way to ask again
@@ -2341,6 +2547,32 @@ struct WorldRenderScene: View {
         }
     }
 
+    /// U0.6 (IOS §3c): under the ladder's note, the live stage line and the
+    /// elapsed line while the world is a preview, then what the picture on
+    /// screen is known to be. `nil` when there is nothing to say.
+    private func progressLines(style: WorldFinishLineView.Style) -> AnyView? {
+        let finish = progress.map { $0.isPreview } ?? false
+        let settle = WorldPreviewCopy.settleLine(
+            isPreview: progress?.isPreview ?? false, walkEnded: progress?.walkEnded ?? false,
+            openedOnPreview: openedOnPreview, basisOnScreen: model.basisOnScreen,
+            noteSaysWalkTime: progress?.noteSaysWalkTime ?? false)
+        guard finish || settle != nil else { return nil }
+        return AnyView(VStack(alignment: .leading, spacing: 2) {
+            if let progress, progress.isPreview {
+                WorldFinishLineView(showsSpinner: false, line: progress.line, stoppedAt: progress.stoppedAt,
+                                    style: style)
+            }
+            if let settle {
+                Text(settle)
+                    .font(.caption)
+                    .foregroundStyle(style == .band ? AnyShapeStyle(WorldChromeStyle.secondary)
+                                                    : AnyShapeStyle(.readableSecondary))
+                    .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityIdentifier("world-render-settle-line")
+            }
+        })
+    }
+
     private var caption: some View {
         VStack(alignment: .leading, spacing: 2) {
             if let note {
@@ -2349,6 +2581,7 @@ struct WorldRenderScene: View {
                     .foregroundStyle(.readableSecondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
+            if let lines = progressLines(style: .viewer) { lines }
             // Follows the page. "Not a surface" was load-bearing while every
             // page was points; the Tower can now serve a surface, and a caption
             // that denies what is on screen is as wrong as one that overclaims.
@@ -2527,8 +2760,9 @@ struct WorldRenderScene: View {
     @ViewBuilder
     private var content: some View {
         if let html = model.state.html {
-            WorldRenderWebView(target: model.target, html: html, assets: model.assets, bridge: model.bridge,
+            WorldRenderWebView(owner: model.web, html: html,
                                attempt: model.renderAttempt, budgetToken: model.renderBudgetToken,
+                               isActive: webIsActive, hosted: hosted,
                                onEvent: model.pageEvent)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 // U1.1: the native chrome over the canvas. It never resizes

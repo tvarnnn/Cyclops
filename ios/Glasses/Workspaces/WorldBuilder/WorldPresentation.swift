@@ -746,6 +746,13 @@ struct WorldPresentation: Equatable {
     var recovery: WorldRecoveryReport?
     /// The look-back banner, under the same rule as `recovery`.
     var lookBackBanner: WorldLookBackBanner?
+    /// `lifecycle.processing` (U0.6, T-UX1), or `nil`.
+    var processing: WorldProcessingReport?
+    /// The stage line under a finalizing world (IOS §3c), built by the view
+    /// model from `state`; `nil` otherwise.
+    var finishLine: WorldFinishLine?
+    /// The followed walk's stop clock and away banner.
+    var finishClock: WorldFinishClock
 
     init(
         stage: WorldStage? = nil,
@@ -758,7 +765,10 @@ struct WorldPresentation: Equatable {
         recoverability: WorldRecoverability? = nil,
         photographic: WorldPhotographicReport? = nil,
         recovery: WorldRecoveryReport? = nil,
-        lookBackBanner: WorldLookBackBanner? = nil
+        lookBackBanner: WorldLookBackBanner? = nil,
+        processing: WorldProcessingReport? = nil,
+        finishLine: WorldFinishLine? = nil,
+        finishClock: WorldFinishClock = .unknown
     ) {
         self.stage = stage
         self.evidence = evidence
@@ -769,7 +779,20 @@ struct WorldPresentation: Equatable {
         self.photographic = photographic
         self.recovery = recovery
         self.lookBackBanner = lookBackBanner
+        self.processing = processing
+        self.finishLine = finishLine
+        self.finishClock = finishClock
     }
+
+    /// The picture this world can open is a PREVIEW (WORLDS §4a rule 8): the
+    /// world is not settled. Never presented as the final world.
+    var isPreview: Bool { stage?.isStillChanging == true && reconstruction.target != nil }
+
+    /// What the open control says: *Open the preview* for a preview.
+    var openTitle: String { isPreview ? WorldPreviewCopy.openPreview : reconstruction.actionTitle }
+
+    /// When the followed walk stopped, only while the world is unsettled.
+    var stoppedAt: ContinuousClock.Instant? { stage?.isStillChanging == true ? finishClock.stoppedAt : nil }
 
     /// Whether this is a saved world whose photographic build failed: the one
     /// case `WORLD-BUILDER-IOS.md` §3a says is worth new copy. Only over
@@ -961,7 +984,7 @@ enum WorldReconstruction: Equatable {
             // and be wrong about one of them.
             return .final(target)
         case .mapping, .building:
-            return .partial(target, note: "This world is still being built, so it will change.")
+            return .partial(target, note: WorldPreviewCopy.labelled("This world is still being built, so it will change."))
         case .improving:
             // NOT "it will change" — that reads as polish, and this is not
             // polish. The final solve is what MAKES the world: on the
@@ -994,14 +1017,12 @@ enum WorldReconstruction: Equatable {
             // unobservable one may be waiting for nothing. They get the
             // sentence that is true of them.
             if let unfinished = Self.unfinishedPhotographicNote(photographic) {
-                return .partial(target, note: unfinished)
+                return .partial(target, note: WorldPreviewCopy.labelled(unfinished))
             }
-            return .partial(
-                target,
-                note: "This world is still being finished. After a long walk, "
-                    + "finishing can take twenty minutes or more, and the finished "
-                    + "world is very different from this one — it is worth waiting for Saved."
-            )
+            // U0.6: a PREVIEW, and no duration: the elapsed line under the
+            // stage word replaces "twenty minutes or more", and nothing on
+            // the phone promises how long the rest takes.
+            return .partial(target, note: WorldPreviewCopy.building)
         case .finalizing:
             // SPLIT FROM `.improving`, AND THE DIFFERENCE IS WHETHER
             // ANYTHING IS ACTUALLY RUNNING.
@@ -1044,19 +1065,19 @@ enum WorldReconstruction: Equatable {
             // drawable geometry). "The final pass has not landed" was false
             // there (Mac gate B0, F2); the photographic sentence is not.
             if let unfinished = Self.unfinishedPhotographicNote(photographic) {
-                return .partial(target, note: unfinished)
+                return .partial(target, note: WorldPreviewCopy.labelled(unfinished))
             }
             if photographic?.standing == .building {
                 return .partial(
                     target,
-                    note: WorldPhotographicCopy.buildingSentence + " "
-                        + WorldPhotographicCopy.finishedLooksDifferent
+                    note: WorldPreviewCopy.labelled(WorldPhotographicCopy.buildingSentence + " "
+                        + WorldPhotographicCopy.finishedLooksDifferent)
                 )
             }
             return .partial(
                 target,
-                note: "The final pass has not landed for this world, and the "
-                    + "finished version is very different from this one."
+                note: WorldPreviewCopy.labelled("The final pass has not landed for this world, and the "
+                    + "finished version is very different from this one.")
             )
         case .partial:
             // NOT `finalSolve.sentence`. The canvas draws that sentence on

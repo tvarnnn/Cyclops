@@ -166,6 +166,9 @@ struct WorldChromeTopBand: View {
     @ObservedObject var chrome: WorldChromeModel
     let isArea: Bool
     let note: String?
+    /// U0.6 (lead override 2026-10-05): the live stage line, the elapsed
+    /// line and the settle line sit in this band, directly under the note.
+    var progress: AnyView? = nil
     let notice: String?
     let showsAreas: Bool
     /// The most the words may take before they scroll; 0 is no cap.
@@ -253,6 +256,9 @@ struct WorldChromeTopBand: View {
                     .foregroundStyle(WorldChromeStyle.secondary)
                     .fixedSize(horizontal: false, vertical: true)
                     .accessibilitySortPriority(90)
+            }
+            if let progress {
+                progress.accessibilitySortPriority(89.5)
             }
             if wordsCap > 0 {
                 // The accessibility sizes: the words already scroll in a
@@ -460,6 +466,19 @@ struct WorldChromeBar: View {
 
 // MARK: - Over the canvas
 
+/// Where the canvas layer is drawn: the full-screen viewer, or the World
+/// Builder panel's small inline world (U-INLINE §3.4).
+enum WorldChromePresentation: Equatable {
+    case full, inline
+}
+
+/// What the inline canvas may show. Everything else -- the top band, the
+/// bar, the ring, the chevron, the position, the caption and areas panels
+/// and the offer banner -- is in the full screen only.
+enum WorldChromeInlineElement: Hashable, CaseIterable {
+    case message, hint, dark, status
+}
+
 /// Everything the phone draws over the web view. Hit testing is only on
 /// content: empty space passes touches to the page's canvas. None of it
 /// resizes the web view.
@@ -471,23 +490,45 @@ struct WorldChromeCanvasLayer<Banner: View, AreasPanel: View, Details: View>: Vi
     @ViewBuilder let banner: () -> Banner
     @ViewBuilder let areas: () -> AreasPanel
     @ViewBuilder let details: () -> Details
+    /// `.inline`: only `inlineElements`, and the status goes to the panel's
+    /// footer.
+    var presentation: WorldChromePresentation = .full
 
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
+    /// What the inline canvas draws for `state` (U-INLINE §3.4). Pure; a
+    /// subset of `WorldChromeInlineElement` for every state (P8). The status
+    /// is listed because the panel shows it, in its footer.
+    static func inlineElements(_ state: WorldChromeState) -> Set<WorldChromeInlineElement> {
+        var elements: Set<WorldChromeInlineElement> = []
+        if state.message != nil { elements.insert(.message) }
+        guard !isBlocked(state) else { return elements }
+        if state.hint != nil { elements.insert(.hint) }
+        if isFull(state), state.dark { elements.insert(.dark) }
+        if state.status != nil { elements.insert(.status) }
+        return elements
+    }
+
     var body: some View {
         GeometryReader { geometry in
             ZStack(alignment: .topLeading) {
-                if chrome.isDrawingNative, let state = chrome.state, let labels = chrome.hello?.labels {
+                if presentation == .inline {
+                    if chrome.isDrawingNative, let state = chrome.state, let labels = chrome.hello?.labels {
+                        inlineDrawn(state, labels)
+                    }
+                } else if chrome.isDrawingNative, let state = chrome.state, let labels = chrome.hello?.labels {
                     drawn(state, labels, canvas: geometry.size)
                 }
-                banner()
-                    .padding(8)
-                    .frame(maxWidth: .infinity, alignment: .topLeading)
-                    .accessibilityElement(children: .contain)
-                    .accessibilitySortPriority(80)
-                if chrome.isDrawingNative, let state = chrome.state, let labels = chrome.hello?.labels,
-                   Self.isFull(state), let panel {
+                if presentation == .full {
+                    banner()
+                        .padding(8)
+                        .frame(maxWidth: .infinity, alignment: .topLeading)
+                        .accessibilityElement(children: .contain)
+                        .accessibilitySortPriority(80)
+                }
+                if presentation == .full, chrome.isDrawingNative, let state = chrome.state,
+                   let labels = chrome.hello?.labels, Self.isFull(state), let panel {
                     panelView(panel, state, labels, canvas: geometry.size)
                 }
             }
@@ -557,6 +598,51 @@ struct WorldChromeCanvasLayer<Banner: View, AreasPanel: View, Details: View>: Vi
                     if full, let walk = state.walk {
                         WorldChromePosition(walk: walk)
                     }
+                }
+            }
+            .padding(8)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+    }
+
+    /// The inline subset: the message, the hint and the dark line, nothing
+    /// else. Hit testing only on content, as in full.
+    @ViewBuilder
+    private func inlineDrawn(_ state: WorldChromeState, _ labels: WorldChromeLabels) -> some View {
+        let elements = Self.inlineElements(state)
+        if elements.contains(.message), let message = state.message {
+            WorldChromeMessageView(message: message)
+        }
+        if elements.contains(.hint) || elements.contains(.dark) {
+            VStack(spacing: 6) {
+                Spacer(minLength: 0)
+                if elements.contains(.dark) {
+                    Button { if state.buttons.face { onAction(.face) } } label: {
+                        Text(verbatim: labels.darkTitle)
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(WorldChromeStyle.text)
+                            .multilineTextAlignment(.center)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .padding(.horizontal, 10)
+                            .frame(minHeight: 44)
+                            .background(RoundedRectangle(cornerRadius: 8).fill(WorldChromeStyle.pill))
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(!state.buttons.face)
+                    .dynamicTypeSize(...DynamicTypeSize.accessibility1)
+                    .accessibilityLabel(Text(verbatim: labels.darkName))
+                    .accessibilityShowsLargeContentViewer { Text(verbatim: labels.darkTitle + "\n" + labels.darkTap) }
+                    .accessibilitySortPriority(60)
+                    .accessibilityIdentifier("world-chrome-dark")
+                }
+                if elements.contains(.hint), let hint = state.hint {
+                    WorldChromePill(text: hint.text, font: .caption, colour: WorldChromeStyle.text)
+                        .opacity(max(0.4, hint.opacity))
+                        .multilineTextAlignment(.center)
+                        .dynamicTypeSize(...DynamicTypeSize.accessibility2)
+                        .accessibilitySortPriority(55)
+                        .accessibilityIdentifier("world-chrome-hint")
                 }
             }
             .padding(8)

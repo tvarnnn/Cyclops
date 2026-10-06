@@ -116,8 +116,13 @@ struct ContentView: View {
     /// is too much to hold there for good, so it scrolls with the content.
     private var isStatusPinned: Bool { !dynamicTypeSize.isAccessibilitySize }
 
+    /// The root scroll view's visible height, for the World Builder panel's
+    /// stage (U-INLINE §1.1, B). Written only when it moved by half a point.
+    @State private var visibleHeight: CGFloat = 0
+
     var body: some View {
         NavigationStack {
+            ScrollViewReader { proxy in
             ScrollView {
                 VStack(spacing: 16) {
                     if !isStatusPinned {
@@ -129,6 +134,15 @@ struct ContentView: View {
                 .padding(.horizontal, 16)
                 .padding(.bottom, 24)
             }
+            .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { height in
+                if MeasuredHeight.moved(from: visibleHeight, to: height) { visibleHeight = height }
+            }
+            // The World Builder panel: how tall the screen is, and how to
+            // bring the panel into view after a Saved worlds pin (U-INLINE
+            // §2.4). The proxy reaches the workspace only through here.
+            .environment(\.worldPanelViewport, WorldPanelViewport(
+                visibleHeight: visibleHeight,
+                scrollTo: { id in proxy.scrollTo(id, anchor: .top) }))
             .background(Color(.systemGroupedBackground))
             .scrollBounceBehavior(.basedOnSize)
             // Connect and Settings for every "Not connected" panel in the
@@ -166,6 +180,7 @@ struct ContentView: View {
                 glasses: project.glassesConnection,
                 openConnections: { destination = .connections }
             ))
+            }
         }
         // The app's only automatic side effect, in the one place it belongs.
         // `startAutomaticConnections()` is itself idempotent, so a re-run of

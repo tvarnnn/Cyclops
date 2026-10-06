@@ -449,6 +449,11 @@ nonisolated struct WorldAssetMemory: Sendable {
     private(set) var bytes = 0
     /// When the Tower last served this session's manifest.
     private(set) var authorizedAt: Date?
+    /// What the last manifest handed to the PAGE says it was built from
+    /// (U0.6: `quality`, APPEARANCE §7). The label follows the manifest the
+    /// page loaded, not the page revision, which does not move at Stop
+    /// (WORLDS §4a rule 8). `nil` before one, and after `drop()`.
+    private(set) var servedBasis: WorldPictureBasis?
 
     enum Decision: Equatable, Sendable {
         /// Answer from memory, now.
@@ -471,12 +476,15 @@ nonisolated struct WorldAssetMemory: Sendable {
         return isAuthorized(at: now) ? .serve(hit) : .revalidate
     }
 
-    /// Learn from what the Tower answered.
-    mutating func record(_ asset: WorldAssetRequest, _ response: WorldAssetResponse, now: Date) {
+    /// Learn from what the Tower answered. `toPage`: the answer is handed to
+    /// the page (not the handler's own revalidation).
+    mutating func record(_ asset: WorldAssetRequest, _ response: WorldAssetResponse, now: Date,
+                         toPage: Bool = true) {
         switch asset {
         case .appearanceManifest:
             if response.status == 200 {
                 authorizedAt = now
+                if toPage { servedBasis = WorldPictureBasis.ofAppearanceManifest(response.data) }
             } else {
                 drop()
             }
@@ -499,6 +507,7 @@ nonisolated struct WorldAssetMemory: Sendable {
         entries = [:]
         bytes = 0
         authorizedAt = nil
+        servedBasis = nil
     }
 }
 
@@ -577,6 +586,15 @@ final class WorldAssetSchemeHandler: NSObject, WKURLSchemeHandler {
     /// revision poll does NOT come through here, so this timestamp is the
     /// page's and nobody else's. Read by `WorldRenderViewerModel` (M-2).
     var servedAppearanceToPageAt: Date? { memory.authorizedAt }
+
+    /// What the last manifest the page was served says it was built from
+    /// (U0.6), or `nil`. Read by `WorldRenderViewerModel.basisOnScreen`.
+    var servedAppearanceBasis: WorldPictureBasis? { memory.servedBasis }
+
+    /// Called after a manifest answer is handed to the page, so the label
+    /// is recomputed whenever a manifest is served (lead override
+    /// 2026-10-05), not only on the next revision poll.
+    var onAppearanceManifest: (() -> Void)?
 
     /// Whether a web view is attached. `false` between `dismantleUIView` and
     /// the next `makeUIView`, and after `tearDown()`.
@@ -703,7 +721,7 @@ final class WorldAssetSchemeHandler: NSObject, WKURLSchemeHandler {
             guard let manifest = try? await self.client.fetch(
                 .appearanceManifest, worldID: self.worldID, sessionID: sessionID, scope: self.scope)
             else { return }
-            self.memory.record(.appearanceManifest, manifest, now: self.clock())
+            self.memory.record(.appearanceManifest, manifest, now: self.clock(), toPage: false)
         }
         revalidating = task
         await task.value
@@ -765,6 +783,7 @@ final class WorldAssetSchemeHandler: NSObject, WKURLSchemeHandler {
                 self.reportImagery(response)
                 self.respond(urlSchemeTask, status: response.status, mimeType: response.mimeType,
                              data: response.data)
+                if asset == .appearanceManifest { self.onAppearanceManifest?() }
             case .failure(let error):
                 urlSchemeTask.didFailWithError(error)
             }

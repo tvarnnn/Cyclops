@@ -54,10 +54,8 @@ private enum PhotoWalk {
 
     static let solved = WorldFinalizationReport(state: .complete, finalSolve: "solved")
 
-    /// The improving note as it has always read.
-    static let liveImprovingNote = "This world is still being finished. After a long walk, "
-        + "finishing can take twenty minutes or more, and the finished "
-        + "world is very different from this one — it is worth waiting for Saved."
+    /// The improving note: a PREVIEW since U0.6, with no duration in it.
+    static let liveImprovingNote = WorldPreviewCopy.building
 }
 
 // MARK: - Decoding
@@ -316,9 +314,9 @@ final class WorldPhotographicLadderTests: XCTestCase {
             XCTAssertFalse(text.contains("worth waiting for Saved"), "\(word): \(text)")
             XCTAssertTrue(text.contains(WorldPhotographicCopy.finishedLooksDifferent), "\(word): \(text)")
         }
-        XCTAssertTrue(note(.improving, PhotoWalk.report("owed"))?.hasPrefix(WorldPhotographicCopy.owedSentence) == true)
+        XCTAssertTrue(note(.improving, PhotoWalk.report("owed"))?.hasPrefix(WorldPreviewCopy.labelled(WorldPhotographicCopy.owedSentence)) == true)
         XCTAssertTrue(note(.improving, PhotoWalk.report("unobservable"))?.hasPrefix(
-            WorldPhotographicCopy.unobservableSentence) == true)
+            WorldPreviewCopy.labelled(WorldPhotographicCopy.unobservableSentence)) == true)
     }
 
     /// "The final pass has not landed" was false over owed work (B0 F2): the
@@ -434,14 +432,14 @@ final class WorldPhotographicListingTests: XCTestCase {
             pinnedStage: nil, pinnedReconstruction: nil)
         XCTAssertNotNil(note)
         XCTAssertFalse(note?.contains("worth waiting for Saved") ?? true, note ?? "")
-        XCTAssertTrue(note?.hasPrefix(WorldPhotographicCopy.owedSentence) == true, note ?? "")
+        XCTAssertTrue(note?.hasPrefix(WorldPreviewCopy.labelled(WorldPhotographicCopy.owedSentence)) == true, note ?? "")
     }
 
     func testAnUnobservableFinishingRowSaysTheTowerCouldNotTell() throws {
         let note = WorldPickerView.note(
             forOpened: try row(state: "finalizing", photographic: "unobservable"), target: target,
             pinnedStage: nil, pinnedReconstruction: nil)
-        XCTAssertTrue(note?.hasPrefix(WorldPhotographicCopy.unobservableSentence) == true, note ?? "")
+        XCTAssertTrue(note?.hasPrefix(WorldPreviewCopy.labelled(WorldPhotographicCopy.unobservableSentence)) == true, note ?? "")
     }
 
     /// A live build, or an older Tower whose `finalizing` really was a held
@@ -600,7 +598,7 @@ final class WorldPhotographicTowerFixtureTests: XCTestCase {
         XCTAssertEqual(canvas, WorldPhotographicCopy.owedSentence)
         XCTAssertFalse(canvas.contains("does not report whether a build is running"))
         let viewer = try XCTUnwrap(presentation.viewerNote)
-        XCTAssertTrue(viewer.hasPrefix(WorldPhotographicCopy.owedSentence), viewer)
+        XCTAssertTrue(viewer.hasPrefix(WorldPreviewCopy.labelled(WorldPhotographicCopy.owedSentence)), viewer)
         XCTAssertFalse(viewer.contains("final pass has not landed"), viewer)
         XCTAssertFalse(viewer.contains("worth waiting for Saved"), viewer)
     }
@@ -646,7 +644,7 @@ final class WorldPhotographicTowerFixtureTests: XCTestCase {
         let owed = try row("w2")
         XCTAssertEqual(WorldListingPresentation.stateBadge(for: owed), "Finishing")
         XCTAssertNil(WorldListingPresentation.photographicCaption(for: owed))
-        XCTAssertTrue(note(owed)?.hasPrefix(WorldPhotographicCopy.owedSentence) == true, note(owed) ?? "")
+        XCTAssertTrue(note(owed)?.hasPrefix(WorldPreviewCopy.labelled(WorldPhotographicCopy.owedSentence)) == true, note(owed) ?? "")
 
         let failed = try row("w3")
         XCTAssertEqual(WorldListingPresentation.stateBadge(for: failed), "Photographic failed")
