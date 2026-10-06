@@ -68,8 +68,9 @@ final class WorldChromeModel: ObservableObject {
     /// build replaces it -- so it, not `rawByHeader`, feeds the caption.
     @Published private(set) var headerSaysRaw: Bool?
     /// What the page's own latest hello or state said (`research.raw`, or a
-    /// marker). The page's last word stands until it speaks again, a
-    /// fallback included. Not sticky across its own later words.
+    /// marker). The page's last word stands until it speaks again; a new
+    /// page or a fallback to today's chrome forgets it (`setMode`). Not
+    /// sticky across its own later words.
     @Published private(set) var pageSaysRaw: Bool?
     /// The screen fell back to today's chrome, for good.
     @Published private(set) var refusedForScreen = false
@@ -95,7 +96,19 @@ final class WorldChromeModel: ObservableObject {
     /// viewer says "faces redacted" again once the header and the page both
     /// say redacted (Codex MED, 2026-10-05). Either source saying raw wins,
     /// so the caption never claims a redaction one of them denies.
-    var imageryIsRaw: Bool { headerSaysRaw == true || pageSaysRaw == true }
+    var imageryIsRaw: Bool { imageryRaw == true }
+
+    /// What this viewer knows about the CURRENT build's redaction, for the
+    /// caption: `true` not redacted (either source says so -- raw wins),
+    /// `false` redacted (a source says so and none says raw), `nil` when
+    /// neither the served header nor the page has spoken. `nil` is worded as
+    /// unknown, never as a redaction claim (final-gate review of cb865eb,
+    /// LOW).
+    var imageryRaw: Bool? {
+        if headerSaysRaw == true || pageSaysRaw == true { return true }
+        if headerSaysRaw == false || pageSaysRaw == false { return false }
+        return nil
+    }
 
     /// The research marker on today's screen (legacy geometry): after a
     /// fallback from native chrome, and whenever the served header raised it.
@@ -117,6 +130,13 @@ final class WorldChromeModel: ObservableObject {
             hello = nil
             state = nil
             heading.publish(nil)
+            // The page's word was about the page it came from, under the
+            // protocol it spoke. A new page has not spoken yet, and after a
+            // fallback the screen no longer listens to it: its last `raw`
+            // must not keep the caption off the redaction the served header
+            // reports (final-gate review of cb865eb, LOW). The research
+            // MARKER is sticky and stays.
+            if pageSaysRaw != nil { pageSaysRaw = nil }
         }
         if self.mode != mode { self.mode = mode }
         guard mode == .native else { return }

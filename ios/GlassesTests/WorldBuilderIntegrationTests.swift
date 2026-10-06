@@ -899,6 +899,14 @@ final class TowerWorldBuilderClientTests: XCTestCase {
         XCTAssertEqual(subscribes(), 4, "no fifth subscription")
         assertNoLiveFigures(healthRows(model), "the subscription that produced them is closed for good")
 
+        // Final-gate review of cb865eb (LOW): a heartbeat the Tower had
+        // already queued for the closed subscription is dropped, not applied.
+        server.send(text: Self.healthReport(seq: 2, keyframes: 30, restarts: 1, revision: "r9",
+                                            subscription: "sub-4"))
+        try await Task.sleep(for: .milliseconds(400))
+        if case .failed = client.state {} else { XCTFail("the closed subscription's envelope revived the screen") }
+        assertNoLiveFigures(healthRows(model), "a queued envelope for the closed subscription")
+
         tower.disconnect()
     }
 
@@ -924,6 +932,12 @@ final class TowerWorldBuilderClientTests: XCTestCase {
         }
         XCTAssertEqual(tower.status, .online)
         assertNoLiveFigures(healthRows(model), "the subscription that produced them is gone")
+
+        // Final-gate review of cb865eb (LOW): the closed id is retired, so a
+        // heartbeat already queued for it does not bring its figures back.
+        server.send(text: Self.healthReport(seq: 2, keyframes: 21, restarts: 1, revision: "r2"))
+        try await Task.sleep(for: .milliseconds(400))
+        XCTAssertFalse(hasFreshFigures(model), "an envelope for the closed subscription is dropped")
 
         tower.disconnect()
     }

@@ -223,6 +223,30 @@ final class CaptureHealthTests: XCTestCase {
         XCTAssertFalse(readout(history, 6).lookBackShown, "another walk, no recovery yet")
     }
 
+    /// Final-gate review of cb865eb (LOW): a report that names no walk is
+    /// about no walk. The walk heard before -- which carried recovery -- is
+    /// not retained for it, so the row is not shown for an unnamed report,
+    /// and the same walk named again starts afresh until it carries recovery.
+    func testAnUnnamedReportDoesNotKeepTheLastWalksLookBackRow() {
+        var history = CaptureHealthHistory()
+        let report = WorldRecoveryReport(state: .recovered, episode: 1,
+                                         counts: WorldRecoveryCounts(recovered: 1, timedOut: 0))
+        history.record(sample(keyframes: 2, recovery: report), at: at(0))
+        XCTAssertTrue(readout(history, 0).lookBackShown, "fixture: the walk carried recovery")
+        history.record(sample(keyframes: 3, world: nil, session: nil), at: at(2))
+        XCTAssertNil(history.walk, "no walk is named")
+        XCTAssertFalse(readout(history, 2).lookBackShown, "an unnamed report has no look-back row")
+        history.record(sample(keyframes: 3, session: nil), at: at(3))
+        XCTAssertFalse(readout(history, 3).lookBackShown, "half a name is no name")
+        history.record(sample(keyframes: 4), at: at(4))
+        XCTAssertFalse(readout(history, 4).lookBackShown, "named again: afresh, no recovery carried yet")
+        history.record(sample(keyframes: 5, recovery: report), at: at(6))
+        XCTAssertTrue(readout(history, 6).lookBackShown)
+        // A dropped link is not the Tower speaking: the row survives it.
+        history.invalidate()
+        XCTAssertTrue(readout(history, 7).lookBackShown)
+    }
+
     /// A walk with recovery whose figures then go stale, lose the link, or
     /// are invalidated: the row stays and reads "—". Hiding never stands in
     /// for staleness.

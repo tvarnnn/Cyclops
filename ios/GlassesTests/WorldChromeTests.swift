@@ -1045,10 +1045,63 @@ final class WorldChromeTests: XCTestCase {
         XCTAssertEqual(model.mode, .legacy)
         XCTAssertFalse(model.everNative)
         XCTAssertNil(model.legacyResearchMarker, "the page never activated: its own marker is on it")
-        XCTAssertTrue(model.imageryIsRaw, "the page said its imagery is not redacted")
+        XCTAssertNil(model.imageryRaw, "after the fallback the page's word is forgotten; nobody else has spoken")
+        XCTAssertEqual(model.researchMarker, "The page's marker", "the marker itself is sticky")
         model.raiseResearch(headerWarning: "The header's sentence")
+        XCTAssertTrue(model.imageryIsRaw, "the header says not redacted")
         XCTAssertEqual(model.legacyResearchMarker, "The page's marker", "the header raised it; the page's words")
         bridge.receive(.teardown)
+    }
+
+    /// Final-gate review of cb865eb (LOW): the page said `raw`, then the
+    /// screen fell back to today's chrome. The page's word must not stay true
+    /// after that: when the served header then says the imagery IS redacted,
+    /// the caption says "faces redacted", not "not redacted".
+    func testThePagesRawWordDoesNotOutliveAFallback() {
+        let model = WorldChromeModel()
+        let bridge = WorldChromeBridge(model: model, kind: .room, pageURL: Self.pageURL)
+        bridge.receive(.pageWillLoad(echo: true))
+        bridge.receive(body: Self.webKit(Self.helloBody(raw: true, marker: "The page's marker")),
+                       frame: Self.frame) { _, _ in }
+        XCTAssertTrue(model.imageryIsRaw, "fixture: the page said raw")
+        bridge.receive(.timer(.noState))
+        XCTAssertEqual(model.mode, .legacy, "fixture: the fallback")
+        model.noteImagery("redacted", warning: nil)
+        XCTAssertEqual(model.imageryRaw, false, "the header says redacted, and the page is no longer heard")
+        XCTAssertTrue(WorldRenderRepresentation.caption(for: .appearance, rawImagery: model.imageryRaw)
+            .contains("faces redacted"))
+        // A new page has not spoken either.
+        let next = WorldChromeModel()
+        next.publishState(Self.decodedState(Self.stateFields(raw: true, marker: "M")))
+        XCTAssertTrue(next.imageryIsRaw)
+        next.setMode(.pending)
+        XCTAssertNil(next.imageryRaw, "a new page's redaction is not the last page's")
+        bridge.receive(.teardown)
+    }
+
+    /// Final-gate review of cb865eb (LOW): when neither the served header
+    /// nor the page has said anything, the caption says the redaction is
+    /// unknown -- it claims neither "faces redacted" nor "not redacted".
+    func testTheCaptionSaysUnknownWhenNobodyHasSpoken() {
+        let model = WorldChromeModel()
+        XCTAssertNil(model.imageryRaw)
+        let room = WorldRenderRepresentation.caption(for: .appearance, rawImagery: model.imageryRaw)
+        XCTAssertTrue(room.hasPrefix("The camera's own images, redaction unknown, placed on the reconstructed room."), room)
+        XCTAssertFalse(room.contains("faces redacted"), room)
+        XCTAssertFalse(room.contains("not redacted"), room)
+        let spans = [WorldCaptureSpan(start: 86.0, end: 109.0)]
+        let area = WorldComponentsPresentation.areaCaption(representation: .appearance, spans: spans,
+                                                           rawImagery: model.imageryRaw)
+        XCTAssertTrue(area.hasPrefix("The camera's own images, redaction unknown, from 1:26 to 1:49 of this walk."), area)
+        XCTAssertFalse(area.contains("faces redacted"), area)
+        model.noteImagery("redacted", warning: nil)
+        XCTAssertTrue(WorldRenderRepresentation.caption(for: .appearance, rawImagery: model.imageryRaw)
+            .contains("faces redacted"), "once the header says redacted")
+        // The other rungs make no redaction claim either way.
+        for rung in [WorldRenderRepresentation.surface, .dense, .sparse] {
+            XCTAssertEqual(WorldRenderRepresentation.caption(for: rung, rawImagery: nil),
+                           WorldRenderRepresentation.caption(for: rung))
+        }
     }
 
     /// Codex MED (2026-10-05): a raw page replaced by a redacted build in the

@@ -204,7 +204,11 @@ final class WorldChromeUITests: XCTestCase {
     func testAPageWithoutTheEchoKeepsTodaysScreen() throws {
         openViewer(page: Page.html(steps: [.init(state: Page.state())], echo: false))
         XCTAssertTrue(legacyCaption.waitForExistence(timeout: 30), "today's caption line")
-        XCTAssertTrue(legacyCaption.label.contains("faces redacted"), "today's words: \(legacyCaption.label)")
+        // This page fetches no manifest, so no `X-World-Imagery` header and no
+        // page word reach the app: the caption claims no redaction either way
+        // (final-gate review of cb865eb, LOW).
+        XCTAssertTrue(legacyCaption.label.contains("redaction unknown"), "today's words: \(legacyCaption.label)")
+        XCTAssertFalse(legacyCaption.label.contains("faces redacted"), legacyCaption.label)
         XCTAssertTrue(element("world-render-reload").exists)
         XCTAssertTrue(pageChrome.waitForExistence(timeout: 10), "the page's own chrome")
         Thread.sleep(forTimeInterval: 3)

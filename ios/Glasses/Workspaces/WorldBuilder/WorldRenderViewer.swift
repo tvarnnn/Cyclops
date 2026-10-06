@@ -573,11 +573,16 @@ nonisolated enum WorldRenderRepresentation: String, Equatable, Sendable {
     /// redacted (the latest served `X-World-Imagery` header, or the page's
     /// latest `research` word:
     /// APPEARANCE §6.6, `raw-local-research/no-redaction`). The appearance
-    /// sentence then says so instead of claiming faces were redacted.
-    static func caption(for representation: WorldRenderRepresentation?, rawImagery: Bool = false) -> String {
+    /// sentence then says so instead of claiming faces were redacted. `nil`:
+    /// neither the header nor the page has said, and the sentence says
+    /// exactly that -- "redaction unknown" -- rather than claiming a
+    /// redaction nobody reported (final-gate review of cb865eb, LOW).
+    static func caption(for representation: WorldRenderRepresentation?, rawImagery: Bool? = false) -> String {
         switch representation {
-        case .appearance where rawImagery:
+        case .appearance where rawImagery == true:
             return "The camera's own images, not redacted, placed on the reconstructed room. Grey haze is where no kept image looked; only cracks a few pixels wide are filled, from the images beside them. Not to scale."
+        case .appearance where rawImagery == nil:
+            return "The camera's own images, redaction unknown, placed on the reconstructed room. Grey haze is where no kept image looked; only cracks a few pixels wide are filled, from the images beside them. Not to scale."
         case .appearance:
             // Agrees with the page's own caption and WORLD-BUILDER-WORLDS.md §4
             // ("what it draws"), which is where the page's drawing rules live.
@@ -2441,12 +2446,12 @@ struct WorldRenderScene: View {
         if model.target.isArea {
             return WorldComponentsPresentation.areaCaption(
                 representation: model.state.representation, spans: area?.spans ?? [],
-                rawImagery: model.chrome.imageryIsRaw)
+                rawImagery: model.chrome.imageryRaw)
         }
         // The same source as the research marker: no redaction claimed once
         // the viewer knows the imagery is not redacted.
         return WorldRenderRepresentation.caption(for: model.state.representation,
-                                                 rawImagery: model.chrome.imageryIsRaw)
+                                                 rawImagery: model.chrome.imageryRaw)
             + (WorldComponentsPresentation.roomCaptionSuffix(model.components) ?? "")
     }
 

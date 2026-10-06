@@ -202,6 +202,15 @@ nonisolated struct CaptureHealthHistory: Equatable, Sendable {
                 walkCarriedRecovery = false
             }
             if sample.recovery != nil { walkCarriedRecovery = true }
+        } else {
+            // A report that names no walk is about no walk: the one heard
+            // before is not "the current walk" any more, so whether IT carried
+            // recovery says nothing about this report (final-gate review of
+            // cb865eb, LOW). Unlike `invalidate()`, this is the Tower
+            // speaking, not the link dropping. A walk named again later starts
+            // afresh, as its histories do.
+            walk = nil
+            walkCarriedRecovery = false
         }
         if let last, !sample.isSameWalk(as: last) {
             // Another walk, or none: nothing seen so far is about it -- not

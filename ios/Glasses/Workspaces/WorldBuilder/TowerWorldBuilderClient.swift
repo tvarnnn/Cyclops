@@ -1348,6 +1348,11 @@ final class TowerWorldBuilderClient: WorldBuilderClient {
 
         case .unsubscribed(let id):
             guard id == subscriptionID else { return }
+            // Retired as well as cleared: a heartbeat the Tower had already
+            // queued for it is not this screen's any more, and applying one
+            // would bring the closed subscription's figures back (final-gate
+            // review of cb865eb, LOW).
+            retiredSubscriptionIDs.insert(id)
             subscriptionID = nil
 
         case .result(let envelope):
@@ -1703,6 +1708,10 @@ final class TowerWorldBuilderClient: WorldBuilderClient {
 
     private func apply(_ error: CartridgeResultError) {
         if error.closesSubscription {
+            // The closed id is retired, for `.unsubscribed`'s reason: an
+            // envelope already queued for it must not be applied.
+            if let closed = subscriptionID { retiredSubscriptionIDs.insert(closed) }
+            if let closed = error.subscriptionID { retiredSubscriptionIDs.insert(closed) }
             subscriptionID = nil
             isSubscribing = false
             // The Tower answered, so the wait is over however it ended. The
