@@ -347,22 +347,30 @@ struct WorldInlinePanel<Health: View>: View {
 
     var body: some View {
         VStack(spacing: 12) {
-            if showsBanner, let headline = presentation.headline {
-                WorldFinishBannerView(text: WorldFinishCopy.awayBanner(headline: headline), dismiss: dismissBanner)
-                    .transition(reduceMotion ? .opacity : .move(edge: .top).combined(with: .opacity))
-                    .accessibilitySortPriority(100)
+            // Rows 0-4: one accessibility container, read in §5's order.
+            // Capture health stays its own container beside it: nested as the
+            // only child of this one, SwiftUI folded it in and its identity
+            // ("capture-health") was lost.
+            VStack(spacing: 12) {
+                if showsBanner, let headline = presentation.headline {
+                    WorldFinishBannerView(text: WorldFinishCopy.awayBanner(headline: headline), dismiss: dismissBanner)
+                        .transition(reduceMotion ? .opacity : .move(edge: .top).combined(with: .opacity))
+                        .accessibilitySortPriority(100)
+                }
+                if phase.drawsCard {
+                    card
+                }
             }
-            if phase.drawsCard {
-                card
-            }
+            .accessibilityElement(children: .contain)
+            .accessibilityIdentifier("wb-panel")
+            // Under the full-screen world the panel is not there to read:
+            // its web view is in the cover, and its rows would be read twice.
+            .accessibilityHidden(host.placement == .expanded)
             if case .walking = phase, showsHealth {
                 health()
-                    .accessibilitySortPriority(40)
             }
         }
         .animation(reduceMotion ? nil : .easeInOut(duration: 0.25), value: showsBanner)
-        .accessibilityElement(children: .contain)
-        .accessibilityIdentifier("wb-panel")
         .onScrollVisibilityChange(threshold: 0.2) { visible in host.visibilityChanged(visible) }
         .onChange(of: phase) { old, new in
             if new.isReady {
@@ -659,7 +667,10 @@ struct WorldInlinePanel<Health: View>: View {
     /// or the page's status (native chrome), else nothing.
     private var readyLine: (text: String, identifier: String)? {
         if !isTowerReachable { return (WorldPanelCopy.readyButOffline, "wb-panel-footer-line") }
-        guard let model = host.model, model.chrome.isDrawingNative, let status = model.chrome.state?.status
+        // The inline subset's rule (U-INLINE §3.4): never under a message.
+        guard let model = host.model, model.chrome.isDrawingNative, let state = model.chrome.state,
+              let status = state.status,
+              WorldChromeCanvasLayer<EmptyView, EmptyView, EmptyView>.inlineElements(state).contains(.status)
         else { return nil }
         return (status, "world-chrome-status")
     }

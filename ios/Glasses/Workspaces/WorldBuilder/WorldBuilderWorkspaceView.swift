@@ -93,6 +93,11 @@ struct WorldBuilderWorkspaceView: View {
     /// Whether this workspace is on screen (a cartridge switch takes it away).
     @State private var isOnScreen = false
 
+    /// The panel's own full-screen cover took this screen away: not a
+    /// cartridge switch, so the World Builder session is neither stopped
+    /// when it goes up nor started again when it comes down.
+    @State private var coveredByOwnCover = false
+
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.worldPanelViewport) private var viewport
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -269,11 +274,20 @@ struct WorldBuilderWorkspaceView: View {
         // disappearance. Nothing else on the phone starts or stops a builder.
         .onAppear {
             isOnScreen = true
+            if coveredByOwnCover {
+                coveredByOwnCover = false
+                return
+            }
             session.workspaceDidAppear(isTowerReachable: isTowerReachable)
         }
         .onDisappear {
-            // The cover over this screen is not a cartridge switch.
-            if !host.coverIsUp { isOnScreen = false }
+            // The world expanded over this screen is not a cartridge switch:
+            // a walk in progress keeps its session (U-INLINE §3.2).
+            if host.coverIsUp {
+                coveredByOwnCover = true
+                return
+            }
+            isOnScreen = false
             session.workspaceDidDisappear()
         }
         .onChange(of: isTowerReachable) { _, isReachable in

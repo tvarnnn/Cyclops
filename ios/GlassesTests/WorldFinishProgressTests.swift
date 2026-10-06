@@ -28,7 +28,7 @@ final class WorldFinishProgressTests: XCTestCase {
         XCTAssertEqual(unknown?.stage.isKnown, false, "and is not one of the six")
 
         func step(_ value: Any) -> WorldProcessingStep? {
-            WorldProcessingReport(json: ["stage": "checking", "step": value])?.step
+            WorldProcessingReport(json: ["stage": "checking", "step": value] as [String: Any])?.step
         }
         XCTAssertEqual(step(["n": 2, "of": 3]), WorldProcessingStep(n: 2, of: 3))
         XCTAssertEqual(step(["n": 7, "of": 7]), WorldProcessingStep(n: 7, of: 7))
@@ -36,12 +36,12 @@ final class WorldFinishProgressTests: XCTestCase {
         XCTAssertNil(step(["n": 4, "of": 3]), "n > of")
         XCTAssertNil(step(["n": 0, "of": 3]), "n < 1")
         XCTAssertNil(step(["n": 1, "of": 8]), "of > 7")
-        XCTAssertNil(step(["n": true, "of": 3]), "n is a Bool")
+        XCTAssertNil(step(["n": true, "of": 3] as [String: Any]), "n is a Bool")
         XCTAssertNil(step(["n": 1.5, "of": 3]), "not an integer")
         XCTAssertNil(step("2 of 3"), "not an object")
         XCTAssertEqual(WorldProcessingReport(json: ["stage": "checking", "step": "x"])?.stage, .checking,
                        "a bad step is dropped, the stage kept")
-        XCTAssertNil(WorldProcessingReport(json: ["stage": "placing", "step": ["n": 1, "of": 3]])?.step,
+        XCTAssertNil(WorldProcessingReport(json: ["stage": "placing", "step": ["n": 1, "of": 3]] as [String: Any])?.step,
                      "a step only on checking")
 
         XCTAssertNil(WorldProcessingReport(json: nil), "absent")
@@ -110,6 +110,25 @@ final class WorldFinishProgressTests: XCTestCase {
         }
     }
 
+    /// Lead override (2026-10-05): `world_snapshot.revision` is the
+    /// envelope's and moves with every stage and pass. The geometry address
+    /// -- what the gallery fetch is keyed on -- must not move with it, or
+    /// each stage would refetch the geometry.
+    func testAStageChangeMovesNoGeometryAddress() {
+        func payload(snapshotRevision: String, stage: String) -> [String: Any] {
+            ["model_state": "finalizing",
+             "session": ["session_id": "s1"],
+             "world_snapshot": ["world_id": "w1", "revision": snapshotRevision, "keyframe_count": 40],
+             "geometry": ["revision": "g7"],
+             "lifecycle": ["build_in_progress": true, "processing": ["stage": stage]]]
+        }
+        let placing = WorldBuilderResultDecoder.geometryCoordinates(from: payload(snapshotRevision: "r1", stage: "placing"))
+        let checking = WorldBuilderResultDecoder.geometryCoordinates(from: payload(snapshotRevision: "r2", stage: "checking"))
+        XCTAssertNotNil(placing)
+        XCTAssertEqual(placing, checking, "the same geometry, whatever stage the builder is in")
+        XCTAssertEqual(checking?.revision, "g7")
+    }
+
     // MARK: I3: the stage line, against an independent oracle
 
     private enum Presented: CaseIterable { case receiving, finalizingTrue, finalizingFalse, finalizingNil, finalized, interrupted }
@@ -173,7 +192,7 @@ final class WorldFinishProgressTests: XCTestCase {
             WorldPhotographicReport(state: .owed, stage: "appearance", scope: .area),
         ]
         var processings: [WorldProcessingReport?] = [nil]
-        processings += WorldProcessingStage.known.map { WorldProcessingReport(stage: $0) }
+        processings += WorldProcessingStage.known.map { Optional(WorldProcessingReport(stage: $0)) }
         processings.append(WorldProcessingReport(stage: .checking, step: WorldProcessingStep(n: 2, of: 3)))
         processings.append(WorldProcessingReport(stage: WorldProcessingStage(rawValue: "replaying")))
         var cases = 0
@@ -366,7 +385,7 @@ final class WorldFinishProgressTests: XCTestCase {
 
     func testTheRevisionBasisDecodes() throws {
         func basis(_ tail: String) throws -> WorldPictureBasis? {
-            try WorldRenderClient.decodeRevision(Data(#"{"revision":"s1/surface:1""#.utf8 + Data(tail.utf8))).basis
+            try WorldRenderClient.decodeRevision(Data((#"{"revision":"s1/surface:1""# + tail).utf8)).basis
         }
         XCTAssertEqual(try basis(#","basis":"final"}"#), .final)
         XCTAssertEqual(try basis(#","basis":"walk"}"#), .walk)
