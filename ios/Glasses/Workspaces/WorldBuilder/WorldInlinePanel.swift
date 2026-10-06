@@ -276,10 +276,13 @@ struct WorldPanelMapFixtureView: View {
             }
         }
         .overlay(alignment: .bottomLeading) {
-            Text(WorldPanelCopy.mapFixture)
-                .font(.caption)
-                .foregroundStyle(WorldChromeStyle.secondary)
-                .padding(8)
+            // Not under the finish block: frozen, the map is only a backdrop.
+            if !isFrozen {
+                Text(WorldPanelCopy.mapFixture)
+                    .font(.caption)
+                    .foregroundStyle(WorldChromeStyle.secondary)
+                    .padding(8)
+            }
         }
         .opacity(isFrozen ? 0.35 : 1)
         .accessibilityElement(children: .ignore)
@@ -701,6 +704,12 @@ struct WorldInlinePanel<Health: View>: View {
                 .font(.caption.monospacedDigit())
                 .foregroundStyle(.readableSecondary)
                 .fixedSize(horizontal: false, vertical: true)
+                // The page's status is the native chrome's pill, capped as
+                // the pill is (U1.1 168 #3); the Tower sentence is not.
+                .dynamicTypeSize(line.identifier == "world-chrome-status"
+                                 ? DynamicTypeSize.xSmall...DynamicTypeSize.accessibility2
+                                 : DynamicTypeSize.xSmall...DynamicTypeSize.accessibility5)
+                .accessibilityShowsLargeContentViewer()
                 .accessibilitySortPriority(70)
                 .accessibilityIdentifier(line.identifier)
         }
