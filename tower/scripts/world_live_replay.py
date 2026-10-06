@@ -115,6 +115,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from tower.artifact_paths import artifact_root_arg  # noqa: E402
+from scripts.world_live_replay_capture import ReplayCapture  # noqa: E402
 
 TOWER_ROOT = Path(__file__).resolve().parents[1]
 # The stored captures live in the canonical checkout's store; a worktree has
@@ -154,15 +155,15 @@ EXIT_ABORTED = 3
 
 # The harness itself, pinned in every run record (review C22 L5).
 HARNESS_FILES = ("world_live_replay.py", "world_live_replay_report.py", "world_live_replay_run.py",
-                 "world_live_timeline.py")
-# The two scripts that STREAM a run. Their sha1 is the pin `--compare` keys
+                 "world_live_timeline.py", "world_live_replay_capture.py")
+# The scripts that STREAM or record a run. Their sha1 is the pin `--compare` keys
 # on (review C24 HIGH-2); the report script only reads a finished run.
-STREAMING_FILES = ("world_live_replay.py", "world_live_replay_run.py")
+STREAMING_FILES = ("world_live_replay.py", "world_live_replay_run.py", "world_live_replay_capture.py")
 # The harness's own version, recorded beside the pin in run.json, client.json
 # and every report, so which harness made a run is self-evident (manager 154
 # §2: proof sets run only on a pin that passed the C24x2 re-verify). Change it
 # with every change to the harness.
-HARNESS_VERSION = "c22-harness/F14 (optional live timeline)"
+HARNESS_VERSION = "c22-harness/F15 (optional status and geometry receipts)"
 
 # Leaf keys copied out of each World Builder status push to show what the
 # phone was being told, and when. Generic on purpose: the payload is large
@@ -553,6 +554,17 @@ def http_bytes(url: str, timeout: float = 30.0):
         return None, 0
 
 
+def http_raw(url: str, timeout: float = 30.0):
+    """The exact HTTP response body, used only by the optional recorder."""
+    try:
+        with urllib.request.urlopen(url, timeout=timeout) as response:
+            return response.status, response.read()
+    except urllib.error.HTTPError as exc:
+        return exc.code, exc.read()
+    except (OSError, ValueError):
+        return None, b""
+
+
 def health_probe(url: str, timeout: float = LIVE_GUARD_TIMEOUT_S):
     """(kind, doc) for one GET of a `/health`. `kind` is `ok` (200 and a JSON
     object), `refused` (the connection was refused: nothing listens), or
@@ -741,7 +753,7 @@ def target_refusal(health: dict | None) -> str | None:
 
 
 def harness_identity() -> dict:
-    """Which harness this is: the sha1 of its three scripts, and git HEAD and
+    """Which harness this is: the sha1 of its scripts, and git HEAD and
     the scripts' own uncommitted changes when they sit in a checkout
     (review C22 L5: "pin its SHA before any proof"). Read-only git, without
     optional locks."""
@@ -775,8 +787,8 @@ def harness_identity() -> dict:
 
 def harness_pin(identity) -> dict:
     """The pin, in one place (manager 154 §2): the harness version, its git
-    HEAD, whether the three scripts were committed and clean there, and the
-    sha1 of the two STREAMING scripts (what `--compare` keys on). A record
+    HEAD, whether the scripts were committed and clean there, and the
+    sha1 of the STREAMING scripts (what `--compare` keys on). A record
     made before C22-F7 has no version: `None`, shown as not recorded."""
     identity = identity if isinstance(identity, dict) else {}
     files = identity.get("files_sha1") if isinstance(identity.get("files_sha1"), dict) else {}
@@ -886,9 +898,10 @@ class GeometryMirror:
     a time, and a newer revision supersedes a fetch in flight, as the phone's
     does."""
 
-    def __init__(self, base_url: str, enabled: bool = True):
+    def __init__(self, base_url: str, enabled: bool = True, capture: ReplayCapture | None = None):
         self.base_url = base_url.rstrip("/")
         self.enabled = enabled
+        self.capture = capture
         self._wanted = asyncio.Event()
         self._target = None
         self._last_revision = None
@@ -898,6 +911,7 @@ class GeometryMirror:
         self.segments = 0
         self.bytes = 0
         self.errors = 0
+        self.capture_errors: list[str] = []
         self.manifest_ms: list = []
         self.segment_ms: list = []
 
@@ -919,22 +933,33 @@ class GeometryMirror:
             if stop.is_set():
                 return
             self._wanted.clear()
-            with contextlib.suppress(Exception):
+            try:
                 await self._fetch(self._target)
+            except Exception as exc:  # noqa: BLE001 -- retain failure in the run record
+                if self.capture is not None:
+                    self.capture_errors.append(f"{type(exc).__name__}: {exc}")
 
     async def _fetch(self, target) -> None:
         world_id, session_id = target[0], target[1]
         if (world_id, session_id) != self._cache_target:
             self._cache, self._cache_target = set(), (world_id, session_id)
         started = time.perf_counter()
-        status, manifest = await asyncio.to_thread(
-            http_json, "GET",
-            f"{self.base_url}/worlds/{world_id}/geometry/manifest?session_id={session_id}", 30.0)
+        manifest_url = f"{self.base_url}/worlds/{world_id}/geometry/manifest?session_id={session_id}"
+        if self.capture is None:
+            status, manifest = await asyncio.to_thread(http_json, "GET", manifest_url, 30.0)
+            manifest_body = None
+        else:
+            status, manifest_body = await asyncio.to_thread(http_raw, manifest_url, 30.0)
+            try:
+                manifest = json.loads(manifest_body) if status == 200 else None
+            except ValueError:
+                manifest = None
         self.manifest_ms.append((time.perf_counter() - started) * 1000)
         if status != 200 or not isinstance(manifest, dict):
             self.errors += status != 404
             return
         self.manifests += 1
+        fetched = []
         keys = {}
         for segment in manifest.get("segments") or []:
             key = (segment.get("content_hash"), segment.get("placement_hash"))
@@ -945,17 +970,24 @@ class GeometryMirror:
             if self._wanted.is_set():
                 break  # superseded: the phone stops fetching a dead manifest
             started = time.perf_counter()
-            status, size = await asyncio.to_thread(
-                http_bytes,
-                f"{self.base_url}/worlds/{world_id}/geometry/segment/{index}?session_id={session_id}")
+            segment_url = f"{self.base_url}/worlds/{world_id}/geometry/segment/{index}?session_id={session_id}"
+            if self.capture is None:
+                status, size = await asyncio.to_thread(http_bytes, segment_url)
+            else:
+                status, body = await asyncio.to_thread(http_raw, segment_url)
+                size = len(body)
             self.segment_ms.append((time.perf_counter() - started) * 1000)
             if status == 200:
                 self.segments += 1
                 self.bytes += size
                 self._cache.add(key)
+                if self.capture is not None:
+                    fetched.append((next(s for s in manifest["segments"] if s["segment_index"] == index), body))
             else:
                 self.errors += 1
         self._cache &= set(keys)
+        if self.capture is not None:
+            self.capture.geometry(target, manifest_body, fetched)
 
     def summary(self) -> dict:
         return {
@@ -964,6 +996,7 @@ class GeometryMirror:
             "segments": self.segments,
             "bytes": self.bytes,
             "errors": self.errors,
+            **({"capture_errors": self.capture_errors} if self.capture is not None else {}),
             "manifest_ms": distribution(self.manifest_ms),
             "segment_ms": distribution(self.segment_ms),
         }
@@ -1015,12 +1048,13 @@ class TowerSocket:
     the sender, and replies matched to what was sent."""
 
     def __init__(self, uri: str, stats: StreamStats, phone: PhoneView, mirror: GeometryMirror,
-                 timeline=None):
+                 timeline=None, capture: ReplayCapture | None = None):
         self.uri = uri
         self.stats = stats
         self.phone = phone
         self.mirror = mirror
         self.timeline = timeline
+        self.capture = capture
         self.capture_id = None
         self.ws = None
         self._reader = None
@@ -1028,6 +1062,7 @@ class TowerSocket:
         self._sent_at: dict = {}
         self.subscription_id = None
         self.closed_by_us = False
+        self.capture_error = None
 
     async def open(self) -> None:
         import websockets
@@ -1051,9 +1086,10 @@ class TowerSocket:
                     self.stats.other_messages["unparseable"] += 1
                     continue
                 if isinstance(message, dict):
-                    self._dispatch(message)
-        except Exception:  # noqa: BLE001 -- a closed socket ends the reader
-            pass
+                    self._dispatch(message, raw)
+        except Exception as exc:  # noqa: BLE001 -- a closed socket ends the reader
+            if self.capture is not None:
+                self.capture_error = f"{type(exc).__name__}: {exc}"
         finally:
             if not self.closed_by_us:
                 self.stats.unexpected_closes += 1
@@ -1062,7 +1098,7 @@ class TowerSocket:
                     if not future.done():
                         future.set_result(None)
 
-    def _dispatch(self, message: dict) -> None:
+    def _dispatch(self, message: dict, raw: str | bytes | None = None) -> None:
         kind = message.get("type")
         now = time.perf_counter()
         if self.timeline is not None:
@@ -1080,6 +1116,8 @@ class TowerSocket:
                 self.stats.frame_errors[str(message.get("reason"))] += 1
         elif kind == "cartridge_result":
             if message.get("cartridge") == WORLD_BUILDER:
+                if self.capture is not None and raw is not None:
+                    self.capture.status(raw, message)
                 self.mirror.request(self.phone.update(message))
         else:
             self.stats.other_messages[str(kind)] += 1
@@ -1482,6 +1520,7 @@ class ReplayOptions:
     calibration_root: Path | None = None
     calibration_expected: dict[str, str] | None = None
     live_timeline: bool = False
+    capture_status_geometry: bool = False
     tower_log: Path | None = None
 
 
@@ -1554,6 +1593,18 @@ async def _watch_surface(options: ReplayOptions, phone: "PhoneView", watch: Surf
             await asyncio.wait_for(stop.wait(), options.surface_watch_seconds)
 
 
+async def _watch_solutions(options: ReplayOptions, phone: "PhoneView", snapshots: SolutionSnapshots,
+                           stop: asyncio.Event) -> None:
+    """Catch live solve publishes before the next solve overwrites solution.json."""
+    while not stop.is_set():
+        if options.world_root is not None and phone.target:
+            world_id, session_id = phone.target
+            path = Path(options.world_root) / "worlds" / world_id / "solve" / session_id / "solution.json"
+            await asyncio.to_thread(snapshots.poll, path)
+        with contextlib.suppress(asyncio.TimeoutError):
+            await asyncio.wait_for(stop.wait(), 0.25)
+
+
 async def _wait_or_abort(abort: asyncio.Event, seconds: float) -> None:
     with contextlib.suppress(asyncio.TimeoutError):
         await asyncio.wait_for(abort.wait(), seconds)
@@ -1570,6 +1621,10 @@ async def run_replay(options: ReplayOptions) -> dict:
     phone.
     """
     check_target_port(options.port)
+    if options.capture_status_geometry and (options.world_root is None or not options.subscribe
+                                            or not options.phone_fetches):
+        raise SystemExit("--capture-status-geometry requires --world-root, status subscription, "
+                         "and phone geometry fetches")
     out = Path(options.out)
     out.mkdir(parents=True, exist_ok=True)
     base = f"http://127.0.0.1:{options.port}"
@@ -1596,6 +1651,8 @@ async def run_replay(options: ReplayOptions) -> dict:
         "started_at": round(time.time(), 3),
         "outcome": None,
     }
+    if options.capture_status_geometry:
+        record["options"]["capture_status_geometry"] = True
 
     # The :8000 guard is read and ARMED FIRST (review C24 HIGH-3), before the
     # harness pin's git calls, the walk's journals and the target checks:
@@ -1713,7 +1770,10 @@ async def run_replay(options: ReplayOptions) -> dict:
 
     stats = StreamStats()
     phone = PhoneView()
-    mirror = GeometryMirror(base, enabled=options.phone_fetches)
+    capture = ReplayCapture(out) if options.capture_status_geometry else None
+    live_solutions = SolutionSnapshots(out) if capture is not None else None
+    solution_watch_stop = asyncio.Event()
+    mirror = GeometryMirror(base, enabled=options.phone_fetches, capture=capture)
     timeline = None
     if options.live_timeline:
         if options.world_root is None:
@@ -1723,12 +1783,17 @@ async def run_replay(options: ReplayOptions) -> dict:
     surfaces = SurfaceWatch()
     background = [asyncio.create_task(mirror.run(stop_background)),
                   asyncio.create_task(_watch_surface(options, phone, surfaces, stop_background))]
+    solution_watch = None
+    if live_solutions is not None:
+        solution_watch = asyncio.create_task(
+            _watch_solutions(options, phone, live_solutions, solution_watch_stop))
     if guard_task is not None:
         background.append(guard_task)
     sampler = ResourceSampler(options.tower_pid, options.sample_seconds, out / "samples.csv")
     sampler.start()
     uri = f"ws://127.0.0.1:{options.port}/ws"
     events: list = []
+    capture_socket_errors: list[str] = []
     tower_captures: list = []
     if timeline is not None:
         async def watch_timeline():
@@ -1755,7 +1820,7 @@ async def run_replay(options: ReplayOptions) -> dict:
     socket = None
     try:
         with fine_timer():
-            socket = TowerSocket(uri, stats, phone, mirror, timeline)
+            socket = TowerSocket(uri, stats, phone, mirror, timeline, capture)
             await socket.open()
             record["handshake"] = await socket.handshake(options.subscribe)
             note("connected", handshake=record["handshake"])
@@ -1817,7 +1882,7 @@ async def run_replay(options: ReplayOptions) -> dict:
                         _log(out, f"t={step.at:6.1f}s sent {stats.frames_sent} frames, "
                                   f"{stats.frame_results} results, {sum(stats.frame_errors.values())} errors")
                 elif step.kind == "connect":
-                    socket = TowerSocket(uri, stats, phone, mirror, timeline)
+                    socket = TowerSocket(uri, stats, phone, mirror, timeline, capture)
                     await socket.open()
                     handshake = await socket.handshake(options.subscribe)
                     # The phone re-sends `start` on every reconnect
@@ -1841,6 +1906,8 @@ async def run_replay(options: ReplayOptions) -> dict:
                     note("stream_stop", capture=step.capture, late_s=round(late, 4))
                 elif step.kind == "disconnect":
                     await socket.close()
+                    if socket.capture_error is not None:
+                        capture_socket_errors.append(socket.capture_error)
                     note("disconnect", capture=step.capture, late_s=round(late, 4))
             record["stopped_at"] = round(time.time(), 3)
             record["tower_captures"] = tower_captures
@@ -1855,7 +1922,10 @@ async def run_replay(options: ReplayOptions) -> dict:
             if options.after_stop == "disconnect" and socket is not None:
                 await socket.close()
                 note("disconnect_after_stop")
-            settle = await _follow_settle(options, base, tower_captures, abort, out)
+            if solution_watch is not None:
+                solution_watch_stop.set()
+                await solution_watch
+            settle = await _follow_settle(options, base, tower_captures, abort, out, live_solutions)
             record["settle"] = settle
             if abort.is_set():
                 record["outcome"] = "aborted"
@@ -1883,6 +1953,10 @@ async def run_replay(options: ReplayOptions) -> dict:
         _log(out, f"the stream ended under the abort: {exc!r}\n{trace.rstrip()}")
     finally:
         stop_background.set()
+        solution_watch_stop.set()
+        if solution_watch is not None:
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await solution_watch
         aborted = abort.is_set()
         if aborted and guard_task is not None:
             # The guard kills the test Tower (`on_abort`) before it returns:
@@ -1896,6 +1970,8 @@ async def run_replay(options: ReplayOptions) -> dict:
                 await asyncio.wait_for(task, 5 if aborted else 35)
         if socket is not None:
             await socket.close()
+            if socket.capture_error is not None:
+                capture_socket_errors.append(socket.capture_error)
         sampler.stop()
         sampler.join(timeout=5 if aborted else 20)
         record["events"] = events
@@ -1904,6 +1980,15 @@ async def run_replay(options: ReplayOptions) -> dict:
                                 "transitions": phone.transitions,
                                 "photographic": phone.photographic}
         record["phone_fetches"] = mirror.summary()
+        if capture is not None:
+            solutions = (record.get("settle") or {}).get("solution_snapshots", [])
+            capture.finish(record.get("t0"), solutions)
+            record["status_geometry_capture"] = {"status_pushes": capture.status_count,
+                                                    "geometry_revisions": len(capture.geometry_rows),
+                                                    "socket_errors": capture_socket_errors,
+                                                    "geometry_errors": mirror.capture_errors}
+            if capture_socket_errors or mirror.capture_errors:
+                record["outcome"] = "capture-incomplete"
         record["surface_watch"] = surfaces.transitions
         if timeline is not None:
             record["live_timeline"] = timeline.finish(phone.photographic, options.tower_log)
@@ -1944,7 +2029,8 @@ async def _learn_capture(base: str, captures: list, polls: int = 40) -> None:
 
 
 async def _follow_settle(options: ReplayOptions, base: str, captures: list,
-                         abort: asyncio.Event, out: Path) -> dict:
+                         abort: asyncio.Event, out: Path,
+                         snapshots: SolutionSnapshots | None = None) -> dict:
     started = time.time()
     deadline = started + options.settle_timeout_min * 60.0
     transitions: list = []
@@ -1952,7 +2038,7 @@ async def _follow_settle(options: ReplayOptions, base: str, captures: list,
     judge = None
     session_path = None
     settled_at = None
-    snapshots = SolutionSnapshots(out)
+    snapshots = snapshots if snapshots is not None else SolutionSnapshots(out)
     while time.time() < deadline and not abort.is_set():
         status, health = await asyncio.to_thread(http_json, "GET", f"{base}/health", 10.0)
         if options.world_root is not None and captures and session_path is None:
@@ -2060,6 +2146,8 @@ def add_replay_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--label", default=None)
     parser.add_argument("--live-timeline", action="store_true",
                         help="Record per-frame/keyframe live timing, phone messages, and published poses.")
+    parser.add_argument("--capture-status-geometry", action="store_true",
+                        help="Preserve every received World Builder status envelope and fetched geometry body.")
 
 
 def refuse_unguarded_proof(args) -> None:
@@ -2102,6 +2190,7 @@ def options_from_args(args, *, port, out, world_root=None, tower_pid=None, on_ab
         on_abort=on_abort, on_guard_armed=on_guard_armed, label=args.label,
         calibration_root=calibration_root, calibration_expected=calibration_expected,
         live_timeline=bool(getattr(args, "live_timeline", False)),
+        capture_status_geometry=bool(getattr(args, "capture_status_geometry", False)),
         tower_log=getattr(args, "tower_log", None),
     )
 

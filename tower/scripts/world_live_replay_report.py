@@ -2582,7 +2582,7 @@ def render_markdown(report: dict) -> str:
                      + (f" with uncommitted changes {dirty}" if dirty else (" (committed, clean)" if dirty == [] else ""))
                      + "; streaming scripts sha1 "
                      + ", ".join(f"{name} `{sha}`" for name, sha in (pin.get("streaming_sha1") or {}).items())
-                     + f"; all three scripts sha1 `{harness.get('sha1')}`.")
+                     + f"; all harness scripts sha1 `{harness.get('sha1')}`.")
         lines.append("")
     rendered = report.get("rendered_by") or {}
     if rendered:
@@ -3002,7 +3002,8 @@ TIMING_ENV_REQUIRED = ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREA
                        "PYTORCH_CUDA_ALLOC_CONF")
 # The harness that STREAMED the run. The report script is not part of the
 # pin: a re-render reads, it does not stream.
-STREAMING_HARNESS_FILES = ("world_live_replay.py", "world_live_replay_run.py")
+STREAMING_HARNESS_FILES = ("world_live_replay.py", "world_live_replay_run.py",
+                           "world_live_replay_capture.py")
 
 
 def _ordered_digest(entries: list[dict]) -> str:
@@ -3179,7 +3180,9 @@ def comparability_key(report: dict) -> dict:
         "code": ({"py_fingerprint": code["py_fingerprint"], "tower_dir": code["tower_dir"]}
                  if code.get("py_fingerprint") and code.get("tower_dir") else None),
         "harness": ({name: files[name] for name in STREAMING_HARNESS_FILES}
-                    if all(files.get(name) for name in STREAMING_HARNESS_FILES) else None),
+                    if all(files.get(name) for name in STREAMING_HARNESS_FILES)
+                    else ({name: files[name] for name in STREAMING_HARNESS_FILES[:2]}
+                          if all(files.get(name) for name in STREAMING_HARNESS_FILES[:2]) else None)),
         "replay": replay,
         "calibration": _verified_calibration(run, client),
         "fidelity_family": FIDELITY_FAMILY.get(version),
