@@ -419,6 +419,8 @@ def main(argv=None) -> int:
     parser.add_argument("--intrinsics-from", type=Path, default=DEFAULT_INTRINSICS,
                         help="Calibrations copied into the fresh world root (read only).")
     parser.add_argument("--health-timeout", type=float, default=240.0)
+    parser.add_argument("--snapshot-at-stop", type=Path, default=None,
+                        help="Freeze the test Tower world with SQLite backup after Stop and before final solve.")
     args = parser.parse_args(argv)
     refuse_unguarded_proof(args)
 
@@ -433,8 +435,21 @@ def main(argv=None) -> int:
     refuse_non_empty_out(out)
     if _inside(out, data_root) or _inside(data_root, out):
         raise SystemExit("refused: --out and --data-root must be separate directories")
+    if args.snapshot_at_stop is not None:
+        snapshot = args.snapshot_at_stop.resolve()
+        if (_inside(snapshot, LIVE_DATA) or _inside(snapshot, data_root) or
+                _inside(snapshot, out) or _inside(data_root, snapshot) or _inside(out, snapshot)):
+            raise SystemExit("refused: --snapshot-at-stop must be outside the live store, data root and output")
+        if snapshot.exists():
+            raise SystemExit(f"refused: --snapshot-at-stop already exists: {snapshot}")
 
     tower_dir = resolve_code_tree(args.code)
+    if args.snapshot_at_stop is not None:
+        builder = tower_dir / "scripts" / "world_build_session.py"
+        helper = tower_dir / "scripts" / "prestop_snapshot.py"
+        if not helper.is_file() or not builder.is_file() or \
+                b'TOWER_PRESTOP_SNAPSHOT_DIR' not in builder.read_bytes():
+            raise SystemExit("refused: --code does not contain the pre-final-solve snapshot hook")
     identity = code_identity(tower_dir)
     switches: dict = {}
     for path in args.env_file:
@@ -444,6 +459,10 @@ def main(argv=None) -> int:
             raise SystemExit(f"--set wants KEY=VALUE, got {item!r}")
         key, value = item.split("=", 1)
         switches[key.strip()] = value.strip()
+    if args.snapshot_at_stop is not None:
+        if "TOWER_PRESTOP_SNAPSHOT_DIR" in switches:
+            raise SystemExit("refused: set snapshot path with --snapshot-at-stop only")
+        switches["TOWER_PRESTOP_SNAPSHOT_DIR"] = str(snapshot)
     ignored = sorted(k for k in switches if k in FORCED_KEYS)
     if switches.get("TOWER_WORLD_STAGE_TIMING", "").lower() in ("on", "true", "1", "yes") \
             and not identity["has_stage_timing"]:
@@ -644,6 +663,16 @@ def main(argv=None) -> int:
         options.tower_log = err_log
         record = asyncio.run(run_replay(options))
         code = exit_code(record)
+        if args.snapshot_at_stop is not None:
+            if not (snapshot / "PRESTOP-PIN.json").is_file():
+                _log(out, f"pre-Stop snapshot missing at {snapshot}; builder did not reach the barrier")
+                code = EXIT_ERROR
+            else:
+                from scripts.prestop_snapshot import verify_snapshot  # noqa: PLC0415
+
+                pin = verify_snapshot(snapshot)
+                _log(out, f"pre-Stop snapshot verified: {pin['world']}/{pin['session']} "
+                     f"database SHA-256 {pin['database_sha256']}")
     except LiveTowerAbort as exc:
         _log(out, f"ABORT before the replay: {exc}; stopping the test Tower")
         run["aborted"] = {"t": round(time.time(), 3), "reason": str(exc), "during": "startup"}

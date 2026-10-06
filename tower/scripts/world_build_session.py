@@ -2389,6 +2389,15 @@ def main(argv=None) -> int:
             # wait and then TERMINATED, never abandoned: the final solve is
             # about to reuse its workspace.
             solver.wait(args.solve_wait_seconds, should_stop=stop_request.hard_asked_for)
+            # Optional replay-only barrier. The capture has closed and the
+            # background solver has exited; run_final has not opened the DB.
+            prestop_dir = os.environ.get("TOWER_PRESTOP_SNAPSHOT_DIR")
+            if prestop_dir:
+                if capture_end != END_REASON_CAPTURE_STOP or end_reason != END_REASON_STOP or stop_request.hard:
+                    raise RuntimeError("pre-Stop snapshot requires an ordinary capture Stop")
+                from scripts.prestop_snapshot import snapshot_at_stop  # noqa: PLC0415
+
+                snapshot_at_stop(args.root, world_id, session_id, Path(prestop_dir))
             if stop_request.hard:
                 final_solve_state = FINAL_SOLVE_SKIPPED
                 finalization_detail = (
