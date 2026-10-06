@@ -81,9 +81,18 @@ nonisolated struct CaptureHealthSample: Equatable, Sendable {
         )
     }
 
-    /// Whether `other` is about the same walk: the same world and session.
+    /// Whether the report named its walk: a world id AND a session id. A
+    /// sample without both is no walk's, so none of its figures are shown.
+    var hasIdentity: Bool {
+        !(worldID ?? "").isEmpty && !(sessionID ?? "").isEmpty
+    }
+
+    /// Whether `other` is about the same walk: the same world and session,
+    /// both named. Two missing ids are NOT the same walk -- reports from
+    /// different walks would otherwise share pace, breaks and stall history
+    /// until identity arrived (Codex HIGH, 2026-10-05).
     func isSameWalk(as other: CaptureHealthSample) -> Bool {
-        worldID == other.worldID && sessionID == other.sessionID
+        hasIdentity && other.hasIdentity && worldID == other.worldID && sessionID == other.sessionID
     }
 }
 
@@ -152,6 +161,12 @@ nonisolated struct CaptureHealthHistory: Equatable, Sendable {
     }
 
     mutating func record(_ sample: CaptureHealthSample, at now: Instant) {
+        // Until a report names both its world and its session, it says
+        // nothing about a walk this panel can follow: every figure stays
+        // "—", as for `empty`, and the walk that is named later starts its
+        // histories from its own first sample (a nil → id change is a new
+        // identity, by `isSameWalk`).
+        let sample = sample.hasIdentity ? sample : .empty
         if let last, !sample.isSameWalk(as: last) {
             // Another walk, or none: nothing seen so far is about it -- not
             // its pace, not its breaks, not how long since its last keyframe.

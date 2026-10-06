@@ -425,6 +425,7 @@ final class ReportPump: @unchecked Sendable {
          "revision_changed":true,"coalesced":0,"cursor_status":null,
          "snapshot":true,"tower_sent_at":1787463092.9,"time_basis":"tower-receipt",
          "payload":{"model_state":"receiving","model_state_reason":null,
+           "session":{"session_id":"sess-1","started_at":1788895000.0},
            "world_snapshot":{"name":"Probe Room","world_id":"w1",
              "keyframe_count":\(keyframes),"revision":"r\(keyframes)",
              "tracking":"good","scale":"relative","mapping_seconds":12.5,

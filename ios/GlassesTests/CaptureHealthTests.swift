@@ -18,7 +18,7 @@ final class CaptureHealthTests: XCTestCase {
     private func at(_ seconds: Double) -> ContinuousClock.Instant { t0 + .milliseconds(Int(seconds * 1000)) }
 
     private func sample(keyframes: Int? = nil, restarts: Int? = nil, recovery: WorldRecoveryReport? = nil,
-                        lag: WorldMapLag? = nil, world: String? = nil, session: String? = nil) -> CaptureHealthSample {
+                        lag: WorldMapLag? = nil, world: String? = "w1", session: String? = "s1") -> CaptureHealthSample {
         CaptureHealthSample(keyframeCount: keyframes, trackingRestarts: restarts, recovery: recovery, mapLag: lag,
                             worldID: world, sessionID: session)
     }
@@ -105,6 +105,82 @@ final class CaptureHealthTests: XCTestCase {
         history.record(sample(keyframes: 30, restarts: 4, world: "w2", session: "s2"), at: at(61))
         XCTAssertEqual(readout(history, 61).pace, "— keyframes/min")
         XCTAssertEqual(readout(history, 61).breaks, "Breaks in the last 30 s: —")
+    }
+
+    /// No figure at all: what a report about no walk this panel can follow
+    /// shows (`CaptureHealthSample.empty`), the map row hidden.
+    private func assertNoFigures(_ r: CaptureHealthReadout, _ why: String, line: UInt = #line) {
+        XCTAssertEqual(r.pace, "— keyframes/min", why, line: line)
+        XCTAssertNil(r.stalled, why, line: line)
+        XCTAssertEqual(r.breaks, "Breaks in the last 30 s: —", why, line: line)
+        XCTAssertNil(r.breaksCount, why, line: line)
+        XCTAssertEqual(r.lookBackCounts, "Look-back: —", why, line: line)
+        XCTAssertNil(r.lookBackLine, why, line: line)
+        XCTAssertNil(r.mapLag, why, line: line)
+    }
+
+    /// Codex HIGH (2026-10-05): a `receiving` report that does not name both
+    /// its world and its session is no walk's. Every figure reads "—" until
+    /// both ids arrive, and the walk then named starts from its own first
+    /// sample (a nil → id change is a new identity).
+    func testEveryFigureWaitsForBothIdsAndALateIdentityStartsAfresh() {
+        var history = CaptureHealthHistory()
+        let recovery = WorldRecoveryReport(state: .recovered, episode: 1,
+                                           counts: WorldRecoveryCounts(recovered: 1, timedOut: 0))
+        let lag = WorldMapLag(builtFromKeyframes: 0, keyframesNow: 5)
+        // 20 s of reports naming the world but not the session, then the
+        // session but not the world: counters rising all along.
+        for second in stride(from: 0, through: 20, by: 2) {
+            history.record(sample(keyframes: second, restarts: second / 4, recovery: recovery, lag: lag,
+                                  world: second < 10 ? "w1" : nil, session: second < 10 ? nil : "s1"),
+                           at: at(Double(second)))
+            assertNoFigures(readout(history, Double(second)), "no identity at \(second) s")
+        }
+
+        // Both ids arrive.
+        history.record(sample(keyframes: 22, restarts: 5, recovery: recovery, lag: lag, world: "w1", session: "s1"),
+                       at: at(22))
+        let first = readout(history, 22)
+        XCTAssertEqual(first.pace, "— keyframes/min", "the named walk warms up from its own first sample")
+        XCTAssertEqual(first.breaks, "Breaks in the last 30 s: —", "no break before identity is the walk's")
+        XCTAssertNil(first.stalled)
+        XCTAssertEqual(first.lookBackCounts, "linked back 1 · could not link 0", "this report's own figures show")
+        XCTAssertEqual(first.mapLag, "Map: 5 keyframes behind")
+        for second in stride(from: 24, through: 32, by: 2) {
+            history.record(sample(keyframes: 22 + (second - 22) / 2, restarts: 5, recovery: recovery, lag: lag,
+                                  world: "w1", session: "s1"), at: at(Double(second)))
+        }
+        XCTAssertEqual(readout(history, 32).pace, "30 keyframes/min", "5 in its own 10 s, not the unnamed reports' rise")
+        XCTAssertEqual(readout(history, 32).breaks, "Breaks in the last 30 s: —", "no rise since identity")
+    }
+
+    /// Codex HIGH (2026-10-05): two walks whose reports lack the same id
+    /// are not one walk -- two missing ids are not equal. Neither shows a
+    /// figure, and nothing of the first is the second's once its ids arrive.
+    func testWalksWithMissingIdsShareNoPaceBreaksOrStall() {
+        var history = CaptureHealthHistory()
+        // Walk A, its session never named: 0 → 20 keyframes over 40 s, two
+        // breaks at 20 s, then 8 s stalled.
+        for second in stride(from: 0, through: 48, by: 2) {
+            history.record(sample(keyframes: min(second, 40) / 2, restarts: second >= 20 ? 2 : 0,
+                                  world: "w1", session: nil), at: at(Double(second)))
+        }
+        assertNoFigures(readout(history, 48), "walk A never named its session")
+
+        // Walk B, the same world, its session not named either; counters higher.
+        for second in stride(from: 50, through: 58, by: 2) {
+            history.record(sample(keyframes: 20 + (second - 48), restarts: 3, world: "w1", session: nil),
+                           at: at(Double(second)))
+        }
+        assertNoFigures(readout(history, 58), "walk B is no walk's, and not walk A's")
+
+        // B's session is named.
+        history.record(sample(keyframes: 32, restarts: 3, world: "w1", session: "s2"), at: at(60))
+        let named = readout(history, 60)
+        XCTAssertEqual(named.pace, "— keyframes/min", "B's pace is its own, from its first named sample")
+        XCTAssertEqual(named.breaks, "Breaks in the last 30 s: —", "walk A's breaks are not B's")
+        XCTAssertNil(named.breaksCount)
+        XCTAssertNil(named.stalled, "walk A's stall is not B's")
     }
 
     // MARK: 2. Breaks in the last 30 s
