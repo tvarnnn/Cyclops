@@ -182,6 +182,7 @@ struct WorldBuilderWorkspaceView: View {
                 askAgain: { world.askTowerAgain() },
                 goToCapture: goToCapture,
                 awaitingIsOverdue: world.awaitingIsOverdue,
+                panelNarratesFinishing: panelPhase.narratesFinishing,
                 recentWorld: world.recentWorld,
                 openRecent: { recent in
                     world.open(worldID: recent.worldID, sessionID: recent.sessionID)

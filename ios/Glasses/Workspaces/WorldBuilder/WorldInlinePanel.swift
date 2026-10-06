@@ -602,6 +602,10 @@ struct WorldInlinePanel<Health: View>: View {
                     isActive: host.placement == .inline, hosted: true, inline: true,
                     onTap: native ? { expand(target) } : nil,
                     onEvent: model.pageEvent)
+                    // The world itself first, then the inline chrome over it
+                    // (its dark line 60, its hint 55): U-INLINE §5, UI10
+                    // (review 2, MED 2).
+                    .accessibilitySortPriority(WorldPanelOrder.world)
                     .overlay {
                         if native {
                             WorldChromeCanvasLayer(
@@ -613,7 +617,6 @@ struct WorldInlinePanel<Health: View>: View {
                             .tint(Color.readableTint)
                         }
                     }
-                    .accessibilitySortPriority(2)
                     .opacity(shown ? 1 : 0)
                 // Faded out and then gone, so nothing of the wait is left
                 // for VoiceOver or a touch once the world is shown.

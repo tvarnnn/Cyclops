@@ -633,7 +633,7 @@ struct WorldChromeCanvasLayer<Banner: View, AreasPanel: View, Details: View>: Vi
                     .dynamicTypeSize(...DynamicTypeSize.accessibility1)
                     .accessibilityLabel(Text(verbatim: labels.darkName))
                     .accessibilityShowsLargeContentViewer { Text(verbatim: labels.darkTitle + "\n" + labels.darkTap) }
-                    .accessibilitySortPriority(60)
+                    .accessibilitySortPriority(WorldChromeInlineOrder.dark)
                     .accessibilityIdentifier("world-chrome-dark")
                 }
                 if elements.contains(.hint), let hint = state.hint {
@@ -641,7 +641,7 @@ struct WorldChromeCanvasLayer<Banner: View, AreasPanel: View, Details: View>: Vi
                         .opacity(max(0.4, hint.opacity))
                         .multilineTextAlignment(.center)
                         .dynamicTypeSize(...DynamicTypeSize.accessibility2)
-                        .accessibilitySortPriority(55)
+                        .accessibilitySortPriority(WorldChromeInlineOrder.hint)
                         .accessibilityIdentifier("world-chrome-hint")
                 }
             }
@@ -698,6 +698,14 @@ struct WorldChromePosition: View {
             .accessibilityHidden(voiceOver)
             .accessibilityIdentifier("world-chrome-position")
     }
+}
+
+/// VoiceOver's order of the inline chrome drawn over the panel's world:
+/// after the world itself (`WorldPanelOrder.world`), the dark line, then
+/// the hint (U-INLINE §5).
+enum WorldChromeInlineOrder {
+    static let dark: Double = 60
+    static let hint: Double = 55
 }
 
 // MARK: - Notices

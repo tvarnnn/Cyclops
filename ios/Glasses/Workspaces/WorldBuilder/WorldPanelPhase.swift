@@ -58,6 +58,12 @@ enum WorldPanelPhase: Equatable {
         return target
     }
 
+    /// The panel is narrating the finishing wait: the canvas's own spinner,
+    /// "The Tower is finishing this world." and its fallback sentence are
+    /// then not drawn (review 2, MED 1) -- one voice for the wait, and the
+    /// panel's is the more specific.
+    var narratesFinishing: Bool { isFinishing }
+
     /// The world this phase can show or open, if any.
     var target: WorldRenderTarget? {
         switch self {
@@ -149,6 +155,13 @@ enum WorldInlineWebPolicy {
         guard scenePhase != .background else { return false }
         return isExpanded || (isReady && panelVisible && !pickerShown)
     }
+}
+
+/// VoiceOver's order inside the ready stage (U-INLINE §5; review 2, MED 2).
+enum WorldPanelOrder {
+    /// The 3D world: read before the inline chrome drawn over it
+    /// (`WorldChromeInlineOrder`).
+    static let world: Double = 70
 }
 
 /// The panel's words that are not the stage's (U-INLINE §2.2, §5).

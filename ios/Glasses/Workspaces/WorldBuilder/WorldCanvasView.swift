@@ -117,6 +117,11 @@ struct WorldCanvasView: View {
     /// .awaitingBound` (U0.8 F13): the spinner gives way to a sentence.
     var awaitingIsOverdue = false
 
+    /// The World Builder panel is narrating the finishing wait
+    /// (`WorldPanelPhase.narratesFinishing`): the `.finalizing` arm then
+    /// draws no spinner and no sentence of its own (review 2, MED 1).
+    var panelNarratesFinishing = false
+
     /// Whether the Diagnostics disclosure is open.
     ///
     /// View state, and deliberately not remembered: every time this screen
@@ -267,7 +272,7 @@ struct WorldCanvasView: View {
             // thing the Tower had carefully declined to say.
             stageHeadline(fallback: "Finalizing", systemImage: "cube")
             worldName(snapshot)
-            if presentation.showsLiveBuild(buildInProgress: buildInProgress) {
+            if !panelNarratesFinishing, presentation.showsLiveBuild(buildInProgress: buildInProgress) {
                 HStack(spacing: 10) {
                     ProgressView()
                     Text("The Tower is finishing this world.")
@@ -284,8 +289,12 @@ struct WorldCanvasView: View {
             // every non-`true` value, including `build_in_progress: false`
             // from a Tower that had just reported nothing was running
             // (Mac gate B0, F2).
-            detailText(WorldPresentation.finalizingDetail(
-                buildInProgress: buildInProgress, photographic: presentation.photographic))
+            // The panel says it, under the capture control, when it is
+            // narrating the wait: one voice (review 2, MED 1).
+            if !panelNarratesFinishing {
+                detailText(WorldPresentation.finalizingDetail(
+                    buildInProgress: buildInProgress, photographic: presentation.photographic))
+            }
             diagnostics
 
         case .finalized(let snapshot):

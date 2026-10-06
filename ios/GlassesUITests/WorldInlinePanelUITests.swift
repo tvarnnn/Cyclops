@@ -401,7 +401,8 @@ final class WorldInlinePanelUITests: XCTestCase {
 
     func testTheVoiceOverOrderOfThePanel() throws {
         let marker = "RESEARCH ORDER T"
-        var state = Page.state(status: "Status T")
+        // With the inline dark line and hint over the world (review 2, MED 2).
+        var state = Page.state(status: "Status T", hint: ["text": "Hint T", "opacity": 0.9], dark: true, edge: "left")
         state["research"] = ["raw": true, "marker": marker]
         mock.setRoute("GET /worlds/w1/render", status: 200,
                       body: Page.html(steps: [.init(state: state)], raw: true, marker: marker))
@@ -409,12 +410,18 @@ final class WorldInlinePanelUITests: XCTestCase {
         openReadyLiveWorld(configure: false)
         XCTAssertTrue(element("world-chrome-research").waitForExistence(timeout: 30))
         XCTAssertTrue(waitFor(timeout: 20) { self.element("world-chrome-status").exists && self.element("world-chrome-status").label == "Status T" })
-        let expected = ["world-chrome-research", "wb-panel-headline", "wb-panel-stage", "world-chrome-status",
-                        "wb-panel-expand"]
+        XCTAssertTrue(element("world-chrome-dark").waitForExistence(timeout: 20), "the inline dark line")
+        XCTAssertTrue(element("world-chrome-hint").exists, "the inline hint")
+        // The world, then the chrome drawn over it. (A snapshot lists the
+        // hierarchy, not VoiceOver's sort order: the priorities themselves
+        // are pinned by WorldInlinePanelTests.)
+        let expected = ["world-chrome-research", "wb-panel-headline", "wb-panel-stage", "web-view",
+                        "world-chrome-dark", "world-chrome-hint", "world-chrome-status", "wb-panel-expand"]
         let snapshot = try element("wb-panel").snapshot()
         var order: [String] = []
         func visit(_ node: XCUIElementSnapshot) {
-            if expected.contains(node.identifier), !order.contains(node.identifier) { order.append(node.identifier) }
+            let name = node.elementType == .webView ? "web-view" : node.identifier
+            if expected.contains(name), !order.contains(name) { order.append(name) }
             node.children.forEach(visit)
         }
         visit(snapshot)
@@ -469,12 +476,17 @@ final class WorldInlinePanelUITests: XCTestCase {
         let line = element("wb-finish-line")
         XCTAssertTrue(line.waitForExistence(timeout: 15))
         XCTAssertTrue(waitFor { line.label.contains("Now: placing and checking images.") }, line.label)
+        // One voice for the wait: the canvas's own is not drawn (review 2).
+        XCTAssertFalse(app.staticTexts["The Tower is finishing this world."].exists, "the canvas narrates it too")
         shoot("u4-fallback")
         push(modelState: "finalizing", buildInProgress: false, finalizationState: "complete", finalSolve: "solved",
              photographic: #"{"state":"owed","stage":"appearance","detail":"d"}"#)
         let detail = element("wb-panel-finishing-detail")
         XCTAssertTrue(detail.waitForExistence(timeout: 15), "today's owed sentence")
         XCTAssertTrue(detail.label.hasPrefix("This world's photographic version is not finished"), detail.label)
+        let owed = app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@",
+                                                        "This world's photographic version is not finished"))
+        XCTAssertEqual(owed.count, 1, "the owed sentence once, the panel's")
         XCTAssertFalse(line.exists && line.label.contains("Now:"), "no stage line: \(text(line))")
     }
 
@@ -497,7 +509,8 @@ final class WorldInlinePanelUITests: XCTestCase {
         push(modelState: "receiving")
         let map = element("wb-panel-map")
         XCTAssertTrue(map.waitForExistence(timeout: 15), "walking: the map slot")
-        XCTAssertTrue(reveal(map, whole: true), "\(name): the walking map slot")
+        // Screens away at AX5: room for the drags it takes.
+        XCTAssertTrue(reveal(map, whole: true, attempts: 28), "\(name): the walking map slot")
         shoot("state-walking-\(name)")
 
         push(modelState: "finalizing", buildInProgress: true, finalizationState: "pending", finalSolve: "pending",
@@ -518,6 +531,11 @@ final class WorldInlinePanelUITests: XCTestCase {
         // The card above was brought into view, so the panel may be off the
         // screen: there it holds no web view (U-INLINE §4). Back to it first.
         XCTAssertTrue(element("wb-panel-stage").waitForExistence(timeout: 15))
+        // The footer first, then the stage: a stage at the screen's bottom
+        // edge leaves the panel under its visibility threshold, and then it
+        // holds no web view (the 17e at AX5).
+        XCTAssertTrue(element("wb-panel-expand").waitForExistence(timeout: 15), "\(name): the ready footer")
+        XCTAssertTrue(reveal(element("wb-panel-expand")), "\(name): the ready panel's footer")
         XCTAssertTrue(reveal(element("wb-panel-stage")), "\(name): the ready panel")
         XCTAssertTrue(app.webViews.firstMatch.waitForExistence(timeout: 30))
         XCTAssertTrue(waitFor(timeout: 20) { self.element("world-chrome-status").exists && self.element("world-chrome-status").label == "1 of 24 images" })

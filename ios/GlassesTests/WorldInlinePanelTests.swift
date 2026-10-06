@@ -445,6 +445,28 @@ final class WorldInlinePanelTests: XCTestCase {
         XCTAssertEqual(WorldPanelCopy.coverNotice(nil, towerReachable: false), WorldPanelCopy.readyButOffline)
     }
 
+    // MARK: Review 2, MED 1: one voice for the finishing wait
+
+    func testOnlyThePanelNarratesTheFinishingWaitWhenItIsShowingIt() {
+        XCTAssertTrue(WorldPanelPhase.finishing(target: nil).narratesFinishing, "the canvas would say it twice")
+        XCTAssertTrue(WorldPanelPhase.finishing(target: target).narratesFinishing)
+        for phase: WorldPanelPhase in [.hidden, .walking(hasMap: false), .walking(hasMap: true), .ready(target),
+                                       .failed(sentence: nil), .offline] {
+            XCTAssertFalse(phase.narratesFinishing, "\(phase): the canvas keeps its own words")
+        }
+    }
+
+    // MARK: Review 2, MED 2: VoiceOver reads the world before its inline chrome
+
+    func testVoiceOverReadsTheWorldBeforeTheInlineChromeOverIt() {
+        // Siblings in the stage's container: the higher priority is read
+        // first. (An XCUITest snapshot lists the hierarchy, not VoiceOver's
+        // order, so this is pinned here.)
+        XCTAssertGreaterThan(WorldPanelOrder.world, WorldChromeInlineOrder.dark, "the dark line before the world")
+        XCTAssertGreaterThan(WorldPanelOrder.world, WorldChromeInlineOrder.hint, "the hint before the world")
+        XCTAssertGreaterThan(WorldChromeInlineOrder.dark, WorldChromeInlineOrder.hint)
+    }
+
     // MARK: The lead's ruling: no third "not connected" line
 
     func testOfflineSaysNotConnectedOnlyWhenTheScreenDoesNot() {
