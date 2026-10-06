@@ -360,4 +360,95 @@ final class WorldInlinePanelTests: XCTestCase {
         XCTAssertEqual(WorldPanelLayout.stageHeight(width: 343, visibleHeight: 400), 200, "half the visible height")
         XCTAssertEqual(WorldPanelLayout.stageHeight(width: 370, visibleHeight: 0), 278, "no height yet: 3:4")
     }
+
+    // MARK: Review HIGH 1: a stage is paired only with its own walk's picture
+
+    func testThePanelPairsAStageOnlyWithItsOwnWalksPicture() {
+        let walk = WorldFinishWalk(worldID: "w1", sessionID: "s1")
+        XCTAssertEqual(WorldPanelPhase.target(target, matching: walk), target, "the same walk")
+        // A Saved worlds pin names its target before its own report arrives.
+        XCTAssertNil(WorldPanelPhase.target(other, matching: walk), "another world: the pin before its report")
+        // A new session of the same world reports before its coordinates.
+        XCTAssertNil(WorldPanelPhase.target(WorldRenderTarget(worldID: "w1", sessionID: "s2"), matching: walk),
+                     "another session of the same world")
+        XCTAssertNil(WorldPanelPhase.target(WorldRenderTarget(worldID: "w1", sessionID: nil), matching: walk),
+                     "a target that names no session cannot be proved this walk's")
+        XCTAssertNil(WorldPanelPhase.target(target, matching: nil), "a report that names no walk")
+        XCTAssertNil(WorldPanelPhase.target(nil, matching: walk))
+        // And so the phase: a settled stage with another walk's target is not ready.
+        let phase = WorldPanelPhase.phase(
+            isCapturing: false, sessionActive: false, towerReachable: true, pageLoaded: false,
+            state: .finalized(WorldSnapshot()), stage: .saved,
+            target: WorldPanelPhase.target(other, matching: walk), needsRetrySentence: nil, hasMap: false)
+        XCTAssertFalse(phase.isReady, "\(phase)")
+    }
+
+    // MARK: Review HIGH 2: a replaced ready world never shows the first one's wait
+
+    func testAReplacedReadyWorldNeverShowsTheFirstWorldsWait() {
+        let walkA = WorldFinishWalk(worldID: "w1", sessionID: "s1")
+        let walkB = WorldFinishWalk(worldID: "w2", sessionID: "s9")
+        var memory = WorldPanelFinishMemory<String>()
+        memory.record("A's finish block", walk: walkA)
+        XCTAssertFalse(memory.phaseChanged(from: .walking(hasMap: false), to: .finishing(target: target)))
+        XCTAssertTrue(memory.phaseChanged(from: .finishing(target: target), to: .ready(target)), "arrived from the wait")
+        XCTAssertEqual(memory.overlay(for: target), "A's finish block", "A's wait over A")
+        // Ready A → ready B: B's wait overlay is "Opening your world…".
+        XCTAssertFalse(memory.phaseChanged(from: .ready(target), to: .ready(other)))
+        XCTAssertNil(memory.overlay(for: other), "A's finish block over B")
+        XCTAssertNil(memory.overlay(for: target), "replaced: forgotten")
+        // A block recorded for another walk never covers this one.
+        var foreign = WorldPanelFinishMemory<String>()
+        foreign.record("B's finish block", walk: walkB)
+        foreign.phaseChanged(from: .finishing(target: target), to: .ready(target))
+        XCTAssertNil(foreign.overlay(for: target), "another walk's block")
+        // Not ready: nothing to overlay.
+        memory.record("A again", walk: walkA)
+        memory.phaseChanged(from: .ready(other), to: .offline)
+        XCTAssertNil(memory.overlay(for: target))
+    }
+
+    func testThePanelDrawsOnlyThePhaseTargetsModel() async throws {
+        let recorder = Recorder()
+        let host = makeHost(recorder)
+        host.update(WorldInlineHost.Inputs(target: target, isReady: true))
+        await settle()
+        let model = try XCTUnwrap(host.model)
+        XCTAssertTrue(host.model(for: target) === model)
+        XCTAssertNil(host.model(for: other), "A's page drawn under B's phase")
+        XCTAssertNil(host.model(for: nil))
+        host.suspend()
+        withExtendedLifetime(recorder) {}
+    }
+
+    // MARK: Review MED 3: the Tower drops under an open preview
+
+    func testTheTowerDroppingUnderAnOpenPreviewDropsTheLiveClaims() {
+        typealias Block = WorldInlinePanel<EmptyView>.FinishingBlock
+        let stop = ContinuousClock.now
+        let live = Block(showsSpinner: true, line: .finalPlacement, stoppedAt: stop, detail: "d")
+        XCTAssertEqual(live.reachable(true), live, "connected: unchanged")
+        let dropped = live.reachable(false)
+        XCTAssertFalse(dropped.showsSpinner, "no spinner")
+        XCTAssertNil(dropped.line, "no stage")
+        XCTAssertNil(dropped.detail, "no Tower sentence")
+        XCTAssertTrue(dropped.offline, "the offline notice")
+        XCTAssertEqual(dropped.stoppedAt, stop, "the phone's own clock stays")
+
+        let progress = WorldViewerProgress(isPreview: true, walkEnded: true, line: .finalPlacement,
+                                           stoppedAt: stop, noteSaysWalkTime: false)
+        XCTAssertEqual(progress.reachable(true), progress)
+        XCTAssertNil(progress.reachable(false).line, "the cover claims no live stage")
+        XCTAssertTrue(progress.reachable(false).isPreview, "the loaded picture is still a preview")
+        XCTAssertEqual(WorldPanelCopy.coverNotice("N.", towerReachable: true), "N.")
+        XCTAssertEqual(WorldPanelCopy.coverNotice("N.", towerReachable: false), WorldPanelCopy.readyButOffline + " N.")
+        XCTAssertEqual(WorldPanelCopy.coverNotice(nil, towerReachable: false), WorldPanelCopy.readyButOffline)
+    }
+
+    // MARK: The lead's ruling: no third "not connected" line
+
+    func testOfflineSaysNotConnectedOnlyWhenTheScreenDoesNot() {
+        XCTAssertNil(WorldPanelCopy.offlineLine(screenSaysOffline: true), "a third line")
+        XCTAssertEqual(WorldPanelCopy.offlineLine(screenSaysOffline: false), WorldPanelCopy.notConnected)
+    }
 }

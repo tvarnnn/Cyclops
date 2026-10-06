@@ -381,6 +381,36 @@ final class WorldFinishProgressTests: XCTestCase {
         XCTAssertEqual(next, before)
     }
 
+    // MARK: Review MED 4: the away banner is announced once per walk
+
+    func testTheAwayBannerIsAnnouncedOncePerWalk() {
+        let a = WorldFinishWalk(worldID: "w1", sessionID: "s1")
+        let b = WorldFinishWalk(worldID: "w1", sessionID: "s2")
+        let t0 = ContinuousClock.now
+        var watch = WorldFinishWatch()
+        func settleAway(_ walk: WorldFinishWalk, at seconds: Int) {
+            watch.report(walk: walk, following: true, standing: .receiving, appActive: true, now: t0 + .seconds(seconds))
+            watch.app(active: false, currentWalk: walk, currentStanding: .receiving)
+            watch.report(walk: walk, following: true, standing: .settled, appActive: false,
+                         now: t0 + .seconds(seconds + 1))
+        }
+        settleAway(a, at: 0)
+        XCTAssertTrue(watch.clock(for: a).showsAwayBanner)
+        XCTAssertTrue(watch.clock(for: a).announcesAwayBanner, "announced when it first appears")
+        watch.bannerAnnounced(for: a)
+        // The banner stays (a cartridge switch, a phase change, a reappearance)
+        // and is not announced again.
+        XCTAssertTrue(watch.clock(for: a).showsAwayBanner, "still shown")
+        XCTAssertFalse(watch.clock(for: a).announcesAwayBanner, "announced twice")
+        // Another walk's announcement does not count for this one, and a
+        // walk with no banner records nothing.
+        watch.bannerAnnounced(for: b)
+        XCTAssertFalse(watch.clock(for: a).announcesAwayBanner)
+        settleAway(b, at: 10)
+        XCTAssertTrue(watch.clock(for: b).announcesAwayBanner, "a new walk's banner is announced")
+        XCTAssertFalse(watch.clock(for: a).showsAwayBanner)
+    }
+
     // MARK: I8: the revision's `basis`
 
     func testTheRevisionBasisDecodes() throws {

@@ -45,6 +45,19 @@ enum WorldPanelPhase: Equatable {
         return .hidden
     }
 
+    /// The picture the panel may pair with the report's stage: `target`
+    /// only when it names the walk the report describes -- the same world
+    /// AND the same session (review HIGH 1). A Saved worlds pin names its
+    /// target before its own report arrives, and a new session of the same
+    /// world reports before its coordinates do: either way the stage on
+    /// screen is another walk's, and another walk's picture is never shown
+    /// (or offered) under it.
+    static func target(_ target: WorldRenderTarget?, matching walk: WorldFinishWalk?) -> WorldRenderTarget? {
+        guard let target, let walk, target.worldID == walk.worldID, target.sessionID == walk.sessionID
+        else { return nil }
+        return target
+    }
+
     /// The world this phase can show or open, if any.
     var target: WorldRenderTarget? {
         switch self {
@@ -75,6 +88,57 @@ enum WorldPanelPhase: Equatable {
     }
 }
 
+/// What the ready panel's wait overlay may show of the finishing wait
+/// before it (U-INLINE §2.2; review HIGH 2): the finish block as it last
+/// stood, kept for the walk it was drawn for. A ready world shows it only
+/// when it came straight from THAT walk's wait; a ready world replaced by
+/// another forgets it, so B's wait is never A's finish block.
+struct WorldPanelFinishMemory<Block: Equatable>: Equatable {
+    private(set) var block: Block?
+    /// The walk `block` was drawn for.
+    private(set) var walk: WorldFinishWalk?
+    /// The ready world that arrived straight from the finishing wait.
+    private(set) var readyFromFinishing: WorldRenderTarget?
+
+    /// The finish block as it stands now, for the walk the report describes.
+    /// `nil` (not finishing) keeps what there is.
+    mutating func record(_ block: Block?, walk: WorldFinishWalk?) {
+        guard let block else { return }
+        self.block = block
+        self.walk = walk
+    }
+
+    /// The phase moved. `true` when the world arrived from the finishing
+    /// wait: the one moment the panel announces it.
+    @discardableResult
+    mutating func phaseChanged(from old: WorldPanelPhase, to new: WorldPanelPhase) -> Bool {
+        guard case .ready(let target) = new else {
+            readyFromFinishing = nil
+            return false
+        }
+        if old.isFinishing {
+            readyFromFinishing = target
+            return true
+        }
+        if case .ready(let previous) = old, previous != target {
+            // Replaced: nothing of the first world's wait is kept.
+            readyFromFinishing = nil
+            block = nil
+            walk = nil
+        }
+        return false
+    }
+
+    /// The finish block the wait overlay over `target` shows, or `nil` for
+    /// "Opening your world…".
+    func overlay(for target: WorldRenderTarget) -> Block? {
+        guard readyFromFinishing == target, let walk,
+              walk.worldID == target.worldID, walk.sessionID == target.sessionID
+        else { return nil }
+        return block
+    }
+}
+
 /// U-INLINE §4: the one `WKWebView` exists only while it is wanted.
 enum WorldInlineWebPolicy {
     /// Expanded, or ready and on screen with nothing over it. Never in the
@@ -96,11 +160,29 @@ enum WorldPanelCopy {
     static let openingLabel = "Opening your world"
     static let notConnected = "The Tower is not connected."
     static let readyButOffline = "The Tower is not connected. This picture will not change until it is."
+    /// The finishing wait when the Tower drops under an open preview: its
+    /// last stage and spinner are no longer current (review MED 3).
+    static let finishingButOffline = "The Tower is not connected. Its progress shows again once it is."
     static let mapFixture = "Fixture map"
+
+    /// The offline stage's sentence, or `nil` when the screen already says
+    /// it (the capture control's Tower line): then the panel shows only its
+    /// own actions, never a third "not connected" line (the lead's ruling).
+    static func offlineLine(screenSaysOffline: Bool) -> String? {
+        screenSaysOffline ? nil : notConnected
+    }
+
+    /// The full-screen preview's notice: the walk's own, and -- with the
+    /// Tower gone -- that the picture will not change until it is back.
+    static func coverNotice(_ notice: String?, towerReachable: Bool) -> String? {
+        guard !towerReachable else { return notice }
+        return [readyButOffline, notice].compactMap { $0 }.joined(separator: " ")
+    }
 
     /// Every sentence the panel itself writes, for the banned-phrase audit (P9).
     static var all: [String] {
-        [fullScreen, fullScreenHint, tryAgain, opening, openingLabel, notConnected, readyButOffline, mapFixture,
+        [fullScreen, fullScreenHint, tryAgain, opening, openingLabel, notConnected, readyButOffline,
+         finishingButOffline, mapFixture,
          WorldFinishCopy.finishing, WorldPreviewCopy.openPreview, WorldPreviewCopy.building,
          WorldPreviewCopy.finalComing, WorldPreviewCopy.finalShown, WorldPreviewCopy.walkTimePicture,
          WorldPreviewCopy.walkTimePreview, WorldFinishCopy.awayBanner(headline: "Saved"),
@@ -115,5 +197,17 @@ enum WorldPanelLayout {
         let byWidth = (width * 0.75).rounded()
         guard visibleHeight > 0 else { return byWidth }
         return min(byWidth, (visibleHeight * 0.5).rounded())
+    }
+}
+
+extension WorldViewerProgress {
+    /// With the Tower gone, the live stage line is no longer current: the
+    /// preview stays a preview and the elapsed clock stays true, but no
+    /// stage is claimed (review MED 3).
+    func reachable(_ towerReachable: Bool) -> WorldViewerProgress {
+        guard !towerReachable else { return self }
+        var progress = self
+        progress.line = nil
+        return progress
     }
 }

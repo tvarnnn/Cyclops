@@ -562,6 +562,7 @@ final class TowerWorldBuilderClient: WorldBuilderClient {
     /// not establish as this session's never reaches here as a result. See
     /// `WorldSessionGate`.
     private(set) var state: WorldModelState = .idle {
+        willSet { refreshPresentedWalk(presenting: newValue) }
         didSet {
             guard state != oldValue else { return }
             log(state)
@@ -840,6 +841,7 @@ final class TowerWorldBuilderClient: WorldBuilderClient {
     /// the arrival path, where a failure is still attributable to a message.
     private var lastReport: StatusReport? {
         didSet {
+            refreshPresentedWalk(presenting: state)
             // Nothing offered stands once the report that offered it is gone.
             if lastReport == nil { recentWorld = nil }
             // Every assignment, including the clearing one above. Its own
@@ -1036,11 +1038,35 @@ final class TowerWorldBuilderClient: WorldBuilderClient {
     }
 
     /// The walk the presented state describes: the last report's, when the
-    /// state carries a snapshot and the report named both ids.
-    private var presentedWalk: WorldFinishWalk? {
+    /// state carries a snapshot and the report named both ids. Refreshed when
+    /// the report changes and just BEFORE the state does (`willSet`), so a
+    /// subscriber never pairs a new stage with the old walk (review HIGH 1).
+    private(set) var presentedWalk: WorldFinishWalk? {
+        didSet {
+            guard presentedWalk != oldValue else { return }
+            presentedWalkSubject.send(presentedWalk)
+        }
+    }
+
+    var presentedWalkUpdates: AnyPublisher<WorldFinishWalk?, Never> {
+        presentedWalkSubject.eraseToAnyPublisher()
+    }
+
+    private let presentedWalkSubject = PassthroughSubject<WorldFinishWalk?, Never>()
+
+    private func refreshPresentedWalk(presenting state: WorldModelState) {
         guard state.snapshot != nil, let worldID = lastReport?.worldID, let sessionID = lastReport?.sessionID
-        else { return nil }
-        return WorldFinishWalk(worldID: worldID, sessionID: sessionID)
+        else {
+            presentedWalk = nil
+            return
+        }
+        presentedWalk = WorldFinishWalk(worldID: worldID, sessionID: sessionID)
+    }
+
+    /// The away banner was announced: never again for its walk.
+    func finishBannerAnnounced() {
+        finishWatch.bannerAnnounced(for: presentedWalk)
+        publishFinishClock()
     }
 
     /// The presented state, for the stop clock.

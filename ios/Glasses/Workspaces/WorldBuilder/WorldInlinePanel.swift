@@ -172,6 +172,14 @@ final class WorldInlineHost: ObservableObject {
         lifecycle = Task { await run(model) }
     }
 
+    /// The model, only when it is `target`'s (review HIGH 2): until the
+    /// host catches up with a new phase it still holds the previous
+    /// target's page, and the panel never draws that under this phase.
+    func model(for target: WorldRenderTarget?) -> WorldRenderViewerModel? {
+        guard let model, let target, model.target == target else { return nil }
+        return model
+    }
+
     /// Cancel the lifecycle, close the viewer (drops the imagery, PRIVACY
     /// §3.6, and resets the chrome), tear the web view down (`close` to the
     /// page's held `await`), forget the model.
@@ -301,12 +309,19 @@ struct WorldInlinePanel<Health: View>: View {
     /// `lifecycle.build_in_progress` of a finalizing state, for the spinner.
     let buildInProgress: Bool?
     let isTowerReachable: Bool
+    /// The walk the report describes (world and session), or `nil`.
+    let walk: WorldFinishWalk?
+    /// The screen already says the Tower is not connected (the capture
+    /// control's line): the offline stage then shows only its actions.
+    let screenSaysOffline: Bool
     /// Capture health is drawn while walking (a session or a capture).
     let showsHealth: Bool
     /// The frozen map under the finishing wait, when there was one.
     let hasMap: Bool
     @ObservedObject var host: WorldInlineHost
     let dismissBanner: () -> Void
+    /// The away banner was announced: never again for this walk.
+    let bannerAnnounced: () -> Void
     let expand: (WorldRenderTarget) -> Void
     @ViewBuilder let health: () -> Health
 
@@ -315,17 +330,15 @@ struct WorldInlinePanel<Health: View>: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     @State private var width: CGFloat = 0
-    /// The ready world arrived from the finishing wait: its wait overlay is
-    /// the finishing content, not "Opening your world…".
-    @State private var cameFromFinishing = false
     /// The page has been ready for the model's `renderTimeout` without a
     /// drawn state: show it anyway, with its own message.
     @State private var readyTimedOut = false
-    /// The finish block as it last stood while finishing: what the wait
-    /// overlay shows until the world is drawn, so the cross-fade starts from
-    /// the picture the wearer was looking at, and never from words
-    /// recomputed for the settled world (which no longer has a stage line).
-    @State private var lastFinishing: FinishingBlock?
+    /// The finish block as it last stood while finishing, for its walk:
+    /// what the wait overlay shows until the world is drawn, so the
+    /// cross-fade starts from the picture the wearer was looking at, and
+    /// never from words recomputed for the settled world (which no longer
+    /// has a stage line) -- nor from another walk's wait.
+    @State private var finish = WorldPanelFinishMemory<FinishingBlock>()
 
     /// What S2 draws: the spinner, the stage line, the elapsed line, or the
     /// canvas's own sentence when there is no stage line.
@@ -334,6 +347,17 @@ struct WorldInlinePanel<Health: View>: View {
         var line: WorldFinishLine?
         var stoppedAt: ContinuousClock.Instant?
         var detail: String?
+        /// The Tower dropped: the offline notice stands in for the claims.
+        var offline = false
+
+        /// With the Tower gone (an open preview keeps the phase finishing),
+        /// the last stage, the spinner and the Tower's sentence are no
+        /// longer current: none is claimed, the elapsed clock stays (it is
+        /// the phone's), and the offline notice says why (review MED 3).
+        func reachable(_ towerReachable: Bool) -> FinishingBlock {
+            guard !towerReachable else { return self }
+            return FinishingBlock(showsSpinner: false, line: nil, stoppedAt: stoppedAt, detail: nil, offline: true)
+        }
     }
 
     private var currentFinishing: FinishingBlock? {
@@ -346,6 +370,7 @@ struct WorldInlinePanel<Health: View>: View {
                 ? WorldPresentation.finalizingDetail(buildInProgress: buildInProgress,
                                                      photographic: presentation.photographic)
                 : nil)
+        .reachable(isTowerReachable)
     }
 
     var body: some View {
@@ -356,7 +381,9 @@ struct WorldInlinePanel<Health: View>: View {
             // ("capture-health") was lost.
             VStack(spacing: 12) {
                 if showsBanner, let headline = presentation.headline {
-                    WorldFinishBannerView(text: WorldFinishCopy.awayBanner(headline: headline), dismiss: dismissBanner)
+                    WorldFinishBannerView(text: WorldFinishCopy.awayBanner(headline: headline),
+                                          announces: presentation.finishClock.announcesAwayBanner,
+                                          announced: bannerAnnounced, dismiss: dismissBanner)
                         .transition(reduceMotion ? .opacity : .move(edge: .top).combined(with: .opacity))
                         .accessibilitySortPriority(100)
                 }
@@ -376,34 +403,31 @@ struct WorldInlinePanel<Health: View>: View {
         .animation(reduceMotion ? nil : .easeInOut(duration: 0.25), value: showsBanner)
         .onScrollVisibilityChange(threshold: 0.2) { visible in host.visibilityChanged(visible) }
         .onChange(of: phase) { old, new in
-            if new.isReady {
-                if old.isFinishing {
-                    cameFromFinishing = true
-                    // One announcement, unless the away banner says it.
-                    if !showsBanner, let headline = presentation.headline {
-                        AccessibilityNotification.Announcement(WorldFinishCopy.finished(headline: headline)).post()
-                    }
-                }
-            } else {
-                cameFromFinishing = false
+            // One announcement, unless the away banner says it.
+            if finish.phaseChanged(from: old, to: new), !showsBanner, let headline = presentation.headline {
+                AccessibilityNotification.Announcement(WorldFinishCopy.finished(headline: headline)).post()
             }
         }
         .onChange(of: currentFinishing, initial: true) { _, block in
-            if let block { lastFinishing = block }
+            finish.record(block, walk: walk)
+        }
+        .onChange(of: walk) { _, walk in
+            finish.record(currentFinishing, walk: walk)
         }
         .onChange(of: webShown) { _, shown in
             guard shown else { return }
             // The wait overlay has gone with this commit: the chrome may now
             // be told the page finished, so `activate` reaches the page only
             // once the native chrome is visible (WORLDS §4c).
+            let model = host.model(for: phase.target)
             Task { @MainActor in
                 await Task.yield()
-                host.model?.renderingPanelGone()
+                model?.renderingPanelGone()
             }
         }
         .task(id: readyKey) {
             readyTimedOut = false
-            guard readyKey != nil, let timeout = host.model?.renderTimeout else { return }
+            guard readyKey != nil, let timeout = host.model(for: phase.target)?.renderTimeout else { return }
             try? await Task.sleep(for: timeout)
             guard !Task.isCancelled else { return }
             readyTimedOut = true
@@ -424,7 +448,7 @@ struct WorldInlinePanel<Health: View>: View {
         VStack(alignment: .leading, spacing: 0) {
             // Row 1: the research marker, read directly -- in every chrome
             // mode, a fallback included (U-INLINE §2.2, the everNative MED).
-            if let marker = host.model?.chrome.researchMarker {
+            if let marker = host.model(for: phase.target)?.chrome.researchMarker {
                 WorldChromeResearchBand(marker: marker)
                     .environment(\.colorScheme, .dark)
                     .accessibilitySortPriority(95)
@@ -504,11 +528,13 @@ struct WorldInlinePanel<Health: View>: View {
             stageText(sentence ?? host.model?.state.failureMessage ?? presentation.recoverability?.sentence ?? "")
         case .offline:
             VStack(alignment: .leading, spacing: 12) {
-                Text(WorldPanelCopy.notConnected)
-                    .font(.body)
-                    .foregroundStyle(WorldChromeStyle.text)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .accessibilityIdentifier("wb-panel-offline")
+                if let line = WorldPanelCopy.offlineLine(screenSaysOffline: screenSaysOffline) {
+                    Text(line)
+                        .font(.body)
+                        .foregroundStyle(WorldChromeStyle.text)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .accessibilityIdentifier("wb-panel-offline")
+                }
                 if let recovery {
                     TowerRecoveryButtons(actions: recovery, identifierPrefix: "wb-panel")
                         .environment(\.colorScheme, .light)
@@ -538,6 +564,13 @@ struct WorldInlinePanel<Health: View>: View {
                         .fixedSize(horizontal: false, vertical: true)
                         .accessibilityIdentifier("wb-panel-finishing-detail")
                 }
+                if block.offline {
+                    Text(WorldPanelCopy.finishingButOffline)
+                        .font(.body)
+                        .foregroundStyle(WorldChromeStyle.text)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .accessibilityIdentifier("wb-panel-finishing-offline")
+                }
             }
             .padding(16)
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -559,7 +592,7 @@ struct WorldInlinePanel<Health: View>: View {
     /// page would not draw.
     @ViewBuilder
     private func readyContent(_ target: WorldRenderTarget) -> some View {
-        if let model = host.model, let html = model.state.html {
+        if let model = host.model(for: target), let html = model.state.html {
             let native = usesNativeChrome(model, html: html)
             let shown = webShown
             ZStack {
@@ -585,25 +618,25 @@ struct WorldInlinePanel<Health: View>: View {
                 // Faded out and then gone, so nothing of the wait is left
                 // for VoiceOver or a touch once the world is shown.
                 if !shown {
-                    waitOverlay
+                    waitOverlay(for: target)
                         .transition(.opacity)
                 }
             }
             .animation(reduceMotion ? nil : .easeInOut(duration: 0.35), value: shown)
-        } else if let failure = host.model?.state.failureMessage {
+        } else if let failure = host.model(for: target)?.state.failureMessage {
             stageText(failure)
         } else {
-            waitOverlay
+            waitOverlay(for: target)
         }
     }
 
     /// Until the web view is shown: the finishing content when the world
-    /// came from the wait, otherwise a spinner and *Opening your world…* (a
+    /// came from ITS wait, otherwise a spinner and *Opening your world…* (a
     /// fetch is genuinely in flight).
     @ViewBuilder
-    private var waitOverlay: some View {
-        if cameFromFinishing, let lastFinishing {
-            finishingContent(lastFinishing)
+    private func waitOverlay(for target: WorldRenderTarget) -> some View {
+        if let block = finish.overlay(for: target) {
+            finishingContent(block)
                 .background(Color(WorldRenderLoadingPanel.pageBackground))
         } else {
             VStack(spacing: 10) {
@@ -624,13 +657,13 @@ struct WorldInlinePanel<Health: View>: View {
     /// The page is drawn, or will never say: `.ready` and (today's chrome,
     /// the page's first drawn state, or the model's render timeout).
     private var webShown: Bool {
-        guard phase.isReady, let model = host.model, case .ready = model.state else { return false }
+        guard phase.isReady, let model = host.model(for: phase.target), case .ready = model.state else { return false }
         return model.chrome.mode == .legacy || model.chrome.state?.drawn == true || readyTimedOut
     }
 
     /// Restarts the render-timeout wait for each model and each ready page.
     private var readyKey: String? {
-        guard phase.isReady, let model = host.model, case .ready = model.state else { return nil }
+        guard phase.isReady, let model = host.model(for: phase.target), case .ready = model.state else { return nil }
         return "\(ObjectIdentifier(model).hashValue)-\(model.renderAttempt)-\(model.pageFinishedToken)"
     }
 
@@ -649,7 +682,7 @@ struct WorldInlinePanel<Health: View>: View {
                              identifier: "wb-panel-expand") { expand(target) }
             }
         case .ready(let target):
-            if let model = host.model, model.state.failureMessage != nil {
+            if let model = host.model(for: target), model.state.failureMessage != nil {
                 footerRow(line: nil) {
                     actionButton(WorldPanelCopy.tryAgain, hint: nil, identifier: "wb-panel-retry") {
                         Task { await model.load() }
@@ -671,7 +704,7 @@ struct WorldInlinePanel<Health: View>: View {
     private var readyLine: (text: String, identifier: String)? {
         if !isTowerReachable { return (WorldPanelCopy.readyButOffline, "wb-panel-footer-line") }
         // The inline subset's rule (U-INLINE §3.4): never under a message.
-        guard let model = host.model, model.chrome.isDrawingNative, let state = model.chrome.state,
+        guard let model = host.model(for: phase.target), model.chrome.isDrawingNative, let state = model.chrome.state,
               let status = state.status,
               WorldChromeCanvasLayer<EmptyView, EmptyView, EmptyView>.inlineElements(state).contains(.status)
         else { return nil }

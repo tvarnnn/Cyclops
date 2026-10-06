@@ -152,6 +152,16 @@ protocol WorldBuilderClient: CartridgeClient {
     /// The away banner was read.
     func dismissFinishBanner()
 
+    /// The away banner was announced to VoiceOver: never again for its walk.
+    func finishBannerAnnounced()
+
+    /// The walk the presented state describes -- the report's world AND
+    /// session -- or `nil` when it named either not. Published BEFORE the
+    /// state it describes, so a reader never pairs a new walk's stage with
+    /// the previous walk's identity (review HIGH 1).
+    var presentedWalk: WorldFinishWalk? { get }
+    var presentedWalkUpdates: AnyPublisher<WorldFinishWalk?, Never> { get }
+
     /// The live relocalizer's episode (`tracking.recovery`) for the walk this
     /// phone is streaming, or `nil` -- never for a saved or foreign world.
     var recovery: WorldRecoveryReport? { get }
@@ -256,6 +266,15 @@ extension WorldBuilderClient {
     }
 
     func dismissFinishBanner() {}
+
+    func finishBannerAnnounced() {}
+
+    /// No Tower, no report, no walk.
+    var presentedWalk: WorldFinishWalk? { nil }
+
+    var presentedWalkUpdates: AnyPublisher<WorldFinishWalk?, Never> {
+        Empty(completeImmediately: false).eraseToAnyPublisher()
+    }
 
     /// No live walk, no relocalizer.
     var recovery: WorldRecoveryReport? { nil }
@@ -468,6 +487,10 @@ final class WorldBuilderViewModel: ObservableObject {
     /// clears it, and the next report re-earns it.
     @Published private(set) var renderTarget: WorldRenderTarget?
 
+    /// The walk the presented state describes (world and session), or `nil`.
+    /// Republished from the client, ahead of the state it describes.
+    @Published private(set) var presentedWalk: WorldFinishWalk?
+
     /// Whether the world on screen belongs to the capture the phone has open.
     ///
     /// Republished rather than derived, for the reason `state` is: the client
@@ -615,6 +638,7 @@ final class WorldBuilderViewModel: ObservableObject {
         self.lookBackBanner = client.lookBackBanner
         self.processing = client.processing
         self.finishClock = client.finishClock
+        self.presentedWalk = client.presentedWalk
         self.geometry = geometry
         self.library = library
 
@@ -638,6 +662,11 @@ final class WorldBuilderViewModel: ObservableObject {
         // the client's began (U0.8 F13).
         watchAwaiting(client.state)
 
+        // Ahead of `stateUpdates`, as the client sends it.
+        client.presentedWalkUpdates
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] walk in self?.presentedWalkDidChange(to: walk) }
+            .store(in: &cancellables)
         client.stateUpdates
             .receive(on: DispatchQueue.main)
             .sink { [weak self] state in self?.stateDidChange(to: state) }
@@ -713,6 +742,39 @@ final class WorldBuilderViewModel: ObservableObject {
     /// The away banner's OK.
     func dismissFinishBanner() {
         client.dismissFinishBanner()
+    }
+
+    func finishBannerAnnounced() {
+        client.finishBannerAnnounced()
+    }
+
+    /// The report now describes `walk`. A drawn gallery -- and with it the
+    /// picture target -- that is another session's, of this world or any
+    /// other, goes before anything of the new walk's is fetched: a new
+    /// session of the same world is a new walk, and its stage must never be
+    /// paired with the previous session's picture (review HIGH 1). A
+    /// pinned world named without a session takes the session its report
+    /// names, so the panel can pair the two.
+    ///
+    /// Internal rather than private so a test can drive it.
+    func presentedWalkDidChange(to walk: WorldFinishWalk?) {
+        guard presentedWalk != walk else { return }
+        presentedWalk = walk
+        guard let walk else { return }
+        if let owner = geometryOwner, owner.worldID != walk.worldID || owner.sessionID != walk.sessionID {
+            forgetGeometry()
+        }
+        if case .inspecting(let worldID?) = inspection, worldID == walk.worldID,
+           let target = renderTarget, target.worldID == worldID, target.sessionID == nil {
+            renderTarget = WorldRenderTarget(worldID: worldID, sessionID: walk.sessionID)
+        }
+    }
+
+    /// The picture the World Builder panel may show or offer under the
+    /// current report's stage: the ladder's target, only when it names the
+    /// walk the report describes (`WorldPanelPhase.target(_:matching:)`).
+    var panelTarget: WorldRenderTarget? {
+        WorldPanelPhase.target(presentation.reconstruction.target, matching: presentedWalk)
     }
 
     /// Republish the state, and forget the gallery when the state no longer

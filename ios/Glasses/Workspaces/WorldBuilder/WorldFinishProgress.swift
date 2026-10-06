@@ -308,6 +308,8 @@ nonisolated struct WorldFinishWalk: Equatable, Sendable, Hashable {
 nonisolated struct WorldFinishClock: Equatable, Sendable {
     var stoppedAt: ContinuousClock.Instant?
     var showsAwayBanner: Bool
+    /// The banner shows and has not been announced for this walk yet.
+    var announcesAwayBanner = false
     static let unknown = WorldFinishClock(stoppedAt: nil, showsAwayBanner: false)
 }
 
@@ -326,6 +328,9 @@ nonisolated struct WorldFinishWatch: Equatable, Sendable {
     private(set) var stopped: Stop?
     private(set) var awayWhileFinishing: WorldFinishWalk?
     private(set) var bannerFor: WorldFinishWalk?
+    /// The walk whose banner VoiceOver has announced: once per walk,
+    /// whether or not the banner is still on screen.
+    private(set) var announcedFor: WorldFinishWalk?
 
     init() {}
 
@@ -363,9 +368,16 @@ nonisolated struct WorldFinishWatch: Equatable, Sendable {
 
     mutating func dismissBanner() { bannerFor = nil }
 
+    /// The banner for `walk` was announced: never again for that walk.
+    mutating func bannerAnnounced(for walk: WorldFinishWalk?) {
+        guard let walk, bannerFor == walk else { return }
+        announcedFor = walk
+    }
+
     func clock(for walk: WorldFinishWalk?) -> WorldFinishClock {
         guard let walk else { return .unknown }
         return WorldFinishClock(stoppedAt: stopped?.walk == walk ? stopped?.at : nil,
-                                showsAwayBanner: bannerFor == walk)
+                                showsAwayBanner: bannerFor == walk,
+                                announcesAwayBanner: bannerFor == walk && announcedFor != walk)
     }
 }

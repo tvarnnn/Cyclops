@@ -264,8 +264,10 @@ struct WorldBuilderWorkspaceView: View {
                 // The status channel's `lifecycle.finalization` is the same
                 // record as the row's; when the Tower carries the v6 notice
                 // there too, the live screen's room shows it. `nil` otherwise.
-                notice: world.finalization?.notice,
-                progress: world.viewerProgress
+                // With the Tower gone the picture stays, its live stage goes,
+                // and the notice says why (review MED 3).
+                notice: WorldPanelCopy.coverNotice(world.finalization?.notice, towerReachable: isTowerReachable),
+                progress: world.viewerProgress.reachable(isTowerReachable)
             )
         }
         .onChange(of: hostInputs, initial: true) { _, inputs in host.update(inputs) }
@@ -451,7 +453,8 @@ struct WorldBuilderWorkspaceView: View {
             pageLoaded: host.model?.state.html != nil,
             state: world.state,
             stage: presentation.stage,
-            target: presentation.reconstruction.target,
+            // Only a picture of the walk this report describes (review HIGH 1).
+            target: world.panelTarget,
             needsRetrySentence: presentation.recoverability?.sentence,
             hasMap: WorldPanelMap.fixtureEnabled)
     }
@@ -475,10 +478,13 @@ struct WorldBuilderWorkspaceView: View {
             presentation: world.presentation,
             buildInProgress: buildInProgress,
             isTowerReachable: isTowerReachable,
+            walk: world.presentedWalk,
+            screenSaysOffline: captureSaysTowerIsOff,
             showsHealth: showsHealthInPanel,
             hasMap: WorldPanelMap.fixtureEnabled,
             host: host,
             dismissBanner: { world.dismissFinishBanner() },
+            bannerAnnounced: { world.finishBannerAnnounced() },
             expand: { target in expand(target) }
         ) {
             #if DEBUG
@@ -488,6 +494,18 @@ struct WorldBuilderWorkspaceView: View {
             #endif
         }
         .id(Self.panelID)
+    }
+
+    /// The capture control already says the Tower is not connected (its
+    /// `wb-capture-tower-line`): the panel then says it no third time.
+    private var captureSaysTowerIsOff: Bool {
+        #if DEBUG
+        guard !isTowerReachable else { return false }
+        return controlMode == .start
+            || WorldBuilderCaptureText.towerLine(status: tower.status, gaveUp: tower.reconnectGaveUp) != nil
+        #else
+        false
+        #endif
     }
 
     private var showsHealthInPanel: Bool {

@@ -4598,6 +4598,15 @@ final class ScriptedWorldBuilderClient: WorldBuilderClient {
         geometrySubject.send(coordinates)
     }
 
+    private(set) var presentedWalk: WorldFinishWalk?
+    private let walkSubject = PassthroughSubject<WorldFinishWalk?, Never>()
+    var presentedWalkUpdates: AnyPublisher<WorldFinishWalk?, Never> { walkSubject.eraseToAnyPublisher() }
+
+    func send(walk: WorldFinishWalk?) {
+        presentedWalk = walk
+        walkSubject.send(walk)
+    }
+
     func inspect(worldID: String, sessionID: String?) {
         pins.append((worldID, sessionID))
         inspection = .inspecting(worldID: worldID)
@@ -4760,6 +4769,54 @@ final class WorldBuilderViewModelOwnershipTests: XCTestCase {
         viewModel.inspectionDidChange(to: .live)
         XCTAssertTrue(viewModel.fragmentsModel.segments.isEmpty)
         XCTAssertNil(viewModel.renderTarget)
+    }
+
+    /// Review HIGH 1, the pin before its report: Saved worlds names the
+    /// pinned world's target at once, while the stage on screen is still the
+    /// previous walk's. The panel pairs that stage with no picture until the
+    /// pinned world's own report arrives.
+    func testAPinBeforeItsReportPairsTheOldStageWithNoPicture() async {
+        let client = ScriptedWorldBuilderClient()
+        let viewModel = makeViewModel(client: client)
+        let a = WorldFinishWalk(worldID: "w-a", sessionID: "s-a")
+        client.send(walk: a)
+        let walked = await waitUntil { viewModel.presentedWalk == a }
+        XCTAssertTrue(walked, "the walk never reached the view model")
+        await populate(viewModel)
+        XCTAssertEqual(viewModel.panelTarget, WorldRenderTarget(worldID: "w-a", sessionID: "s-a"))
+
+        viewModel.open(worldID: "w-b", sessionID: "s-b")
+        XCTAssertEqual(viewModel.renderTarget, WorldRenderTarget(worldID: "w-b", sessionID: "s-b"))
+        XCTAssertNil(viewModel.panelTarget, "w-a's stage was paired with w-b's picture")
+
+        client.send(walk: WorldFinishWalk(worldID: "w-b", sessionID: "s-b"))
+        let arrived = await waitUntil { viewModel.panelTarget != nil }
+        XCTAssertTrue(arrived, "the pinned world's own report pairs its picture")
+        XCTAssertEqual(viewModel.panelTarget, WorldRenderTarget(worldID: "w-b", sessionID: "s-b"))
+    }
+
+    /// Review HIGH 1, a new session in the same world: the previous
+    /// session's picture target goes when the report names the new session,
+    /// before the new session's coordinates arrive -- the world id alone
+    /// never changed.
+    func testANewSessionOfTheSameWorldForgetsThePreviousSessionsPicture() async {
+        let client = ScriptedWorldBuilderClient()
+        let viewModel = makeViewModel(client: client)
+        viewModel.presentedWalkDidChange(to: WorldFinishWalk(worldID: "w-a", sessionID: "s-a"))
+        await populate(viewModel)
+        XCTAssertNotNil(viewModel.panelTarget)
+
+        viewModel.presentedWalkDidChange(to: WorldFinishWalk(worldID: "w-a", sessionID: "s-a2"))
+        viewModel.stateDidChange(to: .receiving(WorldSnapshot(worldID: "w-a", keyframeCount: 3)))
+        XCTAssertNil(viewModel.renderTarget, "s-a's picture target survived into s-a2")
+        XCTAssertNil(viewModel.panelTarget)
+        XCTAssertTrue(viewModel.fragmentsModel.segments.isEmpty, "s-a's gallery survived into s-a2")
+
+        // A pinned world named without a session takes its report's.
+        viewModel.open(worldID: "w-p", sessionID: nil)
+        viewModel.inspectionDidChange(to: .inspecting(worldID: "w-p"))
+        viewModel.presentedWalkDidChange(to: WorldFinishWalk(worldID: "w-p", sessionID: "s-p"))
+        XCTAssertEqual(viewModel.panelTarget, WorldRenderTarget(worldID: "w-p", sessionID: "s-p"))
     }
 
     func testReturningToLiveClearsTheGalleryAndThePictureTarget() async {

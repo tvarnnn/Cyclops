@@ -102,10 +102,16 @@ struct WorldFinishLineView: View {
 }
 
 /// "While you were away, your walk finished: Saved." One OK; never
-/// auto-dismissed; announced once when it appears. No haptic: the look-back
-/// cue owns that channel.
+/// auto-dismissed; announced once per walk, when it first appears -- not on
+/// every appearance: the banner outlives a cartridge switch and a phase
+/// change, and its delivery is recorded per walk by the client (review
+/// MED 4). No haptic: the look-back cue owns that channel.
 struct WorldFinishBannerView: View {
     let text: String
+    /// This walk's banner has not been announced yet.
+    let announces: Bool
+    /// Records the announcement for this walk.
+    let announced: () -> Void
     let dismiss: () -> Void
 
     var body: some View {
@@ -125,7 +131,11 @@ struct WorldFinishBannerView: View {
         .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 14))
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("wb-finish-banner")
-        .onAppear { AccessibilityNotification.Announcement(text).post() }
+        .onAppear {
+            guard announces else { return }
+            AccessibilityNotification.Announcement(text).post()
+            announced()
+        }
     }
 
     private var label: some View {
