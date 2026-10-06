@@ -802,7 +802,17 @@ final class TowerWorldBuilderClient: WorldBuilderClient {
 
     /// The open subscription on the **current** socket, or `nil`. Cleared on
     /// every disconnect because the Tower's ids are per connection.
-    private var subscriptionID: String?
+    ///
+    /// Whenever it closes -- on EVERY path, the terminal ones included (a
+    /// `closesSubscription` error that exhausts the budget, an unsolicited
+    /// `result_unsubscribed`) -- the capture-health figures it produced stop
+    /// being live at once. With the socket still up, nothing else would
+    /// blank them before they went stale 5 s later (Codex HIGH, 2026-10-05).
+    private var subscriptionID: String? {
+        didSet {
+            if subscriptionID == nil, oldValue != nil { invalidateHealth() }
+        }
+    }
 
     /// Subscription ids this client has closed on the current socket, so a
     /// heartbeat the Tower had already queued for one of them is recognised

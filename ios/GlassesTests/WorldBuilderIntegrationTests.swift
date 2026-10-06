@@ -846,6 +846,86 @@ final class TowerWorldBuilderClientTests: XCTestCase {
         tower.disconnect()
     }
 
+    /// Codex HIGH (2026-10-05): the Tower closes the subscription once too
+    /// often and the client gives up on it -- with the socket still up. The
+    /// figures that subscription produced are not live any more, so the
+    /// panel goes blank at once, not when they go stale 5 s later.
+    func testWhenTheTowerClosesTheSubscriptionForGoodThePanelGoesBlankAtOnce() async throws {
+        let server = try MockTowerServer()
+        let port = try await server.start()
+        let recorder = MessageRecorder()
+        serve(server, recorder: recorder)
+        defer { server.stop() }
+
+        let tower = TowerClient(metrics: SenderMetrics())
+        let client = TowerWorldBuilderClient(tower: tower)
+        let model = CaptureHealthModel(client: client)
+        tower.connect(to: url(port: port))
+        await expect { client.state == .awaitingFirstUpdate }
+
+        func closeSubscription(_ id: String) {
+            server.send(text: """
+                {"type":"result_error","reason":"channel_failed","message":"The result channel failed.",
+                 "cartridge":"world_builder","subscription_id":"\(id)","closes_subscription":true}
+                """)
+        }
+        func subscribes() -> Int {
+            recorder.all.compactMap(self.decode).filter { $0["type"] as? String == "result_subscribe" }.count
+        }
+
+        server.send(text: Self.healthReport(seq: 1, keyframes: 20, restarts: 1, revision: "r1"))
+        await expect { self.hasFreshFigures(model) }
+        // The budget: each close is answered by a new subscription, which
+        // reports. Its report, after its ack on the one ordered socket, also
+        // proves the client holds the new id.
+        for n in 1...3 {
+            closeSubscription("sub-\(n)")
+            await expect { subscribes() == n + 1 }
+            server.send(text: Self.healthReport(seq: 1, keyframes: 20 + n, restarts: 1, revision: "r\(n + 1)",
+                                                subscription: "sub-\(n + 1)"))
+            await expect("sub-\(n + 1)'s report") { self.hasFreshFigures(model) }
+        }
+
+        // The budget is spent: this close is the last word.
+        closeSubscription("sub-4")
+        await expect {
+            if case .failed = client.state { return true }
+            return false
+        }
+        try await Task.sleep(for: .milliseconds(100))   // the model hears on the main queue
+        XCTAssertEqual(tower.status, .online, "the socket is still up: only the subscription is gone")
+        XCTAssertEqual(subscribes(), 4, "no fifth subscription")
+        assertNoLiveFigures(healthRows(model), "the subscription that produced them is closed for good")
+
+        tower.disconnect()
+    }
+
+    /// Codex HIGH (2026-10-05): the Tower says the subscription is gone
+    /// (`result_unsubscribed`) without being asked. Its figures go with it.
+    func testAResultUnsubscribedTheClientDidNotAskForBlanksThePanelAtOnce() async throws {
+        let server = try MockTowerServer()
+        let port = try await server.start()
+        serve(server)
+        defer { server.stop() }
+
+        let tower = TowerClient(metrics: SenderMetrics())
+        let client = TowerWorldBuilderClient(tower: tower)
+        let model = CaptureHealthModel(client: client)
+        tower.connect(to: url(port: port))
+        await expect { client.state == .awaitingFirstUpdate }
+
+        server.send(text: Self.healthReport(seq: 1, keyframes: 20, restarts: 1, revision: "r1"))
+        await expect { self.hasFreshFigures(model) }
+        server.send(text: #"{"type":"result_unsubscribed","subscription_id":"sub-1"}"#)
+        await expect("the panel goes blank well inside the 5 s staleness", timeout: 2) {
+            !self.hasFreshFigures(model)
+        }
+        XCTAssertEqual(tower.status, .online)
+        assertNoLiveFigures(healthRows(model), "the subscription that produced them is gone")
+
+        tower.disconnect()
+    }
+
     /// U2-D0 (review HIGH 2): the screen pins a saved world. The live walk's
     /// figures are gone at once -- not when the pinned report arrives, and
     /// never shown beside the saved world -- and they come back only with a
