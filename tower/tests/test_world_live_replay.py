@@ -695,6 +695,46 @@ def test_solution_snapshots_keep_each_version_once(tmp_path):
     assert first["timing"]["map_s"] == 30.5
 
 
+def test_placement_snapshots_pair_arrays_and_descriptors_only_when_enabled(tmp_path):
+    import sqlite3
+    import numpy as np
+
+    solve = tmp_path / "solve"
+    solve.mkdir()
+    path = solve / "solution.json"
+    np.savez_compressed(solve / "solution.npz", xyz=np.zeros((1, 3), np.float32),
+                        component=np.zeros(1, np.int32),
+                        observations=np.array([[0, 0, 0]], np.int32),
+                        observation_xy=np.array([[10., 20.]], np.float32))
+    db = sqlite3.connect(solve / "database.db")
+    db.execute("create table images(image_id integer primary key, name text)")
+    db.execute("create table descriptors(image_id integer primary key, rows integer, cols integer, data blob)")
+    db.execute("create table keypoints(image_id integer primary key, rows integer, cols integer, data blob)")
+    db.execute("insert into images values(1, '00000001.jpg')")
+    db.execute("insert into descriptors values(1, 1, 128, ?)", (bytes(range(128)),))
+    db.execute("insert into keypoints values(1, 1, 2, ?)",
+               (np.array([[10., 20.]], np.float32).tobytes(),))
+    db.commit()
+    db.close()
+    path.write_text(json.dumps({"solved_at": 1, "keyframe_ids": ["s:00000001"],
+                                "poses": {"s:00000001": {"component": 0}}}), encoding="utf-8")
+
+    off = replay.SolutionSnapshots(tmp_path / "off")
+    assert off.poll(path)
+    assert sorted(p.name for p in off.dir.iterdir()) == ["000.json", "index.json"]
+    assert set(off.items[0]) == {"n", "file", "mtime", "seen_at", "solved_at",
+                                 "consensus_state", "map_s", "gate_s"}
+
+    on = replay.SolutionSnapshots(tmp_path / "on", capture_placement=True)
+    assert on.poll(path)
+    item = on.items[0]
+    assert item["array_file"] == "000.npz" and item["descriptor_file"] == "000.db"
+    assert (on.dir / item["array_file"]).read_bytes() == (solve / "solution.npz").read_bytes()
+    snap = sqlite3.connect(on.dir / item["descriptor_file"])
+    assert snap.execute("select data from descriptors").fetchone()[0] == bytes(range(128))
+    snap.close()
+
+
 def test_the_surface_watch_keeps_transitions_and_their_kind(tmp_path):
     path = tmp_path / "status.json"
     watch = replay.SurfaceWatch()

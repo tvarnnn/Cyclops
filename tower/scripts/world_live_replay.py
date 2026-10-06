@@ -99,7 +99,10 @@ import contextlib
 import csv
 import hashlib
 import json
+import io
 import os
+import sqlite3
+import zipfile
 import statistics
 import subprocess
 import sys
@@ -1358,8 +1361,9 @@ class SolutionSnapshots:
     and retried on the next poll. Reads the data root; writes only `out`.
     """
 
-    def __init__(self, out: Path):
+    def __init__(self, out: Path, *, capture_placement: bool = False):
         self.dir = Path(out) / "solution-snapshots"
+        self.capture_placement = capture_placement
         self.items: list = []
         self._last = None
 
@@ -1378,6 +1382,53 @@ class SolutionSnapshots:
             doc = json.loads(data.decode("utf-8"))
         except (ValueError, UnicodeDecodeError):
             return False
+        arrays = None
+        if self.capture_placement:
+            # Metadata is the publication marker. The producer writes the array
+            # first; verify its indices before preserving the pair.
+            try:
+                import numpy as np  # optional recorder only
+                arrays_path = path.with_suffix(".npz")
+                arrays_stat = arrays_path.stat()
+                if arrays_stat.st_mtime_ns > st.st_mtime_ns:
+                    return False  # next arrays landed before their metadata
+                arrays = arrays_path.read_bytes()
+                with np.load(io.BytesIO(arrays), allow_pickle=False) as npz:
+                    xyz, obs = npz["xyz"], npz["observations"]
+                    components = npz["component"]
+                    observation_xy = npz["observation_xy"]
+                    if (len(xyz) != len(components) or obs.ndim != 2 or obs.shape[1] != 3
+                            or observation_xy.shape != (len(obs), 2)
+                            or (len(obs) and (np.min(obs[:, 0]) < 0 or np.max(obs[:, 0]) >= len(doc["keyframe_ids"])
+                                              or np.min(obs[:, 2]) < 0 or np.max(obs[:, 2]) >= len(xyz)))):
+                        return False
+                db_path = path.with_name("database.db")
+                if not db_path.is_file():
+                    return False
+            except (OSError, ValueError, KeyError, IndexError, zipfile.BadZipFile):
+                return False
+            self.dir.mkdir(parents=True, exist_ok=True)
+            name = f"{len(self.items):03d}"
+            try:
+                source = sqlite3.connect(db_path.as_uri() + "?mode=ro", uri=True)
+                target = sqlite3.connect(self.dir / f"{name}.db.tmp")
+                try:
+                    source.backup(target)
+                    if not target.execute("PRAGMA quick_check").fetchone()[0] == "ok":
+                        return False
+                finally:
+                    target.close()
+                    source.close()
+                # A newer metadata publication during backup invalidates this
+                # observation; never label its mutable database as the old solve.
+                latest_arrays = arrays_path.stat()
+                if (path.read_bytes() != data or latest_arrays.st_mtime_ns != arrays_stat.st_mtime_ns
+                        or latest_arrays.st_size != arrays_stat.st_size):
+                    return False
+                os.replace(self.dir / f"{name}.db.tmp", self.dir / f"{name}.db")
+                (self.dir / f"{name}.npz").write_bytes(arrays)
+            except (OSError, sqlite3.Error):
+                return False
         self._last = stamp
         n = len(self.items)
         name = f"{n:03d}.json"
@@ -1386,11 +1437,14 @@ class SolutionSnapshots:
         gate = doc.get("gate") if isinstance(doc.get("gate"), dict) else {}
         consensus = gate.get("consensus") if isinstance(gate.get("consensus"), dict) else {}
         timing = doc.get("timing") if isinstance(doc.get("timing"), dict) else {}
-        self.items.append({
+        item = {
             "n": n, "file": name, "mtime": round(st.st_mtime, 3), "seen_at": round(time.time(), 3),
             "solved_at": doc.get("solved_at"), "consensus_state": consensus.get("state"),
             "map_s": timing.get("map_s"), "gate_s": timing.get("gate_s"),
-        })
+        }
+        if self.capture_placement:
+            item.update(array_file=f"{n:03d}.npz", descriptor_file=f"{n:03d}.db")
+        self.items.append(item)
         index = self.dir / "index.json.tmp"
         index.write_text(json.dumps(self.items, indent=2), encoding="utf-8")
         os.replace(index, self.dir / "index.json")
@@ -1521,6 +1575,7 @@ class ReplayOptions:
     calibration_expected: dict[str, str] | None = None
     live_timeline: bool = False
     capture_status_geometry: bool = False
+    capture_placement_snapshots: bool = False
     tower_log: Path | None = None
 
 
@@ -1625,6 +1680,8 @@ async def run_replay(options: ReplayOptions) -> dict:
                                             or not options.phone_fetches):
         raise SystemExit("--capture-status-geometry requires --world-root, status subscription, "
                          "and phone geometry fetches")
+    if options.capture_placement_snapshots and (options.world_root is None or not options.subscribe):
+        raise SystemExit("--capture-placement-snapshots requires --world-root and status subscription")
     out = Path(options.out)
     out.mkdir(parents=True, exist_ok=True)
     base = f"http://127.0.0.1:{options.port}"
@@ -1653,6 +1710,8 @@ async def run_replay(options: ReplayOptions) -> dict:
     }
     if options.capture_status_geometry:
         record["options"]["capture_status_geometry"] = True
+    if options.capture_placement_snapshots:
+        record["options"]["capture_placement_snapshots"] = True
 
     # The :8000 guard is read and ARMED FIRST (review C24 HIGH-3), before the
     # harness pin's git calls, the walk's journals and the target checks:
@@ -1771,7 +1830,8 @@ async def run_replay(options: ReplayOptions) -> dict:
     stats = StreamStats()
     phone = PhoneView()
     capture = ReplayCapture(out) if options.capture_status_geometry else None
-    live_solutions = SolutionSnapshots(out) if capture is not None else None
+    live_solutions = (SolutionSnapshots(out, capture_placement=options.capture_placement_snapshots)
+                      if capture is not None or options.capture_placement_snapshots else None)
     solution_watch_stop = asyncio.Event()
     mirror = GeometryMirror(base, enabled=options.phone_fetches, capture=capture)
     timeline = None
@@ -2038,7 +2098,8 @@ async def _follow_settle(options: ReplayOptions, base: str, captures: list,
     judge = None
     session_path = None
     settled_at = None
-    snapshots = snapshots if snapshots is not None else SolutionSnapshots(out)
+    snapshots = snapshots if snapshots is not None else SolutionSnapshots(
+        out, capture_placement=options.capture_placement_snapshots)
     while time.time() < deadline and not abort.is_set():
         status, health = await asyncio.to_thread(http_json, "GET", f"{base}/health", 10.0)
         if options.world_root is not None and captures and session_path is None:
@@ -2148,6 +2209,8 @@ def add_replay_arguments(parser: argparse.ArgumentParser) -> None:
                         help="Record per-frame/keyframe live timing, phone messages, and published poses.")
     parser.add_argument("--capture-status-geometry", action="store_true",
                         help="Preserve every received World Builder status envelope and fetched geometry body.")
+    parser.add_argument("--capture-placement-snapshots", action="store_true",
+                        help="Also preserve paired solution.npz and descriptor database at each observed publish.")
 
 
 def refuse_unguarded_proof(args) -> None:
@@ -2191,6 +2254,7 @@ def options_from_args(args, *, port, out, world_root=None, tower_pid=None, on_ab
         calibration_root=calibration_root, calibration_expected=calibration_expected,
         live_timeline=bool(getattr(args, "live_timeline", False)),
         capture_status_geometry=bool(getattr(args, "capture_status_geometry", False)),
+        capture_placement_snapshots=bool(getattr(args, "capture_placement_snapshots", False)),
         tower_log=getattr(args, "tower_log", None),
     )
 
