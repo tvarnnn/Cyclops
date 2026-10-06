@@ -183,6 +183,67 @@ final class CaptureHealthTests: XCTestCase {
         XCTAssertNil(named.stalled, "walk A's stall is not B's")
     }
 
+    // MARK: 1c. The look-back row when the relocalizer is off (the lead's decision, 2026-10-05)
+
+    /// A walk whose reports never carry `tracking.recovery` (the relocalizer
+    /// off): no look-back row at all, live or stale -- not "—" for the whole
+    /// walk. The other rows are unchanged.
+    func testTheLookBackRowIsHiddenForAWalkWithoutRecovery() {
+        var history = CaptureHealthHistory()
+        XCTAssertFalse(readout(history, 0).lookBackShown, "no report yet")
+        for second in stride(from: 0, through: 20, by: 2) {
+            history.record(sample(keyframes: second, restarts: 0,
+                                  lag: WorldMapLag(builtFromKeyframes: 0, keyframesNow: 5)), at: at(Double(second)))
+            XCTAssertFalse(readout(history, Double(second)).lookBackShown, "no recovery at \(second) s")
+        }
+        let live = readout(history, 20)
+        XCTAssertEqual(live.pace, "60 keyframes/min", "the other rows are as before")
+        XCTAssertEqual(live.mapLag, "Map: 5 keyframes behind")
+        XCTAssertFalse(readout(history, 30).lookBackShown, "stale, and still no look-back to speak of")
+        XCTAssertEqual(readout(history, 30).pace, "— keyframes/min")
+    }
+
+    /// A walk in which one report carries `tracking.recovery`: the row shows
+    /// from then on, by the normal rules -- "—" counts for a later report
+    /// without it, never hidden again. Another walk starts hidden again.
+    func testTheLookBackRowShowsOnceTheWalkCarriesRecovery() {
+        var history = CaptureHealthHistory()
+        history.record(sample(keyframes: 1), at: at(0))
+        XCTAssertFalse(readout(history, 0).lookBackShown)
+        let report = WorldRecoveryReport(state: .recovered, episode: 1,
+                                         counts: WorldRecoveryCounts(recovered: 1, timedOut: 0))
+        history.record(sample(keyframes: 2, recovery: report), at: at(2))
+        XCTAssertTrue(readout(history, 2).lookBackShown)
+        XCTAssertEqual(readout(history, 2).lookBackCounts, "linked back 1 · could not link 0")
+        history.record(sample(keyframes: 3), at: at(4))
+        XCTAssertTrue(readout(history, 4).lookBackShown, "once carried, the row stays for the walk")
+        XCTAssertEqual(readout(history, 4).lookBackCounts, "Look-back: —")
+
+        history.record(sample(keyframes: 4, world: "w1", session: "s2"), at: at(6))
+        XCTAssertFalse(readout(history, 6).lookBackShown, "another walk, no recovery yet")
+    }
+
+    /// A walk with recovery whose figures then go stale, lose the link, or
+    /// are invalidated: the row stays and reads "—". Hiding never stands in
+    /// for staleness.
+    func testAStaleLookBackRowReadsUnknownAndIsNotHidden() {
+        var history = CaptureHealthHistory()
+        let report = WorldRecoveryReport(state: .recovered, episode: 1,
+                                         counts: WorldRecoveryCounts(recovered: 1, timedOut: 0))
+        history.record(sample(keyframes: 2, recovery: report), at: at(0))
+        XCTAssertTrue(readout(history, 0).lookBackShown)
+        for (r, why) in [(readout(history, 6), "stale"), (readout(history, 1, linked: false), "no link")] {
+            XCTAssertTrue(r.lookBackShown, why)
+            XCTAssertEqual(r.lookBackCounts, "Look-back: —", why)
+            XCTAssertNil(r.lookBackLine, why)
+        }
+        history.invalidate()
+        let invalidated = readout(history, 1)
+        XCTAssertTrue(invalidated.lookBackShown, "invalidated")
+        XCTAssertEqual(invalidated.lookBackCounts, "Look-back: —")
+        XCTAssertEqual(invalidated.pace, "— keyframes/min")
+    }
+
     // MARK: 2. Breaks in the last 30 s
 
     /// Restarts +2 at 10 s and +1 at 35 s: 3 at 36 s, 1 at 41 s. Before the

@@ -38,7 +38,9 @@ struct CaptureHealthView: View {
                 row(stalled, id: "capture-health-stalled")
             }
             row(readout.breaks, spoken: readout.breaksSpoken, id: "capture-health-breaks")
-            lookBack(readout)
+            if readout.lookBackShown {
+                lookBack(readout)
+            }
             if let map = readout.mapLag {
                 row(map, id: "capture-health-map")
             }

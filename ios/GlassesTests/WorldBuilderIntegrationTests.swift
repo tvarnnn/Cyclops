@@ -761,6 +761,8 @@ final class TowerWorldBuilderClientTests: XCTestCase {
         XCTAssertEqual(readout.pace, "— keyframes/min", why, file: file, line: line)
         XCTAssertEqual(readout.breaks, "Breaks in the last 30 s: —", why, file: file, line: line)
         XCTAssertEqual(readout.lookBackCounts, "Look-back: —", why, file: file, line: line)
+        XCTAssertTrue(readout.lookBackShown, "the walk carried recovery: \(why), the row reads —, never hidden",
+                      file: file, line: line)
         XCTAssertNil(readout.lookBackLine, why, file: file, line: line)
         XCTAssertEqual(readout.mapLag, "Map: —", why, file: file, line: line)
     }

@@ -112,6 +112,13 @@ nonisolated struct CaptureHealthReadout: Equatable, Sendable {
     /// The relocalizer's line (the canvas's), when there is an episode.
     var lookBackLine: String?
     var lookBackCounts: String
+    /// Whether the look-back row is on the panel at all. Hidden while no
+    /// report of the current walk has carried `tracking.recovery` -- a Tower
+    /// with the relocalizer off sends `null` on every report, and a row
+    /// reading "—" for a whole walk reads as broken. Once one report of the
+    /// walk carried it, the row stays, and stale or invalidated figures read
+    /// "—" there as everywhere: hiding never masks staleness.
+    var lookBackShown: Bool = true
     /// `nil` hides the row: no lag, or (with fresh figures) an unknown one.
     var mapLag: String?
 
@@ -150,6 +157,25 @@ nonisolated struct CaptureHealthHistory: Equatable, Sendable {
     private(set) var lastSampleAt: Instant?
     private(set) var last: CaptureHealthSample?
 
+    /// A walk, by both its ids.
+    struct Walk: Equatable, Sendable {
+        let worldID: String
+        let sessionID: String
+
+        init?(_ sample: CaptureHealthSample) {
+            guard sample.hasIdentity, let world = sample.worldID, let session = sample.sessionID else { return nil }
+            worldID = world
+            sessionID = session
+        }
+    }
+
+    /// The walk the panel last heard named, and whether any of its reports
+    /// carried `tracking.recovery`. Kept through `invalidate()`: the figures
+    /// go, but whether this walk has a look-back row at all does not, so a
+    /// dropped link never hides the row in place of reading "—".
+    private(set) var walk: Walk?
+    private(set) var walkCarriedRecovery = false
+
     init() {}
 
     /// What was held is no longer live -- the socket dropped, the
@@ -157,7 +183,10 @@ nonisolated struct CaptureHealthHistory: Equatable, Sendable {
     /// forgotten at once, not 5 s later: every figure reads "—" until the next
     /// report, as for an old one.
     mutating func invalidate() {
-        self = CaptureHealthHistory()
+        var fresh = CaptureHealthHistory()
+        fresh.walk = walk
+        fresh.walkCarriedRecovery = walkCarriedRecovery
+        self = fresh
     }
 
     mutating func record(_ sample: CaptureHealthSample, at now: Instant) {
@@ -167,6 +196,13 @@ nonisolated struct CaptureHealthHistory: Equatable, Sendable {
         // histories from its own first sample (a nil → id change is a new
         // identity, by `isSameWalk`).
         let sample = sample.hasIdentity ? sample : .empty
+        if let named = Walk(sample) {
+            if named != walk {
+                walk = named
+                walkCarriedRecovery = false
+            }
+            if sample.recovery != nil { walkCarriedRecovery = true }
+        }
         if let last, !sample.isSameWalk(as: last) {
             // Another walk, or none: nothing seen so far is about it -- not
             // its pace, not its breaks, not how long since its last keyframe.
@@ -205,8 +241,8 @@ nonisolated struct CaptureHealthHistory: Equatable, Sendable {
             return CaptureHealthReadout(
                 link: link, pace: "\(unknown) keyframes/min", stalled: nil,
                 breaks: "Breaks in the last 30 s: \(unknown)", breaksSpoken: "Breaks in the last 30 seconds: unknown",
-                lookBackLine: nil, lookBackCounts: "Look-back: \(unknown)", mapLag: "Map: \(unknown)",
-                breaksCount: nil
+                lookBackLine: nil, lookBackCounts: "Look-back: \(unknown)", lookBackShown: walkCarriedRecovery,
+                mapLag: "Map: \(unknown)", breaksCount: nil
             )
         }
 
@@ -241,6 +277,7 @@ nonisolated struct CaptureHealthHistory: Equatable, Sendable {
             breaksSpoken: "Breaks in the last 30 seconds: \(breaks?.spoken ?? "unknown")",
             lookBackLine: lookBackLine,
             lookBackCounts: lookBackCounts,
+            lookBackShown: walkCarriedRecovery,
             mapLag: mapLag,
             breaksCount: breaks?.count
         )
