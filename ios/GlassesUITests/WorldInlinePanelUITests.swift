@@ -10,8 +10,11 @@
 //
 //  The mock tests never reach a real Tower: `MockTowerHTTPServer` serves the
 //  render routes (the U1.1 bridge test page, counting its own loads) and
-//  speaks the World Builder socket (`PanelSocket`). R1 needs
-//  GLASSES_UITEST_TOWER_AUTHORITY and skips without it.
+//  speaks the World Builder socket (`PanelSocket`). R1 is a REQUIRED gate:
+//  it fails, never skips, without GLASSES_UITEST_TOWER_AUTHORITY naming a
+//  real local Tower with TOWER_WORLD_NATIVE_CHROME=1 and the fixture world.
+//  UI8 is run on each phone U-INLINE §1.2 names (iPhone 17 Pro, 17e, SE 3)
+//  and fails on any other.
 //
 //  Screenshots go to UINLINE_SHOTS_DIR when it is set, suffixed with
 //  UINLINE_SHOT_SUFFIX.
@@ -254,8 +257,10 @@ final class WorldInlinePanelUITests: XCTestCase {
         // The Tower drops before any page is loaded.
         mock.refusesSockets = true
         mock.dropSocket()
-        XCTAssertTrue(element("wb-panel-offline").waitForExistence(timeout: 20), "offline")
-        XCTAssertTrue(element("wb-panel-connect").exists, "with the way to reconnect")
+        XCTAssertTrue(element("wb-panel-connect").waitForExistence(timeout: 20), "offline, with the way to reconnect")
+        // The capture control says it already: no third line (the lead).
+        XCTAssertTrue(element("wb-capture-tower-line").exists, "the screen's own offline line")
+        XCTAssertFalse(element("wb-panel-offline").exists, "a third \"not connected\" line")
         XCTAssertEqual(webViewCount(), 0)
         shoot("ui6-offline")
     }
@@ -302,6 +307,13 @@ final class WorldInlinePanelUITests: XCTestCase {
 
     // MARK: UI8: the layout on each phone
 
+    /// U-INLINE §1.2's phones (window points → W, the ready stage's H).
+    private static let specPhones: [String: (name: String, width: CGFloat, height: CGFloat)] = [
+        "402x874": ("iPhone 17 Pro", 370, 278),
+        "390x844": ("iPhone 17e", 358, 269),
+        "375x667": ("iPhone SE 3", 343, 257),
+    ]
+
     func testTheLayoutOnEachPhone() throws {
         for size in [nil, Self.ax5] {
             let name = size == nil ? "default" : "ax5"
@@ -314,7 +326,12 @@ final class WorldInlinePanelUITests: XCTestCase {
             XCTAssertTrue(reveal(panel, whole: true), "\(name): the whole panel")
             Thread.sleep(forTimeInterval: 1)
             let window = app.windows.firstMatch.frame
-            print("UINLINE-LAYOUT|\(name)|window=\(Int(window.width))x\(Int(window.height))"
+            let key = "\(Int(window.width))x\(Int(window.height))"
+            guard let phone = Self.specPhones[key] else {
+                XCTFail("UI8 proves the spec's phones (17 Pro, 17e, SE 3); a \(key) window is none of them")
+                return
+            }
+            print("UINLINE-LAYOUT|\(phone.name)|\(name)|window=\(Int(window.width))x\(Int(window.height))"
                   + "|panel=\(Int(panel.frame.width))x\(Int(panel.frame.height))"
                   + "|stage=\(Int(stage.frame.width))x\(Int(stage.frame.height))"
                   + "|expand=\(Int(expand.frame.width))x\(Int(expand.frame.height))")
@@ -322,6 +339,9 @@ final class WorldInlinePanelUITests: XCTestCase {
             XCTAssertGreaterThanOrEqual(expand.frame.width, 44, name)
             XCTAssertGreaterThanOrEqual(expand.frame.height, 44, name)
             XCTAssertLessThanOrEqual(panel.frame.height, window.height, "\(name): the panel fits the window")
+            // §1.1: W is the card's width; ready, the stage is exactly H.
+            XCTAssertEqual(stage.frame.width, phone.width, accuracy: 1, "\(phone.name) \(name): W")
+            XCTAssertEqual(stage.frame.height, phone.height, accuracy: 1, "\(phone.name) \(name): H")
             shoot("ui8-layout-\(name)")
             try audit(name)
             app.terminate()
@@ -356,6 +376,18 @@ final class WorldInlinePanelUITests: XCTestCase {
         Thread.sleep(forTimeInterval: 1)
         print("UINLINE-DRAG|before=\(Int(before))|after=\(Int(panel.frame.minY))")
         XCTAssertGreaterThan(abs(panel.frame.minY - before), 20, "a vertical drag scrolls the screen")
+
+        // Two fingers: a pinch on the world is the page's, start to end, and
+        // the screen does not move under it.
+        XCTAssertTrue(reveal(stage, whole: true))
+        Thread.sleep(forTimeInterval: 1)
+        let still = panel.frame.minY
+        web.pinch(withScale: 2.5, velocity: 1.5)
+        XCTAssertTrue(waitFor { status.exists && status.label == "got pinch" },
+                      "a two-finger gesture reached the page, uncancelled: \(text(status))")
+        Thread.sleep(forTimeInterval: 0.5)
+        XCTAssertEqual(status.label, "got pinch", "the screen did not take the two fingers away")
+        XCTAssertEqual(panel.frame.minY, still, accuracy: 0.5, "and the screen did not scroll")
     }
 
     // MARK: UI10: the VoiceOver order
@@ -500,8 +532,13 @@ final class WorldInlinePanelUITests: XCTestCase {
 
         mock.refusesSockets = true
         mock.dropSocket()
-        XCTAssertTrue(element("wb-panel-offline").waitForExistence(timeout: 20))
-        XCTAssertTrue(reveal(element("wb-panel-offline")))
+        // The capture control already says the Tower is not connected: the
+        // panel shows only its own actions, never a third line (the lead).
+        let connect = element("wb-panel-connect")
+        XCTAssertTrue(connect.waitForExistence(timeout: 20), "the panel's own actions")
+        XCTAssertTrue(element("wb-capture-tower-line").exists, "the screen's own offline line")
+        XCTAssertFalse(element("wb-panel-offline").exists, "a third \"not connected\" line")
+        XCTAssertTrue(reveal(connect))
         shoot("state-offline-\(name)")
     }
 
@@ -512,9 +549,14 @@ final class WorldInlinePanelUITests: XCTestCase {
     /// collapse and a second expand (same `world-chrome-position`): no
     /// reload, the pose kept.
     func testR1ARealPageCrossFadesInlineAndKeepsItsPose() throws {
+        // A REQUIRED gate: never a silent skip.
         guard let authority = ProcessInfo.processInfo.environment["GLASSES_UITEST_TOWER_AUTHORITY"],
               !authority.isEmpty
-        else { throw XCTSkip("Set GLASSES_UITEST_TOWER_AUTHORITY=host:port of a Tower with the fixture world.") }
+        else {
+            XCTFail("R1 is required: set GLASSES_UITEST_TOWER_AUTHORITY=host:port of a real local Tower "
+                    + "(TOWER_WORLD_NATIVE_CHROME=1) serving the fixture world.")
+            return
+        }
         launch(authority: authority)
         open(cartridge: "World Builder")
         openSavedWorlds()
@@ -539,14 +581,15 @@ final class WorldInlinePanelUITests: XCTestCase {
         // Native chrome (TOWER_WORLD_NATIVE_CHROME on): the bar is the phone's.
         let native = element("world-chrome-best").waitForExistence(timeout: 60)
         print("UINLINE-R1|native=\(native)")
+        XCTAssertTrue(native, "the Tower's page offered native chrome: run it with TOWER_WORLD_NATIVE_CHROME=1")
         let position = element("world-chrome-position")
-        if native {
-            XCTAssertTrue(position.waitForExistence(timeout: 30), "the walk position")
-            let next = element("world-chrome-next")
-            if next.waitForExistence(timeout: 10), next.isEnabled { next.tap() }
-            Thread.sleep(forTimeInterval: 3)
-        }
-        let before = position.exists ? position.label : ""
+        XCTAssertTrue(position.waitForExistence(timeout: 30), "the walk position")
+        let next = element("world-chrome-next")
+        XCTAssertTrue(next.waitForExistence(timeout: 10), "the next pose")
+        if next.isEnabled { next.tap() }
+        Thread.sleep(forTimeInterval: 3)
+        XCTAssertTrue(position.exists, "the walk position after a step")
+        let before = position.label
         shoot("r1-expanded")
         closeTheCover()
         XCTAssertTrue(waitFor(timeout: 15) { stage.frame.insetBy(dx: -1, dy: -1).contains(web.frame) }, "collapsed")
@@ -555,11 +598,9 @@ final class WorldInlinePanelUITests: XCTestCase {
         XCTAssertTrue(reveal(expand))
         expand.tap()
         XCTAssertTrue(waitFor(timeout: 20) { web.frame.height > window.height * 0.5 })
-        if native {
-            XCTAssertTrue(position.waitForExistence(timeout: 30))
-            print("UINLINE-R1|position-before=\(before)|after=\(position.label)")
-            XCTAssertEqual(position.label, before, "the pose survived the move")
-        }
+        XCTAssertTrue(position.waitForExistence(timeout: 30), "the walk position, expanded again")
+        print("UINLINE-R1|position-before=\(before)|after=\(position.label)")
+        XCTAssertEqual(position.label, before, "the pose survived the move")
         shoot("r1-expanded-again")
     }
 

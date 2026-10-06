@@ -183,19 +183,37 @@ enum WorldChromeTestPage {
           // A touch that reaches the canvas says so in the next status, so a
           // test proves empty chrome space passes touches through.
           let downX = null, downY = null;
+          // Two fingers at once (U-INLINE UI9): "two fingers" when the
+          // second goes down, "pinch" when they move together, and
+          // "two fingers cancelled" if the screen took the gesture away.
+          const fingers = new Set();
+          let multi = false;
           document.getElementById("wrap").addEventListener("pointerdown", (e) => {
+            fingers.add(e.pointerId);
             downX = e.clientX; downY = e.clientY;
-            if (nonce && !dead){ got = "touch"; sendState(); }
+            if (fingers.size >= 2) multi = true;
+            if (nonce && !dead){ got = multi ? "two fingers" : "touch"; sendState(); }
           });
           // A horizontal drag that reaches the page (U-INLINE UI9).
           document.getElementById("wrap").addEventListener("pointermove", (e) => {
-            if (downX === null || !nonce || dead) return;
+            if (!nonce || dead) return;
+            if (multi) {
+              if (fingers.size >= 2 && got === "two fingers"){ got = "pinch"; sendState(); }
+              return;
+            }
+            if (downX === null) return;
             if (Math.abs(e.clientX - downX) > 30 && Math.abs(e.clientX - downX) > Math.abs(e.clientY - downY)) {
               downX = null; got = "drag"; sendState();
             }
           });
-          document.getElementById("wrap").addEventListener("pointercancel", () => { downX = null; });
-          document.getElementById("wrap").addEventListener("pointerup", () => { downX = null; });
+          function lift(e, cancelled){
+            fingers.delete(e.pointerId);
+            downX = null;
+            if (cancelled && multi && nonce && !dead){ got = "two fingers cancelled"; sendState(); }
+            if (fingers.size === 0) multi = false;
+          }
+          document.getElementById("wrap").addEventListener("pointercancel", (e) => lift(e, true));
+          document.getElementById("wrap").addEventListener("pointerup", (e) => lift(e, false));
           post("hello", HELLO).then(r => {
             if (!(r && r.type === "welcome" && r.protocol === 1 && r.nonce)) return;
             nonce = r.nonce;
