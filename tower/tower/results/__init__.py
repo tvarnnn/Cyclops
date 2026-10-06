@@ -37,6 +37,7 @@ and so mechanically prevents that handle from becoming a second frame
 path.
 """
 
+import os
 import time
 
 from tower.results.contracts import (
@@ -89,6 +90,9 @@ def make_snapshot_for(
     under-promise-on-omission rule `registry.declare` follows.
     """
     producers: dict = {}
+    if world_root is not None and os.environ.get("TOWER_WORLD_GUIDANCE_COVERAGE") == "on":
+        from tower.results.world_builder import WorldBuilderStatusProducer
+        producers[CARTRIDGE_WORLD_BUILDER] = WorldBuilderStatusProducer(world_root, clock)
 
     def snapshot_for(cartridge, result_type, world_id, session_id) -> Snapshot:
         if (

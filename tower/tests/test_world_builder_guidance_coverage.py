@@ -13,7 +13,10 @@ from pathlib import Path
 
 import pytest
 
-from tower.results.world_builder import WorldBuilderStatusProducer
+from tower.results.world_builder import WorldBuilderStatusProducer, _geometry_block
+from tower.results import make_snapshot_for
+from tower.results.contracts import CARTRIDGE_WORLD_BUILDER, RESULT_TYPE_STATUS
+from tower.results.envelope import ResultEnvelope
 from tower.world_builder.events import EventLog
 from tower.world_builder.guidance_coverage import compute_coverage, compute_from_tree
 from tower.world_builder import guidance_coverage as coverage_module
@@ -197,6 +200,52 @@ def test_unresolved_partial_and_component_isolation():
     assert result["components"][0]["stations"] != []
 
 
+def test_missing_reference_placement_omits_only_that_island():
+    data = _inputs(((0, 4), (17, 4)))
+    data["placements"] = data["placements"][:1]
+    block = _block(data)
+    assert block["components_total"] == 2
+    assert block["components_omitted"] == 1
+    assert [row["reference_segment"] for row in block["components"]] == [0]
+
+
+def test_unreliable_solve_placement_cannot_support_a_sector():
+    data = _inputs()
+    data["placements"][0]["evidence"]["placement_reliable"] = False
+    block = _block(data)
+    assert block["components_total"] == 1
+    assert block["components_omitted"] == 1
+    assert block["components"] == []
+
+
+def test_nonfinite_derived_metadata_is_rejected_at_component_boundary():
+    entries = [("a", [0.0, 0.0, 1e308], [0.0, 0.0, 1.0], [0.0, 1.0, 0.0]),
+               ("b", [0.0, 2.0, 1e308], [0.0, 0.0, 1.0], [0.0, 1.0, 0.0])]
+    with pytest.raises(ValueError, match="nonfinite"):
+        coverage_module._component(0, entries)
+
+
+def test_nonfinite_component_metadata_omits_only_that_island(monkeypatch):
+    original = coverage_module._component
+    def overflow_one(reference, entries):
+        component, stations = original(reference, entries)
+        if reference == 0:
+            component["origin_xyz"][2] = float("inf")
+        return component, stations
+    monkeypatch.setattr(coverage_module, "_component", overflow_one)
+    block = _block(_inputs(((0, 4), (17, 4))))
+    assert block["components_total"] == 2
+    assert block["components_omitted"] == 1
+    assert [row["reference_segment"] for row in block["components"]] == [17]
+
+
+def test_boolean_computed_at_is_not_a_json_number():
+    data = _inputs(solved_at=0.0)
+    data["computed_at"] = True
+    with pytest.raises(ValueError, match="clock"):
+        _block(data)
+
+
 def test_omission_reasons_and_global_station_cap():
     data = _inputs(tuple((i, 4) for i in range(17)))
     result = _block(data)
@@ -367,14 +416,86 @@ def test_worker_publishes_only_completed_receipt_and_keeps_revision(monkeypatch,
     assert worker._pending is None  # duplicate landing did not enqueue another job
 
 
+def test_guidance_poll_never_stats_or_starts_a_thread(monkeypatch, tmp_path):
+    monkeypatch.setenv("TOWER_WORLD_GUIDANCE_COVERAGE", "on")
+    producer = WorldBuilderStatusProducer(tmp_path, lambda: 1000.12)
+    receipt = {"geometry_revision": "g", "solved_at": 1000.0}
+    class Published:
+        def latest(self, world, session):
+            assert (world, session) == ("w", "s")
+            return receipt
+    producer._coverage_worker = Published()
+    def forbidden(*args, **kwargs):
+        raise AssertionError("guidance poll performed I/O or started a thread")
+    with monkeypatch.context() as patch:
+        patch.setattr(os, "stat", forbidden)
+        patch.setattr(threading.Thread, "start", forbidden)
+        assert producer._coverage(None, "w", "s", None, None) is receipt
+
+
+def test_on_worker_starts_before_poll_and_discovers_landing(monkeypatch, tmp_path):
+    monkeypatch.setenv("TOWER_WORLD_GUIDANCE_COVERAGE", "on")
+    root = tmp_path / "worlds"
+    world, session, _ = _landed_tree(root, _inputs())
+    producer = WorldBuilderStatusProducer(root, lambda: 1000.12)
+    worker = producer._coverage_worker
+    assert worker is not None and worker._thread.is_alive()
+    for _ in range(200):
+        if worker.latest(world, session) is not None:
+            break
+        threading.Event().wait(0.01)
+    assert worker.latest(world, session) is not None
+    assert producer.snapshot(world, session).payload["guidance"]["coverage"] is not None
+    with pytest.raises(TypeError, match="immutable"):
+        worker.latest(world, session)["solved_at"] = 0
+
+
+def test_tower_result_setup_starts_on_worker_before_first_status(monkeypatch, tmp_path):
+    monkeypatch.setenv("TOWER_WORLD_GUIDANCE_COVERAGE", "on")
+    root = tmp_path / "worlds"
+    world, session, _ = _landed_tree(root, _inputs())
+    before = {id(thread) for thread in threading.enumerate()}
+    snapshot_for = make_snapshot_for(root, lambda: 1000.12)
+    assert any(thread.name == "world-guidance" and id(thread) not in before
+               for thread in threading.enumerate())
+    for _ in range(200):
+        snapshot = snapshot_for(CARTRIDGE_WORLD_BUILDER, RESULT_TYPE_STATUS, world, session)
+        if snapshot.payload["guidance"]["coverage"] is not None:
+            break
+        threading.Event().wait(0.01)
+    assert snapshot.payload["guidance"]["coverage"] is not None
+
+
+def test_whole_status_envelope_with_near_cap_coverage_fits_budget(monkeypatch, tmp_path):
+    monkeypatch.setenv("TOWER_WORLD_GUIDANCE_COVERAGE", "on")
+    root = tmp_path / "worlds"
+    world, session, _ = _landed_tree(root, _inputs())
+    producer = WorldBuilderStatusProducer(root, lambda: 1000.12)
+    block = _block(_inputs(tuple((i, 4) for i in range(16))))
+    assert len(json.dumps(block, separators=(",", ":")).encode("utf-8")) > 3500
+    producer._coverage_worker._published = {(world, session): coverage_module._freeze(block)}
+    snapshot = producer.snapshot(world, session)
+    envelope = ResultEnvelope(cartridge=CARTRIDGE_WORLD_BUILDER,
+                              result_type=RESULT_TYPE_STATUS,
+                              contract="world_builder.status/2026-09-10",
+                              subscription_id="s", seq=1, revision=snapshot.revision,
+                              revision_changed=True, tower_sent_at=1000.12,
+                              payload=snapshot.payload)
+    size = len(json.dumps(envelope.to_json_dict(), separators=(",", ":"),
+                          ensure_ascii=False).encode("utf-8"))
+    assert size <= 16 * 1024
+
+
 def test_tree_snapshot_refuses_torn_identity_and_placement(tmp_path, monkeypatch):
     data = _inputs()
     root = tmp_path / "worlds"
     world, session, store = _landed_tree(root, data)
     solution = store.world_dir(world) / "solve" / session / "solution.json"
     stat = solution.stat()
+    manifest = json.loads((store.derived_dir(world) / session / "manifest.json").read_text(encoding="utf-8"))
+    revision = _geometry_block(manifest, True, 4, has_session_geometry=True)["revision"]
     block = compute_from_tree(root, world, session, (1000.0, 4, (stat.st_size, stat.st_mtime_ns)),
-                              "g-tree", lambda: 1000.12)
+                              revision, lambda: 1000.12)
     assert block["horizon_keyframes"] == 4
     with pytest.raises(ValueError, match="changed"):
         compute_from_tree(root, world, session, (1000.0, 4, (0, 0)), "g-tree", lambda: 1000.12)
@@ -392,14 +513,33 @@ def test_tree_snapshot_refuses_torn_identity_and_placement(tmp_path, monkeypatch
         patch.setattr(coverage_module, "_json", change_during_read)
         with pytest.raises(ValueError, match="changed"):
             compute_from_tree(root, world, session, (1000.0, 4, (stat.st_size, stat.st_mtime_ns)),
-                              "g-tree", lambda: 1000.12)
+                              revision, lambda: 1000.12)
     placement = store.derived_dir(world) / session / "placements.json"
     doc = json.loads(placement.read_text(encoding="utf-8"))
     doc["placements"][0]["input_digest"] = "stale"
     placement.write_text(json.dumps(doc), encoding="utf-8")
     with pytest.raises(ValueError, match="source"):
         compute_from_tree(root, world, session, (1000.0, 4, (stat.st_size, stat.st_mtime_ns)),
-                          "g-tree", lambda: 1000.12)
+                          revision, lambda: 1000.12)
+
+
+def test_tree_snapshot_rejects_same_tag_with_different_geometry_revision(tmp_path):
+    data = _inputs()
+    root = tmp_path / "worlds"
+    world, session, store = _landed_tree(root, data)
+    path = store.derived_dir(world) / session / "manifest.json"
+    manifest = json.loads(path.read_text(encoding="utf-8"))
+    revision = _geometry_block(manifest, True, 4, has_session_geometry=True)["revision"]
+    solution = store.world_dir(world) / "solve" / session / "solution.json"
+    stat = solution.stat()
+    expected = (1000.0, 4, (stat.st_size, stat.st_mtime_ns))
+    assert compute_from_tree(root, world, session, expected, revision,
+                             lambda: 1000.12)["geometry_revision"] == revision
+    manifest["points"] += 1
+    path.write_text(json.dumps(manifest), encoding="utf-8")
+    with pytest.raises(ValueError, match="geometry revision"):
+        compute_from_tree(root, world, session, expected, revision, lambda: 1000.12,
+                          (manifest["built_at"], manifest["input_digest"]))
 
 
 def test_stale_receipt_publishes_no_directional_prompt(monkeypatch, tmp_path):

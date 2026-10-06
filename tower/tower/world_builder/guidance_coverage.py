@@ -19,6 +19,25 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 _EPS = 1e-6
 _MAX_BYTES = 4096
+_DISCOVERY_INTERVAL_S = 0.5
+
+
+class _FrozenDict(dict):
+    def _immutable(self, *args, **kwargs):
+        raise TypeError("published coverage is immutable")
+
+    __setitem__ = __delitem__ = clear = pop = popitem = setdefault = update = _immutable
+
+    def __deepcopy__(self, memo):
+        return self
+
+
+def _freeze(value):
+    if isinstance(value, dict):
+        return _FrozenDict({key: _freeze(item) for key, item in value.items()})
+    if isinstance(value, list):
+        return tuple(_freeze(item) for item in value)
+    return value
 
 
 def _dot(a, b):
@@ -142,6 +161,9 @@ def _component(reference, entries):
     z = sum(_dot(position, up) for _, position, _, _ in entries)/len(entries)
     origin = [mid_x*forward[i]+mid_y*right[i]+z*up[i] for i in range(3)]
     cell_size = side/8
+    if not all(math.isfinite(v) for v in (
+            min_x, min_y, max_x, max_y, *origin, *up, *forward, cell_size)) or cell_size <= 0:
+        raise ValueError("nonfinite component geometry")
     cells = {}
     for ((_, _, _, ray), (x, y)) in zip(entries, xy):
         cx = min(7, max(0, math.floor((x-(mid_x-side/2))/cell_size)))
@@ -168,12 +190,20 @@ def _component(reference, entries):
              "stations": []}, stations)
 
 
+def _finite_component(component):
+    return (all(math.isfinite(v) for name in ("bounds_xy", "origin_xyz", "up_xyz", "forward_xyz")
+                for v in component[name]) and
+            math.isfinite(component["cell_size"]) and component["cell_size"] > 0)
+
+
 def compute_coverage(*, solution, manifest, placements, poses, keyframes,
                      geometry_revision, computed_at):
     """Pure computation from one coherent snapshot; invalid global identity refuses all."""
     summary = manifest["global_solve"]
     solved_at = float(summary["solved_at"])
     if (not math.isfinite(solved_at) or solved_at < 0 or
+            isinstance(computed_at, bool) or
+            not isinstance(computed_at, (int, float)) or
             not math.isfinite(computed_at) or computed_at < solved_at or
             float(solution["solved_at"]) != solved_at):
         raise ValueError("invalid solve clock")
@@ -206,6 +236,7 @@ def compute_coverage(*, solution, manifest, placements, poses, keyframes,
     placement_by_segment = {}
     revisions = set()
     for p in placements:
+        _integer(p["frame_revision"], 2**31-1)
         if p["state"] != "registered":
             continue
         seg = _integer(p["segment_index"], 2**31-1)
@@ -220,8 +251,6 @@ def compute_coverage(*, solution, manifest, placements, poses, keyframes,
     if len(revisions) != 1 or not 1 <= len(placement_by_segment):
         raise ValueError("no consistent registered placements")
     revision = revisions.pop()
-    if any(ref not in placement_by_segment for ref in references):
-        raise ValueError("missing component reference placement")
     poses_by_id = {r["keyframe_id"]: r for r in poses}
     if len(poses_by_id) != len(poses):
         raise ValueError("duplicate pose")
@@ -234,6 +263,12 @@ def compute_coverage(*, solution, manifest, placements, poses, keyframes,
             anchor_candidates[seg].append(row)
     anchors = {}
     for ref in references:
+        if ref not in placement_by_segment:
+            continue
+        evidence = placement_by_segment[ref].get("evidence", {})
+        if (evidence.get("placement_reliable") is False or
+                evidence.get("scale_reliable") is False):
+            continue
         candidates = anchor_candidates[ref]
         if len(candidates) != 1:
             continue
@@ -257,6 +292,9 @@ def compute_coverage(*, solution, manifest, placements, poses, keyframes,
             continue
         p = placement_by_segment.get(row["segment_index"])
         if p is None or p.get("evidence", {}).get("coverage") not in ("confident", "partial"):
+            continue
+        if (p.get("evidence", {}).get("placement_reliable") is False or
+                p.get("evidence", {}).get("scale_reliable") is False):
             continue
         ref = p["reference_segment"]
         if ref not in anchors:
@@ -283,6 +321,8 @@ def compute_coverage(*, solution, manifest, placements, poses, keyframes,
         try:
             component, stations = _component(ref, eligible[ref])
         except (ValueError, TypeError, OverflowError):
+            continue
+        if not _finite_component(component):
             continue
         rows[ref] = component
         all_stations.extend((ref, station) for station in stations)
@@ -335,14 +375,18 @@ def compute_from_tree(root, world_id, session_id, expected, geometry_revision,
         raise ValueError("build has not merged the named solution")
     if tree_tag is not None and (manifest.get("built_at"), manifest.get("input_digest")) != tree_tag:
         raise ValueError("derived tree changed before guidance read")
+    from tower.results.world_builder import geometry_revision_from_manifest
+    actual_revision = geometry_revision_from_manifest(manifest)
+    if geometry_revision is not None and actual_revision != geometry_revision:
+        raise ValueError("geometry revision changed before guidance read")
     return compute_coverage(solution=solution, manifest=manifest,
                             placements=placed["placements"], poses=posed["poses"],
-                            keyframes=keyframes, geometry_revision=geometry_revision,
+                            keyframes=keyframes, geometry_revision=actual_revision,
                             computed_at=clock())
 
 
 class CoverageWorker:
-    """One daemon, one active job, latest pending candidate wins."""
+    """One startup daemon discovers landings and publishes immutable receipts."""
 
     def __init__(self, root, clock=time.time):
         self.root, self.clock = root, clock
@@ -358,8 +402,34 @@ class CoverageWorker:
         # Keep this bounded so they cannot resubmit the same solve every poll.
         self._receipts = OrderedDict()
         self._attempts = OrderedDict()
+        self._published = {}
         self._thread = threading.Thread(target=self._run, name="world-guidance", daemon=True)
         self._thread.start()
+
+    def latest(self, world_id, session_id):
+        """A constant-time, lock-free read; the worker replaces the mapping atomically."""
+        return self._published.get((world_id, session_id))
+
+    def _discover(self):
+        """All file discovery stays in the worker, independently of status polls."""
+        candidates = []
+        for path in (Path(self.root) / "worlds").glob("*/solve/*/solution.json"):
+            world_id, session_id = path.parents[2].name, path.parent.name
+            try:
+                stat = path.stat()
+                manifest = _json(Path(self.root) / "worlds" / world_id / "derived" /
+                                 session_id / "manifest.json")
+                summary = manifest["global_solve"]
+                from tower.results.world_builder import geometry_revision_from_manifest
+                revision = geometry_revision_from_manifest(manifest)
+                candidates.append((summary["solved_at"], world_id, session_id,
+                                   summary["horizon_keyframes"],
+                                   (stat.st_size, stat.st_mtime_ns), revision,
+                                   (manifest.get("built_at"), manifest.get("input_digest"))))
+            except (OSError, KeyError, TypeError, ValueError, OverflowError):
+                continue
+        for solved_at, world, session, horizon, stat, revision, tag in sorted(candidates):
+            self.offer(world, session, solved_at, horizon, stat, revision, tag)
 
     def offer(self, world_id, session_id, solved_at, horizon, solution_stat,
               geometry_revision, tree_tag):
@@ -391,9 +461,15 @@ class CoverageWorker:
             except (AttributeError, OSError):
                 logger.warning("world builder guidance: could not lower worker priority")
         while True:
+            try:
+                self._discover()
+            except Exception:
+                logger.exception("world builder guidance: discovery failed")
             with self._condition:
-                while self._pending is None:
-                    self._condition.wait()
+                if self._pending is None:
+                    self._condition.wait(timeout=_DISCOVERY_INTERVAL_S)
+                    if self._pending is None:
+                        continue
                 candidate, revision, tree_tag = self._pending
                 self._pending = None
             start = time.monotonic()
@@ -404,17 +480,19 @@ class CoverageWorker:
                                           self.clock, tree_tag)
                 if time.monotonic()-start > 0.250:
                     raise ValueError("coverage worker exceeded 250 ms")
-            except (OSError, KeyError, TypeError, ValueError, OverflowError) as exc:
+            except Exception as exc:
                 logger.warning("world builder guidance: coverage unavailable: %s", exc)
                 block = None
             with self._condition:
                 if candidate == self._candidate:
                     self._completed = candidate
                     if block is not None:
-                        self._block = block
+                        self._block = _freeze(block)
                         self._block_session = (world, session)
                         self._successful_candidate = candidate
                         self._receipts[candidate] = block
+                        self._published = {**self._published,
+                                           (world, session): self._block}
                         if len(self._receipts) > 8:
                             self._receipts.popitem(last=False)
                 else:
