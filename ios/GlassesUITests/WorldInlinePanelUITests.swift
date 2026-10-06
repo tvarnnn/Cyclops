@@ -509,8 +509,7 @@ final class WorldInlinePanelUITests: XCTestCase {
         push(modelState: "receiving")
         let map = element("wb-panel-map")
         XCTAssertTrue(map.waitForExistence(timeout: 15), "walking: the map slot")
-        // Screens away at AX5: room for the drags it takes.
-        XCTAssertTrue(reveal(map, whole: true, attempts: 28), "\(name): the walking map slot")
+        XCTAssertTrue(reveal(map, whole: true), "\(name): the walking map slot")
         shoot("state-walking-\(name)")
 
         push(modelState: "finalizing", buildInProgress: true, finalizationState: "pending", finalSolve: "pending",
@@ -847,8 +846,10 @@ final class WorldInlinePanelUITests: XCTestCase {
     /// all of it, when it fits), by drags measured from where it is -- in
     /// the right-hand margin, so a drag that starts on the inline world is
     /// never the world's.
+    /// 28 drags: at AX5 on the SE the panel is some 4,200 pt down, the first
+    /// drags only collapse the shell's status bar, and 14 ran out (UI8).
     @discardableResult
-    private func reveal(_ element: XCUIElement, whole: Bool = false, attempts: Int = 14) -> Bool {
+    private func reveal(_ element: XCUIElement, whole: Bool = false, attempts: Int = 28) -> Bool {
         func needed() -> CGFloat? {
             guard element.exists else { return nil }
             let window = app.windows.firstMatch.frame
