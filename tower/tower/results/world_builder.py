@@ -35,6 +35,7 @@ malformed_frame). Tower genuinely does not know it yet, and says so.
 import json
 import logging
 import math
+import os
 import time
 from pathlib import Path
 
@@ -411,6 +412,9 @@ class WorldBuilderStatusProducer:
         # per geometry revision and remembered. One entry per target,
         # replaced rather than accumulated -- see _path_length.
         self._path_length_cache: dict[str, tuple[str, dict | None]] = {}
+        # The optional guidance worker is created only after an ON request has
+        # a qualifying merged solve. The default OFF path never touches it.
+        self._coverage_worker = None
 
     # -- target selection ---------------------------------------------
 
@@ -889,7 +893,7 @@ class WorldBuilderStatusProducer:
         )
         keyframes_now = progress["keyframes_accepted"]
 
-        return {
+        payload = {
             "world": _world_block(world),
             "session": _session_block(session),
             "lifecycle": lifecycle,
@@ -921,6 +925,35 @@ class WorldBuilderStatusProducer:
             ),
             "time_basis": TIME_BASIS,
         }
+        if os.environ.get("TOWER_WORLD_GUIDANCE_COVERAGE") == "on":
+            payload["guidance"] = {"coverage": self._coverage(
+                store, world.world_id, session_id, manifest,
+                payload["geometry"].get("revision"),
+            )}
+        return payload
+
+    def _coverage(self, store, world_id, session_id, manifest, geometry_revision):
+        """Only enqueue an identity and read the last immutable receipt on the poll path."""
+        summary = (manifest or {}).get("global_solve") or {}
+        solved_at, horizon = summary.get("solved_at"), summary.get("horizon_keyframes")
+        if (not isinstance(solved_at, (int, float)) or
+                not math.isfinite(solved_at) or solved_at < 0 or
+                isinstance(horizon, bool) or not isinstance(horizon, int) or
+                not 0 <= horizon <= 65535 or not geometry_revision):
+            return None
+        path = store.world_dir(world_id) / "solve" / session_id / "solution.json"
+        try:
+            stat = path.stat()
+        except OSError:
+            return None
+        if self._coverage_worker is None:
+            from tower.world_builder.guidance_coverage import CoverageWorker
+            self._coverage_worker = CoverageWorker(self._root, self._clock)
+        return self._coverage_worker.offer(
+            world_id, session_id, solved_at, horizon,
+            (stat.st_size, stat.st_mtime_ns), geometry_revision,
+            (manifest.get("built_at"), manifest.get("input_digest")),
+        )
 
     def _processing(self, store, world_id, session_id, session, holder):
         """`lifecycle.processing`, or None (`finish_phase.project`). The parse is cached on the
