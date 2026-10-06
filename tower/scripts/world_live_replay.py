@@ -153,7 +153,8 @@ EXIT_NOT_SETTLED = 2
 EXIT_ABORTED = 3
 
 # The harness itself, pinned in every run record (review C22 L5).
-HARNESS_FILES = ("world_live_replay.py", "world_live_replay_report.py", "world_live_replay_run.py")
+HARNESS_FILES = ("world_live_replay.py", "world_live_replay_report.py", "world_live_replay_run.py",
+                 "world_live_timeline.py")
 # The two scripts that STREAM a run. Their sha1 is the pin `--compare` keys
 # on (review C24 HIGH-2); the report script only reads a finished run.
 STREAMING_FILES = ("world_live_replay.py", "world_live_replay_run.py")
@@ -161,7 +162,7 @@ STREAMING_FILES = ("world_live_replay.py", "world_live_replay_run.py")
 # and every report, so which harness made a run is self-evident (manager 154
 # §2: proof sets run only on a pin that passed the C24x2 re-verify). Change it
 # with every change to the harness.
-HARNESS_VERSION = "c22-harness/F11 (full-walk proof admission)"
+HARNESS_VERSION = "c22-harness/F14 (optional live timeline)"
 
 # Leaf keys copied out of each World Builder status push to show what the
 # phone was being told, and when. Generic on purpose: the payload is large
@@ -1013,11 +1014,14 @@ class TowerSocket:
     """One /ws connection, as the phone holds it: a reader that never blocks
     the sender, and replies matched to what was sent."""
 
-    def __init__(self, uri: str, stats: StreamStats, phone: PhoneView, mirror: GeometryMirror):
+    def __init__(self, uri: str, stats: StreamStats, phone: PhoneView, mirror: GeometryMirror,
+                 timeline=None):
         self.uri = uri
         self.stats = stats
         self.phone = phone
         self.mirror = mirror
+        self.timeline = timeline
+        self.capture_id = None
         self.ws = None
         self._reader = None
         self._waiters: dict = {}
@@ -1061,6 +1065,11 @@ class TowerSocket:
     def _dispatch(self, message: dict) -> None:
         kind = message.get("type")
         now = time.perf_counter()
+        if self.timeline is not None:
+            if kind in ("frame_result", "frame_error"):
+                self.timeline.frame_reply(message.get("seq"), message, time.time())
+            else:
+                self.timeline.phone(message, time.time())
         if kind in ("frame_result", "frame_error"):
             sent = self._sent_at.pop(message.get("seq"), None)
             if sent is not None:
@@ -1090,6 +1099,8 @@ class TowerSocket:
     async def send_frame(self, frame: FrameRecord, text: str, jpeg_size: int) -> None:
         now = time.perf_counter()
         self._sent_at[frame.wire_seq] = now
+        if self.timeline is not None:
+            self.timeline.sent(self.capture_id, frame.source_seq, time.time())
         await self.ws.send(text)
         self.stats.frames_sent += 1
         self.stats.json_bytes_sent += len(text)
@@ -1470,6 +1481,8 @@ class ReplayOptions:
     label: str | None = None
     calibration_root: Path | None = None
     calibration_expected: dict[str, str] | None = None
+    live_timeline: bool = False
+    tower_log: Path | None = None
 
 
 def _log(out: Path, text: str) -> None:
@@ -1701,6 +1714,12 @@ async def run_replay(options: ReplayOptions) -> dict:
     stats = StreamStats()
     phone = PhoneView()
     mirror = GeometryMirror(base, enabled=options.phone_fetches)
+    timeline = None
+    if options.live_timeline:
+        if options.world_root is None:
+            raise SystemExit("--live-timeline requires --world-root")
+        from scripts.world_live_timeline import LiveTimeline  # noqa: PLC0415
+        timeline = LiveTimeline(out, options.world_root)
     surfaces = SurfaceWatch()
     background = [asyncio.create_task(mirror.run(stop_background)),
                   asyncio.create_task(_watch_surface(options, phone, surfaces, stop_background))]
@@ -1711,6 +1730,16 @@ async def run_replay(options: ReplayOptions) -> dict:
     uri = f"ws://127.0.0.1:{options.port}/ws"
     events: list = []
     tower_captures: list = []
+    if timeline is not None:
+        async def watch_timeline():
+            while not stop_background.is_set():
+                await asyncio.to_thread(timeline.poll, tower_captures)
+                try:
+                    await asyncio.wait_for(stop_background.wait(), timeline.poll_interval)
+                except asyncio.TimeoutError:
+                    pass
+            await asyncio.to_thread(timeline.poll, tower_captures)
+        background.append(asyncio.create_task(watch_timeline()))
     sent_inputs: list[dict] = record["source_images"]["sent"]
     frame_input_index = 0
 
@@ -1726,7 +1755,7 @@ async def run_replay(options: ReplayOptions) -> dict:
     socket = None
     try:
         with fine_timer():
-            socket = TowerSocket(uri, stats, phone, mirror)
+            socket = TowerSocket(uri, stats, phone, mirror, timeline)
             await socket.open()
             record["handshake"] = await socket.handshake(options.subscribe)
             note("connected", handshake=record["handshake"])
@@ -1778,6 +1807,8 @@ async def run_replay(options: ReplayOptions) -> dict:
                     # the actual call boundary so their I/O cannot hide a late
                     # frame from the client-lateness fidelity bar.
                     stats.lateness_s.append(pacer.elapsed() - step.at)
+                    if timeline is not None:
+                        socket.capture_id = walk[step.capture].capture_id
                     await socket.send_frame(step.frame, text, size)
                     sent_inputs.append(entry)
                     frame_input_index += 1
@@ -1786,7 +1817,7 @@ async def run_replay(options: ReplayOptions) -> dict:
                         _log(out, f"t={step.at:6.1f}s sent {stats.frames_sent} frames, "
                                   f"{stats.frame_results} results, {sum(stats.frame_errors.values())} errors")
                 elif step.kind == "connect":
-                    socket = TowerSocket(uri, stats, phone, mirror)
+                    socket = TowerSocket(uri, stats, phone, mirror, timeline)
                     await socket.open()
                     handshake = await socket.handshake(options.subscribe)
                     # The phone re-sends `start` on every reconnect
@@ -1805,6 +1836,8 @@ async def run_replay(options: ReplayOptions) -> dict:
                     background.append(asyncio.create_task(_learn_capture(base, tower_captures)))
                 elif step.kind == "stream_stop":
                     await socket.send({"type": "stream_stop"})
+                    if timeline is not None:
+                        timeline.stop(time.time())
                     note("stream_stop", capture=step.capture, late_s=round(late, 4))
                 elif step.kind == "disconnect":
                     await socket.close()
@@ -1872,6 +1905,8 @@ async def run_replay(options: ReplayOptions) -> dict:
                                 "photographic": phone.photographic}
         record["phone_fetches"] = mirror.summary()
         record["surface_watch"] = surfaces.transitions
+        if timeline is not None:
+            record["live_timeline"] = timeline.finish(phone.photographic, options.tower_log)
         if guard is not None:
             record["live_tower_watch"] = guard.summary()
         record["tower_captures"] = tower_captures
@@ -2023,6 +2058,8 @@ def add_replay_arguments(parser: argparse.ArgumentParser) -> None:
                         help="Declare this run NOT proof (a smoke, a test). Its record and report say "
                              "NOT-PROOF and --compare never counts it. Required with --no-live-guard.")
     parser.add_argument("--label", default=None)
+    parser.add_argument("--live-timeline", action="store_true",
+                        help="Record per-frame/keyframe live timing, phone messages, and published poses.")
 
 
 def refuse_unguarded_proof(args) -> None:
@@ -2064,6 +2101,8 @@ def options_from_args(args, *, port, out, world_root=None, tower_pid=None, on_ab
         not_a_proof_run=bool(getattr(args, "not_a_proof_run", False)),
         on_abort=on_abort, on_guard_armed=on_guard_armed, label=args.label,
         calibration_root=calibration_root, calibration_expected=calibration_expected,
+        live_timeline=bool(getattr(args, "live_timeline", False)),
+        tower_log=getattr(args, "tower_log", None),
     )
 
 
