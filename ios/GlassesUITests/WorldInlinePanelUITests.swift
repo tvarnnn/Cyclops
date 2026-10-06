@@ -307,11 +307,11 @@ final class WorldInlinePanelUITests: XCTestCase {
 
     // MARK: UI8: the layout on each phone
 
-    /// U-INLINE §1.2's phones (window points → W, the ready stage's H).
-    private static let specPhones: [String: (name: String, width: CGFloat, height: CGFloat)] = [
-        "402x874": ("iPhone 17 Pro", 370, 278),
-        "390x844": ("iPhone 17e", 358, 269),
-        "375x667": ("iPhone SE 3", 343, 257),
+    /// U-INLINE §1.2's phones (window points → the card width W).
+    private static let specPhones: [String: (name: String, width: CGFloat)] = [
+        "402x874": ("iPhone 17 Pro", 370),
+        "390x844": ("iPhone 17e", 358),
+        "375x667": ("iPhone SE 3", 343),
     ]
 
     func testTheLayoutOnEachPhone() throws {
@@ -339,9 +339,16 @@ final class WorldInlinePanelUITests: XCTestCase {
             XCTAssertGreaterThanOrEqual(expand.frame.width, 44, name)
             XCTAssertGreaterThanOrEqual(expand.frame.height, 44, name)
             XCTAssertLessThanOrEqual(panel.frame.height, window.height, "\(name): the panel fits the window")
-            // §1.1: W is the card's width; ready, the stage is exactly H.
+            // §1.1: W is the card's width; ready, the stage is
+            // H = min(round(W × 0.75), round(0.5 × B)) -- the formula is
+            // P3's; here, its bounds: never over 3:4 of W, nor over half of
+            // what is under the navigation bar (B is at most that).
             XCTAssertEqual(stage.frame.width, phone.width, accuracy: 1, "\(phone.name) \(name): W")
-            XCTAssertEqual(stage.frame.height, phone.height, accuracy: 1, "\(phone.name) \(name): H")
+            XCTAssertLessThanOrEqual(stage.frame.height, (phone.width * 0.75).rounded() + 1,
+                                     "\(phone.name) \(name): H ≤ 3:4 of W")
+            let underBar = window.maxY - app.navigationBars.firstMatch.frame.maxY
+            XCTAssertLessThanOrEqual(stage.frame.height, (underBar * 0.5).rounded() + 1,
+                                     "\(phone.name) \(name): H ≤ half the screen under the bar")
             shoot("ui8-layout-\(name)")
             try audit(name)
             app.terminate()
