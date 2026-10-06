@@ -123,6 +123,43 @@ final class WorldInlinePanelUITests: XCTestCase {
         shoot("ui2-ready")
     }
 
+    // MARK: Review 3, HIGH: the cover keeps its own walk's words
+
+    /// The cover is open on A's preview when a report for B arrives: the
+    /// picture stays A's, so its title stays and no stage is claimed over
+    /// it -- B's least of all -- and a notice says a new walk is in
+    /// progress. Closed, the panel follows B.
+    func testTheCoverKeepsItsWalksWordsWhenAReportForAnotherWalkArrives() throws {
+        mock.setRoute("GET /worlds/w1/render", status: 200, body: Page.html(steps: [.init(state: Page.state())]))
+        mock.setRoute("GET /worlds/w1/render/revision", status: 200, body: Page.revision())
+        openLive()
+        push(modelState: "receiving")
+        push(modelState: "finalizing", buildInProgress: true, finalizationState: "pending", finalSolve: "pending",
+             processing: #"{"stage":"placing"}"#)
+        let expand = element("wb-panel-expand")
+        XCTAssertTrue(expand.waitForExistence(timeout: 15), "Open the preview")
+        XCTAssertTrue(reveal(expand))
+        expand.tap()
+        let line = element("world-render-finish-line")
+        XCTAssertTrue(waitFor(timeout: 20) { line.exists && line.label.contains("placing images") },
+                      "A's stage in the cover: \(text(line))")
+        XCTAssertTrue(app.navigationBars["Probe Room"].exists, "A's title")
+
+        push(modelState: "receiving", world: "w2", session: "s9", name: "Other Room")
+        let notice = element("world-render-notice")
+        XCTAssertTrue(waitFor(timeout: 10) { notice.exists && notice.label.contains("A new walk is in progress.") },
+                      "the notice: \(text(notice))")
+        XCTAssertTrue(app.navigationBars["Probe Room"].exists, "A's title stays")
+        XCTAssertFalse(app.navigationBars["Other Room"].exists, "B's title over A's picture")
+        XCTAssertFalse(line.exists && line.label.contains("Now:"), "a stage over A's picture: \(text(line))")
+        XCTAssertTrue(app.webViews.firstMatch.exists, "A's picture stays")
+        shoot("r3-cover-other-walk")
+
+        closeTheCover()
+        XCTAssertTrue(waitFor { !self.element("wb-panel-expand").exists && !self.element("wb-finish-line").exists },
+                      "the panel's own rules again: B is walking, with no picture")
+    }
+
     // MARK: UI3: expand and collapse never reload
 
     func testExpandAndCollapseDoNotReload() throws {
@@ -679,13 +716,15 @@ final class WorldInlinePanelUITests: XCTestCase {
         return count
     }
 
-    private func push(modelState: String, elements: Int = 1360, poses: Int = 40, reason: String? = nil,
+    private func push(modelState: String, world: String = "w1", session: String = "s1", name: String = "Probe Room",
+                      elements: Int = 1360, poses: Int = 40, reason: String? = nil,
                       buildInProgress: Bool? = nil, finalizationState: String? = nil, finalSolve: String? = nil,
                       processing: String? = nil, photographic: String? = nil) {
         seq += 1
         let seq = self.seq
         socket.sendLive { subscription in
-            PanelReport.text(subscription: subscription, seq: seq, modelState: modelState, elements: elements,
+            PanelReport.text(subscription: subscription, seq: seq, modelState: modelState, world: world,
+                             session: session, name: name, elements: elements,
                              poses: poses, reason: reason, buildInProgress: buildInProgress,
                              finalizationState: finalizationState, finalSolve: finalSolve,
                              processing: processing, photographic: photographic)

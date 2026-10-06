@@ -328,9 +328,10 @@ nonisolated struct WorldFinishWatch: Equatable, Sendable {
     private(set) var stopped: Stop?
     private(set) var awayWhileFinishing: WorldFinishWalk?
     private(set) var bannerFor: WorldFinishWalk?
-    /// The walk whose banner VoiceOver has announced: once per walk,
-    /// whether or not the banner is still on screen.
-    private(set) var announcedFor: WorldFinishWalk?
+    /// The walks whose banner VoiceOver has announced: once per walk,
+    /// whether or not the banner is still on screen -- and after another
+    /// walk's, so A, B, A never announces A twice (review 3).
+    private(set) var announced: Set<WorldFinishWalk> = []
 
     init() {}
 
@@ -371,13 +372,13 @@ nonisolated struct WorldFinishWatch: Equatable, Sendable {
     /// The banner for `walk` was announced: never again for that walk.
     mutating func bannerAnnounced(for walk: WorldFinishWalk?) {
         guard let walk, bannerFor == walk else { return }
-        announcedFor = walk
+        announced.insert(walk)
     }
 
     func clock(for walk: WorldFinishWalk?) -> WorldFinishClock {
         guard let walk else { return .unknown }
         return WorldFinishClock(stoppedAt: stopped?.walk == walk ? stopped?.at : nil,
                                 showsAwayBanner: bannerFor == walk,
-                                announcesAwayBanner: bannerFor == walk && announcedFor != walk)
+                                announcesAwayBanner: bannerFor == walk && !announced.contains(walk))
     }
 }

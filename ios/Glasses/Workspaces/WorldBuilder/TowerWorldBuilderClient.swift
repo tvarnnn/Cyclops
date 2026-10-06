@@ -1063,9 +1063,9 @@ final class TowerWorldBuilderClient: WorldBuilderClient {
         presentedWalk = WorldFinishWalk(worldID: worldID, sessionID: sessionID)
     }
 
-    /// The away banner was announced: never again for its walk.
-    func finishBannerAnnounced() {
-        finishWatch.bannerAnnounced(for: presentedWalk)
+    /// The away banner drawn for `walk` was announced: never again for it.
+    func finishBannerAnnounced(for walk: WorldFinishWalk?) {
+        finishWatch.bannerAnnounced(for: walk)
         publishFinishClock()
     }
 

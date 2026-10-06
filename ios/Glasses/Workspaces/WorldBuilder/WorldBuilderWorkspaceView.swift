@@ -256,20 +256,20 @@ struct WorldBuilderWorkspaceView: View {
         }
         // The panel's web view, moved here: no reload, the pose kept, the
         // bridge untouched (U-INLINE §3.2). The title, the note and the
-        // notice come from the same `WorldPresentation` the canvas draws.
+        // notice come from the same `WorldPresentation` the canvas draws --
+        // while it still describes the picture's walk (review 3, HIGH).
+        // With the Tower gone the picture stays, its live stage goes, and
+        // the notice says why (review MED 3).
         .fullScreenCover(isPresented: $host.isExpanded) {
-            WorldInlineCover(
-                host: host,
-                title: world.state.snapshot?.name,
-                note: viewerNote,
-                // The status channel's `lifecycle.finalization` is the same
-                // record as the row's; when the Tower carries the v6 notice
-                // there too, the live screen's room shows it. `nil` otherwise.
-                // With the Tower gone the picture stays, its live stage goes,
-                // and the notice says why (review MED 3).
-                notice: WorldPanelCopy.coverNotice(world.finalization?.notice, towerReachable: isTowerReachable),
-                progress: world.viewerProgress.reachable(isTowerReachable)
-            )
+            let words = host.coverWords.words(
+                live: liveCoverWords, presented: world.presentedWalk,
+                presentedInProgress: world.presentation.stage?.isStillChanging == true,
+                towerReachable: isTowerReachable)
+            WorldInlineCover(host: host, title: words.title, note: words.note, notice: words.notice,
+                             progress: words.progress)
+        }
+        .onChange(of: CoverReport(words: liveCoverWords, walk: world.presentedWalk)) { _, report in
+            host.coverReported(report.words, walk: report.walk)
         }
         .onChange(of: hostInputs, initial: true) { _, inputs in host.update(inputs) }
         // The World Builder cartridge session: `start` on appearance and
@@ -485,7 +485,7 @@ struct WorldBuilderWorkspaceView: View {
             hasMap: WorldPanelMap.fixtureEnabled,
             host: host,
             dismissBanner: { world.dismissFinishBanner() },
-            bannerAnnounced: { world.finishBannerAnnounced() },
+            bannerAnnounced: { walk in world.finishBannerAnnounced(for: walk) },
             expand: { target in expand(target) }
         ) {
             #if DEBUG
@@ -499,6 +499,11 @@ struct WorldBuilderWorkspaceView: View {
 
     /// The capture control already says the Tower is not connected (its
     /// `wb-capture-tower-line`): the panel then says it no third time.
+    ///
+    /// `false` in Release on purpose, not as a gap (review 3, LOW): Release
+    /// compiles no capture control, so no `wb-capture-tower-line` exists to
+    /// defer to. The rule -- never a THIRD "not connected" line -- then
+    /// leaves the panel's line as the second, beside the canvas's own.
     private var captureSaysTowerIsOff: Bool {
         #if DEBUG
         guard !isTowerReachable else { return false }
@@ -517,12 +522,28 @@ struct WorldBuilderWorkspaceView: View {
         #endif
     }
 
+    /// What the report says now, for the cover. The status channel's
+    /// `lifecycle.finalization` is the same record as the row's; when the
+    /// Tower carries the v6 notice there too, the live screen's room shows
+    /// it. `nil` otherwise.
+    private var liveCoverWords: WorldCoverText {
+        WorldCoverText(title: world.state.snapshot?.name, note: viewerNote,
+                       notice: world.finalization?.notice, progress: world.viewerProgress)
+    }
+
+    private struct CoverReport: Equatable {
+        let words: WorldCoverText
+        let walk: WorldFinishWalk?
+    }
+
     /// Full screen: the panel's web view moves into the cover (U-INLINE
-    /// §3.2). Reduce Motion: no slide.
+    /// §3.2), with the words of the walk it shows. Reduce Motion: no slide.
     private func expand(_ target: WorldRenderTarget) {
         var transaction = Transaction()
         transaction.disablesAnimations = reduceMotion
-        withTransaction(transaction) { host.expand(target) }
+        withTransaction(transaction) {
+            host.expand(target, walk: world.presentedWalk, words: liveCoverWords)
+        }
     }
 }
 

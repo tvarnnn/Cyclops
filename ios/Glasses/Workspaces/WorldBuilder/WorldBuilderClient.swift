@@ -152,8 +152,10 @@ protocol WorldBuilderClient: CartridgeClient {
     /// The away banner was read.
     func dismissFinishBanner()
 
-    /// The away banner was announced to VoiceOver: never again for its walk.
-    func finishBannerAnnounced()
+    /// The away banner drawn for `walk` was announced to VoiceOver: never
+    /// again for that walk. The screen passes the walk it drew the banner
+    /// for, not whichever walk is presented when the call lands.
+    func finishBannerAnnounced(for walk: WorldFinishWalk?)
 
     /// The walk the presented state describes -- the report's world AND
     /// session -- or `nil` when it named either not. Published BEFORE the
@@ -267,7 +269,7 @@ extension WorldBuilderClient {
 
     func dismissFinishBanner() {}
 
-    func finishBannerAnnounced() {}
+    func finishBannerAnnounced(for walk: WorldFinishWalk?) {}
 
     /// No Tower, no report, no walk.
     var presentedWalk: WorldFinishWalk? { nil }
@@ -744,8 +746,8 @@ final class WorldBuilderViewModel: ObservableObject {
         client.dismissFinishBanner()
     }
 
-    func finishBannerAnnounced() {
-        client.finishBannerAnnounced()
+    func finishBannerAnnounced(for walk: WorldFinishWalk?) {
+        client.finishBannerAnnounced(for: walk)
     }
 
     /// The report now describes `walk`. A drawn gallery -- and with it the

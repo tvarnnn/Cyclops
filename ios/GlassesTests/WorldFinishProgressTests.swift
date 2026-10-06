@@ -411,6 +411,28 @@ final class WorldFinishProgressTests: XCTestCase {
         XCTAssertFalse(watch.clock(for: a).showsAwayBanner)
     }
 
+    // Review 3, LOW: A, B, A never announces A twice.
+    func testTheAwayBannerIsNotAnnouncedAgainAfterAnotherWalksBanner() {
+        let a = WorldFinishWalk(worldID: "w1", sessionID: "s1")
+        let b = WorldFinishWalk(worldID: "w2", sessionID: "s9")
+        let t0 = ContinuousClock.now
+        var watch = WorldFinishWatch()
+        func settleAway(_ walk: WorldFinishWalk, at seconds: Int) {
+            watch.report(walk: walk, following: true, standing: .receiving, appActive: true, now: t0 + .seconds(seconds))
+            watch.app(active: false, currentWalk: walk, currentStanding: .receiving)
+            watch.report(walk: walk, following: true, standing: .settled, appActive: false,
+                         now: t0 + .seconds(seconds + 1))
+        }
+        settleAway(a, at: 0)
+        watch.bannerAnnounced(for: a)
+        settleAway(b, at: 10)
+        XCTAssertTrue(watch.clock(for: b).announcesAwayBanner)
+        watch.bannerAnnounced(for: b)
+        settleAway(a, at: 20)
+        XCTAssertTrue(watch.clock(for: a).showsAwayBanner, "A's banner is back")
+        XCTAssertFalse(watch.clock(for: a).announcesAwayBanner, "A announced a second time")
+    }
+
     // MARK: I8: the revision's `basis`
 
     func testTheRevisionBasisDecodes() throws {

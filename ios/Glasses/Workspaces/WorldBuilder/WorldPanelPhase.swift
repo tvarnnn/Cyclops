@@ -114,8 +114,10 @@ struct WorldPanelFinishMemory<Block: Equatable>: Equatable {
         self.walk = walk
     }
 
-    /// The phase moved. `true` when the world arrived from the finishing
-    /// wait: the one moment the panel announces it.
+    /// The phase moved. `true` when the world arrived from ITS OWN finishing
+    /// wait: the one moment the panel announces it. A world that replaced
+    /// the wait without being its walk -- a pin to another world while
+    /// finishing -- is not "finished" (review 3).
     @discardableResult
     mutating func phaseChanged(from old: WorldPanelPhase, to new: WorldPanelPhase) -> Bool {
         guard case .ready(let target) = new else {
@@ -123,6 +125,11 @@ struct WorldPanelFinishMemory<Block: Equatable>: Equatable {
             return false
         }
         if old.isFinishing {
+            guard block != nil, let walk, walk.worldID == target.worldID, walk.sessionID == target.sessionID
+            else {
+                readyFromFinishing = nil
+                return false
+            }
             readyFromFinishing = target
             return true
         }
@@ -142,6 +149,66 @@ struct WorldPanelFinishMemory<Block: Equatable>: Equatable {
               walk.worldID == target.worldID, walk.sessionID == target.sessionID
         else { return nil }
         return block
+    }
+}
+
+/// What the full-screen cover says over its picture.
+struct WorldCoverText: Equatable {
+    var title: String?
+    var note: String?
+    var notice: String?
+    var progress: WorldViewerProgress?
+}
+
+/// The cover's words, bound to the walk of the picture it shows (review 3,
+/// HIGH). The cover keeps its picture while it is open, whatever the report
+/// moves on to, so its title, note, notice and progress are the report's
+/// only while the report still describes that walk. Once it describes
+/// another, the cover keeps the picture's own last words -- static, with no
+/// live stage -- and says so; it never pairs B's words with A's picture.
+/// Closed, the panel's own rules apply again.
+struct WorldCoverBinding: Equatable {
+    /// The walk the report described when the cover opened: the picture's
+    /// (the panel's target always names it, `WorldPanelPhase.target`).
+    private(set) var walk: WorldFinishWalk?
+    /// That walk's own words as they last stood; `nil` while closed.
+    private(set) var held: WorldCoverText?
+
+    mutating func opened(walk: WorldFinishWalk?, words: WorldCoverText) {
+        self.walk = walk
+        held = words
+    }
+
+    /// The report now says `words` about `walk`: kept only while it is the
+    /// picture's walk.
+    mutating func reported(_ words: WorldCoverText, walk: WorldFinishWalk?) {
+        guard held != nil, walk == self.walk else { return }
+        held = words
+    }
+
+    mutating func closed() {
+        self = WorldCoverBinding()
+    }
+
+    /// What the cover shows. `live`: the report's words now, about
+    /// `presented`; `presentedInProgress`: that walk is still changing.
+    func words(live: WorldCoverText, presented: WorldFinishWalk?, presentedInProgress: Bool,
+               towerReachable: Bool) -> WorldCoverText {
+        var words = live
+        var moved: String?
+        if let held, presented != walk {
+            words = held
+            // The picture's walk is no longer reported: its last stage is
+            // not current.
+            words.progress?.line = nil
+            if presented != nil {
+                moved = presentedInProgress ? WorldPanelCopy.coverNewWalk : WorldPanelCopy.coverOtherWalk
+            }
+        }
+        let notice = [moved, words.notice].compactMap { $0 }.joined(separator: " ")
+        words.notice = WorldPanelCopy.coverNotice(notice.isEmpty ? nil : notice, towerReachable: towerReachable)
+        words.progress = words.progress?.reachable(towerReachable)
+        return words
     }
 }
 
@@ -177,6 +244,10 @@ enum WorldPanelCopy {
     /// last stage and spinner are no longer current (review MED 3).
     static let finishingButOffline = "The Tower is not connected. Its progress shows again once it is."
     static let mapFixture = "Fixture map"
+    /// Over the full-screen picture once the report has moved to another
+    /// walk (review 3, HIGH): the picture and its words stay as they were.
+    static let coverNewWalk = "A new walk is in progress. This picture stays as it is until you close it."
+    static let coverOtherWalk = "The Tower is now reporting another walk. This picture stays as it is until you close it."
 
     /// The offline stage's sentence, or `nil` when the screen already says
     /// it (the capture control's Tower line): then the panel shows only its
@@ -195,7 +266,7 @@ enum WorldPanelCopy {
     /// Every sentence the panel itself writes, for the banned-phrase audit (P9).
     static var all: [String] {
         [fullScreen, fullScreenHint, tryAgain, opening, openingLabel, notConnected, readyButOffline,
-         finishingButOffline, mapFixture,
+         finishingButOffline, mapFixture, coverNewWalk, coverOtherWalk,
          WorldFinishCopy.finishing, WorldPreviewCopy.openPreview, WorldPreviewCopy.building,
          WorldPreviewCopy.finalComing, WorldPreviewCopy.finalShown, WorldPreviewCopy.walkTimePicture,
          WorldPreviewCopy.walkTimePreview, WorldFinishCopy.awayBanner(headline: "Saved"),

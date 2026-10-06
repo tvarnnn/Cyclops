@@ -50,6 +50,8 @@ final class WorldInlineHost: ObservableObject {
     /// From `expand(_:)` until the cover has gone.
     private(set) var coverIsUp = false
     private(set) var expandedTarget: WorldRenderTarget?
+    /// The cover's words, bound to its picture's walk (review 3, HIGH).
+    private(set) var coverWords = WorldCoverBinding()
     /// The panel has been off screen for `offscreenGrace`.
     private(set) var offscreenExpired = false
 
@@ -120,9 +122,11 @@ final class WorldInlineHost: ObservableObject {
         }
     }
 
-    /// Full screen: the same web view, moved into the cover (§3.2).
-    func expand(_ target: WorldRenderTarget) {
+    /// Full screen: the same web view, moved into the cover (§3.2). `walk`
+    /// and `words`: what the report says about the picture's walk now.
+    func expand(_ target: WorldRenderTarget, walk: WorldFinishWalk? = nil, words: WorldCoverText = .init()) {
         expandedTarget = target
+        coverWords.opened(walk: walk, words: words)
         coverIsUp = true
         evaluate()
         isExpanded = true
@@ -139,9 +143,17 @@ final class WorldInlineHost: ObservableObject {
         isExpanded = false
         coverIsUp = false
         expandedTarget = nil
+        coverWords.closed()
         showsArea = false
         placement = .inline
         evaluate()
+    }
+
+    /// The report now says `words` about `walk`: the cover keeps them only
+    /// while `walk` is its picture's.
+    func coverReported(_ words: WorldCoverText, walk: WorldFinishWalk?) {
+        guard coverIsUp else { return }
+        coverWords.reported(words, walk: walk)
     }
 
     func setShowsArea(_ shows: Bool) {
@@ -320,8 +332,9 @@ struct WorldInlinePanel<Health: View>: View {
     let hasMap: Bool
     @ObservedObject var host: WorldInlineHost
     let dismissBanner: () -> Void
-    /// The away banner was announced: never again for this walk.
-    let bannerAnnounced: () -> Void
+    /// The away banner drawn for this walk was announced: never again for
+    /// it. The walk is the panel's own, the one the banner was drawn for.
+    let bannerAnnounced: (WorldFinishWalk?) -> Void
     let expand: (WorldRenderTarget) -> Void
     @ViewBuilder let health: () -> Health
 
@@ -360,6 +373,15 @@ struct WorldInlinePanel<Health: View>: View {
         }
     }
 
+    /// The wait overlay's finish block over `target`: the saved one, under
+    /// the live block's reachability rule -- the Tower dropping during the
+    /// ready page's loading wait leaves no spinner or stage claimed over
+    /// it, and the offline notice says why (review 3, MED).
+    static func waitBlock(_ memory: WorldPanelFinishMemory<FinishingBlock>, over target: WorldRenderTarget,
+                          towerReachable: Bool) -> FinishingBlock? {
+        memory.overlay(for: target)?.reachable(towerReachable)
+    }
+
     private var currentFinishing: FinishingBlock? {
         guard phase.isFinishing else { return nil }
         return FinishingBlock(
@@ -383,7 +405,7 @@ struct WorldInlinePanel<Health: View>: View {
                 if showsBanner, let headline = presentation.headline {
                     WorldFinishBannerView(text: WorldFinishCopy.awayBanner(headline: headline),
                                           announces: presentation.finishClock.announcesAwayBanner,
-                                          announced: bannerAnnounced, dismiss: dismissBanner)
+                                          announced: { bannerAnnounced(walk) }, dismiss: dismissBanner)
                         .transition(reduceMotion ? .opacity : .move(edge: .top).combined(with: .opacity))
                         .accessibilitySortPriority(100)
                 }
@@ -638,7 +660,7 @@ struct WorldInlinePanel<Health: View>: View {
     /// fetch is genuinely in flight).
     @ViewBuilder
     private func waitOverlay(for target: WorldRenderTarget) -> some View {
-        if let block = finish.overlay(for: target) {
+        if let block = Self.waitBlock(finish, over: target, towerReachable: isTowerReachable) {
             finishingContent(block)
                 .background(Color(WorldRenderLoadingPanel.pageBackground))
         } else {
