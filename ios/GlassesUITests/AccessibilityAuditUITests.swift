@@ -393,7 +393,7 @@ final class AccessibilityAuditUITests: XCTestCase {
             openSavedWorlds(app, mode: mode)
             let row = app.staticTexts["Appearance fixture (Mac)"]
             XCTAssertTrue(reveal(app, row), "\(mode.name): the appearance fixture's row")
-            row.tap()
+            openRoom(app, row)
             let started = Date()
             var shotLoading = false
             let drawing = app.staticTexts.containing(NSPredicate(format: "label BEGINSWITH %@", "Drawing the world")).firstMatch
@@ -439,7 +439,7 @@ final class AccessibilityAuditUITests: XCTestCase {
         // screens down the list, so it is looked for further than usual.
         let row = app.staticTexts["Appearance fixture (Mac)"]
         XCTAssertTrue(reveal(app, row, attempts: 30), "the appearance fixture's row")
-        row.tap()
+        openRoom(app, row)
         let web = app.webViews.firstMatch
         XCTAssertTrue(web.waitForExistence(timeout: 120), "the page was drawn")
         let caption = app.staticTexts.containing(
@@ -475,7 +475,7 @@ final class AccessibilityAuditUITests: XCTestCase {
         openSavedWorlds(app, mode: .axl)
         let row = app.staticTexts["Appearance fixture (Mac)"]
         XCTAssertTrue(reveal(app, row, attempts: 30), "the appearance fixture's row")
-        row.tap()
+        openRoom(app, row)
         let web = app.webViews.firstMatch
         XCTAssertTrue(web.waitForExistence(timeout: 120), "the page was drawn")
 
@@ -542,7 +542,7 @@ final class AccessibilityAuditUITests: XCTestCase {
         openSavedWorlds(app, mode: .light)
         let row = app.staticTexts["Appearance fixture (Mac)"]
         XCTAssertTrue(reveal(app, row), "the appearance fixture's row")
-        row.tap()
+        openRoom(app, row)
         let web = app.webViews.firstMatch
         XCTAssertTrue(web.waitForExistence(timeout: 120), "the page was drawn")
         let caption = app.staticTexts.containing(
@@ -610,7 +610,7 @@ final class AccessibilityAuditUITests: XCTestCase {
         openSavedWorlds(app, mode: .light)
         let row = app.staticTexts["Appearance fixture (Mac)"]
         if reveal(app, row) {
-            row.tap()
+            openRoom(app, row)
             _ = app.webViews.firstMatch.waitForExistence(timeout: 60)
             Thread.sleep(forTimeInterval: 30)
         }
@@ -1194,6 +1194,18 @@ final class AccessibilityAuditUITests: XCTestCase {
         // is on the screen, and the list builds rows as they come into view.
         let fixture = app.staticTexts.matching(NSPredicate(format: "label ENDSWITH %@", "fixture (Mac B0)")).firstMatch
         XCTAssertTrue(fixture.waitForExistence(timeout: 20), "\(mode.name): the Tower listed the fixture worlds")
+    }
+
+    /// U-INLINE §2.4 / §6.3: a room row pins its world and the sheet goes;
+    /// the World Builder panel shows it, and Full screen opens the viewer.
+    private func openRoom(_ app: XCUIApplication, _ row: XCUIElement) {
+        row.tap()
+        _ = waitFor(timeout: 10) { !app.navigationBars["Saved worlds"].exists }
+        let expand = element(app, "wb-panel-expand")
+        guard expand.waitForExistence(timeout: 60) else { return }
+        _ = reveal(app, expand)
+        expand.tap()
+        _ = element(app, "wb-cover-close").waitForExistence(timeout: 15)
     }
 
     // MARK: Helpers

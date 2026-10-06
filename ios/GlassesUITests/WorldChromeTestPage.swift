@@ -102,9 +102,13 @@ enum WorldChromeTestPage {
     /// `fetchManifest` has the page ask for its appearance manifest
     /// (proxied by the scheme handler) as it loads, as the real page does,
     /// so the served `X-World-Imagery` headers reach the app.
+    /// `countsLoads` (U-INLINE): the status reads `loads N`, N counted in the
+    /// page's own `sessionStorage` -- one per document load in this web view,
+    /// so a reload shows 2 and a reparent leaves it at 1 -- and a horizontal
+    /// drag on the canvas is echoed as `got drag`.
     static func html(steps: [Step], kind: String = "room", echo: Bool = true, hello: Hello = .valid,
                      labels: [String: Any]? = nil, raw: Bool = false, marker: Any = NSNull(),
-                     fetchManifest: Bool = false) -> String {
+                     fetchManifest: Bool = false, countsLoads: Bool = false) -> String {
         let stepsJSON = json(steps.map { step -> [String: Any] in
             var entry: [String: Any] = ["state": step.state]
             if let after = step.after { entry["after"] = after }
@@ -127,7 +131,7 @@ enum WorldChromeTestPage {
         <meta name="wb-representation" content="appearance"><meta name="wb-revision" content="\(revision)">\(areaMeta)\(echoMeta)
         <title>chrome test page</title>
         <style>html,body{margin:0;height:100%;background:#0b0d10;color:#e8e9ec;font:14px -apple-system}
-        #wrap{position:fixed;inset:0;background:linear-gradient(#335,#0b0d10)}
+        #wrap{position:fixed;inset:0;background:linear-gradient(#335,#0b0d10);touch-action:none}
         #pagechrome{position:fixed;left:8px;bottom:8px;padding:6px;background:#222}
         body.wbnative #pagechrome{display:none!important}</style></head>
         <body><div id="wrap"></div><div id="pagechrome">PAGE CHROME</div>
@@ -142,6 +146,12 @@ enum WorldChromeTestPage {
           if (!h || MODE === "silent") return;
           const pageId = "testpage" + Math.random().toString(36).slice(2, 10).replace(/[^a-z0-9]/g, "0");
           let seq = 0, nonce = null, i = 0, got = null, dead = false;
+          let loads = 0;
+          if (\(countsLoads)) {
+            try { loads = (parseInt(sessionStorage.getItem("wbLoads") || "0", 10) || 0) + 1;
+                  sessionStorage.setItem("wbLoads", String(loads)); }
+            catch (e) { loads = -1; }
+          }
           function post(type, body){
             const m = Object.assign({v: 1, type: type, pageId: pageId, seq: seq++}, nonce ? {nonce: nonce} : {}, body || {});
             return h.postMessage(m);
@@ -149,6 +159,7 @@ enum WorldChromeTestPage {
           function snapshot(){
             const s = JSON.parse(JSON.stringify(STEPS[i].state));
             s.active = document.body.classList.contains("wbnative");
+            if (\(countsLoads)) s.status = "loads " + loads;
             if (got) s.status = "got " + got;
             return s;
           }
@@ -171,9 +182,20 @@ enum WorldChromeTestPage {
           }
           // A touch that reaches the canvas says so in the next status, so a
           // test proves empty chrome space passes touches through.
-          document.getElementById("wrap").addEventListener("pointerdown", () => {
+          let downX = null, downY = null;
+          document.getElementById("wrap").addEventListener("pointerdown", (e) => {
+            downX = e.clientX; downY = e.clientY;
             if (nonce && !dead){ got = "touch"; sendState(); }
           });
+          // A horizontal drag that reaches the page (U-INLINE UI9).
+          document.getElementById("wrap").addEventListener("pointermove", (e) => {
+            if (downX === null || !nonce || dead) return;
+            if (Math.abs(e.clientX - downX) > 30 && Math.abs(e.clientX - downX) > Math.abs(e.clientY - downY)) {
+              downX = null; got = "drag"; sendState();
+            }
+          });
+          document.getElementById("wrap").addEventListener("pointercancel", () => { downX = null; });
+          document.getElementById("wrap").addEventListener("pointerup", () => { downX = null; });
           post("hello", HELLO).then(r => {
             if (!(r && r.type === "welcome" && r.protocol === 1 && r.nonce)) return;
             nonce = r.nonce;

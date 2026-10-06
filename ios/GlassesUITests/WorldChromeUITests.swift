@@ -29,6 +29,10 @@ final class WorldChromeUITests: XCTestCase {
     private var app: XCUIApplication!
     private var mock: MockTowerHTTPServer!
     private var mockAuthority = ""
+    /// The mock's World Builder socket: a Saved worlds pin is answered with
+    /// the saved fixture world's report, so the World Builder panel shows it
+    /// (U-INLINE §2.4) and Full screen opens the viewer these tests read.
+    private var socket: PanelSocket!
     private let closedAuthority = "127.0.0.1:9"
     private static let ax5 = "UICTContentSizeCategoryAccessibilityXXXL"
     private typealias Page = WorldChromeTestPage
@@ -37,6 +41,11 @@ final class WorldChromeUITests: XCTestCase {
         continueAfterFailure = false
         mock = try MockTowerHTTPServer(.tower)
         mockAuthority = "127.0.0.1:\(try mock.start())"
+        socket = PanelSocket(mock: mock)
+        socket.pinnedReply = { subscription, world, session in
+            PanelReport.savedWorld(subscription: subscription, world: world, session: session)
+        }
+        socket.install()
     }
 
     override func tearDownWithError() throws {
@@ -86,8 +95,10 @@ final class WorldChromeUITests: XCTestCase {
             return state
         }
         let steps: [Page.Step] = [
+            // Long enough to reach the full screen while it lasts: the page
+            // starts in the World Builder panel and is expanded (U-INLINE).
             .init(state: research(Page.state(drawn: false, status: "Loading T",
-                                             hint: ["text": "One moment T", "opacity": 0.9])), after: 5000),
+                                             hint: ["text": "One moment T", "opacity": 0.9])), after: 12000),
             .init(state: research(Page.state(dark: true, edge: "left"))),
             .init(state: research(Page.state(hint: ["text": "Movement T", "opacity": 0.6], edge: "right"))),
             .init(state: research(Page.state(message: "Withdrawn T", phase: "withdrawn")), after: 4000),
@@ -346,7 +357,7 @@ final class WorldChromeUITests: XCTestCase {
             + "the walls are drawn from fewer images than usual. An owner can run the walk again from "
             + "the Tower, and the picture here changes when it does. Nothing else about the room is affected."
         let steps: [Page.Step] = [
-            .init(state: Page.state(drawn: false, status: "Loading T"), after: 6000),
+            .init(state: Page.state(drawn: false, status: "Loading T"), after: 12000),
             .init(state: Page.state(head: head)),
         ]
         openViewer(page: Page.html(steps: steps, labels: Page.realLabels(kind: "room")), notice: notice)
@@ -520,9 +531,15 @@ final class WorldChromeUITests: XCTestCase {
     /// R2: the cold open says what it is doing, before any bar, head or ring.
     /// One snapshot of the tree per pass, so a short pre-draw window is not
     /// missed between separate queries.
+    ///
+    /// U-INLINE: a world opened from Saved worlds now opens in the World
+    /// Builder panel, and its cold open happens there, under the panel's
+    /// wait overlay (`wb-panel-opening`), with the page's status in the
+    /// panel's footer. "Before the picture" is: while that overlay is up.
     func testTheColdOpenSaysWhatItIsDoing() throws {
-        try openRealWorld()
-        let watched = ["world-chrome-status", "world-chrome-best", "world-chrome-head", "world-chrome-ring"]
+        try openRealWorld(expand: false)
+        let watched = ["world-chrome-status", "world-chrome-best", "world-chrome-head", "world-chrome-ring",
+                       "wb-panel-opening"]
         var coldStatus: String?
         var headFirstSeenWithoutAColdStatus = false
         let deadline = Date().addingTimeInterval(90)
@@ -535,11 +552,12 @@ final class WorldChromeUITests: XCTestCase {
             }
             visit(snapshot)
             if coldStatus == nil, let status = seen["world-chrome-status"], seen["world-chrome-best"] == nil,
-               seen["world-chrome-head"] == nil, seen["world-chrome-ring"] == nil {
+               seen["world-chrome-head"] == nil, seen["world-chrome-ring"] == nil,
+               seen["wb-panel-opening"] != nil {
                 coldStatus = status
                 shoot("r2-cold-open")
             }
-            if seen["world-chrome-head"] != nil {
+            if seen["world-chrome-head"] != nil || (coldStatus != nil && seen["wb-panel-opening"] == nil) {
                 headFirstSeenWithoutAColdStatus = coldStatus == nil
                 break
             }
@@ -650,6 +668,11 @@ final class WorldChromeUITests: XCTestCase {
 
     private func openViewer(page: String, area: String? = nil, size: String? = nil, notice: String? = nil) {
         mock.setRoute("GET /worlds", status: 200, body: Page.listing(withArea: area != nil, notice: notice))
+        // The pinned world's report carries the walk's notice too, as the
+        // Tower's `lifecycle.finalization` does (the row's own record).
+        socket.pinnedReply = { subscription, world, session in
+            PanelReport.savedWorld(subscription: subscription, world: world, session: session, notice: notice)
+        }
         mock.setRoute("GET /worlds/w1/render", status: 200, body: page)
         mock.setRoute("GET /worlds/w1/render/revision", status: 200, body: Page.revision(withArea: area != nil))
         if let area {
@@ -661,12 +684,12 @@ final class WorldChromeUITests: XCTestCase {
         openTheWorld(named: "Appearance fixture (Mac)")
     }
 
-    private func openRealWorld(size: String? = nil) throws {
+    private func openRealWorld(size: String? = nil, expand: Bool = true) throws {
         guard let authority = ProcessInfo.processInfo.environment["GLASSES_UITEST_TOWER_AUTHORITY"],
               !authority.isEmpty
         else { throw XCTSkip("Set GLASSES_UITEST_TOWER_AUTHORITY=host:port of a U1.1 Tower with the fixture world.") }
         launch(authority: authority, size: size)
-        openTheWorld(named: "Appearance fixture (Mac)")
+        openTheWorld(named: "Appearance fixture (Mac)", expand: expand)
     }
 
     private func launch(authority: String, size: String?) {
@@ -677,7 +700,7 @@ final class WorldChromeUITests: XCTestCase {
         app.launch()
     }
 
-    private func openTheWorld(named name: String) {
+    private func openTheWorld(named name: String, expand shouldExpand: Bool = true) {
         let cartridges = app.buttons["Cartridges"]
         XCTAssertTrue(cartridges.waitForExistence(timeout: 15), "Home")
         let drawerDone = app.buttons["Done"]
@@ -692,7 +715,17 @@ final class WorldChromeUITests: XCTestCase {
         let world = app.staticTexts[name].firstMatch
         XCTAssertTrue(world.waitForExistence(timeout: 20), "the listing")
         XCTAssertTrue(reveal(world), "the world's row")
-        XCTAssertTrue(tap(world, until: app.webViews.firstMatch.exists, attempts: 3), "the viewer opened")
+        // U-INLINE §2.4 / §6.3: the row pins the world and the sheet goes;
+        // the World Builder panel shows it, and Full screen opens the viewer.
+        XCTAssertTrue(tap(world, until: !app.navigationBars["Saved worlds"].exists, attempts: 3), "the row pinned it")
+        guard shouldExpand else { return }
+        let expand = element("wb-panel-expand")
+        XCTAssertTrue(expand.waitForExistence(timeout: 30), "the panel shows the pinned world")
+        XCTAssertTrue(reveal(expand), "Full screen")
+        let window = app.windows.firstMatch.frame
+        XCTAssertTrue(tap(expand, until: self.app.webViews.firstMatch.exists
+                            && self.app.webViews.firstMatch.frame.height > window.height * 0.4, attempts: 3),
+                      "the viewer opened full screen")
         let drawing = app.staticTexts.containing(NSPredicate(format: "label BEGINSWITH %@", "Drawing the world")).firstMatch
         _ = waitFor(timeout: 30) { !drawing.exists }
     }

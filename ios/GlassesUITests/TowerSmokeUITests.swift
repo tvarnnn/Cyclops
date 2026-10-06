@@ -220,8 +220,19 @@ final class TowerSmokeUITests: XCTestCase {
         ).firstMatch
         // Or the web view itself: under native chrome (U1.1) the caption
         // line is the page's own head, drawn natively once the page speaks.
-        XCTAssertTrue(tap(complete, until: caption.exists || app.webViews.firstMatch.exists),
-                      "tapping a session opens its 3D world, with no further tap")
+        //
+        // U-INLINE §2.4 (manager 209): the tap pins the session and the sheet
+        // goes; the World Builder panel shows its 3D world live inline, and
+        // Full screen opens the viewer this test reads (§6.3).
+        XCTAssertTrue(tap(complete, until: !app.navigationBars["Saved worlds"].exists),
+                      "tapping a session pins it and the list goes")
+        let expand = app.descendants(matching: .any).matching(identifier: "wb-panel-expand").firstMatch
+        XCTAssertTrue(expand.waitForExistence(timeout: 30), "the panel shows the session's 3D world")
+        XCTAssertTrue(reveal(expand))
+        let window = app.windows.firstMatch.frame
+        XCTAssertTrue(tap(expand, until: app.webViews.firstMatch.exists
+                            && app.webViews.firstMatch.frame.height > window.height * 0.5),
+                      "Full screen opens its 3D world")
 
         // The page arrived and the web view drew it. Asserted on the presence
         // of the Tower's page rather than on its wording: the render page's own
@@ -297,21 +308,10 @@ final class TowerSmokeUITests: XCTestCase {
             attach("3d-world-details")
         }
 
-        // Back to the picker, then out of it: the workspace is pinned to the
-        // world that was opened.
-        // The back button by its LABEL, which UIKit sets to the previous
-        // screen's title. `app.navigationBars.buttons.element(boundBy: 0)` is
-        // unscoped across every navigation bar on screen and can pick the
-        // wrong one while a push is still animating; a labelled query cannot.
-        // The index form stays only as a last resort, for the case where a
-        // long title makes UIKit collapse the label to "Back".
-        let named = app.navigationBars.buttons["Saved worlds"]
-        let generic = app.navigationBars.buttons["Back"]
-        let backToWorlds = named.exists ? named
-            : (generic.exists ? generic : app.navigationBars.firstMatch.buttons.element(boundBy: 0))
-        XCTAssertTrue(tap(backToWorlds, until: app.navigationBars["Saved worlds"].exists),
-                      "the 3D world pops back to the list it was opened from")
-        XCTAssertTrue(tap(app.buttons["Close"], until: !app.navigationBars["Saved worlds"].exists))
+        // Close the full screen: back on the workspace, which is pinned to
+        // the world that was opened (U-INLINE §3.2).
+        let close = app.descendants(matching: .any).matching(identifier: "wb-cover-close").firstMatch
+        XCTAssertTrue(tap(close, until: !close.exists), "Close collapses the 3D world into the panel")
 
         let looking = app.staticTexts.containing(NSPredicate(format: "label BEGINSWITH %@", "Looking at saved world")).firstMatch
         XCTAssertTrue(looking.waitForExistence(timeout: 10), "the workspace names the world that was opened")
