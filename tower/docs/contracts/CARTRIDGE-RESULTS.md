@@ -2165,3 +2165,56 @@ and `tests/result_channel_fixtures.py`. The two newer cartridges are
 driven end to end through the real app in `tests/test_scene_wire_e2e.py`
 and `tests/test_documents_wire_e2e.py`; their sessions are tested in
 isolation in `tests/test_scene_live_session.py`.
+
+## vNEXT — World Builder `guidance.coverage`
+
+`TOWER_WORLD_GUIDANCE_COVERAGE=on` adds `guidance: {"coverage": ...}` only
+for a selected session in the existing `world_builder.status/2026-09-10`
+payload. Any other switch value is OFF. OFF leaves every payload and envelope
+byte-identical to `324f4a6`, including no-session and stopped states. ON
+publishes `coverage:null` until one global solve has landed, been merged into
+the derived tree, and passed a consistent read. A stopped session without one
+also has `coverage:null`; no session omits `guidance`. Coverage is nonvolatile,
+so a changed block changes the status envelope revision. `age_seconds` is
+never on the wire. A later local rebuild may change `geometry.revision` but
+does not change the old receipt's `geometry_revision` or masks.
+
+The complete nonnull block has exactly these fields (all required, no nulls):
+
+| Field | Type and bound |
+|---|---|
+| `version`, `source` | integer `1`; string `landed_global_solve` |
+| `solved_at`, `computed_at` | finite Unix seconds on Tower clock, `0 ≤ solved_at ≤ computed_at` |
+| `horizon_keyframes`, `keyframes_now`, `keyframes_pending` | integers 0…65535; pending is `max(0, now - horizon)` at computation time |
+| `geometry_revision`, `frame_revision` | opaque ASCII string 1…128; integer 0…2³¹−1 |
+| `station_grid`, `sector_frame` | `component_square_8x8_v1`; `first_qualified_forward_cw_from_up_v1` |
+| `components_total`, `components_omitted`, `stations_omitted` | integers 0…65535 |
+| `components` | array of 0…16 rows, sorted by `reference_segment` |
+
+Each component row has `reference_segment` (integer 0…2³¹−1, identity only
+within this solve and session), `posed_keyframes` (integer 1…65535),
+`bounds_xy` (four finite numbers `[minX,minY,maxX,maxY]`), `origin_xyz`,
+`up_xyz`, `forward_xyz` (three finite numbers each; up and forward unit and
+perpendicular), `cell_size` (finite positive number in arbitrary solve units),
+and `stations` (nonempty array of 1…16 rows). Across all components there
+are at most 16 stations, selected by descending keyframe count and then
+ascending `(reference_segment,y,x)`; emitted rows sort by component, then
+`(y,x)`. Each station has integer `x,y` in 0…7, `keyframes` in 1…65535,
+and `weak_mask`,`supported_mask` in 0…4095. The masks are disjoint: one
+distinct eligible view in a heading sector is weak, two or more is supported.
+No direction ray paints beyond the station cell. Missing or invalid component
+basis/placement omits that component; missing source identity, solve time,
+horizon or geometry consistency makes the whole block null. A component that
+loses the global station cap has no empty `stations` row and increments
+`components_omitted`.
+
+The compact UTF-8 JSON serialization of `guidance.coverage` is capped at
+4,096 bytes. If a truthful complete block cannot fit, Tower logs a
+diagnostic and publishes `coverage:null`. The existing status size limit
+still applies. One low-priority worker computes from accepted journal IDs,
+solve-replaced poses, the named solution and registered placements after the
+merge. Status polls read only the latest immutable receipt. A failed or slow
+job leaves the previous dated receipt visible and does not hold live rebuild,
+Stop, final solve or the status reply. The semantic and phone display rules
+are in WORLD-BUILDER-WORLDS vNEXT and WORLD-BUILDER-IOS vNEXT; the frozen
+field authority is `FOW-COVERAGE-V1-SPEC-20261006.md`.
