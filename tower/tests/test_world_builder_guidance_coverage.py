@@ -14,6 +14,7 @@ from pathlib import Path
 import pytest
 
 from tower.results.world_builder import WorldBuilderStatusProducer, _geometry_block
+from tower.results import world_builder as status_module
 from tower.results import make_snapshot_for
 from tower.results.contracts import CARTRIDGE_WORLD_BUILDER, RESULT_TYPE_STATUS
 from tower.results.envelope import ResultEnvelope
@@ -352,17 +353,36 @@ def test_four_kib_cap():
 
 
 def test_on_selected_without_landing_is_null_and_off_omits(tmp_path, monkeypatch):
+    monkeypatch.setenv("TOWER_WORLD_GUIDANCE_COVERAGE", "on")
     root = tmp_path / "worlds"
     store = WorldStore(root)
     store.write_world(World(world_id="w", created_at=1, updated_at=1, session_ids=("s",)))
     store.write_session(Session(session_id="s", world_id="w", started_at=1))
     producer = WorldBuilderStatusProducer(root, lambda: 1000)
-    monkeypatch.setenv("TOWER_WORLD_GUIDANCE_COVERAGE", "on")
     assert producer.snapshot("w", "s").payload["guidance"] == {"coverage": None}
     store.write_world(World(world_id="empty", created_at=1, updated_at=1))
     assert "guidance" not in producer.snapshot("empty", None).payload
     monkeypatch.setenv("TOWER_WORLD_GUIDANCE_COVERAGE", "garbage")
-    assert "guidance" not in producer.snapshot("w", "s").payload
+    assert producer.snapshot("w", "s").payload["guidance"] == {"coverage": None}
+    off_producer = WorldBuilderStatusProducer(root, lambda: 1000,
+                                             coverage_enabled=False)
+    assert "guidance" not in off_producer.snapshot("w", "s").payload
+
+
+def test_switch_latched_at_setup_never_starts_worker_on_later_poll(tmp_path, monkeypatch):
+    monkeypatch.delenv("TOWER_WORLD_GUIDANCE_COVERAGE", raising=False)
+    root = tmp_path / "worlds"
+    store = WorldStore(root)
+    store.write_world(World(world_id="w", created_at=1, updated_at=1,
+                            session_ids=("s",)))
+    store.write_session(Session(session_id="s", world_id="w", started_at=1))
+    snapshot_for = make_snapshot_for(root, lambda: 1000)
+    monkeypatch.setenv("TOWER_WORLD_GUIDANCE_COVERAGE", "on")
+    with monkeypatch.context() as patch:
+        patch.setattr(threading.Thread, "start", lambda *_: pytest.fail(
+            "status poll started a guidance worker"))
+        snapshot = snapshot_for(CARTRIDGE_WORLD_BUILDER, RESULT_TYPE_STATUS, "w", "s")
+    assert "guidance" not in snapshot.payload
 
 
 def _landed_tree(root, data):
@@ -397,11 +417,20 @@ def test_worker_publishes_only_completed_receipt_and_keeps_revision(monkeypatch,
     data = _inputs()
     root = tmp_path / "worlds"
     world, session, _ = _landed_tree(root, data)
+    release = threading.Event()
+    original = coverage_module.compute_from_tree
+
+    def delayed(*args, **kwargs):
+        release.wait(timeout=2)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(coverage_module, "compute_from_tree", delayed)
     producer = WorldBuilderStatusProducer(root, lambda: 1000.12)
     first = producer.snapshot(world, session)
     assert first.payload["guidance"] == {"coverage": None}
     worker = producer._coverage_worker
     assert worker is not None
+    release.set()
     deadline = threading.Event()
     for _ in range(100):
         with worker._condition:
@@ -450,6 +479,30 @@ def test_on_worker_starts_before_poll_and_discovers_landing(monkeypatch, tmp_pat
         worker.latest(world, session)["solved_at"] = 0
 
 
+def test_worker_recovers_from_discovery_exception(monkeypatch, tmp_path):
+    monkeypatch.setenv("TOWER_WORLD_GUIDANCE_COVERAGE", "on")
+    root = tmp_path / "worlds"
+    world, session, _ = _landed_tree(root, _inputs())
+    original = coverage_module.CoverageWorker._discover
+    calls = 0
+
+    def discover(worker):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise RuntimeError("transient discovery failure")
+        return original(worker)
+
+    monkeypatch.setattr(coverage_module.CoverageWorker, "_discover", discover)
+    worker = coverage_module.CoverageWorker(root, lambda: 1000.12)
+    for _ in range(200):
+        if worker.latest(world, session) is not None:
+            break
+        threading.Event().wait(0.01)
+    assert calls >= 2
+    assert worker.latest(world, session) is not None
+
+
 def test_tower_result_setup_starts_on_worker_before_first_status(monkeypatch, tmp_path):
     monkeypatch.setenv("TOWER_WORLD_GUIDANCE_COVERAGE", "on")
     root = tmp_path / "worlds"
@@ -484,6 +537,34 @@ def test_whole_status_envelope_with_near_cap_coverage_fits_budget(monkeypatch, t
     size = len(json.dumps(envelope.to_json_dict(), separators=(",", ":"),
                           ensure_ascii=False).encode("utf-8"))
     assert size <= 16 * 1024
+
+
+def test_coverage_falls_back_to_null_if_complete_status_exceeds_budget(monkeypatch, tmp_path):
+    monkeypatch.setenv("TOWER_WORLD_GUIDANCE_COVERAGE", "on")
+    root = tmp_path / "worlds"
+    world, session, store = _landed_tree(root, _inputs())
+    producer = WorldBuilderStatusProducer(root, lambda: 1000.12)
+    block = _block(_inputs(tuple((i, 4) for i in range(16))))
+
+    class Published:
+        def latest(self, *_):
+            return block
+
+    producer._coverage_worker = Published()
+    base = producer.snapshot(world, session).payload
+    base["guidance"]["coverage"] = None
+    base_size = len(json.dumps(base, separators=(",", ":"),
+                               ensure_ascii=False).encode("utf-8"))
+    # The iOS projection repeats the world name, so reserve for both copies.
+    padding = (status_module._MAX_STATUS_WITH_COVERAGE_BYTES - base_size - 64) // 2
+    assert padding > 0
+    store.write_world(replace(store.read_world(world), display_name="x" * padding))
+    snapshot = producer.snapshot(world, session)
+    assert snapshot.payload["guidance"] == {"coverage": None}
+    assert len(json.dumps(snapshot.payload, separators=(",", ":"),
+                          ensure_ascii=False).encode("utf-8")) <= status_module._MAX_STATUS_WITH_COVERAGE_BYTES
+    assert snapshot.revision == status_module.compute_revision(snapshot.payload,
+                                                               snapshot.volatile_fields)
 
 
 def test_tree_snapshot_refuses_torn_identity_and_placement(tmp_path, monkeypatch):

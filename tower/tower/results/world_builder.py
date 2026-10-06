@@ -76,6 +76,15 @@ from tower.world_builder.photographic import (  # noqa: E402
     is_unsettled,
 )
 
+# Leave room for the result envelope and subscription metadata inside the
+# 16 KiB status budget when the optional coverage block is present.
+_MAX_STATUS_WITH_COVERAGE_BYTES = 15 * 1024
+
+
+def _coverage_status_fits(payload):
+    return len(json.dumps(payload, separators=(",", ":"),
+                          ensure_ascii=False).encode("utf-8")) <= _MAX_STATUS_WITH_COVERAGE_BYTES
+
 # Lifecycle, named for the evidence rather than for an intention. Tower
 # cannot see a process's intent; it can see a lock, a journal and a
 # manifest.
@@ -402,9 +411,11 @@ class _FileCache:
 class WorldBuilderStatusProducer:
     """Builds one status snapshot per call. Holds only a small cache."""
 
-    def __init__(self, world_root, clock) -> None:
+    def __init__(self, world_root, clock, *, coverage_enabled=None) -> None:
         self._root = Path(world_root)
         self._clock = clock
+        self._coverage_enabled = (os.environ.get("TOWER_WORLD_GUIDANCE_COVERAGE") == "on"
+                                  if coverage_enabled is None else coverage_enabled)
         self._files = _FileCache()
         # Path length needs the full poses file, which the manifest does
         # not summarise. Reading it on every poll would be the one
@@ -413,7 +424,7 @@ class WorldBuilderStatusProducer:
         # replaced rather than accumulated -- see _path_length.
         self._path_length_cache: dict[str, tuple[str, dict | None]] = {}
         self._coverage_worker = None
-        if os.environ.get("TOWER_WORLD_GUIDANCE_COVERAGE") == "on":
+        if self._coverage_enabled:
             from tower.world_builder.guidance_coverage import CoverageWorker
             self._coverage_worker = CoverageWorker(self._root, self._clock)
 
@@ -709,6 +720,11 @@ class WorldBuilderStatusProducer:
 
         _attach_ios_projection(payload)
 
+        coverage = (payload.get("guidance") or {}).get("coverage")
+        if coverage is not None and not _coverage_status_fits(payload):
+            logger.warning("world builder guidance: complete status exceeds size budget")
+            payload["guidance"]["coverage"] = None
+
         revision = compute_revision(payload, VOLATILE_PATHS)
         if payload.get("world_snapshot") is not None:
             # iOS holds the revision INSIDE the snapshot (handoff.md 8.3),
@@ -926,7 +942,7 @@ class WorldBuilderStatusProducer:
             ),
             "time_basis": TIME_BASIS,
         }
-        if os.environ.get("TOWER_WORLD_GUIDANCE_COVERAGE") == "on":
+        if self._coverage_enabled:
             payload["guidance"] = {"coverage": self._coverage(
                 store, world.world_id, session_id, manifest,
                 payload["geometry"].get("revision"),
