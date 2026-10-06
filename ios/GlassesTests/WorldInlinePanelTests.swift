@@ -673,6 +673,8 @@ final class WorldInlinePanelTests: XCTestCase {
         let walks: [WorldFinishWalk?] = [walkA, walkB, WorldFinishWalk(worldID: "w1", sessionID: "s2"), nil]
         let surfaces: [(String, (WorldBuilderViewModel, WorldRenderTarget) -> Bool)] = [
             ("the header's Picture", { world, picture in WorldBuilderWorkspaceView.headerPicture(world) == picture }),
+            ("the canvas's 3D controls", { world, picture in
+                WorldCanvasPictureOffer(world.walkPresentation)?.target == picture }),
             ("the panel's phase", { world, picture in
                 WorldPanelPhase.phase(
                     isCapturing: false, sessionActive: false, towerReachable: true, pageLoaded: false,
@@ -719,17 +721,20 @@ final class WorldInlinePanelTests: XCTestCase {
         XCTAssertEqual(paired, 3, "the matrix pairs only a picture with its own walk")
     }
 
-    /// And no surface has a rule of its own: the panel, its phase and the
-    /// workspace compare no world or session ids, read no walk or picture
-    /// target apart from a `WalkScoped`, and compare no walks -- the helper
+    /// And no surface has a rule of its own: the panel, its phase, the
+    /// workspace and the canvas compare no world or session ids, read no walk
+    /// or picture target apart from a `WalkScoped` (a ladder's target only
+    /// through `picture(_:)`), and compare no walks -- the helper
     /// in `WorldWalkScope.swift` is the only place a picture meets words.
     func testNoSurfaceComparesAWalkWithAPictureOutsideTheOneHelper() throws {
         let folder = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
             .appendingPathComponent("Glasses/Workspaces/WorldBuilder")
         let banned = [#"\b(worldID|sessionID)\s*(==|!=)"#, #"(==|!=)\s*\w*\.(worldID|sessionID)\b"#,
-                      #"\bpresentedWalk\b"#, #"\brenderTarget\b"#, #"\.walk\s*(==|!=)(?!\s*nil)"#]
+                      #"\bpresentedWalk\b"#, #"\brenderTarget\b"#, #"\.walk\s*(==|!=)(?!\s*nil)"#,
+                      #"^(?!.*\.picture\().*\breconstruction\.target\b"#]
             .map { try! NSRegularExpression(pattern: $0) }
-        for file in ["WorldPanelPhase.swift", "WorldInlinePanel.swift", "WorldBuilderWorkspaceView.swift"] {
+        for file in ["WorldPanelPhase.swift", "WorldInlinePanel.swift", "WorldBuilderWorkspaceView.swift",
+                     "WorldCanvasView.swift"] {
             let text = try String(contentsOf: folder.appendingPathComponent(file), encoding: .utf8)
             XCTAssertGreaterThan(text.count, 1000, file)
             for (number, line) in text.components(separatedBy: "\n").enumerated() {

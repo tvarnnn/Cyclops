@@ -4866,7 +4866,10 @@ final class WorldBuilderViewModelOwnershipTests: XCTestCase {
     /// picture, never the bare target), and a cover opened on B's picture in
     /// that gap -- the canvas may still offer it -- says nothing of A. B's
     /// own report pairs both. (Before, the header opened B's picture with
-    /// A's words and progress.)
+    /// A's words and progress.) The canvas's 3D controls -- "Open the 3D
+    /// world" and the solver's view -- and their words refuse the same gap:
+    /// before, they offered B's picture under A's stage, button wording and
+    /// reconstruction note (review 4, the remaining HIGH).
     func testTheHeadersPictureRefusesWhileTheTargetAndTheReportDisagree() {
         let viewModel = WorldBuilderViewModel(client: ScriptedWorldBuilderClient())
         let a = WorldRenderTarget(worldID: "w-a", sessionID: "s-a")
@@ -4875,11 +4878,14 @@ final class WorldBuilderViewModelOwnershipTests: XCTestCase {
         viewModel.walkReportDidChange(to: walkReport("w-a", "s-a", name: "Kitchen"))
         XCTAssertEqual(WorldBuilderWorkspaceView.headerPicture(viewModel), a)
         XCTAssertEqual(viewModel.coverWords.value(for: a)?.title, "Kitchen")
+        XCTAssertEqual(WorldCanvasPictureOffer(viewModel.walkPresentation)?.target, a)
 
         // The pin: B's target before B's report.
         viewModel.open(worldID: "w-b", sessionID: "s-b")
         XCTAssertEqual(viewModel.renderTarget, b, "the pin names its target at once")
         XCTAssertNil(WorldBuilderWorkspaceView.headerPicture(viewModel), "B's picture offered under A's words")
+        XCTAssertNil(WorldCanvasPictureOffer(viewModel.walkPresentation),
+                     "the canvas offered B's picture with A's stage, button wording or note")
         var cover = WorldCoverBinding()
         cover.opened(picture: b, live: viewModel.coverWords)
         let gap = cover.words(live: viewModel.coverWords, towerReachable: true)
@@ -4891,6 +4897,9 @@ final class WorldBuilderViewModelOwnershipTests: XCTestCase {
         viewModel.walkReportDidChange(to: walkReport("w-b", "s-b", name: "Hall"))
         XCTAssertEqual(WorldBuilderWorkspaceView.headerPicture(viewModel), b)
         XCTAssertEqual(viewModel.panelTarget, b)
+        let offer = WorldCanvasPictureOffer(viewModel.walkPresentation)
+        XCTAssertEqual(offer?.target, b)
+        XCTAssertEqual(offer?.openTitle, viewModel.presentation.openTitle)
         cover.reported(viewModel.coverWords)
         XCTAssertEqual(cover.words(live: viewModel.coverWords, towerReachable: true).title, "Hall")
     }

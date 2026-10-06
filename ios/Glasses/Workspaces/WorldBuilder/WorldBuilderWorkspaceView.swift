@@ -177,7 +177,7 @@ struct WorldBuilderWorkspaceView: View {
                 sessionBinding: world.sessionBinding,
                 fragments: world.fragmentsModel,
                 geometryChunks: world.geometryChunks,
-                presentation: world.presentation,
+                report: world.walkPresentation,
                 openReconstruction: { target in expand(target) },
                 askAgain: { world.askTowerAgain() },
                 goToCapture: goToCapture,

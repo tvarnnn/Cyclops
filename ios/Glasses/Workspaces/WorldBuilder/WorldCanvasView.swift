@@ -90,14 +90,16 @@ struct WorldCanvasView: View {
     var fragments = WorldFragmentsModel(segments: [])
     var geometryChunks: [String: WorldSegmentChunk] = [:]
 
-    /// The derived half of the screen: the stage word, the 3D ladder, the
+    /// The derived half of the screen -- the stage word, the 3D ladder, the
     /// account for a gallery with nothing in it, the final-solve sentence and
-    /// what survived. Built by `WorldBuilderViewModel.presentation` and by
-    /// nothing else, so this view composes no judgment of its own.
+    /// what survived -- WITH the walk it describes
+    /// (`WorldBuilderViewModel.walkPresentation`), so this view composes no
+    /// judgment of its own and pairs no picture with words on its own: its 3D
+    /// controls and their words come only from `WorldCanvasPictureOffer`.
     ///
-    /// Defaulted to `.empty` so previews and the states with no world in them
-    /// construct this view exactly as they did before.
-    var presentation: WorldPresentation = .empty
+    /// Defaulted to no walk and `.empty` so previews and the states with no
+    /// world in them construct this view exactly as they did before.
+    var report: WalkScoped<WorldPresentation> = WalkScoped(walk: nil, value: .empty)
 
     /// Opens the 3D world. `nil` in a context that cannot present a sheet —
     /// previews, and any future embedding — in which case the primary control
@@ -139,6 +141,13 @@ struct WorldCanvasView: View {
     /// after `openRecent` pins it, under the "Saved world" heading.
     var recentWorld: WorldRecentReference? = nil
     var openRecent: ((WorldRecentReference) -> Void)? = nil
+
+    private var presentation: WorldPresentation { report.value }
+
+    /// The 3D controls and their words, only for a picture of the report's
+    /// own walk (review 4: a Saved worlds pin names B's target while the
+    /// report is still A's).
+    private var pictureOffer: WorldCanvasPictureOffer? { WorldCanvasPictureOffer(report) }
 
     var body: some View {
         if let forcedPhase = availability.forcedPhase {
@@ -484,22 +493,24 @@ struct WorldCanvasView: View {
     @ViewBuilder
     private var reconstructionCard: some View {
         VStack(alignment: .leading, spacing: 8) {
-            if let target = presentation.reconstruction.target, let open = openReconstruction {
+            // Nothing at all while the target and the report disagree: no
+            // control for one walk's picture under another walk's words.
+            if let offer = pictureOffer, let open = openReconstruction {
                 Button {
-                    open(target)
+                    open(offer.target)
                 } label: {
                     // *Open the preview* while the world is unsettled (U0.6,
                     // WORLDS §4a rule 8): never presented as the final world.
-                    Label(presentation.openTitle, systemImage: "cube.transparent")
+                    Label(offer.openTitle, systemImage: "cube.transparent")
                         .font(.headline)
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 6)
                 }
                 .buttonStyle(.borderedProminent)
-                .accessibilityLabel(presentation.openTitle)
-                .accessibilityInputLabels([presentation.openTitle])
+                .accessibilityLabel(offer.openTitle)
+                .accessibilityInputLabels([offer.openTitle])
                 .accessibilityIdentifier("wb-open-3d")
-                if let note = reconstructionNote {
+                if let note = offer.note {
                     Text(note)
                         .font(.footnote)
                         .foregroundStyle(.readableSecondary)
@@ -518,24 +529,18 @@ struct WorldCanvasView: View {
     }
 
     /// `World <id>` and, when one is known, `Session <id>`, or `nil` when the
-    /// Tower has named neither. Built here rather than in the builder above for
-    /// the reason `reconstructionNote` gives.
+    /// Tower has named neither. Read through a property rather than bound
+    /// inside the builder above -- the pattern this codebase settled on after
+    /// a result-builder block with a binding in it caused trouble in Product
+    /// Shell V2. The session is the offered picture's, so never another
+    /// walk's beside this world's id.
     private var identifiers: String? {
         var lines: [String] = []
         if let worldID = state.snapshot?.worldID { lines.append("World \(worldID)") }
-        if let sessionID = presentation.reconstruction.target?.sessionID {
+        if let sessionID = pictureOffer?.target.sessionID {
             lines.append("Session \(sessionID)")
         }
         return lines.isEmpty ? nil : lines.joined(separator: "\n")
-    }
-
-    /// The `.partial` note, or `nil`. Read through a property rather than bound
-    /// inside the builder above — the pattern this codebase settled on after a
-    /// result-builder block with a binding in it caused trouble in Product
-    /// Shell V2.
-    private var reconstructionNote: String? {
-        if case .partial(_, let note) = presentation.reconstruction { return note }
-        return nil
     }
 
     private var reconstructionUnavailableReason: String? {
@@ -619,9 +624,9 @@ struct WorldCanvasView: View {
                 // the rendering at the moment a page is opened costs a fetch
                 // that was going to happen regardless, and it puts the solver's
                 // view where the rest of the solver's output already is.
-                if let target = presentation.reconstruction.target, let open = openReconstruction {
+                if let offer = pictureOffer, let open = openReconstruction {
                     Button {
-                        open(target.showing(.diagnostics))
+                        open(offer.target.showing(.diagnostics))
                     } label: {
                         Label("Open the solver's 3D view", systemImage: "scope")
                             .font(.footnote)
@@ -942,6 +947,33 @@ struct WorldSummaryView: View {
         explanation: UnavailableWorldBuilderClient.reason
     )
     .padding()
+}
+
+// MARK: - The canvas's 3D controls (review 4)
+
+/// The canvas's 3D controls and the words beside them, for ONE walk: the
+/// ladder's target only when the report describes its walk
+/// (`WalkScoped.picture(_:)`), and the control's title and note only from
+/// that walk's words (`WalkScoped.value(for:)`). `nil` while they disagree --
+/// a Saved worlds pin names B's target at once while the report is still
+/// A's -- so the canvas then offers no picture and none of another walk's
+/// words (review 4, the remaining HIGH: it offered B's picture with A's
+/// stage, button wording and note).
+struct WorldCanvasPictureOffer: Equatable {
+    /// What both controls open (the 3D world, and its diagnostics view).
+    let target: WorldRenderTarget
+    /// *Open the preview* / the ladder's action title, for this walk.
+    let openTitle: String
+    /// The `.partial` note under the control, for this walk.
+    let note: String?
+
+    init?(_ report: WalkScoped<WorldPresentation>) {
+        guard let target = report.picture(report.value.reconstruction.target),
+              let words = report.value(for: target) else { return nil }
+        self.target = target
+        openTitle = words.openTitle
+        if case .partial(_, let note) = words.reconstruction { self.note = note } else { note = nil }
+    }
 }
 
 // MARK: - The canvas's words (U0.8 F11-F13)
