@@ -516,7 +516,7 @@ final class WorldPhotographicViewModelTests: XCTestCase {
 
         // And a heartbeat carrying the same word publishes nothing.
         var republishes = 0
-        let cancellable = model.$photographic.dropFirst().sink { _ in republishes += 1 }
+        let cancellable = model.$walkReport.dropFirst().sink { _ in republishes += 1 }
         client.send(photographic: PhotoWalk.report("failed", detail: "the encode raised"))
         try? await Task.sleep(nanoseconds: 60_000_000)
         cancellable.cancel()

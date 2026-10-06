@@ -806,7 +806,7 @@ final class WorldBuilderViewModelGeometryStatusTests: XCTestCase {
     /// is situations 1 and 2, and it must not read as "nothing was mapped".
     func testAWorldStateWithNoAddressIsUnaddressedAndNotEmpty() {
         let model = viewModel()
-        model.stateDidChange(to: .interrupted(FieldWalk.snapshot, reason: "the builder exited"))
+        model.report(.interrupted(FieldWalk.snapshot, reason: "the builder exited"))
         XCTAssertEqual(model.geometryStatus, .notAddressed)
         XCTAssertNotEqual(model.geometryAccount.headline, "Nothing mapped yet")
         XCTAssertEqual(model.stage, .interrupted)
@@ -954,7 +954,7 @@ final class WorldBuilderViewModelGeometryStatusTests: XCTestCase {
         _ = await waitUntil { model.finalSolve == .solved }
 
         var republishes = 0
-        let cancellable = model.$finalization.dropFirst().sink { _ in republishes += 1 }
+        let cancellable = model.$walkReport.dropFirst().sink { _ in republishes += 1 }
         client.send(finalization: WorldFinalizationReport(state: .complete, finalSolve: "solved"))
         try? await Task.sleep(nanoseconds: 60_000_000)
         cancellable.cancel()

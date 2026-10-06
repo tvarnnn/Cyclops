@@ -256,20 +256,18 @@ struct WorldBuilderWorkspaceView: View {
         }
         // The panel's web view, moved here: no reload, the pose kept, the
         // bridge untouched (U-INLINE §3.2). The title, the note and the
-        // notice come from the same `WorldPresentation` the canvas draws --
-        // while it still describes the picture's walk (review 3, HIGH).
+        // notice come from the same `WorldPresentation` the canvas draws,
+        // carried with the walk they describe (`world.coverWords`) -- and
+        // shown only over that walk's picture (review 3, HIGH; review 4).
         // With the Tower gone the picture stays, its live stage goes, and
         // the notice says why (review MED 3).
         .fullScreenCover(isPresented: $host.isExpanded) {
-            let words = host.coverWords.words(
-                live: liveCoverWords, presented: world.presentedWalk,
-                presentedInProgress: world.presentation.stage?.isStillChanging == true,
-                towerReachable: isTowerReachable)
+            let words = host.coverWords.words(live: world.coverWords, towerReachable: isTowerReachable)
             WorldInlineCover(host: host, title: words.title, note: words.note, notice: words.notice,
                              progress: words.progress)
         }
-        .onChange(of: CoverReport(words: liveCoverWords, walk: world.presentedWalk)) { _, report in
-            host.coverReported(report.words, walk: report.walk)
+        .onChange(of: world.coverWords) { _, words in
+            host.coverReported(words)
         }
         .onChange(of: hostInputs, initial: true) { _, inputs in host.update(inputs) }
         // The World Builder cartridge session: `start` on appearance and
@@ -352,25 +350,34 @@ struct WorldBuilderWorkspaceView: View {
     // camera can still look at what the Tower has stored.
     //
     // The picture button is disabled, not hidden, until the Tower has named a
-    // world with geometry (`renderTarget`): a control that appears from
-    // nowhere is one nobody looks for, and a disabled one says "not yet"
-    // truthfully.
+    // world with geometry AND reported that world's walk: a control that
+    // appears from nowhere is one nobody looks for, and a disabled one says
+    // "not yet" truthfully. It offers the panel's picture (`panelTarget`),
+    // never a target the report does not describe yet -- a Saved worlds pin
+    // names its target before its report arrives (review 4, HIGH 1).
     private var pictureButton: some View {
-        Button {
-            if let target = world.renderTarget { expand(target) }
+        let target = Self.headerPicture(world)
+        return Button {
+            if let target { expand(target) }
         } label: {
             Label("Picture", systemImage: "cube.transparent")
                 .font(.subheadline)
         }
         .readableBorderedButton()
-        .disabled(world.renderTarget == nil)
+        .disabled(target == nil)
         .accessibilityLabel("Interactive picture of the world")
         // Why it is off, for VoiceOver: the canvas says it on screen (U0.8
         // F14). Once here, so both of the header's layouts carry it.
-        .accessibilityValue(world.renderTarget == nil ? WorldCanvasText.pictureOffValue : "")
+        .accessibilityValue(target == nil ? WorldCanvasText.pictureOffValue : "")
         // Voice Control matches what is on screen: "Tap Picture" has to find
         // it, although VoiceOver reads the longer name.
         .accessibilityInputLabels(["Picture", "Interactive picture of the world"])
+    }
+
+    /// What the header's Picture button opens, or `nil` (off): the panel's
+    /// picture, which the report describes (review 4, HIGH 1).
+    static func headerPicture(_ world: WorldBuilderViewModel) -> WorldRenderTarget? {
+        world.panelTarget
     }
 
     private var savedWorldsButton: some View {
@@ -425,13 +432,6 @@ struct WorldBuilderWorkspaceView: View {
         return "Looking at saved world."
     }
 
-    /// The ladder's note for the world the viewer is about to show, so the
-    /// cover says the same thing the card behind it says -- including, for a
-    /// saved world whose photographic build failed, that it did.
-    private var viewerNote: String? {
-        world.presentation.viewerNote
-    }
-
     // MARK: The panel (U-INLINE)
 
     static let panelID = "wb-panel"
@@ -476,10 +476,9 @@ struct WorldBuilderWorkspaceView: View {
     private var panel: some View {
         WorldInlinePanel(
             phase: panelPhase,
-            presentation: world.presentation,
+            report: world.walkPresentation,
             buildInProgress: buildInProgress,
             isTowerReachable: isTowerReachable,
-            walk: world.presentedWalk,
             screenSaysOffline: captureSaysTowerIsOff,
             showsHealth: showsHealthInPanel,
             hasMap: WorldPanelMap.fixtureEnabled,
@@ -522,27 +521,16 @@ struct WorldBuilderWorkspaceView: View {
         #endif
     }
 
-    /// What the report says now, for the cover. The status channel's
-    /// `lifecycle.finalization` is the same record as the row's; when the
-    /// Tower carries the v6 notice there too, the live screen's room shows
-    /// it. `nil` otherwise.
-    private var liveCoverWords: WorldCoverText {
-        WorldCoverText(title: world.state.snapshot?.name, note: viewerNote,
-                       notice: world.finalization?.notice, progress: world.viewerProgress)
-    }
-
-    private struct CoverReport: Equatable {
-        let words: WorldCoverText
-        let walk: WorldFinishWalk?
-    }
-
     /// Full screen: the panel's web view moves into the cover (U-INLINE
-    /// §3.2), with the words of the walk it shows. Reduce Motion: no slide.
+    /// §3.2), with the report's words and the walk they are about; the
+    /// cover shows them only over that walk's picture. Every route into the
+    /// cover -- the panel, the header's Picture, the canvas -- comes here.
+    /// Reduce Motion: no slide.
     private func expand(_ target: WorldRenderTarget) {
         var transaction = Transaction()
         transaction.disablesAnimations = reduceMotion
         withTransaction(transaction) {
-            host.expand(target, walk: world.presentedWalk, words: liveCoverWords)
+            host.expand(target, words: world.coverWords)
         }
     }
 }

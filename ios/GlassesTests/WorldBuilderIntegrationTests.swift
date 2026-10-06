@@ -3751,6 +3751,48 @@ final class TowerWorldBuilderLiveHistoryTests: XCTestCase {
         XCTAssertEqual(published.compactMap { $0?.state }, [.owed, .failed])
     }
 
+    /// Review 4: a walk and what the Tower says about it are published as
+    /// ONE value, once per report, after every part of it has moved. Walk A
+    /// (with a photographic word), then B (with none), then A again: every
+    /// value published names the walk its state, word and session describe
+    /// -- never A's walk with B's state, never B's walk with A's word, never
+    /// a value in between. (Before, the word went out first, then the walk,
+    /// then the state, each on its own publisher.)
+    func testEachReportIsPublishedOnceWithItsOwnWalk() async throws {
+        let server = try MockTowerServer()
+        let port = try await server.start()
+        serve(server)
+        defer { server.stop() }
+
+        let tower = TowerClient(metrics: SenderMetrics())
+        let client = TowerWorldBuilderClient(tower: tower)
+        var published: [WalkScoped<WorldWalkReport>] = []
+        let cancellable = client.walkReportUpdates.sink { published.append($0) }
+        defer { cancellable.cancel() }
+        tower.connect(to: url(port: port))
+        await expect { client.state == .awaitingFirstUpdate }
+        published.removeAll()
+
+        let owed = #"{"state":"owed","stage":"appearance","detail":"nothing is working on it"}"#
+        for (seq, world) in [(1, "w-a"), (2, "w-b"), (3, "w-a")] {
+            server.send(text: message(
+                seq: seq, modelState: "finalizing", worldID: world, revision: "r\(seq)",
+                geometryRevision: "g1", selection: "pinned", endedAt: 1788895000.0,
+                buildInProgress: false, photographic: world == "w-a" ? owed : nil
+            ))
+            await expect { client.walkReport.walk?.worldID == world }
+        }
+        XCTAssertEqual(published.map { $0.walk?.worldID }, ["w-a", "w-b", "w-a"], "one value per report")
+        for value in published {
+            let world = value.walk?.worldID
+            XCTAssertEqual(value.value.state.snapshot?.worldID, world, "a state under another walk")
+            XCTAssertEqual(value.walk?.sessionID, world.map { "s-\($0)" }, "another walk's session")
+            XCTAssertEqual(value.value.photographic?.state, world == "w-a" ? .owed : nil,
+                           "a photographic word under another walk")
+        }
+        tower.disconnect()
+    }
+
     // MARK: The look-back prompt (WORLD-BUILDER-COMPONENTS.md §6.5)
 
     private func prompting(id: Int, episode: Int = 1, speakUntil: Double = 1788895035.0,
@@ -4530,36 +4572,49 @@ final class TowerWorldBuilderLiveHistoryTests: XCTestCase {
 
 // MARK: - The view model's gallery is keyed on world identity
 
-/// A `WorldBuilderClient` a test drives by hand: four subjects, no socket.
+extension WorldBuilderViewModel {
+    /// The report moves to `state`, naming `walk`: one value, as a client
+    /// publishes it.
+    func report(_ state: WorldModelState, walk: WorldFinishWalk? = nil) {
+        walkReportDidChange(to: WalkScoped(walk: walk, value: WorldWalkReport(state: state)))
+    }
+
+    /// The report names `walk`, its words unchanged.
+    func report(walk: WorldFinishWalk?) {
+        walkReportDidChange(to: WalkScoped(walk: walk, value: walkReport.value))
+    }
+}
+
+/// A `WorldBuilderClient` a test drives by hand: no socket.
 /// The seam the audit asked for, so view-model behaviour under client-driven
-/// transitions is testable without a Tower.
+/// transitions is testable without a Tower. Each `send` moves one part of
+/// the walk report and publishes the whole report, as one value -- the only
+/// shape the protocol has for it.
 @MainActor
 final class ScriptedWorldBuilderClient: WorldBuilderClient {
     let cartridgeID = "world-build"
-    private(set) var state: WorldModelState = .idle
+    private(set) var walkReport: WalkScoped<WorldWalkReport> = .unreported(.idle)
+    var state: WorldModelState { walkReport.value.state }
+    /// The builder's finalization record. `nil` until a test sends one.
+    var finalization: WorldFinalizationReport? { walkReport.value.finalization }
+    /// The Tower's photographic word. `nil` until a test sends one.
+    var photographic: WorldPhotographicReport? { walkReport.value.photographic }
+    var presentedWalk: WorldFinishWalk? { walkReport.walk }
     private(set) var sessionBinding: WorldSessionBinding = .none
     private(set) var inspection: WorldInspectionMode = .live
     private(set) var recentWorld: WorldRecentReference?
-    /// The builder's finalization record. `nil` until a test sends one.
-    private(set) var finalization: WorldFinalizationReport?
-    /// The Tower's photographic word. `nil` until a test sends one.
-    private(set) var photographic: WorldPhotographicReport?
 
-    private let stateSubject = PassthroughSubject<WorldModelState, Never>()
+    private let reportSubject = PassthroughSubject<WalkScoped<WorldWalkReport>, Never>()
     private let bindingSubject = PassthroughSubject<WorldSessionBinding, Never>()
     private let inspectionSubject = PassthroughSubject<WorldInspectionMode, Never>()
     private let recentSubject = PassthroughSubject<WorldRecentReference?, Never>()
     private let geometrySubject = PassthroughSubject<WorldGeometryCoordinates, Never>()
-    private let finalizationSubject = PassthroughSubject<WorldFinalizationReport?, Never>()
-    private let photographicSubject = PassthroughSubject<WorldPhotographicReport?, Never>()
 
-    var stateUpdates: AnyPublisher<WorldModelState, Never> { stateSubject.eraseToAnyPublisher() }
+    var walkReportUpdates: AnyPublisher<WalkScoped<WorldWalkReport>, Never> { reportSubject.eraseToAnyPublisher() }
     var bindingUpdates: AnyPublisher<WorldSessionBinding, Never> { bindingSubject.eraseToAnyPublisher() }
     var inspectionUpdates: AnyPublisher<WorldInspectionMode, Never> { inspectionSubject.eraseToAnyPublisher() }
     var recentWorldUpdates: AnyPublisher<WorldRecentReference?, Never> { recentSubject.eraseToAnyPublisher() }
     var geometryUpdates: AnyPublisher<WorldGeometryCoordinates, Never> { geometrySubject.eraseToAnyPublisher() }
-    var finalizationUpdates: AnyPublisher<WorldFinalizationReport?, Never> { finalizationSubject.eraseToAnyPublisher() }
-    var photographicUpdates: AnyPublisher<WorldPhotographicReport?, Never> { photographicSubject.eraseToAnyPublisher() }
 
     /// Recorded so a test can assert the view model asked for the pin it was
     /// told to.
@@ -4569,9 +4624,20 @@ final class ScriptedWorldBuilderClient: WorldBuilderClient {
         self.recentWorld = recentWorld
     }
 
+    /// The whole report, as one value: a walk and what it says, together.
+    func send(_ report: WalkScoped<WorldWalkReport>) {
+        walkReport = report
+        reportSubject.send(report)
+    }
+
+    private func send(walk: WorldFinishWalk?, _ change: (inout WorldWalkReport) -> Void) {
+        var value = walkReport.value
+        change(&value)
+        send(WalkScoped(walk: walk, value: value))
+    }
+
     func send(_ state: WorldModelState) {
-        self.state = state
-        stateSubject.send(state)
+        send(walk: walkReport.walk) { $0.state = state }
     }
 
     func send(recent: WorldRecentReference?) {
@@ -4583,28 +4649,22 @@ final class ScriptedWorldBuilderClient: WorldBuilderClient {
     /// shape the real Tower sends while a long final solve runs, and the shape
     /// that used to reach the screen as nothing at all.
     func send(finalization report: WorldFinalizationReport?) {
-        finalization = report
-        finalizationSubject.send(report)
+        send(walk: walkReport.walk) { $0.finalization = report }
     }
 
     /// A photographic word **without** a state change beside it: `owed` →
     /// `complete` while the snapshot stands still.
     func send(photographic report: WorldPhotographicReport?) {
-        photographic = report
-        photographicSubject.send(report)
+        send(walk: walkReport.walk) { $0.photographic = report }
     }
 
     func send(_ coordinates: WorldGeometryCoordinates) {
         geometrySubject.send(coordinates)
     }
 
-    private(set) var presentedWalk: WorldFinishWalk?
-    private let walkSubject = PassthroughSubject<WorldFinishWalk?, Never>()
-    var presentedWalkUpdates: AnyPublisher<WorldFinishWalk?, Never> { walkSubject.eraseToAnyPublisher() }
-
+    /// The report names another walk, its words unchanged.
     func send(walk: WorldFinishWalk?) {
-        presentedWalk = walk
-        walkSubject.send(walk)
+        send(walk: walk) { _ in }
     }
 
     func inspect(worldID: String, sessionID: String?) {
@@ -4795,6 +4855,67 @@ final class WorldBuilderViewModelOwnershipTests: XCTestCase {
         XCTAssertEqual(viewModel.panelTarget, WorldRenderTarget(worldID: "w-b", sessionID: "s-b"))
     }
 
+    private func walkReport(_ world: String, _ session: String, name: String) -> WalkScoped<WorldWalkReport> {
+        WalkScoped(walk: WorldFinishWalk(worldID: world, sessionID: session),
+                   value: WorldWalkReport(state: .finalized(WorldSnapshot(name: name, worldID: world))))
+    }
+
+    /// Review 4, HIGH 1: open saved world B while the report is still A's.
+    /// B's picture target is named at once; the header's Picture offers
+    /// nothing until B's report arrives (it reads the panel's paired
+    /// picture, never the bare target), and a cover opened on B's picture in
+    /// that gap -- the canvas may still offer it -- says nothing of A. B's
+    /// own report pairs both. (Before, the header opened B's picture with
+    /// A's words and progress.)
+    func testTheHeadersPictureRefusesWhileTheTargetAndTheReportDisagree() {
+        let viewModel = WorldBuilderViewModel(client: ScriptedWorldBuilderClient())
+        let a = WorldRenderTarget(worldID: "w-a", sessionID: "s-a")
+        let b = WorldRenderTarget(worldID: "w-b", sessionID: "s-b")
+        viewModel.open(worldID: "w-a", sessionID: "s-a")
+        viewModel.walkReportDidChange(to: walkReport("w-a", "s-a", name: "Kitchen"))
+        XCTAssertEqual(WorldBuilderWorkspaceView.headerPicture(viewModel), a)
+        XCTAssertEqual(viewModel.coverWords.value(for: a)?.title, "Kitchen")
+
+        // The pin: B's target before B's report.
+        viewModel.open(worldID: "w-b", sessionID: "s-b")
+        XCTAssertEqual(viewModel.renderTarget, b, "the pin names its target at once")
+        XCTAssertNil(WorldBuilderWorkspaceView.headerPicture(viewModel), "B's picture offered under A's words")
+        var cover = WorldCoverBinding()
+        cover.opened(picture: b, live: viewModel.coverWords)
+        let gap = cover.words(live: viewModel.coverWords, towerReachable: true)
+        XCTAssertNil(gap.title, "A's title over B's picture")
+        XCTAssertNil(gap.note)
+        XCTAssertNil(gap.progress, "A's progress over B's picture")
+
+        // B's report: the header, the panel and the cover all pair B.
+        viewModel.walkReportDidChange(to: walkReport("w-b", "s-b", name: "Hall"))
+        XCTAssertEqual(WorldBuilderWorkspaceView.headerPicture(viewModel), b)
+        XCTAssertEqual(viewModel.panelTarget, b)
+        cover.reported(viewModel.coverWords)
+        XCTAssertEqual(cover.words(live: viewModel.coverWords, towerReachable: true).title, "Hall")
+    }
+
+    /// Review 4: A, then B, then A again, each as the one value a client
+    /// publishes, under A's picture. At every step the words and the walk
+    /// they carry agree, and every surface over A's picture shows A's words
+    /// or nothing: the panel and the header pair A only while A is reported,
+    /// the cover's words over A are A's or none, and the panel's report and
+    /// the cover's are the same walk.
+    func testAThenBThenAPairsEverySurfaceWithItsOwnWalk() {
+        let viewModel = WorldBuilderViewModel(client: ScriptedWorldBuilderClient())
+        let a = WorldRenderTarget(worldID: "w-a", sessionID: "s-a")
+        viewModel.open(worldID: "w-a", sessionID: "s-a")
+        for (world, session, name) in [("w-a", "s-a", "Kitchen"), ("w-b", "s-b", "Hall"), ("w-a", "s-a", "Kitchen")] {
+            viewModel.walkReportDidChange(to: walkReport(world, session, name: name))
+            XCTAssertEqual(viewModel.coverWords.walk?.worldID, world)
+            XCTAssertEqual(viewModel.coverWords.value.title, name, "\(name)'s walk with other words")
+            XCTAssertEqual(viewModel.walkPresentation.walk, viewModel.coverWords.walk)
+            XCTAssertEqual(viewModel.coverWords.value(for: a)?.title, world == "w-a" ? "Kitchen" : nil)
+            XCTAssertEqual(viewModel.panelTarget, world == "w-a" ? a : nil)
+            XCTAssertEqual(WorldBuilderWorkspaceView.headerPicture(viewModel), viewModel.panelTarget)
+        }
+    }
+
     /// Review HIGH 1, a new session in the same world: the previous
     /// session's picture target goes when the report names the new session,
     /// before the new session's coordinates arrive -- the world id alone
@@ -4802,12 +4923,12 @@ final class WorldBuilderViewModelOwnershipTests: XCTestCase {
     func testANewSessionOfTheSameWorldForgetsThePreviousSessionsPicture() async {
         let client = ScriptedWorldBuilderClient()
         let viewModel = makeViewModel(client: client)
-        viewModel.presentedWalkDidChange(to: WorldFinishWalk(worldID: "w-a", sessionID: "s-a"))
+        viewModel.report(walk: WorldFinishWalk(worldID: "w-a", sessionID: "s-a"))
         await populate(viewModel)
         XCTAssertNotNil(viewModel.panelTarget)
 
-        viewModel.presentedWalkDidChange(to: WorldFinishWalk(worldID: "w-a", sessionID: "s-a2"))
-        viewModel.stateDidChange(to: .receiving(WorldSnapshot(worldID: "w-a", keyframeCount: 3)))
+        viewModel.report(.receiving(WorldSnapshot(worldID: "w-a", keyframeCount: 3)),
+                         walk: WorldFinishWalk(worldID: "w-a", sessionID: "s-a2"))
         XCTAssertNil(viewModel.renderTarget, "s-a's picture target survived into s-a2")
         XCTAssertNil(viewModel.panelTarget)
         XCTAssertTrue(viewModel.fragmentsModel.segments.isEmpty, "s-a's gallery survived into s-a2")
@@ -4815,7 +4936,7 @@ final class WorldBuilderViewModelOwnershipTests: XCTestCase {
         // A pinned world named without a session takes its report's.
         viewModel.open(worldID: "w-p", sessionID: nil)
         viewModel.inspectionDidChange(to: .inspecting(worldID: "w-p"))
-        viewModel.presentedWalkDidChange(to: WorldFinishWalk(worldID: "w-p", sessionID: "s-p"))
+        viewModel.report(walk: WorldFinishWalk(worldID: "w-p", sessionID: "s-p"))
         XCTAssertEqual(viewModel.panelTarget, WorldRenderTarget(worldID: "w-p", sessionID: "s-p"))
     }
 
@@ -4839,7 +4960,7 @@ final class WorldBuilderViewModelOwnershipTests: XCTestCase {
         let viewModel = makeViewModel(client: client)
 
         await populate(viewModel)
-        viewModel.stateDidChange(to: .awaitingFirstUpdate)
+        viewModel.report(.awaitingFirstUpdate)
         XCTAssertEqual(viewModel.fragmentsModel.segments.count, 1, "waiting for the same world dropped its gallery")
         XCTAssertNotNil(viewModel.renderTarget)
 
@@ -4849,7 +4970,7 @@ final class WorldBuilderViewModelOwnershipTests: XCTestCase {
             .unsupported(reason: "x"),
         ] {
             await populate(viewModel)
-            viewModel.stateDidChange(to: state)
+            viewModel.report(state)
             XCTAssertTrue(viewModel.fragmentsModel.segments.isEmpty, "\(state) kept the gallery")
             XCTAssertTrue(viewModel.geometryChunks.isEmpty)
             XCTAssertNil(viewModel.renderTarget, "\(state) kept the picture target")
@@ -4864,17 +4985,17 @@ final class WorldBuilderViewModelOwnershipTests: XCTestCase {
         let viewModel = makeViewModel(client: ScriptedWorldBuilderClient())
         await populate(viewModel)
 
-        viewModel.stateDidChange(to: .receiving(WorldSnapshot(worldID: "w-a", keyframeCount: 5)))
+        viewModel.report(.receiving(WorldSnapshot(worldID: "w-a", keyframeCount: 5)))
         XCTAssertEqual(viewModel.fragmentsModel.segments.count, 1, "the same world's state dropped its gallery")
 
-        viewModel.stateDidChange(to: .receiving(WorldSnapshot(worldID: "w-new", keyframeCount: 2)))
+        viewModel.report(.receiving(WorldSnapshot(worldID: "w-new", keyframeCount: 2)))
         XCTAssertTrue(viewModel.fragmentsModel.segments.isEmpty)
         XCTAssertNil(viewModel.renderTarget)
 
         // A pinned world's target, set before any state of its own, survives
         // that state: nothing was drawn, so nothing is forgotten.
         viewModel.open(worldID: "w-pinned", sessionID: nil)
-        viewModel.stateDidChange(to: .finalized(WorldSnapshot(worldID: "w-pinned", keyframeCount: 9)))
+        viewModel.report(.finalized(WorldSnapshot(worldID: "w-pinned", keyframeCount: 9)))
         XCTAssertEqual(viewModel.renderTarget, WorldRenderTarget(worldID: "w-pinned", sessionID: nil))
     }
 

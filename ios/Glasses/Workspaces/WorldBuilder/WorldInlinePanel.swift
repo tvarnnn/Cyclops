@@ -122,11 +122,12 @@ final class WorldInlineHost: ObservableObject {
         }
     }
 
-    /// Full screen: the same web view, moved into the cover (§3.2). `walk`
-    /// and `words`: what the report says about the picture's walk now.
-    func expand(_ target: WorldRenderTarget, walk: WorldFinishWalk? = nil, words: WorldCoverText = .init()) {
+    /// Full screen: the same web view, moved into the cover (§3.2). `words`:
+    /// what the report says now, with the walk it says it about -- the cover
+    /// shows them only if that is the picture's walk.
+    func expand(_ target: WorldRenderTarget, words: WalkScoped<WorldCoverText> = WalkScoped(walk: nil, value: .init())) {
         expandedTarget = target
-        coverWords.opened(walk: walk, words: words)
+        coverWords.opened(picture: target, live: words)
         coverIsUp = true
         evaluate()
         isExpanded = true
@@ -149,11 +150,11 @@ final class WorldInlineHost: ObservableObject {
         evaluate()
     }
 
-    /// The report now says `words` about `walk`: the cover keeps them only
-    /// while `walk` is its picture's.
-    func coverReported(_ words: WorldCoverText, walk: WorldFinishWalk?) {
+    /// The report now says `words`, about the walk they carry: the cover
+    /// keeps them only when that walk is its picture's.
+    func coverReported(_ words: WalkScoped<WorldCoverText>) {
         guard coverIsUp else { return }
-        coverWords.reported(words, walk: walk)
+        coverWords.reported(words)
     }
 
     func setShowsArea(_ shows: Bool) {
@@ -317,12 +318,13 @@ struct WorldPanelMapFixtureView: View {
 /// only when the phase says so.
 struct WorldInlinePanel<Health: View>: View {
     let phase: WorldPanelPhase
-    let presentation: WorldPresentation
+    /// Everything the panel says, WITH the walk it is about: one value, so
+    /// the heading, the finish block, the banner and its announcement are
+    /// never one walk's words under another walk's identity (review 4).
+    let report: WalkScoped<WorldPresentation>
     /// `lifecycle.build_in_progress` of a finalizing state, for the spinner.
     let buildInProgress: Bool?
     let isTowerReachable: Bool
-    /// The walk the report describes (world and session), or `nil`.
-    let walk: WorldFinishWalk?
     /// The screen already says the Tower is not connected (the capture
     /// control's line): the offline stage then shows only its actions.
     let screenSaysOffline: Bool
@@ -353,6 +355,8 @@ struct WorldInlinePanel<Health: View>: View {
     /// has a stage line) -- nor from another walk's wait.
     @State private var finish = WorldPanelFinishMemory<FinishingBlock>()
 
+    private var presentation: WorldPresentation { report.value }
+
     /// What S2 draws: the spinner, the stage line, the elapsed line, or the
     /// canvas's own sentence when there is no stage line.
     struct FinishingBlock: Equatable {
@@ -382,17 +386,30 @@ struct WorldInlinePanel<Health: View>: View {
         memory.overlay(for: target)?.reachable(towerReachable)
     }
 
-    private var currentFinishing: FinishingBlock? {
-        guard phase.isFinishing else { return nil }
-        return FinishingBlock(
-            showsSpinner: presentation.showsLiveBuild(buildInProgress: buildInProgress),
-            line: presentation.finishLine,
-            stoppedAt: presentation.stoppedAt,
-            detail: presentation.finishLine == nil
-                ? WorldPresentation.finalizingDetail(buildInProgress: buildInProgress,
-                                                     photographic: presentation.photographic)
-                : nil)
-        .reachable(isTowerReachable)
+    /// The finish block now, with the walk it is drawn for.
+    private var finishing: WalkScoped<FinishingBlock?> {
+        Self.finishing(report, phase: phase, buildInProgress: buildInProgress, towerReachable: isTowerReachable)
+    }
+
+    private var currentFinishing: FinishingBlock? { finishing.value }
+
+    /// S2's finish block -- the spinner, the stage line, the elapsed line --
+    /// drawn from the report and carried WITH its walk (review 4): the
+    /// progress shown and the walk it is recorded for are one value.
+    static func finishing(_ report: WalkScoped<WorldPresentation>, phase: WorldPanelPhase, buildInProgress: Bool?,
+                          towerReachable: Bool) -> WalkScoped<FinishingBlock?> {
+        report.map { presentation in
+            guard phase.isFinishing else { return nil }
+            return FinishingBlock(
+                showsSpinner: presentation.showsLiveBuild(buildInProgress: buildInProgress),
+                line: presentation.finishLine,
+                stoppedAt: presentation.stoppedAt,
+                detail: presentation.finishLine == nil
+                    ? WorldPresentation.finalizingDetail(buildInProgress: buildInProgress,
+                                                         photographic: presentation.photographic)
+                    : nil)
+            .reachable(towerReachable)
+        }
     }
 
     var body: some View {
@@ -402,10 +419,10 @@ struct WorldInlinePanel<Health: View>: View {
             // only child of this one, SwiftUI folded it in and its identity
             // ("capture-health") was lost.
             VStack(spacing: 12) {
-                if showsBanner, let headline = presentation.headline {
-                    WorldFinishBannerView(text: WorldFinishCopy.awayBanner(headline: headline),
+                if let banner = Self.awayBanner(report, phase: phase) {
+                    WorldFinishBannerView(text: banner.value,
                                           announces: presentation.finishClock.announcesAwayBanner,
-                                          announced: { bannerAnnounced(walk) }, dismiss: dismissBanner)
+                                          announced: { bannerAnnounced(banner.walk) }, dismiss: dismissBanner)
                         .transition(reduceMotion ? .opacity : .move(edge: .top).combined(with: .opacity))
                         .accessibilitySortPriority(100)
                 }
@@ -430,11 +447,8 @@ struct WorldInlinePanel<Health: View>: View {
                 AccessibilityNotification.Announcement(WorldFinishCopy.finished(headline: headline)).post()
             }
         }
-        .onChange(of: currentFinishing, initial: true) { _, block in
-            finish.record(block, walk: walk)
-        }
-        .onChange(of: walk) { _, walk in
-            finish.record(currentFinishing, walk: walk)
+        .onChange(of: finishing, initial: true) { _, block in
+            finish.record(block)
         }
         .onChange(of: webShown) { _, shown in
             guard shown else { return }
@@ -456,11 +470,16 @@ struct WorldInlinePanel<Health: View>: View {
         }
     }
 
-    private var showsBanner: Bool {
-        guard presentation.finishClock.showsAwayBanner else { return false }
+    private var showsBanner: Bool { Self.awayBanner(report, phase: phase) != nil }
+
+    /// The away banner over `phase`, WITH the walk it is drawn for: the
+    /// report's clock, headline and walk are one value, so the walk marked
+    /// announced is always the walk whose banner was read (review 4).
+    static func awayBanner(_ report: WalkScoped<WorldPresentation>, phase: WorldPanelPhase) -> WalkScoped<String>? {
+        guard report.value.finishClock.showsAwayBanner, let headline = report.value.headline else { return nil }
         switch phase {
-        case .ready, .failed: return true
-        case .hidden, .walking, .finishing, .offline: return false
+        case .ready, .failed: return report.map { _ in WorldFinishCopy.awayBanner(headline: headline) }
+        case .hidden, .walking, .finishing, .offline: return nil
         }
     }
 

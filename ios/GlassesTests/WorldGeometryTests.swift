@@ -3002,7 +3002,7 @@ final class WorldGeometryFetchLifecycleTests: XCTestCase {
 // MARK: - The seeded state gets the same reading a published one does
 
 /// `WorldBuilderViewModel.init` seeds `state` from the client, and the
-/// `.noWorld → .notAddressed` step used to live only in `stateDidChange`.
+/// `.noWorld → .notAddressed` step used to live only in `stateDidChange` (now `stateDidMove`).
 /// The client outlives the view model, so a cartridge switch and back builds
 /// a fresh view model over a client already holding a world — and the
 /// gallery said "There is no world on screen for geometry to belong to"
@@ -3032,7 +3032,7 @@ final class WorldBuilderViewModelSeedingTests: XCTestCase {
     }
 
     /// The negative control: a client holding no world seeds `.noWorld`, as
-    /// before, so the rule is the same one `stateDidChange` applies and not
+    /// before, so the rule is the same one `stateDidMove` applies and not
     /// a blanket promotion.
     func testAClientWithNoWorldStillSeedsNoWorld() {
         let client = ScriptedWorldBuilderClient()

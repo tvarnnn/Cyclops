@@ -562,11 +562,10 @@ final class TowerWorldBuilderClient: WorldBuilderClient {
     /// not establish as this session's never reaches here as a result. See
     /// `WorldSessionGate`.
     private(set) var state: WorldModelState = .idle {
-        willSet { refreshPresentedWalk(presenting: newValue) }
         didSet {
             guard state != oldValue else { return }
             log(state)
-            stateSubject.send(state)
+            publishWalkReport()
         }
     }
 
@@ -585,8 +584,11 @@ final class TowerWorldBuilderClient: WorldBuilderClient {
         }
     }
 
+    /// Every state after the one held at subscription, read off
+    /// `walkReportUpdates` -- never a second channel that could disagree
+    /// with it. For tests and logs; the screen reads `walkReport`.
     var stateUpdates: AnyPublisher<WorldModelState, Never> {
-        stateSubject.eraseToAnyPublisher()
+        walkReportSubject.map(\.value.state).prepend(state).removeDuplicates().dropFirst().eraseToAnyPublisher()
     }
 
     var bindingUpdates: AnyPublisher<WorldSessionBinding, Never> {
@@ -645,12 +647,8 @@ final class TowerWorldBuilderClient: WorldBuilderClient {
     private(set) var finalization: WorldFinalizationReport? {
         didSet {
             guard finalization != oldValue else { return }
-            finalizationSubject.send(finalization)
+            publishWalkReport()
         }
-    }
-
-    var finalizationUpdates: AnyPublisher<WorldFinalizationReport?, Never> {
-        finalizationSubject.eraseToAnyPublisher()
     }
 
     /// The Tower's photographic word from the last report, or `nil`. Stored and
@@ -660,12 +658,15 @@ final class TowerWorldBuilderClient: WorldBuilderClient {
     private(set) var photographic: WorldPhotographicReport? {
         didSet {
             guard photographic != oldValue else { return }
-            photographicSubject.send(photographic)
+            publishWalkReport()
         }
     }
 
+    /// Every photographic word after the one held at subscription, read off
+    /// `walkReportUpdates`, as `stateUpdates` is.
     var photographicUpdates: AnyPublisher<WorldPhotographicReport?, Never> {
-        photographicSubject.eraseToAnyPublisher()
+        walkReportSubject.map(\.value.photographic).prepend(photographic).removeDuplicates().dropFirst()
+            .eraseToAnyPublisher()
     }
 
     /// `lifecycle.processing` from the last report, or `nil` (U0.6, T-UX1).
@@ -674,12 +675,8 @@ final class TowerWorldBuilderClient: WorldBuilderClient {
     private(set) var processing: WorldProcessingReport? {
         didSet {
             guard processing != oldValue else { return }
-            processingSubject.send(processing)
+            publishWalkReport()
         }
-    }
-
-    var processingUpdates: AnyPublisher<WorldProcessingReport?, Never> {
-        processingSubject.eraseToAnyPublisher()
     }
 
     /// When the walk this phone followed live stopped, and whether it
@@ -688,16 +685,55 @@ final class TowerWorldBuilderClient: WorldBuilderClient {
     private(set) var finishClock: WorldFinishClock = .unknown {
         didSet {
             guard finishClock != oldValue else { return }
-            finishClockSubject.send(finishClock)
+            publishWalkReport()
         }
     }
 
-    var finishClockUpdates: AnyPublisher<WorldFinishClock, Never> {
-        finishClockSubject.eraseToAnyPublisher()
+    // MARK: The walk report, as one value (review 4)
+
+    /// The presented walk and everything above that describes it, as ONE
+    /// value: what the screen reads (`WorldBuilderClient.walkReport`).
+    private(set) var walkReport: WalkScoped<WorldWalkReport> = .unreported(.idle)
+
+    var walkReportUpdates: AnyPublisher<WalkScoped<WorldWalkReport>, Never> {
+        walkReportSubject.eraseToAnyPublisher()
+    }
+
+    private let walkReportSubject = PassthroughSubject<WalkScoped<WorldWalkReport>, Never>()
+
+    /// How many walk-report edits are open in this turn.
+    private var walkReportEdits = 0
+
+    /// Every path that moves more than one part of the walk report -- a
+    /// report from the Tower (its walk, state, finalization, photographic
+    /// word, processing stage and stop clock), a resubscribe, a failure, a
+    /// bracket re-judge -- opens an edit first and closes it on the way out
+    /// (`defer`), and the report is published ONCE, when the outermost edit
+    /// closes, with every part moved. A part that moves on its own, outside
+    /// any edit, publishes at once.
+    private func beginWalkReportEdit() {
+        walkReportEdits += 1
+    }
+
+    private func endWalkReportEdit() {
+        walkReportEdits -= 1
+        publishWalkReport()
+    }
+
+    private func publishWalkReport() {
+        guard walkReportEdits == 0 else { return }
+        let next = WalkScoped(walk: presentedWalk, value: WorldWalkReport(
+            state: state, finalization: finalization, photographic: photographic,
+            processing: processing, finishClock: finishClock))
+        guard next != walkReport else { return }
+        walkReport = next
+        walkReportSubject.send(next)
     }
 
     /// The banner was read: it does not return for this walk.
     func dismissFinishBanner() {
+        beginWalkReportEdit()
+        defer { endWalkReportEdit() }
         finishWatch.dismissBanner()
         publishFinishClock()
     }
@@ -744,14 +780,9 @@ final class TowerWorldBuilderClient: WorldBuilderClient {
     /// comes back.
     private var pinned: (worldID: String, sessionID: String?)?
 
-    private let stateSubject = PassthroughSubject<WorldModelState, Never>()
     private let bindingSubject = PassthroughSubject<WorldSessionBinding, Never>()
     private let inspectionSubject = PassthroughSubject<WorldInspectionMode, Never>()
     private let recentWorldSubject = PassthroughSubject<WorldRecentReference?, Never>()
-    private let finalizationSubject = PassthroughSubject<WorldFinalizationReport?, Never>()
-    private let photographicSubject = PassthroughSubject<WorldPhotographicReport?, Never>()
-    private let processingSubject = PassthroughSubject<WorldProcessingReport?, Never>()
-    private let finishClockSubject = PassthroughSubject<WorldFinishClock, Never>()
     private let recoverySubject = PassthroughSubject<WorldRecoveryReport?, Never>()
     private let lookBackBannerSubject = PassthroughSubject<WorldLookBackBanner?, Never>()
     private let healthSubject = PassthroughSubject<CaptureHealthSample?, Never>()
@@ -841,7 +872,6 @@ final class TowerWorldBuilderClient: WorldBuilderClient {
     /// the arrival path, where a failure is still attributable to a message.
     private var lastReport: StatusReport? {
         didSet {
-            refreshPresentedWalk(presenting: state)
             // Nothing offered stands once the report that offered it is gone.
             if lastReport == nil { recentWorld = nil }
             // Every assignment, including the clearing one above. Its own
@@ -1031,6 +1061,8 @@ final class TowerWorldBuilderClient: WorldBuilderClient {
     }
 
     private func appActivityChanged(_ active: Bool) {
+        beginWalkReportEdit()
+        defer { endWalkReportEdit() }
         isAppActive = active
         finishWatch.app(active: active, currentWalk: pinned == nil ? presentedWalk : nil,
                         currentStanding: finishStanding)
@@ -1038,33 +1070,18 @@ final class TowerWorldBuilderClient: WorldBuilderClient {
     }
 
     /// The walk the presented state describes: the last report's, when the
-    /// state carries a snapshot and the report named both ids. Refreshed when
-    /// the report changes and just BEFORE the state does (`willSet`), so a
-    /// subscriber never pairs a new stage with the old walk (review HIGH 1).
-    private(set) var presentedWalk: WorldFinishWalk? {
-        didSet {
-            guard presentedWalk != oldValue else { return }
-            presentedWalkSubject.send(presentedWalk)
-        }
-    }
-
-    var presentedWalkUpdates: AnyPublisher<WorldFinishWalk?, Never> {
-        presentedWalkSubject.eraseToAnyPublisher()
-    }
-
-    private let presentedWalkSubject = PassthroughSubject<WorldFinishWalk?, Never>()
-
-    private func refreshPresentedWalk(presenting state: WorldModelState) {
+    /// state carries a snapshot and the report named both ids. Computed, and
+    /// published only inside `walkReport`, beside the state it describes.
+    private var presentedWalk: WorldFinishWalk? {
         guard state.snapshot != nil, let worldID = lastReport?.worldID, let sessionID = lastReport?.sessionID
-        else {
-            presentedWalk = nil
-            return
-        }
-        presentedWalk = WorldFinishWalk(worldID: worldID, sessionID: sessionID)
+        else { return nil }
+        return WorldFinishWalk(worldID: worldID, sessionID: sessionID)
     }
 
     /// The away banner drawn for `walk` was announced: never again for it.
     func finishBannerAnnounced(for walk: WorldFinishWalk?) {
+        beginWalkReportEdit()
+        defer { endWalkReportEdit() }
         finishWatch.bannerAnnounced(for: walk)
         publishFinishClock()
     }
@@ -1139,6 +1156,8 @@ final class TowerWorldBuilderClient: WorldBuilderClient {
     /// same two flags, so a status change and a republished declaration racing
     /// each other cannot open two subscriptions.
     private func subscribeIfPossible() {
+        beginWalkReportEdit()
+        defer { endWalkReportEdit() }
         guard tower.status == .online, subscriptionID == nil, !isSubscribing else { return }
         guard let declaration = tower.cartridgeDeclaration else { return }
         guard let offer = declaration.offer(forTowerCartridge: WorldBuilderResultContract.towerCartridge)
@@ -1243,6 +1262,8 @@ final class TowerWorldBuilderClient: WorldBuilderClient {
     /// what sets it again. The Tower treats a closed socket as sufficient
     /// cleanup anyway; this just spares it a subscription nobody is reading.
     private func restartSubscription() {
+        beginWalkReportEdit()
+        defer { endWalkReportEdit() }
         if let id = subscriptionID {
             tower.unsubscribeFromResults(subscriptionID: id)
             retiredSubscriptionIDs.insert(id)
@@ -1298,6 +1319,8 @@ final class TowerWorldBuilderClient: WorldBuilderClient {
     }
 
     private func subscribeDidTimeOut(attempt: Int) {
+        beginWalkReportEdit()
+        defer { endWalkReportEdit() }
         // Three guards, and each one closes a real race: a newer attempt has
         // superseded this timeout; the ack arrived while it was sleeping; or
         // the connection went away and the reconnect path already owns the
@@ -1373,6 +1396,8 @@ final class TowerWorldBuilderClient: WorldBuilderClient {
     /// the socket's full rate. What is said when the budget is gone is the
     /// truth about the *channel*, not about the world.
     private func retryFirstSnapshot(after message: String) {
+        beginWalkReportEdit()
+        defer { endWalkReportEdit() }
         subscriptionID = nil
         isSubscribing = false
         disarmSubscribeTimeout()
@@ -1503,7 +1528,12 @@ final class TowerWorldBuilderClient: WorldBuilderClient {
             // than for equality with the current one, so an envelope that
             // races its own `result_subscribed` is still applied.
             if let id = envelope.subscriptionID, retiredSubscriptionIDs.contains(id) { return }
-            apply(envelope)
+            // The walk report is out (the edit in `apply` has closed) before
+            // the geometry address is: the screen learns whose walk it is
+            // showing before it fetches that walk's picture.
+            if let coordinates = apply(envelope) {
+                geometrySubject.send(coordinates)
+            }
 
         case .failed(let error):
             guard isOurs(error) else { return }
@@ -1526,7 +1556,12 @@ final class TowerWorldBuilderClient: WorldBuilderClient {
         return false
     }
 
-    private func apply(_ envelope: CartridgeResultEnvelope) {
+    /// The report, applied as one walk-report edit. Returns the geometry
+    /// address to send, if any -- sent by the caller, once the edit has
+    /// closed and the walk report is published.
+    private func apply(_ envelope: CartridgeResultEnvelope) -> WorldGeometryCoordinates? {
+        beginWalkReportEdit()
+        defer { endWalkReportEdit() }
         // The envelope says whether it is a complete state or a delta, and
         // this build knows how to merge exactly nothing.
         //
@@ -1559,7 +1594,7 @@ final class TowerWorldBuilderClient: WorldBuilderClient {
                         """
                 )
             )
-            return
+            return nil
         }
 
         guard let next = WorldBuilderResultDecoder.modelState(from: envelope.payload) else {
@@ -1580,7 +1615,7 @@ final class TowerWorldBuilderClient: WorldBuilderClient {
                         """
                 )
             )
-            return
+            return nil
         }
         let payload = envelope.payload
         let selection = WorldBuilderResultDecoder.selection(from: payload)
@@ -1648,10 +1683,8 @@ final class TowerWorldBuilderClient: WorldBuilderClient {
         // address anyway would fetch that world's fragments into the cache
         // and name it for the picture button, to be drawn the moment the
         // state next became a world state — for a *different* world.
-        guard state.snapshot != nil else { return }
-        if let coordinates = WorldBuilderResultDecoder.geometryCoordinates(from: payload) {
-            geometrySubject.send(coordinates)
-        }
+        guard state.snapshot != nil else { return nil }
+        return WorldBuilderResultDecoder.geometryCoordinates(from: payload)
     }
 
     /// Re-runs the gate over the last thing the Tower said, because the phone's
@@ -1661,6 +1694,8 @@ final class TowerWorldBuilderClient: WorldBuilderClient {
     /// nothing to say, and `state` is already whatever `subscribeIfPossible`
     /// left it as.
     private func rejudgeLastReport() {
+        beginWalkReportEdit()
+        defer { endWalkReportEdit() }
         guard lastReport != nil else {
             sessionBinding = bindingWithNoReport
             return
@@ -1703,6 +1738,8 @@ final class TowerWorldBuilderClient: WorldBuilderClient {
     }
 
     private func publishLastReport() {
+        beginWalkReportEdit()
+        defer { endWalkReportEdit() }
         guard let report = lastReport else { return }
 
         // ## Live versus History
@@ -1856,6 +1893,8 @@ final class TowerWorldBuilderClient: WorldBuilderClient {
     }
 
     private func apply(_ error: CartridgeResultError) {
+        beginWalkReportEdit()
+        defer { endWalkReportEdit() }
         if error.closesSubscription {
             // The closed id is retired, for `.unsubscribed`'s reason: an
             // envelope already queued for it must not be applied.

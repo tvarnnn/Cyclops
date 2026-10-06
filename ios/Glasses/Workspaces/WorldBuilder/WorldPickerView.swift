@@ -173,19 +173,20 @@ struct WorldPickerView: View {
     /// What the pushed screen says about the world under its caption, or `nil`.
     /// See `note(forOpened:target:pinnedStage:pinnedReconstruction:)`.
     ///
-    /// The pin's own report is consulted only once it describes THIS world:
-    /// `open()` sets `renderTarget` at the tap, but the status channel's answer
-    /// reaches the view model a main-queue hop later, so for a moment the
-    /// presentation is still the world the workspace was showing before.
+    /// The pin's own report is consulted only once it describes THIS walk --
+    /// asked of the report itself (`WalkScoped.value(for:)`, the one pairing
+    /// rule): `open()` sets `renderTarget` at the tap, but the status
+    /// channel's answer arrives later, so for a moment the report is still
+    /// the walk the workspace was showing before.
     private var openedNote: String? {
         guard let opened, let session = openedSession else { return nil }
-        let pinned = world.renderTarget == opened
-            && world.state.snapshot?.worldID == opened.worldID
+        // An area is not the room picture the report's ladder describes.
+        let pinned = opened.isArea ? nil : world.walkPresentation.value(for: opened)
         return Self.note(
             forOpened: session, target: opened,
-            pinnedStage: pinned ? world.presentation.stage : nil,
-            pinnedReconstruction: pinned ? world.presentation.reconstruction : nil,
-            pinnedPhotographic: pinned ? world.presentation.photographic : nil
+            pinnedStage: pinned?.stage,
+            pinnedReconstruction: pinned?.reconstruction,
+            pinnedPhotographic: pinned?.photographic
         )
     }
 

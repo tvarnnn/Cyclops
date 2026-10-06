@@ -45,19 +45,6 @@ enum WorldPanelPhase: Equatable {
         return .hidden
     }
 
-    /// The picture the panel may pair with the report's stage: `target`
-    /// only when it names the walk the report describes -- the same world
-    /// AND the same session (review HIGH 1). A Saved worlds pin names its
-    /// target before its own report arrives, and a new session of the same
-    /// world reports before its coordinates do: either way the stage on
-    /// screen is another walk's, and another walk's picture is never shown
-    /// (or offered) under it.
-    static func target(_ target: WorldRenderTarget?, matching walk: WorldFinishWalk?) -> WorldRenderTarget? {
-        guard let target, let walk, target.worldID == walk.worldID, target.sessionID == walk.sessionID
-        else { return nil }
-        return target
-    }
-
     /// The panel is narrating the finishing wait: the canvas's own spinner,
     /// "The Tower is finishing this world." and its fallback sentence are
     /// then not drawn (review 2, MED 1) -- one voice for the wait, and the
@@ -96,22 +83,20 @@ enum WorldPanelPhase: Equatable {
 
 /// What the ready panel's wait overlay may show of the finishing wait
 /// before it (U-INLINE §2.2; review HIGH 2): the finish block as it last
-/// stood, kept for the walk it was drawn for. A ready world shows it only
-/// when it came straight from THAT walk's wait; a ready world replaced by
-/// another forgets it, so B's wait is never A's finish block.
+/// stood, kept WITH the walk it was drawn for (`WalkScoped`). A ready world
+/// shows it only when it came straight from THAT walk's wait; a ready world
+/// replaced by another forgets it, so B's wait is never A's finish block.
 struct WorldPanelFinishMemory<Block: Equatable>: Equatable {
-    private(set) var block: Block?
-    /// The walk `block` was drawn for.
-    private(set) var walk: WorldFinishWalk?
+    /// The last finish block drawn, and its walk.
+    private(set) var block: WalkScoped<Block>?
     /// The ready world that arrived straight from the finishing wait.
     private(set) var readyFromFinishing: WorldRenderTarget?
 
-    /// The finish block as it stands now, for the walk the report describes.
-    /// `nil` (not finishing) keeps what there is.
-    mutating func record(_ block: Block?, walk: WorldFinishWalk?) {
-        guard let block else { return }
-        self.block = block
-        self.walk = walk
+    /// The finish block as it stands now, with the walk it describes. A
+    /// `nil` block (not finishing) keeps what there is.
+    mutating func record(_ current: WalkScoped<Block?>) {
+        guard let value = current.value else { return }
+        block = WalkScoped(walk: current.walk, value: value)
     }
 
     /// The phase moved. `true` when the world arrived from ITS OWN finishing
@@ -125,8 +110,7 @@ struct WorldPanelFinishMemory<Block: Equatable>: Equatable {
             return false
         }
         if old.isFinishing {
-            guard block != nil, let walk, walk.worldID == target.worldID, walk.sessionID == target.sessionID
-            else {
+            guard let block, block.describes(target) else {
                 readyFromFinishing = nil
                 return false
             }
@@ -137,7 +121,6 @@ struct WorldPanelFinishMemory<Block: Equatable>: Equatable {
             // Replaced: nothing of the first world's wait is kept.
             readyFromFinishing = nil
             block = nil
-            walk = nil
         }
         return false
     }
@@ -145,10 +128,8 @@ struct WorldPanelFinishMemory<Block: Equatable>: Equatable {
     /// The finish block the wait overlay over `target` shows, or `nil` for
     /// "Opening your world…".
     func overlay(for target: WorldRenderTarget) -> Block? {
-        guard readyFromFinishing == target, let walk,
-              walk.worldID == target.worldID, walk.sessionID == target.sessionID
-        else { return nil }
-        return block
+        guard readyFromFinishing == target else { return nil }
+        return block?.value(for: target)
     }
 }
 
@@ -158,31 +139,36 @@ struct WorldCoverText: Equatable {
     var note: String?
     var notice: String?
     var progress: WorldViewerProgress?
+    /// The walk these words describe is still changing. Not drawn: it picks
+    /// the cover's notice when the report has moved to another walk.
+    var inProgress = false
 }
 
 /// The cover's words, bound to the walk of the picture it shows (review 3,
-/// HIGH). The cover keeps its picture while it is open, whatever the report
-/// moves on to, so its title, note, notice and progress are the report's
-/// only while the report still describes that walk. Once it describes
-/// another, the cover keeps the picture's own last words -- static, with no
-/// live stage -- and says so; it never pairs B's words with A's picture.
-/// Closed, the panel's own rules apply again.
+/// HIGH; review 4). The cover keeps its picture while it is open, whatever
+/// the report moves on to, and its title, note, notice and progress are the
+/// report's only while the report describes THAT picture's walk -- asked of
+/// the scoped words themselves (`WalkScoped.value(for:)`), so words that
+/// arrive with another walk can never be taken for the picture's. Otherwise
+/// the cover keeps the picture's own last words -- static, with no live
+/// stage -- and says so; or, when the picture's walk has not been reported
+/// since the cover opened, says nothing of any walk. Closed, it says nothing.
 struct WorldCoverBinding: Equatable {
-    /// The walk the report described when the cover opened: the picture's
-    /// (the panel's target always names it, `WorldPanelPhase.target`).
-    private(set) var walk: WorldFinishWalk?
-    /// That walk's own words as they last stood; `nil` while closed.
+    /// The picture the cover shows, from expand to close.
+    private(set) var picture: WorldRenderTarget?
+    /// The picture's own walk's words as they last stood, or `nil` when the
+    /// report has not described that walk since the cover opened.
     private(set) var held: WorldCoverText?
 
-    mutating func opened(walk: WorldFinishWalk?, words: WorldCoverText) {
-        self.walk = walk
-        held = words
+    mutating func opened(picture: WorldRenderTarget, live: WalkScoped<WorldCoverText>) {
+        self.picture = picture
+        held = live.value(for: picture)
     }
 
-    /// The report now says `words` about `walk`: kept only while it is the
-    /// picture's walk.
-    mutating func reported(_ words: WorldCoverText, walk: WorldFinishWalk?) {
-        guard held != nil, walk == self.walk else { return }
+    /// The report now says `live`: kept only when it is about the picture's
+    /// walk.
+    mutating func reported(_ live: WalkScoped<WorldCoverText>) {
+        guard let picture, let words = live.value(for: picture) else { return }
         held = words
     }
 
@@ -190,19 +176,21 @@ struct WorldCoverBinding: Equatable {
         self = WorldCoverBinding()
     }
 
-    /// What the cover shows. `live`: the report's words now, about
-    /// `presented`; `presentedInProgress`: that walk is still changing.
-    func words(live: WorldCoverText, presented: WorldFinishWalk?, presentedInProgress: Bool,
-               towerReachable: Bool) -> WorldCoverText {
-        var words = live
+    /// What the cover shows over its picture, given what the report says
+    /// now (`live`, with the walk it is about).
+    func words(live: WalkScoped<WorldCoverText>, towerReachable: Bool) -> WorldCoverText {
+        guard let picture else { return WorldCoverText() }
+        var words: WorldCoverText
         var moved: String?
-        if let held, presented != walk {
-            words = held
-            // The picture's walk is no longer reported: its last stage is
+        if let own = live.value(for: picture) {
+            words = own
+        } else {
+            words = held ?? WorldCoverText()
+            // The picture's walk is not what is reported: its last stage is
             // not current.
             words.progress?.line = nil
-            if presented != nil {
-                moved = presentedInProgress ? WorldPanelCopy.coverNewWalk : WorldPanelCopy.coverOtherWalk
+            if held != nil, live.walk != nil {
+                moved = live.value.inProgress ? WorldPanelCopy.coverNewWalk : WorldPanelCopy.coverOtherWalk
             }
         }
         let notice = [moved, words.notice].compactMap { $0 }.joined(separator: " ")
