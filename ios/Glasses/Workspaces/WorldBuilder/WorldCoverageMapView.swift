@@ -80,6 +80,11 @@ struct WorldCoverageMapView: View {
                 }
             }
         }
+        // An open sheet never outlives its thumbnail: a newer landing, a
+        // switch going off or another walk's map closes it.
+        .onChange(of: landed) { _, overlay in
+            if let shown = selected, overlay?.thumbnails.contains(shown) != true { selected = nil }
+        }
         .sheet(item: $selected) { thumbnail in
             if let landed {
                 WorldLandedThumbnailSheet(thumbnail: thumbnail, receipt: landed.receipt)

@@ -166,15 +166,16 @@ final class WorldImageryUITests: XCTestCase {
         let age = text(element("wb-imagery-landed-age"))
         XCTAssertTrue(age.hasSuffix("seconds old") || age.hasSuffix("seconds old, stale"), age)
         shoot("imagery-landed-sheet")
-        XCTAssertTrue(tap(app.buttons["Done"], until: !self.element("wb-imagery-landed-direction").exists),
-                      "the sheet closed")
 
         // A newer landing on the map -- the same grid, re-dated -- while the
         // Tower's manifest still carries the stop landing's thumbnails (its
-        // job is slow): none is drawn on the newer landing's map.
+        // job is slow): none is drawn on the newer landing's map, and the
+        // open sheet of the old one closes.
         let newer = FOWGuidance.stop.replacingOccurrences(of: "g-stop-984", with: "g-stop-990")
             .replacingOccurrences(of: "1791240313.", with: "1791240320.")
         push(geometry: "gA", guidance: newer)
+        XCTAssertTrue(waitFor(timeout: 10) { !self.element("wb-imagery-landed-direction").exists },
+                      "a superseded landing's sheet stayed open")
         XCTAssertTrue(waitFor(timeout: 10) { !thumb.exists }, "a superseded landing's thumbnail")
         XCTAssertTrue(element("wb-panel-map-piece").exists, "the map stays")
         XCTAssertTrue(neverExists(thumb, for: 2), "the superseded thumbnail came back")
