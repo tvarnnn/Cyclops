@@ -834,7 +834,7 @@ default phone surface page (sized to the 6 MiB page budget,
 larger pages it is the likeliest moment for a WebContent kill, which the
 fallback above then absorbs.
 
-## vNEXT — optional `guidance.coverage` status receipt
+## 2026-10-06 (WORLDS v8) — optional `guidance.coverage` status receipt
 
 Decode `guidance.coverage` under the existing
 `world_builder.status/2026-09-10` payload. Unknown status fields remain

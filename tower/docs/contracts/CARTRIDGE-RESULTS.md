@@ -2166,7 +2166,7 @@ driven end to end through the real app in `tests/test_scene_wire_e2e.py`
 and `tests/test_documents_wire_e2e.py`; their sessions are tested in
 isolation in `tests/test_scene_live_session.py`.
 
-## vNEXT — World Builder `guidance.coverage`
+## 2026-10-06 (WORLDS v8) — World Builder `guidance.coverage`
 
 `TOWER_WORLD_GUIDANCE_COVERAGE=on` adds `guidance: {"coverage": ...}` only
 for a selected session in the existing `world_builder.status/2026-09-10`
@@ -2210,13 +2210,14 @@ loses the global station cap has no empty `stations` row and increments
 
 The compact UTF-8 JSON serialization of `guidance.coverage` is capped at
 4,096 bytes. If a truthful complete block cannot fit, Tower logs a
-diagnostic and publishes `coverage:null`. The existing status size limit
-still applies. One low-priority worker computes from accepted journal IDs,
+diagnostic and publishes `coverage:null`. There is no transport-wide status
+byte limit; the whole status carries a FOW-specific 15 KiB allowance (change log).
+One low-priority worker computes from accepted journal IDs,
 solve-replaced poses, the named solution and registered placements after the
 merge. Status polls read only the latest immutable receipt. A failed or slow
 job leaves the previous dated receipt visible and does not hold live rebuild,
 Stop, final solve or the status reply. The semantic and phone display rules
-are in WORLD-BUILDER-WORLDS vNEXT and WORLD-BUILDER-IOS vNEXT; the frozen
+are in WORLD-BUILDER-WORLDS v8 and WORLD-BUILDER-IOS (2026-10-06 section); the frozen
 field authority is `FOW-COVERAGE-V1-SPEC-20261006.md`.
 
-Change log (vNEXT): when `guidance.coverage` is non-null, Tower publishes `coverage:null` instead if the complete status payload's compact UTF-8 JSON would exceed 15 KiB, and this 15 KiB allowance is a FOW-specific bound on that one decision, not a transport-wide status size limit.
+Change log (2026-10-06, WORLDS v8): when `guidance.coverage` is non-null, Tower publishes `coverage:null` instead if the complete status payload's compact UTF-8 JSON would exceed 15 KiB, and this 15 KiB allowance is a FOW-specific bound on that one decision, not a transport-wide status size limit.
