@@ -503,9 +503,13 @@ class CoverageWorker:
       not yet settled) retries the same candidate and tree in this thread
       after 5 s, then 20 s: at most two timed retries per candidate. Distinct
       requested worlds wait in a queue; a newer offer supersedes a cooling-down
-      retry, and `shutdown()` cancels queued work. A rebuilt tree is
-      re-attempted at once, without resetting the retry count. Validation failures are
-      not retried. Every attempt logs candidate, elapsed, reason, disposition.
+      retry, and `shutdown()` cancels queued work. After a failure a rebuilt
+      tree is re-attempted at once, without resetting the retry count.
+      Validation failures are not retried. Every attempt logs candidate,
+      elapsed, reason, disposition.
+    - A solve candidate that published is never recomputed: a later tree
+      tag of the same solve returns that receipt (WORLDS v8: a local rebuild
+      advances geometry.revision without re-dating coverage).
     - `shutdown()` returns without waiting. After it, nothing is published
       and no new job starts.
 
@@ -531,9 +535,12 @@ class CoverageWorker:
         self._block_session = None
         self._attempt_tag = None
         self._wanted = {}
-        # A world list can contain more than eight historical sessions. Keep
-        # successful and failed identities together, including their tree tag.
         self._targets = OrderedDict()
+        # A world list can contain more than eight historical sessions, so
+        # both memos are large and bounded. A published receipt is keyed by
+        # the solve candidate alone: a live rebuild (new tree tag) of the same
+        # solve neither recomputes nor re-dates it (WORLDS v8). An attempt is
+        # keyed by (candidate, tree tag), so a failure is retried on a new tree.
         self._receipts = OrderedDict()
         self._attempts = OrderedDict()
         # Timed retries used per attempted candidate (evicted with it).
@@ -599,14 +606,15 @@ class CoverageWorker:
                 return self._published.get((world_id, session_id))
             pair = (world_id, session_id)
             self._wanted[pair] = identity
-            if identity in self._receipts:
-                self._receipts.move_to_end(identity)
-                block = self._receipts[identity]
-                self._published = {**self._published,
-                                   (world_id, session_id): _freeze(block)}
+            if candidate in self._receipts:
+                # This solve already published: any tree tag reuses it as is.
+                self._receipts.move_to_end(candidate)
+                block, frozen = self._receipts[candidate]
+                if self._published.get(pair) is not frozen:
+                    self._published = {**self._published, pair: frozen}
                 return block
-            previous = next((block for key, block in reversed(self._receipts.items())
-                             if key[0][:2] == pair), None)
+            previous = next((block for key, (block, _) in reversed(self._receipts.items())
+                             if key[:2] == pair), None)
             if identity not in self._attempts:
                 # A newer tree of the same session makes queued older work
                 # obsolete; a different world keeps its place in the queue.
@@ -671,6 +679,9 @@ class CoverageWorker:
                         self._condition.wait(timeout=min(_DISCOVERY_INTERVAL_S, remaining))
                         continue
                 self._pending = None
+                if candidate in self._receipts:
+                    # Published while this job waited; never recompute a solve.
+                    continue
                 self._candidate = candidate
                 self._attempt_tag = tree_tag
             budget = _Budget(self._stop)
@@ -700,7 +711,7 @@ class CoverageWorker:
                         self._block = _freeze(block)
                         self._block_session = (world, session)
                         self._successful_candidate = candidate
-                        self._receipts[(candidate, tree_tag)] = block
+                        self._receipts[candidate] = (block, self._block)
                         self._published = {**self._published,
                                            (world, session): self._block}
                         if len(self._receipts) > _MEMO_LIMIT:
@@ -721,12 +732,8 @@ class CoverageWorker:
                     else:
                         disposition = "gave up"
                 else:
-                    # A superseded computation is still memoized when it
-                    # succeeded; its receipt can be published on the next offer.
-                    if block is not None:
-                        self._receipts[(candidate, tree_tag)] = block
-                        if len(self._receipts) > _MEMO_LIMIT:
-                            self._receipts.popitem(last=False)
+                    # Superseded: the requested identity changed in flight.
+                    # Only a published receipt is memoized, so this one is not.
                     disposition = "gave up (superseded)"
             log = logger.info if block is not None else logger.warning
             log("world builder guidance: candidate=%r elapsed_ms=%.1f reason=%s disposition=%s",

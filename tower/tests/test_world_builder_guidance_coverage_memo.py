@@ -40,21 +40,85 @@ def test_twelve_rotating_worlds_compute_once_and_publish_from_memo(monkeypatch, 
         worker._thread.join(1)
 
 
-def test_same_solve_new_tree_recomputes_and_publishes_new_receipt(monkeypatch, tmp_path):
-    calls = []
+def _solve(worker, tag, solved_at=1000.0, horizon=4):
+    """One offer of world/session; the geometry revision follows the tree."""
+    return worker.offer("world", "session", solved_at, horizon, (1, horizon),
+                        f"geometry-{tag[0]}", tag)
 
+
+def _geometry_compute(calls, fail_tags=()):
     def compute(root, world, session, expected, revision, clock, tag, budget):
-        calls.append(tag)
-        return {"tag": tag}
+        calls.append((expected[0], tag))
+        if tag in fail_tags:
+            raise ValueError("solution input digest mismatch")
+        return {"geometry_revision": revision, "solved_at": expected[0]}
+    return compute
 
-    monkeypatch.setattr(coverage, "compute_from_tree", compute)
+
+def test_after_success_a_tree_change_does_not_recompute_or_redate(monkeypatch, tmp_path):
+    """WORLDS v8: an ordinary local rebuild advances the tree, not the coverage date."""
+    calls = []
+    monkeypatch.setattr(coverage, "compute_from_tree", _geometry_compute(calls))
     worker = coverage.CoverageWorker(tmp_path)
     try:
-        _offer(worker, "world")
+        _solve(worker, (1, "digest"))
         _until(lambda: worker.latest("world", "session") is not None)
-        _offer(worker, "world", (2, "digest"))
-        _until(lambda: worker.latest("world", "session").get("tag") == (2, "digest"))
-        assert calls == [(1, "digest"), (2, "digest")]
+        published = worker.latest("world", "session")
+        assert published["geometry_revision"] == "geometry-1"
+        assert _solve(worker, (2, "digest"))["geometry_revision"] == "geometry-1"
+        threading.Event().wait(2 * coverage._DISCOVERY_INTERVAL_S)
+        assert calls == [(1000.0, (1, "digest"))]
+        assert worker.latest("world", "session") == published
+        assert worker.latest("world", "session")["geometry_revision"] == "geometry-1"
+    finally:
+        worker.shutdown()
+        worker._thread.join(1)
+
+
+def test_after_failure_a_tree_change_recomputes(monkeypatch, tmp_path):
+    calls = []
+    monkeypatch.setattr(coverage, "compute_from_tree",
+                        _geometry_compute(calls, fail_tags={(1, "digest")}))
+    worker = coverage.CoverageWorker(tmp_path)
+    try:
+        _solve(worker, (1, "digest"))
+        _until(lambda: len(calls) == 1 and worker._pending is None)
+        _solve(worker, (1, "digest"))  # the same failed tree is not re-attempted
+        threading.Event().wait(2 * coverage._DISCOVERY_INTERVAL_S)
+        assert calls == [(1000.0, (1, "digest"))]
+        assert worker.latest("world", "session") is None
+        _solve(worker, (2, "digest"))
+        _until(lambda: worker.latest("world", "session") is not None)
+        assert calls == [(1000.0, (1, "digest")), (1000.0, (2, "digest"))]
+        assert worker.latest("world", "session")["geometry_revision"] == "geometry-2"
+    finally:
+        worker.shutdown()
+        worker._thread.join(1)
+
+
+def test_sixty_rebuilds_of_one_solve_compute_once_until_the_next_solve(monkeypatch, tmp_path):
+    """Walk-6 replay: ~1 rebuild/s gave 199 attempts and 136 coverage revisions."""
+    calls = []
+    monkeypatch.setattr(coverage, "compute_from_tree", _geometry_compute(calls))
+    worker = coverage.CoverageWorker(tmp_path)
+    try:
+        _solve(worker, (0, "digest"))
+        _until(lambda: worker.latest("world", "session") is not None)
+        revisions = set()
+        for n in range(1, 60):
+            returned = _solve(worker, (n, "digest"))
+            revisions.add(returned["geometry_revision"])
+            threading.Event().wait(0.02)  # room for a (wrong) recompute to land
+            revisions.add(worker.latest("world", "session")["geometry_revision"])
+        threading.Event().wait(2 * coverage._DISCOVERY_INTERVAL_S)
+        revisions.add(worker.latest("world", "session")["geometry_revision"])
+        assert calls == [(1000.0, (0, "digest"))]
+        assert revisions == {"geometry-0"}
+        # The next solve lands: a new candidate is computed and re-dated once.
+        _solve(worker, (60, "digest"), solved_at=2000.0, horizon=9)
+        _until(lambda: worker.latest("world", "session")["solved_at"] == 2000.0)
+        assert calls == [(1000.0, (0, "digest")), (2000.0, (60, "digest"))]
+        assert worker.latest("world", "session")["geometry_revision"] == "geometry-60"
     finally:
         worker.shutdown()
         worker._thread.join(1)

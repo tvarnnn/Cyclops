@@ -943,23 +943,29 @@ def test_slow_failed_worker_keeps_previous_receipt_without_blocking_offer(monkey
         return _block(_inputs(solved_at=1001.0))
     monkeypatch.setattr(coverage_module, "compute_from_tree", job)
     worker = CoverageWorker(tmp_path, lambda: 1000.12)
-    assert worker.offer("w", "s", 1000.0, 4, (1, 1), "g1", (1, "d")) is None
-    for _ in range(100):
-        with worker._condition:
-            if worker._completed is not None:
-                break
-        threading.Event().wait(0.01)
-    assert worker.offer("w", "s", 1000.0, 4, (1, 1), "g1", (1, "d")) == first
-    start = time.monotonic()
-    assert worker.offer("w", "s", 1001.0, 5, (2, 2), "g2", (2, "d")) == first
-    assert time.monotonic()-start < 0.05
-    for _ in range(100):
-        with worker._condition:
-            if worker._completed and worker._completed[2] == 1001.0:
-                break
-        threading.Event().wait(0.01)
-    assert worker.offer("w", "s", 1001.0, 5, (2, 2), "g2", (2, "d")) == first
-    assert len(calls) == 2
+    # Shut down: the deadline miss arms a real 5 s retry that would otherwise
+    # call a later test's patched compute_from_tree.
+    try:
+        assert worker.offer("w", "s", 1000.0, 4, (1, 1), "g1", (1, "d")) is None
+        for _ in range(100):
+            with worker._condition:
+                if worker._completed is not None:
+                    break
+            threading.Event().wait(0.01)
+        assert worker.offer("w", "s", 1000.0, 4, (1, 1), "g1", (1, "d")) == first
+        start = time.monotonic()
+        assert worker.offer("w", "s", 1001.0, 5, (2, 2), "g2", (2, "d")) == first
+        assert time.monotonic()-start < 0.05
+        for _ in range(100):
+            with worker._condition:
+                if worker._completed and worker._completed[2] == 1001.0:
+                    break
+            threading.Event().wait(0.01)
+        assert worker.offer("w", "s", 1001.0, 5, (2, 2), "g2", (2, "d")) == first
+        assert len(calls) == 2
+    finally:
+        worker.shutdown()
+        worker._thread.join(1)
 
 
 def test_two_pinned_sessions_do_not_resubmit_completed_landings(monkeypatch, tmp_path):
