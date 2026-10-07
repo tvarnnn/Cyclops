@@ -319,8 +319,9 @@ final class WorldImageryModelTests: XCTestCase {
                                                      session: Stub.makeSession(), timeout: 5))
     }
 
-    private func push(_ model: WorldImageryModel, _ walk: WorldFinishWalk = walkA, revision: String,
+    private func push(_ model: WorldImageryModel, _ walk: WorldFinishWalk? = nil, revision: String,
                       receiving: Bool = true) {
+        let walk = walk ?? Self.walkA
         model.geometryPushed(WorldGeometryCoordinates(worldID: walk.worldID, sessionID: walk.sessionID,
                                                       revision: revision), receiving: receiving)
     }
