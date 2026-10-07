@@ -2627,6 +2627,18 @@ def main(argv=None) -> int:
                     # And the phone's copy of it (v6, §3.1; `detail` keeps its meaning and
                     # still carries the sentence).
                     finalization_notice_text = finalization_notice(solve_report)
+                elif solve_report.get("withheld"):
+                    # THE FINAL SCALE GUARD WITHHELD THE FINAL SOLVE (`TOWER_WORLD_FINAL_SCALE_GUARD=on`;
+                    # unreachable off). Nothing was published; the walk's background solution stands and
+                    # was never checked, so the row says so, on the phone, in a closed sentence (review
+                    # XR F6; contract COMPONENTS 2.6 rule 4). No photographic final stages are owed.
+                    from tower.world_builder.final_scale_guard import (  # noqa: PLC0415
+                        NOTICE_WITHHELD,
+                    )
+
+                    final_solve_state = FINAL_SOLVE_UNAVAILABLE
+                    finalization_detail = str(solve_report.get("reason") or NOTICE_WITHHELD)
+                    finalization_notice_text = NOTICE_WITHHELD
                 elif solve_report.get("interrupted"):
                     # Only when the child published nothing of a consensus solve
                     # (`run_final` answers `solved` for one that did): what stands is
