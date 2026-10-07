@@ -103,10 +103,15 @@ nonisolated struct WorldCurrentPiece: Equatable, Sendable {
     /// while that walk is live -- the panel walking and the Tower receiving.
     /// Another walk's piece, a piece of no named walk, the finishing wait
     /// after Stop and every other phase draw nothing.
+    ///
+    /// `stoppedHere` is the walk whose capture this phone stopped: its piece
+    /// goes at the local Stop, not when the Tower's (possibly delayed)
+    /// finalizing report arrives (Codex review MED).
     static func shown(_ piece: WalkScoped<WorldCurrentPiece>?, walk: WorldFinishWalk?,
+                      stoppedHere: WorldFinishWalk? = nil,
                       phase: WorldPanelPhase, state: WorldModelState) -> WorldCurrentPiece? {
         guard case .walking = phase, case .receiving = state else { return nil }
-        guard let piece, let owner = piece.walk, owner == walk else { return nil }
+        guard let piece, let owner = piece.walk, owner == walk, owner != stoppedHere else { return nil }
         return piece.value
     }
 }
@@ -114,8 +119,15 @@ nonisolated struct WorldCurrentPiece: Equatable, Sendable {
 extension WorldBuilderViewModel {
     /// The current piece of the geometry on screen, WITH the walk whose
     /// geometry it is: the panel shows it only beside that walk's report.
+    ///
+    /// Only while the published geometry is the revision the Tower last
+    /// named. A newer revision still being fetched may have started a new
+    /// segment (a tracking break), so the published last segment is not
+    /// known to be current: nothing is shown until that revision lands
+    /// (Codex review HIGH). The room map keeps the published revision.
     var currentPiece: WalkScoped<WorldCurrentPiece>? {
         guard let owner = geometryOwner, let walk = WorldFinishWalk(picture: owner),
+              let published = publishedGeometryRevision, published == namedGeometryRevision,
               let piece = WorldCurrentPiece.current(segments: fragmentsModel.segments, chunks: geometryChunks)
         else { return nil }
         return WalkScoped(walk: walk, value: piece)

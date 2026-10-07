@@ -93,6 +93,11 @@ struct WorldBuilderWorkspaceView: View {
     /// Whether this workspace is on screen (a cartridge switch takes it away).
     @State private var isOnScreen = false
 
+    /// The walk whose capture this phone stopped, until the next Start: its
+    /// current piece goes at the local Stop rather than when the Tower's
+    /// finalizing report arrives, which can lag (Codex review MED).
+    @State private var stoppedHere: WorldFinishWalk?
+
     /// The panel's own full-screen cover took this screen away: not a
     /// cartridge switch, so the World Builder session is neither stopped
     /// when it goes up nor started again when it comes down.
@@ -270,6 +275,9 @@ struct WorldBuilderWorkspaceView: View {
             host.coverReported(words)
         }
         .onChange(of: hostInputs, initial: true) { _, inputs in host.update(inputs) }
+        .onChange(of: isCapturingNow) { wasCapturing, isCapturing in
+            stoppedHere = wasCapturing && !isCapturing ? world.presentedWalk : nil
+        }
         // The World Builder cartridge session: `start` on appearance and
         // whenever the socket comes back while on screen, `stop` on
         // disappearance. Nothing else on the phone starts or stops a builder.
@@ -488,6 +496,7 @@ struct WorldBuilderWorkspaceView: View {
             showsHealth: showsHealthInPanel,
             map: panelMap,
             currentPiece: WorldCurrentPiece.shown(world.currentPiece, walk: world.presentedWalk,
+                                                  stoppedHere: stoppedHere,
                                                   phase: panelPhase, state: world.state),
             host: host,
             dismissBanner: { world.dismissFinishBanner() },

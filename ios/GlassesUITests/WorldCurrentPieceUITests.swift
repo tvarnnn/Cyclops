@@ -112,6 +112,10 @@ final class WorldCurrentPieceUITests: XCTestCase {
 
         reveal(stop)
         XCTAssertTrue(tap(stop, until: !self.app.buttons["Stop capture"].exists), "Stop")
+        // Codex review MED: gone at the local Stop, with the Tower still
+        // reporting `receiving` -- not only once a finalizing report lands.
+        XCTAssertTrue(waitFor(timeout: 5) { !self.element("wb-current-piece").exists },
+                      "the piece after the local Stop, before the finalizing report")
         push(modelState: "finalizing", geometry: "gA", liveCapture: true, buildInProgress: true)
         XCTAssertTrue(waitFor(timeout: 10) { !self.element("wb-current-piece").exists }, "the piece after Stop")
         shoot("current-piece-after-stop")

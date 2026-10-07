@@ -136,6 +136,45 @@ final class WorldCurrentPieceTests: XCTestCase {
         XCTAssertNil(viewModel.currentPiece, "w1's piece survived under w2's geometry")
     }
 
+    /// Codex review HIGH: a new revision (a tracking break) is named while
+    /// its fetch is still out. The old segment is not "current" any more, so
+    /// nothing is shown until the new geometry lands -- while the room map
+    /// keeps its silent refetch, the previous manifest still on screen.
+    func testANewRevisionHidesThePieceUntilItsGeometryLands() async throws {
+        let host = URL(string: "http://stub.invalid")!
+        StubbedGeometryProtocol.reset(routes: [
+            "/worlds/w1/geometry/manifest": (200, Self.manifestJSON(revision: "g1", rows: [Self.rowJSON(0, hash: "h0")])),
+            "/worlds/w1/geometry/segment/0": (200, Self.chunkJSON(0, hash: "h0", poses: Self.zeroPoses)),
+        ])
+        let viewModel = WorldBuilderViewModel(
+            client: UnavailableWorldBuilderClient(),
+            geometry: WorldGeometryClient(baseURL: host, session: StubbedGeometryProtocol.makeSession()))
+        await viewModel.geometryDidChange(worldID: "w1", sessionID: "s1", revision: "g1")
+        XCTAssertEqual(viewModel.currentPiece?.value.segmentIndex, 0)
+
+        StubbedGeometryProtocol.reset(routes: [
+            "/worlds/w1/geometry/manifest": (200, Self.manifestJSON(
+                revision: "g2", rows: [Self.rowJSON(0, hash: "h0"), Self.rowJSON(1, hash: "h1")])),
+            "/worlds/w1/geometry/segment/0": (200, Self.chunkJSON(0, hash: "h0", poses: Self.zeroPoses)),
+            "/worlds/w1/geometry/segment/1": (200, Self.chunkJSON(1, hash: "h1", poses: Self.onePoses)),
+        ])
+        StubbedGeometryProtocol.set(delay: 0.5, for: "/worlds/w1/geometry/manifest")
+        let fetch = Task { await viewModel.geometryDidChange(worldID: "w1", sessionID: "s1", revision: "g2") }
+        let deadline = Date().addingTimeInterval(3)
+        while StubbedGeometryProtocol.requestCount(for: "/worlds/w1/geometry/manifest") == 0, Date() < deadline {
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+        XCTAssertEqual(StubbedGeometryProtocol.requestCount(for: "/worlds/w1/geometry/manifest"), 1,
+                       "g2's fetch never went out")
+        XCTAssertNil(viewModel.currentPiece, "segment 0 still labelled current while g2's fetch is out")
+        XCTAssertEqual(viewModel.fragmentsModel.segments.count, 1, "the room map dropped g1 during the refetch")
+
+        await fetch.value
+        let after = try XCTUnwrap(viewModel.currentPiece, "g2 landed and no piece")
+        XCTAssertEqual(after.value.segmentIndex, 1)
+        XCTAssertEqual(after.value.viewCount, 2)
+    }
+
     // MARK: No data, nothing drawn
 
     func testNoSegmentDataIsNoPiece() {
@@ -180,6 +219,12 @@ final class WorldCurrentPieceTests: XCTestCase {
                                              state: .finalizing(WorldSnapshot())),
                      "still capturing but the Tower has stopped receiving: the segment is frozen")
         XCTAssertNil(WorldCurrentPiece.shown(scoped, walk: Self.walkA, phase: .offline, state: Self.receiving))
+        // Stopped on this phone, the Tower still receiving: gone at the Stop.
+        XCTAssertNil(WorldCurrentPiece.shown(scoped, walk: Self.walkA, stoppedHere: Self.walkA,
+                                             phase: .walking(hasMap: false), state: Self.receiving))
+        XCTAssertNotNil(WorldCurrentPiece.shown(scoped, walk: Self.walkA, stoppedHere: Self.walkB,
+                                                phase: .walking(hasMap: false), state: Self.receiving),
+                        "another walk's Stop hid this walk's piece")
     }
 
     // MARK: Segment-local: no world transform

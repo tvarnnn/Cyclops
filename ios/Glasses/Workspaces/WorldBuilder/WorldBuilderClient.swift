@@ -501,6 +501,19 @@ final class WorldBuilderViewModel: ObservableObject {
     /// would make one refused request permanent.
     private var lastGeometryRevision: String?
 
+    /// The `geometry.revision` the Tower last named for `geometryOwner`, and
+    /// the one whose manifest and chunks are published in `geometryStatus` and
+    /// `geometryChunks`. Equal once that revision's fetch has landed; apart
+    /// while a newer one is out (or failed and awaits its retry).
+    ///
+    /// Not `lastGeometryRevision`, which is a retry marker and is cleared
+    /// after a partial failure with the revision still on screen. The room map
+    /// keeps drawing the published revision through a silent refetch; the
+    /// current piece may not (Codex review HIGH): after a tracking break the
+    /// published last segment is no longer the current one.
+    @Published private(set) var namedGeometryRevision: String?
+    private(set) var publishedGeometryRevision: String?
+
     /// Whose geometry `fragmentsModel`, `geometryChunks` and the live
     /// `renderTarget` currently describe, or `nil` when they describe nobody's.
     ///
@@ -947,6 +960,8 @@ final class WorldBuilderViewModel: ObservableObject {
         }
         geometryOwner = named
         if renderTarget != named { renderTarget = named }
+        // Guarded like the target: the heartbeat repeats an unchanged revision.
+        if namedGeometryRevision != revision { namedGeometryRevision = revision }
 
         guard revision != lastGeometryRevision else { return }
         lastGeometryRevision = revision
@@ -1123,6 +1138,7 @@ final class WorldBuilderViewModel: ObservableObject {
         // Checked again, for the same reason: the segment fetches above are the
         // slow part, and a newer manifest may have landed during them.
         guard isStillOurs(revision: revision, owner: named) else { return }
+        publishedGeometryRevision = revision
         geometryChunks = chunks
         // How many of the segments the manifest named have no chunk to draw.
         //
@@ -1292,6 +1308,8 @@ final class WorldBuilderViewModel: ObservableObject {
     /// the same staleness guard `geometryDidChange` already relies on.
     private func clearGeometry() {
         lastGeometryRevision = nil
+        namedGeometryRevision = nil
+        publishedGeometryRevision = nil
         // `.notAddressed` and not `.noWorld`: this is called when the world
         // being looked at changes, and there is still a world — what there is
         // not, yet, is an address for its geometry. `forgetGeometry()` is the
