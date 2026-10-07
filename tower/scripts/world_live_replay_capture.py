@@ -1,6 +1,6 @@
 """Optional replay receipts and a deliberately narrow FOW data stub.
 
-Coverage names a pinned status geometry revision. A pinned revision needs a
+Coverage names a status geometry revision. A pinned revision needs a
 complete HTTP receipt or a verified local tree snapshot; coalesced ordinary
 revisions are reported separately and do not make the capture incomplete.
 """
@@ -31,8 +31,10 @@ def revision_dir(revision: str) -> str:
 
 
 class ReplayCapture:
+    DEFAULT_TREE_BUDGET_BYTES = 512 * 1024 * 1024
+
     def __init__(self, out: Path, *, world_root: Path | None = None,
-                 code_root: Path | None = None):
+                 code_root: Path | None = None, tree_budget_bytes: int = DEFAULT_TREE_BUDGET_BYTES):
         self.out = Path(out)
         self.world_root = Path(world_root) if world_root is not None else None
         self.code_root = Path(code_root) if code_root is not None else None
@@ -42,6 +44,11 @@ class ReplayCapture:
         self.geometry_rows = []
         self.tree_rows = []
         self._tree_pending = []  # (row, manifest bytes, staging dir): verified once, at finish()
+        if tree_budget_bytes < 0:
+            raise ValueError("tree disk budget must be nonnegative")
+        self.tree_budget_bytes = tree_budget_bytes
+        self.tree_staged_bytes = 0
+        self._tree_seen = set()
         self._bodies = {}  # (world, session, content hash, placement hash) -> saved file
         self._revisions = {}
         self._current_revision = None
@@ -80,13 +87,23 @@ class ReplayCapture:
             "pinned_at": None, "pinned_monotonic": None,
             "superseded_at": None, "superseded_monotonic": None,
         })
+        if self.world_root is not None and target not in self._tree_seen:
+            self._tree_seen.add(target)
+            self._snapshot_tree(target)
         coverage = ((payload.get("guidance") or {}).get("coverage") or {})
-        if (isinstance(coverage, dict) and coverage.get("geometry_revision") == target[2]
-                and tracked["pinned_at"] is None):
-            tracked["pinned_at"] = row["received_at"]
-            tracked["pinned_monotonic"] = row["received_monotonic"]
-            if self.world_root is not None:
-                self._snapshot_tree(target)
+        coverage_revision = coverage.get("geometry_revision") if isinstance(coverage, dict) else None
+        if isinstance(coverage_revision, str) and coverage_revision:
+            coverage_target = (target[0], target[1], coverage_revision)
+            covered = self._revisions.setdefault(coverage_target, {
+                "world_id": target[0], "session_id": target[1], "revision": coverage_revision,
+                "first_received_at": row["received_at"],
+                "first_received_monotonic": row["received_monotonic"],
+                "pinned_at": None, "pinned_monotonic": None,
+                "superseded_at": None, "superseded_monotonic": None,
+            })
+            if covered["pinned_at"] is None:
+                covered["pinned_at"] = row["received_at"]
+                covered["pinned_monotonic"] = row["received_monotonic"]
 
     def _tree_revisions(self, manifests: list[dict]) -> list[str]:
         """Import the revision function in the selected test Tower's code tree, once for all
@@ -111,7 +128,7 @@ class ReplayCapture:
         return [str(revision) for revision in revisions]
 
     def _verify_pending_trees(self) -> None:
-        """Verify every staged tree snapshot against its pinned revision; a verified one moves
+        """Verify every staged tree snapshot against its status revision; a verified one moves
         from tree-snapshots/_pending/ to tree-snapshots/<revision>/ (nothing is deleted)."""
         pending, self._tree_pending = self._tree_pending, []
         if not pending:
@@ -158,6 +175,11 @@ class ReplayCapture:
                 row["attempts"] = attempt
                 try:
                     before = tuple((p.stat().st_size, p.stat().st_mtime_ns) for p in paths)
+                    size = sum(item[0] for item in before)
+                    if size > self.tree_budget_bytes - self.tree_staged_bytes:
+                        row["reason"] = "tree disk budget exceeded"
+                        row["tree_bytes"] = size
+                        break
                     # Copy source bytes into memory first, so failed attempts
                     # cannot publish a partial snapshot under the revision.
                     bodies = [p.read_bytes() for p in paths]
@@ -169,12 +191,15 @@ class ReplayCapture:
                     if before != after or any(len(body) != size for body, (size, _) in zip(bodies, before)):
                         row["reason"] = "tree changed during copy"
                     else:
+                        size = sum(len(body) for body in bodies)
                         # Stage the consistent bytes now (milliseconds); the revision check
                         # runs once at finish() so the status path never waits on it.
                         staged = self.out / "tree-snapshots" / "_pending" / revision_dir(revision)
                         staged.mkdir(parents=True, exist_ok=True)
                         for path, body in zip(paths, bodies):
                             (staged / path.name).write_bytes(body)
+                        self.tree_staged_bytes += size
+                        row["tree_bytes"] = size
                         row["verified"] = None
                         row["reason"] = "verification pending"
                         self._tree_pending.append((row, bodies[1], staged))
@@ -276,7 +301,13 @@ class ReplayCapture:
                                else "recording ended without complete receipt")}
             (pinned_misses if tracked["pinned_at"] is not None else unpinned_misses).append(miss)
         return {"pinned_missed": len(pinned_misses), "pinned_misses": pinned_misses,
-                "unpinned_missed": len(unpinned_misses), "unpinned_misses": unpinned_misses}
+                "unpinned_missed": len(unpinned_misses), "unpinned_misses": unpinned_misses,
+                "tree_disk": {"budget_bytes": self.tree_budget_bytes,
+                              "staged_bytes": self.tree_staged_bytes,
+                              "verified_bytes": sum(row.get("tree_bytes", 0) for row in self.tree_rows
+                                                    if row["verified"]),
+                              "budget_skips": sum(row.get("reason") == "tree disk budget exceeded"
+                                                  for row in self.tree_rows)}}
 
     @property
     def incomplete(self) -> bool:

@@ -130,6 +130,44 @@ def test_tree_revision_mismatch_is_a_miss(tmp_path):
     assert not (out / "tree-snapshots" / (revision + "wrong") / "manifest.json").exists()
 
 
+def test_stale_coverage_uses_tree_captured_on_earlier_status_revision(tmp_path):
+    root, files, revision, code_root = _tree(tmp_path)
+    out = tmp_path / "out"
+    out.mkdir()
+    solutions = out / "solution-snapshots"
+    solutions.mkdir()
+    (solutions / "000.json").write_text(json.dumps({
+        "solved_at": 10.0, "keyframe_ids": ["a", "b"]}), encoding="utf-8")
+    recorder = ReplayCapture(out, world_root=root, code_root=code_root)
+    raw, envelope = _status(revision)
+    recorder.status(raw, envelope)
+    # The derived tree advances before Tower publishes coverage for the old revision.
+    files[1].write_text(json.dumps({"test_revision": "new-rev"}), encoding="utf-8")
+    raw, envelope = _status("new-rev")
+    envelope["payload"]["guidance"] = {"coverage": _coverage(revision)}
+    recorder.status(json.dumps(envelope), envelope)
+    recorder.finish(1.0, [{"file": "000.json"}])
+    assert recorder.capture_summary()["pinned_missed"] == 0
+    assert [row["geometry_revision"] for row in supported_by_landing(out)] == [revision]
+    assert (out / "tree-snapshots" / revision / "manifest.json").read_bytes() != files[1].read_bytes()
+    assert recorder.capture_summary()["tree_disk"]["staged_bytes"] > 0
+
+
+def test_tree_disk_budget_skips_without_partial_receipt(tmp_path):
+    root, _, revision, code_root = _tree(tmp_path)
+    out = tmp_path / "out"
+    out.mkdir()
+    recorder = ReplayCapture(out, world_root=root, code_root=code_root,
+                             tree_budget_bytes=1)
+    raw, envelope = _status(revision, coverage=True)
+    recorder.status(raw, envelope)
+    recorder.finish(None, [])
+    assert recorder.tree_rows[0]["reason"] == "tree disk budget exceeded"
+    assert recorder.capture_summary()["tree_disk"]["budget_bytes"] == 1
+    assert recorder.capture_summary()["tree_disk"]["staged_bytes"] == 0
+    assert not (out / "tree-snapshots" / revision).exists()
+
+
 def _fixture(tmp_path):
     out = tmp_path / "run"
     out.mkdir()
