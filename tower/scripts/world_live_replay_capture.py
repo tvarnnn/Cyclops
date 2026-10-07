@@ -46,8 +46,9 @@ class ReplayCapture:
                  fetched: list[tuple[dict, bytes]]) -> None:
         world, session, revision = target
         doc = json.loads(manifest)
-        if (doc.get("geometry_revision", revision) != revision or
-                doc.get("world_id", world) != world or doc.get("session_id", session) != session):
+        # Status geometry.revision names the captured landing. The HTTP
+        # manifest's geometry_revision is a separate segment-hash rollup.
+        if (doc.get("world_id", world) != world or doc.get("session_id", session) != session):
             raise ValueError(f"geometry manifest changed before revision {revision} was fetched")
         directory = self.out / "geometry-snapshots" / revision_dir(revision)
         directory.mkdir(parents=True, exist_ok=True)

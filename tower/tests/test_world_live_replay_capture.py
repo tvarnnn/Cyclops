@@ -116,10 +116,37 @@ def test_socket_records_each_raw_status_before_phone_projection(tmp_path):
     assert [base64.b64decode(row["envelope_b64"]) for row in rows] == [raw.encode()] * 2
 
 
-def test_revision_mismatch_is_refused(tmp_path):
+def test_status_and_wire_revisions_can_differ_at_each_landing(tmp_path):
     out = tmp_path / "run"
     out.mkdir()
     recorder = ReplayCapture(out)
-    with pytest.raises(ValueError, match="manifest changed"):
-        recorder.geometry(("w", "s", "g1"),
-                          b'{"geometry_revision":"g2","segments":[]}', [])
+    solutions = out / "solution-snapshots"
+    solutions.mkdir()
+    for n, (status_revision, wire_revision) in enumerate((("status-a", "wire-a"),
+                                                          ("status-b", "wire-b"))):
+        solved_at = 10.0 + n
+        (solutions / f"{n:03}.json").write_text(json.dumps({
+            "solved_at": solved_at, "keyframe_ids": ["a", "b"][:n + 1]
+        }), encoding="utf-8")
+        manifest = json.dumps({
+            "world_id": "w", "session_id": "s", "geometry_revision": wire_revision,
+            "segments": [{"segment_index": 0, "content_hash": f"c{n}",
+                          "placement_hash": f"p{n}"}],
+        }).encode()
+        recorder.geometry(("w", "s", status_revision), manifest,
+                          [({"segment_index": 0, "content_hash": f"c{n}",
+                             "placement_hash": f"p{n}"},
+                            json.dumps({"segment_index": 0, "content_hash": f"c{n}",
+                                        "placement_hash": f"p{n}"}).encode())])
+        coverage = _coverage(status_revision)
+        coverage["solved_at"] = solved_at
+        coverage["horizon_keyframes"] = n + 1
+        envelope = {"payload": {"guidance": {"coverage": coverage}}}
+        recorder.status(json.dumps(envelope), envelope)
+    recorder.finish(1.0, [{"file": "000.json"}, {"file": "001.json"}])
+
+    landings = supported_by_landing(out)
+    assert [landing["geometry_revision"] for landing in landings] == ["status-a", "status-b"]
+    assert [landing["horizon_keyframes"] for landing in landings] == [1, 2]
+    assert (out / "geometry-snapshots" / "status-a" / "manifest.json").is_file()
+    assert (out / "geometry-snapshots" / "status-b" / "segment-0.json").is_file()
