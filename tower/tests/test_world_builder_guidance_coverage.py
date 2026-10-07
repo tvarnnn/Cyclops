@@ -463,7 +463,7 @@ def test_guidance_poll_never_stats_or_starts_a_thread(monkeypatch, tmp_path):
         assert producer._coverage(None, "w", "s", None, None) is receipt
 
 
-def test_slow_file_read_does_not_block_status_or_final_solve_and_cannot_publish(monkeypatch, tmp_path):
+def test_slow_file_read_does_not_block_status_or_shutdown_and_cannot_publish(monkeypatch, tmp_path):
     monkeypatch.setenv("TOWER_WORLD_GUIDANCE_COVERAGE", "on")
     root = tmp_path / "worlds"
     world, session, _ = _landed_tree(root, _inputs())
@@ -482,12 +482,6 @@ def test_slow_file_read_does_not_block_status_or_final_solve_and_cannot_publish(
     start = time.monotonic()
     assert producer.snapshot(world, session).payload["guidance"]["coverage"] is None
     assert time.monotonic() - start < 0.1
-    # Final-solve work is independent of the guidance worker and can finish.
-    finished = threading.Event()
-    final = threading.Thread(target=lambda: finished.set())
-    final.start()
-    assert finished.wait(0.1)
-    final.join()
     start = time.monotonic()
     worker.shutdown()
     assert time.monotonic() - start < 0.1
@@ -497,14 +491,97 @@ def test_slow_file_read_does_not_block_status_or_final_solve_and_cannot_publish(
     assert worker.latest(world, session) is None
 
 
+def test_slow_os_read_releases_the_file_so_the_final_solve_write_lands(monkeypatch, tmp_path):
+    """The final solve publishes by replacing the derived files. On Windows a
+    replace onto a file a reader holds open is refused (WinError 5), and the
+    writer's `replace_with_retry` gives up after 2 s. A guidance read slowed
+    at the OS level must therefore close its handle at the next budget check,
+    let the write land, keep the status poll fast, and publish nothing."""
+    monkeypatch.setenv("TOWER_WORLD_GUIDANCE_COVERAGE", "on")
+    root = tmp_path / "worlds"
+    data = _inputs()
+    world, session, store = _landed_tree(root, data)
+    derived = store.derived_dir(world) / session
+    poses_path = derived / "poses.json"
+    manifest = json.loads((derived / "manifest.json").read_text(encoding="utf-8"))
+    # Many small chunks, each slower than the whole 250 ms budget.
+    monkeypatch.setattr(coverage_module, "_READ_CHUNK_BYTES", 16)
+    assert poses_path.stat().st_size > 20 * 16
+    entered, fast = threading.Event(), threading.Event()
+    times = {}
+    real_open = Path.open
+
+    class SlowStream:
+        def __init__(self, stream):
+            self.stream = stream
+
+        def read(self, n=-1):
+            if not fast.is_set():
+                time.sleep(0.3)
+            return self.stream.read(n)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            self.stream.close()
+            times.setdefault("closed", time.monotonic())
+
+    def open_(self, *args, **kwargs):
+        stream = real_open(self, *args, **kwargs)
+        if threading.current_thread().name == "world-guidance" and self == poses_path:
+            times.setdefault("opened", time.monotonic())
+            entered.set()
+            return SlowStream(stream)
+        return stream
+
+    monkeypatch.setattr(Path, "open", open_)
+    producer = WorldBuilderStatusProducer(root, lambda: 1000.12)
+    worker = producer._coverage_worker
+    try:
+        assert entered.wait(2)
+        start = time.monotonic()
+        assert producer.snapshot(world, session).payload["guidance"]["coverage"] is None
+        assert time.monotonic() - start < 0.1
+        # The final solve's publication: the same atomic writes a merge makes.
+        start = time.monotonic()
+        store.write_derived(world, session, poses=data["poses"], points=[], manifest=manifest)
+        assert time.monotonic() - start < 1.5
+        assert "closed" in times and times["closed"] - times["opened"] < 1.0
+        assert worker.latest(world, session) is None
+    finally:
+        worker.shutdown()
+        fast.set()
+        worker._thread.join(2)
+    assert not worker._thread.is_alive()
+    assert worker.latest(world, session) is None
+
+
 def test_oversized_guidance_file_is_rejected_before_read(monkeypatch, tmp_path):
     root = tmp_path / "worlds"
     world, session, _ = _landed_tree(root, _inputs())
     path = root / "worlds" / world / "derived" / session / "manifest.json"
     with path.open("ab") as stream:
-        stream.write(b" " * (coverage_module._FILE_LIMITS["manifest.json"] + 1))
+        stream.write(b" " * (1024 * 1024 + 1))  # past the 1 MiB manifest cap
     with pytest.raises(ValueError, match="size"):
         compute_from_tree(root, world, session, (1000.0, 4, (0, 0)), None)
+    # The cap also bounds the one uninterruptible step, a single json.loads
+    # (25-29 ms measured at 4 MiB): no file may be capped above that.
+    assert max(coverage_module._FILE_LIMITS.values()) <= 4 * 1024 * 1024
+
+
+def test_result_hub_shutdown_never_raises_from_the_guidance_hook():
+    from tower.results.publisher import ResultHub
+
+    def snapshot_for(*_):
+        raise AssertionError("no snapshot is built during shutdown")
+
+    def failing_hook():
+        raise RuntimeError("guidance hook failed")
+
+    snapshot_for.shutdown_guidance = failing_hook
+    hub = ResultHub(snapshot_for, clock=lambda: 1000.0)
+    asyncio.run(hub.shutdown())
 
 
 def test_tower_result_hub_shutdown_cancels_guidance_worker(monkeypatch, tmp_path):
@@ -626,6 +703,43 @@ def test_largest_realistic_fow_status_uses_full_allowance(monkeypatch, tmp_path)
     assert status_module._MAX_STATUS_WITH_COVERAGE_BYTES - 32 <= size <= status_module._MAX_STATUS_WITH_COVERAGE_BYTES
     store.write_world(replace(store.read_world(world), display_name="x" * high))
     assert producer.snapshot(world, session).payload["guidance"]["coverage"] is None
+
+
+REAL_LARGEST_STATUS = Path(__file__).parent / "golden" / "world_builder_status_walk6_largest_20261006.json"
+
+
+def test_largest_realistic_status_with_cap_size_coverage_fits_the_15_kib_allowance():
+    """The largest status measured on a real walk (5,147 B, walk 6, 1,090
+    keyframes, finalizing with the longest reason sentences), given a
+    64-character two-byte world name in both copies and a coverage block
+    padded to its own 4,096-byte cap, still fits the FOW-specific 15 KiB
+    allowance, so coverage is kept, and the complete envelope fits 16 KiB."""
+    fixture = json.loads(REAL_LARGEST_STATUS.read_text(encoding="utf-8"))
+    payload = fixture["payload"]
+    assert "guidance" not in payload
+    assert len(json.dumps(payload, separators=(",", ":"), ensure_ascii=False)
+               .encode("utf-8")) == fixture["payload_compact_bytes"] == 5147
+    name = "é" * 64
+    payload["world"]["display_name"] = name
+    payload["world_snapshot"]["name"] = name
+    block = _block(_inputs(tuple((i, 4) for i in range(16))))
+    block_bytes = len(json.dumps(block, separators=(",", ":")).encode("utf-8"))
+    assert 3500 < block_bytes <= coverage_module._MAX_BYTES
+    payload["guidance"] = {"coverage": block}
+    size = len(json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode("utf-8"))
+    worst = size + (coverage_module._MAX_BYTES - block_bytes)
+    assert worst <= status_module._MAX_STATUS_WITH_COVERAGE_BYTES
+    assert status_module._coverage_status_fits(payload)
+    envelope = ResultEnvelope(cartridge=CARTRIDGE_WORLD_BUILDER,
+                              result_type=RESULT_TYPE_STATUS,
+                              contract="world_builder.status/2026-09-10",
+                              subscription_id="sub-1", seq=1190, revision="7ed5b1bcc48926d7",
+                              revision_changed=True, tower_sent_at=1791329472.3530006,
+                              payload=payload)
+    envelope_size = len(json.dumps(envelope.to_json_dict(), separators=(",", ":"),
+                                   ensure_ascii=False).encode("utf-8"))
+    assert envelope_size + (coverage_module._MAX_BYTES - block_bytes) <= 16 * 1024
+    assert status_module._MAX_STATUS_WITH_COVERAGE_BYTES == 15 * 1024
 
 
 def test_coverage_falls_back_to_null_if_complete_status_exceeds_budget(monkeypatch, tmp_path):

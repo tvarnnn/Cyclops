@@ -22,14 +22,27 @@ _MAX_BYTES = 4096
 _DISCOVERY_INTERVAL_S = 0.5
 _LANDING_BUDGET_S = 0.250
 _READ_CHUNK_BYTES = 64 * 1024
-_FILE_LIMITS = {"solution.json": 16 * 1024 * 1024,
+# Per-file read caps, about 5-10x the walk-6 files (solution 438 KB,
+# manifest 25 KB, placements 68 KB, poses 332 KB, keyframes 778 KB for
+# 1,090 keyframes). The cap is also the bound on the one step the budget
+# cannot interrupt: a single json.loads of a capped 4 MiB file measured
+# 25-29 ms on the Tower host, holding the GIL for that long.
+_FILE_LIMITS = {"solution.json": 4 * 1024 * 1024,
                 "manifest.json": 1024 * 1024,
-                "placements.json": 4 * 1024 * 1024,
-                "poses.json": 16 * 1024 * 1024,
+                "placements.json": 1024 * 1024,
+                "poses.json": 4 * 1024 * 1024,
                 "keyframes.jsonl": 4 * 1024 * 1024}
 
 
 class _Budget:
+    """The hard per-landing budget: wall time since the job began, plus cancellation.
+
+    `check()` raises once either is exceeded. It is called before and after
+    every bounded chunk read, every parse, and every loop iteration of the
+    computation, so the job stops at the next check, publishes nothing, and
+    the worker keeps the last published block (and logs a warning).
+    """
+
     def __init__(self, cancelled=None):
         self.deadline = time.monotonic() + _LANDING_BUDGET_S
         self.cancelled = cancelled
@@ -449,7 +462,33 @@ def compute_from_tree(root, world_id, session_id, expected, geometry_revision,
 
 
 class CoverageWorker:
-    """One startup daemon discovers landings and publishes immutable receipts."""
+    """One startup daemon discovers landings and publishes immutable receipts.
+
+    A Python thread cannot be killed, so this is exactly what is guaranteed:
+
+    - A status poll never waits on this thread. `latest()` is one dict
+      lookup on a mapping the worker replaces atomically; the poll does no
+      I/O and takes no lock this thread holds during a job.
+    - No builder lock is taken. Stop and the final solve run in the capture
+      worker process and never join, wait on, or signal this thread.
+    - A job stops at its next budget check once 250 ms have elapsed or
+      `shutdown()` was called. Checks sit between bounded 64 KiB reads,
+      after each parse, and inside every computation loop. Each derived file
+      is closed when its read is abandoned, so the builder's
+      `replace_with_retry` (2 s budget) is not refused for longer than the
+      budget plus one chunk read.
+    - A job that overruns or is cancelled publishes nothing; the last
+      published block stays and a warning is logged.
+    - `shutdown()` returns without waiting. After it, nothing is published
+      and no new job starts.
+
+    Not guaranteed: an OS read that itself never returns (a stalled disk)
+    holds that one handle and this daemon thread until it returns. One
+    `json.loads` of a capped file (<= 4 MiB, about 25-29 ms measured) cannot
+    be interrupted and holds the GIL for that long. Low thread priority
+    does not remove disk or CPU contention with a final solve; the budget
+    only bounds how long a job contends.
+    """
 
     def __init__(self, root, clock=time.time):
         self.root, self.clock = root, clock

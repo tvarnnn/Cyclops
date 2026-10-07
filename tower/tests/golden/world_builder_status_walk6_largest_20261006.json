@@ -1,0 +1,181 @@
+{
+ "provenance": "Largest World Builder status payload (compact UTF-8 bytes) of the 1,348 status pushes captured by the live-replay status harness (codex/live-replay-status 49d64de) on the walk-6 replay RUN/experiments/C22-REPLAY/runs/walk6-live-reg-20261006/status-pushes.jsonl, push n=1189, envelope sha256 361aa4cfeb221a13decc8955482c60a9d1da8e934d62dc4e84109d6bab5cd9c4. guidance was OFF in that run, so the payload has no guidance key.",
+ "payload_compact_bytes": 5147,
+ "payload": {
+  "world": {
+   "world_id": "0a18955fc442479183dc350a4fe4af88",
+   "display_name": null,
+   "schema_version": 1,
+   "created_at": 1791327786.6868532,
+   "updated_at": 1791328638.7188706
+  },
+  "session": {
+   "session_id": "027489be8e074254b0cfcfb5e6553f24",
+   "started_at": 1791327787.450624,
+   "ended_at": 1791328132.37191,
+   "end_reason": "stop",
+   "frame_source": "live-capture",
+   "capture_id": "8ef30bee03b1413d8d39fb4c5a142585",
+   "retains_raw_imagery": true
+  },
+  "lifecycle": {
+   "state": "finalizing",
+   "evidence": "session_stopped was written, the finalization record is complete, the lock was released and the derived tree is there, and the appearance stage is unfinished and no process is working on it",
+   "reason": "this world does not have the photographic representation it is owed yet: the appearance stage is unfinished and no process is working on it. A Tower with the photographic stages enabled finishes owed work the next time it is idle; one that has them switched off will not, and this world then stays as it is until somebody runs scripts/world_finish_pending.py by hand",
+   "build_in_progress": false,
+   "build_in_progress_unavailable_reason": null,
+   "finalization": {
+    "state": "complete",
+    "final_solve": "solved",
+    "started_at": 1791328132.37191,
+    "updated_at": 1791328638.821824,
+    "detail": null
+   },
+   "photographic": {
+    "state": "owed",
+    "stage": "appearance",
+    "detail": "the appearance stage is unfinished and no process is working on it"
+   }
+  },
+  "progress": {
+   "keyframes_accepted": 1090,
+   "keyframes_accepted_provenance": "measured",
+   "keyframes_accepted_source": "session record",
+   "frames_observed": 4124,
+   "frames_observed_unavailable_reason": null,
+   "frames_rejected_wrong_size": 0,
+   "frames_rejected_malformed": 0,
+   "rejected_by_reason": {
+    "insufficient_motion": 1730,
+    "blurred": 1170,
+    "tracking_lost": 71,
+    "tracking_degraded": 63
+   },
+   "journal_corrupt_lines": 0,
+   "mapping_seconds": 344.9212861061096,
+   "mapping_seconds_unavailable_reason": null,
+   "mapping_clock": "tower",
+   "time_basis": "tower-receipt"
+  },
+  "tracking": {
+   "state": "good",
+   "evidence": "the most recent tracking event was keyframe_accepted",
+   "limited_ever_reported": false,
+   "recovery": null
+  },
+  "calibration": {
+   "state": "calibrated",
+   "source": "self_calibrated",
+   "calibrated_width": 360,
+   "calibrated_height": 640,
+   "reprojection_rms_px": 0.2892588770541774,
+   "view_count": 511,
+   "calibrating_ever_reported": false,
+   "scope": "session"
+  },
+  "scale": {
+   "state": "unknown",
+   "semantics": null,
+   "meters_per_unit": null,
+   "method": null,
+   "confidence": "unknown",
+   "unit": null,
+   "allows_metres": false,
+   "unavailable_reason": null
+  },
+  "geometry": {
+   "available": true,
+   "current": true,
+   "built_from_keyframes": 1090,
+   "keyframes_now": 1090,
+   "representation": "sparse point cloud",
+   "element_count": 42080,
+   "element_name": "point",
+   "is_incremental": false,
+   "revision": "85124670109e2d07",
+   "provenance": "inferred",
+   "confidence": null,
+   "backend_id": "classical-sfm",
+   "built_at": 1791328638.7238703,
+   "time_basis": "tower-receipt",
+   "unavailable_reason": null,
+   "stale_reason": null
+  },
+  "trajectory": {
+   "available": true,
+   "current": true,
+   "built_from_keyframes": 1090,
+   "keyframes_now": 1090,
+   "stale_reason": null,
+   "pose_count": 1049,
+   "poses_solved": 946,
+   "poses_refused": 20,
+   "poses_anchor": 124,
+   "keyframes": 1090,
+   "segments": 124,
+   "tracking_restarts": 71,
+   "chain_breaks": 59,
+   "path_length": {
+    "available": false,
+    "reason": "20 of this session's poses were refused, so the path has gaps; a total would draw straight lines across them and count the result as distance travelled"
+   },
+   "revision": "a14a4289f7d89f23",
+   "provenance": "inferred",
+   "confidence": null,
+   "unavailable_reason": null
+  },
+  "persistence": {
+   "state": "saved",
+   "revision": "9c139250241e24af",
+   "images_purged": false,
+   "location_disclosed": false
+  },
+  "artifacts": {
+   "keyframe_images": {
+    "present": true,
+    "count": 1090,
+    "redaction": "faces-detected-and-filled/yunet-2023mar@0.30+plausibility3",
+    "reredacted_set": null,
+    "fetchable": false,
+    "reason": "no artifact transfer contract exists, and these remain first-person frames whose redaction is best-effort with measured false negatives; a consumer must withhold imagery it cannot verify"
+   },
+   "images_purged_declared": false,
+   "images_purged_verified": null,
+   "images_purged_meaning": "a declaration that rebuilds are refused for this world, not a verified deletion of the imagery"
+  },
+  "time_basis": "tower-receipt",
+  "selection": {
+   "mode": "latest",
+   "world_id": "0a18955fc442479183dc350a4fe4af88",
+   "session_id": "027489be8e074254b0cfcfb5e6553f24",
+   "reason": "nothing is live; this is the most recently updated world"
+  },
+  "model_state": "finalizing",
+  "model_state_reason": "this world does not have the photographic representation it is owed yet: the appearance stage is unfinished and no process is working on it. A Tower with the photographic stages enabled finishes owed work the next time it is idle; one that has them switched off will not, and this world then stays as it is until somebody runs scripts/world_finish_pending.py by hand",
+  "world_snapshot": {
+   "name": null,
+   "world_id": "0a18955fc442479183dc350a4fe4af88",
+   "keyframe_count": 1090,
+   "revision": "7ed5b1bcc48926d7",
+   "tracking": "good",
+   "scale": "unknown",
+   "mapping_seconds": 344.9212861061096,
+   "calibration": "calibrated",
+   "geometry": {
+    "representation": "sparse point cloud",
+    "element_count": 42080,
+    "is_incremental": false
+   },
+   "trajectory": {
+    "pose_count": 1049,
+    "path_length": null,
+    "path_length_unit": null,
+    "scale": "unknown"
+   },
+   "persistence": {
+    "state": "saved",
+    "revision": "9c139250241e24af"
+   }
+  }
+ }
+}

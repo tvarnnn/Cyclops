@@ -2219,4 +2219,4 @@ Stop, final solve or the status reply. The semantic and phone display rules
 are in WORLD-BUILDER-WORLDS vNEXT and WORLD-BUILDER-IOS vNEXT; the frozen
 field authority is `FOW-COVERAGE-V1-SPEC-20261006.md`.
 
-Change log: The 15 KiB complete-status allowance is FOW-specific, not a transport-wide bound.
+Change log (vNEXT): when `guidance.coverage` is non-null, Tower publishes `coverage:null` instead if the complete status payload's compact UTF-8 JSON would exceed 15 KiB, and this 15 KiB allowance is a FOW-specific bound on that one decision, not a transport-wide status size limit.
