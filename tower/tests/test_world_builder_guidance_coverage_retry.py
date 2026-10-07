@@ -208,8 +208,10 @@ def test_discovery_keeps_running_during_a_retry_cooldown(monkeypatch, tmp_path):
     _land(tmp_path, "s", 1000.0, 221)
     worker = coverage.CoverageWorker(tmp_path, retry_clock=clock.now)
     try:
+        worker.request("w", "s")
         _until(lambda: worker._pending is not None and worker._pending[3] == 1)
         _land(tmp_path, "s", 2000.0, 1090)  # the next solve lands; nothing offered by hand
+        worker.request("w", "s")
         _until(lambda: worker.latest("w", "s") is not None)  # clock never advanced
         assert worker.latest("w", "s")["horizon_keyframes"] == 1090
         assert calls == [221, 1090]

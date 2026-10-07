@@ -451,7 +451,7 @@ def test_guidance_poll_never_stats_or_starts_a_thread(monkeypatch, tmp_path):
     producer = WorldBuilderStatusProducer(tmp_path, lambda: 1000.12)
     receipt = {"geometry_revision": "g", "solved_at": 1000.0}
     class Published:
-        def latest(self, world, session):
+        def request(self, world, session):
             assert (world, session) == ("w", "s")
             return receipt
     producer._coverage_worker = Published()
@@ -478,6 +478,7 @@ def test_slow_file_read_does_not_block_status_or_shutdown_and_cannot_publish(mon
     monkeypatch.setattr(coverage_module, "_read_bounded", slow_read)
     producer = WorldBuilderStatusProducer(root, lambda: 1000.12)
     worker = producer._coverage_worker
+    producer.snapshot(world, session)
     assert entered.wait(1)
     start = time.monotonic()
     assert producer.snapshot(world, session).payload["guidance"]["coverage"] is None
@@ -539,6 +540,7 @@ def test_slow_os_read_releases_the_file_so_the_final_solve_write_lands(monkeypat
     producer = WorldBuilderStatusProducer(root, lambda: 1000.12)
     worker = producer._coverage_worker
     try:
+        producer.snapshot(world, session)
         assert entered.wait(2)
         start = time.monotonic()
         assert producer.snapshot(world, session).payload["guidance"]["coverage"] is None
@@ -601,13 +603,14 @@ def test_tower_result_hub_shutdown_cancels_guidance_worker(monkeypatch, tmp_path
     assert not seen[0]._thread.is_alive()
 
 
-def test_on_worker_starts_before_poll_and_discovers_landing(monkeypatch, tmp_path):
+def test_on_worker_starts_before_poll_and_discovers_requested_landing(monkeypatch, tmp_path):
     monkeypatch.setenv("TOWER_WORLD_GUIDANCE_COVERAGE", "on")
     root = tmp_path / "worlds"
     world, session, _ = _landed_tree(root, _inputs())
     producer = WorldBuilderStatusProducer(root, lambda: 1000.12)
     worker = producer._coverage_worker
     assert worker is not None and worker._thread.is_alive()
+    producer.snapshot(world, session)
     for _ in range(200):
         if worker.latest(world, session) is not None:
             break
@@ -634,6 +637,7 @@ def test_worker_recovers_from_discovery_exception(monkeypatch, tmp_path):
 
     monkeypatch.setattr(coverage_module.CoverageWorker, "_discover", discover)
     worker = coverage_module.CoverageWorker(root, lambda: 1000.12)
+    worker.request(world, session)
     for _ in range(200):
         if worker.latest(world, session) is not None:
             break
@@ -750,7 +754,7 @@ def test_coverage_falls_back_to_null_if_complete_status_exceeds_budget(monkeypat
     block = _block(_inputs(tuple((i, 4) for i in range(16))))
 
     class Published:
-        def latest(self, *_):
+        def request(self, *_):
             return block
 
     producer._coverage_worker = Published()

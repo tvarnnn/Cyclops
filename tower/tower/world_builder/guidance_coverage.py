@@ -20,6 +20,7 @@ logger = logging.getLogger(__name__)
 _EPS = 1e-6
 _MAX_BYTES = 4096
 _DISCOVERY_INTERVAL_S = 0.5
+_MEMO_LIMIT = 256
 _LANDING_BUDGET_S = 0.250
 _RETRY_DELAYS_S = (5.0, 20.0)
 _READ_CHUNK_BYTES = 64 * 1024
@@ -482,7 +483,7 @@ def compute_from_tree(root, world_id, session_id, expected, geometry_revision,
 
 
 class CoverageWorker:
-    """One startup daemon discovers landings and publishes immutable receipts.
+    """One daemon discovers requested landings and publishes immutable receipts.
 
     A Python thread cannot be killed, so this is exactly what is guaranteed:
 
@@ -500,10 +501,10 @@ class CoverageWorker:
     - A failed job publishes nothing; the last published block stays.
       A transient failure (deadline miss, tree changed mid-read, solve clock
       not yet settled) retries the same candidate and tree in this thread
-      after 5 s, then 20 s: at most two timed retries per candidate, at most
-      one pending job (any newer offer supersedes a cooling-down retry), and
-      `shutdown()` cancels it. A rebuilt tree is re-attempted at once, as
-      before, without resetting the retry count. Validation failures are
+      after 5 s, then 20 s: at most two timed retries per candidate. Distinct
+      requested worlds wait in a queue; a newer offer supersedes a cooling-down
+      retry, and `shutdown()` cancels queued work. A rebuilt tree is
+      re-attempted at once, without resetting the retry count. Validation failures are
       not retried. Every attempt logs candidate, elapsed, reason, disposition.
     - `shutdown()` returns without waiting. After it, nothing is published
       and no new job starts.
@@ -522,14 +523,17 @@ class CoverageWorker:
         self._stop = threading.Event()
         self._condition = threading.Condition()
         self._pending = None
+        self._queued = OrderedDict()
         self._candidate = None
         self._completed = None
         self._successful_candidate = None
         self._block = None
         self._block_session = None
         self._attempt_tag = None
-        # A few pinned subscriptions may inspect different saved sessions.
-        # Keep this bounded so they cannot resubmit the same solve every poll.
+        self._wanted = {}
+        # A world list can contain more than eight historical sessions. Keep
+        # successful and failed identities together, including their tree tag.
+        self._targets = OrderedDict()
         self._receipts = OrderedDict()
         self._attempts = OrderedDict()
         # Timed retries used per attempted candidate (evicted with it).
@@ -542,20 +546,32 @@ class CoverageWorker:
         """A constant-time, lock-free read; the worker replaces the mapping atomically."""
         return self._published.get((world_id, session_id))
 
+    def request(self, world_id, session_id):
+        """Schedule discovery for one status target; never inspect other worlds."""
+        with self._condition:
+            if not self._stop.is_set():
+                self._targets[(world_id, session_id)] = None
+                self._condition.notify()
+        return self.latest(world_id, session_id)
+
     def shutdown(self):
         """Cancel future work and publication without waiting on an OS read."""
         self._stop.set()
         with self._condition:
             self._pending = None
+            self._queued.clear()
             self._condition.notify_all()
 
     def _discover(self):
-        """All file discovery stays in the worker, independently of status polls."""
+        """Inspect only status targets, off the status polling thread."""
+        with self._condition:
+            targets = tuple(self._targets)
+            self._targets.clear()
         candidates = []
-        for path in (Path(self.root) / "worlds").glob("*/solve/*/solution.json"):
+        for world_id, session_id in targets:
             if self._stop.is_set():
                 return
-            world_id, session_id = path.parents[2].name, path.parent.name
+            path = Path(self.root) / "worlds" / world_id / "solve" / session_id / "solution.json"
             try:
                 stat = path.stat()
                 manifest = _json(Path(self.root) / "worlds" / world_id / "derived" /
@@ -577,15 +593,27 @@ class CoverageWorker:
     def offer(self, world_id, session_id, solved_at, horizon, solution_stat,
               geometry_revision, tree_tag):
         candidate = (world_id, session_id, solved_at, horizon, solution_stat)
+        identity = (candidate, tree_tag)
         with self._condition:
             if self._stop.is_set():
                 return self._published.get((world_id, session_id))
-            if candidate in self._receipts:
-                self._receipts.move_to_end(candidate)
-                return self._receipts[candidate]
+            pair = (world_id, session_id)
+            self._wanted[pair] = identity
+            if identity in self._receipts:
+                self._receipts.move_to_end(identity)
+                block = self._receipts[identity]
+                self._published = {**self._published,
+                                   (world_id, session_id): _freeze(block)}
+                return block
             previous = next((block for key, block in reversed(self._receipts.items())
-                             if key[:2] == (world_id, session_id)), None)
-            if self._attempts.get(candidate) != tree_tag:
+                             if key[0][:2] == pair), None)
+            if identity not in self._attempts:
+                # A newer tree of the same session makes queued older work
+                # obsolete; a different world keeps its place in the queue.
+                for queued_identity in tuple(self._queued):
+                    if queued_identity[0][:2] == pair:
+                        self._queued.pop(queued_identity)
+                        self._attempts.pop(queued_identity, None)
                 if self._pending is not None:
                     dropped, retry = self._pending[0], self._pending[3]
                     if retry:
@@ -593,14 +621,20 @@ class CoverageWorker:
                         # job is pending, so the newer offer supersedes it.
                         logger.warning("world builder guidance: candidate=%r retry %d "
                                        "cancelled: superseded", dropped, retry)
+                        self._pending = None
                     else:
-                        self._attempts.pop(dropped, None)
-                self._candidate = candidate
-                self._attempt_tag = tree_tag
-                self._attempts[candidate] = tree_tag
-                if len(self._attempts) > 8:
+                        queued = self._pending
+                        queued_identity = (queued[0], queued[2])
+                        if dropped[:2] != pair:
+                            # Different requested worlds still need work.
+                            self._queued[queued_identity] = queued
+                        else:
+                            self._attempts.pop(queued_identity, None)
+                        self._pending = None
+                self._attempts[identity] = None
+                if len(self._attempts) > _MEMO_LIMIT:
                     evicted, _ = self._attempts.popitem(last=False)
-                    self._retries.pop(evicted, None)
+                    self._retries.pop(evicted[0], None)
                 self._pending = (candidate, geometry_revision, tree_tag, 0, None)
                 self._condition.notify()
             return previous
@@ -621,6 +655,8 @@ class CoverageWorker:
             with self._condition:
                 if self._stop.is_set():
                     break
+                if self._pending is None and self._queued:
+                    _, self._pending = self._queued.popitem(last=True)
                 if self._pending is None:
                     self._condition.wait(timeout=_DISCOVERY_INTERVAL_S)
                     if self._stop.is_set():
@@ -635,6 +671,8 @@ class CoverageWorker:
                         self._condition.wait(timeout=min(_DISCOVERY_INTERVAL_S, remaining))
                         continue
                 self._pending = None
+                self._candidate = candidate
+                self._attempt_tag = tree_tag
             budget = _Budget(self._stop)
             started = time.monotonic()
             reason = "ok"
@@ -656,16 +694,16 @@ class CoverageWorker:
                                    "reason=%s disposition=gave up (shutdown)",
                                    candidate, elapsed_ms, reason)
                     break
-                if candidate == self._candidate:
+                if self._wanted.get((world, session)) == (candidate, tree_tag):
                     self._completed = candidate
                     if block is not None:
                         self._block = _freeze(block)
                         self._block_session = (world, session)
                         self._successful_candidate = candidate
-                        self._receipts[candidate] = block
+                        self._receipts[(candidate, tree_tag)] = block
                         self._published = {**self._published,
                                            (world, session): self._block}
-                        if len(self._receipts) > 8:
+                        if len(self._receipts) > _MEMO_LIMIT:
                             self._receipts.popitem(last=False)
                         self._retries.pop(candidate, None)
                         disposition = "ok"
@@ -683,7 +721,12 @@ class CoverageWorker:
                     else:
                         disposition = "gave up"
                 else:
-                    self._attempts.pop(candidate, None)
+                    # A superseded computation is still memoized when it
+                    # succeeded; its receipt can be published on the next offer.
+                    if block is not None:
+                        self._receipts[(candidate, tree_tag)] = block
+                        if len(self._receipts) > _MEMO_LIMIT:
+                            self._receipts.popitem(last=False)
                     disposition = "gave up (superseded)"
             log = logger.info if block is not None else logger.warning
             log("world builder guidance: candidate=%r elapsed_ms=%.1f reason=%s disposition=%s",

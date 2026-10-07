@@ -956,8 +956,8 @@ class WorldBuilderStatusProducer:
         return payload
 
     def _coverage(self, store, world_id, session_id, manifest, geometry_revision):
-        """Read the worker's last published block without disk or scheduling."""
-        return (self._coverage_worker.latest(world_id, session_id)
+        """Request this status target; the worker discovers its landing."""
+        return (self._coverage_worker.request(world_id, session_id)
                 if self._coverage_worker is not None else None)
 
     def _processing(self, store, world_id, session_id, session, holder):
