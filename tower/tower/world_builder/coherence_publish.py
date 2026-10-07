@@ -62,6 +62,7 @@ import numpy as np
 
 from tower.world_builder import coherence_gate as CG
 from tower.world_builder import coherence_scale as CS
+from tower.world_builder import final_scale_guard as FSG
 from tower.world_builder import stage_timing
 
 logger = logging.getLogger(__name__)
@@ -1438,11 +1439,63 @@ def gate_and_publish(store, world_id: str, session_id: str, workspace, solution,
         if hasattr(solution, "gate"):
             solution.gate = result.record
         solution.timing = dict(getattr(solution, "timing", None) or {}, gate_s=result.record.get("seconds"))
+    guard = _final_scale_guard(store, world_id, session_id, solution, result, final=final,
+                               database_path=database_path, keyframes=keyframes)
+    if guard is not None:
+        if guard.solution is None:
+            # WITHHELD (`final_scale_guard`, on): nothing is written -- not the solution, not a record, not
+            # the depth -- and the solution published before stands. The audit says what was refused.
+            _write_guard_audit(workspace.root, guard)
+            why = FSG.withheld_reason(guard.summary)
+            record = dict((result.record if result is not None else None) or {},
+                          final_scale_guard=guard.summary, publish={"written": False, "why": why})
+            return None, record
+        solution, result = guard.solution, guard.result
+        if guard.decision == FSG.DECISION_PUBLISHED and result is not None and result.record:
+            # Additive, Tower-internal, on only (shadow publishes exactly what off publishes).
+            result.record = dict(result.record, final_scale_guard=guard.summary)
+            if hasattr(solution, "gate"):
+                solution.gate = result.record
     write(workspace, solution)
     published = after_publish(store, world_id, session_id, workspace.root, solution, result)
-    if result is None:
+    if guard is not None:
+        _write_guard_audit(workspace.root, guard)
+        if guard.depth is not None and (result is None or result.depth is None):
+            # Shadow on an ungated solve: the guard's own depth stage is the surface's, as the gate's is.
+            published = dict(published, depth_handoff=_hand_guard_depth(store, world_id, session_id, solution,
+                                                                        guard.depth))
+    if result is None or not result.record:
         return solution, None
     return solution, dict(result.record, publish=published)
+
+
+def _final_scale_guard(store, world_id, session_id, solution, result, *, final: bool, database_path,
+                       keyframes):
+    """The final scale guard's outcome at the publish seam, or None when it is off (or this is not a final
+    solve): then NOTHING else happens -- the guard is an environment read away from today's publish."""
+    if not final:
+        return None
+    mode = FSG.mode()
+    if mode not in (FSG.MODE_ON, FSG.MODE_SHADOW):
+        return None
+    return FSG.guard_publication(store, world_id, session_id, solution, result, mode_=mode,
+                                 database_path=database_path, keyframes=keyframes)
+
+
+def _write_guard_audit(workspace_root, guard) -> None:
+    try:
+        FSG.write_audit(workspace_root, guard.audit)
+    except Exception:  # noqa: BLE001 -- the audit is paperwork; the decision is already made
+        logger.warning("[Tower][WorldBuilder] could not write the final scale guard's audit in %s",
+                       workspace_root, exc_info=True)
+
+
+def _hand_guard_depth(store, world_id, session_id, solution, depth) -> dict:
+    try:
+        return hand_depth_to_surface(store, world_id, session_id, solution, depth)
+    except Exception as exc:  # noqa: BLE001 -- the solve is published; this is its paperwork
+        logger.warning("[Tower][WorldBuilder] could not hand the guard's depth to the surface", exc_info=True)
+        return {"stamped": False, "detail": f"{type(exc).__name__}: {exc}"}
 
 
 # ---------------------------------------------------------------------------
@@ -1637,10 +1690,30 @@ def regate_published(store, world_id: str, session_id: str, *, should_stop=None,
                 "detail": publish_detail(kept)}
     published = result.solution
     record = dict(result.record, regate={"at": time.time(), "previous": previous})
+    guard = _final_scale_guard(store, world_id, session_id, published, result, final=True,
+                               database_path=database, keyframes=keyframes)
+    if guard is not None and guard.solution is None:
+        # WITHHELD (`final_scale_guard`, on): nothing is written, the published solve stands, and its
+        # re-gate stays owed. Not a stop: the attempt is spent, and the row's detail says why.
+        _write_guard_audit(workspace.root, guard)
+        why = FSG.withheld_reason(guard.summary)
+        kept = {"gate": solution.gate, "transients": solution.transients}
+        return {"gate": {k: solution.gate.get(k) for k in ("state", "retryable", "cause", "metric_available",
+                                                             "attach", "components")},
+                "publish": {"written": False, "why": why},
+                "withheld": True,
+                "final_scale_guard": guard.summary,
+                "notice": publish_notice(kept),
+                "detail": why}
+    if guard is not None and guard.decision == FSG.DECISION_PUBLISHED:
+        published, result = guard.solution, guard.result
+        record = dict(record, final_scale_guard=guard.summary)
     published.gate = record
     published.timing = dict(published.timing or {}, regate_s=result.record.get("seconds"))
     write_solution(workspace, published)
     out = after_publish(store, world_id, session_id, workspace.root, published, result)
+    if guard is not None:
+        _write_guard_audit(workspace.root, guard)
     return {"gate": {k: record.get(k) for k in ("state", "retryable", "cause", "metric_available",
                                                   "attach", "components")},
             "publish": out,

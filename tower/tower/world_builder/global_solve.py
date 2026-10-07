@@ -1031,6 +1031,10 @@ def write_solution(workspace: SolveWorkspace, solution: Solution) -> None:
         # Only on a gated solve, whose components record and depth stamp name it: an
         # ungated solution.json is byte-for-byte what it was.
         meta["solve_identity"] = solve_identity(solution)
+    elif isinstance(solution.solve, dict) and "final_scale_guard" in solution.solve:
+        # An ungated solve the final scale guard published (on only): it writes a components
+        # record and stamps the depth, both of which name the solve.
+        meta["solve_identity"] = solve_identity(solution)
     write_json_atomic(workspace.solution_path, meta)
 
 
@@ -1607,6 +1611,7 @@ def solve(
         # `coherence_publish.gate_by_consensus`); a single-draw gated solve has no pass.
         finish_phase.mark(finish_phase.CHECKING,
                           (1, requested) if plan is not None and plan.map_draw is not None else None)
+    _gate_record = None
     if plan is not None and plan.map_draw is not None and gated:
         # A CONSENSUS THAT WILL MAP FURTHER DRAWS PUBLISHES DRAW 0 FIRST (review V10, MED-1(a)).
         solution = _publish_draw_0_first(
@@ -1625,6 +1630,10 @@ def solve(
             store, world_id, session_id, workspace, solution, final=final, gate=gate,
             database_path=database_path, keyframes=keyframes, write=write_solution,
             consensus=plan, **stop_kw)
+    if solution is None:
+        # THE FINAL SCALE GUARD WITHHELD THE CANDIDATE (`final_scale_guard`, on; unreachable off):
+        # nothing was published, and the solution published before stands.
+        return _withheld_summary(_gate_record, workspace)
     return {
         "solved": True,
         "solver": solver,
@@ -1796,6 +1805,24 @@ def frozen_draw_mapper(store, world_id: str, session_id: str, database_path, bas
         return candidate
 
     return map_draw
+
+
+def _withheld_summary(record, workspace: SolveWorkspace) -> dict:
+    """The solve's summary when the final scale guard withheld its candidate: `solved: false` with the
+    guard's one-line reason (the builder's finalization detail) and its summary (no figures)."""
+    from tower.world_builder import final_scale_guard as FSG  # noqa: PLC0415
+
+    guard = (record or {}).get("final_scale_guard")
+    if guard is None:
+        # The draw-0-first path returns only the solution; the audit beside the solve is the record.
+        try:
+            doc = json.loads((workspace.root / FSG.AUDIT_FILENAME).read_text(encoding="utf-8"))
+            guard = {"id": doc.get("guard"), "decision": doc.get("decision"),
+                     "why": (doc.get("assessment") or {}).get("why") or doc.get("error")}
+        except (OSError, ValueError):
+            guard = {"id": FSG.GUARD_ID, "decision": FSG.DECISION_WITHHELD, "why": None}
+    return {"solved": False, "reason": FSG.withheld_reason(guard), "withheld": True,
+            "final_scale_guard": guard, "workspace": str(workspace.root)}
 
 
 def _publish_draw_0_first(store, world_id: str, session_id: str, workspace: SolveWorkspace,
