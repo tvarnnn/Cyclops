@@ -111,6 +111,14 @@ final class MockTowerHTTPServer: @unchecked Sendable {
         queue.sync { routes[methodAndPath] = (status, body, headers) }
     }
 
+    /// Answers `methodAndPath` with raw bytes of `contentType` -- an image
+    /// tile, say -- ahead of every string route.
+    func setDataRoute(_ methodAndPath: String, status: Int = 200, data: Data, contentType: String) {
+        queue.sync { dataRoutes[methodAndPath] = (status, data, contentType) }
+    }
+
+    private var dataRoutes: [String: (status: Int, data: Data, contentType: String)] = [:]
+
     private static func statusText(_ status: Int) -> String {
         switch status {
         case 200: return "OK"
@@ -221,6 +229,15 @@ final class MockTowerHTTPServer: @unchecked Sendable {
     }
 
     private func respond(on connection: NWConnection, to line: String) {
+        if let route = dataRoutes[Self.methodAndPath(line)] {
+            let head = "HTTP/1.1 \(route.status) \(Self.statusText(route.status))\r\n"
+                + "Content-Type: \(route.contentType)\r\nContent-Length: \(route.data.count)\r\n"
+                + "Connection: close\r\n\r\n"
+            connection.send(content: Data(head.utf8) + route.data, completion: .contentProcessed { _ in
+                connection.cancel()
+            })
+            return
+        }
         let status: Int
         let body: String
         var extra: [String: String] = [:]

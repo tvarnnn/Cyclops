@@ -95,6 +95,27 @@ nonisolated struct WorldCoverage: Equatable, Sendable {
         let cellSize: Double
         /// Sorted `(y, x)`; never empty.
         let stations: [Station]
+        /// The grid's solve-frame basis (§5, §6): where a solve-placed
+        /// camera centre falls on this piece. Only FOW v1.1 B's landed
+        /// thumbnails read it; the v1 fans never do.
+        var basis: Basis? = nil
+    }
+
+    /// `origin_xyz`, `up_xyz`, `forward_xyz` of one component: the square
+    /// grid's centre and its sector-zero (column) and right (row) axes, in
+    /// that component's own solve frame and arbitrary units.
+    struct Basis: Equatable, Sendable {
+        let origin: [Double]
+        let up: [Double]
+        let forward: [Double]
+
+        /// `forward x up`: rows run along it, and sectors turn clockwise
+        /// from `forward` towards it, as seen from above (§6.4).
+        var right: [Double] {
+            [forward[1] * up[2] - forward[2] * up[1],
+             forward[2] * up[0] - forward[0] * up[2],
+             forward[0] * up[1] - forward[1] * up[0]]
+        }
     }
 
     struct Station: Equatable, Sendable {
@@ -202,9 +223,9 @@ nonisolated enum WorldCoverageReader {
               let segment = integer(object["reference_segment"], 0...Int(Int32.max)),
               let posed = integer(object["posed_keyframes"], 1...65535),
               let bounds = vector(object["bounds_xy"], count: 4), bounds[2] >= bounds[0], bounds[3] >= bounds[1],
-              vector(object["origin_xyz"], count: 3) != nil,
-              vector(object["up_xyz"], count: 3) != nil,
-              vector(object["forward_xyz"], count: 3) != nil,
+              let origin = vector(object["origin_xyz"], count: 3),
+              let up = vector(object["up_xyz"], count: 3),
+              let forward = vector(object["forward_xyz"], count: 3),
               let cellSize = number(object["cell_size"]), cellSize > 0,
               let rows = object["stations"] as? [Any], rows.count <= WorldCoverage.maxStations
         else { return nil }
@@ -215,7 +236,8 @@ nonisolated enum WorldCoverageReader {
             stations.append(station)
         }
         return WorldCoverage.Component(referenceSegment: segment, posedKeyframes: posed, cellSize: cellSize,
-                                       stations: stations)
+                                       stations: stations,
+                                       basis: WorldCoverage.Basis(origin: origin, up: up, forward: forward))
     }
 
     static func station(_ value: Any) -> WorldCoverage.Station? {

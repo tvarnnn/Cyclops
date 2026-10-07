@@ -107,9 +107,12 @@ nonisolated struct WorldCurrentPiece: Equatable, Sendable {
     /// `stoppedHere` is the walk whose capture this phone stopped: its piece
     /// goes at the local Stop, not when the Tower's (possibly delayed)
     /// finalizing report arrives (Codex review MED).
-    static func shown(_ piece: WalkScoped<WorldCurrentPiece>?, walk: WorldFinishWalk?,
-                      stoppedHere: WorldFinishWalk? = nil,
-                      phase: WorldPanelPhase, state: WorldModelState) -> WorldCurrentPiece? {
+    ///
+    /// Generic so that every value of the current segment -- the piece, and
+    /// FOW v1.1 B1's live strip -- goes by this one rule.
+    static func shown<Value>(_ piece: WalkScoped<Value>?, walk: WorldFinishWalk?,
+                             stoppedHere: WorldFinishWalk? = nil,
+                             phase: WorldPanelPhase, state: WorldModelState) -> Value? {
         guard case .walking = phase, case .receiving = state else { return nil }
         guard let piece, let owner = piece.walk, owner == walk, owner != stoppedHere else { return nil }
         return piece.value
@@ -151,10 +154,16 @@ nonisolated struct WorldCurrentPieceGate: Equatable, Sendable {
     /// What the panel draws: nothing unless this phone is capturing; then
     /// the piece of the presented walk, if that walk is not refused and the
     /// received data is that walk's (`WorldCurrentPiece.shown`).
-    func shown(_ piece: WalkScoped<WorldCurrentPiece>?, walk: WorldFinishWalk?, isCapturing: Bool,
-               phase: WorldPanelPhase, state: WorldModelState) -> WorldCurrentPiece? {
+    func shown<Value>(_ piece: WalkScoped<Value>?, walk: WorldFinishWalk?, isCapturing: Bool,
+                      phase: WorldPanelPhase, state: WorldModelState) -> Value? {
         guard isCapturing else { return nil }
         return WorldCurrentPiece.shown(piece, walk: walk, stoppedHere: refused, phase: phase, state: state)
+    }
+
+    /// The same, beside the walk `report` describes (FOW v1.1 B1's strip).
+    func shown<Value, Report>(_ value: WalkScoped<Value>?, beside report: WalkScoped<Report>, isCapturing: Bool,
+                              phase: WorldPanelPhase, state: WorldModelState) -> Value? {
+        shown(value, walk: report.walk, isCapturing: isCapturing, phase: phase, state: state)
     }
 }
 

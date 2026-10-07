@@ -51,6 +51,11 @@ enum WorldCoverageStyle {
 struct WorldCoverageMapView: View {
     let coverage: WorldCoverage
     let isFrozen: Bool
+    /// FOW v1.1 B2: landed thumbnails over this receipt's pieces, or `nil`
+    /// (the switch off, or none to draw): the map exactly as v1 draws it.
+    var landed: WorldLandedOverlay? = nil
+
+    @State private var selected: WorldLandedThumbnail?
 
     var body: some View {
         GeometryReader { proxy in
@@ -64,7 +69,20 @@ struct WorldCoverageMapView: View {
                     WorldCoveragePieceView(component: component, index: index, showsName: named && !isFrozen)
                         .frame(width: frame.width, height: frame.height)
                         .position(x: frame.midX, y: frame.midY)
+                    // Over the piece, never inside its element: the v1
+                    // piece's own label and value are unchanged.
+                    if let landed, !isFrozen, case let thumbnails = landed.thumbnails(on: component.referenceSegment),
+                       !thumbnails.isEmpty {
+                        WorldLandedPieceOverlay(thumbnails: thumbnails, receipt: landed.receipt) { selected = $0 }
+                            .frame(width: frame.width, height: frame.height)
+                            .position(x: frame.midX, y: frame.midY)
+                    }
                 }
+            }
+        }
+        .sheet(item: $selected) { thumbnail in
+            if let landed {
+                WorldLandedThumbnailSheet(thumbnail: thumbnail, receipt: landed.receipt)
             }
         }
         .opacity(isFrozen ? 0.35 : 1)

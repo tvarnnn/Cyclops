@@ -796,7 +796,7 @@ final class WorldInlinePanelTests: XCTestCase {
                       #"^(?!.*\.picture\().*\breconstruction\.target\b"#]
             .map { try! NSRegularExpression(pattern: $0) }
         for file in ["WorldPanelPhase.swift", "WorldInlinePanel.swift", "WorldBuilderWorkspaceView.swift",
-                     "WorldCanvasView.swift"] {
+                     "WorldCanvasView.swift", "WorldImageryViews.swift"] {
             let text = try String(contentsOf: folder.appendingPathComponent(file), encoding: .utf8)
             XCTAssertGreaterThan(text.count, 1000, file)
             for (number, line) in text.components(separatedBy: "\n").enumerated() {

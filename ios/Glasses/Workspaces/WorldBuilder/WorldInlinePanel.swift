@@ -307,6 +307,11 @@ struct WorldInlinePanel<Health: View>: View {
     /// The current piece, already walk-scoped and live-gated: its own card
     /// under the map, never in it (`WorldCurrentPiece`).
     var currentPiece: WorldCurrentPiece? = nil
+    /// FOW v1.1 B1: the current segment's strip, gated like the piece (this
+    /// phone capturing, the walk's own): its own card under the piece.
+    var liveStrip: WorldImageryStrip? = nil
+    /// FOW v1.1 B2: landed thumbnails, the walk's own: over the map only.
+    var landed: WorldLandedOverlay? = nil
     @ObservedObject var host: WorldInlineHost
     let dismissBanner: () -> Void
     /// The away banner drawn for this walk was announced: never again for
@@ -413,6 +418,9 @@ struct WorldInlinePanel<Health: View>: View {
             // Gated once, upstream: the walk's own, while it walks.
             if let currentPiece {
                 WorldCurrentPieceView(piece: currentPiece)
+            }
+            if let liveStrip {
+                WorldImageryStripView(strip: liveStrip)
             }
             if case .walking = phase, showsHealth {
                 health()
@@ -555,7 +563,10 @@ struct WorldInlinePanel<Health: View>: View {
         case .none:
             EmptyView()
         case .map:
-            if let map { WorldCoverageMapView(coverage: map.receipt.coverage, isFrozen: false) }
+            if let map {
+                WorldCoverageMapView(coverage: map.receipt.coverage, isFrozen: false,
+                                     landed: Self.landed(landed, over: map))
+            }
         case .loading:
             if let block = currentFinishing { finishingContent(block, alwaysSpins: true) }
         case .viewer:
@@ -581,6 +592,14 @@ struct WorldInlinePanel<Health: View>: View {
             .padding(16)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
+    }
+
+    /// B2's thumbnails only over the live receipt they were placed on: never
+    /// over the DEBUG fixture, and never over another landing's grid.
+    static func landed(_ overlay: WorldLandedOverlay?, over map: WorldPanelMapSource) -> WorldLandedOverlay? {
+        guard let overlay, case .coverage(let receipt) = map, receipt.coverage == overlay.receipt.coverage
+        else { return nil }
+        return overlay
     }
 
     /// S2: the loading view -- no map, no current piece: the finish block. Never a duration or an estimate.

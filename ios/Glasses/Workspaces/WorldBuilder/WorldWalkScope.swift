@@ -52,6 +52,14 @@ nonisolated struct WalkScoped<Value> {
         describes(picture) ? value : nil
     }
 
+    /// The value, beside a report of its own walk; `nil` beside another
+    /// walk's report or a report of no named walk. What the panel asks before
+    /// it draws a walk's imagery (FOW v1.1 B) beside a walk's words.
+    func value<Other>(beside report: WalkScoped<Other>) -> Value? {
+        guard let walk, let other = report.walk, other == walk else { return nil }
+        return value
+    }
+
     /// `picture`, when this value describes the walk it shows; `nil` otherwise.
     func picture(_ picture: WorldRenderTarget?) -> WorldRenderTarget? {
         describes(picture) ? picture : nil
