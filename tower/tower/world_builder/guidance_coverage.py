@@ -21,6 +21,7 @@ _EPS = 1e-6
 _MAX_BYTES = 4096
 _DISCOVERY_INTERVAL_S = 0.5
 _LANDING_BUDGET_S = 0.250
+_RETRY_DELAYS_S = (5.0, 20.0)
 _READ_CHUNK_BYTES = 64 * 1024
 # Per-file read caps, about 5-10x the walk-6 files (solution 438 KB,
 # manifest 25 KB, placements 68 KB, poses 332 KB, keyframes 778 KB for
@@ -32,6 +33,10 @@ _FILE_LIMITS = {"solution.json": 4 * 1024 * 1024,
                 "placements.json": 1024 * 1024,
                 "poses.json": 4 * 1024 * 1024,
                 "keyframes.jsonl": 4 * 1024 * 1024}
+
+
+class _TransientCoverageError(ValueError):
+    """A coherent snapshot may become available on a later attempt."""
 
 
 class _Budget:
@@ -51,7 +56,7 @@ class _Budget:
         if self.cancelled is not None and self.cancelled.is_set():
             raise ValueError("coverage worker cancelled")
         if time.monotonic() >= self.deadline:
-            raise ValueError("coverage worker exceeded 250 ms")
+            raise _TransientCoverageError("coverage worker exceeded 250 ms")
 
 
 class _FrozenDict(dict):
@@ -239,9 +244,11 @@ def compute_coverage(*, solution, manifest, placements, poses, keyframes,
     if (not math.isfinite(solved_at) or solved_at < 0 or
             isinstance(computed_at, bool) or
             not isinstance(computed_at, (int, float)) or
-            not math.isfinite(computed_at) or computed_at < solved_at or
+            not math.isfinite(computed_at) or
             float(solution["solved_at"]) != solved_at):
         raise ValueError("invalid solve clock")
+    if computed_at < solved_at:
+        raise _TransientCoverageError("solve clock not yet settled")
     horizon = _integer(summary["horizon_keyframes"], 65535)
     ids = solution["keyframe_ids"]
     if len(ids) != horizon or len(set(ids)) != horizon:
@@ -444,17 +451,17 @@ def compute_from_tree(root, world_id, session_id, expected, geometry_revision,
     budget.check()
     after = _signature(paths)
     if before != after or before[:1] != (expected[2],):
-        raise ValueError("derived tree changed during guidance read")
+        raise _TransientCoverageError("derived tree changed during guidance read")
     summary = manifest.get("global_solve") or {}
     if (summary.get("solved_at"), summary.get("horizon_keyframes")) != expected[:2]:
-        raise ValueError("build has not merged the named solution")
+        raise _TransientCoverageError("build has not merged the named solution")
     if tree_tag is not None and (manifest.get("built_at"), manifest.get("input_digest")) != tree_tag:
-        raise ValueError("derived tree changed before guidance read")
+        raise _TransientCoverageError("derived tree changed before guidance read")
     from tower.results.world_builder import geometry_revision_from_manifest
     actual_revision = geometry_revision_from_manifest(manifest)
     budget.check()
     if geometry_revision is not None and actual_revision != geometry_revision:
-        raise ValueError("geometry revision changed before guidance read")
+        raise _TransientCoverageError("geometry revision changed before guidance read")
     return compute_coverage(solution=solution, manifest=manifest,
                             placements=placed["placements"], poses=posed["poses"],
                             keyframes=keyframes, geometry_revision=actual_revision,
@@ -477,8 +484,8 @@ class CoverageWorker:
       is closed when its read is abandoned, so the builder's
       `replace_with_retry` (2 s budget) is not refused for longer than the
       budget plus one chunk read.
-    - A job that overruns or is cancelled publishes nothing; the last
-      published block stays and a warning is logged.
+    - A failed job publishes nothing; the last published block stays.
+      Transient failures get at most two delayed retries in this same thread.
     - `shutdown()` returns without waiting. After it, nothing is published
       and no new job starts.
 
@@ -490,8 +497,9 @@ class CoverageWorker:
     only bounds how long a job contends.
     """
 
-    def __init__(self, root, clock=time.time):
+    def __init__(self, root, clock=time.time, retry_clock=time.monotonic):
         self.root, self.clock = root, clock
+        self._retry_clock = retry_clock
         self._stop = threading.Event()
         self._condition = threading.Condition()
         self._pending = None
@@ -502,7 +510,7 @@ class CoverageWorker:
         self._block_session = None
         self._attempt_tag = None
         # A few pinned subscriptions may inspect different saved sessions.
-        # Keep this bounded so they cannot resubmit the same solve every poll.
+        # Receipts are bounded; attempts persist to enforce the retry cap.
         self._receipts = OrderedDict()
         self._attempts = OrderedDict()
         self._published = {}
@@ -556,15 +564,17 @@ class CoverageWorker:
                 return self._receipts[candidate]
             previous = next((block for key, block in reversed(self._receipts.items())
                              if key[:2] == (world_id, session_id)), None)
-            if self._attempts.get(candidate) != tree_tag:
-                if self._pending is not None:
-                    self._attempts.pop(self._pending[0], None)
+            if candidate in self._attempts:
+                # Discovery can see a newer coherent tree while its retry is
+                # cooling down. Use the latest tag without resetting the cap.
+                if self._pending is not None and self._pending[0] == candidate:
+                    _, _, _, retry, due = self._pending
+                    self._pending = (candidate, geometry_revision, tree_tag, retry, due)
+            else:
                 self._candidate = candidate
                 self._attempt_tag = tree_tag
                 self._attempts[candidate] = tree_tag
-                if len(self._attempts) > 8:
-                    self._attempts.popitem(last=False)
-                self._pending = (candidate, geometry_revision, tree_tag)
+                self._pending = (candidate, geometry_revision, tree_tag, 0, self._retry_clock())
                 self._condition.notify()
             return previous
 
@@ -590,9 +600,16 @@ class CoverageWorker:
                         break
                     if self._pending is None:
                         continue
-                candidate, revision, tree_tag = self._pending
+                candidate, revision, tree_tag, retry, due = self._pending
+                remaining = due - self._retry_clock()
+                if remaining > 0:
+                    self._condition.wait(timeout=min(_DISCOVERY_INTERVAL_S, remaining))
+                    continue
                 self._pending = None
             budget = _Budget(self._stop)
+            started = time.monotonic()
+            reason = "ok"
+            failure = None
             try:
                 world, session, solved_at, horizon, stat = candidate
                 block = compute_from_tree(self.root, world, session,
@@ -600,12 +617,14 @@ class CoverageWorker:
                                           self.clock, tree_tag, budget)
                 budget.check()
             except Exception as exc:
-                logger.warning("world builder guidance: coverage unavailable: %s", exc)
+                failure = exc
+                reason = str(exc) or type(exc).__name__
                 block = None
             with self._condition:
                 if self._stop.is_set():
-                    break
-                if candidate == self._candidate:
+                    disposition = "gave up"
+                    reason = "shutdown"
+                elif candidate == self._candidate:
                     self._completed = candidate
                     if block is not None:
                         self._block = _freeze(block)
@@ -616,5 +635,17 @@ class CoverageWorker:
                                            (world, session): self._block}
                         if len(self._receipts) > 8:
                             self._receipts.popitem(last=False)
+                        disposition = "ok"
+                    elif isinstance(failure, _TransientCoverageError) and retry < len(_RETRY_DELAYS_S) and self._pending is None:
+                        next_retry = retry + 1
+                        self._pending = (candidate, revision, tree_tag, next_retry,
+                                         self._retry_clock() + _RETRY_DELAYS_S[retry])
+                        self._condition.notify()
+                        disposition = f"retry {next_retry}"
+                    else:
+                        disposition = "gave up"
                 else:
-                    self._attempts.pop(candidate, None)
+                    disposition = "gave up"
+                    reason = "superseded"
+            logger.warning("world builder guidance: candidate=%r elapsed_ms=%.1f reason=%s disposition=%s",
+                           candidate, (time.monotonic() - started) * 1000, reason, disposition)
