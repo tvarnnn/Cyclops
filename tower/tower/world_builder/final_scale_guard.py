@@ -107,6 +107,12 @@ DECISION_PUBLISHED = "published"
 DECISION_WITHHELD = "withheld"
 DECISION_SHADOW = "shadow"
 
+# F6 (review XR): the row's `finalization.notice` after a withhold. The solution published before -- the
+# walk's background solve, never checked by this guard -- still stands, so the phone is told, in a closed
+# sentence, that the room it shows is NOT CERTIFIED. One line, no slash, no figure (contract COMPONENTS 3.1).
+NOTICE_WITHHELD = ("the final check could not certify this walk's room, so the room shown is the walk's "
+                   "unchecked preview and its photos are kept; an owner can re-finish this walk")
+
 WHY_WITHHELD = ("the final scale guard withheld the final solve ({}); nothing was published, and the "
                 "solution published before stands")
 
@@ -127,6 +133,12 @@ class GuardParams:
     min_ratios: int = 10
     # Plateau detection: a centred running median over 2h+1 measured cameras.
     smooth_half_window: int = 5
+    # The EXCURSION screen (review XR F2): inside a kept plateau, this many consecutive measured cameras each
+    # beyond the CLEAR boundary on the same side are a short, grossly wrong stretch the running median
+    # swallows. They are isolated `final-scale-uncertified` (too few ratios to certify either way). Three:
+    # at the clear boundary a single camera's own ratio is out in a few per cent of cameras, three in a row
+    # on one side in about one per 40 000 (independent cameras); a run of 6+ already moves the median.
+    excursion_min_cameras: int = 3
     # Reference refinement rounds (it stops earlier when the decisions stop changing).
     max_reference_rounds: int = 6
     # The deterministic bootstrap interval of a piece's log ratio to the core.
@@ -306,7 +318,70 @@ def _scale_round(groups: dict, values: dict, ref: float, params: GuardParams) ->
                 decided[k]["decision"] = "inherited" if bounded else "isolated"
                 decided[k]["reason"] = None if bounded else REASON_SCALE_UNCERTIFIED
             i = j
-        out.extend(decided)
+        for row in decided:
+            out.extend(_split_excursions(row, values, ref, params))
+    return out
+
+
+def _excursions(cams: list, values: dict, ref: float, params: GuardParams) -> list[tuple[int, int]]:
+    """[(start, end_exclusive)] positions in `cams` of the runs of >= `excursion_min_cameras` consecutive
+    MEASURED cameras each beyond the clear boundary on one side (unmeasured cameras between them belong to
+    the run; they do not break it)."""
+    lo, hi = math.log(params.clear_low), math.log(params.clear_high)
+    out = []
+    run: list[int] = []
+    side = 0
+
+    def close():
+        if len(run) >= params.excursion_min_cameras:
+            out.append((run[0], run[-1] + 1))
+
+    for pos, c in enumerate(cams):
+        v = values.get(c.name)
+        if v is None:
+            continue
+        d = v - ref
+        sd = 1 if d > hi else (-1 if d < lo else 0)
+        if sd != 0 and sd == side:
+            run.append(pos)
+            continue
+        close()
+        run, side = ([pos], sd) if sd != 0 else ([], 0)
+    close()
+    return out
+
+
+def _split_excursions(row: dict, values: dict, ref: float, params: GuardParams) -> list[dict]:
+    """A kept or inherited plateau with its excursions taken out as isolated rows of their own (the rest
+    keeps the plateau's decision and certificate); any other row unchanged."""
+    if row["decision"] not in ("kept", "inherited"):
+        return [dict(row, kind="plateau")]
+    cams = row["cameras"]
+    spans = _excursions(cams, values, ref, params)
+    if not spans:
+        return [dict(row, kind="plateau")]
+    parts = []
+    cut = 0
+    for a, b in spans:
+        parts.append((cut, a, False))
+        parts.append((a, b, True))
+        cut = b
+    parts.append((cut, len(cams), False))
+    out = []
+    for a, b, exc in parts:
+        if a >= b:
+            continue
+        sub = cams[a:b]
+        m = np.asarray([values[c.name] for c in sub if c.name in values], np.float64)
+        d = float(np.median(m)) - ref if len(m) else None
+        part = dict(row, start=row["start"] + a, end=row["start"] + b, cameras=sub, values=m,
+                    measured=int(len(m)), ratio=None if d is None else math.exp(d),
+                    kind="excursion" if exc else "plateau")
+        if exc:
+            reason = ratio_reason(d, params) if len(m) >= params.min_ratios else REASON_SCALE_UNCERTIFIED
+            part.update({"decision": "isolated", "reason": reason, "certified": False,
+                         "class": HIGH if d is not None and d > 0 else LOW})
+        out.append(part)
     return out
 
 
@@ -351,14 +426,14 @@ def _pose_screen(cams: list[RoomCamera], mpu: float, params: GuardParams) -> dic
     def allowance(dt):
         return params.speed_mps * dt + params.speed_margin_m
 
-    def step(a: RoomCamera, b: RoomCamera, *, adjacent: bool) -> dict | None:
-        """The step a -> b: None when not testable (adjacent pairs only: gap and dt bounds)."""
+    def step(a: RoomCamera, b: RoomCamera) -> dict | None:
+        """The step a -> b, or None when it is not testable: more than `step_max_index_gap` journal indices or
+        `step_max_dt_s` apart (or no time). The same bounds for a cut and for a rejoin (review XR F3): elapsed
+        time alone never certifies where an island sits relative to the room."""
         if a.t is None or b.t is None:
             return None
         dt = float(b.t - a.t)
-        if adjacent and (b.index - a.index > params.step_max_index_gap or not 0 < dt <= params.step_max_dt_s):
-            return None
-        if dt <= 0:
+        if b.index - a.index > params.step_max_index_gap or not 0 < dt <= params.step_max_dt_s:
             return None
         delta = (cu[b.kid][0] - cu[a.kid][0]) * mpu
         dist = float(np.linalg.norm(delta))
@@ -378,7 +453,7 @@ def _pose_screen(cams: list[RoomCamera], mpu: float, params: GuardParams) -> dic
         if not runs:
             runs.append([c])
             continue
-        s = step(runs[-1][-1], c, adjacent=True)
+        s = step(runs[-1][-1], c)
         if s is not None and s["hard"]:
             flags.append({"kind": "hard-step", "indices": [s["a"].index, s["b"].index], "dt_s": round(s["dt"], 3),
                           "metres": round(s["dist"], 3), "limit_m": round(s["hard_limit"], 3),
@@ -390,12 +465,13 @@ def _pose_screen(cams: list[RoomCamera], mpu: float, params: GuardParams) -> dic
                              "indices": [s["a"].index, s["b"].index], "dt_s": round(s["dt"], 3),
                              "metres": round(s["dist"], 3), "allowance_m": round(s["allow"], 3)})
         runs[-1].append(c)
-    # Rejoin: a run joins the earliest-formed cluster whose latest camera it follows without a hard step.
+    # Rejoin: a run joins the earliest-formed cluster whose latest camera it follows within the step bounds and
+    # without a hard step. An untestable gap never rejoins: the run stays its own cluster.
     clusters: list[list[list[RoomCamera]]] = []
     for run in runs:
         joined = False
         for cl in clusters:
-            s = step(cl[-1][-1], run[0], adjacent=False)
+            s = step(cl[-1][-1], run[0])
             if s is not None and not s["hard"]:
                 cl.append(run)
                 joined = True
@@ -467,7 +543,7 @@ def assess(cameras: list[RoomCamera], metric_log: dict, params: GuardParams | No
     for r in rows:
         ids = [c.kid for c in r["cameras"]]
         row = {"group": r["group"], "first_index": r["cameras"][0].index, "last_index": r["cameras"][-1].index,
-               "keyframes": len(ids), "measured": r["measured"], "class": r["class"],
+               "keyframes": len(ids), "measured": r["measured"], "class": r["class"], "kind": r.get("kind"),
                "ratio": None if r["ratio"] is None else round(r["ratio"], 4),
                "decision": r["decision"], "reason": r["reason"]}
         if r["measured"] >= params.min_ratios and len(core_vals) and r["decision"] == "isolated":
@@ -475,7 +551,8 @@ def assess(cameras: list[RoomCamera], metric_log: dict, params: GuardParams | No
             row["ci_excludes_one"] = bool(row["ci"][0] > 1.0 or row["ci"][1] < 1.0)
         plateau_rows.append(row)
         if r["decision"] == "isolated":
-            pieces.append(dict(row, basis="scale", keyframe_ids=ids))
+            pieces.append(dict(row, basis="excursion" if r.get("kind") == "excursion" else "scale",
+                               keyframe_ids=ids))
     if len(core_vals) < params.min_ratios:
         return dict(base, decision="withhold", pieces=pieces, plateaus=plateau_rows, rounds=rounds,
                     reference=reference, pose=None, room_keyframes=[],
@@ -530,17 +607,34 @@ def room_cameras(solution, keyframes, name_of: dict, *, groups_of: dict | None =
         p = (solution.poses or {}).get(kid)
         if not p or int(p.get("component", 0)) != 0 or int(p.get("observations", 0)) < min_obs:
             continue
-        if p.get("rotation") is None or p.get("translation") is None:
-            continue
+        # A supported room pose with a missing or malformed rotation or translation, or no image name, is
+        # NOT skipped (review XR F4): skipped, it stayed in the published room unassessed. It enters as a
+        # non-finite camera, which the pose screen quarantines (`final-pose-outlier`).
+        R = _array_or_nan(p.get("rotation"), (3, 3))
+        tvec = _array_or_nan(p.get("translation"), (3,))
         name = name_of.get(kid)
         if name is None:
-            continue
+            R = np.full((3, 3), np.nan)
+            name = kid
         out.append(RoomCamera(
-            kid=kid, name=name, index=i, t=received.get(kid),
-            R=np.asarray(p["rotation"], np.float64).reshape(3, 3),
-            tvec=np.asarray(p["translation"], np.float64).reshape(3),
+            kid=kid, name=name, index=i, t=received.get(kid), R=R, tvec=tvec,
             group="room" if groups_of is None else groups_of.get(name, "room")))
+    # A supported room pose the keyframe list does not name: no capture position, so never certifiable.
+    listed = set(solution.keyframe_ids)
+    for kid, p in sorted((solution.poses or {}).items()):
+        if kid in listed or int(p.get("component", 0)) != 0 or int(p.get("observations", 0)) < min_obs:
+            continue
+        out.append(RoomCamera(kid=kid, name=name_of.get(kid, kid), index=len(listed) + len(out),
+                              t=received.get(kid), R=np.full((3, 3), np.nan), tvec=np.full(3, np.nan),
+                              group="room"))
     return out
+
+
+def _array_or_nan(value, shape) -> np.ndarray:
+    try:
+        return np.asarray(value, np.float64).reshape(shape)
+    except (TypeError, ValueError):
+        return np.full(shape, np.nan)
 
 
 def gate_groups(gated: dict | None) -> dict | None:
@@ -786,6 +880,13 @@ def guard_publication(store, world_id: str, session_id: str, solution, result, *
         return GuardOutcome(mode_, DECISION_WITHHELD, None, None, summ,
                             audit_document(assessment, mode_=mode_, decision=DECISION_WITHHELD, solution=solution,
                                            inputs=inputs, seconds=secs, error=why), depth)
+
+
+def withhold(outcome: "GuardOutcome", why: str) -> "GuardOutcome":
+    """`outcome` turned into a withhold (on): nothing to publish, the summary and the audit say why."""
+    summ = dict(outcome.summary, decision=DECISION_WITHHELD, why=why)
+    audit = dict(outcome.audit, decision=DECISION_WITHHELD, error=why)
+    return GuardOutcome(outcome.mode, DECISION_WITHHELD, None, None, summ, audit, outcome.depth)
 
 
 class _Withhold(RuntimeError):

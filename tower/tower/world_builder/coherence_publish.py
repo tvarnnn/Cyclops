@@ -62,7 +62,6 @@ import numpy as np
 
 from tower.world_builder import coherence_gate as CG
 from tower.world_builder import coherence_scale as CS
-from tower.world_builder import final_scale_guard as FSG
 from tower.world_builder import stage_timing
 
 logger = logging.getLogger(__name__)
@@ -1442,13 +1441,19 @@ def gate_and_publish(store, world_id: str, session_id: str, workspace, solution,
     guard = _final_scale_guard(store, world_id, session_id, solution, result, final=final,
                                database_path=database_path, keyframes=keyframes)
     if guard is not None:
+        # The guard's module is imported only here, with the switch on or shadow (review XR F1): off, the
+        # publish step imports, reads and writes nothing it did not before.
+        from tower.world_builder import final_scale_guard as FSG  # noqa: PLC0415
+
+        guard = _records_before_publish(workspace.root, guard)
         if guard.solution is None:
             # WITHHELD (`final_scale_guard`, on): nothing is written -- not the solution, not a record, not
-            # the depth -- and the solution published before stands. The audit says what was refused.
-            _write_guard_audit(workspace.root, guard)
-            why = FSG.withheld_reason(guard.summary)
+            # the depth -- and the solution published before stands, marked NOT CERTIFIED on the row
+            # (`final_scale_guard.NOTICE_WITHHELD`, set by the builder). The audit says what was refused.
+            summary = dict(guard.summary, audit_written=_write_guard_audit(workspace.root, guard))
+            why = FSG.withheld_reason(summary)
             record = dict((result.record if result is not None else None) or {},
-                          final_scale_guard=guard.summary, publish={"written": False, "why": why})
+                          final_scale_guard=summary, publish={"written": False, "why": why})
             return None, record
         solution, result = guard.solution, guard.result
         if guard.decision == FSG.DECISION_PUBLISHED and result is not None and result.record:
@@ -1459,7 +1464,8 @@ def gate_and_publish(store, world_id: str, session_id: str, workspace, solution,
     write(workspace, solution)
     published = after_publish(store, world_id, session_id, workspace.root, solution, result)
     if guard is not None:
-        _write_guard_audit(workspace.root, guard)
+        if guard.decision != FSG.DECISION_PUBLISHED:
+            _write_guard_audit(workspace.root, guard)        # shadow: after, as paperwork
         if guard.depth is not None and (result is None or result.depth is None):
             # Shadow on an ungated solve: the guard's own depth stage is the surface's, as the gate's is.
             published = dict(published, depth_handoff=_hand_guard_depth(store, world_id, session_id, solution,
@@ -1472,22 +1478,57 @@ def gate_and_publish(store, world_id: str, session_id: str, workspace, solution,
 def _final_scale_guard(store, world_id, session_id, solution, result, *, final: bool, database_path,
                        keyframes):
     """The final scale guard's outcome at the publish seam, or None when it is off (or this is not a final
-    solve): then NOTHING else happens -- the guard is an environment read away from today's publish."""
+    solve): then NOTHING else happens -- the guard is an environment read away from today's publish, and its
+    module is not even imported (review XR F1)."""
     if not final:
         return None
-    mode = FSG.mode()
-    if mode not in (FSG.MODE_ON, FSG.MODE_SHADOW):
+    from tower.config import (  # noqa: PLC0415 -- loaded already (stage_timing)
+        WORLD_FINAL_SCALE_GUARD_ON,
+        WORLD_FINAL_SCALE_GUARD_SHADOW,
+        world_final_scale_guard_setting,
+    )
+
+    mode = world_final_scale_guard_setting()
+    if mode not in (WORLD_FINAL_SCALE_GUARD_ON, WORLD_FINAL_SCALE_GUARD_SHADOW):
         return None
+    from tower.world_builder import final_scale_guard as FSG  # noqa: PLC0415
+
     return FSG.guard_publication(store, world_id, session_id, solution, result, mode_=mode,
                                  database_path=database_path, keyframes=keyframes)
 
 
-def _write_guard_audit(workspace_root, guard) -> None:
+def _records_before_publish(workspace_root, guard):
+    """A publication the guard CHANGED writes its audit and its components record BEFORE the solution (review
+    XR F7): the reader takes a components record only beside the solution whose `solve_identity` it names, so
+    until the solution lands the new record reads as absent, and once it lands both agree. If either write
+    fails, nothing is published: the outcome becomes a withhold (`on` is fail-closed). Any other outcome is
+    returned unchanged."""
+    from tower.world_builder import final_scale_guard as FSG  # noqa: PLC0415
+
+    if guard.solution is None or guard.decision != FSG.DECISION_PUBLISHED:
+        return guard
     try:
         FSG.write_audit(workspace_root, guard.audit)
-    except Exception:  # noqa: BLE001 -- the audit is paperwork; the decision is already made
+        if guard.result is not None and guard.result.components is not None:
+            write_components(workspace_root, guard.result.components)
+    except Exception as exc:  # noqa: BLE001 -- fail-closed: a half-recorded publication is not published
+        logger.exception("[Tower][WorldBuilder] the final scale guard could not write its records in %s; "
+                         "nothing is published", workspace_root)
+        return FSG.withhold(guard, f"its records could not be written ({type(exc).__name__})")
+    return guard
+
+
+def _write_guard_audit(workspace_root, guard) -> bool:
+    """Write the guard's audit; whether it was written (a withhold says so: `audit_written`)."""
+    from tower.world_builder import final_scale_guard as FSG  # noqa: PLC0415
+
+    try:
+        FSG.write_audit(workspace_root, guard.audit)
+        return True
+    except Exception:  # noqa: BLE001 -- the decision is already made; its record says the audit is missing
         logger.warning("[Tower][WorldBuilder] could not write the final scale guard's audit in %s",
                        workspace_root, exc_info=True)
+        return False
 
 
 def _hand_guard_depth(store, world_id, session_id, solution, depth) -> dict:
@@ -1692,18 +1733,22 @@ def regate_published(store, world_id: str, session_id: str, *, should_stop=None,
     record = dict(result.record, regate={"at": time.time(), "previous": previous})
     guard = _final_scale_guard(store, world_id, session_id, published, result, final=True,
                                database_path=database, keyframes=keyframes)
+    if guard is not None:
+        from tower.world_builder import final_scale_guard as FSG  # noqa: PLC0415 -- on or shadow only
+
+        guard = _records_before_publish(workspace.root, guard)
     if guard is not None and guard.solution is None:
-        # WITHHELD (`final_scale_guard`, on): nothing is written, the published solve stands, and its
-        # re-gate stays owed. Not a stop: the attempt is spent, and the row's detail says why.
-        _write_guard_audit(workspace.root, guard)
-        why = FSG.withheld_reason(guard.summary)
-        kept = {"gate": solution.gate, "transients": solution.transients}
+        # WITHHELD (`final_scale_guard`, on): nothing is written, the published solve stands -- marked NOT
+        # CERTIFIED on the row (`NOTICE_WITHHELD`) -- and its re-gate stays owed. Not a stop: the attempt is
+        # spent, and the row's detail says why.
+        summary = dict(guard.summary, audit_written=_write_guard_audit(workspace.root, guard))
+        why = FSG.withheld_reason(summary)
         return {"gate": {k: solution.gate.get(k) for k in ("state", "retryable", "cause", "metric_available",
                                                              "attach", "components")},
                 "publish": {"written": False, "why": why},
                 "withheld": True,
-                "final_scale_guard": guard.summary,
-                "notice": publish_notice(kept),
+                "final_scale_guard": summary,
+                "notice": FSG.NOTICE_WITHHELD,
                 "detail": why}
     if guard is not None and guard.decision == FSG.DECISION_PUBLISHED:
         published, result = guard.solution, guard.result
@@ -1712,7 +1757,7 @@ def regate_published(store, world_id: str, session_id: str, *, should_stop=None,
     published.timing = dict(published.timing or {}, regate_s=result.record.get("seconds"))
     write_solution(workspace, published)
     out = after_publish(store, world_id, session_id, workspace.root, published, result)
-    if guard is not None:
+    if guard is not None and guard.decision != FSG.DECISION_PUBLISHED:
         _write_guard_audit(workspace.root, guard)
     return {"gate": {k: record.get(k) for k in ("state", "retryable", "cause", "metric_available",
                                                   "attach", "components")},
