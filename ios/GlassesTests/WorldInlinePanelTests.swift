@@ -650,8 +650,15 @@ final class WorldInlinePanelTests: XCTestCase {
         let src = try String(contentsOf: url, encoding: .utf8)
         let body = try XCTUnwrap(src.components(separatedBy: "private func finishingContent").last?
             .components(separatedBy: "private func stageText").first)
-        XCTAssertFalse(body.contains("WorldCoverageMapView") || body.contains("WorldCurrentPieceView")
-                       || body.contains("map"), "the loading view draws no map")
+        for symbol in ["WorldCoverageMapView", "WorldCurrentPieceView", "WorldCoverageCaption", "map.receipt"] {
+            XCTAssertFalse(body.contains(symbol), "the loading view draws \(symbol)")
+        }
+        let stage = try XCTUnwrap(src.components(separatedBy: "private var stageContent").last?
+            .components(separatedBy: "private func finishingContent").first)
+        XCTAssertTrue(stage.contains("switch Self.stageKind(phase)"), "the stage routes through stageKind")
+        let loading = try XCTUnwrap(stage.components(separatedBy: "case .loading:").last?
+            .components(separatedBy: "case .viewer:").first)
+        XCTAssertTrue(loading.contains("finishingContent("), ".loading must draw finishingContent")
     }
 
     /// The ready status shows the inline viewer with no tap or refresh: the

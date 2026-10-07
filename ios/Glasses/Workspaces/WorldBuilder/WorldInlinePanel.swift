@@ -302,8 +302,7 @@ struct WorldInlinePanel<Health: View>: View {
     let screenSaysOffline: Bool
     /// Capture health is drawn while walking (a session or a capture).
     let showsHealth: Bool
-    /// The walking map, and the frozen map under the finishing wait, when
-    /// there is one.
+    /// The walking map, when there is one. After Stop the panel draws no map.
     let map: WorldPanelMapSource?
     /// The current piece, already walk-scoped and live-gated: its own card
     /// under the map, never in it (`WorldCurrentPiece`).
@@ -552,17 +551,19 @@ struct WorldInlinePanel<Health: View>: View {
 
     @ViewBuilder
     private var stageContent: some View {
-        switch phase {
-        case .hidden:
+        switch Self.stageKind(phase) {
+        case .none:
             EmptyView()
-        case .walking:
+        case .map:
             if let map { WorldCoverageMapView(coverage: map.receipt.coverage, isFrozen: false) }
-        case .finishing:
-            if let block = currentFinishing { finishingContent(block) }
-        case .ready(let target):
-            readyContent(target)
-        case .failed(let sentence):
-            stageText(sentence ?? host.model?.state.failureMessage ?? presentation.recoverability?.sentence ?? "")
+        case .loading:
+            if let block = currentFinishing { finishingContent(block, alwaysSpins: true) }
+        case .viewer:
+            if case .ready(let target) = phase { readyContent(target) }
+        case .text:
+            if case .failed(let sentence) = phase {
+                stageText(sentence ?? host.model?.state.failureMessage ?? presentation.recoverability?.sentence ?? "")
+            }
         case .offline:
             VStack(alignment: .leading, spacing: 12) {
                 if let line = WorldPanelCopy.offlineLine(screenSaysOffline: screenSaysOffline) {
@@ -583,11 +584,13 @@ struct WorldInlinePanel<Health: View>: View {
     }
 
     /// S2: the loading view -- no map, no current piece: the finish block. Never a duration or an estimate.
-    private func finishingContent(_ block: FinishingBlock) -> some View {
+    private func finishingContent(_ block: FinishingBlock, alwaysSpins: Bool = false) -> some View {
         ZStack(alignment: .topLeading) {
             VStack(alignment: .leading, spacing: 10) {
-                // A progress indicator always, unless the Tower is gone.
-                WorldFinishLineView(showsSpinner: block.showsSpinner || !block.offline, line: block.line,
+                // The post-Stop loading view always shows a progress indicator
+                // unless the Tower is gone; the ready page's wait keeps the
+                // honest live-build spinner.
+                WorldFinishLineView(showsSpinner: block.showsSpinner || (alwaysSpins && !block.offline), line: block.line,
                                     stoppedAt: block.stoppedAt, style: .panel)
                 if let detail = block.detail {
                     // The canvas's own true sentence: owed, unobservable, or
