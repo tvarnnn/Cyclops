@@ -175,6 +175,42 @@ final class WorldCurrentPieceTests: XCTestCase {
         XCTAssertEqual(after.value.viewCount, 2)
     }
 
+    /// Codex review HIGH (second pass): the manifest route is not
+    /// revision-pinned, so a request made for g2 mid-rebuild can come back as
+    /// g1. What came back decides: no piece while the returned revision is
+    /// not the named one, the map keeps what arrived, and the next report
+    /// naming g2 asks again -- and the piece shows once g2 itself lands.
+    func testAnOlderManifestReturnedForANewRevisionIsNoPieceUntilTheNamedOneLands() async throws {
+        let host = URL(string: "http://stub.invalid")!
+        let g1 = Self.manifestJSON(revision: "g1", rows: [Self.rowJSON(0, hash: "h0")])
+        StubbedGeometryProtocol.reset(routes: [
+            "/worlds/w1/geometry/manifest": (200, g1),
+            "/worlds/w1/geometry/segment/0": (200, Self.chunkJSON(0, hash: "h0", poses: Self.zeroPoses)),
+        ])
+        let viewModel = WorldBuilderViewModel(
+            client: UnavailableWorldBuilderClient(),
+            geometry: WorldGeometryClient(baseURL: host, session: StubbedGeometryProtocol.makeSession()))
+        await viewModel.geometryDidChange(worldID: "w1", sessionID: "s1", revision: "g1")
+        XCTAssertEqual(viewModel.currentPiece?.value.segmentIndex, 0)
+
+        // The Tower names g2 (a tracking break) but its manifest still serves g1.
+        await viewModel.geometryDidChange(worldID: "w1", sessionID: "s1", revision: "g2")
+        XCTAssertNil(viewModel.currentPiece, "g1's segment shown as current under g2")
+        XCTAssertEqual(viewModel.fragmentsModel.segments.count, 1, "the room map lost what arrived")
+
+        // g2 itself lands; the next report naming g2 fetches it again.
+        StubbedGeometryProtocol.reset(routes: [
+            "/worlds/w1/geometry/manifest": (200, Self.manifestJSON(
+                revision: "g2", rows: [Self.rowJSON(0, hash: "h0"), Self.rowJSON(1, hash: "h1")])),
+            "/worlds/w1/geometry/segment/0": (200, Self.chunkJSON(0, hash: "h0", poses: Self.zeroPoses)),
+            "/worlds/w1/geometry/segment/1": (200, Self.chunkJSON(1, hash: "h1", poses: Self.onePoses)),
+        ])
+        await viewModel.geometryDidChange(worldID: "w1", sessionID: "s1", revision: "g2")
+        let after = try XCTUnwrap(viewModel.currentPiece, "g2 landed and no piece")
+        XCTAssertEqual(after.value.segmentIndex, 1)
+        XCTAssertEqual(viewModel.fragmentsModel.segments.count, 2)
+    }
+
     // MARK: No data, nothing drawn
 
     func testNoSegmentDataIsNoPiece() {

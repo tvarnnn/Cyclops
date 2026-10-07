@@ -121,6 +121,46 @@ final class WorldCurrentPieceUITests: XCTestCase {
         shoot("current-piece-after-stop")
     }
 
+    /// Codex review HIGH: Stop, then Start again before the Tower has moved
+    /// on. It still reports the stopped walk `receiving`, and that walk's
+    /// piece must not come back at any point; the next walk's piece shows
+    /// once the Tower presents that walk.
+    func testStartBeforeTheTowerAdvancesNeverBringsTheStoppedWalksPieceBack() throws {
+        launch(mockGlasses: true)
+        open(cartridge: "World Builder")
+        XCTAssertTrue(waitFor(timeout: 15) { self.socket.liveSubscription != nil }, "the live subscription")
+        let start = app.buttons["Start capture"]
+        guard waitFor(timeout: 15, { start.exists && start.isEnabled }) else {
+            throw XCTSkip("Mock Device Kit gave no active device here")
+        }
+        start.tap()
+        let stop = app.buttons["Stop capture"]
+        XCTAssertTrue(stop.waitForExistence(timeout: 15), "the capture started")
+        serve(revision: "gA", segments: [(0, "h0", Self.zeroPoses)])
+        push(modelState: "receiving", geometry: "gA", liveCapture: true)
+        let piece = element("wb-current-piece")
+        XCTAssertTrue(piece.waitForExistence(timeout: 15), "the current piece while capturing")
+
+        reveal(stop)
+        XCTAssertTrue(tap(stop, until: !self.app.buttons["Stop capture"].exists), "Stop")
+        XCTAssertTrue(waitFor(timeout: 5) { !piece.exists }, "the piece after the local Stop")
+
+        // Start again; the Tower has not advanced and still reports s1.
+        reveal(start)
+        XCTAssertTrue(tap(start, until: self.app.buttons["Stop capture"].exists), "Start again")
+        for round in 0..<4 {
+            push(modelState: "receiving", geometry: "gA", liveCapture: true)
+            XCTAssertTrue(neverExists(piece, for: 1), "the stopped walk's piece came back after Start (\(round))")
+        }
+        shoot("current-piece-restart-before-the-tower")
+
+        // The Tower presents the new walk: its own piece.
+        serve(world: "w2", session: "s9", revision: "gN", segments: [(0, "n0", Self.onePoses)])
+        push(modelState: "receiving", world: "w2", session: "s9", geometry: "gN", liveCapture: true)
+        XCTAssertTrue(piece.waitForExistence(timeout: 15), "the new walk's piece")
+        XCTAssertEqual(text(element("wb-current-piece-views")), "2 views since tracking last restarted")
+    }
+
     // MARK: The mock Tower's geometry
 
     private typealias Segment = (index: Int, hash: String, poses: [String])
@@ -141,7 +181,7 @@ final class WorldCurrentPieceUITests: XCTestCase {
     private static let unplaced = #""registered":false,"transform_to_world":null"#
 
     /// The manifest naming `segments`, and each segment's chunk.
-    private func serve(revision: String, segments: [Segment]) {
+    private func serve(world: String = "w1", session: String = "s1", revision: String, segments: [Segment]) {
         let rows = segments.map { segment in
             #"{"segment_index":\#(segment.index),"content_hash":"\#(segment.hash)","#
                 + #""frame_id":"segment:\#(segment.index)",\#(Self.unplaced),"resolution_state":"resolved","#
@@ -149,15 +189,15 @@ final class WorldCurrentPieceUITests: XCTestCase {
                 + #""solved_count":\#(segment.poses.count),"point_count":1,"#
                 + #""bounds":{"min":[0.0,0.0,0.0],"max":[1.0,1.0,1.0]}}"#
         }
-        mock.setRoute("GET /worlds/w1/geometry/manifest", status: 200, body:
-            #"{"contract":"\#(Self.contract)","world_id":"w1","session_id":"s1","#
+        mock.setRoute("GET /worlds/\(world)/geometry/manifest", status: 200, body:
+            #"{"contract":"\#(Self.contract)","world_id":"\#(world)","session_id":"\#(session)","#
             + #""geometry_revision":"\#(revision)","current":true,"pose_convention":{"pose_type":"T_world_camera","#
             + #""quaternion_order":"wxyz","handedness":"right","camera_axes":"opencv_x_right_y_down_z_forward","#
             + #""translation_units":"world","world_axes_origin":"first_keyframe_camera","up_axis":"unknown","#
             + #""pose_dtype":"float64","point_dtype":"float32"},"segment_count":\#(segments.count),"#
             + #""segments":[\#(rows.joined(separator: ","))]}"#)
         for segment in segments {
-            mock.setRoute("GET /worlds/w1/geometry/segment/\(segment.index)", status: 200, body:
+            mock.setRoute("GET /worlds/\(world)/geometry/segment/\(segment.index)", status: 200, body:
                 #"{"contract":"\#(Self.contract)","segment_index":\#(segment.index),"#
                 + #""content_hash":"\#(segment.hash)","frame_id":"segment:\#(segment.index)",\#(Self.unplaced),"#
                 + #""poses":[\#(segment.poses.joined(separator: ","))],"points":[[0.5,0.5,0.5]],"#
@@ -243,6 +283,16 @@ final class WorldCurrentPieceUITests: XCTestCase {
             if waitFor(timeout: 4, effect) { return true }
         }
         return effect()
+    }
+
+    /// True when `element` is absent at every sample for `seconds`.
+    private func neverExists(_ element: XCUIElement, for seconds: TimeInterval) -> Bool {
+        let deadline = Date().addingTimeInterval(seconds)
+        while Date() < deadline {
+            if element.exists { return false }
+            Thread.sleep(forTimeInterval: 0.1)
+        }
+        return !element.exists
     }
 
     private func waitFor(timeout: TimeInterval = 10, _ condition: () -> Bool) -> Bool {

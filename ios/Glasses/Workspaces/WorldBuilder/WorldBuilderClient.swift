@@ -502,9 +502,10 @@ final class WorldBuilderViewModel: ObservableObject {
     private var lastGeometryRevision: String?
 
     /// The `geometry.revision` the Tower last named for `geometryOwner`, and
-    /// the one whose manifest and chunks are published in `geometryStatus` and
-    /// `geometryChunks`. Equal once that revision's fetch has landed; apart
-    /// while a newer one is out (or failed and awaits its retry).
+    /// the `geometry_revision` the published manifest itself carries (what
+    /// the Tower returned, which mid-rebuild can be older than what was
+    /// asked for). Equal once the named revision's geometry has landed; apart
+    /// while a newer one is out, failed, or came back as another revision.
     ///
     /// Not `lastGeometryRevision`, which is a retry marker and is cleared
     /// after a partial failure with the revision still on screen. The room map
@@ -1138,7 +1139,12 @@ final class WorldBuilderViewModel: ObservableObject {
         // Checked again, for the same reason: the segment fetches above are the
         // slow part, and a newer manifest may have landed during them.
         guard isStillOurs(revision: revision, owner: named) else { return }
-        publishedGeometryRevision = revision
+        // The revision the Tower RETURNED, not the one asked for: the manifest
+        // route is not revision-pinned, so mid-rebuild it can answer with the
+        // previous build (Codex review HIGH). The map draws what arrived; the
+        // current piece stays off until the returned revision is the named
+        // one, and the retry is rearmed below so the next report asks again.
+        publishedGeometryRevision = manifest.geometryRevision
         geometryChunks = chunks
         // How many of the segments the manifest named have no chunk to draw.
         //
@@ -1173,7 +1179,8 @@ final class WorldBuilderViewModel: ObservableObject {
         // The manifest path clears the marker for the same reason and under the
         // same staleness guard, so a newer update already in flight is not
         // stomped.
-        if anySegmentFailed, isStillOurs(revision: revision, owner: named) {
+        if anySegmentFailed || manifest.geometryRevision != revision,
+           isStillOurs(revision: revision, owner: named) {
             lastGeometryRevision = nil
         }
 
