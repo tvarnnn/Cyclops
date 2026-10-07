@@ -86,9 +86,7 @@ struct WorldCoverageMapView: View {
             if let shown = selected, overlay?.thumbnails.contains(shown) != true { selected = nil }
         }
         .sheet(item: $selected) { thumbnail in
-            if let landed {
-                WorldLandedThumbnailSheet(thumbnail: thumbnail, receipt: landed.receipt)
-            }
+            WorldLandedThumbnailSheet(thumbnail: thumbnail, receipt: landed?.receipt)
         }
         .opacity(isFrozen ? 0.35 : 1)
         // The map's own element is a leaf under the pieces, read first: a

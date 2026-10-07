@@ -191,7 +191,8 @@ struct WorldLandedTicks: View {
 /// A tapped thumbnail: the photo, where it looked, and how old the solve is.
 struct WorldLandedThumbnailSheet: View {
     let thumbnail: WorldLandedThumbnail
-    let receipt: WorldCoverageReceipt
+    /// The receipt the thumbnail was placed on; `nil` reads "age unavailable".
+    let receipt: WorldCoverageReceipt?
 
     @Environment(\.dismiss) private var dismiss
 
@@ -207,7 +208,7 @@ struct WorldLandedThumbnailSheet: View {
                     .font(.headline)
                     .accessibilityIdentifier("wb-imagery-landed-direction")
                 TimelineView(.periodic(from: .now, by: 1)) { _ in
-                    Text(WorldImageryCopy.age(receipt.age(at: .now)).capitalizedFirst)
+                    Text(WorldImageryCopy.age(receipt?.age(at: .now)).capitalizedFirst)
                         .font(.subheadline)
                         .accessibilityIdentifier("wb-imagery-landed-age")
                 }
