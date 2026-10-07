@@ -5107,3 +5107,20 @@ final class DeadEndsTests: XCTestCase {
     }
 }
 #endif
+
+#if DEBUG
+final class MotionLiveProbeEntryTests: XCTestCase {
+    func testTheProbeEntryExistsOnlyInDebugBuilds() {
+        XCTAssertTrue(MotionProbeEntry.isDebugOnly)
+        XCTAssertEqual(MotionProbeEntry.title, "Motion probe")
+    }
+
+    func testReadoutSummaryNamesEveryField() {
+        var r = MotionLiveReadout()
+        r.samples = 3; r.gyro = 3; r.error = "sensorUnavailable"
+        XCTAssertTrue(r.summary.contains("samples=3"))
+        XCTAssertTrue(r.summary.contains("gyro=3"))
+        XCTAssertTrue(r.summary.contains("sensorUnavailable"))
+    }
+}
+#endif

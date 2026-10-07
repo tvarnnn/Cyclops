@@ -379,6 +379,20 @@ final class GlassesConnection: ObservableObject {
     /// The samples, for the Developer Tools readout. Its own object so that
     /// the IMU rate never reaches this one's observers.
     let motionProbe = MotionProbe()
+    /// The tap-driven 30 s probe in Developer Tools. Independent of `motion`.
+    let motionLiveProbe = MotionLiveProbe()
+
+    /// Why the live probe cannot start now, or nil after starting it. It needs a
+    /// started session (capture running) and must not collide with the capture
+    /// Motion switch, since DAT allows one Motion per session.
+    func startMotionLiveProbe() -> String? {
+        guard let session = deviceSession, deviceSessionState == .started else {
+            return "Start capture first: Motion needs a started device session."
+        }
+        guard motion == nil else { return "Motion is already attached (turn off \"Start Motion with capture\")." }
+        motionLiveProbe.start(on: session)
+        return nil
+    }
 
     private var motion: Motion?
     private var motionSamplesTask: Task<Void, Never>?
@@ -1741,6 +1755,7 @@ final class GlassesConnection: ObservableObject {
     /// Detaches Motion at session end. The session tears its capabilities down
     /// with it, so this only releases this app's references and listeners.
     private func stopMotion() {
+        motionLiveProbe.cancel()
         let wasAttached = motion != nil
         detachMotion()
         motionConfiguredRate = nil

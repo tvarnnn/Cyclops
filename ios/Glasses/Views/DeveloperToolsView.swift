@@ -38,6 +38,7 @@ struct DeveloperToolsView: View {
                 mockDeviceSection
                 captureResolutionSection
                 motionProbeSection
+                motionLiveProbeSection
                 imuRecorderSection
                 rawStateSection
                 towerSection
@@ -282,6 +283,20 @@ struct DeveloperToolsView: View {
             Text("Motion (experimental)")
         } footer: {
             Text("DAT 1.0.0's experimental IMU capability, started beside the camera at 30 Hz when capture next starts. Off by default and off again after a relaunch. Samples stay on this phone: nothing is sent to the Tower and nothing is shown to the wearer. \"Received\" is measured on the phone's clock, \"Measured\" on the glasses' own; gyro is angular speed in rad/s. With the IMU log on, these rows show state only; the log's rows below carry the rate.")
+        }
+    }
+
+    @State private var liveProbeRefusal: String?
+
+    private var motionLiveProbeSection: some View {
+        Section {
+            MotionLiveProbeRows(probe: glasses.motionLiveProbe)
+            Button("Start probe (30 s)") { liveProbeRefusal = glasses.startMotionLiveProbe() }
+            if let liveProbeRefusal { Text(liveProbeRefusal).foregroundStyle(.red) }
+        } header: {
+            Text(MotionProbeEntry.title)
+        } footer: {
+            Text("Run while capture is live. Adds Motion to the running session, runs 30 s, retries start() once after sensorUnavailable, then removes it.")
         }
     }
 
@@ -649,6 +664,21 @@ private struct IMUPurgeButton: View {
             isConfirming = true
         }
         .disabled(isSessionClaimed || readout.indicator != .off)
+    }
+}
+
+private struct MotionLiveProbeRows: View {
+    @ObservedObject var probe: MotionLiveProbe
+
+    var body: some View {
+        let r = probe.readout
+        LabeledContent("State", value: r.running ? "\(r.state) (\(Int(r.elapsed))/30 s)" : r.state)
+        LabeledContent("Samples", value: "\(r.samples)  (\(r.samplesPerSecond.map { String(format: "%.1f", $0) } ?? "-")/s)")
+        LabeledContent("Non-null", value: "accel \(r.accel) gyro \(r.gyro) mag \(r.mag) orient \(r.orientation)")
+        LabeledContent("Gyro", value: r.latestGyro)
+        LabeledContent("Orientation", value: r.latestOrientation)
+        LabeledContent("start() calls", value: "\(r.startAttempts)")
+        if let e = r.error { LabeledContent("Error", value: e) }
     }
 }
 
