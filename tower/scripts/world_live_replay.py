@@ -108,7 +108,7 @@ import time
 import traceback
 import urllib.error
 import urllib.request
-from collections import Counter
+from collections import Counter, deque
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -895,14 +895,18 @@ class GeometryMirror:
     """Fetches what the phone fetches when the geometry revision moves: the
     manifest, then every segment whose (content, placement) key it lacks
     (`WorldBuilderClient.swift`, `geometryDidChange`). Coalesced, one fetch at
-    a time, and a newer revision supersedes a fetch in flight, as the phone's
-    does."""
+    a time for ordinary revisions. Coverage revisions have a separate priority
+    worker so a slow ordinary fetch cannot consume their entire live window."""
 
     def __init__(self, base_url: str, enabled: bool = True, capture: ReplayCapture | None = None):
         self.base_url = base_url.rstrip("/")
         self.enabled = enabled
         self.capture = capture
         self._wanted = asyncio.Event()
+        self._pinned_wanted = asyncio.Event()
+        self._pinned = deque()
+        self._pinned_seen = set()
+        self._active_pin = None
         self._target = None
         self._last_revision = None
         self._cache: set = set()
@@ -915,15 +919,30 @@ class GeometryMirror:
         self.manifest_ms: list = []
         self.segment_ms: list = []
 
-    def request(self, coordinates) -> None:
+    def request(self, coordinates, *, pinned: bool = False) -> None:
         """A status push named (world, session, geometry revision)."""
-        if not self.enabled or coordinates is None or coordinates == self._last_revision:
+        if not self.enabled or coordinates is None:
+            return
+        if pinned and coordinates not in self._pinned_seen:
+            self._pinned_seen.add(coordinates)
+            self._pinned.append(coordinates)
+            self._pinned_wanted.set()
+        if coordinates == self._last_revision:
             return
         self._last_revision = coordinates
         self._target = coordinates
         self._wanted.set()
 
     async def run(self, stop: asyncio.Event) -> None:
+        pinned = asyncio.create_task(self._run_pinned(stop))
+        try:
+            await self._run_ordinary(stop)
+        finally:
+            pinned.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await pinned
+
+    async def _run_ordinary(self, stop: asyncio.Event) -> None:
         while not stop.is_set():
             waiter = asyncio.create_task(self._wanted.wait())
             stopper = asyncio.create_task(stop.wait())
@@ -933,13 +952,42 @@ class GeometryMirror:
             if stop.is_set():
                 return
             self._wanted.clear()
+            target = self._target
+            if target in self._pinned_seen:
+                continue
             try:
-                await self._fetch(self._target)
+                await self._fetch(target)
             except Exception as exc:  # noqa: BLE001 -- retain failure in the run record
                 if self.capture is not None:
                     self.capture_errors.append(f"{type(exc).__name__}: {exc}")
 
-    async def _fetch(self, target) -> None:
+    async def _run_pinned(self, stop: asyncio.Event) -> None:
+        while not stop.is_set():
+            waiter = asyncio.create_task(self._pinned_wanted.wait())
+            stopper = asyncio.create_task(stop.wait())
+            await asyncio.wait({waiter, stopper}, return_when=asyncio.FIRST_COMPLETED)
+            waiter.cancel()
+            stopper.cancel()
+            if stop.is_set():
+                return
+            self._pinned_wanted.clear()
+            while self._pinned and not stop.is_set():
+                target = self._pinned.popleft()
+                self._active_pin = target
+                try:
+                    while target == self._target and not stop.is_set():
+                        try:
+                            if await self._fetch(target, pinned=True):
+                                break
+                        except Exception as exc:  # noqa: BLE001 -- retry a live pin
+                            if self.capture is not None:
+                                self.capture_errors.append(f"{type(exc).__name__}: {exc}")
+                        if target == self._target:
+                            await asyncio.sleep(0.1)
+                finally:
+                    self._active_pin = None
+
+    async def _fetch(self, target, *, pinned: bool = False) -> bool:
         world_id, session_id = target[0], target[1]
         if (world_id, session_id) != self._cache_target:
             self._cache, self._cache_target = set(), (world_id, session_id)
@@ -957,17 +1005,20 @@ class GeometryMirror:
         self.manifest_ms.append((time.perf_counter() - started) * 1000)
         if status != 200 or not isinstance(manifest, dict):
             self.errors += status != 404
-            return
+            return False
         self.manifests += 1
         fetched = []
+        complete = True
         keys = {}
         for segment in manifest.get("segments") or []:
             key = (segment.get("content_hash"), segment.get("placement_hash"))
             keys[key] = segment.get("segment_index")
         for key, index in keys.items():
-            if key in self._cache or index is None:
+            if (key in self._cache and not pinned) or index is None:
                 continue
-            if self._wanted.is_set():
+            if not pinned and (self._wanted.is_set() or self._pinned_wanted.is_set()
+                               or self._active_pin is not None):
+                complete = False
                 break  # superseded: the phone stops fetching a dead manifest
             started = time.perf_counter()
             segment_url = f"{self.base_url}/worlds/{world_id}/geometry/segment/{index}?session_id={session_id}"
@@ -985,9 +1036,11 @@ class GeometryMirror:
                     fetched.append((next(s for s in manifest["segments"] if s["segment_index"] == index), body))
             else:
                 self.errors += 1
+                complete = False
         self._cache &= set(keys)
         if self.capture is not None:
-            self.capture.geometry(target, manifest_body, fetched)
+            return self.capture.geometry(target, manifest_body, fetched)
+        return complete
 
     def summary(self) -> dict:
         return {
@@ -1118,7 +1171,13 @@ class TowerSocket:
             if message.get("cartridge") == WORLD_BUILDER:
                 if self.capture is not None and raw is not None:
                     self.capture.status(raw, message)
-                self.mirror.request(self.phone.update(message))
+                coordinates = self.phone.update(message)
+                payload = message.get("payload") or {}
+                guidance = payload.get("guidance") or {} if isinstance(payload, dict) else {}
+                coverage = guidance.get("coverage") or {} if isinstance(guidance, dict) else {}
+                pinned = (coordinates is not None and isinstance(coverage, dict)
+                          and coverage.get("geometry_revision") == coordinates[2])
+                self.mirror.request(coordinates, pinned=pinned)
         else:
             self.stats.other_messages[str(kind)] += 1
         for future in self._waiters.pop(kind, []):
@@ -1983,11 +2042,15 @@ async def run_replay(options: ReplayOptions) -> dict:
         if capture is not None:
             solutions = (record.get("settle") or {}).get("solution_snapshots", [])
             capture.finish(record.get("t0"), solutions)
+            capture_summary = capture.capture_summary()
             record["status_geometry_capture"] = {"status_pushes": capture.status_count,
                                                     "geometry_revisions": len(capture.geometry_rows),
                                                     "socket_errors": capture_socket_errors,
-                                                    "geometry_errors": mirror.capture_errors}
-            if capture_socket_errors or mirror.capture_errors:
+                                                    "geometry_errors": mirror.capture_errors,
+                                                    **capture_summary}
+            # A broken status stream is always incomplete; geometry is incomplete only when a
+            # coverage-pinned revision was missed (unpinned misses are reported, not fatal).
+            if capture_socket_errors or capture_summary["pinned_missed"]:
                 record["outcome"] = "capture-incomplete"
         record["surface_watch"] = surfaces.transitions
         if timeline is not None:

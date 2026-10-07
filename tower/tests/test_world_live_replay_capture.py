@@ -4,6 +4,8 @@ import asyncio
 import base64
 import hashlib
 import json
+import threading
+import time
 
 import pytest
 
@@ -16,6 +18,15 @@ def _coverage(revision="g1"):
             "horizon_keyframes": 2, "geometry_revision": revision,
             "components": [{"reference_segment": 3, "stations": [
                 {"x": 1, "y": 2, "supported_mask": 0b100000000011}]}]}
+
+
+def _status(revision, *, coverage=False):
+    payload = {"world_snapshot": {"world_id": "w"}, "session": {"session_id": "s"},
+               "geometry": {"revision": revision}}
+    if coverage:
+        payload["guidance"] = {"coverage": _coverage(revision)}
+    envelope = {"type": "cartridge_result", "cartridge": "world_builder", "payload": payload}
+    return json.dumps(envelope), envelope
 
 
 def _fixture(tmp_path):
@@ -150,3 +161,192 @@ def test_status_and_wire_revisions_can_differ_at_each_landing(tmp_path):
     assert [landing["horizon_keyframes"] for landing in landings] == [1, 2]
     assert (out / "geometry-snapshots" / "status-a" / "manifest.json").is_file()
     assert (out / "geometry-snapshots" / "status-b" / "segment-0.json").is_file()
+
+
+def test_pinned_revision_that_vanishes_is_timed_and_incomplete(tmp_path):
+    out = tmp_path / "run"
+    out.mkdir()
+    recorder = ReplayCapture(out)
+    raw, envelope = _status("landing", coverage=True)
+    recorder.status(raw, envelope)
+    raw, envelope = _status("next")
+    recorder.status(raw, envelope)
+    recorder.finish(None, [])
+
+    summary = recorder.capture_summary()
+    assert summary["pinned_missed"] == 1
+    assert [row["revision"] for row in summary["pinned_misses"]] == ["landing"]
+    miss = summary["pinned_misses"][0]
+    assert miss["first_received_monotonic"] <= miss["missed_monotonic"]
+    assert miss["reason"] == "revision superseded before complete receipt"
+    assert recorder.incomplete
+
+
+def test_unpinned_misses_alone_leave_capture_complete(tmp_path):
+    out = tmp_path / "run"
+    out.mkdir()
+    recorder = ReplayCapture(out)
+    for revision in ("transient-a", "transient-b"):
+        raw, envelope = _status(revision)
+        recorder.status(raw, envelope)
+    recorder.finish(None, [])
+
+    summary = recorder.capture_summary()
+    assert summary["unpinned_missed"] == 2
+    assert {row["revision"] for row in summary["unpinned_misses"]} == {
+        "transient-a", "transient-b"}
+    assert summary["pinned_missed"] == 0
+    assert not recorder.incomplete
+
+
+def test_status_dispatch_pins_only_matching_coverage_revision(tmp_path):
+    out = tmp_path / "run"
+    out.mkdir()
+    recorder = ReplayCapture(out)
+    mirror = replay.GeometryMirror("http://127.0.0.1:9", capture=recorder)
+    socket = replay.TowerSocket("ws://127.0.0.1:9/ws", replay.StreamStats(),
+                               replay.PhoneView(), mirror, capture=recorder)
+    raw, envelope = _status("landing", coverage=True)
+    socket._dispatch(envelope, raw)
+    assert list(mirror._pinned) == [("w", "s", "landing")]
+
+    raw, envelope = _status("later", coverage=True)
+    envelope["payload"]["guidance"]["coverage"]["geometry_revision"] = "landing"
+    socket._dispatch(envelope, json.dumps(envelope))
+    assert list(mirror._pinned) == [("w", "s", "landing")]
+
+
+def test_short_lived_pinned_revision_is_fetched_while_unpinned_fetch_is_busy(
+        monkeypatch, tmp_path):
+    out = tmp_path / "run"
+    out.mkdir()
+    recorder = ReplayCapture(out)
+    mirror = replay.GeometryMirror("http://127.0.0.1:9", capture=recorder)
+    socket = replay.TowerSocket("ws://127.0.0.1:9/ws", replay.StreamStats(),
+                               replay.PhoneView(), mirror, capture=recorder)
+    first_fetch_started = threading.Event()
+    release_first_fetch = threading.Event()
+    current = {"revision": "busy"}
+    calls = 0
+
+    def raw(url, timeout=30.0):
+        nonlocal calls
+        if "/manifest?" in url:
+            calls += 1
+            if calls == 1:
+                first_fetch_started.set()
+                assert release_first_fetch.wait(2)
+                revision = "busy"
+            else:
+                revision = current["revision"]
+            return 200, json.dumps({"world_id": "w", "session_id": "s", "segments": [
+                {"segment_index": 0, "content_hash": revision, "placement_hash": "p"}]}).encode()
+        revision = current["revision"]
+        return 200, json.dumps({"segment_index": 0, "content_hash": revision,
+                                "placement_hash": "p"}).encode()
+
+    monkeypatch.setattr(replay, "http_raw", raw)
+
+    async def exercise():
+        stop = asyncio.Event()
+        worker = asyncio.create_task(mirror.run(stop))
+
+        def push(revision, *, coverage=False):
+            raw_status, envelope = _status(revision, coverage=coverage)
+            current["revision"] = revision
+            socket._dispatch(envelope, raw_status)
+
+        try:
+            push("busy")
+            assert await asyncio.to_thread(first_fetch_started.wait, 1)
+            push("landing", coverage=True)
+            deadline = time.perf_counter() + 0.5
+            while time.perf_counter() < deadline:
+                if any(row["revision"] == "landing" and row["complete"]
+                       for row in recorder.geometry_rows):
+                    break
+                await asyncio.sleep(0.005)
+            captured_in_window = any(row["revision"] == "landing" and row["complete"]
+                                     for row in recorder.geometry_rows)
+            push("later")
+        finally:
+            release_first_fetch.set()
+            await asyncio.sleep(0.02)
+            stop.set()
+            await asyncio.wait_for(worker, 2)
+        recorder.finish(None, [])
+        return captured_in_window
+
+    assert asyncio.run(exercise())
+    assert recorder.capture_summary()["pinned_missed"] == 0
+
+
+def test_pinned_revision_retries_changed_segment_while_current(monkeypatch, tmp_path):
+    out = tmp_path / "run"
+    out.mkdir()
+    recorder = ReplayCapture(out)
+    mirror = replay.GeometryMirror("http://127.0.0.1:9", capture=recorder)
+    attempts = 0
+
+    def raw(url, timeout=30.0):
+        nonlocal attempts
+        if "/manifest?" in url:
+            attempts += 1
+            return 200, json.dumps({"world_id": "w", "session_id": "s", "segments": [
+                {"segment_index": 0, "content_hash": "new", "placement_hash": "p"}]}).encode()
+        return 200, json.dumps({"segment_index": 0,
+                                "content_hash": "old" if attempts == 1 else "new",
+                                "placement_hash": "p"}).encode()
+
+    monkeypatch.setattr(replay, "http_raw", raw)
+
+    async def exercise():
+        stop = asyncio.Event()
+        worker = asyncio.create_task(mirror.run(stop))
+        mirror.request(("w", "s", "landing"), pinned=True)
+        try:
+            for _ in range(100):
+                if recorder.geometry_rows and recorder.geometry_rows[-1]["complete"]:
+                    break
+                await asyncio.sleep(0.005)
+        finally:
+            stop.set()
+            await asyncio.wait_for(worker, 2)
+
+    asyncio.run(exercise())
+    assert attempts >= 2
+    assert recorder.geometry_rows[-1]["complete"]
+    assert len(mirror.capture_errors) == 1
+
+
+def test_changed_segment_does_not_publish_partial_revision_before_retry(tmp_path):
+    out = tmp_path / "run"
+    out.mkdir()
+    recorder = ReplayCapture(out)
+    item = {"segment_index": 0, "content_hash": "new", "placement_hash": "p"}
+    manifest = json.dumps({"segments": [item]}).encode()
+    stale = b'{"segment_index":0,"content_hash":"old","placement_hash":"p"}'
+    current = b'{"segment_index":0,"content_hash":"new","placement_hash":"p"}'
+
+    with pytest.raises(ValueError, match="changed before revision"):
+        recorder.geometry(("w", "s", "landing"), manifest, [(item, stale)])
+    assert not (out / "geometry-snapshots" / "landing" / "manifest.json").exists()
+    recorder.geometry(("w", "s", "landing"), manifest, [(item, current)])
+    assert recorder.geometry_rows[-1]["complete"]
+    assert (out / "geometry-snapshots" / "landing" / "segment-0.json").read_bytes() == current
+
+
+def test_partial_fetch_does_not_lock_retry_to_old_manifest(tmp_path):
+    out = tmp_path / "run"
+    out.mkdir()
+    recorder = ReplayCapture(out)
+    old = json.dumps({"segments": [{"segment_index": 0, "content_hash": "old",
+                                     "placement_hash": "p"}]}).encode()
+    item = {"segment_index": 0, "content_hash": "new", "placement_hash": "p"}
+    new = json.dumps({"segments": [item]}).encode()
+    body = b'{"segment_index":0,"content_hash":"new","placement_hash":"p"}'
+
+    assert recorder.geometry(("w", "s", "landing"), old, []) is False
+    assert not (out / "geometry-snapshots" / "landing" / "manifest.json").exists()
+    assert recorder.geometry(("w", "s", "landing"), new, [(item, body)]) is True
+    assert (out / "geometry-snapshots" / "landing" / "manifest.json").read_bytes() == new

@@ -1,4 +1,9 @@
-"""Optional, lossless replay receipts and a deliberately narrow FOW data stub."""
+"""Optional replay receipts and a deliberately narrow FOW data stub.
+
+Coverage names a pinned status geometry revision. A missing pinned receipt
+means ``capture-incomplete``; coalesced ordinary revisions are reported
+separately and do not make the capture incomplete.
+"""
 
 from __future__ import annotations
 
@@ -30,6 +35,9 @@ class ReplayCapture:
         self.status_count = 0
         self.geometry_rows = []
         self._bodies = {}  # (world, session, content hash, placement hash) -> saved file
+        self._revisions = {}
+        self._current_revision = None
+        self._finished_at = None
 
     def status(self, raw: str | bytes, envelope: dict) -> None:
         data = raw.encode("utf-8") if isinstance(raw, str) else raw
@@ -41,21 +49,43 @@ class ReplayCapture:
         with (self.out / "status-pushes.jsonl").open("a", encoding="utf-8", newline="\n") as handle:
             handle.write(json.dumps(row, separators=(",", ":"), ensure_ascii=False) + "\n")
         self.status_count += 1
+        payload = envelope.get("payload") or {}
+        if not isinstance(payload, dict):
+            return
+        snapshot = payload.get("world_snapshot") or {}
+        session = payload.get("session") or {}
+        geometry = payload.get("geometry") or {}
+        if not all(isinstance(block, dict) for block in (snapshot, session, geometry)):
+            return
+        target = (snapshot.get("world_id"), session.get("session_id"), geometry.get("revision"))
+        if not all(isinstance(value, str) and value for value in target):
+            return
+        if self._current_revision is not None and self._current_revision != target:
+            previous = self._revisions[self._current_revision]
+            previous["superseded_at"] = row["received_at"]
+            previous["superseded_monotonic"] = row["received_monotonic"]
+        self._current_revision = target
+        tracked = self._revisions.setdefault(target, {
+            "world_id": target[0], "session_id": target[1], "revision": target[2],
+            "first_received_at": row["received_at"],
+            "first_received_monotonic": row["received_monotonic"],
+            "pinned_at": None, "pinned_monotonic": None,
+            "superseded_at": None, "superseded_monotonic": None,
+        })
+        coverage = ((payload.get("guidance") or {}).get("coverage") or {})
+        if (isinstance(coverage, dict) and coverage.get("geometry_revision") == target[2]
+                and tracked["pinned_at"] is None):
+            tracked["pinned_at"] = row["received_at"]
+            tracked["pinned_monotonic"] = row["received_monotonic"]
 
     def geometry(self, target: tuple[str, str, str], manifest: bytes,
-                 fetched: list[tuple[dict, bytes]]) -> None:
+                 fetched: list[tuple[dict, bytes]]) -> bool:
         world, session, revision = target
         doc = json.loads(manifest)
         # Status geometry.revision names the captured landing. The HTTP
         # manifest's geometry_revision is a separate segment-hash rollup.
         if (doc.get("world_id", world) != world or doc.get("session_id", session) != session):
             raise ValueError(f"geometry manifest changed before revision {revision} was fetched")
-        directory = self.out / "geometry-snapshots" / revision_dir(revision)
-        directory.mkdir(parents=True, exist_ok=True)
-        manifest_path = directory / "manifest.json"
-        if manifest_path.exists() and manifest_path.read_bytes() != manifest:
-            raise ValueError(f"geometry revision {revision} changed manifest bytes")
-        manifest_path.write_bytes(manifest)
         by_index = {item["segment_index"]: item for item in doc.get("segments", [])}
         for item, body in fetched:
             index = item["segment_index"]
@@ -64,6 +94,19 @@ class ReplayCapture:
                     chunk.get("content_hash", item.get("content_hash")) != item.get("content_hash") or
                     chunk.get("placement_hash", item.get("placement_hash")) != item.get("placement_hash")):
                 raise ValueError(f"segment {index} changed before revision {revision} was fetched")
+        fetched_indices = {item["segment_index"] for item, _ in fetched}
+        if any(index not in fetched_indices and
+               (world, session, item.get("content_hash"), item.get("placement_hash"))
+               not in self._bodies for index, item in by_index.items()):
+            return False  # a retry may see a newer manifest; publish no partial receipt
+        directory = self.out / "geometry-snapshots" / revision_dir(revision)
+        directory.mkdir(parents=True, exist_ok=True)
+        manifest_path = directory / "manifest.json"
+        if manifest_path.exists() and manifest_path.read_bytes() != manifest:
+            raise ValueError(f"geometry revision {revision} changed manifest bytes")
+        manifest_path.write_bytes(manifest)
+        for item, body in fetched:
+            index = item["segment_index"]
             key = (world, session, item.get("content_hash"), item.get("placement_hash"))
             path = directory / f"segment-{index}.json"
             path.write_bytes(body)
@@ -86,14 +129,44 @@ class ReplayCapture:
         self.geometry_rows.append(row)
         with (self.out / "geometry-snapshots.jsonl").open("a", encoding="utf-8", newline="\n") as handle:
             handle.write(json.dumps(row, separators=(",", ":")) + "\n")
+        return row["complete"]
 
     def finish(self, walk_t0: float | None, solutions: list[dict]) -> None:
+        self._finished_at = (time.time(), time.perf_counter())
         index = {"clock_basis": "client wall clock on test Tower host",
                  "recording_started_at": self.started_at,
                  "recording_started_monotonic": self.started_monotonic,
                  "walk_t0": walk_t0, "status_pushes": self.status_count,
-                 "geometry": self.geometry_rows, "solutions": solutions}
+                 "geometry": self.geometry_rows, "solutions": solutions,
+                 "capture_summary": self.capture_summary()}
         (self.out / "walk-clock-index.json").write_text(json.dumps(index, indent=2), encoding="utf-8")
+
+    def capture_summary(self) -> dict:
+        """Classify distinct status revisions by whether a complete receipt exists."""
+        complete = {(row["world_id"], row["session_id"], row["revision"])
+                    for row in self.geometry_rows if row["complete"]}
+        ended_at, ended_monotonic = self._finished_at or (time.time(), time.perf_counter())
+        pinned_misses = []
+        unpinned_misses = []
+        for target, tracked in self._revisions.items():
+            if target in complete:
+                continue
+            superseded = tracked["superseded_at"] is not None
+            missed_at = tracked["superseded_at"] if superseded else ended_at
+            missed_monotonic = (tracked["superseded_monotonic"] if superseded
+                                else ended_monotonic)
+            miss = {**tracked, "missed_at": missed_at,
+                    "missed_monotonic": missed_monotonic,
+                    "elapsed_ms": round((missed_monotonic - tracked["first_received_monotonic"]) * 1000, 3),
+                    "reason": ("revision superseded before complete receipt" if superseded
+                               else "recording ended without complete receipt")}
+            (pinned_misses if tracked["pinned_at"] is not None else unpinned_misses).append(miss)
+        return {"pinned_missed": len(pinned_misses), "pinned_misses": pinned_misses,
+                "unpinned_missed": len(unpinned_misses), "unpinned_misses": unpinned_misses}
+
+    @property
+    def incomplete(self) -> bool:
+        return self.capture_summary()["pinned_missed"] > 0
 
 
 def supported_by_landing(out: Path) -> list[dict]:
