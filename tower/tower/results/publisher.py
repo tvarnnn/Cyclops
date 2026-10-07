@@ -629,6 +629,9 @@ class ResultHub:
         failed application shutdown.
         """
         self._channels.clear()
+        shutdown_guidance = getattr(self._snapshot_for, "shutdown_guidance", None)
+        if shutdown_guidance is not None:
+            shutdown_guidance()
         task, self._task = self._task, None
         if task is None:
             return

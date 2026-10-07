@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import asyncio
 import json
 import math
 import os
@@ -15,7 +16,7 @@ import pytest
 
 from tower.results.world_builder import WorldBuilderStatusProducer, _geometry_block
 from tower.results import world_builder as status_module
-from tower.results import make_snapshot_for
+from tower.results import build_hub, make_snapshot_for
 from tower.results.contracts import CARTRIDGE_WORLD_BUILDER, RESULT_TYPE_STATUS
 from tower.results.envelope import ResultEnvelope
 from tower.world_builder.events import EventLog
@@ -228,8 +229,8 @@ def test_nonfinite_derived_metadata_is_rejected_at_component_boundary():
 
 def test_nonfinite_component_metadata_omits_only_that_island(monkeypatch):
     original = coverage_module._component
-    def overflow_one(reference, entries):
-        component, stations = original(reference, entries)
+    def overflow_one(reference, entries, check=lambda: None):
+        component, stations = original(reference, entries, check)
         if reference == 0:
             component["origin_xyz"][2] = float("inf")
         return component, stations
@@ -462,6 +463,67 @@ def test_guidance_poll_never_stats_or_starts_a_thread(monkeypatch, tmp_path):
         assert producer._coverage(None, "w", "s", None, None) is receipt
 
 
+def test_slow_file_read_does_not_block_status_or_final_solve_and_cannot_publish(monkeypatch, tmp_path):
+    monkeypatch.setenv("TOWER_WORLD_GUIDANCE_COVERAGE", "on")
+    root = tmp_path / "worlds"
+    world, session, _ = _landed_tree(root, _inputs())
+    entered, release = threading.Event(), threading.Event()
+    original = coverage_module._read_bounded
+
+    def slow_read(*args, **kwargs):
+        entered.set()
+        release.wait(2)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(coverage_module, "_read_bounded", slow_read)
+    producer = WorldBuilderStatusProducer(root, lambda: 1000.12)
+    worker = producer._coverage_worker
+    assert entered.wait(1)
+    start = time.monotonic()
+    assert producer.snapshot(world, session).payload["guidance"]["coverage"] is None
+    assert time.monotonic() - start < 0.1
+    # Final-solve work is independent of the guidance worker and can finish.
+    finished = threading.Event()
+    final = threading.Thread(target=lambda: finished.set())
+    final.start()
+    assert finished.wait(0.1)
+    final.join()
+    start = time.monotonic()
+    worker.shutdown()
+    assert time.monotonic() - start < 0.1
+    release.set()
+    worker._thread.join(1)
+    assert not worker._thread.is_alive()
+    assert worker.latest(world, session) is None
+
+
+def test_oversized_guidance_file_is_rejected_before_read(monkeypatch, tmp_path):
+    root = tmp_path / "worlds"
+    world, session, _ = _landed_tree(root, _inputs())
+    path = root / "worlds" / world / "derived" / session / "manifest.json"
+    with path.open("ab") as stream:
+        stream.write(b" " * (coverage_module._FILE_LIMITS["manifest.json"] + 1))
+    with pytest.raises(ValueError, match="size"):
+        compute_from_tree(root, world, session, (1000.0, 4, (0, 0)), None)
+
+
+def test_tower_result_hub_shutdown_cancels_guidance_worker(monkeypatch, tmp_path):
+    monkeypatch.setenv("TOWER_WORLD_GUIDANCE_COVERAGE", "on")
+    hub = build_hub(tmp_path, lambda: 1000.12)
+    # The producer was created by make_snapshot_for before any subscription.
+    from tower.world_builder import guidance_coverage
+    seen = []
+    original = guidance_coverage.CoverageWorker.shutdown
+    def shutdown(self):
+        seen.append(self)
+        original(self)
+    monkeypatch.setattr(guidance_coverage.CoverageWorker, "shutdown", shutdown)
+    asyncio.run(hub.shutdown())
+    assert len(seen) == 1 and seen[0]._stop.is_set()
+    seen[0]._thread.join(1)
+    assert not seen[0]._thread.is_alive()
+
+
 def test_on_worker_starts_before_poll_and_discovers_landing(monkeypatch, tmp_path):
     monkeypatch.setenv("TOWER_WORLD_GUIDANCE_COVERAGE", "on")
     root = tmp_path / "worlds"
@@ -539,6 +601,33 @@ def test_whole_status_envelope_with_near_cap_coverage_fits_budget(monkeypatch, t
     assert size <= 16 * 1024
 
 
+def test_largest_realistic_fow_status_uses_full_allowance(monkeypatch, tmp_path):
+    monkeypatch.setenv("TOWER_WORLD_GUIDANCE_COVERAGE", "on")
+    root = tmp_path / "worlds"
+    world, session, store = _landed_tree(root, _inputs())
+    producer = WorldBuilderStatusProducer(root, lambda: 1000.12)
+    block = _block(_inputs(tuple((i, 4) for i in range(16))))
+    producer._coverage_worker._published = {(world, session): coverage_module._freeze(block)}
+    # Maximum contract station/component rows plus a large real display name
+    # carried through the status and its iOS projection.
+    low, high = 0, status_module._MAX_STATUS_WITH_COVERAGE_BYTES
+    while low + 1 < high:
+        mid = (low + high) // 2
+        store.write_world(replace(store.read_world(world), display_name="x" * mid))
+        payload = producer.snapshot(world, session).payload
+        if payload["guidance"]["coverage"] is None:
+            high = mid
+        else:
+            low = mid
+    store.write_world(replace(store.read_world(world), display_name="x" * low))
+    payload = producer.snapshot(world, session).payload
+    assert payload["guidance"]["coverage"] is not None
+    size = len(json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode("utf-8"))
+    assert status_module._MAX_STATUS_WITH_COVERAGE_BYTES - 32 <= size <= status_module._MAX_STATUS_WITH_COVERAGE_BYTES
+    store.write_world(replace(store.read_world(world), display_name="x" * high))
+    assert producer.snapshot(world, session).payload["guidance"]["coverage"] is None
+
+
 def test_coverage_falls_back_to_null_if_complete_status_exceeds_budget(monkeypatch, tmp_path):
     monkeypatch.setenv("TOWER_WORLD_GUIDANCE_COVERAGE", "on")
     root = tmp_path / "worlds"
@@ -583,9 +672,9 @@ def test_tree_snapshot_refuses_torn_identity_and_placement(tmp_path, monkeypatch
     original_json = coverage_module._json
     manifest_path = store.derived_dir(world) / session / "manifest.json"
     touched = False
-    def change_during_read(path):
+    def change_during_read(path, budget=None):
         nonlocal touched
-        result = original_json(path)
+        result = original_json(path, budget)
         if path.name == "placements.json" and not touched:
             manifest_path.write_text(manifest_path.read_text(encoding="utf-8")+" ", encoding="utf-8")
             touched = True

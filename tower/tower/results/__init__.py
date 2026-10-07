@@ -191,6 +191,12 @@ def make_snapshot_for(
             f"no producer is wired for {cartridge}/{result_type}"
         )
 
+    def shutdown_guidance():
+        producer = producers.get(CARTRIDGE_WORLD_BUILDER)
+        if producer is not None:
+            producer.shutdown_guidance()
+
+    snapshot_for.shutdown_guidance = shutdown_guidance
     return snapshot_for
 
 

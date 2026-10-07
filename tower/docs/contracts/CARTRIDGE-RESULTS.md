@@ -2218,3 +2218,5 @@ job leaves the previous dated receipt visible and does not hold live rebuild,
 Stop, final solve or the status reply. The semantic and phone display rules
 are in WORLD-BUILDER-WORLDS vNEXT and WORLD-BUILDER-IOS vNEXT; the frozen
 field authority is `FOW-COVERAGE-V1-SPEC-20261006.md`.
+
+Change log: The 15 KiB complete-status allowance is FOW-specific, not a transport-wide bound.

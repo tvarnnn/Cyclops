@@ -428,6 +428,10 @@ class WorldBuilderStatusProducer:
             from tower.world_builder.guidance_coverage import CoverageWorker
             self._coverage_worker = CoverageWorker(self._root, self._clock)
 
+    def shutdown_guidance(self) -> None:
+        if self._coverage_worker is not None:
+            self._coverage_worker.shutdown()
+
     # -- target selection ---------------------------------------------
 
     def resolve(self, world_id: str | None, session_id: str | None):
@@ -720,17 +724,19 @@ class WorldBuilderStatusProducer:
 
         _attach_ios_projection(payload)
 
-        coverage = (payload.get("guidance") or {}).get("coverage")
-        if coverage is not None and not _coverage_status_fits(payload):
-            logger.warning("world builder guidance: complete status exceeds size budget")
-            payload["guidance"]["coverage"] = None
-
         revision = compute_revision(payload, VOLATILE_PATHS)
         if payload.get("world_snapshot") is not None:
             # iOS holds the revision INSIDE the snapshot (handoff.md 8.3),
             # so it survives being handed around as one value. It is the
             # same string the envelope carries.
             payload["world_snapshot"]["revision"] = revision
+        coverage = (payload.get("guidance") or {}).get("coverage")
+        if coverage is not None and not _coverage_status_fits(payload):
+            logger.warning("world builder guidance: complete status exceeds size budget")
+            payload["guidance"]["coverage"] = None
+            revision = compute_revision(payload, VOLATILE_PATHS)
+            if payload.get("world_snapshot") is not None:
+                payload["world_snapshot"]["revision"] = revision
         return Snapshot(
             payload=payload,
             revision=revision,
