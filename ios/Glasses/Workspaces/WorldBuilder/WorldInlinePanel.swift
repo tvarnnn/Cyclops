@@ -305,6 +305,9 @@ struct WorldInlinePanel<Health: View>: View {
     /// The walking map, and the frozen map under the finishing wait, when
     /// there is one.
     let map: WorldPanelMapSource?
+    /// The current piece, already walk-scoped and live-gated: its own card
+    /// under the map, never in it (`WorldCurrentPiece`).
+    var currentPiece: WorldCurrentPiece? = nil
     @ObservedObject var host: WorldInlineHost
     let dismissBanner: () -> Void
     /// The away banner drawn for this walk was announced: never again for
@@ -408,6 +411,10 @@ struct WorldInlinePanel<Health: View>: View {
             // Under the full-screen world the panel is not there to read:
             // its web view is in the cover, and its rows would be read twice.
             .accessibilityHidden(host.placement == .expanded)
+            // Gated once, upstream: the walk's own, while it walks.
+            if let currentPiece {
+                WorldCurrentPieceView(piece: currentPiece)
+            }
             if case .walking = phase, showsHealth {
                 health()
             }

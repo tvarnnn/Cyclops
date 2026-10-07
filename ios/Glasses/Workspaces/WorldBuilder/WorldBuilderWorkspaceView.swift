@@ -487,6 +487,8 @@ struct WorldBuilderWorkspaceView: View {
             screenSaysOffline: captureSaysTowerIsOff,
             showsHealth: showsHealthInPanel,
             map: panelMap,
+            currentPiece: WorldCurrentPiece.shown(world.currentPiece, walk: world.presentedWalk,
+                                                  phase: panelPhase, state: world.state),
             host: host,
             dismissBanner: { world.dismissFinishBanner() },
             bannerAnnounced: { walk in world.finishBannerAnnounced(for: walk) },

@@ -515,7 +515,7 @@ final class WorldBuilderViewModel: ObservableObject {
     ///
     /// Both halves of the address, not the world alone: derived geometry is
     /// per session, and two sessions of one world are two galleries.
-    private var geometryOwner: WorldRenderTarget?
+    private(set) var geometryOwner: WorldRenderTarget?
 
     /// The geometry fetch currently out, and the coordinates it was started
     /// for, or `nil` when none is.
