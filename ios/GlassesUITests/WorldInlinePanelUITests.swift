@@ -692,17 +692,13 @@ final class WorldInlinePanelUITests: XCTestCase {
         XCTAssertTrue(map.frame.contains(first.frame) && map.frame.contains(second.frame), "in the map slot")
         XCTAssertTrue(element("capture-health").exists, "Capture health stays")
         shoot("fow-mid")
-        // The pixels: grey, muted and colored headings are all drawn. Not on
-        // an iPad: its landscape screenshot is not laid out in the elements'
-        // frames, so the sampled box misses the piece (geometry only).
-        if UIDevice.current.userInterfaceIdiom == .pad {
-            print("FOW-PIXELS|not sampled on an iPad")
-        } else {
-            let shot = app.screenshot().image
-            for (name, rgb) in [("grey", (87, 87, 87)), ("muted", (0x2E, 0x6B, 0x66)), ("colored", (0x4F, 0xD8, 0xC8))] {
-                XCTAssertGreaterThan(Self.pixels(in: shot, frame: first.frame, near: rgb), 3,
-                                     "\(name) headings in piece 1")
-            }
+        // The pixels: grey, muted and colored headings are all drawn -- on an
+        // iPad too. Sampled in piece 1's own screenshot, so no frame-to-raster
+        // arithmetic is needed (see `pixels`).
+        let shot = first.screenshot().image
+        print("FOW-PIXELS|piece=\(first.frame)|shot=\(shot.size)@\(shot.scale)|orientation=\(shot.imageOrientation.rawValue)")
+        for (name, rgb) in [("grey", (87, 87, 87)), ("muted", (0x2E, 0x6B, 0x66)), ("colored", (0x4F, 0xD8, 0xC8))] {
+            XCTAssertGreaterThan(Self.pixels(in: shot, near: rgb), 3, "\(name) headings in piece 1")
         }
 
         // Another walk's report, with no block: A's map goes.
@@ -724,8 +720,16 @@ final class WorldInlinePanelUITests: XCTestCase {
         shoot("fow-stale")
     }
 
-    /// Pixels within `frame` (points) whose colour is within 20 of `rgb`.
-    private static func pixels(in image: UIImage, frame: CGRect, near rgb: (Int, Int, Int)) -> Int {
+    /// Pixels anywhere in `image` whose colour is within 20 of `rgb`.
+    ///
+    /// The whole raster of an element's own screenshot, never a box cut
+    /// from the app's: on the iPad the app's screenshot is a portrait raster
+    /// (EXIF-rotated) holding only part of the landscape window, offset from
+    /// the element frames (measured on the iPad Air: a 1180x820 app came
+    /// back as 2360x1640 tagged orientation 8, its content 360 pt down and
+    /// cut off past x = 820), so no scale or offset maps a frame into it.
+    /// A count over the whole raster does not depend on its orientation.
+    private static func pixels(in image: UIImage, near rgb: (Int, Int, Int)) -> Int {
         guard let cg = image.cgImage else { return 0 }
         let width = cg.width, height = cg.height
         var data = [UInt8](repeating: 0, count: width * height * 4)
@@ -734,13 +738,9 @@ final class WorldInlinePanelUITests: XCTestCase {
                                       bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
         else { return 0 }
         context.draw(cg, in: CGRect(x: 0, y: 0, width: width, height: height))
-        let scale = CGFloat(width) / image.size.width
-        let box = CGRect(x: frame.minX * scale, y: frame.minY * scale, width: frame.width * scale,
-                         height: frame.height * scale).intersection(CGRect(x: 0, y: 0, width: width, height: height))
-        guard !box.isNull else { return 0 }
         var count = 0
-        for y in Int(box.minY)..<Int(box.maxY) {
-            for x in Int(box.minX)..<Int(box.maxX) {
+        for y in 0..<height {
+            for x in 0..<width {
                 let i = (y * width + x) * 4
                 if abs(Int(data[i]) - rgb.0) <= 20, abs(Int(data[i + 1]) - rgb.1) <= 20,
                    abs(Int(data[i + 2]) - rgb.2) <= 20 { count += 1 }

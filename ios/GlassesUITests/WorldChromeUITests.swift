@@ -570,8 +570,10 @@ final class WorldChromeUITests: XCTestCase {
     }
 
     /// R3: the canvas share on the real page, default and AX5.
+    /// On an iPad everything runs but the AX5 two-row layout check: the bar's
+    /// two rows at AX5 are a phone's width, and an iPad's bar is one row.
     func testTheCanvasShareOnTheRealPage() throws {
-        try skipOnAnIPad("the bar's two rows at AX5 are a phone's width; an iPad's bar is one row")
+        let isPad = UIDevice.current.userInterfaceIdiom == .pad
         for size in [nil, Self.ax5] {
             try openRealWorld(size: size)
             XCTAssertTrue(element("world-chrome-best").waitForExistence(timeout: 120), "the native bar")
@@ -580,7 +582,7 @@ final class WorldChromeUITests: XCTestCase {
             let share = canvasShare("real-\(mode)")
             let window = app.windows.firstMatch.frame
             XCTAssertGreaterThanOrEqual(share, size == nil ? (window.height >= 800 ? 0.70 : 0.60) : 0.60)
-            if size != nil { assertTheBarIsReachable(twoRows: true) }
+            if size != nil { assertTheBarIsReachable(twoRows: !isPad) }
             shoot("r3-\(mode)")
             app.terminate()
         }
