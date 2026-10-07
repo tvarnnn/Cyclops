@@ -833,3 +833,33 @@ default phone surface page (sized to the 6 MiB page budget,
 `WORLD-BUILDER-SURFACE.md` §8) that is fine, and for a Tower configured to serve
 larger pages it is the likeliest moment for a WebContent kill, which the
 fallback above then absorbs.
+
+## vNEXT — optional `guidance.coverage` status receipt
+
+Decode `guidance.coverage` under the existing
+`world_builder.status/2026-09-10` payload. Unknown status fields remain
+ignorable. Absent `guidance` means the Tower switch is off or no session is
+selected; `coverage:null` means no qualifying completed receipt is available.
+A nonnull block is a replacement, never a delta. Drop malformed known fields,
+any component with `stations:[]`, or masks that overlap or exceed twelve bits.
+Use the block's `geometry_revision` only as the receipt's provenance; fetch
+geometry by the status `geometry.revision` as before. A new status envelope
+revision can change coverage without changing geometry, and a local geometry
+revision must not re-date an unchanged coverage block.
+
+Label the map “Map through keyframe N · solved at [time]”. Show newer pending
+keyframes from live `progress.keyframes_accepted - horizon_keyframes`, floored
+at zero, rather than presenting the block's snapshot `keyframes_pending` as
+current. Derive age from `solved_at` and a measured Tower clock offset; at
+exactly 30 seconds the map is dated, and above 30 seconds it is `stale`.
+Without a measured offset, show the absolute Tower time and “age unavailable”.
+After Stop, say “at Stop” only if the receipt includes every accepted
+keyframe; otherwise say “through keyframe N before Stop”.
+
+No current-position dot, north arrow, metric ruler or coverage percentage is
+justified by this block. Keep islands separate and expose omitted counts. Grey
+means unconfirmed at this solve horizon; color means repeated accepted posed
+views, not a reconstructed surface or texture. The optional directional
+revisit prompt is not part of this Tower v1 output. If a client later adds it,
+it must suppress it for stale or age-unknown receipts, ambiguous or omitted
+stations, and after Stop, with the frozen 20-keyframe and 30-second limits.

@@ -35,6 +35,7 @@ malformed_frame). Tower genuinely does not know it yet, and says so.
 import json
 import logging
 import math
+import os
 import time
 from pathlib import Path
 
@@ -74,6 +75,15 @@ from tower.world_builder.photographic import (  # noqa: E402
     PHOTOGRAPHIC_UNOBSERVABLE,
     is_unsettled,
 )
+
+# Leave room for the result envelope and subscription metadata inside the
+# 16 KiB status budget when the optional coverage block is present.
+_MAX_STATUS_WITH_COVERAGE_BYTES = 15 * 1024
+
+
+def _coverage_status_fits(payload):
+    return len(json.dumps(payload, separators=(",", ":"),
+                          ensure_ascii=False).encode("utf-8")) <= _MAX_STATUS_WITH_COVERAGE_BYTES
 
 # Lifecycle, named for the evidence rather than for an intention. Tower
 # cannot see a process's intent; it can see a lock, a journal and a
@@ -401,9 +411,11 @@ class _FileCache:
 class WorldBuilderStatusProducer:
     """Builds one status snapshot per call. Holds only a small cache."""
 
-    def __init__(self, world_root, clock) -> None:
+    def __init__(self, world_root, clock, *, coverage_enabled=None) -> None:
         self._root = Path(world_root)
         self._clock = clock
+        self._coverage_enabled = (os.environ.get("TOWER_WORLD_GUIDANCE_COVERAGE") == "on"
+                                  if coverage_enabled is None else coverage_enabled)
         self._files = _FileCache()
         # Path length needs the full poses file, which the manifest does
         # not summarise. Reading it on every poll would be the one
@@ -411,6 +423,14 @@ class WorldBuilderStatusProducer:
         # per geometry revision and remembered. One entry per target,
         # replaced rather than accumulated -- see _path_length.
         self._path_length_cache: dict[str, tuple[str, dict | None]] = {}
+        self._coverage_worker = None
+        if self._coverage_enabled:
+            from tower.world_builder.guidance_coverage import CoverageWorker
+            self._coverage_worker = CoverageWorker(self._root, self._clock)
+
+    def shutdown_guidance(self) -> None:
+        if self._coverage_worker is not None:
+            self._coverage_worker.shutdown()
 
     # -- target selection ---------------------------------------------
 
@@ -710,6 +730,13 @@ class WorldBuilderStatusProducer:
             # so it survives being handed around as one value. It is the
             # same string the envelope carries.
             payload["world_snapshot"]["revision"] = revision
+        coverage = (payload.get("guidance") or {}).get("coverage")
+        if coverage is not None and not _coverage_status_fits(payload):
+            logger.warning("world builder guidance: complete status exceeds size budget")
+            payload["guidance"]["coverage"] = None
+            revision = compute_revision(payload, VOLATILE_PATHS)
+            if payload.get("world_snapshot") is not None:
+                payload["world_snapshot"]["revision"] = revision
         return Snapshot(
             payload=payload,
             revision=revision,
@@ -889,7 +916,7 @@ class WorldBuilderStatusProducer:
         )
         keyframes_now = progress["keyframes_accepted"]
 
-        return {
+        payload = {
             "world": _world_block(world),
             "session": _session_block(session),
             "lifecycle": lifecycle,
@@ -921,6 +948,17 @@ class WorldBuilderStatusProducer:
             ),
             "time_basis": TIME_BASIS,
         }
+        if self._coverage_enabled:
+            payload["guidance"] = {"coverage": self._coverage(
+                store, world.world_id, session_id, manifest,
+                payload["geometry"].get("revision"),
+            )}
+        return payload
+
+    def _coverage(self, store, world_id, session_id, manifest, geometry_revision):
+        """Read the worker's last published block without disk or scheduling."""
+        return (self._coverage_worker.latest(world_id, session_id)
+                if self._coverage_worker is not None else None)
 
     def _processing(self, store, world_id, session_id, session, holder):
         """`lifecycle.processing`, or None (`finish_phase.project`). The parse is cached on the
@@ -2507,6 +2545,19 @@ def _scale_block(world, *, attributable: bool = True) -> dict:
     }
 
 
+def geometry_revision_from_manifest(manifest):
+    """The status geometry equality key for exactly this manifest snapshot."""
+    return compute_revision({
+        "digest": manifest.get("input_digest"),
+        "built_at": manifest.get("built_at"),
+        "points": manifest.get("points"),
+        "solved": manifest.get("poses_solved"),
+        "segments": manifest.get("segments"),
+        "scale": manifest.get("scale_state"),
+        "tree": manifest.get("tree_fingerprint"),
+    })
+
+
 def _geometry_block(manifest, current: bool, keyframes_now, *,
                     has_session_geometry: bool = False,
                     tree_figures=None) -> dict:
@@ -2597,21 +2648,7 @@ def _geometry_block(manifest, current: bool, keyframes_now, *,
         # stay silent while the geometry moves underneath a viewer, only
         # the first is safe: the cost is a redundant redraw, and the cost
         # of the second is a stale world shown as current.
-        "revision": compute_revision(
-            {
-                "digest": manifest.get("input_digest"),
-                "built_at": manifest.get("built_at"),
-                "points": manifest.get("points"),
-                "solved": manifest.get("poses_solved"),
-                "segments": manifest.get("segments"),
-                "scale": manifest.get("scale_state"),
-                # None on every manifest read from a file. Set only when
-                # these figures were counted from the tree, where there is
-                # no `built_at` and no digest to move the revision when a
-                # rebuild lands on the same counts.
-                "tree": manifest.get("tree_fingerprint"),
-            }
-        ),
+        "revision": geometry_revision_from_manifest(manifest),
         "provenance": "inferred",
         # Tower keeps per-keyframe and per-edge confidence labels but has
         # never defined an aggregate for a whole reconstruction. Null

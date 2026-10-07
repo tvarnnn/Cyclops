@@ -37,6 +37,7 @@ and so mechanically prevents that handle from becoming a second frame
 path.
 """
 
+import os
 import time
 
 from tower.results.contracts import (
@@ -89,6 +90,11 @@ def make_snapshot_for(
     under-promise-on-omission rule `registry.declare` follows.
     """
     producers: dict = {}
+    coverage_enabled = os.environ.get("TOWER_WORLD_GUIDANCE_COVERAGE") == "on"
+    if world_root is not None and coverage_enabled:
+        from tower.results.world_builder import WorldBuilderStatusProducer
+        producers[CARTRIDGE_WORLD_BUILDER] = WorldBuilderStatusProducer(
+            world_root, clock, coverage_enabled=True)
 
     def snapshot_for(cartridge, result_type, world_id, session_id) -> Snapshot:
         if (
@@ -124,7 +130,8 @@ def make_snapshot_for(
             if producer is None:
                 from tower.results.world_builder import WorldBuilderStatusProducer
 
-                producer = WorldBuilderStatusProducer(world_root, clock)
+                producer = WorldBuilderStatusProducer(
+                    world_root, clock, coverage_enabled=coverage_enabled)
                 producers[cartridge] = producer
             return producer.snapshot(world_id, session_id)
 
@@ -184,6 +191,12 @@ def make_snapshot_for(
             f"no producer is wired for {cartridge}/{result_type}"
         )
 
+    def shutdown_guidance():
+        producer = producers.get(CARTRIDGE_WORLD_BUILDER)
+        if producer is not None:
+            producer.shutdown_guidance()
+
+    snapshot_for.shutdown_guidance = shutdown_guidance
     return snapshot_for
 
 
