@@ -303,6 +303,13 @@ enum WorldBuilderResultDecoder {
         return WorldProcessingReport(json: lifecycle["processing"])
     }
 
+    /// `progress.keyframes_accepted`, or `nil`: the live count the map's
+    /// "newer keyframes" line is computed from (fog of war v1, §7).
+    static func keyframesAccepted(from payload: [String: Any]) -> Int? {
+        let progress = payload["progress"] as? [String: Any] ?? [:]
+        return WorldCoverageReader.integer(progress["keyframes_accepted"], 0...Int(Int32.max))
+    }
+
     static func recovery(from payload: [String: Any]) -> WorldRecoveryReport? {
         let tracking = payload["tracking"] as? [String: Any] ?? [:]
         return WorldRecoveryReport(json: tracking["recovery"])
@@ -679,6 +686,16 @@ final class TowerWorldBuilderClient: WorldBuilderClient {
         }
     }
 
+    /// `guidance.coverage` from the last report, with its live accepted
+    /// count and the Tower clock read at its receipt (fog of war v1).
+    /// Published inside `walkReport`, and only for a named walk.
+    private(set) var coverage: WorldCoverageReceipt? {
+        didSet {
+            guard coverage != oldValue else { return }
+            publishWalkReport()
+        }
+    }
+
     /// When the walk this phone followed live stopped, and whether it
     /// settled while the app was away (U0.6 §5.3). Memory only: a relaunch
     /// forgets it, and the elapsed line is then hidden.
@@ -724,7 +741,9 @@ final class TowerWorldBuilderClient: WorldBuilderClient {
         guard walkReportEdits == 0 else { return }
         let next = WalkScoped(walk: presentedWalk, value: WorldWalkReport(
             state: state, finalization: finalization, photographic: photographic,
-            processing: processing, finishClock: finishClock))
+            processing: processing, finishClock: finishClock,
+            // The map belongs to its walk: none for a report naming no walk.
+            coverage: presentedWalk == nil ? nil : coverage))
         guard next != walkReport else { return }
         walkReport = next
         walkReportSubject.send(next)
@@ -849,6 +868,13 @@ final class TowerWorldBuilderClient: WorldBuilderClient {
         var recentWorld: WorldRecentReference?
         /// `tracking.recovery`, or `nil`.
         var recovery: WorldRecoveryReport? = nil
+        /// `guidance.coverage`, or `nil`: absent, `null` or refused.
+        var coverage: WorldCoverage? = nil
+        /// `progress.keyframes_accepted`, or `nil`.
+        var keyframesAccepted: Int? = nil
+        /// The Tower's clock as read at this report's arrival, or `nil`
+        /// without `tower_sent_at`.
+        var towerClock: WorldTowerClock? = nil
 
         /// Whether a `latest` offer is the walk `followedWalk` remembers.
         /// Both ids, not just the world: a world walked twice has one id and
@@ -880,6 +906,9 @@ final class TowerWorldBuilderClient: WorldBuilderClient {
             finalization = lastReport?.finalization
             photographic = lastReport?.photographic
             processing = lastReport?.processing
+            coverage = WorldCoverageReceipt.next(after: coverage, coverage: lastReport?.coverage,
+                                                 keyframesAccepted: lastReport?.keyframesAccepted,
+                                                 clock: lastReport?.towerClock)
             if lastReport == nil { recovery = nil; lookBack.dismiss() }
         }
     }
@@ -1632,7 +1661,10 @@ final class TowerWorldBuilderClient: WorldBuilderClient {
             recentWorld: selection.isHistoryOfferedAsLive
                 ? WorldBuilderResultDecoder.recentReference(from: payload)
                 : nil,
-            recovery: WorldBuilderResultDecoder.recovery(from: payload)
+            recovery: WorldBuilderResultDecoder.recovery(from: payload),
+            coverage: WorldCoverageStatus(payload: payload).coverage,
+            keyframesAccepted: WorldBuilderResultDecoder.keyframesAccepted(from: payload),
+            towerClock: envelope.towerSentAt.map { WorldTowerClock(towerSentAt: $0, receivedAt: now()) }
         )
         publishLastReport()
 

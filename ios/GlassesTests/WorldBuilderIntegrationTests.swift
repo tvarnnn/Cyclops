@@ -6897,3 +6897,124 @@ extension TowerWorldBuilderClientTests {
         tower.disconnect()
     }
 }
+
+// MARK: - Fog of war v1: the map belongs to its walk
+
+extension TowerWorldBuilderClientTests {
+
+    /// A receiving report for `world`/`session` (no session block when
+    /// `session` is nil), carrying `guidance` and `progress` when given.
+    private static func coverageReport(seq: Int, world: String = "w1", session: String? = "s1",
+                                       geometry: String = "g1", coverage: String? = nil, accepted: Int? = nil,
+                                       towerSentAt: Double = 1787463092.9) -> String {
+        let sessionField = session.map { #""session":{"session_id":"\#($0)","started_at":1787463000.0},"# } ?? ""
+        let guidanceField = coverage.map { #","guidance":{"coverage":\#($0)}"# } ?? ""
+        let progressField = accepted.map { #","progress":{"keyframes_accepted":\#($0)}"# } ?? ""
+        return """
+        {"type":"cartridge_result",
+         "envelope_contract":"cartridge_results.envelope/2026-08-23",
+         "subscription_id":"sub-1","cartridge":"world_builder","result_type":"status",
+         "contract":"\(contract)","seq":\(seq),"revision":"r\(seq)",
+         "revision_changed":true,"coalesced":0,"cursor_status":null,
+         "snapshot":true,"tower_sent_at":\(towerSentAt),"time_basis":"tower-receipt",
+         "payload":{"model_state":"receiving","model_state_reason":null,\(sessionField)
+           "world_snapshot":{"name":"Probe Room","world_id":"\(world)","keyframe_count":40,"revision":"r\(seq)",
+             "tracking":"good","scale":"relative","mapping_seconds":12.5,"calibration":"calibrated",
+             "geometry":{"representation":"sparse point cloud","element_count":1360,"is_incremental":false},
+             "trajectory":{"pose_count":40,"path_length":2.85,"path_length_unit":"world units","scale":"relative"},
+             "persistence":{"state":"saved","revision":"p1"}},
+           "geometry":{"available":true,"current":true,"revision":"\(geometry)"}\(guidanceField)\(progressField)}}
+        """
+    }
+
+    /// The `coverage` value of a §9 fixture, as JSON text.
+    private static func coverageJSON(_ fixture: String) -> String {
+        let data = try? JSONSerialization.data(withJSONObject: FOWFixtures.block(fixture))
+        return data.flatMap { String(data: $0, encoding: .utf8) } ?? "null"
+    }
+
+    /// Walk A's map is never shown for walk B: a report for another walk
+    /// without a block takes A's map away; B's own block is B's; and a
+    /// report naming no walk carries no map at all.
+    func testTheMapBelongsToItsWalk() async throws {
+        let server = try MockTowerServer()
+        let port = try await server.start()
+        serve(server)
+        defer { server.stop() }
+        let tower = TowerClient(metrics: SenderMetrics())
+        let client = TowerWorldBuilderClient(tower: tower)
+        let model = WorldBuilderViewModel(client: client)
+        tower.connect(to: url(port: port))
+        await expect { client.state == .awaitingFirstUpdate }
+
+        server.send(text: Self.coverageReport(seq: 1, coverage: Self.coverageJSON(FOWFixtures.mid), accepted: 127))
+        await expect("A's map") { model.coverage?.coverage.geometryRevision == "g-mid-113" }
+        XCTAssertEqual(client.walkReport.walk, WorldFinishWalk(worldID: "w1", sessionID: "s1"))
+        XCTAssertEqual(client.walkReport.value.coverage?.keyframesAccepted, 127)
+
+        server.send(text: Self.coverageReport(seq: 2, world: "w2", session: "s9"))
+        await expect("B's report") { client.walkReport.walk == WorldFinishWalk(worldID: "w2", sessionID: "s9") }
+        XCTAssertNil(client.walkReport.value.coverage, "A's map under B's walk")
+        XCTAssertNil(model.coverage)
+
+        server.send(text: Self.coverageReport(seq: 3, world: "w2", session: "s9",
+                                              coverage: Self.coverageJSON(FOWFixtures.stop), accepted: 1090))
+        await expect("B's own map") { model.coverage?.coverage.geometryRevision == "g-stop-984" }
+        XCTAssertEqual(model.coverage?.newerKeyframes, 106)
+
+        server.send(text: Self.coverageReport(seq: 4, world: "w3", session: nil,
+                                              coverage: Self.coverageJSON(FOWFixtures.mid), accepted: 127))
+        await expect("a report naming no session") { client.walkReport.walk == nil && client.state.snapshot?.worldID == "w3" }
+        XCTAssertNil(client.walkReport.value.coverage, "a map for a walk that cannot be named")
+        XCTAssertNil(model.coverage)
+        tower.disconnect()
+    }
+
+    /// A new block replaces the map without a new geometry revision; a new
+    /// geometry revision under the same block neither replaces nor re-dates
+    /// it, while the live count still moves (spec §9).
+    func testANewBlockReplacesTheMapAndALocalRebuildDoesNotRedateIt() async throws {
+        let server = try MockTowerServer()
+        let port = try await server.start()
+        serve(server)
+        defer { server.stop() }
+        let instant = ContinuousClock.now
+        let tower = TowerClient(metrics: SenderMetrics())
+        let client = TowerWorldBuilderClient(tower: tower, now: { instant })
+        tower.connect(to: url(port: port))
+        await expect { client.state == .awaitingFirstUpdate }
+        let solved = 1791240000.0
+
+        server.send(text: Self.coverageReport(seq: 1, geometry: "g1", coverage: Self.coverageJSON(FOWFixtures.mid),
+                                              accepted: 127, towerSentAt: solved + 5))
+        await expect { client.walkReport.value.coverage != nil }
+        let first = try XCTUnwrap(client.walkReport.value.coverage)
+        XCTAssertEqual(first.age(at: instant), 5)
+
+        server.send(text: Self.coverageReport(seq: 2, geometry: "g2", coverage: Self.coverageJSON(FOWFixtures.mid),
+                                              accepted: 131, towerSentAt: solved + 9))
+        await expect("the live count moves") { client.walkReport.value.coverage?.keyframesAccepted == 131 }
+        XCTAssertEqual(client.walkReport.value.coverage?.coverage, first.coverage, "same block, same map")
+        XCTAssertEqual(client.walkReport.value.coverage?.age(at: instant), 5, "a local rebuild re-dated the map")
+
+        var replaced = FOWFixtures.block(FOWFixtures.mid)
+        replaced["solved_at"] = solved + 20
+        replaced["computed_at"] = solved + 20.1
+        replaced["horizon_keyframes"] = 120
+        replaced["keyframes_now"] = 131
+        replaced["keyframes_pending"] = 11
+        replaced["geometry_revision"] = "g-mid-120"
+        let text = String(data: try JSONSerialization.data(withJSONObject: replaced), encoding: .utf8)
+        server.send(text: Self.coverageReport(seq: 3, geometry: "g2", coverage: text, accepted: 131,
+                                              towerSentAt: solved + 21))
+        await expect("the new block, same geometry revision") {
+            client.walkReport.value.coverage?.coverage.horizonKeyframes == 120
+        }
+        XCTAssertEqual(client.walkReport.value.coverage?.age(at: instant), 1, "dated by its own solve")
+        XCTAssertEqual(client.walkReport.value.coverage?.newerKeyframes, 11)
+
+        server.send(text: Self.coverageReport(seq: 4, geometry: "g2", coverage: "null", accepted: 131))
+        await expect("coverage:null: no map") { client.walkReport.value.coverage == nil }
+        tower.disconnect()
+    }
+}

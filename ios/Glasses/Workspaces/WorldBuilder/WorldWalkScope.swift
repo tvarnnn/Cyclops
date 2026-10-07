@@ -81,15 +81,19 @@ nonisolated struct WorldWalkReport: Equatable, Sendable {
     var processing: WorldProcessingReport?
     /// The followed walk's stop clock and away banner (U0.6 §5.3).
     var finishClock: WorldFinishClock
+    /// `guidance.coverage` (fog of war v1): the map belongs to its walk, so
+    /// it travels in the walk's report and only for a walk that is named.
+    var coverage: WorldCoverageReceipt?
 
     init(state: WorldModelState, finalization: WorldFinalizationReport? = nil,
          photographic: WorldPhotographicReport? = nil, processing: WorldProcessingReport? = nil,
-         finishClock: WorldFinishClock = .unknown) {
+         finishClock: WorldFinishClock = .unknown, coverage: WorldCoverageReceipt? = nil) {
         self.state = state
         self.finalization = finalization
         self.photographic = photographic
         self.processing = processing
         self.finishClock = finishClock
+        self.coverage = coverage
     }
 }
 

@@ -457,7 +457,12 @@ struct WorldBuilderWorkspaceView: View {
             // Only a picture of the walk this report describes (review HIGH 1).
             target: world.panelTarget,
             needsRetrySentence: presentation.recoverability?.sentence,
-            hasMap: WorldPanelMap.fixtureEnabled)
+            hasMap: panelMap != nil)
+    }
+
+    /// The panel's map: the walk's own coverage receipt, else the DEBUG fixture.
+    private var panelMap: WorldPanelMapSource? {
+        WorldPanelMap.source(live: world.coverage)
     }
 
     private var hostInputs: WorldInlineHost.Inputs {
@@ -481,7 +486,7 @@ struct WorldBuilderWorkspaceView: View {
             isTowerReachable: isTowerReachable,
             screenSaysOffline: captureSaysTowerIsOff,
             showsHealth: showsHealthInPanel,
-            hasMap: WorldPanelMap.fixtureEnabled,
+            map: panelMap,
             host: host,
             dismissBanner: { world.dismissFinishBanner() },
             bannerAnnounced: { walk in world.finishBannerAnnounced(for: walk) },

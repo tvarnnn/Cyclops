@@ -262,8 +262,9 @@ extension EnvironmentValues {
 
 // MARK: - The fog-of-war slot
 
-/// S1's map slot. FOW v1 replaces the fixture; nothing else moves. The
-/// fixture draws only behind `-WBPanelMapFixture` (a DEBUG launch argument).
+/// S1's map slot: the walk's fog-of-war receipt (FOW v1). The fixture --
+/// §9's mid-walk receipt, labelled *Fixture map* -- draws only behind
+/// `-WBPanelMapFixture` (a DEBUG launch argument), and never over a real one.
 enum WorldPanelMap {
     static let fixtureArgument = "-WBPanelMapFixture"
 
@@ -274,41 +275,12 @@ enum WorldPanelMap {
         false
         #endif
     }
-}
 
-/// A grey disc of twelve sectors, labelled *Fixture map*: the slot's
-/// stand-in until the fog-of-war map lands.
-struct WorldPanelMapFixtureView: View {
-    let isFrozen: Bool
-
-    var body: some View {
-        Canvas { context, size in
-            let radius = min(size.width, size.height) * 0.38
-            let centre = CGPoint(x: size.width / 2, y: size.height / 2)
-            for sector in 0..<12 {
-                var path = Path()
-                path.move(to: centre)
-                path.addArc(center: centre, radius: radius,
-                            startAngle: .degrees(Double(sector) * 30 + 1),
-                            endAngle: .degrees(Double(sector + 1) * 30 - 1), clockwise: false)
-                path.closeSubpath()
-                let shade = 0.30 + 0.04 * Double(sector % 4)
-                context.fill(path, with: .color(Color(white: shade)))
-            }
-        }
-        .overlay(alignment: .bottomLeading) {
-            // Not under the finish block: frozen, the map is only a backdrop.
-            if !isFrozen {
-                Text(WorldPanelCopy.mapFixture)
-                    .font(.caption)
-                    .foregroundStyle(WorldChromeStyle.secondary)
-                    .padding(8)
-            }
-        }
-        .opacity(isFrozen ? 0.35 : 1)
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel(WorldPanelCopy.mapFixture)
-        .accessibilityIdentifier("wb-panel-map")
+    static func source(live: WorldCoverageReceipt?, fixtureEnabled: Bool = Self.fixtureEnabled)
+        -> WorldPanelMapSource? {
+        if let live { return .coverage(live) }
+        guard fixtureEnabled, let fixture = WorldCoverageReceipt.fixture else { return nil }
+        return .fixture(fixture)
     }
 }
 
@@ -330,8 +302,9 @@ struct WorldInlinePanel<Health: View>: View {
     let screenSaysOffline: Bool
     /// Capture health is drawn while walking (a session or a capture).
     let showsHealth: Bool
-    /// The frozen map under the finishing wait, when there was one.
-    let hasMap: Bool
+    /// The walking map, and the frozen map under the finishing wait, when
+    /// there is one.
+    let map: WorldPanelMapSource?
     @ObservedObject var host: WorldInlineHost
     let dismissBanner: () -> Void
     /// The away banner drawn for this walk was announced: never again for
@@ -560,7 +533,7 @@ struct WorldInlinePanel<Health: View>: View {
         case .hidden:
             EmptyView()
         case .walking:
-            WorldPanelMapFixtureView(isFrozen: false)
+            if let map { WorldCoverageMapView(coverage: map.receipt.coverage, isFrozen: false) }
         case .finishing:
             if let block = currentFinishing { finishingContent(block) }
         case .ready(let target):
@@ -590,8 +563,8 @@ struct WorldInlinePanel<Health: View>: View {
     /// plate -- the finish block. Never a duration or an estimate.
     private func finishingContent(_ block: FinishingBlock) -> some View {
         ZStack(alignment: .topLeading) {
-            if hasMap {
-                WorldPanelMapFixtureView(isFrozen: true)
+            if let map {
+                WorldCoverageMapView(coverage: map.receipt.coverage, isFrozen: true)
             }
             VStack(alignment: .leading, spacing: 10) {
                 WorldFinishLineView(showsSpinner: block.showsSpinner, line: block.line,
@@ -604,6 +577,11 @@ struct WorldInlinePanel<Health: View>: View {
                         .foregroundStyle(WorldChromeStyle.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                         .accessibilityIdentifier("wb-panel-finishing-detail")
+                }
+                if let map {
+                    // The frozen map's receipt, dated: "at Stop" only when
+                    // it holds every accepted keyframe (FOW §8.2).
+                    WorldCoverageCaption(source: map, stopped: true)
                 }
                 if block.offline {
                     Text(WorldPanelCopy.finishingButOffline)
@@ -738,7 +716,13 @@ struct WorldInlinePanel<Health: View>: View {
                                  identifier: "wb-panel-expand") { expand(target) }
                 }
             }
-        case .hidden, .walking, .finishing(nil), .failed, .offline:
+        case .walking:
+            if let map {
+                WorldCoverageCaption(source: map, stopped: false)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 10)
+            }
+        case .hidden, .finishing(nil), .failed, .offline:
             EmptyView()
         }
     }

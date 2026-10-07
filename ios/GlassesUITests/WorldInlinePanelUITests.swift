@@ -603,6 +603,99 @@ final class WorldInlinePanelUITests: XCTestCase {
         shoot("state-offline-\(name)")
     }
 
+    // MARK: FOW v1: the coverage map
+
+    /// The mock Tower serves FOW §9's fixtures. No `guidance` (the live
+    /// Tower today) and `coverage:null` are today's panel; the mid-walk
+    /// block draws two separate pieces with grey, muted and colored headings
+    /// under its dated label, beside Capture health; another walk's report
+    /// takes the map away and that walk's own block brings its own; a
+    /// receipt older than 30 s says `stale`.
+    func testTheCoverageMapIsDatedSeparateAndItsWalksOwn() throws {
+        openLive()
+        push(modelState: "receiving")
+        XCTAssertTrue(element("capture-health").waitForExistence(timeout: 15), "Capture health")
+        XCTAssertFalse(element("wb-panel-map").exists, "no guidance: no map")
+        XCTAssertFalse(element("wb-panel-stage").exists, "no guidance: today's panel, Capture health alone")
+        push(modelState: "receiving", guidance: FOWGuidance.none, accepted: 40)
+        XCTAssertFalse(element("wb-panel-map").waitForExistence(timeout: 2), "coverage:null: no map yet")
+        XCTAssertFalse(element("wb-panel-stage").exists, "coverage:null: today's panel")
+
+        push(modelState: "receiving", guidance: FOWGuidance.mid, accepted: 127,
+             towerSentAt: FOWGuidance.midSolvedAt + 12)
+        let map = element("wb-panel-map")
+        if !map.waitForExistence(timeout: 15) { print("FOW-AX|\(app.debugDescription)") }
+        XCTAssertTrue(map.exists, "the map")
+        XCTAssertTrue(reveal(map, whole: true), "the map on screen")
+        let label = element("wb-panel-map-label")
+        XCTAssertTrue(label.waitForExistence(timeout: 5), "the label")
+        XCTAssertTrue(text(label).hasPrefix("Map through keyframe 113 · updated "), text(label))
+        XCTAssertTrue(text(label).hasSuffix(" s ago"), "dated, not stale: \(text(label))")
+        XCTAssertEqual(text(element("wb-panel-map-newer")), "14 newer keyframes not yet placed")
+        XCTAssertEqual(text(element("wb-panel-map-pieces")), "2 separate pieces, not placed relative to each other")
+        let pieces = app.descendants(matching: .any).matching(identifier: "wb-panel-map-piece")
+        XCTAssertEqual(pieces.count, 2, "two components, two pieces")
+        let first = pieces.element(boundBy: 0), second = pieces.element(boundBy: 1)
+        XCTAssertEqual(first.label, "Piece 1")
+        XCTAssertEqual(first.value as? String, "1 station. Two or more views: 4 headings. One view: 1. "
+                       + "Not yet seen by a finished solve: 7.")
+        XCTAssertEqual(second.label, "Piece 2")
+        XCTAssertEqual(second.value as? String, "1 station. Two or more views: 1 headings. One view: 1. "
+                       + "Not yet seen by a finished solve: 10.")
+        XCTAssertFalse(first.frame.intersects(second.frame), "two pieces, never merged")
+        XCTAssertTrue(map.frame.contains(first.frame) && map.frame.contains(second.frame), "in the map slot")
+        XCTAssertTrue(element("capture-health").exists, "Capture health stays")
+        // The pixels: grey, muted and colored headings are all drawn.
+        let shot = app.screenshot().image
+        for (name, rgb) in [("grey", (87, 87, 87)), ("muted", (0x2E, 0x6B, 0x66)), ("colored", (0x4F, 0xD8, 0xC8))] {
+            XCTAssertGreaterThan(Self.pixels(in: shot, frame: first.frame, near: rgb), 3, "\(name) headings in piece 1")
+        }
+        shoot("fow-mid")
+
+        // Another walk's report, with no block: A's map goes.
+        push(modelState: "receiving", world: "w2", session: "s9", name: "Other Room")
+        XCTAssertTrue(waitFor(timeout: 10) { !self.element("wb-panel-map").exists }, "A's map under B's walk")
+        XCTAssertTrue(element("capture-health").exists, "B's walking panel is today's")
+
+        // B's own block, 45 s old: B's map, stale.
+        push(modelState: "receiving", world: "w2", session: "s9", name: "Other Room", guidance: FOWGuidance.stop,
+             accepted: 1090, towerSentAt: FOWGuidance.stopSolvedAt + 45)
+        XCTAssertTrue(map.waitForExistence(timeout: 15), "B's map")
+        XCTAssertTrue(waitFor(timeout: 5) { self.text(label).hasPrefix("Map through keyframe 984 · updated ") },
+                      text(label))
+        XCTAssertTrue(text(label).hasSuffix(" s ago · stale"), text(label))
+        XCTAssertEqual(text(element("wb-panel-map-newer")), "106 newer keyframes not yet placed")
+        XCTAssertEqual(pieces.count, 1, "one component, one piece")
+        XCTAssertFalse(element("wb-panel-map-pieces").exists, "one piece: no separate-pieces line")
+        XCTAssertTrue(reveal(map, whole: true))
+        shoot("fow-stale")
+    }
+
+    /// Pixels within `frame` (points) whose colour is within 20 of `rgb`.
+    private static func pixels(in image: UIImage, frame: CGRect, near rgb: (Int, Int, Int)) -> Int {
+        guard let cg = image.cgImage else { return 0 }
+        let width = cg.width, height = cg.height
+        var data = [UInt8](repeating: 0, count: width * height * 4)
+        guard let context = CGContext(data: &data, width: width, height: height, bitsPerComponent: 8,
+                                      bytesPerRow: width * 4, space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                                      bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
+        else { return 0 }
+        context.draw(cg, in: CGRect(x: 0, y: 0, width: width, height: height))
+        let scale = CGFloat(width) / image.size.width
+        let box = CGRect(x: frame.minX * scale, y: frame.minY * scale, width: frame.width * scale,
+                         height: frame.height * scale).intersection(CGRect(x: 0, y: 0, width: width, height: height))
+        guard !box.isNull else { return 0 }
+        var count = 0
+        for y in Int(box.minY)..<Int(box.maxY) {
+            for x in Int(box.minX)..<Int(box.maxX) {
+                let i = (y * width + x) * 4
+                if abs(Int(data[i]) - rgb.0) <= 20, abs(Int(data[i + 1]) - rgb.1) <= 20,
+                   abs(Int(data[i + 2]) - rgb.2) <= 20 { count += 1 }
+            }
+        }
+        return count
+    }
+
     // MARK: R1: a real page on a Mac scratch Tower
 
     /// Saved worlds → the fixture world → the panel shows the real page
@@ -719,7 +812,8 @@ final class WorldInlinePanelUITests: XCTestCase {
     private func push(modelState: String, world: String = "w1", session: String = "s1", name: String = "Probe Room",
                       elements: Int = 1360, poses: Int = 40, reason: String? = nil,
                       buildInProgress: Bool? = nil, finalizationState: String? = nil, finalSolve: String? = nil,
-                      processing: String? = nil, photographic: String? = nil) {
+                      processing: String? = nil, photographic: String? = nil, guidance: String? = nil,
+                      accepted: Int? = nil, towerSentAt: Double = 1787463092.9) {
         seq += 1
         let seq = self.seq
         socket.sendLive { subscription in
@@ -727,7 +821,8 @@ final class WorldInlinePanelUITests: XCTestCase {
                              session: session, name: name, elements: elements,
                              poses: poses, reason: reason, buildInProgress: buildInProgress,
                              finalizationState: finalizationState, finalSolve: finalSolve,
-                             processing: processing, photographic: photographic)
+                             processing: processing, photographic: photographic, guidance: guidance,
+                             accepted: accepted, towerSentAt: towerSentAt)
         }
         Thread.sleep(forTimeInterval: 0.7)
     }

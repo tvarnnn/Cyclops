@@ -392,6 +392,10 @@ final class WorldBuilderViewModel: ObservableObject {
     /// The Tower's photographic word, from `walkReport`.
     var photographic: WorldPhotographicReport? { walkReport.value.photographic }
 
+    /// The fog-of-war receipt, from `walkReport`: only for a report that
+    /// names its walk, so one walk's map is never shown for another.
+    var coverage: WorldCoverageReceipt? { walkReport.walk == nil ? nil : walkReport.value.coverage }
+
     /// The live relocalizer's line, republished from the client.
     @Published private(set) var recovery: WorldRecoveryReport?
 

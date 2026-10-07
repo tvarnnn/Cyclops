@@ -107,7 +107,8 @@ enum PanelReport {
                      session: String = "s1", name: String = "Probe Room", elements: Int = 1360, poses: Int = 40,
                      reason: String? = nil, buildInProgress: Bool? = nil, finalizationState: String? = nil,
                      finalSolve: String? = nil, processing: String? = nil, photographic: String? = nil,
-                     notice: String? = nil) -> String {
+                     notice: String? = nil, guidance: String? = nil, accepted: Int? = nil,
+                     towerSentAt: Double = 1787463092.9) -> String {
         var lifecycle: [String] = []
         if let buildInProgress { lifecycle.append(#""build_in_progress":\#(buildInProgress)"#) }
         if let finalizationState {
@@ -119,13 +120,17 @@ enum PanelReport {
         if let processing { lifecycle.append(#""processing":\#(processing)"#) }
         let lifecycleJSON = lifecycle.isEmpty ? "" : #","lifecycle":{\#(lifecycle.joined(separator: ","))}"#
         let reasonJSON = reason.map { "\"\($0)\"" } ?? "null"
+        // Fog of war v1: `guidance` only when given -- absent is the live
+        // Tower today, whose switch is off -- and the live accepted count.
+        let guidanceJSON = guidance.map { #","guidance":\#($0)"# } ?? ""
+        let progressJSON = accepted.map { #","progress":{"keyframes_accepted":\#($0)}"# } ?? ""
         return """
             {"type":"cartridge_result",
              "envelope_contract":"cartridge_results.envelope/2026-08-23",
              "subscription_id":"\(subscription)","cartridge":"world_builder","result_type":"status",
              "contract":"\(DeadEndsUITests.worldBuilderContract)","seq":\(seq),"revision":"r\(seq)",
              "revision_changed":true,"coalesced":0,"cursor_status":null,
-             "snapshot":true,"tower_sent_at":1787463092.9,"time_basis":"tower-receipt",
+             "snapshot":true,"tower_sent_at":\(towerSentAt),"time_basis":"tower-receipt",
              "payload":{"model_state":"\(modelState)","model_state_reason":\(reasonJSON),
                "session":{"session_id":"\(session)","started_at":1788895000.0},
                "world_snapshot":{"name":"\(name)","world_id":"\(world)",
@@ -137,7 +142,7 @@ enum PanelReport {
                                "path_length_unit":"world units","scale":"relative"},
                  "persistence":{"state":"saved","revision":"p1"}},
                "geometry":{"available":true,"current":true,"built_from_keyframes":\(poses),
-                           "keyframes_now":\(poses),"revision":"g1"}\(lifecycleJSON)}}
+                           "keyframes_now":\(poses),"revision":"g1"}\(lifecycleJSON)\(guidanceJSON)\(progressJSON)}}
             """
     }
 
@@ -148,4 +153,13 @@ enum PanelReport {
              name: "Appearance fixture (Mac)", finalizationState: "complete", finalSolve: "solved",
              photographic: #"{"state":"complete","stage":"appearance"}"#, notice: notice)
     }
+}
+
+/// FOW-COVERAGE-V1 §9's two nonnull fixtures, as `guidance` values.
+enum FOWGuidance {
+    static let midSolvedAt = 1791240000.0
+    static let stopSolvedAt = 1791240313.0
+    static let none = #"{"coverage":null}"#
+    static let mid = #"{"coverage":{"version":1,"source":"landed_global_solve","solved_at":1791240000.0,"computed_at":1791240000.12,"horizon_keyframes":113,"keyframes_now":127,"keyframes_pending":14,"geometry_revision":"g-mid-113","frame_revision":1,"station_grid":"component_square_8x8_v1","sector_frame":"first_qualified_forward_cw_from_up_v1","components_total":2,"components_omitted":0,"stations_omitted":0,"components":[{"reference_segment":0,"posed_keyframes":82,"bounds_xy":[-4.0,-4.0,4.0,4.0],"origin_xyz":[0.0,0.0,0.0],"up_xyz":[0.0,0.0,1.0],"forward_xyz":[0.0,1.0,0.0],"cell_size":1.0,"stations":[{"x":3,"y":5,"keyframes":30,"weak_mask":1,"supported_mask":30}]},{"reference_segment":17,"posed_keyframes":19,"bounds_xy":[-2.0,-2.0,2.0,2.0],"origin_xyz":[10.0,0.0,0.0],"up_xyz":[0.0,0.0,1.0],"forward_xyz":[1.0,0.0,0.0],"cell_size":0.5,"stations":[{"x":1,"y":2,"keyframes":8,"weak_mask":2,"supported_mask":1}]}]}}"#
+    static let stop = #"{"coverage":{"version":1,"source":"landed_global_solve","solved_at":1791240313.0,"computed_at":1791240313.19,"horizon_keyframes":984,"keyframes_now":984,"keyframes_pending":0,"geometry_revision":"g-stop-984","frame_revision":1,"station_grid":"component_square_8x8_v1","sector_frame":"first_qualified_forward_cw_from_up_v1","components_total":1,"components_omitted":0,"stations_omitted":0,"components":[{"reference_segment":0,"posed_keyframes":616,"bounds_xy":[-8.0,-8.0,8.0,8.0],"origin_xyz":[0.0,0.0,0.0],"up_xyz":[0.0,0.0,1.0],"forward_xyz":[0.0,1.0,0.0],"cell_size":2.0,"stations":[{"x":3,"y":5,"keyframes":120,"weak_mask":0,"supported_mask":30}]}]}}"#
 }
