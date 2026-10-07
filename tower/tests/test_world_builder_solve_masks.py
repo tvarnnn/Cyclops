@@ -341,6 +341,18 @@ def test_with_the_settings_off_pycolmap_gets_exactly_todays_inputs(session, colm
     assert meta["solve"]["seed"] is None and meta["solve"]["threads"] == -1
 
 
+def test_solve_digest_uses_the_keyframes_it_actually_reads(session, colmap):
+    """A live append between the CLI's read and solve's read cannot stamp an older digest."""
+    from tower.world_builder.store import compute_input_digest
+
+    ids = session.store.read_keyframes(session.world_id, session.session_id)
+    stale_digest = compute_input_digest(ids[:-1])
+    assert _solve(session, final=False, input_digest=stale_digest)["solved"] is True
+    solution = _solution_json(session)
+    assert solution["keyframe_ids"] == [row.keyframe_id for row in ids]
+    assert solution["input_digest"] == compute_input_digest(ids)
+
+
 # ---------------------------------------------------------------------------
 # 3. the seeded single-thread solve
 # ---------------------------------------------------------------------------

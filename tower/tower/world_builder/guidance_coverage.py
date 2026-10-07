@@ -263,15 +263,25 @@ def compute_coverage(*, solution, manifest, placements, poses, keyframes,
         if kid not in seen:
             accepted.append(kid)
             seen.add(kid)
-    if accepted[:horizon] != ids or len(accepted) > 65535 or manifest["keyframes"] != len(accepted):
+    built_count = _integer(manifest["keyframes"], 65535)
+    common = min(horizon, len(accepted))
+    if (accepted[:common] != ids[:common] or len(accepted) > 65535 or
+            built_count < horizon):
         raise ValueError("accepted journal mismatch")
-    digest = hashlib.sha256(b"".join(k.encode("utf-8")+b"\0" for k in accepted)).hexdigest()
+    if len(accepted) < built_count:
+        raise _TransientCoverageError("accepted journal mismatch: build ahead of journal")
+    # The derived build consumed a frozen prefix; the append-only journal may
+    # already have more accepted keyframes by the time guidance reads it.
+    digest = hashlib.sha256(b"".join(k.encode("utf-8")+b"\0"
+                                     for k in accepted[:built_count])).hexdigest()
     if digest != manifest["input_digest"]:
         raise ValueError("manifest input digest mismatch")
     if solution.get("input_digest") != hashlib.sha256(
             b"".join(k.encode("utf-8")+b"\0" for k in ids)).hexdigest():
         raise ValueError("solution input digest mismatch")
-    if solution.get("solver") != summary["solver"] or solution.get("gate") != summary.get("gate"):
+    if (solution.get("solver") != summary["solver"] or
+            solution.get("gate") != summary.get("gate") or
+            solution.get("solve") != summary.get("solve")):
         raise ValueError("solution identity mismatch")
     references = {_integer(c["reference_segment"], 2**31-1) for c in summary["components"]}
     if len(references) > 65535:
@@ -453,6 +463,9 @@ def compute_from_tree(root, world_id, session_id, expected, geometry_revision,
     if before != after or before[:1] != (expected[2],):
         raise _TransientCoverageError("derived tree changed during guidance read")
     summary = manifest.get("global_solve") or {}
+    if (manifest.get("session_id") != session_id or
+            any(row.get("session_id") != session_id for row in keyframes)):
+        raise ValueError("accepted journal session mismatch")
     if (summary.get("solved_at"), summary.get("horizon_keyframes")) != expected[:2]:
         raise _TransientCoverageError("build has not merged the named solution")
     if tree_tag is not None and (manifest.get("built_at"), manifest.get("input_digest")) != tree_tag:

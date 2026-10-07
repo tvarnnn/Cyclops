@@ -807,6 +807,89 @@ def test_tree_snapshot_refuses_torn_identity_and_placement(tmp_path, monkeypatch
                           revision, lambda: 1000.12)
 
 
+def test_tree_snapshot_accepts_live_tail_after_frozen_build(tmp_path):
+    data = _inputs()
+    root = tmp_path / "worlds"
+    world, session, store = _landed_tree(root, data)
+    solution = store.world_dir(world) / "solve" / session / "solution.json"
+    stat = solution.stat()
+    # The build and solve froze four inputs. The accepted journal grows before
+    # guidance reads it; no derived file is rewritten for the fifth keyframe.
+    store.append_keyframe(world, Keyframe(
+        keyframe_id="live-tail", session_id=session, source_seq=4,
+        received_at=905, image_relpath="images/4.jpg", width=1, height=1,
+        byte_count=1))
+    block = compute_from_tree(root, world, session,
+                              (1000.0, 4, (stat.st_size, stat.st_mtime_ns)),
+                              None, lambda: 1000.12)
+    assert (block["horizon_keyframes"], block["keyframes_now"],
+            block["keyframes_pending"]) == (4, 5, 1)
+
+
+def test_tree_snapshot_refuses_other_session_and_solve_with_live_tail(tmp_path):
+    data = _inputs(pending=1)
+    root = tmp_path / "worlds"
+    world, session, store = _landed_tree(root, data)
+    solution = store.world_dir(world) / "solve" / session / "solution.json"
+    stat = solution.stat()
+    expected = (1000.0, 4, (stat.st_size, stat.st_mtime_ns))
+    manifest_path = store.derived_dir(world) / session / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["session_id"] = "another-session"
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    with pytest.raises(ValueError, match="session"):
+        compute_from_tree(root, world, session, expected, None, lambda: 1000.12)
+    manifest["session_id"] = session
+    manifest["global_solve"]["solve"] = {"run": "another-solve"}
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    with pytest.raises(ValueError, match="solution identity"):
+        compute_from_tree(root, world, session, expected, None, lambda: 1000.12)
+
+
+def test_frozen_inputs_refuse_changed_prefix_and_bad_solve_digest():
+    data = _inputs(pending=1)
+    data["keyframes"][0]["keyframe_id"] = "another-walk"
+    with pytest.raises(ValueError, match="accepted journal mismatch") as refused:
+        _block(data)
+    assert not isinstance(refused.value, coverage_module._TransientCoverageError)
+    data = _inputs(pending=1)
+    # Walk 6's 501 solution declared the digest of 499 IDs but listed 501.
+    data["solution"]["input_digest"] = _digest(data["solution"]["keyframe_ids"][:-1])
+    with pytest.raises(ValueError, match="solution input digest mismatch") as refused:
+        _block(data)
+    assert not isinstance(refused.value, coverage_module._TransientCoverageError)
+
+
+def test_journal_behind_frozen_build_is_retryable():
+    data = _inputs(pending=1)
+    data["keyframes"].pop()
+    with pytest.raises(coverage_module._TransientCoverageError,
+                       match="accepted journal mismatch"):
+        _block(data)
+
+
+def test_tree_snapshot_refuses_other_session_journal(tmp_path):
+    root = tmp_path / "worlds"
+    world, session, store = _landed_tree(root, _inputs())
+    journal = store.keyframes_path(world, session)
+    rows = [json.loads(line) for line in journal.read_text(encoding="utf-8").splitlines()]
+    rows[0]["session_id"] = "another-session"
+    journal.write_text("\n".join(json.dumps(row) for row in rows) + "\n", encoding="utf-8")
+    solution = store.world_dir(world) / "solve" / session / "solution.json"
+    stat = solution.stat()
+    with pytest.raises(ValueError, match="session"):
+        compute_from_tree(root, world, session,
+                          (1000.0, 4, (stat.st_size, stat.st_mtime_ns)),
+                          None, lambda: 1000.12)
+
+
+def test_live_tail_still_refuses_wrong_build_digest():
+    data = _inputs(pending=1)
+    data["manifest"]["input_digest"] = _digest(data["solution"]["keyframe_ids"])
+    with pytest.raises(ValueError, match="manifest input digest mismatch"):
+        _block(data)
+
+
 def test_tree_snapshot_rejects_same_tag_with_different_geometry_revision(tmp_path):
     data = _inputs()
     root = tmp_path / "worlds"

@@ -91,6 +91,7 @@ from tower.storage import (
     write_json_atomic,
 )
 from tower.world_builder.records import Keyframe, SegmentPlacement
+from tower.world_builder.store import compute_input_digest
 from tower.world_builder import finish_phase
 from tower.world_builder import stage_timing
 from tower.world_builder.schema import (
@@ -1273,6 +1274,14 @@ def solve(
     keyframes = store.read_keyframes(world_id, session_id)
     if len(keyframes) < 2:
         return {"solved": False, "reason": "fewer than two keyframes"}
+    # A background caller may have read the live journal before this solve
+    # did. Bind its digest to this frozen list, which also supplies IDs.
+    # Final solves retain their caller digest for the existing OFF contract.
+    frozen_digest = compute_input_digest(keyframes)
+    if not final and input_digest is not None and input_digest != frozen_digest:
+        logger.warning("global solve: caller digest predates solve keyframes; using solve snapshot")
+    if input_digest is None or not final:
+        input_digest = frozen_digest
     # T-UX1 finish phase (WORLDS §2b). Every mark below is guarded on `final` and is a no-op
     # unless the live builder's final-solve child installed a writer (`scripts/world_solve.py`):
     # it replaces one side file and touches nothing this solve reads or writes.
