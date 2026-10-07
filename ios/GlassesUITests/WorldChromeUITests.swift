@@ -291,6 +291,7 @@ final class WorldChromeUITests: XCTestCase {
     /// U7: at AX5 the canvas keeps 60 %, and all five controls can be hit, at
     /// least 44 × 44, on two rows.
     func testTheBarAndTheCanvasAtAX5() throws {
+        try skipOnAnIPad("the bar's two rows at AX5 are a phone's width; an iPad's bar is one row")
         openViewer(page: Page.html(steps: [.init(state: Page.state())], labels: Page.realLabels(kind: "room")),
                    size: Self.ax5)
         XCTAssertTrue(element("world-chrome-best").waitForExistence(timeout: 30))
@@ -312,6 +313,7 @@ final class WorldChromeUITests: XCTestCase {
     /// U8: the area viewer at AX5: *Back to the room* and the caption toggle
     /// in the top row, the area's own face control, and 60 % of the screen.
     func testTheAreaViewerAtAX5() throws {
+        try skipOnAnIPad("the bar's two rows at AX5 are a phone's width; an iPad's bar is one row")
         openViewer(page: Page.html(steps: [.init(state: Page.state())], labels: Page.realLabels(kind: "room")),
                    area: Page.html(steps: [.init(state: Page.state())], kind: "area",
                                    labels: Page.realLabels(kind: "area")),
@@ -569,6 +571,7 @@ final class WorldChromeUITests: XCTestCase {
 
     /// R3: the canvas share on the real page, default and AX5.
     func testTheCanvasShareOnTheRealPage() throws {
+        try skipOnAnIPad("the bar's two rows at AX5 are a phone's width; an iPad's bar is one row")
         for size in [nil, Self.ax5] {
             try openRealWorld(size: size)
             XCTAssertTrue(element("world-chrome-best").waitForExistence(timeout: 120), "the native bar")
@@ -705,8 +708,12 @@ final class WorldChromeUITests: XCTestCase {
         XCTAssertTrue(cartridges.waitForExistence(timeout: 15), "Home")
         let drawerDone = app.buttons["Done"]
         XCTAssertTrue(tap(cartridges, until: drawerDone.exists), "the cartridge drawer opened")
+        app.raiseTheCartridgeDrawerOnAnIPad()
         let row = app.buttons.containing(NSPredicate(format: "label BEGINSWITH %@", "World Builder")).firstMatch
-        XCTAssertTrue(reveal(row), "the World Builder row")
+        // An iPad's drawer is a centred sheet: `reveal` drags at the
+        // screen's edge, outside it.
+        XCTAssertTrue(UIDevice.current.userInterfaceIdiom == .pad ? app.revealInTheCartridgeDrawer(row) : reveal(row),
+                      "the World Builder row")
         XCTAssertTrue(tap(row, until: !drawerDone.exists && app.navigationBars["World Builder"].exists),
                       "World Builder opened")
         let saved = app.buttons["Saved worlds"]
@@ -755,6 +762,11 @@ final class WorldChromeUITests: XCTestCase {
     /// Slow drags in the right-hand margin, up then down, until `element`
     /// can be hit.
     @discardableResult
+    /// iPhone-geometry tests skip on an iPad (the iPhone 17 Pro Simulator runs them).
+    private func skipOnAnIPad(_ why: String) throws {
+        if UIDevice.current.userInterfaceIdiom == .pad { throw XCTSkip("iPhone geometry: \(why)") }
+    }
+
     private func reveal(_ element: XCUIElement, attempts: Int = 12) -> Bool {
         if element.waitForExistence(timeout: 5), element.isHittable { return true }
         for direction in [(0.85, 0.45), (0.45, 0.85)] {

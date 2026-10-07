@@ -729,6 +729,13 @@ final class WorldInlinePanelTests: XCTestCase {
     func testNoSurfaceComparesAWalkWithAPictureOutsideTheOneHelper() throws {
         let folder = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
             .appendingPathComponent("Glasses/Workspaces/WorldBuilder")
+        guard FileManager.default.fileExists(atPath: folder.path) else {
+            #if targetEnvironment(simulator)
+            return XCTFail("sources not readable at \(folder.path)")
+            #else
+            throw XCTSkip("sources are not on a device")
+            #endif
+        }
         let banned = [#"\b(worldID|sessionID)\s*(==|!=)"#, #"(==|!=)\s*\w*\.(worldID|sessionID)\b"#,
                       #"\bpresentedWalk\b"#, #"\brenderTarget\b"#, #"\.walk\s*(==|!=)(?!\s*nil)"#,
                       #"^(?!.*\.picture\().*\breconstruction\.target\b"#]

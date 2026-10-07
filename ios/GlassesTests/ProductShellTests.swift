@@ -3697,11 +3697,16 @@ final class IMULogFormatTests: XCTestCase {
         XCTAssertEqual(live.datSDKVersion, "1.0.0", "read from MWDATCore's own Info.plist")
         XCTAssertEqual(live.datMotionVersion, "1.0.0")
         XCTAssertNotNil(live.phoneModel)
-        let project = try String(
-            contentsOf: URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
-                .appendingPathComponent("Glasses.xcodeproj/project.pbxproj"),
-            encoding: .utf8
-        )
+        let projectURL = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("Glasses.xcodeproj/project.pbxproj")
+        guard FileManager.default.fileExists(atPath: projectURL.path) else {
+            #if targetEnvironment(simulator)
+            return XCTFail("sources not readable at \(projectURL.path)")
+            #else
+            throw XCTSkip("sources are not on a device")
+            #endif
+        }
+        let project = try String(contentsOf: projectURL, encoding: .utf8)
         XCTAssertTrue(project.contains("version = \(live.datSDKVersion ?? "?");"), "the linked DAT is not the pinned one")
     }
 

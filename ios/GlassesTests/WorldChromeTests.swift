@@ -948,7 +948,7 @@ final class WorldChromeTests: XCTestCase {
     /// The viewer's two height write-backs (its own height, and a capped
     /// scroller's content) take a change of half a point or more, and
     /// nothing smaller: the boundary, both ways.
-    func testAMeasuredHeightIsWrittenBackFromHalfAPoint() {
+    func testAMeasuredHeightIsWrittenBackFromHalfAPoint() throws {
         XCTAssertEqual(MeasuredHeight.threshold, 0.5)
         XCTAssertFalse(MeasuredHeight.moved(from: 708, to: 708))
         XCTAssertFalse(MeasuredHeight.moved(from: 708, to: 708.49))
@@ -960,9 +960,16 @@ final class WorldChromeTests: XCTestCase {
         XCTAssertTrue(MeasuredHeight.moved(from: 0, to: 708), "the first measurement")
         XCTAssertTrue(MeasuredHeight.moved(from: 52, to: 62), "a band that grew a line")
         // Both write-backs go through it: no other half-point test remains.
-        let source = try? String(contentsOf: URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent().deletingLastPathComponent()
-            .appendingPathComponent("Glasses/Workspaces/WorldBuilder/WorldRenderViewer.swift"), encoding: .utf8)
+        let viewer = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("Glasses/Workspaces/WorldBuilder/WorldRenderViewer.swift")
+        guard FileManager.default.fileExists(atPath: viewer.path) else {
+            #if targetEnvironment(simulator)
+            return XCTFail("sources not readable at \(viewer.path)")
+            #else
+            throw XCTSkip("sources are not on a device")
+            #endif
+        }
+        let source = try? String(contentsOf: viewer, encoding: .utf8)
         XCTAssertNotNil(source)
         XCTAssertEqual(source?.components(separatedBy: "MeasuredHeight.moved(").count, 3,
                        "the scene's height and CappedScroll's content height")
@@ -1214,6 +1221,9 @@ final class WorldChromeTests: XCTestCase {
     private static func chromeSources() throws -> [(String, String)] {
         let folder = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
             .appendingPathComponent("Glasses/Workspaces/WorldBuilder")
+        #if !targetEnvironment(simulator)
+        guard FileManager.default.fileExists(atPath: folder.path) else { throw XCTSkip("sources are not on a device") }
+        #endif
         return try ["WorldChromeProtocol.swift", "WorldChromeBridge.swift", "WorldChromeOverlay.swift"].map {
             ($0, try String(contentsOf: folder.appendingPathComponent($0), encoding: .utf8))
         }

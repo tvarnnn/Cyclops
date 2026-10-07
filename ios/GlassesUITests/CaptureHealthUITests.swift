@@ -8,6 +8,7 @@
 //  and the panel's honesty on a real socket). No Tower needed.
 //
 
+import UIKit
 import XCTest
 
 final class CaptureHealthUITests: XCTestCase {
@@ -295,6 +296,7 @@ final class CaptureHealthUITests: XCTestCase {
         XCTAssertTrue(cartridges.waitForExistence(timeout: 15), "the shell's Cartridges button")
         let drawerDone = app.buttons["Done"]
         XCTAssertTrue(tap(cartridges, until: drawerDone.exists), "the cartridge drawer opened")
+        app.raiseTheCartridgeDrawerOnAnIPad()
         let row = app.buttons.containing(NSPredicate(format: "label BEGINSWITH %@", name)).firstMatch
         var found = waitFor(timeout: 3) { row.exists && row.isHittable }
         for _ in 0..<6 where !found {
@@ -441,5 +443,31 @@ final class ReportPump: @unchecked Sendable {
              "counts":{"episodes":3,"recovered":2,"recovered_after_prompt":1,"timed_out":1,
                        "prompts":1,"withheld_by_limiter":0,"withheld_disabled":0}}}}}
         """
+    }
+}
+
+extension XCUIApplication {
+    /// On an iPad the cartridge drawer opens at half height below the
+    /// screen's centre, where `swipeUp()` misses it: drag the drawer itself
+    /// up to full height first. On an iPhone, nothing changes.
+    func raiseTheCartridgeDrawerOnAnIPad() {
+        guard UIDevice.current.userInterfaceIdiom == .pad else { return }
+        let bar = navigationBars["Cartridges"]
+        guard bar.waitForExistence(timeout: 5) else { return }
+        let grab = bar.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+        grab.press(forDuration: 0.1, thenDragTo: grab.withOffset(CGVector(dx: 0, dy: -400)))
+        Thread.sleep(forTimeInterval: 0.6)
+    }
+
+    /// Scrolls the cartridge drawer from inside it until `row` is hittable:
+    /// an iPad's drawer is a centred sheet, narrower than the screen.
+    func revealInTheCartridgeDrawer(_ row: XCUIElement, attempts: Int = 10) -> Bool {
+        let bar = navigationBars["Cartridges"]
+        for _ in 0..<attempts where !(row.exists && row.isHittable) {
+            let start = bar.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 1)).withOffset(CGVector(dx: 0, dy: 300))
+            start.press(forDuration: 0.1, thenDragTo: start.withOffset(CGVector(dx: 0, dy: -220)),
+                        withVelocity: .slow, thenHoldForDuration: 0.1)
+        }
+        return row.exists && row.isHittable
     }
 }

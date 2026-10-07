@@ -282,6 +282,13 @@ nonisolated struct WorldCoverageReceipt: Equatable, Sendable {
 
     /// Seconds since `solved_at` on the Tower's clock, at least zero, or
     /// `nil` when no clock was measured.
+    ///
+    /// Known LOW (FOW review): this age reads SHORT by the report's network
+    /// transit -- `tower_sent_at` is taken as the Tower's clock at the
+    /// phone's receipt, so the one-way delay (typically well under a second
+    /// on the LAN, more over a slow link) is never counted. The map can
+    /// therefore read a little fresher than it is, and `stale` arrives that
+    /// much late; it never reads older than it is.
     func age(at instant: ContinuousClock.Instant) -> Double? {
         clock.map { max(0, $0.towerNow(at: instant) - coverage.solvedAt) }
     }

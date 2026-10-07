@@ -14,7 +14,7 @@
 //  it fails, never skips, without GLASSES_UITEST_TOWER_AUTHORITY naming a
 //  real local Tower with TOWER_WORLD_NATIVE_CHROME=1 and the fixture world.
 //  UI8 is run on each phone U-INLINE §1.2 names (iPhone 17 Pro, 17e, SE 3)
-//  and fails on any other.
+//  and fails on any other iPhone; on an iPad it skips.
 //
 //  Screenshots go to UINLINE_SHOTS_DIR when it is set, suffixed with
 //  UINLINE_SHOT_SUFFIX.
@@ -73,6 +73,43 @@ final class WorldInlinePanelUITests: XCTestCase {
                 shoot("ui1-walking-\(name)\(map ? "-map" : "")")
                 app.terminate()
             }
+        }
+    }
+
+    /// FOW review MED-1: the walking caption runs to about eight lines, so
+    /// the panel's height follows the receipt -- below Stop, never moving
+    /// it. Stop's frame is identical with no coverage block and with the
+    /// longest one: two pieces, the not-drawn note, newer keyframes, stale,
+    /// and the legend.
+    func testTheCoverageCaptionNeverMovesStop() throws {
+        for size in [nil, Self.ax5] {
+            let name = size == nil ? "default" : "ax5"
+            let run = try startCapture(size: size, extra: [])
+            XCTAssertTrue(waitFor(timeout: 15) { self.socket.liveSubscription != nil }, "\(name): the live subscription")
+            // A live-capture session, so the reports are this capture's walk
+            // and not a foreign one.
+            push(modelState: "receiving", liveCapture: true, accepted: 127)
+            XCTAssertTrue(element("capture-health").waitForExistence(timeout: 10), "\(name): the walking panel")
+            Thread.sleep(forTimeInterval: 1)
+            XCTAssertFalse(element("wb-panel-map").exists, "\(name): no block, no map")
+            let without = run.stop.frame
+            push(modelState: "receiving", liveCapture: true, guidance: FOWGuidance.maximal, accepted: 127,
+                 towerSentAt: FOWGuidance.midSolvedAt + 45)
+            let notDrawn = element("wb-panel-map-not-drawn")
+            if !notDrawn.waitForExistence(timeout: 15) { print("FOW-AX|\(app.debugDescription)") }
+            XCTAssertTrue(notDrawn.exists, "\(name): the not-drawn note")
+            XCTAssertEqual(text(notDrawn), "1 more piece and 5 more stations not drawn")
+            XCTAssertTrue(element("wb-panel-map-legend").exists, "\(name): the legend")
+            XCTAssertTrue(element("wb-panel-map-pieces").exists, "\(name): the separate-pieces line")
+            XCTAssertTrue(element("wb-panel-map-newer").exists, "\(name): the newer line")
+            XCTAssertTrue(text(element("wb-panel-map-label")).hasSuffix(" · stale"), "\(name): stale")
+            XCTAssertEqual(app.descendants(matching: .any).matching(identifier: "wb-panel-map-piece").count, 2)
+            Thread.sleep(forTimeInterval: 1)
+            let with = run.stop.frame
+            print("FOW-STOP|\(name)|without=\(without)|with=\(with)|panel=\(element("wb-panel").frame)")
+            XCTAssertEqual(with, without, "\(name): the coverage caption moved Stop")
+            shoot("fow-stop-\(name)")
+            app.terminate()
         }
     }
 
@@ -212,6 +249,10 @@ final class WorldInlinePanelUITests: XCTestCase {
         for _ in 0..<8 where !(top.exists && top.isHittable) { app.swipeDown(velocity: .fast) }
         let panel = element("wb-panel")
         let window = app.windows.firstMatch.frame
+        if UIDevice.current.userInterfaceIdiom == .pad,
+           panel.frame.minY <= window.maxY - 0.2 * panel.frame.height, panel.isHittable {
+            throw XCTSkip("geometry: an iPad window is tall enough that the panel never scrolls off it (\(panel.frame))")
+        }
         XCTAssertTrue(panel.frame.minY > window.maxY - 0.2 * panel.frame.height || !panel.isHittable,
                       "the panel is off the screen: \(panel.frame)")
         Thread.sleep(forTimeInterval: 6.5)
@@ -352,6 +393,11 @@ final class WorldInlinePanelUITests: XCTestCase {
     ]
 
     func testTheLayoutOnEachPhone() throws {
+        // UI8 is the spec's phones' geometry; an iPad window is none of them
+        // (the iPad device run skips it, the iPhone 17 Pro Simulator runs it).
+        if UIDevice.current.userInterfaceIdiom == .pad {
+            throw XCTSkip("UI8 proves the spec's phones (17 Pro, 17e, SE 3), not an iPad")
+        }
         for size in [nil, Self.ax5] {
             let name = size == nil ? "default" : "ax5"
             mock.setRoute("GET /worlds/w1/render", status: 200,
@@ -645,12 +691,19 @@ final class WorldInlinePanelUITests: XCTestCase {
         XCTAssertFalse(first.frame.intersects(second.frame), "two pieces, never merged")
         XCTAssertTrue(map.frame.contains(first.frame) && map.frame.contains(second.frame), "in the map slot")
         XCTAssertTrue(element("capture-health").exists, "Capture health stays")
-        // The pixels: grey, muted and colored headings are all drawn.
-        let shot = app.screenshot().image
-        for (name, rgb) in [("grey", (87, 87, 87)), ("muted", (0x2E, 0x6B, 0x66)), ("colored", (0x4F, 0xD8, 0xC8))] {
-            XCTAssertGreaterThan(Self.pixels(in: shot, frame: first.frame, near: rgb), 3, "\(name) headings in piece 1")
-        }
         shoot("fow-mid")
+        // The pixels: grey, muted and colored headings are all drawn. Not on
+        // an iPad: its landscape screenshot is not laid out in the elements'
+        // frames, so the sampled box misses the piece (geometry only).
+        if UIDevice.current.userInterfaceIdiom == .pad {
+            print("FOW-PIXELS|not sampled on an iPad")
+        } else {
+            let shot = app.screenshot().image
+            for (name, rgb) in [("grey", (87, 87, 87)), ("muted", (0x2E, 0x6B, 0x66)), ("colored", (0x4F, 0xD8, 0xC8))] {
+                XCTAssertGreaterThan(Self.pixels(in: shot, frame: first.frame, near: rgb), 3,
+                                     "\(name) headings in piece 1")
+            }
+        }
 
         // Another walk's report, with no block: A's map goes.
         push(modelState: "receiving", world: "w2", session: "s9", name: "Other Room")
@@ -812,8 +865,8 @@ final class WorldInlinePanelUITests: XCTestCase {
     private func push(modelState: String, world: String = "w1", session: String = "s1", name: String = "Probe Room",
                       elements: Int = 1360, poses: Int = 40, reason: String? = nil,
                       buildInProgress: Bool? = nil, finalizationState: String? = nil, finalSolve: String? = nil,
-                      processing: String? = nil, photographic: String? = nil, guidance: String? = nil,
-                      accepted: Int? = nil, towerSentAt: Double = 1787463092.9) {
+                      processing: String? = nil, photographic: String? = nil, liveCapture: Bool = false,
+                      guidance: String? = nil, accepted: Int? = nil, towerSentAt: Double = 1787463092.9) {
         seq += 1
         let seq = self.seq
         socket.sendLive { subscription in
@@ -821,8 +874,8 @@ final class WorldInlinePanelUITests: XCTestCase {
                              session: session, name: name, elements: elements,
                              poses: poses, reason: reason, buildInProgress: buildInProgress,
                              finalizationState: finalizationState, finalSolve: finalSolve,
-                             processing: processing, photographic: photographic, guidance: guidance,
-                             accepted: accepted, towerSentAt: towerSentAt)
+                             processing: processing, photographic: photographic, liveCapture: liveCapture,
+                             guidance: guidance, accepted: accepted, towerSentAt: towerSentAt)
         }
         Thread.sleep(forTimeInterval: 0.7)
     }
@@ -877,6 +930,7 @@ final class WorldInlinePanelUITests: XCTestCase {
         XCTAssertTrue(cartridges.waitForExistence(timeout: 15), "the shell's Cartridges button")
         let drawerDone = app.buttons["Done"]
         XCTAssertTrue(tap(cartridges, until: drawerDone.exists), "the cartridge drawer opened")
+        app.raiseTheCartridgeDrawerOnAnIPad()
         let row = app.buttons.containing(NSPredicate(format: "label BEGINSWITH %@", name)).firstMatch
         var found = waitFor(timeout: 3) { row.exists && row.isHittable }
         for _ in 0..<6 where !found {
