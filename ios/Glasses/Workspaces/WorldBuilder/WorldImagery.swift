@@ -253,7 +253,9 @@ nonisolated struct WorldImageryClient {
     func tile(worldID: String, sessionID: String, digest: String) async throws -> UIImage {
         guard WorldImageryManifest.isDigest(digest) else { throw WorldImageryFetchError.refused }
         let data = try await get("worlds/\(worldID)/guidance/\(sessionID)/imagery/tile/\(digest)", accept: "image/jpeg")
-        guard data.count <= Self.maxTileBytes, let image = UIImage(data: data), let cgImage = image.cgImage,
+        // JPEG by its bytes too (SOI marker), not only by its Content-Type.
+        guard data.count <= Self.maxTileBytes, data.starts(with: [0xFF, 0xD8, 0xFF]),
+              let image = UIImage(data: data), let cgImage = image.cgImage,
               cgImage.width <= Self.maxTileSize.width, cgImage.height <= Self.maxTileSize.height
         else { throw WorldImageryFetchError.refused }
         // Decoded once here, off the main actor, rather than on first draw.

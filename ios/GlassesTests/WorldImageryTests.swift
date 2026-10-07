@@ -540,6 +540,12 @@ final class WorldImageryModelTests: XCTestCase {
         Stub.set(path, status: 200, data: F.jpeg(), type: "image/png")
         let png = await fetch()
         XCTAssertEqual(png, .refused, "not a JPEG")
+        let pngFormat = UIGraphicsImageRendererFormat()
+        pngFormat.scale = 1
+        let pngBytes = UIGraphicsImageRenderer(size: CGSize(width: 160, height: 90), format: pngFormat).pngData { _ in }
+        Stub.set(path, status: 200, data: pngBytes, type: "image/jpeg")
+        let mislabelled = await fetch()
+        XCTAssertEqual(mislabelled, .refused, "PNG bytes labelled image/jpeg")
         Stub.set(path, status: 200, data: Data(repeating: 0xFF, count: 17 * 1024), type: "image/jpeg")
         let heavy = await fetch()
         XCTAssertEqual(heavy, .refused, "over 16 KiB")
