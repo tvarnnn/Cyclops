@@ -93,11 +93,10 @@ struct WorldBuilderWorkspaceView: View {
     /// Whether this workspace is on screen (a cartridge switch takes it away).
     @State private var isOnScreen = false
 
-    /// The walk whose capture this phone stopped, until the Tower presents a
-    /// different walk: its current piece goes at the local Stop rather than
-    /// when the Tower's finalizing report arrives, which can lag (Codex review
-    /// MED), and does not come back if Start is tapped before it advances.
-    @State private var stoppedHere: WorldFinishWalk?
+    /// The current piece's local lifecycle: shown only while this phone
+    /// captures, never for a walk the Tower presented while it did not --
+    /// the Tower's reports lag the local Stop (Codex review MED, HOLD).
+    @State private var pieceGate = WorldCurrentPieceGate()
 
     /// The panel's own full-screen cover took this screen away: not a
     /// cartridge switch, so the World Builder session is neither stopped
@@ -276,14 +275,13 @@ struct WorldBuilderWorkspaceView: View {
             host.coverReported(words)
         }
         .onChange(of: hostInputs, initial: true) { _, inputs in host.update(inputs) }
-        // Set at the local Stop, and NOT cleared at the next Start: until the
-        // Tower presents a different walk, what it presents is still the one
-        // stopped here, and its piece is not the new capture's (Codex review).
-        .onChange(of: isCapturingNow) { wasCapturing, isCapturing in
-            if wasCapturing, !isCapturing { stoppedHere = world.presentedWalk }
+        // Any walk presented while this phone is not capturing is refused,
+        // past the next Start, until that capture's walk is presented.
+        .onChange(of: isCapturingNow, initial: true) { _, isCapturing in
+            pieceGate.observe(isCapturing: isCapturing, presented: world.presentedWalk)
         }
         .onChange(of: world.presentedWalk) { _, walk in
-            if let walk, walk != stoppedHere { stoppedHere = nil }
+            pieceGate.observe(isCapturing: isCapturingNow, presented: walk)
         }
         // The World Builder cartridge session: `start` on appearance and
         // whenever the socket comes back while on screen, `stop` on
@@ -502,9 +500,9 @@ struct WorldBuilderWorkspaceView: View {
             screenSaysOffline: captureSaysTowerIsOff,
             showsHealth: showsHealthInPanel,
             map: panelMap,
-            currentPiece: WorldCurrentPiece.shown(world.currentPiece, walk: world.presentedWalk,
-                                                  stoppedHere: stoppedHere,
-                                                  phase: panelPhase, state: world.state),
+            currentPiece: pieceGate.shown(world.currentPiece, walk: world.presentedWalk,
+                                          isCapturing: isCapturingNow,
+                                          phase: panelPhase, state: world.state),
             host: host,
             dismissBanner: { world.dismissFinishBanner() },
             bannerAnnounced: { walk in world.finishBannerAnnounced(for: walk) },

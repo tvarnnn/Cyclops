@@ -263,6 +263,100 @@ final class WorldCurrentPieceTests: XCTestCase {
                         "another walk's Stop hid this walk's piece")
     }
 
+    // MARK: Local lifecycle: only while this phone captures (Codex HOLD on ed3112b)
+
+    private static let walkC = WorldFinishWalk(worldID: "w3", sessionID: "s3")
+
+    /// The workspace screen: an input changes, the panel draws from the live
+    /// inputs, then the gate observes the change (SwiftUI's `onChange` runs
+    /// after the render that saw it) and the panel draws again. Every draw is
+    /// a sample.
+    private struct Screen {
+        var gate = WorldCurrentPieceGate()
+        var isCapturing = false
+        var presented: WorldFinishWalk?
+        var state = WorldModelState.receiving(WorldSnapshot())
+        var piece: WalkScoped<WorldCurrentPiece>?
+        var samples: [WorldCurrentPiece?] = []
+
+        var drawn: WorldCurrentPiece? {
+            let phase = WorldPanelPhase.phase(isCapturing: isCapturing, sessionActive: true, towerReachable: true,
+                                              pageLoaded: false, state: state, stage: nil, target: nil,
+                                              needsRetrySentence: nil, hasMap: false)
+            return gate.shown(piece, walk: presented, isCapturing: isCapturing, phase: phase, state: state)
+        }
+
+        private mutating func changed() {
+            samples.append(drawn)
+            gate.observe(isCapturing: isCapturing, presented: presented)
+            samples.append(drawn)
+        }
+
+        mutating func capture(_ on: Bool) {
+            isCapturing = on
+            changed()
+        }
+
+        mutating func tower(_ walk: WorldFinishWalk?, _ state: WorldModelState, piece: WalkScoped<WorldCurrentPiece>?) {
+            presented = walk
+            self.state = state
+            self.piece = piece
+            changed()
+        }
+    }
+
+    private static func scoped(_ walk: WorldFinishWalk) throws -> WalkScoped<WorldCurrentPiece> {
+        WalkScoped(walk: walk, value: try XCTUnwrap(WorldCurrentPiece(chunk: chunk(0, hash: "h0", poses: zeroPoses))))
+    }
+
+    /// Start -> Stop before the Tower presents the new walk: the Tower's
+    /// delayed `.receiving` for that walk lands after the local Stop. Its
+    /// piece is never drawn -- not then, and not under the next capture
+    /// until the Tower presents that capture's own walk.
+    func testAStartStoppedBeforeTheTowerNamedItsWalkNeverDrawsThatWalksPiece() throws {
+        let a = try Self.scoped(Self.walkA), b = try Self.scoped(Self.walkB), c = try Self.scoped(Self.walkC)
+        var screen = Screen()
+        // Walk A runs here and its piece draws: the samples can see a piece.
+        screen.capture(true)
+        screen.tower(Self.walkA, Self.receiving, piece: a)
+        XCTAssertEqual(screen.drawn, a.value)
+
+        let mark = screen.samples.count
+        screen.capture(false)                                   // Stop A
+        screen.capture(true)                                    // Start B: the Tower still presents A
+        screen.tower(Self.walkA, .finalizing(WorldSnapshot()), piece: a)
+        screen.capture(false)                                   // Stop B before the Tower named it
+        screen.tower(Self.walkB, Self.receiving, piece: b)      // B's delayed `.receiving`
+        screen.tower(Self.walkB, Self.receiving, piece: b)      // ... and the next one
+        screen.capture(true)                                    // Start C: the Tower still presents B
+        screen.tower(Self.walkB, Self.receiving, piece: b)
+        for (i, sample) in screen.samples[mark...].enumerated() {
+            XCTAssertNil(sample, "sample \(i): a piece after the local Stop, or B's under C's capture")
+        }
+
+        // C's own walk is presented: its piece draws.
+        screen.tower(Self.walkC, Self.receiving, piece: c)
+        XCTAssertEqual(screen.drawn, c.value)
+    }
+
+    /// Stop while the Tower presents no walk, then a late report for the
+    /// walk: no piece, after the Stop or under the next capture.
+    func testAStopWithNoWalkPresentedThenALateReportDrawsNothing() throws {
+        let b = try Self.scoped(Self.walkB), c = try Self.scoped(Self.walkC)
+        var screen = Screen()
+        screen.capture(true)                                    // Start: no walk presented yet
+        screen.capture(false)                                   // Stop, still none
+        screen.tower(Self.walkB, Self.receiving, piece: b)      // the late report
+        screen.capture(true)                                    // the next Start: still B
+        screen.tower(Self.walkB, Self.receiving, piece: b)
+        for (i, sample) in screen.samples.enumerated() {
+            XCTAssertNil(sample, "sample \(i): the late walk's piece was drawn")
+        }
+
+        screen.tower(Self.walkC, Self.receiving, piece: c)
+        XCTAssertEqual(screen.drawn, c.value)
+    }
+
     // MARK: Segment-local: no world transform
 
     /// A registered segment placed far away, rotated half a turn and scaled

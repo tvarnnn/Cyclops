@@ -38,13 +38,16 @@ final class WorldCurrentPieceUITests: XCTestCase {
 
     // MARK: Fills in, resets, stays out of the map, the walk's own
 
+    /// On the mock glasses: the piece is drawn only while this phone
+    /// captures (Codex review HOLD on ed3112b).
     func testTheCurrentPieceFillsInRestartsAtABreakAndIsItsWalksOwn() throws {
-        launch()
+        launch(mockGlasses: true)
         open(cartridge: "World Builder")
         XCTAssertTrue(waitFor(timeout: 15) { self.socket.liveSubscription != nil }, "the live subscription")
+        try startCapture()
 
         // No segment data (the manifest 404s): nothing drawn, today's panel.
-        push(modelState: "receiving", geometry: "g0")
+        push(modelState: "receiving", geometry: "g0", liveCapture: true)
         XCTAssertTrue(element("capture-health").waitForExistence(timeout: 15), "Capture health")
         Thread.sleep(forTimeInterval: 1.5)
         XCTAssertFalse(element("wb-current-piece").exists, "no segment data: no piece")
@@ -52,7 +55,7 @@ final class WorldCurrentPieceUITests: XCTestCase {
 
         // Segment 0, three posed keyframes: the piece, beside the map.
         serve(revision: "gA", segments: [(0, "h0", Self.zeroPoses)])
-        push(modelState: "receiving", geometry: "gA", guidance: FOWGuidance.mid, accepted: 127)
+        push(modelState: "receiving", geometry: "gA", liveCapture: true, guidance: FOWGuidance.mid, accepted: 127)
         let piece = element("wb-current-piece")
         XCTAssertTrue(piece.waitForExistence(timeout: 15), "the current piece")
         XCTAssertEqual(text(element("wb-current-piece-label")), "Provisional · current stretch")
@@ -66,14 +69,14 @@ final class WorldCurrentPieceUITests: XCTestCase {
 
         // A tracking break: segment 1 is current, and the piece starts over.
         serve(revision: "gB", segments: [(0, "h0", Self.zeroPoses), (1, "h1", Self.onePoses)])
-        push(modelState: "receiving", geometry: "gB", guidance: FOWGuidance.mid, accepted: 129)
+        push(modelState: "receiving", geometry: "gB", liveCapture: true, guidance: FOWGuidance.mid, accepted: 129)
         XCTAssertTrue(waitFor(timeout: 15) {
             self.text(self.element("wb-current-piece-views")) == "2 views since tracking last restarted"
         }, "after the break: \(text(element("wb-current-piece-views")))")
         shoot("current-piece-segment-1")
 
         // Another walk's report: A's piece goes.
-        push(modelState: "receiving", world: "w2", session: "s9", geometry: "gW2")
+        push(modelState: "receiving", world: "w2", session: "s9", geometry: "gW2", liveCapture: true)
         XCTAssertTrue(waitFor(timeout: 10) { !self.element("wb-current-piece").exists }, "A's piece under B's walk")
         XCTAssertTrue(element("capture-health").exists, "B's walking panel")
     }
@@ -159,6 +162,60 @@ final class WorldCurrentPieceUITests: XCTestCase {
         push(modelState: "receiving", world: "w2", session: "s9", geometry: "gN", liveCapture: true)
         XCTAssertTrue(piece.waitForExistence(timeout: 15), "the new walk's piece")
         XCTAssertEqual(text(element("wb-current-piece-views")), "2 views since tracking last restarted")
+    }
+
+    /// Codex review HOLD on ed3112b: Start -> Stop before the Tower presents
+    /// the new walk, whose delayed `receiving` report then lands after the
+    /// local Stop. Its piece never shows -- not then, and not under the next
+    /// capture until the Tower presents that capture's own walk.
+    func testAStartStoppedBeforeTheTowerNamedItsWalkNeverShowsThatWalksPiece() throws {
+        launch(mockGlasses: true)
+        open(cartridge: "World Builder")
+        XCTAssertTrue(waitFor(timeout: 15) { self.socket.liveSubscription != nil }, "the live subscription")
+        try startCapture()
+        let piece = element("wb-current-piece")
+        serve(revision: "gA", segments: [(0, "h0", Self.zeroPoses)])
+        push(modelState: "receiving", geometry: "gA", liveCapture: true)
+        XCTAssertTrue(piece.waitForExistence(timeout: 15), "walk A's piece while capturing")
+
+        // Stop A, Start B, Stop B: the Tower never presented B meanwhile.
+        let start = app.buttons["Start capture"], stop = app.buttons["Stop capture"]
+        reveal(stop)
+        XCTAssertTrue(tap(stop, until: !self.app.buttons["Stop capture"].exists), "Stop A")
+        reveal(start)
+        XCTAssertTrue(tap(start, until: self.app.buttons["Stop capture"].exists), "Start B")
+        reveal(stop)
+        XCTAssertTrue(tap(stop, until: !self.app.buttons["Stop capture"].exists), "Stop B")
+        XCTAssertTrue(neverExists(piece, for: 1), "a piece after the local Stop")
+
+        // B's delayed `receiving`, with its geometry: nothing, at every report.
+        serve(world: "w2", session: "s9", revision: "gN", segments: [(0, "n0", Self.onePoses)])
+        for round in 0..<3 {
+            push(modelState: "receiving", world: "w2", session: "s9", geometry: "gN", liveCapture: true)
+            XCTAssertTrue(neverExists(piece, for: 1), "B's piece after the local Stop (\(round))")
+        }
+        // The next Start: the Tower still presents B, and B's piece stays out.
+        reveal(start)
+        XCTAssertTrue(tap(start, until: self.app.buttons["Stop capture"].exists), "Start C")
+        for round in 0..<3 {
+            push(modelState: "receiving", world: "w2", session: "s9", geometry: "gN", liveCapture: true)
+            XCTAssertTrue(neverExists(piece, for: 1), "B's piece under C's capture (\(round))")
+        }
+        shoot("current-piece-rapid-start-stop")
+        // C's own walk: its piece.
+        serve(world: "w3", session: "s3", revision: "gC", segments: [(0, "c0", Self.zeroPoses)])
+        push(modelState: "receiving", world: "w3", session: "s3", geometry: "gC", liveCapture: true)
+        XCTAssertTrue(piece.waitForExistence(timeout: 15), "C's own piece")
+    }
+
+    /// Starts a capture on the mock glasses, or skips without a device.
+    private func startCapture() throws {
+        let start = app.buttons["Start capture"]
+        guard waitFor(timeout: 15, { start.exists && start.isEnabled }) else {
+            throw XCTSkip("Mock Device Kit gave no active device here")
+        }
+        start.tap()
+        XCTAssertTrue(app.buttons["Stop capture"].waitForExistence(timeout: 15), "the capture started")
     }
 
     // MARK: The mock Tower's geometry

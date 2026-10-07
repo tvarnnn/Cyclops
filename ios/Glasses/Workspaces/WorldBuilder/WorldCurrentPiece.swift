@@ -116,6 +116,48 @@ nonisolated struct WorldCurrentPiece: Equatable, Sendable {
     }
 }
 
+/// This phone's side of the piece's lifecycle (Codex review HOLD on ed3112b):
+/// the piece is shown ONLY while this phone's own capture runs, and never for
+/// a walk this phone is not capturing.
+///
+/// - After a local Stop nothing is shown, whatever the Tower reports, until
+///   the next local Start: the Tower's reports lag, so a `.receiving` report
+///   arriving after the Stop says nothing about this phone's capture.
+/// - Every walk the Tower presents while this phone is NOT capturing is
+///   refused -- the walk stopped here, and equally a walk a rapid Start ->
+///   Stop ended before the Tower ever named it (its delayed `.receiving`
+///   report lands after the Stop). It is not the next capture's walk, so the
+///   refusal holds past the next Start until, during that capture, the Tower
+///   presents a different walk.
+///
+/// `observe` is fed the screen's two inputs whenever either changes. `shown`
+/// reads the live capture flag rather than a stored one, so the piece goes
+/// in the very render that sees the Stop.
+nonisolated struct WorldCurrentPieceGate: Equatable, Sendable {
+    /// The walk whose piece is refused: one the Tower presented while this
+    /// phone was not capturing.
+    private(set) var refused: WorldFinishWalk?
+
+    /// Whether this phone captures now, and the walk the Tower presents now.
+    mutating func observe(isCapturing: Bool, presented: WorldFinishWalk?) {
+        guard let presented else { return }
+        if !isCapturing {
+            refused = presented
+        } else if presented != refused {
+            refused = nil
+        }
+    }
+
+    /// What the panel draws: nothing unless this phone is capturing; then
+    /// the piece of the presented walk, if that walk is not refused and the
+    /// received data is that walk's (`WorldCurrentPiece.shown`).
+    func shown(_ piece: WalkScoped<WorldCurrentPiece>?, walk: WorldFinishWalk?, isCapturing: Bool,
+               phase: WorldPanelPhase, state: WorldModelState) -> WorldCurrentPiece? {
+        guard isCapturing else { return nil }
+        return WorldCurrentPiece.shown(piece, walk: walk, stoppedHere: refused, phase: phase, state: state)
+    }
+}
+
 extension WorldBuilderViewModel {
     /// The current piece of the geometry on screen, WITH the walk whose
     /// geometry it is: the panel shows it only beside that walk's report.
