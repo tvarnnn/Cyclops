@@ -278,9 +278,9 @@ struct WorldBuilderWorkspaceView: View {
         // Any walk presented while this phone is not capturing is refused,
         // past the next Start, until that capture's walk is presented.
         .onChange(of: isCapturingNow, initial: true) { _, isCapturing in
-            pieceGate.observe(isCapturing: isCapturing, presented: world.presentedWalk)
+            pieceGate.observe(isCapturing: isCapturing, presented: world.walkPresentation.walk)
         }
-        .onChange(of: world.presentedWalk) { _, walk in
+        .onChange(of: world.walkPresentation.walk) { _, walk in
             pieceGate.observe(isCapturing: isCapturingNow, presented: walk)
         }
         // The World Builder cartridge session: `start` on appearance and
@@ -500,7 +500,7 @@ struct WorldBuilderWorkspaceView: View {
             screenSaysOffline: captureSaysTowerIsOff,
             showsHealth: showsHealthInPanel,
             map: panelMap,
-            currentPiece: pieceGate.shown(world.currentPiece, walk: world.presentedWalk,
+            currentPiece: pieceGate.shown(world.currentPiece, walk: world.walkPresentation.walk,
                                           isCapturing: isCapturingNow,
                                           phase: panelPhase, state: world.state),
             liveStrip: pieceGate.shown(world.liveStrip, beside: world.walkPresentation,
