@@ -187,4 +187,135 @@ final class MotionProbe: ObservableObject {
     }
 }
 
+// MARK: - Live 30 s probe
+
+import MWDATCore
+import os
+
+/// What the live probe shows. Pure value, so the arithmetic is testable.
+nonisolated struct MotionLiveReadout: Equatable, Sendable {
+    var state = "idle"
+    var running = false
+    var elapsed: TimeInterval = 0
+    var samples = 0
+    var accel = 0, gyro = 0, mag = 0, orientation = 0
+    var samplesPerSecond: Double?
+    var latestGyro: String = "-"
+    var latestOrientation: String = "-"
+    var error: String?
+    var startAttempts = 0
+
+    var summary: String {
+        "state=\(state) samples=\(samples) rate=\(samplesPerSecond.map { String(format: "%.1f", $0) } ?? "-")/s "
+            + "nonNull(accel=\(accel) gyro=\(gyro) mag=\(mag) orient=\(orientation)) "
+            + "starts=\(startAttempts) error=\(error ?? "none")"
+    }
+}
+
+/// Tap-driven, 30 s Motion probe. Adds Motion to an already STARTED session,
+/// starts it, retries `start()` once after `sensorUnavailable`, then removes it.
+/// Touches nothing of capture, streaming or Tower: the session is only handed in.
+@MainActor
+final class MotionLiveProbe: ObservableObject {
+    static let duration: TimeInterval = 30
+    private static let log = Logger(subsystem: "Glasses", category: "MotionProbe")
+
+    @Published private(set) var readout = MotionLiveReadout()
+    private var task: Task<Void, Never>?
+    private let tokens = ListenerTokenBag()
+    private var motion: Motion?
+    private var retried = false
+
+    func start(on session: DeviceSession) {
+        guard task == nil else { return }
+        readout = MotionLiveReadout()
+        retried = false
+        let motion: Motion
+        do {
+            guard let m = try session.addMotion(configuration: MotionConfiguration(samplingRate: .hz30)) else {
+                readout.error = "addMotion returned nil (session not started)"
+                finish(session)
+                return
+            }
+            motion = m
+        } catch {
+            readout.error = "addMotion threw: \(error.description)"
+            finish(session)
+            return
+        }
+        self.motion = motion
+        readout.running = true
+        motion.statePublisher.listen { [weak self] state in
+            Task { @MainActor [weak self] in self?.readout.state = state.description }
+        }.store(in: tokens)
+        motion.errorPublisher.listen { [weak self] error in
+            Task { @MainActor [weak self] in self?.handle(error, motion: motion) }
+        }.store(in: tokens)
+        let began = Date()
+        let samples = motion.samples
+        readout.startAttempts = 1
+        motion.start()
+        task = Task { [weak self] in
+            let reader = Task { [weak self] in
+                for await s in samples { self?.ingest(s, since: began) }
+            }
+            while !Task.isCancelled, Date().timeIntervalSince(began) < Self.duration {
+                try? await Task.sleep(nanoseconds: 250_000_000)
+                self?.readout.elapsed = Date().timeIntervalSince(began)
+            }
+            reader.cancel()
+            guard let self else { return }
+            self.finish(session)
+        }
+    }
+
+    func cancel() { task?.cancel() }
+
+    private func ingest(_ s: MotionSample, since began: Date) {
+        readout.samples += 1
+        if s.accelerometer != nil { readout.accel += 1 }
+        if s.gyroscope != nil { readout.gyro += 1 }
+        if s.magnetometer != nil { readout.mag += 1 }
+        if s.orientation != nil { readout.orientation += 1 }
+        if let g = s.gyroscope { readout.latestGyro = String(format: "%.3f %.3f %.3f rad/s", g.x, g.y, g.z) }
+        if let q = s.orientation { readout.latestOrientation = String(format: "x%.3f y%.3f z%.3f w%.3f", q.x, q.y, q.z, q.w) }
+        let t = Date().timeIntervalSince(began)
+        if t > 0.5 { readout.samplesPerSecond = Double(readout.samples) / t }
+    }
+
+    private func handle(_ error: MotionError, motion: Motion) {
+        readout.error = "\(error) — \(error.description)"
+        guard error == .sensorUnavailable, !retried, self.motion === motion else { return }
+        retried = true
+        Task { [weak self] in
+            // start() is legal again only once the state is back to stopped.
+            for _ in 0..<20 where motion.state != .stopped {
+                try? await Task.sleep(nanoseconds: 100_000_000)
+            }
+            guard let self, self.task != nil, self.motion === motion else { return }
+            self.readout.startAttempts += 1
+            motion.start()
+        }
+    }
+
+    private func finish(_ session: DeviceSession) {
+        tokens.clear()
+        motion?.stop()
+        motion = nil
+        do { try session.removeMotion() } catch {
+            Self.log.error("removeMotion failed: \(error.description, privacy: .public)")
+        }
+        readout.running = false
+        task = nil
+        Self.log.notice("Motion probe summary: \(self.readout.summary, privacy: .public)")
+        print("[Glasses][MotionProbe] \(readout.summary)")
+    }
+}
+
+/// The probe's entry exists only in DEBUG. Pinned by a test that is itself DEBUG.
+enum MotionProbeEntry {
+    static let isDebugOnly = true
+    static let title = "Motion probe"
+}
+
 #endif
