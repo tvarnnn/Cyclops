@@ -640,7 +640,7 @@ def main(argv=None) -> int:
         options = options_from_args(args, port=args.port, out=out, world_root=world_root,
                                     tower_pid=process.pid, on_abort=kill_tower_now,
                                     calibration_root=intrinsics, calibration_expected=copied_sha256,
-                                    on_guard_armed=handoff_live_watch)
+                                    on_guard_armed=handoff_live_watch, code_root=tower_dir)
         options.tower_log = err_log
         record = asyncio.run(run_replay(options))
         code = exit_code(record)

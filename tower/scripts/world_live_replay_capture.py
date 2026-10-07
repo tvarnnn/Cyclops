@@ -1,8 +1,8 @@
 """Optional replay receipts and a deliberately narrow FOW data stub.
 
-Coverage names a pinned status geometry revision. A missing pinned receipt
-means ``capture-incomplete``; coalesced ordinary revisions are reported
-separately and do not make the capture incomplete.
+Coverage names a pinned status geometry revision. A pinned revision needs a
+complete HTTP receipt or a verified local tree snapshot; coalesced ordinary
+revisions are reported separately and do not make the capture incomplete.
 """
 
 from __future__ import annotations
@@ -11,7 +11,10 @@ import argparse
 import base64
 import hashlib
 import json
+import os
 import re
+import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -28,12 +31,17 @@ def revision_dir(revision: str) -> str:
 
 
 class ReplayCapture:
-    def __init__(self, out: Path):
+    def __init__(self, out: Path, *, world_root: Path | None = None,
+                 code_root: Path | None = None):
         self.out = Path(out)
+        self.world_root = Path(world_root) if world_root is not None else None
+        self.code_root = Path(code_root) if code_root is not None else None
         self.started_monotonic = time.perf_counter()
         self.started_at = time.time()
         self.status_count = 0
         self.geometry_rows = []
+        self.tree_rows = []
+        self._tree_pending = []  # (row, manifest bytes, staging dir): verified once, at finish()
         self._bodies = {}  # (world, session, content hash, placement hash) -> saved file
         self._revisions = {}
         self._current_revision = None
@@ -77,6 +85,108 @@ class ReplayCapture:
                 and tracked["pinned_at"] is None):
             tracked["pinned_at"] = row["received_at"]
             tracked["pinned_monotonic"] = row["received_monotonic"]
+            if self.world_root is not None:
+                self._snapshot_tree(target)
+
+    def _tree_revisions(self, manifests: list[dict]) -> list[str]:
+        """Import the revision function in the selected test Tower's code tree, once for all
+        pending snapshots. Runs at finish(), never on the status path: a subprocess per pin
+        would stall the replay's event loop for an interpreter start each time (lead gate)."""
+        if self.code_root is None:
+            raise ValueError("missing replay code root")
+        env = os.environ.copy()
+        env["PYTHONPATH"] = str(self.code_root)
+        env["PYTHONDONTWRITEBYTECODE"] = "1"
+        script = ("import json, sys\n"
+                  "from tower.results.world_builder import geometry_revision_from_manifest\n"
+                  "print(json.dumps([geometry_revision_from_manifest(m) for m in json.load(sys.stdin)]))\n")
+        result = subprocess.run([sys.executable, "-c", script], input=json.dumps(manifests),
+                                text=True, capture_output=True, cwd=self.code_root, env=env,
+                                timeout=120, check=False)
+        if result.returncode:
+            raise ValueError(f"revision verifier failed: {result.stderr.strip()[-500:]}")
+        revisions = json.loads(result.stdout)
+        if not isinstance(revisions, list) or len(revisions) != len(manifests):
+            raise ValueError("revision verifier returned the wrong number of revisions")
+        return [str(revision) for revision in revisions]
+
+    def _verify_pending_trees(self) -> None:
+        """Verify every staged tree snapshot against its pinned revision; a verified one moves
+        from tree-snapshots/_pending/ to tree-snapshots/<revision>/ (nothing is deleted)."""
+        pending, self._tree_pending = self._tree_pending, []
+        if not pending:
+            return
+        try:
+            actual = self._tree_revisions([json.loads(manifest) for _, manifest, _ in pending])
+        except (ValueError, OSError, subprocess.TimeoutExpired) as exc:
+            for row, _, _ in pending:
+                row["verified"] = False
+                row["reason"] = f"revision verification failed: {exc}"
+        else:
+            for (row, _, staged), revision in zip(pending, actual):
+                if revision != row["revision"]:
+                    row["verified"] = False
+                    row["reason"] = "revision mismatch"
+                    row["actual_revision"] = revision
+                    continue
+                final = self.out / "tree-snapshots" / revision_dir(row["revision"])
+                staged.replace(final)
+                row["directory"] = final.relative_to(self.out).as_posix()
+                row["verified"] = True
+                row.pop("reason", None)
+        with (self.out / "tree-snapshots.jsonl").open("w", encoding="utf-8", newline="\n") as handle:
+            for row in self.tree_rows:
+                handle.write(json.dumps(row, separators=(",", ":")) + "\n")
+
+    def _snapshot_tree(self, target: tuple[str, str, str]) -> None:
+        world, session, revision = target
+        started_at, started_mono = time.time(), time.perf_counter()
+        row = {"world_id": world, "session_id": session, "revision": revision,
+               "started_at": started_at, "started_monotonic": started_mono,
+               "sha256s": {name: None for name in ("solution.json", "manifest.json",
+                                                   "placements.json", "poses.json",
+                                                   "keyframes.jsonl")}, "verified": False}
+        if not all(re.fullmatch(r"[A-Za-z0-9_-]{1,128}", value) for value in (world, session)):
+            row["reason"] = "invalid tree identity"
+        else:
+            base = self.world_root / "worlds" / world
+            derived = base / "derived" / session
+            paths = (base / "solve" / session / "solution.json", derived / "manifest.json",
+                     derived / "placements.json", derived / "poses.json",
+                     base / "sessions" / session / "keyframes.jsonl")
+            for attempt in range(1, 4):
+                row["attempts"] = attempt
+                try:
+                    before = tuple((p.stat().st_size, p.stat().st_mtime_ns) for p in paths)
+                    # Copy source bytes into memory first, so failed attempts
+                    # cannot publish a partial snapshot under the revision.
+                    bodies = [p.read_bytes() for p in paths]
+                    after = tuple((p.stat().st_size, p.stat().st_mtime_ns) for p in paths)
+                except OSError as exc:
+                    row["reason"] = f"tree read failed: {type(exc).__name__}: {exc}"
+                else:
+                    row["sha256s"] = {p.name: _sha(body) for p, body in zip(paths, bodies)}
+                    if before != after or any(len(body) != size for body, (size, _) in zip(bodies, before)):
+                        row["reason"] = "tree changed during copy"
+                    else:
+                        # Stage the consistent bytes now (milliseconds); the revision check
+                        # runs once at finish() so the status path never waits on it.
+                        staged = self.out / "tree-snapshots" / "_pending" / revision_dir(revision)
+                        staged.mkdir(parents=True, exist_ok=True)
+                        for path, body in zip(paths, bodies):
+                            (staged / path.name).write_bytes(body)
+                        row["verified"] = None
+                        row["reason"] = "verification pending"
+                        self._tree_pending.append((row, bodies[1], staged))
+                        break
+                if attempt < 3:
+                    time.sleep(0.01)
+        row["finished_at"] = time.time()
+        row["finished_monotonic"] = time.perf_counter()
+        row["elapsed_ms"] = round((row["finished_monotonic"] - started_mono) * 1000, 3)
+        self.tree_rows.append(row)
+        with (self.out / "tree-snapshots.jsonl").open("a", encoding="utf-8", newline="\n") as handle:
+            handle.write(json.dumps(row, separators=(",", ":")) + "\n")
 
     def geometry(self, target: tuple[str, str, str], manifest: bytes,
                  fetched: list[tuple[dict, bytes]]) -> bool:
@@ -133,18 +243,22 @@ class ReplayCapture:
 
     def finish(self, walk_t0: float | None, solutions: list[dict]) -> None:
         self._finished_at = (time.time(), time.perf_counter())
+        self._verify_pending_trees()
         index = {"clock_basis": "client wall clock on test Tower host",
                  "recording_started_at": self.started_at,
                  "recording_started_monotonic": self.started_monotonic,
                  "walk_t0": walk_t0, "status_pushes": self.status_count,
-                 "geometry": self.geometry_rows, "solutions": solutions,
+                 "geometry": self.geometry_rows, "tree_snapshots": self.tree_rows,
+                 "solutions": solutions,
                  "capture_summary": self.capture_summary()}
         (self.out / "walk-clock-index.json").write_text(json.dumps(index, indent=2), encoding="utf-8")
 
     def capture_summary(self) -> dict:
-        """Classify distinct status revisions by whether a complete receipt exists."""
+        """Classify distinct status revisions by their HTTP or tree receipt."""
         complete = {(row["world_id"], row["session_id"], row["revision"])
                     for row in self.geometry_rows if row["complete"]}
+        complete.update((row["world_id"], row["session_id"], row["revision"])
+                        for row in self.tree_rows if row["verified"])
         ended_at, ended_monotonic = self._finished_at or (time.time(), time.perf_counter())
         pinned_misses = []
         unpinned_misses = []
@@ -178,8 +292,14 @@ def supported_by_landing(out: Path) -> list[dict]:
     out = Path(out)
     statuses = [json.loads(line) for line in (out / "status-pushes.jsonl").read_text(
         encoding="utf-8").splitlines()]
+    geometry_index = out / "geometry-snapshots.jsonl"
     geometries = {row["revision"]: row for row in (json.loads(line) for line in
-                  (out / "geometry-snapshots.jsonl").read_text(encoding="utf-8").splitlines())}
+                  (geometry_index.read_text(encoding="utf-8").splitlines()
+                   if geometry_index.exists() else []))}
+    tree_index = out / "tree-snapshots.jsonl"
+    trees = {row["revision"]: row for row in (json.loads(line) for line in
+             (tree_index.read_text(encoding="utf-8").splitlines()
+              if tree_index.exists() else []))}
     index = json.loads((out / "walk-clock-index.json").read_text(encoding="utf-8"))
     if index.get("walk_t0") is None:
         raise ValueError("missing walk clock")
@@ -210,17 +330,26 @@ def supported_by_landing(out: Path) -> list[dict]:
             raise ValueError("status predates named landing")
         revision = coverage["geometry_revision"]
         geometry = geometries.get(revision)
-        if geometry is None or not geometry["complete"]:
-            raise ValueError(f"missing complete geometry revision {revision}")
-        directory = out / geometry["directory"]
-        if not (directory / "manifest.json").is_file():
-            raise ValueError(f"missing manifest for {revision}")
-        if _sha((directory / "manifest.json").read_bytes()) != geometry["manifest_sha256"]:
-            raise ValueError(f"manifest digest mismatch for {revision}")
-        for segment in geometry["segments"]:
-            path = directory / segment["file"]
-            if not path.is_file() or _sha(path.read_bytes()) != segment["sha256"]:
-                raise ValueError(f"missing or changed segment body for {revision}")
+        if geometry is not None and geometry["complete"]:
+            directory = out / geometry["directory"]
+            if not (directory / "manifest.json").is_file():
+                raise ValueError(f"missing manifest for {revision}")
+            if _sha((directory / "manifest.json").read_bytes()) != geometry["manifest_sha256"]:
+                raise ValueError(f"manifest digest mismatch for {revision}")
+            for segment in geometry["segments"]:
+                path = directory / segment["file"]
+                if not path.is_file() or _sha(path.read_bytes()) != segment["sha256"]:
+                    raise ValueError(f"missing or changed segment body for {revision}")
+        else:
+            tree = trees.get(revision)
+            if tree is None or not tree["verified"]:
+                raise ValueError(f"missing complete geometry revision {revision}")
+            directory = out / tree["directory"]
+            for name in ("solution.json", "manifest.json", "placements.json",
+                         "poses.json", "keyframes.jsonl"):
+                path = directory / name
+                if not path.is_file() or _sha(path.read_bytes()) != tree["sha256s"].get(name):
+                    raise ValueError(f"missing or changed tree snapshot file for {revision}: {name}")
         horizon = coverage["horizon_keyframes"]
         if not any(solution.get("solved_at") == coverage["solved_at"] and
                    len(solution["keyframe_ids"]) == horizon for solution in solutions):

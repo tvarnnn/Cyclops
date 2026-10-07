@@ -4,8 +4,10 @@ import asyncio
 import base64
 import hashlib
 import json
+import os
 import threading
 import time
+from pathlib import Path
 
 import pytest
 
@@ -27,6 +29,105 @@ def _status(revision, *, coverage=False):
         payload["guidance"] = {"coverage": _coverage(revision)}
     envelope = {"type": "cartridge_result", "cartridge": "world_builder", "payload": payload}
     return json.dumps(envelope), envelope
+
+
+def _tree(tmp_path):
+    code_root = tmp_path / "code"
+    module = code_root / "tower" / "results" / "world_builder.py"
+    module.parent.mkdir(parents=True)
+    (module.parent.parent / "__init__.py").write_text("", encoding="utf-8")
+    (module.parent / "__init__.py").write_text("", encoding="utf-8")
+    module.write_text("def geometry_revision_from_manifest(manifest):\n"
+                      "    return manifest['test_revision']\n", encoding="utf-8")
+    root = tmp_path / "data" / "world_builder"
+    base = root / "worlds" / "w"
+    files = (base / "solve" / "s" / "solution.json",
+             base / "derived" / "s" / "manifest.json",
+             base / "derived" / "s" / "placements.json",
+             base / "derived" / "s" / "poses.json",
+             base / "sessions" / "s" / "keyframes.jsonl")
+    manifest = {"test_revision": "tree-rev"}
+    for path, body in zip(files, (b'{"solved_at":10}', json.dumps(manifest).encode(),
+                                  b'{"placements":[]}', b'{"poses":[]}', b'{}\n')):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(body)
+    return root, files, manifest["test_revision"], code_root
+
+
+def test_verified_tree_captures_pin_after_http_receipt_is_superseded(tmp_path):
+    root, files, revision, code_root = _tree(tmp_path)
+    out = tmp_path / "out"
+    out.mkdir()
+    solutions = out / "solution-snapshots"
+    solutions.mkdir()
+    (solutions / "000.json").write_text(json.dumps({
+        "solved_at": 10.0, "keyframe_ids": ["a", "b"]}), encoding="utf-8")
+    recorder = ReplayCapture(out, world_root=root, code_root=code_root)
+    raw, envelope = _status(revision, coverage=True)
+    recorder.status(raw, envelope)
+    with pytest.raises(ValueError, match="segment 0 changed"):
+        recorder.geometry(("w", "s", revision), json.dumps({"segments": [
+            {"segment_index": 0, "content_hash": "new", "placement_hash": "p"}]}).encode(),
+            [({"segment_index": 0, "content_hash": "new", "placement_hash": "p"},
+              b'{"segment_index":0,"content_hash":"old","placement_hash":"p"}')])
+    raw, envelope = _status("next")
+    recorder.status(raw, envelope)
+    recorder.finish(1.0, [{"file": "000.json"}])
+    row = json.loads((out / "tree-snapshots.jsonl").read_text().splitlines()[0])
+    assert row["revision"] == revision and row["verified"] is True
+    assert set(row["sha256s"]) == {path.name for path in files}
+    for path in files:
+        assert (out / "tree-snapshots" / revision / path.name).read_bytes() == path.read_bytes()
+    assert recorder.capture_summary()["pinned_missed"] == 0
+    assert not recorder.incomplete
+    assert [row["geometry_revision"] for row in supported_by_landing(out)] == [revision]
+    (out / "tree-snapshots" / revision / "poses.json").write_bytes(b"changed")
+    with pytest.raises(ValueError, match="changed tree snapshot file"):
+        supported_by_landing(out)
+
+
+def test_changing_tree_is_retried_then_missed(tmp_path, monkeypatch):
+    root, files, revision, code_root = _tree(tmp_path)
+    out = tmp_path / "out"
+    out.mkdir()
+    original = Path.read_bytes
+    reads = 0
+
+    def changing_read(path):
+        nonlocal reads
+        data = original(path)
+        if path == files[0]:
+            reads += 1
+            poses = files[3]
+            poses.write_bytes(b'{"poses":[],"changed":%d}' % reads)
+            stat = poses.stat()
+            os.utime(poses, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1_000_000_000))
+        return data
+
+    monkeypatch.setattr(Path, "read_bytes", changing_read)
+    recorder = ReplayCapture(out, world_root=root, code_root=code_root)
+    raw, envelope = _status(revision, coverage=True)
+    recorder.status(raw, envelope)
+    recorder.finish(None, [])
+    assert reads >= 2
+    assert recorder.capture_summary()["pinned_missed"] == 1
+    assert not (out / "tree-snapshots" / revision / "manifest.json").exists()
+    assert json.loads((out / "tree-snapshots.jsonl").read_text().splitlines()[0])["verified"] is False
+
+
+def test_tree_revision_mismatch_is_a_miss(tmp_path):
+    root, _, revision, code_root = _tree(tmp_path)
+    out = tmp_path / "out"
+    out.mkdir()
+    recorder = ReplayCapture(out, world_root=root, code_root=code_root)
+    raw, envelope = _status(revision + "wrong", coverage=True)
+    recorder.status(raw, envelope)
+    recorder.finish(None, [])
+    row = json.loads((out / "tree-snapshots.jsonl").read_text().splitlines()[0])
+    assert row["verified"] is False
+    assert row["reason"] == "revision mismatch"
+    assert recorder.capture_summary()["pinned_missed"] == 1
+    assert not (out / "tree-snapshots" / (revision + "wrong") / "manifest.json").exists()
 
 
 def _fixture(tmp_path):

@@ -1580,6 +1580,7 @@ class ReplayOptions:
     calibration_expected: dict[str, str] | None = None
     live_timeline: bool = False
     capture_status_geometry: bool = False
+    code_root: Path | None = None
     tower_log: Path | None = None
 
 
@@ -1829,7 +1830,9 @@ async def run_replay(options: ReplayOptions) -> dict:
 
     stats = StreamStats()
     phone = PhoneView()
-    capture = ReplayCapture(out) if options.capture_status_geometry else None
+    capture = (ReplayCapture(out, world_root=options.world_root,
+                             code_root=options.code_root or TOWER_ROOT)
+               if options.capture_status_geometry else None)
     live_solutions = SolutionSnapshots(out) if capture is not None else None
     solution_watch_stop = asyncio.Event()
     mirror = GeometryMirror(base, enabled=options.phone_fetches, capture=capture)
@@ -2045,6 +2048,8 @@ async def run_replay(options: ReplayOptions) -> dict:
             capture_summary = capture.capture_summary()
             record["status_geometry_capture"] = {"status_pushes": capture.status_count,
                                                     "geometry_revisions": len(capture.geometry_rows),
+                                                    "tree_snapshots": len(capture.tree_rows),
+                                                    "tree_verified": sum(row["verified"] for row in capture.tree_rows),
                                                     "socket_errors": capture_socket_errors,
                                                     "geometry_errors": mirror.capture_errors,
                                                     **capture_summary}
@@ -2239,7 +2244,8 @@ def refuse_inside_live_store(path, what: str) -> None:
 
 
 def options_from_args(args, *, port, out, world_root=None, tower_pid=None, on_abort=None,
-                      calibration_root=None, calibration_expected=None, on_guard_armed=None) -> ReplayOptions:
+                      calibration_root=None, calibration_expected=None, on_guard_armed=None,
+                      code_root=None) -> ReplayOptions:
     return ReplayOptions(
         port=port, captures=list(args.capture), capture_root=Path(args.capture_root),
         out=Path(out), world_root=None if world_root is None else Path(world_root),
@@ -2254,6 +2260,7 @@ def options_from_args(args, *, port, out, world_root=None, tower_pid=None, on_ab
         calibration_root=calibration_root, calibration_expected=calibration_expected,
         live_timeline=bool(getattr(args, "live_timeline", False)),
         capture_status_geometry=bool(getattr(args, "capture_status_geometry", False)),
+        code_root=None if code_root is None else Path(code_root),
         tower_log=getattr(args, "tower_log", None),
     )
 
@@ -2297,6 +2304,8 @@ def main(argv=None) -> int:
     refuse_unguarded_proof(args)
     check_target_port(args.port)
     refuse_inside_live_store(args.out, "--out")
+    if args.capture_status_geometry:
+        refuse_inside_live_store(args.world_root, "--world-root")
     refuse_non_empty_out(args.out)
     options = options_from_args(args, port=args.port, out=args.out, world_root=args.world_root,
                                 tower_pid=args.tower_pid)
