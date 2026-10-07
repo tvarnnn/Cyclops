@@ -621,6 +621,54 @@ final class WorldInlinePanelTests: XCTestCase {
     /// The finish block's progress line is the report's, recorded for the
     /// report's walk -- A, B, A -- so the memory never holds one walk's line
     /// under another's identity.
+    // MARK: Build loading (after a local Stop)
+
+    /// After a local Stop with a building status: no map, no current piece,
+    /// the loading view with its stage text and a progress indicator.
+    func testAfterStopWhileBuildingThePanelIsTheLoadingViewAlone() throws {
+        typealias Panel = WorldInlinePanel<EmptyView>
+        let phase = WorldPanelPhase.phase(
+            isCapturing: false, sessionActive: true, towerReachable: true, pageLoaded: true,
+            state: .finalizing(WorldSnapshot(), buildInProgress: true), stage: .improving, target: nil,
+            needsRetrySentence: nil, hasMap: true)
+        XCTAssertEqual(phase, .finishing(target: nil))
+        XCTAssertEqual(Panel.stageKind(phase), .loading)
+        XCTAssertNotEqual(Panel.stageKind(phase), .map)
+        let report = scoped(walkA, WorldPresentation(stage: .improving,
+                                                     finishLine: .processing(.placing, step: nil)))
+        let block = try XCTUnwrap(Panel.finishing(report, phase: phase, buildInProgress: true,
+                                                  towerReachable: true).value)
+        XCTAssertNotNil(block.line, "the U0.6 stage text")
+        XCTAssertTrue(block.showsSpinner)
+    }
+
+    /// Source scan (Mac only): the loading view draws no map or piece.
+    func testTheLoadingViewSourceDrawsNoMapOrPiece() throws {
+        let url = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("Glasses/Workspaces/WorldBuilder/WorldInlinePanel.swift")
+        guard FileManager.default.fileExists(atPath: url.path) else { throw XCTSkip("sources are not on a device") }
+        let src = try String(contentsOf: url, encoding: .utf8)
+        let body = try XCTUnwrap(src.components(separatedBy: "private func finishingContent").last?
+            .components(separatedBy: "private func stageText").first)
+        XCTAssertFalse(body.contains("WorldCoverageMapView") || body.contains("WorldCurrentPieceView")
+                       || body.contains("map"), "the loading view draws no map")
+    }
+
+    /// The ready status shows the inline viewer with no tap or refresh: the
+    /// phase follows the status alone.
+    func testTheReadyStatusShowsTheInlineViewerWithoutUserAction() {
+        typealias Panel = WorldInlinePanel<EmptyView>
+        func phase(_ state: WorldModelState, _ stage: WorldStage) -> WorldPanelPhase {
+            .phase(isCapturing: false, sessionActive: true, towerReachable: true, pageLoaded: true,
+                   state: state, stage: stage, target: target, needsRetrySentence: nil, hasMap: true)
+        }
+        let building = phase(.finalizing(WorldSnapshot(), buildInProgress: true), .building)
+        XCTAssertEqual(Panel.stageKind(building), .loading)
+        let ready = phase(.finalized(WorldSnapshot()), .saved)
+        XCTAssertEqual(ready, .ready(target))
+        XCTAssertEqual(Panel.stageKind(ready), .viewer)
+    }
+
     func testTheFinishingProgressIsRecordedForItsOwnWalk() {
         typealias Panel = WorldInlinePanel<EmptyView>
         let a = scoped(walkA, WorldPresentation(stage: .improving, finishLine: .processing(.placing, step: nil)))

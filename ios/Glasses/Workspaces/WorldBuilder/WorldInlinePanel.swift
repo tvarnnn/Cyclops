@@ -534,6 +534,22 @@ struct WorldInlinePanel<Health: View>: View {
         .accessibilityIdentifier("wb-panel-stage")
     }
 
+    /// What the stage draws, by phase. The fog-of-war map belongs to the
+    /// walking capture only: after Stop, until the world is ready, the stage
+    /// is the loading view alone, and the ready world replaces it with no tap.
+    enum StageKind: Equatable { case none, map, loading, viewer, text, offline }
+
+    static func stageKind(_ phase: WorldPanelPhase) -> StageKind {
+        switch phase {
+        case .hidden: return .none
+        case .walking: return .map
+        case .finishing: return .loading
+        case .ready: return .viewer
+        case .failed: return .text
+        case .offline: return .offline
+        }
+    }
+
     @ViewBuilder
     private var stageContent: some View {
         switch phase {
@@ -566,15 +582,12 @@ struct WorldInlinePanel<Health: View>: View {
         }
     }
 
-    /// S2: the frozen map when there was one, and over it -- or alone on the
-    /// plate -- the finish block. Never a duration or an estimate.
+    /// S2: the loading view -- no map, no current piece: the finish block. Never a duration or an estimate.
     private func finishingContent(_ block: FinishingBlock) -> some View {
         ZStack(alignment: .topLeading) {
-            if let map {
-                WorldCoverageMapView(coverage: map.receipt.coverage, isFrozen: true)
-            }
             VStack(alignment: .leading, spacing: 10) {
-                WorldFinishLineView(showsSpinner: block.showsSpinner, line: block.line,
+                // A progress indicator always, unless the Tower is gone.
+                WorldFinishLineView(showsSpinner: block.showsSpinner || !block.offline, line: block.line,
                                     stoppedAt: block.stoppedAt, style: .panel)
                 if let detail = block.detail {
                     // The canvas's own true sentence: owed, unobservable, or
@@ -584,11 +597,6 @@ struct WorldInlinePanel<Health: View>: View {
                         .foregroundStyle(WorldChromeStyle.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                         .accessibilityIdentifier("wb-panel-finishing-detail")
-                }
-                if let map {
-                    // The frozen map's receipt, dated: "at Stop" only when
-                    // it holds every accepted keyframe (FOW §8.2).
-                    WorldCoverageCaption(source: map, stopped: true)
                 }
                 if block.offline {
                     Text(WorldPanelCopy.finishingButOffline)
