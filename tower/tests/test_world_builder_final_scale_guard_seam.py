@@ -469,3 +469,17 @@ def test_a_withheld_regate_writes_nothing_and_is_not_a_stop(tmp_path, colmap, mo
     assert s.workspace.solution_path.read_bytes() == before
     assert out["detail"].startswith("the final scale guard withheld")
     del eng
+
+
+def test_a_background_solve_is_never_guarded(tmp_path, colmap, monkeypatch):
+    """Only a FINAL solve's publication is guarded: the walk's background solves publish as today, even
+    with the guard on (and they run no depth stage for it)."""
+    eng = _Engines(monkeypatch, n=W3_N, levels=_w3_levels_named())
+    s = _walk(tmp_path / "w", W3_N, colmap, monkeypatch)
+    monkeypatch.setenv(SWITCH, "on")
+    eng.depth_calls = eng.metric_calls = 0
+    out = GS.solve(s.store, s.world_id, s.session_id, final=False, input_digest="walk-digest")
+    meta, comp, audit = _published(s)
+    assert out["solved"] is True and comp is None and audit is None
+    assert len(_room_ids(meta)) == W3_N and "final_scale_guard" not in (meta.get("solve") or {})
+    assert eng.depth_calls == 0 and eng.metric_calls == 0
