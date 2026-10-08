@@ -1106,6 +1106,28 @@ def run_depth_stage(
             continue
         targets.append((i, kid, pose))
 
+    # EXP3 (PREREG-EXP3-MIRROR-ORACLE-20261008): off (`mirror_masks_path` None, the
+    # default) touches nothing below -- no polygon file opened, no keyframe re-read, no
+    # `_mirror.npy` written. On, loaded ONCE: a bad file or no `mirror_walk` means this
+    # depth stage runs without the oracle, exactly like the switch being off, logged once.
+    from tower.world_builder import mirror_masks
+
+    want_mirror = bool(params.mirror_masks_path)
+    polygons_by_key, seq_by_kid = {}, {}
+    if want_mirror and params.mirror_walk is None:
+        logger.warning("[Tower][WorldBuilder][dense] TOWER_WORLD_MIRROR_MASKS is on but no "
+                       "mirror_walk was given; this depth stage runs without the oracle")
+        want_mirror = False
+    if want_mirror:
+        try:
+            polygons_by_key = mirror_masks.load_polygons(params.mirror_masks_path)
+            seq_by_kid = {k.keyframe_id: k.source_seq
+                         for k in store.read_keyframes(world_id, session_id)}
+        except Exception:  # noqa: BLE001 -- this stage runs without the oracle, logged
+            logger.exception("[Tower][WorldBuilder][dense] could not load the mirror polygon "
+                             "file; this depth stage runs without the oracle")
+            want_mirror = False
+
     maps = None
     map_shape = None
     # Per-FRAME resume. A stop halfway through a 429-frame world should cost
@@ -1162,6 +1184,7 @@ def run_depth_stage(
 
         pred_path = work / "depth" / f"{ki:05d}_pred.npy"
         fill_path = work / "depth" / f"{ki:05d}_fill.npy"
+        mirror_path = work / "depth" / f"{ki:05d}_mirror.npy"
         undist_path = work / "undist" / f"{ki:05d}.jpg"
 
         data, origin, exact_fill = keyframe_image_bytes(
@@ -1172,18 +1195,23 @@ def run_depth_stage(
         image_sha1 = hashlib.sha1(data).hexdigest() if data is not None else None
         # A prediction is reused only for the SAME IMAGE, not merely the same
         # keyframe id: a keyframe re-redacted or replaced since would otherwise
-        # keep the old pixels' depth, fill mask and colour.
+        # keep the old pixels' depth, fill mask and colour. EXP3: also only when the
+        # mirror mask is off, or an earlier run under the SAME switch already wrote
+        # this frame's `_mirror.npy` -- never silently reuse a fit made before the
+        # oracle existed for this frame.
         offered = reuse_predictions.get(int(ki))
         if (image_sha1 is not None and offered == (kid, image_sha1)
-                and pred_path.exists() and fill_path.exists() and undist_path.exists()):
+                and pred_path.exists() and fill_path.exists() and undist_path.exists()
+                and (not want_mirror or mirror_path.exists())):
             disp = np.load(pred_path).astype(np.float32)
             fill_u = np.load(fill_path)
             fill_fraction = float(fill_u.mean())
+            mirror_u = np.load(mirror_path) if mirror_path.exists() else None
             origins["reused-prediction"] = origins.get("reused-prediction", 0) + 1
             reused += 1
             record = _fit_record(
                 ki, kid, pose, disp, fill_u, fill_fraction, "reused-prediction",
-                solution, obs_kf, obs_pt, K, W, H, params, backend, work)
+                solution, obs_kf, obs_pt, K, W, H, params, backend, work, mirror_u=mirror_u)
             record["image_sha1"] = image_sha1
             record["fill_rule"] = FILL_RULE
             records.append(record)
@@ -1236,6 +1264,23 @@ def run_depth_stage(
                                cv2.INTER_NEAREST)[y0:y0 + rh, x0:x0 + rw] > 0
         np.save(work / "depth" / f"{ki:05d}_fill.npy", fill_u)
         fill_fraction = float(fill_u.mean())
+        # EXP3: the oracle mirror interior, mapped through the SAME undistortion maps as
+        # the redaction fill just above, so the two exclusions sit in one pixel grid. No
+        # record for this keyframe (outside the annotated range) leaves `mirror_u` None and
+        # nothing is written -- this frame is untouched, exactly as if the switch were off.
+        mirror_u = None
+        if want_mirror:
+            try:
+                interior = mirror_masks.interior_mask_for_frame(
+                    polygons_by_key, params.mirror_walk, seq_by_kid.get(kid),
+                    m1=m1, m2=m2, roi=(x0, y0, rw, rh), out_shape=(rh, rw))
+            except mirror_masks.MirrorPolygonError:
+                logger.exception("[Tower][WorldBuilder][dense] mirror mask for keyframe %s "
+                                 "could not be remapped; this frame is unaffected", ki)
+                interior = None
+            if interior is not None:
+                mirror_u = interior
+                np.save(work / "depth" / f"{ki:05d}_mirror.npy", mirror_u)
         if params.inpaint_redaction_fill and fill_u.any():
             # Give the network a continuous image instead of a hole. What
             # comes back inside the hole is invention and is thrown away by
@@ -1281,7 +1326,7 @@ def run_depth_stage(
         np.save(pred_path, disp.astype(np.float16))
         record = _fit_record(
             ki, kid, pose, disp, fill_u, fill_fraction, origin, solution,
-            obs_kf, obs_pt, K, W, H, params, backend, work)
+            obs_kf, obs_pt, K, W, H, params, backend, work, mirror_u=mirror_u)
         record["image_sha1"] = image_sha1
         record["fill_rule"] = FILL_RULE
         records.append(record)
@@ -1320,12 +1365,18 @@ def run_depth_stage(
 
 
 def _fit_record(ki, kid, pose, disp, fill_u, fill_fraction, origin, solution,
-                obs_kf, obs_pt, K, W, H, params, backend, work) -> dict:
+                obs_kf, obs_pt, K, W, H, params, backend, work, *, mirror_u=None) -> dict:
     """Fit one frame's depth prediction to THIS solve's sparse points.
 
     Separated from prediction so that a prediction made during an earlier
     solve can be fitted again against a later one. The body is the depth
     stage's original fit, moved and unchanged in what it computes.
+
+    `mirror_u` (EXP3): the oracle mirror interior, unioned with `fill_u` for the
+    anchor exclusion below ONLY -- never saved as `fill_u`, never counted in
+    `redaction_fill_fraction`: the two stay separately provenanced (prereg's O1 depth
+    row). None (the switch off, or this frame outside the annotated range) is exactly
+    today's `fill_u`-only exclusion.
     """
     m = obs_kf == ki
     if int(m.sum()) < params.min_sparse_points:
@@ -1364,6 +1415,12 @@ def _fit_record(ki, kid, pose, disp, fill_u, fill_fraction, origin, solution,
     # those 30 frames on clean points alone moves the depth by a median
     # 12.8% and a maximum of 467%, and three of them flip to a negative `a`,
     # the value the fusion stage explicitly refuses.
+    if mirror_u is not None:
+        # EXP3: unioned into the anchor exclusion only. `fill_u` is reassigned to a NEW
+        # array bound to this function's own local name -- the caller's redaction-fill
+        # array, its `_fill.npy` and the `fill_fraction` it already computed from that
+        # array are untouched; only the anchor exclusion below sees the union.
+        fill_u = fill_u | mirror_u
     clean = ~fill_u[vi, ui].astype(bool)
     n_clean = int(clean.sum())
     if n_clean < params.min_sparse_points:
@@ -1510,6 +1567,12 @@ def run_fuse_stage(
         if fillp.exists():
             # Redaction fill is unobserved, so it stays a hole.
             ok &= ~np.load(fillp)
+        # EXP3 (PREREG-EXP3-MIRROR-ORACLE-20261008): the oracle mirror interior, a
+        # SEPARATE file from redaction fill above (own provenance, own cache key). Absent
+        # -- the switch off, or this frame outside the annotated range -- changes nothing.
+        mirrorp = work / "depth" / f"{ki:05d}_mirror.npy"
+        if mirrorp.exists():
+            ok &= ~np.load(mirrorp)
         VALID[ki] = ok
 
     sample = np.concatenate([d[np.isfinite(d)][::37] for d in D.values()])

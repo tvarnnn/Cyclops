@@ -56,6 +56,12 @@ def main(argv=None) -> int:
                              "(downloads a vocabulary tree on first use)")
     parser.add_argument("--min-image-observations", type=int,
                         default=global_solve.MIN_IMAGE_OBSERVATIONS)
+    parser.add_argument("--mirror-polygons", default=None,
+                        help="EXP3 (PREREG-EXP3-MIRROR-ORACLE-20261008): the oracle polygon "
+                             "JSONL; with TOWER_WORLD_MIRROR_MASKS=on this is required "
+                             "alongside --mirror-walk, or the solve runs without the oracle")
+    parser.add_argument("--mirror-walk", type=int, default=None,
+                        help="EXP3: the walk number (matches the polygon file's `walk` field)")
     parser.add_argument("--format", choices=("json", "text"), default="json")
     args = parser.parse_args(argv)
 
@@ -77,6 +83,8 @@ def main(argv=None) -> int:
             min_image_observations=args.min_image_observations,
             loop_detection=args.loop_detection,
             input_digest=compute_input_digest(keyframes),
+            mirror_polygons=args.mirror_polygons,
+            mirror_walk=args.mirror_walk,
         )
     finally:
         finish_phase.uninstall(token)

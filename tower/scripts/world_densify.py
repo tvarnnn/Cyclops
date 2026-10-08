@@ -41,6 +41,10 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from tower.artifact_paths import artifact_root_arg  # noqa: E402
+from tower.config import (  # noqa: E402
+    world_mirror_masks_setting,
+    world_mirror_polygons_path_setting,
+)
 from tower.world_builder.dense import DenseParams, available_backends  # noqa: E402
 from tower.world_builder.dense_pipeline import (  # noqa: E402
     STATE_OK,
@@ -89,6 +93,12 @@ def main(argv=None) -> int:
                          "fused.npz. About 470 MB on a 438-keyframe world, and what "
                          "makes re-fusing with different parameters fast -- so this "
                          "is the flag for the development loop")
+    ap.add_argument("--mirror-polygons", default=None,
+                    help="EXP3 (PREREG-EXP3-MIRROR-ORACLE-20261008): the oracle polygon "
+                         "JSONL, else TOWER_WORLD_MIRROR_POLYGONS; read only when "
+                         "TOWER_WORLD_MIRROR_MASKS=on")
+    ap.add_argument("--mirror-walk", type=int, default=None,
+                    help="EXP3: the walk number (matches the polygon file's `walk` field)")
     ap.add_argument("--format", choices=("text", "json"), default="text")
     a = ap.parse_args(argv)
 
@@ -113,10 +123,16 @@ def main(argv=None) -> int:
                 print(f"  {r['world_id']}  {r['session_id'][:12]}  {mark}")
         return 0
 
+    # EXP3: the polygon path is read only when the switch is on, so an unset
+    # TOWER_WORLD_MIRROR_MASKS leaves `DenseParams.mirror_masks_path` at its default
+    # (None) and every stage below untouched, byte for byte.
+    mirror_path = (a.mirror_polygons or world_mirror_polygons_path_setting()
+                  if world_mirror_masks_setting() else None)
     params = DenseParams(
         backend=a.backend, gate_rel=a.gate_rel, tau=a.tau, min_views=a.min_views,
         neighbours=a.neighbours, stride=a.stride, component=a.component,
         keep_intermediates=a.keep_intermediates,
+        mirror_masks_path=mirror_path, mirror_walk=a.mirror_walk,
     )
 
     targets: list[tuple[str, str]] = []

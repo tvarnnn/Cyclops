@@ -252,6 +252,16 @@ class DenseParams:
     # -- scope ------------------------------------------------------------
     component: int = 0
 
+    # -- EXP3 mirror oracle (PREREG-EXP3-MIRROR-ORACLE-20261008) -----------
+    # `TOWER_WORLD_MIRROR_MASKS`, independent of every setting above: unions the oracle
+    # mirror interior (`mirror_masks.py`) into the sparse fit anchors (`_fit_record`) and
+    # the fused validity mask (`run_fuse_stage`'s `VALID[ki]`), alongside but never
+    # replacing the redaction-fill exclusion. Off (`mirror_masks_path` None) is every
+    # stage above untouched, byte for byte: no polygon file opened, no `_mirror.npy`
+    # written, no pixel excluded beyond what redaction fill already excludes.
+    mirror_masks_path: str | None = None
+    mirror_walk: int | None = None
+
     def as_dict(self) -> dict:
         d = asdict(self)
         d["lod_depth_fractions"] = list(self.lod_depth_fractions)
@@ -259,6 +269,9 @@ class DenseParams:
         # byte-identical to one written before the parameter existed.
         if not self.known_fov:
             d.pop("known_fov", None)
+        if self.mirror_masks_path is None:
+            d.pop("mirror_masks_path", None)
+            d.pop("mirror_walk", None)
         return d
 
     def voxels_for(self, median_scene_depth: float) -> list[float]:

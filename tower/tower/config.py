@@ -925,6 +925,31 @@ def world_solve_masks_setting() -> bool:
     return _flag(WORLD_SOLVE_MASKS_ENV, default=False)
 
 
+# EXP3 (PREREG-EXP3-MIRROR-ORACLE-20261008, addendum 1): the oracle mirror-interior mask,
+# unioned into the final solve's feature-extraction mask and into the dense/fusion validity
+# mask (`world_builder/mirror_masks.py`). INDEPENDENT of `TOWER_WORLD_SOLVE_MASKS` above --
+# either, neither or both may be on; this is not a mode of that switch. Off is today's solve
+# and dense/fusion byte for byte: the polygon file is never opened and no oracle pixel is
+# excluded. Read by the final solve and by the dense/fusion stage.
+WORLD_MIRROR_MASKS_ENV = "TOWER_WORLD_MIRROR_MASKS"
+# The oracle polygon JSONL (`PREREG-EXP3-MIRROR-ORACLE-20261008.md` §Lock): walk+keyframe ->
+# raw-image polygons. A path argument from the caller (CLI `--mirror-polygons`) always wins;
+# this is the fallback for a caller that only sets the environment.
+WORLD_MIRROR_POLYGONS_ENV = "TOWER_WORLD_MIRROR_POLYGONS"
+
+
+def world_mirror_masks_setting() -> bool:
+    """`TOWER_WORLD_MIRROR_MASKS`: the Exp3 oracle mirror-interior mask. Off."""
+    return _flag(WORLD_MIRROR_MASKS_ENV, default=False)
+
+
+def world_mirror_polygons_path_setting() -> str | None:
+    """`TOWER_WORLD_MIRROR_POLYGONS`: the oracle polygon JSONL path. Unset or blank is None --
+    the caller's own explicit path (e.g. a CLI `--mirror-polygons`) must be given instead."""
+    value = os.environ.get(WORLD_MIRROR_POLYGONS_ENV)
+    return value.strip() if value and value.strip() else None
+
+
 def world_solve_seed_setting() -> int | None:
     """`TOWER_WORLD_SOLVE_SEED`: the seed of the single-thread final solve.
 

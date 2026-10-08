@@ -1197,6 +1197,9 @@ def solve(
     input_digest: str | None = None,
     masks: bool | None = None,
     seed=FROM_SETTINGS,
+    mirror_masks: bool | None = None,
+    mirror_polygons: str | None = None,
+    mirror_walk: int | None = None,
     transient_backend_factory=None,
     mask_device_probe=None,
     gate: bool | None = None,
@@ -1266,6 +1269,14 @@ def solve(
     if not available:
         return {"solved": False, "reason": reason}
     want_masks, seed = resolve_run_options(final=final, masks=masks, seed=seed)
+    # EXP3 (PREREG-EXP3-MIRROR-ORACLE-20261008): a SEPARATE switch from `want_masks` above --
+    # either, neither or both may be on. `mirror_masks=None` reads the setting (final solve
+    # only, like the two options above); an explicit argument wins either way.
+    from tower.config import world_mirror_masks_setting, world_mirror_polygons_path_setting  # noqa: PLC0415
+
+    want_mirror = (bool(final) and world_mirror_masks_setting()) if mirror_masks is None else bool(mirror_masks)
+    if mirror_polygons is None:
+        mirror_polygons = world_mirror_polygons_path_setting()
     sweep_workspace(workspace_for(store, world_id, session_id))
     import pycolmap
 
@@ -1342,17 +1353,39 @@ def solve(
         masks, masks_record = _ensure_solver_masks(
             workspace, present, keyframes, camera,
             backend_factory=transient_backend_factory, device_probe=mask_device_probe)
-        if masks is not None:
-            if _walk_database_usable(database_path):
-                masking = _MASKING_FILTERED
-                walk_database = "filtered"
-            else:
-                walk_database = "absent" if not database_path.exists() else "unusable"
-                database_path, masks_record = _reextract_masked(workspace, reader, masks,
-                                                                present, masks_record)
-                database_existed = masks_record.get("database_reused", False)
-                masking = _MASKING_REEXTRACTED
-                imports_cleared += _clear_earlier_revisit_imports(database_path)
+    # EXP3: the oracle mirror mask is unioned into the SAME `masks/<name>.png` files the
+    # transient (hands/phone) mask writes -- or, with `want_masks` off, into fresh all-keep
+    # ones of its own -- so the walk-database-filtered / re-extracted machinery below sees
+    # one mask per image either way. Its own record (`mirror_record`) is kept OUT of
+    # `masks_record`/`transients`: that record is the evidence gate's hard dependency
+    # (`TOWER_WORLD_SOLVE_MASKS`) and must say only what the hands/phone mask step did.
+    # A plain `import mirror_masks` here would shadow the `mirror_masks: bool | None`
+    # PARAMETER above for the rest of this function -- harmless today (nothing below
+    # reads that parameter again), but one typo away from reading the module where a
+    # future edit means the flag. Named import instead; no shadowing possible.
+    from tower.world_builder.mirror_masks import off_record as _mirror_off_record  # noqa: PLC0415
+
+    mirror_record = _mirror_off_record()
+    if want_mirror:
+        masks, mirror_record = _ensure_mirror_masks(
+            workspace, present, keyframes, camera, store, world_id, session_id,
+            base_masks=masks, polygons_path=mirror_polygons, walk=mirror_walk)
+        # From here on `masks` is whatever is actually driving extraction (transient,
+        # mirror, or both unioned): every reader below -- the filtered/re-extracted
+        # choice, `_filter_walk_database`, `_mask_imported_pairs` -- wants exactly that,
+        # not only the transient half.
+    if masks is not None:
+        if _walk_database_usable(database_path):
+            masking = _MASKING_FILTERED
+            walk_database = "filtered"
+        else:
+            walk_database = "absent" if not database_path.exists() else "unusable"
+            database_path, masks_record = _reextract_masked(workspace, reader, masks,
+                                                            present, masks_record)
+            database_existed = masks_record.get("database_reused", False)
+            masking = _MASKING_REEXTRACTED
+            imports_cleared += _clear_earlier_revisit_imports(database_path)
+    if want_masks:
         masks_record["database"] = database_path.name
     masked = time.perf_counter()
 
@@ -1643,7 +1676,7 @@ def solve(
         # THE FINAL SCALE GUARD WITHHELD THE CANDIDATE (`final_scale_guard`, on; unreachable off):
         # nothing was published, and the solution published before stands.
         return _withheld_summary(_gate_record, workspace)
-    return {
+    summary = {
         "solved": True,
         "solver": solver,
         "keyframes": len(keyframes),
@@ -1656,6 +1689,15 @@ def solve(
         "solve": solution.solve,
         "gate": solution.gate,
     }
+    # EXP3: NOT part of `transients` (the evidence gate's hard dependency, read only
+    # from `TOWER_WORLD_SOLVE_MASKS`) -- a separate record of what the oracle mirror
+    # mask did. Present ONLY when asked for (`want_mirror`), exactly like
+    # `DenseParams.as_dict()` dropping `mirror_masks_path` when unset: an OFF solve's
+    # returned summary -- hashed whole by the OFF-golden tests -- must gain no key at
+    # all, not merely an inert one.
+    if want_mirror:
+        summary["mirror"] = mirror_record
+    return summary
 
 
 def _loop_detection_wanted(loop_detection) -> bool:
@@ -2663,6 +2705,94 @@ def _ensure_solver_masks(workspace, present, keyframes, camera, *,
             result.state, result.detail)
         return None, record
     return result, record
+
+
+def _ensure_mirror_masks(workspace, present, keyframes, camera, store, world_id, session_id, *,
+                         base_masks, polygons_path, walk):
+    """(the extraction masks, the Exp3 record) -- EXP3 (`mirror_masks.py`). Unions the oracle
+    mirror interior into every present image's `masks/<name>.png`: the transient mask's, if
+    `base_masks` already wrote one, else a fresh all-keep one of its own, so the walk-database
+    filter / re-extraction below finds exactly one mask per image either way. A keyframe
+    outside the annotated range keeps whatever `base_masks` already gave it (or all-keep).
+    Never raises: a bad polygon file, an undistortion failure, or no polygons path/walk
+    configured all mean this solve runs without the oracle, recorded as `failed`/`off`."""
+    import hashlib  # noqa: PLC0415
+
+    from tower.world_builder import mirror_masks, solve_masks  # noqa: PLC0415
+
+    if not polygons_path:
+        return base_masks, mirror_masks.off_record("no polygons path (TOWER_WORLD_MIRROR_POLYGONS unset)")
+    if walk is None:
+        return base_masks, mirror_masks.off_record("no walk number given")
+    try:
+        polygons_by_key = mirror_masks.load_polygons(polygons_path)
+        session = store.read_session(world_id, session_id)
+        raw_width, raw_height = keyframes[0].width, keyframes[0].height
+        m1, m2, roi, _cam = _undistort_maps(session.intrinsics, raw_width, raw_height)
+    except Exception as exc:  # noqa: BLE001 -- this solve runs without the oracle, recorded
+        logger.exception("global solve: the mirror mask step failed to prepare; this solve "
+                         "runs without the oracle")
+        return base_masks, mirror_masks.failed_record(f"{type(exc).__name__}: {exc}")
+
+    seq_by_kid = {k.keyframe_id: k.source_seq for k in keyframes}
+    ids = {keyframe_image_name(k): k.keyframe_id for k in keyframes}
+    masked = dict(base_masks.masked) if base_masks is not None else {}
+    mdir = solve_masks.masks_dir(workspace)
+    mdir.mkdir(parents=True, exist_ok=True)
+    out_shape = (camera.height, camera.width)
+    images_with_record = images_touched = oracle_pixels_excluded = 0
+    try:
+        import cv2  # noqa: PLC0415
+
+        for name in present:
+            kid = ids.get(name)
+            seq = seq_by_kid.get(kid)
+            try:
+                interior = mirror_masks.interior_mask_for_frame(
+                    polygons_by_key, walk, seq, m1=m1, m2=m2, roi=roi, out_shape=out_shape)
+            except mirror_masks.MirrorPolygonError:
+                logger.exception("global solve: mirror mask for %s could not be remapped; "
+                                 "left as the transient mask gave it", name)
+                interior = None
+            if interior is not None:
+                images_with_record += 1
+                if interior.any():
+                    images_touched += 1
+                    oracle_pixels_excluded += int(interior.sum())
+            existing = masked.get(name)
+            png_path = mdir / f"{name}.png"
+            if existing is not None:
+                base_png = cv2.imread(str(png_path), cv2.IMREAD_GRAYSCALE)
+                base = (base_png == 0) if base_png is not None else np.zeros(out_shape, bool)
+            else:
+                base = np.zeros(out_shape, bool)
+            final = base if interior is None else (base | interior)
+            png = np.where(final, 0, 255).astype(np.uint8)
+            ok, buf = cv2.imencode(".png", png)
+            if not ok:
+                raise OSError(f"cannot encode mirror mask {png_path}")
+            png_path.write_bytes(buf.tobytes())
+            image_sha1 = (existing or {}).get("image_sha1")
+            if image_sha1 is None:
+                try:
+                    image_sha1 = solve_masks.file_sha1(Path(workspace.images_dir) / name)
+                except OSError:
+                    image_sha1 = None
+            masked[name] = {"image_sha1": image_sha1,
+                            "mask_sha1": hashlib.sha1(buf.tobytes()).hexdigest(),
+                            "masked_frac": float(final.mean())}
+    except Exception as exc:  # noqa: BLE001 -- this solve runs without the oracle, recorded
+        logger.exception("global solve: the mirror mask step failed while writing masks; "
+                         "this solve runs without the oracle")
+        return base_masks, mirror_masks.failed_record(f"{type(exc).__name__}: {exc}")
+
+    record = mirror_masks.applied_record(
+        polygons_path=polygons_path, polygons_sha256=mirror_masks.file_sha256(polygons_path),
+        walk=walk, images=len(present), images_with_record=images_with_record,
+        images_touched=images_touched, oracle_pixels_excluded=oracle_pixels_excluded,
+        oracle_pixel_fraction=(oracle_pixels_excluded / (len(present) * out_shape[0] * out_shape[1])
+                              if present else 0.0))
+    return mirror_masks.MirrorExtractionMasks(masked=masked), record
 
 
 def _walk_database_usable(path) -> bool:
