@@ -1265,6 +1265,16 @@ def solve(
     available, reason = solver_available()
     if not available:
         return {"solved": False, "reason": reason}
+    # Exp2 is restricted to an explicit offline copy. The ordinary path does not
+    # import its module, inspect its cache, or create any Exp2 sidecar.
+    exp2_on = final and os.environ.get("TOWER_WORLD_EXP2_RETRIEVAL") == "dinov2_gem"
+    if exp2_on:
+        from tower.world_builder import exp2_retrieval  # noqa: PLC0415
+        exp2_retrieval.verify_copied_inputs(store.root)
+        if not (store.root / "exp2-freeze.json").is_file():
+            raise ValueError("Exp2 R requires exp2-freeze.json before any solve IO")
+        if loop_detection is not True:
+            raise ValueError("Exp2 R requires loop_detection=True final recipe")
     want_masks, seed = resolve_run_options(final=final, masks=masks, seed=seed)
     sweep_workspace(workspace_for(store, world_id, session_id))
     import pycolmap
@@ -1376,12 +1386,12 @@ def solve(
                 revisits = {"listed": len(listed), "verified": 0, "detail": refusal,
                             "imported": False}
     floor = revisit_floor() if revisit_list else None
-    wanted = _loop_detection_wanted(loop_detection)
+    wanted = bool(loop_detection) if exp2_on else _loop_detection_wanted(loop_detection)
     seeded = seed is not None
 
     # THE FROZEN MATCHING (seeded final solves only; see `database_digest`). Only the
     # walk's own database is frozen: a re-extracted masked database is this solve's own.
-    freeze = bool(final and seeded and masking != _MASKING_REEXTRACTED)
+    freeze = bool(final and seeded and masking != _MASKING_REEXTRACTED and not exp2_on)
     frozen_refusal = None
     frozen = False
     images = None
@@ -1430,8 +1440,14 @@ def solve(
         # the view graph GLOMAP averages, differ run to run.
         verification = pycolmap.TwoViewGeometryOptions()
         verification.ransac.random_seed = seed
+    exp2_match = None
     if not frozen:
-        _match_sequential(pycolmap, database_path, matching, pairing, verification)
+        if exp2_on:
+            exp2_match = exp2_retrieval.match_retrieval(
+                pycolmap, database_path, workspace.images_dir, present, workspace.root,
+                matching, pairing, verification, _match_sequential)
+        else:
+            _match_sequential(pycolmap, database_path, matching, pairing, verification)
         # NOT the revisit links (review V9 M-10). They were matched here, into the walk's
         # own database, before the mask filter copied it: the floor then applied only in
         # the copy, and every later solve -- unmasked, ungated, a re-finish -- mapped the
@@ -1462,7 +1478,12 @@ def solve(
                 camera_mode=pycolmap.CameraMode.SINGLE, reader_options=reader,
                 extraction_options=extraction,
             )
-            _match_sequential(pycolmap, database_path, matching, pairing, verification)
+            if exp2_on:
+                exp2_match = exp2_retrieval.match_retrieval(
+                    pycolmap, database_path, workspace.images_dir, present, workspace.root,
+                    matching, pairing, verification, _match_sequential)
+            else:
+                _match_sequential(pycolmap, database_path, matching, pairing, verification)
         else:
             # The filtered copy is made after the walk's matching, and nothing but the import
             # is matched into it: cleared here, as before.
@@ -1553,6 +1574,12 @@ def solve(
         # The live relocalizer's verified revisit links, matched explicitly.
         "revisit_pairs": revisits,
     }
+    if exp2_on:
+        solution.solve["exp2_retrieval"] = {
+            "mode": "dinov2_gem", "candidate_sha256": exp2_match["sha256"],
+            "candidate_pairs": exp2_match["pairs"],
+            "nonsequential_unique": exp2_match["nonsequential_unique"],
+        }
     if ambiguous_frames:
         # Keyframes whose image name more than one capture directory holds: undistorted
         # from the session's stored copy rather than another capture's frame
