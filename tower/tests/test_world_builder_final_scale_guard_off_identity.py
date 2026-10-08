@@ -473,3 +473,46 @@ def test_each_off_output_golden_kills_one_byte_mutant(
         with pytest.raises(AssertionError):
             _check("gated", _observe(s, returned))
         path.write_bytes(before)
+
+
+def _plant_live_depth_cache(s) -> dict:
+    """A live depth cache in the walk's dense directory, as `live_depth.LiveDepthWorker` leaves it: the
+    evidence guard v2 reads when on or shadow. Returns {path: bytes} to prove OFF never touches it."""
+    live = s.store.world_dir(s.world_id) / "dense" / s.session_id / "live_depth"
+    (live / "work" / "depth").mkdir(parents=True)
+    np.save(live / "work" / "depth" / "00000_pred.npy", np.full((HEIGHT, WIDTH), 2.0, np.float16))
+    (live / "align.json").write_text(json.dumps({
+        "backend": "moge2-vitl", "imagery_source": "redacted", "redaction_trust": None,
+        "keyframe_image_set": None, "known_fov": 42.0, "fill_rule": "planted",
+        "records": [{"ki": 0, "kid": f"{s.session_id}:00000000", "image_sha1": "0" * 40,
+                     "pred": "work/depth/00000_pred.npy", "known_fov": 42.0}]}), encoding="utf-8")
+    return {p: p.read_bytes() for p in live.rglob("*") if p.is_file()}
+
+
+@pytest.mark.parametrize("scenario", ("simple", "gated"))
+def test_off_with_a_live_depth_cache_present_keeps_the_golden(
+        scenario, tmp_path, colmap, monkeypatch):  # noqa: F811
+    """EXTENDED OFF GOLDEN (Exp1 slice 4): guard v2 reads a session's live depth cache as publication
+    evidence when on or shadow. OFF must not: a world holding one publishes exactly the golden's outputs and
+    status (the planted cache's own files aside), writes no guard audit, and leaves the cache's bytes as
+    they were, for every off spelling."""
+    if os.environ.get(RECORD_ENV):
+        pytest.skip("recording")
+    from scripts import world_refinish as wr
+
+    monkeypatch.setattr(wr, "_restart_attempts", lambda *a, **k: {})
+    for name in OTHER_SWITCHES:
+        monkeypatch.delenv(name, raising=False)
+    for n, spelling in enumerate((None, "off", "garbage")):
+        if spelling is None:
+            monkeypatch.delenv(SWITCH, raising=False)
+        else:
+            monkeypatch.setenv(SWITCH, spelling)
+        s = _make_walk(tmp_path / f"v{n}", colmap, monkeypatch)
+        planted = _plant_live_depth_cache(s)
+        observed = _observe(s, _final(s, scenario))
+        assert any("/live_depth/" in k for k in observed["files"])
+        observed["files"] = {k: v for k, v in observed["files"].items() if "/live_depth/" not in k}
+        _check(scenario, observed)
+        assert {p: p.read_bytes() for p in planted} == planted
+        assert not (s.workspace.root / "final_scale_guard.json").exists()

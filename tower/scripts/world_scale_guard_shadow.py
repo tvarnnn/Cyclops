@@ -80,7 +80,7 @@ def shadow_score(root: Path, world_id: str, session_id: str, *, depth_work: Path
     cams = FSG.room_cameras(room_solution, keyframes, name_of, min_obs=params.min_obs)
     assessment = FSG.assess(cams, scale["metric_log"], params)
     return {
-        "record": "wb-final-scale-guard-shadow/1", "guard": FSG.GUARD_ID, "params_digest": params.digest(),
+        "record": "wb-final-scale-guard-shadow/1", "guard": FSG.GUARD_ID_V1, "params_digest": params.digest(),
         "world_id": world_id, "session_id": session_id, "input_digest": solution.input_digest,
         "solve_identity": GS.solve_identity(solution), "room_source": room_source,
         "database": str(database), "database_sha256": hashlib.sha256(database.read_bytes()).hexdigest(),

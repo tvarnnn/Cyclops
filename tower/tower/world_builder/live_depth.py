@@ -297,6 +297,37 @@ class LiveDepthWorker:
 def offer_live_predictions(store, world_id, session_id, solution, intrinsics,
                            root: Path, *, imagery_source: str, trust: str) -> dict:
     """Stage only exact live matches at final solve indices; return reader-shaped offers."""
+    live = root / "live_depth"
+    offers = {}
+    work = root / "work"
+    for ki, (kid, image_sha1, old_ki) in compatible_live_records(
+            store, world_id, session_id, solution, intrinsics, root,
+            imagery_source=imagery_source, trust=trust).items():
+        try:
+            for directory, src, dst in _live_files(old_ki, ki):
+                target = work / directory
+                target.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(live / "work" / directory / src, target / dst)
+            offers[ki] = (kid, image_sha1)
+        except OSError:
+            continue
+    return offers
+
+
+def _live_files(old_ki: int, ki: int) -> list:
+    return [("depth", f"{old_ki:05d}_pred.npy", f"{ki:05d}_pred.npy"),
+            ("depth", f"{old_ki:05d}_fill.npy", f"{ki:05d}_fill.npy"),
+            ("undist", f"{old_ki:05d}.jpg", f"{ki:05d}.jpg")]
+
+
+def compatible_live_records(store, world_id, session_id, solution, intrinsics,
+                            root: Path, *, imagery_source: str, trust: str) -> dict:
+    """`{final ki: (kid, image_sha1, live ki)}` for every live prediction whose FULL
+    identity matches this solve (backend, fill rule, imagery, trust, keyframe image
+    set, numeric calibrated FoV == the solve's FoV, camera size, the keyframe's
+    current image bytes, the prediction's shape). READ-ONLY: nothing is copied or
+    written; `offer_live_predictions` stages these for the depth stage, and the
+    final scale guard (v2) reads them in place as publication evidence."""
     import numpy as np
 
     from tower.world_builder.dense_pipeline import FILL_RULE
@@ -332,8 +363,7 @@ def offer_live_predictions(store, world_id, session_id, solution, intrinsics,
     by_kid = {r.get("kid"): r for r in document.get("records", [])
               if isinstance(r, dict) and r.get("known_fov") == final_fov
               and r.get("fill_rule") == FILL_RULE}
-    offers = {}
-    work = root / "work"
+    matches = {}
     for ki, kid in enumerate(solution.keyframe_ids):
         record = by_kid.get(kid)
         if record is None:
@@ -343,21 +373,15 @@ def offer_live_predictions(store, world_id, session_id, solution, intrinsics,
                       f"{kid.rsplit(':', 1)[-1]}.jpg")
             image_sha1 = hashlib.sha1(source.read_bytes()).hexdigest()
             old_ki = int(record["ki"])
-            paths = [("depth", f"{old_ki:05d}_pred.npy", f"{ki:05d}_pred.npy"),
-                     ("depth", f"{old_ki:05d}_fill.npy", f"{ki:05d}_fill.npy"),
-                     ("undist", f"{old_ki:05d}.jpg", f"{ki:05d}.jpg")]
             if image_sha1 != record.get("image_sha1") or any(
-                    not (live / "work" / d / src).is_file() for d, src, _ in paths):
+                    not (live / "work" / d / src).is_file()
+                    for d, src, _ in _live_files(old_ki, ki)):
                 continue
             prediction = np.load(live / "work" / "depth" /
                                  f"{old_ki:05d}_pred.npy", mmap_mode="r")
             if prediction.shape != (height, width):
                 continue
-            for directory, src, dst in paths:
-                target = work / directory
-                target.mkdir(parents=True, exist_ok=True)
-                shutil.copyfile(live / "work" / directory / src, target / dst)
-            offers[ki] = (kid, image_sha1)
+            matches[ki] = (kid, image_sha1, old_ki)
         except (OSError, ValueError, KeyError):
             continue
-    return offers
+    return matches

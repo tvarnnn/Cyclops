@@ -1,5 +1,20 @@
 """The final-solve scale and pose PUBLICATION guard (`TOWER_WORLD_FINAL_SCALE_GUARD`, off by default).
 
+V2 (Exp1 slice 4; design RUN review/codex/cx-SCALE-GUARD-V2-DESIGN-20261007.md) IS THE RULE THE SEAM RUNS
+(`guard_publication`, `assess_v2`); the description below is v1's and still holds for v1's `assess` (the
+offline shadow CLI) except where v2 says otherwise:
+  * EVIDENCE IS READ, NEVER MADE (`read_evidence`): the applied gate's `metric_log` first, else the session's
+    live depth cache under a full identity match (`live_depth.compatible_live_records`), else none. No depth
+    stage runs at publish.
+  * ISOLATE only a plateau with >= 10 finite ratios, its median outside the inclusive [0.8, 1.25] AND its
+    deterministic 95 % bootstrap interval (400 draws, seed 20261006) excluding 1. A plateau is bounded by
+    its first and last MEASURED camera: no class is carried across an unmeasured tail. Re-segment after
+    each removal.
+  * EVERYTHING ELSE STAYS ATTACHED and is recorded `uncertified`, in `final_scale_guard.json` and on the
+    placed component of `components.json` (`placed_scale_status`). No pose-only quarantine (pose screen
+    recorded only). No evidence: the room is `uncertified` (never PASS), nothing is isolated, nothing is
+    withheld. ON still withholds on a failure (an exception, a relabel that leaves no room).
+
 WHY. The evidence gate decides which pieces of a final solve to attach to the room, but it does not check
 the result it publishes: the historical walk-3 bathroom was published inside the room at x2.56 relative to
 it despite the gate, and the live product (the "simple" solve: unmasked, ungated, one draw) publishes the
@@ -86,9 +101,30 @@ import numpy as np
 
 logger = logging.getLogger(__name__)
 
-GUARD_ID = "final-scale-guard/1"
-RECORD = "wb-final-scale-guard/1"
+# v2 (Exp1 slice 4) is the rule the publish seam runs; v1's `assess` stays only for the offline shadow CLI.
+GUARD_ID = "final-scale-guard/2"
+GUARD_ID_V1 = "final-scale-guard/1"
+RECORD = "wb-final-scale-guard/2"
 AUDIT_FILENAME = "final_scale_guard.json"
+
+# v2's room scale status: `certified` only with evidence, a >= 10-ratio in-band core and no attached
+# uncertified stretch. Never PASS; no evidence is `uncertified`.
+SCALE_CERTIFIED = "certified"
+SCALE_UNCERTIFIED = "uncertified"
+
+# v2's evidence, in the order it is looked for. Read only: no depth is predicted at publish.
+EVIDENCE_GATE = "gate-metric-log"
+EVIDENCE_LIVE = "live-depth-cache"
+EVIDENCE_NONE = "none"
+
+# Why a stretch stays attached but uncertified (v2).
+UNCERTIFIED_NO_EVIDENCE = "no-evidence"
+UNCERTIFIED_UNMEASURED = "unmeasured"
+UNCERTIFIED_SHORT = "short"
+UNCERTIFIED_CI = "ci-includes-one"
+UNCERTIFIED_NO_CORE = "no-certified-core"
+UNCERTIFIED_EXCURSION = "excursion"
+UNCERTIFIED_RETEST_LIMIT = "retest-limit"
 
 MODE_OFF = "off"
 MODE_SHADOW = "shadow"
@@ -141,6 +177,8 @@ class GuardParams:
     excursion_min_cameras: int = 3
     # Reference refinement rounds (it stops earlier when the decisions stop changing).
     max_reference_rounds: int = 6
+    # v2: re-segment the rest after each removal, at most this many times.
+    max_retest_rounds: int = 8
     # The deterministic bootstrap interval of a piece's log ratio to the core.
     bootstrap_draws: int = 400
     bootstrap_seed: int = 20261006
@@ -508,7 +546,7 @@ def assess(cameras: list[RoomCamera], metric_log: dict, params: GuardParams | No
     values = {c.name: float(v) for c in cameras for v in [metric_log.get(c.name)]
               if v is not None and math.isfinite(v)}
     measured = np.asarray([values[c.name] for c in cameras if c.name in values], np.float64)
-    base = {"guard": GUARD_ID, "params": params.to_json(), "params_digest": params.digest(),
+    base = {"guard": GUARD_ID_V1, "params": params.to_json(), "params_digest": params.digest(),
             "room_candidate": len(cameras), "room_measured": int(len(measured))}
     if len(measured) < params.min_ratios:
         return dict(base, decision="withhold", pieces=[], plateaus=[], rounds=[], reference=None, pose=None,
@@ -590,6 +628,211 @@ def _counts(items: list[dict]) -> dict:
     for f in items:
         out[f["kind"]] = out.get(f["kind"], 0) + 1
     return out
+
+
+# ---------------------------------------------------------------------------
+# v2: the rule the publish seam runs (design RUN review/codex/cx-SCALE-GUARD-V2-DESIGN-20261007.md)
+# ---------------------------------------------------------------------------
+#
+# Isolate a plateau ONLY when all three hold: >= `min_ratios` finite ratios; the median ratio to the
+# reference outside the inclusive [screen_low, screen_high]; and the deterministic 95 % bootstrap interval
+# of its median against the certified core (`bootstrap_draws`, `bootstrap_seed`) excludes 1. A plateau is
+# bounded by its FIRST and LAST MEASURED camera: unmeasured cameras inside it go with it, an unmeasured
+# head, tail or gap never does (v1 carried a class across an arbitrarily long unmeasured tail). Everything
+# else -- short plateaus, out-of-band plateaus whose interval includes 1, excursions, unmeasured stretches --
+# STAYS ATTACHED and is recorded `uncertified`, in the audit and on the placed component. No evidence: the
+# whole room is `uncertified`, nothing is isolated, nothing is withheld. No pose-only quarantine: the pose
+# screen is recorded for audit and applied to nothing. After each removal the rest is re-segmented.
+
+
+def measured_plateaus(values: np.ndarray, ref: float, params: GuardParams) -> list[tuple[int, int, str]]:
+    """[(start, end_exclusive, class)]: maximal runs of one class of the centred running median of the
+    MEASURED values, each from its first to its last measured camera (positions in `values`). Positions
+    before the first run, after the last, or between two runs belong to none (the caller's unmeasured
+    stretches)."""
+    measured = np.flatnonzero(np.isfinite(values))
+    if not len(measured):
+        return []
+    y = values[measured]
+    h = params.smooth_half_window
+    cls_m = [classify(float(np.median(y[max(0, k - h):k + h + 1])) - ref, params) for k in range(len(y))]
+    runs = []
+    k0 = 0
+    for k in range(1, len(measured) + 1):
+        if k == len(measured) or cls_m[k] != cls_m[k0]:
+            runs.append((int(measured[k0]), int(measured[k - 1]) + 1, cls_m[k0]))
+            k0 = k
+    return runs
+
+
+def _gap_row(group: str, cams: list, start: int, end: int) -> dict:
+    return {"group": group, "start": start, "end": end, "class": None, "measured": 0, "ratio": None,
+            "cameras": cams[start:end], "values": np.zeros(0), "kind": "unmeasured", "decision": "attached",
+            "reason": None, "certified": False, "uncertified": UNCERTIFIED_UNMEASURED}
+
+
+def _v2_rows(groups: dict, values: dict, ref: float, params: GuardParams) -> list[dict]:
+    """One segmentation of every group against `ref`: measured-bounded plateaus and unmeasured stretches,
+    each with its provisional v2 decision (`kept`, `candidate` or `attached`)."""
+    out = []
+    for gname, cams in groups.items():
+        vals = np.asarray([values.get(c.name, np.nan) for c in cams], np.float64)
+        rows = []
+        covered = 0
+        for start, end, cls in measured_plateaus(vals, ref, params):
+            if start > covered:
+                rows.append(_gap_row(gname, cams, covered, start))
+            seg = vals[start:end]
+            m = seg[np.isfinite(seg)]
+            d = float(np.median(m)) - ref
+            row = {"group": gname, "start": start, "end": end, "class": cls, "measured": int(len(m)),
+                   "ratio": math.exp(d), "cameras": cams[start:end], "values": m, "kind": "plateau"}
+            if len(m) < params.min_ratios:
+                row.update(decision="attached", reason=None, certified=False, uncertified=UNCERTIFIED_SHORT)
+            elif classify(d, params) == IN:
+                row.update(decision="kept", reason=None, certified=True, uncertified=None)
+            else:
+                row.update(decision="candidate", reason=None, certified=False, uncertified=None)
+            rows.append(row)
+            covered = end
+        if covered < len(cams):
+            rows.append(_gap_row(gname, cams, covered, len(cams)))
+        for row in rows:
+            if row["decision"] != "kept":
+                out.append(row)
+                continue
+            # A short gross excursion the running median swallows stays attached, flagged (never isolated).
+            for part in _split_excursions(row, values, ref, params):
+                if part["kind"] == "excursion":
+                    part.update(decision="attached", reason=None, certified=False,
+                                uncertified=UNCERTIFIED_EXCURSION)
+                out.append(part)
+    return out
+
+
+def _v2_segment(groups: dict, values: dict, params: GuardParams):
+    """(reference log or None, rows, reference rounds, certified core values) for `groups`, the reference
+    refined from the certified core exactly as v1 refines it; every out-of-band >= 10-ratio plateau then
+    decided by its bootstrap interval against that core."""
+    measured = np.asarray([values[c.name] for cams in groups.values() for c in cams if c.name in values],
+                          np.float64)
+    ref = dominant_level(measured, params)
+    if ref is None:
+        return None, _v2_rows(groups, values, 0.0, params), [], np.zeros(0)
+    rounds = [{"reference_log": ref, "basis": "densest-window"}]
+    rows = _v2_rows(groups, values, ref, params)
+    seen = {_signature(rows)}
+    for _ in range(params.max_reference_rounds):
+        core = np.concatenate([r["values"] for r in rows if r["certified"]] or [np.zeros(0)])
+        if len(core) < params.min_ratios:
+            break
+        new_ref = float(np.median(core))
+        if abs(new_ref - ref) < 1e-12:
+            break
+        new_rows = _v2_rows(groups, values, new_ref, params)
+        sig = _signature(new_rows)
+        rounds.append({"reference_log": new_ref, "basis": "certified-core-median"})
+        ref, rows = new_ref, new_rows
+        if sig in seen:
+            break
+        seen.add(sig)
+    core = np.concatenate([r["values"] for r in rows if r["certified"]] or [np.zeros(0)])
+    for r in rows:
+        if r["decision"] != "candidate":
+            continue
+        if len(core) < params.min_ratios:
+            r.update(decision="attached", uncertified=UNCERTIFIED_NO_CORE)
+            continue
+        r["ci"] = bootstrap_interval(r["values"], core, params, salt=r["cameras"][0].index)
+        r["ci_excludes_one"] = bool(r["ci"][0] > 1.0 or r["ci"][1] < 1.0)
+        if r["ci_excludes_one"]:
+            r.update(decision="isolated", reason=REASON_SCALE_OUTLIER)
+        else:
+            r.update(decision="attached", uncertified=UNCERTIFIED_CI)
+    return ref, rows, rounds, core
+
+
+def _v2_row_record(r: dict) -> dict:
+    """A row as the audit records it: frozen keyframe ids, counts, ratio and interval (Tower-internal)."""
+    cams = r["cameras"]
+    out = {"group": r["group"], "first_index": cams[0].index, "last_index": cams[-1].index,
+           "first_keyframe_id": cams[0].kid, "last_keyframe_id": cams[-1].kid, "keyframes": len(cams),
+           "measured": r["measured"], "class": r["class"], "kind": r.get("kind"),
+           "ratio": None if r["ratio"] is None else round(r["ratio"], 4),
+           "decision": r["decision"], "reason": r["reason"], "uncertified": r.get("uncertified")}
+    if "ci" in r:
+        out["ci"] = r["ci"]
+        out["ci_excludes_one"] = r["ci_excludes_one"]
+    return out
+
+
+def assess_v2(cameras: list[RoomCamera], metric_log: dict, params: GuardParams | None = None) -> dict:
+    """The v2 decision on one candidate room. Pure: no IO. Always `decision: publish` (v2 never withholds
+    on scale); `pieces` are only the qualifying isolated plateaus (`final-scale-outlier`), `uncertified`
+    every attached stretch the evidence does not certify, `scale_status` certified or uncertified."""
+    params = params or GuardParams()
+    values = {c.name: float(v) for c in cameras for v in [metric_log.get(c.name)]
+              if v is not None and math.isfinite(v)}
+    base = {"guard": GUARD_ID, "rule": "v2", "params": params.to_json(), "params_digest": params.digest(),
+            "room_candidate": len(cameras), "room_measured": len(values), "decision": "publish", "why": None}
+    if not values:
+        span = []
+        if cameras:
+            span = [dict(_v2_row_record(dict(_gap_row("room", cameras, 0, len(cameras)),
+                                             uncertified=UNCERTIFIED_NO_EVIDENCE)),
+                         keyframe_ids=[c.kid for c in cameras])]
+        return dict(base, scale_status=SCALE_UNCERTIFIED, pieces=[], plateaus=[], rounds=[], retest=[],
+                    reference=None, pose=None, room_keyframes=[c.kid for c in cameras], uncertified=span,
+                    uncertified_keyframes=len(cameras),
+                    why="no metric evidence (no applied gate scale, no compatible live depth cache): the room "
+                        "is published uncertified and nothing is isolated")
+    groups: dict[str, list[RoomCamera]] = {}
+    for c in cameras:
+        groups.setdefault(c.group, []).append(c)
+    pieces: list[dict] = []
+    retest: list[dict] = []
+    for rnd in range(params.max_retest_rounds + 1):
+        ref, rows, rounds, core = _v2_segment(groups, values, params)
+        isolated = [r for r in rows if r["decision"] == "isolated"]
+        if isolated and rnd == params.max_retest_rounds:
+            for r in isolated:
+                r.update(decision="attached", reason=None, uncertified=UNCERTIFIED_RETEST_LIMIT)
+            isolated = []
+        retest.append({"round": rnd, "reference_log": ref, "reference_rounds": len(rounds),
+                       "core_measured": int(len(core)), "isolated": len(isolated)})
+        if not isolated:
+            break
+        for r in isolated:
+            pieces.append(dict(_v2_row_record(r), basis="scale", round=rnd,
+                               keyframe_ids=[c.kid for c in r["cameras"]]))
+        gone = {c.kid for r in isolated for c in r["cameras"]}
+        groups = {g: [c for c in cams if c.kid not in gone] for g, cams in groups.items()}
+        groups = {g: cams for g, cams in groups.items() if cams}
+    pieces.sort(key=lambda p: p["first_index"])
+    attached = [r for r in rows if r["decision"] == "attached"]
+    uncertified = [dict(_v2_row_record(r), keyframe_ids=[c.kid for c in r["cameras"]]) for r in attached]
+    room = sorted((c for r in rows for c in r["cameras"]), key=lambda c: c.index)
+    status = SCALE_CERTIFIED if (not uncertified and len(core) >= params.min_ratios) else SCALE_UNCERTIFIED
+    pose = None
+    if ref is not None and room:
+        # Recorded for audit only: v2 isolates nothing on pose (design §3).
+        screen = _pose_screen(room, math.exp(-ref), params)
+        pose = {"applied": False, "metres_per_unit": math.exp(-ref), "flags": screen["flags"],
+                "warnings": screen["warnings"], "nonfinite": screen["nonfinite"],
+                "defects": screen.get("defects", {}), "flag_counts": _counts(screen["flags"]),
+                "warning_counts": _counts(screen["warnings"]),
+                "would_isolate_keyframes": sum(len(p) for p in screen["isolated"])}
+    why = None
+    if status == SCALE_UNCERTIFIED:
+        why = (f"{sum(len(u['keyframe_ids']) for u in uncertified)} attached keyframes are not certified"
+               if uncertified else f"the certified room core has {len(core)} cameras with a metric ratio; "
+                                   f"{params.min_ratios} are needed")
+    return dict(base, scale_status=status, why=why,
+                reference=None if ref is None else {"log": ref, "core_measured": int(len(core)),
+                                                    "rounds": len(rounds)},
+                rounds=rounds, retest=retest, plateaus=[_v2_row_record(r) for r in rows], pieces=pieces,
+                pose=pose, room_keyframes=[c.kid for c in room], uncertified=uncertified,
+                uncertified_keyframes=sum(len(u["keyframe_ids"]) for u in uncertified))
 
 
 # ---------------------------------------------------------------------------
@@ -696,7 +939,26 @@ def apply(solution, assessment: dict, *, session_id: str, keyframes, started_at:
     doc = CP.components_document(session_id, relabelled, labels, gate, keyframes, started_at, min_obs=min_obs)
     if doc is None:
         raise ValueError("the relabelled candidate has no published room")
+    if assessment.get("rule") == "v2":
+        placed = next(e for e in doc["components"] if e["state"] == CP.CG_PLACED)
+        placed["final_scale_guard"] = placed_scale_status(assessment, placed["keyframe_ids"])
     return relabelled, doc
+
+
+def placed_scale_status(assessment: dict, placed_ids) -> dict:
+    """v2's versioned, Tower-internal scale status of the PLACED component (components.json): the status and
+    every attached uncertified stretch as frozen keyframe-id spans with counts. No ratio, no metric factor
+    (the phone's reader drops unknown keys; contract §2.4 rule 6)."""
+    placed = set(placed_ids)
+    spans = []
+    for u in assessment.get("uncertified") or []:
+        ids = [k for k in u["keyframe_ids"] if k in placed]
+        if ids:
+            spans.append({"first_keyframe_id": ids[0], "last_keyframe_id": ids[-1], "keyframes": len(ids),
+                          "kind": u["uncertified"]})
+    return {"id": GUARD_ID, "scale_status": assessment.get("scale_status") or SCALE_UNCERTIFIED,
+            "evidence": assessment.get("evidence"),
+            "uncertified_keyframes": sum(s["keyframes"] for s in spans), "uncertified_spans": spans}
 
 
 def summary(assessment: dict | None, *, mode_: str, decision: str, seconds: float, error: str | None = None
@@ -710,6 +972,10 @@ def summary(assessment: dict | None, *, mode_: str, decision: str, seconds: floa
            "params_digest": (assessment or {}).get("params_digest") or GuardParams().digest(),
            "pieces_isolated": len(pieces), "keyframes_isolated": sum(len(p["keyframe_ids"]) for p in pieces),
            "reasons": reasons, "audit": AUDIT_FILENAME, "seconds": round(seconds, 3)}
+    if (assessment or {}).get("rule") == "v2":
+        out["scale_status"] = assessment["scale_status"]
+        out["uncertified_keyframes"] = assessment["uncertified_keyframes"]
+        out["evidence"] = assessment.get("evidence")
     if decision == DECISION_WITHHELD:
         out["why"] = (assessment or {}).get("why") or error
     if error:
@@ -772,52 +1038,85 @@ class GuardOutcome:
     depth: dict | None = None      # the guard's own depth stage (an ungated solve), for the surface
 
 
-def _measure(store, world_id, session_id, solution, result, *, database_path, keyframes, name_of,
-             depth_runner=None, metric_fn=None) -> tuple[dict, dict | None, dict]:
-    """(metric_log, the depth hand-off {align, work, dparams} or None, inputs record). Reuses the gate's
-    scale when the gate measured one; otherwise runs the product depth stage under the surface lock.
-    Raises on anything that leaves the guard without a metric scale (ON is fail-closed)."""
+def read_evidence(store, world_id, session_id, solution, result, *, database_path, name_of,
+                  live_metric_fn=None) -> tuple[dict, dict]:
+    """(metric_log, inputs record) from EXISTING evidence only (v2; no depth is predicted at publish): the
+    applied gate's `scale.metric_log` first; else the session's live depth cache, every record of it whose
+    FULL identity matches this solve (`live_depth.compatible_live_records`), read in place; else `{}`
+    (the room is then published `uncertified`)."""
     from tower.world_builder import coherence_publish as CP  # noqa: PLC0415
 
+    db = Path(str(database_path)).name
+    gate_state = None
     if result is not None:
         record = result.record or {}
-        if record.get("state") != CP.GATE_STATE_APPLIED:
-            raise RuntimeError(f"the evidence gate did not apply ({record.get('state')}): the guard has no "
-                               "certified candidate")
+        gate_state = record.get("state")
         scale = result.scale or {}
         metric_log = dict(scale.get("metric_log") or {})
-        if not metric_log:
-            raise RuntimeError("the evidence gate measured no metric scale")
-        return metric_log, None, {"scale": "the gate's", "database": Path(str(database_path)).name,
-                                  "depth": (record.get("depth") or {}).get("predictions"),
-                                  "cameras_measured": scale.get("cameras_measured")}
+        if gate_state == CP.GATE_STATE_APPLIED and metric_log:
+            return metric_log, {"source": EVIDENCE_GATE, "scale": "the gate's", "database": db,
+                                "depth": (record.get("depth") or {}).get("predictions"),
+                                "cameras_measured": scale.get("cameras_measured")}
+    metric_log, live = _live_cache_evidence(store, world_id, session_id, solution, database_path=database_path,
+                                            name_of=name_of, live_metric_fn=live_metric_fn)
+    if metric_log:
+        return metric_log, {"source": EVIDENCE_LIVE, "scale": "the live depth cache", "database": db,
+                            "gate_state": gate_state, "live": live}
+    return {}, {"source": EVIDENCE_NONE, "scale": None, "database": db, "gate_state": gate_state, "live": live}
+
+
+def _live_cache_evidence(store, world_id, session_id, solution, *, database_path, name_of,
+                         live_metric_fn=None) -> tuple[dict, dict]:
+    """(metric_log, record) over the compatible live depth cache, read in place; ({}, why) without one."""
+    from tower.world_builder import live_depth as LD  # noqa: PLC0415
+    from tower.world_builder.coherence_publish import _depth_params  # noqa: PLC0415
+    from tower.world_builder.dense_pipeline import dense_dir, depth_trust_now  # noqa: PLC0415
+
+    if LD.mode() != "on":
+        # Exp1 design §5 / prereg arm L: a shadow (or off) live cache measures the worker's cost only;
+        # it is never evidence for the guard (lead gate, 2026-10-08).
+        return {}, {"state": "live-depth-not-on", "mode": LD.mode()}
+    root = dense_dir(store, world_id, session_id)
+    align = root / "live_depth" / "align.json"
+    if not align.is_file():
+        return {}, {"state": "absent"}
+    imagery = _depth_params().imagery_source
+    trust = depth_trust_now(store, world_id, session_id, imagery_source=imagery)
     session = store.read_session(world_id, session_id)
-    runner = depth_runner or CP.run_gate_depth
-    held: list = []
-    try:
-        if runner is CP._PRODUCT_DEPTH_RUNNER:
-            align, work, dparams = runner(store, world_id, session_id, solution, session.intrinsics, hold=held)
-        else:
-            align, work, dparams = runner(store, world_id, session_id, solution, session.intrinsics)
-        scale = (metric_fn or CP.measure_metric_scale)(solution, name_of, database_path, work)
-    finally:
-        for lock in held:
-            lock.release()
-    metric_log = dict(scale.get("metric_log") or {})
-    cache = align.get("prediction_cache") if isinstance(align, dict) else None
-    return metric_log, {"align": align, "work": work, "dparams": dparams}, {
-        "scale": "the guard's own depth stage", "database": Path(str(database_path)).name,
-        "depth": ({"token": cache.get("token"), "cached": cache.get("hits"), "predicted": cache.get("predicted")}
-                  if isinstance(cache, dict) else None),
-        "cameras_measured": scale.get("cameras_measured")}
+    fingerprint = hashlib.sha1(align.read_bytes()).hexdigest()[:16]
+    matches = LD.compatible_live_records(store, world_id, session_id, solution, session.intrinsics, root,
+                                         imagery_source=imagery, trust=trust)
+    ki_of_name = {name_of[kid]: old_ki for _ki, (kid, _sha1, old_ki) in sorted(matches.items())
+                  if kid in name_of}
+    record = {"state": "compatible" if ki_of_name else "incompatible", "align_sha1": fingerprint,
+              "backend": LD.MODEL, "imagery_source": imagery, "trust": trust, "records_matched": len(ki_of_name)}
+    if not ki_of_name:
+        return {}, record
+    scale = (live_metric_fn or _live_metric_scale)(solution, name_of, database_path, root / "live_depth" / "work",
+                                                   ki_of_name)
+    record["cameras_measured"] = scale.get("cameras_measured")
+    return dict(scale.get("metric_log") or {}), record
+
+
+def _live_metric_scale(solution, name_of: dict, database_path, live_work, ki_of_name: dict) -> dict:
+    """`coherence_scale.metric_scale` with the live predictions read in place (`live_work/depth/<live ki>`):
+    CPU only, the final solve's own verified pairs and poses."""
+    from tower.world_builder import coherence_scale as CS  # noqa: PLC0415
+
+    cameras = CS.cameras_from_solution(solution, name_of.__getitem__)
+    sampler = CS.DepthStageSampler(live_work, ki_of_name)
+    out = CS.metric_scale(cameras, CS.read_inlier_pairs(database_path), solution.camera, sampler)
+    out["frames_without_prediction"] = len(sampler.missing)
+    return out
 
 
 def guard_publication(store, world_id: str, session_id: str, solution, result, *, mode_: str, database_path,
-                      keyframes, params: GuardParams | None = None, depth_runner=None, metric_fn=None
-                      ) -> GuardOutcome:
-    """The guard at the publish seam. `solution`: what would be published; `result`: its GateResult, or
-    None on an ungated solve. Never raises: in `on`, any failure withholds; in `shadow`, it is recorded and
-    the candidate is published unchanged."""
+                      keyframes, params: GuardParams | None = None, live_metric_fn=None) -> GuardOutcome:
+    """The guard (v2) at the publish seam. `solution`: what would be published; `result`: its GateResult,
+    or None on an ungated solve. Reads existing evidence only (`read_evidence`): it predicts no depth. Never
+    withholds on scale: without evidence the room is published `uncertified`. Never raises: in `on`, a
+    failure (an exception, a relabel that leaves no room) withholds; in `shadow`, it is recorded and the
+    candidate is published unchanged."""
     from tower.world_builder import coherence_publish as CP  # noqa: PLC0415
     from tower.world_builder.coherence_publish import GateResult  # noqa: PLC0415
 
@@ -828,12 +1127,12 @@ def guard_publication(store, world_id: str, session_id: str, solution, result, *
     depth = None
     try:
         name_of = CP._image_names(keyframes)
-        metric_log, depth, inputs = _measure(store, world_id, session_id, solution, result,
-                                             database_path=database_path, keyframes=keyframes, name_of=name_of,
-                                             depth_runner=depth_runner, metric_fn=metric_fn)
+        metric_log, inputs = read_evidence(store, world_id, session_id, solution, result,
+                                           database_path=database_path, name_of=name_of,
+                                           live_metric_fn=live_metric_fn)
         groups_of = gate_groups(result.gated) if result is not None else None
         cams = room_cameras(solution, keyframes, name_of, groups_of=groups_of, min_obs=params.min_obs)
-        assessment = assess(cams, metric_log, params)
+        assessment = dict(assess_v2(cams, metric_log, params), evidence=inputs["source"])
         if mode_ == MODE_SHADOW:
             secs = time.perf_counter() - started
             return GuardOutcome(mode_, DECISION_SHADOW, solution, result,
@@ -853,7 +1152,8 @@ def guard_publication(store, world_id: str, session_id: str, solution, result, *
         secs = time.perf_counter() - started
         summ = summary(assessment, mode_=mode_, decision=DECISION_PUBLISHED, seconds=secs)
         doc["final_scale_guard"] = {"id": GUARD_ID, "params_digest": params.digest(),
-                                    "pieces_isolated": summ["pieces_isolated"], "audit": AUDIT_FILENAME}
+                                    "pieces_isolated": summ["pieces_isolated"], "audit": AUDIT_FILENAME,
+                                    "scale_status": summ["scale_status"]}
         published = dataclasses.replace(published, solve=dict(solution.solve or {}, final_scale_guard=summ))
         if result is not None:
             new_result = dataclasses.replace(result, solution=published, components=doc)

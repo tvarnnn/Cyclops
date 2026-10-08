@@ -237,7 +237,11 @@ def test_f6_a_withheld_regate_says_not_certified(tmp_path, colmap, monkeypatch):
              links=_gated_links())
     s = _walk(tmp_path / "w", G_A + G_B, colmap, monkeypatch)
     _gated(s)
-    monkeypatch.setattr(CP, "measure_metric_scale", lambda *a, **k: {"metric_log": {}, "cameras_measured": 0})
+
+    def no_room(*a, **k):                # v2 withholds only on a failure (no scale reason withholds)
+        raise ValueError("the relabelled candidate has no published room")
+
+    monkeypatch.setattr(FSG, "apply", no_room)
     monkeypatch.setenv(SWITCH, "on")
     out = CP.regate_published(s.store, s.world_id, s.session_id)
     assert out["withheld"] is True and out["notice"] == FSG.NOTICE_WITHHELD
