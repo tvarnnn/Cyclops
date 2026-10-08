@@ -23,6 +23,7 @@
 		6A11AE000000000000000001 /* WorldFinishProgressTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6A11AE000000000000000002 /* WorldFinishProgressTests.swift */; };
 		6A11AE000000000000000003 /* WorldInlinePanelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6A11AE000000000000000004 /* WorldInlinePanelTests.swift */; };
 		6A11AF000000000000000001 /* WorldCoverageTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6A11AF000000000000000002 /* WorldCoverageTests.swift */; };
+		6A11AF100000000000000001 /* WorldCoverageFieldTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6A11AF100000000000000002 /* WorldCoverageFieldTests.swift */; };
 		6A11B1000000000000000001 /* WorldCurrentPieceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6A11B1000000000000000002 /* WorldCurrentPieceTests.swift */; };
 		6A11B2000000000000000001 /* WorldImageryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6A11B2000000000000000002 /* WorldImageryTests.swift */; };
 		7F2D5E31A94C0B6683DF12A4 /* ObjectMemoryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C4A17E9B0D3F42A85B61E77C /* ObjectMemoryTests.swift */; };
@@ -69,6 +70,7 @@
 		6A11AE000000000000000002 /* WorldFinishProgressTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = WorldFinishProgressTests.swift; sourceTree = "<group>"; };
 		6A11AE000000000000000004 /* WorldInlinePanelTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = WorldInlinePanelTests.swift; sourceTree = "<group>"; };
 		6A11AF000000000000000002 /* WorldCoverageTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = WorldCoverageTests.swift; sourceTree = "<group>"; };
+		6A11AF100000000000000002 /* WorldCoverageFieldTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = WorldCoverageFieldTests.swift; sourceTree = "<group>"; };
 		6A11B1000000000000000002 /* WorldCurrentPieceTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = WorldCurrentPieceTests.swift; sourceTree = "<group>"; };
 		6A11B2000000000000000002 /* WorldImageryTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = WorldImageryTests.swift; sourceTree = "<group>"; };
 		C4A17E9B0D3F42A85B61E77C /* ObjectMemoryTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ObjectMemoryTests.swift; sourceTree = "<group>"; };
@@ -196,6 +198,7 @@
 				6A11AE000000000000000002 /* WorldFinishProgressTests.swift */,
 				6A11AE000000000000000004 /* WorldInlinePanelTests.swift */,
 				6A11AF000000000000000002 /* WorldCoverageTests.swift */,
+				6A11AF100000000000000002 /* WorldCoverageFieldTests.swift */,
 				6A11B1000000000000000002 /* WorldCurrentPieceTests.swift */,
 				6A11B2000000000000000002 /* WorldImageryTests.swift */,
 			);
@@ -405,6 +408,7 @@
 				6A11AE000000000000000001 /* WorldFinishProgressTests.swift in Sources */,
 				6A11AE000000000000000003 /* WorldInlinePanelTests.swift in Sources */,
 				6A11AF000000000000000001 /* WorldCoverageTests.swift in Sources */,
+				6A11AF100000000000000001 /* WorldCoverageFieldTests.swift in Sources */,
 				6A11B1000000000000000001 /* WorldCurrentPieceTests.swift in Sources */,
 				6A11B2000000000000000001 /* WorldImageryTests.swift in Sources */,
 			);

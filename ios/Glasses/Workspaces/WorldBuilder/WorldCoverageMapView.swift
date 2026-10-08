@@ -2,10 +2,9 @@
 //  WorldCoverageMapView.swift
 //  Glasses
 //
-//  Fog of war v1 in the panel's map slot (U-INLINE S1/S2): one top-down
-//  station grid per component, each station a fan of 12 heading sectors --
-//  grey, muted or colored -- and separate components as separate pieces in
-//  a tray, never merged. The caption under it says how old the map is.
+//  A fog field in the panel's map slot: each component is a separate piece,
+//  with lit directions fading into unseen space. The caption says how old
+//  the solve is.
 //
 
 import SwiftUI
@@ -28,21 +27,105 @@ enum WorldPanelMapSource: Equatable {
 }
 
 enum WorldCoverageStyle {
-    /// Not yet seen by a finished solve: grey, never "a hole".
-    static let unconfirmed = Color(white: 0.34)
-    /// One view: muted, and not covered.
-    static let weak = WorldChromeStyle.rgb(0x2E6B66)
-    /// Two or more views.
-    static let supported = WorldChromeStyle.rgb(0x4FD8C8)
-    static let cell = Color.white.opacity(0.05)
-    static let cellLine = Color.white.opacity(0.10)
+    /// The entire piece is this slate until a direction lights it.
+    static let fog = WorldChromeStyle.rgb(0x182936)
+    static let lit = WorldChromeStyle.rgb(0x6DF5DD)
+    static let station = WorldChromeStyle.rgb(0xD6FFF5)
 
-    static func color(_ evidence: WorldCoverageEvidence) -> Color {
-        switch evidence {
-        case .unconfirmed: return unconfirmed
-        case .weak: return weak
-        case .supported: return supported
+    static let supportedGradient = Gradient(stops: [
+        .init(color: lit.opacity(WorldCoverageField.supportedIntensity), location: 0),
+        .init(color: lit.opacity(0.55), location: 0.28),
+        .init(color: lit.opacity(0.22), location: 0.67),
+        .init(color: lit.opacity(0), location: 1),
+    ])
+    static let weakGradient = Gradient(stops: [
+        .init(color: lit.opacity(WorldCoverageField.weakIntensity), location: 0),
+        .init(color: lit.opacity(0.24), location: 0.3),
+        .init(color: lit.opacity(0.07), location: 0.7),
+        .init(color: lit.opacity(0), location: 1),
+    ])
+    static let stationGradient = Gradient(colors: [station.opacity(0.85), lit.opacity(0.25), lit.opacity(0)])
+}
+
+/// Solve evidence in screen-independent cell coordinates. Sector zero is
+/// screen-right; sector numbers advance clockwise on the y-down map.
+struct WorldCoverageField {
+    struct Wedge {
+        let center: CGPoint
+        let sector: Int
+        let startAngle: Double
+        let endAngle: Double
+        let radiusInCells: CGFloat
+        let intensity: Double
+        let evidence: WorldCoverageEvidence
+    }
+
+    static let supportedIntensity = 0.86
+    static let weakIntensity = 0.42
+
+    let stations: [CGPoint]
+    let wedges: [Wedge]
+    let supportedDirections: Int
+    let weakDirections: Int
+
+    var stationCount: Int { stations.count }
+    var seenDirections: Int { supportedDirections + weakDirections }
+    var totalDirections: Int { stationCount * WorldCoverage.sectors }
+    var accessibilitySummary: String {
+        Self.summary(seen: seenDirections, total: totalDirections, places: stationCount)
+    }
+
+    init(component: WorldCoverage.Component) {
+        var stations: [CGPoint] = []
+        var wedges: [Wedge] = []
+        stations.reserveCapacity(component.stations.count)
+        wedges.reserveCapacity(component.stations.count * WorldCoverage.sectors)
+        var supported = 0
+        var weak = 0
+        for station in component.stations {
+            let center = CGPoint(x: CGFloat(station.x) + 0.5, y: CGFloat(station.y) + 0.5)
+            stations.append(center)
+            for sector in 0..<WorldCoverage.sectors {
+                let evidence = station.evidence(sector: sector)
+                let radius: CGFloat
+                let intensity: Double
+                switch evidence {
+                case .supported:
+                    supported += 1
+                    radius = 3
+                    intensity = Self.supportedIntensity
+                case .weak:
+                    weak += 1
+                    radius = 2
+                    intensity = Self.weakIntensity
+                case .unconfirmed:
+                    continue
+                }
+                let span = WorldCoverageGeometry.span(sector: sector)
+                wedges.append(Wedge(center: center, sector: sector, startAngle: span.start,
+                                    endAngle: span.end, radiusInCells: radius, intensity: intensity,
+                                    evidence: evidence))
+            }
         }
+        self.stations = stations
+        self.wedges = wedges
+        self.supportedDirections = supported
+        self.weakDirections = weak
+    }
+
+    static func summary(for components: [WorldCoverage.Component]) -> String {
+        var seen = 0, total = 0, places = 0
+        for component in components {
+            let field = WorldCoverageField(component: component)
+            seen += field.seenDirections
+            total += field.totalDirections
+            places += field.stationCount
+        }
+        return summary(seen: seen, total: total, places: places)
+    }
+
+    private static func summary(seen: Int, total: Int, places: Int) -> String {
+        "Seen in \(seen) of \(total) directions at \(places) \(places == 1 ? "place" : "places")"
     }
 }
 
@@ -96,7 +179,7 @@ struct WorldCoverageMapView: View {
             Rectangle()
                 .fill(Color.white.opacity(0.001))
                 .accessibilityElement(children: .ignore)
-                .accessibilityLabel(WorldCoverageCopy.mapName)
+                .accessibilityLabel("\(WorldCoverageCopy.mapName). \(WorldCoverageField.summary(for: coverage.components))")
                 .accessibilityValue(WorldCoverageCopy.mapValue(coverage))
                 .accessibilityIdentifier("wb-panel-map")
                 .accessibilitySortPriority(1)
@@ -104,34 +187,41 @@ struct WorldCoverageMapView: View {
     }
 }
 
-/// One component: its 8 x 8 station grid and one fan per station.
+/// One component: fog everywhere, with evidence lighting only seen headings.
 struct WorldCoveragePieceView: View {
     let component: WorldCoverage.Component
     let index: Int
     let showsName: Bool
 
     var body: some View {
+        let field = WorldCoverageField(component: component)
         Canvas { context, size in
             let side = min(size.width, size.height)
             let cell = side / CGFloat(WorldCoverage.gridSide)
-            for row in 0..<WorldCoverage.gridSide {
-                for column in 0..<WorldCoverage.gridSide {
-                    let rect = CGRect(x: CGFloat(column) * cell, y: CGFloat(row) * cell, width: cell, height: cell)
-                        .insetBy(dx: 0.5, dy: 0.5)
-                    context.fill(Path(rect), with: .color(WorldCoverageStyle.cell))
-                    context.stroke(Path(rect), with: .color(WorldCoverageStyle.cellLine), lineWidth: 0.5)
-                }
+            context.fill(Path(CGRect(origin: .zero, size: size)), with: .color(WorldCoverageStyle.fog))
+            context.blendMode = .plusLighter
+            for wedge in field.wedges {
+                let center = CGPoint(x: wedge.center.x * cell, y: wedge.center.y * cell)
+                let radius = wedge.radiusInCells * cell
+                var path = Path()
+                path.move(to: center)
+                path.addArc(center: center, radius: radius, startAngle: .degrees(wedge.startAngle),
+                            endAngle: .degrees(wedge.endAngle), clockwise: false)
+                path.closeSubpath()
+                let gradient = wedge.evidence == .supported
+                    ? WorldCoverageStyle.supportedGradient : WorldCoverageStyle.weakGradient
+                context.fill(path, with: .radialGradient(gradient, center: center,
+                                                         startRadius: 0, endRadius: radius))
             }
-            for fan in WorldCoverageGeometry.fans(component, side: side) {
-                for (sector, evidence) in fan.sectors.enumerated() {
-                    let span = WorldCoverageGeometry.span(sector: sector)
-                    var path = Path()
-                    path.move(to: fan.centre)
-                    path.addArc(center: fan.centre, radius: fan.radius, startAngle: .degrees(span.start + 1.5),
-                                endAngle: .degrees(span.end - 1.5), clockwise: false)
-                    path.closeSubpath()
-                    context.fill(path, with: .color(WorldCoverageStyle.color(evidence)))
-                }
+            context.blendMode = .normal
+            for station in field.stations {
+                let center = CGPoint(x: station.x * cell, y: station.y * cell)
+                let radius = max(2, cell * 0.22)
+                let rect = CGRect(x: center.x - radius, y: center.y - radius,
+                                  width: radius * 2, height: radius * 2)
+                context.fill(Path(ellipseIn: rect), with: .radialGradient(WorldCoverageStyle.stationGradient,
+                                                                          center: center, startRadius: 0,
+                                                                          endRadius: radius))
             }
         }
         .overlay(alignment: .topLeading) {
@@ -202,21 +292,24 @@ struct WorldCoverageCaption: View {
 
     private var legend: some View {
         VStack(alignment: .leading, spacing: 2) {
-            ForEach(WorldCoverageEvidence.allCases, id: \.self) { evidence in
-                HStack(alignment: .firstTextBaseline, spacing: 6) {
-                    RoundedRectangle(cornerRadius: 2)
-                        .fill(WorldCoverageStyle.color(evidence))
-                        .frame(width: 10, height: 10)
-                        .accessibilityHidden(true)
-                    Text(Self.legendWord(evidence))
-                        .font(.footnote)
-                        .foregroundStyle(Color.primary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-            }
+            legendRow("Seen", color: WorldCoverageStyle.lit)
+            legendRow("Not yet seen", color: WorldCoverageStyle.fog)
         }
         .accessibilityElement(children: .combine)
         .accessibilityIdentifier("wb-panel-map-legend")
+    }
+
+    private func legendRow(_ word: String, color: Color) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 6) {
+            RoundedRectangle(cornerRadius: 2)
+                .fill(color)
+                .frame(width: 10, height: 10)
+                .accessibilityHidden(true)
+            Text(word)
+                .font(.footnote)
+                .foregroundStyle(Color.primary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
     }
 
     static func legendWord(_ evidence: WorldCoverageEvidence) -> String {
