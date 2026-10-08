@@ -692,14 +692,15 @@ final class WorldInlinePanelUITests: XCTestCase {
         XCTAssertTrue(map.frame.contains(first.frame) && map.frame.contains(second.frame), "in the map slot")
         XCTAssertTrue(element("capture-health").exists, "Capture health stays")
         shoot("fow-mid")
-        // The pixels: grey, muted and colored headings are all drawn -- on an
+        // The pixels: the fog field draws both fog and lit (seen) area -- on an
         // iPad too. Sampled in piece 1's own screenshot, so no frame-to-raster
-        // arithmetic is needed (see `pixels`).
+        // arithmetic is needed (see `pixels`). Lit is blended over fog, so it
+        // is matched by shape (bright, teal), not by one exact colour.
         let shot = first.screenshot().image
         print("FOW-PIXELS|piece=\(first.frame)|shot=\(shot.size)@\(shot.scale)|orientation=\(shot.imageOrientation.rawValue)")
-        for (name, rgb) in [("grey", (87, 87, 87)), ("muted", (0x2E, 0x6B, 0x66)), ("colored", (0x4F, 0xD8, 0xC8))] {
-            XCTAssertGreaterThan(Self.pixels(in: shot, near: rgb), 3, "\(name) headings in piece 1")
-        }
+        XCTAssertGreaterThan(Self.pixels(in: shot, near: (0x18, 0x29, 0x36)), 100, "fog in piece 1")
+        XCTAssertGreaterThan(Self.pixels(in: shot) { r, g, b in g >= 0x50 && b >= 0x50 && g - r >= 30 }, 30,
+                             "lit (seen) field in piece 1")
 
         // Another walk's report, with no block: A's map goes.
         push(modelState: "receiving", world: "w2", session: "s9", name: "Other Room")
@@ -730,6 +731,10 @@ final class WorldInlinePanelUITests: XCTestCase {
     /// cut off past x = 820), so no scale or offset maps a frame into it.
     /// A count over the whole raster does not depend on its orientation.
     private static func pixels(in image: UIImage, near rgb: (Int, Int, Int)) -> Int {
+        pixels(in: image) { r, g, b in abs(r - rgb.0) <= 20 && abs(g - rgb.1) <= 20 && abs(b - rgb.2) <= 20 }
+    }
+
+    private static func pixels(in image: UIImage, where match: (Int, Int, Int) -> Bool) -> Int {
         guard let cg = image.cgImage else { return 0 }
         let width = cg.width, height = cg.height
         var data = [UInt8](repeating: 0, count: width * height * 4)
@@ -742,8 +747,7 @@ final class WorldInlinePanelUITests: XCTestCase {
         for y in 0..<height {
             for x in 0..<width {
                 let i = (y * width + x) * 4
-                if abs(Int(data[i]) - rgb.0) <= 20, abs(Int(data[i + 1]) - rgb.1) <= 20,
-                   abs(Int(data[i + 2]) - rgb.2) <= 20 { count += 1 }
+                if match(Int(data[i]), Int(data[i + 1]), Int(data[i + 2])) { count += 1 }
             }
         }
         return count
