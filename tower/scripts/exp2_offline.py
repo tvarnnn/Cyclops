@@ -61,6 +61,12 @@ def main(argv=None):
         options.overlap = E.OVERLAP
         options.quadratic_overlap = False
         options.loop_detection = True
+        # The prereg's freeze-manifest clause also pins "PyCOLMAP installed defaults
+        # including RANSAC seed/threshold, matching threads" -- the INSTALLED library's
+        # defaults (fresh options objects), not the per-solve overrides global_solve.solve
+        # applies on top of them. A pycolmap upgrade that moves these must refuse replay.
+        matching_defaults = pycolmap.FeatureMatchingOptions().todict()
+        verification_defaults = pycolmap.TwoViewGeometryOptions().todict()
         images = sorted(args.images_dir.glob("*.jpg"))
         if not images:
             raise ValueError("freeze requires prepared solver images")
@@ -77,6 +83,8 @@ def main(argv=None):
         manifest = E.freeze_manifest(images, args.tree, E.checkpoint_file(),
                                      pycolmap.__version__, options.todict(),
                                      labels_sha256=E.sha256(args.labels),
+                                     feature_matching_options=matching_defaults,
+                                     two_view_geometry_options=verification_defaults,
                                      adjudication_sha256=E.sha256(args.adjudication),
                                      settings=settings)
         manifest["label_path"] = str(args.labels.resolve())
@@ -107,6 +115,8 @@ def main(argv=None):
             raise FileExistsError(output)
         print(json.dumps(E.log_tree_candidates(args.database, args.tree, names, output)))
         return 0
+    import pycolmap
+    E.verify_installed_pycolmap_defaults(frozen, pycolmap)
     if E.sha256(E.checkpoint_file()) != frozen["checkpoint_sha256"]:
         raise ValueError("frozen checkpoint digest changed")
     images_dir = args.root / "worlds" / args.world / "solve" / args.session / "images"

@@ -11,11 +11,13 @@ from pathlib import Path
 
 import numpy as np
 
+from tower.world_builder import global_solve as GS
+
 SWITCH = "TOWER_WORLD_EXP2_RETRIEVAL"
 MODEL_ID = "facebook/dinov2-small"
 HEIGHT, WIDTH, GEM_P = 224, 392, 3
 CADENCE, K, MIN_DISTANCE = 10, 50, 0
-OVERLAP, SIFT_FEATURES = 20, 4096
+OVERLAP = 20
 MEAN = (0.485, 0.456, 0.406)
 STD = (0.229, 0.224, 0.225)
 COPY_RECORD = "exp2-copied-inputs.json"
@@ -36,6 +38,17 @@ def sha256(path: Path) -> str:
 def _json(path: Path, value: dict) -> None:
     Path(path).write_text(json.dumps(value, sort_keys=True, indent=2, default=str) + "\n",
                           encoding="utf-8", newline="\n")
+
+
+def _json_round_trip(value: dict) -> dict:
+    """Normalize a pycolmap `.todict()` the same way the frozen manifest was written.
+
+    `.todict()` can hold enum members (e.g. `FeatureMatcherType.SIFT_BRUTEFORCE`); `_json`
+    stringifies them (`default=str`) on the way to disk. Comparing a freshly-read `.todict()`
+    straight against the re-loaded (already-stringified) frozen value would spuriously
+    mismatch on every enum field, so both sides must go through the same round trip.
+    """
+    return json.loads(json.dumps(value, sort_keys=True, default=str))
 
 
 def copy_inputs(source: Path, destination: Path) -> dict:
@@ -81,6 +94,7 @@ def checkpoint_file() -> Path:
 
 def freeze_manifest(images, tree: Path, checkpoint: Path, pycolmap_version: str,
                     sequential_pairing_options: dict, *, labels_sha256: str,
+                    feature_matching_options: dict, two_view_geometry_options: dict,
                     adjudication_sha256: str | None = None,
                     settings: dict | None = None) -> dict:
     images = [Path(p) for p in images]
@@ -89,6 +103,13 @@ def freeze_manifest(images, tree: Path, checkpoint: Path, pycolmap_version: str,
         "tree_sha256": sha256(tree), "checkpoint_sha256": sha256(checkpoint),
         "model": MODEL_ID, "pycolmap_version": pycolmap_version,
         "sequential_pairing_options": sequential_pairing_options,
+        # PREREG-EXP2-RETRIEVAL-20261008.md's freeze-manifest clause: "PyCOLMAP installed
+        # defaults including RANSAC seed/threshold, matching threads". These are the
+        # *installed library's* defaults (a fresh `FeatureMatchingOptions()` /
+        # `TwoViewGeometryOptions()`), not the per-solve overrides global_solve.solve makes --
+        # a pycolmap upgrade that silently moves them must refuse replay, not drift unnoticed.
+        "feature_matching_options": feature_matching_options,
+        "two_view_geometry_options": two_view_geometry_options,
         "labels_sha256": labels_sha256,
         "adjudication_sha256": adjudication_sha256,
         "retrieval": {"height": HEIGHT, "width": WIDTH, "mean": MEAN, "std": STD,
@@ -96,11 +117,31 @@ def freeze_manifest(images, tree: Path, checkpoint: Path, pycolmap_version: str,
                       "normalization": "L2", "similarity": "cosine",
                       "tie_break": "keyframe_index_ascending", "cadence": CADENCE,
                       "k": K, "min_index_distance": MIN_DISTANCE,
-                      "sequential_overlap": OVERLAP, "sift_features": SIFT_FEATURES},
+                      "sequential_overlap": OVERLAP, "sift_features": GS.MAX_FEATURES},
         "settings": settings or {},
         "conditional_v_candidate_sha256": None,
         "conditional_v_status": "not triggered in slices 1-3",
     }
+
+
+def verify_installed_pycolmap_defaults(frozen: dict, pycolmap_module) -> None:
+    """Refuse a replay whose installed PyCOLMAP differs from the one the freeze pinned.
+
+    Prereg freeze-manifest clause: PyCOLMAP version, matching threads and RANSAC/two-view
+    defaults are pinned at freeze and must be re-checked at replay, not just the pairing
+    options -- an upgraded pycolmap can change candidate-count accounting silently otherwise.
+    """
+    live_version = getattr(pycolmap_module, "__version__", None)
+    if live_version != frozen["pycolmap_version"]:
+        raise ValueError(
+            f"installed pycolmap version {live_version!r} differs from frozen "
+            f"{frozen['pycolmap_version']!r}")
+    live_matching = _json_round_trip(pycolmap_module.FeatureMatchingOptions().todict())
+    if live_matching != frozen["feature_matching_options"]:
+        raise ValueError("installed pycolmap matching defaults differ from the frozen value")
+    live_verification = _json_round_trip(pycolmap_module.TwoViewGeometryOptions().todict())
+    if live_verification != frozen["two_view_geometry_options"]:
+        raise ValueError("installed pycolmap verification defaults differ from the frozen value")
 
 
 def gem_patch_tokens(patches: np.ndarray) -> np.ndarray:

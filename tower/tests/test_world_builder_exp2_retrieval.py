@@ -89,11 +89,76 @@ def test_freeze_manifest_pins_options_tree_and_checkpoint(tmp_path):
     for file, data in ((image, b"image"), (tree, b"tree"), (weights, b"weights")):
         file.write_bytes(data)
     manifest = E.freeze_manifest([image], tree, weights, "4.2.0", {"overlap": 20},
-                                 labels_sha256="1" * 64)
+                                 labels_sha256="1" * 64,
+                                 feature_matching_options={"num_threads": -1},
+                                 two_view_geometry_options={"ransac": {"random_seed": -1}})
     assert manifest["tree_sha256"] == hashlib.sha256(b"tree").hexdigest()
     assert manifest["checkpoint_sha256"] == hashlib.sha256(b"weights").hexdigest()
     assert manifest["sequential_pairing_options"] == {"overlap": 20}
+    assert manifest["feature_matching_options"] == {"num_threads": -1}
+    assert manifest["two_view_geometry_options"] == {"ransac": {"random_seed": -1}}
     assert manifest["retrieval"]["k"] == 50
+
+
+def test_freeze_manifest_sift_feature_count_comes_from_global_solve():
+    """MINOR fix: no duplicate SIFT_FEATURES constant; the manifest label is global_solve's."""
+    assert not hasattr(E, "SIFT_FEATURES")
+    manifest = E.freeze_manifest([], Path(__file__), Path(__file__), "4.2.0", {},
+                                 labels_sha256="1" * 64,
+                                 feature_matching_options={}, two_view_geometry_options={})
+    assert manifest["retrieval"]["sift_features"] == GS.MAX_FEATURES
+
+
+class _FakePycolmapDefaults:
+    """A minimal stand-in for the installed pycolmap module's defaults."""
+
+    def __init__(self, version="4.2.0", matching=None, verification=None):
+        self.__version__ = version
+        self._matching = matching if matching is not None else {"num_threads": -1}
+        self._verification = (verification if verification is not None
+                              else {"ransac": {"random_seed": -1, "max_error": 4.0}})
+
+    def FeatureMatchingOptions(self):
+        return SimpleNamespace(todict=lambda: dict(self._matching))
+
+    def TwoViewGeometryOptions(self):
+        return SimpleNamespace(todict=lambda: dict(self._verification))
+
+
+def _frozen_for(fake: _FakePycolmapDefaults) -> dict:
+    return E.freeze_manifest([], Path(__file__), Path(__file__), fake.__version__, {},
+                             labels_sha256="1" * 64,
+                             feature_matching_options=fake.FeatureMatchingOptions().todict(),
+                             two_view_geometry_options=fake.TwoViewGeometryOptions().todict())
+
+
+def test_replay_accepts_matching_installed_pycolmap_defaults():
+    fake = _FakePycolmapDefaults()
+    frozen = _frozen_for(fake)
+    E.verify_installed_pycolmap_defaults(frozen, fake)  # does not raise
+
+
+def test_replay_refuses_on_pycolmap_version_mismatch():
+    frozen = _frozen_for(_FakePycolmapDefaults(version="4.2.0"))
+    live = _FakePycolmapDefaults(version="4.3.0")
+    with pytest.raises(ValueError, match="version"):
+        E.verify_installed_pycolmap_defaults(frozen, live)
+
+
+def test_replay_refuses_on_matching_options_mismatch():
+    frozen = _frozen_for(_FakePycolmapDefaults(matching={"num_threads": -1}))
+    live = _FakePycolmapDefaults(matching={"num_threads": 4})
+    with pytest.raises(ValueError, match="matching"):
+        E.verify_installed_pycolmap_defaults(frozen, live)
+
+
+def test_replay_refuses_on_verification_options_mismatch():
+    frozen = _frozen_for(_FakePycolmapDefaults(
+        verification={"ransac": {"random_seed": -1, "max_error": 4.0}}))
+    live = _FakePycolmapDefaults(
+        verification={"ransac": {"random_seed": -1, "max_error": 8.0}})
+    with pytest.raises(ValueError, match="verification"):
+        E.verify_installed_pycolmap_defaults(frozen, live)
 
 
 def test_freeze_writer_serializes_pycolmap_path_options(tmp_path):
