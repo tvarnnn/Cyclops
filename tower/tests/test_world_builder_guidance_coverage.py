@@ -123,6 +123,8 @@ def _status_matrix(root, producer_class=WorldBuilderStatusProducer):
 
 def test_off_exact_bytes_twice_and_one_byte_mutant(tmp_path, monkeypatch):
     monkeypatch.delenv("TOWER_WORLD_GUIDANCE_COVERAGE", raising=False)
+    monkeypatch.delenv("TOWER_WORLD_GUIDANCE_IMAGERY_LIVE", raising=False)
+    monkeypatch.delenv("TOWER_WORLD_GUIDANCE_IMAGERY_LANDED", raising=False)
     source = os.environ.get("FOW_BASELINE_SOURCE")
     if source:
         import types

@@ -238,7 +238,8 @@ def _finite_component(component):
 
 
 def compute_coverage(*, solution, manifest, placements, poses, keyframes,
-                     geometry_revision, computed_at, check=lambda: None):
+                     geometry_revision, computed_at, check=lambda: None,
+                     eligible_out=None):
     """Pure computation from one coherent snapshot; invalid global identity refuses all."""
     summary = manifest["global_solve"]
     solved_at = float(summary["solved_at"])
@@ -394,6 +395,12 @@ def compute_coverage(*, solution, manifest, placements, poses, keyframes,
         if rows[ref]["stations"]:
             rows[ref]["stations"].sort(key=lambda s: (s["y"], s["x"]))
             components.append(rows[ref])
+    if eligible_out is not None:
+        # The phone projects through coverage.components; a thumbnail from a
+        # component omitted by its station cap has no valid projected basis.
+        visible_refs = {component["reference_segment"] for component in components}
+        eligible_out.extend((kid, ref) for ref in sorted(visible_refs)
+                            for kid, _, _, _ in eligible[ref])
     block = {"version": 1, "source": "landed_global_solve", "solved_at": solved_at,
              "computed_at": computed_at, "horizon_keyframes": horizon,
              "keyframes_now": len(accepted), "keyframes_pending": max(0, len(accepted)-horizon),
@@ -441,7 +448,8 @@ def _json(path, budget=None):
 
 
 def compute_from_tree(root, world_id, session_id, expected, geometry_revision,
-                      clock=time.time, tree_tag=None, budget=None):
+                      clock=time.time, tree_tag=None, budget=None,
+                      eligible_out=None):
     """Read without a builder lock; reject torn trees and never read image bytes."""
     base = Path(root) / "worlds" / world_id
     session = base / "sessions" / session_id
@@ -479,7 +487,8 @@ def compute_from_tree(root, world_id, session_id, expected, geometry_revision,
     return compute_coverage(solution=solution, manifest=manifest,
                             placements=placed["placements"], poses=posed["poses"],
                             keyframes=keyframes, geometry_revision=actual_revision,
-                            computed_at=clock(), check=budget.check)
+                            computed_at=clock(), check=budget.check,
+                            eligible_out=eligible_out)
 
 
 class CoverageWorker:
@@ -546,6 +555,11 @@ class CoverageWorker:
         # Timed retries used per attempted candidate (evicted with it).
         self._retries = {}
         self._published = {}
+        self._imagery_landed = os.environ.get("TOWER_WORLD_GUIDANCE_IMAGERY_LANDED") == "on"
+        self._imagery_state = None
+        if self._imagery_landed:
+            from tower.world_builder.guidance_imagery import state_for
+            self._imagery_state = state_for(root)
         self._thread = threading.Thread(target=self._run, name="world-guidance", daemon=True)
         self._thread.start()
 
@@ -690,9 +704,12 @@ class CoverageWorker:
             failure = None
             try:
                 world, session, solved_at, horizon, stat = candidate
+                imagery_eligible = [] if self._imagery_landed else None
+                kwargs = ({"eligible_out": imagery_eligible}
+                          if self._imagery_landed else {})
                 block = compute_from_tree(self.root, world, session,
                                           (solved_at, horizon, stat), revision,
-                                          self.clock, tree_tag, budget)
+                                          self.clock, tree_tag, budget, **kwargs)
                 budget.check()
             except Exception as exc:
                 failure = exc
@@ -712,6 +729,8 @@ class CoverageWorker:
                         self._block_session = (world, session)
                         self._successful_candidate = candidate
                         self._receipts[candidate] = (block, self._block)
+                        if self._imagery_state is not None:
+                            self._imagery_state.begin_landed(world, session)
                         self._published = {**self._published,
                                            (world, session): self._block}
                         if len(self._receipts) > _MEMO_LIMIT:
@@ -738,3 +757,15 @@ class CoverageWorker:
             log = logger.info if block is not None else logger.warning
             log("world builder guidance: candidate=%r elapsed_ms=%.1f reason=%s disposition=%s",
                 candidate, elapsed_ms, reason, disposition)
+            # Coverage is already published. Imagery can fail or miss its own
+            # budget without delaying that receipt, Stop, or a status reply.
+            if block is not None and disposition == "ok" and self._imagery_landed:
+                try:
+                    if not self._stop.is_set():
+                        self._imagery_state.publish_landed(self.root, world, session,
+                                                           block, imagery_eligible,
+                                                           cancelled=self._stop)
+                except Exception:
+                    logger.exception("world builder guidance: landed imagery failed")
+                finally:
+                    self._imagery_state.finish_landed(world, session)

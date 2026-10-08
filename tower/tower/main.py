@@ -1616,6 +1616,10 @@ def create_app() -> FastAPI:
     # nothing in common but a path prefix.
     app.include_router(cv_lab_preview.router)
     app.include_router(geometry.router)
+    if (os.environ.get("TOWER_WORLD_GUIDANCE_IMAGERY_LIVE") == "on" or
+            os.environ.get("TOWER_WORLD_GUIDANCE_IMAGERY_LANDED") == "on"):
+        from tower.routes import guidance_imagery
+        app.include_router(guidance_imagery.router)
     app.include_router(observations.router)
     app.include_router(sessions.router)
     app.include_router(scene.router)
