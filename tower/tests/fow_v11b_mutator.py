@@ -18,7 +18,7 @@ def pytest_configure(config):
         imagery.ImageryState.live = lambda self, root, world, session: None
     elif mutant == "route_off":
         from tower import main
-        from tower.routes import guidance_imagery as route
+        from tower.results import world_builder_guidance_imagery as route
         original = main.create_app
 
         def broken():

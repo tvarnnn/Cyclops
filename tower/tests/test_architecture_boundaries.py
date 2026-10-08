@@ -149,6 +149,10 @@ _RESULT_CHANNEL_ADAPTERS = frozenset(
         # {session}/...), an adapter over the store named after the cartridge,
         # serving the redacted keyframe bundles the phone blends.
         TOWER / "results" / "world_builder_appearance.py",
+        # Added 2026-10-07: FOW v1.1 B guidance imagery (GET /worlds/{id}/guidance/
+        # imagery/...), an adapter over the store named after the cartridge, serving
+        # the redacted thumbnail tiles; registered only when its switches are on.
+        TOWER / "results" / "world_builder_guidance_imagery.py",
         TOWER / "results" / "__init__.py",
         # Added 2026-08-27 with the Scene Understanding and Document
         # Memory wire paths. Same shape, same rule: one adapter per

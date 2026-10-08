@@ -11,7 +11,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from tower.routes import guidance_imagery as route
+from tower.results import world_builder_guidance_imagery as route
 from tower.world_builder import guidance_imagery as imagery
 from tower.world_builder import guidance_coverage as coverage
 
