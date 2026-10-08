@@ -26,6 +26,7 @@ observe() a future module adapter would.
 """
 
 import logging
+import os
 import time
 from dataclasses import dataclass, field, replace
 
@@ -249,6 +250,7 @@ class WorldBuilderEngine:
         # observe... stop_session() build(), and throwing the solve away
         # at stop would put the whole cost straight back.
         self._live: _LiveSolve | None = None
+        self._live_depth = None
 
     # -- lifecycle -----------------------------------------------------
 
@@ -328,6 +330,17 @@ class WorldBuilderEngine:
         self._events.append("session_started", {"frame_source": frame_source})
         self._start_relocalizer(session)
         self._open_live_solve(session)
+        if self._live_depth is not None:
+            self._live_depth.close()
+            self._live_depth = None
+        if os.environ.get("TOWER_WORLD_LIVE_DEPTH", "off").lower() in ("shadow", "on"):
+            # OFF never imports the depth worker or starts a thread.
+            from tower.world_builder.live_depth import LiveDepthWorker
+
+            self._live_depth = LiveDepthWorker(
+                self._store, session.world_id, session.session_id,
+                session.intrinsics, monotonic=self._mono,
+            )
         return session.session_id
 
     def observe(
@@ -497,6 +510,9 @@ class WorldBuilderEngine:
             motion=motion,
             reason=decision.reason,
         )
+        if self._live_depth is not None:
+            self._live_depth.submit(keyframe, image_bytes, raw_bytes,
+                                    self._session.redaction)
         chain_broke_pending = False
         if self._live is not None:
             # The REDACTED bytes, because those are what landed on disk
@@ -632,6 +648,9 @@ class WorldBuilderEngine:
         # below can raise: every frame is in, and a walk that ended in error
         # reaches here too (world_build_session.py). Never raises.
         self._close_frame_quality_log()
+        if self._live_depth is not None:
+            self._live_depth.close()
+            self._live_depth = None
         now = self._clock()
         finalization = None
         if hold_lock:

@@ -1405,7 +1405,7 @@ def _fit_record(ki, kid, pose, disp, fill_u, fill_fraction, origin, solution,
 
 def reusable_predictions(align_path: Path, backend: str,
                          imagery_source: str = IMAGERY_REDACTED,
-                         known_fov: bool = False) -> dict:
+                         known_fov: bool | float | None = False) -> dict:
     """`{ki: kid}` for every frame an earlier depth stage predicted with this
     backend, read off its `align.json`. Empty when there is none or it cannot
     be read; the depth stage then predicts every frame, which is slower and
@@ -1433,6 +1433,9 @@ def reusable_predictions(align_path: Path, backend: str,
     # Absent is off, which every stage before the parameter was.
     if (cached.get("known_fov") is not None) != bool(known_fov):
         return {}
+    if isinstance(known_fov, (int, float)) and not isinstance(known_fov, bool):
+        if cached.get("known_fov") != round(float(known_fov), 6):
+            return {}
     # (kid, image hash): a record written before hashes were recorded offers
     # nothing, and costs one fresh prediction rather than a wrong reuse. Nor
     # does one whose fill mask was made under an earlier FILL_RULE: its

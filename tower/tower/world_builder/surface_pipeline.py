@@ -258,11 +258,14 @@ def ensure_depth_stage(store, world_id: str, session_id: str, solution,
     """
     from tower.world_builder.dense import DenseParams
     from tower.world_builder.dense_pipeline import dense_dir, run_depth_stage
+    import os
+
+    live_on = os.environ.get("TOWER_WORLD_LIVE_DEPTH", "off").lower() == "on"
 
     root = dense_dir(store, world_id, session_id)
     root.mkdir(parents=True, exist_ok=True)
     dparams = DenseParams(gate_rel=gate_rel, imagery_source=imagery_source,
-                          known_fov=bool(known_fov),
+                          known_fov=bool(known_fov or live_on),
                           **({"backend": backend} if backend else {}))
 
     align_path = root / "align.json"
@@ -287,13 +290,29 @@ def ensure_depth_stage(store, world_id: str, session_id: str, solution,
     # Never `prior=cached`: `prior` resumes whole records, fits included, and
     # a cache that was not usable above is by definition for another solve.
     # Its PREDICTIONS are still good and are reused; the fits are redone.
+    fov_identity = dparams.known_fov
+    if live_on:
+        import math
+
+        try:
+            camera = solution.camera
+            fov_identity = round(math.degrees(2.0 * math.atan(
+                int(camera["width"]) / (2.0 * float(camera["fx"])))), 6)
+        except (TypeError, KeyError, ValueError, ZeroDivisionError):
+            fov_identity = None
+    offers = reusable_predictions(
+        align_path, dparams.backend, dparams.imagery_source,
+        known_fov=fov_identity)
+    if live_on and dparams.known_fov:
+        from tower.world_builder.live_depth import offer_live_predictions
+
+        offers.update(offer_live_predictions(
+            store, world_id, session_id, solution, intrinsics, root,
+            imagery_source=dparams.imagery_source, trust=trust))
     align = run_depth_stage(store, world_id, session_id, solution, intrinsics,
                             dparams, root, should_stop=should_stop,
                             progress=progress, prior=None,
-                            reuse_predictions=reusable_predictions(
-                                align_path, dparams.backend,
-                                dparams.imagery_source,
-                                known_fov=dparams.known_fov))
+                            reuse_predictions=offers)
     if align.get("stopped_after") is None:
         # Name the solve, in both spellings the two readers of this file use,
         # so neither can mistake it for a cache of another solve.
@@ -692,6 +711,10 @@ def surfacify(store, world_id: str, session_id: str, *,
     params = params or SurfaceParams()
     if depth_known_fov is not None and bool(depth_known_fov) != params.depth_known_fov:
         params = dataclasses.replace(params, depth_known_fov=bool(depth_known_fov))
+    import os
+    if os.environ.get("TOWER_WORLD_LIVE_DEPTH", "off").lower() == "on":
+        # Keep the surface digest aligned with ensure_depth_stage's FoV mode.
+        params = dataclasses.replace(params, depth_known_fov=True)
     root = surface_dir(store, world_id, session_id)
     root.mkdir(parents=True, exist_ok=True)
     seconds: dict = {}

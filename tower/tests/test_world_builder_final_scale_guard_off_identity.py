@@ -71,7 +71,7 @@ CLOCK0 = 1_790_000_000.0
 OTHER_SWITCHES = ("TOWER_WORLD_SOLVE_GATE", "TOWER_WORLD_SOLVE_MASKS", "TOWER_WORLD_SOLVE_SEED",
                   "TOWER_WORLD_SOLVE_CONSENSUS", "TOWER_WORLD_ANCHOR_VERIFY",
                   "TOWER_WORLD_POSE_QUARANTINE", "TOWER_WORLD_FINISH_STAGES",
-                  "TOWER_WORLD_PICTURE_BASIS")
+                  "TOWER_WORLD_PICTURE_BASIS", "TOWER_WORLD_LIVE_DEPTH")
 
 
 # ---------------------------------------------------------------------------
@@ -373,3 +373,55 @@ def test_the_golden_is_sensitive_to_one_byte(tmp_path, colmap, monkeypatch):  # 
     path.write_bytes(bytes(data))
     with pytest.raises(AssertionError):
         _check("simple", _observe(s, returned))
+
+
+def test_live_depth_off_spellings_keep_the_three_golden_outputs(
+        tmp_path, colmap, monkeypatch):  # noqa: F811
+    """OFF's three spellings preserve the locked, normalized byte digests."""
+    from scripts import world_refinish as wr
+
+    monkeypatch.setattr(wr, "_restart_attempts", lambda *a, **k: {})
+    for name in OTHER_SWITCHES + (SWITCH,):
+        monkeypatch.delenv(name, raising=False)
+    baseline_bytes = None
+    for n, value in enumerate((None, "off", "misspelled")):
+        if value is not None:
+            monkeypatch.setenv("TOWER_WORLD_LIVE_DEPTH", value)
+        else:
+            monkeypatch.delenv("TOWER_WORLD_LIVE_DEPTH", raising=False)
+        s = _make_walk(tmp_path / f"l{n}", colmap, monkeypatch)
+        observed = _observe(s, _final(s, "gated"))
+        for name in ("solution.json", "align.json", "components.json"):
+            assert any(path.endswith(name) for path in observed["files"])
+        _check("gated", observed)
+        raw = {
+            "align": (s.store.world_dir(s.world_id) / "dense" / s.session_id /
+                      "align.json").read_bytes(),
+            "components": (s.workspace.root / "components.json").read_bytes(),
+        }
+        if baseline_bytes is None:
+            baseline_bytes = raw
+        else:
+            assert raw == baseline_bytes
+
+
+def test_each_off_output_golden_kills_one_byte_mutant(
+        tmp_path, colmap, monkeypatch):  # noqa: F811
+    if os.environ.get(RECORD_ENV):
+        pytest.skip("recording")
+    for name in OTHER_SWITCHES + (SWITCH,):
+        monkeypatch.delenv(name, raising=False)
+    s = _make_walk(tmp_path / "b", colmap, monkeypatch)
+    returned = _final(s, "gated")
+    paths = [s.workspace.solution_path,
+             s.store.world_dir(s.world_id) / "dense" / s.session_id / "align.json",
+             s.workspace.root / "components.json"]
+    for path in paths:
+        before = path.read_bytes()
+        mutant = bytearray(before)
+        at = next(i for i, byte in enumerate(mutant) if 48 <= byte <= 57)
+        mutant[at] = ord("7") if mutant[at] != ord("7") else ord("3")
+        path.write_bytes(mutant)
+        with pytest.raises(AssertionError):
+            _check("gated", _observe(s, returned))
+        path.write_bytes(before)
