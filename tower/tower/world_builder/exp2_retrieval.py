@@ -23,8 +23,17 @@ STD = (0.229, 0.224, 0.225)
 COPY_RECORD = "exp2-copied-inputs.json"
 
 
+UNION = "dinov2_gem_union"  # addendum 2 arm U: S's own matching, topped up with DINO proposals
+MODES = ("dinov2_gem", UNION)
+
+
+def mode() -> str | None:
+    value = os.environ.get(SWITCH)
+    return value if value in MODES else None
+
+
 def enabled() -> bool:
-    return os.environ.get(SWITCH) == "dinov2_gem"
+    return mode() is not None
 
 
 def sha256(path: Path) -> str:
@@ -288,8 +297,10 @@ def remove_nonsequential_pairs(database_path: Path, names, overlap: int = OVERLA
 
 
 def match_retrieval(pycolmap, database_path, images_dir: Path, names, workspace_root: Path,
-                    matching, pairing, verification, match_sequential) -> dict:
-    """R: same sequential geometry, with tree proposals replaced by frozen DINO proposals."""
+                    matching, pairing, verification, match_sequential, union: bool = False) -> dict:
+    """R: same sequential geometry, with tree proposals replaced by frozen DINO proposals.
+    U (`union`): S's matching unchanged -- the walk's matching history and the tree proposal
+    step both kept -- with the same DINO proposals matched on top."""
     names = list(names)
     workspace_root = Path(workspace_root)
     checkpoint = checkpoint_file()
@@ -300,18 +311,22 @@ def match_retrieval(pycolmap, database_path, images_dir: Path, names, workspace_
                                         overlap=pairing.overlap)
     _json(workspace_root / "exp2-candidates.json", {"candidate_file": manifest,
           "checkpoint_sha256": sha256(checkpoint), "rows": rows})
-    removed = remove_nonsequential_pairs(database_path, names, overlap=pairing.overlap)
-    # Preserve every sequential setting except the S vocabulary-tree proposal step.
-    previous_loop_detection = pairing.loop_detection
-    pairing.loop_detection = False
-    try:
+    if union:
+        removed = 0
         match_sequential(pycolmap, database_path, matching, pairing, verification)
-    finally:
-        pairing.loop_detection = previous_loop_detection
+    else:
+        removed = remove_nonsequential_pairs(database_path, names, overlap=pairing.overlap)
+        # Preserve every sequential setting except the S vocabulary-tree proposal step.
+        previous_loop_detection = pairing.loop_detection
+        pairing.loop_detection = False
+        try:
+            match_sequential(pycolmap, database_path, matching, pairing, verification)
+        finally:
+            pairing.loop_detection = previous_loop_detection
     imported = pycolmap.ImportedPairingOptions()
     imported.match_list_path = str(workspace_root / "exp2-candidates.txt")
     kwargs = {"matching_options": matching, "pairing_options": imported}
     if verification is not None:
         kwargs["verification_options"] = verification
     pycolmap.match_image_pairs(database_path, **kwargs)
-    return dict(manifest, prior_nonsequential_rows_removed=removed)
+    return dict(manifest, prior_nonsequential_rows_removed=removed, union=bool(union))

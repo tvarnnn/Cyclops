@@ -1267,7 +1267,8 @@ def solve(
         return {"solved": False, "reason": reason}
     # Exp2 is restricted to an explicit offline copy. The ordinary path does not
     # import its module, inspect its cache, or create any Exp2 sidecar.
-    exp2_on = final and os.environ.get("TOWER_WORLD_EXP2_RETRIEVAL") == "dinov2_gem"
+    exp2_mode = os.environ.get("TOWER_WORLD_EXP2_RETRIEVAL") if final else None
+    exp2_on = exp2_mode in ("dinov2_gem", "dinov2_gem_union")
     if exp2_on:
         from tower.world_builder import exp2_retrieval  # noqa: PLC0415
         exp2_retrieval.verify_copied_inputs(store.root)
@@ -1445,7 +1446,8 @@ def solve(
         if exp2_on:
             exp2_match = exp2_retrieval.match_retrieval(
                 pycolmap, database_path, workspace.images_dir, present, workspace.root,
-                matching, pairing, verification, _match_sequential)
+                matching, pairing, verification, _match_sequential,
+                union=exp2_mode == "dinov2_gem_union")
         else:
             _match_sequential(pycolmap, database_path, matching, pairing, verification)
         # NOT the revisit links (review V9 M-10). They were matched here, into the walk's
@@ -1481,7 +1483,8 @@ def solve(
             if exp2_on:
                 exp2_match = exp2_retrieval.match_retrieval(
                     pycolmap, database_path, workspace.images_dir, present, workspace.root,
-                    matching, pairing, verification, _match_sequential)
+                    matching, pairing, verification, _match_sequential,
+                    union=exp2_mode == "dinov2_gem_union")
             else:
                 _match_sequential(pycolmap, database_path, matching, pairing, verification)
         else:
@@ -1576,7 +1579,7 @@ def solve(
     }
     if exp2_on:
         solution.solve["exp2_retrieval"] = {
-            "mode": "dinov2_gem", "candidate_sha256": exp2_match["sha256"],
+            "mode": exp2_mode, "candidate_sha256": exp2_match["sha256"],
             "candidate_pairs": exp2_match["pairs"],
             "nonsequential_unique": exp2_match["nonsequential_unique"],
         }

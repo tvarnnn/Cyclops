@@ -27,6 +27,57 @@ def test_switch_is_exact_and_off_by_default(monkeypatch):
     assert E.enabled() is True
 
 
+def test_union_switch_is_exact(monkeypatch):
+    for value in ("dinov2_gem_union ", "DINOV2_GEM_UNION", "union"):
+        monkeypatch.setenv(E.SWITCH, value)
+        assert E.enabled() is False and E.mode() is None
+    monkeypatch.setenv(E.SWITCH, "dinov2_gem_union")
+    assert E.enabled() is True and E.mode() == E.UNION
+
+
+def _fake_match_inputs(tmp_path, monkeypatch, removal):
+    names = [f"{i:03}.jpg" for i in range(60)]
+    images = tmp_path / "images"
+    images.mkdir()
+    for name in names:
+        (images / name).write_bytes(b"x")
+    monkeypatch.setattr(E, "checkpoint_file", lambda: tmp_path / "weights")
+    (tmp_path / "weights").write_bytes(b"weights")
+    monkeypatch.setattr(E, "descriptor_cache", lambda *a, **k: np.eye(60, dtype=np.float32))
+    monkeypatch.setattr(E, "remove_nonsequential_pairs", removal)
+    calls = []
+    class Imported:
+        match_list_path = None
+    fake = SimpleNamespace(ImportedPairingOptions=Imported,
+                           match_image_pairs=lambda *a, **k: calls.append((a, k)))
+    return names, images, fake, calls
+
+
+def test_union_keeps_history_and_tree_step_then_imports_the_same_candidates(tmp_path, monkeypatch):
+    def removal(*a, **k):
+        raise AssertionError("U must keep the walk's matching history")
+    names, images, fake, calls = _fake_match_inputs(tmp_path, monkeypatch, removal)
+    pairing = SimpleNamespace(loop_detection=True, overlap=20)
+    result = E.match_retrieval(fake, tmp_path / "database.db", images, names, tmp_path,
+                               "matching", pairing, None,
+                               lambda p, d, m, pairing_, v: calls.append(("sequential", pairing_.loop_detection)),
+                               union=True)
+    assert calls[0] == ("sequential", True)
+    assert calls[1][1]["pairing_options"].match_list_path.endswith("exp2-candidates.txt")
+    assert result["union"] is True and result["prior_nonsequential_rows_removed"] == 0
+
+
+def test_r_swap_matches_sequential_without_the_tree_step(tmp_path, monkeypatch):
+    names, images, fake, calls = _fake_match_inputs(tmp_path, monkeypatch, lambda *a, **k: 7)
+    pairing = SimpleNamespace(loop_detection=True, overlap=20)
+    result = E.match_retrieval(fake, tmp_path / "database.db", images, names, tmp_path,
+                               "matching", pairing, None,
+                               lambda p, d, m, pairing_, v: calls.append(("sequential", pairing_.loop_detection)))
+    assert calls[0] == ("sequential", False)
+    assert pairing.loop_detection is True
+    assert result["union"] is False and result["prior_nonsequential_rows_removed"] == 7
+
+
 def test_rank_cadence_budget_distance_and_tie():
     vectors = np.eye(60, dtype=np.float32)
     vectors[0] = vectors[59]

@@ -42,7 +42,7 @@ def main(argv=None):
     tree.add_argument("--freeze-sha256", required=True)
     replay = sub.add_parser("replay")
     replay.add_argument("root", type=Path)
-    replay.add_argument("--arm", choices=("S", "R"), required=True)
+    replay.add_argument("--arm", choices=("S", "R", "U"), required=True)
     replay.add_argument("--world", required=True)
     replay.add_argument("--session", required=True)
     replay.add_argument("--freeze-sha256", required=True)
@@ -131,7 +131,7 @@ def main(argv=None):
     from scripts import world_finalize
     previous = os.environ.get(E.SWITCH)
     try:
-        os.environ[E.SWITCH] = "dinov2_gem" if args.arm == "R" else "off"
+        os.environ[E.SWITCH] = {"R": "dinov2_gem", "U": E.UNION}.get(args.arm, "off")
         return world_finalize.main(["--root", str(args.root), "--world", args.world,
                                     "--session", args.session, "--format", "json"])
     finally:
