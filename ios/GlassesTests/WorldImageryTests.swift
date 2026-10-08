@@ -262,6 +262,20 @@ final class WorldImageryTests: XCTestCase {
                        WorldImagerySwitches(live: false, landed: true))
     }
 
+    /// A home-screen launch has no launch environment: the build's Info.plist
+    /// keys carry the switches, "on" exactly; an unset build setting is "".
+    func testTheBuildCarriesTheSwitchesForAHomeScreenLaunch() {
+        XCTAssertEqual(WorldImagerySwitches(environment: [:], info: ["GlassesFOWImageryLive": "",
+                                                                    "GlassesFOWImageryLanded": ""]), .off)
+        XCTAssertEqual(WorldImagerySwitches(environment: [:], info: ["GlassesFOWImageryLive": "ON",
+                                                                    "GlassesFOWImageryLanded": "1"]), .off)
+        XCTAssertEqual(WorldImagerySwitches(environment: [:], info: ["GlassesFOWImageryLive": "on",
+                                                                    "GlassesFOWImageryLanded": "on"]),
+                       WorldImagerySwitches(live: true, landed: true))
+        XCTAssertEqual(WorldImagerySwitches(environment: [:], info: ["GlassesFOWImageryLanded": "on"]),
+                       WorldImagerySwitches(live: false, landed: true))
+    }
+
     /// The panel puts B2's thumbnails only over the live receipt they were
     /// placed on: not over the fixture map, not over another landing's.
     func testThePanelDrawsLandedThumbnailsOnlyOverTheirOwnReceipt() {

@@ -43,6 +43,12 @@
 
 	<!-- The commit this build was made from, for the DEBUG IMU log's header.
 	     Empty unless the build passes GLASSES_BUILD_SHA=<sha> to xcodebuild. -->
+	<!-- FOW v1.1 B phone switches for home-screen launches: "on" only when the
+	     build passes IOS_FOW_ROOM_IMAGERY_LIVE=on / _LANDED=on to xcodebuild. -->
+	<key>GlassesFOWImageryLive</key>
+	<string>$(IOS_FOW_ROOM_IMAGERY_LIVE)</string>
+	<key>GlassesFOWImageryLanded</key>
+	<string>$(IOS_FOW_ROOM_IMAGERY_LANDED)</string>
 	<key>GlassesBuildSHA</key>
 	<string>$(GLASSES_BUILD_SHA)</string>
 

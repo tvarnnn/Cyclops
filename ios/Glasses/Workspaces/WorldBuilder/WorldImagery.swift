@@ -35,10 +35,15 @@ import UIKit
 
 /// The phone's side of each stage's switch. The Tower's routes exist only
 /// when its own switches are on (spec §0); these say whether the phone asks.
-/// Read from the launch environment, `on` exactly; anything else is off.
+/// Read from the launch environment or, for a build launched from the home
+/// screen (which has no launch environment), from the Info.plist keys the
+/// build fills from the same-named build settings. `on` exactly; anything
+/// else, including an unset setting's empty string, is off.
 nonisolated struct WorldImagerySwitches: Equatable, Sendable {
     static let liveVariable = "IOS_FOW_ROOM_IMAGERY_LIVE"
     static let landedVariable = "IOS_FOW_ROOM_IMAGERY_LANDED"
+    static let liveInfoKey = "GlassesFOWImageryLive"
+    static let landedInfoKey = "GlassesFOWImageryLanded"
     static let off = WorldImagerySwitches(live: false, landed: false)
 
     var live: Bool
@@ -51,11 +56,14 @@ nonisolated struct WorldImagerySwitches: Equatable, Sendable {
         self.landed = landed
     }
 
-    init(environment: [String: String]) {
-        self.init(live: environment[Self.liveVariable] == "on", landed: environment[Self.landedVariable] == "on")
+    init(environment: [String: String], info: [String: Any] = [:]) {
+        self.init(live: environment[Self.liveVariable] == "on" || info[Self.liveInfoKey] as? String == "on",
+                  landed: environment[Self.landedVariable] == "on" || info[Self.landedInfoKey] as? String == "on")
     }
 
-    static var current: WorldImagerySwitches { WorldImagerySwitches(environment: ProcessInfo.processInfo.environment) }
+    static var current: WorldImagerySwitches {
+        WorldImagerySwitches(environment: ProcessInfo.processInfo.environment, info: Bundle.main.infoDictionary ?? [:])
+    }
 }
 
 // MARK: - The manifest, decoded (§1)
