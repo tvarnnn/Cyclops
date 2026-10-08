@@ -1,0 +1,231 @@
+{
+ "source": {
+  "run_root": "C:\\Users\\tvllo\\Projects\\Glasses-scratch\\wb-coherence-run-2026-09-23\\experiments\\C22-REPLAY\\runs\\walk71-fow-e464fac3",
+  "status_line": 377,
+  "received_at": 1791432556.4661357,
+  "envelope_sha256": "3d316cd839fa092eb834e9e10a50ebface4b8a2794b415a00ef2e7b90bba928f"
+ },
+ "receipt": {
+  "world_id": "97371d234e96468a9e0e2dab49a15cc0",
+  "session_id": "0060f923b1e44f5097521a9171ac19a6",
+  "status_geometry_revision": "f55cffdb111a562e",
+  "cartridge": "world_builder",
+  "type": "cartridge_result"
+ },
+ "guidance": {
+  "coverage": {
+   "version": 1,
+   "source": "landed_global_solve",
+   "solved_at": 1791432554.1079836,
+   "computed_at": 1791432555.9871435,
+   "horizon_keyframes": 563,
+   "keyframes_now": 563,
+   "keyframes_pending": 0,
+   "geometry_revision": "f55cffdb111a562e",
+   "frame_revision": 1,
+   "station_grid": "component_square_8x8_v1",
+   "sector_frame": "first_qualified_forward_cw_from_up_v1",
+   "components_total": 4,
+   "components_omitted": 1,
+   "stations_omitted": 25,
+   "components": [
+    {
+     "reference_segment": 0,
+     "posed_keyframes": 386,
+     "bounds_xy": [
+      -7.549619619252086,
+      -5.404514443170655,
+      2.736590639602825,
+      4.13814590072671
+     ],
+     "origin_xyz": [
+      -0.2191585064831209,
+      1.079919956631395,
+      -2.364262935778571
+     ],
+     "up_xyz": [
+      -0.39985613813739396,
+      -0.9152050124010812,
+      -0.0501483207075371
+     ],
+     "forward_xyz": [
+      -0.020077375579421988,
+      -0.04595381441870548,
+      0.9987417814080946
+     ],
+     "cell_size": 1.285776282356864,
+     "stations": [
+      {
+       "x": 1,
+       "y": 0,
+       "keyframes": 15,
+       "weak_mask": 0,
+       "supported_mask": 1
+      },
+      {
+       "x": 2,
+       "y": 0,
+       "keyframes": 59,
+       "weak_mask": 0,
+       "supported_mask": 62
+      },
+      {
+       "x": 6,
+       "y": 2,
+       "keyframes": 30,
+       "weak_mask": 0,
+       "supported_mask": 3073
+      },
+      {
+       "x": 4,
+       "y": 3,
+       "keyframes": 13,
+       "weak_mask": 0,
+       "supported_mask": 3073
+      },
+      {
+       "x": 5,
+       "y": 3,
+       "keyframes": 24,
+       "weak_mask": 0,
+       "supported_mask": 3073
+      },
+      {
+       "x": 6,
+       "y": 3,
+       "keyframes": 45,
+       "weak_mask": 1,
+       "supported_mask": 3072
+      },
+      {
+       "x": 7,
+       "y": 3,
+       "keyframes": 20,
+       "weak_mask": 1,
+       "supported_mask": 3072
+      },
+      {
+       "x": 1,
+       "y": 4,
+       "keyframes": 67,
+       "weak_mask": 0,
+       "supported_mask": 3073
+      },
+      {
+       "x": 2,
+       "y": 4,
+       "keyframes": 14,
+       "weak_mask": 0,
+       "supported_mask": 2049
+      },
+      {
+       "x": 4,
+       "y": 4,
+       "keyframes": 21,
+       "weak_mask": 1,
+       "supported_mask": 2050
+      },
+      {
+       "x": 5,
+       "y": 4,
+       "keyframes": 13,
+       "weak_mask": 0,
+       "supported_mask": 2049
+      },
+      {
+       "x": 7,
+       "y": 4,
+       "keyframes": 18,
+       "weak_mask": 0,
+       "supported_mask": 3072
+      }
+     ]
+    },
+    {
+     "reference_segment": 13,
+     "posed_keyframes": 81,
+     "bounds_xy": [
+      -6.053142763760873,
+      -3.6841355114743224,
+      4.026368801163454,
+      0.0
+     ],
+     "origin_xyz": [
+      -1.834443098064073,
+      0.31268136921351375,
+      -0.9903964797478476
+     ],
+     "up_xyz": [
+      -0.024230975040560123,
+      -0.9163043371307371,
+      -0.39974894822123586
+     ],
+     "forward_xyz": [
+      -0.010567364315721473,
+      -0.3996092496619706,
+      0.9166246660416769
+     ],
+     "cell_size": 1.259938945615541,
+     "stations": [
+      {
+       "x": 0,
+       "y": 2,
+       "keyframes": 12,
+       "weak_mask": 0,
+       "supported_mask": 2051
+      },
+      {
+       "x": 6,
+       "y": 4,
+       "keyframes": 13,
+       "weak_mask": 0,
+       "supported_mask": 2051
+      },
+      {
+       "x": 7,
+       "y": 4,
+       "keyframes": 29,
+       "weak_mask": 1,
+       "supported_mask": 14
+      }
+     ]
+    },
+    {
+     "reference_segment": 45,
+     "posed_keyframes": 45,
+     "bounds_xy": [
+      -9.51680756299117,
+      -0.27889546115991565,
+      0.13620715163913125,
+      3.4601886274480433
+     ],
+     "origin_xyz": [
+      1.4352462251871565,
+      -1.4677968042135334,
+      -4.507269254954256
+     ],
+     "up_xyz": [
+      -0.10783568572131132,
+      -0.9565131677555029,
+      0.2710240299223448
+     ],
+     "forward_xyz": [
+      0.03036245023666245,
+      0.2693179281276578,
+      0.9625725817852137
+     ],
+     "cell_size": 1.2066268393287878,
+     "stations": [
+      {
+       "x": 7,
+       "y": 2,
+       "keyframes": 39,
+       "weak_mask": 0,
+       "supported_mask": 2051
+      }
+     ]
+    }
+   ]
+  }
+ }
+}

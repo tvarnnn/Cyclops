@@ -31,7 +31,7 @@ final class WorldCoverageFieldTests: XCTestCase {
         ]))
         XCTAssertEqual(field.wedges.count, 1)
         XCTAssertEqual(field.wedges[0].evidence, .supported)
-        XCTAssertEqual(field.wedges[0].radiusInCells, 3)
+        XCTAssertEqual(field.wedges[0].radiusInCells, 2.5)
         XCTAssertEqual(field.wedges[0].intensity, WorldCoverageField.supportedIntensity)
         XCTAssertEqual(field.supportedDirections, 1)
         XCTAssertEqual(field.weakDirections, 0)
@@ -43,7 +43,7 @@ final class WorldCoverageFieldTests: XCTestCase {
         ]))
         XCTAssertEqual(field.wedges.count, 1)
         XCTAssertEqual(field.wedges[0].evidence, .weak)
-        XCTAssertEqual(field.wedges[0].radiusInCells, 2)
+        XCTAssertEqual(field.wedges[0].radiusInCells, 1.6)
         XCTAssertEqual(field.wedges[0].intensity, WorldCoverageField.weakIntensity)
         XCTAssertFalse(field.wedges.contains { $0.sector == 0 })
     }
@@ -79,14 +79,9 @@ final class WorldCoverageFieldTests: XCTestCase {
 
     func testRealCoverageBlocksParseAndMatchMaskCounts() throws {
         let files = try realBlockFiles()
-        let sources: [(String, [String: Any])]
-        if files.isEmpty {
-            sources = [("fixture-mid", FOWFixtures.payload(FOWFixtures.mid)),
-                       ("fixture-stop", FOWFixtures.payload(FOWFixtures.stop))]
-        } else {
-            sources = try files.map { ($0.lastPathComponent, try payload(at: $0)) }
-        }
-        for (name, payload) in sources {
+        for file in files {
+            let name = file.lastPathComponent
+            let payload = try payload(at: file)
             let coverage = try XCTUnwrap(WorldCoverageStatus(payload: payload).coverage, name)
             for component in coverage.components {
                 let field = WorldCoverageField(component: component)
@@ -102,43 +97,110 @@ final class WorldCoverageFieldTests: XCTestCase {
 
     @MainActor
     func testRenderEveryCoverageBlockToPNG() throws {
-#if targetEnvironment(simulator)
         let files = try realBlockFiles()
-        let sources: [(String, [String: Any])]
-        if files.isEmpty {
-            sources = [("fixture-mid", FOWFixtures.payload(FOWFixtures.mid)),
-                       ("fixture-stop", FOWFixtures.payload(FOWFixtures.stop))]
-        } else {
-            sources = try files.map { ($0.deletingPathExtension().lastPathComponent, try payload(at: $0)) }
-        }
-        let shots = URL(fileURLWithPath: "/Users/tristan/Projects/Glasses-scratch/fow-field/shots", isDirectory: true)
-        try FileManager.default.createDirectory(at: shots, withIntermediateDirectories: true)
-        for (name, payload) in sources {
+        for file in files {
+            let name = file.deletingPathExtension().lastPathComponent
+            let payload = try payload(at: file)
             let coverage = try XCTUnwrap(WorldCoverageStatus(payload: payload).coverage, name)
-            let component = try XCTUnwrap(coverage.components.first, name)
-            let view = WorldCoveragePieceView(component: component, index: 0, showsName: false)
+            XCTAssertFalse(coverage.components.isEmpty, name)
+            let count = coverage.components.count
+            let gap: CGFloat = 8
+            let pieceSide = (512 - gap * CGFloat(count - 1)) / CGFloat(count)
+            let view = HStack(spacing: gap) {
+                ForEach(Array(coverage.components.enumerated()), id: \.element.referenceSegment) { index, component in
+                    WorldCoveragePieceView(component: component, index: index, showsName: count > 1)
+                        .frame(width: pieceSide, height: pieceSide)
+                }
+            }
                 .frame(width: 512, height: 512)
+                .background(WorldCoverageStyle.fog)
             let renderer = ImageRenderer(content: view)
             renderer.scale = 2
             let image = try XCTUnwrap(renderer.uiImage, name)
             let png = try XCTUnwrap(image.pngData(), name)
-            let destination = shots.appendingPathComponent("\(name).png")
-            try png.write(to: destination, options: .atomic)
             XCTAssertGreaterThan(png.count, 1_000, name)
             let colors = try sampledColors(in: image)
             XCTAssertGreaterThan(colors.count, 20, "\(name): radial light must be visible in the fog")
+            let attachment = XCTAttachment(image: image)
+            attachment.name = "\(name).png"
+            attachment.lifetime = .keepAlways
+            add(attachment)
         }
-#else
-        throw XCTSkip("Host-path PNG rendering runs on the simulator")
-#endif
+        let progression = ["walk7-h52", "walk7-h103", "walk7-h236", "walk7-h509", "walk7-h991"]
+        let snapshots = try progression.map { name -> (String, WorldCoverage.Component) in
+            let file = try XCTUnwrap(files.first { $0.deletingPathExtension().lastPathComponent == name }, name)
+            let coverage = try XCTUnwrap(WorldCoverageStatus(payload: try payload(at: file)).coverage, name)
+            return (name, try XCTUnwrap(coverage.components.first, name))
+        }
+        let strip = HStack(spacing: 0) {
+            ForEach(0..<snapshots.count, id: \.self) { index in
+                let name = snapshots[index].0
+                let component = snapshots[index].1
+                VStack(spacing: 0) {
+                    Text(name.replacingOccurrences(of: "walk7-", with: "Walk 7 · "))
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundStyle(.white)
+                        .frame(height: 28)
+                    WorldCoveragePieceView(component: component, index: 0, showsName: false)
+                        .frame(width: 320, height: 320)
+                }
+                .frame(width: 320, height: 348)
+            }
+        }
+        .background(WorldCoverageStyle.fog)
+        let renderer = ImageRenderer(content: strip)
+        renderer.scale = 2
+        let image = try XCTUnwrap(renderer.uiImage)
+        let attachment = XCTAttachment(image: image)
+        attachment.name = "walk7-progression.png"
+        attachment.lifetime = .keepAlways
+        add(attachment)
+    }
+
+    @MainActor
+    func testEdgeWedgeFitsInsideThePiece() throws {
+        let edge = component([
+            Station(x: 7, y: 4, keyframes: 2, weakMask: 0, supportedMask: 1),
+        ])
+        let renderer = ImageRenderer(content: WorldCoveragePieceView(component: edge, index: 0, showsName: false)
+            .frame(width: 512, height: 512))
+        renderer.scale = 1
+        let image = try XCTUnwrap(renderer.uiImage)
+        let pixels = try rgbaBytes(in: image)
+        let centre = (288 * 512 + 511) * 4
+        let fog = (0 * 512 + 0) * 4
+        for channel in 0..<3 {
+            XCTAssertLessThanOrEqual(abs(Int(pixels[centre + channel]) - Int(pixels[fog + channel])), 4,
+                                     "a revealed wedge reaches the right edge")
+        }
+    }
+
+    func testEveryRealWedgeAndItsBlurFitInsideThePiece() throws {
+        let side: CGFloat = 512
+        let fit = WorldCoverageField.fit(side: side)
+        for file in try realBlockFiles() {
+            let name = file.lastPathComponent
+            let coverage = try XCTUnwrap(WorldCoverageStatus(payload: try payload(at: file)).coverage, name)
+            for component in coverage.components {
+                for wedge in WorldCoverageField(component: component).wedges {
+                    let centre = fit.point(wedge.center)
+                    let extent = (wedge.radiusInCells + WorldCoverageField.blurRadiusInCells) * fit.cell
+                    XCTAssertGreaterThanOrEqual(centre.x - extent, 0, name)
+                    XCTAssertGreaterThanOrEqual(centre.y - extent, 0, name)
+                    XCTAssertLessThanOrEqual(centre.x + extent, side, name)
+                    XCTAssertLessThanOrEqual(centre.y + extent, side, name)
+                }
+            }
+        }
     }
 
     private func realBlockFiles() throws -> [URL] {
-        let folder = URL(fileURLWithPath: "/Users/tristan/Projects/Glasses-scratch/fow-ios/real-blocks", isDirectory: true)
-        guard FileManager.default.fileExists(atPath: folder.path) else { return [] }
-        return try FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil)
+        let folder = try XCTUnwrap(Bundle(for: Self.self).url(forResource: "CoverageBlocks", withExtension: nil))
+        let files = try FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil)
             .filter { $0.pathExtension == "json" }
             .sorted { $0.lastPathComponent < $1.lastPathComponent }
+        XCTAssertEqual(files.count, 15, "all real coverage blocks must be bundled on device")
+        return files
     }
 
     private func payload(at file: URL) throws -> [String: Any] {
@@ -149,12 +211,7 @@ final class WorldCoverageFieldTests: XCTestCase {
     private func sampledColors(in image: UIImage) throws -> Set<UInt32> {
         let source = try XCTUnwrap(image.cgImage)
         let width = source.width, height = source.height
-        var bytes = [UInt8](repeating: 0, count: width * height * 4)
-        let bitmap = CGImageAlphaInfo.premultipliedLast.rawValue | CGBitmapInfo.byteOrder32Big.rawValue
-        let context = try XCTUnwrap(CGContext(data: &bytes, width: width, height: height, bitsPerComponent: 8,
-                                             bytesPerRow: width * 4, space: CGColorSpaceCreateDeviceRGB(),
-                                             bitmapInfo: bitmap))
-        context.draw(source, in: CGRect(x: 0, y: 0, width: width, height: height))
+        let bytes = try rgbaBytes(in: image)
         var colors: Set<UInt32> = []
         for y in stride(from: 0, to: height, by: 16) {
             for x in stride(from: 0, to: width, by: 16) {
@@ -168,5 +225,17 @@ final class WorldCoverageFieldTests: XCTestCase {
             }
         }
         return colors
+    }
+
+    private func rgbaBytes(in image: UIImage) throws -> [UInt8] {
+        let source = try XCTUnwrap(image.cgImage)
+        let width = source.width, height = source.height
+        var bytes = [UInt8](repeating: 0, count: width * height * 4)
+        let bitmap = CGImageAlphaInfo.premultipliedLast.rawValue | CGBitmapInfo.byteOrder32Big.rawValue
+        let context = try XCTUnwrap(CGContext(data: &bytes, width: width, height: height, bitsPerComponent: 8,
+                                             bytesPerRow: width * 4, space: CGColorSpaceCreateDeviceRGB(),
+                                             bitmapInfo: bitmap))
+        context.draw(source, in: CGRect(x: 0, y: 0, width: width, height: height))
+        return bytes
     }
 }

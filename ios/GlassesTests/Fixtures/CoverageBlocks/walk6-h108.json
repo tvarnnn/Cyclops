@@ -1,0 +1,175 @@
+{
+ "source": {
+  "run_root": "experiments/C22-REPLAY/runs/walk6-fow-20261006-v8",
+  "status_line": 106,
+  "received_at": 1791416073.3000915,
+  "envelope_sha256": "6bd90fcff17d5287c27017e55339d45e4c1b4f5c4af7c5a7b866b0baa4521464"
+ },
+ "receipt": {
+  "world_id": "dc6fe619e9d14fcab648936796b84d88",
+  "session_id": "05353c70453948e585a97af8646f7ccb",
+  "status_geometry_revision": "30551ee433aa636d",
+  "cartridge": "world_builder",
+  "type": "cartridge_result"
+ },
+ "guidance": {
+  "coverage": {
+   "version": 1,
+   "source": "landed_global_solve",
+   "solved_at": 1791416072.0304601,
+   "computed_at": 1791416072.6457741,
+   "horizon_keyframes": 108,
+   "keyframes_now": 200,
+   "keyframes_pending": 92,
+   "geometry_revision": "bdc5504791bd3e9c",
+   "frame_revision": 1,
+   "station_grid": "component_square_8x8_v1",
+   "sector_frame": "first_qualified_forward_cw_from_up_v1",
+   "components_total": 1,
+   "components_omitted": 0,
+   "stations_omitted": 4,
+   "components": [
+    {
+     "reference_segment": 0,
+     "posed_keyframes": 95,
+     "bounds_xy": [
+      -3.0617479047514093,
+      -2.8487738619514675,
+      7.09284287042462,
+      5.237975425648254
+     ],
+     "origin_xyz": [
+      1.2600316158803067,
+      -0.5051380090219135,
+      1.910564760575814
+     ],
+     "up_xyz": [
+      0.1085069510077074,
+      -0.9504143392675805,
+      -0.29144266210968417
+     ],
+     "forward_xyz": [
+      0.033058688545819795,
+      -0.28956164871959483,
+      0.9565882994801997
+     ],
+     "cell_size": 1.2693238468970036,
+     "stations": [
+      {
+       "x": 3,
+       "y": 0,
+       "keyframes": 1,
+       "weak_mask": 1,
+       "supported_mask": 0
+      },
+      {
+       "x": 2,
+       "y": 1,
+       "keyframes": 1,
+       "weak_mask": 1,
+       "supported_mask": 0
+      },
+      {
+       "x": 6,
+       "y": 2,
+       "keyframes": 2,
+       "weak_mask": 0,
+       "supported_mask": 1
+      },
+      {
+       "x": 1,
+       "y": 3,
+       "keyframes": 3,
+       "weak_mask": 0,
+       "supported_mask": 2048
+      },
+      {
+       "x": 2,
+       "y": 3,
+       "keyframes": 2,
+       "weak_mask": 2049,
+       "supported_mask": 0
+      },
+      {
+       "x": 6,
+       "y": 3,
+       "keyframes": 16,
+       "weak_mask": 0,
+       "supported_mask": 2049
+      },
+      {
+       "x": 7,
+       "y": 3,
+       "keyframes": 21,
+       "weak_mask": 0,
+       "supported_mask": 2049
+      },
+      {
+       "x": 0,
+       "y": 4,
+       "keyframes": 2,
+       "weak_mask": 0,
+       "supported_mask": 2048
+      },
+      {
+       "x": 1,
+       "y": 4,
+       "keyframes": 2,
+       "weak_mask": 0,
+       "supported_mask": 2048
+      },
+      {
+       "x": 2,
+       "y": 4,
+       "keyframes": 3,
+       "weak_mask": 0,
+       "supported_mask": 2048
+      },
+      {
+       "x": 0,
+       "y": 5,
+       "keyframes": 4,
+       "weak_mask": 0,
+       "supported_mask": 3072
+      },
+      {
+       "x": 1,
+       "y": 5,
+       "keyframes": 4,
+       "weak_mask": 0,
+       "supported_mask": 2048
+      },
+      {
+       "x": 0,
+       "y": 6,
+       "keyframes": 4,
+       "weak_mask": 0,
+       "supported_mask": 512
+      },
+      {
+       "x": 1,
+       "y": 6,
+       "keyframes": 18,
+       "weak_mask": 256,
+       "supported_mask": 1536
+      },
+      {
+       "x": 1,
+       "y": 7,
+       "keyframes": 6,
+       "weak_mask": 3072,
+       "supported_mask": 256
+      },
+      {
+       "x": 2,
+       "y": 7,
+       "keyframes": 2,
+       "weak_mask": 0,
+       "supported_mask": 2048
+      }
+     ]
+    }
+   ]
+  }
+ }
+}

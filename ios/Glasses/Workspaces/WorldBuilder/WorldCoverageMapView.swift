@@ -34,17 +34,17 @@ enum WorldCoverageStyle {
 
     static let supportedGradient = Gradient(stops: [
         .init(color: lit.opacity(WorldCoverageField.supportedIntensity), location: 0),
-        .init(color: lit.opacity(0.55), location: 0.28),
-        .init(color: lit.opacity(0.22), location: 0.67),
+        .init(color: lit.opacity(0.46), location: 0.3),
+        .init(color: lit.opacity(0.24), location: 0.68),
         .init(color: lit.opacity(0), location: 1),
     ])
     static let weakGradient = Gradient(stops: [
         .init(color: lit.opacity(WorldCoverageField.weakIntensity), location: 0),
-        .init(color: lit.opacity(0.24), location: 0.3),
-        .init(color: lit.opacity(0.07), location: 0.7),
+        .init(color: lit.opacity(0.22), location: 0.3),
+        .init(color: lit.opacity(0.09), location: 0.7),
         .init(color: lit.opacity(0), location: 1),
     ])
-    static let stationGradient = Gradient(colors: [station.opacity(0.85), lit.opacity(0.25), lit.opacity(0)])
+    static let stationGradient = Gradient(colors: [station.opacity(0.55), lit.opacity(0.15), lit.opacity(0)])
 }
 
 /// Solve evidence in screen-independent cell coordinates. Sector zero is
@@ -60,8 +60,30 @@ struct WorldCoverageField {
         let evidence: WorldCoverageEvidence
     }
 
-    static let supportedIntensity = 0.86
-    static let weakIntensity = 0.42
+    static let supportedIntensity = 0.62
+    static let weakIntensity = 0.34
+    static let supportedRadius: CGFloat = 2.5
+    static let weakRadius: CGFloat = 1.6
+    static let blurRadiusInCells: CGFloat = 0.28
+
+    /// The eight-cell grid and its largest possible wedge share one fit.
+    /// A centred scale of an eight-cell overlay has exactly this mapping.
+    struct Fit {
+        let cell: CGFloat
+        let inset: CGFloat
+        let overlayScale: CGFloat
+
+        func point(_ gridPoint: CGPoint) -> CGPoint {
+            CGPoint(x: inset + gridPoint.x * cell, y: inset + gridPoint.y * cell)
+        }
+    }
+
+    static func fit(side: CGFloat) -> Fit {
+        let paddedGrid = CGFloat(WorldCoverage.gridSide) + 2 * supportedRadius
+        let cell = side / paddedGrid
+        return Fit(cell: cell, inset: supportedRadius * cell,
+                   overlayScale: CGFloat(WorldCoverage.gridSide) / paddedGrid)
+    }
 
     let stations: [CGPoint]
     let wedges: [Wedge]
@@ -92,11 +114,11 @@ struct WorldCoverageField {
                 switch evidence {
                 case .supported:
                     supported += 1
-                    radius = 3
+                    radius = Self.supportedRadius
                     intensity = Self.supportedIntensity
                 case .weak:
                     weak += 1
-                    radius = 2
+                    radius = Self.weakRadius
                     intensity = Self.weakIntensity
                 case .unconfirmed:
                     continue
@@ -158,6 +180,7 @@ struct WorldCoverageMapView: View {
                        !thumbnails.isEmpty {
                         WorldLandedPieceOverlay(thumbnails: thumbnails, receipt: landed.receipt) { selected = $0 }
                             .frame(width: frame.width, height: frame.height)
+                            .scaleEffect(WorldCoverageField.fit(side: frame.width).overlayScale)
                             .position(x: frame.midX, y: frame.midY)
                     }
                 }
@@ -197,26 +220,28 @@ struct WorldCoveragePieceView: View {
         let field = WorldCoverageField(component: component)
         Canvas { context, size in
             let side = min(size.width, size.height)
-            let cell = side / CGFloat(WorldCoverage.gridSide)
+            let fit = WorldCoverageField.fit(side: side)
+            let cell = fit.cell
             context.fill(Path(CGRect(origin: .zero, size: size)), with: .color(WorldCoverageStyle.fog))
-            context.blendMode = .plusLighter
-            for wedge in field.wedges {
-                let center = CGPoint(x: wedge.center.x * cell, y: wedge.center.y * cell)
-                let radius = wedge.radiusInCells * cell
-                var path = Path()
-                path.move(to: center)
-                path.addArc(center: center, radius: radius, startAngle: .degrees(wedge.startAngle),
-                            endAngle: .degrees(wedge.endAngle), clockwise: false)
-                path.closeSubpath()
-                let gradient = wedge.evidence == .supported
-                    ? WorldCoverageStyle.supportedGradient : WorldCoverageStyle.weakGradient
-                context.fill(path, with: .radialGradient(gradient, center: center,
-                                                         startRadius: 0, endRadius: radius))
+            context.drawLayer { revealed in
+                revealed.addFilter(.blur(radius: cell * WorldCoverageField.blurRadiusInCells))
+                for wedge in field.wedges {
+                    let center = fit.point(wedge.center)
+                    let radius = wedge.radiusInCells * cell
+                    var path = Path()
+                    path.move(to: center)
+                    path.addArc(center: center, radius: radius, startAngle: .degrees(wedge.startAngle),
+                                endAngle: .degrees(wedge.endAngle), clockwise: false)
+                    path.closeSubpath()
+                    let gradient = wedge.evidence == .supported
+                        ? WorldCoverageStyle.supportedGradient : WorldCoverageStyle.weakGradient
+                    revealed.fill(path, with: .radialGradient(gradient, center: center,
+                                                              startRadius: 0, endRadius: radius))
+                }
             }
-            context.blendMode = .normal
             for station in field.stations {
-                let center = CGPoint(x: station.x * cell, y: station.y * cell)
-                let radius = max(2, cell * 0.22)
+                let center = fit.point(station)
+                let radius = max(1.5, cell * 0.13)
                 let rect = CGRect(x: center.x - radius, y: center.y - radius,
                                   width: radius * 2, height: radius * 2)
                 context.fill(Path(ellipseIn: rect), with: .radialGradient(WorldCoverageStyle.stationGradient,
