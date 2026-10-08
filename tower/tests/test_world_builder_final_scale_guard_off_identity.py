@@ -375,16 +375,60 @@ def test_the_golden_is_sensitive_to_one_byte(tmp_path, colmap, monkeypatch):  # 
         _check("simple", _observe(s, returned))
 
 
+# Exactly the `solution.json` fields `_Norm` replaces before hashing (prereg rule 7).
+SOLUTION_NORMALIZED_FIELDS = (
+    "gate.depth.seconds", "gate.gate_seconds", "gate.metric_scale.seconds", "gate.seconds",
+    "solve.database", "solve_identity", "solved_at", "timing",
+    "transients.database", "transients.filter.seconds", "transients.seconds",
+)
+
+
+def _normalized_fields(raw, normed, path=""):
+    """Dotted paths (`[]` for list items) whose value normalisation replaced."""
+    if isinstance(raw, dict) and isinstance(normed, dict):
+        return sorted({p for k in raw for p in _normalized_fields(
+            raw[k], normed[k], f"{path}.{k}" if path else k)})
+    if isinstance(raw, list) and isinstance(normed, list) and len(raw) == len(normed):
+        return sorted({p for x, y in zip(raw, normed) for p in _normalized_fields(x, y, path + "[]")})
+    return [] if raw == normed else [path]
+
+
 def test_live_depth_off_spellings_keep_the_three_golden_outputs(
         tmp_path, colmap, monkeypatch):  # noqa: F811
-    """OFF's three spellings preserve the locked, normalized byte digests."""
+    """OFF's spellings (unset, `off`, `misspelled`, `On`) preserve the locked digests.
+
+    `align.json` and `components.json` are compared as RAW bytes across the
+    spellings, and by normalised digest against the golden. `solution.json` is
+    compared by normalised digest only, because the final solve writes
+    wall-clock values into it that differ on every run, OFF or not:
+    `SOLUTION_NORMALIZED_FIELDS` is the exact list `_Norm` replaces in the
+    gated scenario (asserted here, so it cannot drift), and why:
+
+      solved_at                         wall clock of the solve;
+      timing                            measured durations (prepare_s, extract_s,
+                                        match_s, map_s, ...);
+      gate.seconds, gate.gate_seconds,  measured durations of the evidence gate
+      gate.depth.seconds,               and its sub-steps;
+      gate.metric_scale.seconds
+      transients.seconds,               measured durations of transient masking;
+      transients.filter.seconds
+      solve.database,                   per-solve database file name
+      transients.database               (`database.masked.p<N>.<8 hex>`, random) and
+                                        the tmp root path inside it;
+      solve_identity                    sha1 over `solved_at` (wall clock) and the
+                                        poses; the poses are hashed as written.
+
+    Every other byte -- poses, points, camera, keyframe ids, solve settings,
+    gate verdicts and scales -- is hashed as written. Nothing Exp1 adds can
+    hide in those fields: OFF writes no `live_depth/` file at all (asserted).
+    """
     from scripts import world_refinish as wr
 
     monkeypatch.setattr(wr, "_restart_attempts", lambda *a, **k: {})
     for name in OTHER_SWITCHES + (SWITCH,):
         monkeypatch.delenv(name, raising=False)
     baseline_bytes = None
-    for n, value in enumerate((None, "off", "misspelled")):
+    for n, value in enumerate((None, "off", "misspelled", "On")):
         if value is not None:
             monkeypatch.setenv("TOWER_WORLD_LIVE_DEPTH", value)
         else:
@@ -394,6 +438,10 @@ def test_live_depth_off_spellings_keep_the_three_golden_outputs(
         for name in ("solution.json", "align.json", "components.json"):
             assert any(path.endswith(name) for path in observed["files"])
         _check("gated", observed)
+        solution = json.loads(s.workspace.solution_path.read_text(encoding="utf-8"))
+        assert tuple(_normalized_fields(
+            solution, _Norm(s.root).value(solution))) == SOLUTION_NORMALIZED_FIELDS
+        assert not any("live_depth" in path for path in observed["files"])
         raw = {
             "align": (s.store.world_dir(s.world_id) / "dense" / s.session_id /
                       "align.json").read_bytes(),

@@ -333,7 +333,7 @@ class WorldBuilderEngine:
         if self._live_depth is not None:
             self._live_depth.close()
             self._live_depth = None
-        if os.environ.get("TOWER_WORLD_LIVE_DEPTH", "off").lower() in ("shadow", "on"):
+        if os.environ.get("TOWER_WORLD_LIVE_DEPTH", "off") in ("shadow", "on"):
             # OFF never imports the depth worker or starts a thread.
             from tower.world_builder.live_depth import LiveDepthWorker
 

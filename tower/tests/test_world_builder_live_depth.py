@@ -354,3 +354,138 @@ def test_model_load_failure_disables_the_worker(walk):
     assert loads == [1]
     counters = json.loads((worker.root / "align.json").read_text())["live"]
     assert counters["failed"] == counters["skipped"] == 1
+
+
+# -- lead gate follow-up: the switch is exact ---------------------------------
+
+@pytest.mark.parametrize("value", ["On", "ON", "Shadow", "SHADOW", " on", "on "])
+def test_switch_is_exact_lowercase_spelling(walk, monkeypatch, value):
+    """Only the exact strings `shadow` / `on` arm Exp1; `On` is off everywhere."""
+    from tower.world_builder import engine as E
+    from tower.world_builder.redaction import RedactionResult
+
+    class Redactor:
+        available = True
+        unavailable_reason = None
+
+        def redact(self, image):
+            return RedactionResult(image, LABEL, 0)
+
+    store, session, _, pixels = walk
+    _predict_one(walk)
+    monkeypatch.setenv("TOWER_WORLD_LIVE_DEPTH", value)
+    assert LD.mode() == "off"
+    engine = E.WorldBuilderEngine(store, redactor_factory=Redactor)
+    engine.start_session(engine.create_world(), intrinsics=session.intrinsics)
+    assert engine._live_depth is None
+    engine.stop_session()
+    align, _work = SP.ensure_depth_stage(
+        store, WORLD, SESSION, load_solution(store, WORLD, SESSION),
+        session.intrinsics, gate_rel=0.08, backend=LD.MODEL)
+    # Not offered: the live prediction is ignored and the frame re-predicted,
+    # and the stage stays in its OFF (unknown-FoV) mode.
+    assert FakeMoGe.calls == 2
+    assert align["image_origins"].get("reused-prediction", 0) == 0
+    assert align.get("known_fov") is None
+
+
+# -- slice 3: the Stop-time skip, measured ------------------------------------
+
+def _walk_frames(tmp_path, monkeypatch, n):
+    store = _synthetic_world(tmp_path, n_frames=n, with_dense=False)
+    session = store.read_session(WORLD, SESSION)
+    camera = load_solution(store, WORLD, SESSION).camera
+    frames = []
+    for i in range(n):
+        image = np.random.default_rng(100 + i).integers(
+            0, 256, (camera["height"], camera["width"], 3), dtype=np.uint8)
+        ok, encoded = cv2.imencode(".jpg", image)
+        assert ok
+        pixels = encoded.tobytes()
+        store.write_keyframe_image(WORLD, SESSION, f"{i:08d}.jpg", pixels)
+        keyframe = Keyframe(keyframe_id=f"{SESSION}:{i:08d}", session_id=SESSION,
+                            source_seq=i, received_at=1.0 + i,
+                            image_relpath=f"images/{i:08d}.jpg",
+                            width=camera["width"], height=camera["height"],
+                            byte_count=len(pixels), segment_index=0)
+        store.append_keyframe(WORLD, keyframe)
+        frames.append((keyframe, pixels))
+    monkeypatch.setattr(GS, "_undistort_maps", _identity_maps)
+    monkeypatch.setitem(D._BACKENDS, LD.MODEL, FakeMoGe)
+    FakeMoGe.calls = 0
+    return store, session, frames
+
+
+def _live_cover(store, session, frames):
+    worker = LD.LiveDepthWorker(store, WORLD, SESSION, session.intrinsics,
+                                backend_factory=FakeMoGe, vram_probe=lambda: None)
+    for keyframe, pixels in frames:
+        worker.submit(keyframe, pixels, pixels, LABEL)
+    worker.jobs.join()
+    worker.close()
+    worker.thread.join(timeout=2)
+    return worker
+
+
+def test_stop_time_depth_skips_live_covered_pairs_and_predicts_only_the_tail(
+        tmp_path, monkeypatch):
+    store, session, frames = _walk_frames(tmp_path, monkeypatch, 5)
+    _live_cover(store, session, frames[:3])          # the walk so far
+    assert FakeMoGe.calls == 3
+    monkeypatch.setenv("TOWER_WORLD_LIVE_DEPTH", "on")
+    align, _work = SP.ensure_depth_stage(
+        store, WORLD, SESSION, load_solution(store, WORLD, SESSION),
+        session.intrinsics, gate_rel=0.08, backend=LD.MODEL)
+    # Stop paid MoGe only for the two-frame uncovered tail.
+    assert FakeMoGe.calls == 3 + 2
+    assert align["targets"] == 5
+    assert align["image_origins"] == {"reused-prediction": 3, "world-keyframe": 2}
+    by_kid = {r["kid"]: r for r in align["records"] if "kid" in r}
+    covered = {kf.keyframe_id for kf, _ in frames[:3]}
+    for kid, record in by_kid.items():
+        if "image_origin" in record:
+            assert (record["image_origin"] == "reused-prediction") == (kid in covered)
+
+
+def test_stop_time_depth_reuses_nothing_live_when_off(tmp_path, monkeypatch):
+    store, session, frames = _walk_frames(tmp_path, monkeypatch, 5)
+    _live_cover(store, session, frames[:3])
+    monkeypatch.delenv("TOWER_WORLD_LIVE_DEPTH", raising=False)
+    align, _work = SP.ensure_depth_stage(
+        store, WORLD, SESSION, load_solution(store, WORLD, SESSION),
+        session.intrinsics, gate_rel=0.08, backend=LD.MODEL)
+    assert FakeMoGe.calls == 3 + 5
+    assert align["image_origins"].get("reused-prediction", 0) == 0
+
+
+def test_replay_check_reports_coverage_calls_and_surface_seconds(tmp_path, monkeypatch):
+    from scripts import exp1_live_depth_replay_check as RC
+
+    store, session, frames = _walk_frames(tmp_path / "data", monkeypatch, 5)
+    _live_cover(store, session, frames[:3])
+    monkeypatch.setenv("TOWER_WORLD_LIVE_DEPTH", "on")
+    SP.ensure_depth_stage(store, WORLD, SESSION, load_solution(store, WORLD, SESSION),
+                          session.intrinsics, gate_rel=0.08, backend=LD.MODEL)
+    run = tmp_path / "run"
+    run.mkdir()
+    (run / "report.json").write_text(json.dumps({"store": {
+        "world_dir": str(store.world_dir(WORLD)), "session_id": SESSION}}))
+    (run / "tower-1-x.out.log").write_text(
+        "global_solve           {'solved': True}\n"
+        "surface                {'attempted': True, 'state': 'ok', "
+        "'seconds': {'depth': 1.5, 'fuse': 2.25, 'mesh': 0.25}}\n")
+    (run / "tower-1-x.err.log").write_text(
+        "... [Tower][WorldBuilder][dense] depth: 3 of 5 predictions reused from an "
+        "earlier solve and refitted\n")
+    before = {p: p.stat().st_mtime_ns for p in tmp_path.rglob("*") if p.is_file()}
+    out = RC.check(run)
+    assert out["coverage"]["live_cached"] == 3
+    assert out["coverage"]["final_keyframes"] == 5
+    assert out["coverage"]["c"] == 0.6
+    assert out["coverage"]["live_counters"]["predicted"] == 3
+    assert (out["depth"]["made"], out["depth"]["skipped"]) == (2, 3)
+    assert out["depth"]["tower_log_reused"] == {"reused": 3, "of": 5}
+    assert out["surface_seconds"]["steps"] == {"depth": 1.5, "fuse": 2.25, "mesh": 0.25}
+    assert out["surface_seconds"]["total"] == 4.0
+    # Read only: nothing written, nothing touched.
+    assert {p: p.stat().st_mtime_ns for p in tmp_path.rglob("*") if p.is_file()} == before

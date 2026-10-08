@@ -36,7 +36,7 @@ RESUME_IN_BUDGET_SAMPLES = 3
 
 
 def mode() -> str:
-    value = os.environ.get("TOWER_WORLD_LIVE_DEPTH", "off").lower()
+    value = os.environ.get("TOWER_WORLD_LIVE_DEPTH", "off")
     return value if value in ("shadow", "on") else "off"
 
 

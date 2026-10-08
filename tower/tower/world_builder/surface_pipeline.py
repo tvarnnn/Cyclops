@@ -260,7 +260,7 @@ def ensure_depth_stage(store, world_id: str, session_id: str, solution,
     from tower.world_builder.dense_pipeline import dense_dir, run_depth_stage
     import os
 
-    live_on = os.environ.get("TOWER_WORLD_LIVE_DEPTH", "off").lower() == "on"
+    live_on = os.environ.get("TOWER_WORLD_LIVE_DEPTH", "off") == "on"
 
     root = dense_dir(store, world_id, session_id)
     root.mkdir(parents=True, exist_ok=True)
@@ -712,7 +712,7 @@ def surfacify(store, world_id: str, session_id: str, *,
     if depth_known_fov is not None and bool(depth_known_fov) != params.depth_known_fov:
         params = dataclasses.replace(params, depth_known_fov=bool(depth_known_fov))
     import os
-    if os.environ.get("TOWER_WORLD_LIVE_DEPTH", "off").lower() == "on":
+    if os.environ.get("TOWER_WORLD_LIVE_DEPTH", "off") == "on":
         # Keep the surface digest aligned with ensure_depth_stage's FoV mode.
         params = dataclasses.replace(params, depth_known_fov=True)
     root = surface_dir(store, world_id, session_id)
