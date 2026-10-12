@@ -292,6 +292,17 @@ def test_shutdown_cancels_pending_retry_without_timer_or_thread(monkeypatch, tmp
     assert calls == [1]
 
 
+def test_new_solution_waits_for_matching_manifest_clock():
+    data = _inputs()
+    data["solution"]["solved_at"] += 1.0
+    data["computed_at"] = data["solution"]["solved_at"] + 0.1
+    with pytest.raises(coverage._TransientCoverageError,
+                       match="solution and manifest solve clocks differ"):
+        _block(data)
+    data["manifest"]["global_solve"]["solved_at"] = data["solution"]["solved_at"]
+    assert _block(data)["solved_at"] == data["solution"]["solved_at"]
+
+
 def test_failure_classification():
     data = _inputs()
     data["computed_at"] = data["solution"]["solved_at"] - 0.001

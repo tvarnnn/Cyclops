@@ -9,7 +9,9 @@ from __future__ import annotations
 import dataclasses
 from contextlib import closing
 import math
+import os
 import sqlite3
+import uuid
 
 import numpy as np
 
@@ -25,6 +27,14 @@ MAX_ANCHOR_POSITION_RESIDUAL = 0.35
 MAX_ANCHOR_ROTATION_DEG = 8.0
 MIN_SCALE = 0.67
 MAX_SCALE = 1.5
+MIN_CUMULATIVE_SCALE = 0.8
+MAX_CUMULATIVE_SCALE = 1.25
+MAX_ACTIVE_FAILURE_FRACTION = 0.25
+MAX_POSE_POSITION_RESIDUAL = 0.35
+MAX_POSE_ROTATION_DEG = 8.0
+MIN_NEW_CAMERA_POINTS = 6
+MAX_REPROJECTION_MEDIAN_PX = 3.0
+MAX_REPROJECTION_P95_PX = 6.0
 
 
 class WindowRefused(ValueError):
@@ -172,6 +182,103 @@ def _aligned_pose(pose, scale, rotation, translation, component):
             "translation": (-r_cw @ centre).tolist()}
 
 
+def _pose_agrees(old, aligned):
+    old_r, old_c = global_solve._pose_matrices(old)
+    new_r, new_c = global_solve._pose_matrices(aligned)
+    cosine = float(np.clip((np.trace(old_r.T @ new_r) - 1) / 2, -1, 1))
+    return (np.linalg.norm(old_c - new_c) <= MAX_POSE_POSITION_RESIDUAL and
+            math.degrees(math.acos(cosine)) <= MAX_POSE_ROTATION_DEG)
+
+
+def _camera_point_errors(candidate, kid):
+    if candidate.camera is None or len(candidate.observation_xy) != len(candidate.observations):
+        return {}
+    index = candidate.keyframe_ids.index(kid)
+    pose = candidate.poses[kid]
+    r = np.asarray(pose["rotation"], np.float64).reshape(3, 3)
+    t = np.asarray(pose["translation"], np.float64)
+    cam = candidate.camera
+    rows = candidate.observations
+    selected = ((rows[:, 0] == index) & (rows[:, 2] >= 0) &
+                (rows[:, 2] < len(candidate.xyz)))
+    point_ids = rows[selected, 2]
+    if not len(point_ids):
+        return {}
+    positions = (r @ candidate.xyz[point_ids].astype(np.float64).T).T + t
+    depth = positions[:, 2]
+    valid = depth > 1e-9
+    pixels = candidate.observation_xy[selected]
+    x = cam["fx"] * positions[valid, 0] / depth[valid] + cam["cx"]
+    y = cam["fy"] * positions[valid, 1] / depth[valid] + cam["cy"]
+    errors = {}
+    for point, error in zip(point_ids[valid], np.hypot(x - pixels[valid, 0],
+                                                      y - pixels[valid, 1])):
+        point = int(point)
+        error = float(error)
+        if math.isfinite(error):
+            errors[point] = min(errors.get(point, math.inf), error)
+    return errors
+
+
+def _validated_active(previous, candidate, ids, selection, new_comp,
+                      scale, rotation, translation, old_comp):
+    aligned = {}
+    failures = []
+    for kid in selection.active_ids:
+        pose = candidate.poses.get(kid)
+        if pose is None or int(pose["component"]) != new_comp:
+            failures.append(kid)
+            continue
+        transformed = _aligned_pose(pose, scale, rotation, translation, old_comp)
+        if kid in previous.poses and not _pose_agrees(previous.poses[kid], transformed):
+            failures.append(kid)
+            continue
+        aligned[kid] = transformed
+    # Previously published cameras are the trusted bridge to the anchors.
+    trusted = {kid for kid in aligned if kid in previous.poses}
+    point_support = {}
+    for kid in trusted | set(selection.anchor_ids):
+        if kid not in candidate.poses:
+            continue
+        for point, error in _camera_point_errors(candidate, kid).items():
+            if error <= MAX_REPROJECTION_MEDIAN_PX:
+                point_support.setdefault(point, set()).add(kid)
+    historical_steps = []
+    for left, right in zip(previous.keyframe_ids, previous.keyframe_ids[1:]):
+        if left in previous.poses and right in previous.poses:
+            a = global_solve._pose_matrices(previous.poses[left])[1]
+            b = global_solve._pose_matrices(previous.poses[right])[1]
+            historical_steps.append(float(np.linalg.norm(a - b)))
+    step_limit = max(2.0, 4.0 * float(np.median(historical_steps[-30:]))) if historical_steps else 2.0
+    for kid in selection.active_ids:
+        if kid not in aligned or kid in previous.poses:
+            continue
+        index = ids.index(kid)
+        predecessor = next((ids[j] for j in range(index - 1, -1, -1)
+                            if ids[j] in trusted), None)
+        errors = _camera_point_errors(candidate, kid)
+        supported = [error for point, error in errors.items()
+                     if len(point_support.get(point, ())) >= 2]
+        plausible = False
+        if predecessor is not None:
+            centre = global_solve._pose_matrices(aligned[kid])[1]
+            prior = global_solve._pose_matrices(aligned[predecessor])[1]
+            plausible = float(np.linalg.norm(centre - prior)) <= step_limit * (index - ids.index(predecessor))
+        if (not plausible or len(supported) < MIN_NEW_CAMERA_POINTS or
+                float(np.median(supported)) > MAX_REPROJECTION_MEDIAN_PX or
+                float(np.percentile(supported, 95)) > MAX_REPROJECTION_P95_PX):
+            del aligned[kid]
+            failures.append(kid)
+            continue
+        trusted.add(kid)
+        for point, error in errors.items():
+            if error <= MAX_REPROJECTION_MEDIAN_PX:
+                point_support.setdefault(point, set()).add(kid)
+    if len(failures) > MAX_ACTIVE_FAILURE_FRACTION * len(selection.active_ids):
+        raise WindowRefused("too many active cameras failed validation")
+    return aligned, failures
+
+
 def stitch(previous: global_solve.Solution, candidate: global_solve.Solution,
            ids: list[str], selection: WindowSelection) -> global_solve.Solution:
     """Align validated poses and points; retain the earlier published prefix."""
@@ -181,26 +288,72 @@ def stitch(previous: global_solve.Solution, candidate: global_solve.Solution,
         raise WindowRefused("anchor or prefix identity changed during window solve")
     old_comp, new_comp, scale, rotation, translation, residual = _alignment(
         previous, candidate, selection.anchor_ids)
-    active = set(selection.active_ids)
+    cumulative = float(((previous.solve or {}).get("live_window") or {}).get("cumulative_scale", 1.0)) * scale
+    if not MIN_CUMULATIVE_SCALE <= cumulative <= MAX_CUMULATIVE_SCALE:
+        raise WindowRefused("cumulative scale outside first solve bound")
+    aligned, failures = _validated_active(previous, candidate, ids, selection,
+                                          new_comp, scale, rotation, translation, old_comp)
+    active = set(aligned)
     poses = dict(previous.poses)
-    for kid in selection.active_ids:
-        pose = candidate.poses.get(kid)
-        if pose is not None and int(pose["component"]) == new_comp:
-            poses[kid] = _aligned_pose(pose, scale, rotation, translation, old_comp)
+    poses.update(aligned)
     if not any(kid not in previous.poses and kid in poses for kid in active):
         raise WindowRefused("window solve added no anchored poses")
 
-    old_keep = np.array([ids[int(i)] not in active or int(c) != old_comp
-                         for i, c in zip(previous.first_keyframe, previous.component)], bool)
-    new_keep = np.array([selection.solve_ids[int(i)] in active and int(c) == new_comp
-                         for i, c in zip(candidate.first_keyframe, candidate.component)], bool)
+    active_observations = {}
+    for camera_index, _feature, point_index in candidate.observations:
+        if selection.solve_ids[int(camera_index)] in active:
+            active_observations.setdefault(int(point_index), set()).add(int(camera_index))
+    new_keep = np.array([int(c) == new_comp and
+                         len(active_observations.get(p, ())) >= 2
+                         for p, c in enumerate(candidate.component)], bool)
+    valid_candidate = active | (set(selection.anchor_ids) - set(failures))
+    # Feature indices in shared keyframes identify points across the two
+    # solutions. Replace a prior point only when at least two observations
+    # agree on the same candidate point and their aligned 3-D positions agree.
+    old_features = {}
+    for camera_index, feature, point in previous.observations:
+        point = int(point)
+        if int(previous.component[point]) == old_comp:
+            old_features[(previous.keyframe_ids[int(camera_index)], int(feature))] = point
+    matches = {}
+    for camera_index, feature, point in candidate.observations:
+        kid = selection.solve_ids[int(camera_index)]
+        point = int(point)
+        if kid not in valid_candidate or not new_keep[point]:
+            continue
+        old_point = old_features.get((kid, int(feature)))
+        if old_point is not None:
+            key = (old_point, point)
+            matches[key] = matches.get(key, 0) + 1
+    old_keep = np.ones(len(previous.xyz), bool)
+    replaced_old = {}
+    old_claims, new_claims = {}, {}
+    for (old_point, new_point), votes in matches.items():
+        if votes >= 2:
+            old_claims[old_point] = old_claims.get(old_point, 0) + 1
+            new_claims[new_point] = new_claims.get(new_point, 0) + 1
+    for (old_point, new_point), votes in matches.items():
+        if (votes < 2 or old_claims[old_point] != 1 or
+                new_claims[new_point] != 1):
+            continue
+        aligned_xyz = scale * rotation @ candidate.xyz[new_point] + translation
+        if np.linalg.norm(previous.xyz[old_point] - aligned_xyz) <= MAX_POSE_POSITION_RESIDUAL:
+            old_keep[old_point] = False
+            replaced_old[old_point] = new_point
     old_indices = np.flatnonzero(old_keep)
     new_indices = np.flatnonzero(new_keep)
     old_map = {int(p): j for j, p in enumerate(old_indices)}
     new_map = {int(p): len(old_indices) + j for j, p in enumerate(new_indices)}
+    old_map.update({old: new_map[new] for old, new in replaced_old.items()})
     id_index = {kid: i for i, kid in enumerate(ids)}
+    new_owner = {}
+    for camera_index, _feature, point_index in candidate.observations:
+        kid = selection.solve_ids[int(camera_index)]
+        point = int(point_index)
+        if point in new_map and kid in valid_candidate:
+            new_owner[point] = min(new_owner.get(point, len(ids)), id_index[kid])
     first = np.concatenate((previous.first_keyframe[old_keep],
-                            np.array([id_index[selection.solve_ids[int(candidate.first_keyframe[p])]]
+                            np.array([new_owner[p]
                                       for p in new_indices], np.int32)))
     xyz = np.concatenate((previous.xyz[old_keep],
                           (scale * (rotation @ candidate.xyz[new_keep].T).T + translation).astype(np.float32)))
@@ -214,9 +367,14 @@ def stitch(previous: global_solve.Solution, candidate: global_solve.Solution,
         for row, pixel in zip(source.observations, source.observation_xy):
             kf, feature, point = (int(v) for v in row)
             kid = source_ids[kf]
-            if point in point_map and (not discard_active or kid not in active):
+            if (point in point_map and
+                    ((kid not in active and
+                      (point not in replaced_old or kid not in valid_candidate))
+                     if discard_active else kid in valid_candidate)):
                 observations.append((id_index[kid], feature, point_map[point]))
                 xy.append(pixel)
+    observation_rows = np.asarray(observations, np.int32).reshape(-1, 3)
+    track_length = np.bincount(observation_rows[:, 2], minlength=len(xyz)).astype(np.int32)
     counts = {c: sum(int(p["component"]) == c for p in poses.values())
               for c in set(int(p["component"]) for p in poses.values())}
     components = [dict(c, images=counts.get(int(c["index"]), 0),
@@ -227,16 +385,18 @@ def stitch(previous: global_solve.Solution, candidate: global_solve.Solution,
                   for c in previous.components]
     info = {"active_keyframes": len(selection.active_ids),
             "anchor_ids": selection.anchor_ids, "anchor_max_residual": residual,
-            "scale": scale, "reused_prefix_keyframes": len(previous.keyframe_ids)}
+            "scale": scale, "cumulative_scale": cumulative,
+            "failed_active_ids": failures,
+            "reused_prefix_keyframes": len(previous.keyframe_ids)}
     return dataclasses.replace(
         previous, solver=candidate.solver, solved_at=candidate.solved_at,
         input_digest=compute_input_digest([_Id(kid) for kid in ids]),
         keyframe_ids=list(ids), poses=poses, components=components,
         xyz=xyz, rgb=global_solve.withheld_rgb(len(xyz)), component=component,
         first_keyframe=first,
-        track_length=np.concatenate((previous.track_length[old_keep], candidate.track_length[new_keep])),
+        track_length=track_length,
         error=np.concatenate((previous.error[old_keep], candidate.error[new_keep])),
-        observations=np.asarray(observations, np.int32).reshape(-1, 3),
+        observations=observation_rows,
         observation_xy=np.asarray(xy, np.float32).reshape(-1, 2),
         camera=candidate.camera, timing=candidate.timing, transients=candidate.transients,
         solve={**(candidate.solve or {}), "live_window": info}, gate=None,
@@ -268,6 +428,32 @@ class _WindowStore:
         return self.base.session_dir(world_id, session_id)
 
 
+def _commit_window_metadata(workspace, metadata):
+    global_solve.write_json_atomic(workspace.solution_path, metadata)
+
+
+def publish_window_solution(workspace, solution):
+    """Commit metadata last; it names an immutable arrays generation.
+
+    The ordinary full solve still writes the historical pair. A crashed
+    window writer can leave an unreferenced archive, never a mixed pair.
+    """
+    generation = uuid.uuid4().hex
+    stage = global_solve.SolveWorkspace(workspace.root / f".live-stage-{generation}")
+    arrays = workspace.root / f"solution-live-{generation}.npz"
+    try:
+        global_solve.write_solution(stage, solution)
+        metadata = global_solve.read_json_closed(stage.solution_path)
+        os.replace(stage.arrays_path, arrays)
+        metadata["arrays_file"] = arrays.name
+        _commit_window_metadata(workspace, metadata)
+    finally:
+        for path in (stage.arrays_path, stage.solution_path):
+            path.unlink(missing_ok=True)
+        if stage.root.exists():
+            stage.root.rmdir()
+
+
 def solve(store, world_id, session_id, *, capture_dirs=(), final=False,
           num_threads=None, min_image_observations=global_solve.MIN_IMAGE_OBSERVATIONS,
           loop_detection=True, input_digest=None):
@@ -278,8 +464,6 @@ def solve(store, world_id, session_id, *, capture_dirs=(), final=False,
     ids = [kf.keyframe_id for kf in keyframes]
     previous = global_solve.load_solution(store, world_id, session_id)
     if previous is None:
-        if len(keyframes) > WINDOW_KEYFRAMES:
-            return {"solved": False, "reason": "no published anchors for bounded window"}
         return global_solve.solve(store, world_id, session_id,
                                   capture_dirs=capture_dirs, final=False,
                                   num_threads=num_threads,
@@ -326,8 +510,15 @@ def solve(store, world_id, session_id, *, capture_dirs=(), final=False,
     try:
         published = stitch(previous, candidate, ids, selection)
     except WindowRefused as exc:
+        if "cumulative scale outside first solve bound" in str(exc):
+            return global_solve.solve(store, world_id, session_id,
+                                      capture_dirs=capture_dirs, final=False,
+                                      num_threads=num_threads,
+                                      min_image_observations=min_image_observations,
+                                      loop_detection=loop_detection,
+                                      input_digest=input_digest)
         return {"solved": False, "reason": str(exc), "window_refused": True}
-    global_solve.write_solution(canonical, published)
+    publish_window_solution(canonical, published)
     return {**summary, "keyframes": len(ids),
             "keyframes_posed": sum(int(p["observations"]) >= min_image_observations
                                    for p in published.poses.values()),

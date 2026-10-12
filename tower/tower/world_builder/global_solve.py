@@ -1043,18 +1043,29 @@ def load_solution(store, world_id: str, session_id: str) -> Solution | None:
     """The persisted solution, or None. Never raises: an unreadable or
     half-written solution is absent, and the build proceeds without it."""
     workspace = workspace_for(store, world_id, session_id)
-    if not workspace.solution_path.exists() or not workspace.arrays_path.exists():
+    if not workspace.solution_path.exists():
         return None
     try:
         meta = read_json_closed(workspace.solution_path)
         if meta.get("schema_version") != SOLUTION_SCHEMA_VERSION:
+            return None
+        arrays_name = meta.get("arrays_file")
+        if arrays_name is None:
+            arrays_path = workspace.arrays_path
+        elif (isinstance(arrays_name, str) and
+              arrays_name.startswith("solution-live-") and
+              arrays_name.endswith(".npz") and
+              len(arrays_name) == len("solution-live-") + 32 + len(".npz") and
+              all(c in "0123456789abcdef" for c in arrays_name[len("solution-live-"):-4])):
+            arrays_path = workspace.root / arrays_name
+        else:
             return None
         # Read the bytes with the handle closed, then parse in memory.
         # `np.load` on a PATH keeps the zip open for the life of the
         # NpzFile, and a held handle is what blocks a writer's os.replace
         # on Windows -- so the lazy form would make this reader the very
         # obstacle the write path has to retry around.
-        with np.load(io.BytesIO(read_bytes_closed(workspace.arrays_path))) as arrays:
+        with np.load(io.BytesIO(read_bytes_closed(arrays_path))) as arrays:
             return Solution(
                 solver=meta["solver"],
                 solved_at=float(meta["solved_at"]),

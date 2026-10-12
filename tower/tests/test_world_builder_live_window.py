@@ -29,18 +29,37 @@ def _solution(ids, *, solved_at=100.0, offset=0.0, outlier=False):
     if outlier:
         poses[ids[2]] = _pose(1000.0, 1000.0)
     n = len(ids)
+    # Eight landmarks jointly observed by every camera make support checkable.
+    xyz = np.array([[offset + j - 4.0, 0.0, 10.0] for j in range(8)], np.float32)
+    obs = np.array([(i, j, j) for i in range(n) for j in range(8)], np.int32)
+    xy = np.array([[100.0 * (xyz[j, 0] - (i + offset)) / 10.0 + 320.0,
+                    100.0 * (xyz[j, 1] - (i % 3)) / 10.0 + 240.0]
+                   for i in range(n) for j in range(8)], np.float32)
     return global_solve.Solution(
         solver="synthetic", solved_at=solved_at, input_digest=_digest(ids),
         keyframe_ids=list(ids), poses=poses,
         components=[{"index": 0, "images": n, "images_supported": n,
                      "points": n, "mean_error_px": 0.0}],
-        xyz=np.array([[float(i), 0.0, 0.0] for i in range(n)], np.float32),
-        rgb=np.zeros((n, 3), np.uint8), component=np.zeros(n, np.int32),
-        first_keyframe=np.arange(n, dtype=np.int32),
-        track_length=np.ones(n, np.int32), error=np.zeros(n, np.float32),
-        observations=np.zeros((0, 3), np.int32), camera=None,
+        xyz=xyz, rgb=np.zeros((8, 3), np.uint8), component=np.zeros(8, np.int32),
+        first_keyframe=np.zeros(8, dtype=np.int32),
+        track_length=np.full(8, n, np.int32), error=np.zeros(8, np.float32),
+        observations=obs, observation_xy=xy,
+        camera={"fx": 100.0, "fy": 100.0, "cx": 320.0, "cy": 240.0},
         solve={"final": False},
     )
+
+
+def _refresh_observations(solution):
+    xy = []
+    for camera_index, _feature, point_index in solution.observations:
+        kid = solution.keyframe_ids[int(camera_index)]
+        pose = solution.poses[kid]
+        r = np.asarray(pose["rotation"]).reshape(3, 3)
+        t = np.asarray(pose["translation"])
+        p = r @ solution.xyz[int(point_index)] + t
+        xy.append([100.0 * p[0] / p[2] + 320.0,
+                   100.0 * p[1] / p[2] + 240.0])
+    solution.observation_xy = np.asarray(xy, np.float32).reshape(-1, 2)
 
 
 def test_window_is_bounded_and_anchors_are_spread():
@@ -78,6 +97,7 @@ def test_stitched_published_solution_passes_coverage_prefix_contract(tmp_path):
     for kid in selection.solve_ids:
         i = ids.index(kid)
         window.poses[kid] = _pose(float(i) + 3.0, float(i % 3))
+    _refresh_observations(window)
     stitched = live_window.stitch(old, window, ids, selection)
     store = WorldStore(tmp_path)
     workspace = global_solve.workspace_for(store, "w", "s")
@@ -154,6 +174,8 @@ def test_run_window_limits_mapper_inputs_and_resets_matching_database(tmp_path, 
         for kid in selected_ids:
             i = ids.index(kid)
             candidate.poses[kid] = _pose(float(i) + 3.0, float(i % 3))
+        candidate.xyz[:, 0] += 3.0
+        _refresh_observations(candidate)
         global_solve.write_solution(global_solve.workspace_for(target, "w", "s"), candidate)
         mapped.append(selected_ids)
         return {"solved": True, "solver": "synthetic", "timing": {}}
@@ -194,13 +216,155 @@ def test_database_pruning_removes_old_pairs_and_preserves_overlap(tmp_path):
             (2,), (3,)]
 
 
-def test_first_background_solve_cannot_expand_beyond_window(tmp_path, monkeypatch):
+def test_first_background_solve_falls_back_to_full_prefix(tmp_path, monkeypatch):
     store = WorldStore(tmp_path)
     monkeypatch.setattr(store, "read_keyframes", lambda *_: [_Keyframe(f"k{i}") for i in range(500)])
-    monkeypatch.setattr(global_solve, "solve", lambda *_a, **_kw: pytest.fail("unbounded solve"))
+    called = []
+    monkeypatch.setattr(global_solve, "solve", lambda target, *_a, **_kw:
+                        called.append(len(target.read_keyframes("w", "s"))) or {"solved": True})
     result = live_window.solve(store, "w", "s")
-    assert result["solved"] is False
-    assert "no published anchors" in result["reason"]
+    assert result["solved"] is True
+    assert called == [500]
+
+
+def test_non_anchor_wrong_published_pose_is_not_replaced():
+    ids = [f"k{i}" for i in range(15)]
+    old = _solution(ids[:12])
+    selection = live_window.select_window(ids, old, active_size=12)
+    new = _solution(selection.solve_ids, solved_at=101.0, offset=3.0)
+    for kid in selection.solve_ids:
+        i = ids.index(kid)
+        new.poses[kid] = _pose(float(i) + 3.0, float(i % 3))
+    _refresh_observations(new)
+    new.poses["k10"] = _pose(1000.0, 1000.0)
+    stitched = live_window.stitch(old, new, ids, selection)
+    assert stitched.poses["k10"] == old.poses["k10"]
+    assert "k14" in stitched.poses
+    assert np.count_nonzero(stitched.observations[:, 0] == 10) == 8
+    assert np.array_equal(stitched.track_length,
+                          np.bincount(stitched.observations[:, 2],
+                                      minlength=len(stitched.xyz)))
+
+
+def test_new_camera_needs_anchor_supported_observations_and_plausible_step():
+    ids = [f"k{i}" for i in range(15)]
+    old = _solution(ids[:12])
+    selection = live_window.select_window(ids, old, active_size=12)
+    new = _solution(selection.solve_ids, solved_at=101.0, offset=3.0)
+    for kid in selection.solve_ids:
+        i = ids.index(kid)
+        new.poses[kid] = _pose(float(i) + 3.0, float(i % 3))
+    _refresh_observations(new)
+    # One isolated jump, and one camera whose observations have no support.
+    new.poses["k13"] = _pose(1000.0, 0.0)
+    index = selection.solve_ids.index("k14")
+    new.observations = new.observations[new.observations[:, 0] != index]
+    new.observation_xy = np.delete(new.observation_xy,
+                                   np.arange(index * 8, (index + 1) * 8), axis=0)
+    stitched = live_window.stitch(old, new, ids, selection)
+    assert "k13" not in stitched.poses
+    assert "k14" not in stitched.poses
+    assert not np.any(np.isin(stitched.observations[:, 0], [13, 14]))
+
+
+def test_too_many_failed_active_cameras_refuses_window():
+    ids = [f"k{i}" for i in range(15)]
+    old = _solution(ids[:12])
+    selection = live_window.select_window(ids, old, active_size=12)
+    new = _solution(selection.solve_ids, solved_at=101.0, offset=3.0)
+    for kid in selection.solve_ids:
+        i = ids.index(kid)
+        new.poses[kid] = _pose(float(i) + 3.0, float(i % 3))
+    _refresh_observations(new)
+    for kid in (kid for kid in selection.active_ids if kid not in selection.anchor_ids):
+        new.poses[kid] = _pose(1000.0, 0.0)
+    with pytest.raises(live_window.WindowRefused, match="active cameras"):
+        live_window.stitch(old, new, ids, selection)
+
+
+def test_anchor_first_point_seen_by_two_active_cameras_is_retained():
+    ids = [f"k{i}" for i in range(15)]
+    old = _solution(ids[:12])
+    selection = live_window.select_window(ids, old, active_size=12)
+    new = _solution(selection.solve_ids, solved_at=101.0, offset=3.0)
+    for kid in selection.solve_ids:
+        i = ids.index(kid)
+        new.poses[kid] = _pose(float(i) + 3.0, float(i % 3))
+    _refresh_observations(new)
+    new.xyz = np.vstack((new.xyz, [20.0, 0.0, 10.0])).astype(np.float32)
+    new.rgb = np.vstack((new.rgb, [0, 0, 0])).astype(np.uint8)
+    new.component = np.append(new.component, 0).astype(np.int32)
+    new.first_keyframe = np.append(new.first_keyframe, 0).astype(np.int32)
+    new.track_length = np.append(new.track_length, 3).astype(np.int32)
+    new.error = np.append(new.error, 0).astype(np.float32)
+    for kid in (selection.anchor_ids[0], "k12", "k13"):
+        j = selection.solve_ids.index(kid)
+        new.observations = np.vstack((new.observations, [j, 8, 8])).astype(np.int32)
+        new.observation_xy = np.vstack((new.observation_xy,
+            [100.0 * (20.0 - (ids.index(kid) + 3.0)) / 10.0 + 320.0,
+             100.0 * (0.0 - ids.index(kid) % 3) / 10.0 + 240.0])).astype(np.float32)
+    stitched = live_window.stitch(old, new, ids, selection)
+    assert len(stitched.xyz) == 9
+    extra = np.flatnonzero(np.isclose(stitched.xyz[:, 0], 17.0))
+    assert len(extra) == 1
+    assert ids[int(stitched.first_keyframe[extra[0]])] == selection.anchor_ids[0]
+
+
+def test_window_publish_crash_before_metadata_keeps_old_pair(tmp_path, monkeypatch):
+    store = WorldStore(tmp_path)
+    workspace = global_solve.workspace_for(store, "w", "s")
+    old = _solution(["k0", "k1"])
+    new = _solution(["k0", "k1", "k2"], solved_at=101.0)
+    global_solve.write_solution(workspace, old)
+    original_meta = workspace.solution_path.read_bytes()
+    def crash(*_args, **_kwargs):
+        raise OSError("crash before commit")
+    monkeypatch.setattr(live_window, "_commit_window_metadata", crash, raising=False)
+    with pytest.raises(OSError, match="crash before commit"):
+        live_window.publish_window_solution(workspace, new)
+    loaded = global_solve.load_solution(store, "w", "s")
+    assert loaded.keyframe_ids == old.keyframe_ids
+    assert len(loaded.xyz) == len(old.xyz)
+    assert workspace.solution_path.read_bytes() == original_meta
+
+
+def test_repeated_window_scale_drift_falls_back_to_full_prefix(tmp_path, monkeypatch):
+    ids = [f"k{i}" for i in range(15)]
+    store = WorldStore(tmp_path)
+    monkeypatch.setattr(store, "read_keyframes", lambda *_: [_Keyframe(kid) for kid in ids])
+    old = _solution(ids[:12])
+    old.solve["live_window"] = {"cumulative_scale": 1.24}
+    global_solve.write_solution(global_solve.workspace_for(store, "w", "s"), old)
+    selection = live_window.select_window(ids, old)
+    candidate = _solution(selection.solve_ids)
+    real_load = global_solve.load_solution
+    monkeypatch.setattr(global_solve, "load_solution", lambda target, w, s:
+                        candidate if isinstance(target, live_window._WindowStore)
+                        else real_load(target, w, s))
+    def too_large(*_args, **_kw):
+        raise live_window.WindowRefused("cumulative scale outside first solve bound")
+    monkeypatch.setattr(live_window, "stitch", too_large)
+    called = []
+    monkeypatch.setattr(global_solve, "solve", lambda target, *_a, **_kw:
+                        called.append(target) or {"solved": True, "solver": "synthetic"})
+    result = live_window.solve(store, "w", "s")
+    assert result["solved"] is True
+    assert called[-1] is store
+
+
+def test_cumulative_scale_is_bounded_against_first_full_solve():
+    ids = [f"k{i}" for i in range(15)]
+    old = _solution(ids[:12])
+    old.solve["live_window"] = {"cumulative_scale": 1.24}
+    selection = live_window.select_window(ids, old, active_size=12)
+    new = _solution(selection.solve_ids, solved_at=101.0)
+    for kid in selection.solve_ids:
+        i = ids.index(kid)
+        new.poses[kid] = _pose(float(i) / 1.1, float(i % 3) / 1.1)
+    new.xyz /= 1.1
+    _refresh_observations(new)
+    with pytest.raises(live_window.WindowRefused, match="cumulative scale"):
+        live_window.stitch(old, new, ids, selection)
 
 
 class _Keyframe:

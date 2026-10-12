@@ -246,9 +246,13 @@ def compute_coverage(*, solution, manifest, placements, poses, keyframes,
     if (not math.isfinite(solved_at) or solved_at < 0 or
             isinstance(computed_at, bool) or
             not isinstance(computed_at, (int, float)) or
-            not math.isfinite(computed_at) or
-            float(solution["solved_at"]) != solved_at):
+            not math.isfinite(computed_at)):
         raise ValueError("invalid solve clock")
+    solution_solved_at = float(solution["solved_at"])
+    if not math.isfinite(solution_solved_at) or solution_solved_at < 0:
+        raise ValueError("invalid solve clock")
+    if solution_solved_at != solved_at:
+        raise _TransientCoverageError("solution and manifest solve clocks differ")
     if computed_at < solved_at:
         raise _TransientCoverageError("solve clock not yet settled")
     horizon = _integer(summary["horizon_keyframes"], 65535)
