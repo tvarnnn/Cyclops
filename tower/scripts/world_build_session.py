@@ -848,7 +848,8 @@ class BackgroundSolver:
 
     def __init__(self, *, root: Path, world_id: str, session_id: str, every: int,
                  capture_dirs, threads: int | None = None, script: Path | None = None,
-                 spawn=None, final_immediate: bool = False, capture_stopped=None):
+                 spawn=None, final_immediate: bool = False, capture_stopped=None,
+                 fallback_wait_seconds: float = DEFAULT_SOLVE_WAIT_SECONDS):
         self.root = root
         self.world_id = world_id
         self.session_id = session_id
@@ -866,6 +867,12 @@ class BackgroundSolver:
         self._capture_stopped = capture_stopped
         self._background_closed = False
         self._final_started = False
+        self._fallback_wait_seconds = fallback_wait_seconds
+        self.final_immediate_fallback = False
+        self._background_job = None
+        self._background_descendants = {}
+        self._descendant_thread = None
+        self._descendant_stop = threading.Event()
 
     @property
     def running(self) -> bool:
@@ -963,6 +970,13 @@ class BackgroundSolver:
             self._argv(final=False), cwd=str(TOWER_ROOT), stdout=self._log,
             stderr=subprocess.STDOUT, env=child_environment(), stdin=subprocess.DEVNULL,
         )
+        if self._final_immediate:
+            from tower.process_ownership import assign_to_job  # noqa: PLC0415
+
+            # Keep the job handle after the parent exits: closing it at Stop
+            # also stops a worker that has been orphaned in the meantime.
+            self._background_job = assign_to_job(self._child)
+            self._track_background_descendants(self._child)
         if self._final_immediate and self._capture_stopped is not None and self._capture_stopped():
             self.stop_background(store)
             return False
@@ -974,6 +988,36 @@ class BackgroundSolver:
         )
         return True
 
+    def _track_background_descendants(self, child) -> None:
+        """Remember descendants while the parent still has a process tree."""
+        if not isinstance(child, subprocess.Popen):
+            return
+        import psutil  # noqa: PLC0415
+
+        self._descendant_stop.clear()
+
+        def snapshot() -> None:
+            if child.poll() is not None:
+                return
+            try:
+                for process in psutil.Process(child.pid).children(recursive=True):
+                    self._background_descendants[process.pid] = process
+            except psutil.Error:
+                pass
+
+        snapshot()
+
+        def watch() -> None:
+            while not self._descendant_stop.wait(0.01):
+                if child.poll() is not None:
+                    break
+                snapshot()
+
+        self._descendant_thread = threading.Thread(
+            target=watch, name="world-builder-background-descendants", daemon=True,
+        )
+        self._descendant_thread.start()
+
     def stop_background(self, store: WorldStore) -> None:
         """Permanently close live launches and hand the committed database to final.
 
@@ -984,29 +1028,56 @@ class BackgroundSolver:
         if not self._final_immediate or self._background_closed or self._final_started:
             return
         self._background_closed = True
-        descendants = []
+        self._descendant_stop.set()
+        if self._descendant_thread is not None:
+            self._descendant_thread.join(timeout=0.1)
         if self.running:
             try:
                 import psutil  # noqa: PLC0415
-                descendants = psutil.Process(self._child.pid).children(recursive=True)
+                for process in psutil.Process(self._child.pid).children(recursive=True):
+                    self._background_descendants[process.pid] = process
             except psutil.Error:
                 pass
-        self.wait(0.0)
-        if self.running:
-            raise RuntimeError("background solve still owns the final workspace after Stop")
-        # The launcher can exit before its real interpreter. The process-tree
-        # helper signals descendants; wait for them before opening SQLite.
-        for process in descendants:
+        stopped = True
+        if self._background_job is not None:
             try:
-                process.wait(timeout=CHILD_TERMINATE_TIMEOUT_S)
-            except Exception:  # noqa: BLE001 -- a vanished pid is already done
-                try:
+                stopped = self._background_job.terminate()
+            except Exception:  # noqa: BLE001 -- degrade to the ordinary wait
+                logger.exception("[Tower][WorldBuilder] background job termination failed")
+                stopped = False
+            try:
+                self._background_job.close()
+            except Exception:  # noqa: BLE001 -- a failed close must not skip final
+                logger.exception("[Tower][WorldBuilder] background job close failed")
+                stopped = False
+            self._background_job = None
+        if self.running:
+            try:
+                self.wait(0.0)
+            except Exception:  # noqa: BLE001 -- a failed kill takes the OFF wait
+                logger.exception("[Tower][WorldBuilder] immediate child termination failed")
+                stopped = False
+        # A parent may already have exited. The saved psutil handles include
+        # process creation time, so a reused PID is not mistaken for its worker.
+        for process in self._background_descendants.values():
+            try:
+                if process.is_running():
                     process.kill()
                     process.wait(timeout=CHILD_TERMINATE_TIMEOUT_S)
-                except Exception:  # noqa: BLE001
-                    pass
-            if process.is_running():
-                raise RuntimeError("background solve descendant still owns the final workspace")
+                if process.is_running():
+                    stopped = False
+            except Exception:  # noqa: BLE001 -- already gone or kill refused
+                stopped = False
+        if self.running:
+            stopped = False
+        if not stopped:
+            self.final_immediate_fallback = True
+            logger.error("[Tower][WorldBuilder] immediate background stop failed; "
+                         "falling back to the bounded OFF wait before final")
+            try:
+                self.wait(self._fallback_wait_seconds)
+            except Exception:  # noqa: BLE001 -- OFF's wait failed; final still runs
+                logger.exception("[Tower][WorldBuilder] bounded background wait failed")
         self.finished()  # a killed solve must not trigger a landing rebuild
         if self._log is not None:
             self._log.close()
@@ -1018,6 +1089,16 @@ class BackgroundSolver:
             with closing(sqlite3.connect(str(database), timeout=1.0)) as connection:
                 if connection.execute("pragma quick_check").fetchone() != ("ok",):
                     raise sqlite3.DatabaseError("quick_check failed")
+                connection.execute("begin immediate")  # prove no writer still owns it
+                connection.rollback()
+        except sqlite3.OperationalError as exc:
+            self.final_immediate_fallback = True
+            logger.error("[Tower][WorldBuilder] feature database is still locked; "
+                         "proceeding with the bounded OFF fallback: %s", exc)
+            try:
+                self.wait(self._fallback_wait_seconds)
+            except Exception:  # noqa: BLE001 -- final must still be attempted
+                logger.exception("[Tower][WorldBuilder] bounded background wait failed")
         except sqlite3.DatabaseError as exc:
             logger.warning("[Tower][WorldBuilder] killed solve left an unusable feature "
                            "database; final will extract afresh: %s", exc)
@@ -2357,6 +2438,7 @@ def main(argv=None) -> int:
             every=args.solve_every if args.solve_every > 0 else 0,
             capture_dirs=capture_dirs, script=args.solve_script,
             final_immediate=final_immediate, capture_stopped=capture_stopped,
+            fallback_wait_seconds=args.solve_wait_seconds,
         )
     background_solves = args.solve and args.solve_every > 0
     # The live surface needs a global solve to exist at all, so it is only
@@ -2748,6 +2830,8 @@ def main(argv=None) -> int:
                 solve_report = {"attempted": False, "solved": False}
             solve_report["background_launches"] = solver.launches
             solve_report["final_solve"] = final_solve_state
+            if final_immediate and solver.final_immediate_fallback:
+                solve_report["final_immediate_fallback"] = "bounded_off_wait"
 
         if phase is not None:
             phase.mark(finish_phase.ASSEMBLING)
