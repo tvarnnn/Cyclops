@@ -328,7 +328,7 @@ final class WorldPhotoFloorplanModel: ObservableObject {
     @Published private(set) var plan = WalkScoped<WorldPhotoFloorplan>(walk: nil, value: WorldPhotoFloorplan())
     private var receipt = WalkScoped<WorldCoverageReceipt?>(walk: nil, value: nil)
     /// Only a plan proved against the receipt it carries can enter this slot.
-    private var lastValid: WalkScoped<(plan: WorldPhotoPlan, at: TimeInterval)>?
+    private var lastValid: WalkScoped<(plan: WorldPhotoPlan, supersededAt: TimeInterval?)>?
     private var holdExpiryTask: Task<Void, Never>?
 
     /// The landing asked for, the receipt's drawn pieces, whether it is
@@ -352,18 +352,18 @@ final class WorldPhotoFloorplanModel: ObservableObject {
         self.now = now
     }
 
-    /// A current plan wins immediately. Otherwise the last valid plan may
-    /// stay on its own receipt for this walk until the monotonic hold ends.
+    /// The remembered plan is current on its own receipt. Once superseded,
+    /// it stays on that receipt until the monotonic hold ends.
     func displayedPlan(for current: WalkScoped<WorldCoverageReceipt?>) -> WalkScoped<WorldPhotoDisplay>? {
         guard floorplanSwitch.on, let walk = current.walk, let currentReceipt = current.value,
               receipt.walk == walk, receipt.value?.coverage == currentReceipt.coverage
         else { return nil }
-        if let landed = plan.value.landed, plan.walk == walk,
-           let own = WorldPhotoPlan(landed, rasters: plan.value.rasters, receipt: currentReceipt) {
-            return WalkScoped(walk: walk, value: WorldPhotoDisplay(plan: own, updating: false))
+        guard let lastValid, lastValid.walk == walk else { return nil }
+        if lastValid.value.plan.receipt.coverage == currentReceipt.coverage {
+            return WalkScoped(walk: walk, value: WorldPhotoDisplay(plan: lastValid.value.plan, updating: false))
         }
-        guard let lastValid, lastValid.walk == walk,
-              now() - lastValid.value.at < holdSeconds else { return nil }
+        guard let supersededAt = lastValid.value.supersededAt,
+              now() - supersededAt < holdSeconds else { return nil }
         return WalkScoped(walk: walk, value: WorldPhotoDisplay(plan: lastValid.value.plan, updating: true))
     }
 
@@ -375,6 +375,7 @@ final class WorldPhotoFloorplanModel: ObservableObject {
         self.receipt = coverage
         let block = receipt.coverage
         rememberValidPlan()
+        supersedeRememberedPlan(ifDifferentFrom: block, walk: walk)
         let next = WorldImageryLanding(block)
         guard next != landing else { return }
         manifestTask?.cancel()
@@ -510,8 +511,16 @@ final class WorldPhotoFloorplanModel: ObservableObject {
               (lastValid?.value.plan.receipt.coverage != current.coverage ||
                lastValid?.value.plan.pieces != valid.pieces)
         else { return }
-        lastValid = WalkScoped(walk: walk, value: (plan: valid, at: now()))
+        lastValid = WalkScoped(walk: walk, value: (plan: valid, supersededAt: nil))
         holdExpiryTask?.cancel()
+        holdExpiryTask = nil
+    }
+
+    private func supersedeRememberedPlan(ifDifferentFrom coverage: WorldCoverage, walk: WorldFinishWalk) {
+        guard let lastValid, lastValid.walk == walk,
+              lastValid.value.plan.receipt.coverage != coverage,
+              lastValid.value.supersededAt == nil else { return }
+        self.lastValid = WalkScoped(walk: walk, value: (plan: lastValid.value.plan, supersededAt: now()))
         guard holdSeconds > 0 else { return }
         holdExpiryTask = Task { [weak self, holdSeconds] in
             try? await Task.sleep(for: .seconds(holdSeconds))

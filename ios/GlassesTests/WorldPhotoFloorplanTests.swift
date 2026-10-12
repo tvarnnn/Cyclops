@@ -337,9 +337,9 @@ final class WorldPhotoFloorplanModelTests: XCTestCase {
 
     private func settle() async { try? await Task.sleep(for: .milliseconds(300)) }
 
-    func testTheLastValidPlanHoldsItsOwnReceiptUntilItsMonotonicDeadline() async throws {
-        var time: TimeInterval = 100
-        let model = model(holdSeconds: 4, now: { time })
+    func testTheHoldStartsWhenThePlanIsSupersededAfterALongLandingGap() async throws {
+        var time: TimeInterval = 0
+        let model = model(holdSeconds: 45, now: { time })
         report(model, stop)
         await expect("first valid plan") { model.displayedPlan(for: self.scopedReceipt(self.stop)) != nil }
         let first = try XCTUnwrap(model.displayedPlan(for: scopedReceipt(stop)))
@@ -348,32 +348,87 @@ final class WorldPhotoFloorplanModelTests: XCTestCase {
         let newer = FOWFixtures.coverage(FOWFixtures.stop
             .replacingOccurrences(of: "g-stop-984", with: "g-stop-990")
             .replacingOccurrences(of: "1791240313.", with: "1791240320."))!
+        time = 60
         report(model, newer)
         let held = try XCTUnwrap(model.displayedPlan(for: scopedReceipt(newer)))
         XCTAssertTrue(held.value.updating)
         XCTAssertEqual(held.value.plan.receipt, first.value.plan.receipt, "old raster keeps its own basis and receipt")
         XCTAssertEqual(WorldPhotoFloorplanCopy.updating, "Updating…")
-        time = 103.99
-        XCTAssertNotNil(model.displayedPlan(for: scopedReceipt(newer)))
-        time = 104
-        XCTAssertNil(model.displayedPlan(for: scopedReceipt(newer)), "holdSeconds has passed")
+        time = 100
+        XCTAssertTrue(model.displayedPlan(for: scopedReceipt(newer))?.value.updating == true)
+        time = 106
+        XCTAssertNil(model.displayedPlan(for: scopedReceipt(newer)), "45 seconds since supersession")
 
         Stub.set(Self.manifestA, json: F.manifest(solvedAt: "1791240320.0", revision: "g-stop-990"))
-        await settle() // the old landing's in-flight manifest has finished
+        await settle() // the unanswered landing's in-flight manifest has finished
         push(model, revision: "g-new")
         await expect("new valid plan") {
             model.displayedPlan(for: self.scopedReceipt(newer))?.value.updating == false
         }
         let replacement = try XCTUnwrap(model.displayedPlan(for: scopedReceipt(newer)))
         XCTAssertEqual(replacement.value.plan.receipt.coverage, newer)
-        time = 107
+        time = 200
+        XCTAssertFalse(try XCTUnwrap(model.displayedPlan(for: scopedReceipt(newer))).value.updating,
+                       "a current plan has no hold deadline")
+    }
+
+    func testAnotherUnansweredLandingDoesNotRestartTheHold() async throws {
+        var time: TimeInterval = 0
+        let model = model(holdSeconds: 45, now: { time })
+        report(model, stop)
+        await expect("first valid plan") { model.displayedPlan(for: self.scopedReceipt(self.stop)) != nil }
+        let newer = FOWFixtures.coverage(FOWFixtures.stop
+            .replacingOccurrences(of: "g-stop-984", with: "g-stop-990")
+            .replacingOccurrences(of: "1791240313.", with: "1791240320."))!
+        time = 60
+        report(model, newer)
+        XCTAssertTrue(model.displayedPlan(for: scopedReceipt(newer))?.value.updating == true)
+
+        let newest = FOWFixtures.coverage(FOWFixtures.stop
+            .replacingOccurrences(of: "g-stop-984", with: "g-stop-991")
+            .replacingOccurrences(of: "1791240313.", with: "1791240321."))!
+        time = 80
+        report(model, newest)
+        XCTAssertTrue(model.displayedPlan(for: scopedReceipt(newest))?.value.updating == true)
+        time = 100
+        XCTAssertTrue(model.displayedPlan(for: scopedReceipt(newest))?.value.updating == true)
+        time = 106
+        XCTAssertNil(model.displayedPlan(for: scopedReceipt(newest)), "the second landing did not restart the hold")
+    }
+
+    func testANewValidPlanDuringTheHoldClearsTheOldDeadline() async throws {
+        var time: TimeInterval = 0
+        let model = model(holdSeconds: 45, now: { time })
+        report(model, stop)
+        await expect("first valid plan") { model.displayedPlan(for: self.scopedReceipt(self.stop)) != nil }
+        let newer = FOWFixtures.coverage(FOWFixtures.stop
+            .replacingOccurrences(of: "g-stop-984", with: "g-stop-990")
+            .replacingOccurrences(of: "1791240313.", with: "1791240320."))!
+        time = 60
+        report(model, newer)
+        XCTAssertTrue(model.displayedPlan(for: scopedReceipt(newer))?.value.updating == true)
+
+        time = 80
+        Stub.set(Self.manifestA, json: F.manifest(solvedAt: "1791240320.0", revision: "g-stop-990"))
+        await settle()
+        push(model, revision: "g-new")
+        await expect("replacement during hold") {
+            model.displayedPlan(for: self.scopedReceipt(newer))?.value.updating == false
+        }
+        time = 106
+        XCTAssertFalse(try XCTUnwrap(model.displayedPlan(for: scopedReceipt(newer))).value.updating)
+
         let newest = FOWFixtures.coverage(FOWFixtures.stop
             .replacingOccurrences(of: "g-stop-984", with: "g-stop-991")
             .replacingOccurrences(of: "1791240313.", with: "1791240321."))!
         report(model, newest)
         let heldReplacement = try XCTUnwrap(model.displayedPlan(for: scopedReceipt(newest)))
         XCTAssertTrue(heldReplacement.value.updating)
-        XCTAssertEqual(heldReplacement.value.plan.receipt.coverage, newer, "the new plan became the remembered plan")
+        XCTAssertEqual(heldReplacement.value.plan.receipt.coverage, newer, "the replacement became the remembered plan")
+        time = 150
+        XCTAssertTrue(model.displayedPlan(for: scopedReceipt(newest))?.value.updating == true)
+        time = 151
+        XCTAssertNil(model.displayedPlan(for: scopedReceipt(newest)))
     }
 
     func testTheHoldClearsOnWalkChangeAndResetAndIsAbsentWhenOff() async {
