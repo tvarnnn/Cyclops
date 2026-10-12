@@ -54,7 +54,6 @@ no fit/raster; this is reported, not hidden or faked.
 from __future__ import annotations
 
 import argparse
-import dataclasses
 import json
 import logging
 import os
@@ -66,26 +65,34 @@ os.environ.setdefault("CUDA_VISIBLE_DEVICES", "-1")
 import numpy as np  # noqa: E402
 
 from tower.world_builder import guidance_coverage as gc  # noqa: E402
-from tower.world_builder.dense import align_frame, depth_from_prediction, project  # noqa: E402
+from tower.world_builder.dense import depth_from_prediction  # noqa: E402
 from tower.world_builder.photo_floorplan import (  # noqa: E402
     KeyframeSample,
-    LOWER_IMAGE_FRACTION,
-    PhotoFrame,
     build_homography_raster,
     build_raster,
     encode_tile,
-    estimate_floor_plane,
-    frame_gate,
-    lower_band_centre,
+)
+# The landing inputs live with the live side worker; the probe REUSES them (one copy).
+from tower.world_builder.photo_floorplan_worker import (  # noqa: E402,F401
+    MAX_HELD_OUT_REL,
+    MAX_SELECTED,
+    MIN_FIT_POINTS,
+    TARGET_PIXEL_BUDGET,
+    DepthCache,
+    SolveArrays,
+    fit_keyframe,
+    homography_component,
+    load_frame_image,
+    placed_entries,
+    resize_sample,
+    select_spatial,
+    solve_arrays_from,
+    solve_to_output,
 )
 
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 log = logging.getLogger("fow_v12_probe")
 
-MAX_SELECTED = 64
-TARGET_PIXEL_BUDGET = 256 * 144
-MIN_FIT_POINTS = 12
-MAX_HELD_OUT_REL = 0.15
 GRAY_PLATE = (0x70, 0x75, 0x7B)
 
 
@@ -167,24 +174,7 @@ def eligible_placed_keyframes(tree):
         geometry_revision=_revision_of(tree),
         computed_at=float(tree["manifest"]["global_solve"]["solved_at"]) + 0.01,
         eligible_out=captured)
-    poses_by_id = {row["keyframe_id"]: row for row in tree["poses"]}
-    placement_by_segment = {p["segment_index"]: p for p in tree["placements"]
-                            if p.get("state") == "registered"}
-    by_ref = {}
-    for kid, ref in captured:
-        row = poses_by_id.get(kid)
-        placement = placement_by_segment.get(row["segment_index"]) if row else None
-        if row is None or placement is None:
-            continue
-        try:
-            position, up_world, forward_world = gc._placed(row, placement)
-        except (ValueError, TypeError, KeyError, OverflowError):
-            continue
-        scale = float(placement["scale"])
-        by_ref.setdefault(ref, []).append(
-            (kid, np.asarray(position, np.float64), np.asarray(up_world, np.float64),
-             np.asarray(forward_world, np.float64), scale))
-    return block, by_ref
+    return block, placed_entries(tree, captured)
 
 
 def _revision_of(tree):
@@ -193,76 +183,9 @@ def _revision_of(tree):
 
 
 # ---------------------------------------------------------------------------
-# live-depth cache
+# SfM arrays (the live-depth cache, spatial selection and the SfM depth fit are
+# imported from tower.world_builder.photo_floorplan_worker above)
 # ---------------------------------------------------------------------------
-
-
-class DepthCache:
-    def __init__(self, dense_root: Path):
-        self.root = dense_root / "live_depth"
-        doc = load_json(self.root / "align.json")
-        self.by_kid = {r["kid"]: r for r in doc.get("records", [])
-                      if isinstance(r, dict) and r.get("kid")}
-        self.imagery_source = doc.get("imagery_source")
-        self.backend = doc.get("backend")
-
-    def has(self, kid) -> bool:
-        return kid in self.by_kid
-
-    def load(self, kid):
-        record = self.by_kid[kid]
-        ki = int(record["ki"])
-        pred = np.load(self.root / "work" / "depth" / f"{ki:05d}_pred.npy").astype(np.float64)
-        fill_path = self.root / "work" / "depth" / f"{ki:05d}_fill.npy"
-        fill = np.load(fill_path).astype(bool) if fill_path.is_file() else np.zeros_like(pred, bool)
-        undist_path = self.root / "work" / "undist" / f"{ki:05d}.jpg"
-        import cv2
-        bgr = cv2.imread(str(undist_path))
-        rgb = bgr[:, :, ::-1] if bgr is not None else np.zeros((*pred.shape, 3), np.uint8)
-        return pred, fill, rgb
-
-
-# ---------------------------------------------------------------------------
-# spatial selection
-# ---------------------------------------------------------------------------
-
-
-def select_spatial(entries, forward, right, limit=MAX_SELECTED):
-    """`entries`: [(kid, position, up, fwd, scale), ...], all cache hits for
-    one component. Greedy farthest-point sampling in the component's own
-    (x, y) projection, for spatial distribution across the room."""
-    if len(entries) <= limit:
-        return entries
-    xy = np.stack([[np.dot(e[1], forward), np.dot(e[1], right)] for e in entries])
-    centroid = xy.mean(axis=0)
-    start = int(np.argmin(np.sum((xy - centroid) ** 2, axis=1)))
-    chosen = [start]
-    min_dist = np.full(len(entries), np.inf)
-    while len(chosen) < limit:
-        last = xy[chosen[-1]]
-        d = np.sum((xy - last) ** 2, axis=1)
-        min_dist = np.minimum(min_dist, d)
-        min_dist[chosen] = -1.0
-        nxt = int(np.argmax(min_dist))
-        if min_dist[nxt] < 0:
-            break
-        chosen.append(nxt)
-    return [entries[i] for i in chosen]
-
-
-# ---------------------------------------------------------------------------
-# SfM depth fit (needs this solve's own sparse points -- see module docstring)
-# ---------------------------------------------------------------------------
-
-
-@dataclasses.dataclass
-class SolveArrays:
-    camera: dict
-    keyframe_index: dict
-    poses: dict
-    xyz: np.ndarray
-    observations: np.ndarray
-    observation_xy: np.ndarray
 
 
 def load_solve_arrays(solve_session_dir: Path) -> "SolveArrays | None":
@@ -272,74 +195,8 @@ def load_solve_arrays(solve_session_dir: Path) -> "SolveArrays | None":
         return None
     meta = load_json(meta_path)
     with np.load(npz_path) as arrays:
-        xyz = np.asarray(arrays["xyz"], np.float64)
-        observations = np.asarray(arrays["observations"], np.int64).reshape(-1, 3)
-        observation_xy = np.asarray(arrays["observation_xy"], np.float64).reshape(-1, 2)
-    keyframe_index = {kid: i for i, kid in enumerate(meta["keyframe_ids"])}
-    return SolveArrays(camera=meta["camera"], keyframe_index=keyframe_index,
-                       poses=meta["poses"], xyz=xyz, observations=observations,
-                       observation_xy=observation_xy)
-
-
-def fit_keyframe(kid: str, solve: SolveArrays, pred: np.ndarray, fill: np.ndarray):
-    """(ok, a, b, n_clean, held_out_rel, reason)."""
-    ki = solve.keyframe_index.get(kid)
-    if ki is None:
-        return False, None, None, 0, None, "keyframe not in this solve's horizon"
-    mask = solve.observations[:, 0] == ki
-    if int(mask.sum()) < MIN_FIT_POINTS:
-        return False, None, None, int(mask.sum()), None, "too few sparse observations"
-    pt_idx = solve.observations[mask, 2]
-    X = solve.xyz[pt_idx]
-    pose = solve.poses.get(kid)
-    if pose is None:
-        return False, None, None, 0, None, "no local pose for this keyframe"
-    R = np.asarray(pose["rotation"], np.float64).reshape(3, 3)
-    t = np.asarray(pose["translation"], np.float64)
-    cam = solve.camera
-    K = np.array([[cam["fx"], 0.0, cam["cx"]], [0.0, cam["fy"], cam["cy"]], [0.0, 0.0, 1.0]])
-    uv, zc = project(R, t, K, X)
-    H, W = pred.shape
-    g = (np.isfinite(zc) & (zc > 1e-3) & np.isfinite(uv[:, 0]) & np.isfinite(uv[:, 1])
-        & (uv[:, 0] >= 0) & (uv[:, 0] < W - 1) & (uv[:, 1] >= 0) & (uv[:, 1] < H - 1))
-    if int(g.sum()) < MIN_FIT_POINTS:
-        return False, None, None, int(g.sum()), None, "too few sparse points inside the frame"
-    ui = np.clip(np.rint(uv[g, 0]).astype(int), 0, W - 1)
-    vi = np.clip(np.rint(uv[g, 1]).astype(int), 0, H - 1)
-    clean = ~fill[vi, ui]
-    n_clean = int(clean.sum())
-    if n_clean < MIN_FIT_POINTS:
-        return False, None, None, n_clean, None, "too few clean (non-fill) anchors"
-    disp_at_points = pred[vi[clean], ui[clean]].astype(np.float64)
-    z_sfm = zc[g][clean]
-    a, b, ho = align_frame(disp_at_points, z_sfm, kind="depth")
-    if not (np.isfinite(a) and np.isfinite(b)):
-        return False, a, b, n_clean, ho, "non-finite fit"
-    if a <= 0:
-        return False, a, b, n_clean, ho, "negative/zero scale"
-    if ho is not None and ho > MAX_HELD_OUT_REL:
-        return False, a, b, n_clean, ho, f"held-out residual {ho:.3f} > {MAX_HELD_OUT_REL}"
-    return True, a, b, n_clean, ho, "ok"
-
-
-# ---------------------------------------------------------------------------
-# resizing to the design's <= 256x144 sample budget
-# ---------------------------------------------------------------------------
-
-
-def resize_sample(depth, valid, color, fx, fy, cx, cy):
-    import cv2
-
-    h, w = depth.shape
-    scale = min(1.0, (TARGET_PIXEL_BUDGET / float(h * w)) ** 0.5)
-    new_w, new_h = max(1, round(w * scale)), max(1, round(h * scale))
-    if (new_w, new_h) == (w, h):
-        return depth, valid, color, fx, fy, cx, cy
-    depth_r = cv2.resize(depth.astype(np.float32), (new_w, new_h), interpolation=cv2.INTER_NEAREST)
-    valid_r = cv2.resize(valid.astype(np.uint8), (new_w, new_h), interpolation=cv2.INTER_NEAREST) > 0
-    color_r = cv2.resize(color, (new_w, new_h), interpolation=cv2.INTER_AREA)
-    sx, sy = new_w / w, new_h / h
-    return depth_r.astype(np.float64), valid_r, color_r, fx * sx, fy * sy, cx * sx, cy * sy
+        return solve_arrays_from(meta, {k: np.asarray(arrays[k]) for k in
+                                        ("xyz", "observations", "observation_xy")})
 
 
 # ---------------------------------------------------------------------------
@@ -434,149 +291,25 @@ def _write_composite_preview(result, path, *, component_ref, label):
 # --method homography (fallback (3))
 # ---------------------------------------------------------------------------
 
-MIN_TRACK_LENGTH = 3
-MAX_POINT_ERROR_PX = 2.0
-
-
-def solve_to_output(tree, kid):
-    """(M, scale, position_out, centre_solve, solve_component) for one eligible
-    keyframe, such that X_out = position_out + scale * M @ (X_solve - centre_solve).
-
-    The same algebra as `guidance_coverage._solution_relative` (solve world ->
-    that keyframe's camera -> its segment-local frame -> the registered
-    placement), REUSING coverage's `_rotate`/`_placed` rather than re-deriving
-    the conventions."""
-    index = tree.get("_index")
-    if index is None:
-        index = tree["_index"] = (
-            {r["keyframe_id"]: r for r in tree["poses"]},
-            {p["segment_index"]: p for p in tree["placements"] if p.get("state") == "registered"})
-    solution_pose = tree["solution"]["poses"][kid]
-    row = index[0][kid]
-    placement = index[1][row["segment_index"]]
-    R = np.asarray(solution_pose["rotation"], np.float64).reshape(3, 3)
-    t = np.asarray(solution_pose["translation"], np.float64)
-    centre = -R.T @ t
-    M = np.stack([gc._rotate(placement["rotation_wxyz"], gc._rotate(row["rotation"], list(R[:, j])))
-                  for j in range(3)], axis=1)
-    position, _, _ = gc._placed(row, placement)
-    return (M, float(placement["scale"]), np.asarray(position, np.float64), centre,
-            int(solution_pose["component"]))
-
-
-def _load_frame_image(images_dir: Path, kid: str, camera: dict):
-    """The solve's own undistorted image, area-resampled to <= 256x144 pixels,
-    with its intrinsics rescaled to match (pixel-centre convention)."""
-    import cv2
-
-    path = images_dir / f"{kid.split(':')[-1]}.jpg"
-    bgr = cv2.imread(str(path))
-    if bgr is None:
-        return None
-    h, w = bgr.shape[:2]
-    if (w, h) != (int(camera["width"]), int(camera["height"])):
-        return None
-    s = min(1.0, (TARGET_PIXEL_BUDGET / float(h * w)) ** 0.5)
-    nw, nh = max(1, round(w * s)), max(1, round(h * s))
-    rgb = cv2.resize(bgr, (nw, nh), interpolation=cv2.INTER_AREA)[:, :, ::-1]
-    sx, sy = nw / w, nh / h
-    return (np.ascontiguousarray(rgb), camera["fx"] * sx, camera["fy"] * sy,
-            (camera["cx"] + 0.5) * sx - 0.5, (camera["cy"] + 0.5) * sy - 0.5)
-
-
 def process_component_homography(*, component_receipt, placed_entries, tree, solve_dir,
                                   npz, keyframe_index, camera, out_prefix, landing_label,
-                                  run_label):
+                                  run_label, furniture_mask=False):
     t_wall = time.perf_counter()
     t_cpu = time.process_time()
     ref = component_receipt["reference_segment"]
-    forward = np.asarray(component_receipt["forward_xyz"], np.float64)
     up = np.asarray(component_receipt["up_xyz"], np.float64)
-    right = np.cross(forward, up)
-    right = right / np.linalg.norm(right)
-    stats = dict(reference_segment=ref, landing=landing_label, eligible=len(placed_entries),
-                 method="homography")
+    forward = np.asarray(component_receipt["forward_xyz"], np.float64)
+    stats = dict(reference_segment=ref, landing=landing_label, method="homography")
     if not placed_entries:
         stats["reason"] = "no eligible keyframes"
         return stats, None
-
-    # (b) this component's solve points in the output frame.
-    transforms = [solve_to_output(tree, e[0]) for e in placed_entries]
-    M, scale, pos0, c0, solve_component = transforms[0]
-    worst = 0.0
-    for (kid, position, _, _, _), (_, _, _, centre, comp) in zip(placed_entries, transforms):
-        if comp != solve_component:
-            raise ValueError("eligible keyframes of one reference span two solve components")
-        worst = max(worst, float(np.linalg.norm(pos0 + scale * M @ (centre - c0) - position)))
-    stats["sim3_consistency_max"] = worst
-    in_comp = np.asarray(npz["component"]) == solve_component
-    good = (in_comp & (np.asarray(npz["track_length"]) >= MIN_TRACK_LENGTH)
-            & (np.asarray(npz["error"]) <= MAX_POINT_ERROR_PX))
-    xyz = np.asarray(npz["xyz"], np.float64)
-    out_xyz = np.full_like(xyz, np.nan)
-    out_xyz[good] = pos0 + scale * (M @ (xyz[good] - c0).T).T
-    stats["points_component"] = int(in_comp.sum())
-    stats["points_quality"] = int(good.sum())
-
-    # (c) one floor plane.
-    t_core = time.perf_counter()
+    # (b)-(e): the SAME code the live side worker runs.
+    result, plane, frames, core = homography_component(
+        receipt_component=component_receipt, entries=placed_entries, tree=tree, arrays=npz,
+        keyframe_index=keyframe_index, camera=camera, images_dir=solve_dir / "images",
+        furniture_mask=furniture_mask)
+    stats.update(core)
     cams = np.stack([e[1] for e in placed_entries])
-    plane = estimate_floor_plane(points_xyz=out_xyz[good], camera_positions=cams,
-                                 up_xyz=up, forward_xyz=forward,
-                                 bounds_xy=component_receipt["bounds_xy"])
-    plane_ms = (time.perf_counter() - t_core) * 1000.0
-    stats["plane"] = plane.stats
-    stats["plane_ok"] = plane.ok
-    stats["plane_reason"] = plane.reason
-
-    # (d) downward-looking frames, spread over the floor they show.
-    frames = []
-    gate_counts = {}
-    if plane.ok:
-        admissible = []
-        for e in placed_entries:
-            ok, reason, _, _ = frame_gate(plane, e[1], e[3], e[2])
-            gate_counts[reason] = gate_counts.get(reason, 0) + 1
-            if not ok:
-                continue
-            centre = lower_band_centre(plane, e[1], e[3], e[2], camera["fx"], camera["fy"],
-                                       camera["cx"], camera["cy"], camera["width"], camera["height"])
-            if centre is None:
-                gate_counts["band centre misses plane"] = gate_counts.get("band centre misses plane", 0) + 1
-                continue
-            admissible.append((e[0], centre, e))
-        selected = select_spatial(admissible, forward, right)
-        observations = np.asarray(npz["observations"])
-        obs_xy = np.asarray(npz["observation_xy"])
-        band_top = (1.0 - LOWER_IMAGE_FRACTION) * float(camera["height"])
-        by_frame = np.argsort(observations[:, 0], kind="stable")
-        starts = np.searchsorted(observations[by_frame, 0], np.arange(len(keyframe_index) + 1))
-        for kid, _, (_, position, up_world, forward_world, _) in selected:
-            loaded = _load_frame_image(solve_dir / "images", kid, camera)
-            if loaded is None:
-                gate_counts["image missing"] = gate_counts.get("image missing", 0) + 1
-                continue
-            rgb, fx, fy, cx, cy = loaded
-            ki = keyframe_index[kid]
-            rows = by_frame[starts[ki]:starts[ki + 1]]
-            rows = rows[obs_xy[rows, 1] >= band_top]
-            pts = out_xyz[observations[rows, 2]]
-            pts = pts[np.all(np.isfinite(pts), axis=1)]
-            frames.append(PhotoFrame(kid=kid, position_xyz=tuple(position),
-                                     forward_xyz=tuple(forward_world), up_xyz=tuple(up_world),
-                                     fx=fx, fy=fy, cx=cx, cy=cy, color=rgb, order=ki,
-                                     check_points_xyz=pts))
-        stats["admissible_frames"] = len(admissible)
-        stats["selected_frames"] = len(selected)
-    stats["frame_gate_counts"] = gate_counts
-
-    # (e) warp, compose, encode.
-    t_warp = time.perf_counter()
-    result = build_homography_raster(origin_xyz=component_receipt["origin_xyz"], up_xyz=up,
-                                     forward_xyz=forward,
-                                     bounds_xy=component_receipt["bounds_xy"], plane=plane,
-                                     frames=frames)
-    warp_ms = (time.perf_counter() - t_warp) * 1000.0
     t_enc = time.perf_counter()
     tile = encode_tile(result.rgba)
     encode_ms = (time.perf_counter() - t_enc) * 1000.0
@@ -591,12 +324,15 @@ def process_component_homography(*, component_receipt, placed_entries, tree, sol
         tile_path = Path(f"{out_prefix}.{ext}")
         tile_path.write_bytes(tile["data"])
     _write_tile_preview(tile, result, Path(f"{out_prefix}_preview.png"),
-                        caption=f"{run_label} component {ref} - homography - {landing_label}")
+                        caption=f"{run_label} component {ref} - homography"
+                                f"{'' if furniture_mask else ' (no furniture mask)'} - {landing_label}")
 
     stats.update(
         frames_warped=result.stats.get("frames_warped", 0),
         frames_rejected=result.stats.get("frames_rejected", {}),
         cells_rejected=result.stats.get("cells_rejected", {}),
+        furniture_mask=result.stats.get("furniture_mask"),
+        furniture_masked_blocks=result.stats.get("furniture_masked_blocks"),
         raster_reason=result.stats.get("reason"),
         projected_keyframes=len(result.contributing_keyframes),
         opaque_fraction=result.opaque_fraction,
@@ -608,7 +344,7 @@ def process_component_homography(*, component_receipt, placed_entries, tree, sol
         tile_bytes=tile["bytes"] if tile else None,
         tile_encoding=tile["encoding"] if tile else "omitted (> 180 KiB)",
         tile_size=[tile["width"], tile["height"]] if tile else None,
-        plane_ms=round(plane_ms, 1), warp_ms=round(warp_ms, 1), encode_ms=round(encode_ms, 1),
+        encode_ms=round(encode_ms, 1),
         cpu_ms=round(cpu_ms, 1), wall_ms=round(wall_ms, 1),
         imagery_source="unredacted")
 
@@ -623,7 +359,8 @@ def process_component_homography(*, component_receipt, placed_entries, tree, sol
         alt_result = build_homography_raster(origin_xyz=component_receipt["origin_xyz"],
                                              up_xyz=up, forward_xyz=forward,
                                              bounds_xy=component_receipt["bounds_xy"],
-                                             plane=alt, frames=frames)
+                                             plane=alt, frames=frames,
+                                             furniture_mask=furniture_mask)
         _write_tile_preview(None, alt_result, Path(f"{out_prefix}_ALTPLANE-diagnostic_preview.png"),
                             caption=f"DIAGNOSTIC runner-up plane, NOT the rule's choice - {run_label} c{ref}")
         stats["alt_plane_opaque_fraction"] = alt_result.opaque_fraction
@@ -649,7 +386,7 @@ def _write_tile_preview(tile, result, path, *, caption):
     canvas.save(path, format="PNG")
 
 
-def run_homography(*, run_dir, world_dir, session_id, out_dir, run_label):
+def run_homography(*, run_dir, world_dir, session_id, out_dir, run_label, furniture_mask=False):
     solve_dir = world_dir / "solve" / session_id
     camera = load_json(solve_dir / "camera.json")
     meta = load_json(solve_dir / "solution.json")
@@ -687,7 +424,8 @@ def run_homography(*, run_dir, world_dir, session_id, out_dir, run_label):
             stats, _ = process_component_homography(
                 component_receipt=component_receipt, placed_entries=by_ref.get(ref, []),
                 tree=tree, solve_dir=solve_dir, npz=npz, keyframe_index=keyframe_index,
-                camera=camera, out_prefix=prefix, landing_label=label, run_label=run_label)
+                camera=camera, out_prefix=prefix, landing_label=label, run_label=run_label,
+                furniture_mask=furniture_mask)
             stats["solved_at"] = solved_at
             stats["geometry_revision"] = geometry_revision
             rows.append(stats)
@@ -703,6 +441,8 @@ def run_homography(*, run_dir, world_dir, session_id, out_dir, run_label):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--method", choices=("depth", "homography"), default="depth")
+    parser.add_argument("--furniture-mask", choices=("on", "off"), default="off",
+                        help="homography: the opt-in (default off) bottom-band furniture mask")
     parser.add_argument("--run-label", default=None,
                         help="homography: output file prefix (default: the run dir's name)")
     parser.add_argument("--run-dir", default=str(Path(
@@ -722,7 +462,8 @@ def main():
     world_dir = data_root / "worlds" / args.world_id
     if args.method == "homography":
         run_homography(run_dir=run_dir, world_dir=world_dir, session_id=args.session_id,
-                       out_dir=out_dir, run_label=args.run_label or run_dir.name)
+                       out_dir=out_dir, run_label=args.run_label or run_dir.name,
+                       furniture_mask=args.furniture_mask == "on")
         return
     dense_root = world_dir / "dense" / args.session_id
     solve_session_dir = world_dir / "solve" / args.session_id

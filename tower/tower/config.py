@@ -1049,6 +1049,39 @@ def world_anchor_verify_setting() -> frozenset:
 #              the guard cannot certify, or an impossible-pose island, leaves the room as an
 #              explicit separate component; a candidate with no certifiable room is not
 #              published at all (the last published solution stands).
+# FOW v1.2 PHOTO FLOOR PLAN (`world_builder/photo_floorplan_worker.py`; design
+# FOW-V12-PHOTO-FLOORPLAN-DESIGN-20261012, wire mail 303). Exactly `on` enables it, the
+# same exact-'on' rule as TOWER_WORLD_GUIDANCE_COVERAGE / _IMAGERY_LANDED: any other value,
+# including `1`/`true`, is off, so OFF is byte-for-byte today's Tower (no route, no
+# worker, no import). It also needs TOWER_WORLD_GUIDANCE_COVERAGE=on, because a photo
+# plan exists only for a published coverage landing. The METHOD picks the raster:
+# `homography` (the default, CPU-only fallback (3)) or `depth` (option (2), which needs
+# the Exp1 live-depth cache); anything else is the default, and logged.
+WORLD_PHOTO_FLOORPLAN_ENV = "TOWER_WORLD_PHOTO_FLOORPLAN"
+WORLD_PHOTO_FLOORPLAN_METHOD_ENV = "TOWER_WORLD_PHOTO_FLOORPLAN_METHOD"
+WORLD_PHOTO_FLOORPLAN_METHODS = ("homography", "depth")
+
+
+def world_photo_floorplan_setting() -> bool:
+    """True only when both TOWER_WORLD_PHOTO_FLOORPLAN and TOWER_WORLD_GUIDANCE_COVERAGE
+    are exactly `on`."""
+    return (os.environ.get(WORLD_PHOTO_FLOORPLAN_ENV) == "on"
+            and os.environ.get("TOWER_WORLD_GUIDANCE_COVERAGE") == "on")
+
+
+def world_photo_floorplan_method_setting() -> str:
+    """`homography` (default) or `depth`; anything else is `homography`, logged."""
+    value = os.environ.get(WORLD_PHOTO_FLOORPLAN_METHOD_ENV)
+    if value is None or not value.strip():
+        return WORLD_PHOTO_FLOORPLAN_METHODS[0]
+    word = value.strip().lower()
+    if word in WORLD_PHOTO_FLOORPLAN_METHODS:
+        return word
+    logger.warning("[Tower][Config] %s=%r is not homography or depth; using homography",
+                   WORLD_PHOTO_FLOORPLAN_METHOD_ENV, value)
+    return WORLD_PHOTO_FLOORPLAN_METHODS[0]
+
+
 WORLD_FINAL_SCALE_GUARD_ENV = "TOWER_WORLD_FINAL_SCALE_GUARD"
 WORLD_FINAL_SCALE_GUARD_OFF = "off"
 WORLD_FINAL_SCALE_GUARD_SHADOW = "shadow"

@@ -449,8 +449,12 @@ def _json(path, budget=None):
 
 def compute_from_tree(root, world_id, session_id, expected, geometry_revision,
                       clock=time.time, tree_tag=None, budget=None,
-                      eligible_out=None):
-    """Read without a builder lock; reject torn trees and never read image bytes."""
+                      eligible_out=None, tree_out=None):
+    """Read without a builder lock; reject torn trees and never read image bytes.
+
+    `tree_out` (FOW v1.2 photo floor plan only) receives the exact parsed files
+    this receipt was computed from, so the photo worker places keyframes with
+    the same tree rather than re-reading one a rebuild may have replaced."""
     base = Path(root) / "worlds" / world_id
     session = base / "sessions" / session_id
     derived = base / "derived" / session_id
@@ -484,11 +488,15 @@ def compute_from_tree(root, world_id, session_id, expected, geometry_revision,
     budget.check()
     if geometry_revision is not None and actual_revision != geometry_revision:
         raise _TransientCoverageError("geometry revision changed before guidance read")
-    return compute_coverage(solution=solution, manifest=manifest,
-                            placements=placed["placements"], poses=posed["poses"],
-                            keyframes=keyframes, geometry_revision=actual_revision,
-                            computed_at=clock(), check=budget.check,
-                            eligible_out=eligible_out)
+    block = compute_coverage(solution=solution, manifest=manifest,
+                             placements=placed["placements"], poses=posed["poses"],
+                             keyframes=keyframes, geometry_revision=actual_revision,
+                             computed_at=clock(), check=budget.check,
+                             eligible_out=eligible_out)
+    if tree_out is not None:
+        tree_out.update(solution=solution, manifest=manifest,
+                        placements=placed["placements"], poses=posed["poses"])
+    return block
 
 
 class CoverageWorker:
@@ -560,6 +568,14 @@ class CoverageWorker:
         if self._imagery_landed:
             from tower.world_builder.guidance_imagery import state_for
             self._imagery_state = state_for(root)
+        # FOW v1.2 photo floor plan (TOWER_WORLD_PHOTO_FLOORPLAN, exactly `on`): its own
+        # side worker, handed each NEWLY published receipt after publication. OFF imports
+        # nothing and changes nothing here.
+        self._photo_worker = None
+        from tower.config import world_photo_floorplan_setting
+        if world_photo_floorplan_setting():
+            from tower.world_builder.photo_floorplan_worker import PhotoFloorplanWorker
+            self._photo_worker = PhotoFloorplanWorker(root, latest=self.latest)
         self._thread = threading.Thread(target=self._run, name="world-guidance", daemon=True)
         self._thread.start()
 
@@ -582,6 +598,8 @@ class CoverageWorker:
             self._pending = None
             self._queued.clear()
             self._condition.notify_all()
+        if self._photo_worker is not None:
+            self._photo_worker.shutdown()
 
     def _discover(self):
         """Inspect only status targets, off the status polling thread."""
@@ -704,9 +722,13 @@ class CoverageWorker:
             failure = None
             try:
                 world, session, solved_at, horizon, stat = candidate
-                imagery_eligible = [] if self._imagery_landed else None
-                kwargs = ({"eligible_out": imagery_eligible}
-                          if self._imagery_landed else {})
+                wants_eligible = self._imagery_landed or self._photo_worker is not None
+                imagery_eligible = [] if wants_eligible else None
+                kwargs = ({"eligible_out": imagery_eligible} if wants_eligible else {})
+                photo_tree = None
+                if self._photo_worker is not None:
+                    photo_tree = {}
+                    kwargs["tree_out"] = photo_tree
                 block = compute_from_tree(self.root, world, session,
                                           (solved_at, horizon, stat), revision,
                                           self.clock, tree_tag, budget, **kwargs)
@@ -769,3 +791,11 @@ class CoverageWorker:
                     logger.exception("world builder guidance: landed imagery failed")
                 finally:
                     self._imagery_state.finish_landed(world, session)
+            # The photo floor plan runs on its own thread: this is one enqueue.
+            if block is not None and disposition == "ok" and self._photo_worker is not None:
+                try:
+                    if not self._stop.is_set():
+                        self._photo_worker.offer(world, session, block,
+                                                 imagery_eligible, photo_tree, stat)
+                except Exception:
+                    logger.exception("world builder guidance: photo floor plan offer failed")

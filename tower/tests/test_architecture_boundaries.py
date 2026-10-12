@@ -153,6 +153,11 @@ _RESULT_CHANNEL_ADAPTERS = frozenset(
         # imagery/...), an adapter over the store named after the cartridge, serving
         # the redacted thumbnail tiles; registered only when its switches are on.
         TOWER / "results" / "world_builder_guidance_imagery.py",
+        # Added 2026-10-12: FOW v1.2 photo floor plan (GET /worlds/{id}/guidance/
+        # {session}/photo-floorplan/...), the same shape: an adapter named after the
+        # cartridge, serving the landed floor-plan tiles; registered only when
+        # TOWER_WORLD_PHOTO_FLOORPLAN is on.
+        TOWER / "results" / "world_builder_photo_floorplan.py",
         TOWER / "results" / "__init__.py",
         # Added 2026-08-27 with the Scene Understanding and Document
         # Memory wire paths. Same shape, same rule: one adapter per

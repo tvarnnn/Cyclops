@@ -476,3 +476,53 @@ class TestEncodeTile:
         rng = np.random.default_rng(1)
         rgba = rng.integers(0, 256, (512, 512, 4), dtype=np.uint8)
         assert encode_tile(rgba, target_bytes=100, cap_bytes=200) is None
+
+
+class TestFurnitureMask:
+    """A green 'tabletop' patch in the bottom band whose own SfM points sit 0.6 above
+    a floor seen from 1.5 (0.4 H, well over the 0.12 H tolerance)."""
+
+    def _scene(self, *, above=5, on=0):
+        pos, fwd, cam_up = _pitched_camera(pos=(0.0, 0.0, 1.5), pitch_deg=70)
+        img, _ = _render(pos, fwd, cam_up, colour=lambda x, y: np.full(x.shape + (3,), 90, np.uint8))
+        img[96:112, 16:32] = (0, 255, 0)            # exactly one 16x16 block
+        xyz = [[0.3, 0.0, 0.6]] * above + [[0.3, 0.0, 0.0]] * on
+        uv = [[24.0, 104.0]] * (above + on)
+        return _frame("a", pos, fwd, cam_up, img=img,
+                      check_points=np.array(xyz, float).reshape(-1, 3)), np.array(uv, float)
+
+    def _greenish(self, result):
+        rgba = result.rgba.astype(int)
+        return int(((rgba[:, :, 3] == 255) & (rgba[:, :, 1] > rgba[:, :, 0] + 40)).sum())
+
+    def test_a_block_whose_points_sit_above_the_floor_is_not_painted(self):
+        frame, uv = self._scene()
+        frame.check_points_uv = uv
+        masked = _homography([frame], furniture_mask=True, width=512, height=512)
+        unmasked = _homography([frame], furniture_mask=False, width=512, height=512)
+        assert self._greenish(unmasked) > 20
+        # Only bilinear bleed across the block's one-pixel edge may survive.
+        assert self._greenish(masked) <= 0.1 * self._greenish(unmasked)
+        assert masked.stats["cells_rejected"]["furniture_mask"] > 0
+        assert masked.stats["furniture_masked_blocks"] == 1
+        assert masked.opaque_cells > 100                 # the rest of the band still paints
+
+    def test_a_block_with_more_floor_points_than_furniture_points_is_kept(self):
+        frame, uv = self._scene(above=1, on=3)
+        frame.check_points_uv = uv
+        result = _homography([frame], furniture_mask=True)
+        assert result.stats["furniture_masked_blocks"] == 0
+        assert self._greenish(result) > 0
+
+    def test_without_observed_pixels_nothing_is_masked(self):
+        frame, _ = self._scene()
+        result = _homography([frame], furniture_mask=True)   # check_points_uv is None
+        assert result.stats["furniture_masked_blocks"] == 0
+        assert self._greenish(result) > 0
+
+    def test_the_mask_is_opt_in(self):
+        frame, uv = self._scene()
+        frame.check_points_uv = uv
+        result = _homography([frame], width=512, height=512)
+        assert result.stats["furniture_mask"] is False
+        assert result.stats["furniture_masked_blocks"] == 0

@@ -200,7 +200,8 @@ def build_raster(*, origin_xyz, up_xyz, forward_xyz, bounds_xy, keyframes,
                  floor_height_margin_frac: float = FLOOR_HEIGHT_MARGIN_FRAC,
                  floor_admit_headroom_frac: float = FLOOR_ADMIT_HEADROOM_FRAC,
                  grazing_cos_min: float = GRAZING_COS_MIN,
-                 patch_consistency_frac: float = PATCH_CONSISTENCY_FRAC) -> RasterResult:
+                 patch_consistency_frac: float = PATCH_CONSISTENCY_FRAC,
+                 check=None) -> RasterResult:
     """Build one component's RGBA photo raster from already-fit, posed samples.
 
     `origin_xyz` is accepted (it is part of the receipt's basis and the wire
@@ -231,6 +232,8 @@ def build_raster(*, origin_xyz, up_xyz, forward_xyz, bounds_xy, keyframes,
     cam_heights = []
     per_kf_grids = []  # (h_val, mask, obliqueness) per keyframe index; pass 3's patch check
     for ki, kf in enumerate(keyframes):
+        if check is not None:
+            check()
         try:
             kf_up = _unit(kf.up_xyz)
             kf_forward = _unit(kf.forward_xyz)
@@ -558,7 +561,26 @@ FRAME_MIN_CHECK_POINTS = 5
 observed inside its own bottom-40% band lie more than 2 inlier tolerances
 BELOW the plane, the frame's pose and the plane disagree (nothing visible is
 below a floor) and the frame is rejected. Points above the plane are allowed
-(furniture) -- they are what this method cannot remove."""
+(furniture); the opt-in furniture mask below can remove some of them."""
+
+FURNITURE_MASK_DEFAULT = False
+FURNITURE_ABOVE_TOL_FRAC = 0.12
+FURNITURE_BLOCK_PX = 16
+"""Bottom-band FURNITURE MASK (OPT-IN, default OFF; Phase B item 6). Before/after on
+walk 8 (p2probe-h/maskband/before_after_side_by_side.jpg) was NOT a clear improvement:
+it removed most of R0's closet-clothes smear but cut blocky, staircase holes, left the
+desk and bookshelf smears largely in place, and changed G2 little -- so, per the lead's
+rule (mail 308), it is not on by default. The bottom 40% of most
+walk-8 downward frames shows furniture, not floor (R0: a median 3% of a frame's own
+band points lie on the plane), and a homography flattens it onto the floor. Each
+frame's band is cut into 16x16-pixel blocks at the <= 256x144 sample size (about
+40x40 at walk 8's full resolution: SfM points are sparse, so one observation has to
+speak for its neighbourhood). A block is MASKED when its own SfM observations that
+sit clearly above the plane (more than 0.12 H: the pose gate's tolerance, about a
+16 cm step at H = 1.35 m) outnumber those on it (within 0.12 H). A block with no
+observation is kept: carpet is low-texture, so silence is not evidence of
+furniture. Masked cells simply contribute nothing (they may still be painted by
+another frame that sees floor there)."""
 
 
 @dataclass
@@ -581,7 +603,9 @@ class PhotoFrame:
     the RECTIFIED (undistorted) image, already sampled at <= 256x144, and
     `fx/fy/cx/cy` are its intrinsics at that sample size. `check_points_xyz`
     (optional) are the solve's 3-D points this keyframe observed inside its
-    own bottom-40% band, in the output frame (the per-frame pose gate)."""
+    own bottom-40% band, in the output frame (the per-frame pose gate), and
+    `check_points_uv` (optional, same order) their observed pixel positions AT
+    THE SAMPLE SIZE (the furniture mask)."""
 
     kid: str
     position_xyz: tuple
@@ -594,6 +618,31 @@ class PhotoFrame:
     color: np.ndarray
     order: int = 0
     check_points_xyz: np.ndarray = None
+    check_points_uv: np.ndarray = None
+
+
+def _furniture_blocks(frame, n, d, h_med, h_px, w_px, block_px, above_tol_frac):
+    """(masked-block boolean grid, number of masked blocks) for one frame, or None."""
+    if frame.check_points_xyz is None or frame.check_points_uv is None:
+        return None
+    pts = np.asarray(frame.check_points_xyz, dtype=np.float64).reshape(-1, 3)
+    uv = np.asarray(frame.check_points_uv, dtype=np.float64).reshape(-1, 2)
+    if len(pts) != len(uv) or len(pts) == 0:
+        return None
+    ok = np.all(np.isfinite(pts), axis=1) & np.all(np.isfinite(uv), axis=1)
+    pts, uv = pts[ok], uv[ok]
+    rows = -(-h_px // block_px)
+    cols = -(-w_px // block_px)
+    bu = np.clip(np.floor((uv[:, 0] + 0.5) / block_px).astype(int), 0, cols - 1)
+    bv = np.clip(np.floor((uv[:, 1] + 0.5) / block_px).astype(int), 0, rows - 1)
+    r = pts @ n + d
+    tol = above_tol_frac * h_med
+    above = np.zeros((rows, cols), np.int32)
+    on = np.zeros((rows, cols), np.int32)
+    np.add.at(above, (bv[r > tol], bu[r > tol]), 1)
+    np.add.at(on, (bv[np.abs(r) <= tol], bu[np.abs(r) <= tol]), 1)
+    masked = (above > 0) & (above > on)
+    return masked, int(masked.sum())
 
 
 def _reject_plane(reason, stats):
@@ -659,7 +708,7 @@ def estimate_floor_plane(*, points_xyz, camera_positions, up_xyz, forward_xyz, b
                          min_support_cells: int = FLOOR_MIN_SUPPORT_CELLS,
                          camera_above_min_frac: float = CAMERA_ABOVE_MIN_FRAC,
                          camera_height_max_cv: float = CAMERA_HEIGHT_MAX_CV,
-                         hypotheses: int = FLOOR_RANSAC_HYPOTHESES) -> FloorPlane:
+                         hypotheses: int = FLOOR_RANSAC_HYPOTHESES, check=None) -> FloorPlane:
     """ONE floor plane per component from the lower envelope of its 3-D points.
 
     `points_xyz` are the solve's (already quality-filtered) 3-D points of this
@@ -715,7 +764,11 @@ def estimate_floor_plane(*, points_xyz, camera_positions, up_xyz, forward_xyz, b
     kwargs = dict(max_tilt_deg=max_tilt_deg, tol_frac=tol_frac, below_max_frac=below_max_frac,
                   camera_above_min_frac=camera_above_min_frac,
                   camera_height_max_cv=camera_height_max_cv)
+    if check is not None:
+        check()
     sc = _score_planes(score_pts, cams, normals, offsets, n_ref, **kwargs)
+    if check is not None:
+        check()
     stats["hypotheses"] = int(len(offsets))
     stats["hypotheses_valid"] = int(sc["valid"].sum())
     if not sc["valid"].any():
@@ -880,7 +933,11 @@ def build_homography_raster(*, origin_xyz, up_xyz, forward_xyz, bounds_xy, plane
                             horizon_min_depression_deg: float = HORIZON_MIN_DEPRESSION_DEG,
                             max_incidence_deg: float = MAX_INCIDENCE_DEG,
                             max_range_frac: float = MAX_RANGE_FRAC,
-                            grazing_cos_min: float = GRAZING_COS_MIN) -> RasterResult:
+                            grazing_cos_min: float = GRAZING_COS_MIN,
+                            furniture_mask: bool = FURNITURE_MASK_DEFAULT,
+                            furniture_above_tol_frac: float = FURNITURE_ABOVE_TOL_FRAC,
+                            furniture_block_px: int = FURNITURE_BLOCK_PX,
+                            check=None) -> RasterResult:
     """One component's RGBA raster by warping the bottom band of each frame
     onto `plane`. Same basis, bounds, orientation and alpha rules as
     `build_raster`; `origin_xyz` is carried, not used (see `build_raster`)."""
@@ -926,7 +983,9 @@ def build_homography_raster(*, origin_xyz, up_xyz, forward_xyz, bounds_xy, plane
     count = np.zeros(n_cells, dtype=np.int32)
 
     frame_reasons = {}
-    rejected_cells = {"upper_image": 0, "horizon": 0, "incidence": 0, "range": 0}
+    rejected_cells = {"upper_image": 0, "horizon": 0, "incidence": 0, "range": 0,
+                      "furniture_mask": 0}
+    masked_blocks = 0
     band_pixels = 0
     band_pixels_outside_bounds = 0
     used_frames = 0
@@ -935,6 +994,8 @@ def build_homography_raster(*, origin_xyz, up_xyz, forward_xyz, bounds_xy, plane
         frame_reasons[reason] = frame_reasons.get(reason, 0) + 1
 
     for fi, fr in enumerate(frames):
+        if check is not None:
+            check()   # the caller's wall cap / cancellation; raises to abandon
         ok, reason, cam_h, _pitch = frame_gate(plane, fr.position_xyz, fr.forward_xyz,
                                                fr.up_xyz, min_pitch_deg)
         if not ok:
@@ -1028,6 +1089,16 @@ def build_homography_raster(*, origin_xyz, up_xyz, forward_xyz, bounds_xy, plane
         rejected_cells["incidence"] += int((in_band & horizon_ok & ~incidence_ok).sum())
         rejected_cells["range"] += int((in_band & horizon_ok & incidence_ok & ~range_ok).sum())
         ok_cells = in_band & horizon_ok & incidence_ok & range_ok
+        blocks = (_furniture_blocks(fr, n, d, h_med, h_px, w_px, furniture_block_px,
+                                    furniture_above_tol_frac) if furniture_mask else None)
+        if blocks is not None and blocks[1]:
+            grid, n_masked = blocks
+            masked_blocks += n_masked
+            bu = np.clip(np.floor((uu + 0.5) / furniture_block_px).astype(int), 0, grid.shape[1] - 1)
+            bv = np.clip(np.floor((vv + 0.5) / furniture_block_px).astype(int), 0, grid.shape[0] - 1)
+            furniture = ok_cells & grid[bv, bu]
+            rejected_cells["furniture_mask"] += int(furniture.sum())
+            ok_cells &= ~furniture
         if not ok_cells.any():
             _reject("no admissible floor cell")
             continue
@@ -1059,6 +1130,8 @@ def build_homography_raster(*, origin_xyz, up_xyz, forward_xyz, bounds_xy, plane
         "frames_rejected": frame_reasons,
         "cells_rejected": rejected_cells,
         "single_view_grazing_cells": int(((count == 1) & (best_cos < grazing_cos_min)).sum()),
+        "furniture_mask": bool(furniture_mask),
+        "furniture_masked_blocks": masked_blocks,
         "band_pixels_hitting_plane": band_pixels,
         "band_pixels_outside_bounds": band_pixels_outside_bounds,
         "plane": dict(plane.stats),
