@@ -4,7 +4,9 @@ chosen by the final scale guard. No GPU, no Tower; real pycolmap is never run.
 Pinned here (the off / untriggered byte identity against 41cee79 is
 `test_world_builder_solve_select_off_identity.py`):
   * the setting: exact `adaptive:N`, N 1..6; everything else off; the budget's bounds;
-  * the trigger: 149 isolated keyframes runs nothing, 150 runs the extra draws;
+  * the trigger: a fraction of the judged room, max(60, ceil(0.18 x room)) isolated keyframes
+    (walk-7/walk-8-like draws, a keyframe-inflated good draw, a tiny walk); without a room size,
+    the absolute rule (149 isolated runs nothing, 150 runs the extra draws);
   * the pre-fixed score (fewest isolated, most certified, ratio closest to 1) and ties to draw 1;
   * the record's shape, on the solution and the audit;
   * the hard budget kills the draws still running and keeps the best finished one;
@@ -49,11 +51,14 @@ SHIM_ENV = "WB_SOLVE_SELECT_TEST_SHIM"
 # ---------------------------------------------------------------------------
 
 
-def outcome(isolated, certified=100, ratio=1.0, decision="published", tag=None):
-    """A guard outcome as `guard_publication` shapes its audit."""
+def outcome(isolated, certified=100, ratio=1.0, decision="published", tag=None, judged=None):
+    """A guard outcome as `guard_publication` shapes its audit (`judged`: the assessment's
+    `room_candidate`; None leaves it out, as a pre-fraction fake did)."""
     pieces = [{"keyframe_ids": [f"k{i}" for i in range(isolated)]}] if isolated else []
+    extra = {} if judged is None else {"room_candidate": judged}
     return SimpleNamespace(
         audit={"assessment": {
+            **extra,
             "pieces": pieces, "room_keyframes": [f"r{i}" for i in range(certified)],
             "uncertified_keyframes": 0,
             "plateaus": [{"decision": "kept", "measured": 20, "ratio": ratio}],
@@ -156,6 +161,8 @@ def test_the_budget_setting(monkeypatch, value, expected):
 
 def test_the_trigger_and_the_wave_are_config_constants():
     assert config.WORLD_SOLVE_SELECT_TRIGGER_KF == 150
+    assert config.WORLD_SOLVE_SELECT_TRIGGER_FRAC == 0.18
+    assert config.WORLD_SOLVE_SELECT_TRIGGER_MIN_KF == 60
     assert config.WORLD_SOLVE_SELECT_PARALLEL == 3
 
 
@@ -197,8 +204,9 @@ def test_only_attached_well_measured_plateaus_count_toward_the_ratio():
 
 
 @pytest.mark.parametrize("isolated,triggered", [(149, False), (150, True)])
-def test_the_trigger_is_150_isolated_keyframes(scene, monkeypatch, isolated, triggered):
+def test_without_a_room_size_the_trigger_is_150_isolated_keyframes(scene, monkeypatch, isolated, triggered):
     first = outcome(isolated)
+    assert SS.trigger_threshold(first) == {"rule": "absolute", "base_kf": None, "threshold_kf": 150}
     monkeypatch.setattr(FSG, "guard_publication", lambda *a, **k: first)
     launches = []
     monkeypatch.setattr(SS, "_start", lambda draw, d, job: (launches.append(draw), Done(1))[1])
@@ -211,13 +219,46 @@ def test_the_trigger_is_150_isolated_keyframes(scene, monkeypatch, isolated, tri
     assert not (scene.workspace.root / SS.SELECT_DIRNAME).exists()
 
 
+@pytest.mark.parametrize("judged,threshold", [(972, 175), (937, 169), (1400, 252), (200, 60), (1000, 180),
+                                              (0, 150), (True, 150), (-5, 150), (12.5, 150)])
+def test_the_trigger_threshold(judged, threshold):
+    t = SS.trigger_threshold(outcome(0, judged=judged))
+    assert t["threshold_kf"] == threshold
+    assert t["rule"] == ("fraction" if threshold != 150 else "absolute")
+    assert t["base_kf"] == (judged if t["rule"] == "fraction" else None)
+    assert SS.judged_keyframes(SimpleNamespace(audit={})) is None
+
+
+@pytest.mark.parametrize("isolated,judged,triggered", [
+    (83, 972, False), (429, 972, True),        # walk 7: today's good draw, the n1 weld
+    (99, 937, False), (265, 937, True),        # walk 8: the worst good draw, the smallest weld
+    (145, 1400, False),                        # a good draw under the turn bridge's ~1.45x keyframes
+    (40, 200, False), (59, 200, False), (60, 200, True),   # a tiny walk: the 60-keyframe floor
+])
+def test_the_trigger_is_a_fraction_of_the_judged_room(scene, monkeypatch, isolated, judged, triggered):
+    first = outcome(isolated, judged=judged)
+    monkeypatch.setattr(FSG, "guard_publication", lambda *a, **k: first)
+    launches = []
+    monkeypatch.setattr(SS, "_start", lambda draw, d, job: (launches.append(draw), Done(1))[1])
+    chosen, record = run(scene, n=2)
+    assert chosen is first
+    assert launches == ([2, 3] if triggered else [])
+    assert (record is not None) is triggered
+    if triggered:
+        assert record["trigger"] == SS.trigger_threshold(first)
+        assert record["trigger"]["rule"] == "fraction" and record["trigger"]["base_kf"] == judged
+    else:
+        assert first.solution.solve == {"seed": None} and "select" not in first.audit
+
+
 def test_a_tie_goes_to_draw_1_and_the_record_has_its_shape(scene, monkeypatch):
     same = outcome(200, certified=50)
     monkeypatch.setattr(SS, "_start", lambda draw, d, job: finished(d, draw, outcome(200, certified=50)))
     assert SS.score(same) == SS.score(scene.first)
     chosen, record = run(scene, n=2)
     assert chosen is scene.first
-    assert set(record) == {"mode", "n", "triggered", "draws", "winner", "added_seconds", "budget_hit"}
+    assert set(record) == {"mode", "n", "triggered", "trigger", "draws", "winner", "added_seconds", "budget_hit"}
+    assert record["trigger"] == {"rule": "absolute", "base_kf": None, "threshold_kf": 150}
     assert record["mode"] == "adaptive" and record["n"] == 2 and record["triggered"] is True
     assert record["winner"] == 1 and record["budget_hit"] is False
     assert isinstance(record["added_seconds"], float)
@@ -458,7 +499,7 @@ def test_the_worker_environment_has_no_gpu_and_no_phase_token(monkeypatch):
 N_E2E = 360
 # Draw k's `solved_at` (the shim's): a wall clock later than any launch, as a real solve's is.
 SHIM_CLOCK = 4_000_000_000.0
-WELD = (200, N_E2E)        # 160 keyframes at 3x: draw 1 isolates them (>= 150)
+WELD = (200, N_E2E)        # 160 keyframes at 3x: draw 1 isolates them (>= max(60, 0.18 x 360 = 65))
 CLEAN_DRAW = 2
 
 
@@ -578,7 +619,8 @@ def test_end_to_end_the_winner_is_published_through_the_existing_step(e2e, monke
     record = out["solve"]["select"]
     assert record["winner"] == CLEAN_DRAW and record["budget_hit"] is False and record["n"] == 2
     by_draw = {r["draw"]: r for r in record["draws"]}
-    assert by_draw[1]["isolated_kf"] >= config.WORLD_SOLVE_SELECT_TRIGGER_KF
+    assert record["trigger"] == {"rule": "fraction", "base_kf": N_E2E, "threshold_kf": 65}
+    assert by_draw[1]["isolated_kf"] >= record["trigger"]["threshold_kf"]
     assert by_draw[2]["isolated_kf"] == 0 and by_draw[3]["isolated_kf"] == by_draw[1]["isolated_kf"]
     assert all(r["outcome"] == "published" for r in record["draws"])
     meta, comp, audit = _published(s)
@@ -609,7 +651,7 @@ def test_end_to_end_the_winner_is_published_through_the_existing_step(e2e, monke
 def test_end_to_end_below_the_trigger_nothing_is_launched(e2e, monkeypatch):
     from tests.test_world_builder_final_scale_guard_seam import _published
 
-    s = e2e.configure(N_E2E, (260, N_E2E), [])                 # 100 keyframes welded: < 150
+    s = e2e.configure(N_E2E, (320, N_E2E), [])                 # 40 keyframes welded: < max(60, 65)
     monkeypatch.setenv(GUARD, "on")
     monkeypatch.setenv(SELECT, "adaptive:3")
     launched = []
@@ -618,7 +660,7 @@ def test_end_to_end_below_the_trigger_nothing_is_launched(e2e, monkeypatch):
     meta, _, audit = _published(s)
     assert out["solved"] is True and launched == []
     assert "select" not in meta["solve"] and "select" not in audit
-    assert 0 < meta["solve"]["final_scale_guard"]["keyframes_isolated"] < config.WORLD_SOLVE_SELECT_TRIGGER_KF
+    assert 0 < meta["solve"]["final_scale_guard"]["keyframes_isolated"] < config.WORLD_SOLVE_SELECT_TRIGGER_MIN_KF
     assert sorted(r["guard"] for r in e2e.rows() if "guard" in r) == [1]          # guarded once
 
 

@@ -1,7 +1,7 @@
 """ADAPTIVE SELECT OFF -- and ON BUT UNTRIGGERED -- IS 41cee79, BYTE FOR BYTE.
 
 `TOWER_WORLD_SOLVE_SELECT` (`world_builder/solve_select.py`) is default off. Off, and on with draw 1's
-guard isolating fewer than 150 keyframes, the final solve must publish exactly what 41cee79 (the base,
+guard isolating fewer keyframes than the trigger, the final solve must publish exactly what 41cee79 (the base,
 which has no selector) published. This file proves it two ways:
 
 1. AGAINST THE BASE: `golden/world_builder_solve_select_41cee79.json`, recorded by running THIS FILE on an
@@ -118,7 +118,8 @@ def _check(name, observed):
 
 
 def test_the_isolating_scenario_isolates_fewer_than_the_trigger(tmp_path, colmap, monkeypatch):  # noqa: F811
-    """The untriggered case is a real one: the guard isolates keyframes, just fewer than 150."""
+    """The untriggered case is a real one: the guard isolates keyframes, just fewer than the trigger's
+    60-keyframe floor (so fewer than any threshold, fraction or absolute)."""
     if os.environ.get(RECORD_ENV):
         pytest.skip("recording")
     from tower import config
@@ -128,7 +129,7 @@ def test_the_isolating_scenario_isolates_fewer_than_the_trigger(tmp_path, colmap
     _final(s, "simple")
     audit = json.loads((s.workspace.root / FSG.AUDIT_FILENAME).read_text(encoding="utf-8"))
     isolated = {k for p in audit["assessment"]["pieces"] for k in p["keyframe_ids"]}
-    assert len(isolated) == len(PIECE) and 0 < len(isolated) < config.WORLD_SOLVE_SELECT_TRIGGER_KF
+    assert len(isolated) == len(PIECE) and 0 < len(isolated) < config.WORLD_SOLVE_SELECT_TRIGGER_MIN_KF
 
 
 def test_raw_bytes_unset_and_untriggered_are_identical(tmp_path, colmap, monkeypatch):  # noqa: F811
