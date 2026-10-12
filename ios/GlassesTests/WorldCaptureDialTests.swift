@@ -370,22 +370,45 @@ final class WorldCaptureDialTests: XCTestCase {
                         .map(\.sector), [nil], "§4's fixture as it was")
     }
 
-    func testAMalformedSectorDropsItsEntryAndAMalformedLatestOrMotionRefusesTheManifest() throws {
+    /// Each additive field fails closed on its own: a malformed entry
+    /// `sector` drops that entry; a malformed `latest` or `motion_sector` is
+    /// read as absent, the entries kept, and the dial falls back.
+    func testAMalformedSectorDropsItsEntryAndAMalformedLatestOrMotionIsDroppedAlone() throws {
         for bad in [#","sector":12"#, #","sector":-1"#, #","sector":"3""#, #","sector":2.5"#, #","sector":true"#,
                     #","sector":[3]"#] {
             let landed = try XCTUnwrap(Self.manifest(entryA: bad)?.landed.value, bad)
             XCTAssertEqual(landed.entries.map(\.digest), [Self.digestB], "\(bad): dropped, never repaired")
         }
+        let motion = #","motion_sector":2"#
         for bad in [#","latest":{"component_reference_segment":0,"sector":12,"keyframe_id":"s9:1"}"#,
                     #","latest":{"component_reference_segment":0,"sector":3}"#,
                     #","latest":{"component_reference_segment":0,"sector":3,"keyframe_id":""}"#,
                     #","latest":{"component_reference_segment":"0","sector":3,"keyframe_id":"s9:1"}"#,
                     #","latest":{"sector":3,"keyframe_id":"s9:1"}"#,
-                    #","latest":[0,3]"#, #","latest":"s9:1""#,
-                    #","motion_sector":12"#, #","motion_sector":-1"#, #","motion_sector":"2""#,
-                    #","motion_sector":true"#, #","motion_sector":1.5"#] {
-            XCTAssertNil(Self.manifest(extra: bad), "\(bad) was read")
+                    #","latest":[0,3]"#, #","latest":"s9:1""#] {
+            let landed = try XCTUnwrap(Self.manifest(extra: bad + motion)?.landed.value, "\(bad) refused the section")
+            XCTAssertNil(landed.latest, bad)
+            XCTAssertEqual(landed.entries.map(\.sector), [3, 7], "\(bad) cost the entries")
+            XCTAssertEqual(landed.motionSector, 2, "\(bad) cost the walk cue")
         }
+        let latest = #","latest":{"component_reference_segment":0,"sector":7,"keyframe_id":"s9:121"}"#
+        for bad in [#","motion_sector":12"#, #","motion_sector":-1"#, #","motion_sector":"2""#,
+                    #","motion_sector":true"#, #","motion_sector":1.5"#, #","motion_sector":[2]"#] {
+            let landed = try XCTUnwrap(Self.manifest(extra: latest + bad)?.landed.value, "\(bad) refused the section")
+            XCTAssertNil(landed.motionSector, bad)
+            XCTAssertEqual(landed.latest?.sector, 7, "\(bad) cost the latest")
+            XCTAssertEqual(landed.entries.count, 2, "\(bad) cost the entries")
+        }
+        // The dial then falls back: sector zero on top, no walk cue.
+        let stop = try XCTUnwrap(FOWFixtures.coverage(FOWFixtures.stop))
+        let receipt = WorldCoverageReceipt(coverage: stop, keyframesAccepted: nil, clock: nil)
+        let landed = try XCTUnwrap(Self.manifest(extra: #","latest":{"sector":3},"motion_sector":"2""#)?.landed.value)
+        let overlay = WorldLandedOverlay(receipt: receipt, thumbnails: [], latest: landed.latest,
+                                         motionSector: landed.motionSector)
+        let dial = Panel.captureDial(.coverage(receipt), overlay: overlay)
+        XCTAssertEqual(dial.anchor, 0)
+        XCTAssertEqual(dial.top, .pieceStart)
+        XCTAssertNil(dial.motionSector)
     }
 
     // MARK: The words never claim what the receipt does not (§8.5)
