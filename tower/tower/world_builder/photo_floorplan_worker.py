@@ -115,8 +115,9 @@ REGRESS_MAX_CONSECUTIVE_SKIPS = 3
 over a 55% one, and the phone showed gray for ~5 min). A landing is skipped -- the
 prior plan stays, with its prior date -- if any component it shares (same
 `reference_segment`) with the last PUBLISHED landing comes out below 25% of that
-component's published opaque fraction (when that was at least 2%). A tile is never
-kept across landings piecemeal: a new solve changes the receipt basis."""
+component's published opaque fraction (when that was at least 2%), unless the
+new fraction is at least 2% and its opaque raster area has not fallen. A tile
+is never kept across landings piecemeal: a new solve changes the receipt basis."""
 
 
 class LandingSkipped(Exception):
@@ -672,7 +673,9 @@ def build_landing(root, world_id, session_id, receipt, eligible, tree, solution_
         cstats.setdefault("ms", {})["encode"] = round((time.perf_counter() - t_encode) * 1000.0, 1)
         if not stats:
             cstats["ms"]["arrays"] = arrays_ms   # charged once, to the first component
+        x0, y0, x1, y1 = result.raster_bounds_xy
         cstats.update(reference_segment=ref, opaque_fraction=result.opaque_fraction,
+                      opaque_area=result.opaque_fraction * (x1 - x0) * (y1 - y0),
                       projected_keyframes=len(result.contributing_keyframes),
                       frames_warped=result.stats.get("frames_warped"),
                       frames_rejected=result.stats.get("frames_rejected"))
@@ -795,14 +798,23 @@ def opaque_by_ref(stats):
             if c.get("reference_segment") is not None and c.get("opaque_fraction") is not None}
 
 
-def regression(prior, stats):
+def opaque_area_by_ref(stats):
+    return {c["reference_segment"]: float(c["opaque_area"]) for c in stats or ()
+            if c.get("reference_segment") is not None and c.get("opaque_area") is not None}
+
+
+def regression(prior, stats, prior_area=None):
     """A description of the first regressed component, or '' (see REGRESS_MIN_RATIO)."""
     if not prior:
         return ""
+    now_area = opaque_area_by_ref(stats)
     for ref, now in sorted(opaque_by_ref(stats).items()):
         before = prior.get(ref)
         if (before is not None and before >= REGRESS_MIN_PRIOR_OPAQUE
-                and now < REGRESS_MIN_RATIO * before):
+                and now < REGRESS_MIN_RATIO * before
+                and not (now >= REGRESS_MIN_PRIOR_OPAQUE
+                         and ref in now_area and ref in (prior_area or {})
+                         and now_area[ref] >= prior_area[ref])):
             return f"ref {ref}: opaque {now:.3f} < {REGRESS_MIN_RATIO} x published {before:.3f}"
     return ""
 
@@ -823,7 +835,9 @@ def component_summary(stats):
             "gates": c.get("frame_gate_counts"), "selected": c.get("selected_frames"),
             "warped": c.get("frames_warped"), "frames_rejected": c.get("frames_rejected"),
             "projected": c.get("projected_keyframes"),
-            "opaque": (round(c["opaque_fraction"], 3) if c.get("opaque_fraction") is not None
+            "opaque_area": (round(c["opaque_area"], 3) if c.get("opaque_area") is not None
+                            else None),
+            "opaque":(round(c["opaque_fraction"], 3) if c.get("opaque_fraction") is not None
                        else None),
             "tile": c.get("tile"), "bytes": c.get("bytes"), "ms": c.get("ms")})
     return json.dumps(rows, separators=(",", ":"), default=str)
@@ -852,6 +866,7 @@ class PhotoFloorplanWorker:
         self.outcomes = {}
         self._plane_memory = {}   # (world, session) -> {reference_segment: memory}
         self._published_opaque = {}   # (world, session) -> {reference_segment: opaque}
+        self._published_opaque_area = {}  # (world, session) -> {reference_segment: area}
         self._regress_streak = {}     # (world, session) -> consecutive regressed skips
         self._thread = threading.Thread(target=self._run, name="world-photo-floorplan",
                                         daemon=True)
@@ -957,7 +972,8 @@ class PhotoFloorplanWorker:
                     disposition = "skipped: superseded by a newer coverage landing"
                 elif time.monotonic() - started > self.wall_cap_s:
                     disposition = f"skipped: exceeded the {self.wall_cap_s:.1f} s wall cap"
-                elif ((regressed := regression(self._published_opaque.get(pair), stats))
+                elif ((regressed := regression(self._published_opaque.get(pair), stats,
+                                               self._published_opaque_area.get(pair)))
                       and self._regress_streak.get(pair, 0) < REGRESS_MAX_CONSECUTIVE_SKIPS):
                     self._regress_streak[pair] = self._regress_streak.get(pair, 0) + 1
                     disposition = (f"skipped: regressed ({regressed}; "
@@ -969,6 +985,7 @@ class PhotoFloorplanWorker:
                     if trial is not None:
                         self._plane_memory[pair] = trial
                     self._published_opaque[pair] = opaque_by_ref(stats)
+                    self._published_opaque_area[pair] = opaque_area_by_ref(stats)
                     if regressed:
                         logger.warning("world photo floorplan: publishing a regressed landing after %d "
                                        "consecutive skips (escape valve): %s",
