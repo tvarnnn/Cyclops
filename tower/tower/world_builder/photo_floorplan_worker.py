@@ -105,6 +105,16 @@ carried (never a fallback), and a fresh fit is forced after 2 consecutive reuses
 a plane is never more than 2 landings stale."""
 
 
+REGRESS_MIN_RATIO = 0.25
+REGRESS_MIN_PRIOR_OPAQUE = 0.02
+"""NEVER-REGRESS guard (e2e4 10:37:47: a landing published a 0.4%-opaque main room
+over a 55% one, and the phone showed gray for ~5 min). A landing is skipped -- the
+prior plan stays, with its prior date -- if any component it shares (same
+`reference_segment`) with the last PUBLISHED landing comes out below 25% of that
+component's published opaque fraction (when that was at least 2%). A tile is never
+kept across landings piecemeal: a new solve changes the receipt basis."""
+
+
 class LandingSkipped(Exception):
     """This landing publishes nothing; the prior dated plan stays."""
 
@@ -776,6 +786,23 @@ def state_for(root):
 # ---------------------------------------------------------------------------
 
 
+def opaque_by_ref(stats):
+    return {c["reference_segment"]: float(c["opaque_fraction"]) for c in stats or ()
+            if c.get("reference_segment") is not None and c.get("opaque_fraction") is not None}
+
+
+def regression(prior, stats):
+    """A description of the first regressed component, or '' (see REGRESS_MIN_RATIO)."""
+    if not prior:
+        return ""
+    for ref, now in sorted(opaque_by_ref(stats).items()):
+        before = prior.get(ref)
+        if (before is not None and before >= REGRESS_MIN_PRIOR_OPAQUE
+                and now < REGRESS_MIN_RATIO * before):
+            return f"ref {ref}: opaque {now:.3f} < {REGRESS_MIN_RATIO} x published {before:.3f}"
+    return ""
+
+
 def component_summary(stats):
     """One compact JSON line per landing for the disposition log: a live run must never
     be blind again (e2e2: three `ok` landings that projected nothing, with no clue why)."""
@@ -820,6 +847,7 @@ class PhotoFloorplanWorker:
         self._running = None
         self.outcomes = {}
         self._plane_memory = {}   # (world, session) -> {reference_segment: memory}
+        self._published_opaque = {}   # (world, session) -> {reference_segment: opaque}
         self._thread = threading.Thread(target=self._run, name="world-photo-floorplan",
                                         daemon=True)
         self._thread.start()
@@ -924,12 +952,15 @@ class PhotoFloorplanWorker:
                     disposition = "skipped: superseded by a newer coverage landing"
                 elif time.monotonic() - started > self.wall_cap_s:
                     disposition = f"skipped: exceeded the {self.wall_cap_s:.1f} s wall cap"
+                elif (regressed := regression(self._published_opaque.get(pair), stats)):
+                    disposition = f"skipped: regressed ({regressed})"
                 elif not self._state.publish(*pair, block, tiles):
                     disposition = "skipped: not newer than the published landing (never re-dated)"
                 else:
                     # Only a PUBLISHED landing's planes are carried to the next one.
                     if trial is not None:
                         self._plane_memory[pair] = trial
+                    self._published_opaque[pair] = opaque_by_ref(stats)
         self.outcomes = {**self.outcomes, pair: {"identity": identity, "disposition": disposition,
                                                  "elapsed_ms": round(elapsed_ms, 1),
                                                  "components": stats}}

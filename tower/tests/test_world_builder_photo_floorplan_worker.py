@@ -820,3 +820,90 @@ def test_the_disposition_log_line_carries_per_component_stats(caplog):
     assert summary[0]["plane_reason"].startswith("inadequate support")
     assert summary[0]["eligible"] == 29 and summary[0]["points"] == 2344
     assert summary[0]["projected"] == 0 and summary[0]["ms"]["plane"] == 14.1
+
+
+# ---------------------------------------------------------------------------
+# e2e4 regression: 10:37:47 published projected 53 / opaque 0.004 over a 0.55 plan.
+# The estimated plane failed (its inliers covered 1 support cell), and the camera-
+# trajectory FALLBACK was accepted although this solve's cameras are not at one
+# height above it (CV 0.52, 11% below it) -- so almost no frame saw admissible floor.
+# ---------------------------------------------------------------------------
+
+GOLDEN_E2E4 = Path(__file__).parent / "golden" / "fow_v12_e2e4"
+
+
+def test_e2e4_fallback_is_refused_when_the_cameras_contradict_it():
+    from tower.world_builder.photo_floorplan import FloorPlane, fallback_floor_plane
+    doc = json.loads((GOLDEN_E2E4 / "landing4.json").read_text(encoding="utf-8"))
+    with np.load(GOLDEN_E2E4 / "landing4_fallback.npz") as z:
+        cams, normal = z["cameras"], z["normal"]
+        drops = np.split(z["drops"].astype(float), np.cumsum(z["lengths"])[:-1])
+    failed = FloorPlane(ok=False, reason=doc["fallback_from"],
+                        stats={"reference_normal_xyz": [float(v) for v in normal]})
+    plane = fallback_floor_plane(failed=failed, camera_positions=cams,
+                                 band_drops_by_frame=drops, frame_ids=doc["frame_ids"])
+    assert not plane.ok
+    assert "fallback refused: cameras inconsistent" in plane.reason
+    assert plane.stats["camera_height_cv"] > 0.25
+
+
+def test_e2e2_sparse_fallback_still_passes_the_camera_checks():
+    rc, tree, eligible, arrays = _landing0()
+    entries = pfw.placed_entries(tree, eligible)[rc["reference_segment"]]
+    keyframe_index = {k: i for i, k in enumerate(tree["solution"]["keyframe_ids"])}
+    _, plane, _, _ = pfw.homography_component(
+        receipt_component=rc, entries=entries, tree=tree, arrays=arrays,
+        keyframe_index=keyframe_index, camera=tree["solution"]["camera"],
+        images_dir=GOLDEN / "images")
+    assert plane.ok and plane.stats["source"] == "fallback_camera_drop"
+    assert plane.stats["camera_height_cv"] <= 0.25
+    assert plane.stats["camera_above_fraction"] >= 0.95
+
+
+def _opaque_build(opaque_by_solve):
+    def build(root, world, session, receipt, eligible, tree, stat, method, check):
+        block, tiles, _ = _fake_build_factory()(root, world, session, receipt, eligible, tree,
+                                                stat, method=method, check=check)
+        stats = [{"reference_segment": ref, "opaque_fraction": value, "projected_keyframes": 1}
+                 for ref, value in opaque_by_solve[receipt["solved_at"]].items()]
+        return block, tiles, stats
+    return build
+
+
+def test_a_landing_that_regresses_a_component_is_skipped_and_the_prior_plan_kept():
+    latest = {}
+    build = _opaque_build({1000.0: {0: 0.55}, 2000.0: {0: 0.004}, 3000.0: {0: 0.52},
+                           4000.0: {0: 0.10, 26: 0.0}})
+    worker, state = _worker(latest, build=build)
+    try:
+        _offer(worker, latest, _receipt(1000.0))
+        assert _wait(lambda: state.landed(WORLD, SESSION) is not None)
+        _offer(worker, latest, _receipt(2000.0, revision="g2"))
+        assert _wait(lambda: worker.outcomes.get((WORLD, SESSION), {}).get("identity")
+                     == (2000.0, "g2", 1))
+        assert worker.outcomes[(WORLD, SESSION)]["disposition"].startswith("skipped: regressed")
+        assert state.landed(WORLD, SESSION)["solved_at"] == 1000.0      # prior, prior date
+        _offer(worker, latest, _receipt(3000.0, revision="g3"))
+        assert _wait(lambda: state.landed(WORLD, SESSION)["solved_at"] == 3000.0)
+        # 0.10 >= 0.25 x 0.52 is false -> regressed; a NEW component (26) never blocks.
+        _offer(worker, latest, _receipt(4000.0, revision="g4"))
+        assert _wait(lambda: worker.outcomes[(WORLD, SESSION)]["identity"] == (4000.0, "g4", 1))
+        assert "ref 0" in worker.outcomes[(WORLD, SESSION)]["disposition"]
+        assert state.landed(WORLD, SESSION)["solved_at"] == 3000.0
+    finally:
+        worker.shutdown()
+
+
+def test_the_regress_guard_compares_with_the_last_PUBLISHED_landing():
+    latest = {}
+    build = _opaque_build({1000.0: {0: 0.40}, 2000.0: {0: 0.05}, 3000.0: {0: 0.12}})
+    worker, state = _worker(latest, build=build)
+    try:
+        for solved_at, rev in ((1000.0, "g1"), (2000.0, "g2"), (3000.0, "g3")):
+            _offer(worker, latest, _receipt(solved_at, revision=rev))
+            assert _wait(lambda: worker.outcomes.get((WORLD, SESSION), {}).get("identity")
+                         == (solved_at, rev, 1))
+        # 0.05 regressed against 0.40 and was skipped; 0.12 >= 0.25 x 0.40 publishes.
+        assert state.landed(WORLD, SESSION)["solved_at"] == 3000.0
+    finally:
+        worker.shutdown()
