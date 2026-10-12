@@ -907,3 +907,31 @@ def test_the_regress_guard_compares_with_the_last_PUBLISHED_landing():
         assert state.landed(WORLD, SESSION)["solved_at"] == 3000.0
     finally:
         worker.shutdown()
+
+
+def test_the_regress_guard_has_an_escape_after_consecutive_skips():
+    # Guard review MED (manager 336): a genuine, permanent coverage drop must not freeze the plan.
+    # 0.60 publishes; 0.05 x3 is skipped (1/3, 2/3, 3/3); the 4th regressed landing publishes anyway
+    # and becomes the new baseline; the streak resets after a publish.
+    assert pfw.REGRESS_MAX_CONSECUTIVE_SKIPS == 3
+    latest = {}
+    seq = [(1000.0, 0.60), (2000.0, 0.05), (3000.0, 0.05), (4000.0, 0.05), (5000.0, 0.05),
+           (6000.0, 0.04)]
+    build = _opaque_build({t: {0: v} for t, v in seq})
+    worker, state = _worker(latest, build=build)
+    try:
+        dispositions = []
+        for i, (solved_at, _) in enumerate(seq):
+            rev = f"g{i}"
+            _offer(worker, latest, _receipt(solved_at, revision=rev))
+            assert _wait(lambda: worker.outcomes.get((WORLD, SESSION), {}).get("identity")
+                         == (solved_at, rev, 1))
+            dispositions.append(worker.outcomes[(WORLD, SESSION)]["disposition"])
+        assert dispositions[0] == "ok"
+        assert [d.startswith("skipped: regressed") for d in dispositions[1:4]] == [True] * 3
+        assert dispositions[3].endswith("3/3)")
+        assert dispositions[4] == "ok"                       # escape: published anyway
+        assert dispositions[5] == "ok"                       # 0.04 vs the NEW 0.05 baseline
+        assert state.landed(WORLD, SESSION)["solved_at"] == 6000.0
+    finally:
+        worker.shutdown()
