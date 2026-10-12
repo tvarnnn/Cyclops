@@ -484,3 +484,197 @@ def test_worker_off_never_asks_for_a_dial(monkeypatch, tmp_path):
     finally:
         worker.shutdown()
         worker._thread.join(1)
+
+
+# -- the phone's decoder (ios/fow-dial 7ea559c, WorldImagery.swift) -----------
+#
+# WorldImageryManifest(json:) refuses the whole manifest for: `entries` outside
+# 1...16; a `latest` missing a field, with an empty keyframe_id or a sector
+# outside 0...11; a `motion_sector` outside 0...11. WorldCoverageReader.integer
+# refuses a JSON bool. The overlay is used only when the landing triple equals
+# the current coverage receipt's; an entry without `sector` falls back to the
+# S2 heading join.
+
+
+def _strict_int(value, low, high):
+    return type(value) is int and low <= value <= high
+
+
+def _phone_accepts(landed, coverage_block):
+    """The S3 phone contract, for one published B2 block and its receipt."""
+    assert 1 <= len(landed["entries"]) <= 16
+    for key in ("solved_at", "geometry_revision", "frame_revision"):
+        assert landed[key] == coverage_block[key]
+        assert type(landed[key]) is type(coverage_block[key])
+    drawn = {c["reference_segment"]: c for c in coverage_block["components"]}
+    latest = landed["latest"]
+    if latest is not None:
+        assert set(latest) == {"component_reference_segment", "sector", "keyframe_id"}
+        assert _strict_int(latest["sector"], 0, 11)
+        assert isinstance(latest["keyframe_id"], str) and latest["keyframe_id"]
+        assert latest["component_reference_segment"] in drawn
+    motion = landed["motion_sector"]
+    assert motion is None or _strict_int(motion, 0, 11)
+    heroes = {e["component_reference_segment"] for e in landed["entries"]}
+    assert len(heroes) == 1
+    hero = heroes.pop()
+    assert hero in drawn
+    assert latest is None or latest["component_reference_segment"] == hero
+    union = _union(drawn[hero])
+    for entry in landed["entries"]:
+        assert _strict_int(entry["sector"], 0, 11)  # always present: no S2 fallback
+        assert entry["sector"] in union  # never on grey
+        assert isinstance(entry["keyframe_id"], str) and entry["keyframe_id"]
+
+
+def _jpeg_tile(kid):
+    import cv2
+    import numpy as np
+    image = np.full((90, 160, 3), sum(kid.encode()) % 256, dtype=np.uint8)
+    ok, data = cv2.imencode(".jpg", image)
+    assert ok
+    return data.tobytes()
+
+
+def _real_imagery_state(monkeypatch):
+    state = imagery.ImageryState()
+    monkeypatch.setattr(imagery, "state_for", lambda root: state)
+    monkeypatch.setattr(imagery, "WorldStore", _Store)
+    monkeypatch.setattr(imagery, "label_is_trusted", lambda label: label == "faces-blurred")
+    monkeypatch.setattr(imagery, "_tile",
+                        lambda store, world, session, kid, image_set: _jpeg_tile(kid))
+    return state
+
+
+def test_phone_contract_end_to_end_worker_state_and_route(monkeypatch, tmp_path):
+    monkeypatch.setenv("TOWER_WORLD_GUIDANCE_IMAGERY_LANDED", "on")
+    monkeypatch.setenv("TOWER_WORLD_GUIDANCE_IMAGERY_LIVE", "off")
+    monkeypatch.setenv("TOWER_WORLD_GUIDANCE_COVERAGE", "on")
+    monkeypatch.delenv("TOWER_WORLD_PHOTO_FLOORPLAN", raising=False)
+    state = _real_imagery_state(monkeypatch)
+    frames = ROOM + [(0, f"k{i:02d}", (1 + i % 3, 1 + i // 3 % 3), 37*i) for i in range(30)]
+    data = _world(frames)
+    root = tmp_path / "worlds"
+    world, session, _ = _landed_tree(root, data)
+    stat = (root / "worlds" / world / "solve" / session / "solution.json").stat()
+    worker = coverage.CoverageWorker(root, clock=lambda: 1000.1)
+    try:
+        worker.offer(world, session, 1000.0, len(frames), (stat.st_size, stat.st_mtime_ns), None,
+                     (950.0, data["manifest"]["input_digest"]))
+        assert _wait(lambda: state.landed(world, session) is not None)
+        receipt = json.loads(json.dumps(worker.latest(world, session)))
+    finally:
+        worker.shutdown()
+        worker._thread.join(1)
+    for name, value in (("store_from_root", _Store), ("state_for", lambda root: state),
+                        ("contained_world_id", lambda store, w: w),
+                        ("contained_session_id", lambda store, w, s: s),
+                        ("label_is_trusted", lambda label: label == "faces-blurred")):
+        monkeypatch.setattr(route, name, value)
+    app = FastAPI()
+    app.state.world_root = str(root)
+    app.include_router(route.router)
+    client = TestClient(app)
+    response = client.get(f"/worlds/{world}/guidance/{session}/imagery/manifest")
+    assert response.status_code == 200
+    assert '"entries":[]' not in response.text.replace(" ", "")
+    landed = json.loads(response.text)["landed"]
+    _phone_accepts(landed, receipt)
+    assert len(landed["entries"]) == len(_union(receipt["components"][0]))  # one per set sector
+    for entry in landed["entries"]:
+        tile = client.get(f"/worlds/{world}/guidance/{session}/imagery/tile/{entry['digest']}")
+        assert tile.status_code == 200
+        assert hashlib.sha256(tile.content).hexdigest() == entry["digest"]
+
+
+def test_no_tile_landing_keeps_previous_or_null_never_an_empty_list(state, monkeypatch):
+    _tiles(monkeypatch, missing={"gone"})
+    state.publish_landed("root", "home", "s9", RECEIPT, [], dial=_dial_block([(0, ("gone",))]))
+    assert state.landed("home", "s9") is None  # the route serves `landed: null`
+    state.publish_landed("root", "home", "s9", RECEIPT, [], dial=_dial_block([(0, ("a",))]))
+    previous = state.landed("home", "s9")
+    assert previous["entries"]
+    for dial in ({}, _dial_block([]), _dial_block([(0, ("gone",))])):
+        state.publish_landed("root", "home", "s9", {**RECEIPT, "solved_at": 2e9}, [], dial=dial)
+        assert state.landed("home", "s9") == previous
+
+
+def test_latest_never_names_a_component_the_station_cap_dropped():
+    # Ref 0 fills all 16 drawn stations. Ref 17 holds the newest keyframes,
+    # with usable headings, but its one-keyframe stations lose the cap, so
+    # ref 17 is not a drawn piece: latest and H come from ref 0 instead.
+    frames = []
+    for x in range(8):
+        for y in (0, 7):
+            frames += [(0, f"s{x}{y}a", (x, y), 0), (0, f"s{x}{y}b", (x, y), 200)]
+    frames += [(17, "z0", (20, 20), 90), (17, "z1", (24, 24), 90)]
+    block, dial = _dial(_world(frames))
+    assert [c["reference_segment"] for c in block["components"]] == [0]
+    assert block["components_omitted"] == 1
+    assert dial["reference_segment"] == 0
+    assert dial["latest"]["component_reference_segment"] == 0
+    assert dial["latest"]["keyframe_id"] == "s77b"
+
+
+def test_sector_bins_rebuild_the_coverage_masks_exactly(monkeypatch):
+    # Headings on exact 30-degree boundaries and between, across many
+    # stations: counting the dial's own bins per drawn station reproduces
+    # each station's weak and supported masks bit for bit.
+    captured = {}
+    original = coverage._dial
+
+    def capture(components, eligible, bins, ids, check):
+        captured.update(eligible=eligible, bins=dict(bins))
+        return original(components, eligible, bins, ids, check)
+
+    monkeypatch.setattr(coverage, "_dial", capture)
+    frames = ROOM + [(0, f"k{i:03d}", (i % 5, i // 5 % 5), (15*i) % 360) for i in range(120)]
+    block, dial = _dial(_world(frames))
+    component = block["components"][0]
+    counts = {}
+    for kid, _, _, _ in captured["eligible"][0]:
+        cell, sector = captured["bins"][kid]
+        if sector is not None:
+            assert type(sector) is int and 0 <= sector <= 11
+            counts.setdefault(cell, [0]*12)[sector] += 1
+    assert len(component["stations"]) > 4
+    for station in component["stations"]:
+        per = counts.get((station["y"], station["x"]), [0]*12)
+        assert station["weak_mask"] == sum(1 << s for s, n in enumerate(per) if n == 1)
+        assert station["supported_mask"] == sum(1 << s for s, n in enumerate(per) if n >= 2)
+    for sector, kids in dial["sectors"]:
+        assert all(captured["bins"][kid][1] == sector for kid in kids)
+
+
+def test_latest_requires_a_non_empty_string_id():
+    entries = [("a", [0.0, 0.0, 0.0], UP, _ray(0)), ("b", [0.0, 4.0, 0.0], UP, _ray(0)),
+               ("", [0.0, 2.0, 0.0], UP, _ray(100))]
+    eligible = {0: list(entries)}
+    component, bins = _bins(0, eligible[0])
+    dial = coverage._dial([component], eligible, bins, ["a", "b", ""], lambda: None)
+    assert dial["latest"]["keyframe_id"] == "b"
+
+
+def test_failed_dial_never_publishes_sectorless_entries(monkeypatch, tmp_path):
+    monkeypatch.setenv("TOWER_WORLD_GUIDANCE_IMAGERY_LANDED", "on")
+    monkeypatch.delenv("TOWER_WORLD_PHOTO_FLOORPLAN", raising=False)
+    state = _real_imagery_state(monkeypatch)
+
+    def boom(*args):
+        raise RuntimeError("dial bug")
+
+    monkeypatch.setattr(coverage, "_dial", boom)
+    data = _world(ROOM + [(0, "a", (2, 2), 95), (0, "b", (2, 2), 95)])
+    root = tmp_path / "worlds"
+    world, session, _ = _landed_tree(root, data)
+    stat = (root / "worlds" / world / "solve" / session / "solution.json").stat()
+    worker = coverage.CoverageWorker(root, clock=lambda: 1000.1)
+    try:
+        worker.offer(world, session, 1000.0, 4, (stat.st_size, stat.st_mtime_ns), None,
+                     (950.0, data["manifest"]["input_digest"]))
+        assert _wait(lambda: worker.latest(world, session) is not None)
+        threading.Event().wait(.2)
+        assert state.landed(world, session) is None  # never the stride's sector-less entries
+    finally:
+        worker.shutdown()
+        worker._thread.join(1)
