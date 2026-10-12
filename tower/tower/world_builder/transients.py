@@ -62,6 +62,15 @@ GPU. Models are loaded one at a time, run over every keyframe that needs them,
 and freed (`del`, `torch.cuda.empty_cache()`) before the next is loaded: at
 most one checkpoint is on the card (measured <= 2.6 GB allocated each).
 
+FP16. `TOWER_WORLD_TRANSIENTS_FP16=on` runs each model's forward call --
+OneFormer, Grounding DINO, SAM -- under `torch.autocast("cuda",
+dtype=torch.float16)`. Off by default, and off is the fp32 forward call byte
+for byte, with no autocast context entered at all. Everything outside the
+forward call -- the processor, every post-process call, the composition --
+stays fp32: the forward call's output tensors are cast back to float before
+post-processing reads them. A CPU device never autocasts, regardless of the
+switch.
+
 UNAVAILABLE. Missing packages, weights that are neither cached nor
 downloadable, or `TOWER_WORLD_TRANSIENTS=off` produce `state: unavailable` with
 the reason, logged once per process per reason. Nothing is claimed masked: the
@@ -70,6 +79,7 @@ consumers record `transients: unavailable` and proceed with their other masks.
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import io
 import json
@@ -477,6 +487,28 @@ def _sync():
         torch.cuda.synchronize()
 
 
+def _fp16_enabled(dev: str) -> bool:
+    """`TOWER_WORLD_TRANSIENTS_FP16`, and only on a CUDA device: a CPU device
+    never autocasts regardless of the switch. Off is the only value checked
+    here, so OFF never even imports `tower.config` from this call site."""
+    if dev != "cuda":
+        return False
+    from tower.config import world_transients_fp16_setting  # noqa: PLC0415
+
+    return world_transients_fp16_setting()
+
+
+def _autocast(enabled: bool):
+    """`torch.autocast("cuda", dtype=torch.float16)` around a model forward
+    call when `enabled`; a no-op context otherwise, so the OFF path never
+    enters autocast at all."""
+    if not enabled:
+        return contextlib.nullcontext()
+    import torch  # noqa: PLC0415
+
+    return torch.autocast("cuda", dtype=torch.float16)
+
+
 class GroundingDinoSamBackend(ComponentBackend):
     component = COMPONENT_GDSAM
 
@@ -497,6 +529,7 @@ class GroundingDinoSamBackend(ComponentBackend):
         except ImportError as exc:
             raise TransientDetectorUnavailable(f"transformers cannot load Grounding DINO / SAM 2 ({exc})") from None
         dev = "cuda" if torch.cuda.is_available() else "cpu"
+        fp16 = _fp16_enabled(dev)
         lut = _gamma_lut(params.gamma)
         times = {"gdino_load": 0.0, "gdino": 0.0, "sam_load": 0.0, "sam": 0.0,
                  "frames": len(items), "frames_with_boxes": 0}
@@ -521,7 +554,11 @@ class GroundingDinoSamBackend(ComponentBackend):
                 img = Image.fromarray(lut[rgb])
                 with torch.inference_mode():
                     inp = dproc(images=img, text=params.gdino_prompt, return_tensors="pt").to(dev)
-                    out = dmodel(**inp)
+                    with _autocast(fp16):
+                        out = dmodel(**inp)
+                    if fp16:
+                        out.logits = out.logits.float()
+                        out.pred_boxes = out.pred_boxes.float()
                     r = dproc.post_process_grounded_object_detection(
                         out, inp.input_ids, threshold=params.gdino_box_threshold,
                         text_threshold=params.gdino_text_threshold, target_sizes=[(H, W)])[0]
@@ -567,8 +604,10 @@ class GroundingDinoSamBackend(ComponentBackend):
                 with torch.inference_mode():
                     sin = sproc(images=img, input_boxes=[[b.tolist() for b in boxes]],
                                 return_tensors="pt").to(dev)
-                    sout = smodel(**sin, multimask_output=False)
-                    m = sproc.post_process_masks(sout.pred_masks.cpu(), sin["original_sizes"].cpu())[0]
+                    with _autocast(fp16):
+                        sout = smodel(**sin, multimask_output=False)
+                    pred_masks = sout.pred_masks.float() if fp16 else sout.pred_masks
+                    m = sproc.post_process_masks(pred_masks.cpu(), sin["original_sizes"].cpu())[0]
                 masks = m[:, 0].numpy().astype(bool)
                 hand, phone = filter_instance_masks(masks, labels, scores, unobserved, params)
                 emit(ki, hand, phone, per_frame[ki] + time.time() - t1)
@@ -598,6 +637,7 @@ class OneFormerBackend(ComponentBackend):
         except ImportError as exc:
             raise TransientDetectorUnavailable(f"transformers cannot load OneFormer ({exc})") from None
         dev = "cuda" if torch.cuda.is_available() else "cpu"
+        fp16 = _fp16_enabled(dev)
         lut = _gamma_lut(params.gamma)
         times = {"oneformer_load": 0.0, "oneformer": 0.0, "frames": len(items)}
         t = time.time()
@@ -621,7 +661,11 @@ class OneFormerBackend(ComponentBackend):
                 img = Image.fromarray(lut[rgb])
                 with torch.inference_mode():
                     inp = proc(images=img, task_inputs=["panoptic"], return_tensors="pt").to(dev)
-                    out = model(**inp)
+                    with _autocast(fp16):
+                        out = model(**inp)
+                    if fp16:
+                        out.class_queries_logits = out.class_queries_logits.float()
+                        out.masks_queries_logits = out.masks_queries_logits.float()
                     r = proc.post_process_panoptic_segmentation(
                         out, target_sizes=[(H, W)], threshold=params.oneformer_threshold)[0]
                 seg = r["segmentation"].cpu().numpy()
