@@ -248,9 +248,12 @@ def _placed(comp):
     return placed
 
 
-def test_walk3_bathroom_is_isolated_by_the_live_products_final_solve(tmp_path, colmap, monkeypatch):
+def test_a_sustained_out_of_band_ratio_stretch_is_isolated_by_the_live_products_final_solve(
+        tmp_path, colmap, monkeypatch):
     """THE VETO CASE, end to end: the simple solve (unmasked, ungated, one draw) with the guard ON and the
-    walk's live depth cache as its evidence (v2 predicts no depth at publish)."""
+    walk's live depth cache as its evidence (v2 predicts no depth at publish). A scale-ratio case: the
+    ratios are shaped like the historical walk-3 fixture (sustained x3.19 / x2.40 stretches, a short x3.13
+    one), and the `bathroom` names below only label those index ranges."""
     eng = _Engines(monkeypatch, n=W3_N, levels=_w3_levels_named())
     s = _walk(tmp_path / "w", W3_N, colmap, monkeypatch)
     _live_evidence(monkeypatch, _w3_levels_named())
