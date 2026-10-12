@@ -58,6 +58,11 @@
 	     turns on the B2 landed fetch, whose tiles are the dial's photos. -->
 	<key>GlassesFOWDial</key>
 	<string>$(IOS_FOW_DIAL)</string>
+	<!-- The Tower send rate for a measured run: a whole number 6...24 only
+	     when the build passes IOS_TOWER_TARGET_FPS=<n> to xcodebuild;
+	     anything else (unset included) keeps FrameRateGate's 12. -->
+	<key>GlassesTowerTargetFPS</key>
+	<string>$(IOS_TOWER_TARGET_FPS)</string>
 	<key>GlassesBuildSHA</key>
 	<string>$(GLASSES_BUILD_SHA)</string>
 
