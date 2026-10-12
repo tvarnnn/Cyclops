@@ -22,9 +22,9 @@ final class WorldImageryUITests: XCTestCase {
     private var mockAuthority = ""
     private var seq = 10
 
-    private static let liveDigest = "a3f1" + String(repeating: "0", count: 24) + "e02c"
-    private static let liveDigest2 = "a3f2" + String(repeating: "0", count: 24) + "e02c"
-    private static let landedDigest = "7cde" + String(repeating: "0", count: 24) + "1190"
+    private static let liveDigest = "a3f1" + String(repeating: "0", count: 56) + "e02c"
+    private static let liveDigest2 = "a3f2" + String(repeating: "0", count: 56) + "e02c"
+    private static let landedDigest = "7cde" + String(repeating: "0", count: 56) + "1190"
     private static let liveFixture = #"{"version":1,"live":{"segment_index":812,"entries":[{"keyframe_id":"s9:4417","digest":"\#(liveDigest)","redaction":"redacted","pose_source":"segment_local","component_reference_segment":null,"segment_index":812}]}}"#
     private static let landedFixture = #"{"version":1,"landed":{"solved_at":1791240313.0,"geometry_revision":"g-stop-984","frame_revision":1,"entries":[{"keyframe_id":"s9:120","digest":"\#(landedDigest)","redaction":"redacted","pose_source":"landed_global_solve","component_reference_segment":0,"segment_index":null}]}}"#
     /// §9's stop block, solved 12 s before this report was sent.

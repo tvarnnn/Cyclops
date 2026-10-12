@@ -89,7 +89,7 @@ nonisolated enum WorldImagerySection<Value: Equatable & Sendable>: Equatable, Se
 /// One accepted thumbnail: complete, matching provenance only.
 nonisolated struct WorldImageryEntry: Equatable, Sendable {
     let keyframeID: String
-    /// `content_digest()`: 32 lowercase hex; the tile's only cache key.
+    /// SHA-256 of the tile bytes, 64 lowercase hex (FOW-V11B-AMEND-1); the tile's only cache key.
     let digest: String
     /// Landed only: the component the solve placed it in.
     let componentReferenceSegment: Int?
@@ -255,9 +255,9 @@ nonisolated struct WorldImageryManifest: Equatable, Sendable {
         }
     }
 
-    /// `content_digest()`'s shape: 32 lowercase hex.
+    /// The Tower's tile digest (FOW-V11B-AMEND-1): a SHA-256, 64 lowercase hex.
     static func isDigest(_ text: String) -> Bool {
-        text.utf8.count == 32 && text.utf8.allSatisfy { (48...57).contains($0) || (97...102).contains($0) }
+        text.utf8.count == 64 && text.utf8.allSatisfy { (48...57).contains($0) || (97...102).contains($0) }
     }
 }
 

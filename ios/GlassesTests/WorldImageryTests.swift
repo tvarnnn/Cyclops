@@ -17,8 +17,8 @@ import XCTest
 /// is not `content_digest()`'s 32 hex: these keep its first and last four
 /// characters and fill the middle, so the fixture's one entry is a real one.
 enum FOWImageryFixtures {
-    static let liveDigest = "a3f1" + String(repeating: "0", count: 24) + "e02c"
-    static let landedDigest = "7cde" + String(repeating: "0", count: 24) + "1190"
+    static let liveDigest = "a3f1" + String(repeating: "0", count: 56) + "e02c"
+    static let landedDigest = "7cde" + String(repeating: "0", count: 56) + "1190"
 
     static let live = #"{"version":1,"live":{"segment_index":812,"entries":[{"keyframe_id":"s9:4417","digest":"\#(liveDigest)","redaction":"redacted","pose_source":"segment_local","component_reference_segment":null,"segment_index":812}]}}"#
     static let landed = #"{"version":1,"landed":{"solved_at":1791240313.0,"geometry_revision":"g-stop-984","frame_revision":1,"entries":[{"keyframe_id":"s9:120","digest":"\#(landedDigest)","redaction":"redacted","pose_source":"landed_global_solve","component_reference_segment":0,"segment_index":null}]}}"#

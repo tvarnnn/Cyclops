@@ -339,8 +339,8 @@ final class WorldCaptureDialTests: XCTestCase {
         XCTAssertEqual(dial.position(of: 4), 0, "the newest view's own photo sits on top")
     }
 
-    private static let digestA = "a" + String(repeating: "0", count: 31)
-    private static let digestB = "b" + String(repeating: "0", count: 31)
+    private static let digestA = "a" + String(repeating: "0", count: 63)
+    private static let digestB = "b" + String(repeating: "0", count: 63)
 
     private static func manifest(entryA: String = #","sector":3"#, entryB: String = #","sector":7"#,
                                  extra: String = "") -> WorldImageryManifest? {
