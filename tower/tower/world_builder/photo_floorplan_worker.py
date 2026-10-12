@@ -124,7 +124,12 @@ is never kept across landings piecemeal: a new solve changes the receipt basis."
 REGRESS_V2_MIN_RETAINED = 0.5
 REGRESS_V2_MIN_SHARED = PLANE_REUSE_MIN_SHARED
 REGRESS_V2_MAX_RESID_FRAC = 0.25
+REGRESS_V2_MAX_ANGLE_DEG = 5.0
 REGRESS_V2_MIN_AGREE = 0.5
+REGRESS_V2_MIN_SPREAD_H = 0.05
+REGRESS_V2_MAX_SCALE_ERR = 0.05
+REGRESS_V2_MIN_LATERAL_H = 0.5
+REGRESS_V2_MIN_LATERAL_RATIO = 0.2
 REGRESS_V2_MIN_COMMON_SHARE = 0.25
 REGRESS_V2_MAX_CELLS = 65536
 REGRESS_V2_MAX_DILATE_CELLS = 8
@@ -141,12 +146,22 @@ CX-GEN-B-REGRESS, audit item 5). Each live solve has its own gauge, so neither a
 FRACTION (it falls whenever the camera square grows) nor an opaque AREA in solve units
 (e2e6: 1,019 -> 146 between two good landings) compares two landings.
 
-COMMON FOOTPRINT. Per shared `reference_segment`, the Sim(3) prev -> new is fitted
-(Umeyama, as plane reuse does) on the camera positions of keyframes both landings placed
-(>= 10 shared; median residual <= 0.10 x the new camera height). Every opaque cell of the
-PUBLISHED raster is lifted onto its floor plane, carried into the new basis and looked
-up in the new raster (dilated by the residual, 1..8 cells). Over the published floor that
-falls inside the new raster square (the intersection):
+COMMON FOOTPRINT. Per shared `reference_segment`, the Sim(3) prev -> new is fitted on the
+keyframes both landings placed (>= 10), robustly (`robust_sim3`): the ROTATION from the
+cameras' own orientations (up + forward of every shared keyframe, Kabsch -- fixed for any
+trajectory shape, a straight hallway included), scale and translation from their
+positions; a trimmed refit, then the inliers within 0.25 x the new camera height and 5
+degrees. >= 50% of the shared keyframes must agree, and the agreeing cameras must have
+moved: a predicted scale error (median residual / RMS spread) <= 5% -- self-calibrating,
+because camera height is itself a noisy gauge (room side / h ranged 1.2-3x on walk 8) --
+and a numerical floor of 0.05 camera heights of spread; else the scale is unobservable
+(e2e5 kf 520: spread 0.54 h, error 0.9%). A footprint without orientations falls back to
+the positional Umeyama only when the agreeing cameras are genuinely 2-D: lateral RMS
+spread (2nd singular value) >= 0.5 camera heights and >= 0.2 x the along-track one; a
+hallway leaves the roll about its axis free, so it is refused (review HIGH-2).
+Every opaque cell of the PUBLISHED raster is lifted onto its floor plane, carried into the
+new basis and looked up in the new raster (dilated by the residual, 1..8 cells). Over the
+published floor owned by agreeing cameras that falls inside the new raster square:
 
   retained = share of it the new landing still paints   (a cell-count ratio: scale-free)
 
@@ -155,18 +170,22 @@ phone already shows where both plans can show floor -- unless the extent GENUINE
 changed: the camera hull grew >= 1.5x (both hulls in the new gauge, so the ratio is
 scale-free), >= 10 eligible keyframes stand outside the old hull by > 0.5 camera heights,
 and the supported floor did not shrink (net = new area / (s^2 x published area) >= 1).
-Without a usable common footprint (no footprint, < 10 shared keyframes, a large residual,
-no camera height, < 25% of the published floor inside the new square) the component falls
-back to the legacy rule above, so V2 is never more permissive than today blind.
+Without a usable common footprint the component falls back to the legacy rule above, so
+V2 is never more permissive than today blind.
 
 ESCAPE. After 3 consecutive regressed skips a regressed landing publishes only if every
-regressed component meets a floor of its own -- a plane that is estimated or reused (not
-the camera-drop fallback), >= 8 projected keyframes, >= 2% opaque -- or its footprint
-genuinely grew (growth + novel keyframes, >= 2% opaque). Otherwise it is skipped as
-STALLED. The freeze is bounded: once the plan has been held for 300 s since the first
-regressed skip, the next landing with usable floor (plane ok, >= 2% opaque in every
-regressed component) publishes. A blank landing never publishes (e2e4). Every V2
-decision is logged and kept in `outcomes`."""
+regressed component meets a floor of its own: >= 2% opaque, a plane that is estimated or
+reused (not the camera-drop fallback) and >= 8 projected keyframes. (A genuine extent
+change -- growth AND net >= 1 -- is never regressed in the first place; growth alone
+buys nothing: review HIGH-1.) Otherwise it is skipped as STALLED. The freeze is bounded:
+once the plan has been held for 300 s since the first regressed skip, the next landing
+with usable floor -- plane ok, >= 2% opaque, >= 8 projected keyframes in every regressed
+component -- publishes. The bound deliberately accepts the camera-drop fallback plane:
+since e2e4 it must pass the same camera checks as an estimated plane, and it is the only
+plane a sparse or low-texture scene may get for minutes, so refusing it would make the
+freeze unbounded exactly there; what hurt in e2e4 was a blank result (0.4%), which the
+2% and 8-frame floors refuse. A blank landing never publishes. Every V2 decision is
+logged and kept in `outcomes`."""
 
 
 class LandingSkipped(Exception):
@@ -885,6 +904,7 @@ class Footprint:
     plane_offset: float = None
     camera_height: float = None
     origin_xyz: tuple = None
+    axes: dict = None        # kid -> (up, forward) unit vectors (output frame); None = unknown
 
 
 def footprint_of(result, entries, plane, receipt_component):
@@ -901,7 +921,9 @@ def footprint_of(result, entries, plane, receipt_component):
             plane_normal=tuple(float(v) for v in plane.normal) if ok else None,
             plane_offset=float(plane.offset) if ok else None,
             camera_height=height if np.isfinite(height) and height > 0 else None,
-            origin_xyz=tuple(float(v) for v in receipt_component["origin_xyz"]))
+            origin_xyz=tuple(float(v) for v in receipt_component["origin_xyz"]),
+            axes={e[0]: (np.asarray(e[2], np.float64), np.asarray(e[3], np.float64))
+                  for e in entries})
     except (AttributeError, KeyError, TypeError, ValueError, IndexError):
         return None
 
@@ -947,25 +969,72 @@ def _hull_area(xy):
     return float(cv2.contourArea(hull)), hull
 
 
-def robust_sim3(src, dst, tol, min_inliers=REGRESS_V2_MIN_SHARED):
+def _kabsch_directions(src_dirs, dst_dirs):
+    """The rotation taking unit directions src -> dst (least squares)."""
+    U, _, Vt = np.linalg.svd(dst_dirs.T @ src_dirs)
+    D = np.eye(3)
+    D[2, 2] = np.sign(np.linalg.det(U @ Vt)) or 1.0
+    return U @ D @ Vt
+
+
+def _scale_translation(src, dst, R):
+    mu_s, mu_d = src.mean(0), dst.mean(0)
+    xs, xd = src - mu_s, dst - mu_d
+    den = float(np.sum(xs * xs))
+    s = float(np.sum(xd * (R @ xs.T).T)) / den if den > 0 else 0.0
+    return s, mu_d - s * R @ mu_s
+
+
+def robust_sim3(src, dst, tol, min_inliers=REGRESS_V2_MIN_SHARED, src_dirs=None,
+                dst_dirs=None, max_angle_deg=REGRESS_V2_MAX_ANGLE_DEG):
     """Sim(3) src -> dst fitted on the keyframes the two solves AGREE on: a trimmed refit
-    (best half), then the inliers within `tol`, refitted. A new loop that bends part of
-    the trajectory (e2e5 kf 520: median 8.6 keyframe steps over all shared, 0.56 over
-    the consistent majority) then does not hide the part that is unchanged.
-    Returns (s, R, t, inlier mask, residuals) or None."""
-    s, R, t = _umeyama(src, dst)
-    for _ in range(3):
+    (best half), then the inliers within `tol` (and `max_angle_deg`), refitted. A new loop
+    that bends part of the trajectory (e2e5 kf 520: median 8.6 keyframe steps over all
+    shared, 0.56 over the consistent majority) then does not hide the unchanged part.
+
+    With `src_dirs`/`dst_dirs` (n x 2 x 3: each camera's up and forward) the ROTATION comes
+    from the orientations and only scale/translation from the positions, so the fit is
+    determined for any trajectory shape (review HIGH-2: positions on a line leave the roll
+    about it free). Returns (s, R, t, inlier mask, residuals) or None."""
+    use_dirs = src_dirs is not None and dst_dirs is not None
+    cos_tol = math.cos(math.radians(max_angle_deg))
+
+    def fit(keep):
+        if use_dirs:
+            R = _kabsch_directions(src_dirs[keep].reshape(-1, 3), dst_dirs[keep].reshape(-1, 3))
+            s, t = _scale_translation(src[keep], dst[keep], R)
+            return s, R, t
+        return _umeyama(src[keep], dst[keep])
+
+    def residuals(s, R, t):
+        r = np.linalg.norm((s * (R @ src.T)).T + t - dst, axis=1)
+        if not use_dirs:
+            return r, np.ones(len(src), bool)
+        rotated = np.einsum("ij,nkj->nki", R, src_dirs)
+        cos = np.sum(rotated * dst_dirs, axis=2).min(axis=1)
+        return r, cos
+
+    keep = np.ones(len(src), bool)
+    for _ in range(4):
+        s, R, t = fit(keep)
         if not np.isfinite(s) or s <= 0:
             return None
-        r = np.linalg.norm((s * (R @ src.T)).T + t - dst, axis=1)
-        keep = r <= max(float(np.median(r)), tol)
+        r, cos = residuals(s, R, t)
+        if use_dirs:
+            keep = (r <= max(float(np.median(r)), tol)) & (cos >= min(float(np.median(cos)),
+                                                                       cos_tol))
+        else:
+            keep = r <= max(float(np.median(r)), tol)
         if int(keep.sum()) < min_inliers:
             return None
-        s, R, t = _umeyama(src[keep], dst[keep])
+    s, R, t = fit(keep)
     if not np.isfinite(s) or s <= 0:
         return None
-    r = np.linalg.norm((s * (R @ src.T)).T + t - dst, axis=1)
-    return s, R, t, r <= tol, r
+    r, cos = residuals(s, R, t)
+    inlier = r <= tol
+    if use_dirs:
+        inlier &= cos >= cos_tol
+    return s, R, t, inlier, r
 
 
 def compare_footprints(prev, new):
@@ -985,16 +1054,36 @@ def compare_footprints(prev, new):
         return {"basis": "legacy: no camera height", "shared": len(shared)}
     src = np.stack([prev.positions[k] for k in shared])
     dst = np.stack([new.positions[k] for k in shared])
-    fit = robust_sim3(src, dst, REGRESS_V2_MAX_RESID_FRAC * gauge)
+    oriented = (prev.axes is not None and new.axes is not None
+                and all(k in prev.axes and k in new.axes for k in shared))
+    dirs = {}
+    if oriented:
+        dirs = dict(src_dirs=np.stack([np.stack(prev.axes[k]) for k in shared]),
+                    dst_dirs=np.stack([np.stack(new.axes[k]) for k in shared]))
+    fit = robust_sim3(src, dst, REGRESS_V2_MAX_RESID_FRAC * gauge, **dirs)
     if fit is None:
         return {"basis": "legacy: no consistent Sim(3)", "shared": len(shared)}
     s, R, t, inlier, resid_all = fit
     rec = {"shared": len(shared), "scale": round(float(s), 4),
-           "agree": round(float(inlier.mean()), 3)}
+           "agree": round(float(inlier.mean()), 3),
+           "rotation": "orientations" if oriented else "positions"}
     if int(inlier.sum()) < REGRESS_V2_MIN_SHARED or inlier.mean() < REGRESS_V2_MIN_AGREE:
         return {**rec, "basis": f"legacy: {int(inlier.sum())} of {len(shared)} shared "
                                 f"keyframes agree within {REGRESS_V2_MAX_RESID_FRAC} h"}
+    # Conditioning of the agreeing cameras, in camera heights (scale-free): RMS extent
+    # along the trajectory's principal axes (singular values / sqrt(n)).
+    agreeing = dst[inlier] - dst[inlier].mean(0)
+    sv = np.linalg.svd(agreeing, compute_uv=False) / math.sqrt(len(agreeing)) / gauge
+    rec["spread_h"] = [round(float(v), 3) for v in sv[:2]]
     resid = float(np.median(resid_all[inlier]))
+    if sv[0] < REGRESS_V2_MIN_SPREAD_H or resid / gauge > REGRESS_V2_MAX_SCALE_ERR * sv[0]:
+        return {**rec, "basis": f"legacy: shared cameras span {sv[0]:.2f} h (scale "
+                                f"unobservable below {REGRESS_V2_MIN_SPREAD_H} h or a "
+                                f"{REGRESS_V2_MAX_SCALE_ERR:.0%} scale error)"}
+    if not oriented and (sv[1] < REGRESS_V2_MIN_LATERAL_H
+                         or sv[1] < REGRESS_V2_MIN_LATERAL_RATIO * sv[0]):
+        return {**rec, "basis": f"legacy: shared cameras near-collinear (lateral {sv[1]:.2f} h, "
+                                f"{sv[1] / sv[0]:.2f} of along-track) and no orientations"}
     rec["resid_h"] = round(resid / gauge, 4)
     up_p, fwd_p, right_p = _basis(prev)
     up_n, fwd_n, right_n = _basis(new)
@@ -1116,7 +1205,7 @@ def regress_v2_escape(records, stats):
         if fraction < REGRESS_MIN_PRIOR_OPAQUE:
             failures.append(f"ref {rec['ref']}: opaque {fraction:.3f} < {REGRESS_MIN_PRIOR_OPAQUE}")
             continue
-        if rec.get("footprint_grew"):
+        if rec.get("extent_change"):   # never true for a regressed record; explicit anyway
             continue
         source = _plane_source(c)
         projected = int(c.get("projected_keyframes") or 0)
@@ -1129,12 +1218,17 @@ def regress_v2_escape(records, stats):
 
 
 def regress_v2_usable(records, stats):
-    """The freeze bound's bare floor: every regressed component has a plane and >= 2% opaque."""
+    """The freeze bound's floor: every regressed component has a plane (the camera-drop
+    fallback included -- see REGRESS_V2_MAX_FROZEN_S), >= 2% opaque and >= 8 projected
+    keyframes."""
     by_ref = {c.get("reference_segment"): c for c in stats or ()}
-    return all(by_ref.get(r["ref"], {}).get("plane_ok")
-               and float(by_ref.get(r["ref"], {}).get("opaque_fraction") or 0.0)
-               >= REGRESS_MIN_PRIOR_OPAQUE
-               for r in records if r.get("regressed"))
+
+    def usable(c):
+        return (bool(c.get("plane_ok"))
+                and float(c.get("opaque_fraction") or 0.0) >= REGRESS_MIN_PRIOR_OPAQUE
+                and int(c.get("projected_keyframes") or 0) >= REGRESS_V2_ESCAPE_MIN_PROJECTED)
+
+    return all(usable(by_ref.get(r["ref"], {})) for r in records if r.get("regressed"))
 
 
 def component_summary(stats):

@@ -43,7 +43,7 @@ def _grid_cams(x0, x1, y0, y1, n, prefix="k"):
 
 
 def _landing(cams, paint, *, scale=1.0, yaw=0.0, tilt=0.0, shift=(0.0, 0.0, 0.0), size=256,
-             projected=40, source="estimated", plane_ok=True):
+             projected=40, source="estimated", plane_ok=True, axes=True):
     """(stats row, Footprint) of a landing whose cameras are `cams` {kid: (x, y)} at height H
     and whose raster paints canonical floor where `paint(x, y)` is true."""
     R = _rotation(yaw, tilt)
@@ -65,7 +65,16 @@ def _landing(cams, paint, *, scale=1.0, yaw=0.0, tilt=0.0, shift=(0.0, 0.0, 0.0)
     floor_z = float(up @ t)
     world = (x[..., None] * forward + y[..., None] * right + floor_z * up - t) @ R / scale
     opaque = paint(world[..., 0], world[..., 1]) & plane_ok
-    fp = pfw.Footprint(positions=positions, up_xyz=tuple(up), forward_xyz=tuple(forward),
+    extra = {}
+    if axes:   # per-camera (up, forward), looking around and 30 deg down, in this gauge
+        extra["axes"] = {}
+        for i, k in enumerate(cams):
+            a = math.radians(37.0 * i)
+            f = np.array([math.cos(a), math.sin(a), -0.6])
+            f /= np.linalg.norm(f)
+            u = np.array([0.0, 0.0, 1.0]) - f[2] * f
+            extra["axes"][k] = (R @ (u / np.linalg.norm(u)), R @ f)
+    fp = pfw.Footprint(**extra, positions=positions, up_xyz=tuple(up), forward_xyz=tuple(forward),
                        raster_bounds_xy=tuple(bounds), opaque=opaque,
                        plane_normal=tuple(up) if plane_ok else None,
                        plane_offset=-floor_z if plane_ok else None,
@@ -200,7 +209,8 @@ def test_e2e5_kf520_real_landing_publishes():
             raster_bounds_xy=tuple(z[f"{tag}_bounds"]),
             opaque=np.unpackbits(z[f"{tag}_opaque"])[:shape[0] * shape[1]].reshape(shape) > 0,
             plane_normal=tuple(plane[:3]), plane_offset=float(plane[3]),
-            camera_height=float(plane[4]), origin_xyz=tuple(origin))
+            camera_height=float(plane[4]), origin_xyz=tuple(origin),
+            axes={k: tuple(a) for k, a in zip(z[f"{tag}_kids"].tolist(), z[f"{tag}_axes"])})
         row = dict(json.loads(str(z[f"{tag}_stats"])), reference_segment=0)
         return row, fp
 
@@ -208,6 +218,7 @@ def test_e2e5_kf520_real_landing_publishes():
     assert new[0]["opaque_fraction"] < 0.25 * prev[0]["opaque_fraction"]   # today: skipped
     rec = _assess(prev, new)
     assert rec["basis"] == "common" and not rec["regressed"]
+    assert rec["rotation"] == "orientations"
     assert rec["agree"] > 0.85 and rec["resid_h"] < 0.05
     assert rec["retained"] >= pfw.REGRESS_V2_MIN_RETAINED
     assert rec["extent_change"] and rec["growth"] > 5 and rec["net"] > 1.0
@@ -402,3 +413,81 @@ def test_build_landing_output_is_unchanged_by_the_footprint_hook(tmp_path):
     # A landing compared with itself retains everything.
     rec = pfw.compare_footprints(fp, fp)
     assert rec["basis"] == "common" and rec["retained"] == 1.0 and rec["scale"] == pytest.approx(1)
+
+
+# ---------------------------------------------------------------------------
+# review round (lead, b291377): HIGH-1 escape bypass, HIGH-2 degenerate Sim(3)
+# ---------------------------------------------------------------------------
+
+
+def test_escape_refuses_a_grown_footprint_without_supported_floor():
+    # HIGH-1: hull grew (footprint_grew) but the floor shrank (net < 1, so no extent
+    # change); a fallback plane over 2 projected frames must not escape.
+    hall = _grid_cams(6.0, 11.0, 0.5, 3.5, 5, prefix="b")
+    weak = _landing({**ROOM, **hall}, _room(0.0, 1.2, 0.0, 4.0), source="fallback_camera_drop",
+                    projected=2, **NEW_GAUGE)
+    prev = _landing(ROOM, FULL)
+    rec = _assess(prev, weak)
+    assert rec["footprint_grew"] and not rec["extent_change"] and rec["regressed"]
+    plan = {1000.0: prev, **{t: weak for t in (2000.0, 3000.0, 4000.0, 5000.0)}}
+    outcomes, state = _run(plan)
+    assert [o["regress_v2"]["decision"] for o in outcomes] == [
+        "publish", "skip", "skip", "skip", "stalled"]
+    assert state.landed(WORLD, SESSION)["solved_at"] == 1000.0
+
+
+def test_the_freeze_bound_needs_projected_frames_not_just_a_sliver():
+    sliver = _degraded(source="fallback_camera_drop", projected=2)
+    plan = {1000.0: _landing(ROOM, FULL), 2000.0: sliver, 3000.0: sliver}
+    clock_at = {1000.0: 0.0, 2000.0: 10.0, 3000.0: 10.0 + pfw.REGRESS_V2_MAX_FROZEN_S + 1}
+    outcomes, state = _run(plan, clock_at=clock_at)
+    assert [o["regress_v2"]["decision"] for o in outcomes] == ["publish", "skip", "skip"]
+    assert state.landed(WORLD, SESSION)["solved_at"] == 1000.0
+
+
+HALL = {f"h{i}": (float(i), 0.0) for i in range(12)}            # exactly collinear, 11 m
+STRIP = _room(0.0, 11.0, 1.5, 2.5)                               # floor 1.5-2.5 m off the axis
+
+
+def test_a_collinear_hallway_without_orientations_is_not_compared():
+    # HIGH-2: positions on a line leave the roll about that line free -- a perfect fit with
+    # a wrong rotation would carry off-axis floor to the wrong place.
+    rec = _assess(_landing(HALL, STRIP, axes=False),
+                  _landing(HALL, STRIP, axes=False, **NEW_GAUGE))
+    assert rec["basis"].startswith("legacy: shared cameras")
+    assert not rec["regressed"]                                  # legacy: same fraction
+
+
+def test_a_collinear_hallway_is_compared_through_camera_orientations():
+    prev = _landing(HALL, STRIP, axes=True)
+    new = _landing(HALL, STRIP, axes=True, **NEW_GAUGE)
+    rec = _assess(prev, new)
+    assert rec["basis"] == "common" and rec["rotation"] == "orientations"
+    assert rec["scale"] == pytest.approx(0.3, rel=1e-6)
+    assert rec["retained"] > 0.99 and not rec["regressed"]
+    # The strip mirrored across the hallway (the wrong roll) is a real loss, and is seen.
+    mirrored = _landing(HALL, _room(0.0, 11.0, -2.5, -1.5), axes=True, **NEW_GAUGE)
+    rec = _assess(prev, mirrored)
+    assert rec["basis"] == "common" and rec["retained"] < 0.05 and rec["regressed"]
+
+
+def test_orientations_that_disagree_with_the_positions_are_refused():
+    prev = _landing(ROOM, FULL, axes=True)
+    row, fp = _landing(ROOM, FULL, axes=True, **NEW_GAUGE)
+    flip = _rotation(0.0, 40.0)       # every camera rolled 40 deg in the new solve only
+    fp.axes = {k: (flip @ u, flip @ f) for k, (u, f) in fp.axes.items()}
+    rec = _assess(prev, (row, fp))
+    assert rec["basis"].startswith("legacy:")
+
+
+def test_cameras_that_barely_moved_give_no_scale():
+    huddle = {f"q{i}": (2.0 + 0.02 * math.cos(i), 2.0 + 0.02 * math.sin(i)) for i in range(20)}
+    rec = _assess(_landing(huddle, FULL, axes=True), _landing(huddle, FULL, axes=True,
+                                                               **NEW_GAUGE))
+    assert rec["basis"].startswith("legacy: shared cameras")
+
+
+def test_a_two_dimensional_walk_without_orientations_still_compares_by_positions():
+    rec = _assess(_landing(ROOM, FULL, axes=False), _landing(ROOM, FULL, axes=False, **NEW_GAUGE))
+    assert rec["basis"] == "common" and rec["rotation"] == "positions"
+    assert rec["retained"] > 0.99 and not rec["regressed"]
