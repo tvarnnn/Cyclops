@@ -942,7 +942,7 @@ def read_landing_arrays(solve_dir: Path, solution_stat, solution_meta, check=Non
 
 def build_landing(root, world_id, session_id, receipt, eligible, tree, solution_stat,
                   method=METHOD_HOMOGRAPHY, check=None, plane_memory=None, footprints=None,
-                  footprint_bounds=False, floor_evidence=None):
+                  footprint_bounds=False, floor_evidence=None, multilevel_gray=False):
     """(manifest block, {digest: (bytes, mime)}, per-component stats) for one landing.
 
     `footprints` (V2 only): a dict filled with {reference_segment: Footprint}.
@@ -1019,6 +1019,24 @@ def build_landing(root, world_id, session_id, receipt, eligible, tree, solution_
                 "raster_bounds_xy": result.raster_bounds_xy, "raster_width": result.width}
         if check is not None:
             check()
+        if multilevel_gray and method == METHOD_HOMOGRAPHY:
+            from tower.world_builder.photo_floorplan_diagnostics import multilevel_floor_confirmation
+            t_gray = time.perf_counter()
+            reason = multilevel_floor_confirmation(plane, entries, rc,
+                                                   diag_out.get("band_points"), check=check)
+            cstats.setdefault("ms", {})["multilevel_gray_check"] = round(
+                (time.perf_counter() - t_gray) * 1000.0, 1)
+            if reason is not None:
+                # A dated truth correction keeps the component's v1 identity and bounds.
+                result = dataclasses.replace(
+                    result, rgba=np.zeros_like(result.rgba), opaque_cells=0,
+                    multi_view_cells=0, single_view_cells=0, contributing_keyframes=[])
+                cstats["truth_correction"] = "multi_level_suspected"
+                cstats["truth_correction_reason"] = reason
+                if plane_memory is not None:
+                    plane_memory.pop(ref, None)  # do not reuse the known-wrong one-plane fit
+            if check is not None:
+                check()
         if footprints is not None:
             footprints[ref] = footprint_of(result, entries, plane, rc)
         t_encode = time.perf_counter()
@@ -1622,6 +1640,9 @@ def component_summary(stats):
             "opaque":(round(c["opaque_fraction"], 3) if c.get("opaque_fraction") is not None
                        else None),
             "tile": c.get("tile"), "bytes": c.get("bytes"), "ms": c.get("ms")})
+        if c.get("truth_correction"):
+            rows[-1]["truth_correction"] = c["truth_correction"]
+            rows[-1]["truth_correction_reason"] = c.get("truth_correction_reason")
         footprint = c.get("footprint")
         if footprint:   # only with footprint bounds on: OFF's log line is unchanged
             rows[-1]["footprint"] = {"reason": footprint.get("reason"),
@@ -1647,11 +1668,15 @@ class PhotoFloorplanWorker:
     def __init__(self, root, *, latest=None, state=None, method=None,
                  wall_cap_s=LANDING_WALL_CAP_S, build=None, regress_v2=None,
                  clock=time.monotonic, footprint_bounds=None, diagnostics_files=None,
-                 kept=None):
+                 kept=None, multilevel_gray=None):
         if kept is None:
             from tower.config import world_photo_floorplan_kept_setting
             kept = world_photo_floorplan_kept_setting()
         self.kept = bool(kept)
+        if multilevel_gray is None:
+            from tower.config import world_photo_floorplan_multilevel_gray_setting
+            multilevel_gray = world_photo_floorplan_multilevel_gray_setting()
+        self.multilevel_gray = bool(multilevel_gray)
         if method is None:
             from tower.config import world_photo_floorplan_method_setting
             method = world_photo_floorplan_method_setting()
@@ -1675,6 +1700,7 @@ class PhotoFloorplanWorker:
         self._build_takes_memory = "plane_memory" in params
         self._build_takes_footprints = "footprints" in params
         self._build_takes_footprint = "footprint_bounds" in params
+        self._build_takes_gray = "multilevel_gray" in params
         self._stop = threading.Event()
         self._condition = threading.Condition()
         self._jobs = OrderedDict()
@@ -1831,6 +1857,8 @@ class PhotoFloorplanWorker:
                 footprints = kwargs["footprints"] = {}
             if self.footprint_bounds and self._build_takes_footprint:
                 kwargs["footprint_bounds"] = True
+            if self.multilevel_gray and self._build_takes_gray:
+                kwargs["multilevel_gray"] = True
             block, tiles, stats = self._build(self.root, job["world_id"], job["session_id"],
                                               receipt, job["eligible"], job["tree"],
                                               job["solution_stat"], method=self.method,
@@ -1847,8 +1875,13 @@ class PhotoFloorplanWorker:
             disposition = f"failed: {type(exc).__name__}: {exc}"
             kept_reason = KEPT_FAILED
         elapsed_ms = (time.monotonic() - started) * 1000.0
+        truth_correction = [c["reference_segment"] for c in stats or ()
+                            if c.get("truth_correction") == "multi_level_suspected"]
         v2 = None
-        if disposition == "ok" and self.regress_v2:
+        if disposition == "ok" and self.regress_v2 and truth_correction:
+            v2 = {"decision": "truth-correction", "components": [],
+                  "why": "floor-confirmed multi-level photo withheld"}
+        elif disposition == "ok" and self.regress_v2:
             # Pure, and on this worker thread -- the only writer of the published baseline --
             # so it runs before the lock is taken.
             v2 = {"decision": "publish",
@@ -1868,10 +1901,10 @@ class PhotoFloorplanWorker:
                 elif time.monotonic() - started > self.wall_cap_s:
                     disposition = f"skipped: exceeded the {self.wall_cap_s:.1f} s wall cap"
                     kept_reason = KEPT_WALL_CAP
-                elif v2 is not None and self._v2_holds(pair, v2, stats):
+                elif v2 is not None and not truth_correction and self._v2_holds(pair, v2, stats):
                     disposition = v2["disposition"]
                     kept_reason = KEPT_STALLED if v2["decision"] == "stalled" else KEPT_REGRESSED
-                elif v2 is None and ((regressed := regression(
+                elif v2 is None and not truth_correction and ((regressed := regression(
                         self._published_opaque.get(pair), stats,
                         self._published_opaque_area.get(pair)))
                       and self._regress_streak.get(pair, 0) < REGRESS_MAX_CONSECUTIVE_SKIPS):
@@ -1903,6 +1936,8 @@ class PhotoFloorplanWorker:
                     self._regress_streak[pair] = 0
         outcome = {"identity": identity, "disposition": disposition,
                    "elapsed_ms": round(elapsed_ms, 1), "components": stats}
+        if truth_correction and disposition == "ok":
+            outcome["truth_correction"] = truth_correction
         if self.kept:
             # On this worker thread -- the only writer of the published state -- after the
             # disposition is final and before `_run` releases a waiting manifest request. A
@@ -1916,7 +1951,8 @@ class PhotoFloorplanWorker:
         if self.regress_v2:
             if v2 is None:
                 v2 = {"decision": "not assessed", "components": []}
-            elif disposition != "ok" and v2["decision"] in ("publish", "escape", "freeze-bound"):
+            elif disposition != "ok" and v2["decision"] in ("publish", "escape", "freeze-bound",
+                                                            "truth-correction"):
                 # superseded, cancelled, wall cap or never re-dated after the V2 verdict
                 v2["decision"] = f"not published (V2 said {v2['decision']})"
             outcome["regress_v2"] = v2

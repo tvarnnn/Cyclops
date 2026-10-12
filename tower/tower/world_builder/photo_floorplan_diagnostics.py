@@ -1,11 +1,10 @@
 """Photo floor plan NEW-SCENE DIAGNOSTICS (manager 349 lane A; generalization audit item 5).
 
-BEHAVIOUR-NEUTRAL. Nothing here feeds a raster, a tile, the manifest, the regression guard or
-any disposition. The worker computes a landing's diagnostics only AFTER that landing's
-disposition is final (so even the time spent here cannot move a landing across the wall
-cap), from data the landing already produced, and any exception here is swallowed and
-logged. Pure: no I/O except `write_files` (and its read-only `session_write_gate`), which
-the worker calls only when TOWER_WORLD_PHOTO_FLOORPLAN_DIAGNOSTICS is exactly `on`.
+The full diagnostic record is behaviour-neutral and computed AFTER disposition, so its cost
+cannot move a landing across the wall cap. The optional multilevel gray truth gate reuses
+only the floor-confirmation helpers BEFORE publication when its own switch is exactly `on`.
+Pure: no I/O except `write_files` (and its read-only `session_write_gate`), which the worker
+calls only when TOWER_WORLD_PHOTO_FLOORPLAN_DIAGNOSTICS is exactly `on`.
 
 WHAT IS RECORDED
 
@@ -32,7 +31,9 @@ components of one walk have different placement scales (walk 8 e2e6: H = 2.9, 12
 
 THE NEW-SCENE FLAGS (`component_flags`; rules and why)
 
-  multi_level_suspected -- two floor heights inside one component, on FLOOR evidence.
+  multi_level_suspected -- two floor heights inside one component, on FLOOR evidence backed
+    by a stable fitted plane (>= 80 inliers across >= 6 support cells). A marginal fit can
+    misread a misplaced solve piece or furniture as a floor (walk-8 e2e3 main component).
     CAMERA EVIDENCE ALONE NEVER FIRES IT: a camera's height is where the walker held it,
     not where the floor is. It fires on either
     (a) a camera split the floor confirms. The camera heights split into two levels
@@ -231,7 +232,7 @@ def camera_height_split(heights, scale=None, *, min_cameras=MULTILEVEL_MIN_CAMER
     return out
 
 
-def _downward_band_points(entries, inp, axis):
+def _downward_band_points(entries, inp, axis, check=None):
     """[(kid, own bottom-band SfM points)] of every DOWNWARD eligible keyframe (pitch >= the
     warp's MIN_FRAME_PITCH_DEG along `axis`), from the solve's observations when the build
     left its reader; else of the frames it loaded."""
@@ -241,12 +242,16 @@ def _downward_band_points(entries, inp, axis):
     axis = np.asarray(axis, np.float64)
     out = []
     for e in entries:
+        if check is not None:
+            check()
         if e[3] is None:
             continue
         pitch = math.degrees(math.asin(max(-1.0, min(1.0, -float(np.asarray(e[3]) @ axis)))))
         if pitch < MIN_FRAME_PITCH_DEG:
             continue
         _, pts = reader(e[0])
+        if check is not None:
+            check()
         out.append((e[0], pts))
     return out
 
@@ -333,6 +338,53 @@ def _roll_free_axis(entries, up):
     return axis
 
 
+def _floor_support_reliable(plane):
+    """A floor-backed split needs a stable fitted reference, not marginal support."""
+    return (bool(plane.get("ok"))
+            and (plane.get("inliers") or 0) >= LOW_SUPPORT_FACTOR * FLOOR_MIN_INLIERS
+            and (plane.get("support_cells") or 0)
+            >= LOW_SUPPORT_FACTOR * FLOOR_MIN_SUPPORT_CELLS)
+
+
+def multilevel_floor_confirmation(plane, entries, receipt_component, band_points, check=None):
+    """Minimal floor-backed gate decision from data already held by a homography build.
+
+    Returns the same multi-level evidence used by ``component_flags``, or None. A
+    camera split without a confirmed floor-height move remains informational.
+    """
+    if plane is None:
+        return None
+    pstats = plane.stats or {}
+    if not _floor_support_reliable(dict(pstats, ok=plane.ok)):
+        return None
+    alt_h = pstats.get("alt_plane_height_above_chosen_frac")
+    if pstats.get("ambiguous") and alt_h is not None and alt_h < 0:
+        return (f"a second valid floor {abs(_num(alt_h))} H BELOW the chosen one with "
+                f"{_num(pstats.get('alt_plane_support_ratio'))}x its support")
+    h_med = pstats.get("camera_height_median")
+    if h_med is None or h_med <= 0 or not entries:
+        return None
+    if plane.ok and plane.normal is not None:
+        axis, offset = np.asarray(plane.normal, np.float64), float(plane.offset)
+    else:
+        axis = _roll_free_axis(entries, receipt_component["up_xyz"])
+        if axis is None and pstats.get("reference_normal_xyz") is not None:
+            axis = np.asarray(pstats["reference_normal_xyz"], np.float64)
+        offset = 0.0
+    if axis is None:
+        return None
+    cams = np.stack([np.asarray(e[1], np.float64) for e in entries])
+    split = camera_height_split(cams @ axis + offset, h_med)
+    if not split.get("bimodal"):
+        return None
+    inp = {"band_points": band_points}
+    frames = _downward_band_points(entries, inp, axis, check=check)
+    check = floor_level_check(entries, frames, axis, offset, split)
+    if check["result"] != "confirmed":
+        return None
+    return (f"{_split_text(split)}; floor confirmed (moved {check.get('moved')} of the gap)")
+
+
 # ---------------------------------------------------------------------------
 # one component, one landing
 # ---------------------------------------------------------------------------
@@ -400,6 +452,10 @@ def component_record(cstats):
             if split.get("bimodal"):
                 split["floor_check"] = floor_level_check(
                     entries, _downward_band_points(entries, inp, axis), axis, offset0, split)
+                if (split["floor_check"]["result"] == "confirmed"
+                        and not _floor_support_reliable(rec["plane"])):
+                    split["floor_check"]["result"] = "unreliable"
+                    split["floor_check"]["reason"] = "fitted floor has marginal support"
     rec["cams"] = dict(split, axis=axis_name)
 
     # -- bottom-band floor fraction of the WARPED frames.
@@ -463,7 +519,9 @@ def camera_split_unconfirmed(rec):
         return None
     detail = (f"{check.get('frames_lower')} / {check.get('frames_upper')} downward frames "
               f"lower / upper, < {FLOOR_CHECK_MIN_FRAMES} on a side"
-              if result == "unavailable" else f"floor moved {check.get('moved')} of the gap")
+              if result == "unavailable" else
+              check.get("reason") if result == "unreliable" else
+              f"floor moved {check.get('moved')} of the gap")
     return f"{_split_text(cams)}; floor check {result} ({detail})"
 
 
@@ -476,11 +534,12 @@ def component_flags(rec):
     # or a supported floor layer below the chosen one. A split alone is
     # `camera_split_unconfirmed`, not this flag.
     floor_check = cams.get("floor_check") or {}
-    if cams.get("bimodal") and floor_check.get("result") == "confirmed":
+    supported = _floor_support_reliable(plane)
+    if supported and cams.get("bimodal") and floor_check.get("result") == "confirmed":
         out["multi_level_suspected"] = (
             f"{_split_text(cams)}; floor confirmed (moved {floor_check.get('moved')} of the "
             f"gap)")
-    elif (plane.get("ambiguous") and plane.get("alt_h") is not None
+    elif (supported and plane.get("ambiguous") and plane.get("alt_h") is not None
           and plane["alt_h"] < 0):
         out["multi_level_suspected"] = (
             f"a second valid floor {abs(plane['alt_h'])} H BELOW the chosen one with "
