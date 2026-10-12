@@ -992,6 +992,11 @@ class BackgroundSolver:
         finally:
             self._reap()
 
+    def finish_background_for_final(self, *, live_window: bool,
+                                    timeout: float, should_stop=None) -> bool:
+        """Release a disposable window child before the unchanged final solve."""
+        return self.wait(0.0 if live_window else timeout, should_stop=should_stop)
+
     def run_final(self, store: WorldStore, sources: dict, *, should_stop=None,
                   phase_env: dict | None = None) -> dict:
         """The finalization solve, as a child, until it ends or a stop arrives.
@@ -1303,6 +1308,47 @@ def solve_session(store: WorldStore, world_id: str, session_id: str, *, capture_
 # builder that otherwise falls permanently behind the camera with the
 # capture directory as its only queue.
 REBUILD_KNEE_KEYFRAMES = 600
+
+
+LIVE_WINDOW_SOLVE_EVERY = 20
+
+
+def live_solve_interval(every: int) -> int:
+    """The background launch spacing: `every`, or at most 20 with the live window on.
+
+    On, the first child is the full-prefix bootstrap (nothing is published yet),
+    and the smaller it is the sooner the windows can start; after that a window
+    child maps only the frames since the published frontier, so launching it as
+    soon as the last one ends is what keeps landings close together. Off, the
+    spacing is `every`, unchanged.
+    """
+    if every > 0 and os.environ.get("TOWER_WORLD_LIVE_WINDOW") == "on":
+        return min(every, LIVE_WINDOW_SOLVE_EVERY)
+    return every
+
+
+def end_window_solve_on_capture_stop(capture_handle: dict, solver: BackgroundSolver) -> bool:
+    """Live window on: once the recorder confirms an ordinary Stop, end the live child.
+
+    W1 (2026-10-12): the builder was 94-189 s behind the stream at Stop and, while it
+    drained the journal, launched three more window solves (at 672, 848 and 920
+    keyframes); the final solve then waited for the last. A window solve exists only
+    to land coverage during the walk, so after Stop it is terminated, its completion
+    is consumed, and the caller launches no more: the final solve starts as it does
+    with no live child at all.
+    """
+    follower = capture_handle.get("follower")
+    if follower is None or follower.end_reason() != END_REASON_CAPTURE_STOP:
+        return False
+    pid = solver.child_pid
+    if solver.running:
+        logger.info(
+            "[Tower][WorldBuilder] live window: the capture stopped; ending background "
+            "solve pid %s and launching no more", pid,
+        )
+    solver.wait(0.0)
+    solver.finished()  # consume a completion that must not land after Stop
+    return True
 
 
 def rebuild_interval(base: int, accepted: int) -> int:
@@ -2274,10 +2320,13 @@ def main(argv=None) -> int:
             root=args.root.resolve(), world_id=world_id, session_id=session_id,
             # 0 means "final solve only": no background cadence, but the
             # final solve still runs as a child this process owns.
-            every=args.solve_every if args.solve_every > 0 else 0,
+            every=live_solve_interval(args.solve_every),
             capture_dirs=capture_dirs, script=args.solve_script,
         )
     background_solves = args.solve and args.solve_every > 0
+    live_window_enabled = (background_solves and
+                           os.environ.get("TOWER_WORLD_LIVE_WINDOW") == "on")
+    window_stopped = False
     # The live surface needs a global solve to exist at all, so it is only
     # constructed when background solves are on. With `--solve-every 0` there
     # is one solve, at the end, and nothing to show during the walk.
@@ -2352,6 +2401,9 @@ def main(argv=None) -> int:
             since_rebuild += 1
             if frame.source_path is not None:
                 sources[outcome.keyframe_id] = str(frame.source_path)
+            if (live_window_enabled and not window_stopped and args.follow_capture and
+                    since_rebuild >= rebuild_interval(args.rebuild_every, accepted)):
+                window_stopped = end_window_solve_on_capture_stop(capture_handle, solver)
             # A finished background solve is worth a rebuild now: the solution
             # reaches the derived tree only through build(), and the wearer
             # should see the world snap together as soon as it is known.
@@ -2398,7 +2450,7 @@ def main(argv=None) -> int:
                     interim.segments,
                     time.perf_counter() - rebuild_started,
                 )
-                if background_solves:
+                if background_solves and not window_stopped:
                     solver.maybe_launch(store, accepted, sources)
                 # A solve landing is the one moment the live surface can be
                 # rebuilt from geometry worth trusting, so the launch is here
@@ -2593,7 +2645,11 @@ def main(argv=None) -> int:
             # about to reuse its workspace.
             if phase is not None and solver.running:
                 phase.mark(finish_phase.WAITING)
-            solver.wait(args.solve_wait_seconds, should_stop=stop_request.hard_asked_for)
+            solver.finish_background_for_final(
+                live_window=os.environ.get("TOWER_WORLD_LIVE_WINDOW") == "on",
+                timeout=args.solve_wait_seconds,
+                should_stop=stop_request.hard_asked_for,
+            )
             if stop_request.hard:
                 final_solve_state = FINAL_SOLVE_SKIPPED
                 finalization_detail = (

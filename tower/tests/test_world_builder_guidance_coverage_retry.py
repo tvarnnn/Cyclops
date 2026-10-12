@@ -292,7 +292,8 @@ def test_shutdown_cancels_pending_retry_without_timer_or_thread(monkeypatch, tmp
     assert calls == [1]
 
 
-def test_new_solution_waits_for_matching_manifest_clock():
+def test_new_solution_waits_for_matching_manifest_clock(monkeypatch):
+    monkeypatch.setenv("TOWER_WORLD_LIVE_WINDOW", "on")
     data = _inputs()
     data["solution"]["solved_at"] += 1.0
     data["computed_at"] = data["solution"]["solved_at"] + 0.1
@@ -301,6 +302,32 @@ def test_new_solution_waits_for_matching_manifest_clock():
         _block(data)
     data["manifest"]["global_solve"]["solved_at"] = data["solution"]["solved_at"]
     assert _block(data)["solved_at"] == data["solution"]["solved_at"]
+
+
+def test_registered_placements_from_prior_build_wait_for_current_build(monkeypatch):
+    monkeypatch.setenv("TOWER_WORLD_LIVE_WINDOW", "on")
+    data = _inputs()
+    old = "0" * 64
+    data["placements"][0]["input_digest"] = old
+    with pytest.raises(coverage._TransientCoverageError,
+                       match="placements belong to an earlier build"):
+        _block(data)
+    data["placements"][0]["input_digest"] = data["manifest"]["input_digest"]
+    assert _block(data)["horizon_keyframes"] == len(data["solution"]["keyframe_ids"])
+
+
+def test_window_retries_are_not_used_with_switch_off(monkeypatch):
+    monkeypatch.delenv("TOWER_WORLD_LIVE_WINDOW", raising=False)
+    data = _inputs()
+    data["solution"]["solved_at"] += 1.0
+    with pytest.raises(ValueError, match="invalid solve clock") as refused:
+        _block(data)
+    assert not isinstance(refused.value, coverage._TransientCoverageError)
+    data = _inputs()
+    data["placements"][0]["input_digest"] = "0" * 64
+    with pytest.raises(ValueError, match="placement source mismatch") as refused:
+        _block(data)
+    assert not isinstance(refused.value, coverage._TransientCoverageError)
 
 
 def test_failure_classification():

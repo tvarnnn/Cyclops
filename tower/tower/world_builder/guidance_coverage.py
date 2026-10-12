@@ -252,7 +252,9 @@ def compute_coverage(*, solution, manifest, placements, poses, keyframes,
     if not math.isfinite(solution_solved_at) or solution_solved_at < 0:
         raise ValueError("invalid solve clock")
     if solution_solved_at != solved_at:
-        raise _TransientCoverageError("solution and manifest solve clocks differ")
+        if os.environ.get("TOWER_WORLD_LIVE_WINDOW") == "on":
+            raise _TransientCoverageError("solution and manifest solve clocks differ")
+        raise ValueError("invalid solve clock")
     if computed_at < solved_at:
         raise _TransientCoverageError("solve clock not yet settled")
     horizon = _integer(summary["horizon_keyframes"], 65535)
@@ -300,6 +302,15 @@ def compute_coverage(*, solution, manifest, placements, poses, keyframes,
         if p["state"] != "registered":
             continue
         seg = _integer(p["segment_index"], 2**31-1)
+        # A build writes the manifest (`write_derived`) before `placements.json`
+        # (`write_placements`), so a read between the two sees the new manifest
+        # and the previous build's placements. W1 (2026-10-12) read the FINAL build
+        # there at 06:52:51 and gave up ("placement source mismatch"). The race is
+        # not the window's, but window landings make it frequent, so with the
+        # switch on it is retried; off, it is today's permanent refusal.
+        if (p["input_digest"] != digest and
+                os.environ.get("TOWER_WORLD_LIVE_WINDOW") == "on"):
+            raise _TransientCoverageError("placements belong to an earlier build")
         if (p["input_digest"] != digest or p["reference_segment"] not in references or
                 p.get("evidence", {}).get("solver") != summary["solver"] or
                 not summary["segments"].get(str(seg), {}).get("replaced")):

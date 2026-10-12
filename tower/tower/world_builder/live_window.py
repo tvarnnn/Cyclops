@@ -11,6 +11,7 @@ from contextlib import closing
 import math
 import os
 import sqlite3
+import time
 import uuid
 
 import numpy as np
@@ -20,15 +21,25 @@ from tower.world_builder.store import compute_input_digest
 
 
 WINDOW_KEYFRAMES = 100
+# The window always re-solves this many already-published keyframes before the
+# newest frames, so the active window and its anchors share views by construction.
+OVERLAP_KEYFRAMES = 20
 MAX_ANCHORS = 6
-ANCHOR_LOOKBACK = 150
+# Anchors come from the published poses at most this far before the window start.
+# W1 (2026-10-12) drew them from 150 frames back; two of four windows then lost an
+# anchor ("anchor missing or disconnected"). Near anchors are co-visible anchors.
+ANCHOR_LOOKBACK = 40
+# A Sim(3) needs three; four registered anchors leave one redundant check.
+MIN_ALIGNED_ANCHORS = 4
 MIN_ANCHOR_OBSERVATIONS = global_solve.MIN_IMAGE_OBSERVATIONS
 MAX_ANCHOR_POSITION_RESIDUAL = 0.35
 MAX_ANCHOR_ROTATION_DEG = 8.0
-MIN_SCALE = 0.67
-MAX_SCALE = 1.5
-MIN_CUMULATIVE_SCALE = 0.8
-MAX_CUMULATIVE_SCALE = 1.25
+# A fresh window map has its own arbitrary gauge (GLOMAP normalises every map), so
+# the anchor scale is NOT expected near 1: W1's solve 5 aligned at 0.0601 with a
+# 0.0012 anchor residual. Only a degenerate fit is refused here; agreement is
+# judged by the residuals after alignment, in the published solution's units.
+MIN_SCALE = 0.001
+MAX_SCALE = 1000.0
 MAX_ACTIVE_FAILURE_FRACTION = 0.25
 MAX_POSE_POSITION_RESIDUAL = 0.35
 MAX_POSE_ROTATION_DEG = 8.0
@@ -48,17 +59,19 @@ class WindowSelection:
     solve_ids: list[str]
 
 
-def prepare_window_database(window_workspace, canonical_workspace, image_names: set[str]) -> None:
+def prepare_window_database(window_workspace, canonical_workspace, image_names: set[str]) -> dict:
     """Keep incremental overlap matches while removing every out-of-window pair.
 
     The first window can reuse the ordinary background solve's feature database.
     Later windows prune their own database. COLMAP's sequential matcher sees only
     rows in ``images``, not the ``image_names`` extraction argument.
     """
+    started = time.perf_counter()
     database = window_workspace.database_path
     if not database.exists():
         if not canonical_workspace.database_path.exists():
-            return
+            return {"copy_s": 0.0, "prune_s": 0.0,
+                    "removed_images": 0, "kept_images": 0}
         window_workspace.root.mkdir(parents=True, exist_ok=True)
         try:
             with closing(sqlite3.connect(canonical_workspace.database_path)) as source:
@@ -66,6 +79,8 @@ def prepare_window_database(window_workspace, canonical_workspace, image_names: 
                     source.backup(target)
         except sqlite3.Error as exc:
             raise WindowRefused(f"window feature database could not be copied: {exc}") from exc
+    copied = time.perf_counter()
+    removed = set()
     try:
         with closing(sqlite3.connect(database)) as con:
             with con:
@@ -85,21 +100,44 @@ def prepare_window_database(window_workspace, canonical_workspace, image_names: 
                     raise WindowRefused("window feature database exceeds selected images")
     except (sqlite3.Error, OSError) as exc:
         raise WindowRefused(f"window feature database could not be pruned: {exc}") from exc
+    return {"copy_s": round(copied - started, 3),
+            "prune_s": round(time.perf_counter() - copied, 3),
+            "removed_images": len(removed), "kept_images": count}
 
 
 def select_window(ids: list[str], previous: global_solve.Solution,
                   *, active_size: int = WINDOW_KEYFRAMES) -> WindowSelection:
-    """Choose recent frames and six high-observation poses spread in time.
+    """Choose the frames after the published frontier and six anchors before it.
 
-    Anchors are fixed for this solve from the *published* solution. The last
-    150 previous frames bridge the preceding and current windows; bins favour
-    observations without letting one textured patch supply every anchor.
+    The FRONTIER is the last keyframe with a validated published pose. When the
+    newest keyframe is within ``active_size`` of the frontier's overlap, the
+    active window is the newest ``active_size`` frames, as before. Otherwise it
+    is a LAGGED window: ``active_size`` frames starting ``OVERLAP_KEYFRAMES``
+    before the frontier, which advances from the frontier instead of jumping to
+    the newest frames. A jump is what W1 did
+    (2026-10-12): its second solve mapped keyframes 336-435 against anchors from
+    a 70-keyframe solution, shared no view with them, and was refused; so were
+    the three after it. Anchors are fixed for this solve from the *published*
+    solution, within ``ANCHOR_LOOKBACK`` frames before the window start; bins
+    favour observations without letting one textured patch supply every anchor.
     """
     if previous.keyframe_ids != ids[:len(previous.keyframe_ids)]:
         raise WindowRefused("previous solution is not the accepted prefix")
-    active = ids[-active_size:]
+    frontier = max((i for i, kid in enumerate(previous.keyframe_ids)
+                    for pose in [previous.poses.get(kid)]
+                    if pose is not None and
+                    int(pose.get("observations") or 0) >= MIN_ANCHOR_OBSERVATIONS),
+                   default=-1)
+    if frontier < 0:
+        raise WindowRefused("no published poses to anchor the window")
+    overlap = min(OVERLAP_KEYFRAMES, max(1, active_size // 5))
+    start = max(0, frontier - overlap + 1)
+    if len(ids) - start > active_size:
+        active = ids[start:start + active_size]
+    else:
+        active = ids[-active_size:]
     candidates = [(i, kid, pose) for i, kid in enumerate(previous.keyframe_ids)
-                  if i >= max(0, len(previous.keyframe_ids) - ANCHOR_LOOKBACK)
+                  if max(0, start - ANCHOR_LOOKBACK) <= i <= frontier
                   for pose in [previous.poses.get(kid)]
                   if pose is not None and
                   int(pose.get("observations") or 0) >= MIN_ANCHOR_OBSERVATIONS]
@@ -124,19 +162,44 @@ def select_window(ids: list[str], previous: global_solve.Solution,
     return WindowSelection(active, chosen, [kid for kid in ids if kid in selected])
 
 
+def _aligned_anchors(previous, candidate, anchors):
+    """The anchors the fit may use: registered, in one candidate component.
+
+    Every anchor must be a published pose of one component. At least
+    ``MIN_ALIGNED_ANCHORS`` of them (all of them when fewer were chosen) must be
+    registered in the candidate, with enough observations, in the candidate
+    component holding most of them. An anchor the window failed to register is
+    left out of the fit instead of refusing the window; the fit on the others
+    is still checked anchor by anchor below.
+    """
+    if any(kid not in previous.poses for kid in anchors):
+        raise WindowRefused("anchor missing in the published solution")
+    old_components = {int(previous.poses[kid]["component"]) for kid in anchors}
+    if len(old_components) != 1:
+        raise WindowRefused("anchors span published components")
+    registered = [kid for kid in anchors
+                  if kid in candidate.poses and
+                  int(candidate.poses[kid].get("observations") or 0) >= MIN_ANCHOR_OBSERVATIONS]
+    counts: dict[int, int] = {}
+    for kid in registered:
+        comp = int(candidate.poses[kid]["component"])
+        counts[comp] = counts.get(comp, 0) + 1
+    need = min(MIN_ALIGNED_ANCHORS, len(anchors))
+    if not counts:
+        raise WindowRefused("anchor missing or disconnected in window solve")
+    new_component = max(counts, key=lambda comp: (counts[comp], -comp))
+    used = [kid for kid in registered if int(candidate.poses[kid]["component"]) == new_component]
+    if len(used) < need:
+        raise WindowRefused("anchor missing or disconnected in window solve")
+    return old_components.pop(), new_component, used
+
+
 def _alignment(previous, candidate, anchors):
     old_centres, new_centres, old_rotations, new_rotations = [], [], [], []
-    if anchors[0] not in previous.poses or anchors[0] not in candidate.poses:
-        raise WindowRefused("anchor missing in window solve")
-    old_component = int(previous.poses[anchors[0]]["component"])
-    new_component = int(candidate.poses[anchors[0]]["component"])
+    old_component, new_component, anchors = _aligned_anchors(previous, candidate, anchors)
     for kid in anchors:
-        old = previous.poses.get(kid)
-        new = candidate.poses.get(kid)
-        if (old is None or new is None or int(old["component"]) != old_component or
-                int(new["component"]) != new_component or
-                int(new.get("observations") or 0) < MIN_ANCHOR_OBSERVATIONS):
-            raise WindowRefused("anchor missing or disconnected in window solve")
+        old = previous.poses[kid]
+        new = candidate.poses[kid]
         old_r, old_c = global_solve._pose_matrices(old)
         new_r, new_c = global_solve._pose_matrices(new)
         old_centres.append(old_c)
@@ -171,7 +234,8 @@ def _alignment(previous, candidate, anchors):
         angle = math.degrees(math.acos(float(np.clip((np.trace(delta)-1) / 2, -1, 1))))
         if angle > MAX_ANCHOR_ROTATION_DEG:
             raise WindowRefused("anchor orientation residual is too high")
-    return old_component, new_component, scale, rotation, translation, float(max(position_residual))
+    return (old_component, new_component, scale, rotation, translation,
+            float(max(position_residual)), anchors)
 
 
 def _aligned_pose(pose, scale, rotation, translation, component):
@@ -286,11 +350,9 @@ def stitch(previous: global_solve.Solution, candidate: global_solve.Solution,
             candidate.keyframe_ids != selection.solve_ids or
             len(selection.anchor_ids) < 3):
         raise WindowRefused("anchor or prefix identity changed during window solve")
-    old_comp, new_comp, scale, rotation, translation, residual = _alignment(
+    old_comp, new_comp, scale, rotation, translation, residual, used_anchors = _alignment(
         previous, candidate, selection.anchor_ids)
     cumulative = float(((previous.solve or {}).get("live_window") or {}).get("cumulative_scale", 1.0)) * scale
-    if not MIN_CUMULATIVE_SCALE <= cumulative <= MAX_CUMULATIVE_SCALE:
-        raise WindowRefused("cumulative scale outside first solve bound")
     aligned, failures = _validated_active(previous, candidate, ids, selection,
                                           new_comp, scale, rotation, translation, old_comp)
     active = set(aligned)
@@ -306,7 +368,7 @@ def stitch(previous: global_solve.Solution, candidate: global_solve.Solution,
     new_keep = np.array([int(c) == new_comp and
                          len(active_observations.get(p, ())) >= 2
                          for p, c in enumerate(candidate.component)], bool)
-    valid_candidate = active | (set(selection.anchor_ids) - set(failures))
+    valid_candidate = active | (set(used_anchors) - set(failures))
     # Feature indices in shared keyframes identify points across the two
     # solutions. Replace a prior point only when at least two observations
     # agree on the same candidate point and their aligned 3-D positions agree.
@@ -384,7 +446,8 @@ def stitch(previous: global_solve.Solution, candidate: global_solve.Solution,
                        points=int(np.count_nonzero(component == int(c["index"]))))
                   for c in previous.components]
     info = {"active_keyframes": len(selection.active_ids),
-            "anchor_ids": selection.anchor_ids, "anchor_max_residual": residual,
+            "anchor_ids": selection.anchor_ids, "aligned_anchor_ids": used_anchors,
+            "anchor_max_residual": residual,
             "scale": scale, "cumulative_scale": cumulative,
             "failed_active_ids": failures,
             "reused_prefix_keyframes": len(previous.keyframe_ids)}
@@ -460,6 +523,7 @@ def solve(store, world_id, session_id, *, capture_dirs=(), final=False,
     """Run only the in-walk bounded solve; publish after anchor validation."""
     if final:
         raise ValueError("the final solve must use global_solve.solve directly")
+    started = time.perf_counter()
     keyframes = store.read_keyframes(world_id, session_id)
     ids = [kf.keyframe_id for kf in keyframes]
     previous = global_solve.load_solution(store, world_id, session_id)
@@ -473,6 +537,19 @@ def solve(store, world_id, session_id, *, capture_dirs=(), final=False,
         selection = select_window(ids, previous)
     except WindowRefused as exc:
         return {"solved": False, "reason": str(exc), "window_refused": True}
+    # What this window was, on every outcome, for the replay's solve.log: W1 had no
+    # way to tell a lagged window, its anchors or its wall time from the summary.
+    window = {"keyframes": len(ids),
+              "active_first": ids.index(selection.active_ids[0]),
+              "active_last": ids.index(selection.active_ids[-1]),
+              "lagged": selection.active_ids[-1] != ids[-1],
+              "anchors": len(selection.anchor_ids),
+              "solve_images": len(selection.solve_ids),
+              "started_at": round(time.time() - (time.perf_counter() - started), 3)}
+
+    def _done(result):
+        return {**result, "window": {**window, "ended_at": round(time.time(), 3),
+                                     "total_s": round(time.perf_counter() - started, 3)}}
     selected = set(selection.solve_ids)
     window_store = _WindowStore(store, world_id, session_id,
                                 [kf for kf in keyframes if kf.keyframe_id in selected])
@@ -480,47 +557,50 @@ def solve(store, world_id, session_id, *, capture_dirs=(), final=False,
     canonical = global_solve.workspace_for(store, world_id, session_id)
     wanted_images = {global_solve.keyframe_image_name(kf) for kf in window_store.keyframes}
     try:
-        prepare_window_database(window_workspace, canonical, wanted_images)
+        db_timing = prepare_window_database(window_workspace, canonical, wanted_images)
     except WindowRefused as exc:
-        return {"solved": False, "reason": str(exc), "window_refused": True}
+        return _done({"solved": False, "reason": str(exc), "window_refused": True})
     if window_workspace.images_dir.exists():
         for image in window_workspace.images_dir.iterdir():
             if image.is_file() and image.name not in wanted_images:
                 try:
                     image.unlink()
                 except OSError as exc:
-                    return {"solved": False, "reason": f"old window image could not be removed: {exc}",
-                            "window_refused": True}
+                    return _done({"solved": False, "reason": f"old window image could not be removed: {exc}",
+                            "window_refused": True})
     # Preserve the builder's exact raw-frame source mapping in the isolated workspace.
     source_path = canonical.root / global_solve.SOURCES_FILENAME
     if source_path.exists():
         sources = global_solve.read_json_closed(source_path).get("sources", {})
         global_solve.write_sources(window_store, world_id, session_id,
                                    {kid: sources[kid] for kid in selection.solve_ids if kid in sources})
+    prepared = time.perf_counter()
     summary = global_solve.solve(
         window_store, world_id, session_id, capture_dirs=capture_dirs, final=False,
         num_threads=num_threads, min_image_observations=min_image_observations,
         loop_detection=loop_detection)
     if not summary.get("solved"):
-        return summary
+        return _done({**summary, "window_database": db_timing,
+                "window_setup_s": round(prepared - started, 3)})
+    mapped = time.perf_counter()
     candidate = global_solve.load_solution(window_store, world_id, session_id)
     if candidate is None:
-        return {"solved": False, "reason": "window solution could not be loaded",
-                "window_refused": True}
+        return _done({"solved": False, "reason": "window solution could not be loaded",
+                "window_refused": True})
     try:
         published = stitch(previous, candidate, ids, selection)
     except WindowRefused as exc:
-        if "cumulative scale outside first solve bound" in str(exc):
-            return global_solve.solve(store, world_id, session_id,
-                                      capture_dirs=capture_dirs, final=False,
-                                      num_threads=num_threads,
-                                      min_image_observations=min_image_observations,
-                                      loop_detection=loop_detection,
-                                      input_digest=input_digest)
-        return {"solved": False, "reason": str(exc), "window_refused": True}
+        return _done({"solved": False, "reason": str(exc), "window_refused": True,
+                "window_database": db_timing,
+                "window_setup_s": round(prepared - started, 3),
+                "timing": summary.get("timing")})
     publish_window_solution(canonical, published)
-    return {**summary, "keyframes": len(ids),
+    return _done({**summary, "keyframes": len(ids),
+            "window_database": db_timing,
+            "timing": {**(summary.get("timing") or {}),
+                       "window_setup_s": round(prepared - started, 3),
+                       "window_stitch_s": round(time.perf_counter() - mapped, 3)},
             "keyframes_posed": sum(int(p["observations"]) >= min_image_observations
                                    for p in published.poses.values()),
             "components": published.components, "points": len(published.xyz),
-            "solve": published.solve, "workspace": str(canonical.root)}
+            "solve": published.solve, "workspace": str(canonical.root)})

@@ -12,6 +12,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from scripts.world_build_session import BackgroundSolver  # noqa: E402
+from scripts import world_build_session  # noqa: E402
 from tower.world_builder import global_solve  # noqa: E402
 from tower.world_builder.store import WorldStore  # noqa: E402
 
@@ -125,6 +126,78 @@ def test_wait_ends_early_on_a_stop_request(tmp_path):
     assert solver.wait(60.0, should_stop=lambda: True) is False
     assert time.perf_counter() - started < 10.0
     assert child.poll() is not None
+
+
+def test_window_cadence_starts_before_the_full_prefix_threshold(monkeypatch):
+    monkeypatch.delenv("TOWER_WORLD_LIVE_WINDOW", raising=False)
+    assert world_build_session.live_solve_interval(50) == 50
+    monkeypatch.setenv("TOWER_WORLD_LIVE_WINDOW", "on")
+    assert world_build_session.live_solve_interval(50) == 20
+    assert world_build_session.live_solve_interval(10) == 10
+
+
+def test_window_child_is_cancelled_at_final_handoff(tmp_path):
+    stub = tmp_path / "slow.py"
+    stub.write_text("import time\ntime.sleep(30)\n")
+    solver = BackgroundSolver(root=tmp_path, world_id="w", session_id="s",
+                              every=20, capture_dirs=[])
+    import subprocess
+    child = subprocess.Popen([sys.executable, str(stub)])
+    solver._child = child
+    started = time.perf_counter()
+    assert solver.finish_background_for_final(live_window=True, timeout=20.0) is False
+    assert time.perf_counter() - started < 10.0
+    assert child.poll() is not None
+    assert solver.child_pid is None
+
+
+def test_capture_stop_cancels_window_child_before_journal_drain(tmp_path):
+    stub = tmp_path / "slow.py"
+    stub.write_text("import time\ntime.sleep(30)\n")
+    solver = BackgroundSolver(root=tmp_path, world_id="w", session_id="s",
+                              every=20, capture_dirs=[])
+    import subprocess
+    child = subprocess.Popen([sys.executable, str(stub)])
+    solver._child = child
+    class _Follower:
+        def end_reason(self):
+            return "stop"
+    assert world_build_session.end_window_solve_on_capture_stop(
+        {"follower": _Follower()}, solver) is True
+    assert child.poll() is not None
+    assert solver.child_pid is None
+
+
+def test_window_child_is_left_alone_while_the_capture_is_open(tmp_path):
+    stub = tmp_path / "slow.py"
+    stub.write_text("import time\ntime.sleep(30)\n")
+    solver = BackgroundSolver(root=tmp_path, world_id="w", session_id="s",
+                              every=20, capture_dirs=[])
+    import subprocess
+    child = subprocess.Popen([sys.executable, str(stub)])
+    solver._child = child
+    try:
+        for reason in (None, "disconnect", "bounded_limit"):
+            class _Follower:
+                def end_reason(self, _reason=reason):
+                    return _reason
+            assert world_build_session.end_window_solve_on_capture_stop(
+                {"follower": _Follower()}, solver) is False
+            assert child.poll() is None
+        assert world_build_session.end_window_solve_on_capture_stop({}, solver) is False
+    finally:
+        solver.wait(0.0)
+
+
+def test_switch_off_final_handoff_still_waits_its_timeout(tmp_path):
+    stub = tmp_path / "quick.py"
+    stub.write_text("import time\ntime.sleep(1.5)\n")
+    solver = BackgroundSolver(root=tmp_path, world_id="w", session_id="s",
+                              every=50, capture_dirs=[])
+    import subprocess
+    solver._child = subprocess.Popen([sys.executable, str(stub)])
+    # Off: the ordinary wait, so a child that ends inside the timeout is NOT terminated.
+    assert solver.finish_background_for_final(live_window=False, timeout=20.0) is True
 
 
 def test_a_missing_solver_is_reported_not_raised(tmp_path):

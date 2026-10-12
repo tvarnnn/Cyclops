@@ -1043,7 +1043,13 @@ def load_solution(store, world_id: str, session_id: str) -> Solution | None:
     """The persisted solution, or None. Never raises: an unreadable or
     half-written solution is absent, and the build proceeds without it."""
     workspace = workspace_for(store, world_id, session_id)
-    if not workspace.solution_path.exists():
+    # TOWER_WORLD_LIVE_WINDOW off is the 6978a93 reader exactly: both files must
+    # exist, and the arrays are `solution.npz`. On, a window publication names an
+    # immutable arrays generation (`live_window.publish_window_solution`) and
+    # `solution.npz` may be older than it, so only the metadata must exist.
+    live_window = os.environ.get("TOWER_WORLD_LIVE_WINDOW") == "on"
+    if not workspace.solution_path.exists() or (
+            not live_window and not workspace.arrays_path.exists()):
         return None
     try:
         meta = read_json_closed(workspace.solution_path)
@@ -1052,6 +1058,10 @@ def load_solution(store, world_id: str, session_id: str) -> Solution | None:
         arrays_name = meta.get("arrays_file")
         if arrays_name is None:
             arrays_path = workspace.arrays_path
+        elif not live_window:
+            # Only a window publication writes `arrays_file`, and only with the
+            # switch on. Off, its `solution.npz` is not the arrays it describes.
+            return None
         elif (isinstance(arrays_name, str) and
               arrays_name.startswith("solution-live-") and
               arrays_name.endswith(".npz") and
