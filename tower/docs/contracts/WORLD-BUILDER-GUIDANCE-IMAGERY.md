@@ -117,7 +117,7 @@ Nothing is written to disk; tiles live in Tower memory only.
   never part of a status request, the capture path, coverage's 250 ms budget
   or imagery's 80 ms budget. A newer landing for the same session cancels the
   job in flight.
-- **Time cap.** Each landing has a 1.5 s wall cap, checked between
+- **Time cap.** Each landing has an 8 s wall cap (was 1.5 s; manager 323), checked between
   components, frames and reads. On overrun, cancellation or any failure, that
   landing publishes nothing and the prior plan stays, with its prior date.
 - **Inputs.** The job uses the exact derived tree the receipt was computed

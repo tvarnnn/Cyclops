@@ -16,7 +16,6 @@ from tower.results.world_builder_appearance import NO_STORE_HEADERS
 from tower.results.world_builder_geometry import contained_world_id, store_from_root
 from tower.world_builder.guidance_imagery import contained_session_id
 from tower.world_builder.photo_floorplan_worker import (
-    LANDING_WALL_CAP_S,
     MANIFEST_MAX_BYTES,
     manifest_bytes,
     state_for,
@@ -27,8 +26,10 @@ from tower.world_builder.store import WorldStoreError
 router = APIRouter()
 _HEX = frozenset("0123456789abcdef")
 # A manifest request (never a status poll) arriving while its landing's job is in
-# flight waits for it, at most the job's own wall cap plus a margin.
-_MANIFEST_WAIT_S = LANDING_WALL_CAP_S + 0.1
+# flight waits for it at most 1.6 s, its own constant: decoupled from the job's wall
+# cap (manager 323), so the shared threadpool is never held longer. A landing that
+# publishes later is picked up by the phone's bounded re-fetch.
+_MANIFEST_WAIT_S = 1.6
 
 
 def _root(request):

@@ -636,3 +636,18 @@ def test_manifest_waits_for_an_in_flight_landing_but_never_past_the_cap(served):
     reply = client.get(f"/worlds/{WORLD}/guidance/{SESSION}/photo-floorplan/manifest")
     assert reply.json()["landed"]["solved_at"] == 1000.0
     assert time.monotonic() - started < 1.7
+
+
+def test_landing_cap_is_8_s_and_manifest_wait_is_decoupled_at_1_6_s():
+    # Manager 323 (walk-8 e2e): 1.5 s skipped live landings under load. The job cap is 8 s; the
+    # manifest route's wait on an in-flight job stays 1.6 s, its own constant, never the job cap.
+    from tower.results import world_builder_photo_floorplan as routes
+    assert pfw.LANDING_WALL_CAP_S == 8.0
+    assert routes._MANIFEST_WAIT_S == 1.6
+    assert not hasattr(routes, "LANDING_WALL_CAP_S")
+
+
+def test_default_worker_uses_the_8_s_cap():
+    import inspect
+    default = inspect.signature(pfw.PhotoFloorplanWorker.__init__).parameters["wall_cap_s"].default
+    assert default == pfw.LANDING_WALL_CAP_S == 8.0
