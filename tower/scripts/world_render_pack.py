@@ -263,43 +263,8 @@ def orientation_checks(V, F, up, cam_centres=None, metres_per_unit: float | None
         out["surface_height_vs_cameras"] = {
             "p1_p50_p99": [round(float(x), 3) for x in np.percentile(hs, [1, 50, 99])],
             "unit": "m" if metres_per_unit else "units"}
-        drop = 0.8 / metres_per_unit if metres_per_unit else 0.35 * float(np.ptp(hc) + 1e-9 + np.ptp(h) * 0.5)
-        cand = horiz & (h < cam_h - drop)
-        if cand.sum() >= 20 and area[cand].sum() > 0.01 * total:
-            # the floor is the dominant HEIGHT among the low horizontal faces (the
-            # area-weighted mode, +-0.15 m), not every low horizontal: a dispersed set
-            # (stray sheets, a second level) makes a plane fit meaningless
-            hb = h[cand]
-            tol = (0.15 / metres_per_unit) if metres_per_unit else 0.03 * float(np.ptp(h) + 1e-9)
-            nb = max(1, int(math.ceil(float(np.ptp(hb)) / (tol / 3) + 1e-9)))
-            hist, edges = np.histogram(hb, bins=nb, weights=area[cand])
-            peak = 0.5 * (edges[int(np.argmax(hist))] + edges[int(np.argmax(hist)) + 1])
-            low_area = float(area[cand].sum())
-            cand = cand & (np.abs(h - peak) <= tol)
-        if cand.sum() >= 20 and area[cand].sum() > 0.01 * total:
-            w = area[cand]
-            m = (n[cand] * np.sign(d[cand])[:, None] * w[:, None]).sum(axis=0)
-            # a plane through the floor faces' centroids (weighted PCA)
-            P = cen[cand]
-            mu = (P * w[:, None]).sum(axis=0) / w.sum()
-            Q = (P - mu) * np.sqrt(w)[:, None]
-            _, _, vt = np.linalg.svd(Q, full_matrices=False)
-            pn = vt[-1] if vt[-1] @ u >= 0 else -vt[-1]
-            floor_h = float(np.average(h[cand], weights=w))
-            floor_info = {
-                "found": True,
-                "area_fraction": round(float(w.sum() / total), 4),
-                "normal_tilt_deg": round(angle_deg(m, u), 2),
-                "plane_fit_tilt_deg": round(angle_deg(pn, u), 2),
-                "camera_height_above_floor_units": round(cam_h - floor_h, 4),
-                "share_of_low_horizontal_area": round(float(w.sum()) / max(low_area, 1e-12), 3),
-            }
-            if metres_per_unit:
-                m_h = (cam_h - floor_h) * metres_per_unit
-                floor_info["camera_height_above_floor_m"] = round(m_h, 3)
-                floor_info["camera_height_plausible"] = bool(0.8 <= m_h <= 2.2)
-        floor_info["rule"] = ("horizontal faces (|n.up| > cos 30) below the median camera height minus 0.8 m, "
-                              "then the area-weighted height mode +-0.15 m")
+        floor_info = floor_under_cameras(n, area, cen, d, horiz, u, np.asarray(cam_centres, np.float64),
+                                         metres_per_unit, total)
     out["floor"] = floor_info
     if planes:
         rows = []
@@ -316,6 +281,88 @@ def orientation_checks(V, F, up, cam_centres=None, metres_per_unit: float | None
         big = [r for r in rows if r["kind"] == "oblique"]
         out["oblique_plane_area_fraction"] = round(
             sum(r["area"] or 0 for r in big) / max(sum(r["area"] or 0 for r in rows), 1e-9), 3)
+    return out
+
+
+# The floor is looked for UNDER THE WALK, not anywhere in the fuse box: a fused
+# surface can hold stray far geometry (the kitchen walk 9.1: 5.9% of the area ~28
+# units below the cameras in a ~75 m box), and a global "lowest dominant
+# horizontal" reported the camera 18.3 m above the floor (W9-DIAG, 2026-10-12).
+FLOOR_RADIUS_M = 1.5          # horizontal reach from the nearest camera
+FLOOR_BAND_M = (0.5, 2.5)     # how far below that camera a floor may be
+FLOOR_MODE_TOL_M = 0.15       # the floor is the support peak +- this
+
+
+def floor_under_cameras(n, area, cen, d, horiz, u, cams, metres_per_unit, total) -> dict:
+    """The floor as the plane BELOW THE CAMERAS with the most support near them.
+
+    Each horizontal face is measured against the camera horizontally nearest to it
+    (so a drifting or sloped walk is judged locally): it is a floor candidate only
+    within FLOOR_RADIUS_M of that camera in plan and FLOOR_BAND_M below it. The
+    floor is the area-weighted mode of those relative heights (+-0.15 m); the
+    camera height is minus that mode. Without a metric scale the lengths are
+    fractions of the walk's own plan extent (radius 25%, mode +-2%) and the band
+    has no lower limit: nearness in plan is what excludes stray far geometry."""
+    from scipy.spatial import cKDTree
+
+    e1, e2 = plane_basis(u)
+    cam_xy = np.c_[cams @ e1, cams @ e2]
+    cam_h = cams @ u
+    extent = float(max(np.ptp(cam_xy[:, 0]), np.ptp(cam_xy[:, 1]), 1e-9))
+    if metres_per_unit:
+        radius = FLOOR_RADIUS_M / metres_per_unit
+        lo, hi = (b / metres_per_unit for b in FLOOR_BAND_M)
+        tol = FLOOR_MODE_TOL_M / metres_per_unit
+    else:
+        # no scale: no metric band either; "near the walk in plan" is what excludes stray far
+        # geometry, and the best-supported plane below the cameras wins
+        radius, lo, hi, tol = 0.25 * extent, 0.02 * extent, np.inf, 0.02 * extent
+    rule = (f"horizontal faces (|n.up| > cos 30) within {FLOOR_RADIUS_M} m in plan of the nearest camera and "
+            f"{FLOOR_BAND_M[0]}-{FLOOR_BAND_M[1]} m below it; floor = area-weighted mode of the height below "
+            f"that camera +-{FLOOR_MODE_TOL_M} m" if metres_per_unit else
+            "no scale: horizontal faces within 25% of the walk's plan extent of the nearest camera and "
+            "any distance (>= 2% of the extent) below it; floor = area-weighted mode +-2% of the extent")
+    out: dict = {"found": False, "rule": rule}
+    idx = np.flatnonzero(horiz)
+    if len(idx) == 0:
+        return out
+    dist, near = cKDTree(cam_xy).query(np.c_[cen[idx] @ e1, cen[idx] @ e2])
+    below = cam_h[near] - cen[idx] @ u                      # how far under its nearest camera
+    ok = (dist <= radius) & (below >= lo) & (below <= hi)
+    out["candidate_area_fraction"] = round(float(area[idx[ok]].sum() / total), 4)
+    if ok.sum() < 20:
+        return out
+    b, w = below[ok], area[idx[ok]]
+    nb = max(1, int(math.ceil((float(b.max() - b.min()) + 1e-12) / (tol / 3))))
+    hist, edges = np.histogram(b, bins=nb, weights=w)
+    k = int(np.argmax(hist))
+    peak = 0.5 * (edges[k] + edges[k + 1])
+    sel = np.abs(b - peak) <= tol
+    if sel.sum() < 20:
+        return out
+    fi, fw = idx[ok][sel], w[sel]
+    m = (n[fi] * np.sign(d[fi])[:, None] * fw[:, None]).sum(axis=0)
+    P = cen[fi]
+    mu = (P * fw[:, None]).sum(axis=0) / fw.sum()
+    _, _, vt = np.linalg.svd((P - mu) * np.sqrt(fw)[:, None], full_matrices=False)
+    pn = vt[-1] if vt[-1] @ u >= 0 else -vt[-1]
+    cam_above = float(np.average(b[sel], weights=fw))
+    out.update({
+        "found": True,
+        "area_fraction": round(float(fw.sum() / total), 4),
+        "share_of_candidate_area": round(float(fw.sum() / w.sum()), 3),
+        "cameras_over_floor": int(len(np.unique(near[ok][sel]))),
+        "normal_tilt_deg": round(angle_deg(m, u), 2),
+        "plane_fit_tilt_deg": round(angle_deg(pn, u), 2),
+        "camera_height_above_floor_units": round(cam_above, 4),
+        "tilt_note": ("normal_tilt is the floor faces' own tilt from up; plane_fit_tilt fits ONE plane through "
+                      "them, and since each face is chosen relative to its nearest camera, a walk whose camera "
+                      "heights drift (camera_height_spread) shows up there as tilt too"),
+    })
+    if metres_per_unit:
+        m_h = cam_above * metres_per_unit
+        out["camera_height_above_floor_m"] = round(m_h, 3)
+        out["camera_height_plausible"] = bool(0.8 <= m_h <= 2.2)
     return out
 
 

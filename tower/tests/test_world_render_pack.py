@@ -52,7 +52,7 @@ def test_revisit_counts_separates_passes_by_time():
     assert rc[0] == 2 and rc[2] == 1
 
 
-def _box(up_tilt_deg=0.0, size=(4.0, 3.0, 2.5)):
+def _box(up_tilt_deg=0.0, size=(4.0, 3.0, 2.5), floor_tiles=5):
     """A closed axis-aligned box room (y up) as a triangle mesh."""
     sx, sy, sz = size
     V = np.array([[x, y, z] for x in (0, sx) for y in (0, sy) for z in (0, sz)], float)
@@ -63,8 +63,8 @@ def _box(up_tilt_deg=0.0, size=(4.0, 3.0, 2.5)):
     F = np.array(F)
     # subdivide nothing; the orientation checks are area-weighted, so 12 faces suffice
     # the floor needs >= 20 faces for the floor finder: tile the floor
-    fx = np.linspace(0, sx, 6)
-    fz = np.linspace(0, sz, 6)
+    fx = np.linspace(0, sx, floor_tiles + 1)
+    fz = np.linspace(0, sz, floor_tiles + 1)
     extra_v, extra_f = [], []
     base = len(V)
     grid = {}
@@ -72,8 +72,8 @@ def _box(up_tilt_deg=0.0, size=(4.0, 3.0, 2.5)):
         for k, z in enumerate(fz):
             grid[i, k] = base + len(extra_v)
             extra_v.append([x, 0.0, z])
-    for i in range(5):
-        for k in range(5):
+    for i in range(floor_tiles):
+        for k in range(floor_tiles):
             a, b, c, d = grid[i, k], grid[i + 1, k], grid[i + 1, k + 1], grid[i, k + 1]
             extra_f += [(a, b, c), (a, c, d)]
     V = np.vstack([V, extra_v])
@@ -102,6 +102,25 @@ def test_floor_is_the_dominant_height_not_every_low_sheet():
     o = P.orientation_checks(V, F, [0, 1, 0], cams, metres_per_unit=1.0)
     assert o["floor"]["camera_height_above_floor_m"] == pytest.approx(1.6, abs=0.01)
     assert o["floor"]["plane_fit_tilt_deg"] < 0.5
+
+
+def test_floor_ignores_large_stray_geometry_far_from_the_walk():
+    # W9-DIAG (kitchen walk 9.1): stray far geometry, larger than the floor, ~28
+    # units down in a huge fuse box made the camera "18.3 m above the floor"
+    V, F = _box(floor_tiles=20)
+    base = len(V)
+    big = np.array([[30, -28, 30], [70, -28, 30], [70, -28, 70], [30, -28, 70]], float)
+    V = np.vstack([V, big])
+    F = np.vstack([F, [(base, base + 1, base + 2), (base, base + 2, base + 3)] * 12])
+    cams = np.array([[1.0, 1.6, 0.6], [2.0, 1.7, 1.2], [3.0, 1.5, 1.8]])
+    o = P.orientation_checks(V, F, [0, 1, 0], cams, metres_per_unit=1.0)
+    assert o["floor"]["found"]
+    assert 1.4 < o["floor"]["camera_height_above_floor_m"] < 1.8
+    assert o["floor"]["camera_height_plausible"]
+    # and without a scale, the same answer in units
+    o = P.orientation_checks(V, F, [0, 1, 0], cams, metres_per_unit=None)
+    assert o["floor"]["found"]
+    assert 1.4 < o["floor"]["camera_height_above_floor_units"] < 1.8
 
 
 def test_orientation_reports_a_tilted_up():
