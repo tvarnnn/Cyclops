@@ -46,6 +46,10 @@ FOOTPRINT BOUNDS (opt-in, TOWER_WORLD_PHOTO_FLOORPLAN_FOOTPRINT_BOUNDS exactly `
 homography method only): each component's `raster_bounds_xy` grows from the padded
 camera square to the floor its selected frames can paint (see
 `photo_floorplan.FOOTPRINT_TRIM_PERCENTILE`). Off, nothing below changes.
+
+KEPT NOTICE (opt-in, TOWER_WORLD_PHOTO_FLOORPLAN_KEPT exactly `on`): a landing that publishes
+nothing while an earlier plan is published records why in the state, and the manifest serves it
+beside the untouched plan as `kept` (see `KEPT_REASONS`). Off, nothing is recorded or served.
 """
 
 from __future__ import annotations
@@ -825,9 +829,13 @@ def build_landing(root, world_id, session_id, receipt, eligible, tree, solution_
     return block, tiles, stats
 
 
-def manifest_bytes(landed):
-    return json.dumps({"version": 1, "landed": landed}, separators=(",", ":"),
-                      allow_nan=False).encode("utf-8")
+def manifest_bytes(landed, kept=None):
+    """The manifest body. `kept` (TOWER_WORLD_PHOTO_FLOORPLAN_KEPT only) is appended as an
+    optional top-level key; without it the bytes are exactly the v1.2 manifest's."""
+    doc = {"version": 1, "landed": landed}
+    if kept is not None:
+        doc["kept"] = kept
+    return json.dumps(doc, separators=(",", ":"), allow_nan=False).encode("utf-8")
 
 
 def identity_of(block):
@@ -835,6 +843,42 @@ def identity_of(block):
     if block is None:
         return None
     return (float(block["solved_at"]), block["geometry_revision"], block["frame_revision"])
+
+
+KEPT_REGRESSED = "regressed"
+KEPT_STALLED = "stalled"
+KEPT_WALL_CAP = "wall_cap"
+KEPT_SUPERSEDED = "superseded"
+KEPT_FAILED = "failed"
+KEPT_NOT_NEWER = "not_newer"
+KEPT_REASONS = (KEPT_REGRESSED, KEPT_STALLED, KEPT_WALL_CAP, KEPT_SUPERSEDED, KEPT_FAILED,
+                KEPT_NOT_NEWER)
+"""THE KEPT NOTICE (TOWER_WORLD_PHOTO_FLOORPLAN_KEPT, exactly `on`; manager mail 354). When the
+newest landing processed for a session publishes no plan while an earlier plan IS published, the
+served manifest carries
+
+  "kept": {"for_landing": {solved_at, geometry_revision, frame_revision},   # the skipped landing
+           "reason": one of KEPT_REASONS,
+           "plan_landing": {solved_at, geometry_revision, frame_revision}}  # == landed's identity
+
+so the phone can keep drawing the held plan for its own (newer) receipt instead of falling back
+to fog after its 45 s hold. Reasons (closed set):
+
+  regressed   the never-regress guard (legacy, or V2 "skip") refused it;
+  stalled     V2: regressed past the skip count and the escape was refused;
+  wall_cap    the landing job overran its wall cap;
+  superseded  a newer coverage landing replaced it before it could publish (its own job follows);
+  failed      its inputs could not be read or the build failed (any other skip or error);
+  not_newer   its solve is not newer than the served plan's (a local rebuild): never re-dated.
+
+The served plan (`landed`, its identity and tiles) is never touched. The block is replaced by the
+next skip, removed atomically with the next PUBLISHED landing, absent while nothing is published,
+and dropped (never the plan) if it would push the manifest past 8 KiB. Off: nothing is recorded."""
+
+
+def _kept_identity(block):
+    return {"solved_at": block["solved_at"], "geometry_revision": block["geometry_revision"],
+            "frame_revision": block["frame_revision"]}
 
 
 # ---------------------------------------------------------------------------
@@ -849,6 +893,7 @@ class PhotoFloorplanState:
         self._lock = threading.Lock()
         self._landed = {}
         self._inflight = {}
+        self._kept = {}   # (world, session) -> the KEPT notice; only with the KEPT switch on
 
     def begin(self, world_id, session_id):
         with self._lock:
@@ -869,18 +914,54 @@ class PhotoFloorplanState:
             if previous is not None and float(previous[0]["solved_at"]) >= float(block["solved_at"]):
                 return False
             self._landed[pair] = (block, dict(tiles))
+            self._kept.pop(pair, None)   # a published landing ends any kept notice, atomically
             return True
 
-    def landed(self, world_id, session_id, *, wait_s=0.0):
-        """The published block, or None. With `wait_s`, a manifest request (never a
-        status poll) waits up to that long for an in-flight landing job."""
+    def keep(self, world_id, session_id, for_landing, reason) -> bool:
+        """Record that `for_landing` (a receipt or block) published no plan and the served plan
+        is kept (see KEPT_REASONS). Replaces any earlier notice. Nothing is recorded -- and an
+        earlier notice is dropped -- while no plan is published, for the served plan's own
+        identity, or if the notice would push the manifest past 8 KiB. Never touches the plan."""
+        if reason not in KEPT_REASONS:
+            raise ValueError(f"unknown kept reason {reason!r}")
+        pair = (world_id, session_id)
+        with self._lock:
+            row = self._landed.get(pair)
+            if row is None or identity_of(for_landing) == identity_of(row[0]):
+                self._kept.pop(pair, None)
+                return False
+            notice = {"for_landing": _kept_identity(for_landing), "reason": reason,
+                      "plan_landing": _kept_identity(row[0])}
+            if len(manifest_bytes(row[0], notice)) > MANIFEST_MAX_BYTES:
+                self._kept.pop(pair, None)
+                logger.warning("world photo floorplan: kept notice dropped for world=%s "
+                               "session=%s: the manifest would exceed 8 KiB", world_id, session_id)
+                return False
+            self._kept[pair] = notice
+            return True
+
+    def _wait_inflight(self, world_id, session_id, wait_s):
         with self._lock:
             event = self._inflight.get((world_id, session_id))
         if wait_s > 0 and event is not None:
             event.wait(wait_s)
+
+    def landed(self, world_id, session_id, *, wait_s=0.0):
+        """The published block, or None. With `wait_s`, a manifest request (never a
+        status poll) waits up to that long for an in-flight landing job."""
+        self._wait_inflight(world_id, session_id, wait_s)
         with self._lock:
             row = self._landed.get((world_id, session_id))
             return row[0] if row else None
+
+    def served(self, world_id, session_id, *, wait_s=0.0):
+        """(published block or None, kept notice or None), read together under one lock so a
+        notice is never served beside a plan it does not describe. Waits as `landed` does."""
+        self._wait_inflight(world_id, session_id, wait_s)
+        with self._lock:
+            pair = (world_id, session_id)
+            row = self._landed.get(pair)
+            return (row[0] if row else None), (self._kept.get(pair) if row else None)
 
     def tile(self, world_id, session_id, digest):
         """(bytes, mime) of a tile in the CURRENT landing, else None (unknown or superseded)."""
@@ -1320,7 +1401,12 @@ class PhotoFloorplanWorker:
 
     def __init__(self, root, *, latest=None, state=None, method=None,
                  wall_cap_s=LANDING_WALL_CAP_S, build=None, regress_v2=None,
-                 clock=time.monotonic, footprint_bounds=None, diagnostics_files=None):
+                 clock=time.monotonic, footprint_bounds=None, diagnostics_files=None,
+                 kept=None):
+        if kept is None:
+            from tower.config import world_photo_floorplan_kept_setting
+            kept = world_photo_floorplan_kept_setting()
+        self.kept = bool(kept)
         if method is None:
             from tower.config import world_photo_floorplan_method_setting
             method = world_photo_floorplan_method_setting()
@@ -1487,6 +1573,7 @@ class PhotoFloorplanWorker:
         disposition, block, stats = "ok", None, None
         trial = None
         regressed = ""
+        kept_reason = None   # why this landing published nothing (KEPT_REASONS); None if it did
         try:
             if self._build_takes_memory:
                 memory = self._plane_memory.get(pair, {})
@@ -1506,9 +1593,14 @@ class PhotoFloorplanWorker:
             check()
         except LandingSkipped as exc:
             disposition = f"skipped: {exc}"
+            if isinstance(exc, LandingOverrun):
+                kept_reason = KEPT_SUPERSEDED if cancel.is_set() else KEPT_WALL_CAP
+            else:
+                kept_reason = KEPT_FAILED
         except Exception as exc:  # noqa: BLE001 -- one bad landing never stops the worker
             logger.exception("world photo floorplan: build failed")
             disposition = f"failed: {type(exc).__name__}: {exc}"
+            kept_reason = KEPT_FAILED
         elapsed_ms = (time.monotonic() - started) * 1000.0
         v2 = None
         if disposition == "ok" and self.regress_v2:
@@ -1524,12 +1616,16 @@ class PhotoFloorplanWorker:
                 current = self._latest(*pair) if self._latest is not None else receipt
                 if self._stop.is_set() or cancel.is_set():
                     disposition = "skipped: cancelled"
+                    kept_reason = KEPT_SUPERSEDED
                 elif identity_of(current) != identity:
                     disposition = "skipped: superseded by a newer coverage landing"
+                    kept_reason = KEPT_SUPERSEDED
                 elif time.monotonic() - started > self.wall_cap_s:
                     disposition = f"skipped: exceeded the {self.wall_cap_s:.1f} s wall cap"
+                    kept_reason = KEPT_WALL_CAP
                 elif v2 is not None and self._v2_holds(pair, v2, stats):
                     disposition = v2["disposition"]
+                    kept_reason = KEPT_STALLED if v2["decision"] == "stalled" else KEPT_REGRESSED
                 elif v2 is None and ((regressed := regression(
                         self._published_opaque.get(pair), stats,
                         self._published_opaque_area.get(pair)))
@@ -1537,8 +1633,10 @@ class PhotoFloorplanWorker:
                     self._regress_streak[pair] = self._regress_streak.get(pair, 0) + 1
                     disposition = (f"skipped: regressed ({regressed}; "
                                    f"{self._regress_streak[pair]}/{REGRESS_MAX_CONSECUTIVE_SKIPS})")
+                    kept_reason = KEPT_REGRESSED
                 elif not self._state.publish(*pair, block, tiles):
                     disposition = "skipped: not newer than the published landing (never re-dated)"
+                    kept_reason = KEPT_NOT_NEWER
                 else:
                     # Only a PUBLISHED landing's planes are carried to the next one.
                     if trial is not None:
@@ -1560,6 +1658,16 @@ class PhotoFloorplanWorker:
                     self._regress_streak[pair] = 0
         outcome = {"identity": identity, "disposition": disposition,
                    "elapsed_ms": round(elapsed_ms, 1), "components": stats}
+        if self.kept:
+            # On this worker thread -- the only writer of the published state -- after the
+            # disposition is final and before `_run` releases a waiting manifest request. A
+            # published landing already cleared the notice inside `publish`.
+            outcome["kept"] = None
+            if disposition != "ok" and kept_reason is not None and not self._stop.is_set():
+                if self._state.keep(*pair, receipt, kept_reason):
+                    outcome["kept"] = kept_reason
+                    logger.info("world photo floorplan kept: world=%s session=%s landing=%r "
+                                "reason=%s", pair[0], pair[1], identity, kept_reason)
         if self.regress_v2:
             if v2 is None:
                 v2 = {"decision": "not assessed", "components": []}

@@ -1115,6 +1115,21 @@ def world_photo_floorplan_footprint_bounds_setting() -> bool:
     return os.environ.get(WORLD_PHOTO_FLOORPLAN_FOOTPRINT_BOUNDS_ENV) == "on"
 
 
+# PHOTO FLOOR PLAN "KEPT" NOTICE (manager mail 354; `photo_floorplan_worker.KEPT_REASONS`).
+# Exactly `on`: when the newest landing for a session publishes no plan (regressed, stalled,
+# wall cap, superseded, failed, not newer) while an earlier plan is published, the manifest
+# gains an optional top-level `kept` block naming the skipped landing, the reason and the
+# landing whose plan is served; the served plan itself is never re-dated, and the block goes
+# as soon as a newer landing publishes. Anything else -- unset, `1`, `true`, `ON` -- records
+# nothing and serves today's manifest byte for byte.
+WORLD_PHOTO_FLOORPLAN_KEPT_ENV = "TOWER_WORLD_PHOTO_FLOORPLAN_KEPT"
+
+
+def world_photo_floorplan_kept_setting() -> bool:
+    """True only when TOWER_WORLD_PHOTO_FLOORPLAN_KEPT is exactly `on`."""
+    return os.environ.get(WORLD_PHOTO_FLOORPLAN_KEPT_ENV) == "on"
+
+
 # PHOTO FLOOR PLAN NEW-SCENE DIAGNOSTICS FILES (`world_builder/photo_floorplan_diagnostics.py`;
 # manager 349 lane A). Diagnostics only: no published byte, wire field or decision depends on
 # it. The per-landing diagnostics LOG line is written whenever the photo floor plan runs;
