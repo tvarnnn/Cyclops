@@ -85,6 +85,11 @@ REASON_TRACKING_HELD = "tracking_held"
 REASON_INSUFFICIENT_MOTION = "insufficient_motion"
 REASON_RATE_LIMITED = "rate_limited"
 REASON_NO_MOTION_EVIDENCE = "no_motion_evidence"
+# A frame that failed the blur gate, accepted anyway because the view has
+# turned far enough since the last keyframe that skipping it would leave a
+# gap no matcher can cross (KF-TURNS, 2026-10-12). Only ever produced with
+# `KeyframePolicy.turn_bridge` on.
+REASON_TURN_BRIDGE = "turn_bridge"
 
 
 @dataclass(frozen=True)
@@ -234,6 +239,42 @@ class KeyframePolicy:
     # does NOT promote a frame.
     max_frame_gap: int = 90
 
+    # THE TURN BRIDGE (KF-TURNS, 2026-10-12). Off by default, and off is the
+    # policy above exactly: no decision changes.
+    #
+    # Measured on walk 9 (W9-DIAG.md): the blur gate runs before the
+    # overlap-floor rescue, so in a head turn every frame between two sharp
+    # ones is rejected and consecutive keyframes end up 52-391 deg apart.
+    # The camera's horizontal FOV is only ~45 deg; under 15 deg of rotation
+    # 99-100% of consecutive pairs verify, over 50 deg 11%. All 9 of walk
+    # 9's component breaks sit on such a gap. Half the floor's rejects are
+    # low-texture (white wall, carpet), not blurred at all.
+    #
+    # The bridge applies the "a weak link beats a broken chain" rule to the
+    # frames the blur gate rejected: a blurred frame is accepted when the
+    # view has turned far enough since the last keyframe that waiting for a
+    # sharp one would lose correspondence. "Far enough" is measured with
+    # the tracker's own numbers (no extra work on the ingest path): track
+    # overlap against the last keyframe below `bridge_overlap_ratio` (with
+    # a ~45 deg FOV, overlap 0.5 is roughly 20-25 deg of yaw), or a median
+    # track displacement above `bridge_displacement_frac` of the diagonal.
+    # When nothing can be measured (no reference, too few tracks) a run of
+    # `bridge_max_frames` blurred frames takes one anyway, unless the
+    # tracker positively says the camera is still.
+    turn_bridge: bool = False
+    # A sane absolute minimum: pure smear (variance of Laplacian ~1 at
+    # 120 deg/s on walk 9) is never taken, bridge or not.
+    bridge_min_sharpness: float = 3.0
+    # Never bridge sooner than this many frames after a keyframe: in a
+    # sustained blur the tracker against a blurred reference reads low
+    # survival on every frame, and this is what stops a keyframe per frame.
+    bridge_min_frames: int = 2
+    bridge_overlap_ratio: float = 0.5
+    bridge_displacement_frac: float = 0.15
+    # The time bound, in frames (0.5 s at 12 fps), for when motion cannot
+    # be measured or has not yet crossed the bounds above.
+    bridge_max_frames: int = 6
+
 
 @dataclass(frozen=True)
 class KeyframeDecision:
@@ -267,6 +308,9 @@ class KeyframeSelector:
         # frame that tracks, and by a declared loss, so a fresh segment
         # starts with a whole grace window rather than a spent one.
         self._consecutive_loss = 0
+        # Consecutive frames the blur gate has rejected. Read only by the
+        # turn bridge; counted regardless, which changes no decision.
+        self._blur_run = 0
 
     @property
     def policy(self) -> KeyframePolicy:
@@ -308,6 +352,42 @@ class KeyframeSelector:
                 return False
         return True
 
+    def _turn_bridge_due(
+        self, quality: FrameQuality, motion: MotionSummary | None
+    ) -> bool:
+        """Should this blur-rejected frame be taken as a turn bridge?
+
+        Uses only what evaluate() already has: no image work. See the
+        `turn_bridge` block in KeyframePolicy for the measurement behind it.
+        """
+        policy = self._policy
+        if quality.sharpness < policy.bridge_min_sharpness:
+            return False
+        if motion is None or not self._has_keyframe:
+            # Nothing to measure against (session start, or after a loss):
+            # seed a segment only after a sustained blurred run.
+            return self._blur_run >= policy.bridge_max_frames
+        if self._frames_since_keyframe < policy.bridge_min_frames:
+            return False
+        displacement_frac = (
+            (motion.median_displacement_px or 0.0) / quality.diagonal_px
+        )
+        if (
+            motion.tracked_count > 0
+            and motion.overlap_ratio >= policy.min_overlap_ratio
+            and displacement_frac < policy.min_displacement_frac
+        ):
+            # The tracker says the camera is still -- on however few tracks
+            # a low-texture view has: a blurred frame of a scene already
+            # keyframed bridges nothing. This is what keeps a static
+            # low-texture view from becoming a keyframe stream.
+            return False
+        if motion.overlap_ratio < policy.bridge_overlap_ratio:
+            return True
+        if displacement_frac >= policy.bridge_displacement_frac:
+            return True
+        return self._blur_run >= policy.bridge_max_frames
+
     def evaluate(
         self, quality: FrameQuality, motion: MotionSummary | None
     ) -> KeyframeDecision:
@@ -317,7 +397,13 @@ class KeyframeSelector:
         # seed: anchoring a whole session on a smeared frame poisons every
         # measurement taken against it afterwards.
         if not self._is_sharp_enough(quality):
+            self._blur_run += 1
+            if policy.turn_bridge and self._turn_bridge_due(quality, motion):
+                self._blur_run = 0
+                self._consecutive_loss = 0
+                return KeyframeDecision(ACCEPT, REASON_TURN_BRIDGE)
             return KeyframeDecision(REJECT, REASON_BLURRED)
+        self._blur_run = 0
 
         if motion is None or not self._has_keyframe:
             return KeyframeDecision(ACCEPT, REASON_SESSION_SEED)
