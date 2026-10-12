@@ -1635,6 +1635,19 @@ def solve(
             stop_kw["should_stop"] = should_stop
             if should_stop():
                 stop_kw["stopped"] = True
+        # ADAPTIVE SELECT (`TOWER_WORLD_SOLVE_SELECT`, `solve_select.py`): off -- the default -- this is
+        # None and the call below is today's. On (an ungated single-draw final solve, guard `on`), it is
+        # the guard's outcome for the draw to publish, which the publish step then uses instead of
+        # guarding again: draw 1's own when the guard isolated fewer than the trigger (so exactly what
+        # the publish step would have computed), or the winner of the extra draws.
+        selected = _adaptive_select(
+            store, world_id, session_id, workspace, database_path, solution, keyframes, final=final,
+            gated=gated, plan=plan, seed=seed, map_threads=map_threads,
+            min_image_observations=min_image_observations, should_stop=should_stop)
+        if selected is not None:
+            stop_kw["scale_guard"] = selected
+            if selected.solution is not None:
+                solver = selected.solution.solver
         solution, _gate_record = coherence_publish.gate_and_publish(
             store, world_id, session_id, workspace, solution, final=final, gate=gate,
             database_path=database_path, keyframes=keyframes, write=write_solution,
@@ -1656,6 +1669,56 @@ def solve(
         "solve": solution.solve,
         "gate": solution.gate,
     }
+
+
+def _adaptive_select(store, world_id: str, session_id: str, workspace: SolveWorkspace, database_path,
+                     solution: Solution, keyframes, *, final: bool, gated: bool, plan, seed,
+                     map_threads: int, min_image_observations: int, should_stop=None):
+    """The final scale guard's outcome to publish when ADAPTIVE SELECT runs, else None (today).
+
+    None -- and nothing imported, read or written beyond one environment read -- unless this is a
+    final, ungated, single-draw solve (no consensus plan) with `TOWER_WORLD_SOLVE_SELECT=adaptive:N`
+    and `TOWER_WORLD_FINAL_SCALE_GUARD=on`: the selection is decided by the guard, so a gated solve
+    (whose guard reads the gate's evidence) and a guard that is off or shadow are left exactly as
+    they are, with a warning. A selection that fails outright is logged and returns None, and the
+    publish step then guards draw 1 itself, as today."""
+    if not final or gated or plan is not None:
+        if final and (gated or plan is not None):
+            from tower.config import (  # noqa: PLC0415
+                WORLD_SOLVE_SELECT_ADAPTIVE,
+                world_solve_select_setting,
+            )
+
+            if world_solve_select_setting()[0] == WORLD_SOLVE_SELECT_ADAPTIVE:
+                logger.warning("global solve: adaptive select is for an ungated single-draw final solve; "
+                               "this one is gated or a consensus, and is published as today")
+        return None
+    from tower.config import (  # noqa: PLC0415
+        WORLD_FINAL_SCALE_GUARD_ON,
+        WORLD_SOLVE_SELECT_ADAPTIVE,
+        world_final_scale_guard_setting,
+        world_solve_select_budget_setting,
+        world_solve_select_setting,
+    )
+
+    mode, extra = world_solve_select_setting()
+    if mode != WORLD_SOLVE_SELECT_ADAPTIVE:
+        return None
+    if world_final_scale_guard_setting() != WORLD_FINAL_SCALE_GUARD_ON:
+        logger.warning("global solve: adaptive select needs TOWER_WORLD_FINAL_SCALE_GUARD=on; the final "
+                       "solve is published as today")
+        return None
+    from tower.world_builder import solve_select  # noqa: PLC0415
+
+    try:
+        outcome, _record = solve_select.select(
+            store, world_id, session_id, workspace, database_path, solution, keyframes, n=extra,
+            budget_s=world_solve_select_budget_setting(), threads=map_threads, seed=seed,
+            min_image_observations=min_image_observations, should_stop=should_stop)
+    except Exception:  # noqa: BLE001 -- the selection never costs the finish
+        logger.exception("global solve: adaptive select failed; the final solve is published as today")
+        return None
+    return outcome
 
 
 def _loop_detection_wanted(loop_detection) -> bool:
