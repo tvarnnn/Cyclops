@@ -61,6 +61,8 @@ import numpy as np
 from tower.world_builder import guidance_coverage as gc
 from tower.world_builder.photo_floorplan import (
     LOWER_IMAGE_FRACTION,
+    MIN_FRAME_PITCH_DEG,
+    fallback_floor_plane,
     KeyframeSample,
     PhotoFrame,
     build_homography_raster,
@@ -89,6 +91,18 @@ METHOD_DEPTH = "depth"
 # Option (2)'s per-keyframe SfM depth fit (unchanged from the slice-1 probe).
 MIN_FIT_POINTS = 12
 MAX_HELD_OUT_REL = 0.15
+
+
+PLANE_REUSE_MIN_SHARED = 10
+PLANE_REUSE_MAX_RESID_FRAC = 0.05
+PLANE_REUSE_MAX_LANDINGS = 2
+"""Plane REUSE across landings. Each new solve has its own gauge, so the previous
+landing's plane is carried over by a Sim(3) fitted (Umeyama) on the camera centres
+of keyframes both landings placed: >= 10 shared, median residual <= 0.05 of the
+previous camera height. The carried plane must still pass the camera checks against
+THIS landing's cameras (>= 95% above, robust CV <= 0.25). Only an ESTIMATED plane is
+carried (never a fallback), and a fresh fit is forced after 2 consecutive reuses, so
+a plane is never more than 2 landings stale."""
 
 
 class LandingSkipped(Exception):
@@ -197,8 +211,66 @@ def load_frame_image(images_dir: Path, kid: str, camera: dict):
             (camera["cx"] + 0.5) * sx - 0.5, (camera["cy"] + 0.5) * sy - 0.5)
 
 
+def _umeyama(src, dst):
+    mu_s, mu_d = src.mean(0), dst.mean(0)
+    xs, xd = src - mu_s, dst - mu_d
+    U, S_, Vt = np.linalg.svd(xd.T @ xs / len(src))
+    D = np.eye(3)
+    D[2, 2] = np.sign(np.linalg.det(U @ Vt)) or 1.0
+    R = U @ D @ Vt
+    var = float(xs.var(0).sum())
+    scale = float(np.trace(np.diag(S_) @ D) / var) if var > 0 else 0.0
+    return scale, R, mu_d - scale * R @ mu_s
+
+
+def plane_memory_reuses(stats):
+    return int(stats.get("_reuses_before", 0)) + 1
+
+
+def reuse_plane(memory, entries):
+    """The previous landing's estimated plane carried into this landing's gauge, or
+    (None, reason)."""
+    from tower.world_builder.photo_floorplan import (
+        CAMERA_ABOVE_MIN_FRAC, CAMERA_HEIGHT_MAX_CV, FloorPlane)
+
+    if not memory:
+        return None, "no previous plane"
+    if memory.get("reuses", 0) >= PLANE_REUSE_MAX_LANDINGS:
+        return None, "refit due"
+    prior = memory["plane"]
+    now = {e[0]: e[1] for e in entries}
+    shared = [k for k in memory["positions"] if k in now]
+    if len(shared) < PLANE_REUSE_MIN_SHARED:
+        return None, f"{len(shared)} shared keyframes"
+    src = np.stack([memory["positions"][k] for k in shared])
+    dst = np.stack([now[k] for k in shared])
+    scale, R, t = _umeyama(src, dst)
+    if not np.isfinite(scale) or scale <= 0:
+        return None, "degenerate Sim(3)"
+    h_prev = float(prior.stats["camera_height_median"])
+    resid = float(np.median(np.linalg.norm((scale * (R @ src.T)).T + t - dst, axis=1)))
+    if resid > PLANE_REUSE_MAX_RESID_FRAC * h_prev * scale:
+        return None, f"Sim(3) residual {resid:.3f} too large"
+    n_prev = np.asarray(prior.normal, dtype=np.float64)
+    n = R @ n_prev
+    p0 = scale * (R @ (-prior.offset * n_prev)) + t
+    offset = -float(n @ p0)
+    cams = np.stack([e[1] for e in entries])
+    above = cams @ n + offset
+    med = float(np.median(above))
+    cv = float(1.4826 * np.median(np.abs(above - med)) / med) if med > 0 else float("inf")
+    if med <= 0 or float(np.mean(above > 0)) < CAMERA_ABOVE_MIN_FRAC or cv > CAMERA_HEIGHT_MAX_CV:
+        return None, "carried plane fails the camera checks"
+    stats = dict(prior.stats, source="reused_sim3", camera_height_median=med,
+                 camera_height_cv=cv, camera_above_fraction=float(np.mean(above > 0)),
+                 reuse_shared=len(shared), reuse_resid=resid, reason="ok (reused)")
+    return FloorPlane(ok=True, reason="ok (reused from the previous landing)",
+                      normal=tuple(float(v) for v in n), offset=offset, stats=stats), "ok"
+
+
 def homography_component(*, receipt_component, entries, tree, arrays, keyframe_index,
-                         camera, images_dir, check=None, furniture_mask=None):
+                         camera, images_dir, check=None, furniture_mask=None,
+                         plane_memory=None):
     """Fallback (3) for one displayed component.
 
     Returns (RasterResult, FloorPlane, frames, stats)."""
@@ -207,9 +279,11 @@ def homography_component(*, receipt_component, entries, tree, arrays, keyframe_i
     right = np.cross(forward, up)
     right = right / np.linalg.norm(right)
     stats = {"eligible": len(entries)}
+    ms = stats["ms"] = {}
     plane = None
     frames = []
     if entries:
+        t_stage = time.perf_counter()
         transforms = [solve_to_output(tree, e[0]) for e in entries]
         M, scale, pos0, c0, solve_component = transforms[0]
         worst = 0.0
@@ -226,11 +300,53 @@ def homography_component(*, receipt_component, entries, tree, arrays, keyframe_i
         out_xyz[good] = pos0 + scale * (M @ (xyz[good] - c0).T).T
         stats["points_quality"] = int(good.sum())
         cams = np.stack([e[1] for e in entries])
+        ms["points"] = round((time.perf_counter() - t_stage) * 1000.0, 1)
         t_plane = time.perf_counter()
-        plane = estimate_floor_plane(points_xyz=out_xyz[good], camera_positions=cams,
-                                     up_xyz=up, forward_xyz=forward,
-                                     bounds_xy=receipt_component["bounds_xy"], check=check)
-        stats["plane_ms"] = round((time.perf_counter() - t_plane) * 1000.0, 1)
+        stats["_reuses_before"] = (plane_memory or {}).get("reuses", 0)
+        reused, reuse_reason = (reuse_plane(plane_memory, entries)
+                                if plane_memory is not None else (None, "off"))
+        stats["plane_reuse"] = reuse_reason
+        if reused is not None:
+            plane = reused
+        else:
+            rights = np.stack([np.cross(e[3], e[2]) for e in entries])
+            plane = estimate_floor_plane(points_xyz=out_xyz[good], camera_positions=cams,
+                                         up_xyz=up, forward_xyz=forward,
+                                         bounds_xy=receipt_component["bounds_xy"], check=check,
+                                         camera_rights=rights)
+        observations = np.asarray(arrays["observations"]).reshape(-1, 3)
+        obs_xy = np.asarray(arrays["observation_xy"]).reshape(-1, 2)
+        band_top = (1.0 - LOWER_IMAGE_FRACTION) * float(camera["height"])
+        by_frame = np.argsort(observations[:, 0], kind="stable")
+        starts = np.searchsorted(observations[by_frame, 0], np.arange(len(keyframe_index) + 1))
+
+        def band_points(kid):
+            ki = keyframe_index.get(kid)
+            if ki is None or ki + 1 >= len(starts):
+                return np.zeros((0, 2)), np.zeros((0, 3))
+            rows = by_frame[starts[ki]:starts[ki + 1]]
+            rows = rows[obs_xy[rows, 1] >= band_top]
+            return obs_xy[rows], out_xyz[observations[rows, 2]]
+
+        if not plane.ok and plane.stats.get("reference_normal_xyz") is not None:
+            # A sparse live solve: never go blank -- a level plane from the camera
+            # trajectory and the drops the downward frames themselves observed.
+            n_ref = np.asarray(plane.stats["reference_normal_xyz"])
+            drops = []
+            for e in entries:
+                pitch = float(np.degrees(np.arcsin(np.clip(-float(e[3] @ n_ref), -1.0, 1.0))))
+                if pitch < MIN_FRAME_PITCH_DEG:
+                    continue
+                _, pts = band_points(e[0])
+                pts = pts[np.all(np.isfinite(pts), axis=1)]
+                drops.append(float(e[1] @ n_ref) - pts @ n_ref)
+            plane = fallback_floor_plane(failed=plane, camera_positions=cams,
+                                         band_drops_by_frame=drops)
+            stats["plane"] = plane.stats
+            stats["plane_ok"] = plane.ok
+            stats["plane_reason"] = plane.reason
+        stats["plane_ms"] = ms["plane"] = round((time.perf_counter() - t_plane) * 1000.0, 1)
+        t_stage = time.perf_counter()
         stats["plane"] = plane.stats
         stats["plane_ok"] = plane.ok
         stats["plane_reason"] = plane.reason
@@ -251,11 +367,8 @@ def homography_component(*, receipt_component, entries, tree, arrays, keyframe_i
                     continue
                 admissible.append((e[0], centre, e))
             selected = select_spatial(admissible, forward, right)
-            observations = np.asarray(arrays["observations"]).reshape(-1, 3)
-            obs_xy = np.asarray(arrays["observation_xy"]).reshape(-1, 2)
-            band_top = (1.0 - LOWER_IMAGE_FRACTION) * float(camera["height"])
-            by_frame = np.argsort(observations[:, 0], kind="stable")
-            starts = np.searchsorted(observations[by_frame, 0], np.arange(len(keyframe_index) + 1))
+            ms["gate"] = round((time.perf_counter() - t_stage) * 1000.0, 1)
+            t_stage = time.perf_counter()
             for kid, _, (_, position, up_world, forward_world, _) in selected:
                 if check is not None:
                     check()
@@ -265,14 +378,12 @@ def homography_component(*, receipt_component, entries, tree, arrays, keyframe_i
                     continue
                 rgb, fx, fy, cx, cy = loaded
                 ki = keyframe_index[kid]
-                rows = by_frame[starts[ki]:starts[ki + 1]]
-                rows = rows[obs_xy[rows, 1] >= band_top]
-                pts = out_xyz[observations[rows, 2]]
+                band_xy, pts = band_points(kid)
                 keep = np.all(np.isfinite(pts), axis=1)
                 # Observed pixel positions, mapped to the sample size (pixel centres).
                 sx = rgb.shape[1] / float(camera["width"])
                 sy = rgb.shape[0] / float(camera["height"])
-                uv = (obs_xy[rows].astype(np.float64) + 0.5) * np.array([sx, sy]) - 0.5
+                uv = (band_xy.astype(np.float64) + 0.5) * np.array([sx, sy]) - 0.5
                 frames.append(PhotoFrame(kid=kid, position_xyz=tuple(position),
                                          forward_xyz=tuple(forward_world),
                                          up_xyz=tuple(up_world), fx=fx, fy=fy, cx=cx, cy=cy,
@@ -280,11 +391,20 @@ def homography_component(*, receipt_component, entries, tree, arrays, keyframe_i
                                          check_points_uv=uv[keep]))
             stats["admissible_frames"] = len(admissible)
             stats["selected_frames"] = len(selected)
+            ms["load"] = round((time.perf_counter() - t_stage) * 1000.0, 1)
         stats["frame_gate_counts"] = gate_counts
     if plane is None:
         from tower.world_builder.photo_floorplan import FloorPlane
         plane = FloorPlane(ok=False, reason="no eligible keyframes")
         stats["plane_ok"], stats["plane_reason"] = False, plane.reason
+    if plane_memory is not None and entries:
+        source = plane.stats.get("source")
+        if plane.ok and source in (None, "reused_sim3"):
+            plane_memory.clear()
+            plane_memory.update(plane=plane, positions={e[0]: e[1] for e in entries},
+                                reuses=(plane_memory_reuses(stats) if source else 0))
+        else:
+            plane_memory.clear()
     t_warp = time.perf_counter()
     result = build_homography_raster(origin_xyz=receipt_component["origin_xyz"], up_xyz=up,
                                      forward_xyz=forward,
@@ -292,7 +412,7 @@ def homography_component(*, receipt_component, entries, tree, arrays, keyframe_i
                                      frames=frames, check=check,
                                      **({} if furniture_mask is None
                                         else {"furniture_mask": bool(furniture_mask)}))
-    stats["warp_ms"] = round((time.perf_counter() - t_warp) * 1000.0, 1)
+    stats["warp_ms"] = ms["warp"] = round((time.perf_counter() - t_warp) * 1000.0, 1)
     return result, plane, frames, stats
 
 
@@ -491,7 +611,7 @@ def read_landing_arrays(solve_dir: Path, solution_stat, solution_meta, check=Non
 
 
 def build_landing(root, world_id, session_id, receipt, eligible, tree, solution_stat,
-                  method=METHOD_HOMOGRAPHY, check=None):
+                  method=METHOD_HOMOGRAPHY, check=None, plane_memory=None):
     """(manifest block, {digest: (bytes, mime)}, per-component stats) for one landing."""
     solve_dir = Path(root) / "worlds" / world_id / "solve" / session_id
     solution = tree["solution"]
@@ -499,7 +619,9 @@ def build_landing(root, world_id, session_id, receipt, eligible, tree, solution_
     if not isinstance(camera, dict) or not all(
             k in camera for k in ("fx", "fy", "cx", "cy", "width", "height")):
         raise LandingSkipped("the landing's solve records no camera")
+    t_arrays = time.perf_counter()
     arrays = read_landing_arrays(solve_dir, solution_stat, solution, check)
+    arrays_ms = round((time.perf_counter() - t_arrays) * 1000.0, 1)
     keyframe_index = {kid: i for i, kid in enumerate(solution["keyframe_ids"])}
     by_ref = placed_entries(tree, eligible)
     cache = solve = None
@@ -523,12 +645,20 @@ def build_landing(root, world_id, session_id, receipt, eligible, tree, solution_
             result, _, _, cstats = homography_component(
                 receipt_component=rc, entries=entries, tree=tree, arrays=arrays,
                 keyframe_index=keyframe_index, camera=camera,
-                images_dir=solve_dir / "images", check=check)
+                images_dir=solve_dir / "images", check=check,
+                plane_memory=(plane_memory.setdefault(ref, {})
+                              if plane_memory is not None else None))
         if check is not None:
             check()
+        t_encode = time.perf_counter()
         tile = encode_tile(result.rgba)
+        cstats.setdefault("ms", {})["encode"] = round((time.perf_counter() - t_encode) * 1000.0, 1)
+        if not stats:
+            cstats["ms"]["arrays"] = arrays_ms   # charged once, to the first component
         cstats.update(reference_segment=ref, opaque_fraction=result.opaque_fraction,
-                      projected_keyframes=len(result.contributing_keyframes))
+                      projected_keyframes=len(result.contributing_keyframes),
+                      frames_warped=result.stats.get("frames_warped"),
+                      frames_rejected=result.stats.get("frames_rejected"))
         if tile is None:
             cstats["tile"] = "omitted (> 180 KiB)"
             stats.append(cstats)
@@ -643,6 +773,28 @@ def state_for(root):
 # ---------------------------------------------------------------------------
 
 
+def component_summary(stats):
+    """One compact JSON line per landing for the disposition log: a live run must never
+    be blind again (e2e2: three `ok` landings that projected nothing, with no clue why)."""
+    rows = []
+    for c in stats or ():
+        plane = c.get("plane") or {}
+        rows.append({
+            "ref": c.get("reference_segment"), "eligible": c.get("eligible"),
+            "points": c.get("points_quality"), "plane_ok": c.get("plane_ok"),
+            "plane_reason": c.get("plane_reason"), "reference": plane.get("reference_normal"),
+            "plane_source": plane.get("source", "estimated" if c.get("plane_ok") else None),
+            "plane_reuse": c.get("plane_reuse"),
+            "candidates": plane.get("candidate_points"), "inliers": plane.get("inliers"),
+            "gates": c.get("frame_gate_counts"), "selected": c.get("selected_frames"),
+            "warped": c.get("frames_warped"), "frames_rejected": c.get("frames_rejected"),
+            "projected": c.get("projected_keyframes"),
+            "opaque": (round(c["opaque_fraction"], 3) if c.get("opaque_fraction") is not None
+                       else None),
+            "tile": c.get("tile"), "bytes": c.get("bytes"), "ms": c.get("ms")})
+    return json.dumps(rows, separators=(",", ":"), default=str)
+
+
 class PhotoFloorplanWorker:
     """One daemon builds each newly published coverage landing's photo plan."""
 
@@ -657,11 +809,14 @@ class PhotoFloorplanWorker:
         self._latest = latest
         self._state = state if state is not None else state_for(root)
         self._build = build or build_landing
+        import inspect
+        self._build_takes_memory = "plane_memory" in inspect.signature(self._build).parameters
         self._stop = threading.Event()
         self._condition = threading.Condition()
         self._jobs = OrderedDict()
         self._running = None
         self.outcomes = {}
+        self._plane_memory = {}   # (world, session) -> {reference_segment: memory}
         self._thread = threading.Thread(target=self._run, name="world-photo-floorplan",
                                         daemon=True)
         self._thread.start()
@@ -738,11 +893,18 @@ class PhotoFloorplanWorker:
         receipt = job["receipt"]
         identity = identity_of(receipt)
         disposition, block, stats = "ok", None, None
+        trial = None
         try:
+            if self._build_takes_memory:
+                memory = self._plane_memory.get(pair, {})
+                trial = {ref: dict(m) for ref, m in memory.items()}
+                kwargs = {"plane_memory": trial}
+            else:
+                kwargs = {}
             block, tiles, stats = self._build(self.root, job["world_id"], job["session_id"],
                                               receipt, job["eligible"], job["tree"],
                                               job["solution_stat"], method=self.method,
-                                              check=check)
+                                              check=check, **kwargs)
             check()
         except LandingSkipped as exc:
             disposition = f"skipped: {exc}"
@@ -761,9 +923,14 @@ class PhotoFloorplanWorker:
                     disposition = f"skipped: exceeded the {self.wall_cap_s:.1f} s wall cap"
                 elif not self._state.publish(*pair, block, tiles):
                     disposition = "skipped: not newer than the published landing (never re-dated)"
+                else:
+                    # Only a PUBLISHED landing's planes are carried to the next one.
+                    if trial is not None:
+                        self._plane_memory[pair] = trial
         self.outcomes = {**self.outcomes, pair: {"identity": identity, "disposition": disposition,
                                                  "elapsed_ms": round(elapsed_ms, 1),
                                                  "components": stats}}
         log = logger.info if disposition == "ok" else logger.warning
         log("world photo floorplan: world=%s session=%s landing=%r method=%s elapsed_ms=%.1f "
-            "disposition=%s", pair[0], pair[1], identity, self.method, elapsed_ms, disposition)
+            "disposition=%s components=%s", pair[0], pair[1], identity, self.method, elapsed_ms,
+            disposition, component_summary(stats))

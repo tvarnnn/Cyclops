@@ -521,6 +521,30 @@ two dimensions (second/first eigenvalue >= 0.05), are flat (third/second
 <= 0.25) and lie within 25 degrees of the receipt `up`; a walk along one line
 leaves its plane normal undetermined about that line."""
 
+FLOOR_PLANE_MAX_TILT_LOOSE_DEG = 20.0
+"""The tilt window when the camera-centre plane is NOT usable (a partial live
+trajectory: walk 8 / e2e2 landings 0-2 had spread 0.03-0.05, flatness 0.70 or a
+min-variance axis 54 deg off up). The fallback references are biased: the receipt
+`up` (mean camera up axis) sat 10-13 deg off the camera plane on e2e2, the roll-free
+vertical 7-8 deg. A 10 deg window could exclude the true floor; 20 deg holds it,
+and the camera-height consistency check still rejects a wrongly tilted plane."""
+
+FLOOR_POINTS_BUDGET = 20000
+NEAREST_CAMERA_BUDGET = 256
+"""Cost bounds for `estimate_floor_plane`, flat in walk length: at most 20k of the
+component's points (a deterministic subsample, seed 0) and at most 256 cameras (an
+even stride along the walk) for the nearest-camera candidate test. The 4000-point
+RANSAC scoring subsample is drawn from these."""
+
+ROLL_FREE_MIN_SPREAD = 0.05
+ROLL_FREE_MAX_FLATNESS = 0.1
+ROLL_FREE_MAX_TILT_DEG = 30.0
+"""Roll-free vertical: a hand-held / head-worn camera has ~zero roll, so the
+vertical is perpendicular to every camera RIGHT axis -- the least-variance
+direction of the right vectors. Used when the right axes span the horizontal
+(second/first eigenvalue >= 0.05, third/second <= 0.1) and it is within 30 deg
+of the receipt `up`. It does not depend on the trajectory's shape."""
+
 FLOOR_AMBIGUITY_RATIO = 0.5
 """Reported, not acted on: a second VALID plane more than three tolerances
 away with at least half the chosen plane's support marks the estimate
@@ -673,6 +697,50 @@ def _camera_plane_reference(cameras, up):
     return up, info
 
 
+def _roll_free_reference(camera_rights, up):
+    """(normal, info) of the roll-free vertical, or (None, info) if it is not usable."""
+    info = {}
+    if camera_rights is None:
+        return None, info
+    r = np.asarray(camera_rights, dtype=np.float64).reshape(-1, 3)
+    norms = np.linalg.norm(r, axis=1)
+    r = r[np.isfinite(norms) & (norms > EPS)]
+    if len(r) < 3:
+        return None, info
+    r = r / np.linalg.norm(r, axis=1)[:, None]
+    w, v = np.linalg.eigh(r.T @ r)
+    normal = v[:, 0] if float(v[:, 0] @ up) >= 0 else -v[:, 0]
+    spread = float(w[1] / max(w[2], EPS))
+    flatness = float(w[0] / max(w[1], EPS))
+    tilt = math.degrees(math.acos(min(1.0, max(-1.0, float(normal @ up)))))
+    info.update(roll_free_spread=spread, roll_free_flatness=flatness,
+                roll_free_tilt_from_up_deg=tilt)
+    if (spread >= ROLL_FREE_MIN_SPREAD and flatness <= ROLL_FREE_MAX_FLATNESS
+            and tilt <= ROLL_FREE_MAX_TILT_DEG):
+        return normal, info
+    return None, info
+
+
+def _below_nearest_camera(points, cameras, n_ref, chunk=4096):
+    """Each point's height minus the height of the camera nearest to it ACROSS the
+    reference normal (horizontally). A uniform tilt of the reference cancels locally,
+    which a single global camera-height cut does not on a long, tilted trajectory."""
+    a = np.cross(n_ref, [1.0, 0.0, 0.0])
+    if np.linalg.norm(a) < 0.1:
+        a = np.cross(n_ref, [0.0, 1.0, 0.0])
+    a = a / np.linalg.norm(a)
+    b = np.cross(n_ref, a)
+    cam_xy = np.stack([cameras @ a, cameras @ b], axis=1)
+    cam_h = cameras @ n_ref
+    pt_xy = np.stack([points @ a, points @ b], axis=1)
+    pt_h = points @ n_ref
+    out = np.empty(len(points))
+    for i in range(0, len(points), chunk):
+        d = ((pt_xy[i:i + chunk, None, :] - cam_xy[None, :, :]) ** 2).sum(-1)
+        out[i:i + chunk] = pt_h[i:i + chunk] - cam_h[np.argmin(d, axis=1)]
+    return out
+
+
 def _score_planes(points, cameras, normals, offsets, n_ref, *, max_tilt_deg, tol_frac,
                   below_max_frac, camera_above_min_frac, camera_height_max_cv):
     """Vectorised constraint check and inlier count for many plane hypotheses."""
@@ -708,13 +776,16 @@ def estimate_floor_plane(*, points_xyz, camera_positions, up_xyz, forward_xyz, b
                          min_support_cells: int = FLOOR_MIN_SUPPORT_CELLS,
                          camera_above_min_frac: float = CAMERA_ABOVE_MIN_FRAC,
                          camera_height_max_cv: float = CAMERA_HEIGHT_MAX_CV,
-                         hypotheses: int = FLOOR_RANSAC_HYPOTHESES, check=None) -> FloorPlane:
+                         hypotheses: int = FLOOR_RANSAC_HYPOTHESES, check=None,
+                         camera_rights=None) -> FloorPlane:
     """ONE floor plane per component from the lower envelope of its 3-D points.
 
     `points_xyz` are the solve's (already quality-filtered) 3-D points of this
     component, and `camera_positions` its eligible camera centres, both in the
-    component's output frame. Returns a rejected `FloorPlane` (with a reason)
-    rather than raising when the data cannot support a plane."""
+    component's output frame. `camera_rights` (optional, same order) are the
+    cameras' right axes (`forward x up`), for the roll-free reference. Returns a
+    rejected `FloorPlane` (with a reason) rather than raising when the data cannot
+    support a plane."""
     up = _unit(up_xyz)
     forward = _unit(forward_xyz)
     right = np.cross(forward, up)
@@ -724,17 +795,34 @@ def estimate_floor_plane(*, points_xyz, camera_positions, up_xyz, forward_xyz, b
     cams = np.asarray(camera_positions, dtype=np.float64).reshape(-1, 3)
     cams = cams[np.all(np.isfinite(cams), axis=1)]
     stats = {"points_total": int(len(pts)), "cameras": int(len(cams))}
+    if len(pts) > FLOOR_POINTS_BUDGET:
+        keep = np.random.default_rng(seed).choice(len(pts), FLOOR_POINTS_BUDGET, replace=False)
+        pts = pts[np.sort(keep)]
+        stats["points_used"] = int(len(pts))
     if len(cams) < 3:
         return _reject_plane("fewer than 3 posed cameras", stats)
     n_ref, ref_info = _camera_plane_reference(cams, up)
     stats.update(ref_info)
+    if ref_info["reference_normal"] != "camera_plane":
+        # A partial trajectory: no usable camera plane. Prefer the roll-free
+        # vertical over the pitch-biased receipt `up`, and widen the tilt window.
+        roll_free, rf_info = _roll_free_reference(camera_rights, up)
+        stats.update(rf_info)
+        if roll_free is not None:
+            n_ref = roll_free
+            stats["reference_normal"] = "roll_free"
+        max_tilt_deg = max(max_tilt_deg, FLOOR_PLANE_MAX_TILT_LOOSE_DEG)
+    stats["max_tilt_deg"] = max_tilt_deg
+    stats["reference_normal_xyz"] = [float(v) for v in n_ref]
 
     bounds = padded_square_bounds(bounds_xy, pad_frac)
     min_x, min_y, max_x, max_y = bounds
     px, py = pts @ forward, pts @ right
-    cam_ref_h = cams @ n_ref
-    candidate = ((px >= min_x) & (px <= max_x) & (py >= min_y) & (py <= max_y)
-                 & (pts @ n_ref < float(np.percentile(cam_ref_h, 5))))
+    in_bounds = (px >= min_x) & (px <= max_x) & (py >= min_y) & (py <= max_y)
+    candidate = in_bounds.copy()
+    if in_bounds.any():
+        near = cams[::max(1, -(-len(cams) // NEAREST_CAMERA_BUDGET))]
+        candidate[in_bounds] = _below_nearest_camera(pts[in_bounds], near, n_ref) < 0.0
     cand = pts[candidate]
     stats["candidate_points"] = int(len(cand))
     if len(cand) < min_inliers:
@@ -862,6 +950,55 @@ def estimate_floor_plane(*, points_xyz, camera_positions, up_xyz, forward_xyz, b
                       offset=float(offset), stats=stats)
 
 
+FALLBACK_BAND_PERCENTILE = 80.0
+FALLBACK_MIN_POINTS_PER_FRAME = 5
+FALLBACK_MIN_FRAMES = 3
+"""Camera-trajectory FALLBACK plane (live landings whose solve is still too sparse for
+`estimate_floor_plane`; e2e2 landing 0: 29 cameras, 14 inliers). Scale-free: the
+camera height H is read off the solve itself -- for every downward frame, the drop
+(along the reference normal) from the camera to the 3-D points it observed in its
+OWN bottom 40%, taken at the 80th percentile within that frame (the deepest typical
+surface, i.e. the floor when the floor is visible), then the median over frames.
+The plane is level along the reference normal, H below the cameras' median height.
+It needs >= 3 such frames with >= 5 points each; otherwise there is no plane and the
+component stays gray. It is reported as `source = fallback_camera_drop`."""
+
+
+def fallback_floor_plane(*, failed, camera_positions, band_drops_by_frame):
+    """A level plane from the camera trajectory, or a still-rejected plane.
+
+    `band_drops_by_frame`: for each downward frame, the drops (camera height minus
+    point height, along `failed.stats['reference_normal_xyz']`) of the 3-D points it
+    observed in its own bottom band."""
+    n = failed.stats.get("reference_normal_xyz")
+    cams = np.asarray(camera_positions, dtype=np.float64).reshape(-1, 3)
+    if n is None or len(cams) < 3:
+        return failed
+    n = np.asarray(n, dtype=np.float64)
+    per_frame = [float(np.percentile(d, FALLBACK_BAND_PERCENTILE)) for d in band_drops_by_frame
+                 if len(d) >= FALLBACK_MIN_POINTS_PER_FRAME]
+    per_frame = [v for v in per_frame if math.isfinite(v) and v > 0]
+    stats = dict(failed.stats)
+    stats.update(fallback_from=failed.reason, fallback_frames=len(per_frame))
+    if len(per_frame) < FALLBACK_MIN_FRAMES:
+        reason = (f"{failed.reason}; no fallback: {len(per_frame)} downward frames with "
+                  f">= {FALLBACK_MIN_POINTS_PER_FRAME} bottom-band points "
+                  f"(< {FALLBACK_MIN_FRAMES})")
+        stats["reason"] = reason
+        return FloorPlane(ok=False, reason=reason, stats=stats)
+    height = float(np.median(per_frame))
+    cam_h = cams @ n
+    offset = -(float(np.median(cam_h)) - height)
+    above = cam_h + offset
+    med = float(np.median(above))
+    stats.update(source="fallback_camera_drop", camera_height_median=med,
+                 camera_above_fraction=float(np.mean(above > 0)),
+                 camera_height_cv=float(1.4826 * np.median(np.abs(above - med)) / max(med, EPS)),
+                 reason="ok (fallback: camera trajectory)")
+    return FloorPlane(ok=True, reason="ok (fallback: camera trajectory)",
+                      normal=tuple(float(v) for v in n), offset=offset, stats=stats)
+
+
 def _frame_axes(forward_xyz, up_xyz):
     fwd = _unit(forward_xyz)
     cam_up = _unit(up_xyz)
@@ -963,6 +1100,7 @@ def build_homography_raster(*, origin_xyz, up_xyz, forward_xyz, bounds_xy, plane
     n = np.asarray(plane.normal, dtype=np.float64)
     d = float(plane.offset)
     n_up = float(n @ up)
+    fallback = plane.stats.get("source") == "fallback_camera_drop"
     if n_up <= 0.1:
         raise ValueError("floor plane normal nearly perpendicular to the component up")
     h_med = float(plane.stats.get("camera_height_median") or 0.0)
@@ -1001,7 +1139,10 @@ def build_homography_raster(*, origin_xyz, up_xyz, forward_xyz, bounds_xy, plane
         if not ok:
             _reject(reason)
             continue
-        if fr.check_points_xyz is not None:
+        # The per-frame pose gate checks a frame against an INDEPENDENT plane. A
+        # camera-trajectory fallback plane is built from these same frames' drops, so
+        # a frame that glimpses deeper floor would only vote itself out: skip it.
+        if fr.check_points_xyz is not None and not fallback:
             cp = np.asarray(fr.check_points_xyz, dtype=np.float64).reshape(-1, 3)
             if len(cp) >= FRAME_MIN_CHECK_POINTS:
                 below = float(np.mean(cp @ n + d < -FRAME_BELOW_PLANE_TOL_FRAC * h_med))
@@ -1061,8 +1202,9 @@ def build_homography_raster(*, origin_xyz, up_xyz, forward_xyz, bounds_xy, plane
         c1 = min(width - 1, int(math.ceil((hi_x - min_x) / step_x)) + 1)
         r0 = max(0, int(math.floor((lo_y - min_y) / step_y)) - 1)
         r1 = min(height - 1, int(math.ceil((hi_y - min_y) / step_y)) + 1)
-        gx = xs[c0:c1 + 1][None, :]
-        gy = ys[r0:r1 + 1][:, None]
+        # float32 grid: coordinates are tens of units, so ~1e-6 error, far below a cell.
+        gx = xs[c0:c1 + 1][None, :].astype(np.float32)
+        gy = ys[r0:r1 + 1][:, None].astype(np.float32)
         # The plane point of cell (x, y) is affine in (x, y):
         #   P = x * bx + y * by + p0, with its height along `up` solved from
         #   the plane equation; so are its camera coordinates (the
@@ -1070,9 +1212,9 @@ def build_homography_raster(*, origin_xyz, up_xyz, forward_xyz, bounds_xy, plane
         bx = forward - (n_f / n_up) * up
         by = right - (n_r / n_up) * up
         v0 = -(d / n_up) * up - cam
-        zc = (v0 @ fwd_c) + gx * (bx @ fwd_c) + gy * (by @ fwd_c)
-        xc = (v0 @ right_c) + gx * (bx @ right_c) + gy * (by @ right_c)
-        yc = (v0 @ down_c) + gx * (bx @ down_c) + gy * (by @ down_c)
+        zc = float(v0 @ fwd_c) + gx * float(bx @ fwd_c) + gy * float(by @ fwd_c)
+        xc = float(v0 @ right_c) + gx * float(bx @ right_c) + gy * float(by @ right_c)
+        yc = float(v0 @ down_c) + gx * float(bx @ down_c) + gy * float(by @ down_c)
         front = zc > EPS
         safe_z = np.where(front, zc, 1.0)
         uu = fr.fx * xc / safe_z + fr.cx
@@ -1105,14 +1247,17 @@ def build_homography_raster(*, origin_xyz, up_xyz, forward_xyz, bounds_xy, plane
         rr, cc = np.nonzero(ok_cells)
         flat = (rr + r0) * width + (cc + c0)
         cos_s = cos_inc[rr, cc]
-        flat_img = np.ascontiguousarray(img[:, :, :3], dtype=np.float32).reshape(-1, 3)
-        rgb = _bilinear(flat_img, h_px, w_px, uu[rr, cc], vv[rr, cc])
         order = int(fr.order)
         better = (cos_s > best_cos[flat]) | ((cos_s == best_cos[flat]) & (order > best_order[flat]))
         upd = flat[better]
         best_cos[upd] = cos_s[better]
         best_order[upd] = order
-        best_rgb[upd] = rgb[better]
+        if upd.size:
+            # Sample colour only where this frame wins: a cell another frame sees
+            # more head-on never needs this frame's pixel.
+            flat_img = np.ascontiguousarray(img[:, :, :3], dtype=np.float32).reshape(-1, 3)
+            best_rgb[upd] = _bilinear(flat_img, h_px, w_px, uu[rr[better], cc[better]],
+                                      vv[rr[better], cc[better]])
         best_frame[upd] = fi
         count[flat] += 1
         used_frames += 1

@@ -135,7 +135,13 @@ Nothing is written to disk; tiles live in Tower memory only.
 - **Homography method.** The method:
   - estimates ONE floor plane per component from the lower envelope of the
     solve's own 3-D points, cross-checked against the camera centres, and
-    rejects a plane with inadequate support;
+    rejects a plane with inadequate support. On a partial live trajectory (no
+    usable camera plane) the reference is the roll-free vertical and the tilt
+    window is 20 deg; a landing still too sparse for any plane falls back to a
+    level plane from the camera trajectory (height read off what the downward
+    frames observed), logged as `fallback_camera_drop`, so a live plan is not
+    blank. An estimated plane may be carried to the next landing by a Sim(3)
+    on shared keyframes (at most two landings, then refit);
   - warps only the bottom 40% of downward-looking, undistorted solver images
     onto that plane, with horizon, incidence, range and per-frame pose gates;
   - keeps a cell opaque only if at least two keyframes see it, or one view

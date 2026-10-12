@@ -651,3 +651,172 @@ def test_default_worker_uses_the_8_s_cap():
     import inspect
     default = inspect.signature(pfw.PhotoFloorplanWorker.__init__).parameters["wall_cap_s"].default
     assert default == pfw.LANDING_WALL_CAP_S == 8.0
+
+
+# ---------------------------------------------------------------------------
+# e2e2 regression: REAL live-landing fixtures (tests/golden/fow_v12_e2e2)
+#
+# e2e2 published three `ok` landings with projected_keyframes 0 (the empty tile).
+# On a partial live trajectory the camera-centre plane is unusable, so the floor
+# estimate fell back to the receipt `up` -- the mean camera up axis, 10-13 deg off
+# vertical -- and (a) the global "below the 5th-percentile camera height" cut along
+# that tilted axis left almost no candidate points, (b) the 10 deg tilt window could
+# exclude the true floor. Landing 0 was simply too sparse for any plane.
+# ---------------------------------------------------------------------------
+
+GOLDEN = Path(__file__).parent / "golden" / "fow_v12_e2e2"
+
+
+def _landing2():
+    doc = json.loads((GOLDEN / "landing2.json").read_text(encoding="utf-8"))
+    with np.load(GOLDEN / "landing2_plane.npz") as z:
+        return doc["receipt_component"], z["points"].astype(float), z["cameras"], z["rights"]
+
+
+def test_e2e2_kf353_landing_was_on_the_failure_margin_under_the_old_rule():
+    rc, pts, cams, _ = _landing2()
+    up = np.asarray(rc["up_xyz"])
+    fwd = np.asarray(rc["forward_xyz"])
+    right = np.cross(fwd, up)
+    b = padded_square_bounds(rc["bounds_xy"])
+    x, y = pts @ fwd, pts @ right
+    inside = (x >= b[0]) & (x <= b[2]) & (y >= b[1]) & (y <= b[3])
+    old_candidates = int((inside & (pts @ up < np.percentile(cams @ up, 5))).sum())
+    assert old_candidates < 100          # 61 of 10,987 points (vs a 40-inlier minimum)
+    from tower.world_builder.photo_floorplan import _camera_plane_reference
+    _, info = _camera_plane_reference(cams, up)
+    assert info["reference_normal"] == "receipt_up"   # the partial trajectory is not a plane
+
+
+def test_e2e2_kf353_landing_gets_a_well_supported_floor_now():
+    from tower.world_builder.photo_floorplan import estimate_floor_plane
+    rc, pts, cams, rights = _landing2()
+    plane = estimate_floor_plane(points_xyz=pts, camera_positions=cams, up_xyz=rc["up_xyz"],
+                                 forward_xyz=rc["forward_xyz"], bounds_xy=rc["bounds_xy"],
+                                 camera_rights=rights)
+    assert plane.ok, plane.reason
+    assert plane.stats["reference_normal"] == "roll_free"
+    assert plane.stats["candidate_points"] >= 1000
+    assert plane.stats["inliers"] >= 100
+    assert plane.stats["camera_height_cv"] <= 0.15
+
+
+def _landing0():
+    doc = json.loads((GOLDEN / "landing0.json").read_text(encoding="utf-8"))
+    with np.load(GOLDEN / "landing0_arrays.npz") as z:
+        arrays = {k: np.asarray(z[k]) for k in z.files}
+    tree = {"solution": doc["solution"], "poses": doc["poses"], "placements": doc["placements"]}
+    eligible = [tuple(e) for e in doc["eligible"]]
+    return doc["receipt_component"], tree, eligible, arrays
+
+
+def test_e2e2_sparse_first_landing_is_never_blank():
+    rc, tree, eligible, arrays = _landing0()
+    entries = pfw.placed_entries(tree, eligible)[rc["reference_segment"]]
+    keyframe_index = {k: i for i, k in enumerate(tree["solution"]["keyframe_ids"])}
+    result, plane, frames, stats = pfw.homography_component(
+        receipt_component=rc, entries=entries, tree=tree, arrays=arrays,
+        keyframe_index=keyframe_index, camera=tree["solution"]["camera"],
+        images_dir=GOLDEN / "images")
+    # Too sparse for an estimated plane (the old code stopped here: an empty tile)...
+    assert plane.stats["fallback_from"].startswith("inadequate support")
+    # ...so the camera-trajectory fallback carries it.
+    assert plane.ok and plane.stats["source"] == "fallback_camera_drop"
+    assert plane.stats["camera_height_median"] > 0
+    assert len(frames) >= 5
+    assert len(result.contributing_keyframes) >= 5
+    assert 0.01 < result.opaque_fraction < 1.0
+    assert set(stats["ms"]) >= {"points", "plane", "gate", "load", "warp"}
+
+
+def test_fallback_needs_enough_downward_frames_with_band_points():
+    from tower.world_builder.photo_floorplan import FloorPlane, fallback_floor_plane
+    failed = FloorPlane(ok=False, reason="inadequate support: 14 inlier points (< 40)",
+                        stats={"reference_normal_xyz": [0.0, 0.0, 1.0]})
+    cams = [[0, 0, 1.5], [1, 0, 1.5], [0, 1, 1.5], [1, 1, 1.5]]
+    few = fallback_floor_plane(failed=failed, camera_positions=cams,
+                               band_drops_by_frame=[np.full(10, 1.4)] * 2)
+    assert not few.ok and "no fallback" in few.reason
+    drops = [np.linspace(0.5, 1.5, 20)] * 3 + [np.array([1.0, 1.1])]   # last frame: too few
+    ok = fallback_floor_plane(failed=failed, camera_positions=cams, band_drops_by_frame=drops)
+    assert ok.ok and ok.stats["source"] == "fallback_camera_drop"
+    assert ok.stats["fallback_frames"] == 3
+    expected = float(np.percentile(np.linspace(0.5, 1.5, 20), 80))
+    assert ok.stats["camera_height_median"] == pytest.approx(expected)
+    assert ok.offset == pytest.approx(-(1.5 - expected))
+
+
+def test_the_floor_fit_has_a_fixed_point_budget():
+    from tower.world_builder.photo_floorplan import FLOOR_POINTS_BUDGET, estimate_floor_plane
+    rng = np.random.default_rng(0)
+    n = FLOOR_POINTS_BUDGET + 15000
+    pts = np.c_[rng.uniform(-3, 3, (n, 2)), rng.normal(0, 0.01, n)]
+    ang = np.linspace(0, 2 * np.pi, 60, endpoint=False)
+    cams = np.c_[2 * np.cos(ang), 2 * np.sin(ang), np.full(60, 1.5)]
+    plane = estimate_floor_plane(points_xyz=pts, camera_positions=cams, up_xyz=(0, 0, 1),
+                                 forward_xyz=(1, 0, 0), bounds_xy=(-2, -2, 2, 2))
+    assert plane.ok
+    assert plane.stats["points_used"] == FLOOR_POINTS_BUDGET
+    assert abs(plane.offset) < 0.05
+
+
+def test_the_previous_landings_plane_is_reused_then_refit(tmp_path):
+    solve_dir, tree, receipt, eligible, stat = _synthetic_solve(tmp_path)
+    memory = {}
+    seen = []
+    for _ in range(4):
+        block, tiles, stats = pfw.build_landing(tmp_path, WORLD, SESSION, receipt, eligible,
+                                                tree, stat, plane_memory=memory)
+        seen.append(stats[0]["plane_reuse"])
+        assert stats[0]["projected_keyframes"] > 0
+    assert seen == ["no previous plane", "ok", "ok", "refit due"]
+
+
+def test_reuse_carries_the_plane_through_a_gauge_change():
+    from tower.world_builder.photo_floorplan import FloorPlane
+    rng = np.random.default_rng(1)
+    cams = np.c_[rng.uniform(-2, 2, (30, 2)), 1.5 + rng.normal(0, 0.02, 30)]
+    kids = [f"k{i}" for i in range(30)]
+    prior = FloorPlane(ok=True, reason="ok", normal=(0.0, 0.0, 1.0), offset=0.0,
+                       stats={"camera_height_median": 1.5})
+    memory = {"plane": prior, "positions": dict(zip(kids, cams)), "reuses": 0}
+    # The next solve's gauge: rotated 30 deg about x, scaled 2x, shifted.
+    a = math.radians(30)
+    R = np.array([[1, 0, 0], [0, math.cos(a), -math.sin(a)], [0, math.sin(a), math.cos(a)]])
+    new = (2.0 * (R @ cams.T)).T + np.array([5.0, -1.0, 2.0])
+    entries = [(k, p, None, None, 1.0) for k, p in zip(kids, new)]
+    plane, why = pfw.reuse_plane(memory, entries)
+    assert why == "ok"
+    assert np.asarray(plane.normal) == pytest.approx(R @ [0, 0, 1], abs=1e-6)
+    assert plane.stats["camera_height_median"] == pytest.approx(3.0, rel=0.05)
+    # The floor point under the first camera maps onto the carried plane.
+    foot = 2.0 * (R @ np.array([cams[0][0], cams[0][1], 0.0])) + np.array([5.0, -1.0, 2.0])
+    assert float(np.asarray(plane.normal) @ foot + plane.offset) == pytest.approx(0.0, abs=1e-6)
+
+
+def test_the_disposition_log_line_carries_per_component_stats(caplog):
+    latest = {}
+
+    def build(root, world, session, receipt, eligible, tree, stat, method, check):
+        block, tiles, _ = _fake_build_factory()(root, world, session, receipt, eligible, tree,
+                                                stat, method=method, check=check)
+        stats = [{"reference_segment": 0, "eligible": 29, "points_quality": 2344,
+                  "plane_ok": False, "plane_reason": "inadequate support: 14 inlier points (< 40)",
+                  "plane": {"reference_normal": "roll_free", "candidate_points": 263},
+                  "frame_gate_counts": {}, "projected_keyframes": 0, "opaque_fraction": 0.0,
+                  "ms": {"points": 1.3, "plane": 14.1}}]
+        return block, tiles, stats
+
+    worker, state = _worker(latest, build=build)
+    try:
+        with caplog.at_level("INFO", logger="tower.world_builder.photo_floorplan_worker"):
+            _offer(worker, latest, _receipt(1000.0))
+            assert _wait(lambda: state.landed(WORLD, SESSION) is not None)
+            assert _wait(lambda: any("components=" in r.getMessage() for r in caplog.records))
+    finally:
+        worker.shutdown()
+    line = next(r.getMessage() for r in caplog.records if "components=" in r.getMessage())
+    summary = json.loads(line.split("components=", 1)[1])
+    assert summary[0]["plane_reason"].startswith("inadequate support")
+    assert summary[0]["eligible"] == 29 and summary[0]["points"] == 2344
+    assert summary[0]["projected"] == 0 and summary[0]["ms"]["plane"] == 14.1
