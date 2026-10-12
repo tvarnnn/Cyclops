@@ -107,6 +107,10 @@ a plane is never more than 2 landings stale."""
 
 REGRESS_MIN_RATIO = 0.25
 REGRESS_MIN_PRIOR_OPAQUE = 0.02
+# Escape valve (guard review MED, manager 336): after this many CONSECUTIVE regressed skips for one
+# session the next regressed landing publishes anyway -- a fresh but worse plan beats a plan frozen
+# for the rest of the walk -- and its opacity becomes the new baseline.
+REGRESS_MAX_CONSECUTIVE_SKIPS = 3
 """NEVER-REGRESS guard (e2e4 10:37:47: a landing published a 0.4%-opaque main room
 over a 55% one, and the phone showed gray for ~5 min). A landing is skipped -- the
 prior plan stays, with its prior date -- if any component it shares (same
@@ -848,6 +852,7 @@ class PhotoFloorplanWorker:
         self.outcomes = {}
         self._plane_memory = {}   # (world, session) -> {reference_segment: memory}
         self._published_opaque = {}   # (world, session) -> {reference_segment: opaque}
+        self._regress_streak = {}     # (world, session) -> consecutive regressed skips
         self._thread = threading.Thread(target=self._run, name="world-photo-floorplan",
                                         daemon=True)
         self._thread.start()
@@ -952,8 +957,11 @@ class PhotoFloorplanWorker:
                     disposition = "skipped: superseded by a newer coverage landing"
                 elif time.monotonic() - started > self.wall_cap_s:
                     disposition = f"skipped: exceeded the {self.wall_cap_s:.1f} s wall cap"
-                elif (regressed := regression(self._published_opaque.get(pair), stats)):
-                    disposition = f"skipped: regressed ({regressed})"
+                elif ((regressed := regression(self._published_opaque.get(pair), stats))
+                      and self._regress_streak.get(pair, 0) < REGRESS_MAX_CONSECUTIVE_SKIPS):
+                    self._regress_streak[pair] = self._regress_streak.get(pair, 0) + 1
+                    disposition = (f"skipped: regressed ({regressed}; "
+                                   f"{self._regress_streak[pair]}/{REGRESS_MAX_CONSECUTIVE_SKIPS})")
                 elif not self._state.publish(*pair, block, tiles):
                     disposition = "skipped: not newer than the published landing (never re-dated)"
                 else:
@@ -961,6 +969,11 @@ class PhotoFloorplanWorker:
                     if trial is not None:
                         self._plane_memory[pair] = trial
                     self._published_opaque[pair] = opaque_by_ref(stats)
+                    if regressed:
+                        logger.warning("world photo floorplan: publishing a regressed landing after %d "
+                                       "consecutive skips (escape valve): %s",
+                                       self._regress_streak.get(pair, 0), regressed)
+                    self._regress_streak[pair] = 0
         self.outcomes = {**self.outcomes, pair: {"identity": identity, "disposition": disposition,
                                                  "elapsed_ms": round(elapsed_ms, 1),
                                                  "components": stats}}
