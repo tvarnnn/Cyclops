@@ -41,6 +41,11 @@ mixing two solves.
 IMAGERY: the solve's own undistorted solver images (`solve/<session>/images`), which
 are RAW camera pixels: `imagery_source` is "unredacted". Privacy is deferred for the
 walk-9 demo; redaction is a TODO, never an implied property of these bytes.
+
+FOOTPRINT BOUNDS (opt-in, TOWER_WORLD_PHOTO_FLOORPLAN_FOOTPRINT_BOUNDS exactly `on`,
+homography method only): each component's `raster_bounds_xy` grows from the padded
+camera square to the floor its selected frames can paint (see
+`photo_floorplan.FOOTPRINT_TRIM_PERCENTILE`). Off, nothing below changes.
 """
 
 from __future__ import annotations
@@ -71,6 +76,7 @@ from tower.world_builder.photo_floorplan import (
     estimate_floor_plane,
     frame_gate,
     lower_band_centre,
+    padded_square_bounds,
 )
 
 logger = logging.getLogger(__name__)
@@ -285,7 +291,7 @@ def reuse_plane(memory, entries):
 
 def homography_component(*, receipt_component, entries, tree, arrays, keyframe_index,
                          camera, images_dir, check=None, furniture_mask=None,
-                         plane_memory=None):
+                         plane_memory=None, footprint_bounds=False):
     """Fallback (3) for one displayed component.
 
     Returns (RasterResult, FloorPlane, frames, stats)."""
@@ -424,12 +430,15 @@ def homography_component(*, receipt_component, entries, tree, arrays, keyframe_i
         else:
             plane_memory.clear()
     t_warp = time.perf_counter()
+    options = {} if furniture_mask is None else {"furniture_mask": bool(furniture_mask)}
+    if footprint_bounds:
+        # The plane (estimated, reused or fallback) is settled above; the footprint is
+        # derived FROM it and never feeds back into plane estimation or reuse.
+        options["footprint_bounds"] = True
     result = build_homography_raster(origin_xyz=receipt_component["origin_xyz"], up_xyz=up,
                                      forward_xyz=forward,
                                      bounds_xy=receipt_component["bounds_xy"], plane=plane,
-                                     frames=frames, check=check,
-                                     **({} if furniture_mask is None
-                                        else {"furniture_mask": bool(furniture_mask)}))
+                                     frames=frames, check=check, **options)
     stats["warp_ms"] = ms["warp"] = round((time.perf_counter() - t_warp) * 1000.0, 1)
     return result, plane, frames, stats
 
@@ -629,8 +638,15 @@ def read_landing_arrays(solve_dir: Path, solution_stat, solution_meta, check=Non
 
 
 def build_landing(root, world_id, session_id, receipt, eligible, tree, solution_stat,
-                  method=METHOD_HOMOGRAPHY, check=None, plane_memory=None):
-    """(manifest block, {digest: (bytes, mime)}, per-component stats) for one landing."""
+                  method=METHOD_HOMOGRAPHY, check=None, plane_memory=None,
+                  footprint_bounds=False):
+    """(manifest block, {digest: (bytes, mime)}, per-component stats) for one landing.
+
+    `footprint_bounds` (homography only) grows each raster past the padded camera
+    square; each component's stats then also carry `guard_opaque_fraction`, its opaque
+    AREA over the padded square's area -- the never-regress guard's ratio input, so
+    bounds growth alone can never read as a regression (see `regression`)."""
+    footprint_bounds = bool(footprint_bounds) and method != METHOD_DEPTH
     solve_dir = Path(root) / "worlds" / world_id / "solve" / session_id
     solution = tree["solution"]
     camera = solution.get("camera")
@@ -665,7 +681,8 @@ def build_landing(root, world_id, session_id, receipt, eligible, tree, solution_
                 keyframe_index=keyframe_index, camera=camera,
                 images_dir=solve_dir / "images", check=check,
                 plane_memory=(plane_memory.setdefault(ref, {})
-                              if plane_memory is not None else None))
+                              if plane_memory is not None else None),
+                **({"footprint_bounds": True} if footprint_bounds else {}))
         if check is not None:
             check()
         t_encode = time.perf_counter()
@@ -679,6 +696,11 @@ def build_landing(root, world_id, session_id, receipt, eligible, tree, solution_
                       projected_keyframes=len(result.contributing_keyframes),
                       frames_warped=result.stats.get("frames_warped"),
                       frames_rejected=result.stats.get("frames_rejected"))
+        if footprint_bounds:
+            sx0, sy0, sx1, sy1 = padded_square_bounds(rc["bounds_xy"])
+            cstats["guard_opaque_fraction"] = cstats["opaque_area"] / max(
+                (sx1 - sx0) * (sy1 - sy0), 1e-12)
+            cstats["footprint"] = result.stats.get("footprint")
         if tile is None:
             cstats["tile"] = "omitted (> 180 KiB)"
             stats.append(cstats)
@@ -794,8 +816,15 @@ def state_for(root):
 
 
 def opaque_by_ref(stats):
-    return {c["reference_segment"]: float(c["opaque_fraction"]) for c in stats or ()
-            if c.get("reference_segment") is not None and c.get("opaque_fraction") is not None}
+    """The guard's per-component opaque fraction. With footprint bounds it is the
+    square-normalised `guard_opaque_fraction` (opaque area / padded-square area), which
+    is exactly `opaque_fraction` whenever the raster IS the padded square."""
+    out = {}
+    for c in stats or ():
+        value = c.get("guard_opaque_fraction", c.get("opaque_fraction"))
+        if c.get("reference_segment") is not None and value is not None:
+            out[c["reference_segment"]] = float(value)
+    return out
 
 
 def opaque_area_by_ref(stats):
@@ -840,6 +869,11 @@ def component_summary(stats):
             "opaque":(round(c["opaque_fraction"], 3) if c.get("opaque_fraction") is not None
                        else None),
             "tile": c.get("tile"), "bytes": c.get("bytes"), "ms": c.get("ms")})
+        footprint = c.get("footprint")
+        if footprint:   # only with footprint bounds on: OFF's log line is unchanged
+            rows[-1]["footprint"] = {"reason": footprint.get("reason"),
+                                     "growth": footprint.get("growth"),
+                                     "size": [footprint.get("width"), footprint.get("height")]}
     return json.dumps(rows, separators=(",", ":"), default=str)
 
 
@@ -847,18 +881,23 @@ class PhotoFloorplanWorker:
     """One daemon builds each newly published coverage landing's photo plan."""
 
     def __init__(self, root, *, latest=None, state=None, method=None,
-                 wall_cap_s=LANDING_WALL_CAP_S, build=None):
+                 wall_cap_s=LANDING_WALL_CAP_S, build=None, footprint_bounds=None):
         if method is None:
             from tower.config import world_photo_floorplan_method_setting
             method = world_photo_floorplan_method_setting()
+        if footprint_bounds is None:
+            from tower.config import world_photo_floorplan_footprint_bounds_setting
+            footprint_bounds = world_photo_floorplan_footprint_bounds_setting()
         self.root = root
         self.method = method
+        self.footprint_bounds = bool(footprint_bounds)
         self.wall_cap_s = float(wall_cap_s)
         self._latest = latest
         self._state = state if state is not None else state_for(root)
         self._build = build or build_landing
         import inspect
         self._build_takes_memory = "plane_memory" in inspect.signature(self._build).parameters
+        self._build_takes_footprint = "footprint_bounds" in inspect.signature(self._build).parameters
         self._stop = threading.Event()
         self._condition = threading.Condition()
         self._jobs = OrderedDict()
@@ -952,6 +991,8 @@ class PhotoFloorplanWorker:
                 kwargs = {"plane_memory": trial}
             else:
                 kwargs = {}
+            if self.footprint_bounds and self._build_takes_footprint:
+                kwargs["footprint_bounds"] = True
             block, tiles, stats = self._build(self.root, job["world_id"], job["session_id"],
                                               receipt, job["eligible"], job["tree"],
                                               job["solution_stat"], method=self.method,

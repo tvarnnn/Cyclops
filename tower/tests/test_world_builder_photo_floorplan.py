@@ -637,3 +637,156 @@ class TestFallbackPoseGateIsNarrow:
         assert result.stats["frames_rejected"] == {
             "pose disagrees with plane (own lower-band points below it)": 1}
         assert result.contributing_keyframes == ["a"]
+
+
+# ===========================================================================
+# FOOTPRINT BOUNDS (opt-in; TOWER_WORLD_PHOTO_FLOORPLAN_FOOTPRINT_BOUNDS=on)
+# ===========================================================================
+
+from tower.world_builder.photo_floorplan import (  # noqa: E402
+    FOOTPRINT_MAX_GROWTH,
+    fit_raster_grid,
+    footprint_raster_bounds,
+)
+
+
+def _edge_frames():
+    """Three cameras on the square's +X edge looking OUT (+X), pitched 35 degrees: their
+    bottom bands hit the floor at x ~ 3.55-4.6, past the padded square's 3.9."""
+    return [_frame(f"e{i}", *_pitched_camera(pos=(3.0, y, 1.5), yaw_deg=0, pitch_deg=35), order=i)
+            for i, y in enumerate((-1.0, 0.0, 1.0))]
+
+
+def _ring_frames(radius=1.5, n=12, pitch=50):
+    out = []
+    for i in range(n):
+        ang = 2 * math.pi * i / n
+        pos = (radius * math.cos(ang), radius * math.sin(ang), 1.5)
+        out.append(_frame(f"r{i}", *_pitched_camera(pos=pos, yaw_deg=math.degrees(ang + math.pi),
+                                                   pitch_deg=pitch), order=i))
+    return out
+
+
+def _tiny_far_frame(kid, pitch_deg=16.0):
+    """A 4x6 px frame pitched 16 degrees: its 2-row band meets the floor ~4.7-4.9 away
+    at cos(incidence) ~0.29 -- grazing for one view, paintable only with a second."""
+    pos, fwd, cam_up = _pitched_camera(pos=(0.0, 0.0, 1.5), yaw_deg=0, pitch_deg=pitch_deg)
+    return PhotoFrame(kid=kid, position_xyz=tuple(pos), forward_xyz=tuple(fwd),
+                      up_xyz=tuple(cam_up), fx=90.0, fy=90.0, cx=1.5, cy=2.5,
+                      color=np.full((6, 4, 3), 200, np.uint8))
+
+
+class TestFootprintBounds:
+    def test_floor_seen_beyond_the_square_is_included(self):
+        off = _homography(_edge_frames())
+        on = _homography(_edge_frames(), footprint_bounds=True)
+        square = padded_square_bounds(HBOUNDS)
+        assert off.raster_bounds_xy == pytest.approx(square)
+        assert "footprint" not in off.stats
+        # Grown only where the floor is seen (+X); never smaller than the square.
+        assert on.raster_bounds_xy[2] > square[2] + 0.4
+        assert on.raster_bounds_xy[0] == pytest.approx(square[0])
+        assert on.raster_bounds_xy[1] <= square[1] and on.raster_bounds_xy[3] >= square[3]
+        # Non-square: the long side keeps the requested 128 px, cells stay square.
+        assert on.width == 128 and on.height < 128
+        b = on.raster_bounds_xy
+        assert (b[2] - b[0]) / (on.width - 1) == pytest.approx((b[3] - b[1]) / (on.height - 1))
+        # OFF paints nothing past the square's edge; ON does, and paints it correctly.
+        rows, cols = np.nonzero(off.rgba[:, :, 3] == 255)
+        assert (_cell_world(off, rows, cols)[0] <= square[2] + 1e-9).all()
+        rows, cols = np.nonzero(on.rgba[:, :, 3] == 255)
+        x, y = _cell_world(on, rows, cols)
+        beyond = x > square[2] + 0.05
+        assert beyond.sum() > 100
+        cell = (b[2] - b[0]) / (on.width - 1)
+        fx_, fy_ = np.mod(x, 0.5), np.mod(y, 0.5)
+        interior = beyond & ((np.minimum(fx_, 0.5 - fx_) > 1.5 * cell)
+                             & (np.minimum(fy_, 0.5 - fy_) > 1.5 * cell))
+        got = on.rgba[rows, cols, :3].astype(int)
+        agreement = np.mean((got[:, 0] > got[:, 2])[interior]
+                            == (_checker(x, y)[:, 0] > 128)[interior])
+        assert interior.sum() > 30 and agreement > 0.97
+        on_area = on.opaque_fraction * (b[2] - b[0]) * (b[3] - b[1])
+        assert on_area > off.opaque_fraction * 7.8 * 7.8
+
+    def test_a_trimmed_outlier_patch_and_a_single_grazing_view_do_not_grow_the_bounds(self):
+        square = padded_square_bounds((-2.5, -2.5, 2.5, 2.5))
+        kw = dict(plane=_floor_plane(), up_xyz=UP, forward_xyz=FORWARD, square_bounds=square)
+        frames = _ring_frames()
+        # Two views of a tiny far patch: paintable, but < 2% of the footprint -> trimmed.
+        bounds, stats = footprint_raster_bounds(
+            frames=frames + [_tiny_far_frame("o1"), _tiny_far_frame("o2")], **kw)
+        assert stats["footprint_raw_xy"][2] > 4.5          # it was seen and counted...
+        assert bounds == pytest.approx(square)            # ...and trimmed away
+        # ONE grazing view of it is not paintable at all (the raster's opacity rule).
+        _, stats = footprint_raster_bounds(frames=frames + [_tiny_far_frame("o1")],
+                                           trim_percentile=0.0, **kw)
+        assert stats["footprint_raw_xy"][2] < 2.0
+
+    def test_the_cap_holds_against_far_grazing_floor(self):
+        # A 1 x 1 receipt square; two views see floor out to ~2.8 (> 2x the padded side).
+        square = padded_square_bounds((-0.5, -0.5, 0.5, 0.5))
+        side = square[2] - square[0]
+        frames = [_frame(k, *_pitched_camera(pos=(0.0, 0.0, 1.5), yaw_deg=0, pitch_deg=20))
+                  for k in ("a", "b")]
+        for trim in (0.0, 2.0):
+            bounds, stats = footprint_raster_bounds(
+                plane=_floor_plane(), frames=frames, up_xyz=UP, forward_xyz=FORWARD,
+                square_bounds=square, trim_percentile=trim)
+            cap = stats["cap_bounds_xy"]
+            assert stats["pixels_beyond_cap"] > 0
+            assert bounds[2] > square[2]
+            assert all(bounds[i] >= cap[i] - 1e-9 for i in (0, 1))
+            assert all(bounds[i] <= cap[i] + 1e-9 for i in (2, 3))
+            assert (bounds[2] - bounds[0]) <= FOOTPRINT_MAX_GROWTH * side + 1e-9
+            assert (bounds[3] - bounds[1]) <= FOOTPRINT_MAX_GROWTH * side + 1e-9
+        assert FOOTPRINT_MAX_GROWTH == 2.0
+        # And the raster built from it keeps <= 512 px and the capped bounds.
+        result = _homography(frames, bounds_xy=(-0.5, -0.5, 0.5, 0.5), footprint_bounds=True,
+                             width=512, height=512)
+        assert max(result.width, result.height) == 512
+        b = result.raster_bounds_xy
+        assert b[2] - b[0] <= FOOTPRINT_MAX_GROWTH * side + 1e-6
+
+    def test_off_is_the_default_and_on_without_growth_is_byte_identical(self):
+        default = _homography(_ring_frames())
+        off = _homography(_ring_frames(), footprint_bounds=False)
+        on = _homography(_ring_frames(), footprint_bounds=True)
+        assert np.array_equal(default.rgba, off.rgba)
+        assert default.raster_bounds_xy == off.raster_bounds_xy
+        assert default.stats == off.stats
+        # The ring sees only floor inside the square: ON grows nothing and changes nothing.
+        assert on.stats["footprint"]["reason"] == "ok"
+        assert on.raster_bounds_xy == off.raster_bounds_xy
+        assert (on.width, on.height) == (off.width, off.height) == (128, 128)
+        assert np.array_equal(on.rgba, off.rgba)
+        assert encode_tile(on.rgba)["data"] == encode_tile(off.rgba)["data"]
+
+    def test_a_rejected_plane_keeps_the_square(self):
+        rejected = FloorPlane(ok=False, reason="inadequate support")
+        on = _homography(_edge_frames(), plane=rejected, footprint_bounds=True)
+        assert on.raster_bounds_xy == pytest.approx(padded_square_bounds(HBOUNDS))
+        assert on.opaque_cells == 0
+
+
+class TestFitRasterGrid:
+    def test_square_bounds_are_returned_unchanged(self):
+        assert fit_raster_grid((-1.0, -2.0, 3.0, 2.0)) == (512, 512, (-1.0, -2.0, 3.0, 2.0))
+
+    @pytest.mark.parametrize("bounds", [(-3.0, -1.0, 5.0, 2.3), (0.0, -7.0, 2.0, 7.5),
+                                        (-8.47, -6.36, 7.82, 6.39)])
+    def test_aspect_kept_long_side_512_square_cells_and_never_smaller(self, bounds):
+        w, h, out = fit_raster_grid(bounds, 512)
+        assert max(w, h) == 512 and min(w, h) >= 2
+        step_x = (out[2] - out[0]) / (w - 1)
+        step_y = (out[3] - out[1]) / (h - 1)
+        assert step_x == pytest.approx(step_y, rel=1e-9)
+        assert out[0] <= bounds[0] and out[1] <= bounds[1]
+        assert out[2] >= bounds[2] and out[3] >= bounds[3]
+        # grown by < 1 cell, symmetrically, on the short axis only
+        assert (out[2] - out[0]) - (bounds[2] - bounds[0]) < step_x + 1e-9
+        assert (out[3] - out[1]) - (bounds[3] - bounds[1]) < step_y + 1e-9
+        assert (bounds[0] - out[0]) == pytest.approx(out[2] - bounds[2], abs=1e-9)
+        assert (bounds[1] - out[1]) == pytest.approx(out[3] - bounds[3], abs=1e-9)
+        span = (bounds[2] - bounds[0]) / (bounds[3] - bounds[1])
+        assert (w - 1) / (h - 1) == pytest.approx(span, rel=2.0 / min(w, h))

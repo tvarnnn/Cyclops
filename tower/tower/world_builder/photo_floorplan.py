@@ -628,6 +628,37 @@ observation is kept: carpet is low-texture, so silence is not evidence of
 furniture. Masked cells simply contribute nothing (they may still be painted by
 another frame that sees floor there)."""
 
+FOOTPRINT_TRIM_PERCENTILE = 2.0
+FOOTPRINT_MAX_GROWTH = 2.0
+FOOTPRINT_GRID = 128
+"""FOOTPRINT BOUNDS (opt-in: `footprint_bounds=True`, i.e.
+TOWER_WORLD_PHOTO_FLOORPLAN_FOOTPRINT_BOUNDS=on; default OFF = the padded camera
+square, byte for byte). The camera-centre square clips floor the cameras SEE beyond
+it (walk-8 e2e6's final landing is cut at the raster's top edge). With the switch on
+the raster bounds are the selected frames' projected floor footprint, unioned with
+the padded square:
+
+  - every band pixel of every frame the warp would use (same frame gate, same pose
+    cross-check, same horizon / incidence / range gates) is forward-mapped onto the
+    plane and dropped into a coarse 128x128 grid over the CAP square;
+  - a coarse cell counts only under the raster's own opacity rule (>= 2 distinct
+    frames, or one view at cos(incidence) >= GRAZING_COS_MIN), so the bounds grow
+    only where the raster can actually paint;
+  - the counted cells' x and y are trimmed to their 2nd-98th percentiles (by area:
+    every coarse cell is the same size), then unioned with the padded square.
+
+THE CAP (`FOOTPRINT_MAX_GROWTH` = k = 2): the bounds never leave the square of side
+k x the padded-square side about the same centre. Scale-free, and k = 2 because
+(i) the never-regress guard's ratio rule fires below 1/4 of the published opaque
+fraction, and k^2 = 4 is the largest area growth at which the SAME opaque floor
+spread over grown bounds cannot by itself fall below that ratio (the worker also
+normalises the guard to the square, so this is a second line, not the only one);
+(ii) the raster keeps a 512 px long side, so k = 2 at most doubles the cell size
+(about 1/256 of the square's side), which the 256x144 frame samples already exceed
+at range; (iii) the range gate (4 camera heights) already confines real floor to the
+camera box plus ~4 H a side, so the cap binds only for a SMALL early square or a
+bad ray, which is exactly when growth must be bounded."""
+
 
 @dataclass
 class FloorPlane:
@@ -1187,6 +1218,169 @@ def _bilinear(flat_img, h, w, u, v):
     return top * (1 - dv) + bot * dv
 
 
+def _frame_admission(plane: FloorPlane, fr, fallback_ids, n, d, h_med, min_pitch_deg):
+    """(ok, reason, camera_height): the warp's per-frame gates -- the pose gate, then the
+    frame's own lower-band points against the plane. Shared by the warp and the
+    footprint pass so the two can never disagree about which frames count."""
+    ok, reason, cam_h, _pitch = frame_gate(plane, fr.position_xyz, fr.forward_xyz,
+                                           fr.up_xyz, min_pitch_deg)
+    if not ok:
+        return False, reason, cam_h
+    # The per-frame pose gate checks a frame against an INDEPENDENT plane. A
+    # camera-trajectory fallback plane is built from some frames' own drops; such
+    # a frame glimpsing deeper floor would only vote itself out, so only THOSE
+    # frames skip it.
+    if fr.check_points_xyz is not None and fr.kid not in fallback_ids:
+        cp = np.asarray(fr.check_points_xyz, dtype=np.float64).reshape(-1, 3)
+        if len(cp) >= FRAME_MIN_CHECK_POINTS:
+            below = float(np.mean(cp @ n + d < -FRAME_BELOW_PLANE_TOL_FRAC * h_med))
+            if below > FRAME_BELOW_PLANE_MAX_FRAC:
+                return False, "pose disagrees with plane (own lower-band points below it)", cam_h
+    return True, "ok", cam_h
+
+
+def _usable_image(fr):
+    img = np.asarray(fr.color)
+    if img.ndim != 3 or img.shape[2] < 3 or img.shape[0] < 2 or img.shape[1] < 2:
+        return None
+    return img
+
+
+def _band_plane_hits(fr, n, cam_h, h_px, w_px, lower_fraction):
+    """Forward-map every bottom-band pixel of one frame onto the plane:
+    (hit mask, 3-D hit points, rays, ray parameters)."""
+    fwd_c, right_c, down_c = _frame_axes(fr.forward_xyz, fr.up_xyz)
+    cam = np.asarray(fr.position_xyz, dtype=np.float64)
+    v_top = (1.0 - lower_fraction) * h_px - 0.5
+    bv, bu = np.mgrid[int(math.ceil(v_top)):h_px, 0:w_px]
+    rays = (((bu - fr.cx) / fr.fx)[..., None] * right_c + ((bv - fr.cy) / fr.fy)[..., None]
+            * down_c + fwd_c)
+    den = rays @ n
+    hit = den < -EPS
+    t = np.where(hit, cam_h / np.where(hit, -den, 1.0), 0.0)
+    return hit, cam + t[..., None] * rays, rays, t
+
+
+def footprint_raster_bounds(*, plane: FloorPlane, frames, up_xyz, forward_xyz, square_bounds,
+                            lower_fraction: float = LOWER_IMAGE_FRACTION,
+                            min_pitch_deg: float = MIN_FRAME_PITCH_DEG,
+                            horizon_min_depression_deg: float = HORIZON_MIN_DEPRESSION_DEG,
+                            max_incidence_deg: float = MAX_INCIDENCE_DEG,
+                            max_range_frac: float = MAX_RANGE_FRAC,
+                            grazing_cos_min: float = GRAZING_COS_MIN,
+                            trim_percentile: float = FOOTPRINT_TRIM_PERCENTILE,
+                            max_growth: float = FOOTPRINT_MAX_GROWTH,
+                            grid: int = FOOTPRINT_GRID, check=None):
+    """(bounds, stats): the padded square grown to the floor the selected frames can
+    paint, trimmed and capped (see FOOTPRINT_TRIM_PERCENTILE). Never smaller than
+    `square_bounds`; never outside the k x side cap square about its centre."""
+    up = _unit(up_xyz)
+    forward = _unit(forward_xyz)
+    right = np.cross(forward, up)
+    right = right / max(float(np.linalg.norm(right)), EPS)
+    sq = tuple(float(v) for v in square_bounds)
+    side = max(sq[2] - sq[0], sq[3] - sq[1], EPS)
+    mid_x, mid_y = (sq[0] + sq[2]) / 2.0, (sq[1] + sq[3]) / 2.0
+    half_cap = max(float(max_growth), 1.0) * side / 2.0
+    cap = (mid_x - half_cap, mid_y - half_cap, mid_x + half_cap, mid_y + half_cap)
+    grid = max(8, int(grid))
+    stats = {"square_bounds_xy": list(sq), "cap_bounds_xy": list(cap),
+             "max_growth": float(max_growth), "trim_percentile": float(trim_percentile)}
+    if plane is None or not plane.ok:
+        stats["reason"] = "no floor plane"
+        return sq, stats
+    n = np.asarray(plane.normal, dtype=np.float64)
+    d = float(plane.offset)
+    h_med = float(plane.stats.get("camera_height_median") or 0.0)
+    if not math.isfinite(h_med) or h_med <= EPS:
+        stats["reason"] = "floor plane carries no camera height"
+        return sq, stats
+    fallback_ids = (set(plane.stats.get("fallback_frame_ids") or ())
+                    if plane.stats.get("source") == "fallback_camera_drop" else set())
+    sin_horizon = math.sin(math.radians(horizon_min_depression_deg))
+    cos_incidence = math.cos(math.radians(max_incidence_deg))
+    max_range = max_range_frac * h_med
+    cell = 2.0 * half_cap / grid
+    count = np.zeros(grid * grid, dtype=np.int32)
+    best_cos = np.full(grid * grid, -1.0)
+    frames_used = 0
+    pixels_admitted = 0
+    pixels_beyond_cap = 0
+    for fr in frames:
+        if check is not None:
+            check()
+        ok, _, cam_h = _frame_admission(plane, fr, fallback_ids, n, d, h_med, min_pitch_deg)
+        img = _usable_image(fr) if ok else None
+        if img is None:
+            continue
+        h_px, w_px = img.shape[:2]
+        hit, hp, rays, t = _band_plane_hits(fr, n, cam_h, h_px, w_px, lower_fraction)
+        dist = t * np.linalg.norm(rays, axis=-1)
+        cos_inc = cam_h / np.maximum(dist, EPS)
+        keep = (hit & (cos_inc >= sin_horizon) & (cos_inc >= cos_incidence)
+                & (dist <= max_range))
+        if not keep.any():
+            continue
+        pts = hp[keep]
+        ci = np.floor((pts @ forward - cap[0]) / cell).astype(np.int64)
+        ri = np.floor((pts @ right - cap[1]) / cell).astype(np.int64)
+        inside = (ci >= 0) & (ci < grid) & (ri >= 0) & (ri < grid)
+        pixels_admitted += int(keep.sum())
+        pixels_beyond_cap += int((~inside).sum())
+        if not inside.any():
+            continue
+        flat = ri[inside] * grid + ci[inside]
+        np.maximum.at(best_cos, flat, cos_inc[keep][inside])
+        count[np.unique(flat)] += 1
+        frames_used += 1
+    paintable = (count >= 2) | ((count == 1) & (best_cos >= grazing_cos_min))
+    idx = np.nonzero(paintable)[0]
+    stats.update(frames_used=frames_used, pixels_admitted=pixels_admitted,
+                 pixels_beyond_cap=pixels_beyond_cap, paintable_cells=int(idx.size),
+                 cell=cell)
+    if idx.size == 0:
+        stats["reason"] = "no paintable footprint"
+        return sq, stats
+    xs = cap[0] + (idx % grid + 0.5) * cell
+    ys = cap[1] + (idx // grid + 0.5) * cell
+    half = cell / 2.0
+    lo_x, hi_x = (float(v) for v in np.percentile(xs, [trim_percentile, 100.0 - trim_percentile]))
+    lo_y, hi_y = (float(v) for v in np.percentile(ys, [trim_percentile, 100.0 - trim_percentile]))
+    footprint = (lo_x - half, lo_y - half, hi_x + half, hi_y + half)
+    bounds = (max(cap[0], min(sq[0], footprint[0])), max(cap[1], min(sq[1], footprint[1])),
+              min(cap[2], max(sq[2], footprint[2])), min(cap[3], max(sq[3], footprint[3])))
+    stats.update(reason="ok",
+                 footprint_raw_xy=[float(xs.min() - half), float(ys.min() - half),
+                                   float(xs.max() + half), float(ys.max() + half)],
+                 footprint_trimmed_xy=[float(v) for v in footprint],
+                 bounds_xy=[float(v) for v in bounds],
+                 growth=[float((bounds[2] - bounds[0]) / side),
+                         float((bounds[3] - bounds[1]) / side)])
+    return bounds, stats
+
+
+def fit_raster_grid(bounds, long_side: int = MAX_DIM):
+    """(width, height, bounds) for possibly non-square bounds: the longer span gets
+    `long_side` (<= 512) pixels, the aspect ratio is kept, and cells stay exactly
+    square under the pixel-centre convention (step = span / (pixels - 1) on both
+    axes) by growing the SHORTER span symmetrically by less than one cell. Square
+    bounds come back unchanged."""
+    long_side = max(2, min(int(long_side), MAX_DIM))
+    min_x, min_y, max_x, max_y = (float(v) for v in bounds)
+    span_x, span_y = max_x - min_x, max_y - min_y
+    if span_x == span_y:
+        return long_side, long_side, (min_x, min_y, max_x, max_y)
+    if span_x > span_y:
+        step = span_x / (long_side - 1)
+        n = min(long_side, max(2, int(math.ceil(span_y / step - 1e-9)) + 1))
+        grow = max(0.0, step * (n - 1) - span_y) / 2.0
+        return long_side, n, (min_x, min_y - grow, max_x, max_y + grow)
+    step = span_y / (long_side - 1)
+    n = min(long_side, max(2, int(math.ceil(span_x / step - 1e-9)) + 1))
+    grow = max(0.0, step * (n - 1) - span_x) / 2.0
+    return n, long_side, (min_x - grow, min_y, max_x + grow, max_y)
+
+
 def build_homography_raster(*, origin_xyz, up_xyz, forward_xyz, bounds_xy, plane: FloorPlane,
                             frames, width: int = MAX_DIM, height: int = MAX_DIM,
                             pad_frac: float = DEFAULT_PAD_FRAC,
@@ -1199,10 +1393,18 @@ def build_homography_raster(*, origin_xyz, up_xyz, forward_xyz, bounds_xy, plane
                             furniture_mask: bool = FURNITURE_MASK_DEFAULT,
                             furniture_above_tol_frac: float = FURNITURE_ABOVE_TOL_FRAC,
                             furniture_block_px: int = FURNITURE_BLOCK_PX,
+                            footprint_bounds: bool = False,
+                            footprint_trim_percentile: float = FOOTPRINT_TRIM_PERCENTILE,
+                            footprint_max_growth: float = FOOTPRINT_MAX_GROWTH,
                             check=None) -> RasterResult:
     """One component's RGBA raster by warping the bottom band of each frame
     onto `plane`. Same basis, bounds, orientation and alpha rules as
-    `build_raster`; `origin_xyz` is carried, not used (see `build_raster`)."""
+    `build_raster`; `origin_xyz` is carried, not used (see `build_raster`).
+
+    `footprint_bounds` (default False = the padded square, unchanged): grow the
+    raster bounds to the frames' paintable floor footprint (see
+    FOOTPRINT_TRIM_PERCENTILE); the long side keeps max(width, height) pixels and
+    the aspect ratio follows the bounds."""
     width = max(1, min(int(width), MAX_DIM))
     height = max(1, min(int(height), MAX_DIM))
     up = _unit(up_xyz)
@@ -1234,6 +1436,22 @@ def build_homography_raster(*, origin_xyz, up_xyz, forward_xyz, bounds_xy, plane
     h_med = float(plane.stats.get("camera_height_median") or 0.0)
     if not math.isfinite(h_med) or h_med <= EPS:
         raise ValueError("floor plane carries no camera height")
+    footprint_stats = None
+    if footprint_bounds:
+        grown, footprint_stats = footprint_raster_bounds(
+            plane=plane, frames=frames, up_xyz=up, forward_xyz=forward, square_bounds=bounds,
+            lower_fraction=lower_fraction, min_pitch_deg=min_pitch_deg,
+            horizon_min_depression_deg=horizon_min_depression_deg,
+            max_incidence_deg=max_incidence_deg, max_range_frac=max_range_frac,
+            grazing_cos_min=grazing_cos_min, trim_percentile=footprint_trim_percentile,
+            max_growth=footprint_max_growth, check=check)
+        if grown != tuple(bounds):
+            width, height, bounds = fit_raster_grid(grown, max(width, height))
+            min_x, min_y, max_x, max_y = bounds
+            step_x = (max_x - min_x) / max(width - 1, 1)
+            step_y = (max_y - min_y) / max(height - 1, 1)
+        footprint_stats.update(width=width, height=height,
+                               raster_bounds_xy=[float(v) for v in bounds])
     n_f, n_r = float(n @ forward), float(n @ right)
     xs = min_x + np.arange(width) * step_x
     ys = min_y + np.arange(height) * step_y
@@ -1262,24 +1480,12 @@ def build_homography_raster(*, origin_xyz, up_xyz, forward_xyz, bounds_xy, plane
     for fi, fr in enumerate(frames):
         if check is not None:
             check()   # the caller's wall cap / cancellation; raises to abandon
-        ok, reason, cam_h, _pitch = frame_gate(plane, fr.position_xyz, fr.forward_xyz,
-                                               fr.up_xyz, min_pitch_deg)
+        ok, reason, cam_h = _frame_admission(plane, fr, fallback_ids, n, d, h_med, min_pitch_deg)
         if not ok:
             _reject(reason)
             continue
-        # The per-frame pose gate checks a frame against an INDEPENDENT plane. A
-        # camera-trajectory fallback plane is built from some frames' own drops; such
-        # a frame glimpsing deeper floor would only vote itself out, so only THOSE
-        # frames skip it.
-        if fr.check_points_xyz is not None and fr.kid not in fallback_ids:
-            cp = np.asarray(fr.check_points_xyz, dtype=np.float64).reshape(-1, 3)
-            if len(cp) >= FRAME_MIN_CHECK_POINTS:
-                below = float(np.mean(cp @ n + d < -FRAME_BELOW_PLANE_TOL_FRAC * h_med))
-                if below > FRAME_BELOW_PLANE_MAX_FRAC:
-                    _reject("pose disagrees with plane (own lower-band points below it)")
-                    continue
-        img = np.asarray(fr.color)
-        if img.ndim != 3 or img.shape[2] < 3 or img.shape[0] < 2 or img.shape[1] < 2:
+        img = _usable_image(fr)
+        if img is None:
             _reject("bad image")
             continue
         h_px, w_px = img.shape[:2]
@@ -1312,13 +1518,7 @@ def build_homography_raster(*, origin_xyz, up_xyz, forward_xyz, bounds_xy, plane
         # Forward-map the band's own pixels once, only to REPORT how much of
         # the band lands outside the padded bounds (structural in the inverse
         # warp below: such a hit has no cell).
-        bv, bu = np.mgrid[int(math.ceil(v_top)):h_px, 0:w_px]
-        rays = (((bu - fr.cx) / fr.fx)[..., None] * right_c + ((bv - fr.cy) / fr.fy)[..., None]
-                * down_c + fwd_c)
-        den = rays @ n
-        hit = den < -EPS
-        t = np.where(hit, cam_h / np.where(hit, -den, 1.0), 0.0)
-        hp = cam + t[..., None] * rays
+        hit, hp, _, _ = _band_plane_hits(fr, n, cam_h, h_px, w_px, lower_fraction)
         hpx, hpy = hp @ forward, hp @ right
         band_pixels += int(hit.sum())
         band_pixels_outside_bounds += int((hit & ((hpx < min_x) | (hpx > max_x) |
@@ -1410,6 +1610,8 @@ def build_homography_raster(*, origin_xyz, up_xyz, forward_xyz, bounds_xy, plane
         "band_pixels_outside_bounds": band_pixels_outside_bounds,
         "plane": dict(plane.stats),
     }
+    if footprint_stats is not None:
+        stats["footprint"] = footprint_stats
     return RasterResult(rgba=rgba, raster_bounds_xy=tuple(float(v) for v in bounds),
                         width=width, height=height, opaque_cells=int(len(idx)),
                         total_cells=n_cells, multi_view_cells=int(multi[idx].sum()),
