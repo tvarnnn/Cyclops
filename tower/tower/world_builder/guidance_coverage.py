@@ -246,9 +246,17 @@ def compute_coverage(*, solution, manifest, placements, poses, keyframes,
     if (not math.isfinite(solved_at) or solved_at < 0 or
             isinstance(computed_at, bool) or
             not isinstance(computed_at, (int, float)) or
-            not math.isfinite(computed_at) or
-            float(solution["solved_at"]) != solved_at):
+            not math.isfinite(computed_at)):
         raise ValueError("invalid solve clock")
+    solution_solved_at = float(solution["solved_at"])
+    if not math.isfinite(solution_solved_at) or solution_solved_at < 0:
+        raise ValueError("invalid solve clock")
+    if solution_solved_at != solved_at:
+        # solution.json is published before the builder merges the derived
+        # manifest (global_solve.py / world_build_session.py): a read in
+        # between sees a well-formed but mixed generation. The next rebuild
+        # offers the matching manifest for the same solution file.
+        raise _TransientCoverageError("solution and manifest solve clocks differ")
     if computed_at < solved_at:
         raise _TransientCoverageError("solve clock not yet settled")
     horizon = _integer(summary["horizon_keyframes"], 65535)
@@ -296,7 +304,13 @@ def compute_coverage(*, solution, manifest, placements, poses, keyframes,
         if p["state"] != "registered":
             continue
         seg = _integer(p["segment_index"], 2**31-1)
-        if (p["input_digest"] != digest or p["reference_segment"] not in references or
+        if p["input_digest"] != digest:
+            # engine.py writes the derived manifest before placements.json: a
+            # read in between sees this build's manifest with the previous
+            # build's placements. Well-formed, mixed generation; the next
+            # rebuild offers placements that match this digest.
+            raise _TransientCoverageError("placement source mismatch: earlier build")
+        if (p["reference_segment"] not in references or
                 p.get("evidence", {}).get("solver") != summary["solver"] or
                 not summary["segments"].get(str(seg), {}).get("replaced")):
             raise ValueError("placement source mismatch")

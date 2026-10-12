@@ -292,6 +292,95 @@ def test_shutdown_cancels_pending_retry_without_timer_or_thread(monkeypatch, tmp
     assert calls == [1]
 
 
+def test_new_solution_waits_for_matching_manifest_clock():
+    """solution.json publishes before the builder merges the derived manifest
+    (CX-FOW-CLOCK-20261012): a well-formed, mixed-generation clock retries;
+    the next rebuild offers the matching manifest for the same solution."""
+    data = _inputs()
+    data["solution"]["solved_at"] += 1.0
+    data["computed_at"] = data["solution"]["solved_at"] + 0.1
+    with pytest.raises(coverage._TransientCoverageError,
+                       match="solution and manifest solve clocks differ"):
+        _block(data)
+    data["manifest"]["global_solve"]["solved_at"] = data["solution"]["solved_at"]
+    assert _block(data)["solved_at"] == data["solution"]["solved_at"]
+
+
+def test_malformed_solution_clock_stays_permanent():
+    data = _inputs()
+    data["solution"]["solved_at"] = float("nan")
+    with pytest.raises(ValueError, match="invalid solve clock") as refused:
+        _block(data)
+    assert not isinstance(refused.value, coverage._TransientCoverageError)
+    data = _inputs()
+    data["solution"]["solved_at"] = -1.0
+    with pytest.raises(ValueError, match="invalid solve clock") as refused:
+        _block(data)
+    assert not isinstance(refused.value, coverage._TransientCoverageError)
+
+
+def test_placements_from_earlier_build_wait_for_current_build():
+    """engine.py writes the derived manifest before placements.json: a read in
+    between sees this build's manifest with the previous build's placements
+    (same class of bug as the clock race). It must retry, not give up."""
+    data = _inputs()
+    current_digest = data["placements"][0]["input_digest"]
+    data["placements"][0]["input_digest"] = "0" * 64
+    with pytest.raises(coverage._TransientCoverageError,
+                       match="placement source mismatch"):
+        _block(data)
+    data["placements"][0]["input_digest"] = current_digest
+    assert _block(data)["horizon_keyframes"] == len(data["solution"]["keyframe_ids"])
+
+
+def test_other_placement_source_mismatches_stay_permanent():
+    """Only the earlier-build digest race is transient; a genuinely wrong
+    solver or an unreplaced segment is still a permanent refusal."""
+    data = _inputs()
+    data["placements"][0]["evidence"]["solver"] = "another-solver"
+    with pytest.raises(ValueError, match="placement source mismatch") as refused:
+        _block(data)
+    assert not isinstance(refused.value, coverage._TransientCoverageError)
+    data = _inputs()
+    data["manifest"]["global_solve"]["segments"][str(data["placements"][0]["segment_index"])][
+        "replaced"] = False
+    with pytest.raises(ValueError, match="placement source mismatch") as refused:
+        _block(data)
+    assert not isinstance(refused.value, coverage._TransientCoverageError)
+
+
+def test_new_transient_clocks_and_placements_retry_is_bounded_like_others(monkeypatch, tmp_path,
+                                                                          caplog):
+    """The existing bounded-retry mechanism (5 s, then 20 s, at most two
+    attempts) must apply to these two new transient reasons exactly as it
+    already does to the other ones; neither gets special-cased looser bounds."""
+    caplog.set_level(logging.INFO, logger=coverage.__name__)
+    for reason in ("solution and manifest solve clocks differ",
+                  "placement source mismatch: earlier build"):
+        clock = _Clock()
+        calls = []
+
+        def compute(root, world, session, expected, revision, wall, tag, budget, _reason=reason):
+            calls.append(1)
+            raise coverage._TransientCoverageError(_reason)
+
+        monkeypatch.setattr(coverage, "compute_from_tree", compute)
+        worker = coverage.CoverageWorker(tmp_path, retry_clock=clock.now)
+        try:
+            _offer(worker, 1090)
+            _until(lambda: worker._pending is not None and worker._pending[3] == 1)
+            clock.advance(worker, 5.0)
+            _until(lambda: worker._pending is not None and worker._pending[3] == 2)
+            clock.advance(worker, 20.0)
+            _until(lambda: len(calls) == 3 and worker._pending is None and
+                   "gave up" in _dispositions(caplog))
+            assert calls == [1, 1, 1]
+            assert _dispositions(caplog)[-3:] == ["retry 1", "retry 2", "gave up"]
+        finally:
+            _stop(worker)
+            caplog.clear()
+
+
 def test_failure_classification():
     data = _inputs()
     data["computed_at"] = data["solution"]["solved_at"] - 0.001
