@@ -477,6 +477,9 @@ def test_build_landing_matches_the_receipt_and_the_wire(tmp_path):
     assert max(decoded.size) <= 512
     alpha = np.asarray(decoded)[:, :, 3]
     assert 0 < int((alpha == 255).sum()) < alpha.size
+    # The receipt's 3 x 3 bounds become a 3.9 x 3.9 published raster.
+    assert stats[0]["opaque_area"] == pytest.approx(
+        int((alpha == 255).sum()) / alpha.size * 15.21)
     assert len(pfw.manifest_bytes(block)) <= 8 * 1024
     assert stats[0]["plane_ok"] is True
 
@@ -864,10 +867,51 @@ def _opaque_build(opaque_by_solve):
     def build(root, world, session, receipt, eligible, tree, stat, method, check):
         block, tiles, _ = _fake_build_factory()(root, world, session, receipt, eligible, tree,
                                                 stat, method=method, check=check)
-        stats = [{"reference_segment": ref, "opaque_fraction": value, "projected_keyframes": 1}
-                 for ref, value in opaque_by_solve[receipt["solved_at"]].items()]
+        stats = []
+        for ref, value in opaque_by_solve[receipt["solved_at"]].items():
+            fraction, area = value if isinstance(value, tuple) else (value, None)
+            stats.append({"reference_segment": ref, "opaque_fraction": fraction,
+                          "opaque_area": area, "projected_keyframes": 1})
         return block, tiles, stats
     return build
+
+
+@pytest.mark.parametrize("name, first, second, publishes", [
+    ("e2e5 kf 520 area grows", (0.799, 0.799 * 217.4), (0.194, 0.194 * 1490.6), True),
+    ("e2e4 near blank fallback", (0.55, 363.0), (0.004, 0.004 * 47591.0), False),
+    ("fraction and area drop", (0.60, 200.0), (0.05, 150.0), False),
+])
+def test_regress_guard_uses_opaque_area_with_fraction_floor(name, first, second, publishes):
+    latest = {}
+    worker, state = _worker(latest, build=_opaque_build({1000.0: {0: first},
+                                                         2000.0: {0: second}}))
+    try:
+        _offer(worker, latest, _receipt(1000.0))
+        assert _wait(lambda: state.landed(WORLD, SESSION) is not None)
+        _offer(worker, latest, _receipt(2000.0, revision="g2"))
+        assert _wait(lambda: worker.outcomes.get((WORLD, SESSION), {}).get("identity")
+                     == (2000.0, "g2", 1))
+        assert (worker.outcomes[(WORLD, SESSION)]["disposition"] == "ok") is publishes
+        assert state.landed(WORLD, SESSION)["solved_at"] == (2000.0 if publishes else 1000.0)
+    finally:
+        worker.shutdown()
+
+
+def test_regress_guard_uses_area_from_the_last_published_landing():
+    latest = {}
+    build = _opaque_build({1000.0: {0: (0.799, 173.7)},
+                           2000.0: {0: (0.194, 289.2)},
+                           3000.0: {0: (0.025, 250.0)}})
+    worker, state = _worker(latest, build=build)
+    try:
+        for solved_at, rev in ((1000.0, "g1"), (2000.0, "g2"), (3000.0, "g3")):
+            _offer(worker, latest, _receipt(solved_at, revision=rev))
+            assert _wait(lambda: worker.outcomes.get((WORLD, SESSION), {}).get("identity")
+                         == (solved_at, rev, 1))
+        assert state.landed(WORLD, SESSION)["solved_at"] == 2000.0
+        assert worker.outcomes[(WORLD, SESSION)]["disposition"].startswith("skipped: regressed")
+    finally:
+        worker.shutdown()
 
 
 def test_a_landing_that_regresses_a_component_is_skipped_and_the_prior_plan_kept():
