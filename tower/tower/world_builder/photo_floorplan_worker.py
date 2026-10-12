@@ -313,7 +313,9 @@ def homography_component(*, receipt_component, entries, tree, arrays, keyframe_i
             plane = estimate_floor_plane(points_xyz=out_xyz[good], camera_positions=cams,
                                          up_xyz=up, forward_xyz=forward,
                                          bounds_xy=receipt_component["bounds_xy"], check=check,
-                                         camera_rights=rights)
+                                         camera_rights=rights,
+                                         camera_order=[keyframe_index.get(e[0], 0)
+                                                       for e in entries])
         observations = np.asarray(arrays["observations"]).reshape(-1, 3)
         obs_xy = np.asarray(arrays["observation_xy"]).reshape(-1, 2)
         band_top = (1.0 - LOWER_IMAGE_FRACTION) * float(camera["height"])
@@ -332,7 +334,7 @@ def homography_component(*, receipt_component, entries, tree, arrays, keyframe_i
             # A sparse live solve: never go blank -- a level plane from the camera
             # trajectory and the drops the downward frames themselves observed.
             n_ref = np.asarray(plane.stats["reference_normal_xyz"])
-            drops = []
+            drops, drop_ids = [], []
             for e in entries:
                 pitch = float(np.degrees(np.arcsin(np.clip(-float(e[3] @ n_ref), -1.0, 1.0))))
                 if pitch < MIN_FRAME_PITCH_DEG:
@@ -340,8 +342,9 @@ def homography_component(*, receipt_component, entries, tree, arrays, keyframe_i
                 _, pts = band_points(e[0])
                 pts = pts[np.all(np.isfinite(pts), axis=1)]
                 drops.append(float(e[1] @ n_ref) - pts @ n_ref)
+                drop_ids.append(e[0])
             plane = fallback_floor_plane(failed=plane, camera_positions=cams,
-                                         band_drops_by_frame=drops)
+                                         band_drops_by_frame=drops, frame_ids=drop_ids)
             stats["plane"] = plane.stats
             stats["plane_ok"] = plane.ok
             stats["plane_reason"] = plane.reason
