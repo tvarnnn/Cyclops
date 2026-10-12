@@ -11,6 +11,7 @@ import pytest
 from tower.world_builder import dense as D
 from tower.world_builder import global_solve as GS
 from tower.world_builder import live_depth as LD
+from tower.world_builder.photo_floorplan_worker import DepthCache
 from tower.world_builder import surface_pipeline as SP
 from tower.world_builder.dense_pipeline import FILL_RULE, reusable_predictions
 from tower.world_builder.global_solve import load_solution
@@ -90,6 +91,29 @@ def test_worker_writes_reader_shape_and_numeric_fov(walk):
     assert reusable_predictions(worker.root / "align.json", LD.MODEL,
                                 known_fov=True) == {0: (record["kid"], record["image_sha1"])}
     assert document["live"]["predicted"] == 1
+
+
+def test_floor_evidence_switch_binds_live_prediction_bytes(walk, monkeypatch):
+    monkeypatch.setenv("TOWER_WORLD_PHOTO_FLOORPLAN_EVIDENCE", "on")
+    worker = _predict_one(walk)
+    store, _, keyframe, _ = walk
+    record = json.loads((worker.root / "align.json").read_text())["records"][0]
+    assert record["pred_sha256"] == hashlib.sha256(
+        (worker.root / record["pred"]).read_bytes()).hexdigest()
+    assert record["fill_sha256"] == hashlib.sha256(
+        (worker.root / "work" / "depth" / "00000_fill.npy").read_bytes()).hexdigest()
+    image_set = SimpleNamespace(directory=store.images_dir(WORLD, SESSION),
+                                cache_token=None, redaction=LABEL)
+    cache = DepthCache(worker.root.parent, image_set=image_set)
+    assert cache.load_depth(keyframe.keyframe_id,
+                            load_solution(store, WORLD, SESSION).camera)[2] == "ok"
+
+
+def test_floor_evidence_off_adds_no_live_prediction_fields(walk, monkeypatch):
+    monkeypatch.delenv("TOWER_WORLD_PHOTO_FLOORPLAN_EVIDENCE", raising=False)
+    worker = _predict_one(walk)
+    record = json.loads((worker.root / "align.json").read_text())["records"][0]
+    assert "pred_sha256" not in record and "fill_sha256" not in record
 
 
 @pytest.mark.parametrize("setting", ["shadow", "on"])

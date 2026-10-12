@@ -363,13 +363,121 @@ def reuse_plane(memory, entries):
                       normal=tuple(float(v) for v in n), offset=offset, stats=stats), "ok"
 
 
+def _tally(values):
+    out = {}
+    for v in values:
+        out[str(v)] = out.get(str(v), 0) + 1
+    return out
+
+
+def frame_floor_evidence(*, kid, rgb, fx, fy, cx, cy, position, up_world, forward_world,
+                         scale, plane, obs_xy, obs_xyz, camera, depth_cache=None, solve=None,
+                         masks_dir=None):
+    """(evidence, info) for one selected frame at its sample size (lane C; see
+    `photo_floorplan_evidence`). `obs_xy` are this frame's observed pixel positions at
+    the SOLVE camera's size and `obs_xyz` their 3-D points in the output frame (NaN =
+    filtered out). Never raises on a missing or unusable cache entry or mask: that
+    source is simply silent."""
+    from tower.world_builder import photo_floorplan_evidence as fe
+
+    h_px, w_px = rgb.shape[:2]
+    n = np.asarray(plane.normal, dtype=np.float64)
+    d = float(plane.offset)
+    h_med = float(plane.stats["camera_height_median"])
+    info = {}
+    if masks_dir is not None:
+        mask_path = Path(masks_dir) / f"{kid.split(':')[-1]}.jpg.png"
+        if not mask_path.is_file():
+            # An unmasked live solve cannot rule out feet or clothing at floor
+            # height. Do not turn that missing protection into positive colour.
+            return np.zeros((h_px, w_px), dtype=bool), {
+                "source": "none", "depth": "transient mask missing",
+                "depth_px": 0, "sparse_px": 0, "seeds": 0}
+    depth_floor = depth_known = None
+    if depth_cache is not None and solve is not None:
+        pred, fill, reason = depth_cache.load_depth(kid, camera)
+        if pred is not None:
+            at, z_sfm, reason = _clean_anchors(kid, solve, pred, fill)
+            ok = at is not None
+            if ok:
+                ok, s, held_out, reason = fe.fit_depth_scale(at, z_sfm)
+            if ok:
+                d_s, v_s = fe.resample_depth(np.float32(s) * pred, ~fill, w_px, h_px)
+                depth_floor, depth_known, layer = fe.depth_floor_evidence(
+                    d_s, v_s, scale=scale, position_xyz=position, forward_xyz=forward_world,
+                    up_xyz=up_world, fx=fx, fy=fy, cx=cx, cy=cy, normal=n, offset=d,
+                    h_med=h_med)
+                info["layer"] = layer["layer"]
+                info["lower_layer"] = layer["lower_layer"]
+                info["held_out"] = held_out
+        info["depth"] = reason
+    sx = w_px / float(camera["width"])
+    sy = h_px / float(camera["height"])
+    uv = (np.asarray(obs_xy, dtype=np.float64).reshape(-1, 2) + 0.5) * np.array([sx, sy]) - 0.5
+    hf_global = (np.asarray(obs_xyz, dtype=np.float64).reshape(-1, 3) @ n + d) / h_med
+    hf = hf_global.copy()
+    if info.get("layer") is not None:
+        hf = hf - info["layer"]   # seeds and vetoes relative to THIS frame's floor layer
+    sparse_floor, veto, seeds = fe.sparse_floor_evidence(rgb, uv, hf)
+    info["seeds"] = seeds
+    if depth_floor is not None and depth_floor.any():
+        safe_uv = np.where(np.isfinite(uv), uv, -1.0)
+        ui = np.rint(safe_uv[:, 0]).astype(np.int64)
+        vi = np.rint(safe_uv[:, 1]).astype(np.int64)
+        inside = (np.isfinite(hf_global) & np.isfinite(uv).all(axis=1)
+                  & (ui >= 0) & (ui < w_px) & (vi >= 0) & (vi < h_px))
+        support = inside & (np.abs(hf_global) <= fe.EVIDENCE_TOL_FRAC)
+        matched = int(depth_floor[vi[support], ui[support]].sum())
+        if int(support.sum()) < 3 or matched < 2:
+            depth_floor[:] = False
+            info["depth_guard"] = "no independent sparse floor support"
+    if info.get("lower_layer") is not None:
+        depth_known = np.ones((h_px, w_px), dtype=bool)
+        sparse_floor[:] = False
+        info["depth_guard"] = "substantial lower horizontal layer"
+    if (plane.stats.get("ambiguous") and
+            plane.stats.get("alt_plane_height_above_chosen_frac", 0.0) > 0.2):
+        # The plane fitter itself found a credible lower alternative. The
+        # selected layer, including sparse seeds, cannot resolve that ambiguity.
+        depth_floor = np.zeros((h_px, w_px), dtype=bool)
+        depth_known = np.ones((h_px, w_px), dtype=bool)
+        sparse_floor[:] = False
+        info["depth_guard"] = "ambiguous lower plane"
+    transient = None
+    if masks_dir is not None:
+        mask_path = Path(masks_dir) / f"{kid.split(':')[-1]}.jpg.png"
+        if mask_path.is_file():
+            import cv2
+
+            png = cv2.imread(str(mask_path), cv2.IMREAD_GRAYSCALE)
+            if png is not None and png.shape == (int(camera["height"]), int(camera["width"])):
+                transient = fe.resample_transient(png == 0, w_px, h_px)
+            else:
+                # A mask that cannot be read or does not fit cannot clear any pixel.
+                transient = np.ones((h_px, w_px), dtype=bool)
+            info["transient_px"] = int(transient.sum())
+    evidence, counts = fe.combine(depth_floor=depth_floor, depth_known=depth_known,
+                                  sparse_floor=sparse_floor, veto=veto, transient=transient,
+                                  shape=(h_px, w_px))
+    info.update(counts)
+    info["source"] = ("depth" if depth_floor is not None else
+                      "sparse" if counts["sparse_px"] else "none")
+    return evidence, info
+
+
 def homography_component(*, receipt_component, entries, tree, arrays, keyframe_index,
                          camera, images_dir, check=None, furniture_mask=None,
-                         plane_memory=None, footprint_bounds=False, diag_out=None):
+                         plane_memory=None, footprint_bounds=False, diag_out=None,
+                         floor_evidence=False, depth_cache=None):
     """Fallback (3) for one displayed component.
 
     Returns (RasterResult, FloorPlane, frames, stats). `diag_out` (a dict, diagnostics only)
-    receives this component's bottom-band SfM point reader."""
+    receives this component's bottom-band SfM point reader.
+
+    `floor_evidence` (lane C, default off = today): each selected frame carries
+    per-pixel floor evidence (`frame_floor_evidence`) and the warp samples only there.
+
+    Returns (RasterResult, FloorPlane, frames, stats)."""
     forward = np.asarray(receipt_component["forward_xyz"], np.float64)
     up = np.asarray(receipt_component["up_xyz"], np.float64)
     right = np.cross(forward, up)
@@ -418,12 +526,13 @@ def homography_component(*, receipt_component, entries, tree, arrays, keyframe_i
         by_frame = np.argsort(observations[:, 0], kind="stable")
         starts = np.searchsorted(observations[by_frame, 0], np.arange(len(keyframe_index) + 1))
 
-        def band_points(kid):
+        def band_points(kid, band_only=True):
             ki = keyframe_index.get(kid)
             if ki is None or ki + 1 >= len(starts):
                 return np.zeros((0, 2)), np.zeros((0, 3))
             rows = by_frame[starts[ki]:starts[ki + 1]]
-            rows = rows[obs_xy[rows, 1] >= band_top]
+            if band_only:
+                rows = rows[obs_xy[rows, 1] >= band_top]
             return obs_xy[rows], out_xyz[observations[rows, 2]]
 
         if diag_out is not None:
@@ -473,7 +582,10 @@ def homography_component(*, receipt_component, entries, tree, arrays, keyframe_i
             selected = select_spatial(admissible, forward, right)
             ms["gate"] = round((time.perf_counter() - t_stage) * 1000.0, 1)
             t_stage = time.perf_counter()
-            for kid, _, (_, position, up_world, forward_world, _) in selected:
+            evidence_s = 0.0
+            solve = solve_arrays_from(tree["solution"], arrays) if floor_evidence else None
+            evidence_info = {}
+            for kid, _, (_, position, up_world, forward_world, scale_e) in selected:
                 if check is not None:
                     check()
                 loaded = load_frame_image(images_dir, kid, camera)
@@ -488,14 +600,42 @@ def homography_component(*, receipt_component, entries, tree, arrays, keyframe_i
                 sx = rgb.shape[1] / float(camera["width"])
                 sy = rgb.shape[0] / float(camera["height"])
                 uv = (band_xy.astype(np.float64) + 0.5) * np.array([sx, sy]) - 0.5
+                evidence = None
+                if floor_evidence:
+                    t_ev = time.perf_counter()
+                    all_xy, all_pts = band_points(kid, band_only=False)
+                    evidence, evidence_info[kid] = frame_floor_evidence(
+                        kid=kid, rgb=rgb, fx=fx, fy=fy, cx=cx, cy=cy, position=position,
+                        up_world=up_world, forward_world=forward_world, scale=scale_e,
+                        plane=plane, obs_xy=all_xy, obs_xyz=all_pts, camera=camera,
+                        depth_cache=depth_cache, solve=solve,
+                        masks_dir=Path(images_dir).parent / "masks")
+                    evidence_s += time.perf_counter() - t_ev
                 frames.append(PhotoFrame(kid=kid, position_xyz=tuple(position),
                                          forward_xyz=tuple(forward_world),
                                          up_xyz=tuple(up_world), fx=fx, fy=fy, cx=cx, cy=cy,
                                          color=rgb, order=ki, check_points_xyz=pts[keep],
-                                         check_points_uv=uv[keep]))
+                                         check_points_uv=uv[keep], floor_evidence=evidence))
             stats["admissible_frames"] = len(admissible)
             stats["selected_frames"] = len(selected)
-            ms["load"] = round((time.perf_counter() - t_stage) * 1000.0, 1)
+            ms["load"] = round((time.perf_counter() - t_stage - evidence_s) * 1000.0, 1)
+            if floor_evidence:
+                ms["evidence"] = round(evidence_s * 1000.0, 1)
+                sources = [v["source"] for v in evidence_info.values()]
+                stats["evidence"] = {
+                    "frames_depth": sources.count("depth"),
+                    "frames_sparse": sources.count("sparse"),
+                    "frames_none": sources.count("none"),
+                    "frames_depth_no_layer": sum(1 for v in evidence_info.values()
+                                                 if v["source"] == "depth"
+                                                 and v.get("layer") is None),
+                    "depth_cache": depth_cache is not None,
+                    "depth_refusals": _tally(v.get("depth") for v in evidence_info.values()
+                                             if v.get("depth") not in (None, "ok")),
+                    "transient_frames": sum(1 for v in evidence_info.values()
+                                            if "transient_px" in v),
+                    "_per_frame": evidence_info,
+                }
         stats["frame_gate_counts"] = gate_counts
     if plane is None:
         from tower.world_builder.photo_floorplan import FloorPlane
@@ -515,6 +655,8 @@ def homography_component(*, receipt_component, entries, tree, arrays, keyframe_i
         # The plane (estimated, reused or fallback) is settled above; the footprint is
         # derived FROM it and never feeds back into plane estimation or reuse.
         options["footprint_bounds"] = True
+    if floor_evidence:
+        options["floor_evidence"] = True
     result = build_homography_raster(origin_xyz=receipt_component["origin_xyz"], up_xyz=up,
                                      forward_xyz=forward,
                                      bounds_xy=receipt_component["bounds_xy"], plane=plane,
@@ -527,13 +669,24 @@ def homography_component(*, receipt_component, entries, tree, arrays, keyframe_i
 
 
 class DepthCache:
-    def __init__(self, dense_root: Path):
+    def __init__(self, dense_root: Path, *, image_set=None):
         self.root = Path(dense_root) / "live_depth"
-        doc = json.loads((self.root / "align.json").read_text(encoding="utf-8"))
+        from tower.world_builder.store import _read_json_past_a_replace
+
+        manifest = self.root / "align.json"
+        before = manifest.stat().st_mtime_ns
+        doc = _read_json_past_a_replace(manifest, absent_on_failure=False)
+        self.manifest_mtime_ns = manifest.stat().st_mtime_ns
+        if before != self.manifest_mtime_ns:
+            raise ValueError("live-depth manifest changed during read")
         self.by_kid = {r["kid"]: r for r in doc.get("records", [])
                        if isinstance(r, dict) and r.get("kid")}
         self.imagery_source = doc.get("imagery_source")
         self.backend = doc.get("backend")
+        self.fill_rule = doc.get("fill_rule")
+        self.redaction_trust = doc.get("redaction_trust")
+        self.keyframe_image_set = doc.get("keyframe_image_set")
+        self.image_set = image_set
 
     def has(self, kid) -> bool:
         return kid in self.by_kid
@@ -549,6 +702,66 @@ class DepthCache:
         bgr = cv2.imread(str(self.root / "work" / "undist" / f"{ki:05d}.jpg"))
         rgb = bgr[:, :, ::-1] if bgr is not None else np.zeros((*pred.shape, 3), np.uint8)
         return pred, fill, rgb
+
+    def load_depth(self, kid, camera):
+        """(pred, fill, "ok") for floor evidence, or (None, None, reason). Only a
+        prediction made under THIS solve camera's field of view and size, by the Exp1
+        model, is used: anything else is silent, never an error."""
+        import io
+        import math
+
+        from tower.world_builder.appearance import label_is_trusted, pixel_trust_token
+        from tower.world_builder.dense_pipeline import FILL_RULE
+        from tower.world_builder.live_depth import MODEL
+
+        record = self.by_kid.get(kid)
+        if record is None:
+            return None, None, "cache miss"
+        if self.backend != MODEL:
+            return None, None, "backend mismatch"
+        if self.fill_rule != FILL_RULE or record.get("fill_rule") != FILL_RULE:
+            return None, None, "fill rule mismatch"
+        if (self.image_set is None or self.imagery_source != "redacted"
+                or not label_is_trusted(self.image_set.redaction)
+                or self.keyframe_image_set != self.image_set.cache_token
+                or self.redaction_trust != pixel_trust_token(self.image_set.redaction)):
+            return None, None, "image set or trust mismatch"
+        try:
+            width, height = int(camera["width"]), int(camera["height"])
+            fov = round(math.degrees(2.0 * math.atan(width / (2.0 * float(camera["fx"])))), 6)
+            if record.get("known_fov") != fov:
+                return None, None, "field of view mismatch"
+            source = self.image_set.directory / f"{kid.rsplit(':', 1)[-1]}.jpg"
+            if hashlib.sha1(source.read_bytes()).hexdigest() != record.get("image_sha1"):
+                return None, None, "image mismatch"
+            ki = int(record["ki"])
+            if record.get("pred") != f"work/depth/{ki:05d}_pred.npy":
+                return None, None, "prediction path mismatch"
+            pred_path = self.root / "work" / "depth" / f"{ki:05d}_pred.npy"
+            fill_path = self.root / "work" / "depth" / f"{ki:05d}_fill.npy"
+            pred_bytes = pred_path.read_bytes()
+            fill_bytes = fill_path.read_bytes()
+            # Older live records have no content hashes. Their files must at least
+            # predate this manifest snapshot; a writer replacing a sequence file
+            # makes it newer and the old record is then refused.
+            if (pred_path.stat().st_mtime_ns > self.manifest_mtime_ns
+                    or fill_path.stat().st_mtime_ns > self.manifest_mtime_ns):
+                return None, None, "prediction changed since manifest"
+            pred_hash, fill_hash = record.get("pred_sha256"), record.get("fill_sha256")
+            if (pred_hash is None) != (fill_hash is None):
+                return None, None, "incomplete prediction identity"
+            if (pred_hash is not None and
+                    (hashlib.sha256(pred_bytes).hexdigest() != pred_hash or
+                     hashlib.sha256(fill_bytes).hexdigest() != fill_hash)):
+                return None, None, "prediction hash mismatch"
+            # float32: the evidence works at <= 256x144 after an area resample.
+            pred = np.load(io.BytesIO(pred_bytes), allow_pickle=False).astype(np.float32)
+            fill = np.load(io.BytesIO(fill_bytes), allow_pickle=False).astype(bool)
+        except (OSError, ValueError, KeyError, TypeError):
+            return None, None, "unreadable"
+        if pred.shape != (height, width) or fill.shape != pred.shape:
+            return None, None, "size mismatch"
+        return pred, fill, "ok"
 
 
 @dataclasses.dataclass
@@ -569,22 +782,22 @@ def solve_arrays_from(meta: dict, arrays: dict) -> SolveArrays:
                        observation_xy=np.asarray(arrays["observation_xy"], np.float64).reshape(-1, 2))
 
 
-def fit_keyframe(kid: str, solve: SolveArrays, pred: np.ndarray, fill: np.ndarray):
-    """(ok, a, b, n_clean, held_out_rel, reason): the cached prediction fit to THIS
-    solve's own sparse observations of that keyframe."""
-    from tower.world_builder.dense import align_frame, project
+def _clean_anchors(kid: str, solve: SolveArrays, pred: np.ndarray, fill: np.ndarray):
+    """(pred at the anchors, SfM z, None) for one keyframe's clean (non-fill) sparse
+    anchors in THIS solve, or (None, count, reason)."""
+    from tower.world_builder.dense import project
 
     ki = solve.keyframe_index.get(kid)
     if ki is None:
-        return False, None, None, 0, None, "keyframe not in this solve's horizon"
+        return None, 0, "keyframe not in this solve's horizon"
     mask = solve.observations[:, 0] == ki
     if int(mask.sum()) < MIN_FIT_POINTS:
-        return False, None, None, int(mask.sum()), None, "too few sparse observations"
+        return None, int(mask.sum()), "too few sparse observations"
     pt_idx = solve.observations[mask, 2]
     X = solve.xyz[pt_idx]
     pose = solve.poses.get(kid)
     if pose is None:
-        return False, None, None, 0, None, "no local pose for this keyframe"
+        return None, 0, "no local pose for this keyframe"
     R = np.asarray(pose["rotation"], np.float64).reshape(3, 3)
     t = np.asarray(pose["translation"], np.float64)
     cam = solve.camera
@@ -594,15 +807,25 @@ def fit_keyframe(kid: str, solve: SolveArrays, pred: np.ndarray, fill: np.ndarra
     g = (np.isfinite(zc) & (zc > 1e-3) & np.isfinite(uv[:, 0]) & np.isfinite(uv[:, 1])
          & (uv[:, 0] >= 0) & (uv[:, 0] < W - 1) & (uv[:, 1] >= 0) & (uv[:, 1] < H - 1))
     if int(g.sum()) < MIN_FIT_POINTS:
-        return False, None, None, int(g.sum()), None, "too few sparse points inside the frame"
+        return None, int(g.sum()), "too few sparse points inside the frame"
     ui = np.clip(np.rint(uv[g, 0]).astype(int), 0, W - 1)
     vi = np.clip(np.rint(uv[g, 1]).astype(int), 0, H - 1)
     clean = ~fill[vi, ui]
     n_clean = int(clean.sum())
     if n_clean < MIN_FIT_POINTS:
-        return False, None, None, n_clean, None, "too few clean (non-fill) anchors"
-    disp_at_points = pred[vi[clean], ui[clean]].astype(np.float64)
-    z_sfm = zc[g][clean]
+        return None, n_clean, "too few clean (non-fill) anchors"
+    return pred[vi[clean], ui[clean]].astype(np.float64), zc[g][clean], None
+
+
+def fit_keyframe(kid: str, solve: SolveArrays, pred: np.ndarray, fill: np.ndarray):
+    """(ok, a, b, n_clean, held_out_rel, reason): the cached prediction fit to THIS
+    solve's own sparse observations of that keyframe."""
+    from tower.world_builder.dense import align_frame
+
+    disp_at_points, z_sfm, why = _clean_anchors(kid, solve, pred, fill)
+    if disp_at_points is None:
+        return False, None, None, z_sfm, None, why
+    n_clean = len(z_sfm)
     a, b, ho = align_frame(disp_at_points, z_sfm, kind="depth")
     if not (np.isfinite(a) and np.isfinite(b)):
         return False, a, b, n_clean, ho, "non-finite fit"
@@ -719,7 +942,7 @@ def read_landing_arrays(solve_dir: Path, solution_stat, solution_meta, check=Non
 
 def build_landing(root, world_id, session_id, receipt, eligible, tree, solution_stat,
                   method=METHOD_HOMOGRAPHY, check=None, plane_memory=None, footprints=None,
-                  footprint_bounds=False):
+                  footprint_bounds=False, floor_evidence=None):
     """(manifest block, {digest: (bytes, mime)}, per-component stats) for one landing.
 
     `footprints` (V2 only): a dict filled with {reference_segment: Footprint}.
@@ -727,8 +950,13 @@ def build_landing(root, world_id, session_id, receipt, eligible, tree, solution_
     `footprint_bounds` (homography only) grows each raster past the padded camera
     square; each component's stats then also carry `guard_opaque_fraction`, its opaque
     AREA over the padded square's area -- the never-regress guard's ratio input, so
-    bounds growth alone can never read as a regression (see `regression`)."""
+    bounds growth alone can never read as a regression (see `regression`).
+
+    `floor_evidence` None reads TOWER_WORLD_PHOTO_FLOORPLAN_EVIDENCE (exactly `on`)."""
     footprint_bounds = bool(footprint_bounds) and method != METHOD_DEPTH
+    if floor_evidence is None:
+        from tower.config import world_photo_floorplan_evidence_setting
+        floor_evidence = world_photo_floorplan_evidence_setting()
     solve_dir = Path(root) / "worlds" / world_id / "solve" / session_id
     solution = tree["solution"]
     camera = solution.get("camera")
@@ -747,6 +975,17 @@ def build_landing(root, world_id, session_id, receipt, eligible, tree, solution_
         except (OSError, ValueError) as exc:
             raise LandingSkipped(f"no live-depth cache for the depth method: {exc}") from None
         solve = solve_arrays_from(solution, arrays)
+    evidence_cache = None
+    if floor_evidence and method != METHOD_DEPTH:
+        # The live-depth cache is optional evidence: without it, the sparse points speak.
+        try:
+            from tower.world_builder.store import WorldStore
+
+            image_set = WorldStore(Path(root)).keyframe_image_set(world_id, session_id)
+            evidence_cache = DepthCache(Path(root) / "worlds" / world_id / "dense" / session_id,
+                                        image_set=image_set)
+        except (OSError, ValueError, AttributeError, TypeError):
+            evidence_cache = None
     components, tiles, stats = [], {}, []
     receipt_components = sorted(receipt["components"], key=lambda c: c["reference_segment"])
     for rc in receipt_components[:MAX_COMPONENTS]:
@@ -767,6 +1006,8 @@ def build_landing(root, world_id, session_id, receipt, eligible, tree, solution_
                 plane_memory=(plane_memory.setdefault(ref, {})
                               if plane_memory is not None else None),
                 **({"footprint_bounds": True} if footprint_bounds else {}),
+                **({"floor_evidence": True, "depth_cache": evidence_cache}
+                   if floor_evidence else {}),
                 diag_out=diag_out)
             # New-scene diagnostics (photo_floorplan_diagnostics): REFERENCES the worker reads
             # only after this landing's disposition is final; nothing here reads them back.
@@ -1329,7 +1570,7 @@ def regress_v2_escape(records, stats):
         if not rec.get("regressed"):
             continue
         c = by_ref.get(rec["ref"], {})
-        fraction = float(c.get("opaque_fraction") or 0.0)
+        fraction = float(opaque_by_ref([c]).get(rec["ref"], 0.0))
         if fraction < REGRESS_MIN_PRIOR_OPAQUE:
             failures.append(f"ref {rec['ref']}: opaque {fraction:.3f} < {REGRESS_MIN_PRIOR_OPAQUE}")
             continue
@@ -1353,7 +1594,8 @@ def regress_v2_usable(records, stats):
 
     def usable(c):
         return (bool(c.get("plane_ok"))
-                and float(c.get("opaque_fraction") or 0.0) >= REGRESS_MIN_PRIOR_OPAQUE
+                and float(opaque_by_ref([c]).get(c.get("reference_segment"), 0.0))
+                >= REGRESS_MIN_PRIOR_OPAQUE
                 and int(c.get("projected_keyframes") or 0) >= REGRESS_V2_ESCAPE_MIN_PROJECTED)
 
     return all(usable(by_ref.get(r["ref"], {})) for r in records if r.get("regressed"))
@@ -1385,6 +1627,9 @@ def component_summary(stats):
             rows[-1]["footprint"] = {"reason": footprint.get("reason"),
                                      "growth": footprint.get("growth"),
                                      "size": [footprint.get("width"), footprint.get("height")]}
+        if c.get("evidence") is not None:   # lane C, only when it is on
+            rows[-1]["evidence"] = {k: v for k, v in c["evidence"].items()
+                                    if not k.startswith("_")}
     return json.dumps(rows, separators=(",", ":"), default=str)
 
 

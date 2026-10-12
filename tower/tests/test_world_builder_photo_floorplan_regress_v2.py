@@ -493,3 +493,19 @@ def test_a_two_dimensional_walk_without_orientations_still_compares_by_positions
     rec = _assess(_landing(ROOM, FULL, axes=False), _landing(ROOM, FULL, axes=False, **NEW_GAUGE))
     assert rec["basis"] == "common" and rec["rotation"] == "positions"
     assert rec["retained"] > 0.99 and not rec["regressed"]
+
+
+def test_bounds_gauge_is_used_by_legacy_v2_fallback_and_escape():
+    prior = {0: 0.20}
+    row = {"reference_segment": 0, "opaque_fraction": 0.04,
+           "guard_opaque_fraction": 0.16, "opaque_area": 2.0,
+           "plane_ok": True, "plane": {"source": "estimated"},
+           "projected_keyframes": 12}
+    assert pfw.opaque_by_ref([row]) == {0: 0.16}
+    assert pfw.regression(prior, [row], {0: 3.0}) == ""
+    rec = pfw.regress_v2_assess(prior, {0: 3.0}, {}, [row], {})[0]
+    assert rec["basis"] == "legacy: no footprint"
+    assert rec["fraction"] == 0.16 and not rec["regressed"]
+    regressed = {**rec, "regressed": True}
+    assert pfw.regress_v2_escape([regressed], [row])[0] == "escape"
+    assert pfw.regress_v2_usable([regressed], [row])
