@@ -22,15 +22,39 @@ JPEG bytes or 404 for an unknown, superseded, disabled or untrusted tile.
 The digest is lowercase SHA-256 hex over these exact served JPEG bytes.
 Each tile is at most 16 KiB and 160 by 90 pixels. Each section carries at
 most 16 entries. Entries contain `keyframe_id`, `digest`, `redaction` (exactly
-`redacted`), `pose_source`, `component_reference_segment`, and
+`redacted`, or exactly `unredacted` only under the server switch below),
+`pose_source`, `component_reference_segment`, and
 `segment_index`. B1 uses `segment_local`, null component reference, and the
 live segment index. B2 uses `landed_global_solve`, the registered component's
 reference segment, and null segment index. Neither section carries position.
 
+## Unredacted sessions (demo; privacy deferred, 2026-10-12)
+
+`TOWER_WORLD_GUIDANCE_IMAGERY_UNREDACTED` defaults off and accepts only `on`
+(any other value, including `1`/`true`, is off and changes nothing). It is the
+owner-approved demo switch for the deferred-privacy baseline, where redaction
+is bypassed and walks record `session.json` `"redaction": "none"`. With it on,
+a session whose keyframe set's label is exactly `none` is served by both routes
+and by both producers (B1 live, B2 landed, including the S3 capture dial): its
+tiles are thumbnails of the stored keyframe JPEGs as persisted, with no
+redaction applied, and **every entry from such a session carries
+`"redaction": "unredacted"`**. Sessions with a trusted label still carry
+`redacted`. Every other untrusted label (unknown strings, a re-run label, an
+unreadable session) is refused exactly as with the switch off. With the switch
+off, `redaction` is never `unredacted` and a `none` session is 404.
+
+Clients must accept `unredacted` as a value of `redaction`; it changes nothing
+about the entry's shape. B1 never relabels bytes: a tile read under one
+`redaction` value is re-read, not reused, if the session's label changes.
+This switch governs guidance imagery only; appearance, depth and world-build
+trust are unchanged.
+
 ## Production and dating
 
 Every tile is read through `keyframe_image_bytes` with
-`imagery_source=IMAGERY_REDACTED`; raw reader allowlists are not consulted.
+`imagery_source=IMAGERY_REDACTED` (or, for a `none` session under the
+unredacted switch only, straight from the stored keyframe JPEG); raw reader
+allowlists are not consulted.
 An untrusted keyframe set or failed redaction emits no tile. There is no disk
 tile cache. B1 recomputes from accepted, locally posed keyframes on manifest
 fetch, newest first, at most one new 16 KiB tile per second. A segment break
