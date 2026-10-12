@@ -1045,10 +1045,17 @@ def world_anchor_verify_setting() -> frozenset:
 #   shadow  -- the guard measures the publication candidate and writes its audit
 #              (`solve/<session>/final_scale_guard.json`), and the solve is published
 #              exactly as with the guard off.
-#   on      -- `on`, `1`, `true`, `yes`: enforcement. A piece outside the scale band, or one
-#              the guard cannot certify, or an impossible-pose island, leaves the room as an
-#              explicit separate component; a candidate with no certifiable room is not
-#              published at all (the last published solution stands).
+#   on      -- `on`, `1`, `true`, `yes`: enforcement, by the v2 rule (`assess_v2`, design RUN
+#              review/codex/cx-SCALE-GUARD-V2-DESIGN-20261007.md). Only a MEASURED scale
+#              stretch leaves the room as an explicit separate component: >= 10 metric ratios,
+#              median outside [0.8, 1.25], and a bootstrap interval against the certified core
+#              that excludes 1. Everything else -- short or unmeasured stretches, out-of-band
+#              plateaus whose interval includes 1, a room with no metric evidence -- STAYS
+#              ATTACHED and is recorded `uncertified` (audit and `placed_scale_status`). The pose
+#              screen is recorded only; v2 isolates nothing on pose. v2 never withholds on scale;
+#              ON still withholds (the last published solution stands) on a failure: an exception,
+#              or a relabel that leaves no room. (v1's pose quarantine and "no certifiable room ->
+#              withhold" survive only in the offline shadow CLI's `assess`.)
 # FOW v1.2 PHOTO FLOOR PLAN (`world_builder/photo_floorplan_worker.py`; design
 # FOW-V12-PHOTO-FLOORPLAN-DESIGN-20261012, wire mail 303). Exactly `on` enables it, the
 # same exact-'on' rule as TOWER_WORLD_GUIDANCE_COVERAGE / _IMAGERY_LANDED: any other value,
@@ -1080,6 +1087,21 @@ def world_photo_floorplan_method_setting() -> str:
     logger.warning("[Tower][Config] %s=%r is not homography or depth; using homography",
                    WORLD_PHOTO_FLOORPLAN_METHOD_ENV, value)
     return WORLD_PHOTO_FLOORPLAN_METHODS[0]
+
+
+# PHOTO FLOOR PLAN NEW-SCENE DIAGNOSTICS FILES (`world_builder/photo_floorplan_diagnostics.py`;
+# manager 349 lane A). Diagnostics only: no published byte, wire field or decision depends on
+# it. The per-landing diagnostics LOG line is written whenever the photo floor plan runs;
+# exactly `on` here ALSO writes `photo_floorplan_diagnostics.jsonl` (one bounded record per
+# landing) and `photo_floorplan_diagnostics.json` (the per-walk summary and its new-scene
+# flags, rewritten after every landing, so after the final solve's landing it is the walk's)
+# into an EXISTING `worlds/<world>/sessions/<session>/` directory. Any other value: no file.
+WORLD_PHOTO_FLOORPLAN_DIAGNOSTICS_ENV = "TOWER_WORLD_PHOTO_FLOORPLAN_DIAGNOSTICS"
+
+
+def world_photo_floorplan_diagnostics_setting() -> bool:
+    """True only when TOWER_WORLD_PHOTO_FLOORPLAN_DIAGNOSTICS is exactly `on`."""
+    return os.environ.get(WORLD_PHOTO_FLOORPLAN_DIAGNOSTICS_ENV) == "on"
 
 
 WORLD_FINAL_SCALE_GUARD_ENV = "TOWER_WORLD_FINAL_SCALE_GUARD"

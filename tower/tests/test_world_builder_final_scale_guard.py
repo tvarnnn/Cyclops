@@ -294,7 +294,10 @@ def test_the_pose_screen_reads_metres_at_the_reference_scale():
 
 
 # ---------------------------------------------------------------------------
-# the walk-3 x2.56 bathroom, on a fixture shaped like it
+# scale-ratio case: two sustained high-ratio stretches (x3.19 / x2.40, an unmeasured gap between them) at
+# the end of the walk and one short x3.13 stretch early on. The numbers are copied from the historical
+# walk-3 published solve (its x2.56 bathroom and a desk stretch), but the case tests the MECHANISM --
+# label-free plateau isolation on ratios -- not anything about bathrooms or that room.
 # ---------------------------------------------------------------------------
 
 W3_N = 820
@@ -312,7 +315,7 @@ def _w3_levels(seed=3):
     return _levels(W3_N, W3_BAD, noise=0.08, seed=seed, missing=missing)
 
 
-def test_the_walk3_bathroom_leaves_the_room_pure():
+def test_sustained_high_ratio_stretches_and_a_short_one_are_isolated_and_the_room_stays_pure():
     out = FSG.assess(_cams(W3_N, centers=_walk_centers(W3_N, step=0.01)), _w3_levels())
     assert out["decision"] == "publish"
     room = set(out["room_keyframes"])
