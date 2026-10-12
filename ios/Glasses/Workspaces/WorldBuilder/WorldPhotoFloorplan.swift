@@ -219,15 +219,13 @@ nonisolated enum WorldPhotoFloorplanWire {
         return WorldImageryLanding(solvedAt: solvedAt, geometryRevision: revision, frameRevision: frame)
     }
 
-    /// `kept`: exactly its three keys, each landing exactly its three, the
-    /// reason a string. Anything else is no notice at all.
+    /// `kept`: both landings with their three keys and the reason a string;
+    /// keys it does not know are ignored, like everywhere else. A missing or
+    /// mistyped key is no notice at all.
     private static func kept(_ value: Any?) -> WorldPhotoFloorplanKept? {
-        let identity: Set<String> = ["solved_at", "geometry_revision", "frame_revision"]
         guard let object = value as? [String: Any],
-              Set(object.keys) == ["for_landing", "reason", "plan_landing"],
-              let forSection = object["for_landing"] as? [String: Any], Set(forSection.keys) == identity,
-              let planSection = object["plan_landing"] as? [String: Any], Set(planSection.keys) == identity,
-              let forLanding = landing(forSection), let planLanding = landing(planSection),
+              let forSection = object["for_landing"] as? [String: Any], let forLanding = landing(forSection),
+              let planSection = object["plan_landing"] as? [String: Any], let planLanding = landing(planSection),
               let reason = object["reason"] as? String
         else { return nil }
         return WorldPhotoFloorplanKept(forLanding: forLanding, reason: .init(wire: reason), planLanding: planLanding)
@@ -371,6 +369,9 @@ final class WorldPhotoFloorplanModel: ObservableObject {
     /// runs after coverage publishes) is asked again on the next geometry
     /// push, at most this many times in all, first fetch included: a bounded retry, never a poll.
     static let landingRetries = 3
+    /// A `kept` notice outlives at most this many failed asks in a row: an
+    /// unreachable Tower is not a Tower still saying it.
+    static let keptFailedAsks = 3
 
     let floorplanSwitch: WorldPhotoFloorplanSwitch
     private let client: WorldPhotoFloorplanClient
@@ -394,6 +395,8 @@ final class WorldPhotoFloorplanModel: ObservableObject {
     /// remembered plan on purpose. Not an answer for good: while it holds,
     /// each push asks again, since only asking tells it still holds.
     @Published private var kept: WalkScoped<WorldPhotoFloorplanKept>?
+    /// Asks of `landing` that failed in a row (no answer at all).
+    private var failedAsks = 0
     private var manifestTask: Task<Void, Never>?
     private var rasterTask: Task<Void, Never>?
     /// Digests whose raster was refused or failed, until the next manifest.
@@ -454,6 +457,7 @@ final class WorldPhotoFloorplanModel: ObservableObject {
         pieces = Set(block.components.map(\.referenceSegment))
         landingAnswered = false
         landingAttempts = 0
+        failedAsks = 0
         if kept != nil { kept = nil }
         fetchManifest(walk: walk, landing: next)
     }
@@ -483,6 +487,7 @@ final class WorldPhotoFloorplanModel: ObservableObject {
         holdExpiryTask = nil
         lastValid = nil
         if kept != nil { kept = nil }
+        failedAsks = 0
         receipt = WalkScoped(walk: nil, value: nil)
         failed = []
         landing = nil
@@ -518,10 +523,17 @@ final class WorldPhotoFloorplanModel: ObservableObject {
             self.manifestTask = nil
             switch result {
             case .success(let manifest):
-                let notice = manifest.kept.flatMap {
-                    $0.forLanding == landing && $0.planLanding == manifest.landed?.landing ? $0 : nil
+                self.failedAsks = 0
+                // Only a notice for this landing that keeps the plan held is
+                // one for the phone; any other is as if absent.
+                let held = self.lastValid.flatMap {
+                    $0.walk == walk ? WorldImageryLanding($0.value.plan.receipt.coverage) : nil
                 }
-                if self.kept?.value != notice { self.kept = notice.map { WalkScoped(walk: walk, value: $0) } }
+                let notice = manifest.kept.flatMap {
+                    $0.forLanding == landing && $0.planLanding == manifest.landed?.landing && $0.planLanding == held
+                        ? $0 : nil
+                }
+                self.holdKept(notice.map { WalkScoped(walk: walk, value: $0) })
                 if let landed = manifest.landed, landed.landing == landing {
                     self.landingAnswered = true
                     self.show(landed, walk: walk)
@@ -534,11 +546,20 @@ final class WorldPhotoFloorplanModel: ObservableObject {
                 // An answer: the route is absent, or said what the contract
                 // does not allow. Nothing of it is drawn, and no notice holds.
                 self.landingAnswered = true
-                if self.kept != nil { self.kept = nil }
+                self.holdKept(nil)
             case .failure:
-                break
+                self.failedAsks += 1
+                if self.failedAsks >= Self.keptFailedAsks { self.holdKept(nil) }
             }
         }
+    }
+
+    /// A notice that ends gives its landing back the bounded retries, so a
+    /// plan published for it later is still asked for.
+    private func holdKept(_ notice: WalkScoped<WorldPhotoFloorplanKept>?) {
+        guard kept != notice else { return }
+        if notice == nil { landingAttempts = 0 }
+        kept = notice
     }
 
     /// Replaced as a whole, never merged; rasters no longer named go.

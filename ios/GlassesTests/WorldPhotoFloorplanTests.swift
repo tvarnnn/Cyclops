@@ -134,7 +134,8 @@ final class WorldPhotoFloorplanTests: XCTestCase {
     }
 
     /// `kept`: optional, decoded beside the plan; a malformed notice is
-    /// absent and never refuses the manifest; an unknown reason is `failed`.
+    /// absent and never refuses the manifest; keys it does not know are
+    /// ignored; an unknown reason is `failed`.
     func testTheKeptNoticeDecodesAndAMalformedOneIsAbsent() throws {
         XCTAssertNil(F.decode(F.manifest())?.kept, "no notice")
         let manifest = try XCTUnwrap(F.decode(F.manifest(kept: F.kept())))
@@ -160,15 +161,20 @@ final class WorldPhotoFloorplanTests: XCTestCase {
                        WorldPhotoFloorplanManifest(landed: nil), "no plan, nothing kept")
 
         let good = F.kept()
+        let additive: [(String, String)] = [
+            (good.replacingOccurrences(of: #""reason":"regressed""#, with: #""reason":"regressed","why":"x""#),
+             "an extra key"),
+            (good.replacingOccurrences(of: #""frame_revision":1},"reason""#, with: #""frame_revision":1,"x":0},"reason""#),
+             "an extra landing key")]
+        for (extra, why) in additive {
+            XCTAssertEqual(F.decode(F.manifest(kept: extra))?.kept, kept, why)
+        }
         let malformed: [(String, String)] = [
             (good.replacingOccurrences(of: #","reason":"regressed""#, with: ""), "no reason"),
             (good.replacingOccurrences(of: #""reason":"regressed""#, with: #""reason":3"#), "a numeric reason"),
             (good.replacingOccurrences(of: #""reason":"regressed""#, with: #""reason":null"#), "a null reason"),
-            (good.replacingOccurrences(of: #""reason":"regressed""#, with: #""reason":"regressed","why":"x""#),
-             "an extra key"),
-            (good.replacingOccurrences(of: #""frame_revision":1},"reason""#, with: #""frame_revision":1,"x":0},"reason""#),
-             "an extra landing key"),
             (good.replacingOccurrences(of: #""solved_at":1791240320.0,"#, with: ""), "a landing without solved_at"),
+            (good.replacingOccurrences(of: #""for_landing":"#, with: #""for":"#), "no for_landing"),
             (good.replacingOccurrences(of: #""solved_at":1791240320.0"#, with: #""solved_at":"1791240320.0""#),
              "a string solved_at"),
             (good.replacingOccurrences(of: #""geometry_revision":"g-stop-984""#, with: #""geometry_revision":7"#),
@@ -489,6 +495,14 @@ final class WorldPhotoFloorplanModelTests: XCTestCase {
         await expect("asked again") { Stub.count(Self.manifestA) == 3 }
         await settle()
         XCTAssertNil(model.displayedPlan(for: scopedReceipt(newer)), "a notice keeping another plan held this one")
+        // Not for the phone, so not asked on every push: the bounded retries.
+        for revision in ["g2", "g3", "g4", "g5"] {
+            await settle()
+            push(model, revision: revision)
+        }
+        await settle()
+        XCTAssertEqual(Stub.count(Self.manifestA), 1 + WorldPhotoFloorplanModel.landingRetries,
+                       "a notice for another plan was asked on every push")
     }
 
     /// The notice ends without a plan: the timed hold from supersession,
@@ -525,6 +539,59 @@ final class WorldPhotoFloorplanModelTests: XCTestCase {
         push(model, revision: "g5")
         await settle()
         XCTAssertEqual(Stub.count(Self.manifestA), asked, "an answered landing asked again")
+    }
+
+    /// The notice held past the bounded retries, then ended with the plan
+    /// still the old one (the 8 KiB cap, the Tower's switch): the landing
+    /// has its retries back, so a plan published for it later is seen.
+    func testANoticeThatEndsGivesTheLandingBackItsRetries() async throws {
+        var time: TimeInterval = 0
+        let model = await keptModel(F.manifest(kept: F.kept()), time: { time }) { time = 60 }
+        await expect("the notice") { self.held(model, self.newer) == .notImproved }
+        for revision in ["g1", "g2", "g3", "g4"] {
+            await settle()
+            push(model, revision: revision)
+        }
+        await settle()
+        XCTAssertEqual(held(model, newer), .notImproved, "held past the bounded retries")
+        time = 500
+        Stub.set(Self.manifestA, json: F.manifest())
+        push(model, revision: "g5")
+        await expect("the notice ended") { model.displayedPlan(for: self.scopedReceipt(self.newer)) == nil }
+        await settle()
+        Stub.set(Self.manifestA, json: F.manifest(solvedAt: "1791240320.0", revision: "g-stop-990"))
+        push(model, revision: "g6")
+        await expect("the plan published later") {
+            model.displayedPlan(for: self.scopedReceipt(self.newer)).map { $0.value.held == nil } == true
+        }
+        XCTAssertEqual(try XCTUnwrap(model.displayedPlan(for: scopedReceipt(newer))).value.plan.receipt.coverage, newer)
+    }
+
+    /// An unreachable Tower is not a Tower still saying it: the notice
+    /// outlives at most three failed asks in a row, then the timed hold
+    /// (long over) and the fog field; the landing keeps its retries.
+    func testANoticeOutlivesAtMostThreeFailedAsks() async throws {
+        var time: TimeInterval = 0
+        let model = await keptModel(F.manifest(kept: F.kept(reason: "superseded")), time: { time }) { time = 60 }
+        time = 500 // past the timed hold: only the notice says Updating…
+        await expect("the notice") { self.held(model, self.newer) == .updating }
+        Stub.set(Self.manifestA, status: 503, data: Data(), type: "application/json")
+        for (index, revision) in ["g1", "g2", "g3"].enumerated() {
+            let asked = Stub.count(Self.manifestA)
+            push(model, revision: revision)
+            await expect("ask \(index + 1)") { Stub.count(Self.manifestA) == asked + 1 }
+            await settle()
+            if index + 1 < WorldPhotoFloorplanModel.keptFailedAsks {
+                XCTAssertEqual(held(model, newer), .updating, "the notice after \(index + 1) failed asks")
+            }
+        }
+        XCTAssertNil(model.displayedPlan(for: scopedReceipt(newer)), "a notice outlived three failed asks")
+
+        Stub.set(Self.manifestA, json: F.manifest(solvedAt: "1791240320.0", revision: "g-stop-990"))
+        push(model, revision: "g4")
+        await expect("the Tower back, its plan") {
+            model.displayedPlan(for: self.scopedReceipt(self.newer)).map { $0.value.held == nil } == true
+        }
     }
 
     /// Leaving a receipt the Tower kept the plan for starts the hold again:
