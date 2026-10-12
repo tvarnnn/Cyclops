@@ -136,6 +136,35 @@ def test_window_cadence_starts_before_the_full_prefix_threshold(monkeypatch):
     assert world_build_session.live_solve_interval(10) == 10
 
 
+class _DoneChild:
+    pid = 1
+
+    def poll(self):
+        return 0
+
+
+@pytest.mark.parametrize("switch", [None, "on"])
+def test_the_bootstrap_keeps_the_ordinary_spacing_and_windows_follow_at_20(tmp_path,
+                                                                           monkeypatch, switch):
+    """W2: a 20-keyframe bootstrap collapsed; the first launch keeps `every` either way."""
+    if switch is None:
+        monkeypatch.delenv("TOWER_WORLD_LIVE_WINDOW", raising=False)
+    else:
+        monkeypatch.setenv("TOWER_WORLD_LIVE_WINDOW", switch)
+    solver = BackgroundSolver(
+        root=tmp_path, world_id="w", session_id="s",
+        every=world_build_session.live_solve_interval(50), capture_dirs=[],
+        first_every=world_build_session.live_first_interval(50),
+        spawn=lambda *_a, **_kw: _DoneChild())
+    store = _Store(tmp_path)
+    launched = [n for n in range(2, 200) if solver.maybe_launch(store, n, {})]
+    assert launched[0] == 50
+    assert launched[1] - launched[0] == (20 if switch == "on" else 50)
+    if switch is None:
+        assert world_build_session.live_first_interval(50) is None
+        assert solver.first_every == solver.every == 50
+
+
 def test_window_child_is_cancelled_at_final_handoff(tmp_path):
     stub = tmp_path / "slow.py"
     stub.write_text("import time\ntime.sleep(30)\n")

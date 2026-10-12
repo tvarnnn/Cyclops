@@ -846,11 +846,14 @@ class BackgroundSolver:
 
     def __init__(self, *, root: Path, world_id: str, session_id: str, every: int,
                  capture_dirs, threads: int | None = None, script: Path | None = None,
-                 spawn=None):
+                 spawn=None, first_every: int | None = None):
         self.root = root
         self.world_id = world_id
         self.session_id = session_id
         self.every = max(1, every)
+        # The keyframes before the FIRST launch; None is `every`, which is every caller
+        # with the live window off.
+        self.first_every = self.every if first_every is None else max(1, first_every)
         self.capture_dirs = [Path(d) for d in capture_dirs]
         self.threads = threads
         self.script = Path(script) if script is not None else TOWER_ROOT / "scripts" / "world_solve.py"
@@ -938,7 +941,8 @@ class BackgroundSolver:
 
     def maybe_launch(self, store: WorldStore, accepted: int, sources: dict) -> bool:
         self._reap()
-        if self.running or accepted - self._launched_at_keyframes < self.every or accepted < 2:
+        every = self.first_every if self._launches == 0 else self.every
+        if self.running or accepted - self._launched_at_keyframes < every or accepted < 2:
             return False
         from tower.world_builder import global_solve  # noqa: PLC0415
 
@@ -1316,15 +1320,28 @@ LIVE_WINDOW_SOLVE_EVERY = 20
 def live_solve_interval(every: int) -> int:
     """The background launch spacing: `every`, or at most 20 with the live window on.
 
-    On, the first child is the full-prefix bootstrap (nothing is published yet),
-    and the smaller it is the sooner the windows can start; after that a window
-    child maps only the frames since the published frontier, so launching it as
-    soon as the last one ends is what keeps landings close together. Off, the
-    spacing is `every`, unchanged.
+    On, a window child maps only the frames since the published frontier, so
+    launching it as soon as the last one ends is what keeps landings close
+    together. The first launch, the bootstrap, keeps `every`
+    (`live_first_interval`). Off, the spacing is `every`, unchanged.
     """
     if every > 0 and os.environ.get("TOWER_WORLD_LIVE_WINDOW") == "on":
         return min(every, LIVE_WINDOW_SOLVE_EVERY)
     return every
+
+
+def live_first_interval(every: int) -> int | None:
+    """The keyframes before the first background solve: today's `every` either way.
+
+    With the live window on, the first child is the full-prefix BOOTSTRAP every
+    window is anchored to, so it must be the solve the OFF path trusts. FIX2 let it
+    launch at 20 keyframes; W2 (2026-10-12) published a 21-keyframe GLOMAP map with
+    12 of its 21 cameras on one point, and all 8 windows were then (rightly)
+    refused against it. None (off) leaves BackgroundSolver exactly as it was.
+    """
+    if every > 0 and os.environ.get("TOWER_WORLD_LIVE_WINDOW") == "on":
+        return every
+    return None
 
 
 def end_window_solve_on_capture_stop(capture_handle: dict, solver: BackgroundSolver) -> bool:
@@ -2322,6 +2339,7 @@ def main(argv=None) -> int:
             # final solve still runs as a child this process owns.
             every=live_solve_interval(args.solve_every),
             capture_dirs=capture_dirs, script=args.solve_script,
+            first_every=live_first_interval(args.solve_every),
         )
     background_solves = args.solve and args.solve_every > 0
     live_window_enabled = (background_solves and

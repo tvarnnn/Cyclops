@@ -32,8 +32,19 @@ ANCHOR_LOOKBACK = 40
 # A Sim(3) needs three; four registered anchors leave one redundant check.
 MIN_ALIGNED_ANCHORS = 4
 MIN_ANCHOR_OBSERVATIONS = global_solve.MIN_IMAGE_OBSERVATIONS
-MAX_ANCHOR_POSITION_RESIDUAL = 0.35
+# EVERY LENGTH TEST IS A FRACTION OF THE SCENE DEPTH: the median distance from the
+# anchor cameras to the points they observe, in the published solution. The published
+# gauge is as arbitrary as the window's, so an absolute 0.35 meant a different thing
+# in every world; and the anchor spread is no unit either, because a wearer who turns
+# more than walks leaves the anchors almost on one point. Offline on W2 (2026-10-12,
+# seeded GLOMAP, final feature database): anchors spread 1.26 against a depth of
+# 12.2, and honest windows fitted at 0.9-29% of the spread but 0.1-3% of the depth.
+# A residual of 5% of the depth is a camera displaced by ~3 degrees as seen from what
+# it looks at. Without observations (no points) the anchor spread stands in.
+MAX_ANCHOR_RESIDUAL_FRACTION = 0.05
 MAX_ANCHOR_ROTATION_DEG = 8.0
+# Anchors on one point fix no scale; judged against the scene depth (gauge-free).
+DEGENERATE_SPREAD_FRACTION = 1e-4
 # A fresh window map has its own arbitrary gauge (GLOMAP normalises every map), so
 # the anchor scale is NOT expected near 1: W1's solve 5 aligned at 0.0601 with a
 # 0.0012 anchor residual. Only a degenerate fit is refused here; agreement is
@@ -41,8 +52,20 @@ MAX_ANCHOR_ROTATION_DEG = 8.0
 MIN_SCALE = 0.001
 MAX_SCALE = 1000.0
 MAX_ACTIVE_FAILURE_FRACTION = 0.25
-MAX_POSE_POSITION_RESIDUAL = 0.35
+MAX_POSE_RESIDUAL_FRACTION = 0.05
 MAX_POSE_ROTATION_DEG = 8.0
+# The floor of the per-keyframe step a new camera may take from its trusted
+# predecessor, as a fraction of the scene depth. Keyframe steps are heavy-tailed: in
+# W2's final solve the median step is 0.144 and the p99 is 5.52 (38x), so "4x the
+# recent median" alone refused W2's honest keyframe 137 (3.3 final units after a
+# turn) and, through the support chain, every camera after it. Per keyframe, against
+# each camera's own scene depth, an honest step in that final solve is 0.026 at the
+# median, 0.39 at p99 and 1.06 at most (over 900 steps): the floor sits above.
+MIN_STEP_LIMIT_FRACTION = 1.5
+# A published camera whose centre coincides with another's is a collapsed pose, not
+# a validated one: W2's 21-keyframe bootstrap put 12 of its 21 cameras on one point,
+# and three of them became anchors.
+COLLAPSED_CENTRE_FRACTION = 1e-6
 MIN_NEW_CAMERA_POINTS = 6
 MAX_REPROJECTION_MEDIAN_PX = 3.0
 MAX_REPROJECTION_P95_PX = 6.0
@@ -105,6 +128,49 @@ def prepare_window_database(window_workspace, canonical_workspace, image_names: 
             "removed_images": len(removed), "kept_images": count}
 
 
+def _validated_published(previous: global_solve.Solution) -> set[str]:
+    """Published poses a window may start from or anchor on.
+
+    Enough observations, and a centre of its own: a camera on exactly the same
+    point as another published camera is a collapsed pose (W2's bootstrap), not
+    two measurements that happen to agree.
+    """
+    observed = {kid for kid, pose in previous.poses.items()
+                if int(pose.get("observations") or 0) >= MIN_ANCHOR_OBSERVATIONS}
+    return observed - _collapsed(previous) if observed else set()
+
+
+def _collapsed(solution: global_solve.Solution) -> set[str]:
+    """Cameras sharing one centre with another camera of the same solution.
+
+    GLOMAP's global positioning can put a cluster of cameras, and the points they
+    see, on a single point: W2's 21-keyframe bootstrap held 12 such cameras, and an
+    offline W2 window held 3 with their points 0.00018 from the camera against a
+    depth of ~100 elsewhere. Their reprojection stays good, so only this finds them.
+    """
+    centres = {kid: global_solve._pose_matrices(pose)[1] for kid, pose in solution.poses.items()}
+    if len(centres) < 2:
+        return set()
+    stacked = np.asarray(list(centres.values()), np.float64)
+    extent = float(np.max(np.ptp(stacked, axis=0)))
+    tolerance = COLLAPSED_CENTRE_FRACTION * extent
+    if not math.isfinite(tolerance) or tolerance <= 0:
+        return set()
+    cells: dict[tuple, list[str]] = {}
+    for kid, centre in centres.items():
+        cells.setdefault(tuple(np.floor(centre / tolerance).astype(np.int64)), []).append(kid)
+    collapsed = set()
+    for (x, y, z), members in cells.items():
+        neighbours = [kid for dx in (-1, 0, 1) for dy in (-1, 0, 1) for dz in (-1, 0, 1)
+                      for kid in cells.get((x + dx, y + dy, z + dz), ())]
+        for kid in members:
+            if any(other != kid and
+                   np.linalg.norm(centres[other] - centres[kid]) <= tolerance
+                   for other in neighbours):
+                collapsed.add(kid)
+    return collapsed
+
+
 def select_window(ids: list[str], previous: global_solve.Solution,
                   *, active_size: int = WINDOW_KEYFRAMES) -> WindowSelection:
     """Choose the frames after the published frontier and six anchors before it.
@@ -123,10 +189,8 @@ def select_window(ids: list[str], previous: global_solve.Solution,
     """
     if previous.keyframe_ids != ids[:len(previous.keyframe_ids)]:
         raise WindowRefused("previous solution is not the accepted prefix")
-    frontier = max((i for i, kid in enumerate(previous.keyframe_ids)
-                    for pose in [previous.poses.get(kid)]
-                    if pose is not None and
-                    int(pose.get("observations") or 0) >= MIN_ANCHOR_OBSERVATIONS),
+    trusted = _validated_published(previous)
+    frontier = max((i for i, kid in enumerate(previous.keyframe_ids) if kid in trusted),
                    default=-1)
     if frontier < 0:
         raise WindowRefused("no published poses to anchor the window")
@@ -138,9 +202,8 @@ def select_window(ids: list[str], previous: global_solve.Solution,
         active = ids[-active_size:]
     candidates = [(i, kid, pose) for i, kid in enumerate(previous.keyframe_ids)
                   if max(0, start - ANCHOR_LOOKBACK) <= i <= frontier
-                  for pose in [previous.poses.get(kid)]
-                  if pose is not None and
-                  int(pose.get("observations") or 0) >= MIN_ANCHOR_OBSERVATIONS]
+                  if kid in trusted
+                  for pose in [previous.poses[kid]]]
     if not candidates:
         raise WindowRefused("no validated anchor poses in the previous solution")
     counts: dict[int, int] = {}
@@ -177,8 +240,9 @@ def _aligned_anchors(previous, candidate, anchors):
     old_components = {int(previous.poses[kid]["component"]) for kid in anchors}
     if len(old_components) != 1:
         raise WindowRefused("anchors span published components")
+    collapsed = _collapsed(candidate)
     registered = [kid for kid in anchors
-                  if kid in candidate.poses and
+                  if kid in candidate.poses and kid not in collapsed and
                   int(candidate.poses[kid].get("observations") or 0) >= MIN_ANCHOR_OBSERVATIONS]
     counts: dict[int, int] = {}
     for kid in registered:
@@ -212,22 +276,32 @@ def _alignment(previous, candidate, anchors):
     new_mean = new_centres.mean(axis=0)
     old_zero = old_centres - old_mean
     new_zero = new_centres - new_mean
-    if (np.linalg.matrix_rank(old_zero, tol=1e-5) < 2 or
-            np.linalg.matrix_rank(new_zero, tol=1e-5) < 2):
+    span = float(np.max(np.linalg.norm(old_zero, axis=1)))
+    depth = _scene_depth(previous, anchors)
+    unit = depth if math.isfinite(depth) and depth > 0 else span
+    # Degenerate is judged without a gauge: anchors on one point, against the scene
+    # depth in the published solution and against nothing in the window's.
+    if not (span > DEGENERATE_SPREAD_FRACTION * unit and
+            float(np.max(np.linalg.norm(new_zero, axis=1))) > 0):
         raise WindowRefused("anchor centres are geometrically degenerate")
-    u, singular, vt = np.linalg.svd(old_zero.T @ new_zero / len(anchors))
-    sign = np.diag([1.0, 1.0, np.linalg.det(u @ vt)])
-    rotation = u @ sign @ vt
-    variance = float(np.sum(new_zero * new_zero) / len(anchors))
-    scale = float(np.sum(singular * np.diag(sign)) / variance)
+    # THE ROTATION COMES FROM THE ANCHORS' ORIENTATIONS, not their centres. A wearer
+    # turns far more than he walks, so the anchor centres sit in a small cluster
+    # (offline W2: 10% of the scene depth) and a Procrustes fit of the centres alone
+    # was 56 degrees off, while each camera's own orientation is measured well: the
+    # same window then fitted every anchor orientation within 0.5 degrees. The scale
+    # and translation that remain are a linear least-squares fit of the centres.
+    rotation_sum = sum(old_r @ new_r.T for old_r, new_r in zip(old_rotations, new_rotations))
+    u, _singular, vt = np.linalg.svd(rotation_sum)
+    rotation = u @ np.diag([1.0, 1.0, np.linalg.det(u @ vt)]) @ vt
+    turned = (rotation @ new_zero.T).T
+    variance = float(np.sum(turned * turned))
+    scale = float(np.sum(old_zero * turned) / variance) if variance > 0 else float("nan")
     if not math.isfinite(scale) or not MIN_SCALE <= scale <= MAX_SCALE:
         raise WindowRefused("anchor scale is outside the accepted interval")
     translation = old_mean - scale * rotation @ new_mean
     aligned = scale * (rotation @ new_centres.T).T + translation
     position_residual = np.linalg.norm(aligned - old_centres, axis=1)
-    span = float(np.max(np.linalg.norm(old_zero, axis=1)))
-    limit = min(MAX_ANCHOR_POSITION_RESIDUAL, max(0.05, 0.05 * span))
-    if float(np.max(position_residual)) > limit:
+    if float(np.max(position_residual)) > MAX_ANCHOR_RESIDUAL_FRACTION * unit:
         raise WindowRefused("anchor position residual is too high")
     for old_r, new_r in zip(old_rotations, new_rotations):
         delta = old_r.T @ rotation @ new_r
@@ -235,7 +309,27 @@ def _alignment(previous, candidate, anchors):
         if angle > MAX_ANCHOR_ROTATION_DEG:
             raise WindowRefused("anchor orientation residual is too high")
     return (old_component, new_component, scale, rotation, translation,
-            float(max(position_residual)), anchors)
+            float(max(position_residual)), anchors, unit)
+
+
+def _scene_depth(solution, kids) -> float:
+    """Median camera-to-point distance over the observations of `kids`; NaN if none."""
+    index = {kid: i for i, kid in enumerate(solution.keyframe_ids)}
+    rows = solution.observations
+    if not len(rows) or not len(solution.xyz):
+        return float("nan")
+    distances = []
+    for kid in kids:
+        if kid not in index or kid not in solution.poses:
+            continue
+        mine = rows[(rows[:, 0] == index[kid]) & (rows[:, 2] >= 0) & (rows[:, 2] < len(solution.xyz))]
+        if len(mine):
+            centre = global_solve._pose_matrices(solution.poses[kid])[1]
+            distances.append(np.linalg.norm(solution.xyz[mine[:, 2]].astype(np.float64) - centre,
+                                            axis=1))
+    if not distances:
+        return float("nan")
+    return float(np.median(np.concatenate(distances)))
 
 
 def _aligned_pose(pose, scale, rotation, translation, component):
@@ -246,11 +340,11 @@ def _aligned_pose(pose, scale, rotation, translation, component):
             "translation": (-r_cw @ centre).tolist()}
 
 
-def _pose_agrees(old, aligned):
+def _pose_agrees(old, aligned, unit):
     old_r, old_c = global_solve._pose_matrices(old)
     new_r, new_c = global_solve._pose_matrices(aligned)
     cosine = float(np.clip((np.trace(old_r.T @ new_r) - 1) / 2, -1, 1))
-    return (np.linalg.norm(old_c - new_c) <= MAX_POSE_POSITION_RESIDUAL and
+    return (np.linalg.norm(old_c - new_c) <= MAX_POSE_RESIDUAL_FRACTION * unit and
             math.degrees(math.acos(cosine)) <= MAX_POSE_ROTATION_DEG)
 
 
@@ -285,21 +379,38 @@ def _camera_point_errors(candidate, kid):
 
 
 def _validated_active(previous, candidate, ids, selection, new_comp,
-                      scale, rotation, translation, old_comp):
+                      scale, rotation, translation, old_comp, unit):
+    # Only a VALIDATED published pose is a reference: a collapsed or weakly observed
+    # one is re-placed like a new camera, on the same evidence, instead of being
+    # either kept or allowed to veto its correction.
+    validated = _validated_published(previous)
+    collapsed = _collapsed(candidate)
     aligned = {}
     failures = []
+    # FAILED IS TWO THINGS. A camera that CONTRADICTS the evidence -- a re-solved
+    # published pose that moved, a step no walk takes, observations that do not
+    # reproject, a collapse onto another camera's centre -- says the window is
+    # wrong. A camera that is merely UNVERIFIED -- not registered, in another
+    # piece, or past a break in the chain of shared points -- says nothing against
+    # it and is simply not published yet. Offline on W2, an honest window (anchors within 0.2% of the
+    # depth) lost 19 cameras after a turn to "no shared points" and was refused
+    # whole; only contradictions now refuse a window.
+    contradictions = []
     for kid in selection.active_ids:
         pose = candidate.poses.get(kid)
-        if pose is None or int(pose["component"]) != new_comp:
+        if pose is None or int(pose["component"]) != new_comp or kid in collapsed:
             failures.append(kid)
+            if pose is not None and kid in collapsed:
+                contradictions.append(kid)
             continue
         transformed = _aligned_pose(pose, scale, rotation, translation, old_comp)
-        if kid in previous.poses and not _pose_agrees(previous.poses[kid], transformed):
+        if kid in validated and not _pose_agrees(previous.poses[kid], transformed, unit):
             failures.append(kid)
+            contradictions.append(kid)
             continue
         aligned[kid] = transformed
     # Previously published cameras are the trusted bridge to the anchors.
-    trusted = {kid for kid in aligned if kid in previous.poses}
+    trusted = {kid for kid in aligned if kid in validated}
     point_support = {}
     for kid in trusted | set(selection.anchor_ids):
         if kid not in candidate.poses:
@@ -309,13 +420,15 @@ def _validated_active(previous, candidate, ids, selection, new_comp,
                 point_support.setdefault(point, set()).add(kid)
     historical_steps = []
     for left, right in zip(previous.keyframe_ids, previous.keyframe_ids[1:]):
-        if left in previous.poses and right in previous.poses:
+        if left in validated and right in validated:
             a = global_solve._pose_matrices(previous.poses[left])[1]
             b = global_solve._pose_matrices(previous.poses[right])[1]
             historical_steps.append(float(np.linalg.norm(a - b)))
-    step_limit = max(2.0, 4.0 * float(np.median(historical_steps[-30:]))) if historical_steps else 2.0
+    floor = MIN_STEP_LIMIT_FRACTION * unit
+    step_limit = (max(floor, 4.0 * float(np.median(historical_steps[-30:])))
+                  if historical_steps else floor)
     for kid in selection.active_ids:
-        if kid not in aligned or kid in previous.poses:
+        if kid not in aligned or kid in validated:
             continue
         index = ids.index(kid)
         predecessor = next((ids[j] for j in range(index - 1, -1, -1)
@@ -328,19 +441,24 @@ def _validated_active(previous, candidate, ids, selection, new_comp,
             centre = global_solve._pose_matrices(aligned[kid])[1]
             prior = global_solve._pose_matrices(aligned[predecessor])[1]
             plausible = float(np.linalg.norm(centre - prior)) <= step_limit * (index - ids.index(predecessor))
-        if (not plausible or len(supported) < MIN_NEW_CAMERA_POINTS or
-                float(np.median(supported)) > MAX_REPROJECTION_MEDIAN_PX or
-                float(np.percentile(supported, 95)) > MAX_REPROJECTION_P95_PX):
+        contradicted = ((predecessor is not None and not plausible) or
+                        (len(supported) >= MIN_NEW_CAMERA_POINTS and
+                         (float(np.median(supported)) > MAX_REPROJECTION_MEDIAN_PX or
+                          float(np.percentile(supported, 95)) > MAX_REPROJECTION_P95_PX)))
+        if contradicted or predecessor is None or len(supported) < MIN_NEW_CAMERA_POINTS:
             del aligned[kid]
             failures.append(kid)
+            if contradicted:
+                contradictions.append(kid)
             continue
         trusted.add(kid)
         for point, error in errors.items():
             if error <= MAX_REPROJECTION_MEDIAN_PX:
                 point_support.setdefault(point, set()).add(kid)
-    if len(failures) > MAX_ACTIVE_FAILURE_FRACTION * len(selection.active_ids):
+    # Of the cameras the evidence could judge, at most a quarter may contradict it.
+    if len(contradictions) > MAX_ACTIVE_FAILURE_FRACTION * (len(contradictions) + len(aligned)):
         raise WindowRefused("too many active cameras failed validation")
-    return aligned, failures
+    return aligned, failures, contradictions
 
 
 def stitch(previous: global_solve.Solution, candidate: global_solve.Solution,
@@ -350,15 +468,17 @@ def stitch(previous: global_solve.Solution, candidate: global_solve.Solution,
             candidate.keyframe_ids != selection.solve_ids or
             len(selection.anchor_ids) < 3):
         raise WindowRefused("anchor or prefix identity changed during window solve")
-    old_comp, new_comp, scale, rotation, translation, residual, used_anchors = _alignment(
+    old_comp, new_comp, scale, rotation, translation, residual, used_anchors, unit = _alignment(
         previous, candidate, selection.anchor_ids)
     cumulative = float(((previous.solve or {}).get("live_window") or {}).get("cumulative_scale", 1.0)) * scale
-    aligned, failures = _validated_active(previous, candidate, ids, selection,
-                                          new_comp, scale, rotation, translation, old_comp)
+    validated = _validated_published(previous)
+    aligned, failures, contradictions = _validated_active(previous, candidate, ids, selection,
+                                          new_comp, scale, rotation, translation, old_comp,
+                                          unit)
     active = set(aligned)
     poses = dict(previous.poses)
     poses.update(aligned)
-    if not any(kid not in previous.poses and kid in poses for kid in active):
+    if not any(kid not in validated and kid in poses for kid in active):
         raise WindowRefused("window solve added no anchored poses")
 
     active_observations = {}
@@ -399,7 +519,7 @@ def stitch(previous: global_solve.Solution, candidate: global_solve.Solution,
                 new_claims[new_point] != 1):
             continue
         aligned_xyz = scale * rotation @ candidate.xyz[new_point] + translation
-        if np.linalg.norm(previous.xyz[old_point] - aligned_xyz) <= MAX_POSE_POSITION_RESIDUAL:
+        if np.linalg.norm(previous.xyz[old_point] - aligned_xyz) <= MAX_POSE_RESIDUAL_FRACTION * unit:
             old_keep[old_point] = False
             replaced_old[old_point] = new_point
     old_indices = np.flatnonzero(old_keep)
@@ -447,9 +567,11 @@ def stitch(previous: global_solve.Solution, candidate: global_solve.Solution,
                   for c in previous.components]
     info = {"active_keyframes": len(selection.active_ids),
             "anchor_ids": selection.anchor_ids, "aligned_anchor_ids": used_anchors,
-            "anchor_max_residual": residual,
+            "anchor_max_residual": residual, "length_unit": unit,
+            "anchor_residual_fraction": residual / unit if unit > 0 else None,
             "scale": scale, "cumulative_scale": cumulative,
             "failed_active_ids": failures,
+            "contradicted_active_ids": contradictions,
             "reused_prefix_keyframes": len(previous.keyframe_ids)}
     return dataclasses.replace(
         previous, solver=candidate.solver, solved_at=candidate.solved_at,
@@ -517,6 +639,41 @@ def publish_window_solution(workspace, solution):
             stage.root.rmdir()
 
 
+REFUSALS_FILE = "refusals.json"
+REBOOTSTRAP_AFTER_REFUSALS = 3
+
+
+def _refusals_against(path, previous) -> int:
+    """Consecutive window refusals against THIS published solution (its solved_at)."""
+    if previous is None:
+        return 0
+    try:
+        state = global_solve.read_json_closed(path)
+    except Exception:  # noqa: BLE001 -- absent or unreadable: no refusals recorded
+        return 0
+    if state.get("solved_at") != previous.solved_at:
+        return 0
+    count = state.get("count")
+    return count if isinstance(count, int) and count > 0 else 0
+
+
+def _count_refusal(path, previous) -> None:
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        global_solve.write_json_atomic(path, {
+            "solved_at": previous.solved_at,
+            "count": _refusals_against(path, previous) + 1})
+    except OSError:
+        pass  # a lost count delays a re-bootstrap; it never publishes anything
+
+
+def _clear_refusals(path) -> None:
+    try:
+        path.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
 def solve(store, world_id, session_id, *, capture_dirs=(), final=False,
           num_threads=None, min_image_observations=global_solve.MIN_IMAGE_OBSERVATIONS,
           loop_detection=True, input_digest=None):
@@ -527,15 +684,28 @@ def solve(store, world_id, session_id, *, capture_dirs=(), final=False,
     keyframes = store.read_keyframes(world_id, session_id)
     ids = [kf.keyframe_id for kf in keyframes]
     previous = global_solve.load_solution(store, world_id, session_id)
-    if previous is None:
-        return global_solve.solve(store, world_id, session_id,
-                                  capture_dirs=capture_dirs, final=False,
-                                  num_threads=num_threads,
-                                  min_image_observations=min_image_observations,
-                                  loop_detection=loop_detection, input_digest=input_digest)
+    state_path = global_solve.workspace_for(
+        _WindowStore(store, world_id, session_id, []), world_id, session_id).root / REFUSALS_FILE
+    refusals = _refusals_against(state_path, previous)
+    if previous is None or refusals >= REBOOTSTRAP_AFTER_REFUSALS:
+        # The bootstrap, or a RE-bootstrap: the ordinary full-prefix background solve.
+        # Windows refused this many times in a row against one published solution
+        # say that solution, not the windows, is what is wrong (W2: a collapsed
+        # 21-keyframe bootstrap refused all 8). It replaces the reference wholesale,
+        # exactly as every background solve does with the switch off.
+        summary = global_solve.solve(store, world_id, session_id,
+                                     capture_dirs=capture_dirs, final=False,
+                                     num_threads=num_threads,
+                                     min_image_observations=min_image_observations,
+                                     loop_detection=loop_detection, input_digest=input_digest)
+        _clear_refusals(state_path)
+        if previous is not None:
+            summary = {**summary, "rebootstrap": {"after_refusals": refusals}}
+        return summary
     try:
         selection = select_window(ids, previous)
     except WindowRefused as exc:
+        _count_refusal(state_path, previous)
         return {"solved": False, "reason": str(exc), "window_refused": True}
     # What this window was, on every outcome, for the replay's solve.log: W1 had no
     # way to tell a lagged window, its anchors or its wall time from the summary.
@@ -548,6 +718,10 @@ def solve(store, world_id, session_id, *, capture_dirs=(), final=False,
               "started_at": round(time.time() - (time.perf_counter() - started), 3)}
 
     def _done(result):
+        if result.get("solved"):
+            _clear_refusals(state_path)
+        else:
+            _count_refusal(state_path, previous)
         return {**result, "window": {**window, "ended_at": round(time.time(), 3),
                                      "total_s": round(time.perf_counter() - started, 3)}}
     selected = set(selection.solve_ids)

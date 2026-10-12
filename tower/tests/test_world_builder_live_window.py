@@ -721,3 +721,276 @@ def test_final_write_after_a_window_publication_is_byte_identical_on_and_off(tmp
     old_writer(reference, final)
     assert outputs["on"] == outputs["off"] == (reference.solution_path.read_bytes(),
                                                reference.arrays_path.read_bytes())
+
+
+# ---- FIX3 (walk-8 replay W2, 2026-10-12) ---------------------------------------------
+
+
+def _gauged(solution, gauge):
+    """The same reconstruction in another gauge: every length times `gauge`."""
+    poses = {kid: dict(pose, translation=[gauge * v for v in pose["translation"]])
+             for kid, pose in solution.poses.items()}
+    return dataclasses.replace(solution, poses=poses,
+                               xyz=(solution.xyz * gauge).astype(np.float32))
+
+
+def _honest_window(ids, published_ids, published_gauge, window_gauge, *, nudge=None):
+    old = _gauged(_solution(published_ids), published_gauge)
+    selection = live_window.select_window(ids, old)
+    _, candidate = _mapped(ids, selection)
+    # Realistic disagreement: every window camera 1% of the scene depth off, either way,
+    # so a test in absolute units would decide differently in different gauges.
+    depth = live_window._scene_depth(_solution(published_ids), selection.anchor_ids)
+    for n, kid in enumerate(candidate.keyframe_ids):
+        pose = candidate.poses[kid]
+        candidate.poses[kid] = dict(pose, translation=[
+            pose["translation"][0] + (0.01 if n % 2 else -0.01) * depth,
+            *pose["translation"][1:]])
+    _refresh_observations(candidate)
+    if nudge is not None:
+        kid, delta = nudge
+        pose = candidate.poses[kid]
+        candidate.poses[kid] = dict(pose, translation=[
+            v - d for v, d in zip(pose["translation"], delta)])
+        _refresh_observations(candidate)
+    return old, selection, _gauged(candidate, window_gauge)
+
+
+@pytest.mark.parametrize("published_gauge", [0.06, 1.0, 10.0])
+@pytest.mark.parametrize("window_gauge", [0.06, 10.0])
+def test_window_checks_are_scale_free(published_gauge, window_gauge):
+    """The same scene behaves identically in any gauge, published and window."""
+    ids = [f"k{i}" for i in range(150)]
+    outcomes = []
+    for p_gauge, w_gauge in ((1.0, 1.0), (published_gauge, window_gauge)):
+        old, selection, candidate = _honest_window(ids, ids[:70], p_gauge, w_gauge)
+        stitched = live_window.stitch(old, candidate, ids, selection)
+        info = stitched.solve["live_window"]
+        outcomes.append((sorted(info["failed_active_ids"]), sorted(info["aligned_anchor_ids"]),
+                         round(info["anchor_residual_fraction"], 9),
+                         stitched.poses["k149"]["translation"][0] / p_gauge))
+    assert outcomes[0][:2] == outcomes[1][:2]
+    assert outcomes[1][2] == pytest.approx(outcomes[0][2], abs=1e-9)
+    assert outcomes[1][3] == pytest.approx(outcomes[0][3])
+
+
+@pytest.mark.parametrize("published_gauge", [0.06, 10.0])
+def test_inconsistent_anchor_refuses_in_any_gauge(published_gauge):
+    """One anchor displaced by 20% of the scene depth refuses at every gauge."""
+    ids = [f"k{i}" for i in range(150)]
+    old = _solution(ids[:70])
+    anchor = live_window.select_window(ids, old).anchor_ids[0]
+    depth = live_window._scene_depth(old, [anchor])
+    old, selection, candidate = _honest_window(
+        ids, ids[:70], published_gauge, 3.0, nudge=(anchor, (0.2 * depth, 0.0, 0.0)))
+    with pytest.raises(live_window.WindowRefused, match="anchor position residual"):
+        live_window.stitch(old, candidate, ids, selection)
+
+
+def test_reidentified_anchors_refuse():
+    """Anchors whose identities are swapped in the window are a wrong correspondence."""
+    ids = [f"k{i}" for i in range(150)]
+    old = _solution(ids[:70])
+    selection = live_window.select_window(ids, old)
+    _, candidate = _mapped(ids, selection)
+    a, b = selection.anchor_ids[0], selection.anchor_ids[-1]
+    candidate.poses[a], candidate.poses[b] = candidate.poses[b], candidate.poses[a]
+    with pytest.raises(live_window.WindowRefused, match="anchor"):
+        live_window.stitch(old, candidate, ids, selection)
+
+
+def test_anchors_almost_on_one_point_are_judged_against_the_scene_depth():
+    """W2: anchors 1.26 apart under a 12.2 depth; a 3%-of-depth fit is honest."""
+    ids = [f"k{i}" for i in range(150)]
+    old = _solution(ids[:70])
+    for i, kid in enumerate(ids[:70]):                 # a wearer turning, barely walking
+        old.poses[kid] = _pose(0.02 * i, 0.01 * (i % 3))
+    _refresh_observations(old)
+    selection = live_window.select_window(ids, old)
+    mapped, candidate = _mapped(ids, selection)
+    for kid in mapped.solve_ids:
+        i = ids.index(kid)
+        candidate.poses[kid] = _pose(0.02 * i if i < 70 else 0.02 * 69 + 0.1 * (i - 69),
+                                     0.01 * (i % 3))
+    first = selection.anchor_ids[0]
+    pose = candidate.poses[first]
+    candidate.poses[first] = dict(pose, translation=[pose["translation"][0] - 0.2,
+                                                     *pose["translation"][1:]])
+    _refresh_observations(candidate)
+    stitched = live_window.stitch(old, candidate, ids, selection)
+    info = stitched.solve["live_window"]
+    assert info["anchor_residual_fraction"] < live_window.MAX_ANCHOR_RESIDUAL_FRACTION
+
+
+def test_collapsed_published_cameras_are_neither_frontier_nor_anchor():
+    """W2's bootstrap: 12 of 21 cameras on one point. They anchor nothing."""
+    ids = [f"k{i}" for i in range(150)]
+    old = _solution(ids[:70])
+    for kid in ids[40:70]:
+        old.poses[kid] = _pose(-5.0, -5.0)
+    selection = live_window.select_window(ids, old)
+    trusted = live_window._validated_published(old)
+    assert trusted == set(ids[:40])
+    assert ids.index(selection.active_ids[0]) == 39 - live_window.OVERLAP_KEYFRAMES + 1
+    assert all(ids.index(k) < 40 for k in selection.anchor_ids)
+    # The window re-places the collapsed cameras instead of keeping them.
+    _, candidate = _mapped(ids, selection)
+    stitched = live_window.stitch(old, candidate, ids, selection)
+    assert stitched.poses["k45"]["translation"][0] == pytest.approx(-45.0)
+
+
+def _refusing_window(tmp_path, monkeypatch):
+    ids = [f"k{i}" for i in range(150)]
+    store = WorldStore(tmp_path)
+    monkeypatch.setattr(store, "read_keyframes", lambda *_: [_Keyframe(kid) for kid in ids])
+    old = _solution(ids[:70])
+    global_solve.write_solution(global_solve.workspace_for(store, "w", "s"), old)
+    selection = live_window.select_window(ids, old)
+    _, candidate = _mapped(ids, selection)
+    real_load = global_solve.load_solution
+    monkeypatch.setattr(global_solve, "load_solution", lambda target, w, s:
+                        candidate if isinstance(target, live_window._WindowStore)
+                        else real_load(target, w, s))
+    calls = []
+    monkeypatch.setattr(global_solve, "solve", lambda target, *_a, **_kw:
+                        calls.append(target) or {"solved": True, "solver": "synthetic"})
+    return store, calls
+
+
+def test_repeated_refusals_against_one_solution_rebootstrap_the_full_prefix(tmp_path, monkeypatch):
+    store, calls = _refusing_window(tmp_path, monkeypatch)
+    monkeypatch.setattr(live_window, "stitch", lambda *_a, **_kw: (_ for _ in ()).throw(
+        live_window.WindowRefused("anchor position residual is too high")))
+    for _ in range(live_window.REBOOTSTRAP_AFTER_REFUSALS):
+        assert live_window.solve(store, "w", "s")["window_refused"] is True
+    assert all(isinstance(t, live_window._WindowStore) for t in calls)
+    result = live_window.solve(store, "w", "s")
+    assert calls[-1] is store                     # the ordinary full-prefix solve
+    assert result["rebootstrap"] == {"after_refusals": live_window.REBOOTSTRAP_AFTER_REFUSALS}
+    # The count starts again: the next one is a window.
+    live_window.solve(store, "w", "s")
+    assert isinstance(calls[-1], live_window._WindowStore)
+
+
+def test_a_published_window_resets_the_refusal_count(tmp_path, monkeypatch):
+    store, calls = _refusing_window(tmp_path, monkeypatch)
+    real_stitch = live_window.stitch
+    outcomes = iter([False, False, True, False, False])
+
+    def stitch(*args, **kwargs):
+        if next(outcomes):
+            return real_stitch(*args, **kwargs)
+        raise live_window.WindowRefused("anchor position residual is too high")
+
+    monkeypatch.setattr(live_window, "stitch", stitch)
+    monkeypatch.setattr(live_window, "publish_window_solution", lambda *_a, **_kw: None)
+    for _ in range(5):
+        live_window.solve(store, "w", "s")
+    assert all(isinstance(t, live_window._WindowStore) for t in calls)
+
+
+def _rot_y(degrees):
+    a = np.radians(degrees)
+    return np.array([[np.cos(a), 0.0, np.sin(a)], [0.0, 1.0, 0.0], [-np.sin(a), 0.0, np.cos(a)]])
+
+
+def _turning_solution(ids):
+    """A wearer who turns more than he walks: centres 2% of the depth apart per frame."""
+    solution = _solution(ids)
+    for i, kid in enumerate(ids):
+        r_wc = _rot_y(25.0 * np.sin(i / 7.0))
+        centre = np.array([0.02 * i, 0.01 * (i % 3), 0.0])
+        r_cw = r_wc.T
+        solution.poses[kid] = {"component": 0, "rotation": r_cw.reshape(-1).tolist(),
+                               "translation": (-r_cw @ centre).tolist(), "observations": 50}
+    _refresh_observations(solution)
+    return solution
+
+
+def _transformed(solution, rotation, scale, shift):
+    """The same reconstruction in another gauge: x -> scale * rotation @ x + shift."""
+    poses = {}
+    for kid, pose in solution.poses.items():
+        r_wc, centre = global_solve._pose_matrices(pose)
+        r_cw = (rotation @ r_wc).T
+        poses[kid] = dict(pose, rotation=r_cw.reshape(-1).tolist(),
+                          translation=(-r_cw @ (scale * rotation @ centre + shift)).tolist())
+    xyz = (scale * (rotation @ solution.xyz.astype(np.float64).T).T + shift).astype(np.float32)
+    return dataclasses.replace(solution, poses=poses, xyz=xyz)
+
+
+def test_clustered_anchors_align_on_their_orientations():
+    """Offline W2: a centre-only fit of clustered anchors was 56 degrees off."""
+    ids = [f"k{i}" for i in range(150)]
+    whole = _turning_solution(ids)
+    old = dataclasses.replace(whole, keyframe_ids=ids[:70],
+                              poses={k: whole.poses[k] for k in ids[:70]},
+                              observations=whole.observations[whole.observations[:, 0] < 70],
+                              observation_xy=whole.observation_xy[whole.observations[:, 0] < 70])
+    selection = live_window.select_window(ids, old)
+    rows = [ids.index(k) for k in selection.solve_ids]
+    keep = np.isin(whole.observations[:, 0], rows)
+    remap = {g: n for n, g in enumerate(rows)}
+    window = dataclasses.replace(
+        whole, keyframe_ids=list(selection.solve_ids),
+        poses={k: whole.poses[k] for k in selection.solve_ids},
+        observations=np.array([(remap[int(c)], f, p) for c, f, p in whole.observations[keep]],
+                              np.int32).reshape(-1, 3),
+        observation_xy=whole.observation_xy[keep])
+    # Position noise of 1% of the depth, then a new gauge: turned 40 degrees, x0.06.
+    for n, kid in enumerate(window.keyframe_ids):
+        r_wc, centre = global_solve._pose_matrices(window.poses[kid])
+        centre = centre + np.array([0.0, 0.0, (0.1 if n % 2 else -0.1)])
+        r_cw = r_wc.T
+        window.poses[kid] = dict(window.poses[kid], translation=(-r_cw @ centre).tolist())
+    _refresh_observations(window)
+    candidate = _transformed(window, _rot_y(40.0), 0.06, np.array([3.0, -2.0, 1.0]))
+    # The centre-only Procrustes this replaced is wrong here by more than the 8-degree test.
+    anchors = selection.anchor_ids
+    o = np.array([global_solve._pose_matrices(old.poses[k])[1] for k in anchors])
+    n_ = np.array([global_solve._pose_matrices(candidate.poses[k])[1] for k in anchors])
+    u, _s, vt = np.linalg.svd((o - o.mean(0)).T @ (n_ - n_.mean(0)))
+    procrustes = u @ np.diag([1.0, 1.0, np.linalg.det(u @ vt)]) @ vt
+    off = np.degrees(np.arccos(np.clip((np.trace(procrustes.T @ _rot_y(-40.0)) - 1) / 2, -1, 1)))
+    assert off > live_window.MAX_ANCHOR_ROTATION_DEG
+    stitched = live_window.stitch(old, candidate, ids, selection)
+    expected = global_solve._pose_matrices(whole.poses["k149"])[1]
+    got = global_solve._pose_matrices(stitched.poses["k149"])[1]
+    assert np.linalg.norm(got - expected) < 0.05 * live_window._scene_depth(old, anchors)
+
+
+def test_collapsed_window_cameras_neither_anchor_nor_publish():
+    """A window whose mapper put cameras on one point keeps them out of everything."""
+    ids = [f"k{i}" for i in range(150)]
+    old = _solution(ids[:70])
+    selection = live_window.select_window(ids, old)
+    mapped, candidate = _mapped(ids, selection)
+    one_anchor = selection.anchor_ids[0]
+    squashed = [one_anchor] + [k for k in selection.active_ids if ids.index(k) >= 140]
+    point = global_solve._pose_matrices(candidate.poses[squashed[1]])[1]
+    for kid in squashed:
+        candidate.poses[kid] = dict(candidate.poses[kid], translation=(-point).tolist())
+    stitched = live_window.stitch(old, candidate, ids, mapped)
+    info = stitched.solve["live_window"]
+    assert one_anchor not in info["aligned_anchor_ids"]
+    assert set(squashed[1:]) <= set(info["failed_active_ids"])
+    assert all(kid not in stitched.poses for kid in squashed[1:])
+
+
+def test_an_unverifiable_tail_is_left_unpublished_not_a_refusal():
+    """Offline W2: an honest window lost 19 cameras after a turn to a break in the
+    chain of shared points, and was refused whole. Unverified is not contradicted."""
+    ids = [f"k{i}" for i in range(150)]
+    old = _solution(ids[:70])
+    selection = live_window.select_window(ids, old)
+    mapped, candidate = _mapped(ids, selection)
+    tail = [k for k in selection.active_ids if ids.index(k) >= 120]
+    rows = [mapped.solve_ids.index(k) for k in tail]
+    keep = ~np.isin(candidate.observations[:, 0], rows)
+    candidate.observations = candidate.observations[keep]
+    candidate.observation_xy = candidate.observation_xy[keep]
+    assert len(tail) > live_window.MAX_ACTIVE_FAILURE_FRACTION * len(selection.active_ids)
+    stitched = live_window.stitch(old, candidate, ids, mapped)
+    assert set(tail) <= set(stitched.solve["live_window"]["failed_active_ids"])
+    assert all(k not in stitched.poses for k in tail)
+    assert "k119" in stitched.poses
