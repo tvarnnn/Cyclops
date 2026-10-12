@@ -835,7 +835,9 @@ def component_summary(stats):
             "gates": c.get("frame_gate_counts"), "selected": c.get("selected_frames"),
             "warped": c.get("frames_warped"), "frames_rejected": c.get("frames_rejected"),
             "projected": c.get("projected_keyframes"),
-            "opaque": (round(c["opaque_fraction"], 3) if c.get("opaque_fraction") is not None
+            "opaque_area": (round(c["opaque_area"], 3) if c.get("opaque_area") is not None
+                            else None),
+            "opaque":(round(c["opaque_fraction"], 3) if c.get("opaque_fraction") is not None
                        else None),
             "tile": c.get("tile"), "bytes": c.get("bytes"), "ms": c.get("ms")})
     return json.dumps(rows, separators=(",", ":"), default=str)
