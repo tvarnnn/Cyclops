@@ -75,7 +75,9 @@ logger = logging.getLogger(__name__)
 
 MAX_COMPONENTS = 16
 MANIFEST_MAX_BYTES = 8 * 1024
-LANDING_WALL_CAP_S = 1.5
+# Manager 323 (walk-8 e2e, 2026-10-12): 1.5 s skipped 3 of 4 live landings under load. The job is a side thread and
+# landings are >= 15 s apart, so 8 s cannot pile up; a newer landing still cancels the job in flight.
+LANDING_WALL_CAP_S = 8.0
 MAX_SELECTED = 64
 TARGET_PIXEL_BUDGET = 256 * 144
 MIN_TRACK_LENGTH = 3
@@ -94,7 +96,7 @@ class LandingSkipped(Exception):
 
 
 class LandingOverrun(LandingSkipped):
-    """The 1.5 s wall cap elapsed (or the job was cancelled)."""
+    """The landing wall cap elapsed (or the job was cancelled)."""
 
 
 # ---------------------------------------------------------------------------
