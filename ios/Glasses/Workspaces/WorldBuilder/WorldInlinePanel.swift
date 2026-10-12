@@ -622,11 +622,14 @@ struct WorldInlinePanel<Health: View>: View {
     }
 
     /// The dial of the CURRENT receipt (never a held one, §6), with B2's
-    /// photos only when `overlay` is that receipt's own landing
-    /// (`landed(_:over:)`); before the first landing, twelve dashed segments.
+    /// photos and S3's top and walk cue only when `overlay` is that
+    /// receipt's own landing (`landed(_:over:)`); before the first landing,
+    /// twelve dashed segments.
     static func captureDial(_ map: WorldPanelMapSource?, overlay: WorldLandedOverlay?) -> WorldCaptureDial {
         guard let map else { return .awaiting }
-        return WorldCaptureDial(coverage: map.receipt.coverage,
+        let newest = overlay?.latest.map { WorldCaptureDial.Newest(referenceSegment: $0.componentReferenceSegment,
+                                                                   sector: $0.sector) }
+        return WorldCaptureDial(coverage: map.receipt.coverage, newest: newest, motionSector: overlay?.motionSector,
                                 photos: WorldCaptureDial.photos(overlay?.dialEntries ?? []))
     }
 

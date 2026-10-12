@@ -263,6 +263,35 @@ final class WorldImageryUITests: XCTestCase {
         XCTAssertTrue(tap(control.buttons["Dial"], until: dial.exists), "back to the dial")
     }
 
+    /// S3's additive fields: the Tower's own bin, `latest` and the walk cue.
+    /// The newest placed view's sector is drawn at 12 o'clock, so the photo
+    /// binned there sits on top, and the dial says what its top means.
+    func testS3BinsAndLatestPutTheNewestViewOnTop() throws {
+        let s3 = Self.landedFixture.replacingOccurrences(
+            of: #""segment_index":null}]"#,
+            with: #""segment_index":null,"sector":3}],"latest":{"component_reference_segment":0,"sector":3,"keyframe_id":"s9:120"},"motion_sector":4"#)
+        mock.setRoute("GET \(Self.imagery)/manifest", status: 200, body: s3)
+        launch(environment: ["IOS_FOW_DIAL": "on"])
+        open(cartridge: "World Builder")
+        XCTAssertTrue(waitFor(timeout: 15) { self.socket.liveSubscription != nil }, "the live subscription")
+        try startCapture()
+        serve(revision: "gA", segments: [Self.placedZero, Self.live812])
+        push(geometry: "gA", guidance: FOWGuidance.stop)
+        let dial = element("wb-panel-dial")
+        let photo = element("wb-panel-dial-photo")
+        XCTAssertTrue(photo.waitForExistence(timeout: 20), "the dial's photo")
+        XCTAssertEqual(photo.label, "Photo at 12 o'clock", "the newest view's sector on top")
+        XCTAssertLessThan(photo.frame.midY, dial.frame.midY - dial.frame.height * 0.2, "at 12 o'clock")
+        XCTAssertEqual(photo.frame.midX, dial.frame.midX, accuracy: 4, "at 12 o'clock")
+        let value = dial.value as? String ?? ""
+        XCTAssertEqual(dial.label, "Capture dial, your newest views")
+        XCTAssertTrue(value.contains("2 to 9 o'clock"), value)
+        XCTAssertTrue(value.contains("You were moving toward 1 o'clock."), value)
+        XCTAssertTrue(value.hasSuffix("Top of the dial is your newest placed view."), value)
+        reveal(dial)
+        shoot("dial-photo-s3")
+    }
+
     // MARK: FOW v1.2: the photo floor plan
 
     /// ON, with a raster for the stop landing: the piece is the photo -- a

@@ -95,6 +95,11 @@ nonisolated struct WorldImageryEntry: Equatable, Sendable {
     let componentReferenceSegment: Int?
     /// Live only: the segment it was taken in.
     let segmentIndex: Int?
+    /// Landed only, additive (FOW-RING-SPEC §7 S3): the Tower's own 0-11
+    /// bin of the keyframe's look direction, agreeing with the coverage
+    /// masks. `nil` from a Tower that does not send it; a row that sends a
+    /// malformed one is dropped, never repaired.
+    var sector: Int? = nil
 }
 
 /// `live`: the current segment's thumbnails, newest first.
@@ -125,6 +130,20 @@ nonisolated struct WorldImageryLanding: Equatable, Sendable {
 nonisolated struct WorldImageryLanded: Equatable, Sendable {
     let landing: WorldImageryLanding
     let entries: [WorldImageryEntry]
+    /// Additive (S3): the newest eligible keyframe with a usable forward --
+    /// its piece and its sector, the capture dial's top. `nil` when absent
+    /// or `null`; a malformed one refuses the manifest, as any known field.
+    var latest: Latest? = nil
+    /// Additive (S3): 0-11, the floor-plane displacement over the latest
+    /// piece's newest 8 keyframes; `nil` when absent, `null` or below the
+    /// Tower's threshold. A malformed one refuses the manifest.
+    var motionSector: Int? = nil
+
+    struct Latest: Equatable, Sendable {
+        let componentReferenceSegment: Int
+        let sector: Int
+        let keyframeID: String
+    }
 }
 
 /// `GET /worlds/{world}/guidance/{session}/imagery/manifest`, read fail-closed:
@@ -171,9 +190,23 @@ nonisolated struct WorldImageryManifest: Equatable, Sendable {
                   let frame = R.integer(section["frame_revision"], index),
                   let rows = section["entries"] as? [Any], (1...Self.maxEntries).contains(rows.count)
             else { return nil }
+            var latest: WorldImageryLanded.Latest?
+            if let raw = section["latest"], !(raw is NSNull) {
+                guard let object = raw as? [String: Any],
+                      let component = R.integer(object["component_reference_segment"], index),
+                      let sector = R.integer(object["sector"], 0...11),
+                      let keyframe = object["keyframe_id"] as? String, !keyframe.isEmpty
+                else { return nil }
+                latest = .init(componentReferenceSegment: component, sector: sector, keyframeID: keyframe)
+            }
+            var motion: Int?
+            if let raw = section["motion_sector"], !(raw is NSNull) {
+                guard let sector = R.integer(raw, 0...11) else { return nil }
+                motion = sector
+            }
             landed = .value(WorldImageryLanded(
                 landing: WorldImageryLanding(solvedAt: solvedAt, geometryRevision: revision, frameRevision: frame),
-                entries: Self.entries(rows, .landed)))
+                entries: Self.entries(rows, .landed), latest: latest, motionSector: motion))
         }
     }
 
@@ -214,8 +247,13 @@ nonisolated struct WorldImageryManifest: Equatable, Sendable {
             guard object["pose_source"] as? String == "landed_global_solve", isNull("segment_index"),
                   let component = R.integer(object["component_reference_segment"], index)
             else { return nil }
+            var sector: Int?
+            if let raw = object["sector"], !(raw is NSNull) {
+                guard let parsed = R.integer(raw, 0...11) else { return nil }
+                sector = parsed
+            }
             return WorldImageryEntry(keyframeID: keyframeID, digest: digest, componentReferenceSegment: component,
-                                     segmentIndex: nil)
+                                     segmentIndex: nil, sector: sector)
         }
     }
 
@@ -641,26 +679,30 @@ nonisolated struct WorldLandedThumbnail: Equatable, Identifiable {
 nonisolated struct WorldLandedOverlay: Equatable {
     let receipt: WorldCoverageReceipt
     let thumbnails: [WorldLandedThumbnail]
-    /// The capture dial's tiles (FOW-RING-SPEC §3.4), of the same landing
-    /// as `receipt`.
+    /// The capture dial's tiles (FOW-RING-SPEC §3.4), and S3's `latest` and
+    /// `motion_sector`, all of the same landing as `receipt`.
     var dialEntries: [WorldDialThumbnail] = []
+    var latest: WorldImageryLanded.Latest? = nil
+    var motionSector: Int? = nil
 
     func thumbnails(on referenceSegment: Int) -> [WorldLandedThumbnail] {
         thumbnails.filter { $0.referenceSegment == referenceSegment }
     }
 }
 
-/// One in-hand B2 tile for the capture dial, with the look direction the
-/// phone's join found (S2). Not yet checked against any segment: the dial
-/// does that.
+/// One in-hand B2 tile for the capture dial: the Tower's own bin when it
+/// sent one (S3), and the look direction the phone's join found (S2), when
+/// it found one. Not yet checked against any segment: the dial does that.
 nonisolated struct WorldDialThumbnail: Equatable {
     let digest: String
     let image: UIImage
     let referenceSegment: Int
     let heading: Double?
+    var sector: Int? = nil
 
     static func == (lhs: Self, rhs: Self) -> Bool {
-        lhs.digest == rhs.digest && lhs.referenceSegment == rhs.referenceSegment && lhs.heading == rhs.heading
+        lhs.digest == rhs.digest && lhs.referenceSegment == rhs.referenceSegment
+            && lhs.sector == rhs.sector && lhs.heading == rhs.heading
     }
 }
 
@@ -818,13 +860,16 @@ extension WorldBuilderViewModel {
         let dialEntries = landed.entries.compactMap { entry -> WorldDialThumbnail? in
             guard let image = held.value.landedTiles[entry.digest], let component = entry.componentReferenceSegment
             else { return nil }
-            // The phone's join must have found a look direction (S2).
-            guard let heading = headings[entry.digest] else { return nil }
+            // The Tower's bin when it sent one (S3); otherwise the phone's
+            // join must have found a look direction (S2).
+            let heading = headings[entry.digest]
+            guard entry.sector != nil || heading != nil else { return nil }
             return WorldDialThumbnail(digest: entry.digest, image: image, referenceSegment: component,
-                                      heading: heading)
+                                      heading: heading, sector: entry.sector)
         }
         return WalkScoped(walk: walk, value: WorldLandedOverlay(receipt: receipt, thumbnails: thumbnails,
-                                                                 dialEntries: dialEntries))
+                                                                 dialEntries: dialEntries, latest: landed.latest,
+                                                                 motionSector: landed.motionSector))
     }
 
     /// The capture dial's "Photos unavailable for this update": the phone

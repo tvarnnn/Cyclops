@@ -83,9 +83,14 @@ final class WorldCaptureDialSnapshotTests: XCTestCase {
             }
             let entries = (scene.photos ?? lit).map { sector in
                 WorldDialThumbnail(digest: String(format: "%032x", sector + 1), image: Self.tile(sector),
-                                   referenceSegment: hero.referenceSegment, heading: Double(sector) * 30 + 14)
+                                   referenceSegment: hero.referenceSegment, heading: Double(sector) * 30 + 14,
+                                   sector: sector)
             }
-            overlay = WorldLandedOverlay(receipt: receipt, thumbnails: [], dialEntries: entries)
+            overlay = WorldLandedOverlay(
+                receipt: receipt, thumbnails: [], dialEntries: entries,
+                latest: scene.latest.map { .init(componentReferenceSegment: hero.referenceSegment, sector: $0,
+                                                 keyframeID: "s9:\(coverage.horizonKeyframes)") },
+                motionSector: scene.motion)
         }
         let panel = WorldInlinePanel(
             phase: .walking(hasMap: true), report: WalkScoped(walk: Self.walk, value: WorldPresentation()),

@@ -172,11 +172,12 @@ nonisolated struct WorldCaptureDial: Equatable, Sendable {
         photosBySector = accepted
     }
 
-    /// The overlay's in-hand tiles as dial photos: the joined heading's
-    /// 30-degree bin (S2). A tile with no direction is left out.
+    /// The overlay's in-hand tiles as dial photos: the Tower's `sector` when
+    /// it sent one (S3), otherwise the joined heading's 30-degree bin (S2).
+    /// A tile with neither has no direction and is left out.
     static func photos(_ entries: [WorldDialThumbnail]) -> [Photo] {
         entries.compactMap { entry in
-            let sector = entry.heading.flatMap { heading -> Int? in
+            let sector = entry.sector ?? entry.heading.flatMap { heading -> Int? in
                 guard heading.isFinite, heading >= 0 else { return nil }
                 return Int(heading / 30) % sectors
             }

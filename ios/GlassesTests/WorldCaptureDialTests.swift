@@ -282,6 +282,36 @@ final class WorldCaptureDialTests: XCTestCase {
         XCTAssertEqual(undrawn.gap?.positions.first, 11, "the gap through the top is met at once")
     }
 
+    /// A stale `latest` -- the Tower kept the previous landing's block --
+    /// never anchors the CURRENT receipt's dial: the panel draws B2 only
+    /// over the receipt it was made for, and then falls back (§3.3).
+    func testAStaleLatestNeverAnchorsTheCurrentReceipt() throws {
+        let stop = try XCTUnwrap(FOWFixtures.coverage(FOWFixtures.stop))
+        let receipt = WorldCoverageReceipt(coverage: stop, keyframesAccepted: 984, clock: nil)
+        let latest = WorldImageryLanded.Latest(componentReferenceSegment: 0, sector: 3, keyframeID: "s9:120")
+        let image = UIImage(data: FOWImageryFixtures.jpeg())!
+        let overlay = WorldLandedOverlay(receipt: receipt, thumbnails: [], dialEntries: [
+            WorldDialThumbnail(digest: "d1", image: image, referenceSegment: 0, heading: nil, sector: 2),
+        ], latest: latest, motionSector: 1)
+        let current = Panel.captureDial(.coverage(receipt), overlay: Panel.landed(overlay, over: .coverage(receipt)))
+        XCTAssertEqual(current.anchor, 3)
+        XCTAssertEqual(current.top, .newestView)
+        XCTAssertEqual(current.motionSector, 1)
+        XCTAssertEqual(current.photosBySector, [2: "d1"])
+
+        let newer = try XCTUnwrap(FOWFixtures.coverage(FOWFixtures.stop
+            .replacingOccurrences(of: "1791240313.", with: "1791240320.")
+            .replacingOccurrences(of: "g-stop-984", with: "g-stop-990")))
+        let next = WorldCoverageReceipt(coverage: newer, keyframesAccepted: 990, clock: nil)
+        let stale = Panel.captureDial(.coverage(next), overlay: Panel.landed(overlay, over: .coverage(next)))
+        XCTAssertEqual(stale.anchor, 0, "the previous landing's latest")
+        XCTAssertEqual(stale.top, .pieceStart)
+        XCTAssertNil(stale.motionSector)
+        XCTAssertEqual(stale.photosBySector, [:], "nothing carries over")
+        let fixture = Panel.captureDial(.fixture(receipt), overlay: Panel.landed(overlay, over: .fixture(receipt)))
+        XCTAssertEqual(fixture.top, .pieceStart, "never over the DEBUG fixture")
+    }
+
     func testTheWalkCueIsATickAndASentence() {
         let cue = dial(supported: [0, 1, 2], latest: 5, motion: 7)
         XCTAssertEqual(cue.motionSector, 7)
@@ -289,6 +319,73 @@ final class WorldCaptureDialTests: XCTestCase {
         XCTAssertTrue(Copy.accessibilityValue(cue, age: 5).contains("You were moving toward 2 o'clock."))
         XCTAssertNil(Copy.motion(dial(supported: [0], latest: 0, motion: nil)), "null: no tick")
         XCTAssertNil(dial(supported: [0], latest: 0, motion: 12).motionSector, "out of range: no tick")
+    }
+
+    // MARK: S3: the additive B2 fields, read fail-closed
+
+    /// S3: one tile per set sector, binned by the Tower; its bin wins over
+    /// the phone's join, and a tile with only a bin still has a direction.
+    func testTheTowersOwnBinWinsOverTheJoin() {
+        let image = UIImage()
+        let photos = WorldCaptureDial.photos([
+            WorldDialThumbnail(digest: "a", image: image, referenceSegment: 0, heading: 10, sector: 4),
+            WorldDialThumbnail(digest: "b", image: image, referenceSegment: 0, heading: nil, sector: 7),
+            WorldDialThumbnail(digest: "c", image: image, referenceSegment: 0, heading: 95, sector: nil),
+        ])
+        XCTAssertEqual(photos.map(\.sector), [4, 7, 3])
+        let dial = WorldCaptureDial(components: [Self.piece(supported: [3, 4, 5])], stationsOmitted: 0,
+                                    newest: .init(referenceSegment: 0, sector: 4), photos: photos)
+        XCTAssertEqual(dial.photosBySector, [4: "a", 3: "c"], "set sectors only: a binned tile on grey is dropped")
+        XCTAssertEqual(dial.position(of: 4), 0, "the newest view's own photo sits on top")
+    }
+
+    private static let digestA = "a" + String(repeating: "0", count: 31)
+    private static let digestB = "b" + String(repeating: "0", count: 31)
+
+    private static func manifest(entryA: String = #","sector":3"#, entryB: String = #","sector":7"#,
+                                 extra: String = "") -> WorldImageryManifest? {
+        FOWImageryFixtures.manifest(#"{"version":1,"landed":{"solved_at":1791240313.0,"geometry_revision":"g-stop-984","frame_revision":1,"entries":[{"keyframe_id":"s9:120","digest":"\#(digestA)","redaction":"redacted","pose_source":"landed_global_solve","component_reference_segment":0,"segment_index":null\#(entryA)},{"keyframe_id":"s9:121","digest":"\#(digestB)","redaction":"redacted","pose_source":"landed_global_solve","component_reference_segment":0,"segment_index":null\#(entryB)}]\#(extra)}}"#)
+    }
+
+    func testTheS3FieldsDecodeWhenPresent() throws {
+        let landed = try XCTUnwrap(Self.manifest(
+            extra: #","latest":{"component_reference_segment":0,"sector":7,"keyframe_id":"s9:121"},"motion_sector":2"#)?
+            .landed.value)
+        XCTAssertEqual(landed.entries.map(\.sector), [3, 7])
+        XCTAssertEqual(landed.latest, .init(componentReferenceSegment: 0, sector: 7, keyframeID: "s9:121"))
+        XCTAssertEqual(landed.motionSector, 2)
+    }
+
+    func testTheS3FieldsAbsentOrNullAreTodaysWire() throws {
+        let absent = try XCTUnwrap(Self.manifest(entryA: "", entryB: "")?.landed.value)
+        XCTAssertEqual(absent.entries.map(\.sector), [nil, nil])
+        XCTAssertNil(absent.latest)
+        XCTAssertNil(absent.motionSector)
+        let null = try XCTUnwrap(Self.manifest(entryA: #","sector":null"#, entryB: "",
+                                               extra: #","latest":null,"motion_sector":null"#)?.landed.value)
+        XCTAssertEqual(null.entries.count, 2)
+        XCTAssertNil(null.latest)
+        XCTAssertNil(null.motionSector, "null: no tick")
+        XCTAssertEqual(try XCTUnwrap(FOWImageryFixtures.manifest(FOWImageryFixtures.landed)?.landed.value).entries
+                        .map(\.sector), [nil], "§4's fixture as it was")
+    }
+
+    func testAMalformedSectorDropsItsEntryAndAMalformedLatestOrMotionRefusesTheManifest() throws {
+        for bad in [#","sector":12"#, #","sector":-1"#, #","sector":"3""#, #","sector":2.5"#, #","sector":true"#,
+                    #","sector":[3]"#] {
+            let landed = try XCTUnwrap(Self.manifest(entryA: bad)?.landed.value, bad)
+            XCTAssertEqual(landed.entries.map(\.digest), [Self.digestB], "\(bad): dropped, never repaired")
+        }
+        for bad in [#","latest":{"component_reference_segment":0,"sector":12,"keyframe_id":"s9:1"}"#,
+                    #","latest":{"component_reference_segment":0,"sector":3}"#,
+                    #","latest":{"component_reference_segment":0,"sector":3,"keyframe_id":""}"#,
+                    #","latest":{"component_reference_segment":"0","sector":3,"keyframe_id":"s9:1"}"#,
+                    #","latest":{"sector":3,"keyframe_id":"s9:1"}"#,
+                    #","latest":[0,3]"#, #","latest":"s9:1""#,
+                    #","motion_sector":12"#, #","motion_sector":-1"#, #","motion_sector":"2""#,
+                    #","motion_sector":true"#, #","motion_sector":1.5"#] {
+            XCTAssertNil(Self.manifest(extra: bad), "\(bad) was read")
+        }
     }
 
     // MARK: The words never claim what the receipt does not (§8.5)
