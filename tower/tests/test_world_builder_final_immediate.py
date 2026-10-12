@@ -7,9 +7,14 @@ import threading
 import time
 from pathlib import Path
 
+import psutil
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from scripts.world_build_session import BackgroundSolver  # noqa: E402
+from scripts.world_build_session import (  # noqa: E402
+    BackgroundSolver, child_environment, python_executable,
+)
 
 
 class Store:
@@ -97,40 +102,100 @@ def test_stop_kills_writer_mid_transaction_and_final_sees_committed_rows(tmp_pat
     marker = tmp_path / "writer-ready"
     writer = tmp_path / "writer.py"
     writer.write_text(
-        "import sqlite3,sys,time\n"
+        "import os,sqlite3,sys,time\n"
         "con=sqlite3.connect(sys.argv[1])\n"
         "con.execute('begin immediate')\n"
         "con.execute('insert into features values (2)')\n"
-        "open(sys.argv[2],'w').close()\n"
+        "open(sys.argv[2],'w').write(str(os.getpid()))\n"
         "time.sleep(30)\n"
     )
     launcher = tmp_path / "launcher.py"
     launcher.write_text(
         "import subprocess,sys,time\n"
         "subprocess.Popen([sys.executable,sys.argv[1],sys.argv[2],sys.argv[3]])\n"
-        "time.sleep(30)\n"
+        "time.sleep(0.2)\n"
     )
     child = subprocess.Popen([sys.executable, str(launcher), str(writer),
                               str(database), str(marker)])
     solver = solver_at(tmp_path)
     solver._child = child
+    solver._track_background_descendants(child)
+    writer_process = None
     try:
         deadline = time.monotonic() + 5
         while not marker.exists() and time.monotonic() < deadline:
             time.sleep(0.01)
         assert marker.exists()
+        writer_process = psutil.Process(int(marker.read_text()))
+        child.wait(timeout=5)  # the parent exits while its writer still owns SQLite
+        assert writer_process.is_running()
         solver.stop_background(store)
         assert child.poll() is not None
+        assert not writer_process.is_running()
+        final = tmp_path / "final.py"
+        final.write_text(
+            "import json,sqlite3,sys\n"
+            "with sqlite3.connect(sys.argv[1],timeout=1) as con:\n"
+            "    rows=[row[0] for row in con.execute('select id from features')]\n"
+            "    con.execute('insert into features values (3)')\n"
+            "print(json.dumps({'solved':True,'rows':rows}))\n"
+        )
+        solver._argv = lambda *, final: [python_executable(), str(final_script), str(database)]
+        final_script = final
+        assert solver.run_final(store, {})["rows"] == [1]
         with sqlite3.connect(database, timeout=1) as con:
             assert con.execute("pragma quick_check").fetchone() == ("ok",)
-            assert con.execute("select id from features").fetchall() == [(1,)]
-            con.execute("insert into features values (3)")  # final writer can proceed
+            assert con.execute("select id from features").fetchall() == [(1,), (3,)]
         solver.stop_background(store)
         assert solver.maybe_launch(store, 100, {}) is False
     finally:
+        solver.close()
+        if writer_process is not None and writer_process.is_running():
+            writer_process.kill()
+            writer_process.wait(timeout=5)
         if child.poll() is None:
             child.kill()
             child.wait()
+
+
+@pytest.mark.parametrize("failure", ["no_op", "raises"])
+def test_failed_immediate_kill_waits_and_still_runs_final(tmp_path, monkeypatch, failure):
+    store = Store(tmp_path)
+    started = tmp_path / "background-started"
+    done = tmp_path / "background-done"
+    background = tmp_path / "background.py"
+    background.write_text(
+        "import sys,time\nopen(sys.argv[1],'w').close()\n"
+        "time.sleep(0.2)\nopen(sys.argv[2],'w').close()\n"
+    )
+    final = tmp_path / "final.py"
+    final.write_text(
+        "import json,os,sys\n"
+        "print(json.dumps({'solved': True, 'background_done': os.path.exists(sys.argv[1])}))\n"
+    )
+    solver = solver_at(tmp_path, fallback_wait_seconds=5.0)
+    solver._child = subprocess.Popen(
+        [python_executable(), str(background), str(started), str(done)],
+        env=child_environment(),
+    )
+    def fail_termination():
+        if failure == "raises":
+            raise RuntimeError("simulated kill failure")
+
+    monkeypatch.setattr(solver, "_terminate_child", fail_termination)
+    solver._argv = lambda *, final: [python_executable(), str(final_script), str(done)]
+    final_script = final
+    try:
+        deadline = time.monotonic() + 5
+        while not started.exists() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert started.exists()
+        solver.stop_background(store)
+        assert solver.final_immediate_fallback is True
+        assert done.exists(), f"background exit: {solver._child and solver._child.poll()}"
+        assert solver.run_final(store, {})["background_done"] is True
+    finally:
+        solver.close()
 
 
 def test_unusable_database_is_removed_before_final(tmp_path):
