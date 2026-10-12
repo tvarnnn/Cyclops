@@ -45,11 +45,11 @@ The script creates `.venv`, installs `.[dev]`, and creates `.env` if absent; it 
 
 ```powershell
 .venv\Scripts\python.exe -m pip install --index-url https://download.pytorch.org/whl/cu132 "torch==2.13.0+cu132" "torchvision==0.28.0+cu132"
-.venv\Scripts\python.exe -m pip install --no-deps "git+https://github.com/microsoft/MoGe.git@<PINNED_COMMIT>"
-.venv\Scripts\python.exe -m pip install -e ".[dev,ml,sfm,dense,appearance,transients]"
+.venv\Scripts\python.exe -m pip install "moge @ git+https://github.com/microsoft/MoGe.git@74fbce054ebed49800de42d0ad0e83495065719a"
+.venv\Scripts\python.exe -m pip install -e ".[dev,sfm,dense,appearance,transients,ml,ocr,semantic,scene]"
 ```
 
-Replace `<PINNED_COMMIT>` with a tested MoGe Git commit and record it for the host. The source declares `moge>=3.0` but does **not** record a Git revision; MoGe is Git-hosted, and `--no-deps` avoids its `numpy<2` declaration downgrading the Tower's NumPy. The `sfm` extra supplies `pycolmap` for the global solve; `dense` supplies the MoGe depth stack; `appearance` supplies surface/viewer dependencies; `transients` supplies segmentation dependencies. Optional `ocr`, `semantic`, and `scene` extras support other cartridges. Model weights may download on first use. See [calibration](tower/docs/CALIBRATION.md) for camera intrinsics; without matching intrinsics, the unposed backend can produce keyframes but no solved poses.
+This exact sequence (CUDA torch first, then MoGe pinned at commit `74fbce05`, then the extras) passed a fresh-clone dry run on a clean Windows folder on 2026-10-08: `torch 2.13.0+cu132` with CUDA, `pycolmap 4.2.0`, and the Tower up in about 3 s. `moge>=3.0` is not on PyPI, which is why it comes from Git. Clone to a short path (for example `C:\Cyclops`): torch's files overflow Windows' 260-character path limit under a deep folder, unless long paths are enabled. Pre-download the depth model once with `python -c "from moge.model.v2 import MoGeModel; MoGeModel.from_pretrained('Ruicheng/moge-2-vitl')"`.
 
 For a normal capture-backed World Builder, set these in `tower/.env` (paths are relative to `tower/`):
 
