@@ -1394,11 +1394,15 @@ def build_homography_raster(*, origin_xyz, up_xyz, forward_xyz, bounds_xy, plane
             in_band = in_image & (vv >= v_top)
             rejected_cells["upper_image"] += int((in_image & ~in_band).sum())
         else:
-            # The cell's NEAREST sample pixel must carry floor evidence; the colour is
-            # still the bilinear sample, which at an evidence edge blends one pixel.
-            ui = np.clip(np.rint(uu), 0, w_px - 1).astype(np.int64)
-            vi = np.clip(np.rint(vv), 0, h_px - 1).astype(np.int64)
-            in_band = in_image & evidence[vi, ui]
+            # Every texel in the bilinear colour footprint must have floor evidence.
+            # A single unsupported neighbour can otherwise lend furniture colour
+            # to a floor-edge cell. This path runs only with the evidence switch on.
+            u0 = np.clip(np.floor(uu), 0, w_px - 1).astype(np.int64)
+            v0i = np.clip(np.floor(vv), 0, h_px - 1).astype(np.int64)
+            u1 = np.clip(u0 + 1, 0, w_px - 1)
+            v1i = np.clip(v0i + 1, 0, h_px - 1)
+            in_band = (in_image & evidence[v0i, u0] & evidence[v0i, u1]
+                       & evidence[v1i, u0] & evidence[v1i, u1])
             rejected_cells["no_evidence"] = (rejected_cells.get("no_evidence", 0)
                                              + int((in_image & ~in_band).sum()))
         dist = np.sqrt(xc * xc + yc * yc + zc * zc)   # the camera axes are orthonormal

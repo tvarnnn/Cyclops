@@ -12,13 +12,19 @@ raster y = -world Y), cameras 1.5 above the floor (H = 1.5).
 from __future__ import annotations
 
 import cv2
+import hashlib
+import json
 import numpy as np
 import pytest
+from types import SimpleNamespace
 
 from tower import config
 from tower.world_builder import photo_floorplan_evidence as fe
 from tower.world_builder import photo_floorplan_worker as pfw
 from tower.world_builder.photo_floorplan import FloorPlane, PhotoFrame, build_homography_raster
+from tower.world_builder.live_depth import MODEL
+from tower.world_builder.dense_pipeline import FILL_RULE
+from tower.world_builder.appearance import pixel_trust_token
 from tests.test_world_builder_photo_floorplan import _pitched_camera
 from tests.test_world_builder_photo_floorplan_worker import SESSION, WORLD, _synthetic_solve
 
@@ -183,6 +189,65 @@ def test_a_layer_outside_the_window_is_not_floor():
     assert known.any() and info["layer"] is None and not floor.any()
 
 
+def test_a_desk_plane_is_refused_when_a_broad_lower_floor_is_visible():
+    fr, d = _frame("desk", CAMS[0], table=TABLE_TOP)
+    desk = FloorPlane(ok=True, reason="ok", normal=(0.0, 0.0, 1.0),
+                      offset=-TABLE_TOP[-1], stats={"camera_height_median": H - TABLE_TOP[-1]})
+    floor, known, info = _depth_evidence(fr, d, plane=desk)
+    assert known.any() and info["layer"] is not None
+    assert info["lower_layer"] is not None
+    assert not floor.any()
+
+
+def test_an_in_window_nonfloor_surface_without_sparse_support_paints_nothing(
+        tmp_path, monkeypatch):
+    fr, d = _frame("s:00000007", CAMS[0], table=(-20, 20, -20, 20, 0.20))
+    class Cache:
+        def load_depth(self, kid, camera):
+            return d.astype(np.float32), np.zeros_like(d, bool), "ok"
+
+    monkeypatch.setattr(pfw, "_clean_anchors", lambda *a: (np.ones(20), np.ones(20), "ok"))
+    masks = tmp_path / "masks"
+    masks.mkdir()
+    cv2.imwrite(str(masks / "00000007.jpg.png"), np.full(d.shape, 255, np.uint8))
+    camera = dict(width=W_PX, height=H_PX, fx=fr.fx, fy=fr.fy)
+    ev, info = pfw.frame_floor_evidence(
+        kid=fr.kid, rgb=fr.color, fx=fr.fx, fy=fr.fy, cx=fr.cx, cy=fr.cy,
+        position=fr.position_xyz, up_world=fr.up_xyz, forward_world=fr.forward_xyz,
+        scale=1.0, plane=_plane(), obs_xy=np.empty((0, 2)), obs_xyz=np.empty((0, 3)),
+        camera=camera, depth_cache=Cache(), solve=object(), masks_dir=masks)
+    assert info["layer"] is not None
+    assert info["depth_guard"] == "no independent sparse floor support"
+    assert not ev.any()
+
+
+def test_missing_live_transient_mask_is_all_gray(tmp_path):
+    fr, _ = _frame("s:00000007", CAMS[0])
+    ev, info = pfw.frame_floor_evidence(
+        kid=fr.kid, rgb=fr.color, fx=fr.fx, fy=fr.fy, cx=fr.cx, cy=fr.cy,
+        position=fr.position_xyz, up_world=fr.up_xyz, forward_world=fr.forward_xyz,
+        scale=1.0, plane=_plane(), obs_xy=np.array([[20., 100.]]),
+        obs_xyz=np.array([[0., 0., 0.]]),
+        camera=dict(width=W_PX, height=H_PX), masks_dir=tmp_path)
+    assert not ev.any() and info["depth"] == "transient mask missing"
+
+
+def test_a_reported_credible_lower_plane_suppresses_even_sparse_colour(tmp_path):
+    fr, _ = _frame("s:00000007", CAMS[0])
+    mask = tmp_path / "00000007.jpg.png"
+    cv2.imwrite(str(mask), np.full((H_PX, W_PX), 255, np.uint8))
+    plane = _plane()
+    plane.stats.update(ambiguous=True, alt_plane_height_above_chosen_frac=0.25)
+    ev, info = pfw.frame_floor_evidence(
+        kid=fr.kid, rgb=fr.color, fx=fr.fx, fy=fr.fy, cx=fr.cx, cy=fr.cy,
+        position=fr.position_xyz, up_world=fr.up_xyz, forward_world=fr.forward_xyz,
+        scale=1.0, plane=plane, obs_xy=np.array([[20., 100.]]),
+        obs_xyz=np.array([[0., 0., 0.]]),
+        camera=dict(width=W_PX, height=H_PX), masks_dir=tmp_path)
+    assert info["depth_guard"] == "ambiguous lower plane"
+    assert not ev.any()
+
+
 # ---------------------------------------------------------------------------
 # a person: the transient mask wins over every other source
 # ---------------------------------------------------------------------------
@@ -303,6 +368,63 @@ def test_sparse_seeds_grow_only_through_their_own_colour_and_stop_at_vetoes():
     assert veto2[30, 14] and not floor2[30, 14]
     none, _, n0 = fe.sparse_floor_evidence(img, np.zeros((0, 2)), [])
     assert n0 == 0 and not none.any()
+
+
+def test_sparse_seed_does_not_reach_an_unobserved_same_colour_object():
+    img = np.full((60, 60, 3), 120, np.uint8)
+    floor, _, _ = fe.sparse_floor_evidence(img, [[10, 30]], [0.0])
+    assert floor[30, 10]
+    assert not floor[30, 13:].any()
+
+
+def test_bilinear_colour_never_uses_an_unsupported_neighbour():
+    fr = _floor_frames()[0]
+    fr.color[:, 1::2] = TABLE
+    fr.floor_evidence = np.zeros((H_PX, W_PX), bool)
+    fr.floor_evidence[:, ::2] = True
+    result = _raster([fr], floor_evidence=True)
+    assert result.opaque_cells == 0
+
+
+def test_depth_cache_binds_image_trust_and_prediction_files(tmp_path):
+    dense = tmp_path / "dense"
+    live = dense / "live_depth"
+    depth = live / "work" / "depth"
+    depth.mkdir(parents=True)
+    images = tmp_path / "images"
+    images.mkdir()
+    kid = "s:00000007"
+    source = images / "00000007.jpg"
+    source.write_bytes(b"original camera jpeg")
+    pred_path = depth / "00007_pred.npy"
+    fill_path = depth / "00007_fill.npy"
+    np.save(pred_path, np.ones((4, 4), np.float16))
+    np.save(fill_path, np.zeros((4, 4), bool))
+    label = "faces-detected-and-filled/yunet-2023mar@0.30+plausibility3"
+    image_set = SimpleNamespace(directory=images, cache_token=None, redaction=label)
+    camera = dict(width=4, height=4, fx=4.0)
+    fov = round(np.degrees(2 * np.arctan(4 / 8)), 6)
+    record = dict(kid=kid, ki=7, known_fov=fov, fill_rule=FILL_RULE,
+                  pred="work/depth/00007_pred.npy",
+                  image_sha1=hashlib.sha1(source.read_bytes()).hexdigest(),
+                  pred_sha256=hashlib.sha256(pred_path.read_bytes()).hexdigest(),
+                  fill_sha256=hashlib.sha256(fill_path.read_bytes()).hexdigest())
+    doc = dict(backend=MODEL, fill_rule=FILL_RULE, imagery_source="redacted",
+               redaction_trust=pixel_trust_token(label), keyframe_image_set=None,
+               records=[record])
+    manifest = live / "align.json"
+    manifest.write_text(json.dumps(doc), encoding="utf-8")
+    cache = pfw.DepthCache(dense, image_set=image_set)
+    assert cache.load_depth(kid, camera)[2] == "ok"
+    source.write_bytes(b"changed camera jpeg")
+    assert cache.load_depth(kid, camera)[2] == "image mismatch"
+    source.write_bytes(b"original camera jpeg")
+    cache.image_set = SimpleNamespace(directory=images, cache_token=None, redaction="untrusted")
+    assert cache.load_depth(kid, camera)[2] == "image set or trust mismatch"
+    cache.image_set = image_set
+    np.save(pred_path, np.full((4, 4), 2, np.float16))
+    assert cache.load_depth(kid, camera)[2] in (
+        "prediction changed since manifest", "prediction hash mismatch")
 
 
 def test_the_depth_scale_fit_refuses_a_bad_fit():

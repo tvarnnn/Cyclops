@@ -305,6 +305,14 @@ def frame_floor_evidence(*, kid, rgb, fx, fy, cx, cy, position, up_world, forwar
     d = float(plane.offset)
     h_med = float(plane.stats["camera_height_median"])
     info = {}
+    if masks_dir is not None:
+        mask_path = Path(masks_dir) / f"{kid.split(':')[-1]}.jpg.png"
+        if not mask_path.is_file():
+            # An unmasked live solve cannot rule out feet or clothing at floor
+            # height. Do not turn that missing protection into positive colour.
+            return np.zeros((h_px, w_px), dtype=bool), {
+                "source": "none", "depth": "transient mask missing",
+                "depth_px": 0, "sparse_px": 0, "seeds": 0}
     depth_floor = depth_known = None
     if depth_cache is not None and solve is not None:
         pred, fill, reason = depth_cache.load_depth(kid, camera)
@@ -320,16 +328,41 @@ def frame_floor_evidence(*, kid, rgb, fx, fy, cx, cy, position, up_world, forwar
                     up_xyz=up_world, fx=fx, fy=fy, cx=cx, cy=cy, normal=n, offset=d,
                     h_med=h_med)
                 info["layer"] = layer["layer"]
+                info["lower_layer"] = layer["lower_layer"]
                 info["held_out"] = held_out
         info["depth"] = reason
     sx = w_px / float(camera["width"])
     sy = h_px / float(camera["height"])
     uv = (np.asarray(obs_xy, dtype=np.float64).reshape(-1, 2) + 0.5) * np.array([sx, sy]) - 0.5
-    hf = (np.asarray(obs_xyz, dtype=np.float64).reshape(-1, 3) @ n + d) / h_med
+    hf_global = (np.asarray(obs_xyz, dtype=np.float64).reshape(-1, 3) @ n + d) / h_med
+    hf = hf_global.copy()
     if info.get("layer") is not None:
         hf = hf - info["layer"]   # seeds and vetoes relative to THIS frame's floor layer
     sparse_floor, veto, seeds = fe.sparse_floor_evidence(rgb, uv, hf)
     info["seeds"] = seeds
+    if depth_floor is not None and depth_floor.any():
+        safe_uv = np.where(np.isfinite(uv), uv, -1.0)
+        ui = np.rint(safe_uv[:, 0]).astype(np.int64)
+        vi = np.rint(safe_uv[:, 1]).astype(np.int64)
+        inside = (np.isfinite(hf_global) & np.isfinite(uv).all(axis=1)
+                  & (ui >= 0) & (ui < w_px) & (vi >= 0) & (vi < h_px))
+        support = inside & (np.abs(hf_global) <= fe.EVIDENCE_TOL_FRAC)
+        matched = int(depth_floor[vi[support], ui[support]].sum())
+        if int(support.sum()) < 3 or matched < 2:
+            depth_floor[:] = False
+            info["depth_guard"] = "no independent sparse floor support"
+    if info.get("lower_layer") is not None:
+        depth_known = np.ones((h_px, w_px), dtype=bool)
+        sparse_floor[:] = False
+        info["depth_guard"] = "substantial lower horizontal layer"
+    if (plane.stats.get("ambiguous") and
+            plane.stats.get("alt_plane_height_above_chosen_frac", 0.0) > 0.2):
+        # The plane fitter itself found a credible lower alternative. The
+        # selected layer, including sparse seeds, cannot resolve that ambiguity.
+        depth_floor = np.zeros((h_px, w_px), dtype=bool)
+        depth_known = np.ones((h_px, w_px), dtype=bool)
+        sparse_floor[:] = False
+        info["depth_guard"] = "ambiguous lower plane"
     transient = None
     if masks_dir is not None:
         mask_path = Path(masks_dir) / f"{kid.split(':')[-1]}.jpg.png"
@@ -543,13 +576,24 @@ def homography_component(*, receipt_component, entries, tree, arrays, keyframe_i
 
 
 class DepthCache:
-    def __init__(self, dense_root: Path):
+    def __init__(self, dense_root: Path, *, image_set=None):
         self.root = Path(dense_root) / "live_depth"
-        doc = json.loads((self.root / "align.json").read_text(encoding="utf-8"))
+        from tower.world_builder.store import _read_json_past_a_replace
+
+        manifest = self.root / "align.json"
+        before = manifest.stat().st_mtime_ns
+        doc = _read_json_past_a_replace(manifest, absent_on_failure=False)
+        self.manifest_mtime_ns = manifest.stat().st_mtime_ns
+        if before != self.manifest_mtime_ns:
+            raise ValueError("live-depth manifest changed during read")
         self.by_kid = {r["kid"]: r for r in doc.get("records", [])
                        if isinstance(r, dict) and r.get("kid")}
         self.imagery_source = doc.get("imagery_source")
         self.backend = doc.get("backend")
+        self.fill_rule = doc.get("fill_rule")
+        self.redaction_trust = doc.get("redaction_trust")
+        self.keyframe_image_set = doc.get("keyframe_image_set")
+        self.image_set = image_set
 
     def has(self, kid) -> bool:
         return kid in self.by_kid
@@ -570,8 +614,11 @@ class DepthCache:
         """(pred, fill, "ok") for floor evidence, or (None, None, reason). Only a
         prediction made under THIS solve camera's field of view and size, by the Exp1
         model, is used: anything else is silent, never an error."""
+        import io
         import math
 
+        from tower.world_builder.appearance import label_is_trusted, pixel_trust_token
+        from tower.world_builder.dense_pipeline import FILL_RULE
         from tower.world_builder.live_depth import MODEL
 
         record = self.by_kid.get(kid)
@@ -579,17 +626,44 @@ class DepthCache:
             return None, None, "cache miss"
         if self.backend != MODEL:
             return None, None, "backend mismatch"
+        if self.fill_rule != FILL_RULE or record.get("fill_rule") != FILL_RULE:
+            return None, None, "fill rule mismatch"
+        if (self.image_set is None or self.imagery_source != "redacted"
+                or not label_is_trusted(self.image_set.redaction)
+                or self.keyframe_image_set != self.image_set.cache_token
+                or self.redaction_trust != pixel_trust_token(self.image_set.redaction)):
+            return None, None, "image set or trust mismatch"
         try:
             width, height = int(camera["width"]), int(camera["height"])
             fov = round(math.degrees(2.0 * math.atan(width / (2.0 * float(camera["fx"])))), 6)
             if record.get("known_fov") != fov:
                 return None, None, "field of view mismatch"
+            source = self.image_set.directory / f"{kid.rsplit(':', 1)[-1]}.jpg"
+            if hashlib.sha1(source.read_bytes()).hexdigest() != record.get("image_sha1"):
+                return None, None, "image mismatch"
             ki = int(record["ki"])
-            # float32: the evidence works at <= 256x144 after an area resample.
-            pred = np.load(self.root / "work" / "depth" / f"{ki:05d}_pred.npy").astype(np.float32)
+            if record.get("pred") != f"work/depth/{ki:05d}_pred.npy":
+                return None, None, "prediction path mismatch"
+            pred_path = self.root / "work" / "depth" / f"{ki:05d}_pred.npy"
             fill_path = self.root / "work" / "depth" / f"{ki:05d}_fill.npy"
-            fill = (np.load(fill_path).astype(bool) if fill_path.is_file()
-                    else np.zeros_like(pred, bool))
+            pred_bytes = pred_path.read_bytes()
+            fill_bytes = fill_path.read_bytes()
+            # Older live records have no content hashes. Their files must at least
+            # predate this manifest snapshot; a writer replacing a sequence file
+            # makes it newer and the old record is then refused.
+            if (pred_path.stat().st_mtime_ns > self.manifest_mtime_ns
+                    or fill_path.stat().st_mtime_ns > self.manifest_mtime_ns):
+                return None, None, "prediction changed since manifest"
+            pred_hash, fill_hash = record.get("pred_sha256"), record.get("fill_sha256")
+            if (pred_hash is None) != (fill_hash is None):
+                return None, None, "incomplete prediction identity"
+            if (pred_hash is not None and
+                    (hashlib.sha256(pred_bytes).hexdigest() != pred_hash or
+                     hashlib.sha256(fill_bytes).hexdigest() != fill_hash)):
+                return None, None, "prediction hash mismatch"
+            # float32: the evidence works at <= 256x144 after an area resample.
+            pred = np.load(io.BytesIO(pred_bytes), allow_pickle=False).astype(np.float32)
+            fill = np.load(io.BytesIO(fill_bytes), allow_pickle=False).astype(bool)
         except (OSError, ValueError, KeyError, TypeError):
             return None, None, "unreadable"
         if pred.shape != (height, width) or fill.shape != pred.shape:
@@ -803,7 +877,11 @@ def build_landing(root, world_id, session_id, receipt, eligible, tree, solution_
     if floor_evidence and method != METHOD_DEPTH:
         # The live-depth cache is optional evidence: without it, the sparse points speak.
         try:
-            evidence_cache = DepthCache(Path(root) / "worlds" / world_id / "dense" / session_id)
+            from tower.world_builder.store import WorldStore
+
+            image_set = WorldStore(Path(root)).keyframe_image_set(world_id, session_id)
+            evidence_cache = DepthCache(Path(root) / "worlds" / world_id / "dense" / session_id,
+                                        image_set=image_set)
         except (OSError, ValueError, AttributeError, TypeError):
             evidence_cache = None
     components, tiles, stats = [], {}, []

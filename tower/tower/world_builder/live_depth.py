@@ -249,14 +249,21 @@ class LiveDepthWorker:
         work = self.root / "work"
         (work / "depth").mkdir(parents=True, exist_ok=True)
         (work / "undist").mkdir(parents=True, exist_ok=True)
-        np.save(work / "depth" / f"{ki:05d}_pred.npy", np.asarray(pred).astype(np.float16))
-        np.save(work / "depth" / f"{ki:05d}_fill.npy", fill_u)
+        pred_path = work / "depth" / f"{ki:05d}_pred.npy"
+        fill_path = work / "depth" / f"{ki:05d}_fill.npy"
+        np.save(pred_path, np.asarray(pred).astype(np.float16))
+        np.save(fill_path, fill_u)
         cv2.imwrite(str(work / "undist" / f"{ki:05d}.jpg"), img,
                     [cv2.IMWRITE_JPEG_QUALITY, 95])
         record = {"ki": ki, "kid": keyframe.keyframe_id,
                   "image_sha1": hashlib.sha1(image_bytes).hexdigest(),
                   "fill_rule": FILL_RULE, "pred": f"work/depth/{ki:05d}_pred.npy",
                   "known_fov": round(fov_x, 6)}
+        from tower.config import world_photo_floorplan_evidence_setting
+
+        if world_photo_floorplan_evidence_setting():
+            record["pred_sha256"] = hashlib.sha256(pred_path.read_bytes()).hexdigest()
+            record["fill_sha256"] = hashlib.sha256(fill_path.read_bytes()).hexdigest()
         with self.lock:
             self.records.append(record)
             self.counts["predicted"] += 1

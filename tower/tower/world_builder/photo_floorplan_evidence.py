@@ -19,21 +19,21 @@ THE EVIDENCE, per selected frame, at the warp's sample size (<= 256x144), in thi
       above the plane (along one ray height falls linearly with depth, so this is the
       depth agreeing with the ray-plane intersection depth: scale-free, the same at every
       range) and a surface normal. The frame's FLOOR LAYER is the lowest horizontal layer
-      with enough pixels inside `LAYER_WINDOW_FRAC` of the plane; a pixel is floor iff it
-      is horizontal and within `EVIDENCE_TOL_FRAC` of that layer. Where the depth is
-      known but says "not floor" -- or the frame has no floor layer at all -- the pixel
-      is gray: the sparse points do not overrule it.
+      with enough pixels inside `LAYER_WINDOW_FRAC` of the plane. A broad lower
+      horizontal layer vetoes it, and the worker also requires sparse floor support.
+      Where depth is known but says "not floor" -- or no credible layer exists --
+      the pixel is gray.
   (a) SPARSE SfM, only where (b) is silent (no cache entry, a refused fit, redaction
       fill): the frame's OWN observations of the solve's 3-D points. A point within
       `EVIDENCE_TOL_FRAC` of the floor (the frame's layer if (b) found one, else the
       plane) is a SEED; any other point (above: furniture, walls, people; below: a
       pose/plane disagreement or a reflection) is a VETO. Each seed grows a
       colour-consistent region (flood fill, fixed range around the seed's colour) of at
-      most `GROW_RADIUS_FRAC` of the image's shorter side, never into a veto disc. No
+      most one sample pixel, never into a veto disc. No
       seed, no evidence.
-  (c) TRANSIENT MASKS, where the solve has them (`<solve>/masks/<image>.png`, 0 =
-      transient): every sample pixel touching a masked one is dropped, whatever (a)/(b)
-      said. (Walk-8 live solves have none; the path is exercised by tests only.)
+  (c) TRANSIENT MASKS (`<solve>/masks/<image>.png`, 0 = transient): every sample
+      pixel touching a masked one is dropped. If the production worker has no
+      mask for a frame, that frame paints nothing.
 
 Veto discs apply to (b) as well: the depth model smooths over thin chair legs and table
 edges that a triangulated point pins down.
@@ -69,10 +69,9 @@ EVIDENCE_TOL_FRAC = 0.12
 DEPTH_MAX_HELD_OUT_REL = 0.10
 VETO_RADIUS_FRAC = 0.02
 """A veto disc's radius, as a fraction of the sample's shorter side (about 3 px of 144)."""
-GROW_RADIUS_FRAC = 0.08
-"""How far one seed's region may reach, as a fraction of the sample's shorter side (about
-11 px of 144, i.e. ~30 px at walk 8's 359 px width). Carpet is low-texture, so seeds are
-sparse; much further and a seed would speak for floor it never saw."""
+GROW_RADIUS_FRAC = 0.01
+"""At most one sample pixel around a directly observed SfM floor point. A larger
+colour flood can claim an unobserved piece of similarly coloured furniture."""
 GROW_COLOR_TOL = 10
 """Per-channel fixed range (0-255) around the seed's colour (3x3-blurred image)."""
 MAX_SEEDS = 600
@@ -125,8 +124,8 @@ def depth_floor_evidence(depth, valid, *, scale, position_xyz, forward_xyz, up_x
 
     The floor LAYER is the lowest substantial horizontal layer of the frame's own depth
     heights inside `layer_window` of the plane (see `LAYER_WINDOW_FRAC`); a pixel is
-    floor iff its surface is horizontal and within `tol_frac` of that layer. No layer,
-    no depth evidence: the frame stays gray where its depth is known.
+    floor iff its surface is horizontal and within `tol_frac` of that layer. A broad
+    lower horizontal layer vetoes it. No credible layer means no depth floor evidence.
 
     `depth` is camera-frame z in the SOLVE's units (the sparse fit's), `scale` the
     placement scale that takes solve units to the output frame the plane lives in;
@@ -164,7 +163,7 @@ def depth_floor_evidence(depth, valid, *, scale, position_xyz, forward_xyz, up_x
         horizontal = nb_known & (cos_up >= normal_min_cos)
     else:
         horizontal = np.zeros_like(known)
-    info = {"layer": None}
+    info = {"layer": None, "lower_layer": None}
     lo, hi = layer_window
     hv = height[horizontal & (height >= lo - tol_frac) & (height <= hi + tol_frac)]
     n_known = int(known.sum())
@@ -187,6 +186,17 @@ def depth_floor_evidence(depth, valid, *, scale, position_xyz, forward_xyz, up_x
             if lo - 1e-9 <= layer <= hi + 1e-9:
                 info["layer"] = layer
                 floor = horizontal & (np.abs(height - layer) <= tol_frac)
+                # A fitted plane can be a desk while the real floor is far below the
+                # search window. A substantial lower horizontal surface makes that
+                # candidate unsafe, even if the in-window surface is very broad.
+                lower = height[horizontal & (height < layer - 2 * tol_frac)]
+                if len(lower) >= need:
+                    levels = np.arange(-1.0, layer - 2 * tol_frac, layer_bin)
+                    for level in levels:
+                        if int((np.abs(lower - level) <= tol_frac).sum()) >= need:
+                            info["lower_layer"] = float(level)
+                            floor[:] = False
+                            break
     return floor, known, info
 
 
