@@ -210,6 +210,18 @@ nonisolated enum WorldPhotoFloorplanWire {
     /// A tile's bytes, decoded, only as the contract allows: the declared
     /// byte count, at most 180 KiB, SHA-256 equal to the digest, PNG or WebP
     /// by its bytes, the declared pixel size, and an alpha channel.
+    @concurrent static func rasterOffMain(_ data: Data, for component: WorldPhotoFloorplanComponent) async throws -> UIImage {
+        #if DEBUG
+        offMainProbe = !Thread.isMainThread
+        #endif
+        return try raster(data, for: component)
+    }
+
+    #if DEBUG
+    /// Test hook: whether the last `rasterOffMain` ran off the main thread.
+    nonisolated(unsafe) static var offMainProbe = false
+    #endif
+
     static func raster(_ data: Data, for component: WorldPhotoFloorplanComponent) throws -> UIImage {
         guard data.count <= maxTileBytes, data.count == component.bytes else {
             throw WorldPhotoFloorplanError.refused
@@ -247,7 +259,7 @@ nonisolated struct WorldPhotoFloorplanClient {
         guard WorldPhotoFloorplanWire.isDigest(component.digest) else { throw WorldPhotoFloorplanError.refused }
         let path = WorldPhotoFloorplanWire.tilePath(worldID: worldID, sessionID: sessionID, digest: component.digest)
         let data = try await get(path, accept: WorldPhotoFloorplanWire.tileTypes)
-        return try WorldPhotoFloorplanWire.raster(data, for: component)
+        return try await WorldPhotoFloorplanWire.rasterOffMain(data, for: component)
     }
 
     /// The body of a 200 of one of `accept`'s media types.
@@ -303,7 +315,7 @@ nonisolated struct WorldPhotoFloorplan: Equatable {
 final class WorldPhotoFloorplanModel: ObservableObject {
     /// A landing the manifest does not carry yet (the Tower's side worker
     /// runs after coverage publishes) is asked again on the next geometry
-    /// push, at most this many times: a bounded retry, never a poll.
+    /// push, at most this many times in all, first fetch included: a bounded retry, never a poll.
     static let landingRetries = 3
 
     let floorplanSwitch: WorldPhotoFloorplanSwitch
@@ -351,7 +363,7 @@ final class WorldPhotoFloorplanModel: ObservableObject {
         guard floorplanSwitch.on, receiving else { return }
         let walk = WorldFinishWalk(worldID: coordinates.worldID, sessionID: coordinates.sessionID)
         adopt(walk)
-        if let landing, !landingAnswered, manifestTask == nil, landingAttempts <= Self.landingRetries {
+        if let landing, !landingAnswered, manifestTask == nil, landingAttempts < Self.landingRetries {
             fetchManifest(walk: walk, landing: landing)
         }
     }

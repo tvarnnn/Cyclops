@@ -129,6 +129,12 @@ final class WorldPhotoFloorplanTests: XCTestCase {
 
     /// The tile: exactly the declared bytes, SHA-256 equal to the digest,
     /// PNG or WebP, the declared size, with alpha.
+    func testTheTileDecodeRunsOffTheMainThread() async throws {
+        let component = try XCTUnwrap(F.decode(F.manifest())?.landed?.components.first)
+        _ = try await WorldPhotoFloorplanWire.rasterOffMain(F.raster, for: component)
+        XCTAssertTrue(WorldPhotoFloorplanWire.offMainProbe)
+    }
+
     func testATileIsVerifiedAgainstItsDigest() throws {
         let component = try XCTUnwrap(F.decode(F.manifest())?.landed?.components.first)
         let image = try WorldPhotoFloorplanWire.raster(F.raster, for: component)
@@ -446,7 +452,7 @@ final class WorldPhotoFloorplanModelTests: XCTestCase {
             push(model, revision: "g\(index)")
         }
         await settle()
-        XCTAssertEqual(Stub.count(Self.manifestA), 1 + WorldPhotoFloorplanModel.landingRetries)
+        XCTAssertEqual(Stub.count(Self.manifestA), WorldPhotoFloorplanModel.landingRetries)
     }
 
     /// A late push after Stop: the Tower still reports the walk, and the
