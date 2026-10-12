@@ -574,7 +574,9 @@ away with at least half the chosen plane's support marks the estimate
 
 # -- warp ---------------------------------------------------------------------
 LOWER_IMAGE_FRACTION = 0.40
-"""Only the bottom 40% of each rectified image is warped (design)."""
+"""Only the bottom 40% of each rectified image is warped (design). With
+TOWER_WORLD_PHOTO_FLOORPLAN_EVIDENCE=on the band is replaced by per-pixel floor evidence
+(`build_homography_raster(floor_evidence=True)`, `photo_floorplan_evidence`)."""
 
 MIN_FRAME_PITCH_DEG = 15.0
 """A frame is "downward-looking" if its optical axis is at least this far
@@ -651,7 +653,10 @@ class PhotoFrame:
     (optional) are the solve's 3-D points this keyframe observed inside its
     own bottom-40% band, in the output frame (the per-frame pose gate), and
     `check_points_uv` (optional, same order) their observed pixel positions AT
-    THE SAMPLE SIZE (the furniture mask)."""
+    THE SAMPLE SIZE (the furniture mask). `floor_evidence` (optional, (h, w) bool at
+    the sample size) is read only by the warp's floor-evidence mode
+    (`photo_floorplan_evidence`): True where this frame has positive evidence that the
+    pixel sees the floor plane."""
 
     kid: str
     position_xyz: tuple
@@ -665,6 +670,7 @@ class PhotoFrame:
     order: int = 0
     check_points_xyz: np.ndarray = None
     check_points_uv: np.ndarray = None
+    floor_evidence: np.ndarray = None
 
 
 def _furniture_blocks(frame, n, d, h_med, h_px, w_px, block_px, above_tol_frac):
@@ -1199,10 +1205,18 @@ def build_homography_raster(*, origin_xyz, up_xyz, forward_xyz, bounds_xy, plane
                             furniture_mask: bool = FURNITURE_MASK_DEFAULT,
                             furniture_above_tol_frac: float = FURNITURE_ABOVE_TOL_FRAC,
                             furniture_block_px: int = FURNITURE_BLOCK_PX,
+                            floor_evidence: bool = False,
                             check=None) -> RasterResult:
     """One component's RGBA raster by warping the bottom band of each frame
     onto `plane`. Same basis, bounds, orientation and alpha rules as
-    `build_raster`; `origin_xyz` is carried, not used (see `build_raster`)."""
+    `build_raster`; `origin_xyz` is carried, not used (see `build_raster`).
+
+    `floor_evidence` (default False = the fixed band, exactly as before): the band is
+    replaced by each frame's own `PhotoFrame.floor_evidence` -- a cell is sampled only
+    where the frame's nearest sample pixel has positive floor evidence, anywhere in the
+    image; a frame without evidence contributes nothing. Every other gate (pitch,
+    horizon, incidence, range, pose check, bounds) and the opacity / multi-view rules
+    are unchanged."""
     width = max(1, min(int(width), MAX_DIM))
     height = max(1, min(int(height), MAX_DIM))
     up = _unit(up_xyz)
@@ -1286,6 +1300,13 @@ def build_homography_raster(*, origin_xyz, up_xyz, forward_xyz, bounds_xy, plane
         fwd_c, right_c, down_c = _frame_axes(fr.forward_xyz, fr.up_xyz)
         cam = np.asarray(fr.position_xyz, dtype=np.float64)
         v_top = (1.0 - lower_fraction) * h_px - 0.5   # the band's upper pixel edge
+        evidence = None
+        if floor_evidence:
+            evidence = (None if fr.floor_evidence is None
+                        else np.asarray(fr.floor_evidence, dtype=bool))
+            if evidence is None or evidence.shape != (h_px, w_px) or not evidence.any():
+                _reject("no floor evidence")
+                continue
 
         # Footprint bbox: the range disc, tightened by the band's corner hits
         # when all four corners hit the plane (the footprint is then the
@@ -1294,8 +1315,8 @@ def build_homography_raster(*, origin_xyz, up_xyz, forward_xyz, bounds_xy, plane
         lo_x, hi_x = cx_c - max_range, cx_c + max_range
         lo_y, hi_y = cy_c - max_range, cy_c + max_range
         corners = [(-0.5, v_top), (w_px - 0.5, v_top), (-0.5, h_px - 0.5), (w_px - 0.5, h_px - 0.5)]
-        hits = []
-        for (cu, cv) in corners:
+        hits = [] if evidence is None else None
+        for (cu, cv) in (corners if evidence is None else ()):
             ray = ((cu - fr.cx) / fr.fx) * right_c + ((cv - fr.cy) / fr.fy) * down_c + fwd_c
             den = float(n @ ray)
             if den >= -EPS:
@@ -1311,8 +1332,12 @@ def build_homography_raster(*, origin_xyz, up_xyz, forward_xyz, bounds_xy, plane
 
         # Forward-map the band's own pixels once, only to REPORT how much of
         # the band lands outside the padded bounds (structural in the inverse
-        # warp below: such a hit has no cell).
-        bv, bu = np.mgrid[int(math.ceil(v_top)):h_px, 0:w_px]
+        # warp below: such a hit has no cell). In evidence mode the "band" is
+        # the evidence pixels, and their hits also bound the footprint.
+        if evidence is None:
+            bv, bu = np.mgrid[int(math.ceil(v_top)):h_px, 0:w_px]
+        else:
+            bv, bu = np.nonzero(evidence)
         rays = (((bu - fr.cx) / fr.fx)[..., None] * right_c + ((bv - fr.cy) / fr.fy)[..., None]
                 * down_c + fwd_c)
         den = rays @ n
@@ -1323,6 +1348,22 @@ def build_homography_raster(*, origin_xyz, up_xyz, forward_xyz, bounds_xy, plane
         band_pixels += int(hit.sum())
         band_pixels_outside_bounds += int((hit & ((hpx < min_x) | (hpx > max_x) |
                                                   (hpy < min_y) | (hpy > max_y))).sum())
+        if evidence is not None:
+            # A cell is sampled from its NEAREST pixel, so the footprint reaches half a
+            # pixel's floor footprint past each evidence pixel centre: at most
+            # dist / f, stretched <= 1 / cos(MAX_INCIDENCE) (3.9x at 75 deg). Pad by
+            # that (plus two cells), so the bbox never clips an admissible cell.
+            dist = t * np.linalg.norm(rays, axis=-1)
+            reach = hit & (dist <= max_range * 1.05)
+            if not reach.any():
+                _reject("no floor evidence")
+                continue
+            pad = (0.5 * float(dist[reach].max()) / max(min(fr.fx, fr.fy), EPS)
+                   / max(cos_incidence, 0.05) + 2.0 * max(step_x, step_y))
+            lo_x = max(lo_x, float(hpx[reach].min()) - pad)
+            hi_x = min(hi_x, float(hpx[reach].max()) + pad)
+            lo_y = max(lo_y, float(hpy[reach].min()) - pad)
+            hi_y = min(hi_y, float(hpy[reach].max()) + pad)
 
         if hi_x < min_x or lo_x > max_x or hi_y < min_y or lo_y > max_y:
             _reject("footprint outside the padded bounds")
@@ -1349,13 +1390,22 @@ def build_homography_raster(*, origin_xyz, up_xyz, forward_xyz, bounds_xy, plane
         uu = fr.fx * xc / safe_z + fr.cx
         vv = fr.fy * yc / safe_z + fr.cy
         in_image = front & (uu >= -0.5) & (uu <= w_px - 0.5) & (vv >= -0.5) & (vv <= h_px - 0.5)
-        in_band = in_image & (vv >= v_top)
+        if evidence is None:
+            in_band = in_image & (vv >= v_top)
+            rejected_cells["upper_image"] += int((in_image & ~in_band).sum())
+        else:
+            # The cell's NEAREST sample pixel must carry floor evidence; the colour is
+            # still the bilinear sample, which at an evidence edge blends one pixel.
+            ui = np.clip(np.rint(uu), 0, w_px - 1).astype(np.int64)
+            vi = np.clip(np.rint(vv), 0, h_px - 1).astype(np.int64)
+            in_band = in_image & evidence[vi, ui]
+            rejected_cells["no_evidence"] = (rejected_cells.get("no_evidence", 0)
+                                             + int((in_image & ~in_band).sum()))
         dist = np.sqrt(xc * xc + yc * yc + zc * zc)   # the camera axes are orthonormal
         cos_inc = cam_h / np.maximum(dist, EPS)       # = sin(depression) for a plane hit
         horizon_ok = cos_inc >= sin_horizon
         incidence_ok = cos_inc >= cos_incidence
         range_ok = dist <= max_range
-        rejected_cells["upper_image"] += int((in_image & ~in_band).sum())
         rejected_cells["horizon"] += int((in_band & ~horizon_ok).sum())
         rejected_cells["incidence"] += int((in_band & horizon_ok & ~incidence_ok).sum())
         rejected_cells["range"] += int((in_band & horizon_ok & incidence_ok & ~range_ok).sum())
@@ -1406,6 +1456,7 @@ def build_homography_raster(*, origin_xyz, up_xyz, forward_xyz, bounds_xy, plane
         "single_view_grazing_cells": int(((count == 1) & (best_cos < grazing_cos_min)).sum()),
         "furniture_mask": bool(furniture_mask),
         "furniture_masked_blocks": masked_blocks,
+        **({"floor_evidence": True} if floor_evidence else {}),
         "band_pixels_hitting_plane": band_pixels,
         "band_pixels_outside_bounds": band_pixels_outside_bounds,
         "plane": dict(plane.stats),

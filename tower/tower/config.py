@@ -1082,6 +1082,20 @@ def world_photo_floorplan_method_setting() -> str:
     return WORLD_PHOTO_FLOORPLAN_METHODS[0]
 
 
+# Lane C (CX-GEN-C-FLOOR, manager 349): PER-PIXEL FLOOR EVIDENCE for the homography
+# method (`world_builder/photo_floorplan_evidence.py`). Exactly `on` replaces the fixed
+# bottom-40% band with pixels that have positive evidence of seeing the floor plane (the
+# live-depth cache where it hits, the frame's own sparse points elsewhere, minus vetoes and
+# transient masks); everything else stays gray. Any other value, including `1`/`true`, is
+# off: today's warp exactly, and nothing new is read.
+WORLD_PHOTO_FLOORPLAN_EVIDENCE_ENV = "TOWER_WORLD_PHOTO_FLOORPLAN_EVIDENCE"
+
+
+def world_photo_floorplan_evidence_setting() -> bool:
+    """True only when TOWER_WORLD_PHOTO_FLOORPLAN_EVIDENCE is exactly `on`."""
+    return os.environ.get(WORLD_PHOTO_FLOORPLAN_EVIDENCE_ENV) == "on"
+
+
 WORLD_FINAL_SCALE_GUARD_ENV = "TOWER_WORLD_FINAL_SCALE_GUARD"
 WORLD_FINAL_SCALE_GUARD_OFF = "off"
 WORLD_FINAL_SCALE_GUARD_SHADOW = "shadow"
