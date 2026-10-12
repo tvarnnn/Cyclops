@@ -1148,6 +1148,16 @@ def world_photo_floorplan_diagnostics_setting() -> bool:
     return os.environ.get(WORLD_PHOTO_FLOORPLAN_DIAGNOSTICS_ENV) == "on"
 
 
+# Floor-confirmed multi-level components publish a dated gray tile instead of a
+# known-wrong single-plane photo. Default OFF preserves the existing landing bytes.
+WORLD_PHOTO_FLOORPLAN_MULTILEVEL_GRAY_ENV = "TOWER_WORLD_PHOTO_FLOORPLAN_MULTILEVEL_GRAY"
+
+
+def world_photo_floorplan_multilevel_gray_setting() -> bool:
+    """True only when TOWER_WORLD_PHOTO_FLOORPLAN_MULTILEVEL_GRAY is exactly `on`."""
+    return os.environ.get(WORLD_PHOTO_FLOORPLAN_MULTILEVEL_GRAY_ENV) == "on"
+
+
 WORLD_FINAL_SCALE_GUARD_ENV = "TOWER_WORLD_FINAL_SCALE_GUARD"
 WORLD_FINAL_SCALE_GUARD_OFF = "off"
 WORLD_FINAL_SCALE_GUARD_SHADOW = "shadow"
