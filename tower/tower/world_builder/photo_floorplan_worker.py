@@ -50,6 +50,7 @@ import hashlib
 import io
 import json
 import logging
+import math
 import os
 import threading
 import time
@@ -118,6 +119,54 @@ prior plan stays, with its prior date -- if any component it shares (same
 component's published opaque fraction (when that was at least 2%), unless the
 new fraction is at least 2% and its opaque raster area has not fallen. A tile
 is never kept across landings piecemeal: a new solve changes the receipt basis."""
+
+
+REGRESS_V2_MIN_RETAINED = 0.5
+REGRESS_V2_MIN_SHARED = PLANE_REUSE_MIN_SHARED
+REGRESS_V2_MAX_RESID_FRAC = 0.25
+REGRESS_V2_MIN_AGREE = 0.5
+REGRESS_V2_MIN_COMMON_SHARE = 0.25
+REGRESS_V2_MAX_CELLS = 65536
+REGRESS_V2_MAX_DILATE_CELLS = 8
+REGRESS_V2_EXTENT_GROWTH = 1.5
+REGRESS_V2_EXTENT_MIN_NOVEL = 10
+REGRESS_V2_EXTENT_NOVEL_MARGIN_FRAC = 0.5
+REGRESS_V2_EXTENT_MIN_NET = 1.0
+REGRESS_V2_ESCAPE_AFTER = REGRESS_MAX_CONSECUTIVE_SKIPS
+REGRESS_V2_ESCAPE_MIN_PROJECTED = 8
+REGRESS_V2_ESCAPE_PLANE_SOURCES = ("estimated", "reused_sim3")
+REGRESS_V2_MAX_FROZEN_S = 300.0
+"""NEVER-REGRESS GUARD V2 (TOWER_WORLD_PHOTO_FLOORPLAN_REGRESS_V2, exactly `on`; brief
+CX-GEN-B-REGRESS, audit item 5). Each live solve has its own gauge, so neither an opaque
+FRACTION (it falls whenever the camera square grows) nor an opaque AREA in solve units
+(e2e6: 1,019 -> 146 between two good landings) compares two landings.
+
+COMMON FOOTPRINT. Per shared `reference_segment`, the Sim(3) prev -> new is fitted
+(Umeyama, as plane reuse does) on the camera positions of keyframes both landings placed
+(>= 10 shared; median residual <= 0.10 x the new camera height). Every opaque cell of the
+PUBLISHED raster is lifted onto its floor plane, carried into the new basis and looked
+up in the new raster (dilated by the residual, 1..8 cells). Over the published floor that
+falls inside the new raster square (the intersection):
+
+  retained = share of it the new landing still paints   (a cell-count ratio: scale-free)
+
+A landing is REGRESSED if retained < 0.5, i.e. it no longer shows half of the floor the
+phone already shows where both plans can show floor -- unless the extent GENUINELY
+changed: the camera hull grew >= 1.5x (both hulls in the new gauge, so the ratio is
+scale-free), >= 10 eligible keyframes stand outside the old hull by > 0.5 camera heights,
+and the supported floor did not shrink (net = new area / (s^2 x published area) >= 1).
+Without a usable common footprint (no footprint, < 10 shared keyframes, a large residual,
+no camera height, < 25% of the published floor inside the new square) the component falls
+back to the legacy rule above, so V2 is never more permissive than today blind.
+
+ESCAPE. After 3 consecutive regressed skips a regressed landing publishes only if every
+regressed component meets a floor of its own -- a plane that is estimated or reused (not
+the camera-drop fallback), >= 8 projected keyframes, >= 2% opaque -- or its footprint
+genuinely grew (growth + novel keyframes, >= 2% opaque). Otherwise it is skipped as
+STALLED. The freeze is bounded: once the plan has been held for 300 s since the first
+regressed skip, the next landing with usable floor (plane ok, >= 2% opaque in every
+regressed component) publishes. A blank landing never publishes (e2e4). Every V2
+decision is logged and kept in `outcomes`."""
 
 
 class LandingSkipped(Exception):
@@ -629,8 +678,10 @@ def read_landing_arrays(solve_dir: Path, solution_stat, solution_meta, check=Non
 
 
 def build_landing(root, world_id, session_id, receipt, eligible, tree, solution_stat,
-                  method=METHOD_HOMOGRAPHY, check=None, plane_memory=None):
-    """(manifest block, {digest: (bytes, mime)}, per-component stats) for one landing."""
+                  method=METHOD_HOMOGRAPHY, check=None, plane_memory=None, footprints=None):
+    """(manifest block, {digest: (bytes, mime)}, per-component stats) for one landing.
+
+    `footprints` (V2 only): a dict filled with {reference_segment: Footprint}."""
     solve_dir = Path(root) / "worlds" / world_id / "solve" / session_id
     solution = tree["solution"]
     camera = solution.get("camera")
@@ -656,11 +707,12 @@ def build_landing(root, world_id, session_id, receipt, eligible, tree, solution_
             check()
         ref = rc["reference_segment"]
         entries = by_ref.get(ref, [])
+        plane = None
         if method == METHOD_DEPTH:
             result, cstats = depth_component(receipt_component=rc, entries=entries,
                                              cache=cache, solve=solve, check=check)
         else:
-            result, _, _, cstats = homography_component(
+            result, plane, _, cstats = homography_component(
                 receipt_component=rc, entries=entries, tree=tree, arrays=arrays,
                 keyframe_index=keyframe_index, camera=camera,
                 images_dir=solve_dir / "images", check=check,
@@ -668,6 +720,8 @@ def build_landing(root, world_id, session_id, receipt, eligible, tree, solution_
                               if plane_memory is not None else None))
         if check is not None:
             check()
+        if footprints is not None:
+            footprints[ref] = footprint_of(result, entries, plane, rc)
         t_encode = time.perf_counter()
         tile = encode_tile(result.rgba)
         cstats.setdefault("ms", {})["encode"] = round((time.perf_counter() - t_encode) * 1000.0, 1)
@@ -819,6 +873,270 @@ def regression(prior, stats, prior_area=None):
     return ""
 
 
+@dataclasses.dataclass
+class Footprint:
+    """One component's painted floor, in its own solve gauge (V2 only)."""
+    positions: dict          # kid -> camera position (output frame) of the eligible keyframes
+    up_xyz: tuple
+    forward_xyz: tuple
+    raster_bounds_xy: tuple  # the padded square the raster covers
+    opaque: np.ndarray       # bool (height, width); row = right index, col = forward index
+    plane_normal: tuple = None
+    plane_offset: float = None
+    camera_height: float = None
+    origin_xyz: tuple = None
+
+
+def footprint_of(result, entries, plane, receipt_component):
+    """The V2 footprint of one built component (None if it cannot be described)."""
+    try:
+        ok = plane is not None and plane.ok
+        height = float(plane.stats.get("camera_height_median") or 0.0) if ok else 0.0
+        return Footprint(
+            positions={e[0]: np.asarray(e[1], np.float64) for e in entries},
+            up_xyz=tuple(float(v) for v in receipt_component["up_xyz"]),
+            forward_xyz=tuple(float(v) for v in receipt_component["forward_xyz"]),
+            raster_bounds_xy=tuple(float(v) for v in result.raster_bounds_xy),
+            opaque=np.asarray(result.rgba)[:, :, 3] > 0,
+            plane_normal=tuple(float(v) for v in plane.normal) if ok else None,
+            plane_offset=float(plane.offset) if ok else None,
+            camera_height=height if np.isfinite(height) and height > 0 else None,
+            origin_xyz=tuple(float(v) for v in receipt_component["origin_xyz"]))
+    except (AttributeError, KeyError, TypeError, ValueError, IndexError):
+        return None
+
+
+def _basis(fp):
+    up = np.asarray(fp.up_xyz, np.float64)
+    forward = np.asarray(fp.forward_xyz, np.float64)
+    up, forward = up / np.linalg.norm(up), forward / np.linalg.norm(forward)
+    right = np.cross(forward, up)
+    return up, forward, right / np.linalg.norm(right)
+
+
+def _grid(fp):
+    h, w = fp.opaque.shape
+    x0, y0, x1, y1 = fp.raster_bounds_xy
+    return x0, y0, (x1 - x0) / max(w - 1, 1), (y1 - y0) / max(h - 1, 1), w, h
+
+
+def _cells_to_floor(fp, rows, cols):
+    """3-D floor points (own gauge) of raster cells: on the plane, else at the origin height."""
+    up, forward, right = _basis(fp)
+    x0, y0, sx, sy, _, _ = _grid(fp)
+    x = x0 + cols * sx
+    y = y0 + rows * sy
+    if fp.plane_normal is not None:
+        n = np.asarray(fp.plane_normal, np.float64)
+        n_up = float(n @ up)
+        if n_up > 0.1:
+            bx = forward - (float(n @ forward) / n_up) * up
+            by = right - (float(n @ right) / n_up) * up
+            p0 = -(float(fp.plane_offset) / n_up) * up
+            return x[:, None] * bx + y[:, None] * by + p0
+    z = float(np.asarray(fp.origin_xyz or (0.0, 0.0, 0.0), np.float64) @ up)
+    return x[:, None] * forward + y[:, None] * right + z * up
+
+
+def _hull_area(xy):
+    import cv2
+
+    if len(xy) < 3:
+        return 0.0, None
+    hull = cv2.convexHull(np.asarray(xy, np.float32).reshape(-1, 1, 2))
+    return float(cv2.contourArea(hull)), hull
+
+
+def robust_sim3(src, dst, tol, min_inliers=REGRESS_V2_MIN_SHARED):
+    """Sim(3) src -> dst fitted on the keyframes the two solves AGREE on: a trimmed refit
+    (best half), then the inliers within `tol`, refitted. A new loop that bends part of
+    the trajectory (e2e5 kf 520: median 8.6 keyframe steps over all shared, 0.56 over
+    the consistent majority) then does not hide the part that is unchanged.
+    Returns (s, R, t, inlier mask, residuals) or None."""
+    s, R, t = _umeyama(src, dst)
+    for _ in range(3):
+        if not np.isfinite(s) or s <= 0:
+            return None
+        r = np.linalg.norm((s * (R @ src.T)).T + t - dst, axis=1)
+        keep = r <= max(float(np.median(r)), tol)
+        if int(keep.sum()) < min_inliers:
+            return None
+        s, R, t = _umeyama(src[keep], dst[keep])
+    if not np.isfinite(s) or s <= 0:
+        return None
+    r = np.linalg.norm((s * (R @ src.T)).T + t - dst, axis=1)
+    return s, R, t, r <= tol, r
+
+
+def compare_footprints(prev, new):
+    """The scale-free common-footprint comparison of a published and a new component.
+
+    Returns a record; `basis` is "common" when it holds, else "legacy: <why>"."""
+    import cv2
+    from scipy.spatial import cKDTree
+
+    if prev is None or new is None:
+        return {"basis": "legacy: no footprint"}
+    shared = [k for k in prev.positions if k in new.positions]
+    if len(shared) < REGRESS_V2_MIN_SHARED:
+        return {"basis": f"legacy: {len(shared)} shared keyframes", "shared": len(shared)}
+    gauge = new.camera_height
+    if gauge is None:
+        return {"basis": "legacy: no camera height", "shared": len(shared)}
+    src = np.stack([prev.positions[k] for k in shared])
+    dst = np.stack([new.positions[k] for k in shared])
+    fit = robust_sim3(src, dst, REGRESS_V2_MAX_RESID_FRAC * gauge)
+    if fit is None:
+        return {"basis": "legacy: no consistent Sim(3)", "shared": len(shared)}
+    s, R, t, inlier, resid_all = fit
+    rec = {"shared": len(shared), "scale": round(float(s), 4),
+           "agree": round(float(inlier.mean()), 3)}
+    if int(inlier.sum()) < REGRESS_V2_MIN_SHARED or inlier.mean() < REGRESS_V2_MIN_AGREE:
+        return {**rec, "basis": f"legacy: {int(inlier.sum())} of {len(shared)} shared "
+                                f"keyframes agree within {REGRESS_V2_MAX_RESID_FRAC} h"}
+    resid = float(np.median(resid_all[inlier]))
+    rec["resid_h"] = round(resid / gauge, 4)
+    up_p, fwd_p, right_p = _basis(prev)
+    up_n, fwd_n, right_n = _basis(new)
+    nx0, ny0, nsx, nsy, nw, nh = _grid(new)
+    rows, cols = np.nonzero(prev.opaque)
+    if len(rows) == 0:
+        return {**rec, "basis": "legacy: published component unpainted"}
+    if len(rows) > REGRESS_V2_MAX_CELLS:   # a deterministic, uniform subsample
+        pick = np.linspace(0, len(rows) - 1, REGRESS_V2_MAX_CELLS).astype(np.int64)
+        rows, cols = rows[pick], cols[pick]
+    floor_prev = _cells_to_floor(prev, rows, cols)
+    # The common footprint: published floor whose nearest published camera is one both
+    # solves agree on, and that lies inside the new raster square.
+    kids = list(prev.positions)
+    cams = np.stack([prev.positions[k] for k in kids])
+    owner = cKDTree(np.c_[cams @ fwd_p, cams @ right_p]).query(
+        np.c_[floor_prev @ fwd_p, floor_prev @ right_p])[1]
+    agreed = {k for k, ok in zip(shared, inlier) if ok}
+    owned = np.array([k in agreed for k in kids])[owner]
+    floor = (s * (R @ floor_prev.T)).T + t
+    cn = (floor @ fwd_n - nx0) / nsx
+    rn = (floor @ right_n - ny0) / nsy
+    inside = owned & (cn >= -0.5) & (cn <= nw - 0.5) & (rn >= -0.5) & (rn <= nh - 0.5)
+    common = int(inside.sum())
+    rec["common_share"] = round(common / len(rows), 4)
+    if rec["common_share"] < REGRESS_V2_MIN_COMMON_SHARE:
+        return {**rec, "basis": f"legacy: common footprint {rec['common_share']:.2f} of the "
+                                "published floor"}
+    k = int(min(REGRESS_V2_MAX_DILATE_CELLS, max(1, math.ceil(resid / min(nsx, nsy)))))
+    painted = cv2.dilate(new.opaque.astype(np.uint8), np.ones((2 * k + 1, 2 * k + 1), np.uint8)) > 0
+    ri = np.clip(np.rint(rn[inside]).astype(int), 0, nh - 1)
+    ci = np.clip(np.rint(cn[inside]).astype(int), 0, nw - 1)
+    rec["retained"] = round(float(painted[ri, ci].mean()), 4)
+    rec["dilate_cells"] = k
+    # Extent: both camera hulls in the NEW gauge, so their ratio is scale-free.
+    prev_xy_3d = (s * (R @ np.stack(list(prev.positions.values())).T)).T + t
+    prev_xy = np.c_[prev_xy_3d @ fwd_n, prev_xy_3d @ right_n]
+    new_pts = np.stack(list(new.positions.values()))
+    new_xy = np.c_[new_pts @ fwd_n, new_pts @ right_n]
+    prev_hull_area, prev_hull = _hull_area(prev_xy)
+    new_hull_area, _ = _hull_area(new_xy)
+    rec["growth"] = round(new_hull_area / max(prev_hull_area, gauge * gauge), 3)
+    margin = REGRESS_V2_EXTENT_NOVEL_MARGIN_FRAC * gauge
+    if prev_hull is None:
+        novel = len(new_xy)
+    else:
+        novel = sum(cv2.pointPolygonTest(prev_hull, (float(x), float(y)), True) < -margin
+                    for x, y in new_xy)
+    rec["novel_keyframes"] = int(novel)
+    rec["footprint_grew"] = bool(rec["growth"] >= REGRESS_V2_EXTENT_GROWTH
+                                 and novel >= REGRESS_V2_EXTENT_MIN_NOVEL)
+    rec["basis"] = "common"
+    rec["_scale"] = float(s)
+    return rec
+
+
+def _plane_source(c):
+    if not c.get("plane_ok"):
+        return None
+    return (c.get("plane") or {}).get("source") or "estimated"
+
+
+def regress_v2_assess(published_fraction, published_area, published_footprints, stats,
+                      footprints):
+    """Per shared component: the V2 record (see REGRESS_V2_MIN_RETAINED). Pure."""
+    records = []
+    now_fraction, now_area = opaque_by_ref(stats), opaque_area_by_ref(stats)
+    by_ref = {c.get("reference_segment"): c for c in stats or ()}
+    for ref, now in sorted(now_fraction.items()):
+        before = (published_fraction or {}).get(ref)
+        if before is None:
+            continue   # a NEW component never blocks
+        rec = {"ref": ref, "fraction": round(now, 4), "published_fraction": round(before, 4)}
+        if before < REGRESS_MIN_PRIOR_OPAQUE:
+            records.append({**rec, "basis": "none: published component unpainted",
+                            "regressed": False})
+            continue
+        rec.update(compare_footprints((published_footprints or {}).get(ref),
+                                      (footprints or {}).get(ref)))
+        scale = rec.pop("_scale", None)
+        if rec["basis"] == "common":
+            prior_area = (published_area or {}).get(ref)
+            net = (now_area[ref] / (scale * scale * prior_area)
+                   if ref in now_area and prior_area else None)
+            rec["net"] = round(net, 3) if net is not None else None
+            rec["extent_change"] = bool(rec["footprint_grew"] and net is not None
+                                        and net >= REGRESS_V2_EXTENT_MIN_NET)
+            rec["regressed"] = bool(rec["retained"] < REGRESS_V2_MIN_RETAINED
+                                    and not rec["extent_change"])
+            if rec["regressed"]:
+                rec["why"] = (f"ref {ref}: retained {rec['retained']:.2f} < "
+                              f"{REGRESS_V2_MIN_RETAINED} of the published floor on the common "
+                              f"footprint")
+        else:
+            legacy = regression({ref: before}, [{"reference_segment": ref,
+                                                 "opaque_fraction": now,
+                                                 "opaque_area": now_area.get(ref)}],
+                                {ref: published_area[ref]}
+                                if published_area and ref in published_area else None)
+            rec["regressed"] = bool(legacy)
+            if legacy:
+                rec["why"] = legacy
+        c = by_ref.get(ref, {})
+        rec["projected"] = c.get("projected_keyframes")
+        rec["plane_source"] = _plane_source(c)
+        records.append(rec)
+    return records
+
+
+def regress_v2_escape(records, stats):
+    """('escape' | 'stalled', why) for a regressed landing past the skip count."""
+    by_ref = {c.get("reference_segment"): c for c in stats or ()}
+    failures = []
+    for rec in records:
+        if not rec.get("regressed"):
+            continue
+        c = by_ref.get(rec["ref"], {})
+        fraction = float(c.get("opaque_fraction") or 0.0)
+        if fraction < REGRESS_MIN_PRIOR_OPAQUE:
+            failures.append(f"ref {rec['ref']}: opaque {fraction:.3f} < {REGRESS_MIN_PRIOR_OPAQUE}")
+            continue
+        if rec.get("footprint_grew"):
+            continue
+        source = _plane_source(c)
+        projected = int(c.get("projected_keyframes") or 0)
+        if source not in REGRESS_V2_ESCAPE_PLANE_SOURCES:
+            failures.append(f"ref {rec['ref']}: plane {source or 'none'}")
+        elif projected < REGRESS_V2_ESCAPE_MIN_PROJECTED:
+            failures.append(f"ref {rec['ref']}: projected {projected} < "
+                            f"{REGRESS_V2_ESCAPE_MIN_PROJECTED}")
+    return ("stalled", "; ".join(failures)) if failures else ("escape", "quality floor met")
+
+
+def regress_v2_usable(records, stats):
+    """The freeze bound's bare floor: every regressed component has a plane and >= 2% opaque."""
+    by_ref = {c.get("reference_segment"): c for c in stats or ()}
+    return all(by_ref.get(r["ref"], {}).get("plane_ok")
+               and float(by_ref.get(r["ref"], {}).get("opaque_fraction") or 0.0)
+               >= REGRESS_MIN_PRIOR_OPAQUE
+               for r in records if r.get("regressed"))
+
+
 def component_summary(stats):
     """One compact JSON line per landing for the disposition log: a live run must never
     be blind again (e2e2: three `ok` landings that projected nothing, with no clue why)."""
@@ -847,10 +1165,16 @@ class PhotoFloorplanWorker:
     """One daemon builds each newly published coverage landing's photo plan."""
 
     def __init__(self, root, *, latest=None, state=None, method=None,
-                 wall_cap_s=LANDING_WALL_CAP_S, build=None):
+                 wall_cap_s=LANDING_WALL_CAP_S, build=None, regress_v2=None,
+                 clock=time.monotonic):
         if method is None:
             from tower.config import world_photo_floorplan_method_setting
             method = world_photo_floorplan_method_setting()
+        if regress_v2 is None:
+            from tower.config import world_photo_floorplan_regress_v2_setting
+            regress_v2 = world_photo_floorplan_regress_v2_setting()
+        self.regress_v2 = bool(regress_v2)
+        self._clock = clock
         self.root = root
         self.method = method
         self.wall_cap_s = float(wall_cap_s)
@@ -858,7 +1182,9 @@ class PhotoFloorplanWorker:
         self._state = state if state is not None else state_for(root)
         self._build = build or build_landing
         import inspect
-        self._build_takes_memory = "plane_memory" in inspect.signature(self._build).parameters
+        params = inspect.signature(self._build).parameters
+        self._build_takes_memory = "plane_memory" in params
+        self._build_takes_footprints = "footprints" in params
         self._stop = threading.Event()
         self._condition = threading.Condition()
         self._jobs = OrderedDict()
@@ -868,6 +1194,8 @@ class PhotoFloorplanWorker:
         self._published_opaque = {}   # (world, session) -> {reference_segment: opaque}
         self._published_opaque_area = {}  # (world, session) -> {reference_segment: area}
         self._regress_streak = {}     # (world, session) -> consecutive regressed skips
+        self._published_footprints = {}   # V2: (world, session) -> {reference_segment: Footprint}
+        self._frozen_since = {}           # V2: (world, session) -> clock() at the first regressed skip
         self._thread = threading.Thread(target=self._run, name="world-photo-floorplan",
                                         daemon=True)
         self._thread.start()
@@ -931,6 +1259,45 @@ class PhotoFloorplanWorker:
                 if not more:
                     self._state.finish(*pair)
 
+    def _v2_holds(self, pair, v2, stats):
+        """The V2 decision for an otherwise publishable landing (under the condition lock).
+        True: skip it (`v2["disposition"]` says why). False: publish (`v2["decision"]`)."""
+        records = v2["components"]
+        regressed = [r for r in records if r.get("regressed")]
+        if not regressed:
+            return False
+        why = "; ".join(r.get("why", f"ref {r['ref']}") for r in regressed)
+        v2["why"] = why
+        now = self._clock()
+        since = self._frozen_since.get(pair)
+        frozen = 0.0 if since is None else now - since
+        v2["frozen_s"] = round(frozen, 1)
+        streak = self._regress_streak.get(pair, 0)
+        if streak >= REGRESS_V2_ESCAPE_AFTER:
+            verdict, detail = regress_v2_escape(records, stats)
+            if verdict == "escape":
+                v2["decision"], v2["why"] = "escape", f"{why}; {detail}"
+                return False
+        if frozen >= REGRESS_V2_MAX_FROZEN_S and regress_v2_usable(records, stats):
+            v2["decision"] = "freeze-bound"
+            v2["why"] = f"{why}; held {frozen:.0f} s >= {REGRESS_V2_MAX_FROZEN_S:.0f} s"
+            return False
+        if since is None:
+            self._frozen_since[pair] = now
+        self._regress_streak[pair] = streak + 1
+        if streak >= REGRESS_V2_ESCAPE_AFTER:
+            v2["decision"], v2["stalled"] = "stalled", detail
+            v2["disposition"] = (f"skipped: regressed, stalled ({why}; {streak + 1} skips, "
+                                 f"held {frozen:.0f} s; escape refused: {detail})")
+            logger.warning("world photo floorplan: plan STALLED for world=%s session=%s: %d "
+                           "regressed skips, held %.0f s (bound %.0f s): %s", pair[0], pair[1],
+                           streak + 1, frozen, REGRESS_V2_MAX_FROZEN_S, detail)
+        else:
+            v2["decision"] = "skip"
+            v2["disposition"] = (f"skipped: regressed ({why}; "
+                                 f"{streak + 1}/{REGRESS_V2_ESCAPE_AFTER})")
+        return True
+
     def _one(self, pair, job, cancel):
         started = time.monotonic()
         deadline = started + self.wall_cap_s
@@ -952,6 +1319,9 @@ class PhotoFloorplanWorker:
                 kwargs = {"plane_memory": trial}
             else:
                 kwargs = {}
+            footprints = None
+            if self.regress_v2 and self._build_takes_footprints:
+                footprints = kwargs["footprints"] = {}
             block, tiles, stats = self._build(self.root, job["world_id"], job["session_id"],
                                               receipt, job["eligible"], job["tree"],
                                               job["solution_stat"], method=self.method,
@@ -963,6 +1333,15 @@ class PhotoFloorplanWorker:
             logger.exception("world photo floorplan: build failed")
             disposition = f"failed: {type(exc).__name__}: {exc}"
         elapsed_ms = (time.monotonic() - started) * 1000.0
+        v2 = None
+        if disposition == "ok" and self.regress_v2:
+            # Pure, and on this worker thread -- the only writer of the published baseline --
+            # so it runs before the lock is taken.
+            v2 = {"decision": "publish",
+                  "components": regress_v2_assess(self._published_opaque.get(pair),
+                                                  self._published_opaque_area.get(pair),
+                                                  self._published_footprints.get(pair),
+                                                  stats, footprints)}
         if disposition == "ok":
             with self._condition:
                 current = self._latest(*pair) if self._latest is not None else receipt
@@ -972,8 +1351,11 @@ class PhotoFloorplanWorker:
                     disposition = "skipped: superseded by a newer coverage landing"
                 elif time.monotonic() - started > self.wall_cap_s:
                     disposition = f"skipped: exceeded the {self.wall_cap_s:.1f} s wall cap"
-                elif ((regressed := regression(self._published_opaque.get(pair), stats,
-                                               self._published_opaque_area.get(pair)))
+                elif v2 is not None and self._v2_holds(pair, v2, stats):
+                    disposition = v2["disposition"]
+                elif v2 is None and ((regressed := regression(
+                        self._published_opaque.get(pair), stats,
+                        self._published_opaque_area.get(pair)))
                       and self._regress_streak.get(pair, 0) < REGRESS_MAX_CONSECUTIVE_SKIPS):
                     self._regress_streak[pair] = self._regress_streak.get(pair, 0) + 1
                     disposition = (f"skipped: regressed ({regressed}; "
@@ -986,14 +1368,34 @@ class PhotoFloorplanWorker:
                         self._plane_memory[pair] = trial
                     self._published_opaque[pair] = opaque_by_ref(stats)
                     self._published_opaque_area[pair] = opaque_area_by_ref(stats)
-                    if regressed:
+                    if v2 is not None:
+                        self._published_footprints[pair] = dict(footprints or {})
+                        self._frozen_since.pop(pair, None)
+                        if v2["decision"] in ("escape", "freeze-bound"):
+                            logger.warning("world photo floorplan: publishing a regressed landing "
+                                           "after %d consecutive skips (%s: %s)",
+                                           self._regress_streak.get(pair, 0), v2["decision"],
+                                           v2.get("why"))
+                    elif regressed:
                         logger.warning("world photo floorplan: publishing a regressed landing after %d "
                                        "consecutive skips (escape valve): %s",
                                        self._regress_streak.get(pair, 0), regressed)
                     self._regress_streak[pair] = 0
-        self.outcomes = {**self.outcomes, pair: {"identity": identity, "disposition": disposition,
-                                                 "elapsed_ms": round(elapsed_ms, 1),
-                                                 "components": stats}}
+        outcome = {"identity": identity, "disposition": disposition,
+                   "elapsed_ms": round(elapsed_ms, 1), "components": stats}
+        if self.regress_v2:
+            if v2 is None:
+                v2 = {"decision": "not assessed", "components": []}
+            elif disposition != "ok" and v2["decision"] in ("publish", "escape", "freeze-bound"):
+                # superseded, cancelled, wall cap or never re-dated after the V2 verdict
+                v2["decision"] = f"not published (V2 said {v2['decision']})"
+            outcome["regress_v2"] = v2
+            logger.info("world photo floorplan regress-v2: world=%s session=%s landing=%r "
+                        "decision=%s streak=%d frozen_s=%s components=%s", pair[0], pair[1],
+                        identity, v2["decision"], self._regress_streak.get(pair, 0),
+                        v2.get("frozen_s"), json.dumps(v2["components"], separators=(",", ":"),
+                                                       default=str))
+        self.outcomes = {**self.outcomes, pair: outcome}
         log = logger.info if disposition == "ok" else logger.warning
         log("world photo floorplan: world=%s session=%s landing=%r method=%s elapsed_ms=%.1f "
             "disposition=%s components=%s", pair[0], pair[1], identity, self.method, elapsed_ms,

@@ -1082,6 +1082,20 @@ def world_photo_floorplan_method_setting() -> str:
     return WORLD_PHOTO_FLOORPLAN_METHODS[0]
 
 
+# Photo floor plan never-regress guard V2 (`photo_floorplan_worker.regress_v2_*`; brief
+# CX-GEN-B-REGRESS, audit item 5). Exactly `on` compares supported floor on the COMMON
+# footprint of the published and the new landing (Sim(3) over shared keyframes), records
+# extent changes, and replaces the unconditional 4th-landing publish with a conditional
+# escape plus a wall-clock freeze bound. Anything else -- unset, `1`, `true`, `ON` -- is
+# today's rule exactly (fraction < 25%, area exception, unconditional escape after 3 skips).
+WORLD_PHOTO_FLOORPLAN_REGRESS_V2_ENV = "TOWER_WORLD_PHOTO_FLOORPLAN_REGRESS_V2"
+
+
+def world_photo_floorplan_regress_v2_setting() -> bool:
+    """True only when TOWER_WORLD_PHOTO_FLOORPLAN_REGRESS_V2 is exactly `on`."""
+    return os.environ.get(WORLD_PHOTO_FLOORPLAN_REGRESS_V2_ENV) == "on"
+
+
 WORLD_FINAL_SCALE_GUARD_ENV = "TOWER_WORLD_FINAL_SCALE_GUARD"
 WORLD_FINAL_SCALE_GUARD_OFF = "off"
 WORLD_FINAL_SCALE_GUARD_SHADOW = "shadow"
