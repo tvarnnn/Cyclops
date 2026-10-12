@@ -249,8 +249,10 @@ def _finite_component(component):
             math.isfinite(component["cell_size"]) and component["cell_size"] > 0)
 
 
-_DIAL_MOTION_KEYFRAMES = 8
-_DIAL_MOTION_MIN_CELLS = 0.5
+# motion_sector is scale-free (walk 9 had scale unknown): the displacement over
+# H's newest 24 eligible keyframes (~5 s), null below 0.25 cell_size (manager 374).
+_DIAL_MOTION_KEYFRAMES = 24
+_DIAL_MOTION_MIN_CELLS = 0.25
 
 
 def _dial(components, eligible, bins, ids, check):

@@ -101,11 +101,26 @@ is an orientation anchor for the dial, and it carries no position. It is
 null when no eligible keyframe has a sector.
 
 **`motion_sector`** describes the floor-plane displacement from the oldest to
-the newest of H's newest 8 eligible keyframes. That displacement is projected
-onto H's `forward_xyz` and the right axis (forward × up), then binned exactly
-like a sector. It is null when H has fewer than 2 eligible keyframes, or when
-the displacement is shorter than `0.5 * cell_size` of H. The displacement
-itself is not published.
+the newest of H's newest 24 eligible keyframes (about 5 s of walking). That
+displacement is projected onto H's `forward_xyz` and the right axis (forward
+× up), then binned exactly like a sector. It is null when H has fewer than 2
+eligible keyframes, or when the displacement is shorter than
+`0.25 * cell_size` of H. The displacement itself is not published.
+
+The threshold is scale-free on purpose (manager 374): it is a fraction of the
+component's own cell, never metres, because a solve's metric scale can be
+unknown (walk 9). On the 19 real solve trees in the canonical world root,
+`motion_sector` is null on 5 of them. The S3 v1 rule (newest 8, `0.5 *
+cell_size`) was null on 15.
+
+Two known limits follow from being relative to the cell:
+- A component whose bounds are inflated by outlier placements always reads
+  null. On c81766a3, `bounds_xy` spans about 9e6 solve units, so `cell_size`
+  is about 1.1e6, while the walk displacement is 2.9. Its station grid is
+  just as degenerate.
+- A tiny component reports a direction from a tiny displacement. On
+  488ed621 the hero piece has 10 keyframes about 1 mm across; a 1.3 mm
+  displacement gives sector 6.
 
 **Budgets are unchanged.** Each tile is at most 16 KiB and 160 by 90 pixels.
 The imagery job has the same 80 ms budget, and if it is exceeded nothing is

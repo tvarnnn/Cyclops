@@ -191,18 +191,39 @@ def test_no_usable_forward_anywhere_has_no_latest():
     assert dial["reference_segment"] == 0
 
 
-@pytest.mark.parametrize("step, expected", [(0.26, 3), (0.24, None), (-0.26, 9)])
-def test_motion_threshold_is_half_a_cell_over_the_newest_eight(step, expected):
-    # cell_size 0.5 m: eight frames walking along +x (the right of +y) by
-    # `step` in total. An older far frame outside the newest eight is ignored.
-    walk = [(0, f"w{i}", (2 + step*i/7, 2), 0) for i in range(8)]
+@pytest.mark.parametrize("step, expected", [(0.13, 3), (0.12, None), (-0.13, 9)])
+def test_motion_threshold_is_a_quarter_cell_over_the_newest_24(step, expected):
+    # cell_size 0.5 m, so the threshold is 0.125 m: 24 frames walking along +x
+    # (the right of +y) by `step` in total. An older far frame, the 25th
+    # newest, is ignored (were it counted, 0.12 m would not be null).
+    walk = [(0, f"w{i:02d}", (2 + step*i/23, 2), 0) for i in range(24)]
     frames = ROOM + [(0, "old-far", (0, 4), 0)] + walk
     _, dial = _dial(_world(frames))
+    assert coverage._DIAL_MOTION_KEYFRAMES == 24
+    assert coverage._DIAL_MOTION_MIN_CELLS == 0.25
     assert dial["motion_sector"] == expected
 
 
+def test_motion_window_reaches_past_the_newest_eight():
+    # Walked 1 m right over 16 frames, then stood for 8: the 8-frame window
+    # of S3 v1 saw nothing; the ~5 s window still reports the walk.
+    walk = [(0, f"w{i:02d}", (1 + min(i, 15)/15, 2), 0) for i in range(24)]
+    _, dial = _dial(_world(ROOM + walk))
+    assert dial["motion_sector"] == 3
+
+
+def test_motion_is_scale_free():
+    # The same walk at 10x the scale gives the same answer: the threshold is
+    # a fraction of the component's own cell, never metres.
+    def run(scale):
+        room = [(0, "00", (0, 0), 0), (0, "01", (4*scale, 4*scale), 0)]
+        walk = [(0, f"w{i:02d}", ((2 + 0.13*i/23)*scale, 2*scale), 0) for i in range(24)]
+        return _dial(_world(room + walk))[1]["motion_sector"]
+    assert run(1) == run(10) == run(0.1) == 3
+
+
 def test_motion_needs_two_keyframes_and_is_null_when_standing():
-    _, dial = _dial(_world(ROOM + [(0, f"s{i}", (2, 2), 30*i) for i in range(8)]))
+    _, dial = _dial(_world(ROOM + [(0, f"s{i:02d}", (2, 2), 15*i) for i in range(24)]))
     assert dial["motion_sector"] is None
     entries = [("a", [0.0, 0.0, 0.0], UP, _ray(0))]
     component = {"reference_segment": 0, "stations": [], "forward_xyz": [0.0, 1.0, 0.0],
@@ -212,7 +233,7 @@ def test_motion_needs_two_keyframes_and_is_null_when_standing():
 
 
 def test_motion_forward_is_sector_zero():
-    walk = [(0, f"w{i}", (2, 1 + i/7), 0) for i in range(8)]
+    walk = [(0, f"w{i:02d}", (2, 1 + i/23), 0) for i in range(24)]
     _, dial = _dial(_world(ROOM + walk))
     assert dial["motion_sector"] == 0
 
