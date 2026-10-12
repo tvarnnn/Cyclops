@@ -374,7 +374,8 @@ def test_b2_worker_does_not_redate_on_rebuild(monkeypatch, tmp_path):
     calls = []
     published = []
 
-    def compute(root, world, session, expected, revision, clock, tag, budget, *, eligible_out=None):
+    def compute(root, world, session, expected, revision, clock, tag, budget, *, eligible_out=None,
+                dial_out=None):
         calls.append(expected[0])
         if eligible_out is not None:
             eligible_out.append(("s9:120", 0))

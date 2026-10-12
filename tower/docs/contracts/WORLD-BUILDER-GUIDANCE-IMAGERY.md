@@ -38,12 +38,89 @@ clears the strip immediately. B1 may change with any local rebuild.
 
 B2 receives only accepted in-horizon keyframes with coherent registered solve
 placement from the coverage computation. After coverage publishes, the same
-worker selects thumbnails within an 80 ms imagery budget. Its block replaces
+worker selects thumbnails within an 80 ms imagery budget (one per set sector
+of the hero component; see "B2 capture-dial selection" below). Its block replaces
 the previous block as a whole; a failed job leaves the previous one visible.
 An imagery manifest request racing a pending landing waits at most 80 ms for
 that block; status replies and coverage publication never wait for imagery.
 Coverage's solve-candidate memo prevents a local rebuild from re-dating B2.
 No manifest or tile is written to disk.
+
+## B2 capture-dial selection (S3, 2026-10-12)
+
+Authority: `FOW-RING-SPEC-20261012.md` §7 S3 and manager mail 366. This is
+additive and sits under the existing `TOWER_WORLD_GUIDANCE_IMAGERY_LANDED`
+switch: there is no new switch, `version` stays 1, B1 is unchanged, and the
+coverage receipt is byte-identical with or without it. With the switch off,
+nothing below is computed.
+
+The B2 `landed` block keeps `solved_at`, `geometry_revision`,
+`frame_revision` and `entries`. It adds:
+
+```
+"landed": {"solved_at", "geometry_revision", "frame_revision",
+           "entries": [{"keyframe_id", "digest", "redaction", "pose_source",
+                        "component_reference_segment", "segment_index", "sector"}],
+           "latest": null | {"component_reference_segment", "sector", "keyframe_id"},
+           "motion_sector": null | 0-11}
+```
+
+**Inputs.** All inputs come from the coverage receipt this block is dated by.
+That receipt's eligible keyframes are the accepted in-horizon keyframes with
+coherent registered solve placement, restricted to its drawn (listed)
+components. "Newest" means the accepted journal order (the solve's
+`keyframe_ids`), never keyframe-id string order.
+
+**Sector.** A keyframe's sector is the receipt's own binning, the same
+computation that set the coverage masks. The keyframe's solve-pose forward is
+projected onto the component floor plane and measured clockwise, seen from
+above, from the component's `forward_xyz` (`sector_frame`
+`first_qualified_forward_cw_from_up_v1`), in 30-degree sectors 0-11. A
+boundary belongs to the clockwise sector. A forward with no horizontal part
+has no sector: it sets no mask bit, and it is never `latest` or a tile.
+
+**Hero component H** is the component of `latest`'s keyframe. When no eligible
+keyframe has a sector, H is the component of the newest eligible keyframe.
+
+**Selection.** The set sectors of H are the OR of `weak_mask | supported_mask`
+over H's drawn stations. A station dropped by the 16-station cap does not
+count. For each set sector, in ascending sector order, the tile is the newest
+eligible keyframe of H whose station cell is a drawn station of H and whose
+sector is that sector. If that keyframe yields no redacted tile, the next
+newest is tried, with at most 3 reads per sector. A sector with no readable
+candidate is omitted. There is therefore at most one entry per set sector,
+never more than 12 entries, and never a tile on an unset (grey) sector. Every
+entry's `component_reference_segment` is H.
+
+**`entries[].sector`** is that sector (0-11), and it agrees with H's masks.
+
+**`latest`** is taken from the newest eligible keyframe in any drawn
+component that has a sector: `{component_reference_segment, sector,
+keyframe_id}`. Its station need not be drawn, and it need not have a tile. It
+is an orientation anchor for the dial, and it carries no position. It is
+null when no eligible keyframe has a sector.
+
+**`motion_sector`** describes the floor-plane displacement from the oldest to
+the newest of H's newest 8 eligible keyframes. That displacement is projected
+onto H's `forward_xyz` and the right axis (forward × up), then binned exactly
+like a sector. It is null when H has fewer than 2 eligible keyframes, or when
+the displacement is shorter than `0.5 * cell_size` of H. The displacement
+itself is not published.
+
+**Budgets are unchanged.** Each tile is at most 16 KiB and 160 by 90 pixels.
+The imagery job has the same 80 ms budget, and if it is exceeded nothing is
+published and the previous block stays. A landing that yields no entry also
+publishes nothing, and the previous block stays with its own `latest` and
+`motion_sector`. The H/sector/latest/motion computation runs inside
+coverage's 250 ms job; it measured at most 1.3 ms, and 0.03-0.45 ms median, on
+the 19 real solve trees in the canonical world root (42-1090 horizon
+keyframes). Tile encoding there took 1.6-14.4 ms per landing for 1-12 tiles.
+
+**Clients.** A client must treat `sector`, `latest` and `motion_sector` as
+optional. An older Tower, or a direct caller without dial inputs, omits all
+three; that block keeps the pre-S3 selection, a deterministic stride over the
+eligible keyframes, with at most 16 entries. An absent or out-of-range
+`sector` places no photo.
 
 ## Photo floor plan v1.2 (2026-10-12) -- default OFF, imagery_source unredacted
 

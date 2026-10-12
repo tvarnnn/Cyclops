@@ -21,6 +21,11 @@ MAX_TILES = 16
 MAX_BYTES = 16 * 1024
 MAX_WIDTH = 160
 MAX_HEIGHT = 90
+# FOW capture dial (S3): one B2 tile per set sector, so at most 12. A sector
+# whose newest candidate has no redacted tile falls back to the next newest,
+# at most this many reads per sector, all inside the unchanged 80 ms budget.
+DIAL_MAX_TILES = 12
+DIAL_CANDIDATES_PER_SECTOR = 3
 
 
 def contained_session_id(store, world_id, session_id):
@@ -144,33 +149,54 @@ class ImageryState:
         return {"segment_index": segment, "entries": entries}
 
     def publish_landed(self, root, world_id, session_id, coverage, eligible,
-                       cancelled=None):
-        """Called after coverage publication, within an 80 ms imagery budget."""
+                       cancelled=None, dial=None):
+        """Called after coverage publication, within an 80 ms imagery budget.
+
+        `dial` (FOW capture dial, S3) is coverage's `dial_out` for this receipt;
+        the coverage worker always supplies it. With it, B2 carries one tile per
+        set sector of the hero component plus `latest` and `motion_sector`.
+        Without it (a direct caller), the pre-S3 stride selection is used."""
         started = time.monotonic()
         store = WorldStore(root)
         image_set = store.keyframe_image_set(world_id, session_id)
         if not label_is_trusted(image_set.redaction):
             return
-        # Spread thumbnails across the accepted solve horizon, deterministically.
-        stride = max(1, (len(eligible) + MAX_TILES - 1) // MAX_TILES)
+        if dial is None:
+            # Spread thumbnails across the accepted solve horizon, deterministically.
+            stride = max(1, (len(eligible) + MAX_TILES - 1) // MAX_TILES)
+            slots = [(ref, None, (kid,)) for kid, ref in eligible[::stride]]
+        else:
+            # One slot per set sector, candidates newest first.
+            slots = [(dial["reference_segment"], sector, kids[:DIAL_CANDIDATES_PER_SECTOR])
+                     for sector, kids in dial.get("sectors", ())][:DIAL_MAX_TILES]
         entries, tiles = [], {}
-        for kid, ref in eligible[::stride]:
+        for ref, sector, kids in slots:
             if len(entries) >= MAX_TILES or time.monotonic() - started >= .080:
                 break
-            blob = _tile(store, world_id, session_id, kid, image_set)
-            if blob is None:
-                continue
-            digest = hashlib.sha256(blob).hexdigest()
-            entries.append({"keyframe_id": kid, "digest": digest,
-                            "redaction": "redacted", "pose_source": "landed_global_solve",
-                            "component_reference_segment": ref, "segment_index": None})
-            tiles[digest] = blob
+            for kid in kids:
+                if time.monotonic() - started >= .080:
+                    break
+                blob = _tile(store, world_id, session_id, kid, image_set)
+                if blob is None:
+                    continue
+                digest = hashlib.sha256(blob).hexdigest()
+                entry = {"keyframe_id": kid, "digest": digest,
+                         "redaction": "redacted", "pose_source": "landed_global_solve",
+                         "component_reference_segment": ref, "segment_index": None}
+                if sector is not None:
+                    entry["sector"] = sector
+                entries.append(entry)
+                tiles[digest] = blob
+                break
         if not entries or time.monotonic() - started > .080:
             logger.warning("world guidance imagery: landing omitted after 80 ms budget")
             return
         block = {"solved_at": coverage["solved_at"],
                  "geometry_revision": coverage["geometry_revision"],
                  "frame_revision": coverage["frame_revision"], "entries": entries}
+        if dial is not None:
+            block["latest"] = dict(dial["latest"]) if dial.get("latest") else None
+            block["motion_sector"] = dial.get("motion_sector")
         with self._lock:
             if cancelled is not None and cancelled.is_set():
                 return
