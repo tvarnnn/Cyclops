@@ -1,4 +1,9 @@
-"""Optional, redacted-only FOW thumbnail manifests and volatile tile bytes."""
+"""Optional FOW thumbnail manifests and volatile tile bytes.
+
+Redacted-only, except under TOWER_WORLD_GUIDANCE_IMAGERY_UNREDACTED=on (the
+demo's deferred-privacy switch, `tower.config`): then a session whose keyframe
+set is labelled exactly `none` is served from its stored keyframe JPEGs, and
+every entry from it says `"redaction": "unredacted"`."""
 
 from __future__ import annotations
 
@@ -10,10 +15,12 @@ import time
 import cv2
 import numpy as np
 
+from tower.config import world_guidance_imagery_unredacted_setting
 from tower.results.world_builder_geometry import contained_world_id
 from tower.world_builder.appearance import label_is_trusted
 from tower.world_builder.dense_pipeline import keyframe_image_bytes
 from tower.world_builder.raw_imagery import IMAGERY_REDACTED
+from tower.world_builder.redaction import REDACTION_NONE
 from tower.world_builder.store import WorldStore, WorldStoreError
 
 logger = logging.getLogger(__name__)
@@ -38,15 +45,50 @@ def contained_session_id(store, world_id, session_id):
         return None
 
 
-def _tile(store, world_id, session_id, keyframe_id, image_set):
-    """The sole imagery read is the established redaction boundary."""
-    if not label_is_trusted(image_set.redaction):
+def serves_unredacted(label):
+    """True only for a set labelled exactly `none` (no redaction ran) while
+    TOWER_WORLD_GUIDANCE_IMAGERY_UNREDACTED is exactly `on`. Every other
+    untrusted label -- unknown strings, a `+plausibility2` rerun label, an
+    unreadable session (None) -- is refused whatever the switch says."""
+    return label == REDACTION_NONE and world_guidance_imagery_unredacted_setting()
+
+
+def entry_redaction(label):
+    """The `redaction` word an entry from a set with this label carries, or
+    None when the set may not be served at all."""
+    if label_is_trusted(label):
+        return "redacted"
+    if serves_unredacted(label):
+        return "unredacted"
+    return None
+
+
+def _stored_keyframe_bytes(image_set, keyframe_id):
+    """The stored keyframe JPEG, as persisted, with no redaction applied.
+    Same file `keyframe_image_bytes` reads (`<set directory>/<seq>.jpg`)."""
+    seq = keyframe_id.rsplit(":", 1)[-1]
+    if not seq.isdigit():
         return None
-    data, _, _ = keyframe_image_bytes(
-        store, world_id, session_id, keyframe_id, None, None,
-        keyframes_are_redacted=True, image_set=image_set,
-        imagery_source=IMAGERY_REDACTED,
-    )
+    try:
+        return (image_set.directory / f"{seq}.jpg").read_bytes()
+    except (OSError, AttributeError, TypeError):
+        return None
+
+
+def _tile(store, world_id, session_id, keyframe_id, image_set):
+    """The sole imagery read is the established redaction boundary, or, for a
+    `none` set under the unredacted switch, the stored keyframe as persisted."""
+    redaction = entry_redaction(image_set.redaction)
+    if redaction is None:
+        return None
+    if redaction == "unredacted":
+        data = _stored_keyframe_bytes(image_set, keyframe_id)
+    else:
+        data, _, _ = keyframe_image_bytes(
+            store, world_id, session_id, keyframe_id, None, None,
+            keyframes_are_redacted=True, image_set=image_set,
+            imagery_source=IMAGERY_REDACTED,
+        )
     if data is None:
         return None
     image = cv2.imdecode(np.frombuffer(data, dtype=np.uint8), cv2.IMREAD_REDUCED_COLOR_2)
@@ -113,6 +155,11 @@ class ImageryState:
                 return {"segment_index": segment, "entries": []}
             old_tiles = previous[2] if previous else {}
             last_new = previous[3] if previous and len(previous) > 3 else float("-inf")
+        redaction = entry_redaction(image_set.redaction)
+        if redaction is None:
+            # Untrusted (and not a served `none` set): no pictures, as before,
+            # where every tile read refused.
+            redaction = "redacted"
         entries, tiles = [], {}
         now = time.monotonic()
         for row in reversed(keyframes):
@@ -122,8 +169,11 @@ class ImageryState:
             if kid not in posed:
                 continue
             # At most one newly encoded tile each second; reuse existing bytes.
+            # Bytes are reused only under the same redaction word, so a label
+            # change never relabels pixels read under the other one.
             prior_digest = next((e["digest"] for e in previous[1]
-                                 if e["keyframe_id"] == kid), None) if previous else None
+                                 if e["keyframe_id"] == kid and
+                                 e.get("redaction") == redaction), None) if previous else None
             old = old_tiles.get(prior_digest)
             if old is None:
                 if now - last_new < 1.0:
@@ -141,7 +191,7 @@ class ImageryState:
                     logger.warning("world guidance imagery: live tile exceeded 5 ms")
             digest = hashlib.sha256(old).hexdigest()
             entries.append({"keyframe_id": kid, "digest": digest,
-                            "redaction": "redacted", "pose_source": "segment_local",
+                            "redaction": redaction, "pose_source": "segment_local",
                             "component_reference_segment": None, "segment_index": segment})
             tiles[digest] = old
         with self._lock:
@@ -159,7 +209,8 @@ class ImageryState:
         started = time.monotonic()
         store = WorldStore(root)
         image_set = store.keyframe_image_set(world_id, session_id)
-        if not label_is_trusted(image_set.redaction):
+        redaction = entry_redaction(image_set.redaction)
+        if redaction is None:
             return
         if dial is None:
             # Spread thumbnails across the accepted solve horizon, deterministically.
@@ -181,7 +232,7 @@ class ImageryState:
                     continue
                 digest = hashlib.sha256(blob).hexdigest()
                 entry = {"keyframe_id": kid, "digest": digest,
-                         "redaction": "redacted", "pose_source": "landed_global_solve",
+                         "redaction": redaction, "pose_source": "landed_global_solve",
                          "component_reference_segment": ref, "segment_index": None}
                 if sector is not None:
                     entry["sector"] = sector

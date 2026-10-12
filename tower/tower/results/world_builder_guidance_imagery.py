@@ -6,7 +6,8 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse, Response
 
 from tower.results.world_builder_appearance import NO_STORE_HEADERS
-from tower.world_builder.guidance_imagery import contained_session_id, state_for
+from tower.world_builder.guidance_imagery import (
+    contained_session_id, serves_unredacted, state_for)
 from tower.world_builder.appearance import label_is_trusted
 from tower.results.world_builder_geometry import contained_world_id, store_from_root
 from tower.world_builder.store import WorldStoreError
@@ -35,7 +36,8 @@ def manifest(world_id: str, session_id: str, request: Request):
             raise ValueError("world mismatch")
         if store.read_session(world_id, session_id).world_id != world_id:
             raise ValueError("session mismatch")
-        if not label_is_trusted(store.keyframe_image_set(world_id, session_id).redaction):
+        label = store.keyframe_image_set(world_id, session_id).redaction
+        if not (label_is_trusted(label) or serves_unredacted(label)):
             raise ValueError("redaction is not trusted")
     except (OSError, ValueError, KeyError, TypeError, WorldStoreError):
         raise HTTPException(404, "imagery is absent or untrusted",
@@ -66,7 +68,8 @@ def tile(world_id: str, session_id: str, digest: str, request: Request):
             raise ValueError("world mismatch")
         if store.read_session(world_id, session_id).world_id != world_id:
             raise ValueError("session mismatch")
-        if not label_is_trusted(store.keyframe_image_set(world_id, session_id).redaction):
+        label = store.keyframe_image_set(world_id, session_id).redaction
+        if not (label_is_trusted(label) or serves_unredacted(label)):
             raise ValueError("redaction is not trusted")
         if live:
             state.live(root, world_id, session_id)  # re-check current segment

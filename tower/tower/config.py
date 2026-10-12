@@ -1108,6 +1108,24 @@ def world_photo_floorplan_diagnostics_setting() -> bool:
     return os.environ.get(WORLD_PHOTO_FLOORPLAN_DIAGNOSTICS_ENV) == "on"
 
 
+# FOW GUIDANCE IMAGERY, UNREDACTED SESSIONS (`world_builder/guidance_imagery.py` and
+# `results/world_builder_guidance_imagery.py`; owner decision for the demo deploy: privacy is
+# deferred and redaction bypassed, so walks record `session.json` `redaction: "none"`).
+# Exactly `on` lets the B1/B2 guidance imagery routes and producers serve a session whose
+# keyframe set's label is exactly `none` -- the stored keyframe JPEGs, which no redactor
+# touched -- and every entry from such a session says `"redaction": "unredacted"`. Any other
+# value, including `1`/`true`, is off: today's Tower byte for byte (a `none` session is 404).
+# Any other untrusted label (unknown strings, `+plausibility2` rerun, a partial set) is
+# refused either way, and trusted sessions still say `redacted`. Imagery only: appearance,
+# depth and world-build trust (`appearance.label_is_trusted`) are untouched.
+WORLD_GUIDANCE_IMAGERY_UNREDACTED_ENV = "TOWER_WORLD_GUIDANCE_IMAGERY_UNREDACTED"
+
+
+def world_guidance_imagery_unredacted_setting() -> bool:
+    """True only when TOWER_WORLD_GUIDANCE_IMAGERY_UNREDACTED is exactly `on`."""
+    return os.environ.get(WORLD_GUIDANCE_IMAGERY_UNREDACTED_ENV) == "on"
+
+
 WORLD_FINAL_SCALE_GUARD_ENV = "TOWER_WORLD_FINAL_SCALE_GUARD"
 WORLD_FINAL_SCALE_GUARD_OFF = "off"
 WORLD_FINAL_SCALE_GUARD_SHADOW = "shadow"
