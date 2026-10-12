@@ -493,7 +493,15 @@ def compute_coverage(*, solution, manifest, placements, poses, keyframes,
     if dial_out is not None:
         # FOW dial (TOWER_WORLD_GUIDANCE_IMAGERY_LANDED only): B2 selection
         # inputs. The coverage block below is built exactly as without it.
-        dial_out.update(_dial(components, eligible, bins, ids, check))
+        # A dial failure must never cost B1 its receipt: drop the dial (B2 then
+        # publishes nothing and keeps its last block) but let a cancellation or
+        # deadline -- check() raises ValueError -- still stop the job.
+        try:
+            dial_out.update(_dial(components, eligible, bins, ids, check))
+        except Exception:  # noqa: BLE001
+            dial_out.clear()
+            check()
+            logger.exception("world guidance dial failed; coverage published without it")
     block = {"version": 1, "source": "landed_global_solve", "solved_at": solved_at,
              "computed_at": computed_at, "horizon_keyframes": horizon,
              "keyframes_now": len(accepted), "keyframes_pending": max(0, len(accepted)-horizon),

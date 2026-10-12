@@ -252,6 +252,34 @@ def test_receipt_is_byte_identical_with_or_without_dial():
         assert {ref for _, ref in eligible} == drawn
 
 
+def test_a_failing_dial_never_costs_the_coverage_receipt(monkeypatch):
+    data = _inputs()
+    plain = coverage.compute_coverage(**json.loads(json.dumps(data)))
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("dial bug")
+
+    monkeypatch.setattr(coverage, "_dial", boom)
+    dial = {"stale": True}
+    with_dial = coverage.compute_coverage(**json.loads(json.dumps(data)), dial_out=dial)
+    assert _bytes(plain) == _bytes(with_dial)
+    assert dial == {}
+
+
+def test_a_dial_cannot_swallow_a_cancellation(monkeypatch):
+    data = _inputs()
+    cancelled = threading.Event()
+
+    def cancel_then_fail(*args, **kwargs):
+        cancelled.set()
+        raise ValueError("coverage worker cancelled")
+
+    monkeypatch.setattr(coverage, "_dial", cancel_then_fail)
+    budget = coverage._Budget(cancelled)
+    with pytest.raises(ValueError, match="cancelled"):
+        coverage.compute_coverage(**json.loads(json.dumps(data)), dial_out={}, check=budget.check)
+
+
 # -- imagery (B2) --------------------------------------------------------------
 
 
