@@ -18,7 +18,7 @@
 //
 //  What the phone holds is the walk's own (`WalkScoped`): a fetch for one
 //  walk never lands in another's, and a new walk starts with nothing. Every
-//  tile is the Tower's redacted JPEG, kept in memory only (no disk cache), by
+//  tile is the Tower's JPEG (redacted, or honestly labelled unredacted), kept in memory only (no disk cache), by
 //  digest, at most 16 per stage.
 //
 //  OFF -- the phone's switch for a stage -- is no UI and no request. The
@@ -100,6 +100,10 @@ nonisolated struct WorldImageryEntry: Equatable, Sendable {
     /// masks. `nil` from a Tower that does not send it; a row that sends a
     /// malformed one is dropped, never repaired.
     var sector: Int? = nil
+    /// The Tower's honest label: `true` for `"redaction": "unredacted"` (a
+    /// session where no face redaction ran), `false` for `"redacted"`.
+    /// Any other label drops the entry; this only says which of the two.
+    var unredacted: Bool = false
 }
 
 /// `live`: the current segment's thumbnails, newest first.
@@ -223,7 +227,8 @@ nonisolated struct WorldImageryManifest: Equatable, Sendable {
     }
 
     /// Complete matching provenance or nothing: `keyframe_id`, a digest,
-    /// `redaction == "redacted"` and the section's `pose_source`, with the
+    /// `redaction` exactly "redacted" or "unredacted" (carried on the entry; any
+/// other label, null or absent drops it) and the section's `pose_source`, with the
     /// section's own index set and the other one absent or null.
     private static func entry(_ row: Any, _ provenance: Provenance) -> WorldImageryEntry? {
         typealias R = WorldCoverageReader
@@ -231,8 +236,9 @@ nonisolated struct WorldImageryManifest: Equatable, Sendable {
         guard let object = row as? [String: Any],
               let keyframeID = object["keyframe_id"] as? String, !keyframeID.isEmpty,
               let digest = object["digest"] as? String, isDigest(digest),
-              object["redaction"] as? String == "redacted"
+              let redaction = object["redaction"] as? String, redaction == "redacted" || redaction == "unredacted"
         else { return nil }
+        let unredacted = redaction == "unredacted"
         func isNull(_ key: String) -> Bool { object[key] == nil || object[key] is NSNull }
         switch provenance {
         case .live(let segment):
@@ -240,7 +246,7 @@ nonisolated struct WorldImageryManifest: Equatable, Sendable {
                   R.integer(object["segment_index"], index) == segment
             else { return nil }
             return WorldImageryEntry(keyframeID: keyframeID, digest: digest, componentReferenceSegment: nil,
-                                     segmentIndex: segment)
+                                     segmentIndex: segment, unredacted: unredacted)
         case .landed:
             guard object["pose_source"] as? String == "landed_global_solve", isNull("segment_index"),
                   let component = R.integer(object["component_reference_segment"], index)
@@ -251,7 +257,7 @@ nonisolated struct WorldImageryManifest: Equatable, Sendable {
                 sector = parsed
             }
             return WorldImageryEntry(keyframeID: keyframeID, digest: digest, componentReferenceSegment: component,
-                                     segmentIndex: nil, sector: sector)
+                                     segmentIndex: nil, sector: sector, unredacted: unredacted)
         }
     }
 
@@ -668,12 +674,14 @@ nonisolated struct WorldLandedThumbnail: Equatable, Identifiable {
     /// Look direction, degrees clockwise from sector zero, or `nil` when the
     /// camera looked (nearly) straight up or down.
     let heading: Double?
+    /// The Tower labelled this photo "unredacted" (no face redaction ran).
+    var unredacted: Bool = false
 
     var id: String { digest }
 
     static func == (lhs: Self, rhs: Self) -> Bool {
         lhs.digest == rhs.digest && lhs.referenceSegment == rhs.referenceSegment && lhs.column == rhs.column
-            && lhs.row == rhs.row && lhs.heading == rhs.heading
+            && lhs.row == rhs.row && lhs.heading == rhs.heading && lhs.unredacted == rhs.unredacted
     }
 }
 
@@ -701,10 +709,11 @@ nonisolated struct WorldDialThumbnail: Equatable {
     let referenceSegment: Int
     let heading: Double?
     var sector: Int? = nil
+    var unredacted: Bool = false
 
     static func == (lhs: Self, rhs: Self) -> Bool {
         lhs.digest == rhs.digest && lhs.referenceSegment == rhs.referenceSegment
-            && lhs.sector == rhs.sector && lhs.heading == rhs.heading
+            && lhs.sector == rhs.sector && lhs.heading == rhs.heading && lhs.unredacted == rhs.unredacted
     }
 }
 
@@ -731,7 +740,8 @@ nonisolated enum WorldLandedPlacement {
                 .flatMap { rotate($0, by: joined.transform.rotationWXYZ) }
             return WorldLandedThumbnail(digest: entry.digest, image: image, referenceSegment: reference,
                                         column: spot.column, row: spot.row,
-                                        heading: forward.flatMap { heading($0, on: component) })
+                                        heading: forward.flatMap { heading($0, on: component) },
+                                        unredacted: entry.unredacted)
         }
     }
 
@@ -870,7 +880,7 @@ extension WorldBuilderViewModel {
                 let heading = headings[entry.digest]
                 guard entry.sector != nil || heading != nil else { return nil }
                 return WorldDialThumbnail(digest: entry.digest, image: image, referenceSegment: component,
-                                          heading: heading, sector: entry.sector)
+                                          heading: heading, sector: entry.sector, unredacted: entry.unredacted)
             }
         }
         return WalkScoped(walk: walk, value: WorldLandedOverlay(receipt: receipt, thumbnails: thumbnails,

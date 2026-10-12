@@ -144,6 +144,35 @@ final class WorldImageryTests: XCTestCase {
         XCTAssertEqual(manifest, F.manifest(F.landed))
     }
 
+    /// The Tower labels each entry "redacted" or, from a session where no
+    /// face redaction ran, honestly "unredacted"; the phone carries which.
+    func testUnredactedLabelIsCarriedAndOtherLabelsAreRefused() throws {
+        func live(_ label: String) -> [WorldImageryEntry]? {
+            F.manifest(F.live.replacingOccurrences(of: #""redaction":"redacted""#, with: label))?.live.value?.entries
+        }
+        func landed(_ label: String) -> [WorldImageryEntry]? {
+            F.manifest(F.landed.replacingOccurrences(of: #""redaction":"redacted""#, with: label))?.landed.value?.entries
+        }
+        XCTAssertEqual(live(#""redaction":"unredacted""#)?.map(\.unredacted), [true])
+        XCTAssertEqual(landed(#""redaction":"unredacted""#)?.map(\.unredacted), [true])
+        XCTAssertEqual(live(#""redaction":"redacted""#)?.map(\.unredacted), [false])
+        XCTAssertEqual(landed(#""redaction":"redacted""#)?.map(\.unredacted), [false])
+        for label in [#""redaction":"raw-local-research""#, #""redaction":null"#, #""redaction":"Unredacted""#,
+                      #""redaction":true"#, #""x":0"#] {
+            XCTAssertEqual(live(label), [], "live kept \(label)")
+            XCTAssertEqual(landed(label), [], "landed kept \(label)")
+        }
+    }
+
+    func testUnredactedPhotosAreSpokenWithoutTheWordRedacted() {
+        XCTAssertEqual(WorldImageryCopy.landedThumbnail(heading: 90, age: 12.4, unredacted: true),
+                       "photo, look direction 90°, 12 seconds old")
+        XCTAssertEqual(WorldImageryCopy.landedThumbnail(heading: 90, age: 12.4, unredacted: false),
+                       "redacted photo, look direction 90°, 12 seconds old")
+        XCTAssertEqual(WorldImageryCopy.photoNoun(unredacted: true), "photo")
+        XCTAssertEqual(WorldImageryCopy.photoNoun(unredacted: false), "redacted photo")
+    }
+
     /// Only complete matching provenance: anything less drops the entry,
     /// and the rest of the section stands.
     func testEntriesWithoutCompleteMatchingProvenanceAreDropped() throws {

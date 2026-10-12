@@ -5,7 +5,7 @@
 //  FOW v1.1 B's two drawings (spec §5): B1's strip, its own card under the
 //  current piece and never on the map; B2's thumbnails, layered over the v1
 //  grid's pieces, never replacing a fan and never on a grey cell. Every
-//  thumbnail is the Tower's redacted tile; each one is labelled for
+//  thumbnail is the Tower's tile (redacted, or honestly labelled unredacted); each one is labelled for
 //  VoiceOver, and none is ever announced.
 //
 
@@ -32,9 +32,13 @@ enum WorldImageryCopy {
         return (whole == 1 ? "1 second old" : "\(whole) seconds old") + stale
     }
 
-    /// VoiceOver: "redacted photo, look direction N°, M seconds old".
-    static func landedThumbnail(heading: Double?, age seconds: Double?) -> String {
-        "redacted photo, \(direction(heading)), \(age(seconds))"
+    /// "redacted photo" or, for a Tower-labelled unredacted one, "photo".
+    static func photoNoun(unredacted: Bool) -> String { unredacted ? "photo" : "redacted photo" }
+
+    /// VoiceOver: "redacted photo, look direction N°, M seconds old"
+    /// ("photo, ..." when the Tower labelled it unredacted).
+    static func landedThumbnail(heading: Double?, age seconds: Double?, unredacted: Bool = false) -> String {
+        "\(photoNoun(unredacted: unredacted)), \(direction(heading)), \(age(seconds))"
     }
 }
 
@@ -162,7 +166,7 @@ struct WorldLandedThumbnailButton: View {
                 .overlay(RoundedRectangle(cornerRadius: 3).strokeBorder(Color.white.opacity(0.8), lineWidth: 1))
         }
         .buttonStyle(.plain)
-        .accessibilityLabel(WorldImageryCopy.landedThumbnail(heading: thumbnail.heading, age: age))
+        .accessibilityLabel(WorldImageryCopy.landedThumbnail(heading: thumbnail.heading, age: age, unredacted: thumbnail.unredacted))
         .accessibilityIdentifier("wb-imagery-landed-thumb")
     }
 }
@@ -207,7 +211,7 @@ struct WorldLandedThumbnailSheet: View {
                     .resizable()
                     .aspectRatio(16.0 / 9.0, contentMode: .fit)
                     .clipShape(RoundedRectangle(cornerRadius: 8))
-                    .accessibilityLabel("redacted photo")
+                    .accessibilityLabel(WorldImageryCopy.photoNoun(unredacted: thumbnail.unredacted))
                 Text(WorldImageryCopy.direction(thumbnail.heading).capitalizedFirst)
                     .font(.headline)
                     .accessibilityIdentifier("wb-imagery-landed-direction")

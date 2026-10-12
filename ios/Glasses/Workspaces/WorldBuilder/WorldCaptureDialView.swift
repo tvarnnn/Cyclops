@@ -545,7 +545,7 @@ struct WorldCaptureDialFace: View {
         guard let digest = dial.photosBySector[sector], let photo = tiles[digest] else { return }
         selected = WorldLandedThumbnail(digest: photo.digest, image: photo.image,
                                         referenceSegment: photo.referenceSegment, column: 0, row: 0,
-                                        heading: photo.heading)
+                                        heading: photo.heading, unredacted: photo.unredacted)
     }
 }
 
