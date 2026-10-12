@@ -107,14 +107,14 @@ struct WorldLandedPieceOverlay: View {
     }
 
     private func layer(side: CGFloat, age: Double?) -> some View {
-        let cell = side / CGFloat(WorldCoverage.gridSide)
-        let size = Self.thumbnailSize(cell: cell)
+        let fit = WorldCoverageField.fit(side: side)
+        let size = Self.thumbnailSize(cell: side / CGFloat(WorldCoverage.gridSide))
         return ZStack(alignment: .topLeading) {
             ForEach(thumbnails) { thumbnail in
                 WorldLandedThumbnailButton(thumbnail: thumbnail, size: size, age: age) { select(thumbnail) }
-                    .position(Self.placed(thumbnail, cell: cell, size: size, side: side))
+                    .position(Self.placed(thumbnail, fit: fit, size: size, side: side))
             }
-            WorldLandedTicks(thumbnails: thumbnails, cell: cell)
+            WorldLandedTicks(thumbnails: thumbnails, fit: fit)
                 .allowsHitTesting(false)
                 .accessibilityHidden(true)
         }
@@ -127,14 +127,15 @@ struct WorldLandedPieceOverlay: View {
     }
 
     /// The true projected centre, in the piece's points.
-    static func centre(_ thumbnail: WorldLandedThumbnail, cell: CGFloat) -> CGPoint {
-        CGPoint(x: CGFloat(thumbnail.column) * cell, y: CGFloat(thumbnail.row) * cell)
+    static func centre(_ thumbnail: WorldLandedThumbnail, fit: WorldCoverageField.Fit) -> CGPoint {
+        fit.point(CGPoint(x: CGFloat(thumbnail.column), y: CGFloat(thumbnail.row)))
     }
 
     /// The image's centre: the true centre, moved only as far as keeps the
     /// image inside the piece.
-    static func placed(_ thumbnail: WorldLandedThumbnail, cell: CGFloat, size: CGSize, side: CGFloat) -> CGPoint {
-        let centre = centre(thumbnail, cell: cell)
+    static func placed(_ thumbnail: WorldLandedThumbnail, fit: WorldCoverageField.Fit,
+                       size: CGSize, side: CGFloat) -> CGPoint {
+        let centre = centre(thumbnail, fit: fit)
         let x = min(max(centre.x, size.width / 2), side - size.width / 2)
         let y = min(max(centre.y, size.height / 2), side - size.height / 2)
         return CGPoint(x: x, y: y)
@@ -167,17 +168,17 @@ struct WorldLandedThumbnailButton: View {
 /// screen-right, as the fans' sectors run.
 struct WorldLandedTicks: View {
     let thumbnails: [WorldLandedThumbnail]
-    let cell: CGFloat
+    let fit: WorldCoverageField.Fit
 
     var body: some View {
         Canvas { context, _ in
             for thumbnail in thumbnails {
-                let centre = WorldLandedPieceOverlay.centre(thumbnail, cell: cell)
+                let centre = WorldLandedPieceOverlay.centre(thumbnail, fit: fit)
                 let dot = CGRect(x: centre.x - 2.5, y: centre.y - 2.5, width: 5, height: 5)
                 context.fill(Path(ellipseIn: dot), with: .color(.white))
                 guard let heading = thumbnail.heading else { continue }
                 let radians = heading * .pi / 180
-                let length = Double(cell) * 0.7
+                let length = Double(fit.cell) * 0.7
                 var tick = Path()
                 tick.move(to: centre)
                 tick.addLine(to: CGPoint(x: Double(centre.x) + cos(radians) * length,

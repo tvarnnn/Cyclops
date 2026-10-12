@@ -209,6 +209,27 @@ final class WorldImageryTests: XCTestCase {
                        "redacted photo, look direction unknown, age unavailable")
     }
 
+    func testFullSizeLandedThumbnailsClampToASmallPiece() {
+        let side: CGFloat = 50
+        let fit = WorldCoverageField.fit(side: side)
+        let size = WorldLandedPieceOverlay.thumbnailSize(cell: side / 8)
+        let near = WorldLandedThumbnail(digest: "near", image: UIImage(), referenceSegment: 0,
+                                        column: 0, row: 0, heading: nil)
+        let far = WorldLandedThumbnail(digest: "far", image: UIImage(), referenceSegment: 0,
+                                       column: 8, row: 8, heading: nil)
+        XCTAssertEqual(size.width, 28)
+        XCTAssertEqual(WorldLandedPieceOverlay.placed(near, fit: fit, size: size, side: side).x, 14,
+                       accuracy: 0.001)
+        XCTAssertEqual(WorldLandedPieceOverlay.placed(far, fit: fit, size: size, side: side).x, 36,
+                       accuracy: 0.001)
+        for thumbnail in [near, far] {
+            let centre = WorldLandedPieceOverlay.placed(thumbnail, fit: fit, size: size, side: side)
+            let frame = CGRect(x: centre.x - size.width / 2, y: centre.y - size.height / 2,
+                               width: size.width, height: size.height)
+            XCTAssertTrue(CGRect(x: 0, y: 0, width: side, height: side).contains(frame))
+        }
+    }
+
     /// An ordinary receiving status payload around `guidance`.
     static func ordinaryStatus(guidance: String) -> String {
         let block = (FOWFixtures.payload(guidance)["guidance"] as? [String: Any]).flatMap {

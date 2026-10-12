@@ -67,11 +67,9 @@ struct WorldCoverageField {
     static let blurRadiusInCells: CGFloat = 0.28
 
     /// The eight-cell grid and its largest possible wedge share one fit.
-    /// A centred scale of an eight-cell overlay has exactly this mapping.
     struct Fit {
         let cell: CGFloat
         let inset: CGFloat
-        let overlayScale: CGFloat
 
         func point(_ gridPoint: CGPoint) -> CGPoint {
             CGPoint(x: inset + gridPoint.x * cell, y: inset + gridPoint.y * cell)
@@ -81,8 +79,7 @@ struct WorldCoverageField {
     static func fit(side: CGFloat) -> Fit {
         let paddedGrid = CGFloat(WorldCoverage.gridSide) + 2 * supportedRadius
         let cell = side / paddedGrid
-        return Fit(cell: cell, inset: supportedRadius * cell,
-                   overlayScale: CGFloat(WorldCoverage.gridSide) / paddedGrid)
+        return Fit(cell: cell, inset: supportedRadius * cell)
     }
 
     let stations: [CGPoint]
@@ -180,7 +177,6 @@ struct WorldCoverageMapView: View {
                        !thumbnails.isEmpty {
                         WorldLandedPieceOverlay(thumbnails: thumbnails, receipt: landed.receipt) { selected = $0 }
                             .frame(width: frame.width, height: frame.height)
-                            .scaleEffect(WorldCoverageField.fit(side: frame.width).overlayScale)
                             .position(x: frame.midX, y: frame.midY)
                     }
                 }

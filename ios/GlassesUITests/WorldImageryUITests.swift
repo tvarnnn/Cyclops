@@ -154,6 +154,18 @@ final class WorldImageryUITests: XCTestCase {
         print("IMAGERY-LANDED|thumb=\(thumb.frame)|piece=\(piece.frame)")
         XCTAssertTrue(piece.frame.insetBy(dx: -0.5, dy: -0.5).contains(thumb.frame),
                       "the thumbnail \(thumb.frame) outside its piece \(piece.frame)")
+        // The §9 fixture is at (3.5, 5.5) on an eight-cell piece. The fog
+        // field fits thirteen cells (2.5 padding on each side), but that fit
+        // must move only the centre: it must not shrink the photo or its hit box.
+        let side = piece.frame.width
+        let expectedWidth = min(max(side / 8 * 1.6, 28), 64)
+        XCTAssertEqual(thumb.frame.width, expectedWidth, accuracy: 1,
+                       "the padded fog fit shrank the B2 thumbnail")
+        XCTAssertEqual(thumb.frame.height, expectedWidth * 9 / 16, accuracy: 1)
+        XCTAssertEqual(thumb.frame.midX, piece.frame.minX + side * 6 / 13, accuracy: 1,
+                       "the thumbnail moved away from its mapped column")
+        XCTAssertEqual(thumb.frame.midY, piece.frame.minY + side * 8 / 13, accuracy: 1,
+                       "the thumbnail moved away from its mapped row")
         XCTAssertTrue(thumb.label.hasPrefix("redacted photo, look direction 90°, "), thumb.label)
         XCTAssertTrue(thumb.label.contains("seconds old"), thumb.label)
         XCTAssertEqual(text(piece), "Piece 1", "the v1 piece's label changed")
@@ -315,7 +327,21 @@ final class WorldImageryUITests: XCTestCase {
     }
 
     private func reveal(_ element: XCUIElement) {
-        for _ in 0..<8 where !(element.exists && element.isHittable) { app.swipeUp(velocity: .slow) }
+        for _ in 0..<12 {
+            let window = app.windows.firstMatch.frame
+            let status = self.element("shell-status-bar")
+            let top = max(window.minY + 100, status.exists ? status.frame.maxY + 16 : 0)
+            let bottom = window.maxY - 40
+            if element.exists {
+                let frame = element.frame
+                if element.isHittable && frame.minY >= top && frame.maxY <= bottom { return }
+                if frame.minY < top {
+                    app.swipeDown(velocity: .slow)
+                    continue
+                }
+            }
+            app.swipeUp(velocity: .slow)
+        }
     }
 
     @discardableResult
