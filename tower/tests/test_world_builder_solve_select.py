@@ -456,6 +456,8 @@ def test_the_worker_environment_has_no_gpu_and_no_phase_token(monkeypatch):
 # ---------------------------------------------------------------------------
 
 N_E2E = 360
+# Draw k's `solved_at` (the shim's): a wall clock later than any launch, as a real solve's is.
+SHIM_CLOCK = 4_000_000_000.0
 WELD = (200, N_E2E)        # 160 keyframes at 3x: draw 1 isolates them (>= 150)
 CLEAN_DRAW = 2
 
@@ -470,10 +472,10 @@ def _draw_of_sparse(sparse_dir) -> int:
 
 def install_shim(n: int, weld, clean_draws, log_path=None, monkeypatch=None):
     """The mapper and the live depth evidence, faked the same way in the test and in each worker: draw k's
-    candidate has `solved_at = CLOCK0 + 1000 + k` and writes `sparse/draw.txt`; its evidence welds
+    candidate has `solved_at = SHIM_CLOCK + k` (after any launch) and writes `sparse/draw.txt`; its evidence welds
     `weld` at 3x unless k is clean."""
     from tests.test_world_builder_final_scale_guard import _levels, _walk_centers
-    from tests.test_world_builder_final_scale_guard_seam import CLOCK0, _candidate
+    from tests.test_world_builder_final_scale_guard_seam import _candidate
     from tower.world_builder import global_solve as GS
 
     centers = _walk_centers(n, step=0.01)
@@ -492,13 +494,15 @@ def install_shim(n: int, weld, clean_draws, log_path=None, monkeypatch=None):
         Path(sparse_dir).mkdir(parents=True, exist_ok=True)
         (Path(sparse_dir) / "draw.txt").write_text(str(draw))
         note({"map": draw, "database": str(database_path), "seed": seed, "threads": threads, "pid": os.getpid()})
+        if draw != 1 and os.environ.get("WB_SOLVE_SELECT_TEST_SLOW"):
+            time.sleep(float(os.environ["WB_SOLVE_SELECT_TEST_SLOW"]))
         sol = _candidate(keyframes, camera, centers=centers, islands=[(0, n)])
         sol.input_digest = input_digest
-        sol.solved_at = CLOCK0 + 1000.0 + draw
+        sol.solved_at = SHIM_CLOCK + draw
         return sol
 
     def live(store, world_id, session_id, solution, *, database_path, name_of, live_metric_fn=None):
-        draw = int(round(solution.solved_at - CLOCK0 - 1000.0))
+        draw = int(round(solution.solved_at - SHIM_CLOCK))
         note({"guard": draw, "database": str(database_path)})
         levels = clean if draw in clean_draws else welded
         return dict(levels), {"state": "compatible", "records_matched": len(levels)}
@@ -561,7 +565,7 @@ def _solve(s):
 
 
 def test_end_to_end_the_winner_is_published_through_the_existing_step(e2e, monkeypatch):
-    from tests.test_world_builder_final_scale_guard_seam import CLOCK0, _published
+    from tests.test_world_builder_final_scale_guard_seam import _published
     from tower.world_builder.components import read_components_record
 
     s = e2e.configure(N_E2E, WELD, [CLEAN_DRAW])
@@ -579,7 +583,7 @@ def test_end_to_end_the_winner_is_published_through_the_existing_step(e2e, monke
     assert all(r["outcome"] == "published" for r in record["draws"])
     meta, comp, audit = _published(s)
     # ONE solution, the winner's: its poses, its model, the guard's own publication of it
-    assert meta["solved_at"] == CLOCK0 + 1000.0 + CLEAN_DRAW
+    assert meta["solved_at"] == SHIM_CLOCK + CLEAN_DRAW
     assert meta["solve"]["select"] == record and audit["select"] == record
     assert meta["solve"]["final_scale_guard"]["decision"] == "published"
     assert meta["solve"]["final_scale_guard"]["keyframes_isolated"] == 0
@@ -734,3 +738,134 @@ def test_a_parent_that_dies_takes_its_draws_with_it(tmp_path):
         assert _gone(pids), "a draw outlived the solve that launched it"
     finally:
         _reap(pids)
+
+
+# ---------------------------------------------------------------------------
+# THE BUILDER'S CHILD PROTOCOL: the real `scripts/world_solve.py --final`, spawned and parsed by the
+# builder's own `BackgroundSolver.run_final` (SA1, 2026-10-12: selection worked and the builder
+# recorded `final_solve: failed`, "unreadable summary"). Every process in it is real; a shim stands in
+# for pycolmap, the mapper and the live depth evidence inside the solve child and its draws.
+# ---------------------------------------------------------------------------
+
+_SHIM_SOLVE_CHILD = textwrap.dedent("""
+    import json, os, runpy, sys
+    if os.environ.get("WB_SOLVE_SELECT_TEST_GARBAGE"):
+        os.write(1, os.environ["WB_SOLVE_SELECT_TEST_GARBAGE"].encode() + os.linesep.encode())   # a polluted stdout
+    tower_root = os.environ["WB_SOLVE_SELECT_TEST_ROOT"]
+    sys.path.insert(0, tower_root)
+    from tests.test_world_builder_solve_masks import FakeColmap
+    sys.modules["pycolmap"] = FakeColmap()
+    spec = json.loads(os.environ["{env}"])
+    from tests import test_world_builder_solve_select as T
+    T.install_shim(spec["n"], spec["weld"], spec["clean"], spec["log"])
+    from tower.process_ownership import interpreter_command
+    from tower.world_builder import relocalizer, solve_select
+    relocalizer.revisit_pairs = lambda session_dir: []
+    solve_select.worker_argv = lambda job, draw: interpreter_command("-c", T._SHIM_WORKER, str(job), str(draw))
+    script = os.path.join(tower_root, "scripts", "world_solve.py")
+    sys.argv = [script] + sys.argv[1:]
+    runpy.run_path(script, run_name="__main__")
+""").format(env=SHIM_ENV)
+
+
+@pytest.fixture
+def builder(e2e, tmp_path, monkeypatch):
+    from scripts import world_build_session as wbs
+
+    tower_root = Path(__file__).resolve().parents[1]
+    wrapper = tmp_path / "world_solve_shim.py"
+    wrapper.write_text(_SHIM_SOLVE_CHILD, encoding="utf-8")
+    monkeypatch.setenv("WB_SOLVE_SELECT_TEST_ROOT", str(tower_root))
+
+    def run_final(s, **kw):
+        solver = wbs.BackgroundSolver(root=s.store.root, world_id=s.world_id, session_id=s.session_id,
+                                      every=10_000, capture_dirs=[], script=wrapper)
+        try:
+            return solver.run_final(s.store, {}, **kw)
+        finally:
+            solver.close()
+
+    return SimpleNamespace(e2e=e2e, run_final=run_final)
+
+
+def test_the_builders_final_solve_child_reports_a_selected_solve(builder, monkeypatch):
+    from tests.test_world_builder_final_scale_guard_seam import _published
+
+    s = builder.e2e.configure(N_E2E, WELD, [CLEAN_DRAW])
+    monkeypatch.setenv(GUARD, "on")
+    monkeypatch.setenv(SELECT, "adaptive:2")
+    summary = builder.run_final(s)
+    assert summary.get("solved") is True, summary.get("error") or summary
+    assert "error" not in summary
+    assert summary["solve"]["select"]["winner"] == CLEAN_DRAW
+    assert summary["keyframes_posed"] == N_E2E and summary["solver"] == "glomap"
+    meta, _, _ = _published(s)
+    assert meta["solved_at"] == SHIM_CLOCK + CLEAN_DRAW and meta["solve"]["select"] == summary["solve"]["select"]
+    draws = {r["map"] for r in builder.e2e.rows() if "map" in r}
+    assert {2, 3} <= draws
+
+
+def test_a_hard_stop_during_selection_through_the_builder_leaves_no_draw_running(builder, monkeypatch):
+    s = builder.e2e.configure(N_E2E, WELD, [CLEAN_DRAW])
+    monkeypatch.setenv(GUARD, "on")
+    monkeypatch.setenv(SELECT, "adaptive:3")
+    monkeypatch.setenv("WB_SOLVE_SELECT_TEST_SLOW", "120")           # every extra draw hangs
+    before = s.workspace.solution_path.read_bytes()
+    select_dir = s.workspace.root / SS.SELECT_DIRNAME
+
+    def stop():
+        pids = [r["pid"] for r in builder.e2e.rows() if r.get("map", 1) != 1]
+        return len(pids) >= 3
+
+    started = time.perf_counter()
+    summary = builder.run_final(s, should_stop=stop)
+    assert summary.get("interrupted") is True and summary.get("solved") is False
+    assert time.perf_counter() - started < 120
+    pids = [r["pid"] for r in builder.e2e.rows() if r.get("map", 1) != 1]
+    try:
+        assert len(pids) == 3 and _gone(pids), "a draw outlived the stopped final solve"
+    finally:
+        _reap(pids)
+    # nothing was published by the stopped final solve: the walk's own solution stands
+    assert s.workspace.solution_path.read_bytes() == before
+
+
+def test_an_unusable_summary_of_a_selected_solve_is_read_back_from_its_publication(builder, monkeypatch):
+    """SA1: the selected solve was published and the builder recorded `final_solve: failed`
+    ("unreadable summary"). The builder now reads the finished selected solve back from what it
+    published, and keeps the raw stdout for the record."""
+    from scripts import world_build_session as wbs
+
+    s = builder.e2e.configure(N_E2E, WELD, [CLEAN_DRAW])
+    monkeypatch.setenv(GUARD, "on")
+    monkeypatch.setenv(SELECT, "adaptive:2")
+    monkeypatch.setenv("WB_SOLVE_SELECT_TEST_GARBAGE", "not json")
+    summary = builder.run_final(s)
+    assert summary.get("solved") is True and summary.get("summary_from_publication") is True
+    assert "error" not in summary and "interrupted" not in summary
+    assert summary["solve"]["select"]["winner"] == CLEAN_DRAW
+    assert summary["solved_at"] == SHIM_CLOCK + CLEAN_DRAW
+    assert summary["keyframes_posed"] == N_E2E and summary["solver"] == "glomap"
+    kept = s.workspace.root / wbs.FINAL_SOLVE_STDOUT_FILENAME
+    assert kept.read_bytes().startswith(b"not json")
+
+
+def test_an_unusable_summary_without_selection_still_fails_as_before(builder, monkeypatch):
+    s = builder.e2e.configure(N_E2E, WELD, [CLEAN_DRAW])
+    monkeypatch.setenv(GUARD, "on")
+    monkeypatch.setenv("WB_SOLVE_SELECT_TEST_GARBAGE", "not json")
+    summary = builder.run_final(s)
+    assert summary.get("solved") is False and summary["error"].startswith("unreadable summary: ")
+    assert "summary_from_publication" not in summary
+
+
+def test_a_selected_publication_from_before_this_launch_is_not_this_finalizations(builder, monkeypatch):
+    from scripts import world_build_session as wbs
+
+    s = builder.e2e.configure(N_E2E, WELD, [CLEAN_DRAW])
+    monkeypatch.setenv(GUARD, "on")
+    monkeypatch.setenv(SELECT, "adaptive:2")
+    assert builder.run_final(s)["solved"] is True
+    solved_at = json.loads(s.workspace.solution_path.read_text(encoding="utf-8"))["solved_at"]
+    assert wbs.published_selected_solve(s.store, s.world_id, s.session_id, since=solved_at) is not None
+    assert wbs.published_selected_solve(s.store, s.world_id, s.session_id, since=solved_at + 1) is None

@@ -633,6 +633,8 @@ class StopRequest:
 # How long a solve child gets after `terminate()` before it is killed, and
 # how often a waiting builder looks at its stop request.
 CHILD_TERMINATE_TIMEOUT_S = 5.0
+# The raw stdout of a final-solve child whose summary did not parse, kept beside the solve.
+FINAL_SOLVE_STDOUT_FILENAME = "final_solve.stdout"
 CHILD_POLL_S = 0.25
 
 
@@ -1098,8 +1100,9 @@ class BackgroundSolver:
         if text:
             try:
                 summary = json.loads(text)
-            except ValueError:
+            except ValueError as exc:
                 summary = {"solved": False, "error": f"unreadable summary: {text[-200:]}"}
+                self._keep_unreadable_summary(chunks, text, exc)
         if child.returncode not in (0, None) and not summary.get("solved"):
             summary.setdefault("error", f"world_solve.py exited {child.returncode}")
         summary["attempted"] = True
@@ -1126,6 +1129,23 @@ class BackgroundSolver:
         published = published_consensus_solve(store, self.world_id, self.session_id,
                                               since=launched_at)
         if published is None:
+            # ADAPTIVE SELECT (`TOWER_WORLD_SOLVE_SELECT`; W8LOOP SA1, 2026-10-12): a selected final
+            # solve publishes once, as its LAST act, so a solution carrying `solve.select` that was
+            # solved after this launch IS this child's finished final solve -- whatever its stdout
+            # said. Never true with the switch off (no solution carries the record).
+            selected = published_selected_solve(store, self.world_id, self.session_id,
+                                                since=launched_at)
+            if selected is not None:
+                logger.warning(
+                    "[Tower][WorldBuilder] the final solve's summary was not usable (%s), but it had "
+                    "published its selected solve (draw %s of %s); that publication is this "
+                    "finalization's final solve",
+                    "a hard stop" if report.get("interrupted") else report.get("error"),
+                    selected["solve"]["select"].get("winner"),
+                    (selected["solve"]["select"].get("n") or 0) + 1,
+                )
+                report = {k: v for k, v in report.items() if k not in ("error", "interrupted")}
+                return dict(report, **selected, solved=True, summary_from_publication=True)
             if report.get("interrupted"):
                 logger.warning("[Tower][WorldBuilder] the final solve published nothing "
                                "before the stop; the last background solution stands")
@@ -1138,6 +1158,24 @@ class BackgroundSolver:
             "a hard stop" if report.get("interrupted") else report.get("error"),
         )
         return dict(report, **published, solved=True, published_before_it_ended=True)
+
+    def _keep_unreadable_summary(self, chunks, text: str, exc: Exception) -> None:
+        """An unparseable final-solve summary is evidence: say where it broke, and keep the raw
+        bytes beside the solve (`final_solve.stdout`, only ever written on this failure) so the
+        next one can be read in full. Never raises."""
+        try:
+            from tower.world_builder import global_solve  # noqa: PLC0415
+
+            raw = b"".join(chunks)
+            workspace = global_solve.workspace_for(WorldStore(self.root), self.world_id, self.session_id)
+            path = workspace.root / FINAL_SOLVE_STDOUT_FILENAME
+            path.write_bytes(raw)
+            logger.warning(
+                "[Tower][WorldBuilder] the final solve's summary did not parse (%s): %d bytes, "
+                "head %r, tail %r; kept in %s", exc, len(raw), text[:300], text[-200:], path)
+        except Exception:  # noqa: BLE001 -- diagnostics only
+            logger.warning("[Tower][WorldBuilder] could not keep the unreadable final-solve summary",
+                           exc_info=True)
 
     def close(self) -> None:
         """Leave no child behind. Called from the builder's `finally`."""
@@ -1820,6 +1858,48 @@ def published_consensus_solve(store, world_id: str, session_id: str, *,
             return None
         requested = _consensus_requested(solution.gate)
         if requested is None or requested < 2:
+            return None
+        if since is not None and not float(solution.solved_at) >= float(since):
+            return None
+        workspace = global_solve.workspace_for(store, world_id, session_id)
+        return {
+            "solver": solution.solver,
+            "solved_at": solution.solved_at,
+            "keyframes": len(solution.keyframe_ids),
+            "keyframes_posed": sum(
+                1 for p in solution.poses.values()
+                if int(p.get("observations") or 0) >= global_solve.MIN_IMAGE_OBSERVATIONS),
+            "components": solution.components,
+            "points": int(len(solution.xyz)),
+            "timing": solution.timing,
+            "workspace": str(workspace.root),
+            "transients": solution.transients,
+            "solve": solution.solve,
+            "gate": solution.gate,
+        }
+    except Exception:  # noqa: BLE001 -- see the docstring
+        return None
+
+
+def published_selected_solve(store, world_id: str, session_id: str, *,
+                             since: float | None = None) -> dict | None:
+    """The session's PUBLISHED solve, as a final-solve summary (the shape
+    `published_consensus_solve` gives), when it is an ADAPTIVE SELECT final solve
+    (`solve.select`, `TOWER_WORLD_SOLVE_SELECT`) solved at or after `since` -- else None.
+
+    A selected final solve publishes exactly once, as its last act, so such a publication is a
+    finished final solve: what the child would have printed, read back from what it wrote. The
+    builder uses it when the child's stdout summary is unusable (W8LOOP SA1, 2026-10-12: the
+    selection published draw 3 and the builder recorded `final_solve: failed`, "unreadable
+    summary"). Reads only; never raises."""
+    try:
+        from tower.world_builder import global_solve  # noqa: PLC0415
+
+        solution = global_solve.load_solution(store, world_id, session_id)
+        if solution is None or not isinstance(solution.solve, dict):
+            return None
+        record = solution.solve.get("select")
+        if not isinstance(record, dict) or record.get("triggered") is not True:
             return None
         if since is not None and not float(solution.solved_at) >= float(since):
             return None
