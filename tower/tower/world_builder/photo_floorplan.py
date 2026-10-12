@@ -1065,8 +1065,9 @@ camera height H is read off the solve itself -- for every downward frame, the dr
 OWN bottom 40%, taken at the 80th percentile within that frame (the deepest typical
 surface, i.e. the floor when the floor is visible), then the median over frames.
 The plane is level along the reference normal, H below the cameras' median height.
-It needs >= 3 such frames with >= 5 points each; otherwise there is no plane and the
-component stays gray. It is reported as `source = fallback_camera_drop`."""
+It needs >= 3 such frames with >= 5 points each, and it must pass the SAME camera
+checks as an estimated plane (>= 95% of cameras above it, height CV <= 0.25);
+otherwise there is no plane and the component stays gray. It is reported as `source = fallback_camera_drop`."""
 
 
 def fallback_floor_plane(*, failed, camera_positions, band_drops_by_frame, frame_ids=None):
@@ -1103,6 +1104,18 @@ def fallback_floor_plane(*, failed, camera_positions, band_drops_by_frame, frame
     above = cam_h + offset
     med = float(np.median(above))
     stats["fallback_frame_ids"] = [c for c in contributors if c is not None]
+    above_frac = float(np.mean(above > 0))
+    cv = float(1.4826 * np.median(np.abs(above - med)) / max(med, EPS))
+    if med <= EPS or above_frac < CAMERA_ABOVE_MIN_FRAC or cv > CAMERA_HEIGHT_MAX_CV:
+        # e2e4 landing 4: a solve whose cameras are not at one height above ANY level
+        # plane (CV 0.52, 11% below it) -- the fallback then warped 53 frames into
+        # 0.4% opaque cells and replaced a good plan. Refuse it, like an estimated plane.
+        reason = (f"{failed.reason}; fallback refused: cameras inconsistent with it "
+                  f"(above {above_frac:.2f} < {CAMERA_ABOVE_MIN_FRAC} or height CV "
+                  f"{cv:.2f} > {CAMERA_HEIGHT_MAX_CV})")
+        stats.update(camera_height_median=med, camera_above_fraction=above_frac,
+                     camera_height_cv=cv, reason=reason)
+        return FloorPlane(ok=False, reason=reason, stats=stats)
     stats.update(source="fallback_camera_drop", camera_height_median=med,
                  camera_above_fraction=float(np.mean(above > 0)),
                  camera_height_cv=float(1.4826 * np.median(np.abs(above - med)) / max(med, EPS)),
