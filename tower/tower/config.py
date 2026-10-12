@@ -1084,8 +1084,8 @@ def world_final_scale_guard_setting() -> str:
 #   off         -- unset, blank, `0`, `false`, `no`, `off`, and anything unrecognised (logged).
 #                  Today's final solve, byte for byte: nothing new is read, written or recorded.
 #   adaptive:N  -- N in 1..6, exactly. Draw 1 is today's final solve and guard. When the guard
-#                  isolates fewer than `WORLD_SOLVE_SELECT_TRIGGER_KF` keyframes nothing else
-#                  happens (byte for byte as off). At or above it, N further mapper draws run on
+#                  isolates fewer keyframes than the trigger (below) nothing else happens (byte
+#                  for byte as off). At or above it, N further mapper draws run on
 #                  copies of the already-matched database, at most `WORLD_SOLVE_SELECT_PARALLEL` at
 #                  a time, each guarded; the best by the pre-fixed score is published, ties to
 #                  draw 1, through the existing publish step.
@@ -1099,7 +1099,16 @@ WORLD_SOLVE_SELECT_ADAPTIVE = "adaptive"
 WORLD_SOLVE_SELECT_MAX_DRAWS = 6
 WORLD_SOLVE_SELECT_BUDGET_DEFAULT_S = 240.0
 WORLD_SOLVE_SELECT_BUDGET_MAX_S = 3600.0
-# The trigger (SEL-REPORT: GOOD draws isolated 43-99 keyframes, WELDED draws >= 265).
+# The trigger is a FRACTION of the room the guard judged (`solve_select.trigger_threshold`):
+# draw 1 triggers when it isolates >= max(TRIGGER_MIN_KF, ceil(TRIGGER_FRAC x the room's supported
+# keyframes)). As a fraction GOOD draws isolated 4.6-10.6% (walk 7 83/972, walk 8 43-99/937) and
+# WELDED draws 28-44% (walk 8 >= 265/937, walk 7 429/972); an absolute count does not survive a
+# denser keyframe policy (the turn bridge: ~1.4-1.5x keyframes, a good draw's bathroom ~120-145).
+# The floor keeps a tiny walk from triggering on noise.
+WORLD_SOLVE_SELECT_TRIGGER_FRAC = 0.18
+WORLD_SOLVE_SELECT_TRIGGER_MIN_KF = 60
+# The absolute rule (SEL-REPORT: GOOD draws isolated 43-99 keyframes, WELDED draws >= 265), used only
+# when the guard's assessment records no room size to take the fraction of.
 WORLD_SOLVE_SELECT_TRIGGER_KF = 150
 # Extra draws mapped at once, each on every core (SEL-REPORT: 3 in parallel cost ~1.4-1.5x one).
 WORLD_SOLVE_SELECT_PARALLEL = 3

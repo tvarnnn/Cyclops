@@ -13,9 +13,14 @@ WHAT HAPPENS, in `global_solve.solve` (ungated, single-draw final solve, guard `
   1. DRAW 1 is today's final solve: today's mapping, then today's guard call
      (`final_scale_guard.guard_publication`, mode on, ungated). Its outcome is handed to the
      existing publish step, which then does not guard again.
-  2. Fewer than `WORLD_SOLVE_SELECT_TRIGGER_KF` (150) keyframes isolated: NOTHING ELSE. The
-     publish is byte for byte the switch-off publish (pinned by
-     `tests/test_world_builder_solve_select_off_identity.py` against 41cee79).
+  2. Fewer keyframes isolated than the TRIGGER (`trigger_threshold`): NOTHING ELSE. The publish is
+     byte for byte the switch-off publish (pinned by
+     `tests/test_world_builder_solve_select_off_identity.py` against 41cee79). The trigger is a
+     FRACTION of the room draw 1's guard judged: max(`WORLD_SOLVE_SELECT_TRIGGER_MIN_KF` (60),
+     ceil(`WORLD_SOLVE_SELECT_TRIGGER_FRAC` (0.18) x its supported room keyframes)) -- good draws
+     isolate 4.6-10.6% of it, welded ones 28-44%, whatever the walk's length or keyframe density.
+     An assessment that records no room size falls back to the absolute
+     `WORLD_SOLVE_SELECT_TRIGGER_KF` (150).
   3. Otherwise N further draws map the ALREADY-MATCHED database -- no extraction, no matching --
      each in its own process on its OWN COPY of it (opening a COLMAP database through pycolmap
      mutates the file), at most `WORLD_SOLVE_SELECT_PARALLEL` at a time, each on every core
@@ -33,8 +38,8 @@ WHAT HAPPENS, in `global_solve.solve` (ungated, single-draw final solve, guard `
 
 THE RECORD (`solve.select` in solution.json and the solve's summary, and `select` in the guard's
 audit `final_scale_guard.json`), only when the selection triggered:
-`{mode, n, triggered, draws: [{draw, isolated_kf, certified_kf, ratio, seconds, outcome}], winner,
-added_seconds, budget_hit}`.
+`{mode, n, triggered, trigger: {rule, base_kf, threshold_kf}, draws: [{draw, isolated_kf,
+certified_kf, ratio, seconds, outcome}], winner, added_seconds, budget_hit}`.
 
 LOCKS AND SCRATCH. The caller holds the world's writer lock for the whole solve, selection
 included. The workers write only below `<workspace>/select/` (a database copy, a `sparse/`, a
@@ -101,6 +106,43 @@ def certified_keyframes(outcome) -> int | None:
     return max(0, len(a.get("room_keyframes") or ()) - int(a.get("uncertified_keyframes") or 0))
 
 
+def judged_keyframes(outcome) -> int | None:
+    """The base of the trigger's fraction: the supported room keyframes the guard JUDGED -- its
+    assessment's `room_candidate`, the component-0 cameras with >= `min_image_observations`
+    observations handed to `assess`/`assess_v2`, BEFORE any piece is isolated. Chosen because every
+    assessment records it (v1 and v2, published or withheld, even when too few ratios were
+    measured), it is the same population the isolated pieces are drawn from (so the fraction is
+    <= 1 and means "share of the room cut out"), and unlike the assessment's `room_keyframes` it
+    does not shrink by the isolation it is meant to normalise, nor depend on how much was measured.
+    None when the guard made no assessment or did not record it."""
+    a = _assessment(outcome)
+    if a is None:
+        return None
+    v = a.get("room_candidate")
+    if isinstance(v, bool) or not isinstance(v, int) or v <= 0:
+        return None
+    return v
+
+
+def trigger_threshold(outcome) -> dict:
+    """`{rule, base_kf, threshold_kf}`: draw 1 triggers when it isolates >= `threshold_kf`.
+    `fraction`: max(`WORLD_SOLVE_SELECT_TRIGGER_MIN_KF`, ceil(`WORLD_SOLVE_SELECT_TRIGGER_FRAC` x
+    `judged_keyframes`)); `absolute`: `WORLD_SOLVE_SELECT_TRIGGER_KF`, when there is no base."""
+    from tower.config import (  # noqa: PLC0415
+        WORLD_SOLVE_SELECT_TRIGGER_FRAC,
+        WORLD_SOLVE_SELECT_TRIGGER_KF,
+        WORLD_SOLVE_SELECT_TRIGGER_MIN_KF,
+    )
+
+    base = judged_keyframes(outcome)
+    if base is None:
+        return {"rule": "absolute", "base_kf": None, "threshold_kf": int(WORLD_SOLVE_SELECT_TRIGGER_KF)}
+    # The epsilon keeps a product that is an integer in exact arithmetic (0.18 x 1000) from rounding up.
+    frac = math.ceil(float(WORLD_SOLVE_SELECT_TRIGGER_FRAC) * base - 1e-9)
+    return {"rule": "fraction", "base_kf": int(base),
+            "threshold_kf": int(max(int(WORLD_SOLVE_SELECT_TRIGGER_MIN_KF), frac))}
+
+
 def worst_attached_ratio(outcome) -> float | None:
     """The attached, measured (>= 10) plateau ratio farthest from 1 in log terms; None without one."""
     a = _assessment(outcome) or {}
@@ -156,7 +198,6 @@ def select(store, world_id: str, session_id: str, workspace, database_path, base
 
     Never raises for a failed draw, a failed launch or a failed install of the winner's model: each
     is recorded and draw 1 stands. The caller holds the world's writer lock."""
-    from tower.config import WORLD_SOLVE_SELECT_TRIGGER_KF  # noqa: PLC0415
     from tower.world_builder import final_scale_guard as FSG  # noqa: PLC0415
 
     root = Path(workspace.root) / SELECT_DIRNAME
@@ -168,13 +209,15 @@ def select(store, world_id: str, session_id: str, workspace, database_path, base
                                   database_path=database_path, keyframes=keyframes)
     first_s = time.perf_counter() - began
     isolated = isolated_keyframes(first)
-    if isolated is None or isolated < WORLD_SOLVE_SELECT_TRIGGER_KF:
-        logger.info("[Tower][WorldBuilder] adaptive select: draw 1 isolated %s keyframes (< %s); "
-                    "draw 1 is published as today", isolated, WORLD_SOLVE_SELECT_TRIGGER_KF)
+    trigger = trigger_threshold(first)
+    if isolated is None or isolated < trigger["threshold_kf"]:
+        logger.info("[Tower][WorldBuilder] adaptive select: draw 1 isolated %s keyframes (< %s, %s of %s); "
+                    "draw 1 is published as today", isolated, trigger["threshold_kf"], trigger["rule"],
+                    trigger["base_kf"])
         return first, None
-    logger.warning("[Tower][WorldBuilder] adaptive select: draw 1 isolated %s keyframes (>= %s); "
-                   "mapping %s further draws (budget %g s)", isolated, WORLD_SOLVE_SELECT_TRIGGER_KF,
-                   n, budget_s)
+    logger.warning("[Tower][WorldBuilder] adaptive select: draw 1 isolated %s keyframes (>= %s, %s of %s); "
+                   "mapping %s further draws (budget %g s)", isolated, trigger["threshold_kf"],
+                   trigger["rule"], trigger["base_kf"], n, budget_s)
     started = time.perf_counter()
     rows = {1: row(1, first, first_s)}
     outcomes = {1: first}
@@ -200,7 +243,7 @@ def select(store, world_id: str, session_id: str, workspace, database_path, base
         shutil.rmtree(root, ignore_errors=True)
     for k in range(2, n + 2):
         rows.setdefault(k, _cut_row(k, 0.0, f"{OUTCOME_FAILED}: never reported"))
-    record = {"mode": "adaptive", "n": int(n), "triggered": True,
+    record = {"mode": "adaptive", "n": int(n), "triggered": True, "trigger": trigger,
               "draws": [rows[k] for k in sorted(rows)], "winner": int(winner),
               "added_seconds": round(time.perf_counter() - started, 3), "budget_hit": bool(budget_hit)}
     chosen = outcomes[winner]
