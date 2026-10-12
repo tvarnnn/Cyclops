@@ -175,7 +175,17 @@ def _integer(value, maximum):
     return value
 
 
-def _component(reference, entries, check=lambda: None):
+def _sector_bin(x, y):
+    """Sector 0-11 of a floor-plane direction (x along forward, y along right)."""
+    angle = math.degrees(math.atan2(y, x)) % 360
+    # Trig results for an exact boundary can land a few ulps below it.
+    # The contract assigns that boundary to the clockwise sector.
+    return int((angle + 1e-12)//30) % 12
+
+
+def _component(reference, entries, check=lambda: None, bins_out=None):
+    """`bins_out` (FOW dial, imagery-landed only) receives keyframe_id -> ((y, x), sector or None),
+    the exact cell and sector each keyframe contributed to the masks."""
     entries.sort(key=lambda item: item[0])
     check()
     up = _unit([sum(e[2][i] for e in entries) for i in range(3)])
@@ -205,7 +215,7 @@ def _component(reference, entries, check=lambda: None):
             min_x, min_y, max_x, max_y, *origin, *up, *forward, cell_size)) or cell_size <= 0:
         raise ValueError("nonfinite component geometry")
     cells = {}
-    for ((_, _, _, ray), (x, y)) in zip(entries, xy):
+    for ((kid, _, _, ray), (x, y)) in zip(entries, xy):
         check()
         cx = min(7, max(0, math.floor((x-(mid_x-side/2))/cell_size)))
         cy = min(7, max(0, math.floor((y-(mid_y-side/2))/cell_size)))
@@ -213,11 +223,13 @@ def _component(reference, entries, check=lambda: None):
         cell[12] += 1
         projected = [ray[i]-_dot(ray, up)*up[i] for i in range(3)]
         if math.sqrt(_dot(projected, projected)) < _EPS:
+            if bins_out is not None:
+                bins_out[kid] = ((cy, cx), None)
             continue
-        angle = math.degrees(math.atan2(_dot(projected, right), _dot(projected, forward))) % 360
-        # Trig results for an exact boundary can land a few ulps below it.
-        # The contract assigns that boundary to the clockwise sector.
-        cell[int((angle + 1e-12)//30) % 12] += 1
+        sector = _sector_bin(_dot(projected, forward), _dot(projected, right))
+        cell[sector] += 1
+        if bins_out is not None:
+            bins_out[kid] = ((cy, cx), sector)
     stations = []
     for (y, x), counts in cells.items():
         weak = sum(1 << i for i, n in enumerate(counts[:12]) if n == 1)
@@ -237,9 +249,68 @@ def _finite_component(component):
             math.isfinite(component["cell_size"]) and component["cell_size"] > 0)
 
 
+# motion_sector is scale-free (walk 9 had scale unknown): the displacement over
+# H's newest 24 eligible keyframes (~5 s), null below 0.25 cell_size (manager 374).
+_DIAL_MOTION_KEYFRAMES = 24
+_DIAL_MOTION_MIN_CELLS = 0.25
+
+
+def _dial(components, eligible, bins, ids, check):
+    """FOW capture-dial (S3) inputs for B2 imagery, from this receipt's own binning.
+
+    Reads the finished receipt; never changes it. "Newest" is solve/journal
+    order (`ids`), not keyframe-id order. H is the drawn component of the newest
+    eligible keyframe with a usable forward (the one `latest` names); with no
+    usable forward anywhere it is the newest eligible keyframe's component.
+    """
+    order = {kid: index for index, kid in enumerate(ids)}
+    drawn = {component["reference_segment"]: component for component in components}
+    rows = []
+    for ref in drawn:
+        for kid, position, _, _ in eligible[ref]:
+            check()
+            if kid in bins:
+                rows.append((order[kid], kid, ref, position))
+    if not rows:
+        return {}
+    rows.sort(key=lambda row: row[0])
+    newest = next((row for row in reversed(rows) if bins[row[1]][1] is not None), None)
+    hero = (newest or rows[-1])[2]
+    component = drawn[hero]
+    stations = {(s["y"], s["x"]) for s in component["stations"]}
+    union = 0
+    for station in component["stations"]:
+        union |= station["weak_mask"] | station["supported_mask"]
+    candidates = {sector: [] for sector in range(12) if union >> sector & 1}
+    hero_rows = [row for row in rows if row[2] == hero]
+    for _, kid, _, _ in reversed(hero_rows):
+        check()
+        cell, sector = bins[kid]
+        if cell in stations and sector in candidates:
+            candidates[sector].append(kid)
+    motion = None
+    recent = hero_rows[-_DIAL_MOTION_KEYFRAMES:]
+    if len(recent) >= 2:
+        forward, up = component["forward_xyz"], component["up_xyz"]
+        right = _unit(_cross(forward, up))
+        delta = [recent[-1][3][i] - recent[0][3][i] for i in range(3)]
+        x, y = _dot(delta, forward), _dot(delta, right)
+        distance = math.hypot(x, y)
+        if math.isfinite(distance) and distance >= _DIAL_MOTION_MIN_CELLS*component["cell_size"]:
+            motion = _sector_bin(x, y)
+    latest = None
+    if newest is not None:
+        latest = {"component_reference_segment": newest[2],
+                  "sector": bins[newest[1]][1], "keyframe_id": newest[1]}
+    return {"reference_segment": hero,
+            "sectors": tuple((sector, tuple(kids)) for sector, kids in sorted(candidates.items())
+                             if kids),
+            "latest": latest, "motion_sector": motion}
+
+
 def compute_coverage(*, solution, manifest, placements, poses, keyframes,
                      geometry_revision, computed_at, check=lambda: None,
-                     eligible_out=None):
+                     eligible_out=None, dial_out=None):
     """Pure computation from one coherent snapshot; invalid global identity refuses all."""
     summary = manifest["global_solve"]
     solved_at = float(summary["solved_at"])
@@ -388,12 +459,16 @@ def compute_coverage(*, solution, manifest, placements, poses, keyframes,
             raise ValueError("solution pose and merged placement disagree")
         eligible[ref].append((kid, position, up, ray))
     rows, all_stations = {}, []
+    bins = {} if dial_out is not None else None
     for ref in sorted(references):
         check()
         if not eligible[ref]:
             continue
         try:
-            component, stations = _component(ref, eligible[ref], check)
+            if bins is None:
+                component, stations = _component(ref, eligible[ref], check)
+            else:
+                component, stations = _component(ref, eligible[ref], check, bins_out=bins)
         except (ValueError, TypeError, OverflowError):
             continue
         if not _finite_component(component):
@@ -415,6 +490,18 @@ def compute_coverage(*, solution, manifest, placements, poses, keyframes,
         visible_refs = {component["reference_segment"] for component in components}
         eligible_out.extend((kid, ref) for ref in sorted(visible_refs)
                             for kid, _, _, _ in eligible[ref])
+    if dial_out is not None:
+        # FOW dial (TOWER_WORLD_GUIDANCE_IMAGERY_LANDED only): B2 selection
+        # inputs. The coverage block below is built exactly as without it.
+        # A dial failure must never cost B1 its receipt: drop the dial (B2 then
+        # publishes nothing and keeps its last block) but let a cancellation or
+        # deadline -- check() raises ValueError -- still stop the job.
+        try:
+            dial_out.update(_dial(components, eligible, bins, ids, check))
+        except Exception:  # noqa: BLE001
+            dial_out.clear()
+            check()
+            logger.exception("world guidance dial failed; coverage published without it")
     block = {"version": 1, "source": "landed_global_solve", "solved_at": solved_at,
              "computed_at": computed_at, "horizon_keyframes": horizon,
              "keyframes_now": len(accepted), "keyframes_pending": max(0, len(accepted)-horizon),
@@ -463,7 +550,7 @@ def _json(path, budget=None):
 
 def compute_from_tree(root, world_id, session_id, expected, geometry_revision,
                       clock=time.time, tree_tag=None, budget=None,
-                      eligible_out=None, tree_out=None):
+                      eligible_out=None, tree_out=None, dial_out=None):
     """Read without a builder lock; reject torn trees and never read image bytes.
 
     `tree_out` (FOW v1.2 photo floor plan only) receives the exact parsed files
@@ -506,7 +593,7 @@ def compute_from_tree(root, world_id, session_id, expected, geometry_revision,
                              placements=placed["placements"], poses=posed["poses"],
                              keyframes=keyframes, geometry_revision=actual_revision,
                              computed_at=clock(), check=budget.check,
-                             eligible_out=eligible_out)
+                             eligible_out=eligible_out, dial_out=dial_out)
     if tree_out is not None:
         tree_out.update(solution=solution, manifest=manifest,
                         placements=placed["placements"], poses=posed["poses"])
@@ -739,6 +826,11 @@ class CoverageWorker:
                 wants_eligible = self._imagery_landed or self._photo_worker is not None
                 imagery_eligible = [] if wants_eligible else None
                 kwargs = ({"eligible_out": imagery_eligible} if wants_eligible else {})
+                dial = None
+                if self._imagery_landed:
+                    # FOW dial (S3): B2's per-sector selection inputs.
+                    dial = {}
+                    kwargs["dial_out"] = dial
                 photo_tree = None
                 if self._photo_worker is not None:
                     photo_tree = {}
@@ -800,7 +892,7 @@ class CoverageWorker:
                     if not self._stop.is_set():
                         self._imagery_state.publish_landed(self.root, world, session,
                                                            block, imagery_eligible,
-                                                           cancelled=self._stop)
+                                                           cancelled=self._stop, dial=dial)
                 except Exception:
                     logger.exception("world builder guidance: landed imagery failed")
                 finally:
