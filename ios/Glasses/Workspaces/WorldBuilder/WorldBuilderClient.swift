@@ -396,6 +396,10 @@ final class WorldBuilderViewModel: ObservableObject {
     /// names its walk, so one walk's map is never shown for another.
     var coverage: WorldCoverageReceipt? { walkReport.walk == nil ? nil : walkReport.value.coverage }
 
+    /// The capture dial's "before the first landing": the walk's own report
+    /// says `coverage: null` (the Tower's switch on, no landing yet).
+    var coverageAwaited: Bool { walkReport.walk != nil && coverage == nil && walkReport.value.coverageNotYet }
+
     /// The live relocalizer's line, republished from the client.
     @Published private(set) var recovery: WorldRecoveryReport?
 

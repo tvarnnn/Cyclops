@@ -98,6 +98,8 @@ final class WorldImageryUITests: XCTestCase {
         let asked = mock.requestLines.filter { $0.contains("/imagery/") }
         XCTAssertEqual(asked, [], "OFF asked the imagery routes")
         XCTAssertFalse(element("wb-panel-map-photo").exists, "a photo floor plan with its switch off")
+        XCTAssertFalse(element("wb-panel-dial").exists, "a capture dial with its switch off")
+        XCTAssertFalse(element("wb-panel-tab").exists, "a Dial|Map control with the dial's switch off")
         XCTAssertTrue(element("wb-panel-map-piece").exists, "today's fog piece")
         XCTAssertEqual(mock.requestLines.filter { $0.contains("/photo-floorplan/") }, [],
                        "OFF asked the photo floor plan routes")
@@ -217,6 +219,48 @@ final class WorldImageryUITests: XCTestCase {
         XCTAssertTrue(waitFor(timeout: 10) { !thumb.exists }, "a superseded landing's thumbnail")
         XCTAssertTrue(element("wb-panel-map-piece").exists, "the map stays")
         XCTAssertTrue(neverExists(thumb, for: 2), "the superseded thumbnail came back")
+    }
+
+    // MARK: FOW-RING: the capture dial's photos
+
+    /// IOS_FOW_DIAL=on alone -- it asks for B2's tiles itself -- and §4's
+    /// landed fixture: today's join places `s9:120` looking 90°, sector 3, a
+    /// captured direction of §9's stop piece, so it is the dial's photo at
+    /// 3 o'clock (sector zero on top); a tap opens the map's own sheet. The
+    /// Map tab keeps B2's thumbnail over the map.
+    func testTheDialShowsTodaysLandedPhotoInItsSegment() throws {
+        mock.setRoute("GET \(Self.imagery)/manifest", status: 200, body: Self.landedFixture)
+        launch(environment: ["IOS_FOW_DIAL": "on"])
+        open(cartridge: "World Builder")
+        XCTAssertTrue(waitFor(timeout: 15) { self.socket.liveSubscription != nil }, "the live subscription")
+        try startCapture()
+        serve(revision: "gA", segments: [Self.placedZero, Self.live812])
+        push(geometry: "gA", guidance: FOWGuidance.stop)
+        let dial = element("wb-panel-dial")
+        let photo = element("wb-panel-dial-photo")
+        XCTAssertTrue(photo.waitForExistence(timeout: 20), "the dial's photo")
+        XCTAssertEqual(app.descendants(matching: .any).matching(identifier: "wb-panel-dial-photo").count, 1)
+        XCTAssertEqual(photo.label, "Photo at 3 o'clock")
+        XCTAssertTrue(dial.exists)
+        print("DIAL-PHOTO|dial=\(dial.frame)|photo=\(photo.frame)")
+        XCTAssertGreaterThan(photo.frame.midX, dial.frame.midX + dial.frame.width * 0.2, "at 3 o'clock")
+        XCTAssertEqual(photo.frame.midY, dial.frame.midY, accuracy: 4, "at 3 o'clock")
+        XCTAssertTrue((dial.value as? String)?.hasPrefix("4 of 12 directions captured. ") == true,
+                      String(describing: dial.value))
+        XCTAssertFalse(element("wb-panel-dial-photos-unavailable").exists)
+        reveal(dial)
+        shoot("dial-photo-s2")
+        XCTAssertTrue(tap(photo, until: self.element("wb-imagery-landed-direction").exists), "the sheet")
+        XCTAssertEqual(text(element("wb-imagery-landed-direction")), "Look direction 90°")
+        shoot("dial-photo-sheet")
+        XCTAssertTrue(tap(app.buttons["Done"], until: !self.element("wb-imagery-landed-direction").exists),
+                      "the sheet closed")
+        let control = app.segmentedControls.matching(identifier: "wb-panel-tab").firstMatch
+        XCTAssertTrue(control.waitForExistence(timeout: 5), "the Dial|Map control")
+        reveal(control)
+        XCTAssertTrue(tap(control.buttons["Map"], until: self.element("wb-panel-map").exists), "the Map tab")
+        XCTAssertTrue(element("wb-imagery-landed-thumb").waitForExistence(timeout: 5), "B2's thumbnail on the map")
+        XCTAssertTrue(tap(control.buttons["Dial"], until: dial.exists), "back to the dial")
     }
 
     // MARK: FOW v1.2: the photo floor plan
@@ -516,9 +560,13 @@ final class WorldImageryUITests: XCTestCase {
     }
 
     private func shoot(_ name: String) {
-        let attachment = XCTAttachment(screenshot: app.screenshot())
+        let screenshot = app.screenshot()
+        let attachment = XCTAttachment(screenshot: screenshot)
         attachment.name = name
         attachment.lifetime = .keepAlways
         add(attachment)
+        // As WorldInlinePanelUITests: to UINLINE_SHOTS_DIR when it is set.
+        guard let dir = ProcessInfo.processInfo.environment["UINLINE_SHOTS_DIR"], !dir.isEmpty else { return }
+        try? screenshot.pngRepresentation.write(to: URL(fileURLWithPath: dir).appendingPathComponent("\(name).png"))
     }
 }

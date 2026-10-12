@@ -56,9 +56,13 @@ nonisolated struct WorldImagerySwitches: Equatable, Sendable {
         self.landed = landed
     }
 
+    /// B2 is also on when the capture dial is (`IOS_FOW_DIAL`): the dial's
+    /// photos are B2's landed tiles, and a colour-only dial is not shipped
+    /// (FOW-RING-SPEC §1).
     init(environment: [String: String], info: [String: Any] = [:]) {
         self.init(live: environment[Self.liveVariable] == "on" || info[Self.liveInfoKey] as? String == "on",
-                  landed: environment[Self.landedVariable] == "on" || info[Self.landedInfoKey] as? String == "on")
+                  landed: environment[Self.landedVariable] == "on" || info[Self.landedInfoKey] as? String == "on"
+                      || WorldCaptureDialSwitch(environment: environment, info: info).on)
     }
 
     static var current: WorldImagerySwitches {
@@ -333,6 +337,11 @@ nonisolated struct WorldImagery: Equatable {
     var landed: WorldImageryLanded?
     var liveTiles = WorldImageryTiles()
     var landedTiles = WorldImageryTiles()
+    /// The current landing, once the phone has given up on its photos: the
+    /// manifest was refused, absent or off, it never carried this landing
+    /// within the bounded retries, or every tile it named failed. Cleared by
+    /// the next landing.
+    var landedUnavailable: WorldImageryLanding?
 }
 
 // MARK: - The fetching
@@ -401,6 +410,7 @@ final class WorldImageryModel: ObservableObject {
         landing = next
         landingAnswered = false
         landingAttempts = 0
+        if imagery.value.landedUnavailable != nil { update { $0.landedUnavailable = nil } }
         fetchLanded(walk: walk, landing: next)
     }
 
@@ -500,16 +510,29 @@ final class WorldImageryModel: ObservableObject {
                 case .value, .notYet:
                     // Not this landing's yet (its job is slow) or another
                     // landing's: never drawn; asked again on the next push.
-                    break
+                    self.giveUpIfExhausted(landing)
                 case .off:
                     self.landingAnswered = true
+                    self.photosUnavailable(landing)
                 }
             case .failure(WorldImageryFetchError.notFound), .failure(WorldImageryFetchError.refused):
                 self.landingAnswered = true
+                self.photosUnavailable(landing)
             case .failure:
-                break
+                self.giveUpIfExhausted(landing)
             }
         }
+    }
+
+    /// The bounded retries are spent and this landing never came.
+    private func giveUpIfExhausted(_ landing: WorldImageryLanding) {
+        guard landingAttempts > Self.landingRetries else { return }
+        photosUnavailable(landing)
+    }
+
+    private func photosUnavailable(_ landing: WorldImageryLanding) {
+        guard self.landing == landing, imagery.value.landedUnavailable != landing else { return }
+        update { $0.landedUnavailable = landing }
     }
 
     /// Replaced as a whole, never merged.
@@ -559,7 +582,18 @@ final class WorldImageryModel: ObservableObject {
             }
             guard let self, !Task.isCancelled else { return }
             self.tileTasks[stage] = nil
+            if stage == .landed { self.giveUpIfNoLandedTile() }
         }
+    }
+
+    /// Every tile the current landing's manifest named failed: its photos
+    /// are unavailable (the dial says so, FOW-RING-SPEC §3.4).
+    private func giveUpIfNoLandedTile() {
+        guard let landed = imagery.value.landed, let landing, landed.landing == landing,
+              nextMissing(.landed) == nil,
+              !landed.entries.contains(where: { imagery.value.landedTiles[$0.digest] != nil })
+        else { return }
+        photosUnavailable(landing)
     }
 }
 
@@ -607,9 +641,26 @@ nonisolated struct WorldLandedThumbnail: Equatable, Identifiable {
 nonisolated struct WorldLandedOverlay: Equatable {
     let receipt: WorldCoverageReceipt
     let thumbnails: [WorldLandedThumbnail]
+    /// The capture dial's tiles (FOW-RING-SPEC §3.4), of the same landing
+    /// as `receipt`.
+    var dialEntries: [WorldDialThumbnail] = []
 
     func thumbnails(on referenceSegment: Int) -> [WorldLandedThumbnail] {
         thumbnails.filter { $0.referenceSegment == referenceSegment }
+    }
+}
+
+/// One in-hand B2 tile for the capture dial, with the look direction the
+/// phone's join found (S2). Not yet checked against any segment: the dial
+/// does that.
+nonisolated struct WorldDialThumbnail: Equatable {
+    let digest: String
+    let image: UIImage
+    let referenceSegment: Int
+    let heading: Double?
+
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.digest == rhs.digest && lhs.referenceSegment == rhs.referenceSegment && lhs.heading == rhs.heading
     }
 }
 
@@ -623,12 +674,7 @@ nonisolated enum WorldLandedPlacement {
     /// lands on grey.
     static func place(_ landed: WorldImageryLanded, on coverage: WorldCoverage,
                       chunks: some Sequence<WorldSegmentChunk>, tiles: WorldImageryTiles) -> [WorldLandedThumbnail] {
-        var poses: [String: (pose: WorldPose, transform: WorldTransform)] = [:]
-        for chunk in chunks {
-            guard let transform = chunk.transformToWorld, transform.frameRevision == landed.landing.frameRevision
-            else { continue }
-            for pose in chunk.poses where poses[pose.keyframeID] == nil { poses[pose.keyframeID] = (pose, transform) }
-        }
+        let poses = poses(chunks, frameRevision: landed.landing.frameRevision)
         return landed.entries.compactMap { entry in
             guard let image = tiles[entry.digest], let reference = entry.componentReferenceSegment,
                   let component = coverage.components.first(where: { $0.referenceSegment == reference }),
@@ -643,6 +689,40 @@ nonisolated enum WorldLandedPlacement {
                                         column: spot.column, row: spot.row,
                                         heading: forward.flatMap { heading($0, on: component) })
         }
+    }
+
+    /// The capture dial's S2 join (FOW-RING-SPEC §3.4): each entry's look
+    /// direction on its own piece, by digest, joined exactly as `place`
+    /// joins it -- a pose of a chunk placed in the entry's component and the
+    /// landing's frame -- but without the map's station-cell test: the dial
+    /// tests its own segment's evidence instead. No direction, no entry.
+    static func headings(_ landed: WorldImageryLanded, on coverage: WorldCoverage,
+                         chunks: some Sequence<WorldSegmentChunk>) -> [String: Double] {
+        let poses = poses(chunks, frameRevision: landed.landing.frameRevision)
+        var headings: [String: Double] = [:]
+        for entry in landed.entries {
+            guard let reference = entry.componentReferenceSegment,
+                  let component = coverage.components.first(where: { $0.referenceSegment == reference }),
+                  let joined = poses[entry.keyframeID], joined.transform.referenceSegment == reference,
+                  let forward = joined.pose.rotation.flatMap(cameraForward)
+                      .flatMap({ rotate($0, by: joined.transform.rotationWXYZ) }),
+                  let heading = heading(forward, on: component)
+            else { continue }
+            headings[entry.digest] = heading
+        }
+        return headings
+    }
+
+    /// Every posed keyframe of a chunk placed in `frameRevision`, the first
+    /// chunk to name a keyframe winning.
+    private static func poses(_ chunks: some Sequence<WorldSegmentChunk>, frameRevision: Int)
+        -> [String: (pose: WorldPose, transform: WorldTransform)] {
+        var poses: [String: (pose: WorldPose, transform: WorldTransform)] = [:]
+        for chunk in chunks {
+            guard let transform = chunk.transformToWorld, transform.frameRevision == frameRevision else { continue }
+            for pose in chunk.poses where poses[pose.keyframeID] == nil { poses[pose.keyframeID] = (pose, transform) }
+        }
+        return poses
     }
 
     /// A solve-frame point in grid cells (0...8 each way), or `nil` outside
@@ -734,6 +814,27 @@ extension WorldBuilderViewModel {
         else { return nil }
         let thumbnails = WorldLandedPlacement.place(landed, on: receipt.coverage, chunks: geometryChunks.values,
                                                     tiles: held.value.landedTiles)
-        return WalkScoped(walk: walk, value: WorldLandedOverlay(receipt: receipt, thumbnails: thumbnails))
+        let headings = WorldLandedPlacement.headings(landed, on: receipt.coverage, chunks: geometryChunks.values)
+        let dialEntries = landed.entries.compactMap { entry -> WorldDialThumbnail? in
+            guard let image = held.value.landedTiles[entry.digest], let component = entry.componentReferenceSegment
+            else { return nil }
+            // The phone's join must have found a look direction (S2).
+            guard let heading = headings[entry.digest] else { return nil }
+            return WorldDialThumbnail(digest: entry.digest, image: image, referenceSegment: component,
+                                      heading: heading)
+        }
+        return WalkScoped(walk: walk, value: WorldLandedOverlay(receipt: receipt, thumbnails: thumbnails,
+                                                                 dialEntries: dialEntries))
+    }
+
+    /// The capture dial's "Photos unavailable for this update": the phone
+    /// gave up on the photos of the landing the walk's own map is from.
+    var landedPhotosUnavailable: Bool {
+        let held = imageryModel.imagery
+        guard imageryModel.switches.landed, let walk = held.walk, let unavailable = held.value.landedUnavailable,
+              let receipt = walkReport.value(for: WorldRenderTarget(worldID: walk.worldID, sessionID: walk.sessionID))?
+                .coverage
+        else { return false }
+        return unavailable == WorldImageryLanding(receipt.coverage)
     }
 }

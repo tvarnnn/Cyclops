@@ -53,6 +53,11 @@
 	     "on" only when the build passes IOS_FOW_PHOTO_FLOORPLAN=on to xcodebuild. -->
 	<key>GlassesFOWPhotoFloorplan</key>
 	<string>$(IOS_FOW_PHOTO_FLOORPLAN)</string>
+	<!-- FOW capture dial, the phone's switch for home-screen launches: "on"
+	     only when the build passes IOS_FOW_DIAL=on to xcodebuild. It also
+	     turns on the B2 landed fetch, whose tiles are the dial's photos. -->
+	<key>GlassesFOWDial</key>
+	<string>$(IOS_FOW_DIAL)</string>
 	<key>GlassesBuildSHA</key>
 	<string>$(GLASSES_BUILD_SHA)</string>
 

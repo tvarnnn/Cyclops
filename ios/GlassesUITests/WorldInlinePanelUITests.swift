@@ -672,6 +672,8 @@ final class WorldInlinePanelUITests: XCTestCase {
         let map = element("wb-panel-map")
         if !map.waitForExistence(timeout: 15) { print("FOW-AX|\(app.debugDescription)") }
         XCTAssertTrue(map.exists, "the map")
+        XCTAssertFalse(element("wb-panel-dial").exists, "the dial with its switch off")
+        XCTAssertFalse(element("wb-panel-tab").exists, "the Dial|Map control with the dial's switch off")
         XCTAssertTrue(reveal(map, whole: true), "the map on screen")
         let label = element("wb-panel-map-label")
         XCTAssertTrue(label.waitForExistence(timeout: 5), "the label")
@@ -719,6 +721,75 @@ final class WorldInlinePanelUITests: XCTestCase {
         XCTAssertFalse(element("wb-panel-map-pieces").exists, "one piece: no separate-pieces line")
         XCTAssertTrue(reveal(map, whole: true))
         shoot("fow-stale")
+    }
+
+    // MARK: FOW-RING: the capture dial
+
+    /// IOS_FOW_DIAL=on with FOW §9's receipts. Before the first landing the
+    /// dial is drawn empty and says why, with no control (no map yet); the
+    /// mid-walk receipt fills it from the hero piece's union, with a mini
+    /// dial for the other piece; the Dial|Map control reaches today's map,
+    /// its caption and pieces, and comes back; the stale stop receipt is
+    /// never emphasised. One element, read by its value; nothing announced.
+    func testTheCaptureDialFillsFromTheReceiptAndTheToggleReachesTheMap() throws {
+        openLive(environment: ["IOS_FOW_DIAL": "on"])
+        push(modelState: "receiving", guidance: FOWGuidance.none, accepted: 40)
+        let dial = element("wb-panel-dial")
+        if !dial.waitForExistence(timeout: 15) { print("FOW-DIAL-AX|\(app.debugDescription)") }
+        XCTAssertTrue(dial.exists, "the dial before the first landing")
+        XCTAssertEqual(dial.label, "Capture dial")
+        XCTAssertEqual(dial.value as? String, "The dial starts filling when the Tower places your first views.")
+        XCTAssertEqual(text(element("wb-panel-dial-gap")),
+                       "The dial starts filling when the Tower places your first views.")
+        XCTAssertFalse(element("wb-panel-tab").exists, "no map to switch to yet")
+        XCTAssertFalse(element("wb-panel-map").exists)
+        XCTAssertTrue(reveal(dial, whole: true), "the dial on screen")
+        shoot("dial-awaiting")
+
+        push(modelState: "receiving", guidance: FOWGuidance.mid, accepted: 127,
+             towerSentAt: FOWGuidance.midSolvedAt + 2)
+        XCTAssertTrue(waitFor(timeout: 15) { (dial.value as? String)?.hasPrefix("4 of 12") == true },
+                      "the mid receipt: \(String(describing: dial.value))")
+        let value = dial.value as? String ?? ""
+        XCTAssertTrue(value.hasPrefix("4 of 12 directions captured, 1 with one view. "), value)
+        XCTAssertTrue(value.contains("5 to 11 o'clock"), value)
+        XCTAssertTrue(value.hasSuffix("Top of the dial is the way you faced when this piece began."), value)
+        XCTAssertEqual(dial.label, "Capture dial, Piece 1, most views")
+        let minis = app.descendants(matching: .any).matching(identifier: "wb-panel-dial-mini")
+        XCTAssertEqual(minis.count, 1, "the other piece")
+        XCTAssertEqual(minis.firstMatch.label, "Piece 2, 1 of 12 directions captured")
+        XCTAssertEqual(text(element("wb-panel-dial-hero")), "Piece 1 · most views")
+        XCTAssertTrue(text(element("wb-panel-dial-stamp")).hasPrefix("Map through keyframe 113 · updated "),
+                      text(element("wb-panel-dial-stamp")))
+        XCTAssertEqual(text(element("wb-panel-dial-pieces")), "2 separate pieces, not placed relative to each other")
+        XCTAssertEqual(text(element("wb-panel-dial-newer")), "14 newer keyframes not yet placed")
+        XCTAssertFalse(element("wb-panel-map").exists, "the Dial tab first")
+        XCTAssertFalse(element("wb-panel-dial-photo").exists, "no B2 photo from this mock")
+        XCTAssertTrue(reveal(dial, whole: true), "the dial on screen")
+        shoot("dial-mid")
+
+        let control = app.segmentedControls.matching(identifier: "wb-panel-tab").firstMatch
+        XCTAssertTrue(control.waitForExistence(timeout: 5), "the Dial|Map control")
+        XCTAssertTrue(reveal(control), "the control on screen")
+        XCTAssertTrue(tap(control.buttons["Map"], until: self.element("wb-panel-map").exists), "the Map tab")
+        XCTAssertTrue(waitFor(timeout: 5) { !dial.exists }, "one face at a time")
+        XCTAssertTrue(element("wb-panel-map-label").exists, "today's caption under the map")
+        XCTAssertEqual(app.descendants(matching: .any).matching(identifier: "wb-panel-map-piece").count, 2)
+        shoot("dial-map-tab")
+        XCTAssertTrue(tap(control.buttons["Dial"], until: dial.exists), "back to the dial")
+        XCTAssertFalse(element("wb-panel-map").exists)
+
+        // §9's stop receipt, 45 s old: stale, never emphasised; one piece.
+        push(modelState: "receiving", guidance: FOWGuidance.stop, accepted: 1090,
+             towerSentAt: FOWGuidance.stopSolvedAt + 45)
+        XCTAssertTrue(waitFor(timeout: 15) {
+            (dial.value as? String)?.contains("Not yet captured when this map was made: 5 to 12 o'clock.") == true
+        }, "stale: \(String(describing: dial.value))")
+        XCTAssertTrue((dial.value as? String)?.hasPrefix("4 of 12 directions captured. ") == true)
+        XCTAssertEqual(minis.count, 0, "one piece, no mini dial")
+        XCTAssertTrue(text(element("wb-panel-dial-stamp")).hasSuffix(" · stale"), text(element("wb-panel-dial-stamp")))
+        XCTAssertTrue(reveal(dial, whole: true))
+        shoot("dial-stale")
     }
 
     /// Pixels anywhere in `image` whose colour is within 20 of `rgb`.
@@ -817,10 +888,10 @@ final class WorldInlinePanelUITests: XCTestCase {
 
     // MARK: Driving the mock
 
-    private func openLive(size: String? = nil, extra: [String] = []) {
+    private func openLive(size: String? = nil, extra: [String] = [], environment: [String: String] = [:]) {
         mock.setRoute(CaptureHealthUITests.sessionStart, status: 200, body: DeadEndsUITests.session(state: "active"))
         mock.setRoute(CaptureHealthUITests.sessionStop, status: 200, body: DeadEndsUITests.session(state: "stopped"))
-        launch(size: size, extra: extra)
+        launch(size: size, extra: extra, environment: environment)
         open(cartridge: "World Builder")
         XCTAssertTrue(waitFor(timeout: 15) { self.socket.liveSubscription != nil }, "the live subscription")
     }
@@ -904,9 +975,10 @@ final class WorldInlinePanelUITests: XCTestCase {
     }
 
     private func launch(size: String? = nil, extra: [String] = [], mockGlasses: Bool = false,
-                        authority: String? = nil) {
+                        authority: String? = nil, environment: [String: String] = [:]) {
         let app = XCUIApplication()
         app.launchArguments = ["-UITestSkipOnboarding", "-UITestResetTowerAddress"] + extra
+        for (key, value) in environment { app.launchEnvironment[key] = value }
         if let size { app.launchArguments += ["-UIPreferredContentSizeCategoryName", size] }
         if mockGlasses {
             app.launchEnvironment["GLASSES_UITEST_AWAITING_BOUND_SECONDS"] = "600"

@@ -696,6 +696,15 @@ final class TowerWorldBuilderClient: WorldBuilderClient {
         }
     }
 
+    /// `guidance.coverage: null` in the last report (FOW §5 `.notYet`):
+    /// published inside `walkReport` beside `coverage`, for a named walk only.
+    private(set) var coverageNotYet = false {
+        didSet {
+            guard coverageNotYet != oldValue else { return }
+            publishWalkReport()
+        }
+    }
+
     /// When the walk this phone followed live stopped, and whether it
     /// settled while the app was away (U0.6 §5.3). Memory only: a relaunch
     /// forgets it, and the elapsed line is then hidden.
@@ -743,7 +752,8 @@ final class TowerWorldBuilderClient: WorldBuilderClient {
             state: state, finalization: finalization, photographic: photographic,
             processing: processing, finishClock: finishClock,
             // The map belongs to its walk: none for a report naming no walk.
-            coverage: presentedWalk == nil ? nil : coverage))
+            coverage: presentedWalk == nil ? nil : coverage,
+            coverageNotYet: presentedWalk != nil && coverageNotYet))
         guard next != walkReport else { return }
         walkReport = next
         walkReportSubject.send(next)
@@ -870,6 +880,8 @@ final class TowerWorldBuilderClient: WorldBuilderClient {
         var recovery: WorldRecoveryReport? = nil
         /// `guidance.coverage`, or `nil`: absent, `null` or refused.
         var coverage: WorldCoverage? = nil
+        /// `guidance.coverage` was `null`: on, and no landing yet.
+        var coverageNotYet = false
         /// `progress.keyframes_accepted`, or `nil`.
         var keyframesAccepted: Int? = nil
         /// The Tower's clock as read at this report's arrival, or `nil`
@@ -909,6 +921,7 @@ final class TowerWorldBuilderClient: WorldBuilderClient {
             coverage = WorldCoverageReceipt.next(after: coverage, coverage: lastReport?.coverage,
                                                  keyframesAccepted: lastReport?.keyframesAccepted,
                                                  clock: lastReport?.towerClock)
+            coverageNotYet = lastReport?.coverageNotYet ?? false
             if lastReport == nil { recovery = nil; lookBack.dismiss() }
         }
     }
@@ -1649,6 +1662,7 @@ final class TowerWorldBuilderClient: WorldBuilderClient {
         let payload = envelope.payload
         let selection = WorldBuilderResultDecoder.selection(from: payload)
         let session = WorldBuilderResultDecoder.session(from: payload)
+        let coverageStatus = WorldCoverageStatus(payload: payload)
         lastReport = StatusReport(
             state: next,
             session: session,
@@ -1662,7 +1676,8 @@ final class TowerWorldBuilderClient: WorldBuilderClient {
                 ? WorldBuilderResultDecoder.recentReference(from: payload)
                 : nil,
             recovery: WorldBuilderResultDecoder.recovery(from: payload),
-            coverage: WorldCoverageStatus(payload: payload).coverage,
+            coverage: coverageStatus.coverage,
+            coverageNotYet: coverageStatus == .notYet,
             keyframesAccepted: WorldBuilderResultDecoder.keyframesAccepted(from: payload),
             towerClock: envelope.towerSentAt.map { WorldTowerClock(towerSentAt: $0, receivedAt: now()) }
         )

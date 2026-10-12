@@ -314,6 +314,9 @@ struct WorldInlinePanel<Health: View>: View {
     var landed: WorldLandedOverlay? = nil
     /// FOW v1.2: the photo floor plan, the walk's own: in the map only.
     var photo: WorldPhotoDisplay? = nil
+    /// FOW-RING: the capture dial's inputs, or `nil` -- its switch off, and
+    /// the walking stage exactly as before (no toggle, no new element).
+    var dial: WorldPanelDial? = nil
     @ObservedObject var host: WorldInlineHost
     let dismissBanner: () -> Void
     /// The away banner drawn for this walk was announced: never again for
@@ -336,6 +339,8 @@ struct WorldInlinePanel<Health: View>: View {
     /// never from words recomputed for the settled world (which no longer
     /// has a stage line) -- nor from another walk's wait.
     @State private var finish = WorldPanelFinishMemory<FinishingBlock>()
+    /// FOW-RING §5: the walking stage's face with the dial on; Dial first.
+    @SceneStorage("wb-panel-tab") private var tab: WorldPanelTab = .dial
 
     private var presentation: WorldPresentation { report.value }
 
@@ -565,11 +570,14 @@ struct WorldInlinePanel<Health: View>: View {
         case .none:
             EmptyView()
         case .map:
-            if let map {
-                let shownMap = Self.map(map, holding: photo)
-                WorldCoverageMapView(coverage: shownMap.receipt.coverage, isFrozen: false,
-                                     landed: Self.landed(landed, over: shownMap),
-                                     photo: Self.photo(photo?.plan, over: shownMap))
+            if let dial, Self.drawsDial(dial, map: map) {
+                let overlay = map.flatMap { Self.landed(landed, over: $0) }
+                WorldCaptureDialStage(dial: Self.captureDial(map, overlay: overlay), receipt: map?.receipt,
+                                      overlay: overlay, tab: $tab) {
+                    if let map { coverageMap(map) }
+                }
+            } else if let map {
+                coverageMap(map)
             }
         case .loading:
             if let block = currentFinishing { finishingContent(block, alwaysSpins: true) }
@@ -596,6 +604,30 @@ struct WorldInlinePanel<Health: View>: View {
             .padding(16)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
+    }
+
+    /// The walking map as FOW v1/v1.1/v1.2 draw it: the held photo plan's
+    /// receipt while one is held, B2's thumbnails and the photo plan over it.
+    @ViewBuilder
+    private func coverageMap(_ map: WorldPanelMapSource) -> some View {
+        let shownMap = Self.map(map, holding: photo)
+        WorldCoverageMapView(coverage: shownMap.receipt.coverage, isFrozen: false,
+                             landed: Self.landed(landed, over: shownMap),
+                             photo: Self.photo(photo?.plan, over: shownMap))
+    }
+
+    /// FOW-RING §6: the dial is drawn over a map, or before the first landing.
+    static func drawsDial(_ dial: WorldPanelDial, map: WorldPanelMapSource?) -> Bool {
+        map != nil || dial.awaiting
+    }
+
+    /// The dial of the CURRENT receipt (never a held one, §6), with B2's
+    /// photos only when `overlay` is that receipt's own landing
+    /// (`landed(_:over:)`); before the first landing, twelve dashed segments.
+    static func captureDial(_ map: WorldPanelMapSource?, overlay: WorldLandedOverlay?) -> WorldCaptureDial {
+        guard let map else { return .awaiting }
+        return WorldCaptureDial(coverage: map.receipt.coverage,
+                                photos: WorldCaptureDial.photos(overlay?.dialEntries ?? []))
     }
 
     /// B2's thumbnails only over the live receipt they were placed on: never
@@ -771,7 +803,11 @@ struct WorldInlinePanel<Health: View>: View {
                 }
             }
         case .walking:
-            if let map {
+            if let dial, Self.drawsDial(dial, map: map), map == nil || tab == .dial {
+                let overlay = map.flatMap { Self.landed(landed, over: $0) }
+                WorldCaptureDialCaption(dial: Self.captureDial(map, overlay: overlay), source: map,
+                                        photosUnavailable: dial.photosUnavailable)
+            } else if let map {
                 let shownMap = Self.map(map, holding: photo)
                 WorldCoverageCaption(source: shownMap, stopped: false,
                                      photoPieces: Self.photo(photo?.plan, over: shownMap)?.pieces.count ?? 0,

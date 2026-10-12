@@ -470,12 +470,21 @@ struct WorldBuilderWorkspaceView: View {
             // Only a picture of the walk this report describes (review HIGH 1).
             target: world.panelTarget,
             needsRetrySentence: presentation.recoverability?.sentence,
-            hasMap: panelMap != nil)
+            hasMap: panelMap != nil || panelDial?.awaiting == true)
     }
 
     /// The panel's map: the walk's own coverage receipt, else the DEBUG fixture.
     private var panelMap: WorldPanelMapSource? {
         WorldPanelMap.source(live: world.coverage)
+    }
+
+    /// FOW-RING: read once; off is today's panel exactly.
+    private static let dialSwitch = WorldCaptureDialSwitch.current
+
+    /// The capture dial's inputs, or `nil` with its switch off.
+    private var panelDial: WorldPanelDial? {
+        guard Self.dialSwitch.on else { return nil }
+        return WorldPanelDial(awaiting: world.coverageAwaited, photosUnavailable: world.landedPhotosUnavailable)
     }
 
     private var hostInputs: WorldInlineHost.Inputs {
@@ -507,6 +516,7 @@ struct WorldBuilderWorkspaceView: View {
                                        isCapturing: isCapturingNow, phase: panelPhase, state: world.state),
             landed: world.landedOverlay?.value(beside: world.walkPresentation),
             photo: world.photoFloorplan?.value(beside: world.walkPresentation),
+            dial: panelDial,
             host: host,
             dismissBanner: { world.dismissFinishBanner() },
             bannerAnnounced: { walk in world.finishBannerAnnounced(for: walk) },

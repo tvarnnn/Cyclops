@@ -92,16 +92,21 @@ nonisolated struct WorldWalkReport: Equatable, Sendable {
     /// `guidance.coverage` (fog of war v1): the map belongs to its walk, so
     /// it travels in the walk's report and only for a walk that is named.
     var coverage: WorldCoverageReceipt?
+    /// `guidance.coverage: null`: the Tower's switch is on and no landing
+    /// has merged yet (FOW §5 `.notYet`). Only the capture dial reads it.
+    var coverageNotYet: Bool
 
     init(state: WorldModelState, finalization: WorldFinalizationReport? = nil,
          photographic: WorldPhotographicReport? = nil, processing: WorldProcessingReport? = nil,
-         finishClock: WorldFinishClock = .unknown, coverage: WorldCoverageReceipt? = nil) {
+         finishClock: WorldFinishClock = .unknown, coverage: WorldCoverageReceipt? = nil,
+         coverageNotYet: Bool = false) {
         self.state = state
         self.finalization = finalization
         self.photographic = photographic
         self.processing = processing
         self.finishClock = finishClock
         self.coverage = coverage
+        self.coverageNotYet = coverageNotYet
     }
 }
 
