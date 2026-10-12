@@ -100,6 +100,8 @@ final class WorldPhotoFloorplanTests: XCTestCase {
         refused(good.replacingOccurrences(of: #""frame_revision":1"#, with: #""frame_revision":-1"#), "frame")
         refused(good.replacingOccurrences(of: #""horizon_keyframes":984,"#, with: ""), "no horizon")
         refused(good.replacingOccurrences(of: #""redacted""#, with: #""raw""#), "a raw source")
+        XCTAssertNotNil(WorldPhotoFloorplanWire.manifest(Data(good.replacingOccurrences(of: #""redacted""#, with: #""unredacted""#).utf8)),
+                        "privacy deferred: an honestly labelled unredacted source is drawn")
         refused(good.replacingOccurrences(of: F.digest, with: String(F.digest.prefix(32))), "a 32-hex digest")
         refused(good.replacingOccurrences(of: F.digest, with: F.digest.uppercased()), "an uppercase digest")
         refused(good.replacingOccurrences(of: #""width":512"#, with: #""width":513"#), "wider than 512")

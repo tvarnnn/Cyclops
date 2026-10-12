@@ -121,7 +121,9 @@ nonisolated enum WorldPhotoFloorplanWire {
     static let maxComponents = WorldCoverage.maxComponents
     /// The only source the phone draws: the Exp1 cache's redacted frames
     /// (still real camera pixels). A raw source would need its own switch.
-    static let imagerySources: Set<String> = ["redacted"]
+    /// "unredacted" is accepted while privacy is deferred for the walk-9 demo
+    /// (owner, 2026-10-12): the Tower labels unfiltered cache frames honestly.
+    static let imagerySources: Set<String> = ["redacted", "unredacted"]
     static let tileTypes = ["image/webp", "image/png"]
 
     static func manifestPath(worldID: String, sessionID: String) -> String {
