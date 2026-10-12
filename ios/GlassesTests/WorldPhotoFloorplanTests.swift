@@ -303,15 +303,23 @@ final class WorldPhotoFloorplanModelTests: XCTestCase {
         Stub.set(Self.tileA, status: 200, data: F.raster, type: "image/png")
     }
 
-    private func model(on: Bool = true) -> WorldPhotoFloorplanModel {
+    private func model(on: Bool = true, holdSeconds: TimeInterval = 45,
+                       now: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }) -> WorldPhotoFloorplanModel {
         WorldPhotoFloorplanModel(floorplanSwitch: WorldPhotoFloorplanSwitch(on: on),
                                  client: WorldPhotoFloorplanClient(baseURL: URL(string: "http://tower.test")!,
-                                                                   session: Stub.makeSession(), timeout: 5))
+                                                                   session: Stub.makeSession(), timeout: 5),
+                                 holdSeconds: holdSeconds, now: now)
+    }
+
+    private func scopedReceipt(_ coverage: WorldCoverage, walk: WorldFinishWalk? = nil)
+        -> WalkScoped<WorldCoverageReceipt?> {
+        WalkScoped(walk: walk ?? Self.walkA,
+                   value: WorldCoverageReceipt(coverage: coverage, keyframesAccepted: nil, clock: nil))
     }
 
     private func report(_ model: WorldPhotoFloorplanModel, _ coverage: WorldCoverage, walk: WorldFinishWalk? = nil,
                         receiving: Bool = true) {
-        model.coverageReported(WalkScoped(walk: walk ?? Self.walkA, value: coverage), receiving: receiving)
+        model.coverageReported(scopedReceipt(coverage, walk: walk ?? Self.walkA), receiving: receiving)
     }
 
     private func push(_ model: WorldPhotoFloorplanModel, _ walk: WorldFinishWalk? = nil, revision: String,
@@ -328,6 +336,68 @@ final class WorldPhotoFloorplanModelTests: XCTestCase {
     }
 
     private func settle() async { try? await Task.sleep(for: .milliseconds(300)) }
+
+    func testTheLastValidPlanHoldsItsOwnReceiptUntilItsMonotonicDeadline() async throws {
+        var time: TimeInterval = 100
+        let model = model(holdSeconds: 4, now: { time })
+        report(model, stop)
+        await expect("first valid plan") { model.displayedPlan(for: self.scopedReceipt(self.stop)) != nil }
+        let first = try XCTUnwrap(model.displayedPlan(for: scopedReceipt(stop)))
+        XCTAssertFalse(first.value.updating)
+
+        let newer = FOWFixtures.coverage(FOWFixtures.stop
+            .replacingOccurrences(of: "g-stop-984", with: "g-stop-990")
+            .replacingOccurrences(of: "1791240313.", with: "1791240320."))!
+        report(model, newer)
+        let held = try XCTUnwrap(model.displayedPlan(for: scopedReceipt(newer)))
+        XCTAssertTrue(held.value.updating)
+        XCTAssertEqual(held.value.plan.receipt, first.value.plan.receipt, "old raster keeps its own basis and receipt")
+        XCTAssertEqual(WorldPhotoFloorplanCopy.updating, "Updating…")
+        time = 103.99
+        XCTAssertNotNil(model.displayedPlan(for: scopedReceipt(newer)))
+        time = 104
+        XCTAssertNil(model.displayedPlan(for: scopedReceipt(newer)), "holdSeconds has passed")
+
+        Stub.set(Self.manifestA, json: F.manifest(solvedAt: "1791240320.0", revision: "g-stop-990"))
+        await settle() // the old landing's in-flight manifest has finished
+        push(model, revision: "g-new")
+        await expect("new valid plan") {
+            model.displayedPlan(for: self.scopedReceipt(newer))?.value.updating == false
+        }
+        let replacement = try XCTUnwrap(model.displayedPlan(for: scopedReceipt(newer)))
+        XCTAssertEqual(replacement.value.plan.receipt.coverage, newer)
+        time = 107
+        let newest = FOWFixtures.coverage(FOWFixtures.stop
+            .replacingOccurrences(of: "g-stop-984", with: "g-stop-991")
+            .replacingOccurrences(of: "1791240313.", with: "1791240321."))!
+        report(model, newest)
+        let heldReplacement = try XCTUnwrap(model.displayedPlan(for: scopedReceipt(newest)))
+        XCTAssertTrue(heldReplacement.value.updating)
+        XCTAssertEqual(heldReplacement.value.plan.receipt.coverage, newer, "the new plan became the remembered plan")
+    }
+
+    func testTheHoldClearsOnWalkChangeAndResetAndIsAbsentWhenOff() async {
+        var time: TimeInterval = 10
+        let model = model(holdSeconds: 4, now: { time })
+        report(model, stop)
+        await expect { model.displayedPlan(for: self.scopedReceipt(self.stop)) != nil }
+        let newer = FOWFixtures.coverage(FOWFixtures.stop
+            .replacingOccurrences(of: "g-stop-984", with: "g-stop-990")
+            .replacingOccurrences(of: "1791240313.", with: "1791240320."))!
+        report(model, newer)
+        XCTAssertTrue(model.displayedPlan(for: scopedReceipt(newer))?.value.updating == true)
+        report(model, newer, walk: Self.walkB)
+        XCTAssertNil(model.displayedPlan(for: scopedReceipt(newer, walk: Self.walkB)), "old walk's plan")
+        XCTAssertNil(model.displayedPlan(for: scopedReceipt(newer)), "old walk no longer current")
+        report(model, stop, walk: Self.walkA)
+        await expect { model.displayedPlan(for: self.scopedReceipt(self.stop)) != nil }
+        model.reset()
+        XCTAssertNil(model.displayedPlan(for: scopedReceipt(newer)), "reset forgot the plan")
+        let off = self.model(on: false, now: { time })
+        report(off, stop)
+        XCTAssertNil(off.displayedPlan(for: scopedReceipt(stop)), "OFF preserves the old behavior")
+        time += 1
+    }
 
     /// OFF: no request, whatever is pushed, and nothing held.
     func testOffAsksNothing() async {

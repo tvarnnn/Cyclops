@@ -679,7 +679,7 @@ final class WorldBuilderViewModel: ObservableObject {
     private func imageryCoverageMoved() {
         guard case .receiving = state else { return }
         imageryModel.coverageReported(walkReport.map { $0.coverage?.coverage }, receiving: true)
-        photoFloorplanModel.coverageReported(walkReport.map { $0.coverage?.coverage }, receiving: true)
+        photoFloorplanModel.coverageReported(walkReport.map { $0.coverage }, receiving: true)
     }
 
     /// The away banner's OK.

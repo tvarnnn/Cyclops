@@ -17,6 +17,7 @@ enum WorldPhotoFloorplanStyle {
 
 enum WorldPhotoFloorplanCopy {
     static let gray = "No usable photo here yet"
+    static let updating = "Updating…"
 
     static func pieceValue(_ piece: WorldPhotoPiece) -> String {
         let views = piece.projectedKeyframes == 1 ? "1 keyframe" : "\(piece.projectedKeyframes) keyframes"

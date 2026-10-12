@@ -313,7 +313,7 @@ struct WorldInlinePanel<Health: View>: View {
     /// FOW v1.1 B2: landed thumbnails, the walk's own: over the map only.
     var landed: WorldLandedOverlay? = nil
     /// FOW v1.2: the photo floor plan, the walk's own: in the map only.
-    var photo: WorldPhotoPlan? = nil
+    var photo: WorldPhotoDisplay? = nil
     @ObservedObject var host: WorldInlineHost
     let dismissBanner: () -> Void
     /// The away banner drawn for this walk was announced: never again for
@@ -566,8 +566,10 @@ struct WorldInlinePanel<Health: View>: View {
             EmptyView()
         case .map:
             if let map {
-                WorldCoverageMapView(coverage: map.receipt.coverage, isFrozen: false,
-                                     landed: Self.landed(landed, over: map), photo: Self.photo(photo, over: map))
+                let shownMap = Self.map(map, holding: photo)
+                WorldCoverageMapView(coverage: shownMap.receipt.coverage, isFrozen: false,
+                                     landed: Self.landed(landed, over: shownMap),
+                                     photo: Self.photo(photo?.plan, over: shownMap))
             }
         case .loading:
             if let block = currentFinishing { finishingContent(block, alwaysSpins: true) }
@@ -610,6 +612,11 @@ struct WorldInlinePanel<Health: View>: View {
         guard let plan, case .coverage(let receipt) = map, receipt.coverage == plan.receipt.coverage
         else { return nil }
         return plan
+    }
+
+    static func map(_ map: WorldPanelMapSource, holding photo: WorldPhotoDisplay?) -> WorldPanelMapSource {
+        guard case .coverage = map, let photo, photo.updating else { return map }
+        return .coverage(photo.plan.receipt)
     }
 
     /// S2: the loading view -- no map, no current piece: the finish block. Never a duration or an estimate.
@@ -765,8 +772,10 @@ struct WorldInlinePanel<Health: View>: View {
             }
         case .walking:
             if let map {
-                WorldCoverageCaption(source: map, stopped: false,
-                                     photoPieces: Self.photo(photo, over: map)?.pieces.count ?? 0)
+                let shownMap = Self.map(map, holding: photo)
+                WorldCoverageCaption(source: shownMap, stopped: false,
+                                     photoPieces: Self.photo(photo?.plan, over: shownMap)?.pieces.count ?? 0,
+                                     photoUpdating: photo?.updating == true)
                     .padding(.horizontal, 12)
                     .padding(.vertical, 10)
             }

@@ -223,10 +223,10 @@ final class WorldImageryUITests: XCTestCase {
 
     /// ON, with a raster for the stop landing: the piece is the photo -- a
     /// gray plate, the raster's pixels over it, alpha 0 reading gray -- and
-    /// the legend names the gray. A newer landing the manifest does not carry
-    /// yet brings the fog field back, never the older raster.
-    func testThePhotoFloorplanReplacesTheFogFieldForItsOwnLanding() throws {
-        launch(environment: ["IOS_FOW_PHOTO_FLOORPLAN": "on"])
+    /// the legend names the gray. A newer landing holds the proved photo on
+    /// its own receipt briefly, then returns to the fog field at expiry.
+    func testThePhotoFloorplanHoldsThenExpiresForANewerLanding() throws {
+        launch(environment: ["IOS_FOW_PHOTO_FLOORPLAN": "on", "GLASSES_UITEST_PHOTO_HOLD_SECONDS": "10"])
         open(cartridge: "World Builder")
         XCTAssertTrue(waitFor(timeout: 15) { self.socket.liveSubscription != nil }, "the live subscription")
         try startCapture()
@@ -240,6 +240,29 @@ final class WorldImageryUITests: XCTestCase {
         XCTAssertTrue(element("wb-panel-map-legend").label.contains("No usable photo here yet"),
                       element("wb-panel-map-legend").label)
         XCTAssertTrue(mock.requestLines.contains { $0.contains("/photo-floorplan/tile/\(Self.photoDigest)") })
+        // A newer landing, the manifest still at the stop landing.
+        let newer = FOWGuidance.stop.replacingOccurrences(of: "g-stop-984", with: "g-stop-990")
+            .replacingOccurrences(of: "1791240313.", with: "1791240320.")
+        push(geometry: "gA", guidance: newer)
+        let updating = element("wb-panel-map-updating")
+        XCTAssertTrue(updating.waitForExistence(timeout: 2), "the Updating caption during the hold")
+        XCTAssertEqual(updating.label, "Updating…")
+        XCTAssertTrue(photo.exists, "the valid photo remains visible")
+        XCTAssertFalse(element("wb-panel-map-piece").exists, "fog appeared during the hold")
+        XCTAssertTrue(neverExists(element("wb-panel-map-piece"), for: 1), "fog flashed during the hold")
+        XCTAssertTrue(element("wb-panel-map-piece").waitForExistence(timeout: 15), "fog after hold expiry")
+        XCTAssertFalse(photo.exists, "the held photo expired")
+        XCTAssertFalse(updating.exists, "the Updating caption expired")
+
+        // When the Tower catches up, the newer plan takes over. Reveal it
+        // before sampling pixels: an offscreen XCUIElement screenshot is black.
+        let newerManifest = Self.photoManifest
+            .replacingOccurrences(of: "g-stop-984", with: "g-stop-990")
+            .replacingOccurrences(of: "1791240313.", with: "1791240320.")
+        mock.setRoute("GET \(Self.photo)/manifest", status: 200, body: newerManifest)
+        push(geometry: "gA", guidance: newer)
+        XCTAssertTrue(photo.waitForExistence(timeout: 15), "the newer photo replaced the fog")
+        XCTAssertFalse(element("wb-panel-map-piece").exists)
         reveal(photo)
         shoot("photo-floorplan")
         let shot = photo.screenshot().image
@@ -250,14 +273,6 @@ final class WorldImageryUITests: XCTestCase {
         XCTAssertTrue(orange.r > 180 && orange.r - orange.b > 100 && orange.g < 170, "the raster: \(orange)")
         XCTAssertTrue(abs(gray.r - 0x70) < 16 && abs(gray.g - 0x75) < 16 && abs(gray.b - 0x7B) < 16,
                       "alpha 0 reads gray: \(gray)")
-
-        // A newer landing, the manifest still at the stop landing.
-        let newer = FOWGuidance.stop.replacingOccurrences(of: "g-stop-984", with: "g-stop-990")
-            .replacingOccurrences(of: "1791240313.", with: "1791240320.")
-        push(geometry: "gA", guidance: newer)
-        XCTAssertTrue(waitFor(timeout: 10) { !photo.exists }, "a superseded landing's photo")
-        XCTAssertTrue(element("wb-panel-map-piece").waitForExistence(timeout: 5), "the fog field again")
-        XCTAssertTrue(neverExists(photo, for: 2), "the superseded photo came back")
     }
 
     private static func pixel(_ image: UIImage, at unit: CGPoint) -> (r: Int, g: Int, b: Int)? {

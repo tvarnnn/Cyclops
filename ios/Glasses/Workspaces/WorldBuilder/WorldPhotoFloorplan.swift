@@ -14,8 +14,8 @@
 //  - Fetched only on the existing pushes: a new landing in
 //    `guidance.coverage`, retried a bounded number of times on the geometry
 //    push while the Tower's side worker catches up. No timer, no poll.
-//  - What the phone holds is one walk's (`WalkScoped`), and drawn only when
-//    the manifest's five-part landing identity is the map's own receipt's.
+//  - What the phone holds is one walk's (`WalkScoped`). A validated photo
+//    may briefly remain on its own receipt while the next landing loads.
 //    A walk change empties it. Memory only, no disk cache.
 //
 
@@ -310,7 +310,8 @@ nonisolated struct WorldPhotoFloorplan: Equatable {
 // MARK: - The fetching
 
 /// Fetches the manifest on a new landing and the rasters it names for the
-/// map's drawn pieces, for one walk at a time. Nothing here has a timer.
+/// map's drawn pieces, for one walk at a time. Fetching has no poll timer;
+/// a held photo only schedules its own expiry redraw.
 @MainActor
 final class WorldPhotoFloorplanModel: ObservableObject {
     /// A landing the manifest does not carry yet (the Tower's side worker
@@ -320,9 +321,15 @@ final class WorldPhotoFloorplanModel: ObservableObject {
 
     let floorplanSwitch: WorldPhotoFloorplanSwitch
     private let client: WorldPhotoFloorplanClient
+    private let holdSeconds: TimeInterval
+    private let now: () -> TimeInterval
 
     /// Everything held, with the walk it is of. A new walk starts empty.
     @Published private(set) var plan = WalkScoped<WorldPhotoFloorplan>(walk: nil, value: WorldPhotoFloorplan())
+    private var receipt = WalkScoped<WorldCoverageReceipt?>(walk: nil, value: nil)
+    /// Only a plan proved against the receipt it carries can enter this slot.
+    private var lastValid: WalkScoped<(plan: WorldPhotoPlan, at: TimeInterval)>?
+    private var holdExpiryTask: Task<Void, Never>?
 
     /// The landing asked for, the receipt's drawn pieces, whether it is
     /// answered, and how often asked.
@@ -336,16 +343,38 @@ final class WorldPhotoFloorplanModel: ObservableObject {
     private var failed: Set<String> = []
 
     init(floorplanSwitch: WorldPhotoFloorplanSwitch = .current,
-         client: WorldPhotoFloorplanClient = WorldPhotoFloorplanClient()) {
+         client: WorldPhotoFloorplanClient = WorldPhotoFloorplanClient(),
+         holdSeconds: TimeInterval? = nil,
+         now: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }) {
         self.floorplanSwitch = floorplanSwitch
         self.client = client
+        self.holdSeconds = holdSeconds ?? UITestHooks.photoHoldSeconds ?? 45
+        self.now = now
+    }
+
+    /// A current plan wins immediately. Otherwise the last valid plan may
+    /// stay on its own receipt for this walk until the monotonic hold ends.
+    func displayedPlan(for current: WalkScoped<WorldCoverageReceipt?>) -> WalkScoped<WorldPhotoDisplay>? {
+        guard floorplanSwitch.on, let walk = current.walk, let currentReceipt = current.value,
+              receipt.walk == walk, receipt.value?.coverage == currentReceipt.coverage
+        else { return nil }
+        if let landed = plan.value.landed, plan.walk == walk,
+           let own = WorldPhotoPlan(landed, rasters: plan.value.rasters, receipt: currentReceipt) {
+            return WalkScoped(walk: walk, value: WorldPhotoDisplay(plan: own, updating: false))
+        }
+        guard let lastValid, lastValid.walk == walk,
+              now() - lastValid.value.at < holdSeconds else { return nil }
+        return WalkScoped(walk: walk, value: WorldPhotoDisplay(plan: lastValid.value.plan, updating: true))
     }
 
     /// The walk's `guidance.coverage`: the only trigger is a new landing in
     /// it (`solved_at`, `geometry_revision`, `frame_revision`).
-    func coverageReported(_ coverage: WalkScoped<WorldCoverage?>, receiving: Bool) {
-        guard floorplanSwitch.on, receiving, let walk = coverage.walk, let block = coverage.value else { return }
+    func coverageReported(_ coverage: WalkScoped<WorldCoverageReceipt?>, receiving: Bool) {
+        guard floorplanSwitch.on, receiving, let walk = coverage.walk, let receipt = coverage.value else { return }
         adopt(walk)
+        self.receipt = coverage
+        let block = receipt.coverage
+        rememberValidPlan()
         let next = WorldImageryLanding(block)
         guard next != landing else { return }
         manifestTask?.cancel()
@@ -372,8 +401,12 @@ final class WorldPhotoFloorplanModel: ObservableObject {
     func reset() {
         manifestTask?.cancel()
         rasterTask?.cancel()
+        holdExpiryTask?.cancel()
         manifestTask = nil
         rasterTask = nil
+        holdExpiryTask = nil
+        lastValid = nil
+        receipt = WalkScoped(walk: nil, value: nil)
         failed = []
         landing = nil
         pieces = []
@@ -432,6 +465,7 @@ final class WorldPhotoFloorplanModel: ObservableObject {
         held.landed = landed
         held.rasters.keep(Set(landed.components.map(\.digest)))
         if held != plan.value { plan = WalkScoped(walk: walk, value: held) }
+        rememberValidPlan()
         pumpRasters(walk: walk)
     }
 
@@ -462,9 +496,27 @@ final class WorldPhotoFloorplanModel: ObservableObject {
                 var held = self.plan.value
                 held.rasters.insert(image, digest: component.digest)
                 self.plan = WalkScoped(walk: walk, value: held)
+                self.rememberValidPlan()
             }
             guard let self, !Task.isCancelled else { return }
             self.rasterTask = nil
+        }
+    }
+
+    private func rememberValidPlan() {
+        guard floorplanSwitch.on, let walk = receipt.walk, plan.walk == walk,
+              let current = receipt.value, let landed = plan.value.landed,
+              let valid = WorldPhotoPlan(landed, rasters: plan.value.rasters, receipt: current),
+              (lastValid?.value.plan.receipt.coverage != current.coverage ||
+               lastValid?.value.plan.pieces != valid.pieces)
+        else { return }
+        lastValid = WalkScoped(walk: walk, value: (plan: valid, at: now()))
+        holdExpiryTask?.cancel()
+        guard holdSeconds > 0 else { return }
+        holdExpiryTask = Task { [weak self, holdSeconds] in
+            try? await Task.sleep(for: .seconds(holdSeconds))
+            guard !Task.isCancelled else { return }
+            self?.objectWillChange.send()
         }
     }
 }
@@ -559,16 +611,14 @@ nonisolated struct WorldPhotoPlan: Equatable {
     }
 }
 
+nonisolated struct WorldPhotoDisplay: Equatable {
+    let plan: WorldPhotoPlan
+    let updating: Bool
+}
+
 extension WorldBuilderViewModel {
-    /// The photo floor plan, WITH the walk whose it is: only for the landing
-    /// the walk's own receipt carries.
-    var photoFloorplan: WalkScoped<WorldPhotoPlan>? {
-        let held = photoFloorplanModel.plan
-        guard photoFloorplanModel.floorplanSwitch.on, let walk = held.walk, let landed = held.value.landed,
-              let receipt = walkReport.value(for: WorldRenderTarget(worldID: walk.worldID, sessionID: walk.sessionID))?
-                .coverage,
-              let plan = WorldPhotoPlan(landed, rasters: held.value.rasters, receipt: receipt)
-        else { return nil }
-        return WalkScoped(walk: walk, value: plan)
+    /// The display remains walk-scoped, including while its own receipt is held.
+    var photoFloorplan: WalkScoped<WorldPhotoDisplay>? {
+        photoFloorplanModel.displayedPlan(for: walkReport.map { $0.coverage })
     }
 }

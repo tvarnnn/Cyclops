@@ -311,6 +311,7 @@ enum UITestHooks {
     static let subscribeAckMillisecondsVariable = "GLASSES_UITEST_SUBSCRIBE_ACK_MS"
     static let awaitingBoundSecondsVariable = "GLASSES_UITEST_AWAITING_BOUND_SECONDS"
     static let mockCameraFeedVariable = "GLASSES_UITEST_MOCK_CAMERA_FEED"
+    static let photoHoldSecondsVariable = "GLASSES_UITEST_PHOTO_HOLD_SECONDS"
     /// The World Builder screen without its capture-health panel (U2-D0), so
     /// a UI test can measure what the panel moves: Stop exists only while a
     /// capture runs, and a capture always shows the panel.
@@ -332,6 +333,19 @@ enum UITestHooks {
               let milliseconds = Int(value), milliseconds > 0
         else { return nil }
         return .milliseconds(milliseconds)
+        #else
+        return nil
+        #endif
+    }
+
+    /// A short photo hold for the panel UI test; ignored outside DEBUG UI-test launches.
+    static var photoHoldSeconds: TimeInterval? {
+        #if DEBUG
+        guard ProcessInfo.processInfo.arguments.contains("-UITestSkipOnboarding"),
+              let value = ProcessInfo.processInfo.environment[photoHoldSecondsVariable],
+              let seconds = TimeInterval(value), seconds > 0, seconds.isFinite
+        else { return nil }
+        return seconds
         #else
         return nil
         #endif
