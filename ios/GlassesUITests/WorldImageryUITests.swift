@@ -10,6 +10,7 @@
 //  where it looked and how old it is (acceptance 4).
 //
 
+import CryptoKit
 import UIKit
 import XCTest
 
@@ -46,6 +47,9 @@ final class WorldImageryUITests: XCTestCase {
                                 (Self.landedDigest, .systemOrange)] {
             mock.setDataRoute("GET \(Self.imagery)/tile/\(digest)", data: Self.jpeg(color), contentType: "image/jpeg")
         }
+        // FOW v1.2: the photo floor plan's routes answer too, for §9's stop landing.
+        mock.setRoute("GET \(Self.photo)/manifest", status: 200, body: Self.photoManifest)
+        mock.setDataRoute("GET \(Self.photo)/tile/\(Self.photoDigest)", data: Self.photoRaster, contentType: "image/png")
     }
 
     override func tearDownWithError() throws {
@@ -54,6 +58,24 @@ final class WorldImageryUITests: XCTestCase {
     }
 
     private static let imagery = "/worlds/w1/guidance/s9/imagery"
+    private static let photo = "/worlds/w1/guidance/s9/photo-floorplan"
+
+    /// A 512 x 512 RGBA raster, orange with its bottom-right quadrant alpha 0.
+    private static let photoRaster: Data = {
+        let size = CGSize(width: 512, height: 512)
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = 1
+        format.opaque = false
+        format.preferredRange = .standard
+        return UIGraphicsImageRenderer(size: size, format: format).pngData { context in
+            context.cgContext.setFillColor(CGColor(srgbRed: 224 / 255, green: 112 / 255, blue: 32 / 255, alpha: 1))
+            context.cgContext.fill(CGRect(origin: .zero, size: size))
+            context.cgContext.clear(CGRect(x: 256, y: 256, width: 256, height: 256))
+        }
+    }()
+    private static let photoDigest = SHA256.hash(data: photoRaster).map { String(format: "%02x", $0) }.joined()
+    /// §9's stop landing and basis; the 16-unit square padded 15%.
+    private static let photoManifest = #"{"version":1,"landed":{"solved_at":1791240313.0,"geometry_revision":"g-stop-984","frame_revision":1,"horizon_keyframes":984,"components":[{"reference_segment":0,"origin_xyz":[0.0,0.0,0.0],"up_xyz":[0.0,0.0,1.0],"forward_xyz":[0.0,1.0,0.0],"raster_bounds_xy":[-9.2,-9.2,9.2,9.2],"width":512,"height":512,"digest":"\#(photoDigest)","bytes":\#(photoRaster.count),"projected_keyframes":2,"imagery_source":"redacted"}]}}"#
 
     // MARK: Acceptance 2: OFF
 
@@ -75,6 +97,10 @@ final class WorldImageryUITests: XCTestCase {
         XCTAssertFalse(element("wb-imagery-landed-thumb").exists, "a thumbnail with B2 off")
         let asked = mock.requestLines.filter { $0.contains("/imagery/") }
         XCTAssertEqual(asked, [], "OFF asked the imagery routes")
+        XCTAssertFalse(element("wb-panel-map-photo").exists, "a photo floor plan with its switch off")
+        XCTAssertTrue(element("wb-panel-map-piece").exists, "today's fog piece")
+        XCTAssertEqual(mock.requestLines.filter { $0.contains("/photo-floorplan/") }, [],
+                       "OFF asked the photo floor plan routes")
         XCTAssertTrue(mock.requestLines.contains { $0.contains("/geometry/manifest") }, "the geometry was fetched")
         shoot("imagery-off")
     }
@@ -191,6 +217,62 @@ final class WorldImageryUITests: XCTestCase {
         XCTAssertTrue(waitFor(timeout: 10) { !thumb.exists }, "a superseded landing's thumbnail")
         XCTAssertTrue(element("wb-panel-map-piece").exists, "the map stays")
         XCTAssertTrue(neverExists(thumb, for: 2), "the superseded thumbnail came back")
+    }
+
+    // MARK: FOW v1.2: the photo floor plan
+
+    /// ON, with a raster for the stop landing: the piece is the photo -- a
+    /// gray plate, the raster's pixels over it, alpha 0 reading gray -- and
+    /// the legend names the gray. A newer landing the manifest does not carry
+    /// yet brings the fog field back, never the older raster.
+    func testThePhotoFloorplanReplacesTheFogFieldForItsOwnLanding() throws {
+        launch(environment: ["IOS_FOW_PHOTO_FLOORPLAN": "on"])
+        open(cartridge: "World Builder")
+        XCTAssertTrue(waitFor(timeout: 15) { self.socket.liveSubscription != nil }, "the live subscription")
+        try startCapture()
+        serve(revision: "gA", segments: [Self.placedZero, Self.live812])
+        push(geometry: "gA", guidance: FOWGuidance.stop)
+        let photo = element("wb-panel-map-photo")
+        XCTAssertTrue(photo.waitForExistence(timeout: 15), "the photo floor plan")
+        XCTAssertFalse(element("wb-panel-map-piece").exists, "the fog field beside its own photo")
+        XCTAssertTrue(element("wb-current-piece").exists, "the current piece, its own card")
+        XCTAssertFalse(photo.frame.intersects(element("wb-current-piece").frame), "the piece drawn on the photo")
+        XCTAssertTrue(element("wb-panel-map-legend").label.contains("No usable photo here yet"),
+                      element("wb-panel-map-legend").label)
+        XCTAssertTrue(mock.requestLines.contains { $0.contains("/photo-floorplan/tile/\(Self.photoDigest)") })
+        reveal(photo)
+        shoot("photo-floorplan")
+        let shot = photo.screenshot().image
+        let orange = try XCTUnwrap(Self.pixel(shot, at: CGPoint(x: 0.25, y: 0.25)))
+        let gray = try XCTUnwrap(Self.pixel(shot, at: CGPoint(x: 0.75, y: 0.75)))
+        print("PHOTO-FLOORPLAN|frame=\(photo.frame)|orange=\(orange)|gray=\(gray)")
+        // The screenshot is display-converted: orange, not its exact sRGB.
+        XCTAssertTrue(orange.r > 180 && orange.r - orange.b > 100 && orange.g < 170, "the raster: \(orange)")
+        XCTAssertTrue(abs(gray.r - 0x70) < 16 && abs(gray.g - 0x75) < 16 && abs(gray.b - 0x7B) < 16,
+                      "alpha 0 reads gray: \(gray)")
+
+        // A newer landing, the manifest still at the stop landing.
+        let newer = FOWGuidance.stop.replacingOccurrences(of: "g-stop-984", with: "g-stop-990")
+            .replacingOccurrences(of: "1791240313.", with: "1791240320.")
+        push(geometry: "gA", guidance: newer)
+        XCTAssertTrue(waitFor(timeout: 10) { !photo.exists }, "a superseded landing's photo")
+        XCTAssertTrue(element("wb-panel-map-piece").waitForExistence(timeout: 5), "the fog field again")
+        XCTAssertTrue(neverExists(photo, for: 2), "the superseded photo came back")
+    }
+
+    private static func pixel(_ image: UIImage, at unit: CGPoint) -> (r: Int, g: Int, b: Int)? {
+        guard let cg = image.cgImage else { return nil }
+        var rgba = [UInt8](repeating: 0, count: 4)
+        let drawn = rgba.withUnsafeMutableBytes { buffer -> Bool in
+            guard let context = CGContext(data: buffer.baseAddress, width: 1, height: 1, bitsPerComponent: 8,
+                                          bytesPerRow: 4, space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                                          bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
+            else { return false }
+            let x = CGFloat(cg.width) * unit.x, y = CGFloat(cg.height) * (1 - unit.y)
+            context.draw(cg, in: CGRect(x: -x, y: -y, width: CGFloat(cg.width), height: CGFloat(cg.height)))
+            return true
+        }
+        return drawn ? (Int(rgba[0]), Int(rgba[1]), Int(rgba[2])) : nil
     }
 
     // MARK: The mock Tower's geometry

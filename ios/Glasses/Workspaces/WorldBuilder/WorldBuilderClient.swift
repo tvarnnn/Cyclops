@@ -491,6 +491,10 @@ final class WorldBuilderViewModel: ObservableObject {
     /// and the walk's coverage, and nothing else. Its switches OFF, it asks
     /// for nothing.
     let imageryModel: WorldImageryModel
+    /// FOW v1.2's photo floor plan (`WorldPhotoFloorplan.swift`): fed the
+    /// walk's coverage and the geometry push, and nothing else. Its switch
+    /// OFF, it asks for nothing.
+    let photoFloorplanModel: WorldPhotoFloorplanModel
     /// The saved-worlds list, over HTTP. A struct holding a `URL` and the
     /// shared session, like `geometry`, and defaulted for the same reason.
     private let library: WorldListClient
@@ -579,10 +583,12 @@ final class WorldBuilderViewModel: ObservableObject {
         client: any WorldBuilderClient,
         geometry: WorldGeometryClient = WorldGeometryClient(),
         library: WorldListClient = WorldListClient(),
-        imagery: WorldImageryModel? = nil
+        imagery: WorldImageryModel? = nil,
+        photoFloorplan: WorldPhotoFloorplanModel? = nil
     ) {
         self.client = client
         self.imageryModel = imagery ?? WorldImageryModel()
+        self.photoFloorplanModel = photoFloorplan ?? WorldPhotoFloorplanModel()
         self.walkReport = client.walkReport
         self.sessionBinding = client.sessionBinding
         self.inspection = client.inspection
@@ -656,6 +662,9 @@ final class WorldBuilderViewModel: ObservableObject {
         imageryModel.objectWillChange
             .sink { [weak self] _ in self?.objectWillChange.send() }
             .store(in: &cancellables)
+        photoFloorplanModel.objectWillChange
+            .sink { [weak self] _ in self?.objectWillChange.send() }
+            .store(in: &cancellables)
         imageryCoverageMoved()
     }
 
@@ -663,12 +672,14 @@ final class WorldBuilderViewModel: ObservableObject {
     private func imageryGeometryPushed(_ coordinates: WorldGeometryCoordinates) {
         guard case .receiving = state else { return }
         imageryModel.geometryPushed(coordinates, receiving: true)
+        photoFloorplanModel.geometryPushed(coordinates, receiving: true)
     }
 
     /// The walk's coverage, for FOW v1.1 B2: a new landing is its trigger.
     private func imageryCoverageMoved() {
         guard case .receiving = state else { return }
         imageryModel.coverageReported(walkReport.map { $0.coverage?.coverage }, receiving: true)
+        photoFloorplanModel.coverageReported(walkReport.map { $0.coverage?.coverage }, receiving: true)
     }
 
     /// The away banner's OK.
@@ -845,6 +856,7 @@ final class WorldBuilderViewModel: ObservableObject {
         // Whatever is being fetched belongs to the world just left as well.
         cancelGeometryFetch()
         imageryModel.reset()
+        photoFloorplanModel.reset()
         clearGeometry()
         geometryOwner = nil
         switch mode {
@@ -1358,6 +1370,7 @@ final class WorldBuilderViewModel: ObservableObject {
     private func forgetGeometry() {
         cancelGeometryFetch()
         imageryModel.reset()
+        photoFloorplanModel.reset()
         clearGeometry()
         geometryStatus = .noWorld
         geometryOwner = nil

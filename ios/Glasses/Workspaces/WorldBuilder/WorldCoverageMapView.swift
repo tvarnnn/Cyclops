@@ -70,9 +70,12 @@ struct WorldCoverageField {
     struct Fit {
         let cell: CGFloat
         let inset: CGFloat
+        /// The grid's top inset where it differs from its left one (FOW
+        /// v1.2's photo fit, `WorldPhotoPiece.gridFit`); `nil`: `inset`.
+        var insetY: CGFloat? = nil
 
         func point(_ gridPoint: CGPoint) -> CGPoint {
-            CGPoint(x: inset + gridPoint.x * cell, y: inset + gridPoint.y * cell)
+            CGPoint(x: inset + gridPoint.x * cell, y: (insetY ?? inset) + gridPoint.y * cell)
         }
     }
 
@@ -156,6 +159,10 @@ struct WorldCoverageMapView: View {
     /// FOW v1.1 B2: landed thumbnails over this receipt's pieces, or `nil`
     /// (the switch off, or none to draw): the map exactly as v1 draws it.
     var landed: WorldLandedOverlay? = nil
+    /// FOW v1.2: the photo floor plan of this receipt, or `nil` (the switch
+    /// off, or no raster proved this receipt's): the map exactly as v1 draws
+    /// it. A piece with a photo replaces its fog field; the others keep it.
+    var photo: WorldPhotoPlan? = nil
 
     @State private var selected: WorldLandedThumbnail?
 
@@ -168,14 +175,23 @@ struct WorldCoverageMapView: View {
             ZStack(alignment: .topLeading) {
                 ForEach(Array(pieces.enumerated()), id: \.element.referenceSegment) { index, component in
                     let frame = frames[index]
-                    WorldCoveragePieceView(component: component, index: index, showsName: named && !isFrozen)
-                        .frame(width: frame.width, height: frame.height)
-                        .position(x: frame.midX, y: frame.midY)
+                    let shot = photo?.pieces[component.referenceSegment]
+                    Group {
+                        if let shot {
+                            WorldPhotoPieceView(piece: shot, index: index, showsName: named && !isFrozen)
+                        } else {
+                            WorldCoveragePieceView(component: component, index: index, showsName: named && !isFrozen)
+                        }
+                    }
+                    .frame(width: frame.width, height: frame.height)
+                    .position(x: frame.midX, y: frame.midY)
                     // Over the piece, never inside its element: the v1
                     // piece's own label and value are unchanged.
                     if let landed, !isFrozen, case let thumbnails = landed.thumbnails(on: component.referenceSegment),
                        !thumbnails.isEmpty {
-                        WorldLandedPieceOverlay(thumbnails: thumbnails, receipt: landed.receipt) { selected = $0 }
+                        WorldLandedPieceOverlay(thumbnails: thumbnails, receipt: landed.receipt, photo: shot) {
+                            selected = $0
+                        }
                             .frame(width: frame.width, height: frame.height)
                             .position(x: frame.midX, y: frame.midY)
                     }
@@ -272,6 +288,8 @@ struct WorldCoverageCaption: View {
     let source: WorldPanelMapSource
     /// After Stop: the frozen map's wording, on the dark plate, no legend.
     let stopped: Bool
+    /// FOW v1.2: how many pieces show a photo instead of the fog field.
+    var photoPieces: Int = 0
 
     private var receipt: WorldCoverageReceipt { source.receipt }
     private var primary: Color { stopped ? WorldChromeStyle.text : Color.primary }
@@ -313,8 +331,13 @@ struct WorldCoverageCaption: View {
 
     private var legend: some View {
         VStack(alignment: .leading, spacing: 2) {
-            legendRow("Seen", color: WorldCoverageStyle.lit)
-            legendRow("Not yet seen", color: WorldCoverageStyle.fog)
+            if photoPieces < receipt.coverage.components.count {
+                legendRow("Seen", color: WorldCoverageStyle.lit)
+                legendRow("Not yet seen", color: WorldCoverageStyle.fog)
+            }
+            if photoPieces > 0 {
+                legendRow(WorldPhotoFloorplanCopy.gray, color: WorldPhotoFloorplanStyle.gray)
+            }
         }
         .accessibilityElement(children: .combine)
         .accessibilityIdentifier("wb-panel-map-legend")

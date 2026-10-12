@@ -506,6 +506,7 @@ struct WorldBuilderWorkspaceView: View {
             liveStrip: pieceGate.shown(world.liveStrip, beside: world.walkPresentation,
                                        isCapturing: isCapturingNow, phase: panelPhase, state: world.state),
             landed: world.landedOverlay?.value(beside: world.walkPresentation),
+            photo: world.photoFloorplan?.value(beside: world.walkPresentation),
             host: host,
             dismissBanner: { world.dismissFinishBanner() },
             bannerAnnounced: { walk in world.finishBannerAnnounced(for: walk) },

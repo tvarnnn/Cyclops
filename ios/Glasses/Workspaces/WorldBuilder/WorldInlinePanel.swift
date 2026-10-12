@@ -312,6 +312,8 @@ struct WorldInlinePanel<Health: View>: View {
     var liveStrip: WorldImageryStrip? = nil
     /// FOW v1.1 B2: landed thumbnails, the walk's own: over the map only.
     var landed: WorldLandedOverlay? = nil
+    /// FOW v1.2: the photo floor plan, the walk's own: in the map only.
+    var photo: WorldPhotoPlan? = nil
     @ObservedObject var host: WorldInlineHost
     let dismissBanner: () -> Void
     /// The away banner drawn for this walk was announced: never again for
@@ -565,7 +567,7 @@ struct WorldInlinePanel<Health: View>: View {
         case .map:
             if let map {
                 WorldCoverageMapView(coverage: map.receipt.coverage, isFrozen: false,
-                                     landed: Self.landed(landed, over: map))
+                                     landed: Self.landed(landed, over: map), photo: Self.photo(photo, over: map))
             }
         case .loading:
             if let block = currentFinishing { finishingContent(block, alwaysSpins: true) }
@@ -600,6 +602,14 @@ struct WorldInlinePanel<Health: View>: View {
         guard let overlay, case .coverage(let receipt) = map, receipt.coverage == overlay.receipt.coverage
         else { return nil }
         return overlay
+    }
+
+    /// The photo floor plan only over the live receipt it was proved for:
+    /// never over the DEBUG fixture, and never over another landing's map.
+    static func photo(_ plan: WorldPhotoPlan?, over map: WorldPanelMapSource) -> WorldPhotoPlan? {
+        guard let plan, case .coverage(let receipt) = map, receipt.coverage == plan.receipt.coverage
+        else { return nil }
+        return plan
     }
 
     /// S2: the loading view -- no map, no current piece: the finish block. Never a duration or an estimate.
@@ -755,7 +765,8 @@ struct WorldInlinePanel<Health: View>: View {
             }
         case .walking:
             if let map {
-                WorldCoverageCaption(source: map, stopped: false)
+                WorldCoverageCaption(source: map, stopped: false,
+                                     photoPieces: Self.photo(photo, over: map)?.pieces.count ?? 0)
                     .padding(.horizontal, 12)
                     .padding(.vertical, 10)
             }

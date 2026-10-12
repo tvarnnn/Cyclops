@@ -95,6 +95,9 @@ struct WorldImageryStripView: View {
 struct WorldLandedPieceOverlay: View {
     let thumbnails: [WorldLandedThumbnail]
     let receipt: WorldCoverageReceipt
+    /// FOW v1.2: the piece's photo, when it replaces the fog field: the
+    /// thumbnails then sit on the photo's fit of the same grid.
+    var photo: WorldPhotoPiece? = nil
     let select: (WorldLandedThumbnail) -> Void
 
     var body: some View {
@@ -107,7 +110,7 @@ struct WorldLandedPieceOverlay: View {
     }
 
     private func layer(side: CGFloat, age: Double?) -> some View {
-        let fit = WorldCoverageField.fit(side: side)
+        let fit = photo?.gridFit(side: side) ?? WorldCoverageField.fit(side: side)
         let size = Self.thumbnailSize(cell: side / CGFloat(WorldCoverage.gridSide))
         return ZStack(alignment: .topLeading) {
             ForEach(thumbnails) { thumbnail in

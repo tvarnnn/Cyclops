@@ -49,6 +49,10 @@
 	<string>$(IOS_FOW_ROOM_IMAGERY_LIVE)</string>
 	<key>GlassesFOWImageryLanded</key>
 	<string>$(IOS_FOW_ROOM_IMAGERY_LANDED)</string>
+	<!-- FOW v1.2 photo floor plan, the phone's switch for home-screen launches:
+	     "on" only when the build passes IOS_FOW_PHOTO_FLOORPLAN=on to xcodebuild. -->
+	<key>GlassesFOWPhotoFloorplan</key>
+	<string>$(IOS_FOW_PHOTO_FLOORPLAN)</string>
 	<key>GlassesBuildSHA</key>
 	<string>$(GLASSES_BUILD_SHA)</string>
 
