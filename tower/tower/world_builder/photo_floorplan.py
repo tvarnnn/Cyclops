@@ -1473,6 +1473,7 @@ def build_homography_raster(*, origin_xyz, up_xyz, forward_xyz, bounds_xy, plane
     band_pixels = 0
     band_pixels_outside_bounds = 0
     used_frames = 0
+    warped_kids = []   # diagnostics only (the band floor fraction); never read back here
 
     def _reject(reason):
         frame_reasons[reason] = frame_reasons.get(reason, 0) + 1
@@ -1590,6 +1591,7 @@ def build_homography_raster(*, origin_xyz, up_xyz, forward_xyz, bounds_xy, plane
         best_frame[upd] = fi
         count[flat] += 1
         used_frames += 1
+        warped_kids.append(str(fr.kid))
 
     opaque = (count >= 2) | ((count == 1) & (best_cos >= grazing_cos_min))
     multi = count >= 2
@@ -1601,6 +1603,7 @@ def build_homography_raster(*, origin_xyz, up_xyz, forward_xyz, bounds_xy, plane
         "reason": "ok",
         "frames_given": len(frames),
         "frames_warped": used_frames,
+        "warped_kids": warped_kids,
         "frames_rejected": frame_reasons,
         "cells_rejected": rejected_cells,
         "single_view_grazing_cells": int(((count == 1) & (best_cos < grazing_cos_min)).sum()),

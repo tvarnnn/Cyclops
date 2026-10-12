@@ -401,7 +401,9 @@ def test_build_landing_output_is_unchanged_by_the_footprint_hook(tmp_path):
     assert hooked[0] == plain[0] and hooked[1] == plain[1]
 
     def strip(stats):
-        return [{k: v for k, v in c.items() if k != "ms" and not k.endswith("_ms")}
+        # DIAG_INPUTS (lane A diagnostics) carries live arrays the worker strips later.
+        return [{k: v for k, v in c.items()
+                 if k not in ("ms", pfw.DIAG_INPUTS) and not k.endswith("_ms")}
                 for c in stats]
 
     assert strip(hooked[2]) == strip(plain[2])

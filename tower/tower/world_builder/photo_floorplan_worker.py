@@ -94,6 +94,8 @@ MAX_POINT_ERROR_PX = 2.0
 ARRAYS_MAX_BYTES = 64 * 1024 * 1024
 IMAGERY_SOURCE = "unredacted"
 METHOD_HOMOGRAPHY = "homography"
+DIAG_INPUTS = "_diag_inputs"
+DIAG_MAX_WALKS = 8   # walks whose diagnostics records the worker keeps in memory (LRU)
 METHOD_DEPTH = "depth"
 # Option (2)'s per-keyframe SfM depth fit (unchanged from the slice-1 probe).
 MIN_FIT_POINTS = 12
@@ -359,10 +361,11 @@ def reuse_plane(memory, entries):
 
 def homography_component(*, receipt_component, entries, tree, arrays, keyframe_index,
                          camera, images_dir, check=None, furniture_mask=None,
-                         plane_memory=None, footprint_bounds=False):
+                         plane_memory=None, footprint_bounds=False, diag_out=None):
     """Fallback (3) for one displayed component.
 
-    Returns (RasterResult, FloorPlane, frames, stats)."""
+    Returns (RasterResult, FloorPlane, frames, stats). `diag_out` (a dict, diagnostics only)
+    receives this component's bottom-band SfM point reader."""
     forward = np.asarray(receipt_component["forward_xyz"], np.float64)
     up = np.asarray(receipt_component["up_xyz"], np.float64)
     right = np.cross(forward, up)
@@ -418,6 +421,11 @@ def homography_component(*, receipt_component, entries, tree, arrays, keyframe_i
             rows = by_frame[starts[ki]:starts[ki + 1]]
             rows = rows[obs_xy[rows, 1] >= band_top]
             return obs_xy[rows], out_xyz[observations[rows, 2]]
+
+        if diag_out is not None:
+            # Diagnostics only (photo_floorplan_diagnostics' floor-level check), read after
+            # the landing's disposition is final.
+            diag_out["band_points"] = band_points
 
         if not plane.ok and plane.stats.get("reference_normal_xyz") is not None:
             # A sparse live solve: never go blank -- a level plane from the camera
@@ -747,13 +755,23 @@ def build_landing(root, world_id, session_id, receipt, eligible, tree, solution_
             result, cstats = depth_component(receipt_component=rc, entries=entries,
                                              cache=cache, solve=solve, check=check)
         else:
-            result, plane, _, cstats = homography_component(
+            diag_out = {}
+            result, plane, frames, cstats = homography_component(
                 receipt_component=rc, entries=entries, tree=tree, arrays=arrays,
                 keyframe_index=keyframe_index, camera=camera,
                 images_dir=solve_dir / "images", check=check,
                 plane_memory=(plane_memory.setdefault(ref, {})
                               if plane_memory is not None else None),
-                **({"footprint_bounds": True} if footprint_bounds else {}))
+                **({"footprint_bounds": True} if footprint_bounds else {}),
+                diag_out=diag_out)
+            # New-scene diagnostics (photo_floorplan_diagnostics): REFERENCES the worker reads
+            # only after this landing's disposition is final; nothing here reads them back.
+            cstats[DIAG_INPUTS] = {
+                "plane": plane, "entries": entries, "receipt_component": rc,
+                "band_points": diag_out.get("band_points"),
+                "frames": [(f.kid, f.check_points_xyz) for f in frames],
+                "warped_kids": result.stats.get("warped_kids"),
+                "raster_bounds_xy": result.raster_bounds_xy, "raster_width": result.width}
         if check is not None:
             check()
         if footprints is not None:
@@ -1289,12 +1307,20 @@ def component_summary(stats):
     return json.dumps(rows, separators=(",", ":"), default=str)
 
 
+@dataclasses.dataclass
+class _DiagWalk:
+    """One walk's diagnostics records (files on only) and how many are in its JSONL."""
+
+    records: list = dataclasses.field(default_factory=list)
+    written: int = 0
+
+
 class PhotoFloorplanWorker:
     """One daemon builds each newly published coverage landing's photo plan."""
 
     def __init__(self, root, *, latest=None, state=None, method=None,
                  wall_cap_s=LANDING_WALL_CAP_S, build=None, regress_v2=None,
-                 clock=time.monotonic, footprint_bounds=None):
+                 clock=time.monotonic, footprint_bounds=None, diagnostics_files=None):
         if method is None:
             from tower.config import world_photo_floorplan_method_setting
             method = world_photo_floorplan_method_setting()
@@ -1329,6 +1355,15 @@ class PhotoFloorplanWorker:
         self._regress_streak = {}     # (world, session) -> consecutive regressed skips
         self._published_footprints = {}   # V2: (world, session) -> {reference_segment: Footprint}
         self._frozen_since = {}           # V2: (world, session) -> clock() at the first regressed skip
+        # New-scene diagnostics (photo_floorplan_diagnostics): bounded per-walk landing records
+        # (pair -> _DiagWalk), kept -- and written to the session -- only with
+        # TOWER_WORLD_PHOTO_FLOORPLAN_DIAGNOSTICS exactly `on`; off, the log line is all.
+        self._diag_records = OrderedDict()
+        self._diag_pending = None
+        if diagnostics_files is None:
+            from tower.config import world_photo_floorplan_diagnostics_setting
+            diagnostics_files = world_photo_floorplan_diagnostics_setting()
+        self._diag_files = bool(diagnostics_files)
         self._thread = threading.Thread(target=self._run, name="world-photo-floorplan",
                                         daemon=True)
         self._thread.start()
@@ -1391,6 +1426,12 @@ class PhotoFloorplanWorker:
                     more = pair in self._jobs
                 if not more:
                     self._state.finish(*pair)
+                pending, self._diag_pending = self._diag_pending, None
+                if pending is not None:
+                    try:
+                        self._diagnostics(*pending)
+                    except Exception:  # noqa: BLE001 -- never stops the worker
+                        logger.exception("world photo floorplan: diagnostics failed")
 
     def _v2_holds(self, pair, v2, stats):
         """The V2 decision for an otherwise publishable landing (under the condition lock).
@@ -1445,6 +1486,7 @@ class PhotoFloorplanWorker:
         identity = identity_of(receipt)
         disposition, block, stats = "ok", None, None
         trial = None
+        regressed = ""
         try:
             if self._build_takes_memory:
                 memory = self._plane_memory.get(pair, {})
@@ -1535,3 +1577,63 @@ class PhotoFloorplanWorker:
         log("world photo floorplan: world=%s session=%s landing=%r method=%s elapsed_ms=%.1f "
             "disposition=%s components=%s", pair[0], pair[1], identity, self.method, elapsed_ms,
             disposition, component_summary(stats))
+        # New-scene diagnostics run in `_run` AFTER this job is finished and its state released:
+        # the disposition above is final, the wall cap and the manifest wait never see them.
+        self._diag_pending = (pair, identity, receipt, disposition, bool(regressed), elapsed_ms,
+                              stats, time.time())
+
+    def _diagnostics(self, pair, identity, receipt, disposition, regressed, elapsed_ms, stats,
+                     landed_at):
+        record = self._diagnose(pair, receipt, disposition, regressed, elapsed_ms, stats,
+                                landed_at)
+        if record is not None:
+            self._report_diagnostics(pair, identity, record)
+
+    def _diagnose(self, pair, receipt, disposition, regressed, elapsed_ms, stats, landed_at):
+        """The landing's diagnostics record (photo_floorplan_diagnostics), or None. Strips the
+        build's `_diag_inputs` from `stats` either way; never raises."""
+        record = None
+        try:
+            from tower.world_builder import photo_floorplan_diagnostics as diag
+            record = diag.landing_record(
+                world_id=pair[0], session_id=pair[1], receipt=receipt, disposition=disposition,
+                published=disposition == "ok", escaped=disposition == "ok" and regressed,
+                elapsed_ms=elapsed_ms, stats=stats, now=landed_at)
+        except Exception:  # noqa: BLE001 -- a diagnostic never touches a landing
+            logger.exception("world photo floorplan: diagnostics failed")
+        for c in stats or ():
+            if isinstance(c, dict):
+                c.pop(DIAG_INPUTS, None)
+        return record
+
+    def _report_diagnostics(self, pair, identity, record):
+        """One bounded log line per landing; with TOWER_WORLD_PHOTO_FLOORPLAN_DIAGNOSTICS=on also
+        the session's JSONL and per-walk summary. Never raises."""
+        try:
+            from tower.world_builder import photo_floorplan_diagnostics as diag
+            logger.info("world photo floorplan diagnostics: world=%s session=%s landing=%r "
+                        "record=%s", pair[0], pair[1], identity, diag._dumps(record))
+            if not self._diag_files:
+                return          # the log line is the record; nothing is retained
+            walk = self._diag_records.get(pair)
+            if walk is None:
+                walk = self._diag_records[pair] = _DiagWalk()
+            self._diag_records.move_to_end(pair)
+            while len(self._diag_records) > DIAG_MAX_WALKS:
+                self._diag_records.popitem(last=False)
+            if len(walk.records) >= diag.MAX_RECORDS:
+                return
+            walk.records.append(record)
+            summary = diag.walk_summary(walk.records, world_id=pair[0], session_id=pair[1],
+                                        generated_at=time.time())
+            # Every record not yet in the file goes in with this write: a landing whose
+            # write was skipped (`session_write_gate`) is appended by the next permitted one.
+            written, why = diag.write_files(self.root, pair[0], pair[1],
+                                            walk.records[walk.written:], summary)
+            if written:
+                walk.written = len(walk.records)
+            if not written or why.startswith(diag.SUMMARY_NOT_REPLACED):
+                logger.info("world photo floorplan diagnostics files skipped: world=%s "
+                            "session=%s landing=%r: %s", pair[0], pair[1], identity, why)
+        except Exception:  # noqa: BLE001 -- a diagnostic never touches a landing
+            logger.exception("world photo floorplan: diagnostics report failed")
