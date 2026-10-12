@@ -1,4 +1,4 @@
-"""NO BIG BANG for T-UX1: with both switches off, every payload and every builder file is
+"""NO BIG BANG for T-UX1: with the switches off, every payload and every builder file is
 byte for byte what 5c0dc12 produced.
 
 T-UX1 (`RUN\\lead\\specs\\U06-TUX1-PROGRESS-SPEC-20261004.md` §3, §7.1 T2) adds two
@@ -8,6 +8,9 @@ default-off Tower settings:
   `<world>/solve/<session>/finish_phase.json`, and the status channel and the Saved Worlds
   row project it as `processing`;
 - `TOWER_WORLD_PICTURE_BASIS`: the render revision body gains `basis`.
+
+The matrix also checks `TOWER_WORLD_FINAL_IMMEDIATE` off against the same
+baseline.
 
 Off -- unset, blank, `0`, `off` or garbage -- nothing is written, nothing is read, and this
 file proves it against `golden/world_builder_finish_stages_5c0dc12.json`, recorded by running
@@ -55,7 +58,8 @@ import pytest
 
 GOLDEN = Path(__file__).parent / "golden" / "world_builder_finish_stages_5c0dc12.json"
 RECORD_ENV = "WB_FINISH_STAGES_RECORD"
-SWITCHES = ("TOWER_WORLD_FINISH_STAGES", "TOWER_WORLD_PICTURE_BASIS")
+SWITCHES = ("TOWER_WORLD_FINISH_STAGES", "TOWER_WORLD_PICTURE_BASIS",
+            "TOWER_WORLD_FINAL_IMMEDIATE")
 OFF_SPELLINGS = (None, "", "0", "off", "garbage")
 EPOCH = 1790620836.43
 PHASE = "finish_phase.json"
@@ -243,7 +247,7 @@ class _Norm:
 # ---------------------------------------------------------------------------
 
 
-def test_every_payload_is_5c0dc12s_with_both_switches_off(base_world, processes, tmp_path,
+def test_every_payload_is_5c0dc12s_with_switches_off(base_world, processes, tmp_path,
                                                          monkeypatch):
     observed = {}
     norm = _Norm(processes)

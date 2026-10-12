@@ -74,10 +74,12 @@ import json
 import logging
 import os
 import signal
+import sqlite3
 import subprocess
 import sys
 import threading
 import time
+from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -846,7 +848,7 @@ class BackgroundSolver:
 
     def __init__(self, *, root: Path, world_id: str, session_id: str, every: int,
                  capture_dirs, threads: int | None = None, script: Path | None = None,
-                 spawn=None):
+                 spawn=None, final_immediate: bool = False, capture_stopped=None):
         self.root = root
         self.world_id = world_id
         self.session_id = session_id
@@ -860,6 +862,10 @@ class BackgroundSolver:
         self._launches = 0
         self._completed_unseen = False
         self._log = None
+        self._final_immediate = final_immediate
+        self._capture_stopped = capture_stopped
+        self._background_closed = False
+        self._final_started = False
 
     @property
     def running(self) -> bool:
@@ -937,6 +943,10 @@ class BackgroundSolver:
         return argv
 
     def maybe_launch(self, store: WorldStore, accepted: int, sources: dict) -> bool:
+        if self._final_immediate and (self._background_closed or (
+                self._capture_stopped is not None and self._capture_stopped())):
+            self.stop_background(store)
+            return False
         self._reap()
         if self.running or accepted - self._launched_at_keyframes < self.every or accepted < 2:
             return False
@@ -946,10 +956,16 @@ class BackgroundSolver:
         workspace = global_solve.workspace_for(store, self.world_id, self.session_id)
         workspace.root.mkdir(parents=True, exist_ok=True)
         self._log = open(workspace.root / "solve.log", "ab")
+        if self._final_immediate and self._capture_stopped is not None and self._capture_stopped():
+            self.stop_background(store)
+            return False
         self._child = self._spawn(
             self._argv(final=False), cwd=str(TOWER_ROOT), stdout=self._log,
             stderr=subprocess.STDOUT, env=child_environment(), stdin=subprocess.DEVNULL,
         )
+        if self._final_immediate and self._capture_stopped is not None and self._capture_stopped():
+            self.stop_background(store)
+            return False
         self._launched_at_keyframes = accepted
         self._launches += 1
         logger.info(
@@ -957,6 +973,60 @@ class BackgroundSolver:
             self._launches, accepted, self._child.pid,
         )
         return True
+
+    def stop_background(self, store: WorldStore) -> None:
+        """Permanently close live launches and hand the committed database to final.
+
+        The builder owns the only live writer. SQLite rolls back a transaction
+        interrupted by TerminateProcess on the next connection; quick_check
+        forces that recovery before the final child opens the same database.
+        """
+        if not self._final_immediate or self._background_closed or self._final_started:
+            return
+        self._background_closed = True
+        descendants = []
+        if self.running:
+            try:
+                import psutil  # noqa: PLC0415
+                descendants = psutil.Process(self._child.pid).children(recursive=True)
+            except psutil.Error:
+                pass
+        self.wait(0.0)
+        if self.running:
+            raise RuntimeError("background solve still owns the final workspace after Stop")
+        # The launcher can exit before its real interpreter. The process-tree
+        # helper signals descendants; wait for them before opening SQLite.
+        for process in descendants:
+            try:
+                process.wait(timeout=CHILD_TERMINATE_TIMEOUT_S)
+            except Exception:  # noqa: BLE001 -- a vanished pid is already done
+                try:
+                    process.kill()
+                    process.wait(timeout=CHILD_TERMINATE_TIMEOUT_S)
+                except Exception:  # noqa: BLE001
+                    pass
+            if process.is_running():
+                raise RuntimeError("background solve descendant still owns the final workspace")
+        self.finished()  # a killed solve must not trigger a landing rebuild
+        if self._log is not None:
+            self._log.close()
+            self._log = None
+        database = store.world_dir(self.world_id) / "solve" / self.session_id / "database.db"
+        if not database.exists():
+            return
+        try:
+            with closing(sqlite3.connect(str(database), timeout=1.0)) as connection:
+                if connection.execute("pragma quick_check").fetchone() != ("ok",):
+                    raise sqlite3.DatabaseError("quick_check failed")
+        except sqlite3.DatabaseError as exc:
+            logger.warning("[Tower][WorldBuilder] killed solve left an unusable feature "
+                           "database; final will extract afresh: %s", exc)
+            # A failed check cannot become final input. SQLite sidecars belong
+            # to this database and the child has exited before this point.
+            for path in (database, Path(str(database) + "-journal"),
+                         Path(str(database) + "-wal"), Path(str(database) + "-shm")):
+                path.unlink(missing_ok=True)
+            (database.parent / "database.matching.json").unlink(missing_ok=True)
 
     def wait(self, timeout: float | None, should_stop=None) -> bool:
         """Wait for a running child. False if it had to be terminated.
@@ -1017,6 +1087,10 @@ class BackgroundSolver:
         never ran the consensus.
         """
         from tower.world_builder import global_solve  # noqa: PLC0415
+
+        if self._final_immediate and not self._background_closed:
+            self.stop_background(store)
+        self._final_started = True
 
         started = time.perf_counter()
         # WALL CLOCK, for the identity of what the child publishes: its `solved_at`
@@ -2268,6 +2342,12 @@ def main(argv=None) -> int:
     # keyframe_id -> raw frame path, for the global solver (see ObservedFrame).
     sources: dict = {}
     capture_dirs = [d for d in (args.follow_capture, args.frames) if d is not None]
+    final_immediate = os.environ.get("TOWER_WORLD_FINAL_IMMEDIATE") == "on"
+    def capture_stopped() -> bool:
+        follower = capture_handle.get("follower")
+        return bool(args.follow_capture and follower is not None
+                    and follower.end_reason() == END_REASON_CAPTURE_STOP)
+
     solver = None
     if args.solve:
         solver = BackgroundSolver(
@@ -2276,6 +2356,7 @@ def main(argv=None) -> int:
             # final solve still runs as a child this process owns.
             every=args.solve_every if args.solve_every > 0 else 0,
             capture_dirs=capture_dirs, script=args.solve_script,
+            final_immediate=final_immediate, capture_stopped=capture_stopped,
         )
     background_solves = args.solve and args.solve_every > 0
     # The live surface needs a global solve to exist at all, so it is only
@@ -2320,6 +2401,8 @@ def main(argv=None) -> int:
         for frame in stop_request.bounded(
             frames, should_stop=capture_should_stop if args.follow_capture else None
         ):
+            if final_immediate and solver is not None and capture_stopped():
+                solver.stop_background(store)
             outcome = engine.observe(
                 frame.payload,
                 received_at=frame.received_at,
@@ -2410,6 +2493,8 @@ def main(argv=None) -> int:
                     else:
                         surfacer.poll(store)
         observe_seconds = time.perf_counter() - started
+        if final_immediate and solver is not None and capture_stopped():
+            solver.stop_background(store)
         if surfacer is not None:
             # The walk is over, so a live surface still building is already
             # obsolete: the final one after the final solve replaces it. Left
@@ -2588,12 +2673,14 @@ def main(argv=None) -> int:
             )
             solver.wait(0.0)
         else:
-            # A background solve still running at Stop is given a bounded
-            # wait and then TERMINATED, never abandoned: the final solve is
-            # about to reuse its workspace.
-            if phase is not None and solver.running:
+            # With final-immediate on, the latch has ended the live child;
+            # otherwise keep the existing bounded wait before final.
+            if phase is not None and solver.running and not final_immediate:
                 phase.mark(finish_phase.WAITING)
-            solver.wait(args.solve_wait_seconds, should_stop=stop_request.hard_asked_for)
+            if final_immediate:
+                solver.stop_background(store)
+            else:
+                solver.wait(args.solve_wait_seconds, should_stop=stop_request.hard_asked_for)
             if stop_request.hard:
                 final_solve_state = FINAL_SOLVE_SKIPPED
                 finalization_detail = (
