@@ -1386,6 +1386,30 @@ def world_native_chrome_setting() -> bool:
     return _flag(WORLD_NATIVE_CHROME_ENV, default=False)
 
 
+# WORLD UP ESTIMATE (tilt-up lane; manager 378, RUN review/W9-DIAG.md cause 6): the vertical the
+# surface and appearance pages level their horizon to (`surface_render._world_up`). Exactly
+# `camera_right_all` seeds it with the head-level ("roll-free") vertical of EVERY posed camera in
+# the room's solver frame -- before the evidence gate or the final scale guard trimmed the room --
+# and lets the surface refine that only within `surface_render.CAMERA_RIGHT_MAX_REFINE_DEG`
+# (`surface_render.camera_right_up`). Read per page request, so flipping it needs no restart and
+# rebuilds nothing; it changes the `up` of every page served after the flip, including the pages of
+# worlds built before it. Any other value -- unset, blank, `off`, `on`, `1` -- is today's estimate,
+# byte for byte; a value that is not unset/blank/`off` is also logged.
+WORLD_UP_ESTIMATE_ENV = "TOWER_WORLD_UP_ESTIMATE"
+WORLD_UP_ESTIMATE_CAMERA_RIGHT_ALL = "camera_right_all"
+
+
+def world_up_estimate_setting() -> str | None:
+    """`TOWER_WORLD_UP_ESTIMATE`: `camera_right_all`, or None (today's estimate)."""
+    value = os.environ.get(WORLD_UP_ESTIMATE_ENV)
+    if value == WORLD_UP_ESTIMATE_CAMERA_RIGHT_ALL:
+        return WORLD_UP_ESTIMATE_CAMERA_RIGHT_ALL
+    if value is not None and value.strip() and value.strip().lower() != "off":
+        logger.warning("[Tower][Config] %s=%r is not exactly %s; using today's up estimate",
+                       WORLD_UP_ESTIMATE_ENV, value, WORLD_UP_ESTIMATE_CAMERA_RIGHT_ALL)
+    return None
+
+
 def _torch_threads(value: str | None) -> int | str:
     """"auto", or a non-negative integer. Garbage is "auto", not a crash.
 

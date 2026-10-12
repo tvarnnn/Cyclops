@@ -490,7 +490,16 @@ def _world_up(store, world_id: str, session_id: str, vertices, faces) -> list | 
     near-horizontal area, a bounded move from the seed, and walls that end up
     no less vertical than the seed left them. Otherwise the camera estimate
     stands, as before.
+
+    `TOWER_WORLD_UP_ESTIMATE=camera_right_all` (`_world_up_camera_right`)
+    replaces the seed with the head-level vertical of every posed camera in the
+    room's solver frame and bounds the refinement to a small move from it;
+    when that vertical is not measurable it falls back to exactly this.
     """
+    if _up_estimate_setting() is not None:
+        chosen = _world_up_camera_right(store, world_id, session_id, vertices, faces)
+        if chosen is not None:
+            return chosen
     seed = _camera_up(store, world_id, session_id)
     if seed is None:
         return None
@@ -581,6 +590,203 @@ def _camera_up(store, world_id: str, session_id: str) -> list | None:
     if norm < 1e-6:
         return None
     return [round(float(v), 6) for v in mean / norm]
+
+
+# ---------------------------------------------------------------------------
+# TOWER_WORLD_UP_ESTIMATE=camera_right_all (tilt-up lane, manager 378)
+# ---------------------------------------------------------------------------
+#
+# WHY. `_camera_up` is the mean camera -y, which leans toward wherever the wearer
+# mostly looked: R-bar x sin|pitch| for a yaw concentration R-bar. Walk 9's room
+# piece faces the desk (R-bar 0.68, median pitch -19 deg) and its mean is 15 deg
+# from the head-level vertical (RUN review/W9-DIAG.md cause 6). Worse, the room
+# piece is what the evidence gate and the final scale guard LEFT: walk 7 replayed
+# through b845edb (W7REG n1) kept 543 desk-heavy views of 972 and levelled to them.
+#
+# The seed is not the whole story: `surface_up` then moves the vertical to the
+# area-weighted normal of the surface's near-horizontal faces, and on every world
+# measured (walk 9, walk 7, the kitchen, W7REG n1/n2) it converges to the same
+# vertical from either seed. On walk 9 and n1 that surface vertical is the bent
+# one -- 12 and 6 deg from the head-level vertical, with the well-observed walls
+# 6-15 deg off plumb under it and within ~2 deg under the head-level vertical
+# (Glasses-scratch/tilt-up/table.txt). So this option bounds the refinement too.
+#
+#   1. CAMERAS: every posed camera of the room's SOLVER frame -- the solver
+#      component most room (component 0) cameras came from, with every piece the
+#      gate or the guard cut from it (their coordinates are untouched,
+#      `coherence_publish.relabel_solution`), not another solver component, which
+#      has a gauge of its own. Supported ones (>= MIN_IMAGE_OBSERVATIONS) when
+#      there are enough.
+#   2. VERTICAL: a worn camera barely rolls, so its x (right) axis is horizontal
+#      whatever its pitch: up is the least-variance direction of the x axes,
+#      signed by the mean camera up, re-estimated once without the 10 % least
+#      level-headed (`area_build.roll_free_up`'s rule and constants).
+#   3. DEGENERATE -> today: fewer than RF_MIN_CAMERAS cameras; x axes that do
+#      not span the horizontal (photo_floorplan's ROLL_FREE_MIN_SPREAD: every
+#      camera facing one way leaves the vertical undetermined about it); an
+#      ill-conditioned least direction (RF_MIN_CONDITIONING); or a result more
+#      than ROLL_FREE_MAX_TILT_DEG from the mean camera up. Then `_world_up`
+#      runs exactly as it does with the option off.
+#   4. REFINEMENT: `surface_up` from that seed, kept only within
+#      CAMERA_RIGHT_MAX_REFINE_DEG of it (its own `max_move_deg`). The surface
+#      may fine-tune the head-level vertical, not overrule it. Measured moves:
+#      walk 7 1.99, n2 2.29 (kept: today's vertical within 0.01 deg); kitchen
+#      5.52, n1 5.89, walk 9 11.98 (refused). Any value in [2.3, 5.5) decides
+#      these five the same way.
+#   5. A MESH OLDER THAN THE SOLVE -> today (`_mesh_predates_solve`): the cameras'
+#      vertical is the current solve's frame, and a stale mesh is another's.
+CAMERA_RIGHT_MAX_REFINE_DEG = 4.0
+
+
+def _up_estimate_setting() -> str | None:
+    from tower.config import world_up_estimate_setting  # noqa: PLC0415
+
+    return world_up_estimate_setting()
+
+
+def _room_frame_rotations(solution) -> list:
+    """R_cw of every posed camera in the room's solver frame (step 1 above)."""
+    from tower.world_builder.area_build import RF_MIN_CAMERAS  # noqa: PLC0415
+    from tower.world_builder.global_solve import MIN_IMAGE_OBSERVATIONS  # noqa: PLC0415
+
+    import numpy as np
+
+    poses = solution.poses or {}
+
+    def solver_of(pose):
+        # An ungated solve is never relabelled: its component IS the solver's.
+        try:
+            return int(pose.get("solver_component", pose.get("component", ROOM_COMPONENT)))
+        except (TypeError, ValueError):
+            return None
+
+    room = _room_poses(solution, fallback=False)
+    frames = [solver_of(p) for p in room.values()]
+    frames = [f for f in frames if f is not None]
+    if not frames:
+        return []
+    values, counts = np.unique(frames, return_counts=True)
+    frame = int(values[int(np.argmax(counts))])
+    members = [p for p in poses.values() if solver_of(p) == frame]
+
+    def supported(pose) -> bool:
+        try:
+            return int(pose.get("observations") or 0) >= MIN_IMAGE_OBSERVATIONS
+        except (TypeError, ValueError):
+            return False
+
+    strong = [p for p in members if supported(p)]
+    if len(strong) >= RF_MIN_CAMERAS:
+        members = strong
+    out = []
+    for pose in members:
+        try:
+            R = np.array(pose["rotation"], float).reshape(3, 3)
+        except (KeyError, TypeError, ValueError):
+            continue
+        if np.isfinite(R).all():
+            out.append(R)
+    return out
+
+
+def camera_right_up(rotations) -> list | None:
+    """The head-level vertical of a set of world->camera rotations (steps 2-3
+    above), or None when they do not measure one."""
+    import math
+
+    import numpy as np
+
+    from tower.world_builder.area_build import (  # noqa: PLC0415
+        RF_MIN_CAMERAS,
+        RF_MIN_CONDITIONING,
+        RF_TRIM_FRACTION,
+    )
+    from tower.world_builder.photo_floorplan import (  # noqa: PLC0415
+        ROLL_FREE_MAX_TILT_DEG,
+        ROLL_FREE_MIN_SPREAD,
+    )
+
+    R = np.asarray(rotations, np.float64).reshape(-1, 3, 3)
+    if len(R) < RF_MIN_CAMERAS or not np.isfinite(R).all():
+        return None
+    x = R[:, 0, :]                 # camera +x in the world: row 0 of R_cw
+    cam_up = -R[:, 1, :]           # camera -y in the world
+    mean_up = cam_up.mean(axis=0)
+    if np.linalg.norm(mean_up) < 1e-6:
+        return None
+    mean_up = mean_up / np.linalg.norm(mean_up)
+    keep = np.ones(len(x), bool)
+    u = w = None
+    for _ in range(2):
+        w, V = np.linalg.eigh(x[keep].T @ x[keep])      # ascending
+        u = V[:, 0] if V[:, 0] @ mean_up >= 0 else -V[:, 0]
+        k = int(math.floor(RF_TRIM_FRACTION * len(x)))
+        if k == 0:
+            break
+        keep = np.ones(len(x), bool)
+        keep[np.argsort(-np.abs(x @ u), kind="stable")[:k]] = False
+    if not np.isfinite(w).all() or w[2] <= 1e-12:
+        return None
+    spread = float(w[1] / w[2])
+    conditioning = float(w[1] / max(w[0], 1e-12))
+    tilt = math.degrees(math.acos(min(1.0, max(-1.0, float(u @ mean_up)))))
+    if (spread < ROLL_FREE_MIN_SPREAD or conditioning < RF_MIN_CONDITIONING
+            or tilt > ROLL_FREE_MAX_TILT_DEG):
+        return None
+    return [round(float(v), 6) for v in u / np.linalg.norm(u)]
+
+
+def _mesh_predates_solve(store, world_id: str, session_id: str, solution) -> bool:
+    """Whether the mesh a page may draw was built before the solve now on disk.
+
+    The surface is served while it is behind the solve (`surface_currency` reports,
+    never enforces), e.g. between a final solve landing and the surface rebuilt from
+    it -- the W7REG o1 copy was caught in exactly that state. A new solve is a new
+    gauge: today's estimate follows the mesh it draws (the refinement), but the
+    cameras' vertical would be the NEW frame's, 16 deg off that mesh on o1. So the
+    option stands down unless the surface, and the appearance when there is one,
+    were both built at or after the solve (and the surface from its keyframes)."""
+    import math
+
+    from tower.world_builder.appearance_pipeline import read_appearance_manifest  # noqa: PLC0415
+    from tower.world_builder.surface_pipeline import read_surface_manifest  # noqa: PLC0415
+
+    def built_at(manifest) -> float:
+        try:
+            return float(manifest.get("built_at"))
+        except (TypeError, ValueError):
+            return math.nan
+
+    try:
+        solved_at = float(solution.solved_at)
+        surface = read_surface_manifest(store, world_id, session_id)
+        appearance = read_appearance_manifest(store, world_id, session_id)
+    except Exception:  # noqa: BLE001 -- not knowing is not current
+        return True
+    if not math.isfinite(solved_at) or surface is None:
+        return True
+    if surface.get("input_digest") != getattr(solution, "input_digest", None):
+        return True
+    if not built_at(surface) >= solved_at:
+        return True
+    return appearance is not None and not built_at(appearance) >= solved_at
+
+
+def _world_up_camera_right(store, world_id: str, session_id: str, vertices, faces) -> list | None:
+    """`_world_up` under `camera_right_all` (step 4 above); None = fall back to today's."""
+    from tower.world_builder.global_solve import load_solution
+
+    try:
+        solution = load_solution(store, world_id, session_id)
+    except Exception:  # noqa: BLE001 -- today's estimate then decides
+        return None
+    if solution is None or _mesh_predates_solve(store, world_id, session_id, solution):
+        return None
+    seed = camera_right_up(_room_frame_rotations(solution))
+    if seed is None:
+        return None
+    refined = surface_up(vertices, faces, seed, max_move_deg=CAMERA_RIGHT_MAX_REFINE_DEG)
+    return seed if refined is None else refined
 
 
 def _compose(template: str, raw: bytes, config: dict) -> str:
