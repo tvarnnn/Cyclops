@@ -1095,7 +1095,10 @@ def world_photo_floorplan_method_setting() -> str:
 # exactly `on` here ALSO writes `photo_floorplan_diagnostics.jsonl` (one bounded record per
 # landing) and `photo_floorplan_diagnostics.json` (the per-walk summary and its new-scene
 # flags, rewritten after every landing, so after the final solve's landing it is the walk's)
-# into an EXISTING `worlds/<world>/sessions/<session>/` directory. Any other value: no file.
+# into an EXISTING `worlds/<world>/sessions/<session>/` directory, and only when a READ-ONLY
+# check of the world's writer lock says no other writer holds the world
+# (`photo_floorplan_diagnostics.session_write_gate`). Any other value: no file, and no
+# landing records kept in memory (the log line is all).
 WORLD_PHOTO_FLOORPLAN_DIAGNOSTICS_ENV = "TOWER_WORLD_PHOTO_FLOORPLAN_DIAGNOSTICS"
 
 

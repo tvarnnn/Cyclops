@@ -861,6 +861,14 @@ def component_summary(stats):
     return json.dumps(rows, separators=(",", ":"), default=str)
 
 
+@dataclasses.dataclass
+class _DiagWalk:
+    """One walk's diagnostics records (files on only) and how many are in its JSONL."""
+
+    records: list = dataclasses.field(default_factory=list)
+    written: int = 0
+
+
 class PhotoFloorplanWorker:
     """One daemon builds each newly published coverage landing's photo plan."""
 
@@ -886,8 +894,9 @@ class PhotoFloorplanWorker:
         self._published_opaque = {}   # (world, session) -> {reference_segment: opaque}
         self._published_opaque_area = {}  # (world, session) -> {reference_segment: area}
         self._regress_streak = {}     # (world, session) -> consecutive regressed skips
-        # New-scene diagnostics (photo_floorplan_diagnostics): bounded per-walk landing records,
-        # written to the session only with TOWER_WORLD_PHOTO_FLOORPLAN_DIAGNOSTICS exactly `on`.
+        # New-scene diagnostics (photo_floorplan_diagnostics): bounded per-walk landing records
+        # (pair -> _DiagWalk), kept -- and written to the session -- only with
+        # TOWER_WORLD_PHOTO_FLOORPLAN_DIAGNOSTICS exactly `on`; off, the log line is all.
         self._diag_records = OrderedDict()
         self._diag_pending = None
         if diagnostics_files is None:
@@ -1067,16 +1076,27 @@ class PhotoFloorplanWorker:
             from tower.world_builder import photo_floorplan_diagnostics as diag
             logger.info("world photo floorplan diagnostics: world=%s session=%s landing=%r "
                         "record=%s", pair[0], pair[1], identity, diag._dumps(record))
-            records = self._diag_records.setdefault(pair, [])
+            if not self._diag_files:
+                return          # the log line is the record; nothing is retained
+            walk = self._diag_records.get(pair)
+            if walk is None:
+                walk = self._diag_records[pair] = _DiagWalk()
             self._diag_records.move_to_end(pair)
             while len(self._diag_records) > DIAG_MAX_WALKS:
                 self._diag_records.popitem(last=False)
-            if len(records) >= diag.MAX_RECORDS:
+            if len(walk.records) >= diag.MAX_RECORDS:
                 return
-            records.append(record)
-            if self._diag_files:
-                summary = diag.walk_summary(records, world_id=pair[0], session_id=pair[1],
-                                            generated_at=time.time())
-                diag.write_files(self.root, pair[0], pair[1], record, summary)
+            walk.records.append(record)
+            summary = diag.walk_summary(walk.records, world_id=pair[0], session_id=pair[1],
+                                        generated_at=time.time())
+            # Every record not yet in the file goes in with this write: a landing whose
+            # write was skipped (`session_write_gate`) is appended by the next permitted one.
+            written, why = diag.write_files(self.root, pair[0], pair[1],
+                                            walk.records[walk.written:], summary)
+            if written:
+                walk.written = len(walk.records)
+            if not written or why.startswith(diag.SUMMARY_NOT_REPLACED):
+                logger.info("world photo floorplan diagnostics files skipped: world=%s "
+                            "session=%s landing=%r: %s", pair[0], pair[1], identity, why)
         except Exception:  # noqa: BLE001 -- a diagnostic never touches a landing
             logger.exception("world photo floorplan: diagnostics report failed")

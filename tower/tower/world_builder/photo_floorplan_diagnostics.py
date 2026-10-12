@@ -4,8 +4,8 @@ BEHAVIOUR-NEUTRAL. Nothing here feeds a raster, a tile, the manifest, the regres
 any disposition. The worker computes a landing's diagnostics only AFTER that landing's
 disposition is final (so even the time spent here cannot move a landing across the wall
 cap), from data the landing already produced, and any exception here is swallowed and
-logged. Pure: no I/O except `write_files`, which the worker calls only when
-TOWER_WORLD_PHOTO_FLOORPLAN_DIAGNOSTICS is exactly `on`.
+logged. Pure: no I/O except `write_files` (and its read-only `session_write_gate`), which
+the worker calls only when TOWER_WORLD_PHOTO_FLOORPLAN_DIAGNOSTICS is exactly `on`.
 
 WHAT IS RECORDED
 
@@ -32,23 +32,30 @@ components of one walk have different placement scales (walk 8 e2e6: H = 2.9, 12
 
 THE NEW-SCENE FLAGS (`component_flags`; rules and why)
 
-  multi_level_suspected -- two floor heights inside one component. Either
-    (a) the camera heights split into two levels (`camera_height_split`): an Otsu split
-        whose two clusters each hold >= 15% of >= 20 cameras, are separated by >= 4 pooled
-        within-cluster SDs, and (when H is known) lie >= 0.2 H apart. A ONE-level walk cannot
-        reach 4: an Otsu cut of a normal distribution gives 2.65 SDs, of a uniform one 3.46,
-        so 4 needs a real empty band between the clusters. 0.2 H (~27 cm at a 1.35 m camera)
-        is more than one ~17 cm stair riser and well above hand-held bobbing (walk 8 height
-        CV 0.06-0.10). 15% excludes a crouch or a short detour;
-        Then the FLOOR is checked (`floor_level_check`): if the frames' own bottom-band
-        floor heights did not move with the cameras (less than half the camera gap), the
-        walker changed carrying height on one floor, and the flag does not fire; with < 3
-        downward frames on a side the camera evidence alone fires it, marked `unavailable`;
+  multi_level_suspected -- two floor heights inside one component, on FLOOR evidence.
+    CAMERA EVIDENCE ALONE NEVER FIRES IT: a camera's height is where the walker held it,
+    not where the floor is. It fires on either
+    (a) a camera split the floor confirms. The camera heights split into two levels
+        (`camera_height_split`): an Otsu split whose two clusters each hold >= 15% of >= 20
+        cameras, are separated by >= 4 pooled within-cluster SDs, and (when H is known) lie
+        >= 0.2 H apart. A ONE-level walk cannot reach 4: an Otsu cut of a normal
+        distribution gives 2.65 SDs, of a uniform one 3.46, so 4 needs a real empty band
+        between the clusters. 0.2 H (~27 cm at a 1.35 m camera) is more than one ~17 cm
+        stair riser and well above hand-held bobbing (walk 8 height CV 0.06-0.10). 15%
+        excludes a crouch or a short detour. Then the FLOOR is checked (`floor_level_check`,
+        >= 3 downward frames with their own bottom-band floor on EACH side): it fires only
+        when that check is available and `confirmed` -- the frames' floor heights moved with
+        the cameras by at least half the camera gap. `contradicted` (the floor did not move:
+        the walker changed carrying height on one floor) and `unavailable` (too few downward
+        frames on a side -- a kneel or a sit that looked ahead, walk 8 e2e5 c94) do NOT fire;
+        such a split is recorded as the component's informational `camera_split_unconfirmed`
+        field (evidence only, not a flag), and the walk summary lists it apart from the flags;
     (b) or the floor fit found a valid second plane BELOW the chosen floor with >= 0.5x its
-        support (`ambiguous`, FLOOR_AMBIGUITY_RATIO). Nothing visible lies below a floor, so
-        a supported layer there is a second level or a misplaced piece (walk 8 R0: the
-        closet floor 0.6 H below the room). A runner-up ABOVE is not used: furniture tops
-        (a bed, a desk) produce exactly that.
+        support (`ambiguous`, FLOOR_AMBIGUITY_RATIO). This is floor evidence: the runner-up is
+        a plane through the SfM floor-candidate points, with its own inlier support. Nothing
+        visible lies below a floor, so a supported layer there is a second level or a
+        misplaced piece (walk 8 R0: the closet floor 0.6 H below the room). A runner-up ABOVE
+        is not used: furniture tops (a bed, a desk) produce exactly that.
   low_floor_support -- the floor estimate is gray, fallback-only, or within a factor 2 of its
     rejection floor: the plane was rejected, or it is the camera-trajectory fallback, or its
     inliers < 2 x FLOOR_MIN_INLIERS (80) or its inlier spread < 2 x FLOOR_MIN_SUPPORT_CELLS
@@ -76,7 +83,13 @@ THE NEW-SCENE FLAGS (`component_flags`; rules and why)
 
 The per-walk summary (`walk_summary`) evaluates the flags on the LAST landing that built
 components (after the final solve's landing, the final world), lists the firing components
-with their keyframe share, and counts how many built landings fired each flag.
+with their keyframe share, and counts how many built landings fired each flag. Unconfirmed
+camera splits are listed under `camera_split_unconfirmed`, never in `flags` / `flags_fired`.
+
+THE FILES (`write_files`) never race the world's writers. The worker runs in the Tower
+process, which never holds a world's writer lock (the walk's own `world_build_session.py`
+process does), so the files are written under a READ-ONLY check of that lock
+(`session_write_gate`) and never take, wait for, reclaim or rewrite it -- see there.
 """
 
 from __future__ import annotations
@@ -104,6 +117,7 @@ from tower.world_builder.photo_floorplan import (
 VERSION = 1
 SUMMARY_FILENAME = "photo_floorplan_diagnostics.json"
 RECORDS_FILENAME = "photo_floorplan_diagnostics.jsonl"
+SUMMARY_NOT_REPLACED = "records appended; summary not replaced"
 MAX_RECORD_BYTES = 8 * 1024
 MAX_SUMMARY_BYTES = 32 * 1024
 MAX_RECORDS = 512
@@ -425,7 +439,32 @@ def component_record(cstats):
                 area["opaque_area_H2"] = _num(float(cstats["opaque_area"]) / h_med ** 2, 3)
     rec["area"] = area
     rec["flags"] = component_flags(rec)
+    unconfirmed = camera_split_unconfirmed(rec)
+    if unconfirmed is not None:
+        rec["camera_split_unconfirmed"] = unconfirmed
     return rec
+
+
+def _split_text(cams):
+    return (f"camera heights split in two: gap {cams.get('gap_h')} H, separation "
+            f"{cams.get('separation')} SD, lower share {cams.get('low_share')}")
+
+
+def camera_split_unconfirmed(rec):
+    """Evidence text when the camera heights split in two but the floor did NOT confirm it
+    (`floor_level_check` unavailable or contradicted), else None. INFORMATIONAL: it is not a
+    flag and never fires `multi_level_suspected` (module docstring)."""
+    cams = rec.get("cams") or {}
+    if not cams.get("bimodal"):
+        return None
+    check = cams.get("floor_check") or {}
+    result = check.get("result") or "unavailable"
+    if result == "confirmed":
+        return None
+    detail = (f"{check.get('frames_lower')} / {check.get('frames_upper')} downward frames "
+              f"lower / upper, < {FLOOR_CHECK_MIN_FRAMES} on a side"
+              if result == "unavailable" else f"floor moved {check.get('moved')} of the gap")
+    return f"{_split_text(cams)}; floor check {result} ({detail})"
 
 
 def component_flags(rec):
@@ -433,13 +472,14 @@ def component_flags(rec):
     out = {}
     plane, cams, band, area = rec.get("plane", {}), rec.get("cams", {}), rec.get("band", {}), \
         rec.get("area", {})
-    # multi_level_suspected
-    floor_check = (cams.get("floor_check") or {}).get("result")
-    if cams.get("bimodal") and floor_check != "contradicted":
+    # multi_level_suspected: FLOOR evidence only -- a camera split the floor check confirms,
+    # or a supported floor layer below the chosen one. A split alone is
+    # `camera_split_unconfirmed`, not this flag.
+    floor_check = cams.get("floor_check") or {}
+    if cams.get("bimodal") and floor_check.get("result") == "confirmed":
         out["multi_level_suspected"] = (
-            f"camera heights split in two: gap {cams.get('gap_h')} H, separation "
-            f"{cams.get('separation')} SD, lower share {cams.get('low_share')}; floor "
-            f"{floor_check or 'unavailable'}")
+            f"{_split_text(cams)}; floor confirmed (moved {floor_check.get('moved')} of the "
+            f"gap)")
     elif (plane.get("ambiguous") and plane.get("alt_h") is not None
           and plane["alt_h"] < 0):
         out["multi_level_suspected"] = (
@@ -589,6 +629,7 @@ def walk_summary(records, *, world_id=None, session_id=None, generated_at=None):
         "final_landing": None,
         "flags": {},
         "flags_fired": [],
+        "camera_split_unconfirmed": None,
         "not_evaluated": {"reflections_suspected": "omitted: not cheaply detectable from sparse "
                                                    "SfM points and RGB"},
     }
@@ -620,6 +661,14 @@ def walk_summary(records, *, world_id=None, session_id=None, generated_at=None):
                 "landings_built": len(built)}
             if firing:
                 out["flags_fired"].append(flag)
+        # Informational, NOT a flag: camera splits the floor did not confirm.
+        out["camera_split_unconfirmed"] = {
+            "components": [{"ref": c.get("ref"), "share": c.get("share"),
+                            "evidence": c["camera_split_unconfirmed"]}
+                           for c in last["components"] if c.get("camera_split_unconfirmed")],
+            "landings": sum(1 for r in built
+                            if any(c.get("camera_split_unconfirmed") for c in r["components"])),
+            "landings_built": len(built)}
     while len(_dumps(out).encode("utf-8")) > MAX_SUMMARY_BYTES and out["final_landing"] \
             and out["final_landing"]["components"]:
         out["final_landing"]["components"] = out["final_landing"]["components"][:-1]
@@ -637,20 +686,100 @@ def session_dir(root, world_id, session_id):
     return Path(root) / "worlds" / str(world_id) / "sessions" / str(session_id)
 
 
-def write_files(root, world_id, session_id, record, summary):
-    """Append `record` to the JSONL and replace the summary, inside an EXISTING session
-    directory only (never creates one: a purged or foreign world gets nothing). Returns
-    True if written."""
+def session_write_gate(root, world_id, session_id):
+    """(may_write, why): may the diagnostics files go into this session's directory NOW?
+
+    The world's writer lock (`WorldStore.acquire_writer_lock`) is held by the walk's own
+    `world_build_session.py` process from `start_session` until `release_world` after
+    `mark_finalization`; re-redaction, `world_finalize.py` and area builds take it too. The
+    Tower process this runs in never holds it, and must not start to: `acquire_writer_lock`
+    can wait (up to 8 x 20 ms) and RECLAIMS a dead holder's lock -- the evidence
+    `world_finish_pending` recovers a crashed finalization from -- and while held, the lock
+    makes the status producer report the world live and refuses a new walk's
+    `start_session`, a re-redaction and a re-finalize outright. A try-acquire would
+    therefore change published status bytes and decisions; this gate only READS the lock
+    (`lock_holder`) and the session record, and decides:
+
+      - the session's writer window (`ended_at` unset, or finalization `pending`) and a LIVE
+        readable lock: the walk (or its finalization) holds the world, which excludes every
+        other lock-taking writer -> write;
+      - the session settled (stopped, finalization not pending) and NO lock: nobody is
+        writing this world; this is where the final solve's landing arrives (walk 8 e2e6:
+        released 13:02:22.2, final landing 13:02:26.7) -> write;
+      - anything else -> skip: a live lock on a settled session is ANOTHER writer
+        (re-redaction, re-finalize, an area build, a newer walk); a dead or unreadable lock
+        is a crashed writer whose lock is left for recovery; an unfinished session with no
+        lock has lost its writer; no session record (or no directory) is a purge in
+        progress or a foreign world.
+
+    Residual, by construction of a read-only check: a lock-taking writer that starts in the
+    microseconds between this check and the write overlaps it. Nothing else reads or
+    writes these two files, so the overlap cannot corrupt that writer's output.
+    `purge_world` takes no writer lock at all (only its own in-process mutex), so no lock
+    protocol orders it; against it the guarantee is that a purged session is never
+    RE-CREATED (`write_files` makes no directory and stops when the directory vanishes)."""
     directory = session_dir(root, world_id, session_id)
     if not directory.is_dir():
-        return False
-    with open(directory / RECORDS_FILENAME, "a", encoding="utf-8", newline="\n") as stream:
-        stream.write(_dumps(record) + "\n")
+        return False, "no session directory (purged or foreign)"
+    from tower.world_builder.records import FINALIZATION_PENDING
+    from tower.world_builder.store import WorldStore
+
+    store = WorldStore(Path(root))
+    try:
+        session = store.read_session(str(world_id), str(session_id))
+    except Exception as exc:  # noqa: BLE001 -- absent, mid-replace or foreign: skip
+        return False, f"no readable session record ({type(exc).__name__})"
+    finalization = session.finalization if isinstance(session.finalization, dict) else {}
+    window = session.ended_at is None or finalization.get("state") == FINALIZATION_PENDING
+    holder = store.lock_holder(str(world_id))
+    if holder is None:
+        if window:
+            return False, "the session is unfinished and no writer holds the world"
+        return True, "settled session, no writer on the world"
+    if holder.get("unreadable") or not holder.get("alive"):
+        return False, f"a dead or unreadable writer lock (pid {holder.get('pid')}), left " \
+                      "for recovery"
+    if not window:
+        return False, f"another writer (pid {holder.get('pid')}) holds the world after this " \
+                      "session settled"
+    return True, "the session's own writer holds the world"
+
+
+def write_files(root, world_id, session_id, records, summary):
+    """Append `records` to the JSONL and replace the summary, inside an EXISTING session
+    directory only, and only when `session_write_gate` allows it now. Never creates a
+    directory (a purged or foreign world gets nothing) and never touches the writer lock.
+    Returns (records_appended, why); `why` starts with SUMMARY_NOT_REPLACED when the records
+    went in but the summary did not."""
+    directory = session_dir(root, world_id, session_id)
+    if not directory.is_dir():
+        return False, "no session directory (purged or foreign)"
+    ok, why = session_write_gate(root, world_id, session_id)
+    if not ok:
+        return False, why
+    # Neither `open(.., "a")` nor `write_text` creates a parent: a directory purged since the
+    # gate raises FileNotFoundError here instead of being re-created.
+    try:
+        with open(directory / RECORDS_FILENAME, "a", encoding="utf-8", newline="\n") as stream:
+            for record in records:
+                stream.write(_dumps(record) + "\n")
+    except FileNotFoundError:
+        return False, "the session directory vanished under the write (purged)"
     target = directory / SUMMARY_FILENAME
     tmp = directory / (SUMMARY_FILENAME + f".{os.getpid()}.tmp")
-    tmp.write_text(json.dumps(summary, indent=1, allow_nan=False, default=str), encoding="utf-8")
-    os.replace(tmp, target)
-    return True
+    try:
+        tmp.write_text(json.dumps(summary, indent=1, allow_nan=False, default=str),
+                       encoding="utf-8")
+        os.replace(tmp, target)
+    except OSError as exc:
+        return True, f"{SUMMARY_NOT_REPLACED} ({type(exc).__name__})"
+    finally:
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
+    return True, why
+
 
 
 def read_records(path):

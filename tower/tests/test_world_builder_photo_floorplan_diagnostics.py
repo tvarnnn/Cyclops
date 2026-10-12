@@ -327,39 +327,105 @@ def test_the_landing_is_what_the_base_commit_built(tmp_path, name):
     assert _decision(block, tiles, stats) == expected
 
 
+def _diag_lines(caplog):
+    return [r.getMessage() for r in caplog.records
+            if r.getMessage().startswith("world photo floorplan diagnostics:")]
+
+
+def _run_worker(root, receipt, eligible, tree, stat, files, caplog, *, expect_lines):
+    state = pfw.PhotoFloorplanState()
+    worker = pfw.PhotoFloorplanWorker(root, latest=lambda w, s: receipt, state=state,
+                                      method="homography", diagnostics_files=files)
+    try:
+        with caplog.at_level("INFO", logger="tower.world_builder.photo_floorplan_worker"):
+            worker.offer(WORLD, SESSION, receipt, eligible, tree, stat)
+            deadline = time.monotonic() + 30
+            while time.monotonic() < deadline and not (
+                    worker.idle() and (WORLD, SESSION) in worker.outcomes
+                    and worker._diag_pending is None
+                    and len(_diag_lines(caplog)) >= expect_lines):
+                time.sleep(0.02)
+            time.sleep(0.1)       # the file write follows the log line on the worker thread
+    finally:
+        worker.shutdown()
+    return state, worker
+
+
+def test_the_worker_skips_the_files_when_another_writer_holds_the_world(tmp_path, caplog):
+    cams, pts = SCENES["split_level"]()
+    tree, receipt, eligible, stat = _write_scene(tmp_path, cams, pts)
+    store = _session_record(tmp_path, lock="live", **SETTLED)   # e.g. a re-redaction running
+    lock_before = store.lock_path(WORLD).read_bytes()
+    try:
+        state, worker = _run_worker(tmp_path, receipt, eligible, tree, stat, True, caplog,
+                                    expect_lines=1)
+        assert store.lock_path(WORLD).read_bytes() == lock_before    # never touched
+    finally:
+        store.release_writer_lock(WORLD)
+    assert state.landed(WORLD, SESSION) is not None
+    session = diag.session_dir(tmp_path, WORLD, SESSION)
+    assert not (session / diag.SUMMARY_FILENAME).exists()
+    assert not (session / diag.RECORDS_FILENAME).exists()
+    skipped = [r.getMessage() for r in caplog.records
+               if r.getMessage().startswith("world photo floorplan diagnostics files skipped")]
+    assert len(skipped) == 1 and "another writer" in skipped[0], skipped
+    assert len(_diag_lines(caplog)) == 1                      # the record line is still there
+    # the record stays in memory, so the next permitted write appends it
+    assert len(worker._diag_records[(WORLD, SESSION)].records) == 1
+    assert worker._diag_records[(WORLD, SESSION)].written == 0
+
+
+def test_a_skipped_record_is_appended_by_the_next_permitted_write(tmp_path):
+    store = _session_record(tmp_path, lock="live", **SETTLED)
+    worker = pfw.PhotoFloorplanWorker(tmp_path, latest=lambda w, s: None,
+                                      state=pfw.PhotoFloorplanState(), method="homography",
+                                      diagnostics_files=True)
+    try:
+        pair = (WORLD, SESSION)
+        worker._report_diagnostics(pair, (1.0, "g", 1), {"solved_at": 1.0, "components": []})
+        session = diag.session_dir(tmp_path, WORLD, SESSION)
+        assert not (session / diag.RECORDS_FILENAME).exists()
+        store.release_writer_lock(WORLD)                  # the other writer is done
+        worker._report_diagnostics(pair, (2.0, "g", 1), {"solved_at": 2.0, "components": []})
+        assert [r["solved_at"] for r in diag.read_records(session / diag.RECORDS_FILENAME)] \
+            == [1.0, 2.0]
+        worker._report_diagnostics(pair, (3.0, "g", 1), {"solved_at": 3.0, "components": []})
+        assert [r["solved_at"] for r in diag.read_records(session / diag.RECORDS_FILENAME)] \
+            == [1.0, 2.0, 3.0]
+        summary = json.loads((session / diag.SUMMARY_FILENAME).read_text(encoding="utf-8"))
+        assert summary["landings"]["total"] == 3
+    finally:
+        worker.shutdown()
+        store.release_writer_lock(WORLD)
+
+
 @pytest.mark.parametrize("name", ["split_level", "large_open_room"])
 def test_the_worker_publishes_the_same_bytes_with_diagnostics_files_on_and_off(
         tmp_path, name, caplog):
     cams, pts = SCENES[name]()
     tree, receipt, eligible, stat = _write_scene(tmp_path, cams, pts)
+    store = _session_record(tmp_path, lock="live")      # a walk in progress holds the world
     published = {}
-    for files in (False, True):
-        state = pfw.PhotoFloorplanState()
-        worker = pfw.PhotoFloorplanWorker(tmp_path, latest=lambda w, s: receipt, state=state,
-                                          method="homography", diagnostics_files=files)
-        try:
-            with caplog.at_level("INFO", logger="tower.world_builder.photo_floorplan_worker"):
-                worker.offer(WORLD, SESSION, receipt, eligible, tree, stat)
-                deadline = time.monotonic() + 30
-                while time.monotonic() < deadline and not (
-                        worker.idle() and (WORLD, SESSION) in worker.outcomes
-                        and worker._diag_pending is None
-                        and worker._diag_records.get((WORLD, SESSION))):
-                    time.sleep(0.02)
-        finally:
-            worker.shutdown()
-        block = state.landed(WORLD, SESSION)
-        assert block is not None, worker.outcomes
-        digests = [c["digest"] for c in block["components"]]
-        published[files] = (pfw.manifest_bytes(block),
-                            [state.tile(WORLD, SESSION, d) for d in digests],
-                            worker.outcomes[(WORLD, SESSION)]["disposition"])
-        # the build's references are dropped once the diagnostics have read them
-        assert all(pfw.DIAG_INPUTS not in c
-                   for c in worker.outcomes[(WORLD, SESSION)]["components"])
-        session = diag.session_dir(tmp_path, WORLD, SESSION)
-        assert (session / diag.SUMMARY_FILENAME).is_file() is files
-        assert (session / diag.RECORDS_FILENAME).is_file() is files
+    try:
+        for files in (False, True):
+            state, worker = _run_worker(tmp_path, receipt, eligible, tree, stat, files, caplog,
+                                        expect_lines=1 + int(files))
+            block = state.landed(WORLD, SESSION)
+            assert block is not None, worker.outcomes
+            digests = [c["digest"] for c in block["components"]]
+            published[files] = (pfw.manifest_bytes(block),
+                                [state.tile(WORLD, SESSION, d) for d in digests],
+                                worker.outcomes[(WORLD, SESSION)]["disposition"])
+            # the build's references are dropped once the diagnostics have read them
+            assert all(pfw.DIAG_INPUTS not in c
+                       for c in worker.outcomes[(WORLD, SESSION)]["components"])
+            # with the files off, nothing is retained either (the log line is the record)
+            assert bool(worker._diag_records) is files
+            session = diag.session_dir(tmp_path, WORLD, SESSION)
+            assert (session / diag.SUMMARY_FILENAME).is_file() is files
+            assert (session / diag.RECORDS_FILENAME).is_file() is files
+    finally:
+        store.release_writer_lock(WORLD)
     assert published[True] == published[False]
     summary = json.loads((diag.session_dir(tmp_path, WORLD, SESSION) / diag.SUMMARY_FILENAME)
                          .read_text(encoding="utf-8"))
@@ -434,6 +500,75 @@ def test_a_carrying_height_change_on_one_floor_is_not_a_second_level():
     assert "multi_level_suspected" not in diag.component_flags(rec)
 
 
+def kneel_in_one_level_room():
+    """ONE floor (z = 0). 49 cameras carried at 1.5 and pitched down, plus a 12-camera
+    kneel/sit cluster at 0.95 that mostly looks AHEAD (pitch 5 deg, below the warp's
+    MIN_FRAME_PITCH_DEG), with only 2 of the 12 pitched down at the floor. The camera
+    heights split cleanly (19% minority, 0.37 H apart, far over 4 SDs), but the minority
+    side has too few downward frames for the floor-height check to say anything."""
+    rng = np.random.default_rng(50)
+    cams = _grid_cams(np.linspace(-2.5, 2.5, 7), np.linspace(-2.5, 2.5, 7), seed=50)
+    for i, (x, y) in enumerate(zip(np.linspace(-1.5, 1.5, 12), np.linspace(1.5, -1.5, 12))):
+        pitch = 40.0 if i in (3, 8) else 5.0
+        cams.append(((float(x), float(y), 0.95 + float(rng.normal(0.0, 0.02))),
+                     float(rng.uniform(0, 360)), pitch))
+    return cams, _floor(rng, 2500, -3.5, 3.5, -3.5, 3.5)
+
+
+def test_a_short_kneel_on_one_floor_is_recorded_but_never_fires_multi_level(tmp_path):
+    """Camera evidence alone never fires `multi_level_suspected`: the split clears every
+    camera threshold, the floor check is `unavailable`, and the component records it as
+    `camera_split_unconfirmed` -- which the walk summary never counts as a fired flag."""
+    cams, pts = kneel_in_one_level_room()
+    tree, receipt, eligible, stat = _write_scene(tmp_path, cams, pts)
+    _, _, stats = pfw.build_landing(tmp_path, WORLD, SESSION, receipt, eligible, tree, stat,
+                                    plane_memory={})
+    record = _record(receipt, stats)
+    (comp,) = record["components"]
+    split = comp["cams"]
+    assert split["bimodal"] is True, json.dumps(split)
+    assert split["low_share"] >= diag.MULTILEVEL_MIN_SHARE
+    assert split["separation"] >= diag.MULTILEVEL_MIN_SEPARATION
+    assert split["gap_h"] >= diag.MULTILEVEL_MIN_GAP_FRAC
+    assert split["floor_check"]["result"] == "unavailable"
+    assert split["floor_check"]["frames_lower"] < diag.FLOOR_CHECK_MIN_FRAMES
+    assert "multi_level_suspected" not in comp["flags"], comp["flags"]
+    assert "unavailable" in comp["camera_split_unconfirmed"]
+    summary = diag.walk_summary([record, record], world_id=WORLD, session_id=SESSION)
+    assert "multi_level_suspected" not in summary["flags_fired"]
+    assert summary["flags"]["multi_level_suspected"]["landings_fired"] == 0
+    unconfirmed = summary["camera_split_unconfirmed"]
+    assert [c["ref"] for c in unconfirmed["components"]] == [comp["ref"]]
+    assert unconfirmed["landings"] == 2 and unconfirmed["landings_built"] == 2
+
+
+def test_a_camera_split_fires_only_when_the_floor_check_confirms_it():
+    split = {"n": 60, "bimodal": True, "gap_h": 0.4, "separation": 9.0, "low_share": 0.2}
+    plane = {"ok": True, "source": "estimated", "inliers": 500, "support_cells": 20}
+
+    def rec(floor_check):
+        cams = dict(split, floor_check=floor_check) if floor_check is not None else dict(split)
+        return {"plane": dict(plane), "cams": cams, "band": {"frames": 0}, "area": {}}
+
+    confirmed = rec({"result": "confirmed", "moved": 0.9, "frames_lower": 5, "frames_upper": 9})
+    assert "multi_level_suspected" in diag.component_flags(confirmed)
+    assert diag.camera_split_unconfirmed(confirmed) is None
+    for floor_check in ({"result": "unavailable", "frames_lower": 2, "frames_upper": 30},
+                        {"result": "contradicted", "moved": 0.1, "frames_lower": 5,
+                         "frames_upper": 9},
+                        None):
+        r = rec(floor_check)
+        assert "multi_level_suspected" not in diag.component_flags(r), floor_check
+        assert diag.camera_split_unconfirmed(r), floor_check
+    # the floor-backed path (a supported layer BELOW the floor) still fires on its own
+    below = rec({"result": "unavailable", "frames_lower": 1, "frames_upper": 30})
+    below["plane"].update(ambiguous=True, alt_ratio=0.8, alt_h=-0.5)
+    assert "BELOW" in diag.component_flags(below)["multi_level_suspected"]
+    # no split at all: nothing recorded
+    assert diag.camera_split_unconfirmed(
+        {"plane": plane, "cams": {"bimodal": False}, "band": {}, "area": {}}) is None
+
+
 def test_a_supported_layer_below_the_floor_is_a_second_level_but_one_above_is_furniture():
     base = {"ok": True, "source": "estimated", "inliers": 500, "support_cells": 20,
             "ambiguous": True, "alt_ratio": 0.9}
@@ -494,18 +629,97 @@ def test_a_broken_component_never_breaks_the_record():
     assert rec["class"] == "regressed" and "error" in rec["components"][0]
 
 
+def _session_record(root, *, ended_at=None, finalization=None, lock="live"):
+    """A real session record (WorldStore), and the world's writer lock: `live` (this test
+    process -- alive), `dead` (a pid whose start time does not match: a crashed writer),
+    `unreadable`, or None (no lock)."""
+    import os
+
+    from tower.world_builder.records import Session
+    from tower.world_builder.store import LOCK_FILENAME, WorldStore
+
+    store = WorldStore(Path(root))
+    store.write_session(Session(session_id=SESSION, world_id=WORLD, started_at=1.0,
+                                ended_at=ended_at, finalization=finalization))
+    path = store.lock_path(WORLD)
+    assert path.name == LOCK_FILENAME
+    path.unlink(missing_ok=True)
+    if lock == "live":
+        store.acquire_writer_lock(WORLD)
+    elif lock == "dead":
+        path.write_text(json.dumps({"pid": os.getpid(), "created_at": 1.0}), encoding="utf-8")
+    elif lock == "unreadable":
+        path.write_text("", encoding="utf-8")
+    return store
+
+
+SETTLED = {"ended_at": 5.0, "finalization": {"state": "complete", "final_solve": "solved",
+                                             "started_at": 5.0, "updated_at": 6.0,
+                                             "detail": None}}
+PENDING = {"ended_at": 5.0, "finalization": {"state": "pending", "final_solve": "pending",
+                                             "started_at": 5.0, "updated_at": 5.0,
+                                             "detail": None}}
+
+
 def test_files_are_written_only_into_an_existing_session(tmp_path):
     rec = {"solved_at": 1.0, "components": []}
-    assert diag.write_files(tmp_path, WORLD, SESSION, rec, {"k": 1}) is False
+    written, why = diag.write_files(tmp_path, WORLD, SESSION, [rec], {"k": 1})
+    assert written is False and "no session directory" in why
     assert not (tmp_path / "worlds").exists()                  # nothing created
+    _session_record(tmp_path, lock="live")                     # a walk in progress
     session = diag.session_dir(tmp_path, WORLD, SESSION)
-    session.mkdir(parents=True)
-    assert diag.write_files(tmp_path, WORLD, SESSION, rec, {"k": 1}) is True
-    assert diag.write_files(tmp_path, WORLD, SESSION, dict(rec, solved_at=2.0), {"k": 2})
+    assert diag.write_files(tmp_path, WORLD, SESSION, [rec], {"k": 1})[0] is True
+    assert diag.write_files(tmp_path, WORLD, SESSION, [dict(rec, solved_at=2.0)], {"k": 2})[0]
     assert [r["solved_at"] for r in diag.read_records(session / diag.RECORDS_FILENAME)] == [1.0, 2.0]
     assert json.loads((session / diag.SUMMARY_FILENAME).read_text(encoding="utf-8")) == {"k": 2}
     assert sorted(p.name for p in session.iterdir()) == sorted(
-        [diag.RECORDS_FILENAME, diag.SUMMARY_FILENAME])        # no temp file left behind
+        [diag.RECORDS_FILENAME, diag.SUMMARY_FILENAME, "session.json"])  # no temp file left
+
+
+@pytest.mark.parametrize("record, lock, allowed", [
+    ({}, "live", True),                 # the walk: its own writer holds the world
+    (PENDING, "live", True),            # finishing under hold_lock
+    (SETTLED, None, True),              # finalized and released: no writer on the world
+    (SETTLED, "live", False),           # someone else holds it (re-redaction, re-finalize, ...)
+    ({}, "dead", False),                # a crashed writer's lock: left for recovery
+    (PENDING, "dead", False),
+    (PENDING, "unreadable", False),
+    ({}, None, False),                  # an unfinished session with no writer at all
+])
+def test_files_follow_the_world_writer_lock_without_ever_touching_it(tmp_path, record, lock,
+                                                                     allowed):
+    store = _session_record(tmp_path, lock=lock, **record)
+    lock_path = store.lock_path(WORLD)
+    before = lock_path.read_bytes() if lock_path.exists() else None
+    written, why = diag.write_files(tmp_path, WORLD, SESSION, [{"solved_at": 1.0}], {"k": 1})
+    assert written is allowed, why
+    session = diag.session_dir(tmp_path, WORLD, SESSION)
+    assert (session / diag.SUMMARY_FILENAME).exists() is allowed
+    assert (session / diag.RECORDS_FILENAME).exists() is allowed
+    # never taken, released, reclaimed or rewritten
+    assert (lock_path.read_bytes() if lock_path.exists() else None) == before
+    if lock == "live":
+        store.release_writer_lock(WORLD)
+
+
+def test_a_session_without_its_record_or_purged_under_the_write_gets_nothing(tmp_path,
+                                                                            monkeypatch):
+    session = diag.session_dir(tmp_path, WORLD, SESSION)
+    session.mkdir(parents=True)                                 # a directory, no record
+    written, why = diag.write_files(tmp_path, WORLD, SESSION, [{"solved_at": 1.0}], {"k": 1})
+    assert written is False and "record" in why
+    assert list(session.iterdir()) == []
+    # the gate passes, then the world is purged before the write: nothing is re-created
+    import shutil
+
+    def gate_then_purge(*_args):
+        shutil.rmtree(tmp_path / "worlds")
+        return True, "test: the gate passed"
+
+    monkeypatch.setattr(diag, "session_write_gate", gate_then_purge)
+    written, why = diag.write_files(tmp_path, WORLD, SESSION, [{"solved_at": 1.0}], {"k": 1})
+    assert written is False and "vanished" in why
+    assert not (tmp_path / "worlds").exists()
 
 
 def test_the_walk_summary_counts_skips_escapes_and_lag():
