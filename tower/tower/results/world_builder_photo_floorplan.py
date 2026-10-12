@@ -6,12 +6,14 @@ TOWER_WORLD_GUIDANCE_COVERAGE=on); every handler re-checks the switch and answer
 when it is off. Both URL identifiers are untrusted and must name one contained world
 and one of its sessions. The manifest is <= 8 KiB; a tile is served only while its
 digest belongs to the CURRENT landing (a superseded or unknown digest is 404).
+With TOWER_WORLD_PHOTO_FLOORPLAN_KEPT exactly `on` the manifest may also carry the
+optional `kept` notice (`photo_floorplan_worker.KEPT_REASONS`); off, it never does.
 """
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import Response
 
-from tower.config import world_photo_floorplan_setting
+from tower.config import world_photo_floorplan_kept_setting, world_photo_floorplan_setting
 from tower.results.world_builder_appearance import NO_STORE_HEADERS
 from tower.results.world_builder_geometry import contained_world_id, store_from_root
 from tower.world_builder.guidance_imagery import contained_session_id
@@ -57,8 +59,15 @@ def _contained(root, world_id, session_id):
 def manifest(world_id: str, session_id: str, request: Request):
     root = _root(request)
     _contained(root, world_id, session_id)
-    landed = state_for(root).landed(world_id, session_id, wait_s=_MANIFEST_WAIT_S)
-    body = manifest_bytes(landed)
+    if world_photo_floorplan_kept_setting():
+        # TOWER_WORLD_PHOTO_FLOORPLAN_KEPT: the plan and its kept notice, read together.
+        landed, kept = state_for(root).served(world_id, session_id, wait_s=_MANIFEST_WAIT_S)
+        body = manifest_bytes(landed, kept)
+        if kept is not None and len(body) > MANIFEST_MAX_BYTES:
+            body = manifest_bytes(landed)   # the notice goes, never the plan
+    else:
+        landed = state_for(root).landed(world_id, session_id, wait_s=_MANIFEST_WAIT_S)
+        body = manifest_bytes(landed)
     if len(body) > MANIFEST_MAX_BYTES:  # the worker never publishes one; belt and braces
         body = manifest_bytes(None)
     return Response(body, media_type="application/json", headers=NO_STORE_HEADERS)
