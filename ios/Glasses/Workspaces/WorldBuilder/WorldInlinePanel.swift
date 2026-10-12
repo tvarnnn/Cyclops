@@ -615,7 +615,7 @@ struct WorldInlinePanel<Health: View>: View {
     }
 
     static func map(_ map: WorldPanelMapSource, holding photo: WorldPhotoDisplay?) -> WorldPanelMapSource {
-        guard case .coverage = map, let photo, photo.updating else { return map }
+        guard case .coverage = map, let photo, photo.held != nil else { return map }
         return .coverage(photo.plan.receipt)
     }
 
@@ -775,7 +775,7 @@ struct WorldInlinePanel<Health: View>: View {
                 let shownMap = Self.map(map, holding: photo)
                 WorldCoverageCaption(source: shownMap, stopped: false,
                                      photoPieces: Self.photo(photo?.plan, over: shownMap)?.pieces.count ?? 0,
-                                     photoUpdating: photo?.updating == true)
+                                     photoHeld: photo?.held)
                     .padding(.horizontal, 12)
                     .padding(.vertical, 10)
             }

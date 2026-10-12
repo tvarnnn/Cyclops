@@ -275,6 +275,53 @@ final class WorldImageryUITests: XCTestCase {
                       "alpha 0 reads gray: \(gray)")
     }
 
+    /// The Tower's `kept` notice for the phone's newer receipt, keeping the
+    /// stop landing's plan ("regressed"): the photo stays on its own receipt,
+    /// captioned, well past the hold, and no fog field appears. The notice
+    /// gone, the hold is long over: the fog field.
+    func testAKeptNoticeHoldsThePhotoPastTheHoldUntilItEnds() throws {
+        launch(environment: ["IOS_FOW_PHOTO_FLOORPLAN": "on", "GLASSES_UITEST_PHOTO_HOLD_SECONDS": "4"])
+        open(cartridge: "World Builder")
+        XCTAssertTrue(waitFor(timeout: 15) { self.socket.liveSubscription != nil }, "the live subscription")
+        try startCapture()
+        serve(revision: "gA", segments: [Self.placedZero, Self.live812])
+        push(geometry: "gA", guidance: FOWGuidance.stop)
+        let photo = element("wb-panel-map-photo")
+        let fog = element("wb-panel-map-piece")
+        XCTAssertTrue(photo.waitForExistence(timeout: 15), "the photo floor plan")
+
+        // The newer landing published nothing: `landed` stays the stop landing's.
+        let kept = #","kept":{"for_landing":{"solved_at":1791240320.0,"geometry_revision":"g-stop-990","frame_revision":1},"reason":"regressed","plan_landing":{"solved_at":1791240313.0,"geometry_revision":"g-stop-984","frame_revision":1}}}"#
+        mock.setRoute("GET \(Self.photo)/manifest", status: 200, body: String(Self.photoManifest.dropLast()) + kept)
+        let newer = FOWGuidance.stop.replacingOccurrences(of: "g-stop-984", with: "g-stop-990")
+            .replacingOccurrences(of: "1791240313.", with: "1791240320.")
+        push(geometry: "gA", guidance: newer)
+        let notImproved = element("wb-panel-map-not-improved")
+        XCTAssertTrue(notImproved.waitForExistence(timeout: 10), "the kept caption")
+        XCTAssertEqual(notImproved.label, "Couldn't improve this view yet")
+        XCTAssertTrue(neverExists(fog, for: 12), "fog while the Tower keeps the plan (hold is 4 s)")
+        XCTAssertTrue(photo.exists, "the kept photo")
+        XCTAssertTrue(notImproved.exists, "the kept caption")
+        XCTAssertFalse(element("wb-panel-map-updating").exists, "Updating… for a regressed landing")
+        // A heartbeat asks again; the Tower still keeps it.
+        let asked = mock.requestLines.filter { $0.contains("/photo-floorplan/manifest") }.count
+        push(geometry: "gA", guidance: newer)
+        XCTAssertTrue(neverExists(fog, for: 2), "fog after asking again while kept")
+        XCTAssertGreaterThan(mock.requestLines.filter { $0.contains("/photo-floorplan/manifest") }.count, asked,
+                             "a kept landing was not asked again")
+        XCTAssertTrue(notImproved.exists)
+        reveal(photo)
+        shoot("photo-floorplan-kept")
+
+        // The notice ends with no plan for the newer landing: today's expiry.
+        mock.setRoute("GET \(Self.photo)/manifest", status: 200, body: Self.photoManifest)
+        push(geometry: "gA", guidance: newer)
+        XCTAssertTrue(fog.waitForExistence(timeout: 15), "fog once the notice ended")
+        XCTAssertFalse(photo.exists, "the held photo after the notice ended")
+        XCTAssertFalse(notImproved.exists, "the kept caption after the notice ended")
+        XCTAssertFalse(element("wb-panel-map-updating").exists, "the hold had long ended")
+    }
+
     private static func pixel(_ image: UIImage, at unit: CGPoint) -> (r: Int, g: Int, b: Int)? {
         guard let cg = image.cgImage else { return nil }
         var rgba = [UInt8](repeating: 0, count: 4)

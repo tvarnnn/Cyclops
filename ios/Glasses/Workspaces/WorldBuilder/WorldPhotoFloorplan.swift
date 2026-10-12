@@ -13,10 +13,12 @@
 //    no request and no UI change.
 //  - Fetched only on the existing pushes: a new landing in
 //    `guidance.coverage`, retried a bounded number of times on the geometry
-//    push while the Tower's side worker catches up. No timer, no poll.
+//    push while the Tower's side worker catches up, or on every push while
+//    the Tower's `kept` notice holds the landing. No timer, no poll.
 //  - What the phone holds is one walk's (`WalkScoped`). A validated photo
-//    may briefly remain on its own receipt while the next landing loads.
-//    A walk change empties it. Memory only, no disk cache.
+//    may briefly remain on its own receipt while the next landing loads,
+//    or for as long as the Tower's `kept` notice keeps it for the current
+//    receipt. A walk change empties it. Memory only, no disk cache.
 //
 
 import Combine
@@ -95,10 +97,38 @@ nonisolated struct WorldPhotoFloorplanLanded: Equatable, Sendable {
     let components: [WorldPhotoFloorplanComponent]
 }
 
+/// `kept`: the newest landing the Tower processed published no plan, and it
+/// keeps serving `landed` on purpose (TOWER_WORLD_PHOTO_FLOORPLAN_KEPT).
+nonisolated struct WorldPhotoFloorplanKept: Equatable, Sendable {
+    enum Reason: Equatable, Sendable {
+        case regressed, stalled, wallCap, superseded, failed, notNewer
+
+        /// A reason the phone does not know is `failed`.
+        init(wire: String) {
+            switch wire {
+            case "regressed": self = .regressed
+            case "stalled": self = .stalled
+            case "wall_cap": self = .wallCap
+            case "superseded": self = .superseded
+            case "not_newer": self = .notNewer
+            default: self = .failed
+            }
+        }
+    }
+
+    /// The landing that published nothing: the phone's receipt, if it is current.
+    let forLanding: WorldImageryLanding
+    let reason: Reason
+    /// The plan served instead: always `landed`'s identity.
+    let planLanding: WorldImageryLanding
+}
+
 /// `GET .../photo-floorplan/manifest`: `landed` is `nil` for `null` (on, and
 /// nothing yet). The optional `live` section is not read by the phone.
 nonisolated struct WorldPhotoFloorplanManifest: Equatable, Sendable {
     let landed: WorldPhotoFloorplanLanded?
+    /// `nil` when absent or malformed: a bad notice never refuses the plan.
+    var kept: WorldPhotoFloorplanKept? = nil
 }
 
 nonisolated enum WorldPhotoFloorplanError: Error, Equatable {
@@ -144,8 +174,9 @@ nonisolated enum WorldPhotoFloorplanWire {
     }
 
     /// The manifest body, or `nil`: over 8 KiB, not JSON, a wrong version, a
-    /// missing `landed` key, or any malformed known field. Unknown fields are
-    /// ignored; nothing is repaired.
+    /// missing `landed` key, or any malformed known field of `landed`. Unknown
+    /// fields are ignored; nothing is repaired. A malformed `kept` is read as
+    /// absent, never as a refused manifest.
     static func manifest(_ data: Data) -> WorldPhotoFloorplanManifest? {
         guard data.count <= maxManifestBytes, let json = try? JSONSerialization.jsonObject(with: data) else {
             return nil
@@ -159,12 +190,8 @@ nonisolated enum WorldPhotoFloorplanWire {
               object.keys.contains("landed")
         else { return nil }
         if object["landed"] is NSNull { return WorldPhotoFloorplanManifest(landed: nil) }
-        let index = 0...Int(Int32.max)
         guard let section = object["landed"] as? [String: Any],
-              let solvedAt = R.number(section["solved_at"]), solvedAt >= 0,
-              let revision = section["geometry_revision"] as? String, (1...128).contains(revision.utf8.count),
-              revision.unicodeScalars.allSatisfy(\.isASCII),
-              let frame = R.integer(section["frame_revision"], index),
+              let landing = landing(section),
               let horizon = R.integer(section["horizon_keyframes"], 0...65535),
               let rows = section["components"] as? [Any], rows.count <= maxComponents
         else { return nil }
@@ -175,9 +202,35 @@ nonisolated enum WorldPhotoFloorplanWire {
             else { return nil }
             components.append(component)
         }
-        return WorldPhotoFloorplanManifest(landed: WorldPhotoFloorplanLanded(
-            landing: WorldImageryLanding(solvedAt: solvedAt, geometryRevision: revision, frameRevision: frame),
-            horizonKeyframes: horizon, components: components))
+        return WorldPhotoFloorplanManifest(
+            landed: WorldPhotoFloorplanLanded(landing: landing, horizonKeyframes: horizon, components: components),
+            kept: kept(object["kept"]))
+    }
+
+    /// `solved_at`, `geometry_revision`, `frame_revision`: a landing, as
+    /// `landed` and both of `kept`'s landings carry it.
+    private static func landing(_ section: [String: Any]) -> WorldImageryLanding? {
+        typealias R = WorldCoverageReader
+        guard let solvedAt = R.number(section["solved_at"]), solvedAt >= 0,
+              let revision = section["geometry_revision"] as? String, (1...128).contains(revision.utf8.count),
+              revision.unicodeScalars.allSatisfy(\.isASCII),
+              let frame = R.integer(section["frame_revision"], 0...Int(Int32.max))
+        else { return nil }
+        return WorldImageryLanding(solvedAt: solvedAt, geometryRevision: revision, frameRevision: frame)
+    }
+
+    /// `kept`: exactly its three keys, each landing exactly its three, the
+    /// reason a string. Anything else is no notice at all.
+    private static func kept(_ value: Any?) -> WorldPhotoFloorplanKept? {
+        let identity: Set<String> = ["solved_at", "geometry_revision", "frame_revision"]
+        guard let object = value as? [String: Any],
+              Set(object.keys) == ["for_landing", "reason", "plan_landing"],
+              let forSection = object["for_landing"] as? [String: Any], Set(forSection.keys) == identity,
+              let planSection = object["plan_landing"] as? [String: Any], Set(planSection.keys) == identity,
+              let forLanding = landing(forSection), let planLanding = landing(planSection),
+              let reason = object["reason"] as? String
+        else { return nil }
+        return WorldPhotoFloorplanKept(forLanding: forLanding, reason: .init(wire: reason), planLanding: planLanding)
     }
 
     private static func component(_ row: Any) -> WorldPhotoFloorplanComponent? {
@@ -337,6 +390,10 @@ final class WorldPhotoFloorplanModel: ObservableObject {
     private var pieces: Set<Int> = []
     private var landingAnswered = false
     private var landingAttempts = 0
+    /// The Tower's `kept` notice for `landing`, as last asked: it keeps the
+    /// remembered plan on purpose. Not an answer for good: while it holds,
+    /// each push asks again, since only asking tells it still holds.
+    @Published private var kept: WalkScoped<WorldPhotoFloorplanKept>?
     private var manifestTask: Task<Void, Never>?
     private var rasterTask: Task<Void, Never>?
     /// Digests whose raster was refused or failed, until the next manifest.
@@ -353,18 +410,31 @@ final class WorldPhotoFloorplanModel: ObservableObject {
     }
 
     /// The remembered plan is current on its own receipt. Once superseded,
-    /// it stays on that receipt until the monotonic hold ends.
+    /// it stays on that receipt while the Tower's `kept` notice names the
+    /// current receipt and that plan, else until the monotonic hold ends.
     func displayedPlan(for current: WalkScoped<WorldCoverageReceipt?>) -> WalkScoped<WorldPhotoDisplay>? {
         guard floorplanSwitch.on, let walk = current.walk, let currentReceipt = current.value,
               receipt.walk == walk, receipt.value?.coverage == currentReceipt.coverage
         else { return nil }
         guard let lastValid, lastValid.walk == walk else { return nil }
-        if lastValid.value.plan.receipt.coverage == currentReceipt.coverage {
-            return WalkScoped(walk: walk, value: WorldPhotoDisplay(plan: lastValid.value.plan, updating: false))
+        let plan = lastValid.value.plan
+        if plan.receipt.coverage == currentReceipt.coverage {
+            return WalkScoped(walk: walk, value: WorldPhotoDisplay(plan: plan, held: nil))
+        }
+        if let notice = keptNotice(for: WorldImageryLanding(currentReceipt.coverage), walk: walk, plan: plan) {
+            return WalkScoped(walk: walk, value: WorldPhotoDisplay(plan: plan, held: .init(notice.reason)))
         }
         guard let supersededAt = lastValid.value.supersededAt,
               now() - supersededAt < holdSeconds else { return nil }
-        return WalkScoped(walk: walk, value: WorldPhotoDisplay(plan: lastValid.value.plan, updating: true))
+        return WalkScoped(walk: walk, value: WorldPhotoDisplay(plan: plan, held: .updating))
+    }
+
+    /// The notice for `landing`, if it keeps exactly `plan` (its own landing).
+    private func keptNotice(for landing: WorldImageryLanding, walk: WorldFinishWalk,
+                            plan: WorldPhotoPlan) -> WorldPhotoFloorplanKept? {
+        guard let kept, kept.walk == walk, kept.value.forLanding == landing,
+              kept.value.planLanding == WorldImageryLanding(plan.receipt.coverage) else { return nil }
+        return kept.value
     }
 
     /// The walk's `guidance.coverage`: the only trigger is a new landing in
@@ -384,16 +454,21 @@ final class WorldPhotoFloorplanModel: ObservableObject {
         pieces = Set(block.components.map(\.referenceSegment))
         landingAnswered = false
         landingAttempts = 0
+        if kept != nil { kept = nil }
         fetchManifest(walk: walk, landing: next)
     }
 
     /// The existing geometry push, heartbeat included: the bounded retry of
-    /// a landing the manifest did not carry yet. Only for a walk received.
+    /// a landing the manifest did not carry yet. A landing the Tower answered
+    /// with a `kept` notice is asked on every push while the notice holds, so
+    /// a plan published later for it, or the notice's end, is seen. Only for
+    /// a walk received.
     func geometryPushed(_ coordinates: WorldGeometryCoordinates, receiving: Bool) {
         guard floorplanSwitch.on, receiving else { return }
         let walk = WorldFinishWalk(worldID: coordinates.worldID, sessionID: coordinates.sessionID)
         adopt(walk)
-        if let landing, !landingAnswered, manifestTask == nil, landingAttempts < Self.landingRetries {
+        guard let landing, !landingAnswered, manifestTask == nil else { return }
+        if landingAttempts < Self.landingRetries || kept?.value.forLanding == landing {
             fetchManifest(walk: walk, landing: landing)
         }
     }
@@ -407,6 +482,7 @@ final class WorldPhotoFloorplanModel: ObservableObject {
         rasterTask = nil
         holdExpiryTask = nil
         lastValid = nil
+        if kept != nil { kept = nil }
         receipt = WalkScoped(walk: nil, value: nil)
         failed = []
         landing = nil
@@ -442,17 +518,23 @@ final class WorldPhotoFloorplanModel: ObservableObject {
             self.manifestTask = nil
             switch result {
             case .success(let manifest):
+                let notice = manifest.kept.flatMap {
+                    $0.forLanding == landing && $0.planLanding == manifest.landed?.landing ? $0 : nil
+                }
+                if self.kept?.value != notice { self.kept = notice.map { WalkScoped(walk: walk, value: $0) } }
                 if let landed = manifest.landed, landed.landing == landing {
                     self.landingAnswered = true
                     self.show(landed, walk: walk)
                 }
                 // `null`, or another landing's (the side worker is slow, or
-                // it kept the prior image): never drawn; asked again on the
-                // next push.
+                // it kept the prior image): never drawn for this landing;
+                // asked again on the next push. A `kept` notice for this
+                // landing holds the remembered plan (`displayedPlan`).
             case .failure(WorldPhotoFloorplanError.notFound), .failure(WorldPhotoFloorplanError.refused):
                 // An answer: the route is absent, or said what the contract
-                // does not allow. Nothing of it is drawn.
+                // does not allow. Nothing of it is drawn, and no notice holds.
                 self.landingAnswered = true
+                if self.kept != nil { self.kept = nil }
             case .failure:
                 break
             }
@@ -516,10 +598,19 @@ final class WorldPhotoFloorplanModel: ObservableObject {
         holdExpiryTask = nil
     }
 
+    /// The hold starts when the plan stops being the answer for the current
+    /// receipt: when its own receipt is superseded, or a receipt the Tower
+    /// kept it for (`kept`) is.
     private func supersedeRememberedPlan(ifDifferentFrom coverage: WorldCoverage, walk: WorldFinishWalk) {
         guard let lastValid, lastValid.walk == walk,
-              lastValid.value.plan.receipt.coverage != coverage,
-              lastValid.value.supersededAt == nil else { return }
+              lastValid.value.plan.receipt.coverage != coverage
+        else { return }
+        let leavingKept = landing.map {
+            $0 != WorldImageryLanding(coverage) && keptNotice(for: $0, walk: walk, plan: lastValid.value.plan) != nil
+        } ?? false
+        guard lastValid.value.supersededAt == nil || leavingKept else { return }
+        holdExpiryTask?.cancel()
+        holdExpiryTask = nil
         self.lastValid = WalkScoped(walk: walk, value: (plan: lastValid.value.plan, supersededAt: now()))
         guard holdSeconds > 0 else { return }
         holdExpiryTask = Task { [weak self, holdSeconds] in
@@ -621,8 +712,26 @@ nonisolated struct WorldPhotoPlan: Equatable {
 }
 
 nonisolated struct WorldPhotoDisplay: Equatable {
+    /// What the caption says under a held plan.
+    enum Held: Equatable {
+        /// The timed hold, or the Tower's transient `superseded` / `wall_cap`.
+        case updating
+        /// The Tower kept the plan on purpose: `regressed`, `stalled`,
+        /// `failed`, `not_newer`, or a reason the phone does not know.
+        case notImproved
+
+        init(_ reason: WorldPhotoFloorplanKept.Reason) {
+            switch reason {
+            case .superseded, .wallCap: self = .updating
+            case .regressed, .stalled, .failed, .notNewer: self = .notImproved
+            }
+        }
+    }
+
     let plan: WorldPhotoPlan
-    let updating: Bool
+    /// `nil`: the plan is the current receipt's own. Otherwise it is held,
+    /// drawn on its own receipt, never as the current receipt's plan.
+    let held: Held?
 }
 
 extension WorldBuilderViewModel {

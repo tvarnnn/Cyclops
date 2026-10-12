@@ -290,7 +290,8 @@ struct WorldCoverageCaption: View {
     let stopped: Bool
     /// FOW v1.2: how many pieces show a photo instead of the fog field.
     var photoPieces: Int = 0
-    var photoUpdating = false
+    /// FOW v1.2: the photo is a held plan, drawn on its own receipt.
+    var photoHeld: WorldPhotoDisplay.Held? = nil
 
     private var receipt: WorldCoverageReceipt { source.receipt }
     private var primary: Color { stopped ? WorldChromeStyle.text : Color.primary }
@@ -314,9 +315,10 @@ struct WorldCoverageCaption: View {
             if !stopped {
                 legend
             }
-            if photoUpdating {
-                line(WorldPhotoFloorplanCopy.updating, "wb-panel-map-updating", font: .footnote, color: secondary)
-                    .accessibilityLabel(WorldPhotoFloorplanCopy.updating)
+            if let photoHeld {
+                let held = WorldPhotoFloorplanCopy.held(photoHeld)
+                line(held.words, held.identifier, font: .footnote, color: secondary)
+                    .accessibilityLabel(held.words)
             }
             if source.isFixture {
                 line(WorldCoverageCopy.fixture, "wb-panel-map-fixture", font: .footnote, color: secondary)

@@ -46,9 +46,19 @@ enum FOWPhotoFixtures {
     /// §9's stop landing; the stop block's basis; its 16-unit square padded
     /// 15% to 18.4.
     static func manifest(solvedAt: String = "1791240313.0", revision: String = "g-stop-984",
-                         digest: String? = nil, bytes: Int? = nil, component: String? = nil) -> String {
+                         digest: String? = nil, bytes: Int? = nil, component: String? = nil,
+                         kept: String? = nil) -> String {
         let row = component ?? #"{"reference_segment":0,"origin_xyz":[0.0,0.0,0.0],"up_xyz":[0.0,0.0,1.0],"forward_xyz":[0.0,1.0,0.0],"raster_bounds_xy":[-9.2,-9.2,9.2,9.2],"width":512,"height":512,"digest":"\#(digest ?? self.digest)","bytes":\#(bytes ?? raster.count),"projected_keyframes":2,"imagery_source":"redacted"}"#
-        return #"{"version":1,"landed":{"solved_at":\#(solvedAt),"geometry_revision":"\#(revision)","frame_revision":1,"horizon_keyframes":984,"components":[\#(row)]}}"#
+        let notice = kept.map { #","kept":\#($0)"# } ?? ""
+        return #"{"version":1,"landed":{"solved_at":\#(solvedAt),"geometry_revision":"\#(revision)","frame_revision":1,"horizon_keyframes":984,"components":[\#(row)]}\#(notice)}"#
+    }
+
+    /// A `kept` notice: by default for the stop block re-solved (g-stop-990),
+    /// keeping the stop landing's plan.
+    static func kept(reason: String = "regressed", forSolvedAt: String = "1791240320.0",
+                     forRevision: String = "g-stop-990", planSolvedAt: String = "1791240313.0",
+                     planRevision: String = "g-stop-984") -> String {
+        #"{"for_landing":{"solved_at":\#(forSolvedAt),"geometry_revision":"\#(forRevision)","frame_revision":1},"reason":"\#(reason)","plan_landing":{"solved_at":\#(planSolvedAt),"geometry_revision":"\#(planRevision)","frame_revision":1}}"#
     }
 
     static func decode(_ text: String) -> WorldPhotoFloorplanManifest? {
@@ -121,6 +131,60 @@ final class WorldPhotoFloorplanTests: XCTestCase {
         refused(good.replacingOccurrences(of: #"{"version":1,"#,
                                   with: #"{"version":1,"pad":""# + String(repeating: "x", count: 8 * 1024) + #"","#),
                 "over 8 KiB")
+    }
+
+    /// `kept`: optional, decoded beside the plan; a malformed notice is
+    /// absent and never refuses the manifest; an unknown reason is `failed`.
+    func testTheKeptNoticeDecodesAndAMalformedOneIsAbsent() throws {
+        XCTAssertNil(F.decode(F.manifest())?.kept, "no notice")
+        let manifest = try XCTUnwrap(F.decode(F.manifest(kept: F.kept())))
+        XCTAssertEqual(manifest.landed, F.decode(F.manifest())?.landed, "the plan reads as without a notice")
+        let kept = try XCTUnwrap(manifest.kept)
+        XCTAssertEqual(kept.forLanding, WorldImageryLanding(solvedAt: 1791240320.0, geometryRevision: "g-stop-990",
+                                                            frameRevision: 1))
+        XCTAssertEqual(kept.planLanding, WorldImageryLanding(stop))
+        XCTAssertEqual(kept.reason, .regressed)
+        let reasons: [(String, WorldPhotoFloorplanKept.Reason, WorldPhotoDisplay.Held)] = [
+            ("regressed", .regressed, .notImproved), ("stalled", .stalled, .notImproved),
+            ("wall_cap", .wallCap, .updating), ("superseded", .superseded, .updating),
+            ("failed", .failed, .notImproved), ("not_newer", .notNewer, .notImproved),
+            ("frozen", .failed, .notImproved), ("", .failed, .notImproved), ("Regressed", .failed, .notImproved)]
+        for (wire, reason, held) in reasons {
+            let decoded = try XCTUnwrap(F.decode(F.manifest(kept: F.kept(reason: wire)))?.kept?.reason, wire)
+            XCTAssertEqual(decoded, reason, wire)
+            XCTAssertEqual(WorldPhotoDisplay.Held(decoded), held, wire)
+        }
+        XCTAssertEqual(WorldPhotoFloorplanCopy.held(.updating).words, "Updating…")
+        XCTAssertEqual(WorldPhotoFloorplanCopy.held(.notImproved).words, "Couldn't improve this view yet")
+        XCTAssertEqual(F.decode(#"{"version":1,"landed":null,"kept":"# + F.kept() + "}"),
+                       WorldPhotoFloorplanManifest(landed: nil), "no plan, nothing kept")
+
+        let good = F.kept()
+        let malformed: [(String, String)] = [
+            (good.replacingOccurrences(of: #","reason":"regressed""#, with: ""), "no reason"),
+            (good.replacingOccurrences(of: #""reason":"regressed""#, with: #""reason":3"#), "a numeric reason"),
+            (good.replacingOccurrences(of: #""reason":"regressed""#, with: #""reason":null"#), "a null reason"),
+            (good.replacingOccurrences(of: #""reason":"regressed""#, with: #""reason":"regressed","why":"x""#),
+             "an extra key"),
+            (good.replacingOccurrences(of: #""frame_revision":1},"reason""#, with: #""frame_revision":1,"x":0},"reason""#),
+             "an extra landing key"),
+            (good.replacingOccurrences(of: #""solved_at":1791240320.0,"#, with: ""), "a landing without solved_at"),
+            (good.replacingOccurrences(of: #""solved_at":1791240320.0"#, with: #""solved_at":"1791240320.0""#),
+             "a string solved_at"),
+            (good.replacingOccurrences(of: #""geometry_revision":"g-stop-984""#, with: #""geometry_revision":7"#),
+             "a numeric revision"),
+            (good.replacingOccurrences(of: #""geometry_revision":"g-stop-984""#, with: #""geometry_revision":"""#),
+             "an empty revision"),
+            (good.replacingOccurrences(of: #""frame_revision":1}}"#, with: #""frame_revision":-1}}"#),
+             "a negative frame"),
+            (good.replacingOccurrences(of: #""plan_landing":{"#, with: #""plan_landing":[{"#)
+                .replacingOccurrences(of: "}}", with: "}]}"), "an array landing"),
+            ("[]", "an array"), ("null", "null"), (#""regressed""#, "a string"), ("{}", "an empty object")]
+        for (bad, why) in malformed {
+            let decoded = F.decode(F.manifest(kept: bad))
+            XCTAssertNotNil(decoded?.landed, "\(why): the manifest was refused")
+            XCTAssertNil(decoded?.kept, why)
+        }
     }
 
     private static func component(reference: Int) -> String {
@@ -337,13 +401,180 @@ final class WorldPhotoFloorplanModelTests: XCTestCase {
 
     private func settle() async { try? await Task.sleep(for: .milliseconds(300)) }
 
+    /// The stop block re-solved: the landing a `kept` notice names by default.
+    private var newer: WorldCoverage {
+        FOWFixtures.coverage(FOWFixtures.stop.replacingOccurrences(of: "g-stop-984", with: "g-stop-990")
+            .replacingOccurrences(of: "1791240313.", with: "1791240320."))!
+    }
+
+    private var newest: WorldCoverage {
+        FOWFixtures.coverage(FOWFixtures.stop.replacingOccurrences(of: "g-stop-984", with: "g-stop-991")
+            .replacingOccurrences(of: "1791240313.", with: "1791240321."))!
+    }
+
+    private func held(_ model: WorldPhotoFloorplanModel, _ coverage: WorldCoverage) -> WorldPhotoDisplay.Held? {
+        model.displayedPlan(for: scopedReceipt(coverage))?.value.held
+    }
+
+    /// The stop plan proved, then the newer receipt, the Tower answering with
+    /// `manifest`.
+    private func keptModel(_ manifest: String, time: @escaping () -> TimeInterval,
+                           at supersession: () -> Void) async -> WorldPhotoFloorplanModel {
+        let model = model(holdSeconds: 45, now: time)
+        report(model, stop)
+        await expect("first valid plan") { model.displayedPlan(for: self.scopedReceipt(self.stop)) != nil }
+        Stub.set(Self.manifestA, json: manifest)
+        supersession()
+        report(model, newer)
+        return model
+    }
+
+    // MARK: The Tower's `kept` notice
+
+    /// A notice for the current receipt holds the plan, on its own receipt,
+    /// for as long as the Tower sends it: the 45 s hold does not apply. Each
+    /// push asks again while it holds.
+    func testAKeptNoticeForTheCurrentReceiptHoldsPastTheHoldWithItsLabel() async throws {
+        var time: TimeInterval = 0
+        let model = await keptModel(F.manifest(kept: F.kept(reason: "regressed")), time: { time }) { time = 60 }
+        await expect("the notice") { self.held(model, self.newer) == .notImproved }
+        time = 60 + 45 * 10
+        let shown = try XCTUnwrap(model.displayedPlan(for: scopedReceipt(newer)), "the 45 s hold ended a kept plan")
+        XCTAssertEqual(shown.value.held, .notImproved)
+        XCTAssertEqual(shown.value.plan.receipt.coverage, stop, "the held plan keeps its own receipt")
+        XCTAssertEqual(shown.walk, Self.walkA)
+
+        Stub.set(Self.manifestA, json: F.manifest(kept: F.kept(reason: "wall_cap")))
+        push(model, revision: "g1")
+        await expect("a transient reason") { self.held(model, self.newer) == .updating }
+        let asked = Stub.count(Self.manifestA)
+        for revision in ["g2", "g3", "g4", "g5"] {
+            await settle()
+            push(model, revision: revision)
+        }
+        await settle()
+        XCTAssertEqual(Stub.count(Self.manifestA), asked + 4, "a kept landing is asked on every push")
+        XCTAssertEqual(held(model, newer), .updating)
+    }
+
+    /// The notice for another landing: the Tower says nothing about this
+    /// receipt, so the 45 s hold from supersession, then the fog field.
+    func testAKeptNoticeForAnotherLandingKeepsTheTimedHold() async {
+        var time: TimeInterval = 0
+        let model = await keptModel(F.manifest(kept: F.kept(forSolvedAt: "1791240321.0", forRevision: "g-stop-991")),
+                                    time: { time }) { time = 60 }
+        await expect("the manifest answered") { Stub.count(Self.manifestA) == 2 }
+        await settle()
+        time = 100
+        XCTAssertEqual(held(model, newer), .updating)
+        time = 106
+        XCTAssertNil(model.displayedPlan(for: scopedReceipt(newer)), "a notice for another landing held the plan")
+    }
+
+    /// `plan_landing` that is not `landed`, or not the plan the phone holds,
+    /// is no notice for it.
+    func testAKeptNoticeNotNamingTheHeldPlanIsIgnored() async {
+        var time: TimeInterval = 0
+        let model = await keptModel(F.manifest(kept: F.kept(planSolvedAt: "1791240000.0", planRevision: "g-mid-113")),
+                                    time: { time }) { time = 60 }
+        await expect("the manifest answered") { Stub.count(Self.manifestA) == 2 }
+        await settle()
+        time = 106
+        XCTAssertNil(model.displayedPlan(for: scopedReceipt(newer)), "plan_landing is not landed")
+
+        // `landed` and `plan_landing` agree, on a plan the phone does not hold.
+        Stub.set(Self.manifestA, json: F.manifest(solvedAt: "1791240000.0", revision: "g-mid-113",
+                                                  kept: F.kept(planSolvedAt: "1791240000.0", planRevision: "g-mid-113")))
+        push(model, revision: "g1")
+        await expect("asked again") { Stub.count(Self.manifestA) == 3 }
+        await settle()
+        XCTAssertNil(model.displayedPlan(for: scopedReceipt(newer)), "a notice keeping another plan held this one")
+    }
+
+    /// The notice ends without a plan: the timed hold from supersession,
+    /// long over, so the fog field.
+    func testTheNoticeEndingFallsBackToTheTimedHold() async {
+        var time: TimeInterval = 0
+        let model = await keptModel(F.manifest(kept: F.kept()), time: { time }) { time = 60 }
+        await expect("the notice") { self.held(model, self.newer) == .notImproved }
+        time = 200
+        Stub.set(Self.manifestA, json: F.manifest())
+        push(model, revision: "g1")
+        await expect("the notice ended") { model.displayedPlan(for: self.scopedReceipt(self.newer)) == nil }
+    }
+
+    /// Not stuck on a stale notice: a plan published later for the same
+    /// receipt is seen on the next push and shown as that receipt's own.
+    func testANewPlanAfterTheNoticeIsShownForTheSameReceipt() async throws {
+        var time: TimeInterval = 0
+        let model = await keptModel(F.manifest(kept: F.kept(reason: "stalled")), time: { time }) { time = 60 }
+        await expect("the notice") { self.held(model, self.newer) == .notImproved }
+        for revision in ["g1", "g2", "g3"] { // the bounded retries are spent
+            await settle()
+            push(model, revision: revision)
+        }
+        await settle()
+        time = 500
+        Stub.set(Self.manifestA, json: F.manifest(solvedAt: "1791240320.0", revision: "g-stop-990"))
+        push(model, revision: "g4")
+        await expect("the new plan") {
+            model.displayedPlan(for: self.scopedReceipt(self.newer)).map { $0.value.held == nil } == true
+        }
+        XCTAssertEqual(try XCTUnwrap(model.displayedPlan(for: scopedReceipt(newer))).value.plan.receipt.coverage, newer)
+        let asked = Stub.count(Self.manifestA)
+        push(model, revision: "g5")
+        await settle()
+        XCTAssertEqual(Stub.count(Self.manifestA), asked, "an answered landing asked again")
+    }
+
+    /// Leaving a receipt the Tower kept the plan for starts the hold again:
+    /// the next landing's answer is awaited, not met with the fog field.
+    func testLeavingAKeptReceiptStartsTheHoldAgain() async {
+        var time: TimeInterval = 0
+        let model = await keptModel(F.manifest(kept: F.kept()), time: { time }) { time = 60 }
+        await expect("the notice") { self.held(model, self.newer) == .notImproved }
+        Stub.set(Self.manifestA, json: F.manifest())
+        time = 300
+        report(model, newest)
+        XCTAssertEqual(held(model, newest), .updating, "the newest receipt's answer is awaited")
+        await settle()
+        time = 344
+        XCTAssertEqual(held(model, newest), .updating)
+        time = 345
+        XCTAssertNil(model.displayedPlan(for: scopedReceipt(newest)), "45 s since the kept receipt was left")
+    }
+
+    /// A walk change, a reset and OFF: nothing kept survives.
+    func testAKeptPlanClearsOnWalkChangeAndResetAndIsAbsentWhenOff() async {
+        var time: TimeInterval = 0
+        let model = await keptModel(F.manifest(kept: F.kept()), time: { time }) { time = 60 }
+        await expect("the notice") { self.held(model, self.newer) == .notImproved }
+        time = 600
+        report(model, newer, walk: Self.walkB)
+        XCTAssertNil(model.displayedPlan(for: scopedReceipt(newer, walk: Self.walkB)), "A's kept plan in B")
+        XCTAssertNil(model.displayedPlan(for: scopedReceipt(newer)), "the old walk is no longer current")
+
+        report(model, stop)
+        await expect("A again") { model.displayedPlan(for: self.scopedReceipt(self.stop)) != nil }
+        report(model, newer)
+        await expect("the notice again") { self.held(model, self.newer) == .notImproved }
+        model.reset()
+        XCTAssertNil(model.displayedPlan(for: scopedReceipt(newer)), "reset forgot the kept plan")
+
+        let off = self.model(on: false, now: { time })
+        report(off, stop)
+        report(off, newer)
+        push(off, revision: "g1")
+        XCTAssertNil(off.displayedPlan(for: scopedReceipt(newer)), "OFF drew a kept plan")
+    }
+
     func testTheHoldStartsWhenThePlanIsSupersededAfterALongLandingGap() async throws {
         var time: TimeInterval = 0
         let model = model(holdSeconds: 45, now: { time })
         report(model, stop)
         await expect("first valid plan") { model.displayedPlan(for: self.scopedReceipt(self.stop)) != nil }
         let first = try XCTUnwrap(model.displayedPlan(for: scopedReceipt(stop)))
-        XCTAssertFalse(first.value.updating)
+        XCTAssertNil(first.value.held)
 
         let newer = FOWFixtures.coverage(FOWFixtures.stop
             .replacingOccurrences(of: "g-stop-984", with: "g-stop-990")
@@ -351,11 +582,11 @@ final class WorldPhotoFloorplanModelTests: XCTestCase {
         time = 60
         report(model, newer)
         let held = try XCTUnwrap(model.displayedPlan(for: scopedReceipt(newer)))
-        XCTAssertTrue(held.value.updating)
+        XCTAssertEqual(held.value.held, .updating)
         XCTAssertEqual(held.value.plan.receipt, first.value.plan.receipt, "old raster keeps its own basis and receipt")
         XCTAssertEqual(WorldPhotoFloorplanCopy.updating, "Updating…")
         time = 100
-        XCTAssertTrue(model.displayedPlan(for: scopedReceipt(newer))?.value.updating == true)
+        XCTAssertTrue(model.displayedPlan(for: scopedReceipt(newer))?.value.held == .updating)
         time = 106
         XCTAssertNil(model.displayedPlan(for: scopedReceipt(newer)), "45 seconds since supersession")
 
@@ -363,12 +594,12 @@ final class WorldPhotoFloorplanModelTests: XCTestCase {
         await settle() // the unanswered landing's in-flight manifest has finished
         push(model, revision: "g-new")
         await expect("new valid plan") {
-            model.displayedPlan(for: self.scopedReceipt(newer))?.value.updating == false
+            model.displayedPlan(for: self.scopedReceipt(newer)).map { $0.value.held == nil } == true
         }
         let replacement = try XCTUnwrap(model.displayedPlan(for: scopedReceipt(newer)))
         XCTAssertEqual(replacement.value.plan.receipt.coverage, newer)
         time = 200
-        XCTAssertFalse(try XCTUnwrap(model.displayedPlan(for: scopedReceipt(newer))).value.updating,
+        XCTAssertNil(try XCTUnwrap(model.displayedPlan(for: scopedReceipt(newer))).value.held,
                        "a current plan has no hold deadline")
     }
 
@@ -382,16 +613,16 @@ final class WorldPhotoFloorplanModelTests: XCTestCase {
             .replacingOccurrences(of: "1791240313.", with: "1791240320."))!
         time = 60
         report(model, newer)
-        XCTAssertTrue(model.displayedPlan(for: scopedReceipt(newer))?.value.updating == true)
+        XCTAssertTrue(model.displayedPlan(for: scopedReceipt(newer))?.value.held == .updating)
 
         let newest = FOWFixtures.coverage(FOWFixtures.stop
             .replacingOccurrences(of: "g-stop-984", with: "g-stop-991")
             .replacingOccurrences(of: "1791240313.", with: "1791240321."))!
         time = 80
         report(model, newest)
-        XCTAssertTrue(model.displayedPlan(for: scopedReceipt(newest))?.value.updating == true)
+        XCTAssertTrue(model.displayedPlan(for: scopedReceipt(newest))?.value.held == .updating)
         time = 100
-        XCTAssertTrue(model.displayedPlan(for: scopedReceipt(newest))?.value.updating == true)
+        XCTAssertTrue(model.displayedPlan(for: scopedReceipt(newest))?.value.held == .updating)
         time = 106
         XCTAssertNil(model.displayedPlan(for: scopedReceipt(newest)), "the second landing did not restart the hold")
     }
@@ -406,27 +637,27 @@ final class WorldPhotoFloorplanModelTests: XCTestCase {
             .replacingOccurrences(of: "1791240313.", with: "1791240320."))!
         time = 60
         report(model, newer)
-        XCTAssertTrue(model.displayedPlan(for: scopedReceipt(newer))?.value.updating == true)
+        XCTAssertTrue(model.displayedPlan(for: scopedReceipt(newer))?.value.held == .updating)
 
         time = 80
         Stub.set(Self.manifestA, json: F.manifest(solvedAt: "1791240320.0", revision: "g-stop-990"))
         await settle()
         push(model, revision: "g-new")
         await expect("replacement during hold") {
-            model.displayedPlan(for: self.scopedReceipt(newer))?.value.updating == false
+            model.displayedPlan(for: self.scopedReceipt(newer)).map { $0.value.held == nil } == true
         }
         time = 106
-        XCTAssertFalse(try XCTUnwrap(model.displayedPlan(for: scopedReceipt(newer))).value.updating)
+        XCTAssertNil(try XCTUnwrap(model.displayedPlan(for: scopedReceipt(newer))).value.held)
 
         let newest = FOWFixtures.coverage(FOWFixtures.stop
             .replacingOccurrences(of: "g-stop-984", with: "g-stop-991")
             .replacingOccurrences(of: "1791240313.", with: "1791240321."))!
         report(model, newest)
         let heldReplacement = try XCTUnwrap(model.displayedPlan(for: scopedReceipt(newest)))
-        XCTAssertTrue(heldReplacement.value.updating)
+        XCTAssertEqual(heldReplacement.value.held, .updating)
         XCTAssertEqual(heldReplacement.value.plan.receipt.coverage, newer, "the replacement became the remembered plan")
         time = 150
-        XCTAssertTrue(model.displayedPlan(for: scopedReceipt(newest))?.value.updating == true)
+        XCTAssertTrue(model.displayedPlan(for: scopedReceipt(newest))?.value.held == .updating)
         time = 151
         XCTAssertNil(model.displayedPlan(for: scopedReceipt(newest)))
     }
@@ -440,7 +671,7 @@ final class WorldPhotoFloorplanModelTests: XCTestCase {
             .replacingOccurrences(of: "g-stop-984", with: "g-stop-990")
             .replacingOccurrences(of: "1791240313.", with: "1791240320."))!
         report(model, newer)
-        XCTAssertTrue(model.displayedPlan(for: scopedReceipt(newer))?.value.updating == true)
+        XCTAssertTrue(model.displayedPlan(for: scopedReceipt(newer))?.value.held == .updating)
         report(model, newer, walk: Self.walkB)
         XCTAssertNil(model.displayedPlan(for: scopedReceipt(newer, walk: Self.walkB)), "old walk's plan")
         XCTAssertNil(model.displayedPlan(for: scopedReceipt(newer)), "old walk no longer current")

@@ -18,6 +18,15 @@ enum WorldPhotoFloorplanStyle {
 enum WorldPhotoFloorplanCopy {
     static let gray = "No usable photo here yet"
     static let updating = "Updating…"
+    static let notImproved = "Couldn't improve this view yet"
+
+    /// The caption under a held plan, and its identifier.
+    static func held(_ held: WorldPhotoDisplay.Held) -> (words: String, identifier: String) {
+        switch held {
+        case .updating: return (updating, "wb-panel-map-updating")
+        case .notImproved: return (notImproved, "wb-panel-map-not-improved")
+        }
+    }
 
     static func pieceValue(_ piece: WorldPhotoPiece) -> String {
         let views = piece.projectedKeyframes == 1 ? "1 keyframe" : "\(piece.projectedKeyframes) keyframes"
