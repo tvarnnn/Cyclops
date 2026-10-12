@@ -522,7 +522,8 @@ two dimensions (second/first eigenvalue >= 0.05), are flat (third/second
 leaves its plane normal undetermined about that line."""
 
 FLOOR_PLANE_MAX_TILT_LOOSE_DEG = 20.0
-"""The tilt window when the camera-centre plane is NOT usable (a partial live
+"""The tilt window when neither the camera-centre plane NOR the roll-free vertical is
+usable (only the receipt `up` is left). Original rationale: when the camera-centre plane is NOT usable (a partial live
 trajectory: walk 8 / e2e2 landings 0-2 had spread 0.03-0.05, flatness 0.70 or a
 min-variance axis 54 deg off up). The fallback references are biased: the receipt
 `up` (mean camera up axis) sat 10-13 deg off the camera plane on e2e2, the roll-free
@@ -535,6 +536,27 @@ NEAREST_CAMERA_BUDGET = 256
 component's points (a deterministic subsample, seed 0) and at most 256 cameras (an
 even stride along the walk) for the nearest-camera candidate test. The 4000-point
 RANSAC scoring subsample is drawn from these."""
+
+DECOY_LAYER_MIN_POINTS = 10
+DECOY_LAYER_MIN_FRACTION = 0.5
+DECOY_LAYER_MIN_CELLS = 3
+DECOY_LAYER_MIN_BREADTH = 0.5
+DECOY_MAX_ROUNDS = 4
+"""Furniture DECOY rule for the LOOSE path (no usable camera plane; review MED-2).
+The lower-envelope allowance lets up to 10% of the candidates lie below a plane, so
+a long, dense table can beat a sparsely textured floor. On the loose path a plane is
+refused when the points more than one tolerance below it form a LAYER -- >= 10
+points, >= half of them within one tolerance of their median height, spread over
+>= 3 cells of the 8x8 support grid AND over >= half as many cells as the plane's own
+inliers (a floor is broader than the furniture on it; a small lower patch under a
+real floor -- e2e2 kf 353: ~23 points in a few cells under a 13-cell floor -- is not
+a decoy) -- evaluated over every hypothesis on the
+scoring subsample, and again on the REFINED plane against all candidates (a tilted
+hypothesis can hide the floor's layer; its least-squares refinement cannot). A refused
+height excludes every hypothesis within three tolerances of it; at most 4 rounds,
+then the plane is refused. Scattered noise below a floor is not a layer. On the camera-plane path
+the rule is not applied: there a layer below is walk 8's misplaced closet, and the
+room floor above it is the right answer (PROBE-REPORT p2probe-h)."""
 
 ROLL_FREE_MIN_SPREAD = 0.05
 ROLL_FREE_MAX_FLATNESS = 0.1
@@ -777,13 +799,15 @@ def estimate_floor_plane(*, points_xyz, camera_positions, up_xyz, forward_xyz, b
                          camera_above_min_frac: float = CAMERA_ABOVE_MIN_FRAC,
                          camera_height_max_cv: float = CAMERA_HEIGHT_MAX_CV,
                          hypotheses: int = FLOOR_RANSAC_HYPOTHESES, check=None,
-                         camera_rights=None) -> FloorPlane:
+                         camera_rights=None, camera_order=None) -> FloorPlane:
     """ONE floor plane per component from the lower envelope of its 3-D points.
 
     `points_xyz` are the solve's (already quality-filtered) 3-D points of this
     component, and `camera_positions` its eligible camera centres, both in the
     component's output frame. `camera_rights` (optional, same order) are the
-    cameras' right axes (`forward x up`), for the roll-free reference. Returns a
+    cameras' right axes (`forward x up`), for the roll-free reference;
+    `camera_order` (optional, same order) their walk order (keyframe index in the
+    solve), which the nearest-camera stride uses. Returns a
     rejected `FloorPlane` (with a reason) rather than raising when the data cannot
     support a plane."""
     up = _unit(up_xyz)
@@ -792,8 +816,21 @@ def estimate_floor_plane(*, points_xyz, camera_positions, up_xyz, forward_xyz, b
     right = right / max(float(np.linalg.norm(right)), EPS)
     pts = np.asarray(points_xyz, dtype=np.float64).reshape(-1, 3)
     pts = pts[np.all(np.isfinite(pts), axis=1)]
+    # ORDER-INVARIANT (review MED-4): canonicalise the points by an exact lexsort on
+    # xyz before the budget subsample and the RANSAC draws, so a permuted input
+    # gives the same plane.
+    pts = pts[np.lexsort((pts[:, 2], pts[:, 1], pts[:, 0]))]
     cams = np.asarray(camera_positions, dtype=np.float64).reshape(-1, 3)
-    cams = cams[np.all(np.isfinite(cams), axis=1)]
+    finite_cams = np.all(np.isfinite(cams), axis=1)
+    # WALK ORDER (review MED-1): the nearest-camera stride below assumes cameras in
+    # walk order, so sort them by the caller's `camera_order` (keyframe index in the
+    # solve), else canonically by position -- never by whatever order arrived.
+    if camera_order is not None and len(camera_order) == len(cams):
+        order_key = np.asarray(camera_order, dtype=np.float64)[finite_cams]
+        cams = cams[finite_cams][np.argsort(order_key, kind="stable")]
+    else:
+        cams = cams[finite_cams]
+        cams = cams[np.lexsort((cams[:, 2], cams[:, 1], cams[:, 0]))]
     stats = {"points_total": int(len(pts)), "cameras": int(len(cams))}
     if len(pts) > FLOOR_POINTS_BUDGET:
         keep = np.random.default_rng(seed).choice(len(pts), FLOOR_POINTS_BUDGET, replace=False)
@@ -811,7 +848,12 @@ def estimate_floor_plane(*, points_xyz, camera_positions, up_xyz, forward_xyz, b
         if roll_free is not None:
             n_ref = roll_free
             stats["reference_normal"] = "roll_free"
-        max_tilt_deg = max(max_tilt_deg, FLOOR_PLANE_MAX_TILT_LOOSE_DEG)
+        else:
+            # Only the pitch-biased receipt `up` is left: widen the window. With the
+            # roll-free vertical the normal 10 deg window holds (review MED-2: a
+            # near-collinear walk cannot constrain tilt about its own axis, and a
+            # 15-20 deg plane can straddle a table top and the floor).
+            max_tilt_deg = max(max_tilt_deg, FLOOR_PLANE_MAX_TILT_LOOSE_DEG)
     stats["max_tilt_deg"] = max_tilt_deg
     stats["reference_normal_xyz"] = [float(v) for v in n_ref]
 
@@ -873,23 +915,86 @@ def estimate_floor_plane(*, points_xyz, camera_positions, up_xyz, forward_xyz, b
                              f"(best-supported hypothesis failed: {', '.join(failed)})", stats)
     score = np.where(sc["valid"], sc["inliers"], -1)
     best = int(np.argmax(score))
-    normal, offset = normals[best].copy(), float(offsets[best])
+    loose = stats["reference_normal"] != "camera_plane"
+    if loose:
+        # Vectorised over every hypothesis, on the scoring subsample: does a LAYER
+        # of points lie more than one tolerance below it?
+        tol_h = tol_frac * np.where(sc["h_med"] > EPS, sc["h_med"], 1.0)
+        res = score_pts @ normals.T + offsets[None, :]
+        below = res < -tol_h[None, :]
+        n_below = below.sum(axis=0)
+        masked = np.where(below, res, np.nan)
+        with np.errstate(all="ignore"):
+            med = np.nanmedian(np.where(n_below[None, :] > 0, masked, 0.0), axis=0)
+        near = below & (np.abs(res - med[None, :]) <= tol_h[None, :])
+        layer_frac = near.sum(axis=0) / np.maximum(n_below, 1)
+        span_g = max(max_x - min_x, EPS)
+        gx = np.clip(((score_pts @ forward - min_x) / span_g * FLOOR_SUPPORT_GRID).astype(int),
+                     0, FLOOR_SUPPORT_GRID - 1)
+        gy = np.clip(((score_pts @ right - min_y) / span_g * FLOOR_SUPPORT_GRID).astype(int),
+                     0, FLOOR_SUPPORT_GRID - 1)
+        one_hot = np.zeros((len(score_pts), FLOOR_SUPPORT_GRID ** 2), dtype=np.float32)
+        one_hot[np.arange(len(score_pts)), gy * FLOOR_SUPPORT_GRID + gx] = 1.0
+        cells = ((one_hot.T @ below.astype(np.float32)) > 0).sum(axis=0)
+        on = np.abs(res) <= tol_h[None, :]
+        own_cells = ((one_hot.T @ on.astype(np.float32)) > 0).sum(axis=0)
+        decoy = ((n_below >= DECOY_LAYER_MIN_POINTS) & (layer_frac >= DECOY_LAYER_MIN_FRACTION)
+                 & (cells >= np.maximum(DECOY_LAYER_MIN_CELLS,
+                                        DECOY_LAYER_MIN_BREADTH * own_cells)))
+        stats["decoy_refused"] = int((sc["valid"] & decoy).sum())
+        score = np.where(sc["valid"] & ~decoy, sc["inliers"], -1)
+    centroid_cam = cams.mean(axis=0)
+    hyp_height = centroid_cam @ normals.T + offsets      # camera-centroid height per hypothesis
+    span_g = max(max_x - min_x, EPS)
+    cand_cell = (np.clip(((cand @ right - min_y) / span_g * FLOOR_SUPPORT_GRID).astype(int),
+                         0, FLOOR_SUPPORT_GRID - 1) * FLOOR_SUPPORT_GRID
+                 + np.clip(((cand @ forward - min_x) / span_g * FLOOR_SUPPORT_GRID).astype(int),
+                           0, FLOOR_SUPPORT_GRID - 1))
+    for _attempt in range(DECOY_MAX_ROUNDS if loose else 1):
+        best = int(np.argmax(score))
+        if score[best] < 0:
+            return _reject_plane("every supported plane has a layer of points below it "
+                                 "(a furniture decoy on a partial trajectory)", stats)
+        normal, offset = normals[best].copy(), float(offsets[best])
 
-    # Least-squares refinement on the full candidate set's inliers; kept only
-    # if the refined plane still passes every check.
-    h_med = float(sc["h_med"][best])
-    res = cand @ normal + offset
-    inl = np.abs(res) <= tol_frac * h_med
-    stats["refined"] = False
-    if inl.sum() >= 3:
-        centroid = cand[inl].mean(axis=0)
-        _, _, vt = np.linalg.svd(cand[inl] - centroid, full_matrices=False)
-        rn = vt[-1] if float(vt[-1] @ n_ref) >= 0 else -vt[-1]
-        ro = -float(rn @ centroid)
-        rsc = _score_planes(cand, cams, rn[None, :], np.array([ro]), n_ref, **kwargs)
-        if bool(rsc["valid"][0]):
-            normal, offset = rn, ro
-            stats["refined"] = True
+        # Least-squares refinement on the full candidate set's inliers; kept only
+        # if the refined plane still passes every check.
+        h_med = float(sc["h_med"][best])
+        res = cand @ normal + offset
+        inl = np.abs(res) <= tol_frac * h_med
+        stats["refined"] = False
+        if inl.sum() >= 3:
+            centroid = cand[inl].mean(axis=0)
+            _, _, vt = np.linalg.svd(cand[inl] - centroid, full_matrices=False)
+            rn = vt[-1] if float(vt[-1] @ n_ref) >= 0 else -vt[-1]
+            ro = -float(rn @ centroid)
+            rsc = _score_planes(cand, cams, rn[None, :], np.array([ro]), n_ref, **kwargs)
+            if bool(rsc["valid"][0]):
+                normal, offset = rn, ro
+                stats["refined"] = True
+        if not loose:
+            break
+        # MED-2, after refinement: the refined plane lies parallel to the surface it
+        # fits (a table top is parallel to the floor), so a floor below it is a layer
+        # in ITS residuals even if the raw hypothesis was tilted enough to hide it.
+        tol_f = tol_frac * h_med
+        r_all = cand @ normal + offset
+        below = r_all < -tol_f
+        if int(below.sum()) >= DECOY_LAYER_MIN_POINTS:
+            rb = r_all[below]
+            own = len(np.unique(cand_cell[np.abs(r_all) <= tol_f]))
+            if (float(np.mean(np.abs(rb - np.median(rb)) <= tol_f)) >= DECOY_LAYER_MIN_FRACTION
+                    and len(np.unique(cand_cell[below])) >= max(DECOY_LAYER_MIN_CELLS,
+                                                                DECOY_LAYER_MIN_BREADTH * own)):
+                # A decoy: exclude every hypothesis at this height and choose again.
+                refused_h = float(centroid_cam @ normal + offset)
+                score = np.where(np.abs(hyp_height - refused_h) <= 3 * tol_f, -1, score)
+                stats["decoy_refused"] = stats.get("decoy_refused", 0) + 1
+                continue
+        break
+    else:
+        return _reject_plane("every supported plane has a layer of points below it "
+                             "(a furniture decoy on a partial trajectory)", stats)
 
     # Final statistics on the full candidate set.
     fin = _score_planes(cand, cams, normal[None, :], np.array([offset]), n_ref, **kwargs)
@@ -964,7 +1069,7 @@ It needs >= 3 such frames with >= 5 points each; otherwise there is no plane and
 component stays gray. It is reported as `source = fallback_camera_drop`."""
 
 
-def fallback_floor_plane(*, failed, camera_positions, band_drops_by_frame):
+def fallback_floor_plane(*, failed, camera_positions, band_drops_by_frame, frame_ids=None):
     """A level plane from the camera trajectory, or a still-rejected plane.
 
     `band_drops_by_frame`: for each downward frame, the drops (camera height minus
@@ -975,9 +1080,15 @@ def fallback_floor_plane(*, failed, camera_positions, band_drops_by_frame):
     if n is None or len(cams) < 3:
         return failed
     n = np.asarray(n, dtype=np.float64)
-    per_frame = [float(np.percentile(d, FALLBACK_BAND_PERCENTILE)) for d in band_drops_by_frame
-                 if len(d) >= FALLBACK_MIN_POINTS_PER_FRAME]
-    per_frame = [v for v in per_frame if math.isfinite(v) and v > 0]
+    ids = list(frame_ids) if frame_ids is not None else [None] * len(band_drops_by_frame)
+    per_frame, contributors = [], []
+    for fid, d in zip(ids, band_drops_by_frame):
+        if len(d) < FALLBACK_MIN_POINTS_PER_FRAME:
+            continue
+        v = float(np.percentile(d, FALLBACK_BAND_PERCENTILE))
+        if math.isfinite(v) and v > 0:
+            per_frame.append(v)
+            contributors.append(fid)
     stats = dict(failed.stats)
     stats.update(fallback_from=failed.reason, fallback_frames=len(per_frame))
     if len(per_frame) < FALLBACK_MIN_FRAMES:
@@ -991,6 +1102,7 @@ def fallback_floor_plane(*, failed, camera_positions, band_drops_by_frame):
     offset = -(float(np.median(cam_h)) - height)
     above = cam_h + offset
     med = float(np.median(above))
+    stats["fallback_frame_ids"] = [c for c in contributors if c is not None]
     stats.update(source="fallback_camera_drop", camera_height_median=med,
                  camera_above_fraction=float(np.mean(above > 0)),
                  camera_height_cv=float(1.4826 * np.median(np.abs(above - med)) / max(med, EPS)),
@@ -1100,7 +1212,10 @@ def build_homography_raster(*, origin_xyz, up_xyz, forward_xyz, bounds_xy, plane
     n = np.asarray(plane.normal, dtype=np.float64)
     d = float(plane.offset)
     n_up = float(n @ up)
-    fallback = plane.stats.get("source") == "fallback_camera_drop"
+    # Frames whose own drops BUILT a fallback plane are exempt from the pose gate
+    # (review MED-3); every other frame is checked against it as usual.
+    fallback_ids = (set(plane.stats.get("fallback_frame_ids") or ())
+                    if plane.stats.get("source") == "fallback_camera_drop" else set())
     if n_up <= 0.1:
         raise ValueError("floor plane normal nearly perpendicular to the component up")
     h_med = float(plane.stats.get("camera_height_median") or 0.0)
@@ -1140,9 +1255,10 @@ def build_homography_raster(*, origin_xyz, up_xyz, forward_xyz, bounds_xy, plane
             _reject(reason)
             continue
         # The per-frame pose gate checks a frame against an INDEPENDENT plane. A
-        # camera-trajectory fallback plane is built from these same frames' drops, so
-        # a frame that glimpses deeper floor would only vote itself out: skip it.
-        if fr.check_points_xyz is not None and not fallback:
+        # camera-trajectory fallback plane is built from some frames' own drops; such
+        # a frame glimpsing deeper floor would only vote itself out, so only THOSE
+        # frames skip it.
+        if fr.check_points_xyz is not None and fr.kid not in fallback_ids:
             cp = np.asarray(fr.check_points_xyz, dtype=np.float64).reshape(-1, 3)
             if len(cp) >= FRAME_MIN_CHECK_POINTS:
                 below = float(np.mean(cp @ n + d < -FRAME_BELOW_PLANE_TOL_FRAC * h_med))

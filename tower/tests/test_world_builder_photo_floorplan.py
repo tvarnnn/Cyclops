@@ -526,3 +526,114 @@ class TestFurnitureMask:
         result = _homography([frame], width=512, height=512)
         assert result.stats["furniture_mask"] is False
         assert result.stats["furniture_masked_blocks"] == 0
+
+
+# ===========================================================================
+# Review fixes (fa7796c review: MED-1..MED-4)
+# ===========================================================================
+
+
+def _loop_walk(n_cams=600, n_pts=6000, seed=0):
+    """A long walk (more cameras than NEAREST_CAMERA_BUDGET) with a floor, walls up
+    to above the cameras, and hand-held camera heights that vary frame to frame."""
+    rng = np.random.default_rng(seed)
+    t = np.linspace(0, 2 * np.pi, n_cams, endpoint=False)
+    cams = np.c_[2.5 * np.cos(t), 1.5 * np.sin(t), 1.5 + rng.normal(0, 0.2, n_cams)]
+    floor = np.c_[rng.uniform(-3, 3, (n_pts, 2)), rng.normal(0, 0.01, n_pts)]
+    wall = np.c_[np.full(n_pts, 3.0), rng.uniform(-2, 2, n_pts), rng.uniform(0, 2.5, n_pts)]
+    return np.vstack([floor, wall]), cams
+
+
+def _plane_key(plane):
+    return (plane.ok, tuple(np.round(plane.normal, 12)) if plane.ok else None,
+            round(plane.offset, 12) if plane.ok else None, plane.stats.get("candidate_points"))
+
+
+class TestOrderInvariance:
+    def _estimate(self, pts, cams, **kw):
+        return estimate_floor_plane(points_xyz=pts, camera_positions=cams, up_xyz=UP,
+                                    forward_xyz=FORWARD, bounds_xy=(-2.5, -1.5, 2.5, 1.5), **kw)
+
+    def test_shuffled_cameras_give_the_same_plane(self):
+        """MED-1: the nearest-camera stride must not depend on the caller's order."""
+        pts, cams = _loop_walk()
+        perm = np.random.default_rng(7).permutation(len(cams))
+        assert _plane_key(self._estimate(pts, cams)) == _plane_key(self._estimate(pts, cams[perm]))
+
+    def test_walk_order_is_used_when_given(self):
+        """MED-1: with `camera_order`, shuffled cameras are put back in walk order."""
+        pts, cams = _loop_walk()
+        perm = np.random.default_rng(3).permutation(len(cams))
+        walk = self._estimate(pts, cams, camera_order=np.arange(len(cams)))
+        shuffled = self._estimate(pts, cams[perm], camera_order=perm)
+        assert _plane_key(walk) == _plane_key(shuffled)
+
+    def test_permuted_points_give_the_same_plane(self):
+        """MED-4: the 20k budget subsample and the RANSAC draws are order-invariant."""
+        from tower.world_builder.photo_floorplan import FLOOR_POINTS_BUDGET
+        pts, cams = _loop_walk(n_pts=FLOOR_POINTS_BUDGET)
+        assert len(pts) > FLOOR_POINTS_BUDGET
+        perm = np.random.default_rng(11).permutation(len(pts))
+        assert _plane_key(self._estimate(pts, cams)) == _plane_key(self._estimate(pts[perm], cams))
+
+
+def _decoy_scene(n_floor, n_table, seed=0, tilt_deg=12.0):
+    """MED-2: a PARTIAL trajectory (a corridor walk: no usable camera plane, so the
+    loose roll-free path) beside a long table at a locally consistent height."""
+    rng = np.random.default_rng(seed)
+    n = 60
+    cams = np.c_[np.linspace(-4, 4, n), 0.15 * rng.normal(size=n), 1.5 + rng.normal(0, 0.03, n)]
+    rights = []
+    for i in range(n):
+        yaw = math.radians(rng.uniform(-60, 60) + (180 if i % 2 else 0))
+        rights.append(np.cross([math.cos(yaw), math.sin(yaw), 0.0], [0.0, 0.0, 1.0]))
+    floor = np.c_[rng.uniform(-5, 5, n_floor), rng.uniform(-2, 2, n_floor),
+                  rng.normal(0, 0.01, n_floor)]
+    table = np.c_[rng.uniform(-5, 5, n_table), rng.uniform(0.3, 0.9, n_table),
+                  0.75 + rng.normal(0, 0.01, n_table)]
+    t = math.radians(tilt_deg)
+    up = (0.0, math.sin(t), math.cos(t))      # the pitch-biased receipt `up`
+    return np.vstack([floor, table]), cams, np.array(rights), up
+
+
+class TestFurnitureDecoyOnTheLoosePath:
+    def _estimate(self, n_floor, n_table):
+        pts, cams, rights, up = _decoy_scene(n_floor, n_table)
+        return estimate_floor_plane(points_xyz=pts, camera_positions=cams, up_xyz=up,
+                                    forward_xyz=FORWARD, bounds_xy=(-4, -1, 4, 1),
+                                    camera_rights=rights)
+
+    @pytest.mark.parametrize("n_floor,n_table", [(600, 1500), (300, 1500), (150, 1500),
+                                                 (100, 3000), (60, 3000)])
+    def test_the_table_never_wins(self, n_floor, n_table):
+        plane = self._estimate(n_floor, n_table)
+        assert plane.stats["reference_normal"] == "roll_free"   # the loose path
+        if plane.ok:
+            assert abs(plane.offset) < 0.05, f"table chosen: offset {plane.offset:.3f}"
+            assert plane.stats["camera_height_median"] == pytest.approx(1.5, abs=0.1)
+
+    @pytest.mark.parametrize("n_floor,n_table", [(600, 1500), (150, 1500), (100, 3000)])
+    def test_a_supported_floor_still_wins(self, n_floor, n_table):
+        plane = self._estimate(n_floor, n_table)
+        assert plane.ok, plane.reason
+        assert abs(plane.offset) < 0.05
+
+
+class TestFallbackPoseGateIsNarrow:
+    """MED-3: under a fallback plane only the frames whose drops BUILT it skip the
+    per-frame pose gate; any other frame is still checked."""
+
+    def _fallback(self, ids):
+        return FloorPlane(ok=True, reason="ok (fallback: camera trajectory)",
+                          normal=(0.0, 0.0, 1.0), offset=0.0,
+                          stats={"camera_height_median": 1.5, "source": "fallback_camera_drop",
+                                 "fallback_frame_ids": list(ids)})
+
+    def test_only_contributing_frames_skip_the_gate(self):
+        below = np.array([[1.0, 0.0, -0.8]] * 10)          # well below the fallback floor
+        a = _frame("a", *_pitched_camera(pos=(0, 0, 1.5), pitch_deg=50), check_points=below)
+        b = _frame("b", *_pitched_camera(pos=(0.5, 0, 1.5), pitch_deg=50), check_points=below)
+        result = _homography([a, b], plane=self._fallback(["a"]))
+        assert result.stats["frames_rejected"] == {
+            "pose disagrees with plane (own lower-band points below it)": 1}
+        assert result.contributing_keyframes == ["a"]
