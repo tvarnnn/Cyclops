@@ -69,7 +69,11 @@ def main(argv=None) -> int:
              if args.final else None)
     token = finish_phase.install(phase)
     try:
-        summary = global_solve.solve(
+        solve = global_solve.solve
+        if not args.final and os.environ.get("TOWER_WORLD_LIVE_WINDOW") == "on":
+            from tower.world_builder import live_window  # noqa: PLC0415
+            solve = live_window.solve
+        summary = solve(
             store, args.world, args.session,
             capture_dirs=[Path(d) for d in args.capture_dir],
             final=args.final,
