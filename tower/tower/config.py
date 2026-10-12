@@ -1096,6 +1096,18 @@ def world_photo_floorplan_regress_v2_setting() -> bool:
     return os.environ.get(WORLD_PHOTO_FLOORPLAN_REGRESS_V2_ENV) == "on"
 
 
+# FOOTPRINT BOUNDS for the photo floor plan's homography raster: exactly `on` grows each
+# component's `raster_bounds_xy` from the padded camera square to the floor the selected
+# frames can paint (trimmed, capped at 2x the square's side; non-square allowed by the
+# wire). Anything else, including `1`/`true`, is off = the padded square, byte for byte.
+WORLD_PHOTO_FLOORPLAN_FOOTPRINT_BOUNDS_ENV = "TOWER_WORLD_PHOTO_FLOORPLAN_FOOTPRINT_BOUNDS"
+
+
+def world_photo_floorplan_footprint_bounds_setting() -> bool:
+    """True only when TOWER_WORLD_PHOTO_FLOORPLAN_FOOTPRINT_BOUNDS is exactly `on`."""
+    return os.environ.get(WORLD_PHOTO_FLOORPLAN_FOOTPRINT_BOUNDS_ENV) == "on"
+
+
 WORLD_FINAL_SCALE_GUARD_ENV = "TOWER_WORLD_FINAL_SCALE_GUARD"
 WORLD_FINAL_SCALE_GUARD_OFF = "off"
 WORLD_FINAL_SCALE_GUARD_SHADOW = "shadow"

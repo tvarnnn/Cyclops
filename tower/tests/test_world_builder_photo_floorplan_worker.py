@@ -400,17 +400,18 @@ def _quat_wxyz(R):
     return [w, x, y, z]
 
 
-def _synthetic_solve(root, *, solved_at=1000.0, n_cams=12):
+def _synthetic_solve(root, *, solved_at=1000.0, n_cams=12, look_yaw_deg=None, pitch_deg=50):
     """A world whose solve/<session> holds arrays, metadata and undistorted images of a
-    checkerboard floor at Z=0 seen by a ring of cameras pitched 50 degrees down."""
+    checkerboard floor at Z=0 seen by a ring of cameras pitched 50 degrees down (toward
+    the centre, or all at `look_yaw_deg` when given)."""
     solve_dir = Path(root) / "worlds" / WORLD / "solve" / SESSION
     (solve_dir / "images").mkdir(parents=True, exist_ok=True)
     kids, poses_rows, solution_poses = [], [], {}
     for i in range(n_cams):
         ang = 2 * math.pi * i / n_cams
         pos = np.array([1.5 * math.cos(ang), 1.5 * math.sin(ang), 1.5])
-        yaw = math.degrees(ang + math.pi)            # look toward the centre
-        pos, fwd, cam_up = _pitched_camera(pos=pos, yaw_deg=yaw, pitch_deg=50)
+        yaw = math.degrees(ang + math.pi) if look_yaw_deg is None else look_yaw_deg
+        pos, fwd, cam_up = _pitched_camera(pos=pos, yaw_deg=yaw, pitch_deg=pitch_deg)
         right = np.cross(fwd, cam_up)
         R_wc = np.stack([right, -cam_up, fwd], axis=1)
         kid = f"{SESSION}:{i:08d}"
@@ -979,3 +980,120 @@ def test_the_regress_guard_has_an_escape_after_consecutive_skips():
         assert state.landed(WORLD, SESSION)["solved_at"] == 6000.0
     finally:
         worker.shutdown()
+
+
+# ---------------------------------------------------------------------------
+# footprint bounds (opt-in: TOWER_WORLD_PHOTO_FLOORPLAN_FOOTPRINT_BOUNDS=on)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("value, expected", [(None, False), ("", False), ("off", False),
+                                             ("1", False), ("true", False), ("ON", False),
+                                             (" on", False), ("on", True)])
+def test_footprint_bounds_switch_is_exactly_on(monkeypatch, value, expected):
+    if value is None:
+        monkeypatch.delenv(config.WORLD_PHOTO_FLOORPLAN_FOOTPRINT_BOUNDS_ENV, raising=False)
+    else:
+        monkeypatch.setenv(config.WORLD_PHOTO_FLOORPLAN_FOOTPRINT_BOUNDS_ENV, value)
+    assert config.world_photo_floorplan_footprint_bounds_setting() is expected
+
+
+@pytest.mark.parametrize("value, passed", [(None, None), ("1", None), ("on", True)])
+def test_the_worker_hands_footprint_bounds_to_the_build_only_when_on(monkeypatch, value, passed):
+    if value is None:
+        monkeypatch.delenv(config.WORLD_PHOTO_FLOORPLAN_FOOTPRINT_BOUNDS_ENV, raising=False)
+    else:
+        monkeypatch.setenv(config.WORLD_PHOTO_FLOORPLAN_FOOTPRINT_BOUNDS_ENV, value)
+    seen = []
+    base = _fake_build_factory()
+
+    def build(root, world, session, receipt, eligible, tree, stat, method, check,
+              footprint_bounds=None):
+        seen.append(footprint_bounds)
+        return base(root, world, session, receipt, eligible, tree, stat, method=method, check=check)
+
+    latest = {}
+    worker, state = _worker(latest, build=build)
+    try:
+        _offer(worker, latest, _receipt(1000.0))
+        assert _wait(lambda: state.landed(WORLD, SESSION) is not None)
+        assert seen == [passed]
+    finally:
+        worker.shutdown()
+
+
+def test_footprint_bounds_manifest_is_wire_valid_with_non_square_bounds(tmp_path):
+    # Every camera looks +X, so the floor they see runs past the camera square's +X edge.
+    solve_dir, tree, receipt, eligible, stat = _synthetic_solve(tmp_path, look_yaw_deg=0.0,
+                                                                pitch_deg=35)
+    off_block, _, off_stats = pfw.build_landing(tmp_path, WORLD, SESSION, receipt, eligible,
+                                                tree, stat)
+    block, tiles, stats = pfw.build_landing(tmp_path, WORLD, SESSION, receipt, eligible, tree,
+                                            stat, footprint_bounds=True)
+    rc = receipt["components"][0]
+    square = padded_square_bounds(rc["bounds_xy"])
+    assert off_block["components"][0]["raster_bounds_xy"] == pytest.approx(square, abs=1e-6)
+    assert "guard_opaque_fraction" not in off_stats[0] and "footprint" not in off_stats[0]
+    (comp,) = block["components"]
+    assert pfw.identity_of(block) == pfw.identity_of(receipt)
+    for key in ("origin_xyz", "up_xyz", "forward_xyz"):
+        assert comp[key] == rc[key]
+    b = comp["raster_bounds_xy"]
+    # Wire: four finite ABSOLUTE floats, min < max, rounded to 1e-6, containing the grid
+    # centre (origin . forward, origin . right) -- the iOS client's own check.
+    assert len(b) == 4 and all(isinstance(v, float) and math.isfinite(v) for v in b)
+    assert b[0] < b[2] and b[1] < b[3]
+    assert all(round(v, 6) == v for v in b)
+    forward, up = np.array(rc["forward_xyz"]), np.array(rc["up_xyz"])
+    right = np.cross(forward, up)
+    centre = (float(np.dot(rc["origin_xyz"], forward)), float(np.dot(rc["origin_xyz"], right)))
+    assert b[0] <= centre[0] <= b[2] and b[1] <= centre[1] <= b[3]
+    # Grown past the square on +X, never inside it, capped at 2x its side.
+    assert b[2] > square[2] + 0.5
+    assert b[0] <= square[0] + 1e-6 and b[1] <= square[1] + 1e-6 and b[3] >= square[3] - 1e-6
+    side = square[2] - square[0]
+    assert max(b[2] - b[0], b[3] - b[1]) <= 2.0 * side + 1e-5
+    # Non-square raster: 512 on the long side, aspect = the bounds' (square cells).
+    w, h = comp["width"], comp["height"]
+    assert w != h and max(w, h) == 512 and 1 <= min(w, h) <= 512
+    assert (b[2] - b[0]) / (w - 1) == pytest.approx((b[3] - b[1]) / (h - 1), rel=1e-4)
+    # The tile: digest, exact bytes, <= 180 KiB, RGBA of exactly width x height.
+    data, mime = tiles[comp["digest"]]
+    assert hashlib.sha256(data).hexdigest() == comp["digest"]
+    assert len(data) == comp["bytes"] <= 180 * 1024
+    assert mime in ("image/png", "image/webp")
+    decoded = Image.open(io.BytesIO(data))
+    assert decoded.mode == "RGBA" and decoded.size == (w, h)
+    alpha = np.asarray(decoded)[:, :, 3]
+    assert 0 < int((alpha == 255).sum()) < alpha.size
+    manifest = json.loads(pfw.manifest_bytes(block))
+    assert manifest["version"] == 1 and len(pfw.manifest_bytes(block)) <= 8 * 1024
+    assert set(manifest["landed"]["components"][0]) == {
+        "reference_segment", "origin_xyz", "up_xyz", "forward_xyz", "raster_bounds_xy", "width",
+        "height", "digest", "bytes", "projected_keyframes", "imagery_source"}
+    # More floor, and the guard's square-normalised fraction does not fall with growth.
+    assert stats[0]["opaque_area"] > off_stats[0]["opaque_area"]
+    assert stats[0]["guard_opaque_fraction"] == pytest.approx(
+        stats[0]["opaque_area"] / (side * side))
+    assert stats[0]["guard_opaque_fraction"] >= off_stats[0]["opaque_fraction"]
+    assert stats[0]["footprint"]["reason"] == "ok"
+    assert "footprint" in json.loads(pfw.component_summary(stats))[0]
+    assert "footprint" not in json.loads(pfw.component_summary(off_stats))[0]
+
+
+def test_bounds_growth_alone_never_reads_as_a_regression():
+    published = [{"reference_segment": 0, "opaque_fraction": 0.60, "opaque_area": 60.0,
+                  "guard_opaque_fraction": 0.60}]
+    prior, prior_area = pfw.opaque_by_ref(published), pfw.opaque_area_by_ref(published)
+    # The same floor (a little less after resampling) on bounds of 4x the area: the RAW
+    # fraction falls 0.60 -> 0.1425 (< 0.25 x 0.60) and the area dips, so a raw-fraction
+    # guard would skip it; the square-normalised fraction (0.57) does not.
+    grown = {"reference_segment": 0, "opaque_fraction": 0.1425, "opaque_area": 57.0,
+             "guard_opaque_fraction": 0.57}
+    assert pfw.regression(prior, [grown], prior_area) == ""
+    raw = {k: v for k, v in grown.items() if k != "guard_opaque_fraction"}
+    assert pfw.regression(prior, [raw], prior_area).startswith("ref 0")
+    # A real collapse still regresses with footprint bounds on.
+    collapsed = {"reference_segment": 0, "opaque_fraction": 0.01, "opaque_area": 4.0,
+                 "guard_opaque_fraction": 0.04}
+    assert pfw.regression(prior, [collapsed], prior_area).startswith("ref 0")
