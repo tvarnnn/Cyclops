@@ -175,12 +175,9 @@ def select_window(ids: list[str], previous: global_solve.Solution,
                   *, active_size: int = WINDOW_KEYFRAMES) -> WindowSelection:
     """Choose the frames after the published frontier and six anchors before it.
 
-    The FRONTIER is the last keyframe with a validated published pose. When the
-    newest keyframe is within ``active_size`` of the frontier's overlap, the
-    active window is the newest ``active_size`` frames, as before. Otherwise it
-    is a LAGGED window: ``active_size`` frames starting ``OVERLAP_KEYFRAMES``
-    before the frontier, which advances from the frontier instead of jumping to
-    the newest frames. A jump is what W1 did
+    The FRONTIER is the last keyframe with a validated published pose. The
+    active window begins ``OVERLAP_KEYFRAMES`` before it and takes at most
+    ``active_size`` frames. A jump is what W1 did
     (2026-10-12): its second solve mapped keyframes 336-435 against anchors from
     a 70-keyframe solution, shared no view with them, and was refused; so were
     the three after it. Anchors are fixed for this solve from the *published*
@@ -196,10 +193,7 @@ def select_window(ids: list[str], previous: global_solve.Solution,
         raise WindowRefused("no published poses to anchor the window")
     overlap = min(OVERLAP_KEYFRAMES, max(1, active_size // 5))
     start = max(0, frontier - overlap + 1)
-    if len(ids) - start > active_size:
-        active = ids[start:start + active_size]
-    else:
-        active = ids[-active_size:]
+    active = ids[start:start + active_size]
     candidates = [(i, kid, pose) for i, kid in enumerate(previous.keyframe_ids)
                   if max(0, start - ANCHOR_LOOKBACK) <= i <= frontier
                   if kid in trusted
@@ -223,6 +217,63 @@ def select_window(ids: list[str], previous: global_solve.Solution,
                           key=lambda item: (int(item[2]["observations"]), item[0]))[1])
     selected = set(active) | set(chosen)
     return WindowSelection(active, chosen, [kid for kid in ids if kid in selected])
+
+
+def _window_diagnostics(previous, candidate, selection, database_path, keyframes):
+    """Bounded evidence on a refusal, without changing its publication decision."""
+    trusted = _validated_published(previous)
+    active = set(selection.active_ids)
+    anchors = set(selection.anchor_ids)
+    new = active - set(previous.poses)
+    counts_active, counts_new, counts_anchor = {}, {}, {}
+    for kid, pose in candidate.poses.items():
+        comp = int(pose["component"])
+        if kid in active:
+            counts_active[comp] = counts_active.get(comp, 0) + 1
+        if kid in new:
+            counts_new[comp] = counts_new.get(comp, 0) + 1
+        if kid in anchors:
+            counts_anchor[comp] = counts_anchor.get(comp, 0) + 1
+    anchor_points, new_points = set(), set()
+    for camera, _feature, point in candidate.observations:
+        kid = candidate.keyframe_ids[int(camera)]
+        if kid in anchors:
+            anchor_points.add(int(point))
+        if kid in new:
+            new_points.add(int(point))
+    result = {
+        "frontier": max((i for i, kid in enumerate(previous.keyframe_ids)
+                         if kid in trusted), default=-1),
+        "candidate_registered": len(candidate.poses),
+        "candidate_components": len(candidate.components),
+        "registered_active_by_component": counts_active,
+        "registered_new_by_component": counts_new,
+        "registered_anchors_by_component": counts_anchor,
+        "anchor_shared_points_with_new": len(anchor_points & new_points),
+    }
+    # Verified two-view pairs are a diagnostic only. They cannot substitute
+    # for aligned 3-D point and pose checks when publishing a new camera.
+    try:
+        if not database_path.exists():
+            raise sqlite3.OperationalError("window database is absent")
+        names = {global_solve.keyframe_image_name(kf): kf.keyframe_id for kf in keyframes}
+        with closing(sqlite3.connect(database_path)) as con:
+            images = {int(image_id): names.get(name) for image_id, name in
+                      con.execute("SELECT image_id, name FROM images")}
+            pairs = inliers = 0
+            for pair_id, rows in con.execute(
+                    "SELECT pair_id, rows FROM two_view_geometries WHERE rows > 0"):
+                left = images.get(int(pair_id) // global_solve.COLMAP_PAIR_BASE)
+                right = images.get(int(pair_id) % global_solve.COLMAP_PAIR_BASE)
+                if (left in anchors and right in new) or (right in anchors and left in new):
+                    pairs += 1
+                    inliers += int(rows)
+            result["verified_anchor_new_pairs"] = pairs
+            result["verified_anchor_new_inliers"] = inliers
+    except (OSError, sqlite3.Error):
+        result["verified_anchor_new_pairs"] = None
+        result["verified_anchor_new_inliers"] = None
+    return result
 
 
 def _aligned_anchors(previous, candidate, anchors):
@@ -433,19 +484,25 @@ def _validated_active(previous, candidate, ids, selection, new_comp,
         index = ids.index(kid)
         predecessor = next((ids[j] for j in range(index - 1, -1, -1)
                             if ids[j] in trusted), None)
+        # An unposed frame immediately before the first trusted active pose
+        # can be checked against that pose too. The same two-camera point
+        # support and step limit still apply; only the temporal direction of
+        # the bridge changes.
+        reference = predecessor or next((ids[j] for j in range(index + 1, len(ids))
+                                         if ids[j] in trusted), None)
         errors = _camera_point_errors(candidate, kid)
         supported = [error for point, error in errors.items()
                      if len(point_support.get(point, ())) >= 2]
         plausible = False
-        if predecessor is not None:
+        if reference is not None:
             centre = global_solve._pose_matrices(aligned[kid])[1]
-            prior = global_solve._pose_matrices(aligned[predecessor])[1]
-            plausible = float(np.linalg.norm(centre - prior)) <= step_limit * (index - ids.index(predecessor))
-        contradicted = ((predecessor is not None and not plausible) or
+            prior = global_solve._pose_matrices(aligned[reference])[1]
+            plausible = float(np.linalg.norm(centre - prior)) <= step_limit * abs(index - ids.index(reference))
+        contradicted = ((reference is not None and not plausible) or
                         (len(supported) >= MIN_NEW_CAMERA_POINTS and
                          (float(np.median(supported)) > MAX_REPROJECTION_MEDIAN_PX or
                           float(np.percentile(supported, 95)) > MAX_REPROJECTION_P95_PX)))
-        if contradicted or predecessor is None or len(supported) < MIN_NEW_CAMERA_POINTS:
+        if contradicted or reference is None or len(supported) < MIN_NEW_CAMERA_POINTS:
             del aligned[kid]
             failures.append(kid)
             if contradicted:
@@ -765,6 +822,9 @@ def solve(store, world_id, session_id, *, capture_dirs=(), final=False,
         published = stitch(previous, candidate, ids, selection)
     except WindowRefused as exc:
         return _done({"solved": False, "reason": str(exc), "window_refused": True,
+                "window_diagnostics": _window_diagnostics(
+                    previous, candidate, selection, window_workspace.database_path,
+                    window_store.keyframes),
                 "window_database": db_timing,
                 "window_setup_s": round(prepared - started, 3),
                 "timing": summary.get("timing")})

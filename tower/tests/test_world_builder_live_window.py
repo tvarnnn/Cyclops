@@ -71,7 +71,7 @@ def test_window_is_bounded_and_anchors_are_spread():
     ids = [f"k{i}" for i in range(1000)]
     old = _solution(ids[:950])
     selection = live_window.select_window(ids, old)
-    assert len(selection.active_ids) == live_window.WINDOW_KEYFRAMES
+    assert selection.active_ids == ids[930:1000]
     assert len(selection.solve_ids) <= live_window.WINDOW_KEYFRAMES + live_window.MAX_ANCHORS
     assert selection.solve_ids == [kid for kid in ids if kid in set(selection.solve_ids)]
     assert len(selection.anchor_ids) >= 3
@@ -94,6 +94,16 @@ def test_lagged_window_advances_from_last_published_pose():
     second = live_window.select_window(ids, old)
     assert second.active_ids[0] == "k130"
     assert second.active_ids[-1] == "k229"
+
+
+def test_short_first_window_starts_at_the_frontier_overlap():
+    # W3's first refusal took 13-112 with frontier 51, including 39 old
+    # frames. The next successful solve started at 32, the intended overlap.
+    ids = [f"k{i}" for i in range(113)]
+    old = _solution(ids[:52])
+    selection = live_window.select_window(ids, old)
+    assert selection.active_ids == ids[32:113]
+    assert len(selection.solve_ids) <= live_window.WINDOW_KEYFRAMES + live_window.MAX_ANCHORS
 
 
 def test_consistent_sim3_can_land_despite_large_arbitrary_mapper_scale():
@@ -448,6 +458,11 @@ def test_refused_window_does_not_launch_unbounded_full_prefix(tmp_path, monkeypa
     result = live_window.solve(store, "w", "s")
     assert result["solved"] is False
     assert result["window_refused"] is True
+    assert result["window_diagnostics"]["frontier"] == 11
+    assert result["window_diagnostics"]["candidate_registered"] == len(selection.solve_ids)
+    assert result["window_diagnostics"]["registered_active_by_component"] == {0: len(selection.active_ids)}
+    assert result["window_diagnostics"]["registered_new_by_component"] == {0: 3}
+    assert result["window_diagnostics"]["registered_anchors_by_component"] == {0: len(selection.anchor_ids)}
     assert len(called) == 1 and isinstance(called[0], live_window._WindowStore)
     assert global_solve.load_solution(store, "w", "s").keyframe_ids == old.keyframe_ids
 
@@ -994,3 +1009,32 @@ def test_an_unverifiable_tail_is_left_unpublished_not_a_refusal():
     assert set(tail) <= set(stitched.solve["live_window"]["failed_active_ids"])
     assert all(k not in stitched.poses for k in tail)
     assert "k119" in stitched.poses
+
+
+def test_unposed_frames_before_the_trusted_frontier_can_use_a_forward_bridge():
+    # W3's last window had 6 unposed cameras before its first trusted active
+    # camera. They shared many reprojected points with the anchors, but the
+    # backward-only predecessor search rejected every one.
+    ids = [f"k{i}" for i in range(150)]
+    old = _solution(ids[:70])
+    for kid in ids[50:56]:
+        del old.poses[kid]
+    selection = live_window.select_window(ids, old)
+    mapped, candidate = _mapped(ids, selection)
+    stitched = live_window.stitch(old, candidate, ids, mapped)
+    assert all(kid in stitched.poses for kid in ids[50:56])
+
+
+def test_forward_bridge_without_shared_points_keeps_earlier_frames_unposed():
+    ids = [f"k{i}" for i in range(150)]
+    old = _solution(ids[:70])
+    for kid in ids[50:56]:
+        del old.poses[kid]
+    selection = live_window.select_window(ids, old)
+    mapped, candidate = _mapped(ids, selection)
+    rows = {mapped.solve_ids.index(k) for k in ids[50:56]}
+    keep = ~np.isin(candidate.observations[:, 0], list(rows))
+    candidate.observations = candidate.observations[keep]
+    candidate.observation_xy = candidate.observation_xy[keep]
+    stitched = live_window.stitch(old, candidate, ids, mapped)
+    assert all(kid not in stitched.poses for kid in ids[50:56])
