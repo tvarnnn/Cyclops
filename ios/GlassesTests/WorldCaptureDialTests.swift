@@ -5,10 +5,12 @@
 //  FOW-RING-SPEC (2026-10-12) S1-S3, iOS: the capture dial's model on the
 //  15 real coverage blocks, its gap and words, its photos from today's wire
 //  (S2) and from the Tower's own bins (S3), the additive B2 fields read
-//  fail-closed, the latest-up orientation and the walk cue, the one-line
-//  hint turned from the newest view, the single look-here segment, the
-//  photos kept across landings, and the model's record when a landing's
-//  photos never come.
+//  fail-closed, the walk cue, the single look-here segment, the photos
+//  kept across landings, and the model's record when a landing's photos
+//  never come. Round 3 (the owner's call, 2026-10-13): start fixed on top
+//  -- the ring never turns between landings -- no sentence of guidance,
+//  one quiet footer line, the gap as clock positions for VoiceOver only,
+//  the "Recently captured" strip, and the Map tab behind IOS_FOW_MAP_TAB.
 //
 
 import SwiftUI
@@ -50,8 +52,7 @@ final class WorldCaptureDialTests: XCTestCase {
         for (name, count) in [("walk7-h52", 2), ("walk7-h236", 5), ("walk71-h563", 8), ("walk6-h1090", 12)] {
             let dial = WorldCaptureDial(coverage: try Self.coverage(name))
             XCTAssertEqual(dial.hero?.supportedCount, count, name)
-            XCTAssertEqual(dial.top, .pieceStart, "\(name): no latest, sector zero on top")
-            XCTAssertEqual(dial.anchor, 0, name)
+            XCTAssertEqual(dial.anchor, 0, "\(name): sector zero on top")
         }
         let walk71 = WorldCaptureDial(coverage: try Self.coverage("walk71-h563"))
         XCTAssertEqual(walk71.heroIndex, 0, "the most posed keyframes")
@@ -60,11 +61,13 @@ final class WorldCaptureDialTests: XCTestCase {
         XCTAssertEqual(Copy.accessibilityLabel(walk71), "Capture dial, Piece 1")
         XCTAssertEqual(walk71.gap?.positions, [6, 7, 8, 9])
         XCTAssertEqual(walk71.lookHere?.positions, [7], "one segment, never the arc")
-        XCTAssertEqual(Copy.hint(walk71), "Look around the room", "no latest: no direction")
+        XCTAssertEqual(Copy.accessibilityValue(walk71),
+                       "8 of 12 directions captured; missing around 6 to 9 o'clock from where you started")
         let walk6 = WorldCaptureDial(coverage: try Self.coverage("walk6-h1090"))
         XCTAssertNil(walk6.gap)
         XCTAssertNil(walk6.lookHere)
-        XCTAssertEqual(Copy.hint(walk6), "All directions captured — nice.")
+        XCTAssertEqual(Copy.accessibilityValue(walk6), "12 of 12 directions captured")
+        XCTAssertEqual(Copy.footer(walk6, age: 5), "12 of 12 directions · updated 5 s ago")
         XCTAssertEqual(Copy.accessibilityLabel(WorldCaptureDial(coverage: try Self.coverage("walk7-h236"))),
                        "Capture dial")
         // Every real block: the counts are of the hero's drawn union only.
@@ -87,7 +90,8 @@ final class WorldCaptureDialTests: XCTestCase {
         XCTAssertEqual((0..<12).map(dial.evidence(at:)), Array(repeating: .unconfirmed, count: 12))
         XCTAssertEqual(Copy.count(dial), "–")
         XCTAssertEqual(Copy.compactCount(dial), "–")
-        XCTAssertEqual(Copy.hint(dial), "Fills in as the Tower places your first views.")
+        XCTAssertEqual(Copy.footer(dial, age: nil), "Waiting for first views")
+        XCTAssertEqual(Copy.footer(dial, age: 400), "Waiting for first views")
         XCTAssertEqual(Copy.accessibilityLabel(dial), "Capture dial")
         XCTAssertEqual(Copy.accessibilityValue(dial), Copy.awaitingLine)
         XCTAssertEqual(Panel.captureDial(nil, overlay: nil), .awaiting)
@@ -95,30 +99,59 @@ final class WorldCaptureDialTests: XCTestCase {
         XCTAssertFalse(Panel.drawsDial(WorldPanelDial(awaiting: false), map: nil), "absent: today's panel")
     }
 
-    // MARK: The gap, the look-here segment and the hint
+    // MARK: Start on top, fixed; the gap as clock positions from start
 
-    /// The top is the newest view: the look-here segment's side of it is the
-    /// way to turn. Never an o'clock range.
-    func testTheHintTurnsFromTheNewestViewTowardTheLookHereSegment() {
-        func hint(_ supported: [Int], weak: [Int] = []) -> String {
-            Copy.hint(dial(supported: supported, weak: weak, latest: 0))
+    /// The owner's round 3: the top is where the piece began, labelled
+    /// "start", for good. A new newest view (each landing's `latest`) picks
+    /// the hero piece and never turns the ring: every segment, the gap and
+    /// the amber outline stay at the same clock position.
+    func testTheRingNeverTurnsBetweenLandings() throws {
+        let supported = [0, 1, 2, 3, 4, 8, 9, 10]
+        let first = dial(supported: supported, latest: 3, motion: 2)
+        let second = dial(supported: supported, latest: 9, motion: 2)
+        let none = dial(supported: supported)
+        XCTAssertEqual(WorldCaptureDialCopy.start, "start")
+        for shown in [first, second, none] {
+            XCTAssertEqual(shown.anchor, 0)
+            XCTAssertEqual((0..<12).map(shown.sector(at:)), Array(0..<12), "start on top: position = sector")
+            XCTAssertEqual((0..<12).map(shown.evidence(at:)), (0..<12).map(none.evidence(at:)))
+            XCTAssertEqual(shown.gap, none.gap)
+            XCTAssertEqual(shown.lookHere, none.lookHere)
+            XCTAssertEqual(Copy.accessibilityValue(shown), Copy.accessibilityValue(none))
         }
-        XCTAssertEqual(hint([0, 1, 2, 3, 4, 8, 9, 10], weak: [11]), "Look behind you")
-        XCTAssertEqual(hint(Array(0...9) + [11]), "Turn left to capture more")
-        XCTAssertEqual(hint([0] + Array(4...11)), "Turn right to capture more")
-        XCTAssertEqual(hint([0, 1, 2, 5, 6, 7, 8, 9, 10, 11]), "Turn right to capture more", "[3, 4]: its first")
-        XCTAssertEqual(hint(Array(0...4) + Array(6...11)), "Look right and behind you")
-        XCTAssertEqual(hint(Array(0...6) + Array(8...11)), "Look left and behind you")
-        XCTAssertEqual(hint(Array(1...8)), "Turn left to capture more", "[9 ... 0]: 10")
-        XCTAssertEqual(hint(Array(2...10)), "Keep looking ahead to capture more", "[11, 0, 1]: the top itself")
-        XCTAssertEqual(hint([0, 1, 2, 3]), "Look left and behind you", "8 long: its middle two, 7 and 8")
-        XCTAssertEqual(hint([]), "Look around the room", "every direction: none is better")
-        XCTAssertEqual(hint(Array(0..<12)), "All directions captured — nice.")
-        // Without latest the top is only where the piece began: no direction.
-        XCTAssertEqual(Copy.hint(dial(supported: [0, 1, 2, 3, 4, 8, 9, 10])), "Look around the room")
-        for word in (0..<12).map({ missing in hint(Array(0..<12).filter { $0 != missing }) }) {
-            XCTAssertFalse(word.contains("o'clock"), word)
+        XCTAssertEqual(first.lookHere?.positions, [6])
+
+        // Through the panel: two landings of one piece whose latest moves.
+        let stop = try XCTUnwrap(FOWFixtures.coverage(FOWFixtures.stop))
+        let receipt = WorldCoverageReceipt(coverage: stop, keyframesAccepted: 984, clock: nil)
+        let anchors = [3, 7, 11].map { sector -> Int in
+            let overlay = WorldLandedOverlay(receipt: receipt, thumbnails: [], latest: .init(
+                componentReferenceSegment: 0, sector: sector, keyframeID: "s9:\(sector)"))
+            return Panel.captureDial(.coverage(receipt), overlay: overlay).anchor
         }
+        XCTAssertEqual(anchors, [0, 0, 0])
+    }
+
+    /// The value names the largest gap the ring draws, by its first and
+    /// last clock positions from start; nothing on screen says it.
+    func testTheValueNamesTheLargestGapFromStart() {
+        func value(_ supported: [Int], weak: [Int] = []) -> String {
+            Copy.accessibilityValue(dial(supported: supported, weak: weak, latest: 0))
+        }
+        XCTAssertEqual(value([0, 1, 2, 3, 4, 8, 9, 10], weak: [11]),
+                       "8 of 12 directions captured; missing around 5 to 7 o'clock from where you started")
+        XCTAssertEqual(value(Array(2...9)),
+                       "8 of 12 directions captured; missing around 10 to 1 o'clock from where you started",
+                       "a gap through the top")
+        XCTAssertEqual(value(Array(0..<12).filter { $0 != 7 }),
+                       "11 of 12 directions captured; missing around 7 o'clock from where you started")
+        XCTAssertEqual(value(Array(1..<12)),
+                       "11 of 12 directions captured; missing around 12 o'clock from where you started")
+        XCTAssertEqual(value(Array(0..<12).filter { $0 != 3 }, weak: [3]),
+                       "11 of 12 directions captured; one view only around 3 o'clock from where you started")
+        XCTAssertEqual(value(Array(0..<12)), "12 of 12 directions captured")
+        XCTAssertEqual(value([]), "0 of 12 directions captured", "every direction is the gap")
+        XCTAssertEqual(Copy.accessibilityValue(dial(supported: [], weak: Array(0..<12))), "0 of 12 directions captured")
     }
 
     /// One segment -- the gap's centre -- or its middle two from six on;
@@ -148,42 +181,38 @@ final class WorldCaptureDialTests: XCTestCase {
         let one = dial(supported: [0, 1, 2, 4, 5, 6, 7, 8, 9, 10, 11], weak: [3])
         XCTAssertEqual(one.gap, .init(positions: [3], evidence: .weak))
         XCTAssertEqual(one.lookHere, .init(positions: [3], evidence: .weak))
-        XCTAssertEqual(Copy.hint(one), "Look around the room")
-        XCTAssertEqual(Copy.hint(dial(supported: [0, 1, 2, 4, 5, 6, 7, 8, 9, 10, 11], weak: [3], latest: 0)),
-                       "Turn right to capture more")
         let none = dial(supported: [], weak: Array(0..<12), latest: 0)
         XCTAssertNil(none.lookHere)
-        XCTAssertEqual(Copy.hint(none), "Look around the room")
     }
 
-    /// The dial's own 90 s: a stale map keeps its look-here and its hint, and
-    /// the muted stamp is just "Updating…" -- no seconds counting up. The
-    /// map's 30 s is untouched.
-    func testAStaleMapKeepsItsGuidanceAndSaysUpdating() {
+    /// The footer is one quiet line: the count and the stamp, "catching up"
+    /// past the dial's own 90 s (the map's 30 s untouched), the count alone
+    /// for an undated map, "Waiting for first views" before the first
+    /// landing. A stale map keeps its amber outline.
+    func testTheFooterIsOneQuietLine() {
         XCTAssertEqual(Copy.staleAfter, 90)
         XCTAssertEqual(WorldCoverageReceipt.staleAfter, 30, "the map's label, switch OFF, as it was")
-        XCTAssertEqual(Copy.stamp(age: 45), "Updated 45 s ago")
-        XCTAssertEqual(Copy.stamp(age: 90), "Updated 90 s ago", "at exactly 90 s: not yet updating")
-        XCTAssertEqual(Copy.stamp(age: 90.5), "Updating…")
-        XCTAssertEqual(Copy.stamp(age: 150), "Updating…", "no elapsed time while stale")
-        XCTAssertEqual(Copy.stamp(age: nil), "Update time unavailable")
-        XCTAssertFalse(Copy.isUpdating(nil))
-        XCTAssertFalse(Copy.stamp(age: 600).lowercased().contains("stale"))
         let walking = dial(supported: [0, 1, 2, 3, 4, 8, 9, 10, 11], latest: 0)
-        XCTAssertEqual(walking.lookHere?.positions, [6], "the look-here never depends on the age")
-        XCTAssertEqual(Copy.hint(walking), "Look behind you")
+        XCTAssertEqual(Copy.footer(walking, age: 45), "9 of 12 directions · updated 45 s ago")
+        XCTAssertEqual(Copy.footer(walking, age: 90), "9 of 12 directions · updated 90 s ago", "at exactly 90 s")
+        XCTAssertEqual(Copy.footer(walking, age: 90.5), "9 of 12 directions · catching up")
+        XCTAssertEqual(Copy.footer(walking, age: 150), "9 of 12 directions · catching up", "no seconds counting up")
+        XCTAssertEqual(Copy.footer(walking, age: nil), "9 of 12 directions", "undated: the count alone")
+        XCTAssertEqual(Copy.footer(.awaiting, age: nil), "Waiting for first views")
+        XCTAssertFalse(Copy.isCatchingUp(nil))
+        XCTAssertTrue(Copy.isCatchingUp(91))
+        XCTAssertEqual(walking.lookHere?.positions, [6], "the amber outline never depends on the age")
     }
 
     // MARK: Accessibility (§4)
 
     func testTheDialIsOneElementWithTheSpecsValue() {
         let spec = dial(supported: [0, 1, 2, 3, 4, 8, 9, 10], weak: [11], latest: 0)
-        XCTAssertEqual(Copy.accessibilityValue(spec), "8 of 12 directions captured, 1 with one view. Look behind you.")
+        XCTAssertEqual(Copy.accessibilityValue(spec),
+                       "8 of 12 directions captured; missing around 5 to 7 o'clock from where you started")
         XCTAssertEqual(Copy.accessibilityLabel(spec), "Capture dial")
-        let none = dial(supported: [0, 1, 2, 3, 4, 8, 9, 10, 11])
-        XCTAssertEqual(Copy.accessibilityValue(none), "9 of 12 directions captured. Look around the room.")
         XCTAssertEqual(Copy.accessibilityValue(dial(supported: Array(0..<12), latest: 3)),
-                       "12 of 12 directions captured. All directions captured — nice.")
+                       "12 of 12 directions captured")
         XCTAssertEqual(Copy.compactCount(spec), "8/12")
         XCTAssertEqual(Copy.photo(at: 0), "Photo at 12 o'clock")
         XCTAssertEqual(Copy.photo(at: 3), "Photo at 3 o'clock")
@@ -198,6 +227,7 @@ final class WorldCaptureDialTests: XCTestCase {
         XCTAssertEqual(WorldCaptureDialSwitch(environment: [:], info: ["GlassesFOWDial": ""]), .off)
         XCTAssertTrue(WorldCaptureDialSwitch(environment: ["IOS_FOW_DIAL": "on"]).on)
         XCTAssertTrue(WorldCaptureDialSwitch(environment: [:], info: ["GlassesFOWDial": "on"]).on)
+        XCTAssertNotNil(Bundle.main.infoDictionary?["GlassesFOWMapTab"], "the map tab's home-screen key")
         XCTAssertNotNil(Bundle.main.infoDictionary?["GlassesFOWDial"], "the home-screen key")
         XCTAssertEqual(WorldImagerySwitches(environment: ["IOS_FOW_DIAL": "on"]),
                        WorldImagerySwitches(live: false, landed: true), "the dial's photos are B2's tiles")
@@ -252,18 +282,16 @@ final class WorldCaptureDialTests: XCTestCase {
                        "another component")
     }
 
-    // MARK: S3: the Tower's bins, latest-up, the walk cue (§3.3, §7)
+    // MARK: S3: the Tower's bins, the hero piece, the walk cue (§3.3, §7)
 
-    func testLatestPutsItsSectorOnTopAndItsPieceInFront() throws {
+    /// `latest` picks the piece in front; start stays on top (round 3).
+    func testLatestPicksItsPieceAndNeverTheTop() throws {
         let latest = WorldCaptureDial(components: [Self.piece(supported: [0, 1, 2, 5])], stationsOmitted: 0,
                                       newest: .init(referenceSegment: 0, sector: 5))
-        XCTAssertEqual(latest.top, .newestView)
-        XCTAssertEqual(latest.anchor, 5)
-        XCTAssertEqual(latest.sector(at: 0), 5)
-        XCTAssertEqual(latest.position(of: 5), 0)
-        XCTAssertEqual(latest.position(of: 0), 7)
-        XCTAssertEqual(latest.evidence(at: 0), .supported)
-        XCTAssertEqual(latest.evidence(at: 7), .supported, "sector 0, seven hours on")
+        XCTAssertEqual(latest.anchor, 0)
+        XCTAssertEqual(latest.sector(at: 0), 0)
+        XCTAssertEqual(latest.position(of: 5), 5)
+        XCTAssertEqual(latest.evidence(at: 5), .supported)
         XCTAssertEqual(Copy.accessibilityLabel(latest), "Capture dial")
 
         // walk 7.1: latest names piece 2, which has fewer views: it is the hero.
@@ -282,12 +310,12 @@ final class WorldCaptureDialTests: XCTestCase {
     func testANullForeignOrUndrawnLatestIsHandled() throws {
         let coverage = try Self.coverage("walk71-h563")
         let none = WorldCaptureDial(coverage: coverage, newest: nil, motionSector: 3)
-        XCTAssertEqual(none.top, .pieceStart)
+        XCTAssertEqual(none.anchor, 0)
         XCTAssertEqual(none.heroIndex, 0, "most views")
         XCTAssertNil(none.motionSector, "no walk cue without the latest it belongs to")
         let foreign = WorldCaptureDial(coverage: coverage, newest: .init(referenceSegment: 99, sector: 4),
                                        motionSector: 3)
-        XCTAssertEqual(foreign.top, .pieceStart, "a piece not drawn here is no anchor")
+        XCTAssertEqual(foreign.heroIndex, 0, "a piece not drawn here names nothing")
         XCTAssertEqual(foreign.anchor, 0)
         XCTAssertNil(foreign.motionSector)
         // walk 7.1 piece 1 has nothing at sectors 6-9 among its drawn
@@ -296,17 +324,17 @@ final class WorldCaptureDialTests: XCTestCase {
                                        newest: .init(referenceSegment: 0, sector: 7),
                                        photos: [.init(digest: "p7", referenceSegment: 0, sector: 7),
                                                 .init(digest: "p0", referenceSegment: 0, sector: 0)])
-        XCTAssertEqual(undrawn.top, .newestView)
-        XCTAssertEqual(undrawn.anchor, 7, "still the anchor")
-        XCTAssertEqual(undrawn.evidence(at: 0), .unconfirmed, "drawn as the drawn masks say")
+        XCTAssertEqual(undrawn.heroIndex, 0)
+        XCTAssertEqual(undrawn.anchor, 0, "start on top")
+        XCTAssertEqual(undrawn.evidence(at: 7), .unconfirmed, "drawn as the drawn masks say")
         XCTAssertEqual(undrawn.photosBySector, [0: "p0"], "no photo on it")
-        XCTAssertEqual(undrawn.gap?.positions.first, 11, "the gap through the top is met at once")
+        XCTAssertEqual(undrawn.gap?.positions, [6, 7, 8, 9])
     }
 
     /// A stale `latest` -- the Tower kept the previous landing's block --
-    /// never anchors the CURRENT receipt's dial: the panel draws B2 only
+    /// never counts for the CURRENT receipt's dial: the panel draws B2 only
     /// over the receipt it was made for, and then falls back (§3.3).
-    func testAStaleLatestNeverAnchorsTheCurrentReceipt() throws {
+    func testAStaleLatestNeverCountsForTheCurrentReceipt() throws {
         let stop = try XCTUnwrap(FOWFixtures.coverage(FOWFixtures.stop))
         let receipt = WorldCoverageReceipt(coverage: stop, keyframesAccepted: 984, clock: nil)
         let latest = WorldImageryLanded.Latest(componentReferenceSegment: 0, sector: 3, keyframeID: "s9:120")
@@ -315,8 +343,7 @@ final class WorldCaptureDialTests: XCTestCase {
             WorldDialThumbnail(digest: "d1", image: image, referenceSegment: 0, heading: nil, sector: 2),
         ], latest: latest, motionSector: 1)
         let current = Panel.captureDial(.coverage(receipt), overlay: Panel.landed(overlay, over: .coverage(receipt)))
-        XCTAssertEqual(current.anchor, 3)
-        XCTAssertEqual(current.top, .newestView)
+        XCTAssertEqual(current.anchor, 0, "start on top, whatever the latest")
         XCTAssertEqual(current.motionSector, 1)
         XCTAssertEqual(current.photosBySector, [2: "d1"])
 
@@ -325,19 +352,21 @@ final class WorldCaptureDialTests: XCTestCase {
             .replacingOccurrences(of: "g-stop-984", with: "g-stop-990")))
         let next = WorldCoverageReceipt(coverage: newer, keyframesAccepted: 990, clock: nil)
         let stale = Panel.captureDial(.coverage(next), overlay: Panel.landed(overlay, over: .coverage(next)))
-        XCTAssertEqual(stale.anchor, 0, "the previous landing's latest")
-        XCTAssertEqual(stale.top, .pieceStart)
-        XCTAssertNil(stale.motionSector)
+        XCTAssertEqual(stale.anchor, 0)
+        XCTAssertNil(stale.motionSector, "the previous landing's latest")
         XCTAssertEqual(stale.photosBySector, [:], "nothing carries over")
         let fixture = Panel.captureDial(.fixture(receipt), overlay: Panel.landed(overlay, over: .fixture(receipt)))
-        XCTAssertEqual(fixture.top, .pieceStart, "never over the DEBUG fixture")
+        XCTAssertNil(fixture.motionSector, "never over the DEBUG fixture")
+        XCTAssertEqual(fixture.photosBySector, [:])
     }
 
-    /// The walk cue is the tick alone: the value says the hint, never a clock.
-    func testTheWalkCueIsATick() {
+    /// The walk cue is the tick alone: the value never names it.
+    /// The dial still decodes `landed.motion_sector` fail-closed, but draws no
+    /// travel arrow: the owner wants no directional guidance (round 3).
+    func testTheWalkCueIsDecodedButNotADirection() {
         let cue = dial(supported: [0, 1, 2], latest: 5, motion: 7)
         XCTAssertEqual(cue.motionSector, 7)
-        XCTAssertFalse(Copy.accessibilityValue(cue).contains("o'clock"), Copy.accessibilityValue(cue))
+        XCTAssertEqual(Copy.accessibilityValue(cue), Copy.accessibilityValue(dial(supported: [0, 1, 2])))
         XCTAssertNil(dial(supported: [0], latest: 0, motion: nil).motionSector, "null: no tick")
         XCTAssertNil(dial(supported: [0], latest: 0, motion: 12).motionSector, "out of range: no tick")
     }
@@ -357,7 +386,7 @@ final class WorldCaptureDialTests: XCTestCase {
         let dial = WorldCaptureDial(components: [Self.piece(supported: [3, 4, 5])], stationsOmitted: 0,
                                     newest: .init(referenceSegment: 0, sector: 4), photos: photos)
         XCTAssertEqual(dial.photosBySector, [4: "a", 3: "c"], "set sectors only: a binned tile on grey is dropped")
-        XCTAssertEqual(dial.position(of: 4), 0, "the newest view's own photo sits on top")
+        XCTAssertEqual(dial.position(of: 4), 4, "the newest view's own photo stays at its own sector: start on top")
     }
 
     private static let digestA = "a" + String(repeating: "0", count: 63)
@@ -420,7 +449,7 @@ final class WorldCaptureDialTests: XCTestCase {
             XCTAssertEqual(landed.latest?.sector, 7, "\(bad) cost the latest")
             XCTAssertEqual(landed.entries.count, 2, "\(bad) cost the entries")
         }
-        // The dial then falls back: sector zero on top, no walk cue.
+        // The dial then falls back: the biggest piece, no walk cue.
         let stop = try XCTUnwrap(FOWFixtures.coverage(FOWFixtures.stop))
         let receipt = WorldCoverageReceipt(coverage: stop, keyframesAccepted: nil, clock: nil)
         let landed = try XCTUnwrap(Self.manifest(extra: #","latest":{"sector":3},"motion_sector":"2""#)?.landed.value)
@@ -428,26 +457,28 @@ final class WorldCaptureDialTests: XCTestCase {
                                          motionSector: landed.motionSector)
         let dial = Panel.captureDial(.coverage(receipt), overlay: overlay)
         XCTAssertEqual(dial.anchor, 0)
-        XCTAssertEqual(dial.top, .pieceStart)
         XCTAssertNil(dial.motionSector)
     }
 
     // MARK: The words never claim what the receipt does not (§8.5)
 
     func testTheDialsWordsNeverClaimWhatTheReceiptDoesNot() throws {
-        // The owner's demo decisions (2026-10-12): "Room coverage", "Look
-        // around the room", "Turn left", "Look behind you" are allowed now.
+        // The owner's demo decisions: "Room coverage" (2026-10-12), and
+        // "missing around 7 to 9 o'clock from where you started" in the
+        // VoiceOver value (2026-10-13), the top being fixed and labelled.
         let banned = ["hole", "covered", "complete", "surface", "texture", "wall", "floor",
-                      "current", "you are", "live", "scan", "missing", "unseen", "nothing", "%", "everything",
+                      "current", "you are", "live", "scan", "unseen", "nothing", "%", "everything",
                       "position", "estimate", "remaining", "done", "proved", "real time", "just now",
                       "not captured", "never captured", "adequate", " go ", "north", "compass", "stale", "o'clock to"]
-        var words = [Copy.dialName, Copy.title, Copy.tabLabel, Copy.awaitingLine, Copy.ofTwelve,
-                     Copy.captured, Copy.legendCaptured, Copy.legendOneView, Copy.legendNotYet, Copy.allCaptured,
-                     Copy.lookAround, Copy.ahead, Copy.right, Copy.rightBehind, Copy.behind, Copy.leftBehind,
-                     Copy.left, Copy.updating, Copy.undated, Copy.tabName(.dial), Copy.tabName(.map), Copy.more(4),
-                     Copy.healthRow, Copy.finishStamp(headline: "Improving", elapsed: "7 min since you stopped"),
-                     Copy.finishStamp(headline: nil, elapsed: nil)]
-        words += [2, 31, 95, 400, nil].map(Copy.stamp(age:))
+        // Round 3: no sentence of guidance anywhere on screen.
+        let guidance = ["look", "turn", "behind", "left", "right", "ahead", "fills in", "slowly", "fill the ring",
+                        "nice", "around", "…", "keep ", "need"]
+        var visible = [Copy.dialName, Copy.title, Copy.tabLabel, Copy.awaitingLine, Copy.ofTwelve,
+                       Copy.captured, Copy.legendCaptured, Copy.legendOneView, Copy.legendNotYet, Copy.start,
+                       Copy.recentTitle, Copy.closePhoto, Copy.tabName(.dial), Copy.tabName(.map), Copy.more(4),
+                       Copy.healthRow, Copy.finishStamp(headline: "Improving", elapsed: "7 min since you stopped"),
+                       Copy.finishStamp(headline: nil, elapsed: nil)]
+        var spoken = [Copy.recentPhoto(1, of: 4)]
         var dials = [WorldCaptureDial.awaiting]
         for name in ["walk7-h52", "walk7-h236", "walk71-h563", "walk6-h1090", "walk71-h104"] {
             let coverage = try Self.coverage(name)
@@ -457,15 +488,22 @@ final class WorldCaptureDialTests: XCTestCase {
         }
         dials += [dial(supported: []), dial(supported: [], weak: Array(0..<12)), dial(supported: [1], weak: [2, 3])]
         for dial in dials {
-            words += [Copy.hint(dial), Copy.accessibilityValue(dial), Copy.accessibilityLabel(dial), Copy.count(dial),
-                      Copy.compactCount(dial)]
-            words += dial.pieces.flatMap { [Copy.miniLabel($0), Copy.miniAccessibilityLabel($0)] }
-            words += (0..<12).map(Copy.photo(at:))
+            visible += [2, 31, 95, 400, nil].map { Copy.footer(dial, age: $0) }
+            visible += [Copy.count(dial), Copy.compactCount(dial)]
+            visible += dial.pieces.map(Copy.miniLabel)
+            spoken += [Copy.accessibilityValue(dial), Copy.accessibilityLabel(dial)]
+            spoken += dial.pieces.map(Copy.miniAccessibilityLabel)
+            spoken += (0..<12).map(Copy.photo(at:))
         }
-        XCTAssertGreaterThan(words.count, 100)
-        for word in words {
+        XCTAssertGreaterThan(visible.count + spoken.count, 100)
+        for word in visible + spoken {
             for phrase in banned {
                 XCTAssertFalse(word.lowercased().contains(phrase), "\"\(word)\" says \"\(phrase)\"")
+            }
+        }
+        for word in visible {
+            for phrase in guidance {
+                XCTAssertFalse(word.lowercased().contains(phrase), "guidance on screen: \"\(word)\"")
             }
         }
     }
@@ -563,8 +601,9 @@ final class WorldCaptureDialTests: XCTestCase {
         XCTAssertEqual(shown?.dial, last)
         XCTAssertEqual(shown?.photos.bySector.mapValues(\.digest), [0: "a", 1: "b"], "the photos shown live")
         XCTAssertNil(shown?.photos.bySector[2], "a sector never shown a photo stays colour")
-        XCTAssertEqual(Copy.accessibilityValue(last, hint: false), "3 of 12 directions captured.",
-                       "after Stop no hint is shown, so none is read")
+        XCTAssertEqual(Copy.accessibilityValue(last),
+                       "3 of 12 directions captured; missing around 3 to 11 o'clock from where you started",
+                       "after Stop the same value: the dimmed ring draws the same gap")
         XCTAssertNil(Panel.postStopDial(final, beside: WalkScoped(walk: walkB, value: ())), "another walk")
         XCTAssertNil(Panel.postStopDial(final, beside: WalkScoped(walk: nil, value: ())), "a reset")
         XCTAssertNil(Panel.postStopDial(nil, beside: WalkScoped(walk: walkA, value: ())), "no dial was drawn")
@@ -592,18 +631,17 @@ final class WorldCaptureDialTests: XCTestCase {
 
         let window = Panel.shownDial(map, overlay: nil, kept: kept, held: held, beside: report)
         XCTAssertEqual(window.value.dial.hero?.referenceSegment, 17, "the hero holds")
-        XCTAssertEqual(window.value.dial.top, .newestView, "the top holds")
+        XCTAssertEqual(window.value.dial.anchor, 0, "start on top throughout")
         XCTAssertEqual(window.value.photos.bySector.mapValues(\.digest), [0: "k"], "the kept photo stays")
-        XCTAssertNotEqual(Copy.hint(window.value.dial), Copy.lookAround)
 
         let unheld = Panel.shownDial(map, overlay: nil, kept: kept, beside: report)
         XCTAssertEqual(unheld.value.dial.hero?.referenceSegment, 0, "without the hold: the biggest piece")
         let otherFrame = WalkScoped(walk: walkA, value: WorldPanelHeldNewest(
             newest: .init(referenceSegment: 17, sector: 0), frameRevision: mid.frameRevision + 1))
         XCTAssertEqual(Panel.shownDial(map, overlay: nil, kept: kept, held: otherFrame, beside: report)
-                        .value.dial.top, .pieceStart, "never across a new frame")
+                        .value.dial.hero?.referenceSegment, 0, "never across a new frame")
         XCTAssertEqual(Panel.shownDial(map, overlay: nil, kept: kept, held: held,
-                                       beside: WalkScoped(walk: nil, value: ())).value.dial.top, .pieceStart)
+                                       beside: WalkScoped(walk: nil, value: ())).value.dial.hero?.referenceSegment, 0)
 
         // Even a flipped, photo-less dial drawn in the window never replaces
         // the walk's record that holds photos; a landing's own dial does.
@@ -677,6 +715,74 @@ final class WorldCaptureDialTests: XCTestCase {
         XCTAssertEqual(Panel.postStopStatus(.init(showsSpinner: true, line: nil, stoppedAt: nil,
                                                   detail: "A long sentence of the canvas's own.")),
                        WorldFinishCopy.finishing, "the short sentence: two lines")
+    }
+
+    // MARK: Round 3: the Map tab's switch, the recent strip
+
+    /// `IOS_FOW_MAP_TAB=on` exactly shows the Dial|Map control; unset (the
+    /// demo build) or anything else hides it, live and after Stop.
+    func testTheMapTabSwitchHidesTheToggleUnlessOn() throws {
+        XCTAssertFalse(WorldDialMapTabSwitch(environment: [:], info: [:]).on, "unset: hidden")
+        XCTAssertFalse(WorldDialMapTabSwitch(environment: ["IOS_FOW_MAP_TAB": "ON"]).on)
+        XCTAssertFalse(WorldDialMapTabSwitch(environment: [:], info: ["GlassesFOWMapTab": ""]).on)
+        XCTAssertTrue(WorldDialMapTabSwitch(environment: ["IOS_FOW_MAP_TAB": "on"]).on)
+        XCTAssertTrue(WorldDialMapTabSwitch(environment: [:], info: ["GlassesFOWMapTab": "on"]).on)
+        XCTAssertEqual(WorldPanelDial().mapTab, false, "the default is hidden")
+        let stop = try XCTUnwrap(FOWFixtures.coverage(FOWFixtures.stop))
+        let map = WorldPanelMapSource.coverage(WorldCoverageReceipt(coverage: stop, keyframesAccepted: nil, clock: nil))
+        XCTAssertFalse(Panel.showsMapToggle(WorldPanelDial(), map: map, stopped: false), "unset: no control")
+        XCTAssertFalse(Panel.showsMapToggle(WorldPanelDial(), map: nil, stopped: true), "unset: none after Stop")
+        XCTAssertTrue(Panel.showsMapToggle(WorldPanelDial(mapTab: true), map: map, stopped: false))
+        XCTAssertTrue(Panel.showsMapToggle(WorldPanelDial(mapTab: true), map: nil, stopped: true))
+        XCTAssertFalse(Panel.showsMapToggle(WorldPanelDial(mapTab: true), map: nil, stopped: false), "no map yet")
+        XCTAssertFalse(Panel.showsMapToggle(nil, map: map, stopped: false), "dial off: today's panel")
+    }
+
+    /// The strip: at most four, newest first; a landing's new photos lead,
+    /// the newest placed view's own photo first; a photo met before in the
+    /// walk is never new again.
+    func testTheRecentStripKeepsTheFourNewestOnce() {
+        func tiles(_ sectors: [Int], reference: Int = 0) -> [WorldDialThumbnail] {
+            sectors.map { Self.thumb("d\($0)", reference: reference, sector: $0) }
+        }
+        let first = WorldDialRecent().adding(tiles([0, 1, 2]),
+                                             newest: .init(componentReferenceSegment: 0, sector: 2, keyframeID: "k"))
+        XCTAssertEqual(first.photos.map(\.digest), ["d2", "d0", "d1"], "the newest view's photo leads")
+        let second = first.adding(tiles([0, 1, 2, 3, 4]), newest: nil)
+        XCTAssertEqual(second.photos.map(\.digest), ["d3", "d4", "d2", "d0"], "four, the new ones first")
+        let again = second.adding(tiles([0, 1, 2, 3, 4]), newest: .init(componentReferenceSegment: 0, sector: 1,
+                                                                         keyframeID: "k"))
+        XCTAssertEqual(again, second, "a re-sent landing adds nothing; d1 is not new again")
+        let other = again.adding(tiles([5], reference: 7))
+        XCTAssertEqual(other.photos.map(\.digest), ["d5", "d3", "d4", "d2"], "any piece of the walk")
+        XCTAssertLessThanOrEqual(other.photos.count, WorldDialRecent.limit)
+        XCTAssertEqual(WorldDialRecent.limit, 4)
+        XCTAssertEqual(WorldDialRecent().adding([]).photos, [])
+        XCTAssertEqual(Copy.recentPhoto(2, of: 4), "Photo 2 of 4")
+        XCTAssertEqual(Copy.recentTitle, "Recently captured")
+    }
+
+    /// Walk-scoped: another walk starts its own strip, and the panel reads a
+    /// strip only beside a report of its own walk.
+    func testTheRecentStripIsTheWalksOwn() throws {
+        let stop = try XCTUnwrap(FOWFixtures.coverage(FOWFixtures.stop))
+        let receipt = WorldCoverageReceipt(coverage: stop, keyframesAccepted: nil, clock: nil)
+        let walkA = WorldFinishWalk(worldID: "w1", sessionID: "s9")
+        let walkB = WorldFinishWalk(worldID: "w1", sessionID: "s10")
+        func landing(_ walk: WorldFinishWalk, _ digests: [String]) -> WalkScoped<WorldLandedOverlay> {
+            WalkScoped(walk: walk, value: WorldLandedOverlay(
+                receipt: receipt, thumbnails: [],
+                dialEntries: digests.enumerated().map { Self.thumb($0.element, sector: $0.offset) }))
+        }
+        let a1 = Panel.recent(nil, adding: landing(walkA, ["a", "b"]))
+        XCTAssertEqual(a1.walk, walkA)
+        let a2 = Panel.recent(a1, adding: landing(walkA, ["a", "b", "c"]))
+        XCTAssertEqual(a2.value.photos.map(\.digest), ["c", "a", "b"])
+        let b1 = Panel.recent(a2, adding: landing(walkB, ["x"]))
+        XCTAssertEqual(b1.walk, walkB)
+        XCTAssertEqual(b1.value.photos.map(\.digest), ["x"], "another walk starts empty")
+        XCTAssertNil(a2.value(beside: WalkScoped(walk: walkB, value: ())), "never beside another walk")
+        XCTAssertNil(a2.value(beside: WalkScoped(walk: nil, value: ())), "nor a reset")
     }
 }
 

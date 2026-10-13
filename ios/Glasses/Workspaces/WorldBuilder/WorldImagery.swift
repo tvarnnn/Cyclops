@@ -703,13 +703,15 @@ nonisolated struct WorldLandedOverlay: Equatable {
 /// One in-hand B2 tile for the capture dial: the Tower's own bin when it
 /// sent one (S3), and the look direction the phone's join found (S2), when
 /// it found one. Not yet checked against any segment: the dial does that.
-nonisolated struct WorldDialThumbnail: Equatable {
+nonisolated struct WorldDialThumbnail: Equatable, Identifiable {
     let digest: String
     let image: UIImage
     let referenceSegment: Int
     let heading: Double?
     var sector: Int? = nil
     var unredacted: Bool = false
+
+    var id: String { digest }
 
     static func == (lhs: Self, rhs: Self) -> Bool {
         lhs.digest == rhs.digest && lhs.referenceSegment == rhs.referenceSegment

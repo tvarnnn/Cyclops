@@ -70,6 +70,7 @@ final class WorldCaptureDialSnapshotTests: XCTestCase {
             try shoot(scene)
         }
         try shootMapTab()
+        try shootPhotoSheet()
     }
 
     private func with(_ scene: Scene, _ change: (inout Scene) -> Void) -> Scene {
@@ -137,6 +138,17 @@ final class WorldCaptureDialSnapshotTests: XCTestCase {
         .background(Color(.secondarySystemGroupedBackground))
         .clipShape(RoundedRectangle(cornerRadius: 18))
         try render(Scene(name: "dial-map-tab", block: nil, style: .dark), AnyView(card))
+    }
+
+    /// Round 3: a tapped photo (a strip tile or a wedge), large, with Close.
+    private func shootPhotoSheet() throws {
+        let photo = WorldDialThumbnail(digest: String(format: "%032x", 2), image: Self.tile(1), referenceSegment: 0,
+                                       heading: nil, sector: 1)
+        let sheet = WorldCaptureDialPhotoSheet(photo: photo)
+            .frame(height: 420)
+            .background(Color(.systemBackground))
+            .clipShape(RoundedRectangle(cornerRadius: 18))
+        try render(Scene(name: "dial-photo-sheet", block: nil, style: .dark), AnyView(sheet))
     }
 
     // MARK: Rendering

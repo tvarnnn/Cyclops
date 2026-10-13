@@ -171,7 +171,10 @@ struct WorldBuilderWorkspaceView: View {
             }
 
             #if DEBUG
-            glassesPanel
+            // With the dial on, the preview sits right above the dial instead.
+            if !Self.dialSwitch.on {
+                glassesPanel(compact: false)
+            }
             #endif
 
             WorldCanvasView(
@@ -196,6 +199,12 @@ struct WorldBuilderWorkspaceView: View {
 
             #if DEBUG
             captureControl
+            // FOW-RING round 3: what the glasses see now, directly above the
+            // dial, smaller, to compare with what was captured. The same card
+            // and frame, moved; below Stop, so it never moves it.
+            if Self.dialSwitch.on {
+                glassesPanel(compact: true)
+            }
             #else
             HelperText("Capture is not available in this build.")
             #endif
@@ -480,11 +489,13 @@ struct WorldBuilderWorkspaceView: View {
 
     /// FOW-RING: read once; off is today's panel exactly.
     private static let dialSwitch = WorldCaptureDialSwitch.current
+    /// The Dial|Map control: hidden unless `IOS_FOW_MAP_TAB=on`.
+    private static let mapTabSwitch = WorldDialMapTabSwitch.current
 
     /// The capture dial's inputs, or `nil` with its switch off.
     private var panelDial: WorldPanelDial? {
         guard Self.dialSwitch.on else { return nil }
-        return WorldPanelDial(awaiting: world.coverageAwaited)
+        return WorldPanelDial(awaiting: world.coverageAwaited, mapTab: Self.mapTabSwitch.on)
     }
 
     private var hostInputs: WorldInlineHost.Inputs {
@@ -622,16 +633,18 @@ private extension WorldBuilderWorkspaceView {
         (session.status == .active || isRunning) && !UITestHooks.hidesCaptureHealth
     }
 
-    /// What the wearer currently sees.
+    /// What the wearer currently sees. `compact`: at most 180 pt tall, above
+    /// the capture dial.
     @ViewBuilder
-    var glassesPanel: some View {
+    func glassesPanel(compact: Bool) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             SectionLabel("What the glasses see")
             ViewfinderCard(
                 frame: glasses.latestCapturedFrame,
                 isStreaming: isStreaming,
                 placeholderReason: placeholder,
-                isPausedByGlasses: glasses.captureClaim == .devicePaused
+                isPausedByGlasses: glasses.captureClaim == .devicePaused,
+                frameHeight: compact ? 180 : nil
             )
         }
     }

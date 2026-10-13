@@ -58,6 +58,11 @@
 	     turns on the B2 landed fetch, whose tiles are the dial's photos. -->
 	<key>GlassesFOWDial</key>
 	<string>$(IOS_FOW_DIAL)</string>
+	<!-- The capture dial's Dial|Map control: shown only when the build passes
+	     IOS_FOW_MAP_TAB=on to xcodebuild; anything else, unset included,
+	     hides it and the dial is the only face. -->
+	<key>GlassesFOWMapTab</key>
+	<string>$(IOS_FOW_MAP_TAB)</string>
 	<!-- The Tower send rate for a measured run: a whole number 6...24 only
 	     when the build passes IOS_TOWER_TARGET_FPS=<n> to xcodebuild;
 	     anything else (unset included) keeps FrameRateGate's 12. -->
