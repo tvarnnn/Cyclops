@@ -86,6 +86,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from tower.artifact_paths import artifact_root_arg  # noqa: E402
+from tower.config import world_merge_after_stop_setting  # noqa: E402
 from tower.native_prewarm import prewarm_world_builder  # noqa: E402
 from tower.stdin_stop import watch_stdin_close  # noqa: E402
 from tower.capture import (  # noqa: E402
@@ -1506,6 +1507,43 @@ def rebuild_interval(base: int, accepted: int) -> int:
     return base << min(doublings, 4)
 
 
+def merge_landed_solve_after_stop(solver, engine, world_id: str, session_id: str,
+                                  accepted: int, *, hard_stop: bool = False) -> bool:
+    """`TOWER_WORLD_MERGE_AFTER_STOP`: one non-blocking poll after the frame loop.
+
+    A background solve that completed after the last in-loop `finished()` poll (that poll
+    runs only on keyframe frames) or right at Stop was never merged, so the phone's capture
+    dial stayed stale until the final build. This asks `finished()` once more and, if a
+    result is ready, rebuilds exactly as the in-loop path does. The POLL never waits (`finished()`
+    only reaps an already-exited child; the one interim build then runs inline, adding its
+    duration to Stop-to-final latency and skipped on a hard stop), never merges a launch twice (`finished()` reports
+    each completed launch once), and runs before the final solve and build, which then
+    overwrite whatever this wrote. Returns True when a build was published. Any failure is
+    logged and swallowed: this is a best-effort view and must never cost the session its
+    finalization.
+    """
+    if solver is None or hard_stop or accepted < 2:
+        return False
+    try:
+        if not solver.finished():
+            return False
+        started = time.perf_counter()
+        interim = engine.build(world_id, session_id)
+    except Exception as exc:  # noqa: BLE001 -- best-effort; final build still follows
+        logger.warning(
+            "[Tower][WorldBuilder] merge-after-stop failed and is skipped: %s: %s",
+            type(exc).__name__, exc,
+        )
+        return False
+    logger.info(
+        "[Tower][WorldBuilder] merge-after-stop: %s keyframes -> %s positioned poses, "
+        "%s points in %.2fs",
+        interim.keyframes, interim.poses_solved, interim.points,
+        time.perf_counter() - started,
+    )
+    return True
+
+
 def session_manifest(store, world_id: str, session_id: str) -> dict:
     """The manifest that describes THIS session, from either copy.
 
@@ -2655,6 +2693,13 @@ def main(argv=None) -> int:
                     else:
                         surfacer.poll(store)
         observe_seconds = time.perf_counter() - started
+        # BEFORE stop_background: that kills a live child, and a killed child must not read as
+        # a landing. Off, this line does nothing at all.
+        if background_solves and world_merge_after_stop_setting():
+            merge_landed_solve_after_stop(
+                solver, engine, world_id, session_id, accepted,
+                hard_stop=stop_request.hard,
+            )
         if final_immediate and solver is not None and capture_stopped():
             solver.stop_background(store)
         if surfacer is not None:
