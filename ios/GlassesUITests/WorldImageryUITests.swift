@@ -226,8 +226,9 @@ final class WorldImageryUITests: XCTestCase {
     /// IOS_FOW_DIAL=on alone -- it asks for B2's tiles itself -- and §4's
     /// landed fixture: today's join places `s9:120` looking 90°, sector 3, a
     /// captured direction of §9's stop piece, so it is the dial's photo at
-    /// 3 o'clock (sector zero on top); a tap opens the map's own sheet. The
-    /// Map tab keeps B2's thumbnail over the map.
+    /// 3 o'clock (start on top). Round 3: the same photo leads the "Recently
+    /// captured" strip; a tap on either opens it large, with Close; no
+    /// sentence of guidance; IOS_FOW_MAP_TAB unset, so no Dial|Map control.
     func testTheDialShowsTodaysLandedPhotoInItsSegment() throws {
         mock.setRoute("GET \(Self.imagery)/manifest", status: 200, body: Self.landedFixture)
         launch(environment: ["IOS_FOW_DIAL": "on"])
@@ -245,45 +246,57 @@ final class WorldImageryUITests: XCTestCase {
         print("DIAL-PHOTO|dial=\(dial.frame)|photo=\(photo.frame)")
         XCTAssertGreaterThan(photo.frame.midX, dial.frame.midX + dial.frame.width * 0.2, "at 3 o'clock")
         XCTAssertEqual(photo.frame.midY, dial.frame.midY, accuracy: 4, "at 3 o'clock")
-        XCTAssertTrue((dial.value as? String)?.hasPrefix("4 of 12 directions captured. ") == true,
-                      String(describing: dial.value))
+        XCTAssertEqual(dial.value as? String,
+                       "4 of 12 directions captured; missing around 5 to 12 o'clock from where you started")
         XCTAssertFalse(element("wb-panel-dial-photos-unavailable").exists)
+        XCTAssertFalse(element("wb-panel-dial-gap").exists, "no sentence of guidance")
+        XCTAssertTrue(text(element("wb-panel-dial-stamp")).hasPrefix("4 of 12 directions · "),
+                      text(element("wb-panel-dial-stamp")))
         reveal(dial)
         shoot("dial-photo-s2")
-        XCTAssertTrue(tap(photo, until: self.element("wb-imagery-landed-direction").exists), "the sheet")
-        XCTAssertEqual(text(element("wb-imagery-landed-direction")), "Look direction 90°")
+        let sheet = element("wb-panel-dial-photo-sheet")
+        let close = element("wb-panel-dial-photo-close")
+        centre(photo)
+        // A finger on the wedge, wherever accessibility's hit test lands.
+        XCTAssertTrue(tapCentre(photo, until: sheet.exists), "a wedge's photo opens large")
         shoot("dial-photo-sheet")
-        XCTAssertTrue(tap(app.buttons["Done"], until: !self.element("wb-imagery-landed-direction").exists),
-                      "the sheet closed")
+        XCTAssertTrue(tap(close, until: !sheet.exists), "the sheet closed")
+        let recent = element("wb-panel-dial-recent")
+        XCTAssertTrue(recent.waitForExistence(timeout: 5), "the recent strip")
+        XCTAssertEqual(app.descendants(matching: .any).matching(identifier: "wb-panel-dial-recent").count, 1)
+        XCTAssertEqual(recent.label, "Photo 1 of 1")
+        reveal(recent)
+        shoot("dial-recent-strip")
+        XCTAssertTrue(tap(recent, until: sheet.exists), "a strip photo opens large")
+        XCTAssertTrue(tap(close, until: !sheet.exists), "the sheet closed")
         let control = app.segmentedControls.matching(identifier: "wb-panel-tab").firstMatch
-        XCTAssertTrue(control.waitForExistence(timeout: 5), "the Dial|Map control")
-        reveal(control)
-        XCTAssertTrue(tap(control.buttons["Map"], until: self.element("wb-panel-map").exists), "the Map tab")
-        XCTAssertTrue(element("wb-imagery-landed-thumb").waitForExistence(timeout: 5), "B2's thumbnail on the map")
-        XCTAssertTrue(tap(control.buttons["Dial"], until: dial.exists), "back to the dial")
+        XCTAssertFalse(control.exists, "IOS_FOW_MAP_TAB unset: no Dial|Map control")
+        XCTAssertFalse(element("wb-panel-map").exists, "the dial is the only face")
 
-        // After Stop: the same card -- its fixed title, the control in place
-        // -- the walk's dial dimmed with the photo it showed, its value the
-        // count alone, and the progress in the footer, not over the ring.
+        // After Stop: the same card -- its fixed title, no control -- the
+        // walk's dial dimmed with the photo it showed, the strip kept, the
+        // same value, and the progress in the footer, not over the ring.
         let stop = app.buttons["Stop capture"]
-        reveal(stop)
+        centre(stop)
         XCTAssertTrue(tap(stop, until: !self.app.buttons["Stop capture"].exists), "Stop")
         push(modelState: "finalizing", geometry: "gA", guidance: FOWGuidance.stop, buildInProgress: true)
         XCTAssertTrue(element("wb-finish-line").waitForExistence(timeout: 15), "the progress, in the footer")
         XCTAssertEqual(text(element("wb-panel-dial-title")), "Room coverage", "no switch to the headline")
         XCTAssertFalse(element("wb-panel-headline").exists)
-        XCTAssertTrue(control.exists, "the Dial|Map control stays in place")
+        XCTAssertFalse(control.exists, "no Dial|Map control after Stop either")
         XCTAssertFalse(element("wb-panel-dial-mini").exists, "no mini dial after Stop")
         XCTAssertTrue(element("wb-panel-dial-photo").exists, "the photo shown live stays on its segment")
-        XCTAssertEqual(dial.value as? String, "4 of 12 directions captured.", "no hint after Stop, none read")
+        XCTAssertTrue(element("wb-panel-dial-recent").exists, "the strip stays after Stop")
+        XCTAssertEqual(dial.value as? String,
+                       "4 of 12 directions captured; missing around 5 to 12 o'clock from where you started")
         reveal(element("wb-panel-stage"))
         shoot("dial-photo-after-stop")
     }
 
     /// S3's additive fields: the Tower's own bin, `latest` and the walk cue.
-    /// The newest placed view's sector is drawn at 12 o'clock, so the photo
-    /// binned there sits on top, and the hint turns from it.
-    func testS3BinsAndLatestPutTheNewestViewOnTop() throws {
+    /// Round 3: start stays on top whatever `latest` says, so the photo the
+    /// Tower binned at sector 3 sits at 3 o'clock; no sentence of guidance.
+    func testS3LatestNeverTurnsTheDial() throws {
         let s3 = Self.landedFixture.replacingOccurrences(
             of: #""segment_index":null}]"#,
             with: #""segment_index":null,"sector":3}],"latest":{"component_reference_segment":0,"sector":3,"keyframe_id":"s9:120"},"motion_sector":4"#)
@@ -297,13 +310,13 @@ final class WorldImageryUITests: XCTestCase {
         let dial = element("wb-panel-dial")
         let photo = element("wb-panel-dial-photo")
         XCTAssertTrue(photo.waitForExistence(timeout: 20), "the dial's photo")
-        XCTAssertEqual(photo.label, "Photo at 12 o'clock", "the newest view's sector on top")
-        XCTAssertLessThan(photo.frame.midY, dial.frame.midY - dial.frame.height * 0.2, "at 12 o'clock")
-        XCTAssertEqual(photo.frame.midX, dial.frame.midX, accuracy: 4, "at 12 o'clock")
+        XCTAssertEqual(photo.label, "Photo at 3 o'clock", "start on top, never the newest view")
+        XCTAssertGreaterThan(photo.frame.midX, dial.frame.midX + dial.frame.width * 0.2, "at 3 o'clock")
+        XCTAssertEqual(photo.frame.midY, dial.frame.midY, accuracy: 4, "at 3 o'clock")
         XCTAssertEqual(dial.label, "Capture dial")
-        XCTAssertEqual(dial.value as? String, "4 of 12 directions captured. Look behind you.",
-                       "the gap is 2 to 9 from the newest view: its middle two, behind")
-        XCTAssertEqual(text(element("wb-panel-dial-gap")), "Look behind you")
+        XCTAssertEqual(dial.value as? String,
+                       "4 of 12 directions captured; missing around 5 to 12 o'clock from where you started")
+        XCTAssertFalse(element("wb-panel-dial-gap").exists, "no sentence of guidance")
         reveal(dial)
         shoot("dial-photo-s3")
     }
@@ -575,6 +588,31 @@ final class WorldImageryUITests: XCTestCase {
             }
             app.swipeUp(velocity: .slow)
         }
+    }
+
+    /// Small held drags until `element` sits mid-window: a slow swipe can
+    /// step right over a small target under the status bar.
+    private func centre(_ element: XCUIElement) {
+        for _ in 0..<6 {
+            guard element.exists else { return }
+            let window = app.windows.firstMatch
+            let delta = window.frame.midY - element.frame.midY
+            if abs(delta) < 60 { return }
+            let start = window.coordinate(withNormalizedOffset: CGVector(dx: 0.1, dy: 0.6))
+            start.press(forDuration: 0.1, thenDragTo: start.withOffset(CGVector(dx: 0, dy: max(-250, min(250, delta)))),
+                        withVelocity: .slow, thenHoldForDuration: 0.3)
+        }
+    }
+
+    /// A touch at the centre of `element`'s frame, as a finger would.
+    private func tapCentre(_ element: XCUIElement, until effect: @autoclosure () -> Bool) -> Bool {
+        for _ in 0..<4 {
+            if element.waitForExistence(timeout: 5) {
+                element.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
+            }
+            if waitFor(timeout: 4, effect) { return true }
+        }
+        return effect()
     }
 
     @discardableResult

@@ -74,6 +74,9 @@ struct ViewfinderCard: View {
     let placeholderReason: String
     /// The glasses paused the capture themselves (`CaptureClaim.devicePaused`).
     var isPausedByGlasses: Bool = false
+    /// The card's height over a frame; `nil` is the usual 260 pt. World
+    /// Builder's dial passes 180 to sit compact above it.
+    var frameHeight: CGFloat? = nil
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -89,6 +92,14 @@ struct ViewfinderCard: View {
                 Image(uiImage: frame.image)
                     .resizable()
                     .aspectRatio(contentMode: .fill)
+                    // Held to the card: a filled portrait frame is far taller
+                    // than the card, and unclipped its layout (and its touch
+                    // area) spilled over the views around it -- below World
+                    // Builder's Stop capture it swallowed Stop's taps.
+                    .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity)
+                    .clipped()
+                    .contentShape(Rectangle())
+                    .allowsHitTesting(false)
                     // Dimmed and desaturated once the stream stops. The frame
                     // is kept because it is the last thing the glasses really
                     // saw, but a full-brightness image in a large workspace
@@ -111,7 +122,7 @@ struct ViewfinderCard: View {
         // isn't dominated by an empty rectangle. The placeholder's height is
         // a minimum, so its sentence grows the card at the accessibility
         // sizes instead of being clipped by it.
-        .frame(minHeight: frame == nil ? 150 : 260, maxHeight: frame == nil ? nil : 260)
+        .frame(minHeight: frame == nil ? 150 : (frameHeight ?? 260), maxHeight: frame == nil ? nil : (frameHeight ?? 260))
         .clipShape(.rect(cornerRadius: 18))
         .overlay(alignment: .topLeading) {
             // LIVE only over a frame: a stream with nothing to show yet says

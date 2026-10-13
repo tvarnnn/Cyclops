@@ -351,6 +351,9 @@ struct WorldInlinePanel<Health: View>: View {
     /// The newest placed view of the last landing whose photos were in hand,
     /// WITH its walk: held while a newer receipt's photos are not in yet.
     @State private var heldNewest: WalkScoped<WorldPanelHeldNewest>?
+    /// Round 3: the walk's recently landed photos, newest first, WITH the
+    /// walk -- read only beside a report of that walk.
+    @State private var recentPhotos: WalkScoped<WorldDialRecent>?
 
     private var presentation: WorldPresentation { report.value }
 
@@ -468,6 +471,10 @@ struct WorldInlinePanel<Health: View>: View {
             finalDial = next
             keptDialPhotos = next?.map(\.photos)
         }
+        .onChange(of: recentLanding, initial: true) { _, landing in
+            guard let landing else { return }
+            recentPhotos = Self.recent(recentPhotos, adding: landing)
+        }
         .onChange(of: webShown) { _, shown in
             guard shown else { return }
             // The wait overlay has gone with this commit: the chrome may now
@@ -525,7 +532,8 @@ struct WorldInlinePanel<Health: View>: View {
             }
             if showsDialHeader {
                 WorldCaptureDialHeader(tab: postStop == nil ? $tab : .constant(.dial),
-                                       showsToggle: map != nil || postStop != nil, togglable: postStop == nil)
+                                       showsToggle: Self.showsMapToggle(dial, map: map, stopped: postStop != nil),
+                                       togglable: postStop == nil)
                     .accessibilitySortPriority(85)
             }
             stage
@@ -606,6 +614,39 @@ struct WorldInlinePanel<Health: View>: View {
         }
     }
 
+    /// FOW-RING: the Dial|Map control, only with `IOS_FOW_MAP_TAB=on` and a
+    /// map to switch to (or, disabled, after Stop). Off, the dial is the
+    /// walking stage's only face.
+    static func showsMapToggle(_ dial: WorldPanelDial?, map: WorldPanelMapSource?, stopped: Bool) -> Bool {
+        guard let dial, dial.mapTab else { return false }
+        return map != nil || stopped
+    }
+
+    /// The face drawn: the remembered tab only while the control is offered;
+    /// otherwise the dial (a tab remembered from a build with the control
+    /// never strands the walker on the map).
+    private var shownTab: WorldPanelTab { dial?.mapTab == true ? tab : .dial }
+
+    /// Round 3: the CURRENT receipt's own landing, WITH the report's walk,
+    /// for the recent strip; `nil` with the switch off or no landing in hand.
+    private var recentLanding: WalkScoped<WorldLandedOverlay>? {
+        guard dial != nil, report.walk != nil, let overlay = currentOverlay else { return nil }
+        return report.map { _ in overlay }
+    }
+
+    /// The recent strip after `landing`: the walk's own list, or a new one
+    /// for another walk (a reset names none, and never reaches here).
+    static func recent(_ previous: WalkScoped<WorldDialRecent>?,
+                       adding landing: WalkScoped<WorldLandedOverlay>) -> WalkScoped<WorldDialRecent> {
+        let base = previous?.value(beside: landing) ?? WorldDialRecent()
+        return landing.map { base.adding($0.dialEntries, newest: $0.latest) }
+    }
+
+    /// The strip's photos beside this report: its own walk's, else none.
+    private var shownRecent: [WorldDialThumbnail] {
+        recentPhotos?.value(beside: report)?.photos ?? []
+    }
+
     /// FOW-RING: with the dial on, Capture health is one collapsed row that
     /// opens to the same block; with it off, the block as it always was.
     static func collapsesHealth(_ dial: WorldPanelDial?) -> Bool { dial != nil }
@@ -682,7 +723,7 @@ struct WorldInlinePanel<Health: View>: View {
             EmptyView()
         case .map:
             if let dial, let shown = shownDial?.value, Self.drawsDial(dial, map: map) {
-                WorldCaptureDialStage(dial: shown.dial, receipt: map?.receipt, photos: shown.photos, tab: tab) {
+                WorldCaptureDialStage(dial: shown.dial, receipt: map?.receipt, photos: shown.photos, tab: shownTab) {
                     if let map { coverageMap(map) }
                 }
             } else if let map {
@@ -742,11 +783,11 @@ struct WorldInlinePanel<Health: View>: View {
     }
 
     /// The dial of the CURRENT receipt (never a held one, §6), with B2's
-    /// photos and S3's top and walk cue only when `overlay` is that
+    /// photos and S3's hero piece and walk cue only when `overlay` is that
     /// receipt's own landing (`landed(_:over:)`); before the first landing,
     /// twelve dashed segments. While the receipt's own landing is not in
     /// (`overlay` nil), `held` -- the last landing's newest view, in the
-    /// same frame -- keeps the hero, the top and the hint where they were.
+    /// same frame -- keeps the hero piece where it was. Start is always on top.
     static func captureDial(_ map: WorldPanelMapSource?, overlay: WorldLandedOverlay?,
                             held: WorldPanelHeldNewest? = nil) -> WorldCaptureDial {
         guard let map else { return .awaiting }
@@ -939,6 +980,7 @@ struct WorldInlinePanel<Health: View>: View {
                                 : WorldFinishCopy.spoken(showsSpinner: true, line: block.line, elapsed: elapsed)
                         })
                         .accessibilitySortPriority(70)
+                    WorldDialRecentStrip(photos: shownRecent)
                     dialButtonRow(target)
                 }
             } else if let target {
@@ -961,9 +1003,10 @@ struct WorldInlinePanel<Health: View>: View {
                 }
             }
         case .walking:
-            if let dial, let shown = shownDial?.value, Self.drawsDial(dial, map: map), map == nil || tab == .dial {
+            if let dial, let shown = shownDial?.value, Self.drawsDial(dial, map: map), map == nil || shownTab == .dial {
                 VStack(spacing: 0) {
                     WorldCaptureDialCaption(dial: shown.dial, source: map)
+                    WorldDialRecentStrip(photos: shownRecent)
                     // The button row Stop brings, held now: nothing jumps.
                     dialButtonRow(nil)
                 }
