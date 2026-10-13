@@ -1617,6 +1617,22 @@ def world_up_estimate_setting() -> str | None:
     return None
 
 
+# MERGE AFTER STOP (cadence lane, mail 409): the builder's walk loop asks the background solver
+# `finished()` only on keyframe frames, so a solve that completes after the last such poll, or right
+# at Stop, was never merged and the capture dial stayed stale until the final build (~3 min later).
+# `on` makes the builder poll `finished()` ONE more time after the frame loop exits and, if a
+# result is ready, rebuild exactly as the in-loop path does (before the final solve). It is a
+# non-blocking poll: it never waits for a running solve, and `finished()` reports each completed
+# launch once, so nothing is merged twice. Read once per walk. Unset, blank, `off` or anything
+# other than the spellings `_flag` accepts is off: today's behaviour, byte for byte.
+WORLD_MERGE_AFTER_STOP_ENV = "TOWER_WORLD_MERGE_AFTER_STOP"
+
+
+def world_merge_after_stop_setting() -> bool:
+    """`TOWER_WORLD_MERGE_AFTER_STOP`: merge a landed background solve after the frame loop. Off."""
+    return _flag(WORLD_MERGE_AFTER_STOP_ENV, default=False)
+
+
 def _torch_threads(value: str | None) -> int | str:
     """"auto", or a non-negative integer. Garbage is "auto", not a crash.
 
