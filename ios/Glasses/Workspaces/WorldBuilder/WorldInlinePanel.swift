@@ -345,9 +345,9 @@ struct WorldInlinePanel<Health: View>: View {
     /// walk -- read only beside a report of that walk, so another walk (or a
     /// reset, which names none) starts with none.
     @State private var keptDialPhotos: WalkScoped<WorldCaptureDialPhotos>?
-    /// The last dial drawn over a map, WITH its walk: dimmed behind the
-    /// post-Stop progress of that walk only.
-    @State private var finalDial: WalkScoped<WorldCaptureDial>?
+    /// The last dial drawn over a map and the photos it showed, WITH its
+    /// walk: dimmed in the stage after Stop, for that walk only.
+    @State private var finalDial: WalkScoped<WorldPanelDialShown>?
 
     private var presentation: WorldPresentation { report.value }
 
@@ -437,7 +437,11 @@ struct WorldInlinePanel<Health: View>: View {
                 WorldImageryStripView(strip: liveStrip)
             }
             if case .walking = phase, showsHealth {
-                health()
+                if Self.collapsesHealth(dial) {
+                    WorldCaptureHealthDisclosure(content: health)
+                } else {
+                    health()
+                }
             }
         }
         .animation(reduceMotion ? nil : .easeInOut(duration: 0.25), value: showsBanner)
@@ -454,7 +458,7 @@ struct WorldInlinePanel<Health: View>: View {
         .onChange(of: dialRecord, initial: true) { _, shown in
             guard let shown else { return }
             keptDialPhotos = shown.map(\.photos)
-            finalDial = shown.map(\.dial)
+            finalDial = shown
         }
         .onChange(of: webShown) { _, shown in
             guard shown else { return }
@@ -512,7 +516,8 @@ struct WorldInlinePanel<Health: View>: View {
                     .accessibilityIdentifier("wb-panel-headline")
             }
             if showsDialHeader {
-                WorldCaptureDialHeader(tab: $tab, showsToggle: map != nil)
+                WorldCaptureDialHeader(tab: postStop == nil ? $tab : .constant(.dial),
+                                       showsToggle: map != nil || postStop != nil, togglable: postStop == nil)
                     .accessibilitySortPriority(85)
             }
             stage
@@ -531,16 +536,44 @@ struct WorldInlinePanel<Health: View>: View {
     /// *Interrupted* is never "Saved".
     private var heading: String? {
         switch phase {
-        case .finishing, .ready, .failed, .offline: return presentation.headline
+        // FOW-RING after Stop: the dial's fixed title stays; the headline
+        // moves to the footer's second line.
+        case .finishing: return postStop == nil ? presentation.headline : nil
+        case .ready, .failed, .offline: return presentation.headline
         case .hidden, .walking: return nil
         }
     }
 
     /// FOW-RING: the title and the Dial|Map control above the walking stage.
     private var showsDialHeader: Bool {
+        if postStop != nil { return true }
         guard case .walking = phase, let dial else { return false }
         return Self.drawsDial(dial, map: map)
     }
+
+    /// FOW-RING after Stop: the walk's last dial and its photos, with the
+    /// switch on, while finishing, beside a report of that walk only.
+    private var postStop: WorldPanelDialShown? {
+        guard dial != nil, phase.isFinishing else { return nil }
+        return Self.postStopDial(finalDial, beside: report)
+    }
+
+    /// FOW-RING after Stop: the walk's last dial WITH the photos already
+    /// shown on it live -- only those in hand (nothing is fetched after
+    /// Stop), and only beside a report of the same walk. Photos of another
+    /// hero piece are never drawn: every sector then stays colour.
+    static func postStopDial<Report>(_ final: WalkScoped<WorldPanelDialShown>?,
+                                     beside report: WalkScoped<Report>) -> WorldPanelDialShown? {
+        guard let last = final?.value(beside: report) else { return nil }
+        guard last.photos.referenceSegment == last.dial.hero?.referenceSegment else {
+            return WorldPanelDialShown(dial: last.dial, photos: .empty)
+        }
+        return last
+    }
+
+    /// FOW-RING: with the dial on, Capture health is one collapsed row that
+    /// opens to the same block; with it off, the block as it always was.
+    static func collapsesHealth(_ dial: WorldPanelDial?) -> Bool { dial != nil }
 
     /// The dial as drawn now, and its photos, WITH the report's walk; `nil`
     /// with the switch off.
@@ -567,7 +600,8 @@ struct WorldInlinePanel<Health: View>: View {
         let fixed: Bool = {
             switch phase {
             case .ready, .walking: return true
-            case .hidden, .finishing, .failed, .offline: return false
+            case .finishing: return postStop != nil
+            case .hidden, .failed, .offline: return false
             }
         }()
         ZStack(alignment: .topLeading) {
@@ -614,23 +648,14 @@ struct WorldInlinePanel<Health: View>: View {
             }
         case .loading:
             if let block = currentFinishing {
-                if dial != nil, let last = finalDial?.value(beside: report) {
-                    // FOW-RING: the walk's last dial, dimmed and colour only,
-                    // behind the progress line; never read, never touched.
-                    finishingContent(block, alwaysSpins: true)
-                        .frame(maxWidth: .infinity, minHeight: stageHeight, alignment: .topLeading)
-                        .background {
-                            WorldCaptureDialView(dial: last, receipt: nil, photos: .empty, guides: false)
-                                .opacity(0.4)
-                                // A scrim under the words, the dial clear below.
-                                .overlay(LinearGradient(
-                                    stops: [.init(color: WorldDialStyle.stage.opacity(0.9), location: 0),
-                                            .init(color: WorldDialStyle.stage.opacity(0.6), location: 0.45),
-                                            .init(color: .clear, location: 0.8)],
-                                    startPoint: .top, endPoint: .bottom))
-                                .allowsHitTesting(false)
-                                .accessibilityHidden(true)
-                        }
+                if let last = postStop {
+                    // FOW-RING: the walk's last dial with the photos it
+                    // showed, dimmed, with no words over it (they are in the
+                    // footer); never touched, and its value is the count alone.
+                    WorldCaptureDialView(dial: last.dial, receipt: nil, photos: last.photos, guides: false)
+                        .opacity(0.6)
+                        .allowsHitTesting(false)
+                        .accessibilityHidden(true)
                 } else {
                     finishingContent(block, alwaysSpins: true)
                 }
@@ -853,10 +878,26 @@ struct WorldInlinePanel<Health: View>: View {
     @ViewBuilder
     private var footer: some View {
         switch phase {
-        case .finishing(let target?):
-            footerRow(line: nil) {
-                actionButton(WorldPreviewCopy.openPreview, hint: WorldPanelCopy.fullScreenHint,
-                             identifier: "wb-panel-expand") { expand(target) }
+        case .finishing(let target):
+            if let block = currentFinishing, postStop != nil {
+                // FOW-RING after Stop: the live footer's two lines, the
+                // legend and the button row, so the card keeps its height.
+                VStack(spacing: 0) {
+                    WorldCaptureDialFinishCaption(
+                        showsSpinner: !block.offline, status: Self.postStopStatus(block),
+                        headline: presentation.headline, stoppedAt: block.stoppedAt,
+                        spoken: { elapsed in
+                            block.offline ? WorldPanelCopy.finishingButOffline
+                                : WorldFinishCopy.spoken(showsSpinner: true, line: block.line, elapsed: elapsed)
+                        })
+                        .accessibilitySortPriority(70)
+                    dialButtonRow(target)
+                }
+            } else if let target {
+                footerRow(line: nil) {
+                    actionButton(WorldPreviewCopy.openPreview, hint: WorldPanelCopy.fullScreenHint,
+                                 identifier: "wb-panel-expand") { expand(target) }
+                }
             }
         case .ready(let target):
             if let model = host.model(for: target), model.state.failureMessage != nil {
@@ -873,7 +914,11 @@ struct WorldInlinePanel<Health: View>: View {
             }
         case .walking:
             if let dial, let shown = shownDial?.value, Self.drawsDial(dial, map: map), map == nil || tab == .dial {
-                WorldCaptureDialCaption(dial: shown.dial, source: map)
+                VStack(spacing: 0) {
+                    WorldCaptureDialCaption(dial: shown.dial, source: map)
+                    // The button row Stop brings, held now: nothing jumps.
+                    dialButtonRow(nil)
+                }
             } else if let map {
                 let shownMap = Self.map(map, holding: photo)
                 WorldCoverageCaption(source: shownMap, stopped: false,
@@ -882,9 +927,36 @@ struct WorldInlinePanel<Health: View>: View {
                     .padding(.horizontal, 12)
                     .padding(.vertical, 10)
             }
-        case .hidden, .finishing(nil), .failed, .offline:
+        case .hidden, .failed, .offline:
             EmptyView()
         }
+    }
+
+    /// FOW-RING after Stop, the status line: the stage line, else the
+    /// spinner's own short sentence (the canvas's longer one would break
+    /// the footer's two lines); with the Tower gone, the offline notice.
+    static func postStopStatus(_ block: FinishingBlock) -> String {
+        guard !block.offline else { return WorldPanelCopy.finishingButOffline }
+        return block.line?.text ?? WorldFinishCopy.finishing
+    }
+
+    /// The dial footer's button row: "Open the preview" after Stop, and
+    /// the same row held empty (hidden, never read) before it.
+    @ViewBuilder
+    private func dialButtonRow(_ target: WorldRenderTarget?) -> some View {
+        HStack(spacing: 0) {
+            Spacer(minLength: 0)
+            if let target {
+                actionButton(WorldPreviewCopy.openPreview, hint: WorldPanelCopy.fullScreenHint,
+                             identifier: "wb-panel-expand") { expand(target) }
+            } else {
+                actionButton(WorldPreviewCopy.openPreview, hint: nil, identifier: "wb-panel-button-room") {}
+                    .hidden()
+                    .accessibilityHidden(true)
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.bottom, 10)
     }
 
     /// The ready footer's one line: the Tower dropped under a loaded page,
@@ -950,6 +1022,51 @@ struct WorldInlinePanel<Health: View>: View {
         .accessibilityHint(hint ?? "")
         .accessibilitySortPriority(60)
         .accessibilityIdentifier(identifier)
+    }
+}
+
+// MARK: - Capture health, collapsed (FOW-RING)
+
+/// With the dial on: one "Capture health" row, collapsed by default, that
+/// opens to the same block. Collapsed, the block stays mounted at no height
+/// and unread, so its announcements still run exactly as before.
+struct WorldCaptureHealthDisclosure<Content: View>: View {
+    @ViewBuilder let content: () -> Content
+
+    @State private var expanded = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Button {
+                withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.2)) { expanded.toggle() }
+            } label: {
+                HStack(spacing: 8) {
+                    Text(WorldCaptureDialCopy.healthRow)
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(Color.primary)
+                    Spacer(minLength: 0)
+                    Image(systemName: "chevron.right")
+                        .font(.footnote.weight(.semibold))
+                        .foregroundStyle(Color.secondary)
+                        .rotationEffect(.degrees(expanded ? 90 : 0))
+                        .accessibilityHidden(true)
+                }
+                .padding(.horizontal, 12)
+                .frame(minHeight: 44)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 12))
+            .accessibilityValue(expanded ? "Expanded" : "Collapsed")
+            .accessibilityIdentifier("wb-panel-health-toggle")
+            content()
+                .frame(height: expanded ? nil : 0, alignment: .top)
+                .clipped()
+                .opacity(expanded ? 1 : 0)
+                .allowsHitTesting(expanded)
+                .accessibilityHidden(!expanded)
+        }
     }
 }
 

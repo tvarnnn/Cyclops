@@ -196,8 +196,12 @@ nonisolated struct WorldCaptureDial: Equatable, Sendable {
 
     var hero: Piece? { heroIndex.map { pieces[$0] } }
 
-    /// The pieces drawn as mini dials, in reference order.
+    /// The pieces other than the hero, in reference order.
     var otherPieces: [Piece] { pieces.filter { $0.index != heroIndex } }
+
+    /// The pieces drawn as mini dials, live only: another piece with at
+    /// least one captured direction. A "0/12" piece is never drawn.
+    var miniPieces: [Piece] { otherPieces.filter { $0.supportedCount >= 1 } }
 
     func sector(at position: Int) -> Int { ((position + anchor) % Self.sectors + Self.sectors) % Self.sectors }
 
@@ -312,10 +316,12 @@ nonisolated enum WorldCaptureDialCopy {
     static let behind = "Look behind you"
     static let leftBehind = "Look left and behind you"
     static let left = "Turn left to capture more"
-    static let updating = "updating…"
+    static let updating = "Updating…"
     static let undated = "Update time unavailable"
+    /// With the dial on, Capture health's one collapsed row.
+    static let healthRow = "Capture health"
 
-    /// Above this many seconds the stamp adds a muted "updating…". The
+    /// Above this many seconds the stamp is just "Updating…". The
     /// dial's own threshold: the map's `WorldCoverageReceipt.staleAfter` is
     /// unchanged, so the switch OFF is today's panel exactly.
     static let staleAfter: Double = 90
@@ -362,11 +368,19 @@ nonisolated enum WorldCaptureDialCopy {
         }
     }
 
-    /// The footer's second line, muted: "Updated 45 s ago", with
-    /// " · updating…" past `staleAfter`.
+    /// The footer's second line, muted: "Updated 45 s ago", or just
+    /// "Updating…" past `staleAfter` (no elapsed seconds to count up).
     static func stamp(age: Double?) -> String {
         guard let age else { return undated }
-        return "Updated \(WorldCoverageCopy.ago(age)) ago" + (isUpdating(age) ? " · \(updating)" : "")
+        return isUpdating(age) ? updating : "Updated \(WorldCoverageCopy.ago(age)) ago"
+    }
+
+    /// After Stop, the footer's second line: the panel's headline and the
+    /// time since Stop, "Improving · 7 min since you stopped"; never empty,
+    /// so the footer keeps its two lines.
+    static func finishStamp(headline: String?, elapsed: String?) -> String {
+        let parts = [headline, elapsed].compactMap { $0 }.filter { !$0.isEmpty }
+        return parts.isEmpty ? " " : parts.joined(separator: " · ")
     }
 
     /// The centre: the count, or "–" before the first landing.
@@ -385,13 +399,15 @@ nonisolated enum WorldCaptureDialCopy {
     }
 
     /// "8 of 12 directions captured, 1 with one view. Look behind you." The
-    /// hint, as the footer says it; the age stays in the stamp line.
-    static func accessibilityValue(_ dial: WorldCaptureDial) -> String {
+    /// hint, as the footer says it; the age stays in the stamp line. After
+    /// Stop no hint is shown, so none is read: the count alone.
+    static func accessibilityValue(_ dial: WorldCaptureDial, hint showsHint: Bool = true) -> String {
         guard let hero = dial.hero else { return awaitingLine }
+        let count = "\(hero.supportedCount) of 12 directions captured"
+            + (hero.weakCount > 0 ? ", \(hero.weakCount) with one view." : ".")
+        guard showsHint else { return count }
         let hint = hint(dial)
-        return "\(hero.supportedCount) of 12 directions captured"
-            + (hero.weakCount > 0 ? ", \(hero.weakCount) with one view. " : ". ")
-            + hint + (hint.hasSuffix(".") ? "" : ".")
+        return count + " " + hint + (hint.hasSuffix(".") ? "" : ".")
     }
 
     /// A custom action and a photo's own label: "Photo at 3 o'clock".

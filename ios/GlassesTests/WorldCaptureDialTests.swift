@@ -157,14 +157,15 @@ final class WorldCaptureDialTests: XCTestCase {
     }
 
     /// The dial's own 90 s: a stale map keeps its look-here and its hint, and
-    /// the muted stamp says "updating…". The map's 30 s is untouched.
+    /// the muted stamp is just "Updating…" -- no seconds counting up. The
+    /// map's 30 s is untouched.
     func testAStaleMapKeepsItsGuidanceAndSaysUpdating() {
         XCTAssertEqual(Copy.staleAfter, 90)
         XCTAssertEqual(WorldCoverageReceipt.staleAfter, 30, "the map's label, switch OFF, as it was")
         XCTAssertEqual(Copy.stamp(age: 45), "Updated 45 s ago")
         XCTAssertEqual(Copy.stamp(age: 90), "Updated 90 s ago", "at exactly 90 s: not yet updating")
-        XCTAssertEqual(Copy.stamp(age: 90.5), "Updated 90 s ago · updating…")
-        XCTAssertEqual(Copy.stamp(age: 150), "Updated 2 min ago · updating…")
+        XCTAssertEqual(Copy.stamp(age: 90.5), "Updating…")
+        XCTAssertEqual(Copy.stamp(age: 150), "Updating…", "no elapsed time while stale")
         XCTAssertEqual(Copy.stamp(age: nil), "Update time unavailable")
         XCTAssertFalse(Copy.isUpdating(nil))
         XCTAssertFalse(Copy.stamp(age: 600).lowercased().contains("stale"))
@@ -443,7 +444,9 @@ final class WorldCaptureDialTests: XCTestCase {
         var words = [Copy.dialName, Copy.title, Copy.tabLabel, Copy.awaitingLine, Copy.ofTwelve,
                      Copy.captured, Copy.legendCaptured, Copy.legendOneView, Copy.legendNotYet, Copy.allCaptured,
                      Copy.lookAround, Copy.ahead, Copy.right, Copy.rightBehind, Copy.behind, Copy.leftBehind,
-                     Copy.left, Copy.updating, Copy.undated, Copy.tabName(.dial), Copy.tabName(.map), Copy.more(4)]
+                     Copy.left, Copy.updating, Copy.undated, Copy.tabName(.dial), Copy.tabName(.map), Copy.more(4),
+                     Copy.healthRow, Copy.finishStamp(headline: "Improving", elapsed: "7 min since you stopped"),
+                     Copy.finishStamp(headline: nil, elapsed: nil)]
         words += [2, 31, 95, 400, nil].map(Copy.stamp(age:))
         var dials = [WorldCaptureDial.awaiting]
         for name in ["walk7-h52", "walk7-h236", "walk71-h563", "walk6-h1090", "walk71-h104"] {
@@ -539,6 +542,74 @@ final class WorldCaptureDialTests: XCTestCase {
                         .value.photos.bySector, [:], "a reset names no walk")
         XCTAssertEqual(Panel.shownDial(nil, overlay: nil, kept: kept, beside: WalkScoped(walk: walkA, value: ()))
                         .value, WorldPanelDialShown(dial: .awaiting, photos: .empty), "before the first landing")
+    }
+
+    // MARK: Round 2: after Stop, the mini dials, Capture health
+
+    /// After Stop the dial shows the photos already shown live for THIS walk
+    /// (no rule purges them at Stop: the landed tiles live until the world is
+    /// left, forgotten or pinned); never beside another walk's report, and
+    /// never another hero piece's photos -- those sectors stay colour.
+    func testAfterStopTheDialKeepsTheWalksPhotosAndNoOtherWalks() {
+        let walkA = WorldFinishWalk(worldID: "w1", sessionID: "s9")
+        let walkB = WorldFinishWalk(worldID: "w1", sessionID: "s10")
+        let a = Self.thumb("a", sector: 0), b = Self.thumb("b", sector: 1)
+        let last = dial(supported: [0, 1, 2], latest: 0, photos: WorldCaptureDial.photos([a, b]))
+        let photos = WorldCaptureDialPhotos(dial: last, entries: [a, b])
+        let final = WalkScoped(walk: walkA, value: WorldPanelDialShown(dial: last, photos: photos))
+
+        let shown = Panel.postStopDial(final, beside: WalkScoped(walk: walkA, value: ()))
+        XCTAssertEqual(shown?.dial, last)
+        XCTAssertEqual(shown?.photos.bySector.mapValues(\.digest), [0: "a", 1: "b"], "the photos shown live")
+        XCTAssertNil(shown?.photos.bySector[2], "a sector never shown a photo stays colour")
+        XCTAssertEqual(Copy.accessibilityValue(last, hint: false), "3 of 12 directions captured.",
+                       "after Stop no hint is shown, so none is read")
+        XCTAssertNil(Panel.postStopDial(final, beside: WalkScoped(walk: walkB, value: ())), "another walk")
+        XCTAssertNil(Panel.postStopDial(final, beside: WalkScoped(walk: nil, value: ())), "a reset")
+        XCTAssertNil(Panel.postStopDial(nil, beside: WalkScoped(walk: walkA, value: ())), "no dial was drawn")
+
+        let foreign = WalkScoped(walk: walkA, value: WorldPanelDialShown(
+            dial: last, photos: WorldCaptureDialPhotos(referenceSegment: 5, bySector: [0: a])))
+        XCTAssertEqual(Panel.postStopDial(foreign, beside: WalkScoped(walk: walkA, value: ()))?.photos, .empty,
+                       "another piece's photos: colour")
+    }
+
+    /// A piece with nothing captured is never drawn as a mini dial: no "0/12".
+    func testNoMiniDialSaysZeroOfTwelve() {
+        let pieces = WorldCaptureDial(components: [Self.piece(0, posed: 90, supported: [0, 1, 2]),
+                                                   Self.piece(3, posed: 20, supported: []),
+                                                   Self.piece(5, posed: 10, supported: [], weak: [4]),
+                                                   Self.piece(7, posed: 5, supported: [6])],
+                                      stationsOmitted: 0)
+        XCTAssertEqual(pieces.otherPieces.count, 3)
+        XCTAssertEqual(pieces.miniPieces.map(\.name), ["Piece 4"], "only a piece with a captured direction")
+        XCTAssertFalse(pieces.miniPieces.map(Copy.miniLabel).contains { $0.hasSuffix(" 0/12") })
+        XCTAssertEqual(dial(supported: [0, 1]).miniPieces, [], "one piece: none")
+    }
+
+    /// The switch on collapses Capture health into one row; off, it is the
+    /// block as it always was.
+    func testCaptureHealthCollapsesOnlyWithTheDialOn() {
+        XCTAssertTrue(Panel.collapsesHealth(WorldPanelDial()))
+        XCTAssertTrue(Panel.collapsesHealth(WorldPanelDial(awaiting: true)))
+        XCTAssertFalse(Panel.collapsesHealth(nil), "switch OFF: identical")
+        XCTAssertEqual(Copy.healthRow, "Capture health")
+    }
+
+    /// After Stop the footer's second line is the headline and the time
+    /// since Stop; the first is the stage line.
+    func testAfterStopTheFooterSaysTheStatus() {
+        XCTAssertEqual(Copy.finishStamp(headline: "Improving", elapsed: "7 min since you stopped"),
+                       "Improving · 7 min since you stopped")
+        XCTAssertEqual(Copy.finishStamp(headline: nil, elapsed: "Under 1 min since you stopped"),
+                       "Under 1 min since you stopped")
+        XCTAssertEqual(Copy.finishStamp(headline: nil, elapsed: nil), " ", "never empty: two lines")
+        let block = Panel.FinishingBlock(showsSpinner: true, line: .finalPlacement, stoppedAt: nil, detail: nil)
+        XCTAssertEqual(Panel.postStopStatus(block), "Placing and checking images")
+        XCTAssertEqual(Panel.postStopStatus(block.reachable(false)), WorldPanelCopy.finishingButOffline)
+        XCTAssertEqual(Panel.postStopStatus(.init(showsSpinner: true, line: nil, stoppedAt: nil,
+                                                  detail: "A long sentence of the canvas's own.")),
+                       WorldFinishCopy.finishing, "the short sentence: two lines")
     }
 }
 

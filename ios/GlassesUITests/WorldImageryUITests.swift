@@ -261,6 +261,23 @@ final class WorldImageryUITests: XCTestCase {
         XCTAssertTrue(tap(control.buttons["Map"], until: self.element("wb-panel-map").exists), "the Map tab")
         XCTAssertTrue(element("wb-imagery-landed-thumb").waitForExistence(timeout: 5), "B2's thumbnail on the map")
         XCTAssertTrue(tap(control.buttons["Dial"], until: dial.exists), "back to the dial")
+
+        // After Stop: the same card -- its fixed title, the control in place
+        // -- the walk's dial dimmed with the photo it showed, its value the
+        // count alone, and the progress in the footer, not over the ring.
+        let stop = app.buttons["Stop capture"]
+        reveal(stop)
+        XCTAssertTrue(tap(stop, until: !self.app.buttons["Stop capture"].exists), "Stop")
+        push(modelState: "finalizing", geometry: "gA", guidance: FOWGuidance.stop, buildInProgress: true)
+        XCTAssertTrue(element("wb-finish-line").waitForExistence(timeout: 15), "the progress, in the footer")
+        XCTAssertEqual(text(element("wb-panel-dial-title")), "Room coverage", "no switch to the headline")
+        XCTAssertFalse(element("wb-panel-headline").exists)
+        XCTAssertTrue(control.exists, "the Dial|Map control stays in place")
+        XCTAssertFalse(element("wb-panel-dial-mini").exists, "no mini dial after Stop")
+        XCTAssertTrue(element("wb-panel-dial-photo").exists, "the photo shown live stays on its segment")
+        XCTAssertEqual(dial.value as? String, "4 of 12 directions captured.", "no hint after Stop, none read")
+        reveal(element("wb-panel-stage"))
+        shoot("dial-photo-after-stop")
     }
 
     /// S3's additive fields: the Tower's own bin, `latest` and the walk cue.

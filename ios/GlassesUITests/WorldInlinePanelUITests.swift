@@ -661,6 +661,8 @@ final class WorldInlinePanelUITests: XCTestCase {
         openLive()
         push(modelState: "receiving")
         XCTAssertTrue(element("capture-health").waitForExistence(timeout: 15), "Capture health")
+        XCTAssertTrue(element("capture-health-link").exists, "switch OFF: the block itself, not collapsed")
+        XCTAssertFalse(element("wb-panel-health-toggle").exists, "switch OFF: no Capture health row")
         XCTAssertFalse(element("wb-panel-map").exists, "no guidance: no map")
         XCTAssertFalse(element("wb-panel-stage").exists, "no guidance: today's panel, Capture health alone")
         push(modelState: "receiving", guidance: FOWGuidance.none, accepted: 40)
@@ -731,8 +733,9 @@ final class WorldInlinePanelUITests: XCTestCase {
     /// piece's union, with a mini dial for the other piece and a two-line
     /// footer (the hint and the stamp, nothing else); the header's Dial|Map
     /// control reaches today's map, its caption and pieces, and comes back;
-    /// a stop receipt past 90 s keeps its hint and says "updating…". One
-    /// element, read by its value; nothing announced.
+    /// a stop receipt past 90 s keeps its hint and its stamp is just
+    /// "Updating…". One element, read by its value; nothing announced.
+    /// Capture health is one collapsed row that opens to the same block.
     func testTheCaptureDialFillsFromTheReceiptAndTheToggleReachesTheMap() throws {
         openLive(environment: ["IOS_FOW_DIAL": "on"])
         push(modelState: "receiving", guidance: FOWGuidance.none, accepted: 40)
@@ -756,7 +759,7 @@ final class WorldInlinePanelUITests: XCTestCase {
                        "no latest: no direction")
         XCTAssertEqual(dial.label, "Capture dial, Piece 1")
         let minis = app.descendants(matching: .any).matching(identifier: "wb-panel-dial-mini")
-        XCTAssertEqual(minis.count, 1, "the other piece")
+        XCTAssertEqual(minis.count, 1, "the other piece, captured in one direction")
         XCTAssertEqual(minis.firstMatch.label, "Piece 2, 1 of 12 directions captured")
         XCTAssertEqual(text(element("wb-panel-dial-title")), "Room coverage", "one fixed title")
         XCTAssertEqual(text(element("wb-panel-dial-gap")), "Look around the room")
@@ -791,10 +794,19 @@ final class WorldInlinePanelUITests: XCTestCase {
         }, "stale: \(String(describing: dial.value))")
         XCTAssertEqual(minis.count, 0, "one piece, no mini dial")
         let stamp = element("wb-panel-dial-stamp")
-        XCTAssertTrue(waitFor(timeout: 5) { self.text(stamp).hasSuffix(" · updating…") }, text(stamp))
+        XCTAssertTrue(waitFor(timeout: 5) { self.text(stamp) == "Updating…" }, text(stamp))
         XCTAssertFalse(text(element("wb-panel-dial-stamp")).contains("stale"))
         XCTAssertTrue(reveal(dial, whole: true))
         shoot("dial-stale")
+
+        // Capture health, switch ON: one collapsed row, opening to the block.
+        let health = element("wb-panel-health-toggle")
+        XCTAssertTrue(health.waitForExistence(timeout: 10), "the Capture health row")
+        XCTAssertEqual(health.value as? String, "Collapsed")
+        XCTAssertFalse(element("capture-health-link").exists, "collapsed by default")
+        XCTAssertTrue(reveal(health), "the row on screen")
+        XCTAssertTrue(tap(health, until: self.element("capture-health-link").exists), "opens to the same block")
+        XCTAssertEqual(health.value as? String, "Expanded")
     }
 
     /// Pixels anywhere in `image` whose colour is within 20 of `rgb`.

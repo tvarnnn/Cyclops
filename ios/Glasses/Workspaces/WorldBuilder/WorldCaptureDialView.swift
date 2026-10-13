@@ -44,9 +44,10 @@ nonisolated struct WorldDialGeometry: Equatable {
     let diameter: CGFloat
 
     /// `D = min(stageH − 40, stageW − 120, 300)`: about 231 pt on the
-    /// walking card's 361 × 271 stage.
-    init(stage size: CGSize) {
-        diameter = max(96, min(size.height - 40, size.width - 120, 300))
+    /// walking card's 361 × 271 stage. `verticalRoom` is the 40: less when a
+    /// row of mini dials under the ring takes the stage's bottom.
+    init(stage size: CGSize, verticalRoom: CGFloat = 40) {
+        diameter = max(96, min(size.height - verticalRoom, size.width - 120, 300))
     }
 
     init(diameter: CGFloat) { self.diameter = diameter }
@@ -205,6 +206,9 @@ nonisolated struct WorldDialCellShape: Shape {
 struct WorldCaptureDialHeader: View {
     @Binding var tab: WorldPanelTab
     let showsToggle: Bool
+    /// After Stop the control stays in place, on Dial, and does nothing:
+    /// the panel draws no map once the walk has stopped.
+    var togglable = true
 
     var body: some View {
         HStack(alignment: .center, spacing: 12) {
@@ -225,6 +229,7 @@ struct WorldCaptureDialHeader: View {
                 .controlSize(.small)
                 .fixedSize()
                 .dynamicTypeSize(...DynamicTypeSize.xxxLarge)
+                .disabled(!togglable)
                 .accessibilityIdentifier("wb-panel-tab")
             }
         }
@@ -267,9 +272,12 @@ struct WorldCaptureDialView: View {
     let dial: WorldCaptureDial
     let receipt: WorldCoverageReceipt?
     let photos: WorldCaptureDialPhotos
-    /// The look-here segment and the walk cue: off for the dimmed final dial
-    /// behind the post-Stop progress, where there is nowhere left to look.
+    /// The look-here segment, the walk cue and the mini dials: off for the
+    /// dimmed final dial after Stop, where there is nowhere left to look.
     var guides = true
+
+    /// The mini-dial row's height, under the ring.
+    static let miniRow: CGFloat = 28
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.colorSchemeContrast) private var contrast
@@ -291,16 +299,24 @@ struct WorldCaptureDialView: View {
 
     var body: some View {
         GeometryReader { proxy in
-            let geometry = WorldDialGeometry(stage: proxy.size)
+            // Other pieces get their own row under the ring, never on it:
+            // the ring is laid out in the stage above that row.
+            let others = guides ? dial.miniPieces : []
+            let row: CGFloat = others.isEmpty ? 0 : Self.miniRow + 12
+            let region = CGSize(width: proxy.size.width, height: proxy.size.height - row)
+            let geometry = WorldDialGeometry(stage: region, verticalRoom: others.isEmpty ? 40 : 28)
             ZStack {
                 WorldDialStyle.stage
                 dialFace(geometry)
                     .frame(width: geometry.diameter, height: geometry.diameter)
-                    .position(x: proxy.size.width / 2, y: proxy.size.height / 2)
-                minis
-                    .padding(.leading, 12)
-                    .padding(.bottom, 12)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
+                    .position(x: proxy.size.width / 2, y: region.height / 2)
+                if !others.isEmpty {
+                    minis(others)
+                        .frame(height: Self.miniRow)
+                        .padding(.horizontal, 12)
+                        .padding(.bottom, 8)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
+                }
             }
         }
         .environment(\.colorScheme, .dark)
@@ -359,7 +375,7 @@ struct WorldCaptureDialView: View {
                 .fill(Color.white.opacity(0.001))
                 .accessibilityElement(children: .ignore)
                 .accessibilityLabel(WorldCaptureDialCopy.accessibilityLabel(dial))
-                .accessibilityValue(WorldCaptureDialCopy.accessibilityValue(dial))
+                .accessibilityValue(WorldCaptureDialCopy.accessibilityValue(dial, hint: guides))
                 .accessibilityIdentifier("wb-panel-dial")
                 .accessibilityActions {
                     ForEach(photoPositions, id: \.self) { position in
@@ -367,6 +383,9 @@ struct WorldCaptureDialView: View {
                     }
                 }
                 .accessibilitySortPriority(2)
+                // The dimmed dial after Stop: hidden from VoiceOver, and its
+                // value drops the hint, which is not on screen.
+                .accessibilityHidden(!guides)
         }
     }
 
@@ -458,8 +477,9 @@ struct WorldCaptureDialView: View {
             .accessibilityAction { open(sector: sector) }
             .accessibilityIdentifier("wb-panel-dial-photo")
             // VoiceOver reaches the photos through the dial's own actions:
-            // one element (§4). Other tools (Voice Control, tests) see them.
-            .accessibilityHidden(voiceOver)
+            // one element (§4). Other tools (Voice Control, tests) see them,
+            // live only: after Stop the dimmed dial is never read or touched.
+            .accessibilityHidden(voiceOver || !guides)
     }
 
     /// A captured segment with no photo is lit teal, a little brighter
@@ -526,23 +546,22 @@ struct WorldCaptureDialView: View {
 
     // MARK: The other pieces
 
-    @ViewBuilder
-    private var minis: some View {
-        let others = dial.otherPieces
-        if !others.isEmpty {
-            VStack(alignment: .leading, spacing: 6) {
-                ForEach(others.prefix(3), id: \.referenceSegment) { piece in
-                    WorldDialMini(piece: piece)
-                }
-                if others.count > 3 {
-                    Text(WorldCaptureDialCopy.more(others.count - 3))
-                        .font(.caption2.weight(.semibold))
-                        .foregroundStyle(Color.white.opacity(0.8))
-                        .dynamicTypeSize(...DynamicTypeSize.xxxLarge)
-                }
+    /// One row under the ring: two pieces, then "+N more".
+    private func minis(_ others: [WorldCaptureDial.Piece]) -> some View {
+        HStack(alignment: .center, spacing: 14) {
+            ForEach(others.prefix(2), id: \.referenceSegment) { piece in
+                WorldDialMini(piece: piece)
             }
-            .allowsHitTesting(false)
+            if others.count > 2 {
+                Text(WorldCaptureDialCopy.more(others.count - 2))
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(Color.white.opacity(0.8))
+                    .lineLimit(1)
+                    .fixedSize()
+                    .dynamicTypeSize(...DynamicTypeSize.xLarge)
+            }
         }
+        .allowsHitTesting(false)
     }
 
     private func open(sector: Int) {
@@ -633,28 +652,22 @@ struct WorldDialLookHere: View {
     }
 }
 
-/// Another piece, colour only and not interactive (§3.7): 44 pt across,
-/// 7 pt thick, its count inside and its name under it.
+/// Another piece, colour only and not interactive (§3.7), in the row under
+/// the ring: a 28 pt ring and "Piece 2 · 3/12" beside it.
 struct WorldDialMini: View {
     let piece: WorldCaptureDial.Piece
 
     var body: some View {
-        VStack(alignment: .center, spacing: 2) {
+        HStack(alignment: .center, spacing: 6) {
             ZStack {
                 ForEach(0..<WorldCaptureDial.sectors, id: \.self) { sector in
-                    AnnularSector(first: sector, innerRatio: 15.0 / 22, gap: 1.5, cornerRadius: 1.5)
+                    AnnularSector(first: sector, innerRatio: 9.0 / 14, gap: 1.2, cornerRadius: 1)
                         .fill(fill(piece.sectors[sector]))
                 }
-                Text(WorldCaptureDialCopy.miniCount(piece))
-                    .font(.system(size: 9, weight: .semibold, design: .rounded).monospacedDigit())
-                    .foregroundStyle(Color.white)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.7)
-                    .frame(width: 26)
             }
-            .frame(width: 44, height: 44)
-            Text(piece.name)
-                .font(.caption2.weight(.medium))
+            .frame(width: WorldCaptureDialView.miniRow, height: WorldCaptureDialView.miniRow)
+            Text(WorldCaptureDialCopy.miniLabel(piece))
+                .font(.caption2.weight(.semibold).monospacedDigit())
                 .foregroundStyle(Color.white.opacity(0.8))
                 .lineLimit(1)
                 .fixedSize()
@@ -685,9 +698,7 @@ struct WorldCaptureDialCaption: View {
     /// The map the dial draws, or `nil` before the first landing.
     let source: WorldPanelMapSource?
 
-    @Environment(\.colorSchemeContrast) private var contrast
     @ScaledMetric(relativeTo: .subheadline) private var dot: CGFloat = 7
-    @ScaledMetric(relativeTo: .caption2) private var swatch: CGFloat = 9
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -715,16 +726,21 @@ struct WorldCaptureDialCaption: View {
                         .accessibilityIdentifier("wb-panel-dial-stamp")
                 }
             }
-            legend
+            WorldCaptureDialLegend()
                 .padding(.top, 2)
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
         .frame(maxWidth: .infinity, alignment: .leading)
     }
+}
 
-    /// One compact line, or nothing.
-    private var legend: some View {
+/// The dial's legend: one compact line, or nothing. Live and after Stop.
+struct WorldCaptureDialLegend: View {
+    @Environment(\.colorSchemeContrast) private var contrast
+    @ScaledMetric(relativeTo: .caption2) private var swatch: CGFloat = 9
+
+    var body: some View {
         ViewThatFits(in: .horizontal) {
             HStack(spacing: 12) { legendItems }
                 .accessibilityElement(children: .combine)
@@ -760,5 +776,61 @@ struct WorldCaptureDialCaption: View {
                 .lineLimit(1)
                 .fixedSize()
         }
+    }
+}
+
+// MARK: - After Stop: the footer
+
+/// After Stop, in the live footer's slot and the system theme: the status
+/// line (a small spinner while the Tower works) and the muted line under it
+/// -- the panel's headline and the time since Stop -- then the legend. The
+/// stage above holds the dimmed dial alone, with no words over it.
+struct WorldCaptureDialFinishCaption: View {
+    let showsSpinner: Bool
+    let status: String
+    let headline: String?
+    let stoppedAt: ContinuousClock.Instant?
+    /// What VoiceOver reads for the status line, given the elapsed text.
+    let spoken: (WorldElapsedText?) -> String
+
+    var body: some View {
+        if let stoppedAt {
+            // Every 30 s: whole minutes, as the finish block's own line.
+            TimelineView(.periodic(from: .now, by: 30)) { _ in
+                content(WorldElapsedText(since: stoppedAt, now: ContinuousClock.now))
+            }
+        } else {
+            content(nil)
+        }
+    }
+
+    private func content(_ elapsed: WorldElapsedText?) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(alignment: .center, spacing: 6) {
+                if showsSpinner {
+                    ProgressView()
+                        .controlSize(.mini)
+                        .accessibilityHidden(true)
+                }
+                Text(status)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(Color.primary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(spoken(elapsed))
+            .accessibilityIdentifier("wb-finish-line")
+            Text(WorldCaptureDialCopy.finishStamp(headline: headline, elapsed: elapsed?.visible))
+                .font(.footnote.monospacedDigit())
+                .foregroundStyle(Color.secondary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .accessibilityIdentifier("wb-panel-dial-stamp")
+            WorldCaptureDialLegend()
+                .padding(.top, 2)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }

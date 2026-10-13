@@ -34,6 +34,7 @@ final class WorldCaptureDialSnapshotTests: XCTestCase {
         var reduceMotion = false
         var increaseContrast = false
         var phase: WorldPanelPhase = .walking(hasMap: true)
+        var report = WorldPresentation()
     }
 
     // MARK: The shots
@@ -52,11 +53,19 @@ final class WorldCaptureDialSnapshotTests: XCTestCase {
         scenes.append(Scene(name: "dial-colour-only", block: "walk7-h236", age: nil, photos: []))
         scenes.append(Scene(name: "dial-all-12", block: "walk7-h991", latest: 4, style: .dark))
         scenes.append(Scene(name: "dial-before-first-landing", block: nil))
-        scenes.append(with(mid) {
+        // A live dial with a secondary piece: its mini dial in a row under
+        // the ring (a "0/12" piece is never drawn).
+        scenes.append(Scene(name: "dial-live-second-piece", block: "walk71-h563", latest: 10, motion: 9,
+                            style: .dark))
+        // After Stop: the photos shown live, dimmed, the words in the footer.
+        let stopped = with(mid) {
             $0.name = "dial-post-stop"
             $0.style = .dark
             $0.phase = .finishing(target: WorldRenderTarget(worldID: "w1", sessionID: "s9"))
-        })
+            $0.report = WorldPresentation(stage: .improving, finishLine: .finalPlacement)
+        }
+        scenes.append(stopped)
+        scenes.append(with(stopped) { $0.name = "dial-post-stop-light"; $0.style = .light })
         for scene in scenes {
             try shoot(scene)
         }
@@ -97,7 +106,7 @@ final class WorldCaptureDialSnapshotTests: XCTestCase {
                 motionSector: scene.motion)
         }
         let panel = WorldInlinePanel(
-            phase: scene.phase, report: WalkScoped(walk: Self.walk, value: WorldPresentation()),
+            phase: scene.phase, report: WalkScoped(walk: Self.walk, value: scene.report),
             buildInProgress: nil, isTowerReachable: true, screenSaysOffline: false, showsHealth: false,
             map: source, landed: overlay,
             dial: WorldPanelDial(awaiting: source == nil),
