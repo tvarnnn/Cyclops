@@ -361,6 +361,25 @@ Per-stage timing can be recorded with `TOWER_WORLD_STAGE_TIMING`
   `powershell -NoProfile -File scripts\start_tower.ps1` from `tower/`. Set
   `TOWER_WORLD_ROOT=data/world_builder` in `tower/.env`, or World Builder is
   reported as unsupported. Tests: `.venv\Scripts\python.exe -m pytest`.
+- **The demo configuration.** Every new behaviour ships behind a default-off
+  switch, so a plain `start_tower.ps1` runs today's baseline without them. The
+  demo Tower is started with these set in its launcher, never in `.env`
+  (each is documented in [`tower/tower/config.py`](tower/tower/config.py)):
+
+  | Switch | What it turns on |
+  |---|---|
+  | `TOWER_WORLD_KEYFRAME_TURN_BRIDGE=on` | Keyframes through fast head turns (the turn bridge) |
+  | `TOWER_WORLD_UP_ESTIMATE=camera_right_all` | How "up" is estimated for the room |
+  | `TOWER_WORLD_LIVE_DEPTH=on` | Depth predicted during the walk |
+  | `TOWER_WORLD_FINAL_SCALE_GUARD=on` | The final scale guard |
+  | `TOWER_WORLD_TRANSIENTS_FP16=on` | Half-precision transient masking (faster) |
+  | `TOWER_WORLD_GUIDANCE_COVERAGE=on`, `..._COVERAGE_PENDING=on` | The capture dial's coverage |
+  | `TOWER_WORLD_GUIDANCE_IMAGERY_LIVE=on`, `..._IMAGERY_LANDED=on`, `..._IMAGERY_UNREDACTED=on` | The dial's photos |
+  | `TOWER_WORLD_PHOTO_FLOORPLAN=on` (`..._METHOD=homography`, `..._DIAGNOSTICS=on`) | The photo floor plan (hidden on the phone in the demo build) |
+  | `TOWER_WORLD_NATIVE_CHROME=1` | Viewer controls drawn in SwiftUI |
+
+  Before a demo, start the Tower **fresh**. A long-running process was measured
+  ~1.5× slower after Stop.
 - **iPhone app (Mac):** open [`ios/Glasses.xcodeproj`](ios/Glasses.xcodeproj)
   in Xcode, run on a device paired with the glasses, and set the Tower's
   address in Settings.
