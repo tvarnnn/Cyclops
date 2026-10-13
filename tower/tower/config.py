@@ -1522,6 +1522,60 @@ def world_keyframe_policy_overrides() -> dict:
     return overrides
 
 
+# FAR-CAP (lane CX-DEPTH-FAR-CAP, 2026-10-13; the Windows lead's diagnosis on w9b, walk 9.2 and the
+# kitchen): far, unreliable depth -- mostly from far-looking keyframes the turn bridge adds, and from
+# depth seen through doorways -- allocated more blocks than `SurfaceParams.max_blocks`, and the block
+# budget then coarsened the WHOLE room's voxel (w9b 2.9x, walk 9.2 1.65x, kitchen 3.3x). With the cap
+# on, and only when the walk would otherwise be over the block budget, a depth sample deeper
+# (camera-frame z) than K x the scene scale -- the surface stage's `median_depth` -- allocates no
+# block. It still integrates into the blocks nearer samples allocated, and the evidence filter still
+# sees it (`surface_pipeline.FarDepthCap`). A walk within budget is built as with the cap off. Read
+# by the surface stage at each build, in whatever process runs it. Unset is today exactly: nothing is
+# measured, recorded or appended to the params digest, and every surface output is byte for byte
+# main's.
+#   TOWER_WORLD_SURFACE_FAR_DEPTH_CAP           on is `_flag`'s set; unset, blank and the spellings of
+#                                               false are off; anything else is off, and logged.
+#   TOWER_WORLD_SURFACE_FAR_DEPTH_CAP_K         K, a finite number in [2, 50]; unset is 6, anything
+#                                               else is 6, logged. 6 is `SurfaceParams.max_depth_frac`,
+#                                               the stage's own generous fallback far bound, which
+#                                               already cuts there the frames whose fit records no
+#                                               anchor range; the cap reaches the frames whose far
+#                                               anchors (`anchor_depth_multiple`) let depth go further.
+#   TOWER_WORLD_SURFACE_FAR_DEPTH_CAP_MAX_DROP  the largest fraction of the valid depth samples the cap
+#                                               may drop; past it the cap stands down for that build
+#                                               (the scene, not a far tail, is beyond it). In (0, 1];
+#                                               unset is 0.25, anything else is 0.25, logged.
+#                                               Both knobs are read only with the cap on.
+WORLD_SURFACE_FAR_DEPTH_CAP_ENV = "TOWER_WORLD_SURFACE_FAR_DEPTH_CAP"
+WORLD_SURFACE_FAR_DEPTH_CAP_K_ENV = "TOWER_WORLD_SURFACE_FAR_DEPTH_CAP_K"
+WORLD_SURFACE_FAR_DEPTH_CAP_MAX_DROP_ENV = "TOWER_WORLD_SURFACE_FAR_DEPTH_CAP_MAX_DROP"
+WORLD_SURFACE_FAR_DEPTH_CAP_K_DEFAULT = 6.0
+WORLD_SURFACE_FAR_DEPTH_CAP_K_MIN = 2.0
+WORLD_SURFACE_FAR_DEPTH_CAP_K_MAX = 50.0
+WORLD_SURFACE_FAR_DEPTH_CAP_MAX_DROP_DEFAULT = 0.25
+
+
+def world_surface_far_depth_cap_setting() -> dict | None:
+    """`TOWER_WORLD_SURFACE_FAR_DEPTH_CAP`: None (off, the default) or `{"k": K, "max_drop": D}`.
+
+    A typo never turns the cap on, and a bad knob is its default rather than a stage that cannot
+    build; both are logged (`_keyframe_float`'s reading, shared with the keyframe knobs above)."""
+    if not _flag(WORLD_SURFACE_FAR_DEPTH_CAP_ENV, default=False):
+        value = (os.environ.get(WORLD_SURFACE_FAR_DEPTH_CAP_ENV) or "").strip()
+        if value and value.lower() not in ("0", "false", "no", "off"):
+            logger.warning("[Tower][Config] %s=%r is not on or off; treating it as off",
+                           WORLD_SURFACE_FAR_DEPTH_CAP_ENV, value)
+        return None
+    k = _keyframe_float(WORLD_SURFACE_FAR_DEPTH_CAP_K_ENV, low=WORLD_SURFACE_FAR_DEPTH_CAP_K_MIN,
+                        high=WORLD_SURFACE_FAR_DEPTH_CAP_K_MAX, low_open=False)
+    max_drop = _keyframe_float(WORLD_SURFACE_FAR_DEPTH_CAP_MAX_DROP_ENV, low=0.0, high=1.0,
+                               low_open=True)
+    return {
+        "k": WORLD_SURFACE_FAR_DEPTH_CAP_K_DEFAULT if k is None else k,
+        "max_drop": WORLD_SURFACE_FAR_DEPTH_CAP_MAX_DROP_DEFAULT if max_drop is None else max_drop,
+    }
+
+
 # P5-PQ (manager 095 §2, as corrected by 096 §2; granular per manager 098): impossible poses are never
 # published in a room. One switch, three PARTS (RUN experiments/P5-PQ/RULE.md):
 #   `path`   (a) the viewer's camera list (`surface_render._camera_path`) keeps only published, supported
