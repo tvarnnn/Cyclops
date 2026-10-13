@@ -265,7 +265,7 @@ final class WorldImageryUITests: XCTestCase {
 
     /// S3's additive fields: the Tower's own bin, `latest` and the walk cue.
     /// The newest placed view's sector is drawn at 12 o'clock, so the photo
-    /// binned there sits on top, and the dial says what its top means.
+    /// binned there sits on top, and the hint turns from it.
     func testS3BinsAndLatestPutTheNewestViewOnTop() throws {
         let s3 = Self.landedFixture.replacingOccurrences(
             of: #""segment_index":null}]"#,
@@ -283,11 +283,10 @@ final class WorldImageryUITests: XCTestCase {
         XCTAssertEqual(photo.label, "Photo at 12 o'clock", "the newest view's sector on top")
         XCTAssertLessThan(photo.frame.midY, dial.frame.midY - dial.frame.height * 0.2, "at 12 o'clock")
         XCTAssertEqual(photo.frame.midX, dial.frame.midX, accuracy: 4, "at 12 o'clock")
-        let value = dial.value as? String ?? ""
-        XCTAssertEqual(dial.label, "Capture dial, your newest views")
-        XCTAssertTrue(value.contains("2 to 9 o'clock"), value)
-        XCTAssertTrue(value.contains("You were moving toward 1 o'clock."), value)
-        XCTAssertTrue(value.hasSuffix("Top of the dial is your newest placed view."), value)
+        XCTAssertEqual(dial.label, "Capture dial")
+        XCTAssertEqual(dial.value as? String, "4 of 12 directions captured. Look behind you.",
+                       "the gap is 2 to 9 from the newest view: its middle two, behind")
+        XCTAssertEqual(text(element("wb-panel-dial-gap")), "Look behind you")
         reveal(dial)
         shoot("dial-photo-s3")
     }

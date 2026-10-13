@@ -726,11 +726,13 @@ final class WorldInlinePanelUITests: XCTestCase {
     // MARK: FOW-RING: the capture dial
 
     /// IOS_FOW_DIAL=on with FOW §9's receipts. Before the first landing the
-    /// dial is drawn empty and says why, with no control (no map yet); the
-    /// mid-walk receipt fills it from the hero piece's union, with a mini
-    /// dial for the other piece; the Dial|Map control reaches today's map,
-    /// its caption and pieces, and comes back; the stale stop receipt is
-    /// never emphasised. One element, read by its value; nothing announced.
+    /// dial is drawn empty and says why, under its fixed title, with no
+    /// control (no map yet); the mid-walk receipt fills it from the hero
+    /// piece's union, with a mini dial for the other piece and a two-line
+    /// footer (the hint and the stamp, nothing else); the header's Dial|Map
+    /// control reaches today's map, its caption and pieces, and comes back;
+    /// a stop receipt past 90 s keeps its hint and says "updating…". One
+    /// element, read by its value; nothing announced.
     func testTheCaptureDialFillsFromTheReceiptAndTheToggleReachesTheMap() throws {
         openLive(environment: ["IOS_FOW_DIAL": "on"])
         push(modelState: "receiving", guidance: FOWGuidance.none, accepted: 40)
@@ -738,9 +740,9 @@ final class WorldInlinePanelUITests: XCTestCase {
         if !dial.waitForExistence(timeout: 15) { print("FOW-DIAL-AX|\(app.debugDescription)") }
         XCTAssertTrue(dial.exists, "the dial before the first landing")
         XCTAssertEqual(dial.label, "Capture dial")
-        XCTAssertEqual(dial.value as? String, "The dial starts filling when the Tower places your first views.")
-        XCTAssertEqual(text(element("wb-panel-dial-gap")),
-                       "The dial starts filling when the Tower places your first views.")
+        XCTAssertEqual(dial.value as? String, "Fills in as the Tower places your first views.")
+        XCTAssertEqual(text(element("wb-panel-dial-gap")), "Fills in as the Tower places your first views.")
+        XCTAssertEqual(text(element("wb-panel-dial-title")), "Room coverage")
         XCTAssertFalse(element("wb-panel-tab").exists, "no map to switch to yet")
         XCTAssertFalse(element("wb-panel-map").exists)
         XCTAssertTrue(reveal(dial, whole: true), "the dial on screen")
@@ -750,19 +752,20 @@ final class WorldInlinePanelUITests: XCTestCase {
              towerSentAt: FOWGuidance.midSolvedAt + 2)
         XCTAssertTrue(waitFor(timeout: 15) { (dial.value as? String)?.hasPrefix("4 of 12") == true },
                       "the mid receipt: \(String(describing: dial.value))")
-        let value = dial.value as? String ?? ""
-        XCTAssertTrue(value.hasPrefix("4 of 12 directions captured, 1 with one view. "), value)
-        XCTAssertTrue(value.contains("5 to 11 o'clock"), value)
-        XCTAssertTrue(value.hasSuffix("Top of the dial is the way you faced when this piece began."), value)
-        XCTAssertEqual(dial.label, "Capture dial, Piece 1, most views")
+        XCTAssertEqual(dial.value as? String, "4 of 12 directions captured, 1 with one view. Look around the room.",
+                       "no latest: no direction")
+        XCTAssertEqual(dial.label, "Capture dial, Piece 1")
         let minis = app.descendants(matching: .any).matching(identifier: "wb-panel-dial-mini")
         XCTAssertEqual(minis.count, 1, "the other piece")
         XCTAssertEqual(minis.firstMatch.label, "Piece 2, 1 of 12 directions captured")
-        XCTAssertEqual(text(element("wb-panel-dial-hero")), "Piece 1 · most views")
-        XCTAssertTrue(text(element("wb-panel-dial-stamp")).hasPrefix("Map through keyframe 113 · updated "),
-                      text(element("wb-panel-dial-stamp")))
-        XCTAssertEqual(text(element("wb-panel-dial-pieces")), "2 separate pieces, not placed relative to each other")
-        XCTAssertEqual(text(element("wb-panel-dial-newer")), "14 newer keyframes not yet placed")
+        XCTAssertEqual(text(element("wb-panel-dial-title")), "Room coverage", "one fixed title")
+        XCTAssertEqual(text(element("wb-panel-dial-gap")), "Look around the room")
+        XCTAssertTrue(text(element("wb-panel-dial-stamp")).hasPrefix("Updated "), text(element("wb-panel-dial-stamp")))
+        XCTAssertFalse(text(element("wb-panel-dial-stamp")).contains("updating"), text(element("wb-panel-dial-stamp")))
+        for gone in ["wb-panel-dial-hero", "wb-panel-dial-top", "wb-panel-dial-pieces", "wb-panel-dial-newer",
+                     "wb-panel-dial-photos-unavailable"] {
+            XCTAssertFalse(element(gone).exists, "\(gone): two lines under the dial")
+        }
         XCTAssertFalse(element("wb-panel-map").exists, "the Dial tab first")
         XCTAssertFalse(element("wb-panel-dial-photo").exists, "no B2 photo from this mock")
         XCTAssertTrue(reveal(dial, whole: true), "the dial on screen")
@@ -779,15 +782,17 @@ final class WorldInlinePanelUITests: XCTestCase {
         XCTAssertTrue(tap(control.buttons["Dial"], until: dial.exists), "back to the dial")
         XCTAssertFalse(element("wb-panel-map").exists)
 
-        // §9's stop receipt, 45 s old: stale, never emphasised; one piece.
+        // §9's stop receipt, 120 s old: past the dial's 90 s, its hint kept
+        // and the muted stamp says "updating…"; one piece.
         push(modelState: "receiving", guidance: FOWGuidance.stop, accepted: 1090,
-             towerSentAt: FOWGuidance.stopSolvedAt + 45)
+             towerSentAt: FOWGuidance.stopSolvedAt + 120)
         XCTAssertTrue(waitFor(timeout: 15) {
-            (dial.value as? String)?.contains("Not yet captured when this map was made: 5 to 12 o'clock.") == true
+            (dial.value as? String) == "4 of 12 directions captured. Look around the room."
         }, "stale: \(String(describing: dial.value))")
-        XCTAssertTrue((dial.value as? String)?.hasPrefix("4 of 12 directions captured. ") == true)
         XCTAssertEqual(minis.count, 0, "one piece, no mini dial")
-        XCTAssertTrue(text(element("wb-panel-dial-stamp")).hasSuffix(" · stale"), text(element("wb-panel-dial-stamp")))
+        let stamp = element("wb-panel-dial-stamp")
+        XCTAssertTrue(waitFor(timeout: 5) { self.text(stamp).hasSuffix(" · updating…") }, text(stamp))
+        XCTAssertFalse(text(element("wb-panel-dial-stamp")).contains("stale"))
         XCTAssertTrue(reveal(dial, whole: true))
         shoot("dial-stale")
     }

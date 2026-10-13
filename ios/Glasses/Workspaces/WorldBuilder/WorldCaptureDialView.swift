@@ -4,10 +4,11 @@
 //
 //  The FOW capture dial, drawn (FOW-RING-SPEC §4): twelve rounded annular
 //  segments with constant 3 pt gaps on an always-dark stage, the piece's
-//  photos upright in its filled segments, the count in the centre, the
-//  look-here emphasis while the map is fresh, mini dials for the other
-//  pieces, and the Dial|Map control. The footer under the stage follows the
-//  system theme. Nothing here announces, plays a sound or buzzes.
+//  photos upright in its filled segments, the count in the centre, one
+//  look-here segment, and mini dials for the other pieces. The header above
+//  the stage (the title and the Dial|Map control) and the two-line footer
+//  under it follow the system theme. Nothing here announces, plays a sound
+//  or buzzes.
 //
 
 import SwiftUI
@@ -196,33 +197,24 @@ nonisolated struct WorldDialCellShape: Shape {
     }
 }
 
-// MARK: - The stage: the dial or the map, and the control between them
+// MARK: - The stage: the dial or the map; the header that switches them
 
-/// The walking stage with the dial on (§4 Layout, §5): the dial (or, on the
-/// Map tab, today's floor plan, unchanged), and the Dial|Map control
-/// top-trailing once there is a map to switch to.
-struct WorldCaptureDialStage<MapContent: View>: View {
-    let dial: WorldCaptureDial
-    /// The CURRENT receipt (never a held one), or `nil` before the first landing.
-    let receipt: WorldCoverageReceipt?
-    /// B2's overlay, already of `receipt`'s landing; `nil` otherwise.
-    let overlay: WorldLandedOverlay?
+/// The card's header with the dial on (§5): one fixed title, and the
+/// Dial|Map control on its trailing side once there is a map to switch to --
+/// above the stage, so it never sits on the ring.
+struct WorldCaptureDialHeader: View {
     @Binding var tab: WorldPanelTab
-    @ViewBuilder let map: () -> MapContent
-
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-
-    private var showsToggle: Bool { receipt != nil }
+    let showsToggle: Bool
 
     var body: some View {
-        ZStack(alignment: .topTrailing) {
-            if showsToggle, tab == .map {
-                map()
-                    .transition(.opacity)
-            } else {
-                WorldCaptureDialView(dial: dial, receipt: receipt, overlay: overlay)
-                    .transition(.opacity)
-            }
+        HStack(alignment: .center, spacing: 12) {
+            Text(WorldCaptureDialCopy.title)
+                .font(.headline)
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
+                .accessibilityAddTraits(.isHeader)
+                .accessibilityIdentifier("wb-panel-dial-title")
+            Spacer(minLength: 0)
             if showsToggle {
                 Picker(WorldCaptureDialCopy.tabLabel, selection: $tab) {
                     ForEach(WorldPanelTab.allCases, id: \.self) { tab in
@@ -233,9 +225,36 @@ struct WorldCaptureDialStage<MapContent: View>: View {
                 .controlSize(.small)
                 .fixedSize()
                 .dynamicTypeSize(...DynamicTypeSize.xxxLarge)
-                .padding(.top, 10)
-                .padding(.trailing, 12)
                 .accessibilityIdentifier("wb-panel-tab")
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+/// The walking stage with the dial on (§4 Layout, §5): the dial, or on the
+/// Map tab today's floor plan, unchanged.
+struct WorldCaptureDialStage<MapContent: View>: View {
+    let dial: WorldCaptureDial
+    /// The CURRENT receipt (never a held one), or `nil` before the first landing.
+    let receipt: WorldCoverageReceipt?
+    /// The photos the dial shows: this landing's, and those kept for its hero.
+    let photos: WorldCaptureDialPhotos
+    let tab: WorldPanelTab
+    @ViewBuilder let map: () -> MapContent
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        ZStack {
+            if receipt != nil, tab == .map {
+                map()
+                    .transition(.opacity)
+            } else {
+                WorldCaptureDialView(dial: dial, receipt: receipt, photos: photos)
+                    .transition(.opacity)
             }
         }
         .animation(.easeInOut(duration: reduceMotion ? 0.15 : 0.25), value: tab)
@@ -247,23 +266,10 @@ struct WorldCaptureDialStage<MapContent: View>: View {
 struct WorldCaptureDialView: View {
     let dial: WorldCaptureDial
     let receipt: WorldCoverageReceipt?
-    let overlay: WorldLandedOverlay?
-
-    var body: some View {
-        // The phone's one-second tick, as the map's own label: the age moves
-        // the gap line and the emphasis from fresh to stale. Never the Tower.
-        TimelineView(.periodic(from: .now, by: 1)) { _ in
-            WorldCaptureDialFace(dial: dial, receipt: receipt, overlay: overlay, age: receipt?.age(at: .now))
-        }
-    }
-}
-
-/// One frame of the dial at a known age.
-struct WorldCaptureDialFace: View {
-    let dial: WorldCaptureDial
-    let receipt: WorldCoverageReceipt?
-    let overlay: WorldLandedOverlay?
-    let age: Double?
+    let photos: WorldCaptureDialPhotos
+    /// The look-here segment and the walk cue: off for the dimmed final dial
+    /// behind the post-Stop progress, where there is nowhere left to look.
+    var guides = true
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.colorSchemeContrast) private var contrast
@@ -275,17 +281,12 @@ struct WorldCaptureDialFace: View {
     @State private var turn: Double?
     @State private var selected: WorldLandedThumbnail?
 
-    private var fresh: Bool { WorldCaptureDialCopy.isFresh(age) }
     private var increased: Bool { contrast == .increased }
 
     /// What the ring is turned by now.
     private var ringTurn: Double {
         let resting = -Double(dial.anchor) * 30
         return reduceMotion ? resting : (turn ?? resting)
-    }
-
-    private var tiles: [String: WorldDialThumbnail] {
-        Dictionary((overlay?.dialEntries ?? []).map { ($0.digest, $0) }, uniquingKeysWith: { _, last in last })
     }
 
     var body: some View {
@@ -313,9 +314,11 @@ struct WorldCaptureDialFace: View {
             }
             withAnimation(.spring(response: 0.6, dampingFraction: 0.85)) { turn = current + delta }
         }
-        // An open sheet never outlives its photo: a new landing closes it.
-        .onChange(of: dial.photosBySector) { _, photos in
-            if let shown = selected, !photos.values.contains(shown.digest) { selected = nil }
+        // An open sheet never outlives its photo.
+        .onChange(of: photos) { _, photos in
+            if let shown = selected, !photos.bySector.values.contains(where: { $0.digest == shown.digest }) {
+                selected = nil
+            }
         }
         .sheet(item: $selected) { thumbnail in
             WorldLandedThumbnailSheet(thumbnail: thumbnail, receipt: receipt)
@@ -356,7 +359,7 @@ struct WorldCaptureDialFace: View {
                 .fill(Color.white.opacity(0.001))
                 .accessibilityElement(children: .ignore)
                 .accessibilityLabel(WorldCaptureDialCopy.accessibilityLabel(dial))
-                .accessibilityValue(WorldCaptureDialCopy.accessibilityValue(dial, age: age))
+                .accessibilityValue(WorldCaptureDialCopy.accessibilityValue(dial))
                 .accessibilityIdentifier("wb-panel-dial")
                 .accessibilityActions {
                     ForEach(photoPositions, id: \.self) { position in
@@ -369,13 +372,11 @@ struct WorldCaptureDialFace: View {
 
     /// Display positions holding a photo, clockwise from 12 o'clock.
     private var photoPositions: [Int] {
-        (0..<WorldCaptureDial.sectors).filter { position in
-            dial.photosBySector[dial.sector(at: position)].flatMap { tiles[$0] } != nil
-        }
+        (0..<WorldCaptureDial.sectors).filter { photos.bySector[dial.sector(at: $0)] != nil }
     }
 
     private func ring(_ geometry: WorldDialGeometry) -> some View {
-        let emphasis = dial.emphasis(age: age)
+        let lookHere = guides ? dial.lookHere : nil
         let marks = geometry.diameter + WorldDialGeometry.markRoom * 2
         return ZStack {
             ForEach(0..<WorldCaptureDial.sectors, id: \.self) { sector in
@@ -385,8 +386,8 @@ struct WorldCaptureDialFace: View {
         }
         .frame(width: geometry.diameter, height: geometry.diameter)
         .overlay {
-            if let emphasis {
-                WorldDialLookHere(first: dial.sector(at: emphasis.positions[0]), count: emphasis.positions.count,
+            if let lookHere {
+                WorldDialLookHere(first: dial.sector(at: lookHere.positions[0]), count: lookHere.positions.count,
                                   radius: geometry.radius)
                     .frame(width: marks, height: marks)
                     .allowsHitTesting(false)
@@ -394,7 +395,7 @@ struct WorldCaptureDialFace: View {
             }
         }
         .overlay {
-            if let motion = dial.motionSector {
+            if guides, let motion = dial.motionSector {
                 WorldDialMotionTick(sector: motion, radius: geometry.radius)
                     .frame(width: marks, height: marks)
                     .allowsHitTesting(false)
@@ -408,7 +409,7 @@ struct WorldCaptureDialFace: View {
         let state = dial.evidence(sector: sector)
         let position = dial.position(of: sector)
         let shape = AnnularSector(first: sector)
-        let photo = dial.photosBySector[sector].flatMap { tiles[$0] }
+        let photo = photos.bySector[sector]
         let fill = reduceMotion ? Animation.easeInOut(duration: 0.2)
             : .spring(response: 0.45, dampingFraction: 0.75).delay(0.03 * Double(position))
         return ZStack {
@@ -427,6 +428,9 @@ struct WorldCaptureDialFace: View {
         .animation(.easeIn(duration: 0.25), value: photo?.digest)
     }
 
+    /// The photo fills its wedge (`photoSide` ≥ 1.15 of the segment depth),
+    /// upright, with no darkening over it and a slight lift: a one-view
+    /// segment's photo stays faded and grey, so the two states still read.
     private func photoView(_ photo: WorldDialThumbnail, state: WorldCoverageEvidence, sector: Int, position: Int,
                            geometry: WorldDialGeometry) -> some View {
         let side = geometry.photoSide
@@ -437,9 +441,9 @@ struct WorldCaptureDialFace: View {
             .scaledToFill()
             .frame(width: side, height: side)
             .clipped()
-            .saturation(weak ? 0.2 : (fresh ? 1 : 0.6))
-            .overlay(Color.black.opacity(weak ? 0 : 0.15))
-            .opacity(weak ? 0.5 : (fresh ? 1 : 0.8))
+            .saturation(weak ? 0.2 : 1.05)
+            .brightness(weak ? 0 : 0.06)
+            .opacity(weak ? 0.5 : 1)
             // Upright whatever the ring's turn.
             .rotationEffect(.degrees(-ringTurn))
             .frame(width: side, height: side)
@@ -458,8 +462,8 @@ struct WorldCaptureDialFace: View {
             .accessibilityHidden(voiceOver)
     }
 
-    /// A captured segment with no photo yet is lit teal, a little brighter
-    /// towards the rim; under a photo the stage shows through a stale one.
+    /// A captured segment with no photo is lit teal, a little brighter
+    /// towards the rim; under a photo the stage.
     private func base(_ state: WorldCoverageEvidence, photo: Bool, geometry: WorldDialGeometry) -> AnyShapeStyle {
         switch state {
         case .supported:
@@ -542,7 +546,7 @@ struct WorldCaptureDialFace: View {
     }
 
     private func open(sector: Int) {
-        guard let digest = dial.photosBySector[sector], let photo = tiles[digest] else { return }
+        guard let photo = photos.bySector[sector] else { return }
         selected = WorldLandedThumbnail(digest: photo.digest, image: photo.image,
                                         referenceSegment: photo.referenceSegment, column: 0, row: 0,
                                         heading: photo.heading, unredacted: photo.unredacted)
@@ -601,8 +605,8 @@ struct WorldDialMotionTick: View {
     }
 }
 
-/// The look-here emphasis over the gap, fresh maps only (§4): a 2.5 pt
-/// amber outline with an 8 pt glow and an outward chevron, pulsing
+/// The look-here emphasis (§4, polished): ONE next-best segment, or two
+/// for a long gap -- a 2.5 pt amber outline with an 8 pt glow, pulsing
 /// 0.35 ↔ 1.0 every 1.2 s; with Reduce Motion a static 3 pt outline.
 struct WorldDialLookHere: View {
     let first: Int
@@ -617,9 +621,6 @@ struct WorldDialLookHere: View {
             .frame(width: radius * 2, height: radius * 2)
             .shadow(color: WorldDialStyle.amber.opacity(0.75), radius: reduceMotion ? 3 : 8)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .overlay {
-                if count < WorldCaptureDial.sectors { chevron }
-            }
         if reduceMotion {
             outline
         } else {
@@ -629,25 +630,6 @@ struct WorldDialLookHere: View {
                 content.opacity(opacity)
             } animation: { _ in .easeInOut(duration: 0.6) }
         }
-    }
-
-    private var chevron: some View {
-        Canvas { context, size in
-            let centre = CGPoint(x: size.width / 2, y: size.height / 2)
-            let angle = AnnularSector.angle(of: first) + Double(count - 1) * Double.pi / 12
-            let along = CGVector(dx: cos(angle), dy: sin(angle))
-            let across = CGVector(dx: -along.dy, dy: along.dx)
-            func at(_ r: CGFloat, _ side: CGFloat) -> CGPoint {
-                CGPoint(x: centre.x + along.dx * r + across.dx * side, y: centre.y + along.dy * r + across.dy * side)
-            }
-            var path = Path()
-            path.move(to: at(radius + 12, -5.5))
-            path.addLine(to: at(radius + 17, 0))
-            path.addLine(to: at(radius + 12, 5.5))
-            context.stroke(path, with: .color(WorldDialStyle.amber),
-                           style: StrokeStyle(lineWidth: 2.5, lineCap: .round, lineJoin: .round))
-        }
-        .shadow(color: WorldDialStyle.amber.opacity(0.6), radius: 4)
     }
 }
 
@@ -694,95 +676,61 @@ struct WorldDialMini: View {
 
 // MARK: - The footer
 
-/// Under the stage, in the system theme (§3.5, §3.6, §4): the piece, the
-/// gap line, the orientation, the dated stamp, the receipt's own notes, and
-/// the legend. The gap line is emphasised only while the map is fresh.
+/// Under the stage, in the system theme: at most two lines -- the one-line
+/// hint (amber-dotted while there is a segment to look at, stale or not)
+/// and the muted "Updated N s ago" -- and the legend when it fits on one
+/// compact line. The receipt's notes stay with the Map tab's caption.
 struct WorldCaptureDialCaption: View {
     let dial: WorldCaptureDial
     /// The map the dial draws, or `nil` before the first landing.
     let source: WorldPanelMapSource?
-    var photosUnavailable = false
 
     @Environment(\.colorSchemeContrast) private var contrast
-    @ScaledMetric(relativeTo: .footnote) private var dot: CGFloat = 7
-    @ScaledMetric(relativeTo: .caption) private var swatch: CGFloat = 10
+    @ScaledMetric(relativeTo: .subheadline) private var dot: CGFloat = 7
+    @ScaledMetric(relativeTo: .caption2) private var swatch: CGFloat = 9
 
     var body: some View {
-        TimelineView(.periodic(from: .now, by: 1)) { _ in
-            content(age: source?.receipt.age(at: .now))
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                if dial.lookHere != nil {
+                    Circle()
+                        .fill(WorldDialStyle.amber)
+                        .frame(width: dot, height: dot)
+                        .accessibilityHidden(true)
+                }
+                Text(WorldCaptureDialCopy.hint(dial))
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(Color.primary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .accessibilityIdentifier("wb-panel-dial-gap")
+            }
+            if let source {
+                // The phone's one-second tick, as the map's own label.
+                TimelineView(.periodic(from: .now, by: 1)) { _ in
+                    Text(WorldCaptureDialCopy.stamp(age: source.receipt.age(at: .now)))
+                        .font(.footnote.monospacedDigit())
+                        .foregroundStyle(Color.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .accessibilityIdentifier("wb-panel-dial-stamp")
+                }
+            }
+            legend
+                .padding(.top, 2)
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    private func content(age: Double?) -> some View {
-        let fresh = WorldCaptureDialCopy.isFresh(age) && dial.gap != nil
-        return VStack(alignment: .leading, spacing: 5) {
-            if dial.hasReceipt {
-                line(WorldCaptureDialCopy.heroLabel(dial), "wb-panel-dial-hero",
-                     font: .subheadline.weight(.semibold), color: .primary)
-            }
-            HStack(alignment: .firstTextBaseline, spacing: 6) {
-                if fresh {
-                    Circle()
-                        .fill(WorldDialStyle.amber)
-                        .frame(width: dot, height: dot)
-                        .accessibilityHidden(true)
-                }
-                line(WorldCaptureDialCopy.gapLine(dial, age: age), "wb-panel-dial-gap",
-                     font: fresh ? .footnote.weight(.semibold) : .footnote, color: fresh ? .primary : .secondary)
-            }
-            if dial.hasReceipt {
-                line(WorldCaptureDialCopy.topLine(dial), "wb-panel-dial-top", font: .footnote, color: .secondary)
-            }
-            if let source {
-                notes(source)
-            }
-            legend
-                .padding(.top, 2)
-        }
-    }
-
-    @ViewBuilder
-    private func notes(_ source: WorldPanelMapSource) -> some View {
-        let receipt = source.receipt
-        line(WorldCoverageCopy.label(receipt, at: .now, stopped: false), "wb-panel-dial-stamp",
-             font: .footnote.weight(.semibold).monospacedDigit(), color: .primary)
-        if let newer = WorldCoverageCopy.newer(receipt, stopped: false) {
-            line(newer, "wb-panel-dial-newer", font: .footnote, color: .secondary)
-        }
-        if let pieces = WorldCoverageCopy.pieces(receipt.coverage) {
-            line(pieces, "wb-panel-dial-pieces", font: .footnote, color: .secondary)
-        }
-        if let notDrawn = WorldCoverageCopy.notDrawn(receipt.coverage) {
-            line(notDrawn, "wb-panel-dial-not-drawn", font: .footnote, color: .secondary)
-        }
-        if photosUnavailable {
-            line(WorldCaptureDialCopy.photosUnavailable, "wb-panel-dial-photos-unavailable",
-                 font: .footnote, color: .secondary)
-        }
-        if source.isFixture {
-            line(WorldCoverageCopy.fixture, "wb-panel-dial-fixture", font: .footnote, color: .secondary)
-        }
-    }
-
-    private func line(_ text: String, _ identifier: String, font: Font, color: Color) -> some View {
-        Text(text)
-            .font(font)
-            .foregroundStyle(color)
-            .fixedSize(horizontal: false, vertical: true)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .accessibilityIdentifier(identifier)
-    }
-
+    /// One compact line, or nothing.
     private var legend: some View {
         ViewThatFits(in: .horizontal) {
-            HStack(spacing: 14) { legendItems }
-            VStack(alignment: .leading, spacing: 4) { legendItems }
+            HStack(spacing: 12) { legendItems }
+                .accessibilityElement(children: .combine)
+                .accessibilityIdentifier("wb-panel-dial-legend")
+            Color.clear.frame(height: 0)
         }
-        .accessibilityElement(children: .combine)
-        .accessibilityIdentifier("wb-panel-dial-legend")
     }
 
     @ViewBuilder
@@ -798,18 +746,19 @@ struct WorldCaptureDialCaption: View {
     }
 
     private func legendItem(_ word: String, fill: Color, edge: Color, dashed: Bool) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: 5) {
-            RoundedRectangle(cornerRadius: 3)
+        HStack(alignment: .center, spacing: 4) {
+            RoundedRectangle(cornerRadius: 2.5)
                 .fill(WorldDialStyle.stage)
-                .overlay(RoundedRectangle(cornerRadius: 3).fill(fill))
-                .overlay(RoundedRectangle(cornerRadius: 3)
+                .overlay(RoundedRectangle(cornerRadius: 2.5).fill(fill))
+                .overlay(RoundedRectangle(cornerRadius: 2.5)
                     .strokeBorder(edge, style: StrokeStyle(lineWidth: 1, dash: dashed ? [2.5, 1.5] : [])))
                 .frame(width: swatch * 1.4, height: swatch)
                 .accessibilityHidden(true)
             Text(word)
-                .font(.caption)
-                .foregroundStyle(Color.primary)
-                .fixedSize(horizontal: false, vertical: true)
+                .font(.caption2)
+                .foregroundStyle(Color.secondary)
+                .lineLimit(1)
+                .fixedSize()
         }
     }
 }

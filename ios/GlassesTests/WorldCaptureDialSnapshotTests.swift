@@ -33,7 +33,7 @@ final class WorldCaptureDialSnapshotTests: XCTestCase {
         var size: UIContentSizeCategory? = nil
         var reduceMotion = false
         var increaseContrast = false
-        var photosUnavailable = false
+        var phase: WorldPanelPhase = .walking(hasMap: true)
     }
 
     // MARK: The shots
@@ -46,13 +46,17 @@ final class WorldCaptureDialSnapshotTests: XCTestCase {
         scenes.append(with(mid) { $0.name = "dial-reduce-motion"; $0.reduceMotion = true; $0.style = .dark })
         scenes.append(with(mid) { $0.name = "dial-increase-contrast"; $0.increaseContrast = true })
         scenes.append(Scene(name: "dial-two-pieces", block: "walk71-h563", latest: 10, motion: 9))
-        scenes.append(with(mid) { $0.name = "dial-stale"; $0.age = 75; $0.style = .dark })
+        scenes.append(with(mid) { $0.name = "dial-stale"; $0.age = 120; $0.style = .dark })
         scenes.append(Scene(name: "dial-one-view", block: "walk71-h104", latest: 1))
         scenes.append(Scene(name: "dial-s2-sparse", block: "walk7-h236", photos: [0, 9]))
-        scenes.append(Scene(name: "dial-colour-only-unavailable", block: "walk7-h236", age: nil, photos: [],
-                            photosUnavailable: true))
+        scenes.append(Scene(name: "dial-colour-only", block: "walk7-h236", age: nil, photos: []))
         scenes.append(Scene(name: "dial-all-12", block: "walk7-h991", latest: 4, style: .dark))
         scenes.append(Scene(name: "dial-before-first-landing", block: nil))
+        scenes.append(with(mid) {
+            $0.name = "dial-post-stop"
+            $0.style = .dark
+            $0.phase = .finishing(target: WorldRenderTarget(worldID: "w1", sessionID: "s9"))
+        })
         for scene in scenes {
             try shoot(scene)
         }
@@ -93,29 +97,37 @@ final class WorldCaptureDialSnapshotTests: XCTestCase {
                 motionSector: scene.motion)
         }
         let panel = WorldInlinePanel(
-            phase: .walking(hasMap: true), report: WalkScoped(walk: Self.walk, value: WorldPresentation()),
+            phase: scene.phase, report: WalkScoped(walk: Self.walk, value: WorldPresentation()),
             buildInProgress: nil, isTowerReachable: true, screenSaysOffline: false, showsHealth: false,
             map: source, landed: overlay,
-            dial: WorldPanelDial(awaiting: source == nil, photosUnavailable: scene.photosUnavailable),
+            dial: WorldPanelDial(awaiting: source == nil),
             host: WorldInlineHost(), dismissBanner: {}, bannerAnnounced: { _ in }, expand: { _ in }
         ) { EmptyView() }
-        try render(scene, AnyView(panel))
+        // After Stop the stage is not a fixed height: at its ideal height, as
+        // in the screen's scroll view (a 4000 pt proposal would fill it).
+        try render(scene, scene.phase.isFinishing ? AnyView(panel.fixedSize(horizontal: false, vertical: true))
+                                                  : AnyView(panel))
     }
 
-    /// The Map tab: today's floor plan, unchanged, under the control.
+    /// The Map tab: today's floor plan, unchanged, under the header's control.
     private func shootMapTab() throws {
         let coverage = try WorldCaptureDialTests.coverage("walk71-h563")
         let receipt = WorldCoverageReceipt(coverage: coverage, keyframesAccepted: 572,
                                            clock: WorldTowerClock(towerSentAt: coverage.solvedAt + 12, receivedAt: .now))
-        let stage = WorldCaptureDialStage(dial: WorldCaptureDial(coverage: coverage), receipt: receipt, overlay: nil,
-                                          tab: .constant(.map)) {
-            WorldCoverageMapView(coverage: coverage, isFrozen: false)
+        let card = VStack(spacing: 0) {
+            WorldCaptureDialHeader(tab: .constant(.map), showsToggle: true)
+            WorldCaptureDialStage(dial: WorldCaptureDial(coverage: coverage), receipt: receipt, photos: .empty,
+                                  tab: .map) {
+                WorldCoverageMapView(coverage: coverage, isFrozen: false)
+            }
+            .frame(height: WorldPanelLayout.stageHeight(width: Self.width - 32, visibleHeight: 0))
+            .background(Color(WorldRenderLoadingPanel.pageBackground))
+            .clipShape(UnevenRoundedRectangle(topLeadingRadius: 18, topTrailingRadius: 18))
+            .environment(\.colorScheme, .dark)
         }
-        .frame(height: WorldPanelLayout.stageHeight(width: Self.width - 32, visibleHeight: 0))
-        .background(Color(WorldRenderLoadingPanel.pageBackground))
+        .background(Color(.secondarySystemGroupedBackground))
         .clipShape(RoundedRectangle(cornerRadius: 18))
-        .environment(\.colorScheme, .dark)
-        try render(Scene(name: "dial-map-tab", block: nil, style: .dark), AnyView(stage))
+        try render(Scene(name: "dial-map-tab", block: nil, style: .dark), AnyView(card))
     }
 
     // MARK: Rendering

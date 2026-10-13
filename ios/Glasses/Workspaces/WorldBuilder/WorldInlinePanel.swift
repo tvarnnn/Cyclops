@@ -341,6 +341,13 @@ struct WorldInlinePanel<Health: View>: View {
     @State private var finish = WorldPanelFinishMemory<FinishingBlock>()
     /// FOW-RING §5: the walking stage's face with the dial on; Dial first.
     @SceneStorage("wb-panel-tab") private var tab: WorldPanelTab = .dial
+    /// FOW-RING, kept photos: the photos the dial last showed, WITH their
+    /// walk -- read only beside a report of that walk, so another walk (or a
+    /// reset, which names none) starts with none.
+    @State private var keptDialPhotos: WalkScoped<WorldCaptureDialPhotos>?
+    /// The last dial drawn over a map, WITH its walk: dimmed behind the
+    /// post-Stop progress of that walk only.
+    @State private var finalDial: WalkScoped<WorldCaptureDial>?
 
     private var presentation: WorldPresentation { report.value }
 
@@ -444,6 +451,11 @@ struct WorldInlinePanel<Health: View>: View {
         .onChange(of: finishing, initial: true) { _, block in
             finish.record(block)
         }
+        .onChange(of: dialRecord, initial: true) { _, shown in
+            guard let shown else { return }
+            keptDialPhotos = shown.map(\.photos)
+            finalDial = shown.map(\.dial)
+        }
         .onChange(of: webShown) { _, shown in
             guard shown else { return }
             // The wait overlay has gone with this commit: the chrome may now
@@ -499,6 +511,10 @@ struct WorldInlinePanel<Health: View>: View {
                     .accessibilitySortPriority(90)
                     .accessibilityIdentifier("wb-panel-headline")
             }
+            if showsDialHeader {
+                WorldCaptureDialHeader(tab: $tab, showsToggle: map != nil)
+                    .accessibilitySortPriority(85)
+            }
             stage
                 .accessibilitySortPriority(80)
             footer
@@ -518,6 +534,25 @@ struct WorldInlinePanel<Health: View>: View {
         case .finishing, .ready, .failed, .offline: return presentation.headline
         case .hidden, .walking: return nil
         }
+    }
+
+    /// FOW-RING: the title and the Dial|Map control above the walking stage.
+    private var showsDialHeader: Bool {
+        guard case .walking = phase, let dial else { return false }
+        return Self.drawsDial(dial, map: map)
+    }
+
+    /// The dial as drawn now, and its photos, WITH the report's walk; `nil`
+    /// with the switch off.
+    private var shownDial: WalkScoped<WorldPanelDialShown>? {
+        guard dial != nil else { return nil }
+        return Self.shownDial(map, overlay: map.flatMap { Self.landed(landed, over: $0) }, kept: keptDialPhotos,
+                              beside: report)
+    }
+
+    /// What is remembered: only a dial drawn over a map.
+    private var dialRecord: WalkScoped<WorldPanelDialShown>? {
+        map == nil ? nil : shownDial
     }
 
     private var stageHeight: CGFloat {
@@ -570,17 +605,36 @@ struct WorldInlinePanel<Health: View>: View {
         case .none:
             EmptyView()
         case .map:
-            if let dial, Self.drawsDial(dial, map: map) {
-                let overlay = map.flatMap { Self.landed(landed, over: $0) }
-                WorldCaptureDialStage(dial: Self.captureDial(map, overlay: overlay), receipt: map?.receipt,
-                                      overlay: overlay, tab: $tab) {
+            if let dial, let shown = shownDial?.value, Self.drawsDial(dial, map: map) {
+                WorldCaptureDialStage(dial: shown.dial, receipt: map?.receipt, photos: shown.photos, tab: tab) {
                     if let map { coverageMap(map) }
                 }
             } else if let map {
                 coverageMap(map)
             }
         case .loading:
-            if let block = currentFinishing { finishingContent(block, alwaysSpins: true) }
+            if let block = currentFinishing {
+                if dial != nil, let last = finalDial?.value(beside: report) {
+                    // FOW-RING: the walk's last dial, dimmed and colour only,
+                    // behind the progress line; never read, never touched.
+                    finishingContent(block, alwaysSpins: true)
+                        .frame(maxWidth: .infinity, minHeight: stageHeight, alignment: .topLeading)
+                        .background {
+                            WorldCaptureDialView(dial: last, receipt: nil, photos: .empty, guides: false)
+                                .opacity(0.4)
+                                // A scrim under the words, the dial clear below.
+                                .overlay(LinearGradient(
+                                    stops: [.init(color: WorldDialStyle.stage.opacity(0.9), location: 0),
+                                            .init(color: WorldDialStyle.stage.opacity(0.6), location: 0.45),
+                                            .init(color: .clear, location: 0.8)],
+                                    startPoint: .top, endPoint: .bottom))
+                                .allowsHitTesting(false)
+                                .accessibilityHidden(true)
+                        }
+                } else {
+                    finishingContent(block, alwaysSpins: true)
+                }
+            }
         case .viewer:
             if case .ready(let target) = phase { readyContent(target) }
         case .text:
@@ -631,6 +685,18 @@ struct WorldInlinePanel<Health: View>: View {
                                                                    sector: $0.sector) }
         return WorldCaptureDial(coverage: map.receipt.coverage, newest: newest, motionSector: overlay?.motionSector,
                                 photos: WorldCaptureDial.photos(overlay?.dialEntries ?? []))
+    }
+
+    /// FOW-RING, kept photos: the current receipt's dial and the photos it
+    /// shows, WITH the report's walk. `kept` counts only beside a report of
+    /// its own walk, and only for the same hero piece.
+    static func shownDial<Report>(_ map: WorldPanelMapSource?, overlay: WorldLandedOverlay?,
+                                  kept: WalkScoped<WorldCaptureDialPhotos>?,
+                                  beside report: WalkScoped<Report>) -> WalkScoped<WorldPanelDialShown> {
+        let dial = captureDial(map, overlay: overlay)
+        let photos = WorldCaptureDialPhotos(dial: dial, entries: overlay?.dialEntries ?? [],
+                                            keeping: kept?.value(beside: report))
+        return report.map { _ in WorldPanelDialShown(dial: dial, photos: photos) }
     }
 
     /// B2's thumbnails only over the live receipt they were placed on: never
@@ -806,10 +872,8 @@ struct WorldInlinePanel<Health: View>: View {
                 }
             }
         case .walking:
-            if let dial, Self.drawsDial(dial, map: map), map == nil || tab == .dial {
-                let overlay = map.flatMap { Self.landed(landed, over: $0) }
-                WorldCaptureDialCaption(dial: Self.captureDial(map, overlay: overlay), source: map,
-                                        photosUnavailable: dial.photosUnavailable)
+            if let dial, let shown = shownDial?.value, Self.drawsDial(dial, map: map), map == nil || tab == .dial {
+                WorldCaptureDialCaption(dial: shown.dial, source: map)
             } else if let map {
                 let shownMap = Self.map(map, holding: photo)
                 WorldCoverageCaption(source: shownMap, stopped: false,

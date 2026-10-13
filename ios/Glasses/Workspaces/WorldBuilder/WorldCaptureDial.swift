@@ -11,11 +11,13 @@
 //  What the dial is, and is not. Its segment states are the OR of the
 //  frozen coverage receipt's masks over one piece's DRAWN stations (§3.2):
 //  `supported` (two or more views), `weak` (one view), or not yet captured.
-//  It is never "the room", never complete, and never says where the wearer
-//  is or faces. Its top is the newest placed view when the Tower says which
-//  that is (`landed.latest`, S3), and otherwise the way the wearer faced
-//  when the piece began (sector zero) -- never a compass. No clock, image
-//  or view state lives here.
+//  It is never complete, and never says where the wearer is. Its top is the
+//  newest placed view when the Tower says which that is (`landed.latest`,
+//  S3) -- close enough to the way the wearer faces that the one-line hint
+//  turns from it -- and otherwise the way the wearer faced when the piece
+//  began (sector zero), when the hint names no direction. Never a compass.
+//  No clock or view state lives here; the photos kept across landings are
+//  `WorldCaptureDialPhotos`, held by the panel WITH their walk.
 //
 
 import Foundation
@@ -50,14 +52,19 @@ nonisolated enum WorldPanelTab: String, CaseIterable, Sendable {
 }
 
 /// What the panel needs for the dial beyond the map: `nil` is the switch
-/// off. Both flags are already the walk's own (the view model's gates).
+/// off. The flag is already the walk's own (the view model's gate).
 nonisolated struct WorldPanelDial: Equatable, Sendable {
     /// `guidance.coverage: null` for the walk being received: the Tower's
     /// switch is on and no landing has merged yet (§6 "Before the first
     /// landing").
     var awaiting = false
-    /// The phone gave up on the current landing's photos (§3.4).
-    var photosUnavailable = false
+}
+
+/// The walking dial as the panel draws it: the current receipt's dial and
+/// the photos it shows (this landing's, and those kept for its hero).
+nonisolated struct WorldPanelDialShown: Equatable {
+    let dial: WorldCaptureDial
+    let photos: WorldCaptureDialPhotos
 }
 
 // MARK: - The model
@@ -228,31 +235,90 @@ nonisolated struct WorldCaptureDial: Equatable, Sendable {
         return nil
     }
 
-    /// The look-here emphasis: the gap, only while the map is fresh (§3.5,
-    /// §4). Never for a stale or undated map.
-    func emphasis(age: Double?) -> Gap? {
-        WorldCaptureDialCopy.isFresh(age) ? gap : nil
+    /// The look-here emphasis: the single next-best segment -- the centre of
+    /// the gap, or its middle two when the gap is six or more -- never the
+    /// whole arc. Stale or undated maps keep it. `nil` with nothing to look
+    /// for, or when every direction is the gap (no direction is better).
+    var lookHere: Gap? {
+        guard let gap, gap.positions.count < Self.sectors else { return nil }
+        let count = gap.positions.count >= 6 ? 2 : 1
+        let start = (gap.positions.count - count) / 2
+        return Gap(positions: Array(gap.positions[start..<start + count]), evidence: gap.evidence)
+    }
+}
+
+// MARK: - The photos, kept across landings
+
+/// What the dial's segments show as photos (§3.4, kept): this landing's
+/// in-hand tiles, and on each captured hero sector it left without one, the
+/// photo last shown there by an earlier landing of the same hero piece. The
+/// panel holds the last value WITH its walk (`WalkScoped`), so another walk
+/// or a reset starts with none, and a new hero piece drops them here.
+nonisolated struct WorldCaptureDialPhotos: Equatable {
+    /// The hero piece the photos are of; `nil` without one.
+    let referenceSegment: Int?
+    /// Hero sector -> the photo drawn there.
+    let bySector: [Int: WorldDialThumbnail]
+
+    static var empty: Self { Self(referenceSegment: nil, bySector: [:]) }
+
+    init(referenceSegment: Int?, bySector: [Int: WorldDialThumbnail]) {
+        self.referenceSegment = referenceSegment
+        self.bySector = bySector
+    }
+
+    /// `dial`'s accepted photos from `entries`, over `kept` when `kept` is of
+    /// the same hero piece: a kept photo only fills a sector this landing
+    /// left bare, and never a sector that is not captured now.
+    init(dial: WorldCaptureDial, entries: [WorldDialThumbnail], keeping kept: Self? = nil) {
+        guard let hero = dial.hero else {
+            self = .empty
+            return
+        }
+        let tiles = Dictionary(entries.map { ($0.digest, $0) }, uniquingKeysWith: { _, last in last })
+        var shown = dial.photosBySector.compactMapValues { tiles[$0] }
+        if let kept, kept.referenceSegment == hero.referenceSegment {
+            for (sector, photo) in kept.bySector
+            where shown[sector] == nil && (0..<WorldCaptureDial.sectors).contains(sector)
+                && hero.sectors[sector] != .unconfirmed {
+                shown[sector] = photo
+            }
+        }
+        self.init(referenceSegment: hero.referenceSegment, bySector: shown)
     }
 }
 
 // MARK: - The words
 
-/// Everything the dial says (§3, §4). Never "the room", never complete,
-/// never a percentage or an instruction; nothing is voiced on its own.
+/// Everything the dial says (§3, §4, the demo-polish pass): one fixed title,
+/// a one-line hint turned from the dial's top, and the update stamp. Never a
+/// percentage or a clock face; nothing is voiced on its own.
 nonisolated enum WorldCaptureDialCopy {
     static let dialName = "Capture dial"
+    static let title = "Room coverage"
     static let tabLabel = "Panel view"
-    static let awaitingLine = "The dial starts filling when the Tower places your first views."
-    static let photosUnavailable = "Photos unavailable for this update"
+    static let awaitingLine = "Fills in as the Tower places your first views."
     static let ofTwelve = "of 12"
     static let captured = "captured"
     static let notYetNumber = "–"
     static let legendCaptured = "Captured"
     static let legendOneView = "One view"
     static let legendNotYet = "Not yet captured"
-    static let allCaptured = "All 12 directions captured in this piece."
-    static let topNewest = "your newest placed view"
-    static let topPieceStart = "the way you faced when this piece began"
+    static let allCaptured = "All directions captured — nice."
+    static let lookAround = "Look around the room"
+    static let ahead = "Keep looking ahead to capture more"
+    static let right = "Turn right to capture more"
+    static let rightBehind = "Look right and behind you"
+    static let behind = "Look behind you"
+    static let leftBehind = "Look left and behind you"
+    static let left = "Turn left to capture more"
+    static let updating = "updating…"
+    static let undated = "Update time unavailable"
+
+    /// Above this many seconds the stamp adds a muted "updating…". The
+    /// dial's own threshold: the map's `WorldCoverageReceipt.staleAfter` is
+    /// unchanged, so the switch OFF is today's panel exactly.
+    static let staleAfter: Double = 90
 
     static func tabName(_ tab: WorldPanelTab) -> String {
         switch tab {
@@ -261,68 +327,46 @@ nonisolated enum WorldCaptureDialCopy {
         }
     }
 
-    /// ≤ 30 s on the measured Tower clock (§8.2); an undated map is not fresh.
-    static func isFresh(_ age: Double?) -> Bool {
-        age.map { $0 <= WorldCoverageReceipt.staleAfter } ?? false
+    /// Older than `staleAfter` on the measured Tower clock; an undated map
+    /// is not said to be updating (its stamp says it has no time).
+    static func isUpdating(_ age: Double?) -> Bool {
+        age.map { $0 > staleAfter } ?? false
     }
 
     /// "12", "1" ... "11": the clock hour of a display position.
     static func hour(_ position: Int) -> Int { position == 0 ? 12 : position }
 
-    static func clock(_ positions: [Int]) -> String {
-        guard positions.count < WorldCaptureDial.sectors else { return "all 12 directions" }
-        guard let first = positions.first, let last = positions.last else { return "" }
-        return positions.count == 1 ? "\(hour(first)) o'clock" : "\(hour(first)) to \(hour(last)) o'clock"
-    }
-
-    static func reference(_ top: WorldCaptureDial.Top) -> String {
-        top == .newestView ? topNewest : topPieceStart
-    }
-
-    /// §3.1: "Your newest views" / "Most views", "Piece n · …" with several.
-    static func heroLabel(_ dial: WorldCaptureDial) -> String {
-        guard let hero = dial.hero else { return dialName }
-        let what = dial.top == .newestView ? "your newest views" : "most views"
-        return dial.pieces.count > 1 ? "\(hero.name) · \(what)" : what.prefix(1).uppercased() + what.dropFirst()
-    }
-
-    /// The footer's orientation line (§3.3).
-    static func topLine(_ dial: WorldCaptureDial) -> String {
-        "Top of the dial: \(reference(dial.top))."
-    }
-
-    /// §3.5's gap line. Never imperative, never voiced on its own, never haptic.
-    static func gapLine(_ dial: WorldCaptureDial, age: Double?) -> String {
+    /// The one-line hint. The top is the newest placed view, so the
+    /// look-here segment's side of it is the way to turn; without `latest`
+    /// the top is only where the piece began, and no direction is given.
+    static func hint(_ dial: WorldCaptureDial) -> String {
         guard dial.hasReceipt else { return awaitingLine }
-        guard let gap = dial.gap else { return allCaptured }
-        let at = clock(gap.positions)
-        let whole = gap.positions.count == WorldCaptureDial.sectors
-        if gap.evidence == .weak {
-            let place = whole ? "in \(at)" : "at \(at)"
-            return gap.positions.count == 1
-                ? "One view only \(place). Another view there would capture it."
-                : "One view only \(place). Another view of each would capture them."
+        guard dial.gap != nil else { return allCaptured }
+        guard dial.top == .newestView, let target = dial.lookHere else { return lookAround }
+        return turn(target)
+    }
+
+    /// From the look-here centre's angle clockwise from the top: ahead
+    /// within 15°, behind within 15° of 180°, the diagonals behind out to
+    /// 45° either side of it, and right or left between.
+    static func turn(_ target: WorldCaptureDial.Gap) -> String {
+        let first = Double(target.positions.first ?? 0)
+        let centre = (first + Double(target.positions.count - 1) / 2).truncatingRemainder(dividingBy: 12)
+        switch centre * 30 {
+        case ...15, 345...: return ahead
+        case ..<135: return right
+        case ..<165: return rightBehind
+        case ...195: return behind
+        case ...225: return leftBehind
+        default: return left
         }
-        guard isFresh(age) else { return "Not yet captured when this map was made: \(at)." }
-        if whole { return "More needed in \(at)." }
-        let mostly = gap.positions.count >= 4 ? "mostly " : ""
-        return "More needed at \(at), \(mostly)\(side(gap)) \(reference(dial.top))."
     }
 
-    /// From the arc's midpoint hour: 10.5–1.5 ahead of, 1.5–4.5 right of,
-    /// 4.5–7.5 behind, 7.5–10.5 left of (§3.5). A midpoint exactly on a
-    /// boundary (a run of even length) goes to ahead of or behind.
-    static func side(_ gap: WorldCaptureDial.Gap) -> String {
-        let first = Double(gap.positions.first ?? 0)
-        let mid = (first + Double(gap.positions.count - 1) / 2).truncatingRemainder(dividingBy: 12)
-        if mid <= 1.5 || mid >= 10.5 { return "ahead of" }
-        if (4.5...7.5).contains(mid) { return "behind" }
-        return mid < 4.5 ? "right of" : "left of"
-    }
-
-    /// "You were moving toward 2 o'clock" (§3.3's walk cue), spoken only.
-    static func motion(_ dial: WorldCaptureDial) -> String? {
-        dial.motionSector.map { "You were moving toward \(hour(dial.position(of: $0))) o'clock" }
+    /// The footer's second line, muted: "Updated 45 s ago", with
+    /// " · updating…" past `staleAfter`.
+    static func stamp(age: Double?) -> String {
+        guard let age else { return undated }
+        return "Updated \(WorldCoverageCopy.ago(age)) ago" + (isUpdating(age) ? " · \(updating)" : "")
     }
 
     /// The centre: the count, or "–" before the first landing.
@@ -336,21 +380,18 @@ nonisolated enum WorldCaptureDialCopy {
     }
 
     static func accessibilityLabel(_ dial: WorldCaptureDial) -> String {
-        guard let hero = dial.hero else { return dialName }
-        let what = dial.top == .newestView ? "your newest views" : "most views"
-        return dial.pieces.count > 1 ? "\(dialName), \(hero.name), \(what)" : "\(dialName), \(what)"
+        guard let hero = dial.hero, dial.pieces.count > 1 else { return dialName }
+        return "\(dialName), \(hero.name)"
     }
 
-    /// §4: "8 of 12 directions captured, 1 with one view. More needed at 5
-    /// to 7 o'clock, behind your newest placed view. Top of the dial is your
-    /// newest placed view." The age stays in the stamp line.
-    static func accessibilityValue(_ dial: WorldCaptureDial, age: Double?) -> String {
+    /// "8 of 12 directions captured, 1 with one view. Look behind you." The
+    /// hint, as the footer says it; the age stays in the stamp line.
+    static func accessibilityValue(_ dial: WorldCaptureDial) -> String {
         guard let hero = dial.hero else { return awaitingLine }
-        var parts = ["\(hero.supportedCount) of 12 directions captured"
-            + (hero.weakCount > 0 ? ", \(hero.weakCount) with one view." : "."), gapLine(dial, age: age)]
-        if let motion = motion(dial) { parts.append(motion + ".") }
-        parts.append("Top of the dial is \(reference(dial.top)).")
-        return parts.joined(separator: " ")
+        let hint = hint(dial)
+        return "\(hero.supportedCount) of 12 directions captured"
+            + (hero.weakCount > 0 ? ", \(hero.weakCount) with one view. " : ". ")
+            + hint + (hint.hasSuffix(".") ? "" : ".")
     }
 
     /// A custom action and a photo's own label: "Photo at 3 o'clock".

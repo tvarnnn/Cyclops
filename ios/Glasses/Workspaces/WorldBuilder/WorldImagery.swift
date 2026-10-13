@@ -633,7 +633,7 @@ final class WorldImageryModel: ObservableObject {
     }
 
     /// Every tile the current landing's manifest named failed: its photos
-    /// are unavailable (the dial says so, FOW-RING-SPEC §3.4).
+    /// are unavailable (FOW-RING-SPEC §3.4; the dial keeps its last ones).
     private func giveUpIfNoLandedTile() {
         guard let landed = imagery.value.landed, let landing, landed.landing == landing,
               nextMissing(.landed) == nil,
@@ -886,16 +886,5 @@ extension WorldBuilderViewModel {
         return WalkScoped(walk: walk, value: WorldLandedOverlay(receipt: receipt, thumbnails: thumbnails,
                                                                  dialEntries: dialEntries, latest: landed.latest,
                                                                  motionSector: landed.motionSector))
-    }
-
-    /// The capture dial's "Photos unavailable for this update": the phone
-    /// gave up on the photos of the landing the walk's own map is from.
-    var landedPhotosUnavailable: Bool {
-        let held = imageryModel.imagery
-        guard imageryModel.switches.landed, let walk = held.walk, let unavailable = held.value.landedUnavailable,
-              let receipt = walkReport.value(for: WorldRenderTarget(worldID: walk.worldID, sessionID: walk.sessionID))?
-                .coverage
-        else { return false }
-        return unavailable == WorldImageryLanding(receipt.coverage)
     }
 }

@@ -484,7 +484,7 @@ struct WorldBuilderWorkspaceView: View {
     /// The capture dial's inputs, or `nil` with its switch off.
     private var panelDial: WorldPanelDial? {
         guard Self.dialSwitch.on else { return nil }
-        return WorldPanelDial(awaiting: world.coverageAwaited, photosUnavailable: world.landedPhotosUnavailable)
+        return WorldPanelDial(awaiting: world.coverageAwaited)
     }
 
     private var hostInputs: WorldInlineHost.Inputs {
