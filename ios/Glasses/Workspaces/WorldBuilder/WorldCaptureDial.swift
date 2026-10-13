@@ -60,6 +60,14 @@ nonisolated struct WorldPanelDial: Equatable, Sendable {
     var awaiting = false
 }
 
+/// The newest placed view of the last landing whose photos were in hand,
+/// WITH its frame: held while a newer receipt's photos are not in yet, so
+/// the hero, the top and the hint do not flip back for that window.
+nonisolated struct WorldPanelHeldNewest: Equatable, Sendable {
+    let newest: WorldCaptureDial.Newest
+    let frameRevision: Int
+}
+
 /// The walking dial as the panel draws it: the current receipt's dial and
 /// the photos it shows (this landing's, and those kept for its hero).
 nonisolated struct WorldPanelDialShown: Equatable {
@@ -136,6 +144,9 @@ nonisolated struct WorldCaptureDial: Equatable, Sendable {
     /// `landed.motion_sector`, only beside the `newest` that names the hero.
     let motionSector: Int?
     let stationsOmitted: Int
+    /// The receipt's `frame_revision`: a re-solve may turn a piece's frame,
+    /// and kept photos never cross one. `nil` before the first landing.
+    let frameRevision: Int?
     /// Hero sector -> digest; the last eligible photo in manifest order wins,
     /// and a photo is never drawn on a segment that is not yet captured.
     let photosBySector: [Int: String]
@@ -145,14 +156,15 @@ nonisolated struct WorldCaptureDial: Equatable, Sendable {
 
     init(coverage: WorldCoverage, newest: Newest? = nil, motionSector: Int? = nil, photos: [Photo] = []) {
         self.init(components: coverage.components, stationsOmitted: coverage.stationsOmitted,
-                  newest: newest, motionSector: motionSector, photos: photos)
+                  frameRevision: coverage.frameRevision, newest: newest, motionSector: motionSector, photos: photos)
     }
 
-    init(components: [WorldCoverage.Component], stationsOmitted: Int,
+    init(components: [WorldCoverage.Component], stationsOmitted: Int, frameRevision: Int? = nil,
          newest: Newest? = nil, motionSector: Int? = nil, photos: [Photo] = []) {
         let pieces = components.enumerated().map { Piece(index: $0.offset, component: $0.element) }
         self.pieces = pieces
         self.stationsOmitted = stationsOmitted
+        self.frameRevision = frameRevision
         // §3.1: the piece the newest view names, else the one with the most
         // posed keyframes (ties: the first in reference order). A newest view
         // in a piece not drawn here anchors nothing.
@@ -255,25 +267,30 @@ nonisolated struct WorldCaptureDial: Equatable, Sendable {
 
 /// What the dial's segments show as photos (§3.4, kept): this landing's
 /// in-hand tiles, and on each captured hero sector it left without one, the
-/// photo last shown there by an earlier landing of the same hero piece. The
-/// panel holds the last value WITH its walk (`WalkScoped`), so another walk
-/// or a reset starts with none, and a new hero piece drops them here.
+/// photo last shown there by an earlier landing of the same hero piece in
+/// the same frame. The panel holds the last value WITH its walk
+/// (`WalkScoped`), so another walk or a reset starts with none, and a new
+/// hero piece or a new `frame_revision` (a re-solve may turn the piece's
+/// frame) drops them here.
 nonisolated struct WorldCaptureDialPhotos: Equatable {
     /// The hero piece the photos are of; `nil` without one.
     let referenceSegment: Int?
+    /// The frame the sectors are in.
+    let frameRevision: Int?
     /// Hero sector -> the photo drawn there.
     let bySector: [Int: WorldDialThumbnail]
 
     static var empty: Self { Self(referenceSegment: nil, bySector: [:]) }
 
-    init(referenceSegment: Int?, bySector: [Int: WorldDialThumbnail]) {
+    init(referenceSegment: Int?, frameRevision: Int? = nil, bySector: [Int: WorldDialThumbnail]) {
         self.referenceSegment = referenceSegment
+        self.frameRevision = frameRevision
         self.bySector = bySector
     }
 
     /// `dial`'s accepted photos from `entries`, over `kept` when `kept` is of
-    /// the same hero piece: a kept photo only fills a sector this landing
-    /// left bare, and never a sector that is not captured now.
+    /// the same hero piece in the same frame: a kept photo only fills a
+    /// sector this landing left bare, and never one not captured now.
     init(dial: WorldCaptureDial, entries: [WorldDialThumbnail], keeping kept: Self? = nil) {
         guard let hero = dial.hero else {
             self = .empty
@@ -281,14 +298,14 @@ nonisolated struct WorldCaptureDialPhotos: Equatable {
         }
         let tiles = Dictionary(entries.map { ($0.digest, $0) }, uniquingKeysWith: { _, last in last })
         var shown = dial.photosBySector.compactMapValues { tiles[$0] }
-        if let kept, kept.referenceSegment == hero.referenceSegment {
+        if let kept, kept.referenceSegment == hero.referenceSegment, kept.frameRevision == dial.frameRevision {
             for (sector, photo) in kept.bySector
             where shown[sector] == nil && (0..<WorldCaptureDial.sectors).contains(sector)
                 && hero.sectors[sector] != .unconfirmed {
                 shown[sector] = photo
             }
         }
-        self.init(referenceSegment: hero.referenceSegment, bySector: shown)
+        self.init(referenceSegment: hero.referenceSegment, frameRevision: dial.frameRevision, bySector: shown)
     }
 }
 

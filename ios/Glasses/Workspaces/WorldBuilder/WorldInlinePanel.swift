@@ -348,6 +348,9 @@ struct WorldInlinePanel<Health: View>: View {
     /// The last dial drawn over a map and the photos it showed, WITH its
     /// walk: dimmed in the stage after Stop, for that walk only.
     @State private var finalDial: WalkScoped<WorldPanelDialShown>?
+    /// The newest placed view of the last landing whose photos were in hand,
+    /// WITH its walk: held while a newer receipt's photos are not in yet.
+    @State private var heldNewest: WalkScoped<WorldPanelHeldNewest>?
 
     private var presentation: WorldPresentation { report.value }
 
@@ -455,10 +458,15 @@ struct WorldInlinePanel<Health: View>: View {
         .onChange(of: finishing, initial: true) { _, block in
             finish.record(block)
         }
+        .onChange(of: newestRecord, initial: true) { _, newest in
+            guard let newest else { return }
+            heldNewest = newest
+        }
         .onChange(of: dialRecord, initial: true) { _, shown in
             guard let shown else { return }
-            keptDialPhotos = shown.map(\.photos)
-            finalDial = shown
+            let next = Self.record(shown, fromLanding: currentOverlay != nil, over: finalDial)
+            finalDial = next
+            keptDialPhotos = next?.map(\.photos)
         }
         .onChange(of: webShown) { _, shown in
             guard shown else { return }
@@ -565,10 +573,37 @@ struct WorldInlinePanel<Health: View>: View {
     static func postStopDial<Report>(_ final: WalkScoped<WorldPanelDialShown>?,
                                      beside report: WalkScoped<Report>) -> WorldPanelDialShown? {
         guard let last = final?.value(beside: report) else { return nil }
-        guard last.photos.referenceSegment == last.dial.hero?.referenceSegment else {
+        guard last.photos.referenceSegment == last.dial.hero?.referenceSegment,
+              last.photos.frameRevision == last.dial.frameRevision else {
             return WorldPanelDialShown(dial: last.dial, photos: .empty)
         }
         return last
+    }
+
+    /// FOW-RING: what the panel remembers of the dial drawn now. A report
+    /// naming no walk never overwrites a walk's record (read beside its own
+    /// walk only, a reset already shows none of it), and a dial drawn while
+    /// its landing's photos are not in yet never replaces a record of the
+    /// same walk that holds photos: they would be lost for good.
+    static func record(_ shown: WalkScoped<WorldPanelDialShown>, fromLanding: Bool,
+                       over previous: WalkScoped<WorldPanelDialShown>?) -> WalkScoped<WorldPanelDialShown>? {
+        guard shown.walk != nil else { return previous }
+        guard !fromLanding, let held = previous?.value(beside: shown), !held.photos.bySector.isEmpty else {
+            return shown
+        }
+        return previous
+    }
+
+    /// The newest placed view to hold: the current receipt's own landing's
+    /// `latest`, WITH the report's walk and the receipt's frame; `nil`
+    /// without a walk, an in-hand landing or a `latest`.
+    static func heldNewest<Report>(_ map: WorldPanelMapSource?, overlay: WorldLandedOverlay?,
+                                   beside report: WalkScoped<Report>) -> WalkScoped<WorldPanelHeldNewest>? {
+        guard report.walk != nil, let map, let overlay, let latest = overlay.latest else { return nil }
+        let newest = WorldCaptureDial.Newest(referenceSegment: latest.componentReferenceSegment, sector: latest.sector)
+        return report.map { _ in
+            WorldPanelHeldNewest(newest: newest, frameRevision: map.receipt.coverage.frameRevision)
+        }
     }
 
     /// FOW-RING: with the dial on, Capture health is one collapsed row that
@@ -579,13 +614,20 @@ struct WorldInlinePanel<Health: View>: View {
     /// with the switch off.
     private var shownDial: WalkScoped<WorldPanelDialShown>? {
         guard dial != nil else { return nil }
-        return Self.shownDial(map, overlay: map.flatMap { Self.landed(landed, over: $0) }, kept: keptDialPhotos,
-                              beside: report)
+        return Self.shownDial(map, overlay: currentOverlay, kept: keptDialPhotos, held: heldNewest, beside: report)
     }
+
+    /// B2's landing over the current receipt, or `nil` while it is not in.
+    private var currentOverlay: WorldLandedOverlay? { map.flatMap { Self.landed(landed, over: $0) } }
 
     /// What is remembered: only a dial drawn over a map.
     private var dialRecord: WalkScoped<WorldPanelDialShown>? {
         map == nil ? nil : shownDial
+    }
+
+    private var newestRecord: WalkScoped<WorldPanelHeldNewest>? {
+        guard dial != nil else { return nil }
+        return Self.heldNewest(map, overlay: currentOverlay, beside: report)
     }
 
     private var stageHeight: CGFloat {
@@ -651,11 +693,10 @@ struct WorldInlinePanel<Health: View>: View {
                 if let last = postStop {
                     // FOW-RING: the walk's last dial with the photos it
                     // showed, dimmed, with no words over it (they are in the
-                    // footer); never touched, and its value is the count alone.
+                    // footer); never touched, and read as its count alone.
                     WorldCaptureDialView(dial: last.dial, receipt: nil, photos: last.photos, guides: false)
                         .opacity(0.6)
                         .allowsHitTesting(false)
-                        .accessibilityHidden(true)
                 } else {
                     finishingContent(block, alwaysSpins: true)
                 }
@@ -703,11 +744,17 @@ struct WorldInlinePanel<Health: View>: View {
     /// The dial of the CURRENT receipt (never a held one, §6), with B2's
     /// photos and S3's top and walk cue only when `overlay` is that
     /// receipt's own landing (`landed(_:over:)`); before the first landing,
-    /// twelve dashed segments.
-    static func captureDial(_ map: WorldPanelMapSource?, overlay: WorldLandedOverlay?) -> WorldCaptureDial {
+    /// twelve dashed segments. While the receipt's own landing is not in
+    /// (`overlay` nil), `held` -- the last landing's newest view, in the
+    /// same frame -- keeps the hero, the top and the hint where they were.
+    static func captureDial(_ map: WorldPanelMapSource?, overlay: WorldLandedOverlay?,
+                            held: WorldPanelHeldNewest? = nil) -> WorldCaptureDial {
         guard let map else { return .awaiting }
-        let newest = overlay?.latest.map { WorldCaptureDial.Newest(referenceSegment: $0.componentReferenceSegment,
+        var newest = overlay?.latest.map { WorldCaptureDial.Newest(referenceSegment: $0.componentReferenceSegment,
                                                                    sector: $0.sector) }
+        if overlay == nil, let held, held.frameRevision == map.receipt.coverage.frameRevision {
+            newest = held.newest
+        }
         return WorldCaptureDial(coverage: map.receipt.coverage, newest: newest, motionSector: overlay?.motionSector,
                                 photos: WorldCaptureDial.photos(overlay?.dialEntries ?? []))
     }
@@ -717,8 +764,9 @@ struct WorldInlinePanel<Health: View>: View {
     /// its own walk, and only for the same hero piece.
     static func shownDial<Report>(_ map: WorldPanelMapSource?, overlay: WorldLandedOverlay?,
                                   kept: WalkScoped<WorldCaptureDialPhotos>?,
+                                  held: WalkScoped<WorldPanelHeldNewest>? = nil,
                                   beside report: WalkScoped<Report>) -> WalkScoped<WorldPanelDialShown> {
-        let dial = captureDial(map, overlay: overlay)
+        let dial = captureDial(map, overlay: overlay, held: held?.value(beside: report))
         let photos = WorldCaptureDialPhotos(dial: dial, entries: overlay?.dialEntries ?? [],
                                             keeping: kept?.value(beside: report))
         return report.map { _ in WorldPanelDialShown(dial: dial, photos: photos) }

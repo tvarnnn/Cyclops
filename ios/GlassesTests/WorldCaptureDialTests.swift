@@ -532,7 +532,8 @@ final class WorldCaptureDialTests: XCTestCase {
         let walkA = WorldFinishWalk(worldID: "w1", sessionID: "s9")
         let walkB = WorldFinishWalk(worldID: "w1", sessionID: "s10")
         let kept = WalkScoped(walk: walkA, value: WorldCaptureDialPhotos(
-            referenceSegment: 0, bySector: [2: Self.thumb("k2", sector: 2), 7: Self.thumb("k7", sector: 7)]))
+            referenceSegment: 0, frameRevision: stop.frameRevision,
+            bySector: [2: Self.thumb("k2", sector: 2), 7: Self.thumb("k7", sector: 7)]))
         let same = Panel.shownDial(map, overlay: nil, kept: kept, beside: WalkScoped(walk: walkA, value: ()))
         XCTAssertEqual(same.walk, walkA)
         XCTAssertEqual(same.value.photos.bySector.mapValues(\.digest), [2: "k2"], "sector 7 is not captured")
@@ -572,6 +573,72 @@ final class WorldCaptureDialTests: XCTestCase {
             dial: last, photos: WorldCaptureDialPhotos(referenceSegment: 5, bySector: [0: a])))
         XCTAssertEqual(Panel.postStopDial(foreign, beside: WalkScoped(walk: walkA, value: ()))?.photos, .empty,
                        "another piece's photos: colour")
+    }
+
+    /// While a newer receipt's own landing is not in (no overlay), the last
+    /// landing's newest view holds: the hero, the top and the hint stay, the
+    /// kept photos stay on the hero, and nothing recorded loses them. A new
+    /// frame, another walk, or a report naming none holds nothing.
+    func testTheNilOverlayWindowNeitherFlipsTheHeroNorWipesTheKeptPhotos() throws {
+        let mid = try XCTUnwrap(FOWFixtures.coverage(FOWFixtures.mid))
+        let map = WorldPanelMapSource.coverage(WorldCoverageReceipt(coverage: mid, keyframesAccepted: nil, clock: nil))
+        let walkA = WorldFinishWalk(worldID: "w1", sessionID: "s9")
+        let report = WalkScoped(walk: walkA, value: ())
+        let held = WalkScoped(walk: walkA, value: WorldPanelHeldNewest(
+            newest: .init(referenceSegment: 17, sector: 0), frameRevision: mid.frameRevision))
+        let kept = WalkScoped(walk: walkA, value: WorldCaptureDialPhotos(
+            referenceSegment: 17, frameRevision: mid.frameRevision,
+            bySector: [0: Self.thumb("k", reference: 17, sector: 0)]))
+
+        let window = Panel.shownDial(map, overlay: nil, kept: kept, held: held, beside: report)
+        XCTAssertEqual(window.value.dial.hero?.referenceSegment, 17, "the hero holds")
+        XCTAssertEqual(window.value.dial.top, .newestView, "the top holds")
+        XCTAssertEqual(window.value.photos.bySector.mapValues(\.digest), [0: "k"], "the kept photo stays")
+        XCTAssertNotEqual(Copy.hint(window.value.dial), Copy.lookAround)
+
+        let unheld = Panel.shownDial(map, overlay: nil, kept: kept, beside: report)
+        XCTAssertEqual(unheld.value.dial.hero?.referenceSegment, 0, "without the hold: the biggest piece")
+        let otherFrame = WalkScoped(walk: walkA, value: WorldPanelHeldNewest(
+            newest: .init(referenceSegment: 17, sector: 0), frameRevision: mid.frameRevision + 1))
+        XCTAssertEqual(Panel.shownDial(map, overlay: nil, kept: kept, held: otherFrame, beside: report)
+                        .value.dial.top, .pieceStart, "never across a new frame")
+        XCTAssertEqual(Panel.shownDial(map, overlay: nil, kept: kept, held: held,
+                                       beside: WalkScoped(walk: nil, value: ())).value.dial.top, .pieceStart)
+
+        // Even a flipped, photo-less dial drawn in the window never replaces
+        // the walk's record that holds photos; a landing's own dial does.
+        let recorded = Panel.record(window, fromLanding: true, over: nil)
+        XCTAssertEqual(Panel.record(unheld, fromLanding: false, over: recorded), recorded, "nothing lost")
+        XCTAssertEqual(Panel.record(unheld, fromLanding: true, over: recorded), unheld, "a landing's own dial")
+        XCTAssertEqual(Panel.record(unheld, fromLanding: false, over: nil), unheld, "nothing to keep")
+        let reset = WalkScoped(walk: nil, value: unheld.value)
+        XCTAssertEqual(Panel.record(reset, fromLanding: true, over: recorded), recorded,
+                       "a report naming no walk never overwrites the walk's record")
+        XCTAssertNil(Panel.record(reset, fromLanding: true, over: recorded)?.value(beside: WalkScoped(walk: nil,
+                                                                                                    value: ())),
+                     "and a reset still shows none of it")
+        XCTAssertNil(Panel.heldNewest(map, overlay: nil, beside: report), "no landing in hand: nothing new held")
+    }
+
+    /// A re-solve may turn a piece's frame: kept photos never cross a new
+    /// `frame_revision`, even for the same piece.
+    func testANewFrameRevisionDropsTheKeptPhotos() {
+        let a = Self.thumb("a", sector: 0)
+        let frame1 = WorldCaptureDial(components: [Self.piece(supported: [0, 1])], stationsOmitted: 0,
+                                      frameRevision: 1, newest: .init(referenceSegment: 0, sector: 0),
+                                      photos: WorldCaptureDial.photos([a]))
+        let first = WorldCaptureDialPhotos(dial: frame1, entries: [a])
+        XCTAssertEqual(first.frameRevision, 1)
+        XCTAssertEqual(first.bySector.mapValues(\.digest), [0: "a"])
+        let same = WorldCaptureDial(components: [Self.piece(supported: [0, 1, 2])], stationsOmitted: 0,
+                                    frameRevision: 1, newest: .init(referenceSegment: 0, sector: 2))
+        XCTAssertEqual(WorldCaptureDialPhotos(dial: same, entries: [], keeping: first).bySector.mapValues(\.digest),
+                       [0: "a"], "the same frame keeps")
+        let turned = WorldCaptureDial(components: [Self.piece(supported: [0, 1, 2])], stationsOmitted: 0,
+                                      frameRevision: 2, newest: .init(referenceSegment: 0, sector: 2))
+        let dropped = WorldCaptureDialPhotos(dial: turned, entries: [], keeping: first)
+        XCTAssertEqual(dropped.bySector, [:], "a new frame drops them")
+        XCTAssertEqual(dropped.frameRevision, 2)
     }
 
     /// A piece with nothing captured is never drawn as a mini dial: no "0/12".

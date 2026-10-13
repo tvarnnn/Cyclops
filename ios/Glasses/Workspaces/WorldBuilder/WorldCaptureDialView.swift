@@ -375,17 +375,16 @@ struct WorldCaptureDialView: View {
                 .fill(Color.white.opacity(0.001))
                 .accessibilityElement(children: .ignore)
                 .accessibilityLabel(WorldCaptureDialCopy.accessibilityLabel(dial))
+                // After Stop no hint is on screen: the value is the count.
                 .accessibilityValue(WorldCaptureDialCopy.accessibilityValue(dial, hint: guides))
                 .accessibilityIdentifier("wb-panel-dial")
                 .accessibilityActions {
-                    ForEach(photoPositions, id: \.self) { position in
+                    // After Stop the dimmed dial is never touched: no actions.
+                    ForEach(guides ? photoPositions : [], id: \.self) { position in
                         Button(WorldCaptureDialCopy.photo(at: position)) { open(sector: dial.sector(at: position)) }
                     }
                 }
                 .accessibilitySortPriority(2)
-                // The dimmed dial after Stop: hidden from VoiceOver, and its
-                // value drops the hint, which is not on screen.
-                .accessibilityHidden(!guides)
         }
     }
 
