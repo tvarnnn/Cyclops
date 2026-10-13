@@ -53,9 +53,9 @@ with real photos of the directions the Tower has confirmed. Press **Stop**. The
 Tower runs its final pipeline; the phone says which stage it is in and how long
 it has been since Stop, with no fake progress bar. When it finishes, the saved
 world opens as a photographic 3D room you can move around in. A
-four-minute walk took 19.1 minutes from Stop to the photographic world on a
-freshly started Tower; a 2 to 2.5 minute walk is projected at about 10 to 13
-minutes. A previously built world (walk 9.3) is kept as the backup.
+walk of about three and a half minutes (walk 10, the dress rehearsal) took
+**13.1 minutes** from Stop to the photographic world on a freshly started Tower.
+A previously built world (walk 9.3) is kept as the backup.
 
 ## Architecture
 
@@ -184,7 +184,7 @@ Measured on 2026-10-13 on the RTX 5070 Tower:
 |---|---|---|
 | 4 min | freshly started | **19.1 min** (measured) |
 | 4 min | long-running process | 28.7 min (measured) |
-| 2 to 2.5 min | freshly started | ~10 to 13 min (projected) |
+| 3 min 22 s (walk 10) | freshly started | **13.1 min** (measured: final solve +3.6, surface +11.1, photos +13.1) |
 
 | Stage after Stop (4-min walk) | Time |
 |---|---|
