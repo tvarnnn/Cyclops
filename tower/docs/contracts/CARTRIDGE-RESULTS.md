@@ -2221,3 +2221,20 @@ are in WORLD-BUILDER-WORLDS v8 and WORLD-BUILDER-IOS (2026-10-06 section); the f
 field authority is `FOW-COVERAGE-V1-SPEC-20261006.md`.
 
 Change log (2026-10-06, WORLDS v8): when `guidance.coverage` is non-null, Tower publishes `coverage:null` instead if the complete status payload's compact UTF-8 JSON would exceed 15 KiB, and this 15 KiB allowance is a FOW-specific bound on that one decision, not a transport-wide status size limit.
+
+Change log (2026-10-12, server switch `TOWER_WORLD_GUIDANCE_COVERAGE_PENDING`, exactly
+`on`; any other value is off and leaves every receipt byte-identical): with it on, the
+stations may also count keyframes of **pending** segments -- tracker segments the named
+solve has not yet replaced because some of their keyframes are still past its horizon
+(`global_solve.segments[<i>].state` `pending`). Such a keyframe counts only when the named
+solve posed it with at least 30 observations, in a solve component that maps to exactly one
+registered reference segment with a reliable placement and a unique anchor, and it is placed
+at that solve's own pose carried into the output frame through that reference's anchor (the
+same solve-relative pose that checks every replaced keyframe). No pose is inferred, and a
+keyframe whose component does not map is not counted. The wire shape, field set, the
+16-station cap, the 4,096-byte cap and the 250 ms worker budget are unchanged;
+`posed_keyframes`, bounds, the sector frame and the masks are computed over the larger set.
+Consequence for clients: the Map tab may show stations, and the FOW capture dial (B2) may
+show sectors and tiles, for keyframes the phone has not placed yet -- their segment's
+registered placement and replaced poses arrive only once a later solve covers the whole
+segment.
