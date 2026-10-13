@@ -65,6 +65,15 @@ placement from the coverage computation. After coverage publishes, the same
 worker selects thumbnails within an 80 ms imagery budget (one per set sector
 of the hero component; see "B2 capture-dial selection" below). Its block replaces
 the previous block as a whole; a failed job leaves the previous one visible.
+
+The 80 ms budget is the tile job's own CPU time (`time.thread_time()`), with
+a 1 s wall-clock cap so that a stalled read cannot hold the worker. A wall-time
+budget measured only how long the below-normal-priority worker waited for the
+CPU: on e2e10 (2026-10-12 20:47:10), a ~2 ms job was omitted at ~110 ms wall.
+A job that exceeds either limit publishes nothing and is retried once, at the
+next worker tick (about 0.5 s later), for the same receipt only. The retry is
+dropped if a newer receipt for that session has published by then. A job with
+no tile, an untrusted set, or a cancellation is not retried.
 An imagery manifest request racing a pending landing waits at most 80 ms for
 that block; status replies and coverage publication never wait for imagery.
 Coverage's solve-candidate memo prevents a local rebuild from re-dating B2.
@@ -147,8 +156,9 @@ Two known limits follow from being relative to the cell:
   displacement gives sector 6.
 
 **Budgets are unchanged.** Each tile is at most 16 KiB and 160 by 90 pixels.
-The imagery job has the same 80 ms budget, and if it is exceeded nothing is
-published and the previous block stays. A landing that yields no entry also
+The imagery job has the same 80 ms budget, now measured as CPU time (see
+"Production and dating" above). If it is exceeded, nothing is published, the
+previous block stays, and the job is retried once. A landing that yields no entry also
 publishes nothing, and the previous block stays with its own `latest` and
 `motion_sector`. The H/sector/latest/motion computation runs inside
 coverage's 250 ms job; it measured at most 1.3 ms, and 0.03-0.45 ms median, on
