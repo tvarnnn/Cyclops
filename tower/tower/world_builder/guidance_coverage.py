@@ -830,7 +830,12 @@ class CoverageWorker:
             except Exception:
                 logger.exception("world builder guidance: discovery failed")
             if self._landed_retry is not None:
-                self._retry_landed()
+                # Never let a retry end the worker thread: drop it and carry on.
+                try:
+                    self._retry_landed()
+                except Exception:
+                    self._landed_retry = None
+                    logger.exception("world builder guidance: landed imagery retry failed")
             with self._condition:
                 if self._stop.is_set():
                     break
