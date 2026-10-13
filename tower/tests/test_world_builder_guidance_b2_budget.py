@@ -259,3 +259,25 @@ def test_off_has_no_retry_machinery(monkeypatch, tmp_path):
     finally:
         worker.shutdown()
         worker._thread.join(1)
+
+
+def test_a_failing_retry_never_ends_the_worker(monkeypatch, tmp_path):
+    # Review HIGH (1e2c7f5): an exception anywhere in the retry must not kill the coverage thread.
+    sink = _Sink([imagery.LANDED_OVER_BUDGET, imagery.LANDED_PUBLISHED])
+    worker = _worker(monkeypatch, tmp_path, sink)
+
+    def boom():
+        raise RuntimeError("retry bug")
+
+    monkeypatch.setattr(worker, "_retry_landed", boom)
+    try:
+        worker.offer("home", "s9", 1.0, 1, (1, 1), "g1", (1, "d"))
+        assert _wait(lambda: sink.calls == [1.0])
+        assert _wait(lambda: worker._landed_retry is None)
+        assert worker._thread.is_alive()
+        worker.offer("home", "s9", 2.0, 2, (2, 2), "g2", (2, "d"))
+        assert _wait(lambda: sink.calls == [1.0, 2.0])
+        assert worker._thread.is_alive()
+    finally:
+        worker.shutdown()
+        worker._thread.join(1)
