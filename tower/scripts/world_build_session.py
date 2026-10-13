@@ -657,6 +657,17 @@ def child_environment() -> dict:
     return interpreter_environment()
 
 
+def solve_window_setting() -> int:
+    """Positive ASCII integer N, or zero for unset and invalid values."""
+    raw = os.environ.get("TOWER_WORLD_SOLVE_WINDOW", "")
+    if raw.isascii() and raw.isdecimal():
+        try:
+            return max(0, int(raw))
+        except ValueError:  # Python's oversized-integer guard
+            pass
+    return 0
+
+
 # `scripts/world_surface.py` exits with this when the stage cannot run on
 # this machine at all, as opposed to cannot run on this session yet.
 SURFACE_EXIT_CANNOT_RUN_HERE = 4
@@ -728,6 +739,18 @@ class BackgroundSurface:
         for it costs a GPU minute and changes nothing, so the solution file's
         own stamp is compared with the one last built from.
         """
+        # A partial live solution cannot replace an earlier full-walk surface:
+        # --force would drop the old rooms. The final surface path remains the
+        # full solve's job. The transient-mask/OneFormer cache key is untouched.
+        if solve_window_setting():
+            solution_path = (self.root / "worlds" / self.world_id / "solve" /
+                             self.session_id / "solution.json")
+            try:
+                with solution_path.open("r", encoding="utf-8") as stream:
+                    if (json.load(stream).get("solve") or {}).get("window_applied") is True:
+                        return False
+            except (OSError, ValueError):
+                pass
         stamp = self._solution_stamp()
         if stamp is not None and stamp == self._built_from:
             return False
@@ -947,6 +970,11 @@ class BackgroundSolver:
         argv += ["--loop-detection"]
         if final:
             argv += ["--final"]
+        else:
+            # A positive integer is the only enabled form. Keep the OFF argv exact.
+            window = solve_window_setting()
+            if window:
+                argv += ["--solve-window", str(window)]
         if self.threads is not None:
             argv += ["--threads", str(self.threads)]
         return argv

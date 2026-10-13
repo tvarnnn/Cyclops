@@ -3,6 +3,7 @@
 
     python scripts/world_solve.py --root <world root> --world <id> --session <id>
         [--capture-dir <dir> ...] [--final] [--threads N] [--loop-detection]
+        [--solve-window N]
         [--format json|text]
 
 What it does, and what it deliberately does not do:
@@ -11,6 +12,8 @@ What it does, and what it deliberately does not do:
     `--capture-dir` holds them, else the session's redacted copies), extracts
     and matches features INCREMENTALLY into `<world>/solve/<session>/`, and
     solves the whole keyframe set globally (GLOMAP, incremental fallback).
+    With --solve-window on a background call, the shared features/matches
+    still cover the full walk, while the mapper gets a recent subset.
   * It writes `solution.json` + `solution.npz` in that workspace and
     NOTHING under `derived/`. The engine's `build()` is the only writer of
     the derived tree; it merges the solution on its next run. That is what
@@ -50,6 +53,9 @@ def main(argv=None) -> int:
     parser.add_argument("--capture-dir", action="append", default=[],
                         help="capture directory whose frames/ holds raw keyframe frames; repeatable")
     parser.add_argument("--final", action="store_true")
+    parser.add_argument("--solve-window", type=int, default=0,
+                        help="target recent keyframes for a background map; may extend "
+                             "to a placed bridge segment (0=off)")
     parser.add_argument("--threads", type=int, default=None)
     parser.add_argument("--loop-detection", action="store_true",
                         help="sequential matching with vocabulary-tree loop detection "
@@ -77,6 +83,7 @@ def main(argv=None) -> int:
             min_image_observations=args.min_image_observations,
             loop_detection=args.loop_detection,
             input_digest=compute_input_digest(keyframes),
+            solve_window=args.solve_window if not args.final else 0,
         )
     finally:
         finish_phase.uninstall(token)

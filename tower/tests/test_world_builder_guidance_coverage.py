@@ -167,6 +167,26 @@ def test_three_synthetic_guidance_values_round_trip(tmp_path, monkeypatch):
                 assert station["weak_mask"] & station["supported_mask"] == 0
 
 
+def test_windowed_landing_keeps_carried_coverage_and_dial_counts():
+    data = _inputs(((0, 4), (1, 4)))
+    current = data["solution"]
+    ids = current["keyframe_ids"][4:]
+    current["keyframe_ids"] = ids
+    current["poses"] = {kid: pose for kid, pose in current["poses"].items() if kid in ids}
+    current["input_digest"] = _digest(ids)
+    current["solve"] = {"window_keyframes": 4, "window_effective_keyframes": 4}
+    summary = data["manifest"]["global_solve"]
+    summary["horizon_keyframes"] = 4
+    summary["solve"] = current["solve"]
+    eligible, dial = [], {}
+    block = compute_coverage(**data, eligible_out=eligible, dial_out=dial)
+    assert block["keyframes_now"] == 8
+    assert block["keyframes_pending"] == 0
+    assert {ref for _, ref in eligible} == {0, 1}
+    assert len(eligible) == 8
+    assert dial["reference_segment"] in (0, 1)
+
+
 def test_no_pointing_only_and_distinct_support_threshold():
     one = _block(_inputs(((0, 1),)))
     assert one["components"] == []  # a single-point map is not a room

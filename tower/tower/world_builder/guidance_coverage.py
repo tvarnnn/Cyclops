@@ -409,9 +409,22 @@ def compute_coverage(*, solution, manifest, placements, poses, keyframes,
             accepted.append(kid)
             seen.add(kid)
     built_count = _integer(manifest["keyframes"], 65535)
-    common = min(horizon, len(accepted))
-    if (accepted[:common] != ids[:common] or len(accepted) > 65535 or
-            built_count < horizon):
+    windowed = isinstance(solution.get("solve"), dict) and bool(
+        solution["solve"].get("window_keyframes"))
+    if windowed:
+        # A live window is a contiguous suffix of the solve-time journal,
+        # potentially followed by keyframes accepted during mapping.
+        try:
+            start = accepted.index(ids[0])
+        except (ValueError, IndexError):
+            raise ValueError("accepted journal mismatch") from None
+        matches = accepted[start:start + horizon] == ids
+    else:
+        start = 0
+        common = min(horizon, len(accepted))
+        matches = accepted[:common] == ids[:common]
+    if (not matches or len(accepted) > 65535 or
+            built_count < start + horizon):
         raise ValueError("accepted journal mismatch")
     if len(accepted) < built_count:
         raise _TransientCoverageError("accepted journal mismatch: build ahead of journal")
@@ -446,16 +459,17 @@ def compute_coverage(*, solution, manifest, placements, poses, keyframes,
             # rebuild offers placements that match this digest.
             raise _TransientCoverageError("placement source mismatch: earlier build")
         if (p["reference_segment"] not in references or
-                p.get("evidence", {}).get("solver") != summary["solver"] or
+                (not windowed and p.get("evidence", {}).get("solver") != summary["solver"]) or
                 not summary["segments"].get(str(seg), {}).get("replaced")):
             raise ValueError("placement source mismatch")
         revisions.add(_integer(p["frame_revision"], 2**31-1))
         if seg in placement_by_segment:
             raise ValueError("duplicate placement")
         placement_by_segment[seg] = p
-    if len(revisions) != 1 or not 1 <= len(placement_by_segment):
+    if not placement_by_segment or (not windowed and len(revisions) != 1):
         raise ValueError("no consistent registered placements")
-    revision = revisions.pop()
+    revision = max(revisions, key=lambda value: (
+        sum(p["frame_revision"] == value for p in placement_by_segment.values()), -value))
     poses_by_id = {r["keyframe_id"]: r for r in poses}
     if len(poses_by_id) != len(poses):
         raise ValueError("duplicate pose")
@@ -485,17 +499,65 @@ def compute_coverage(*, solution, manifest, placements, poses, keyframes,
                             candidates[0], placement_by_segment[ref])
         except (ValueError, TypeError, KeyError, OverflowError):
             continue
-    pending_refs = (_pending_references(summary, anchors, placement_by_segment)
-                    if include_pending else None)
-    for kid in ids:
+    if windowed:
+        # A carried reference segment can be outside the current solution.
+        # A supported anchor in any newly solved segment of that registered
+        # group supplies the same solve-to-output transform for pending rows.
+        component_refs = {}
+        window_anchors = {}
+        for row in poses:
+            if row["status"] != "anchor" or row["keyframe_id"] not in source_poses:
+                continue
+            p = placement_by_segment.get(row["segment_index"])
+            if p is None or p["frame_revision"] != revision:
+                continue
+            component = source_poses[row["keyframe_id"]].get("component")
+            if not isinstance(component, int) or isinstance(component, bool):
+                continue
+            ref = p["reference_segment"]
+            component_refs.setdefault(component, set()).add(ref)
+            if (ref, component) not in window_anchors:
+                try:
+                    _placed(row, p)
+                    window_anchors[ref, component] = (
+                        _source_pose(source_poses[row["keyframe_id"]]), row, p)
+                except (ValueError, TypeError, KeyError, OverflowError):
+                    continue
+        pending_refs = ({c: next(iter(refs)) for c, refs in component_refs.items()
+                         if len(refs) == 1 and (next(iter(refs)), c) in window_anchors}
+                        if include_pending else None)
+    else:
+        pending_refs = (_pending_references(summary, anchors, placement_by_segment)
+                        if include_pending else None)
+    for kid in (accepted[:built_count] if windowed else ids):
         check()
-        if kid not in seen or kid not in source_poses or kid not in poses_by_id:
+        if kid not in seen or kid not in poses_by_id:
             continue
         row = poses_by_id[kid]
+        if windowed and kid not in source_poses:
+            p = placement_by_segment.get(row["segment_index"])
+            if (p is None or p["frame_revision"] != revision or
+                    row["status"] not in ("solved", "anchor") or
+                    row.get("observations", 0) < 30):
+                continue
+            try:
+                position, up, ray = _placed(row, p)
+            except (ValueError, TypeError, KeyError, OverflowError):
+                continue
+            eligible[p["reference_segment"]].append((kid, position, up, ray))
+            continue
+        if kid not in source_poses:
+            continue
         if pending_refs is not None and row["segment_index"] not in placement_by_segment:
             # Without the switch every such keyframe is skipped below (no
             # placement); with it, only a pending segment's posed keyframe counts.
-            entry = _pending_entry(kid, row, source_poses[kid], summary, pending_refs, anchors)
+            pending_anchors = ({pending_refs[source_poses[kid]["component"]]:
+                                window_anchors[pending_refs[source_poses[kid]["component"]],
+                                               source_poses[kid]["component"]]}
+                               if windowed and source_poses[kid].get("component") in pending_refs
+                               else anchors)
+            entry = _pending_entry(kid, row, source_poses[kid], summary,
+                                   pending_refs, pending_anchors)
             if entry is not None:
                 eligible[entry[0]].append((kid, *entry[1:]))
             continue
@@ -508,13 +570,16 @@ def compute_coverage(*, solution, manifest, placements, poses, keyframes,
                 row.get("observations") != observations):
             continue
         p = placement_by_segment.get(row["segment_index"])
-        if p is None or p.get("evidence", {}).get("coverage") not in ("confident", "partial"):
+        if (p is None or p["frame_revision"] != revision or
+                p.get("evidence", {}).get("coverage") not in ("confident", "partial")):
             continue
         if (p.get("evidence", {}).get("placement_reliable") is False or
                 p.get("evidence", {}).get("scale_reliable") is False):
             continue
         ref = p["reference_segment"]
-        if ref not in anchors:
+        anchor = (window_anchors.get((ref, source_poses[kid]["component"]))
+                  if windowed else anchors.get(ref))
+        if anchor is None:
             continue
         if source_poses[kid]["component"] != p["evidence"]["component"]:
             continue
@@ -524,7 +589,7 @@ def compute_coverage(*, solution, manifest, placements, poses, keyframes,
             # One malformed pose contributes no evidence, never a painted bit.
             continue
         try:
-            expected_position, expected_up, expected_ray = _solution_relative(source_poses[kid], anchors[ref])
+            expected_position, expected_up, expected_ray = _solution_relative(source_poses[kid], anchor)
         except (ValueError, TypeError, KeyError, OverflowError):
             continue
         if not (_agrees(position, expected_position) and _agrees(up, expected_up) and
@@ -570,14 +635,17 @@ def compute_coverage(*, solution, manifest, placements, poses, keyframes,
         # publishes nothing and keeps its last block) but let a cancellation or
         # deadline -- check() raises ValueError -- still stop the job.
         try:
-            dial_out.update(_dial(components, eligible, bins, ids, check))
+            dial_out.update(_dial(components, eligible, bins,
+                                  accepted[:built_count] if windowed else ids, check))
         except Exception:  # noqa: BLE001
             dial_out.clear()
             check()
             logger.exception("world guidance dial failed; coverage published without it")
     block = {"version": 1, "source": "landed_global_solve", "solved_at": solved_at,
              "computed_at": computed_at, "horizon_keyframes": horizon,
-             "keyframes_now": len(accepted), "keyframes_pending": max(0, len(accepted)-horizon),
+             "keyframes_now": len(accepted),
+             "keyframes_pending": max(0, len(accepted)-(start+horizon) if windowed
+                                      else len(accepted)-horizon),
              "geometry_revision": geometry_revision, "frame_revision": revision,
              "station_grid": "component_square_8x8_v1",
              "sector_frame": "first_qualified_forward_cw_from_up_v1",
@@ -591,6 +659,25 @@ def compute_coverage(*, solution, manifest, placements, poses, keyframes,
 
 def _signature(paths):
     return tuple((p.stat().st_size, p.stat().st_mtime_ns) for p in paths)
+
+
+def photo_eligible_for_window(eligible, solution):
+    """B2 photos need source poses from one solve component per drawn frame."""
+    if not (solution.get("solve") or {}).get("window_applied"):
+        return eligible
+    source = solution["poses"]
+    counts = {}
+    for kid, ref in eligible:
+        if kid in source:
+            key = (ref, source[kid]["component"])
+            counts[key] = counts.get(key, 0) + 1
+    dominant = {}
+    for (ref, component), count in counts.items():
+        if ref not in dominant or count > dominant[ref][1]:
+            dominant[ref] = (component, count)
+    return [(kid, ref) for kid, ref in eligible
+            if kid in source and ref in dominant and
+            source[kid]["component"] == dominant[ref][0]]
 
 
 def _read_bounded(path, budget):
@@ -1034,7 +1121,15 @@ class CoverageWorker:
             if block is not None and disposition == "ok" and self._photo_worker is not None:
                 try:
                     if not self._stop.is_set():
+                        # The photo worker needs a pose in this solution for
+                        # every offered frame. Carried old coverage remains
+                        # eligible for B2 tiles and the dial, while photos
+                        # use only the current window's solved images.
+                        photo_eligible = imagery_eligible
+                        if photo_tree is not None:
+                            photo_eligible = photo_eligible_for_window(
+                                imagery_eligible, photo_tree["solution"])
                         self._photo_worker.offer(world, session, block,
-                                                 imagery_eligible, photo_tree, stat)
+                                                 photo_eligible, photo_tree, stat)
                 except Exception:
                     logger.exception("world builder guidance: photo floor plan offer failed")

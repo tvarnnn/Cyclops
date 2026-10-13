@@ -69,11 +69,13 @@ Builder behaves exactly as before, and the manifest says why.
 from __future__ import annotations
 
 import dataclasses
+from contextlib import closing
 import io
 import json
 import logging
 import os
 import shutil
+import sqlite3
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -1182,6 +1184,90 @@ def resolve_run_options(*, final: bool, masks: bool | None, seed) -> tuple[bool,
     return bool(masks), seed
 
 
+def window_keyframes(keyframes: list[Keyframe], maximum: int,
+                     bridge_start: int | None = None) -> list[Keyframe]:
+    """Recent keyframes, plus the bridge to a previously placed segment."""
+    if maximum <= 0 or len(keyframes) <= maximum:
+        return keyframes
+    start = len(keyframes) - maximum
+    if bridge_start is not None:
+        start = min(start, bridge_start)
+    while start and keyframes[start - 1].segment_index == keyframes[start].segment_index:
+        start -= 1
+    return keyframes[start:]
+
+
+def window_bridge_start(keyframes, previous_solution, placements) -> int | None:
+    """Earliest keyframe of the latest placed segment with two shared poses."""
+    if previous_solution is None or not placements:
+        return None
+    placed = {p.segment_index for p in placements if p.state == "registered"}
+    if not placed:
+        return None
+    positions = {}
+    for i, keyframe in enumerate(keyframes):
+        if keyframe.segment_index not in placed:
+            continue
+        entry = previous_solution.poses.get(keyframe.keyframe_id)
+        if entry is not None and entry.get("observations", 0) >= MIN_IMAGE_OBSERVATIONS:
+            positions.setdefault(keyframe.segment_index, []).append(i)
+    candidates = [(indices[-1], segment) for segment, indices in positions.items()
+                  if len(indices) >= 2]
+    if not candidates:
+        return None
+    _, segment = max(candidates)
+    return next(i for i, keyframe in enumerate(keyframes)
+                if keyframe.segment_index == segment)
+
+
+def window_mapping_database(source: Path, target: Path, image_names: list[str]) -> Path:
+    """Copy the matched walk database and retain only a live window's images.
+
+    The original image IDs and pair IDs are left intact. The source is never
+    pruned: the final solve still receives the full accumulated database.
+    """
+    target.unlink(missing_ok=True)
+    source_db = sqlite3.connect(f"file:{Path(source).as_posix()}?mode=ro", uri=True)
+    try:
+        with closing(sqlite3.connect(str(target))) as window_db, window_db:
+            source_db.backup(window_db)
+            window_db.execute("create temp table window_names (name text primary key)")
+            window_db.executemany("insert into window_names values (?)",
+                                  ((name,) for name in image_names))
+            window_db.execute("create temp table window_ids as "
+                              "select image_id from images where name in (select name from window_names)")
+            tables = {row[0] for row in window_db.execute(
+                "select name from sqlite_master where type='table'")}
+            for table in ("matches", "two_view_geometries"):
+                if table in tables:
+                    window_db.execute(
+                        f"delete from {table} where "
+                        "pair_id / 2147483647 not in (select image_id from window_ids) "
+                        "or pair_id % 2147483647 not in (select image_id from window_ids)")
+            for table in ("keypoints", "descriptors"):
+                if table in tables:
+                    window_db.execute(f"delete from {table} where "
+                                      "image_id not in (select image_id from window_ids)")
+            # COLMAP 4.2 stores image associations in frame_data rather
+            # than in images. Camera sensor_type is 0; non-camera data stays.
+            if "frame_data" in tables:
+                window_db.execute("delete from frame_data where sensor_type = 0 and "
+                                  "data_id not in (select image_id from window_ids)")
+            if "frames" in tables and "frame_data" in tables:
+                window_db.execute("delete from frames where frame_id not in "
+                                  "(select frame_id from frame_data)")
+            if "pose_priors" in tables:
+                window_db.execute("delete from pose_priors where corr_sensor_type = 0 and "
+                                  "corr_data_id not in (select image_id from window_ids)")
+            window_db.execute("delete from images where image_id not in "
+                              "(select image_id from window_ids)")
+            window_db.execute("drop table window_ids")
+            window_db.execute("drop table window_names")
+    finally:
+        source_db.close()
+    return target
+
+
 @stage_timing.timed("solve", final_only=True)
 def solve(
     store,
@@ -1202,6 +1288,7 @@ def solve(
     gate: bool | None = None,
     consensus: int | None = None,
     should_stop=None,
+    solve_window: int = 0,
 ) -> dict:
     """Run the recipe over the session's current keyframes and persist the
     solution. Returns a summary dict (what the CLI prints).
@@ -1271,7 +1358,20 @@ def solve(
 
     _quiet_pycolmap()
     started = time.perf_counter()
-    keyframes = store.read_keyframes(world_id, session_id)
+    all_keyframes = store.read_keyframes(world_id, session_id)
+    windowed = not final and isinstance(solve_window, int) and solve_window > 0
+    keyframes = all_keyframes
+    if windowed:
+        # A long single segment can make the effective window larger than
+        # requested. Also retain the bridge from the latest published
+        # placement: a solve can finish after more than N new keyframes, in
+        # which case a plain last-N slice has no overlap to register by.
+        prior_manifest = store.read_session_manifest(world_id, session_id) or {}
+        prior_placements = [p for p in (store.read_placements(world_id, session_id) or [])
+                            if p.input_digest == prior_manifest.get("input_digest")]
+        bridge = window_bridge_start(
+            all_keyframes, load_solution(store, world_id, session_id), prior_placements)
+        keyframes = window_keyframes(keyframes, solve_window, bridge)
     if len(keyframes) < 2:
         return {"solved": False, "reason": "fewer than two keyframes"}
     # A background caller may have read the live journal before this solve
@@ -1293,7 +1393,7 @@ def solve(
         rewritten_images: list = []
         not_rewritten: list = []
         camera, written = prepare_images(
-            store, world_id, session_id, keyframes, capture_dirs=capture_dirs,
+            store, world_id, session_id, all_keyframes, capture_dirs=capture_dirs,
             ambiguous=ambiguous_frames, rewritten=rewritten_images, not_rewritten=not_rewritten,
         )
     except UndistortionUnavailable as exc:
@@ -1307,7 +1407,7 @@ def solve(
     features_cleared = _settle_owed_clear(workspace, workspace.database_path, owed_clear)
     prepared = time.perf_counter()
 
-    names = [keyframe_image_name(k) for k in keyframes]
+    names = [keyframe_image_name(k) for k in all_keyframes]
     present = [n for n in names if (workspace.images_dir / n).exists()]
     if len(present) < 2:
         return {"solved": False, "reason": "fewer than two readable frames"}
@@ -1510,6 +1610,16 @@ def solve(
             frozen_refusal = FROZEN_REFUSAL_CHANGED_UNDER_THE_SOLVE
     matched = time.perf_counter()
 
+    # The shared walk database retains every feature and match for the final.
+    # Mapping that database directly would still re-solve every old image,
+    # regardless of the keyframe slice above. Only the live mapper sees this
+    # pruned copy; its pair IDs remain COLMAP's original image IDs.
+    if windowed:
+        database_path = window_mapping_database(
+            database_path, workspace.root / "window-database.db",
+            [keyframe_image_name(k) for k in keyframes
+             if (workspace.images_dir / keyframe_image_name(k)).exists()])
+
     # ONE thread when seeded: GLOMAP is reproducible only then (D1 §2.4).
     map_threads = 1 if seeded else threads
     if final:
@@ -1553,6 +1663,10 @@ def solve(
         # The live relocalizer's verified revisit links, matched explicitly.
         "revisit_pairs": revisits,
     }
+    if windowed:
+        solution.solve["window_keyframes"] = solve_window
+        solution.solve["window_effective_keyframes"] = len(keyframes)
+        solution.solve["window_applied"] = len(keyframes) < len(all_keyframes)
     if ambiguous_frames:
         # Keyframes whose image name more than one capture directory holds: undistorted
         # from the session's stored copy rather than another capture's frame
@@ -3231,3 +3345,176 @@ def merge(
         pose_rows=new_pose_rows, point_rows=new_point_rows, support_rows=new_support_rows,
         placements=placements, segments=per_segment, summary=summary,
     )
+
+
+def _window_alignment(old_rows, new_rows, old_placement, new_placement):
+    """Sim3 from the new component frame into a previously published frame."""
+    old = {r["keyframe_id"]: r for r in old_rows
+           if r.get("status") in (POSE_STATUS_ANCHOR, POSE_STATUS_SOLVED)}
+    new = {r["keyframe_id"]: r for r in new_rows
+           if r.get("status") in (POSE_STATUS_ANCHOR, POSE_STATUS_SOLVED)}
+    common = sorted(old.keys() & new.keys())
+    if len(common) < 2:
+        return None
+    old_r = quaternion_wxyz_to_rotation(old_placement.rotation_wxyz)
+    new_r = quaternion_wxyz_to_rotation(new_placement.rotation_wxyz)
+    old_t = np.asarray(old_placement.translation, dtype=np.float64)
+    new_t = np.asarray(new_placement.translation, dtype=np.float64)
+    old_c = {kid: old_placement.scale * old_r @ np.asarray(old[kid]["translation"]) + old_t
+             for kid in common}
+    new_c = {kid: new_placement.scale * new_r @ np.asarray(new[kid]["translation"]) + new_t
+             for kid in common}
+    a = common[0]
+    b = max(common[1:], key=lambda kid: np.linalg.norm(new_c[kid] - new_c[a]))
+    old_span = np.linalg.norm(old_c[b] - old_c[a])
+    new_span = np.linalg.norm(new_c[b] - new_c[a])
+    if old_span < 1e-3 or new_span < 1e-3:
+        return None
+    scale = float(old_span / new_span)
+    old_cam = old_r @ quaternion_wxyz_to_rotation(old[a]["rotation"])
+    new_cam = new_r @ quaternion_wxyz_to_rotation(new[a]["rotation"])
+    rotation = old_cam @ new_cam.T
+    translation = old_c[a] - scale * rotation @ new_c[a]
+    residuals = [np.linalg.norm(scale * rotation @ new_c[kid] + translation - old_c[kid])
+                 for kid in common]
+    if not np.isfinite(scale) or not np.isfinite(translation).all() or (
+            max(residuals) > max(0.2, 0.2 * old_span)):
+        return None
+    return scale, rotation, translation, old_span
+
+
+def merge_windowed(keyframes, pose_rows, point_rows, support_rows, solution, *,
+                   input_digest, previous=None, previous_placements=None,
+                   previous_summary=None) -> MergeResult:
+    """Carry old segments and register the live window into their frame.
+
+    A missing or inconsistent overlap never guesses a shared frame. Previously
+    registered geometry remains where it was, and new unaligned segments stay
+    unplaced until a later solve can establish a supported overlap.
+    """
+    result = merge(keyframes, pose_rows, point_rows, support_rows, solution,
+                   input_digest=input_digest)
+    if not previous or not previous_placements:
+        return result
+    prior = {p.segment_index: p for p in previous_placements}
+    old_poses = previous["poses"]
+    old_points = previous["points"]
+    old_support = previous.get("support") or []
+    fresh = {p.segment_index: p for p in result.placements}
+    old_pose_by_segment = {}
+    new_pose_by_segment = {}
+    for row in old_poses:
+        old_pose_by_segment.setdefault(row["segment_index"], []).append(row)
+    for row in result.pose_rows:
+        new_pose_by_segment.setdefault(row["segment_index"], []).append(row)
+    groups = {}
+    for placement in result.placements:
+        if placement.state == "registered":
+            groups.setdefault(placement.reference_segment, []).append(placement)
+    frozen = {s for s in old_pose_by_segment if s not in
+              {k.segment_index for k in keyframes if k.keyframe_id in solution.horizon}}
+    aligned = {}
+    for reference, group in groups.items():
+        candidates = []
+        for placement in group:
+            old = prior.get(placement.segment_index)
+            if (old is None or old.state != "registered" or
+                    old.evidence.get("placement_reliable") is False or
+                    old.evidence.get("scale_reliable") is False):
+                continue
+            fit = _window_alignment(
+                old_pose_by_segment.get(placement.segment_index, []),
+                new_pose_by_segment.get(placement.segment_index, []), old, placement)
+            if fit is not None:
+                candidates.append((fit[3], old.reference_segment, old.frame_revision, fit))
+        if candidates:
+            _, old_reference, revision, (scale, rotation, translation, _) = max(
+                candidates, key=lambda row: row[0])
+            for placement in group:
+                r = quaternion_wxyz_to_rotation(placement.rotation_wxyz)
+                t = np.asarray(placement.translation)
+                aligned[placement.segment_index] = dataclasses.replace(
+                    placement, rotation_wxyz=tuple(rotation_to_quaternion_wxyz(rotation @ r)),
+                    translation=tuple(scale * rotation @ t + translation),
+                    scale=scale * placement.scale, reference_segment=old_reference,
+                    frame_revision=revision)
+        elif any(p.segment_index in prior and prior[p.segment_index].state == "registered"
+                 for p in group):
+            # No two supported shared cameras: keep prior placements and
+            # geometry. The new members of this group are not placed yet.
+            frozen.update(p.segment_index for p in group if p.segment_index in prior)
+        else:
+            aligned.update((p.segment_index, p) for p in group)
+
+    result.pose_rows = [r for r in result.pose_rows if r["segment_index"] not in frozen]
+    result.pose_rows.extend(r for r in old_poses if r["segment_index"] in frozen)
+    order = {keyframe.keyframe_id: i for i, keyframe in enumerate(keyframes)}
+    result.pose_rows.sort(key=lambda row: order.get(row["keyframe_id"], len(order)))
+    result.point_rows = [r for r in result.point_rows if r["segment_index"] not in frozen]
+    result.point_rows.extend(r for r in old_points if r["segment_index"] in frozen)
+    result.point_rows.sort(key=lambda row: row["segment_index"])
+    result.support_rows = [r for r in result.support_rows if r[0] not in frozen]
+    result.support_rows.extend(r for r in old_support if r[0] in frozen)
+    result.support_rows.sort(key=lambda row: row[0])
+    result.placements = [dataclasses.replace(p, input_digest=input_digest)
+                         for s, p in prior.items() if s in frozen]
+    result.placements.extend(p for s, p in aligned.items() if s not in frozen)
+    result.placements.extend(p for s, p in fresh.items()
+                             if p.state != "registered" and s not in frozen)
+    result.placements.sort(key=lambda p: p.segment_index)
+    for segment in frozen:
+        old_segment = ((previous_summary or {}).get("segments") or {}).get(str(segment))
+        if old_segment:
+            result.segments[segment] = old_segment
+    result.summary["segments_carried"] = len(frozen)
+    result.summary["segments_replaced"] = sum(
+        1 for d in result.segments.values() if d.get("replaced"))
+    result.summary["segments_pending"] = sum(
+        1 for d in result.segments.values() if d.get("state") == "pending")
+    result.summary["segments_refused"] = sum(
+        1 for d in result.segments.values() if d.get("state") == "refused")
+    result.summary["poses_solved"] = sum(
+        1 for r in result.pose_rows if r["status"] == POSE_STATUS_SOLVED)
+    result.summary["points"] = len(result.point_rows)
+    components = {}
+    for p in result.placements:
+        if p.state == "registered":
+            components.setdefault((p.reference_segment, p.frame_revision), []).append(p.segment_index)
+    result.summary["components"] = [
+        {"component": i, "reference_segment": ref, "segments": sorted(segments),
+         "keyframes": sum(1 for r in result.pose_rows if r["segment_index"] in segments
+                          and r["status"] in (POSE_STATUS_ANCHOR, POSE_STATUS_SOLVED)),
+         "points": sum(1 for r in result.point_rows if r["segment_index"] in segments)}
+        for i, ((ref, _revision), segments) in enumerate(sorted(components.items()))]
+    shifts, turns = [], []
+    for segment, placed in aligned.items():
+        old_placement = prior.get(segment)
+        if (old_placement is None or old_placement.state != "registered" or
+                old_placement.reference_segment != placed.reference_segment or
+                old_placement.frame_revision != placed.frame_revision):
+            continue
+        old_rows = {r["keyframe_id"]: r for r in old_pose_by_segment.get(segment, [])
+                    if r.get("status") in (POSE_STATUS_ANCHOR, POSE_STATUS_SOLVED)}
+        new_rows = {r["keyframe_id"]: r for r in new_pose_by_segment.get(segment, [])
+                    if r.get("status") in (POSE_STATUS_ANCHOR, POSE_STATUS_SOLVED)}
+        old_r = quaternion_wxyz_to_rotation(old_placement.rotation_wxyz)
+        new_r = quaternion_wxyz_to_rotation(placed.rotation_wxyz)
+        for kid in old_rows.keys() & new_rows.keys():
+            old_row, new_row = old_rows[kid], new_rows[kid]
+            old_c = (old_placement.scale * old_r @ np.asarray(old_row["translation"])
+                     + np.asarray(old_placement.translation))
+            new_c = (placed.scale * new_r @ np.asarray(new_row["translation"])
+                     + np.asarray(placed.translation))
+            shifts.append(float(np.linalg.norm(new_c - old_c)))
+            old_cam = old_r @ quaternion_wxyz_to_rotation(old_row["rotation"])
+            new_cam = new_r @ quaternion_wxyz_to_rotation(new_row["rotation"])
+            cosine = float(np.clip((np.trace(old_cam.T @ new_cam) - 1) / 2, -1, 1))
+            turns.append(float(np.degrees(np.arccos(cosine))))
+    result.summary["window_placement_wobble"] = {
+        "shared_cameras": len(shifts), "units": "relative",
+        "median_translation": float(np.median(shifts)) if shifts else None,
+        "p95_translation": float(np.percentile(shifts, 95)) if shifts else None,
+        "max_translation": max(shifts) if shifts else None,
+        "max_rotation_degrees": max(turns) if turns else None,
+    }
+    return result

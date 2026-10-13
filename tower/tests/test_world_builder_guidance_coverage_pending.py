@@ -188,6 +188,24 @@ def test_on_counts_the_pending_segments_posed_keyframes():
     assert block["horizon_keyframes"] == 6 and block["keyframes_now"] == 8
 
 
+def test_windowed_on_counts_pending_with_a_carried_reference():
+    active = [(1, 0, "mid0", (1, 1), 0, 30),
+              (1, 0, "mid1", (3, 3), 0, 30)]
+    data = _walk(ROOM + active + PENDING, pending={4},
+                 beyond=[(4, "tail0")])
+    solution = data["solution"]
+    ids = solution["keyframe_ids"][2:]
+    solution["keyframe_ids"] = ids
+    solution["poses"] = {kid: p for kid, p in solution["poses"].items() if kid in ids}
+    solution["input_digest"] = _digest(ids)
+    solution["solve"] = {"window_keyframes": len(ids)}
+    summary = data["manifest"]["global_solve"]
+    summary["horizon_keyframes"] = len(ids)
+    summary["solve"] = solution["solve"]
+    assert _posed(_on(data), 0) == 8
+    assert _posed(_off(data), 0) == 4
+
+
 def test_a_pending_keyframe_counts_exactly_as_it_will_once_replaced():
     """The solve's own pose through the reference anchor: the receipt is the one
     the next solve gives the same keyframes after it replaces their segment."""

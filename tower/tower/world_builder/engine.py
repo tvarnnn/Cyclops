@@ -1116,10 +1116,33 @@ class WorldBuilderEngine:
         placements = None
         solution = global_solve.load_solution(self._store, world_id, session_id)
         if solution is not None:
-            merged = global_solve.merge(
-                keyframes, pose_rows, point_rows, support_rows, solution,
-                input_digest=input_digest,
-            )
+            if isinstance(solution.solve, dict) and solution.solve.get("window_keyframes"):
+                previous = self._store.read_session_manifest(world_id, session_id)
+                previous_tree = None
+                previous_placements = None
+                if (isinstance(previous, dict) and
+                        isinstance(previous.get("keyframes"), int) and
+                        0 <= previous["keyframes"] <= len(keyframes) and
+                        previous.get("input_digest") == compute_input_digest(
+                            keyframes[:previous["keyframes"]])):
+                    previous_tree = self._store.read_derived(world_id, session_id, verify=False)
+                    previous_placements = self._store.read_placements(world_id, session_id)
+                    if previous_placements and any(
+                            p.input_digest != previous["input_digest"]
+                            for p in previous_placements):
+                        previous_tree = None
+                        previous_placements = None
+                merged = global_solve.merge_windowed(
+                    keyframes, pose_rows, point_rows, support_rows, solution,
+                    input_digest=input_digest, previous=previous_tree,
+                    previous_placements=previous_placements,
+                    previous_summary=(previous or {}).get("global_solve") if previous_tree else None,
+                )
+            else:
+                merged = global_solve.merge(
+                    keyframes, pose_rows, point_rows, support_rows, solution,
+                    input_digest=input_digest,
+                )
             pose_rows = merged.pose_rows
             point_rows = merged.point_rows
             support_rows = merged.support_rows
