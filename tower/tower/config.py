@@ -1589,6 +1589,14 @@ def world_surface_far_depth_cap_setting() -> dict | None:
 WORLD_POSE_QUARANTINE_ENV = "TOWER_WORLD_POSE_QUARANTINE"
 WORLD_POSE_QUARANTINE_PARTS = ("path", "riders", "seal")
 
+# Publication-time far-pose quarantine. This is independent of the viewer-only pose quarantine.
+WORLD_POSE_SANITY_ENV = "TOWER_WORLD_POSE_SANITY"
+
+
+def world_pose_sanity_setting() -> bool:
+    """Only the exact value `on` changes the published room geometry."""
+    return os.environ.get(WORLD_POSE_SANITY_ENV) == "on"
+
 
 def world_pose_quarantine_setting() -> frozenset:
     """`TOWER_WORLD_POSE_QUARANTINE`: the parts of the pose quarantine (P5-PQ) that are on.

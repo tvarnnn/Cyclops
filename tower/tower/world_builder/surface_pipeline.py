@@ -495,6 +495,9 @@ class _Frames:
         # half's own fit is (held_out_rel None; see below).
         self.refused_inverted: list[int] = []
         self.refused_unscorable: list[int] = []
+        from tower.config import world_pose_sanity_setting  # noqa: PLC0415
+
+        pose_sanity_on = world_pose_sanity_setting()
         for r in align.get("records", []):
             if not r.get("ok"):
                 continue
@@ -525,6 +528,8 @@ class _Frames:
                 continue
             pose = poses.get(r["kid"])
             if pose is None:
+                continue
+            if pose_sanity_on and int(pose.get("component", 0)) != 0:
                 continue
             ki = int(r["ki"])
             if not (work / "depth" / f"{ki:05d}.npy").exists():
