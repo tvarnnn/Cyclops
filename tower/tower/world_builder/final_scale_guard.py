@@ -1134,7 +1134,9 @@ def guard_publication(store, world_id: str, session_id: str, solution, result, *
     try:
         from tower.config import world_pose_sanity_setting  # noqa: PLC0415
 
-        if world_pose_sanity_setting():
+        if world_pose_sanity_setting() and mode_ == MODE_ON:
+            # ON owns pose sanity: it assesses and relabels the sanitized room. In shadow the publish seam
+            # applies pose sanity before calling the guard, so shadow returns exactly its input.
             from tower.world_builder import pose_sanity  # noqa: PLC0415
 
             session = store.read_session(world_id, session_id)

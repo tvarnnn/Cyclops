@@ -1443,10 +1443,9 @@ def gate_and_publish(store, world_id: str, session_id: str, workspace, solution,
         if hasattr(solution, "gate"):
             solution.gate = result.record
         solution.timing = dict(getattr(solution, "timing", None) or {}, gate_s=result.record.get("seconds"))
-    guard = (scale_guard if scale_guard is not None else
-             _final_scale_guard(store, world_id, session_id, solution, result, final=final,
-                                database_path=database_path, keyframes=keyframes))
-    if guard is None:
+    if scale_guard is None and not _scale_guard_on(final):
+        # Pose sanity is its own switch: with the scale guard off OR in shadow it runs here, before the
+        # guard, so a shadow guard assesses and publishes exactly what off publishes.
         try:
             solution, result = _pose_sanity_without_scale_guard(
                 store, world_id, session_id, workspace.root, solution, result,
@@ -1456,6 +1455,9 @@ def gate_and_publish(store, world_id: str, session_id: str, workspace, solution,
             why = f"pose sanity failed: {type(exc).__name__}"
             return None, {"pose_sanity": {"decision": "withheld", "why": type(exc).__name__},
                           "publish": {"written": False, "why": why}}
+    guard = (scale_guard if scale_guard is not None else
+             _final_scale_guard(store, world_id, session_id, solution, result, final=final,
+                                database_path=database_path, keyframes=keyframes))
     if guard is not None:
         # The guard's module is imported only here, with the switch on or shadow (review XR F1): off, the
         # publish step imports, reads and writes nothing it did not before.
@@ -1491,9 +1493,19 @@ def gate_and_publish(store, world_id: str, session_id: str, workspace, solution,
     return solution, dict(result.record, publish=published)
 
 
+def _scale_guard_on(final: bool) -> bool:
+    """True when the final scale guard runs `on` here: it then applies pose sanity itself, before its own
+    assessment and relabel (`final_scale_guard.guard_publication`). Off or shadow, the seam applies it."""
+    if not final:
+        return False
+    from tower.config import WORLD_FINAL_SCALE_GUARD_ON, world_final_scale_guard_setting  # noqa: PLC0415
+
+    return world_final_scale_guard_setting() == WORLD_FINAL_SCALE_GUARD_ON
+
+
 def _pose_sanity_without_scale_guard(store, world_id, session_id, workspace_root, solution, result, *,
                                      final: bool, keyframes):
-    """Apply the independent pose switch when the scale guard is off."""
+    """Apply the independent pose switch when the scale guard is off or in shadow."""
     if not final:
         return solution, result
     from tower.config import world_pose_sanity_setting  # noqa: PLC0415
@@ -1542,16 +1554,8 @@ def _records_before_publish(workspace_root, guard):
     returned unchanged."""
     from tower.world_builder import final_scale_guard as FSG  # noqa: PLC0415
 
-    if guard.solution is None:
-        return guard
-    if guard.decision != FSG.DECISION_PUBLISHED:
-        pose = (getattr(guard.solution, "solve", None) or {}).get("pose_sanity") or {}
-        if guard.decision == FSG.DECISION_SHADOW and pose.get("state") == "quarantined":
-            try:
-                write_components(workspace_root, guard.result.components)
-            except Exception as exc:  # noqa: BLE001 -- do not publish a mismatched record
-                logger.exception("[Tower][WorldBuilder] pose sanity could not write its components record")
-                return FSG.withhold(guard, f"pose sanity's record could not be written ({type(exc).__name__})")
+    if guard.solution is None or guard.decision != FSG.DECISION_PUBLISHED:
+        # Shadow: the seam's own pose sanity (`_pose_sanity_without_scale_guard`) already wrote its record.
         return guard
     try:
         FSG.write_audit(workspace_root, guard.audit)
@@ -1777,9 +1781,8 @@ def regate_published(store, world_id: str, session_id: str, *, should_stop=None,
                 "detail": publish_detail(kept)}
     published = result.solution
     record = dict(result.record, regate={"at": time.time(), "previous": previous})
-    guard = _final_scale_guard(store, world_id, session_id, published, result, final=True,
-                               database_path=database, keyframes=keyframes)
-    if guard is None:
+    if not _scale_guard_on(True):
+        # Off or shadow: pose sanity runs here, before the guard (see `gate_and_publish`).
         try:
             published, result = _pose_sanity_without_scale_guard(
                 store, world_id, session_id, workspace.root, published, result,
@@ -1789,6 +1792,8 @@ def regate_published(store, world_id: str, session_id: str, *, should_stop=None,
             return {"pose_sanity": {"decision": "withheld", "why": type(exc).__name__},
                     "publish": {"written": False, "why": f"pose sanity failed: {type(exc).__name__}"},
                     "withheld": True, "notice": None, "detail": "Pose sanity could not assess the room."}
+    guard = _final_scale_guard(store, world_id, session_id, published, result, final=True,
+                               database_path=database, keyframes=keyframes)
     if guard is not None:
         from tower.world_builder import final_scale_guard as FSG  # noqa: PLC0415 -- on or shadow only
 
