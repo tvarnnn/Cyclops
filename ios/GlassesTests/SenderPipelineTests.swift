@@ -199,6 +199,28 @@ final class FrameRateGateTests: XCTestCase {
             accuracy: 0.05
         )
     }
+
+    /// `IOS_TOWER_TARGET_FPS` (launch environment) or `GlassesTowerTargetFPS`
+    /// (the build's Info.plist key): a whole number in 6...24, else the
+    /// default 12. The parser alone, so the host's own settings never matter.
+    func testTheTowerTargetCanBeSetForAMeasuredRunAndOtherwiseStays12() {
+        typealias Gate = FrameRateGate
+        let key = Gate.towerTargetFPSInfoKey, variable = Gate.towerTargetFPSVariable
+        XCTAssertEqual(Gate.defaultTowerTargetFPS, 12)
+        XCTAssertEqual(Gate.configuredTowerTargetFPS(environment: [:], info: [:]), 12, "unset")
+        XCTAssertEqual(Gate.configuredTowerTargetFPS(environment: [:], info: [key: ""]), 12, "an empty build setting")
+        XCTAssertEqual(Gate.configuredTowerTargetFPS(environment: [:], info: [key: "15"]), 15)
+        XCTAssertEqual(Gate.configuredTowerTargetFPS(environment: [variable: "15"], info: [:]), 15)
+        XCTAssertEqual(Gate.configuredTowerTargetFPS(environment: [:], info: [key: "6"]), 6)
+        XCTAssertEqual(Gate.configuredTowerTargetFPS(environment: [:], info: [key: "24"]), 24)
+        for bad in ["0", "5", "25", "99", "-15", "abc", "15.5", " 15", "1e1"] {
+            XCTAssertEqual(Gate.configuredTowerTargetFPS(environment: [:], info: [key: bad]), 12, bad)
+            XCTAssertEqual(Gate.configuredTowerTargetFPS(environment: [variable: bad], info: [:]), 12, bad)
+        }
+        XCTAssertEqual(Gate.configuredTowerTargetFPS(environment: [variable: "abc"], info: [key: "15"]), 15,
+                       "an invalid launch value falls back to the build's")
+        XCTAssertEqual(Gate.configuredTowerTargetFPS(environment: [variable: "18"], info: [key: "15"]), 18)
+    }
 }
 
 @MainActor

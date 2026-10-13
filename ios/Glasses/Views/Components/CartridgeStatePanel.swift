@@ -47,6 +47,9 @@ struct CartridgeStatePanel: View {
     /// deliberately phrased as a conditional rather than a promise.
     var futureDescription: String?
 
+    /// Connect and Settings, from the root (U0.8 F03). `nil` in previews.
+    @Environment(\.towerRecovery) private var recovery
+
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             SectionLabel(title)
@@ -59,7 +62,7 @@ struct CartridgeStatePanel: View {
                         ProgressView()
                         Text(explanation)
                             .font(.subheadline)
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(.readableSecondary)
                             .fixedSize(horizontal: false, vertical: true)
                     }
                 } else {
@@ -67,14 +70,14 @@ struct CartridgeStatePanel: View {
                         .font(.headline)
                     Text(explanation)
                         .font(.subheadline)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(.readableSecondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
 
                 if let futureDescription {
                     Text(futureDescription)
                         .font(.footnote)
-                        .foregroundStyle(.tertiary)
+                        .foregroundStyle(.readableSecondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }
@@ -82,6 +85,12 @@ struct CartridgeStatePanel: View {
             .padding(16)
             .background(Color(.secondarySystemGroupedBackground), in: .rect(cornerRadius: 18))
             .accessibilityElement(children: .combine)
+
+            // Outside the combined card, so each is its own control. "Not
+            // connected" is the one state a person can end, so it names how.
+            if phase == .disconnected, let recovery {
+                TowerRecoveryButtons(actions: recovery)
+            }
         }
     }
 

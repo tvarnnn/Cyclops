@@ -11,6 +11,17 @@ import SwiftUI
 @main
 struct GlassesApp: App {
     init() {
+        #if DEBUG
+        // Before anything reads `TowerConfiguration`, which fixes the address
+        // for the process on first use.
+        if ProcessInfo.processInfo.arguments.contains(TowerAddressStore.uiTestResetArgument) {
+            TowerAddressStore().clear()
+        }
+        // Before the root view decides whether to show the first-run cards.
+        if ProcessInfo.processInfo.arguments.contains(OnboardingStore.uiTestResetArgument) {
+            OnboardingStore().reset()
+        }
+        #endif
         do {
             try Wearables.configure()
         } catch {

@@ -52,6 +52,16 @@ nonisolated struct WorldListingSession: Equatable, Sendable {
     let state: WorldListingSessionState?
     /// The builder's account of finalization, or `nil` on an older record.
     let finalization: WorldFinalizationReport?
+    /// Where this session's photographic room has got to (WORLDS §2a):
+    /// always present on a Tower since 2026-09-22, `nil` on an older one.
+    /// The same block, and the same decoder, as the status channel's
+    /// `lifecycle.photographic`.
+    let photographic: WorldPhotographicReport?
+    /// The walk's pieces after the evidence gate: the room and the areas it
+    /// could not place (`WORLD-BUILDER-COMPONENTS.md` §2, §3.1). `nil` means
+    /// **not computed** -- every world built before the gate, and every list
+    /// the phone could not trust (rule 8) -- never "no areas".
+    let components: WorldComponents?
 
     /// The record is open and the Tower did **not** call it abandoned. On a
     /// Tower that does not send `abandoned`, the record being open is all
@@ -101,6 +111,8 @@ nonisolated extension WorldListingSession {
         self.abandoned = json["abandoned"] as? Bool
         self.state = (json["state"] as? String).map(WorldListingSessionState.init(rawValue:))
         self.finalization = WorldFinalizationReport(json: json["finalization"])
+        self.photographic = WorldPhotographicReport(json: json["photographic"])
+        self.components = WorldComponents(json: json["components"])
     }
 }
 
@@ -184,6 +196,9 @@ nonisolated enum WorldListFetchError: Error, Equatable {
     /// The Tower answered 404, which on this route means no world root is
     /// configured.
     case notFound
+    /// The Tower answered with another error status: it was reached, and
+    /// failed to list (U0.8 M-1).
+    case towerError(Int)
     case undecodable
     case transport(String)
 }
@@ -220,6 +235,13 @@ nonisolated struct WorldListClient {
             let (data, response) = try await session.data(for: request)
             if let http = response as? HTTPURLResponse, http.statusCode == 404 {
                 throw WorldListFetchError.notFound
+            }
+            // Any other error status is the Tower saying no, not a list in a
+            // form this build cannot read: a 500's `{"detail": …}` body is
+            // JSON, and used to be called "undecodable" (U0.8 F09). Nor is it
+            // a Tower that could not be reached: it answered (U0.8 M-1).
+            if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+                throw WorldListFetchError.towerError(http.statusCode)
             }
             guard
                 let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]

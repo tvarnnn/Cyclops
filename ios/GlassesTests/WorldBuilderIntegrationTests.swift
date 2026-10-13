@@ -654,6 +654,343 @@ final class TowerWorldBuilderClientTests: XCTestCase {
         tower.disconnect()
     }
 
+    /// U2-D0: every report feeds the capture-health panel -- the heartbeat
+    /// too, which `stateUpdates` does not announce -- with the live walk's
+    /// counter, restarts, relocalizer counts and map lag; and a report about
+    /// anything but a live walk this screen follows (finalizing, a pinned
+    /// saved world) feeds it nothing to show.
+    func testEveryReportFeedsTheCaptureHealthPanelAndOnlyTheLiveWalkHasFigures() async throws {
+        let server = try MockTowerServer()
+        let port = try await server.start()
+        serve(server)
+        defer { server.stop() }
+
+        let tower = TowerClient(metrics: SenderMetrics())
+        let client = TowerWorldBuilderClient(tower: tower)
+        var samples: [CaptureHealthSample] = []
+        // The reports' samples only; the invalidations (`nil`) are the next
+        // tests' subject.
+        let cancellable = client.healthSamples.compactMap { $0 }.sink { samples.append($0) }
+        defer { cancellable.cancel() }
+
+        func report(seq: Int, modelState: String = "receiving", keyframes: Int, restarts: Int, revision: String,
+                    changed: Bool = true, subscription: String = "sub-1") -> String {
+            Self.healthReport(seq: seq, modelState: modelState, keyframes: keyframes, restarts: restarts,
+                              revision: revision, changed: changed, subscription: subscription)
+        }
+
+        tower.connect(to: url(port: port))
+        await expect { client.state == .awaitingFirstUpdate }
+        server.send(text: report(seq: 1, keyframes: 20, restarts: 1, revision: "r1"))
+        await expect { samples.count == 1 }
+        XCTAssertEqual(samples.last, CaptureHealthSample(
+            keyframeCount: 20, trackingRestarts: 1,
+            recovery: WorldRecoveryReport(state: .recovered, episode: 2, promptsEnabled: true,
+                                          counts: WorldRecoveryCounts(recovered: 2, timedOut: 1)),
+            mapLag: WorldMapLag(builtFromKeyframes: 17, keyframesNow: 20),
+            worldID: "w1", sessionID: "s1"))
+
+        // The heartbeat: nothing changed, and the panel still hears it.
+        var states = 0
+        let stateCount = client.stateUpdates.sink { _ in states += 1 }
+        defer { stateCount.cancel() }
+        server.send(text: report(seq: 2, keyframes: 20, restarts: 1, revision: "r1", changed: false))
+        await expect { samples.count == 2 }
+        XCTAssertEqual(states, 0, "the heartbeat changed no state")
+        XCTAssertEqual(samples[1], samples[0])
+
+        // Not a live walk: nothing to show.
+        server.send(text: report(seq: 3, modelState: "finalizing", keyframes: 20, restarts: 1, revision: "r2"))
+        await expect { samples.count == 3 }
+        XCTAssertEqual(samples.last, .empty)
+
+        // A pinned saved world: never its figures as the live walk's. Its
+        // reports say "nothing live" (`nil`, as the pin itself does), not
+        // "a live report naming no walk", which forgets the walk (final-gate
+        // review of cb865eb, LOW).
+        var invalidations = 0
+        let nils = client.healthSamples.filter { $0 == nil }.sink { _ in invalidations += 1 }
+        defer { nils.cancel() }
+        client.inspect(worldID: "w1", sessionID: "s1")
+        await expect { client.inspection.isInspecting }
+        let afterPin = invalidations
+        server.send(text: report(seq: 4, keyframes: 30, restarts: 4, revision: "r3", subscription: "sub-2"))
+        await expect { invalidations == afterPin + 1 }
+        XCTAssertEqual(samples.count, 3, "no figures from a pinned world")
+
+        tower.disconnect()
+    }
+
+    /// A `receiving` World Builder report with every input the capture-health
+    /// panel reads: the counter, restarts, the relocalizer's counts (2 linked
+    /// back, 1 not) and a map 3 keyframes behind.
+    private static func healthReport(
+        seq: Int, modelState: String = "receiving", keyframes: Int, restarts: Int, revision: String,
+        changed: Bool = true, subscription: String = "sub-1", session: String = "s1"
+    ) -> String {
+        """
+        {"type":"cartridge_result",
+         "envelope_contract":"cartridge_results.envelope/2026-08-23",
+         "subscription_id":"\(subscription)","cartridge":"world_builder","result_type":"status",
+         "contract":"\(contract)","seq":\(seq),"revision":"\(revision)",
+         "revision_changed":\(changed),"coalesced":0,"cursor_status":null,
+         "snapshot":true,"tower_sent_at":1787463092.9,"time_basis":"tower-receipt",
+         "payload":{"model_state":"\(modelState)","model_state_reason":null,
+           "session":{"session_id":"\(session)","started_at":1787463000.0},
+           "world_snapshot":{"name":"Probe Room","world_id":"w1",
+             "keyframe_count":\(keyframes),"revision":"\(revision)",
+             "tracking":"good","scale":"relative","mapping_seconds":12.5,
+             "calibration":"calibrated",
+             "geometry":{"representation":"sparse point cloud","element_count":1360,
+                         "is_incremental":false},
+             "trajectory":{"pose_count":\(keyframes),"path_length":2.85,
+                           "path_length_unit":"world units","scale":"relative"},
+             "persistence":{"state":"saved","revision":"p1"}},
+           "geometry":{"available":true,"current":false,"built_from_keyframes":\(keyframes - 3),
+                       "keyframes_now":\(keyframes),"revision":"g1"},
+           "trajectory":{"tracking_restarts":\(restarts),"chain_breaks":0,"segments":2},
+           "tracking":{"recovery":{"state":"recovered","episode":2,"prompts_enabled":true,"prompt":null,
+             "counts":{"episodes":3,"recovered":2,"recovered_after_prompt":1,"timed_out":1,
+                       "prompts":1,"withheld_by_limiter":0,"withheld_disabled":0}}}}}
+        """
+    }
+
+    /// The panel as the operator would read it now, with the link up: what
+    /// matters below is whether the held figures still show as live.
+    private func healthRows(_ model: CaptureHealthModel) -> CaptureHealthReadout {
+        model.history.readout(now: .now, isLinked: true, isCapturing: true)
+    }
+
+    /// Every figure "—": nothing is shown as live. The map row reads "—"
+    /// too, rather than vanishing, as for an old report.
+    private func assertNoLiveFigures(_ readout: CaptureHealthReadout, _ why: String,
+                                     file: StaticString = #filePath, line: UInt = #line) {
+        XCTAssertEqual(readout.pace, "— keyframes/min", why, file: file, line: line)
+        XCTAssertEqual(readout.breaks, "Breaks in the last 30 s: —", why, file: file, line: line)
+        XCTAssertEqual(readout.lookBackCounts, "Look-back: —", why, file: file, line: line)
+        XCTAssertTrue(readout.lookBackShown, "the walk carried recovery: \(why), the row reads —, never hidden",
+                      file: file, line: line)
+        XCTAssertNil(readout.lookBackLine, why, file: file, line: line)
+        XCTAssertEqual(readout.mapLag, "Map: —", why, file: file, line: line)
+    }
+
+    /// The fresh report's figures that need no warm-up.
+    private func hasFreshFigures(_ model: CaptureHealthModel) -> Bool {
+        let rows = healthRows(model)
+        return rows.lookBackCounts == "linked back 2 · could not link 1" && rows.mapLag == "Map: 3 keyframes behind"
+    }
+
+    /// U2-D0 (review HIGH 2): the socket drops and comes back within the
+    /// panel's 5 s. The figures the old socket's subscription produced are
+    /// not live any more, so until the new subscription's first report the
+    /// panel reads "—" -- not the old walk's numbers, still young enough to
+    /// pass for current.
+    func testAfterADropAndAQuickReconnectThePanelWaitsForAFreshReport() async throws {
+        let server = try MockTowerServer()
+        let port = try await server.start()
+        let recorder = MessageRecorder()
+        serve(server, recorder: recorder)
+        defer { server.stop() }
+
+        let tower = TowerClient(metrics: SenderMetrics(), autoReconnect: true)
+        let client = TowerWorldBuilderClient(tower: tower)
+        let model = CaptureHealthModel(client: client)
+        tower.connect(to: url(port: port))
+        await expect { client.state == .awaitingFirstUpdate }
+
+        server.send(text: Self.healthReport(seq: 1, keyframes: 20, restarts: 1, revision: "r1"))
+        await expect { self.hasFreshFigures(model) }
+        let reportAt = ContinuousClock.now
+
+        server.dropConnection()
+        await expect { tower.status != .online }
+        await expect(timeout: 4) { tower.status == .online }
+        await expect(timeout: 4) {
+            recorder.all.compactMap(self.decode).filter { $0["type"] as? String == "result_subscribe" }.count == 2
+        }
+        await expect { client.state == .awaitingFirstUpdate }
+        try await Task.sleep(for: .milliseconds(100))   // the model hears on the main queue
+        XCTAssertLessThan(ContinuousClock.now - reportAt, CaptureHealthHistory.staleAfter,
+                          "the link came back while the old report was still young enough to pass for live")
+        assertNoLiveFigures(healthRows(model), "linked again, and no report on the new subscription yet")
+
+        server.send(text: Self.healthReport(seq: 1, keyframes: 21, restarts: 1, revision: "r2", subscription: "sub-1"))
+        await expect("the new subscription's first report brings the figures back") { self.hasFreshFigures(model) }
+
+        tower.disconnect()
+    }
+
+    /// U2-D0 (review HIGH 2): the Tower closes the subscription and the
+    /// client opens another on the same socket. Until that one reports, the
+    /// panel has nothing live to show.
+    func testWhenTheSubscriptionRestartsThePanelWaitsForAFreshReport() async throws {
+        let server = try MockTowerServer()
+        let port = try await server.start()
+        let recorder = MessageRecorder()
+        serve(server, recorder: recorder)
+        defer { server.stop() }
+
+        let tower = TowerClient(metrics: SenderMetrics())
+        let client = TowerWorldBuilderClient(tower: tower)
+        let model = CaptureHealthModel(client: client)
+        tower.connect(to: url(port: port))
+        await expect { client.state == .awaitingFirstUpdate }
+
+        server.send(text: Self.healthReport(seq: 1, keyframes: 20, restarts: 1, revision: "r1"))
+        await expect { self.hasFreshFigures(model) }
+
+        server.send(text: """
+            {"type":"result_error","reason":"channel_failed","message":"The result channel failed.",
+             "cartridge":"world_builder","subscription_id":"sub-1","closes_subscription":true}
+            """)
+        await expect {
+            recorder.all.compactMap(self.decode).filter { $0["type"] as? String == "result_subscribe" }.count == 2
+        }
+        try await Task.sleep(for: .milliseconds(100))
+        assertNoLiveFigures(healthRows(model), "a new subscription, and no report on it yet")
+
+        server.send(text: Self.healthReport(seq: 1, keyframes: 21, restarts: 1, revision: "r2", subscription: "sub-2"))
+        await expect("the new subscription's first report brings the figures back") { self.hasFreshFigures(model) }
+
+        tower.disconnect()
+    }
+
+    /// Codex HIGH (2026-10-05): the Tower closes the subscription once too
+    /// often and the client gives up on it -- with the socket still up. The
+    /// figures that subscription produced are not live any more, so the
+    /// panel goes blank at once, not when they go stale 5 s later.
+    func testWhenTheTowerClosesTheSubscriptionForGoodThePanelGoesBlankAtOnce() async throws {
+        let server = try MockTowerServer()
+        let port = try await server.start()
+        let recorder = MessageRecorder()
+        serve(server, recorder: recorder)
+        defer { server.stop() }
+
+        let tower = TowerClient(metrics: SenderMetrics())
+        let client = TowerWorldBuilderClient(tower: tower)
+        let model = CaptureHealthModel(client: client)
+        tower.connect(to: url(port: port))
+        await expect { client.state == .awaitingFirstUpdate }
+
+        func closeSubscription(_ id: String) {
+            server.send(text: """
+                {"type":"result_error","reason":"channel_failed","message":"The result channel failed.",
+                 "cartridge":"world_builder","subscription_id":"\(id)","closes_subscription":true}
+                """)
+        }
+        func subscribes() -> Int {
+            recorder.all.compactMap(self.decode).filter { $0["type"] as? String == "result_subscribe" }.count
+        }
+
+        server.send(text: Self.healthReport(seq: 1, keyframes: 20, restarts: 1, revision: "r1"))
+        await expect { self.hasFreshFigures(model) }
+        // The budget: each close is answered by a new subscription, which
+        // reports. Its report, after its ack on the one ordered socket, also
+        // proves the client holds the new id.
+        for n in 1...3 {
+            closeSubscription("sub-\(n)")
+            await expect { subscribes() == n + 1 }
+            server.send(text: Self.healthReport(seq: 1, keyframes: 20 + n, restarts: 1, revision: "r\(n + 1)",
+                                                subscription: "sub-\(n + 1)"))
+            await expect("sub-\(n + 1)'s report") { self.hasFreshFigures(model) }
+        }
+
+        // The budget is spent: this close is the last word.
+        closeSubscription("sub-4")
+        await expect {
+            if case .failed = client.state { return true }
+            return false
+        }
+        try await Task.sleep(for: .milliseconds(100))   // the model hears on the main queue
+        XCTAssertEqual(tower.status, .online, "the socket is still up: only the subscription is gone")
+        XCTAssertEqual(subscribes(), 4, "no fifth subscription")
+        assertNoLiveFigures(healthRows(model), "the subscription that produced them is closed for good")
+
+        // Final-gate review of cb865eb (LOW): a heartbeat the Tower had
+        // already queued for the closed subscription is dropped, not applied.
+        server.send(text: Self.healthReport(seq: 2, keyframes: 30, restarts: 1, revision: "r9",
+                                            subscription: "sub-4"))
+        try await Task.sleep(for: .milliseconds(400))
+        if case .failed = client.state {} else { XCTFail("the closed subscription's envelope revived the screen") }
+        assertNoLiveFigures(healthRows(model), "a queued envelope for the closed subscription")
+
+        tower.disconnect()
+    }
+
+    /// Codex HIGH (2026-10-05): the Tower says the subscription is gone
+    /// (`result_unsubscribed`) without being asked. Its figures go with it.
+    func testAResultUnsubscribedTheClientDidNotAskForBlanksThePanelAtOnce() async throws {
+        let server = try MockTowerServer()
+        let port = try await server.start()
+        serve(server)
+        defer { server.stop() }
+
+        let tower = TowerClient(metrics: SenderMetrics())
+        let client = TowerWorldBuilderClient(tower: tower)
+        let model = CaptureHealthModel(client: client)
+        tower.connect(to: url(port: port))
+        await expect { client.state == .awaitingFirstUpdate }
+
+        server.send(text: Self.healthReport(seq: 1, keyframes: 20, restarts: 1, revision: "r1"))
+        await expect { self.hasFreshFigures(model) }
+        server.send(text: #"{"type":"result_unsubscribed","subscription_id":"sub-1"}"#)
+        await expect("the panel goes blank well inside the 5 s staleness", timeout: 2) {
+            !self.hasFreshFigures(model)
+        }
+        XCTAssertEqual(tower.status, .online)
+        assertNoLiveFigures(healthRows(model), "the subscription that produced them is gone")
+
+        // Final-gate review of cb865eb (LOW): the closed id is retired, so a
+        // heartbeat already queued for it does not bring its figures back.
+        server.send(text: Self.healthReport(seq: 2, keyframes: 21, restarts: 1, revision: "r2"))
+        try await Task.sleep(for: .milliseconds(400))
+        XCTAssertFalse(hasFreshFigures(model), "an envelope for the closed subscription is dropped")
+
+        tower.disconnect()
+    }
+
+    /// U2-D0 (review HIGH 2): the screen pins a saved world. The live walk's
+    /// figures are gone at once -- not when the pinned report arrives, and
+    /// never shown beside the saved world -- and they come back only with a
+    /// report on the live subscription the screen returns to.
+    func testPinningASavedWorldClearsThePanelUntilALiveReport() async throws {
+        let server = try MockTowerServer()
+        let port = try await server.start()
+        serve(server)
+        defer { server.stop() }
+
+        let tower = TowerClient(metrics: SenderMetrics())
+        let client = TowerWorldBuilderClient(tower: tower)
+        let model = CaptureHealthModel(client: client)
+        tower.connect(to: url(port: port))
+        await expect { client.state == .awaitingFirstUpdate }
+
+        server.send(text: Self.healthReport(seq: 1, keyframes: 20, restarts: 1, revision: "r1"))
+        await expect { self.hasFreshFigures(model) }
+
+        client.inspect(worldID: "w0", sessionID: "s0")
+        await expect { client.inspection.isInspecting }
+        try await Task.sleep(for: .milliseconds(100))
+        assertNoLiveFigures(healthRows(model), "pinned, before the saved world's report")
+
+        // The saved world's report is not the live walk's.
+        server.send(text: Self.healthReport(seq: 1, keyframes: 40, restarts: 3, revision: "r9",
+                                            subscription: "sub-2", session: "s0"))
+        await expect { client.state.snapshot?.keyframeCount == 40 }
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertFalse(hasFreshFigures(model), "a pinned world's figures are not the live walk's")
+
+        // Back to live: still nothing until the live subscription reports.
+        client.followLive()
+        await expect { !client.inspection.isInspecting }
+        try await Task.sleep(for: .milliseconds(100))
+        assertNoLiveFigures(healthRows(model), "back to live, before the live report")
+        server.send(text: Self.healthReport(seq: 1, keyframes: 22, restarts: 1, revision: "r3", subscription: "sub-3"))
+        await expect("the live subscription's report brings the figures back") { self.hasFreshFigures(model) }
+
+        tower.disconnect()
+    }
+
     /// The wait for `result_subscribed` is bounded, and ends in a state a
     /// person can read.
     ///
@@ -716,6 +1053,88 @@ final class TowerWorldBuilderClientTests: XCTestCase {
         )
         XCTAssertEqual(tower.status, .online, "the socket was healthy throughout")
         XCTAssertFalse(client.state.hasWorld)
+
+        tower.disconnect()
+    }
+
+    /// U0.8 F11: after the bounded wait fails, "Ask the Tower again" is a
+    /// fresh subscription on the same socket, not a reconnect -- and its ack
+    /// is adopted, not ranked as a superseded one.
+    func testAskingAgainAfterATimeoutResubscribes() async throws {
+        let server = try MockTowerServer()
+        let port = try await server.start()
+        defer { server.stop() }
+
+        final class Script: @unchecked Sendable {
+            let lock = NSLock()
+            var acks = false
+            var subscribes = 0
+        }
+        let script = Script()
+        // Built here, on the main actor: one per subscription id the Tower
+        // could hand out on this connection.
+        let snapshots = (1...16).map {
+            snapshotMessage(seq: 1, modelState: "receiving", keyframes: 12, revision: "r1", subscription: "sub-\($0)")
+        }
+        server.onText = { text in
+            guard
+                let data = text.data(using: .utf8),
+                let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                let type = json["type"] as? String
+            else { return }
+            switch type {
+            case "ping":
+                server.send(text: #"{"type":"pong"}"#)
+            case "cartridges":
+                server.send(text: """
+                    {"type":"cartridges",
+                     "envelope_contract":"cartridge_results.envelope/2026-08-23",
+                     "cartridges":[{"cartridge":"world_builder","result_type":"status",
+                        "contract":"\(Self.contract)","available":true,
+                        "unavailable_reason":null,"snapshot_only":true}],
+                     "not_offered":[]}
+                    """)
+            case "result_subscribe":
+                let (acks, count): (Bool, Int) = script.lock.withLock {
+                    script.subscribes += 1
+                    return (script.acks, script.subscribes)
+                }
+                // Silent until the test says otherwise.
+                guard acks else { return }
+                server.send(text: """
+                    {"type":"result_subscribed",
+                     "envelope_contract":"cartridge_results.envelope/2026-08-23",
+                     "subscription_id":"sub-\(count)","cartridge":"world_builder",
+                     "result_type":"status","contract":"\(Self.contract)",
+                     "snapshot_only":true,"world_id":null,"session_id":null,
+                     "cursor_status":"absent"}
+                    """)
+                if count <= snapshots.count { server.send(text: snapshots[count - 1]) }
+            default:
+                break
+            }
+        }
+
+        let tower = TowerClient(metrics: SenderMetrics())
+        let client = TowerWorldBuilderClient(tower: tower, subscribeAckTimeout: .milliseconds(300))
+        tower.connect(to: url(port: port))
+
+        await expect("the subscription wait never ended") {
+            if case .failed(let failure) = client.state { return failure.kind == .timedOut }
+            return false
+        }
+        let before = script.lock.withLock { script.subscribes }
+
+        script.lock.withLock { script.acks = true }
+        client.askAgain()
+
+        await expect("asking again never produced a report: \(client.state)") {
+            if case .receiving = client.state { return true }
+            return false
+        }
+        let after = script.lock.withLock { script.subscribes }
+        XCTAssertEqual(after, before + 1, "one fresh subscribe, adopted on its first ack")
+        XCTAssertEqual(tower.status, .online, "the same socket throughout")
 
         tower.disconnect()
     }
@@ -2461,12 +2880,13 @@ final class WorldRenderViewerTests: XCTestCase {
             for: WorldRenderTarget(worldID: "w1", sessionID: "s1"), baseURL: Self.host
         )
         XCTAssertEqual(pinned?.absoluteString,
-                       "http://stub.invalid/worlds/w1/render?session_id=s1&viewer=appearance-1")
+                       "http://stub.invalid/worlds/w1/render?session_id=s1&viewer=appearance-1&wb-chrome=native")
 
         let unpinned = WorldRenderClient.url(
             for: WorldRenderTarget(worldID: "w1", sessionID: nil), baseURL: Self.host
         )
-        XCTAssertEqual(unpinned?.absoluteString, "http://stub.invalid/worlds/w1/render?viewer=appearance-1")
+        XCTAssertEqual(unpinned?.absoluteString,
+                       "http://stub.invalid/worlds/w1/render?viewer=appearance-1&wb-chrome=native")
     }
 
     /// A wire-supplied id stays one path component. A `/` inside it must not
@@ -2477,7 +2897,7 @@ final class WorldRenderViewerTests: XCTestCase {
         )
         XCTAssertEqual(url?.path, "/worlds/a/b c/render")
         XCTAssertEqual(url?.absoluteString,
-                       "http://stub.invalid/worlds/a%2Fb%20c/render?session_id=s%261&viewer=appearance-1")
+                       "http://stub.invalid/worlds/a%2Fb%20c/render?session_id=s%261&viewer=appearance-1&wb-chrome=native")
     }
 
     func testAnEmptyIdIsRefusedRatherThanAddressed() {
@@ -3193,9 +3613,16 @@ final class TowerWorldBuilderLiveHistoryTests: XCTestCase {
         endedAt: Double? = nil,
         buildInProgress: Bool? = nil,
         reason: String? = nil,
-        updatedAt: Double = 1788895032.0
+        updatedAt: Double = 1788895032.0,
+        photographic: String? = nil,
+        recovery: String? = nil,
+        towerSentAt: Double = 1788895032.9
     ) -> String {
         let sessionID = "s-\(worldID)"
+        // Only when a test names one, so every older fixture stays
+        // byte-identical to the payload it was written from.
+        let photographicKey = photographic.map { #","photographic":"# + $0 } ?? ""
+        let trackingBlock = recovery.map { #""tracking":{"state":"good","recovery":"# + $0 + "}," } ?? ""
         let capture = captureID.map { "\"\($0)\"" } ?? "null"
         let ended = endedAt.map { String($0) } ?? "null"
         let geometry = geometryRevision.map { "\"\($0)\"" } ?? "null"
@@ -3214,9 +3641,10 @@ final class TowerWorldBuilderLiveHistoryTests: XCTestCase {
              "subscription_id":"\(subscription)","cartridge":"world_builder","result_type":"status",
              "contract":"\(Self.contract)","seq":\(seq),"revision":"\(revision)",
              "revision_changed":true,"coalesced":0,"cursor_status":null,
-             "snapshot":true,"tower_sent_at":1788895032.9,"time_basis":"tower-receipt",
+             "snapshot":true,"tower_sent_at":\(towerSentAt),"time_basis":"tower-receipt",
              "payload":{
                \(selectionBlock)
+               \(trackingBlock)
                "world":{"world_id":"\(worldID)","display_name":\(displayName),
                         "schema_version":1,"created_at":1788894856.0,"updated_at":\(updatedAt)},
                "session":{"session_id":"\(sessionID)","started_at":1788894857.0,
@@ -3225,7 +3653,7 @@ final class TowerWorldBuilderLiveHistoryTests: XCTestCase {
                           "retains_raw_imagery":true},
                "lifecycle":{"state":"\(modelState)","evidence":"fixture","reason":\(why),
                             "build_in_progress":\(building),
-                            "build_in_progress_unavailable_reason":null,"finalization":null},
+                            "build_in_progress_unavailable_reason":null,"finalization":null\(photographicKey)},
                "geometry":{"available":\(geometryRevision != nil),"current":true,
                            "revision":\(geometry)},
                "model_state":"\(modelState)","model_state_reason":\(why),
@@ -3269,6 +3697,220 @@ final class TowerWorldBuilderLiveHistoryTests: XCTestCase {
     /// A settled pause, for the assertions that something did **not** happen.
     private func settle() async {
         try? await Task.sleep(nanoseconds: 250_000_000)
+    }
+
+    // MARK: The photographic word (Mac gate B0, 2026-09-23)
+
+    /// `lifecycle.photographic` reaches the client over a real socket and is
+    /// published even when nothing else in the payload moved: `owed` becomes
+    /// `failed` under an unchanged snapshot, which is the shape the finisher
+    /// produces, and `state` -- deduped at the source -- announces nothing.
+    func testThePhotographicWordIsPublishedEvenWhenTheStateStandsStill() async throws {
+        let server = try MockTowerServer()
+        let port = try await server.start()
+        serve(server)
+        defer { server.stop() }
+
+        let tower = TowerClient(metrics: SenderMetrics())
+        let client = TowerWorldBuilderClient(tower: tower)
+        var published: [WorldPhotographicReport?] = []
+        let cancellable = client.photographicUpdates.sink { published.append($0) }
+        defer { cancellable.cancel() }
+        tower.connect(to: url(port: port))
+        await expect { client.state == .awaitingFirstUpdate }
+
+        server.send(text: message(
+            seq: 1, modelState: "finalizing", worldID: "w-owed", revision: "r1",
+            geometryRevision: "g1", selection: "pinned", endedAt: 1788895000.0,
+            buildInProgress: false,
+            photographic: #"{"state":"owed","stage":"appearance","detail":"nothing is working on it"}"#
+        ))
+        await expect { client.photographic?.state == .owed }
+        XCTAssertEqual(client.photographic?.stage, "appearance")
+        guard case .finalizing(_, let building) = client.state else {
+            return XCTFail("\(client.state)")
+        }
+        XCTAssertEqual(building, false)
+
+        // The same snapshot, a new photographic word.
+        server.send(text: message(
+            seq: 2, modelState: "finalized", worldID: "w-owed", revision: "r1",
+            geometryRevision: "g1", selection: "pinned", endedAt: 1788895000.0,
+            buildInProgress: false,
+            photographic: #"{"state":"failed","stage":"appearance","detail":"the encode raised"}"#
+        ))
+        await expect { client.photographic?.state == .failed }
+        XCTAssertEqual(client.photographic?.detail, "the encode raised")
+
+        // A Tower that sends no block: absence, never a made-up word.
+        server.send(text: message(
+            seq: 3, modelState: "finalized", worldID: "w-owed", revision: "r2",
+            geometryRevision: "g1", selection: "pinned", endedAt: 1788895000.0
+        ))
+        await expect { client.photographic == nil }
+        XCTAssertEqual(published.compactMap { $0?.state }, [.owed, .failed])
+    }
+
+    /// Review 4: a walk and what the Tower says about it are published as
+    /// ONE value, once per report, after every part of it has moved. Walk A
+    /// (with a photographic word), then B (with none), then A again: every
+    /// value published names the walk its state, word and session describe
+    /// -- never A's walk with B's state, never B's walk with A's word, never
+    /// a value in between. (Before, the word went out first, then the walk,
+    /// then the state, each on its own publisher.)
+    func testEachReportIsPublishedOnceWithItsOwnWalk() async throws {
+        let server = try MockTowerServer()
+        let port = try await server.start()
+        serve(server)
+        defer { server.stop() }
+
+        let tower = TowerClient(metrics: SenderMetrics())
+        let client = TowerWorldBuilderClient(tower: tower)
+        var published: [WalkScoped<WorldWalkReport>] = []
+        let cancellable = client.walkReportUpdates.sink { published.append($0) }
+        defer { cancellable.cancel() }
+        tower.connect(to: url(port: port))
+        await expect { client.state == .awaitingFirstUpdate }
+        published.removeAll()
+
+        let owed = #"{"state":"owed","stage":"appearance","detail":"nothing is working on it"}"#
+        for (seq, world) in [(1, "w-a"), (2, "w-b"), (3, "w-a")] {
+            server.send(text: message(
+                seq: seq, modelState: "finalizing", worldID: world, revision: "r\(seq)",
+                geometryRevision: "g1", selection: "pinned", endedAt: 1788895000.0,
+                buildInProgress: false, photographic: world == "w-a" ? owed : nil
+            ))
+            await expect { client.walkReport.walk?.worldID == world }
+        }
+        XCTAssertEqual(published.map { $0.walk?.worldID }, ["w-a", "w-b", "w-a"], "one value per report")
+        for value in published {
+            let world = value.walk?.worldID
+            XCTAssertEqual(value.value.state.snapshot?.worldID, world, "a state under another walk")
+            XCTAssertEqual(value.walk?.sessionID, world.map { "s-\($0)" }, "another walk's session")
+            XCTAssertEqual(value.value.photographic?.state, world == "w-a" ? .owed : nil,
+                           "a photographic word under another walk")
+        }
+        tower.disconnect()
+    }
+
+    // MARK: The look-back prompt (WORLD-BUILDER-COMPONENTS.md §6.5)
+
+    private func prompting(id: Int, episode: Int = 1, speakUntil: Double = 1788895035.0,
+                           state: String = "prompting") -> String {
+        """
+        {"state":"\(state)","episode":\(episode),"lost_at":1788895028.0,"resolved_at":null,
+         "recovered_by":null,"prompts_enabled":true,
+         "prompt":{"id":\(id),"episode":\(episode),"kind":"look-back","issued_at":1788895031.0,
+                   "speak_until":\(speakUntil)},
+         "counts":{"episodes":\(episode),"recovered":0,"recovered_after_prompt":0,"timed_out":0,
+                   "prompts":\(id),"withheld_by_limiter":0,"withheld_disabled":0},
+         "limiter":{"max_prompts":2,"window_s":60,"mechanism":"cooldown","cooldown_s":20,
+                    "prompt_after_s":3,"timeout_s":15,"speak_window_s":4},
+         "acceptance":{"matcher":"sift","reference_keyframes":12,"scan_hz":2,
+                       "triangle":{"min_links":2,"min_link_inliers":50,"max_closure_deg":8},
+                       "strong_link":{"min_inliers":100}}}
+        """
+    }
+
+    /// Bound to the walk this phone streams, following live: each prompt id is
+    /// shown once with one haptic, heartbeats never repeat it, a stale one is
+    /// never shown, and the banner and the canvas line follow the episode.
+    func testALiveBoundWalkShowsEachPromptOnce() async throws {
+        let server = try MockTowerServer()
+        let port = try await server.start()
+        serve(server)
+        defer { server.stop() }
+
+        let cue = RecordingLookBackCue()
+        let tower = TowerClient(metrics: SenderMetrics())
+        let client = TowerWorldBuilderClient(tower: tower, lookBackCue: cue)
+        tower.connect(to: url(port: port))
+        await expect { client.state == .awaitingFirstUpdate }
+        tower.sendStreamStart()
+        await expect { tower.isStreamingToTower }
+
+        server.send(text: message(seq: 1, modelState: "receiving", worldID: "w-live", keyframes: 40,
+                                  revision: "r1", selection: "live", recovery: prompting(id: 1)))
+        await expect { cue.alerts.count == 1 }
+        XCTAssertEqual(client.sessionBinding, .bound(captureID: "cap-1"))
+        XCTAssertEqual(cue.alerts, [1])
+        XCTAssertEqual(client.lookBackBanner, .lookBack(promptID: 1))
+        XCTAssertEqual(client.recovery?.displayLine, "Finding where you are…")
+
+        // A heartbeat, and a coalesced snapshot, carry the same id.
+        server.send(text: message(seq: 2, modelState: "receiving", worldID: "w-live", keyframes: 40,
+                                  revision: "r1", selection: "live", recovery: prompting(id: 1)))
+        server.send(text: message(seq: 3, modelState: "receiving", worldID: "w-live", keyframes: 41,
+                                  revision: "r2", selection: "live", recovery: prompting(id: 1)))
+        await settle()
+        XCTAssertEqual(cue.alerts.count, 1, "the same prompt id was shown twice")
+
+        // A stale prompt (sent after its speak_until) is never spoken.
+        server.send(text: message(seq: 4, modelState: "receiving", worldID: "w-live", keyframes: 42,
+                                  revision: "r3", selection: "live",
+                                  recovery: prompting(id: 2, episode: 2, speakUntil: 1788895030.0)))
+        await settle()
+        XCTAssertEqual(cue.alerts.count, 1, "a stale look-back was shown")
+
+        // The next fresh one is.
+        server.send(text: message(seq: 5, modelState: "receiving", worldID: "w-live", keyframes: 43,
+                                  revision: "r4", selection: "live",
+                                  recovery: prompting(id: 3, episode: 3)))
+        await expect { cue.alerts.count == 2 }
+        XCTAssertEqual(cue.alerts.last, 3)
+        XCTAssertEqual(client.lookBackBanner, .lookBack(promptID: 3))
+
+        // Recovered: the line changes, the banner says so, no new haptic.
+        server.send(text: message(seq: 6, modelState: "receiving", worldID: "w-live", keyframes: 44,
+                                  revision: "r5", selection: "live",
+                                  recovery: prompting(id: 3, episode: 3, state: "recovered")))
+        await expect { client.recovery?.state == .recovered }
+        XCTAssertEqual(client.recovery?.displayLine, "Linked back to what you saw before")
+        XCTAssertEqual(client.lookBackBanner, .backOnTrack)
+        XCTAssertEqual(cue.alerts.count, 2)
+
+        tower.sendStreamStop()
+        tower.disconnect()
+    }
+
+    /// C1 E1: a pinned subscription never shows a banner or a recovery line,
+    /// and neither does a phone with no capture bracket open (Release has none).
+    func testAPinnedOrUnboundPhoneNeverShowsAPrompt() async throws {
+        let server = try MockTowerServer()
+        let port = try await server.start()
+        serve(server)
+        defer { server.stop() }
+
+        let cue = RecordingLookBackCue()
+        let tower = TowerClient(metrics: SenderMetrics())
+        let client = TowerWorldBuilderClient(tower: tower, lookBackCue: cue)
+        tower.connect(to: url(port: port))
+        await expect { client.state == .awaitingFirstUpdate }
+
+        // No bracket: the binding is `.none`.
+        server.send(text: message(seq: 1, modelState: "receiving", worldID: "w-live", keyframes: 40,
+                                  revision: "r1", selection: "live", recovery: prompting(id: 1)))
+        await expect { client.state.isReceivingUpdates }
+        await settle()
+        XCTAssertTrue(cue.alerts.isEmpty, "an unbound phone showed a prompt")
+        XCTAssertNil(client.lookBackBanner)
+        XCTAssertNil(client.recovery)
+
+        // Bracket open, but pinned to a world by name.
+        tower.sendStreamStart()
+        await expect { tower.isStreamingToTower }
+        client.inspect(worldID: "w-live", sessionID: "s-w-live")
+        await expect { client.inspection == .inspecting(worldID: "w-live") }
+        server.send(text: message(seq: 1, subscription: "sub-2", modelState: "receiving", worldID: "w-live",
+                                  keyframes: 40, revision: "r1", selection: "pinned",
+                                  recovery: prompting(id: 2, episode: 2)))
+        await settle()
+        XCTAssertTrue(cue.alerts.isEmpty, "a pinned subscription showed a prompt")
+        XCTAssertNil(client.lookBackBanner)
+        XCTAssertNil(client.recovery)
+
+        tower.sendStreamStop()
+        tower.disconnect()
     }
 
     // MARK: The ownership rule
@@ -3930,32 +4572,49 @@ final class TowerWorldBuilderLiveHistoryTests: XCTestCase {
 
 // MARK: - The view model's gallery is keyed on world identity
 
-/// A `WorldBuilderClient` a test drives by hand: four subjects, no socket.
+extension WorldBuilderViewModel {
+    /// The report moves to `state`, naming `walk`: one value, as a client
+    /// publishes it.
+    func report(_ state: WorldModelState, walk: WorldFinishWalk? = nil) {
+        walkReportDidChange(to: WalkScoped(walk: walk, value: WorldWalkReport(state: state)))
+    }
+
+    /// The report names `walk`, its words unchanged.
+    func report(walk: WorldFinishWalk?) {
+        walkReportDidChange(to: WalkScoped(walk: walk, value: walkReport.value))
+    }
+}
+
+/// A `WorldBuilderClient` a test drives by hand: no socket.
 /// The seam the audit asked for, so view-model behaviour under client-driven
-/// transitions is testable without a Tower.
+/// transitions is testable without a Tower. Each `send` moves one part of
+/// the walk report and publishes the whole report, as one value -- the only
+/// shape the protocol has for it.
 @MainActor
 final class ScriptedWorldBuilderClient: WorldBuilderClient {
     let cartridgeID = "world-build"
-    private(set) var state: WorldModelState = .idle
+    private(set) var walkReport: WalkScoped<WorldWalkReport> = .unreported(.idle)
+    var state: WorldModelState { walkReport.value.state }
+    /// The builder's finalization record. `nil` until a test sends one.
+    var finalization: WorldFinalizationReport? { walkReport.value.finalization }
+    /// The Tower's photographic word. `nil` until a test sends one.
+    var photographic: WorldPhotographicReport? { walkReport.value.photographic }
+    var presentedWalk: WorldFinishWalk? { walkReport.walk }
     private(set) var sessionBinding: WorldSessionBinding = .none
     private(set) var inspection: WorldInspectionMode = .live
     private(set) var recentWorld: WorldRecentReference?
-    /// The builder's finalization record. `nil` until a test sends one.
-    private(set) var finalization: WorldFinalizationReport?
 
-    private let stateSubject = PassthroughSubject<WorldModelState, Never>()
+    private let reportSubject = PassthroughSubject<WalkScoped<WorldWalkReport>, Never>()
     private let bindingSubject = PassthroughSubject<WorldSessionBinding, Never>()
     private let inspectionSubject = PassthroughSubject<WorldInspectionMode, Never>()
     private let recentSubject = PassthroughSubject<WorldRecentReference?, Never>()
     private let geometrySubject = PassthroughSubject<WorldGeometryCoordinates, Never>()
-    private let finalizationSubject = PassthroughSubject<WorldFinalizationReport?, Never>()
 
-    var stateUpdates: AnyPublisher<WorldModelState, Never> { stateSubject.eraseToAnyPublisher() }
+    var walkReportUpdates: AnyPublisher<WalkScoped<WorldWalkReport>, Never> { reportSubject.eraseToAnyPublisher() }
     var bindingUpdates: AnyPublisher<WorldSessionBinding, Never> { bindingSubject.eraseToAnyPublisher() }
     var inspectionUpdates: AnyPublisher<WorldInspectionMode, Never> { inspectionSubject.eraseToAnyPublisher() }
     var recentWorldUpdates: AnyPublisher<WorldRecentReference?, Never> { recentSubject.eraseToAnyPublisher() }
     var geometryUpdates: AnyPublisher<WorldGeometryCoordinates, Never> { geometrySubject.eraseToAnyPublisher() }
-    var finalizationUpdates: AnyPublisher<WorldFinalizationReport?, Never> { finalizationSubject.eraseToAnyPublisher() }
 
     /// Recorded so a test can assert the view model asked for the pin it was
     /// told to.
@@ -3965,9 +4624,20 @@ final class ScriptedWorldBuilderClient: WorldBuilderClient {
         self.recentWorld = recentWorld
     }
 
+    /// The whole report, as one value: a walk and what it says, together.
+    func send(_ report: WalkScoped<WorldWalkReport>) {
+        walkReport = report
+        reportSubject.send(report)
+    }
+
+    private func send(walk: WorldFinishWalk?, _ change: (inout WorldWalkReport) -> Void) {
+        var value = walkReport.value
+        change(&value)
+        send(WalkScoped(walk: walk, value: value))
+    }
+
     func send(_ state: WorldModelState) {
-        self.state = state
-        stateSubject.send(state)
+        send(walk: walkReport.walk) { $0.state = state }
     }
 
     func send(recent: WorldRecentReference?) {
@@ -3979,12 +4649,22 @@ final class ScriptedWorldBuilderClient: WorldBuilderClient {
     /// shape the real Tower sends while a long final solve runs, and the shape
     /// that used to reach the screen as nothing at all.
     func send(finalization report: WorldFinalizationReport?) {
-        finalization = report
-        finalizationSubject.send(report)
+        send(walk: walkReport.walk) { $0.finalization = report }
+    }
+
+    /// A photographic word **without** a state change beside it: `owed` →
+    /// `complete` while the snapshot stands still.
+    func send(photographic report: WorldPhotographicReport?) {
+        send(walk: walkReport.walk) { $0.photographic = report }
     }
 
     func send(_ coordinates: WorldGeometryCoordinates) {
         geometrySubject.send(coordinates)
+    }
+
+    /// The report names another walk, its words unchanged.
+    func send(walk: WorldFinishWalk?) {
+        send(walk: walk) { _ in }
     }
 
     func inspect(worldID: String, sessionID: String?) {
@@ -3997,6 +4677,10 @@ final class ScriptedWorldBuilderClient: WorldBuilderClient {
         inspection = .live
         inspectionSubject.send(inspection)
     }
+
+    /// How many times "Ask the Tower again" reached the client (U0.8 F11).
+    private(set) var askAgainCount = 0
+    func askAgain() { askAgainCount += 1 }
 }
 
 @MainActor
@@ -4147,6 +4831,124 @@ final class WorldBuilderViewModelOwnershipTests: XCTestCase {
         XCTAssertNil(viewModel.renderTarget)
     }
 
+    /// Review HIGH 1, the pin before its report: Saved worlds names the
+    /// pinned world's target at once, while the stage on screen is still the
+    /// previous walk's. The panel pairs that stage with no picture until the
+    /// pinned world's own report arrives.
+    func testAPinBeforeItsReportPairsTheOldStageWithNoPicture() async {
+        let client = ScriptedWorldBuilderClient()
+        let viewModel = makeViewModel(client: client)
+        let a = WorldFinishWalk(worldID: "w-a", sessionID: "s-a")
+        client.send(walk: a)
+        let walked = await waitUntil { viewModel.presentedWalk == a }
+        XCTAssertTrue(walked, "the walk never reached the view model")
+        await populate(viewModel)
+        XCTAssertEqual(viewModel.panelTarget, WorldRenderTarget(worldID: "w-a", sessionID: "s-a"))
+
+        viewModel.open(worldID: "w-b", sessionID: "s-b")
+        XCTAssertEqual(viewModel.renderTarget, WorldRenderTarget(worldID: "w-b", sessionID: "s-b"))
+        XCTAssertNil(viewModel.panelTarget, "w-a's stage was paired with w-b's picture")
+
+        client.send(walk: WorldFinishWalk(worldID: "w-b", sessionID: "s-b"))
+        let arrived = await waitUntil { viewModel.panelTarget != nil }
+        XCTAssertTrue(arrived, "the pinned world's own report pairs its picture")
+        XCTAssertEqual(viewModel.panelTarget, WorldRenderTarget(worldID: "w-b", sessionID: "s-b"))
+    }
+
+    private func walkReport(_ world: String, _ session: String, name: String) -> WalkScoped<WorldWalkReport> {
+        WalkScoped(walk: WorldFinishWalk(worldID: world, sessionID: session),
+                   value: WorldWalkReport(state: .finalized(WorldSnapshot(name: name, worldID: world))))
+    }
+
+    /// Review 4, HIGH 1: open saved world B while the report is still A's.
+    /// B's picture target is named at once; the header's Picture offers
+    /// nothing until B's report arrives (it reads the panel's paired
+    /// picture, never the bare target), and a cover opened on B's picture in
+    /// that gap -- the canvas may still offer it -- says nothing of A. B's
+    /// own report pairs both. (Before, the header opened B's picture with
+    /// A's words and progress.) The canvas's 3D controls -- "Open the 3D
+    /// world" and the solver's view -- and their words refuse the same gap:
+    /// before, they offered B's picture under A's stage, button wording and
+    /// reconstruction note (review 4, the remaining HIGH).
+    func testTheHeadersPictureRefusesWhileTheTargetAndTheReportDisagree() {
+        let viewModel = WorldBuilderViewModel(client: ScriptedWorldBuilderClient())
+        let a = WorldRenderTarget(worldID: "w-a", sessionID: "s-a")
+        let b = WorldRenderTarget(worldID: "w-b", sessionID: "s-b")
+        viewModel.open(worldID: "w-a", sessionID: "s-a")
+        viewModel.walkReportDidChange(to: walkReport("w-a", "s-a", name: "Kitchen"))
+        XCTAssertEqual(WorldBuilderWorkspaceView.headerPicture(viewModel), a)
+        XCTAssertEqual(viewModel.coverWords.value(for: a)?.title, "Kitchen")
+        XCTAssertEqual(WorldCanvasPictureOffer(viewModel.walkPresentation)?.target, a)
+
+        // The pin: B's target before B's report.
+        viewModel.open(worldID: "w-b", sessionID: "s-b")
+        XCTAssertEqual(viewModel.renderTarget, b, "the pin names its target at once")
+        XCTAssertNil(WorldBuilderWorkspaceView.headerPicture(viewModel), "B's picture offered under A's words")
+        XCTAssertNil(WorldCanvasPictureOffer(viewModel.walkPresentation),
+                     "the canvas offered B's picture with A's stage, button wording or note")
+        var cover = WorldCoverBinding()
+        cover.opened(picture: b, live: viewModel.coverWords)
+        let gap = cover.words(live: viewModel.coverWords, towerReachable: true)
+        XCTAssertNil(gap.title, "A's title over B's picture")
+        XCTAssertNil(gap.note)
+        XCTAssertNil(gap.progress, "A's progress over B's picture")
+
+        // B's report: the header, the panel and the cover all pair B.
+        viewModel.walkReportDidChange(to: walkReport("w-b", "s-b", name: "Hall"))
+        XCTAssertEqual(WorldBuilderWorkspaceView.headerPicture(viewModel), b)
+        XCTAssertEqual(viewModel.panelTarget, b)
+        let offer = WorldCanvasPictureOffer(viewModel.walkPresentation)
+        XCTAssertEqual(offer?.target, b)
+        XCTAssertEqual(offer?.openTitle, viewModel.presentation.openTitle)
+        cover.reported(viewModel.coverWords)
+        XCTAssertEqual(cover.words(live: viewModel.coverWords, towerReachable: true).title, "Hall")
+    }
+
+    /// Review 4: A, then B, then A again, each as the one value a client
+    /// publishes, under A's picture. At every step the words and the walk
+    /// they carry agree, and every surface over A's picture shows A's words
+    /// or nothing: the panel and the header pair A only while A is reported,
+    /// the cover's words over A are A's or none, and the panel's report and
+    /// the cover's are the same walk.
+    func testAThenBThenAPairsEverySurfaceWithItsOwnWalk() {
+        let viewModel = WorldBuilderViewModel(client: ScriptedWorldBuilderClient())
+        let a = WorldRenderTarget(worldID: "w-a", sessionID: "s-a")
+        viewModel.open(worldID: "w-a", sessionID: "s-a")
+        for (world, session, name) in [("w-a", "s-a", "Kitchen"), ("w-b", "s-b", "Hall"), ("w-a", "s-a", "Kitchen")] {
+            viewModel.walkReportDidChange(to: walkReport(world, session, name: name))
+            XCTAssertEqual(viewModel.coverWords.walk?.worldID, world)
+            XCTAssertEqual(viewModel.coverWords.value.title, name, "\(name)'s walk with other words")
+            XCTAssertEqual(viewModel.walkPresentation.walk, viewModel.coverWords.walk)
+            XCTAssertEqual(viewModel.coverWords.value(for: a)?.title, world == "w-a" ? "Kitchen" : nil)
+            XCTAssertEqual(viewModel.panelTarget, world == "w-a" ? a : nil)
+            XCTAssertEqual(WorldBuilderWorkspaceView.headerPicture(viewModel), viewModel.panelTarget)
+        }
+    }
+
+    /// Review HIGH 1, a new session in the same world: the previous
+    /// session's picture target goes when the report names the new session,
+    /// before the new session's coordinates arrive -- the world id alone
+    /// never changed.
+    func testANewSessionOfTheSameWorldForgetsThePreviousSessionsPicture() async {
+        let client = ScriptedWorldBuilderClient()
+        let viewModel = makeViewModel(client: client)
+        viewModel.report(walk: WorldFinishWalk(worldID: "w-a", sessionID: "s-a"))
+        await populate(viewModel)
+        XCTAssertNotNil(viewModel.panelTarget)
+
+        viewModel.report(.receiving(WorldSnapshot(worldID: "w-a", keyframeCount: 3)),
+                         walk: WorldFinishWalk(worldID: "w-a", sessionID: "s-a2"))
+        XCTAssertNil(viewModel.renderTarget, "s-a's picture target survived into s-a2")
+        XCTAssertNil(viewModel.panelTarget)
+        XCTAssertTrue(viewModel.fragmentsModel.segments.isEmpty, "s-a's gallery survived into s-a2")
+
+        // A pinned world named without a session takes its report's.
+        viewModel.open(worldID: "w-p", sessionID: nil)
+        viewModel.inspectionDidChange(to: .inspecting(worldID: "w-p"))
+        viewModel.report(walk: WorldFinishWalk(worldID: "w-p", sessionID: "s-p"))
+        XCTAssertEqual(viewModel.panelTarget, WorldRenderTarget(worldID: "w-p", sessionID: "s-p"))
+    }
+
     func testReturningToLiveClearsTheGalleryAndThePictureTarget() async {
         let client = ScriptedWorldBuilderClient()
         let viewModel = makeViewModel(client: client)
@@ -4167,7 +4969,7 @@ final class WorldBuilderViewModelOwnershipTests: XCTestCase {
         let viewModel = makeViewModel(client: client)
 
         await populate(viewModel)
-        viewModel.stateDidChange(to: .awaitingFirstUpdate)
+        viewModel.report(.awaitingFirstUpdate)
         XCTAssertEqual(viewModel.fragmentsModel.segments.count, 1, "waiting for the same world dropped its gallery")
         XCTAssertNotNil(viewModel.renderTarget)
 
@@ -4177,7 +4979,7 @@ final class WorldBuilderViewModelOwnershipTests: XCTestCase {
             .unsupported(reason: "x"),
         ] {
             await populate(viewModel)
-            viewModel.stateDidChange(to: state)
+            viewModel.report(state)
             XCTAssertTrue(viewModel.fragmentsModel.segments.isEmpty, "\(state) kept the gallery")
             XCTAssertTrue(viewModel.geometryChunks.isEmpty)
             XCTAssertNil(viewModel.renderTarget, "\(state) kept the picture target")
@@ -4192,17 +4994,17 @@ final class WorldBuilderViewModelOwnershipTests: XCTestCase {
         let viewModel = makeViewModel(client: ScriptedWorldBuilderClient())
         await populate(viewModel)
 
-        viewModel.stateDidChange(to: .receiving(WorldSnapshot(worldID: "w-a", keyframeCount: 5)))
+        viewModel.report(.receiving(WorldSnapshot(worldID: "w-a", keyframeCount: 5)))
         XCTAssertEqual(viewModel.fragmentsModel.segments.count, 1, "the same world's state dropped its gallery")
 
-        viewModel.stateDidChange(to: .receiving(WorldSnapshot(worldID: "w-new", keyframeCount: 2)))
+        viewModel.report(.receiving(WorldSnapshot(worldID: "w-new", keyframeCount: 2)))
         XCTAssertTrue(viewModel.fragmentsModel.segments.isEmpty)
         XCTAssertNil(viewModel.renderTarget)
 
         // A pinned world's target, set before any state of its own, survives
         // that state: nothing was drawn, so nothing is forgotten.
         viewModel.open(worldID: "w-pinned", sessionID: nil)
-        viewModel.stateDidChange(to: .finalized(WorldSnapshot(worldID: "w-pinned", keyframeCount: 9)))
+        viewModel.report(.finalized(WorldSnapshot(worldID: "w-pinned", keyframeCount: 9)))
         XCTAssertEqual(viewModel.renderTarget, WorldRenderTarget(worldID: "w-pinned", sessionID: nil))
     }
 
@@ -4251,6 +5053,13 @@ final class WorldBuilderSessionStubProtocol: URLProtocol {
         lock.lock()
         defer { lock.unlock() }
         return requests
+    }
+
+    /// Replaces one route's answer, keeping what was recorded.
+    static func setRoute(_ key: String, _ route: (Int, [String: Any])) {
+        lock.lock()
+        defer { lock.unlock() }
+        routes[key] = route
     }
 
     static func makeSession() -> URLSession {
@@ -4395,7 +5204,11 @@ final class WorldBuilderSessionControllerTests: XCTestCase {
         XCTAssertEqual(requests().count, 1)
 
         controller.towerReachabilityChanged(isReachable: false)
-        XCTAssertEqual(controller.status, .active, "an honoured start was forgotten on a drop")
+        XCTAssertEqual(controller.status, .towerLost, "a disconnect must not keep claiming active")
+        XCTAssertEqual(
+            controller.footnote,
+            "The Tower disconnected. This phone cannot tell whether World Builder is still active there; it asks again when the Tower reconnects."
+        )
         controller.towerReachabilityChanged(isReachable: true)
         let restarted = await waitUntil { self.requests().count == 2 }
         XCTAssertTrue(restarted)
@@ -4403,6 +5216,76 @@ final class WorldBuilderSessionControllerTests: XCTestCase {
             "/cartridges/world_builder/session/start",
             "/cartridges/world_builder/session/start",
         ])
+    }
+
+    /// U0.8 F01: once the socket drops, "active" is no longer a claim the
+    /// phone can make; the reconnect asks again.
+    func testADisconnectAfterActiveNeverClaimsActive() async {
+        let controller = makeController()
+        controller.workspaceDidAppear(isTowerReachable: true)
+        let active = await waitUntil { controller.status == .active }
+        XCTAssertTrue(active, "status is \(controller.status)")
+
+        controller.towerReachabilityChanged(isReachable: false)
+        XCTAssertEqual(controller.status, .towerLost)
+        XCTAssertFalse(controller.footnote.contains("is active"), controller.footnote)
+
+        controller.towerReachabilityChanged(isReachable: true)
+        let askedAgain = await waitUntil { self.requests().count == 2 }
+        XCTAssertTrue(askedAgain, "requests: \(requests())")
+        let activeAgain = await waitUntil { controller.status == .active }
+        XCTAssertTrue(activeAgain, "status is \(controller.status)")
+    }
+
+    /// U0.8 F02: a failed start is asked again in place, with no reconnect
+    /// and no leaving the workspace.
+    func testAFailedStartCanBeAskedAgainInPlace() async {
+        WorldBuilderSessionStubProtocol.reset(routes: [
+            Self.startKey: (500, ["detail": "boom"]),
+            Self.stopKey: (200, session(state: "stopped")),
+        ])
+        let controller = makeController()
+        controller.workspaceDidAppear(isTowerReachable: true)
+        let failed = await waitUntil {
+            if case .failed = controller.status { return true }
+            return false
+        }
+        XCTAssertTrue(failed, "status is \(controller.status)")
+        XCTAssertTrue(controller.canRetry)
+
+        WorldBuilderSessionStubProtocol.setRoute(Self.startKey, (200, session(state: "active")))
+        controller.retry()
+        let active = await waitUntil { controller.status == .active }
+        XCTAssertTrue(active, "status is \(controller.status)")
+        XCTAssertFalse(controller.canRetry)
+        XCTAssertEqual(requests(), [
+            "/cartridges/world_builder/session/start",
+            "/cartridges/world_builder/session/start",
+        ])
+    }
+
+    /// U0.8 F02: a Tower with no producer cannot be talked round, so no
+    /// retry is offered for it.
+    func testANoProducerRefusalOffersNoRetry() async {
+        var refusal = session(state: "stopped", accepted: false, changed: false)
+        refusal["reason"] = "unsupported"
+        refusal["message"] = "no World Builder producer is configured on this Tower"
+        WorldBuilderSessionStubProtocol.reset(routes: [
+            Self.startKey: (409, ["detail": refusal]),
+            Self.stopKey: (200, session(state: "stopped")),
+        ])
+        let controller = makeController()
+        controller.workspaceDidAppear(isTowerReachable: true)
+        let refused = await waitUntil {
+            if case .refused = controller.status { return true }
+            return false
+        }
+        XCTAssertTrue(refused, "status is \(controller.status)")
+        XCTAssertEqual(controller.lastRefusalReason, .unsupported)
+        XCTAssertFalse(controller.canRetry)
+        controller.retry()
+        try? await Task.sleep(nanoseconds: 150_000_000)
+        XCTAssertEqual(requests(), ["/cartridges/world_builder/session/start"], "a retry was sent anyway")
     }
 
     /// Off screen, a reconnect asks for nothing.
@@ -5492,6 +6375,16 @@ final class WorldRenderRevisionTests: XCTestCase {
         XCTAssertEqual(StubbedGeometryProtocol.requestCount(for: Self.revisionPath), asked,
                        "no request after the follower ended")
     }
+
+    /// U0.8 R1: the viewer's controls show one offer at a time. The fixture
+    /// cannot reach the both-offers state, so this is what pins it.
+    func testTheViewerShowsOneOfferAtATime() {
+        XCTAssertEqual(WorldRenderOffer.current(newerPictureAvailable: false, newerPictureRefused: false), WorldRenderOffer.none)
+        XCTAssertEqual(WorldRenderOffer.current(newerPictureAvailable: true, newerPictureRefused: false), .newerPicture)
+        XCTAssertEqual(WorldRenderOffer.current(newerPictureAvailable: false, newerPictureRefused: true), .retryRefused)
+        XCTAssertEqual(WorldRenderOffer.current(newerPictureAvailable: true, newerPictureRefused: true), .newerPicture,
+                       "showing the newer picture is itself a fresh attempt")
+    }
 }
 
 
@@ -5661,7 +6554,9 @@ final class WorldAssetTransportTests: XCTestCase {
     /// imagery does not outlive the viewer.
     func testTheViewerWebViewKeepsNothingAndRegistersTheScheme() {
         let assets = WorldAssetSchemeHandler(worldID: "w1")
-        let configuration = WorldRenderWebView.makeConfiguration(assets: assets)
+        let bridge = WorldChromeBridge(model: WorldChromeModel(), kind: .room,
+                                       pageURL: WorldAssetScheme.pageURL(worldID: "w1"))
+        let configuration = WorldRenderWebView.makeConfiguration(assets: assets, bridge: bridge)
         XCTAssertFalse(configuration.websiteDataStore.isPersistent,
                        "nothing the page stores outlives the viewer")
         XCTAssertTrue(configuration.urlSchemeHandler(forURLScheme: WorldAssetScheme.name) === assets)
@@ -5918,5 +6813,208 @@ final class WorldAssetTransportTests: XCTestCase {
             StubbedGeometryProtocol.requestCount(for: Self.manifestPath),
             manifestsWhileFilling + 1,
             "eight stale hits revalidate once between them, not eight times")
+    }
+}
+
+// MARK: - U0.6 I7: the stop clock and the stage, end to end
+
+extension TowerWorldBuilderClientTests {
+
+    /// A status report carrying `lifecycle` as a T-UX1 Tower sends it.
+    private static func finishReport(seq: Int, modelState: String, processing: String? = nil,
+                                     buildInProgress: Bool? = true, finalSolve: String = "pending") -> String {
+        let processingField = processing.map { #","processing":\#($0)"# } ?? ""
+        let inProgress = buildInProgress.map { $0 ? "true" : "false" } ?? "null"
+        return """
+        {"type":"cartridge_result",
+         "envelope_contract":"cartridge_results.envelope/2026-08-23",
+         "subscription_id":"sub-1","cartridge":"world_builder","result_type":"status",
+         "contract":"\(contract)","seq":\(seq),"revision":"r\(seq)",
+         "revision_changed":true,"coalesced":0,"cursor_status":null,
+         "snapshot":true,"tower_sent_at":1787463092.9,"time_basis":"tower-receipt",
+         "payload":{"model_state":"\(modelState)","model_state_reason":null,
+           "session":{"session_id":"s1","started_at":1787463000.0},
+           "world_snapshot":{"name":"Probe Room","world_id":"w1","keyframe_count":40,"revision":"r\(seq)",
+             "tracking":"good","scale":"relative","mapping_seconds":12.5,"calibration":"calibrated",
+             "geometry":{"representation":"sparse point cloud","element_count":1360,"is_incremental":false},
+             "trajectory":{"pose_count":40,"path_length":2.85,"path_length_unit":"world units","scale":"relative"},
+             "persistence":{"state":"saved","revision":"p1"}},
+           "geometry":{"available":true,"current":true,"revision":"g1"},
+           "lifecycle":{"build_in_progress":\(inProgress),
+             "finalization":{"state":"\(modelState == "finalized" ? "complete" : "pending")",
+                             "final_solve":"\(modelState == "finalized" ? "solved" : finalSolve)"}\(processingField)}}}
+        """
+    }
+
+    /// I7: receiving → finalizing + placing → (the app goes away) →
+    /// finalizing + checking 2/3 → finalized publishes `processing`, the stop
+    /// instant (the injected clock's) and the away banner.
+    func testTheStageTheStopClockAndTheAwayBannerArePublished() async throws {
+        let server = try MockTowerServer()
+        let port = try await server.start()
+        serve(server)
+        defer { server.stop() }
+
+        let stoppedAt = ContinuousClock.now
+        let activity = PassthroughSubject<Bool, Never>()
+        let tower = TowerClient(metrics: SenderMetrics())
+        let client = TowerWorldBuilderClient(tower: tower, now: { stoppedAt },
+                                             appActivity: activity.eraseToAnyPublisher())
+        let model = WorldBuilderViewModel(client: client)
+        tower.connect(to: url(port: port))
+        await expect { client.state == .awaitingFirstUpdate }
+
+        server.send(text: Self.finishReport(seq: 1, modelState: "receiving"))
+        await expect { if case .receiving = client.state { return true } else { return false } }
+        XCTAssertNil(client.finishClock.stoppedAt, "still walking")
+
+        server.send(text: Self.finishReport(seq: 2, modelState: "finalizing", processing: #"{"stage":"placing"}"#))
+        await expect("the stage is published") { client.processing?.stage == .placing }
+        XCTAssertEqual(client.finishClock.stoppedAt, stoppedAt, "the first report after receiving")
+        await expect("the view model republishes it") { model.processing?.stage == .placing }
+        await expect { model.presentation.finishLine?.text == "Placing images" }
+        XCTAssertEqual(model.presentation.stoppedAt, stoppedAt)
+
+        activity.send(false)
+        server.send(text: Self.finishReport(seq: 3, modelState: "finalizing",
+                                            processing: #"{"stage":"checking","step":{"n":2,"of":3}}"#))
+        await expect { client.processing?.step == WorldProcessingStep(n: 2, of: 3) }
+        await expect { model.presentation.finishLine?.text == "Checking the placement · pass 2 of 3" }
+        XCTAssertFalse(client.finishClock.showsAwayBanner, "not settled yet")
+
+        server.send(text: Self.finishReport(seq: 4, modelState: "finalized"))
+        await expect("settled while away: the banner") { client.finishClock.showsAwayBanner }
+        XCTAssertNil(client.processing, "the settled report carries no stage")
+        await expect { model.finishClock.showsAwayBanner }
+        XCTAssertNil(model.presentation.stoppedAt, "settled: no elapsed line")
+        model.dismissFinishBanner()
+        await expect { !client.finishClock.showsAwayBanner }
+
+        // An older Tower: no `processing`, the final pass pending, a live build.
+        server.send(text: Self.finishReport(seq: 5, modelState: "finalizing"))
+        await expect { model.presentation.finishLine?.text == "Placing and checking images" }
+
+        tower.disconnect()
+    }
+}
+
+// MARK: - Fog of war v1: the map belongs to its walk
+
+extension TowerWorldBuilderClientTests {
+
+    /// A receiving report for `world`/`session` (no session block when
+    /// `session` is nil), carrying `guidance` and `progress` when given.
+    private static func coverageReport(seq: Int, world: String = "w1", session: String? = "s1",
+                                       geometry: String = "g1", coverage: String? = nil, accepted: Int? = nil,
+                                       towerSentAt: Double = 1787463092.9) -> String {
+        let sessionField = session.map { #""session":{"session_id":"\#($0)","started_at":1787463000.0},"# } ?? ""
+        let guidanceField = coverage.map { #","guidance":{"coverage":\#($0)}"# } ?? ""
+        let progressField = accepted.map { #","progress":{"keyframes_accepted":\#($0)}"# } ?? ""
+        return """
+        {"type":"cartridge_result",
+         "envelope_contract":"cartridge_results.envelope/2026-08-23",
+         "subscription_id":"sub-1","cartridge":"world_builder","result_type":"status",
+         "contract":"\(contract)","seq":\(seq),"revision":"r\(seq)",
+         "revision_changed":true,"coalesced":0,"cursor_status":null,
+         "snapshot":true,"tower_sent_at":\(towerSentAt),"time_basis":"tower-receipt",
+         "payload":{"model_state":"receiving","model_state_reason":null,\(sessionField)
+           "world_snapshot":{"name":"Probe Room","world_id":"\(world)","keyframe_count":40,"revision":"r\(seq)",
+             "tracking":"good","scale":"relative","mapping_seconds":12.5,"calibration":"calibrated",
+             "geometry":{"representation":"sparse point cloud","element_count":1360,"is_incremental":false},
+             "trajectory":{"pose_count":40,"path_length":2.85,"path_length_unit":"world units","scale":"relative"},
+             "persistence":{"state":"saved","revision":"p1"}},
+           "geometry":{"available":true,"current":true,"revision":"\(geometry)"}\(guidanceField)\(progressField)}}
+        """
+    }
+
+    /// The `coverage` value of a §9 fixture, as JSON text.
+    private static func coverageJSON(_ fixture: String) -> String {
+        let data = try? JSONSerialization.data(withJSONObject: FOWFixtures.block(fixture))
+        return data.flatMap { String(data: $0, encoding: .utf8) } ?? "null"
+    }
+
+    /// Walk A's map is never shown for walk B: a report for another walk
+    /// without a block takes A's map away; B's own block is B's; and a
+    /// report naming no walk carries no map at all.
+    func testTheMapBelongsToItsWalk() async throws {
+        let server = try MockTowerServer()
+        let port = try await server.start()
+        serve(server)
+        defer { server.stop() }
+        let tower = TowerClient(metrics: SenderMetrics())
+        let client = TowerWorldBuilderClient(tower: tower)
+        let model = WorldBuilderViewModel(client: client)
+        tower.connect(to: url(port: port))
+        await expect { client.state == .awaitingFirstUpdate }
+
+        server.send(text: Self.coverageReport(seq: 1, coverage: Self.coverageJSON(FOWFixtures.mid), accepted: 127))
+        await expect("A's map") { model.coverage?.coverage.geometryRevision == "g-mid-113" }
+        XCTAssertEqual(client.walkReport.walk, WorldFinishWalk(worldID: "w1", sessionID: "s1"))
+        XCTAssertEqual(client.walkReport.value.coverage?.keyframesAccepted, 127)
+
+        server.send(text: Self.coverageReport(seq: 2, world: "w2", session: "s9"))
+        await expect("B's report") { client.walkReport.walk == WorldFinishWalk(worldID: "w2", sessionID: "s9") }
+        XCTAssertNil(client.walkReport.value.coverage, "A's map under B's walk")
+        XCTAssertNil(model.coverage)
+
+        server.send(text: Self.coverageReport(seq: 3, world: "w2", session: "s9",
+                                              coverage: Self.coverageJSON(FOWFixtures.stop), accepted: 1090))
+        await expect("B's own map") { model.coverage?.coverage.geometryRevision == "g-stop-984" }
+        XCTAssertEqual(model.coverage?.newerKeyframes, 106)
+
+        server.send(text: Self.coverageReport(seq: 4, world: "w3", session: nil,
+                                              coverage: Self.coverageJSON(FOWFixtures.mid), accepted: 127))
+        await expect("a report naming no session") { client.walkReport.walk == nil && client.state.snapshot?.worldID == "w3" }
+        XCTAssertNil(client.walkReport.value.coverage, "a map for a walk that cannot be named")
+        XCTAssertNil(model.coverage)
+        tower.disconnect()
+    }
+
+    /// A new block replaces the map without a new geometry revision; a new
+    /// geometry revision under the same block neither replaces nor re-dates
+    /// it, while the live count still moves (spec §9).
+    func testANewBlockReplacesTheMapAndALocalRebuildDoesNotRedateIt() async throws {
+        let server = try MockTowerServer()
+        let port = try await server.start()
+        serve(server)
+        defer { server.stop() }
+        let instant = ContinuousClock.now
+        let tower = TowerClient(metrics: SenderMetrics())
+        let client = TowerWorldBuilderClient(tower: tower, now: { instant })
+        tower.connect(to: url(port: port))
+        await expect { client.state == .awaitingFirstUpdate }
+        let solved = 1791240000.0
+
+        server.send(text: Self.coverageReport(seq: 1, geometry: "g1", coverage: Self.coverageJSON(FOWFixtures.mid),
+                                              accepted: 127, towerSentAt: solved + 5))
+        await expect { client.walkReport.value.coverage != nil }
+        let first = try XCTUnwrap(client.walkReport.value.coverage)
+        XCTAssertEqual(first.age(at: instant), 5)
+
+        server.send(text: Self.coverageReport(seq: 2, geometry: "g2", coverage: Self.coverageJSON(FOWFixtures.mid),
+                                              accepted: 131, towerSentAt: solved + 9))
+        await expect("the live count moves") { client.walkReport.value.coverage?.keyframesAccepted == 131 }
+        XCTAssertEqual(client.walkReport.value.coverage?.coverage, first.coverage, "same block, same map")
+        XCTAssertEqual(client.walkReport.value.coverage?.age(at: instant), 5, "a local rebuild re-dated the map")
+
+        var replaced = FOWFixtures.block(FOWFixtures.mid)
+        replaced["solved_at"] = solved + 20
+        replaced["computed_at"] = solved + 20.1
+        replaced["horizon_keyframes"] = 120
+        replaced["keyframes_now"] = 131
+        replaced["keyframes_pending"] = 11
+        replaced["geometry_revision"] = "g-mid-120"
+        let text = String(data: try JSONSerialization.data(withJSONObject: replaced), encoding: .utf8)
+        server.send(text: Self.coverageReport(seq: 3, geometry: "g2", coverage: text, accepted: 131,
+                                              towerSentAt: solved + 21))
+        await expect("the new block, same geometry revision") {
+            client.walkReport.value.coverage?.coverage.horizonKeyframes == 120
+        }
+        XCTAssertEqual(client.walkReport.value.coverage?.age(at: instant), 1, "dated by its own solve")
+        XCTAssertEqual(client.walkReport.value.coverage?.newerKeyframes, 11)
+
+        server.send(text: Self.coverageReport(seq: 4, geometry: "g2", coverage: "null", accepted: 131))
+        await expect("coverage:null: no map") { client.walkReport.value.coverage == nil }
+        tower.disconnect()
     }
 }

@@ -31,6 +31,18 @@ import SwiftUI
 struct CartridgeDrawerView: View {
     @Binding var selectedCartridgeID: String
 
+    /// Whether leaving the workspace on screen must ask first: a World
+    /// Builder capture is running (U0.8 F15, manager 137 D3). Read at the tap.
+    var leavingNeedsConfirmation: () -> Bool = { false }
+
+    /// Stops the glasses camera, for "Stop capture". Leaving World Builder
+    /// then asks the Tower to stop building, so both end together: the camera
+    /// never keeps streaming with no build (D3).
+    var stopCapture: () -> Void = {}
+
+    /// The row tapped while a capture runs, waiting on the alert.
+    @State private var pendingSelection: String?
+
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
@@ -38,8 +50,7 @@ struct CartridgeDrawerView: View {
             List {
                 Section {
                     Button {
-                        selectedCartridgeID = ""
-                        dismiss()
+                        select("")
                     } label: {
                         HomeRow(isSelected: selectedCartridgeID.isEmpty)
                     }
@@ -57,8 +68,7 @@ struct CartridgeDrawerView: View {
                         switch row {
                         case .openable(let cartridge, _):
                             Button {
-                                selectedCartridgeID = cartridge.id
-                                dismiss()
+                                select(cartridge.id)
                             } label: {
                                 CartridgeRow(
                                     row: row,
@@ -72,6 +82,7 @@ struct CartridgeDrawerView: View {
                     }
                 } header: {
                     Text("Modules")
+                        .foregroundStyle(.readableSecondary)
                 } footer: {
                     // The middle clause of this footer used to read: "It does
                     // not start anything on the Tower — the Tower chooses what
@@ -134,6 +145,7 @@ struct CartridgeDrawerView: View {
                     // this claim must never be wrong in — worse than the
                     // stale-but-conservative sentence it replaced.
                     Text("Opening a cartridge changes this app's workspace. Two of them also set the Tower working as they open: World Builder activates its session, and Scene Understanding starts watching the scene — so if a camera is already streaming, opening those is enough. They differ in what is left behind: Scene Understanding keeps nothing, while World Builder's session is what lets the Tower build and save a world from a capture that is already running. Recording is otherwise a deliberate act, and those controls live inside the workspace. Badges describe this app: \u{201C}Ready to test\u{201D} means there is something here to try, not that the Tower you are connected to is serving it right now. Each workspace says what that Tower can actually do.")
+                        .foregroundStyle(.readableSecondary)
                         .padding(.top, 4)
                 }
             }
@@ -144,7 +156,63 @@ struct CartridgeDrawerView: View {
                     Button("Done") { dismiss() }
                 }
             }
+            // Leaving World Builder mid-capture asks first, and "Stop capture"
+            // stops the camera and the build together (U0.8 F15, D3).
+            //
+            // An alert, not a `confirmationDialog`: on iOS 26 a confirmation
+            // dialog can present as a popover, and a popover drops its
+            // `.cancel` button (tapping outside stands in for it). D3 needs
+            // both choices on screen, and an alert always draws both.
+            .alert(
+                CartridgeLeaveText.title,
+                isPresented: Binding(
+                    get: { pendingSelection != nil },
+                    set: { if !$0 { pendingSelection = nil } }
+                ),
+                presenting: pendingSelection
+            ) { id in
+                Button(CartridgeLeaveText.stopCapture, role: .destructive) {
+                    stopCapture()
+                    selectedCartridgeID = id
+                    pendingSelection = nil
+                    dismiss()
+                }
+                Button(CartridgeLeaveText.keepCapturing, role: .cancel) {
+                    pendingSelection = nil
+                    dismiss()
+                }
+            } message: { _ in
+                Text(CartridgeLeaveText.message)
+            }
         }
+    }
+
+    /// A row's tap: switch at once, or ask first while a capture runs.
+    private func select(_ id: String) {
+        if id != selectedCartridgeID && leavingNeedsConfirmation() {
+            pendingSelection = id
+        } else {
+            selectedCartridgeID = id
+            dismiss()
+        }
+    }
+}
+
+/// The words of the leave-mid-capture alert (U0.8 F15; manager 137 D3).
+enum CartridgeLeaveText {
+    static let title = "Leave and stop the capture?"
+    static let message = "Leaving World Builder stops the glasses camera and asks the Tower to stop building a world from this capture."
+    static let stopCapture = "Stop capture"
+    static let keepCapturing = "Keep capturing"
+}
+
+/// When leaving the workspace on screen must ask first (U0.8 F15): only World
+/// Builder, and only while its capture runs or the glasses hold it paused.
+/// Leaving there would ask the Tower to stop building while the camera kept
+/// streaming.
+enum CartridgeLeaveRule {
+    static func needsConfirmation(workspace: CartridgeWorkspace?, claim: CaptureClaim) -> Bool {
+        workspace == .worldBuilder && (claim == .running || claim == .devicePaused)
     }
 }
 
@@ -158,10 +226,12 @@ private struct HomeRow: View {
                     .font(.body.weight(.medium))
                 Text("Infrastructure status and a plain capture session.")
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.readableSecondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
-            Spacer(minLength: 8)
+            // The words take the row's width and grow down, rather than
+            // being offered only their one-line width beside a spacer.
+            .frame(maxWidth: .infinity, alignment: .leading)
             if isSelected {
                 Image(systemName: "checkmark")
                     .font(.body.weight(.semibold))
@@ -188,20 +258,26 @@ private struct CartridgeRow: View {
     private var cartridge: Cartridge { row.cartridge }
     private var isOpenable: Bool { row.isOpenable }
 
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+
     var body: some View {
-        HStack(alignment: .top, spacing: 12) {
+        // The badge under the words at the accessibility sizes, where a
+        // trailing column squeezed both.
+        let layout = dynamicTypeSize.isAccessibilitySize
+            ? AnyLayout(VStackLayout(alignment: .leading, spacing: 8))
+            : AnyLayout(HStackLayout(alignment: .top, spacing: 12))
+        layout {
             VStack(alignment: .leading, spacing: 3) {
                 Text(cartridge.name)
                     .font(.body.weight(.medium))
                 Text(cartridge.summary)
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.readableSecondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
 
-            Spacer(minLength: 8)
-
-            VStack(alignment: .trailing, spacing: 6) {
+            VStack(alignment: dynamicTypeSize.isAccessibilitySize ? .leading : .trailing, spacing: 6) {
                 // Tinted for exactly one status, so the drawer answers "which
                 // of these can I try?" in a glance rather than after reading
                 // eight identical capsules. Colour is not the only carrier —
@@ -217,7 +293,10 @@ private struct CartridgeRow: View {
                             : AnyShapeStyle(Color(.tertiarySystemFill)),
                         in: .capsule
                     )
-                    .foregroundStyle(cartridge.status.isProminent ? AnyShapeStyle(.tint) : AnyShapeStyle(.secondary))
+                    // The label colour on the tinted capsule: tint on a
+                    // 0.18 tint was about 3:1, under the 4.5:1 text needs.
+                    // The capsule still carries the colour.
+                    .foregroundStyle(cartridge.status.isProminent ? AnyShapeStyle(.primary) : AnyShapeStyle(.readableSecondary))
 
                 if isSelected {
                     Image(systemName: "checkmark")

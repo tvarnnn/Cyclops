@@ -5,6 +5,7 @@
 
 import Combine
 import Foundation
+import UIKit
 
 // MARK: - The contract this build implements
 
@@ -145,7 +146,11 @@ enum WorldBuilderResultDecoder {
     /// rather than as an empty world.
     static func modelState(from payload: [String: Any]) -> WorldModelState? {
         guard let word = payload["model_state"] as? String else { return nil }
-        let reason = payload["model_state_reason"] as? String
+        // Guarded (G1-F4): this is `lifecycle.reason`, which review V10 found
+        // could embed `finalization.detail` -- exception text, a path. Shown on
+        // the canvas for `unsupported`, `interrupted` and `failed`, in the
+        // unavailable panel, and inside the recoverability sentence.
+        let reason = WorldTowerText.sentence(payload["model_state_reason"] as? String)
         // `if let` rather than `Optional.map(snapshot(from:))`, for the reason
         // `TowerCartridgeDeclaration.init` gives: a function reference passed
         // to `map` is called from a nonisolated context under this target's
@@ -274,6 +279,40 @@ enum WorldBuilderResultDecoder {
     static func finalization(from payload: [String: Any]) -> WorldFinalizationReport? {
         let lifecycle = payload["lifecycle"] as? [String: Any] ?? [:]
         return WorldFinalizationReport(json: lifecycle["finalization"])
+    }
+
+    /// `lifecycle.photographic` → `WorldPhotographicReport`, or `nil` for
+    /// `null` (a lifecycle computed from the record alone), for an absent key
+    /// (every Tower before 2026-09-22), and for a payload with no `lifecycle`.
+    /// `WORLD-BUILDER-IOS.md` §3a: read, because plain "Saved" over a failed
+    /// photographic build is the T3 defect.
+    static func photographic(from payload: [String: Any]) -> WorldPhotographicReport? {
+        let lifecycle = payload["lifecycle"] as? [String: Any] ?? [:]
+        return WorldPhotographicReport(json: lifecycle["photographic"])
+    }
+
+    /// `tracking.recovery` → `WorldRecoveryReport`, or `nil` for `null` ("not
+    /// recorded", never "no losses") and for a Tower without it
+    /// (`WORLD-BUILDER-COMPONENTS.md` §6.2). The third block this decoder
+    /// reads beside the projection (C1 M5): a prompt is not part of the world.
+    /// `lifecycle.processing` (WORLDS §2b, T-UX1), or `nil`: absent, `null`,
+    /// or not an object naming a stage. Read beside `finalization` and
+    /// `photographic`, never projected into `world_snapshot`.
+    static func processing(from payload: [String: Any]) -> WorldProcessingReport? {
+        let lifecycle = payload["lifecycle"] as? [String: Any] ?? [:]
+        return WorldProcessingReport(json: lifecycle["processing"])
+    }
+
+    /// `progress.keyframes_accepted`, or `nil`: the live count the map's
+    /// "newer keyframes" line is computed from (fog of war v1, §7).
+    static func keyframesAccepted(from payload: [String: Any]) -> Int? {
+        let progress = payload["progress"] as? [String: Any] ?? [:]
+        return WorldCoverageReader.integer(progress["keyframes_accepted"], 0...Int(Int32.max))
+    }
+
+    static func recovery(from payload: [String: Any]) -> WorldRecoveryReport? {
+        let tracking = payload["tracking"] as? [String: Any] ?? [:]
+        return WorldRecoveryReport(json: tracking["recovery"])
     }
 
     /// `world.updated_at`, when the payload carries the Tower-native `world`
@@ -533,7 +572,7 @@ final class TowerWorldBuilderClient: WorldBuilderClient {
         didSet {
             guard state != oldValue else { return }
             log(state)
-            stateSubject.send(state)
+            publishWalkReport()
         }
     }
 
@@ -552,8 +591,11 @@ final class TowerWorldBuilderClient: WorldBuilderClient {
         }
     }
 
+    /// Every state after the one held at subscription, read off
+    /// `walkReportUpdates` -- never a second channel that could disagree
+    /// with it. For tests and logs; the screen reads `walkReport`.
     var stateUpdates: AnyPublisher<WorldModelState, Never> {
-        stateSubject.eraseToAnyPublisher()
+        walkReportSubject.map(\.value.state).prepend(state).removeDuplicates().dropFirst().eraseToAnyPublisher()
     }
 
     var bindingUpdates: AnyPublisher<WorldSessionBinding, Never> {
@@ -612,13 +654,154 @@ final class TowerWorldBuilderClient: WorldBuilderClient {
     private(set) var finalization: WorldFinalizationReport? {
         didSet {
             guard finalization != oldValue else { return }
-            finalizationSubject.send(finalization)
+            publishWalkReport()
         }
     }
 
-    var finalizationUpdates: AnyPublisher<WorldFinalizationReport?, Never> {
-        finalizationSubject.eraseToAnyPublisher()
+    /// The Tower's photographic word from the last report, or `nil`. Stored and
+    /// published for exactly the reason `finalization` is: `state` drops
+    /// repeats at the source, and `owed` → `complete` (or → `failed`) can
+    /// arrive with the snapshot standing still.
+    private(set) var photographic: WorldPhotographicReport? {
+        didSet {
+            guard photographic != oldValue else { return }
+            publishWalkReport()
+        }
     }
+
+    /// Every photographic word after the one held at subscription, read off
+    /// `walkReportUpdates`, as `stateUpdates` is.
+    var photographicUpdates: AnyPublisher<WorldPhotographicReport?, Never> {
+        walkReportSubject.map(\.value.photographic).prepend(photographic).removeDuplicates().dropFirst()
+            .eraseToAnyPublisher()
+    }
+
+    /// `lifecycle.processing` from the last report, or `nil` (U0.6, T-UX1).
+    /// Stored and published for `finalization`'s reason: the stage moves
+    /// while the snapshot stands still.
+    private(set) var processing: WorldProcessingReport? {
+        didSet {
+            guard processing != oldValue else { return }
+            publishWalkReport()
+        }
+    }
+
+    /// `guidance.coverage` from the last report, with its live accepted
+    /// count and the Tower clock read at its receipt (fog of war v1).
+    /// Published inside `walkReport`, and only for a named walk.
+    private(set) var coverage: WorldCoverageReceipt? {
+        didSet {
+            guard coverage != oldValue else { return }
+            publishWalkReport()
+        }
+    }
+
+    /// `guidance.coverage: null` in the last report (FOW §5 `.notYet`):
+    /// published inside `walkReport` beside `coverage`, for a named walk only.
+    private(set) var coverageNotYet = false {
+        didSet {
+            guard coverageNotYet != oldValue else { return }
+            publishWalkReport()
+        }
+    }
+
+    /// When the walk this phone followed live stopped, and whether it
+    /// settled while the app was away (U0.6 §5.3). Memory only: a relaunch
+    /// forgets it, and the elapsed line is then hidden.
+    private(set) var finishClock: WorldFinishClock = .unknown {
+        didSet {
+            guard finishClock != oldValue else { return }
+            publishWalkReport()
+        }
+    }
+
+    // MARK: The walk report, as one value (review 4)
+
+    /// The presented walk and everything above that describes it, as ONE
+    /// value: what the screen reads (`WorldBuilderClient.walkReport`).
+    private(set) var walkReport: WalkScoped<WorldWalkReport> = .unreported(.idle)
+
+    var walkReportUpdates: AnyPublisher<WalkScoped<WorldWalkReport>, Never> {
+        walkReportSubject.eraseToAnyPublisher()
+    }
+
+    private let walkReportSubject = PassthroughSubject<WalkScoped<WorldWalkReport>, Never>()
+
+    /// How many walk-report edits are open in this turn.
+    private var walkReportEdits = 0
+
+    /// Every path that moves more than one part of the walk report -- a
+    /// report from the Tower (its walk, state, finalization, photographic
+    /// word, processing stage and stop clock), a resubscribe, a failure, a
+    /// bracket re-judge -- opens an edit first and closes it on the way out
+    /// (`defer`), and the report is published ONCE, when the outermost edit
+    /// closes, with every part moved. A part that moves on its own, outside
+    /// any edit, publishes at once.
+    private func beginWalkReportEdit() {
+        walkReportEdits += 1
+    }
+
+    private func endWalkReportEdit() {
+        walkReportEdits -= 1
+        publishWalkReport()
+    }
+
+    private func publishWalkReport() {
+        guard walkReportEdits == 0 else { return }
+        let next = WalkScoped(walk: presentedWalk, value: WorldWalkReport(
+            state: state, finalization: finalization, photographic: photographic,
+            processing: processing, finishClock: finishClock,
+            // The map belongs to its walk: none for a report naming no walk.
+            coverage: presentedWalk == nil ? nil : coverage,
+            coverageNotYet: presentedWalk != nil && coverageNotYet))
+        guard next != walkReport else { return }
+        walkReport = next
+        walkReportSubject.send(next)
+    }
+
+    /// The banner was read: it does not return for this walk.
+    func dismissFinishBanner() {
+        beginWalkReportEdit()
+        defer { endWalkReportEdit() }
+        finishWatch.dismissBanner()
+        publishFinishClock()
+    }
+
+    private var finishWatch = WorldFinishWatch()
+    private var isAppActive = true
+    private let now: @Sendable () -> ContinuousClock.Instant
+
+    /// The live relocalizer's episode (`tracking.recovery`), **only while this
+    /// phone follows the live session it is streaming to** -- unpinned and
+    /// `.bound` -- and `nil` otherwise: the world screen shows it for the walk
+    /// in progress and never on a saved world (§8).
+    private(set) var recovery: WorldRecoveryReport? {
+        didSet {
+            guard recovery != oldValue else { return }
+            recoverySubject.send(recovery)
+        }
+    }
+
+    var recoveryUpdates: AnyPublisher<WorldRecoveryReport?, Never> {
+        recoverySubject.eraseToAnyPublisher()
+    }
+
+    /// The look-back banner the live screen shows, or `nil` (§6.5 as amended
+    /// after walk 1: shown on the phone with a haptic, never spoken). Only
+    /// ever while following live and bound, like `recovery`.
+    private(set) var lookBackBanner: WorldLookBackBanner? {
+        didSet {
+            guard lookBackBanner != oldValue else { return }
+            lookBackBannerSubject.send(lookBackBanner)
+        }
+    }
+
+    var lookBackBannerUpdates: AnyPublisher<WorldLookBackBanner?, Never> {
+        lookBackBannerSubject.eraseToAnyPublisher()
+    }
+
+    /// Shows each look-back prompt once (§6.5). Handed every report in `apply`.
+    private let lookBack: WorldLookBackPrompter
 
     /// The pin the next `result_subscribe` carries, or `nil` to follow the
     /// live world. Kept across reconnects on purpose: a reader looking at a
@@ -626,11 +809,26 @@ final class TowerWorldBuilderClient: WorldBuilderClient {
     /// comes back.
     private var pinned: (worldID: String, sessionID: String?)?
 
-    private let stateSubject = PassthroughSubject<WorldModelState, Never>()
     private let bindingSubject = PassthroughSubject<WorldSessionBinding, Never>()
     private let inspectionSubject = PassthroughSubject<WorldInspectionMode, Never>()
     private let recentWorldSubject = PassthroughSubject<WorldRecentReference?, Never>()
-    private let finalizationSubject = PassthroughSubject<WorldFinalizationReport?, Never>()
+    private let recoverySubject = PassthroughSubject<WorldRecoveryReport?, Never>()
+    private let lookBackBannerSubject = PassthroughSubject<WorldLookBackBanner?, Never>()
+    private let healthSubject = PassthroughSubject<CaptureHealthSample?, Never>()
+
+    var healthSamples: AnyPublisher<CaptureHealthSample?, Never> {
+        healthSubject.eraseToAnyPublisher()
+    }
+
+    /// The capture-health panel's figures stop being live the moment the
+    /// subscription that produced them is gone -- a dropped socket, a
+    /// restarted subscription, a pin -- not 5 s later when they go stale: a
+    /// link back within that window would otherwise show the old walk's
+    /// figures as current. Only a fresh report from the current live
+    /// subscription brings figures back.
+    private func invalidateHealth() {
+        healthSubject.send(nil)
+    }
     /// The geometry address carried by every snapshot that has one — the
     /// heartbeat's included.
     ///
@@ -667,6 +865,10 @@ final class TowerWorldBuilderClient: WorldBuilderClient {
         var session: WorldSessionReport?
         var selection: WorldSelection
         var finalization: WorldFinalizationReport?
+        /// `lifecycle.photographic`, or `nil` when the Tower sent none.
+        var photographic: WorldPhotographicReport? = nil
+        /// `lifecycle.processing`, or `nil` when the Tower sent none.
+        var processing: WorldProcessingReport? = nil
         /// `world_snapshot.world_id` / `session.session_id`, as decoded — the
         /// same two strings `WorldGeometryCoordinates` is addressed by.
         var worldID: String?
@@ -674,6 +876,17 @@ final class TowerWorldBuilderClient: WorldBuilderClient {
         /// The stored world this report offered instead of a live one, when
         /// its selection was `latest`; `nil` otherwise.
         var recentWorld: WorldRecentReference?
+        /// `tracking.recovery`, or `nil`.
+        var recovery: WorldRecoveryReport? = nil
+        /// `guidance.coverage`, or `nil`: absent, `null` or refused.
+        var coverage: WorldCoverage? = nil
+        /// `guidance.coverage` was `null`: on, and no landing yet.
+        var coverageNotYet = false
+        /// `progress.keyframes_accepted`, or `nil`.
+        var keyframesAccepted: Int? = nil
+        /// The Tower's clock as read at this report's arrival, or `nil`
+        /// without `tower_sent_at`.
+        var towerClock: WorldTowerClock? = nil
 
         /// Whether a `latest` offer is the walk `followedWalk` remembers.
         /// Both ids, not just the world: a world walked twice has one id and
@@ -703,12 +916,29 @@ final class TowerWorldBuilderClient: WorldBuilderClient {
             // `didSet` drops repeats, so a two-second heartbeat carrying an
             // unchanged finalization publishes nothing.
             finalization = lastReport?.finalization
+            photographic = lastReport?.photographic
+            processing = lastReport?.processing
+            coverage = WorldCoverageReceipt.next(after: coverage, coverage: lastReport?.coverage,
+                                                 keyframesAccepted: lastReport?.keyframesAccepted,
+                                                 clock: lastReport?.towerClock)
+            coverageNotYet = lastReport?.coverageNotYet ?? false
+            if lastReport == nil { recovery = nil; lookBack.dismiss() }
         }
     }
 
     /// The open subscription on the **current** socket, or `nil`. Cleared on
     /// every disconnect because the Tower's ids are per connection.
-    private var subscriptionID: String?
+    ///
+    /// Whenever it closes -- on EVERY path, the terminal ones included (a
+    /// `closesSubscription` error that exhausts the budget, an unsolicited
+    /// `result_unsubscribed`) -- the capture-health figures it produced stop
+    /// being live at once. With the socket still up, nothing else would
+    /// blank them before they went stale 5 s later (Codex HIGH, 2026-10-05).
+    private var subscriptionID: String? {
+        didSet {
+            if subscriptionID == nil, oldValue != nil { invalidateHealth() }
+        }
+    }
 
     /// Subscription ids this client has closed on the current socket, so a
     /// heartbeat the Tower had already queued for one of them is recognised
@@ -804,9 +1034,17 @@ final class TowerWorldBuilderClient: WorldBuilderClient {
     private var resubscribesUsed = 0
     private static let resubscribeBudget = 3
 
-    init(tower: TowerClient, subscribeAckTimeout: Duration? = nil) {
+    /// `lookBackCue` is injectable so a test records the haptic; the default
+    /// is `WorldHapticLookBackCue`. There is no audio in either.
+    init(
+        tower: TowerClient, subscribeAckTimeout: Duration? = nil, lookBackCue: WorldLookBackCue? = nil,
+        now: @escaping @Sendable () -> ContinuousClock.Instant = { ContinuousClock.now },
+        appActivity: AnyPublisher<Bool, Never>? = nil
+    ) {
         self.tower = tower
+        self.now = now
         self.subscribeAckTimeout = subscribeAckTimeout ?? Self.defaultSubscribeAckTimeout
+        self.lookBack = WorldLookBackPrompter(cue: lookBackCue ?? WorldHapticLookBackCue())
 
         // `.receive(on:)` on both, and it is load-bearing rather than
         // stylistic. A `@Published` publisher fires from `willSet`, so a sink
@@ -845,6 +1083,71 @@ final class TowerWorldBuilderClient: WorldBuilderClient {
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in self?.rejudgeLastReport() }
             .store(in: &cancellables)
+
+        lookBack.onChange = { [weak self] banner in self?.lookBackBanner = banner }
+
+        // The foreground banner (U0.6 §2.6): whether the followed walk was
+        // still unsettled when the app went away. No new permission, no
+        // notification: only the app's own activity.
+        (appActivity ?? Self.defaultAppActivity)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] active in self?.appActivityChanged(active) }
+            .store(in: &cancellables)
+    }
+
+    static var defaultAppActivity: AnyPublisher<Bool, Never> {
+        NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification).map { _ in true }
+            .merge(with: NotificationCenter.default.publisher(for: UIApplication.didEnterBackgroundNotification)
+                .map { _ in false })
+            .eraseToAnyPublisher()
+    }
+
+    private func appActivityChanged(_ active: Bool) {
+        beginWalkReportEdit()
+        defer { endWalkReportEdit() }
+        isAppActive = active
+        finishWatch.app(active: active, currentWalk: pinned == nil ? presentedWalk : nil,
+                        currentStanding: finishStanding)
+        publishFinishClock()
+    }
+
+    /// The walk the presented state describes: the last report's, when the
+    /// state carries a snapshot and the report named both ids. Computed, and
+    /// published only inside `walkReport`, beside the state it describes.
+    private var presentedWalk: WorldFinishWalk? {
+        guard state.snapshot != nil, let worldID = lastReport?.worldID, let sessionID = lastReport?.sessionID
+        else { return nil }
+        return WorldFinishWalk(worldID: worldID, sessionID: sessionID)
+    }
+
+    /// The away banner drawn for `walk` was announced: never again for it.
+    func finishBannerAnnounced(for walk: WorldFinishWalk?) {
+        beginWalkReportEdit()
+        defer { endWalkReportEdit() }
+        finishWatch.bannerAnnounced(for: walk)
+        publishFinishClock()
+    }
+
+    /// The presented state, for the stop clock.
+    private var finishStanding: WorldFinishWatch.Standing {
+        switch state {
+        case .receiving:
+            return .receiving
+        case .failed(let failure):
+            return failure.kind == .towerReportedFailure ? .settled : .other
+        case .unsupported, .idle, .awaitingFirstUpdate:
+            return .other
+        case .finalizing, .finalized, .interrupted:
+            guard let stage = WorldStage.stage(
+                for: state, evidence: WorldEvidence(snapshot: state.snapshot),
+                finalization: lastReport?.finalization, photographic: lastReport?.photographic)
+            else { return .other }
+            return stage.isStillChanging ? .finishing : .settled
+        }
+    }
+
+    private func publishFinishClock() {
+        finishClock = finishWatch.clock(for: presentedWalk)
     }
 
     // MARK: Availability
@@ -883,6 +1186,7 @@ final class TowerWorldBuilderClient: WorldBuilderClient {
             disarmSubscribeTimeout()
             firstSnapshotRetry?.cancel()
             firstSnapshotRetry = nil
+            invalidateHealth()
             // `followedWalk` deliberately survives this; see its lifetime.
             return
         }
@@ -894,6 +1198,8 @@ final class TowerWorldBuilderClient: WorldBuilderClient {
     /// same two flags, so a status change and a republished declaration racing
     /// each other cannot open two subscriptions.
     private func subscribeIfPossible() {
+        beginWalkReportEdit()
+        defer { endWalkReportEdit() }
         guard tower.status == .online, subscriptionID == nil, !isSubscribing else { return }
         guard let declaration = tower.cartridgeDeclaration else { return }
         guard let offer = declaration.offer(forTowerCartridge: WorldBuilderResultContract.towerCartridge)
@@ -915,7 +1221,8 @@ final class TowerWorldBuilderClient: WorldBuilderClient {
             // The Tower's own prose is the only honest explanation available,
             // so it is shown verbatim.
             state = .unsupported(
-                reason: offer.unavailableReason ?? WorldBuilderResultDecoder.unexplainedUnsupported
+                reason: WorldTowerText.sentence(offer.unavailableReason)
+                    ?? WorldBuilderResultDecoder.unexplainedUnsupported
             )
             return
         }
@@ -927,6 +1234,7 @@ final class TowerWorldBuilderClient: WorldBuilderClient {
         // state it produced, so a bracket opening in the window before that
         // snapshot arrives cannot re-publish it over the wait.
         lastReport = nil
+        invalidateHealth()
         sessionBinding = bindingWithNoReport
         state = .awaitingFirstUpdate
         tower.subscribeToResults(
@@ -963,6 +1271,31 @@ final class TowerWorldBuilderClient: WorldBuilderClient {
         restartSubscription()
     }
 
+    /// Ask again, in place, after the channel failed or while the first
+    /// update is overdue (U0.8 F11, F13). "Reconnecting is what resolves it"
+    /// used to be the only way back; a fresh subscription is the same cure
+    /// without dropping the socket. Under the current pin, with a fresh
+    /// budget, because this is a person's tap and not a loop. Any other state
+    /// is the Tower's own report, and asking again cannot change it.
+    func askAgain() {
+        guard tower.status == .online else { return }
+        switch state {
+        case .failed(let failure) where failure.kind == .transport || failure.kind == .timedOut:
+            if failure.kind == .timedOut {
+                // The attempt that timed out is written off, as the timeout's
+                // own retry does: otherwise the count ranks the new
+                // subscribe's ack as a superseded one and closes it.
+                pendingSubscribeAcks = max(0, pendingSubscribeAcks - 1)
+            }
+        case .awaitingFirstUpdate:
+            break
+        default:
+            return
+        }
+        resubscribesUsed = 0
+        restartSubscription()   // unsubscribes any held id
+    }
+
     /// Tear down the current subscription and open one under the current pin.
     ///
     /// The unsubscribe is best-effort and its `result_unsubscribed` is ignored
@@ -971,6 +1304,8 @@ final class TowerWorldBuilderClient: WorldBuilderClient {
     /// what sets it again. The Tower treats a closed socket as sufficient
     /// cleanup anyway; this just spares it a subscription nobody is reading.
     private func restartSubscription() {
+        beginWalkReportEdit()
+        defer { endWalkReportEdit() }
         if let id = subscriptionID {
             tower.unsubscribeFromResults(subscriptionID: id)
             retiredSubscriptionIDs.insert(id)
@@ -981,6 +1316,7 @@ final class TowerWorldBuilderClient: WorldBuilderClient {
         firstSnapshotRetry?.cancel()
         firstSnapshotRetry = nil
         lastReport = nil
+        invalidateHealth()
         subscribeIfPossible()
     }
 
@@ -1025,6 +1361,8 @@ final class TowerWorldBuilderClient: WorldBuilderClient {
     }
 
     private func subscribeDidTimeOut(attempt: Int) {
+        beginWalkReportEdit()
+        defer { endWalkReportEdit() }
         // Three guards, and each one closes a real race: a newer attempt has
         // superseded this timeout; the ack arrived while it was sleeping; or
         // the connection went away and the reconnect path already owns the
@@ -1034,6 +1372,7 @@ final class TowerWorldBuilderClient: WorldBuilderClient {
 
         isSubscribing = false
         lastReport = nil
+        invalidateHealth()
         sessionBinding = bindingWithNoReport
         // Asked again, within the same budget `channel_failed` spends, before
         // it becomes a failure. The Tower answers a subscribe only once it
@@ -1099,11 +1438,14 @@ final class TowerWorldBuilderClient: WorldBuilderClient {
     /// the socket's full rate. What is said when the budget is gone is the
     /// truth about the *channel*, not about the world.
     private func retryFirstSnapshot(after message: String) {
+        beginWalkReportEdit()
+        defer { endWalkReportEdit() }
         subscriptionID = nil
         isSubscribing = false
         disarmSubscribeTimeout()
         guard resubscribesUsed < Self.resubscribeBudget else {
             lastReport = nil
+            invalidateHealth()
             sessionBinding = bindingWithNoReport
             state = .failed(
                 CartridgeFailure(
@@ -1121,6 +1463,7 @@ final class TowerWorldBuilderClient: WorldBuilderClient {
         }
         resubscribesUsed += 1
         lastReport = nil
+        invalidateHealth()
         sessionBinding = bindingWithNoReport
         state = .awaitingFirstUpdate
         let attempt = subscribeAttempt
@@ -1207,6 +1550,11 @@ final class TowerWorldBuilderClient: WorldBuilderClient {
 
         case .unsubscribed(let id):
             guard id == subscriptionID else { return }
+            // Retired as well as cleared: a heartbeat the Tower had already
+            // queued for it is not this screen's any more, and applying one
+            // would bring the closed subscription's figures back (final-gate
+            // review of cb865eb, LOW).
+            retiredSubscriptionIDs.insert(id)
             subscriptionID = nil
 
         case .result(let envelope):
@@ -1222,7 +1570,12 @@ final class TowerWorldBuilderClient: WorldBuilderClient {
             // than for equality with the current one, so an envelope that
             // races its own `result_subscribed` is still applied.
             if let id = envelope.subscriptionID, retiredSubscriptionIDs.contains(id) { return }
-            apply(envelope)
+            // The walk report is out (the edit in `apply` has closed) before
+            // the geometry address is: the screen learns whose walk it is
+            // showing before it fetches that walk's picture.
+            if let coordinates = apply(envelope) {
+                geometrySubject.send(coordinates)
+            }
 
         case .failed(let error):
             guard isOurs(error) else { return }
@@ -1245,7 +1598,12 @@ final class TowerWorldBuilderClient: WorldBuilderClient {
         return false
     }
 
-    private func apply(_ envelope: CartridgeResultEnvelope) {
+    /// The report, applied as one walk-report edit. Returns the geometry
+    /// address to send, if any -- sent by the caller, once the edit has
+    /// closed and the walk report is published.
+    private func apply(_ envelope: CartridgeResultEnvelope) -> WorldGeometryCoordinates? {
+        beginWalkReportEdit()
+        defer { endWalkReportEdit() }
         // The envelope says whether it is a complete state or a delta, and
         // this build knows how to merge exactly nothing.
         //
@@ -1264,6 +1622,7 @@ final class TowerWorldBuilderClient: WorldBuilderClient {
         // suggest anything was missed. Refusing costs one comparison; not
         // refusing costs a wrong answer that looks like a right one.
         guard envelope.isSnapshot else {
+            invalidateHealth()
             lastReport = nil
             sessionBinding = bindingWithNoReport
             state = .failed(
@@ -1277,7 +1636,7 @@ final class TowerWorldBuilderClient: WorldBuilderClient {
                         """
                 )
             )
-            return
+            return nil
         }
 
         guard let next = WorldBuilderResultDecoder.modelState(from: envelope.payload) else {
@@ -1285,6 +1644,7 @@ final class TowerWorldBuilderClient: WorldBuilderClient {
             // ownership — there is nothing to judge — so the gate is bypassed
             // and the last report is cleared rather than left to be re-judged
             // against a bracket change later.
+            invalidateHealth()
             lastReport = nil
             sessionBinding = bindingWithNoReport
             state = .failed(
@@ -1297,23 +1657,63 @@ final class TowerWorldBuilderClient: WorldBuilderClient {
                         """
                 )
             )
-            return
+            return nil
         }
         let payload = envelope.payload
         let selection = WorldBuilderResultDecoder.selection(from: payload)
         let session = WorldBuilderResultDecoder.session(from: payload)
+        let coverageStatus = WorldCoverageStatus(payload: payload)
         lastReport = StatusReport(
             state: next,
             session: session,
             selection: selection,
             finalization: WorldBuilderResultDecoder.finalization(from: payload),
+            photographic: WorldBuilderResultDecoder.photographic(from: payload),
+            processing: WorldBuilderResultDecoder.processing(from: payload),
             worldID: (payload["world_snapshot"] as? [String: Any])?["world_id"] as? String,
             sessionID: session?.sessionID,
             recentWorld: selection.isHistoryOfferedAsLive
                 ? WorldBuilderResultDecoder.recentReference(from: payload)
-                : nil
+                : nil,
+            recovery: WorldBuilderResultDecoder.recovery(from: payload),
+            coverage: coverageStatus.coverage,
+            coverageNotYet: coverageStatus == .notYet,
+            keyframesAccepted: WorldBuilderResultDecoder.keyframesAccepted(from: payload),
+            towerClock: envelope.towerSentAt.map { WorldTowerClock(towerSentAt: $0, receivedAt: now()) }
         )
         publishLastReport()
+
+        // The capture-health panel's sample (U2-D0), on every report, the
+        // heartbeat included: from the state as presented -- so a report the
+        // session gate held back says nothing -- and only while following the
+        // live walk, never a pinned saved world's figures.
+        // A pinned report is not a report about the live walk at all: it is
+        // sent as "nothing live" (`nil`, as for a pin), not as a live report
+        // that names no walk -- which, since the final-gate review of cb865eb
+        // (LOW), forgets the walk heard before.
+        healthSubject.send(pinned == nil
+            ? CaptureHealthSample.live(state: state, recovery: lastReport?.recovery,
+                                       worldID: lastReport?.worldID, sessionID: lastReport?.sessionID,
+                                       payload: payload)
+            : nil)
+
+        // The look-back prompt: only here, on a report the Tower just sent --
+        // never on a bracket change, which re-judges an old report -- and only
+        // under §6.5's four conditions and C1 E1's (following live, bound).
+        lookBack.consider(
+            recovery: lastReport?.recovery,
+            binding: sessionBinding,
+            followingLive: pinned == nil,
+            towerSentAt: envelope.towerSentAt,
+            worldID: lastReport?.worldID,
+            sessionID: lastReport?.sessionID
+        )
+
+        // The stop clock and the away banner (U0.6 §5.3): only here, on a
+        // report the Tower just sent, never on a bracket re-judge.
+        finishWatch.report(walk: presentedWalk, following: pinned == nil, standing: finishStanding,
+                           appActive: isAppActive, now: now())
+        publishFinishClock()
 
         // Sent whether or not the state changed, and whether or not the
         // geometry did. See `geometryUpdates` for why this one is not filtered
@@ -1330,10 +1730,8 @@ final class TowerWorldBuilderClient: WorldBuilderClient {
         // address anyway would fetch that world's fragments into the cache
         // and name it for the picture button, to be drawn the moment the
         // state next became a world state — for a *different* world.
-        guard state.snapshot != nil else { return }
-        if let coordinates = WorldBuilderResultDecoder.geometryCoordinates(from: payload) {
-            geometrySubject.send(coordinates)
-        }
+        guard state.snapshot != nil else { return nil }
+        return WorldBuilderResultDecoder.geometryCoordinates(from: payload)
     }
 
     /// Re-runs the gate over the last thing the Tower said, because the phone's
@@ -1343,6 +1741,8 @@ final class TowerWorldBuilderClient: WorldBuilderClient {
     /// nothing to say, and `state` is already whatever `subscribeIfPossible`
     /// left it as.
     private func rejudgeLastReport() {
+        beginWalkReportEdit()
+        defer { endWalkReportEdit() }
         guard lastReport != nil else {
             sessionBinding = bindingWithNoReport
             return
@@ -1385,6 +1785,8 @@ final class TowerWorldBuilderClient: WorldBuilderClient {
     }
 
     private func publishLastReport() {
+        beginWalkReportEdit()
+        defer { endWalkReportEdit() }
         guard let report = lastReport else { return }
 
         // ## Live versus History
@@ -1411,7 +1813,10 @@ final class TowerWorldBuilderClient: WorldBuilderClient {
             recentWorld = report.recentWorld
             let binding = bindingWithNoReport
             sessionBinding = binding
+            recovery = nil
+            lookBack.dismiss()
             state = WorldSessionGate.presented(.idle, binding: binding)
+            publishFinishClock()
             return
         }
         recentWorld = nil
@@ -1436,11 +1841,21 @@ final class TowerWorldBuilderClient: WorldBuilderClient {
         // Before the state, so a subscriber woken by `stateUpdates` that reads
         // `sessionBinding` sees the binding that produced it.
         sessionBinding = binding
+        // The relocalizer's line is the live walk's: shown while following it
+        // and bound to it, never for a pinned or foreign world (§8).
+        if pinned == nil, case .bound = binding {
+            recovery = report.recovery
+        } else {
+            recovery = nil
+            lookBack.dismiss()
+        }
         // Assigned unconditionally; the `didSet` publishes only on a real
         // change. That is what keeps the ~2 s heartbeat — which re-sends an
         // unchanged snapshot to refresh the fields excluded from the revision
         // hash — from invalidating the view tree for nothing.
         state = WorldSessionGate.presented(report.state, binding: binding)
+        // Which walk the screen presents may have changed (a pin, a gate).
+        publishFinishClock()
     }
 
     /// One line per **change**, which at the channel's ~2 Hz ceiling and with
@@ -1525,7 +1940,13 @@ final class TowerWorldBuilderClient: WorldBuilderClient {
     }
 
     private func apply(_ error: CartridgeResultError) {
+        beginWalkReportEdit()
+        defer { endWalkReportEdit() }
         if error.closesSubscription {
+            // The closed id is retired, for `.unsubscribed`'s reason: an
+            // envelope already queued for it must not be applied.
+            if let closed = subscriptionID { retiredSubscriptionIDs.insert(closed) }
+            if let closed = error.subscriptionID { retiredSubscriptionIDs.insert(closed) }
             subscriptionID = nil
             isSubscribing = false
             // The Tower answered, so the wait is over however it ended. The

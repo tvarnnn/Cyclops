@@ -37,20 +37,49 @@ struct WorldPickerView: View {
     @ObservedObject var world: WorldBuilderViewModel
     @Environment(\.dismiss) private var dismiss
 
-    /// The world whose 3D reconstruction is pushed, or `nil`.
+    /// Opens Connections, for a list the Tower could not be reached for
+    /// (U0.8 F09). The presenter dismisses this sheet first, because only one
+    /// sheet can be up. `nil` draws no button.
+    var onOpenConnections: (() -> Void)? = nil
+
+    /// Back to the live screen, where Start capture is, for a walk with
+    /// nothing to open (U0.8 F10). It does not start a capture. `nil` draws
+    /// no button.
+    var onGoToCapture: (() -> Void)? = nil
+
+    /// A room or session row was opened: the presenter dismisses this sheet,
+    /// and the World Builder panel shows the pinned world live inline, a tap
+    /// from full screen (U-INLINE §2.4, manager 209). `nil` dismisses here.
+    var onOpenRoom: (() -> Void)? = nil
+
+    /// The AREA whose 3D reconstruction is pushed, or `nil`.
     ///
-    /// ## Why a tap here goes straight to the 3D world
+    /// ## Rooms pin and dismiss; areas still push
     ///
-    /// It used to pin the world and dismiss, leaving the reader on the
-    /// workspace looking at a gallery of top-down sparse point clouds captioned
-    /// with the solver's registration vocabulary. The 3D reconstruction — the
-    /// thing they opened a saved world to see — was behind a small bordered
-    /// "Picture" button in the header, two taps and a scroll away.
-    ///
-    /// So the tap pushes it. The pin still happens, so the workspace behind is
-    /// showing the same world when Close is used, and the picker stays up
-    /// underneath so a person comparing two walks does not have to reopen it.
+    /// A room tap used to push the 3D world over this list, so a reader
+    /// comparing two walks did not have to reopen it. Since U-INLINE (manager
+    /// 209) the room is pinned and the sheet goes: the panel under the
+    /// capture control shows that world, live, and Full screen is one tap.
+    /// That deliberately gives up the comparison shortcut for one web view
+    /// and one place to look. An area has no panel of its own, so it is
+    /// still pushed here; the panel's web view is torn down while this sheet
+    /// is up, so one web view still holds.
     @State private var opened: WorldRenderTarget?
+    /// For an opened AREA: its number, the walk's area count and its spans,
+    /// from the row it was opened from. `nil` for a room.
+    @State private var openedArea: WorldAreaOpening?
+
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+
+    /// A row's trailing word (a session's badge, an area's "not placed") goes
+    /// under the row's words at the accessibility sizes: as a column beside
+    /// them it squeezed "synthetic-fixture · 24 keyframes" into ragged
+    /// hyphenated columns (UX audit, world-picker-world-row).
+    private var trailingWordsWrap: Bool { dynamicTypeSize.isAccessibilitySize }
+
+    /// An id is kept to one line, cut in the middle, where it fits; at the
+    /// accessibility sizes it wraps instead of being cut off.
+    private var idLineLimit: Int? { dynamicTypeSize.isAccessibilitySize ? nil : 1 }
 
     private var grouped: WorldListingPresentation.Grouped {
         WorldListingPresentation.grouped(world.worlds)
@@ -66,6 +95,13 @@ struct WorldPickerView: View {
                         worldRow(entry)
                         ForEach(entry.sessions, id: \.sessionID) { session in
                             sessionRow(entry: entry, session: session)
+                            // A walk's areas, straight from the listing, so an
+                            // area opens without loading the room first (C1 E5).
+                            // Nothing for `components: null` (every older world)
+                            // and nothing for a walk the gate kept whole.
+                            if let components = session.components, !components.isWhole {
+                                areaRows(entry: entry, session: session, components: components)
+                            }
                         }
                     }
                 }
@@ -78,7 +114,7 @@ struct WorldPickerView: View {
                             }
                         }
                         .font(.footnote)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(.readableSecondary)
                     }
                 }
             }
@@ -93,7 +129,31 @@ struct WorldPickerView: View {
             // layers and two Close buttons, and the back gesture is what a
             // person reaches for after looking at one of several walks.
             .navigationDestination(item: $opened) { target in
-                WorldRenderScene(target: target, title: openedTitle, note: openedNote)
+                WorldRenderScene(
+                    target: target,
+                    title: target.isArea ? nil : openedTitle,
+                    note: target.isArea ? nil : openedNote,
+                    components: target.isArea ? nil : openedSession?.components,
+                    notice: Self.notice(forOpened: openedSession, target: target),
+                    area: target.isArea ? openedArea : nil,
+                    // REPLACE, never stack (C1 E5): one destination slot, so
+                    // setting it to the area swaps the room's scene -- its
+                    // model, web view and WebGL context -- for the area's.
+                    openArea: { area, opening in
+                        openedArea = opening
+                        opened = area
+                    },
+                    // The room is the panel's now (U-INLINE §2.4): back to
+                    // the room pins it and dismisses, as a room row does.
+                    backToRoom: target.isArea ? {
+                        openedArea = nil
+                        opened = nil
+                        open(worldID: target.worldID, sessionID: target.sessionID)
+                    } : nil
+                )
+                // A new identity per target, so the room's `@StateObject`
+                // model is never handed the area's target.
+                .id(target.id)
             }
             .task { await world.loadWorlds() }
             // A pull, so a "Finishing" row can become "Complete" without
@@ -113,18 +173,20 @@ struct WorldPickerView: View {
     /// What the pushed screen says about the world under its caption, or `nil`.
     /// See `note(forOpened:target:pinnedStage:pinnedReconstruction:)`.
     ///
-    /// The pin's own report is consulted only once it describes THIS world:
-    /// `open()` sets `renderTarget` at the tap, but the status channel's answer
-    /// reaches the view model a main-queue hop later, so for a moment the
-    /// presentation is still the world the workspace was showing before.
+    /// The pin's own report is consulted only once it describes THIS walk --
+    /// asked of the report itself (`WalkScoped.value(for:)`, the one pairing
+    /// rule): `open()` sets `renderTarget` at the tap, but the status
+    /// channel's answer arrives later, so for a moment the report is still
+    /// the walk the workspace was showing before.
     private var openedNote: String? {
         guard let opened, let session = openedSession else { return nil }
-        let pinned = world.renderTarget == opened
-            && world.state.snapshot?.worldID == opened.worldID
+        // An area is not the room picture the report's ladder describes.
+        let pinned = opened.isArea ? nil : world.walkPresentation.value(for: opened)
         return Self.note(
             forOpened: session, target: opened,
-            pinnedStage: pinned ? world.presentation.stage : nil,
-            pinnedReconstruction: pinned ? world.presentation.reconstruction : nil
+            pinnedStage: pinned?.stage,
+            pinnedReconstruction: pinned?.reconstruction,
+            pinnedPhotographic: pinned?.photographic
         )
     }
 
@@ -146,30 +208,68 @@ struct WorldPickerView: View {
     ///
     /// So such a row gets the ladder's note: the pin's own live one once its
     /// report has arrived — so the sentence leaves when the build lands, rather
-    /// than when this list is next refreshed — and until then the note for the
-    /// stage the row's word stands for. `finalizing` in the listing is always a
-    /// live process's evidence (a held lock, or a photographic stage running),
-    /// which is exactly what `.improving` claims.
+    /// than when this list is next refreshed — and until then the note for
+    /// what the row says.
+    ///
+    /// ## `finalizing` is NOT always a live process (corrected 2026-09-23)
+    ///
+    /// This said it was: "a held lock, or a photographic stage running". Since
+    /// the Tower's `photographic` block (WORLDS §2a) a row is also `finalizing`
+    /// when its photographic room is `owed` -- nothing is building it, and it
+    /// waits for an idle Tower with its photographic stages on -- or
+    /// `unobservable`. The Improving note's "it is worth waiting for Saved" is
+    /// a promise neither can keep (Mac gate B0, F3). So the row's own
+    /// `photographic` word picks the note, through the same ladder the canvas
+    /// uses; a row with no word (an older Tower, whose `finalizing` really was
+    /// a live lock) keeps the Improving note.
+    ///
+    /// **A settled row whose photographic build failed** says so: the one
+    /// case `WORLD-BUILDER-IOS.md` §3a says is worth new copy.
     static func note(
         forOpened session: WorldListingSession,
         target: WorldRenderTarget,
         pinnedStage: WorldStage?,
-        pinnedReconstruction: WorldReconstruction?
+        pinnedReconstruction: WorldReconstruction?,
+        pinnedPhotographic: WorldPhotographicReport? = nil
     ) -> String? {
         let solve = WorldFinalSolve(word: session.finalization?.finalSolve)
-        let settled = solve.deniesAFinishedWorld ? solve.sentence : nil
+        // The pin's report is newer than the row once it has arrived; until
+        // then the row is all there is.
+        let photographic = pinnedStage != nil ? pinnedPhotographic : session.photographic
+        let failed = photographic?.standing.isFailed == true && !solve.deniesAFinishedWorld
+        let settled = solve.deniesAFinishedWorld
+            ? solve.sentence
+            : (failed ? WorldPhotographicCopy.failedHeadline + "." : nil)
         guard session.state == .finalizing || session.state == .receiving else { return settled }
+        // The room is finished; only an area of the walk is still being made
+        // (`scope: "area"`, COMPONENTS §3.4). The Improving note's "the
+        // finished world is very different from this one" is false of a room
+        // that will not change.
+        if photographic?.standing.isAreaStillFinishing == true {
+            let count = session.components.map(\.areasStillFinishing).flatMap { $0 > 0 ? $0 : nil }
+            return WorldPhotographicCopy.areaStillFinishing(count: count)
+        }
         if pinnedStage != nil, let pinnedReconstruction {
             if case .partial(_, let note) = pinnedReconstruction { return note }
             return settled
         }
         let listed: WorldStage = session.state == .receiving ? .mapping : .improving
         if case .partial(_, let note) = WorldReconstruction.ladder(
-            target: target, stage: listed, finalSolve: .notReported, evidence: nil
+            target: target, stage: listed, finalSolve: .notReported, evidence: nil,
+            photographic: session.photographic
         ) {
             return note
         }
         return settled
+    }
+
+    /// The walk's `finalization.notice` for the pushed ROOM, from its listing
+    /// row (v6, §8), or `nil`: for an area, for a world row that named no
+    /// session, and for a row without one. Independent of `components` -- a
+    /// walk whose gate raised has `components: null` and can still carry one.
+    static func notice(forOpened session: WorldListingSession?, target: WorldRenderTarget) -> String? {
+        guard !target.isArea else { return nil }
+        return WorldNoticeGuard.displayText(session?.finalization?.notice)
     }
 
     private var openedEntry: WorldListingEntry? {
@@ -199,19 +299,36 @@ struct WorldPickerView: View {
                 ProgressView()
                 Text("Asking the Tower for its saved worlds…")
                     .font(.footnote)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.readableSecondary)
             }
-        } else if let failure = world.worldListFailure {
+        } else if let problem = world.worldListProblem {
+            // Each failure in its own words, with its own next step (U0.8
+            // F09). The last list stays below, and its rows stay tappable.
             VStack(alignment: .leading, spacing: 8) {
-                Text(failure)
+                Text(world.worldListFailure ?? "")
                     .font(.footnote)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.readableSecondary)
                     .fixedSize(horizontal: false, vertical: true)
-                Button("Retry") {
-                    Task { await world.loadWorlds() }
+                    .accessibilityIdentifier("worlds-problem")
+                let actions = dynamicTypeSize.isAccessibilitySize
+                    ? AnyLayout(VStackLayout(alignment: .leading, spacing: 8))
+                    : AnyLayout(HStackLayout(spacing: 8))
+                actions {
+                    if let title = WorldListText.retryTitle(problem) {
+                        Button(title) {
+                            Task { await world.loadWorlds() }
+                        }
+                        .font(.footnote)
+                        .readableBorderedButton()
+                        .accessibilityIdentifier("worlds-retry")
+                    }
+                    if WorldListText.offersConnections(problem), let onOpenConnections {
+                        Button(WorldListText.connections, action: onOpenConnections)
+                            .font(.footnote)
+                            .readableBorderedButton()
+                            .accessibilityIdentifier("worlds-connections")
+                    }
                 }
-                .font(.footnote)
-                .buttonStyle(.bordered)
             }
         } else if world.worlds.isEmpty {
             // Empty after an empty answer. "None yet" is true of a Tower with
@@ -219,7 +336,7 @@ struct WorldPickerView: View {
             // claiming which; the log line says which.
             Text("No saved worlds have been listed yet.")
                 .font(.footnote)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(.readableSecondary)
         }
     }
 
@@ -255,13 +372,14 @@ struct WorldPickerView: View {
                 }
             }
             .buttonStyle(.plain)
+            .accessibilityHint("Opens its 3D world")
         } else {
             HStack {
                 VStack(alignment: .leading, spacing: 2) {
                     worldLabel(entry)
                     Text("None of these sessions has geometry, so there is nothing to open.")
                         .font(.caption2)
-                        .foregroundStyle(.tertiary)
+                        .foregroundStyle(.readableSecondary)
                 }
                 Spacer()
                 liveBadge(entry)
@@ -303,7 +421,7 @@ struct WorldPickerView: View {
             worldLabel(entry)
             Text("No sessions, so there is nothing to open.")
                 .font(.caption2)
-                .foregroundStyle(.tertiary)
+                .foregroundStyle(.readableSecondary)
         }
     }
 
@@ -324,12 +442,12 @@ struct WorldPickerView: View {
             // title, which is the arrangement that was never the complaint.
             Text(entry.worldID)
                 .font(.caption2.monospaced())
-                .foregroundStyle(.tertiary)
-                .lineLimit(1)
+                .foregroundStyle(.readableSecondary)
+                .lineLimit(idLineLimit)
                 .truncationMode(.middle)
             Text(WorldListingPresentation.sessionCount(entry.sessions.count))
                 .font(.caption)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(.readableSecondary)
         }
     }
 
@@ -359,19 +477,35 @@ struct WorldPickerView: View {
                 sessionLabel(session)
             }
             .buttonStyle(.plain)
+            .accessibilityHint("Opens its 3D world")
         } else {
             VStack(alignment: .leading, spacing: 2) {
                 sessionLabel(session)
                 Text(WorldListingPresentation.noGeometryCaption(for: session) ?? "")
                     .font(.caption2)
-                    .foregroundStyle(.tertiary)
+                    .foregroundStyle(.readableSecondary)
                     .fixedSize(horizontal: false, vertical: true)
+                // The next step the caption names, where this build has it:
+                // back to the live screen, where Start capture is (U0.8 F10).
+                // Release has no capture, so no button. The badge keeps its
+                // word (manager 137 D2).
+                #if DEBUG
+                if WorldListingPresentation.offersGoToCapture(for: session), let onGoToCapture {
+                    Button(WorldListText.goToCapture, action: onGoToCapture)
+                        .font(.caption)
+                        .readableBorderedButton()
+                        .accessibilityIdentifier("worlds-go-to-capture")
+                }
+                #endif
             }
         }
     }
 
     private func sessionLabel(_ session: WorldListingSession) -> some View {
-        HStack {
+        let layout = trailingWordsWrap
+            ? AnyLayout(VStackLayout(alignment: .leading, spacing: 2))
+            : AnyLayout(HStackLayout())
+        return layout {
             VStack(alignment: .leading, spacing: 2) {
                 // When the walk happened, as the row's primary label.
                 //
@@ -384,15 +518,14 @@ struct WorldPickerView: View {
                 // and in the canvas's Diagnostics.
                 Text(WorldListingPresentation.sessionTitle(for: session))
                     .font(.subheadline)
-                HStack(spacing: 6) {
-                    Text(session.frameSource)
-                    if let keyframes = WorldListingPresentation.keyframeCaption(for: session) {
-                        Text("·")
-                        Text(keyframes)
-                    }
-                }
-                .font(.caption2)
-                .foregroundStyle(.secondary)
+                // One Text, so it wraps as a sentence. Three Texts in an
+                // HStack each took a column and hyphenated inside it.
+                Text([session.frameSource, WorldListingPresentation.keyframeCaption(for: session)]
+                        .compactMap { $0 }
+                        .joined(separator: " · "))
+                    .font(.caption2)
+                    .foregroundStyle(.readableSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
                 // The final pass, when the Tower's own record says it did
                 // not happen. `WorldListingSession.finalization` has been
                 // decoded off this route since 2026-09-06 and read by
@@ -403,7 +536,16 @@ struct WorldPickerView: View {
                 if let solve = WorldListingPresentation.finalSolveCaption(for: session) {
                     Text(solve)
                         .font(.caption2)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(.readableSecondary)
+                }
+                // A complete walk whose photographic build failed: the badge
+                // is short, so the whole sentence is here, where the reader
+                // chooses which walk to open.
+                if let photographic = WorldListingPresentation.photographicCaption(for: session) {
+                    Text(photographic)
+                        .font(.caption2)
+                        .foregroundStyle(.readableSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
                 // The session id, restored as a caption rather than as the
                 // row's primary label.
@@ -416,37 +558,153 @@ struct WorldPickerView: View {
                 // under a dated title, it is not.
                 Text(session.sessionID)
                     .font(.caption2.monospaced())
-                    .foregroundStyle(.tertiary)
-                    .lineLimit(1)
+                    .foregroundStyle(.readableSecondary)
+                    .lineLimit(idLineLimit)
                     .truncationMode(.middle)
             }
-            Spacer()
+            if !trailingWordsWrap {
+                Spacer()
+            }
+            // The words carry the meaning. It used to be fainter still for a
+            // session with nothing to show, so "No geometry" would not read
+            // as an alarm, and that level of grey was too faint to read at
+            // all; muted text is as far as it goes now.
             if let badge = WorldListingPresentation.stateBadge(for: session) {
                 Text(badge)
                     .font(.caption2)
-                    .foregroundStyle(badgeStyle(for: session))
+                    .foregroundStyle(.readableSecondary)
             }
         }
     }
 
-    /// Muted for a session with nothing to show, ordinary otherwise. The
-    /// words carry the meaning; the colour only stops "No geometry" from
-    /// reading as an alarm.
-    private func badgeStyle(for session: WorldListingSession) -> HierarchicalShapeStyle {
-        session.hasGeometry ? .secondary : .tertiary
-    }
-
-    /// Pin the world for the workspace behind, and push its 3D reconstruction.
-    ///
-    /// Both, in that order. The pin is what makes the workspace describe this
-    /// world when the reader comes back to it, and what starts the geometry
-    /// fetch that fills Diagnostics; the push is what they came for.
-    ///
-    /// The picker is **not** dismissed. It was, and the effect was that opening
-    /// a world dropped the reader onto a workspace showing a sparse fragment
-    /// gallery, with the 3D world still two taps away.
+    /// Pin the world for the workspace behind, and dismiss: the World
+    /// Builder panel shows it, live inline, with Full screen one tap away
+    /// (U-INLINE §2.4). The pin is what makes the workspace describe this
+    /// world and what starts the geometry fetch that fills Diagnostics.
     private func open(worldID: String, sessionID: String?) {
         world.open(worldID: worldID, sessionID: sessionID)
-        opened = WorldRenderTarget(worldID: worldID, sessionID: sessionID)
+        openedArea = nil
+        if let onOpenRoom { onOpenRoom() } else { dismiss() }
+    }
+
+    /// Pin the walk and push one of its areas (C1 E5: "areas open directly
+    /// from Saved Worlds rows"). The pin is the session's: the workspace behind
+    /// describes the walk, whose room is the placed component.
+    private func open(worldID: String, sessionID: String, area: WorldComponent, opening: WorldAreaOpening) {
+        world.open(worldID: worldID, sessionID: sessionID)
+        openedArea = opening
+        opened = WorldRenderTarget(worldID: worldID, sessionID: sessionID, areaID: area.id)
+    }
+
+    /// The walk's areas under its row, and its short stretches as one line
+    /// (`WORLD-BUILDER-COMPONENTS.md` §8). An area opens only when the Tower
+    /// says it has something to draw; otherwise its line says why not.
+    @ViewBuilder
+    private func areaRows(
+        entry: WorldListingEntry, session: WorldListingSession, components: WorldComponents
+    ) -> some View {
+        let areas = components.areas
+        ForEach(Array(areas.enumerated()), id: \.element.id) { index, area in
+            let line = WorldComponentsPresentation.areaLine(number: index + 1, area: area)
+            let availability = WorldComponentsPresentation.availability(of: area)
+            if availability == .opens {
+                Button {
+                    open(worldID: entry.worldID, sessionID: session.sessionID, area: area,
+                         opening: WorldAreaOpening(number: index + 1, total: areas.count,
+                                                   spans: area.captureSpans))
+                } label: {
+                    areaLine {
+                        Text(line).font(.caption)
+                    } trailing: {
+                        Text("not placed").font(.caption2).foregroundStyle(.readableSecondary)
+                    }
+                }
+                .buttonStyle(.plain)
+            } else {
+                areaLine {
+                    Text(line).font(.caption).foregroundStyle(.readableSecondary)
+                } trailing: {
+                    if let word = WorldComponentsPresentation.availabilityWord(availability) {
+                        Text(word).font(.caption2).foregroundStyle(.readableSecondary)
+                    }
+                }
+            }
+        }
+        if let footer = WorldComponentsPresentation.footer(components) {
+            Text(footer)
+                .font(.caption2)
+                .foregroundStyle(.readableSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.leading, 16)
+        }
+    }
+
+    /// An area's line and its trailing word: side by side, or the word under
+    /// the line at the accessibility sizes.
+    private func areaLine<Leading: View, Trailing: View>(
+        @ViewBuilder _ leading: () -> Leading, @ViewBuilder trailing: () -> Trailing
+    ) -> some View {
+        Group {
+            if trailingWordsWrap {
+                VStack(alignment: .leading, spacing: 2) {
+                    leading()
+                    trailing()
+                }
+            } else {
+                HStack {
+                    leading()
+                    Spacer()
+                    trailing()
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.leading, 16)
+    }
+}
+
+// MARK: - The list's problems, in words (U0.8 F09, F10)
+
+/// What the saved-worlds sheet says when the Tower's list is not a fresh
+/// answer, and the words of its controls. Each failure is worded as what the
+/// phone knows, and names its own next step.
+enum WorldListText {
+    static let connections = "Connections"
+    static let goToCapture = "Go to capture"
+
+    static func sentence(_ problem: WorldListProblem, listedAt: Date?, hasList: Bool) -> String {
+        let when = listedAt.map { $0.formatted(.relative(presentation: .named)) } ?? "earlier"
+        switch problem {
+        case .noWorldRoot:
+            return "This Tower has no folder for saved worlds set up, so it has none to list. That is set up on the Tower."
+        case .unreadable:
+            return hasList
+                ? "The Tower's latest list could not be read, so this is the list from \(when). It may be out of date."
+                : "The Tower's list of saved worlds is in a form this version of the app cannot read. Updating the app or the Tower fixes this."
+        case .towerError(let status):
+            return hasList
+                ? "The Tower answered but could not list its saved worlds (HTTP \(status)), so this is the list from \(when). It may be out of date."
+                : "The Tower answered but could not list its saved worlds (HTTP \(status)). Try again; if it keeps failing, the Tower's log says why."
+        case .unreachable(let detail):
+            return hasList
+                ? "Could not reach the Tower, so this is the list from \(when). It may be out of date, and opening a world still needs the Tower."
+                : "Could not reach the Tower for its saved worlds: \(detail)"
+        }
+    }
+
+    /// The ask-again button's words, or `nil` where asking again cannot help:
+    /// an unreadable list is fixed by an update, not a retry.
+    static func retryTitle(_ problem: WorldListProblem) -> String? {
+        switch problem {
+        case .noWorldRoot: return "Check again"
+        case .unreadable: return nil
+        case .towerError, .unreachable: return "Try again"
+        }
+    }
+
+    /// Whether Connections can help: only when the Tower was not reached.
+    static func offersConnections(_ problem: WorldListProblem) -> Bool {
+        if case .unreachable = problem { return true }
+        return false
     }
 }

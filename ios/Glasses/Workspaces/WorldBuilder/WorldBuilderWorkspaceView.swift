@@ -77,17 +77,51 @@ struct WorldBuilderWorkspaceView: View {
     /// Whether the saved-worlds sheet is up. View state, so it lives here.
     @State private var isShowingWorlds = false
 
-    /// The world whose interactive picture is up, or `nil`. Captured from
-    /// `world.renderTarget` at the tap rather than read live, so a report
-    /// that renames the live world mid-look does not swap the sheet's content
-    /// under the reader.
-    @State private var viewerTarget: WorldRenderTarget?
+    /// Set by the saved-worlds sheet's Connections button: the sheet goes
+    /// first, and Connections opens once it has (U0.8 F09).
+    @State private var opensConnectionsAfterWorlds = false
+
+    /// The panel's one viewer model and web view, and the full-screen cover
+    /// that same web view moves into (U-INLINE §3). Every room viewer this
+    /// screen opens is the host's.
+    @StateObject private var host = WorldInlineHost()
+
+    /// A Saved worlds room row pinned a world: once the sheet has gone, the
+    /// panel is scrolled into view, once (U-INLINE §2.4).
+    @State private var scrollsToPanelAfterWorlds = false
+
+    /// Whether this workspace is on screen (a cartridge switch takes it away).
+    @State private var isOnScreen = false
+
+    /// The current piece's local lifecycle: shown only while this phone
+    /// captures, never for a walk the Tower presented while it did not --
+    /// the Tower's reports lag the local Stop (Codex review MED, HOLD).
+    @State private var pieceGate = WorldCurrentPieceGate()
+
+    /// The panel's own full-screen cover took this screen away: not a
+    /// cartridge switch, so the World Builder session is neither stopped
+    /// when it goes up nor started again when it comes down.
+    @State private var coveredByOwnCover = false
+
+    @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.worldPanelViewport) private var viewport
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     /// Tells the Tower this workspace is on screen, so a builder may attach
     /// to a capture. View-owned on purpose — see the type's own doc comment
     /// for why it is not on the view model — and a `@StateObject` so the
     /// `stop` on disappear comes from the same object that sent `start`.
     @StateObject private var session: WorldBuilderSessionController
+
+    #if DEBUG
+    /// The operator's capture-health panel (U2-D0), fed by the same client.
+    @StateObject private var health: CaptureHealthModel
+    #endif
+
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+
+    /// Connect and Settings, from the root (U0.8 F03, D1). `nil` in previews.
+    @Environment(\.towerRecovery) private var recovery
 
     /// The client is injected rather than constructed here, and owned by
     /// `ProjectManager`. See `CartridgeClients` for why: this `@StateObject` is
@@ -103,16 +137,22 @@ struct WorldBuilderWorkspaceView: View {
         self.tower = tower
         _world = StateObject(wrappedValue: WorldBuilderViewModel(client: client))
         _session = StateObject(wrappedValue: session ?? WorldBuilderSessionController())
+        #if DEBUG
+        _health = StateObject(wrappedValue: CaptureHealthModel(client: client))
+        #endif
     }
 
     /// Connectivity reaches the view model as a value, never as an object.
     ///
-    /// This view genuinely needs `tower`: the capture control warns when the
-    /// Tower is offline, because a `stream_start` sent while it is down is
-    /// dropped and every frame after it is then suppressed for the whole
-    /// session. So the observation is not a dead dependency here, and reading
-    /// the status costs nothing extra — passing the *fact* rather than the
-    /// client is what keeps the view model free of a reference it could act on.
+    /// This view genuinely needs `tower`: Start capture is off while the
+    /// Tower is not connected (manager 137 D1), and the capture control says
+    /// what happens to frames when it drops mid-capture. Frames are sent only
+    /// while it is connected; frames taken while it is not are dropped
+    /// (`TowerClient.sendFrame`) and never stored, and a reconnect re-opens
+    /// the stream bracket (`ProjectManager`), so sending resumes. So the
+    /// observation is not a dead dependency here, and reading the status
+    /// costs nothing extra — passing the *fact* rather than the client is
+    /// what keeps the view model free of a reference it could act on.
     ///
     /// The three cartridge workspaces that have no capture control receive this
     /// `Bool` from `TowerReachabilityReader` instead, and do not observe the
@@ -122,6 +162,13 @@ struct WorldBuilderWorkspaceView: View {
     var body: some View {
         VStack(spacing: 16) {
             header
+
+            // The look-back prompt (§6.5 as amended after walk 1): shown, with
+            // a haptic, never spoken. `nil` unless following the live walk
+            // this phone streams.
+            if let banner = world.lookBackBanner {
+                WorldLookBackBannerView(banner: banner)
+            }
 
             #if DEBUG
             glassesPanel
@@ -135,8 +182,12 @@ struct WorldBuilderWorkspaceView: View {
                 sessionBinding: world.sessionBinding,
                 fragments: world.fragmentsModel,
                 geometryChunks: world.geometryChunks,
-                presentation: world.presentation,
-                openReconstruction: { target in viewerTarget = target },
+                report: world.walkPresentation,
+                openReconstruction: { target in expand(target) },
+                askAgain: { world.askTowerAgain() },
+                goToCapture: goToCapture,
+                awaitingIsOverdue: world.awaitingIsOverdue,
+                panelNarratesFinishing: panelPhase.narratesFinishing,
                 recentWorld: world.recentWorld,
                 openRecent: { recent in
                     world.open(worldID: recent.worldID, sessionID: recent.sessionID)
@@ -149,96 +200,235 @@ struct WorldBuilderWorkspaceView: View {
             HelperText("Capture is not available in this build.")
             #endif
 
+            // The one World Builder panel (U-INLINE §1.1), in Capture health's
+            // slot: below the capture control, so nothing it draws can move
+            // Stop, and above the session line.
+            panel
+
             // Under the capture control in both configurations: the Tower's
             // gate applies to a Release phone's neighbour as much as to a
             // DEBUG phone's own capture. One line, worded as what was asked
             // for — `active` is intent, and whether a builder attached is the
-            // canvas's report, not this line's.
-            HelperText(session.footnote)
+            // canvas's report, not this line's. A failed or refused request
+            // can be asked again in place (U0.8 F02; manager 137 D2).
+            VStack(spacing: 6) {
+                HelperText(session.footnote)
+                    .accessibilityIdentifier("wb-session-footnote")
+                if session.canRetry {
+                    Button(WorldBuilderSessionController.retryTitle) { session.retry() }
+                        .font(.footnote)
+                        .readableBorderedButton()
+                        .accessibilityIdentifier("wb-session-retry")
+                }
+            }
         }
-        .sheet(isPresented: $isShowingWorlds) {
-            WorldPickerView(world: world)
-        }
-        .sheet(item: $viewerTarget) { target in
-            // The title and the note come from the same `WorldPresentation`
-            // the canvas draws, so the sheet and the screen behind it cannot
-            // describe the same world differently.
-            WorldRenderViewerView(
-                target: target,
-                title: world.state.snapshot?.name,
-                note: viewerNote
+        .animation(.easeInOut(duration: 0.25), value: world.lookBackBanner)
+        // Only one sheet can be up, so Connections waits for this one to go
+        // (the root's `onDismiss` pattern).
+        .sheet(isPresented: $isShowingWorlds, onDismiss: {
+            if opensConnectionsAfterWorlds {
+                opensConnectionsAfterWorlds = false
+                recovery?.openConnections()
+            }
+            if scrollsToPanelAfterWorlds {
+                scrollsToPanelAfterWorlds = false
+                // Once, and animated only without Reduce Motion. Never
+                // otherwise: at Stop the panel is already under the thumb.
+                withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.3)) {
+                    viewport.scrollTo?(Self.panelID)
+                }
+            }
+        }) {
+            WorldPickerView(
+                world: world,
+                onOpenConnections: {
+                    opensConnectionsAfterWorlds = true
+                    isShowingWorlds = false
+                },
+                // Back to the live screen, where Start capture is. It starts
+                // nothing: the Start button is the only way in (U0.8 F10).
+                onGoToCapture: {
+                    world.returnToLive()
+                    isShowingWorlds = false
+                },
+                // A room row pins its world and dismisses: the panel then
+                // shows it, live inline (U-INLINE §2.4, manager 209).
+                onOpenRoom: {
+                    scrollsToPanelAfterWorlds = true
+                    isShowingWorlds = false
+                }
             )
+        }
+        // The panel's web view, moved here: no reload, the pose kept, the
+        // bridge untouched (U-INLINE §3.2). The title, the note and the
+        // notice come from the same `WorldPresentation` the canvas draws,
+        // carried with the walk they describe (`world.coverWords`) -- and
+        // shown only over that walk's picture (review 3, HIGH; review 4).
+        // With the Tower gone the picture stays, its live stage goes, and
+        // the notice says why (review MED 3).
+        .fullScreenCover(isPresented: $host.isExpanded) {
+            let words = host.coverWords.words(live: world.coverWords, towerReachable: isTowerReachable)
+            WorldInlineCover(host: host, title: words.title, note: words.note, notice: words.notice,
+                             progress: words.progress)
+        }
+        .onChange(of: world.coverWords) { _, words in
+            host.coverReported(words)
+        }
+        .onChange(of: hostInputs, initial: true) { _, inputs in host.update(inputs) }
+        // Any walk presented while this phone is not capturing is refused,
+        // past the next Start, until that capture's walk is presented.
+        .onChange(of: isCapturingNow, initial: true) { _, isCapturing in
+            pieceGate.observe(isCapturing: isCapturing, presented: world.walkPresentation.walk)
+        }
+        .onChange(of: world.walkPresentation.walk) { _, walk in
+            pieceGate.observe(isCapturing: isCapturingNow, presented: walk)
         }
         // The World Builder cartridge session: `start` on appearance and
         // whenever the socket comes back while on screen, `stop` on
         // disappearance. Nothing else on the phone starts or stops a builder.
-        .onAppear { session.workspaceDidAppear(isTowerReachable: isTowerReachable) }
-        .onDisappear { session.workspaceDidDisappear() }
+        .onAppear {
+            isOnScreen = true
+            if coveredByOwnCover {
+                coveredByOwnCover = false
+                return
+            }
+            session.workspaceDidAppear(isTowerReachable: isTowerReachable)
+        }
+        .onDisappear {
+            // The world expanded over this screen is not a cartridge switch:
+            // a walk in progress keeps its session (U-INLINE §3.2).
+            if host.coverIsUp {
+                coveredByOwnCover = true
+                return
+            }
+            isOnScreen = false
+            session.workspaceDidDisappear()
+        }
         .onChange(of: isTowerReachable) { _, isReachable in
             session.towerReachabilityChanged(isReachable: isReachable)
         }
     }
 
+    /// "Go to capture" for a saved world with nothing usable in it: back to
+    /// the live screen, where Start capture is (U0.8 F12). Only while a saved
+    /// world is pinned -- following live, Start capture is already here --
+    /// and never in Release, which has no capture.
+    private var goToCapture: (() -> Void)? {
+        #if DEBUG
+        world.inspection.isInspecting ? { world.returnToLive() } : nil
+        #else
+        nil
+        #endif
+    }
+
     // MARK: Header
 
+    /// The two read-only controls, the sentence about the screen, and -- when
+    /// a saved world is pinned -- which one, with the way back to live.
+    ///
+    /// No in-page "World Builder" title: the navigation bar already says it,
+    /// directly above, and the two together read as the same title twice
+    /// (UX audit, wb-header).
     private var header: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(alignment: .firstTextBaseline) {
-                Text("World Builder")
-                    .font(.title2.weight(.semibold))
-                Spacer()
-                // Both read only, so neither is `#if DEBUG`: a Release build
-                // with no camera can still look at what the Tower has stored.
-                //
-                // The picture button is disabled, not hidden, until the Tower
-                // has named a world with geometry (`renderTarget`): a control
-                // that appears from nowhere is one nobody looks for, and a
-                // disabled one says "not yet" truthfully.
-                Button {
-                    viewerTarget = world.renderTarget
-                } label: {
-                    Label("Picture", systemImage: "cube.transparent")
-                        .font(.subheadline)
+        VStack(alignment: .leading, spacing: 10) {
+            // Side by side while both labels fit on one line each, and one
+            // above the other when they do not. An HStack that never gave way
+            // broke "Picture" and "Saved worlds" mid-word inside their
+            // capsules at the accessibility sizes (UX audit, wb-header).
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 8) {
+                    pictureButton
+                    savedWorldsButton
+                    Spacer(minLength: 0)
                 }
-                .buttonStyle(.bordered)
-                .disabled(world.renderTarget == nil)
-                .accessibilityLabel("Interactive picture of the world")
-                Button {
-                    isShowingWorlds = true
-                } label: {
-                    Label("Saved worlds", systemImage: "archivebox")
-                        .font(.subheadline)
+                VStack(alignment: .leading, spacing: 8) {
+                    pictureButton
+                    savedWorldsButton
                 }
-                .buttonStyle(.bordered)
             }
+
             Text("What the glasses see, and what the Tower reports it has built from that. Figures come from the Tower; absent ones are not drawn.")
                 .font(.subheadline)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(.readableSecondary)
                 .fixedSize(horizontal: false, vertical: true)
 
             if world.inspection.isInspecting {
-                HStack(spacing: 8) {
-                    // The world's NAME, or nothing. This line used to end in a
-                    // raw 32-character hex world id — `Looking at saved world
-                    // fcbca9e90b244785bdb671530b33c6a5.` — which is a database
-                    // key on the ordinary surface of the app. The id is still
-                    // reachable: it is in the canvas's Diagnostics disclosure
-                    // and in the 3D viewer's Details.
-                    Text(savedWorldLine)
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                    Spacer()
-                    Button("Back to live") {
-                        world.returnToLive()
-                    }
-                    .font(.footnote)
-                    .buttonStyle(.bordered)
-                }
+                inspectingLine
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    // Both read only, so neither is `#if DEBUG`: a Release build with no
+    // camera can still look at what the Tower has stored.
+    //
+    // The picture button is disabled, not hidden, until the Tower has named a
+    // world with geometry AND reported that world's walk: a control that
+    // appears from nowhere is one nobody looks for, and a disabled one says
+    // "not yet" truthfully. It offers the panel's picture (`panelTarget`),
+    // never a target the report does not describe yet -- a Saved worlds pin
+    // names its target before its report arrives (review 4, HIGH 1).
+    private var pictureButton: some View {
+        let target = Self.headerPicture(world)
+        return Button {
+            if let target { expand(target) }
+        } label: {
+            Label("Picture", systemImage: "cube.transparent")
+                .font(.subheadline)
+        }
+        .readableBorderedButton()
+        .disabled(target == nil)
+        .accessibilityLabel("Interactive picture of the world")
+        // Why it is off, for VoiceOver: the canvas says it on screen (U0.8
+        // F14). Once here, so both of the header's layouts carry it.
+        .accessibilityValue(target == nil ? WorldCanvasText.pictureOffValue : "")
+        // Voice Control matches what is on screen: "Tap Picture" has to find
+        // it, although VoiceOver reads the longer name.
+        .accessibilityInputLabels(["Picture", "Interactive picture of the world"])
+    }
+
+    /// What the header's Picture button opens, or `nil` (off): the panel's
+    /// picture, which the report describes (review 4, HIGH 1).
+    static func headerPicture(_ world: WorldBuilderViewModel) -> WorldRenderTarget? {
+        world.panelTarget
+    }
+
+    private var savedWorldsButton: some View {
+        Button {
+            isShowingWorlds = true
+        } label: {
+            Label("Saved worlds", systemImage: "archivebox")
+                .font(.subheadline)
+        }
+        .readableBorderedButton()
+    }
+
+    /// Which saved world is pinned, and the way back. Wraps rather than
+    /// truncating, and at the accessibility sizes puts the button under the
+    /// sentence instead of squeezing both into one line.
+    @ViewBuilder
+    private var inspectingLine: some View {
+        let layout = dynamicTypeSize.isAccessibilitySize
+            ? AnyLayout(VStackLayout(alignment: .leading, spacing: 8))
+            : AnyLayout(HStackLayout(alignment: .firstTextBaseline, spacing: 8))
+        layout {
+            // The world's NAME, or nothing. This line used to end in a raw
+            // 32-character hex world id — `Looking at saved world
+            // fcbca9e90b244785bdb671530b33c6a5.` — which is a database key on
+            // the ordinary surface of the app. The id is still reachable: it
+            // is in the canvas's Diagnostics disclosure and in the 3D viewer's
+            // Details.
+            Text(savedWorldLine)
+                .font(.footnote)
+                .foregroundStyle(.readableSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            Button("Back to live") {
+                world.returnToLive()
+            }
+            .font(.footnote)
+            .readableBorderedButton()
+        }
     }
 
     /// What the inspecting line says. The Tower's display name when it gave
@@ -255,15 +445,161 @@ struct WorldBuilderWorkspaceView: View {
         return "Looking at saved world."
     }
 
-    /// The ladder's note for the world the viewer is about to show, so the
-    /// sheet says the same thing the card behind it says.
-    private var viewerNote: String? {
-        if case .partial(_, let note) = world.presentation.reconstruction { return note }
+    // MARK: The panel (U-INLINE)
+
+    static let panelID = "wb-panel"
+
+    /// Whether a capture runs on this phone. Never in Release.
+    private var isCapturingNow: Bool {
+        #if DEBUG
+        isRunning
+        #else
+        false
+        #endif
+    }
+
+    private var panelPhase: WorldPanelPhase {
+        let presentation = world.presentation
+        return WorldPanelPhase.phase(
+            isCapturing: isCapturingNow,
+            sessionActive: session.status == .active,
+            towerReachable: isTowerReachable,
+            pageLoaded: host.model?.state.html != nil,
+            state: world.state,
+            stage: presentation.stage,
+            // Only a picture of the walk this report describes (review HIGH 1).
+            target: world.panelTarget,
+            needsRetrySentence: presentation.recoverability?.sentence,
+            hasMap: panelMap != nil || panelDial?.awaiting == true)
+    }
+
+    /// The panel's map: the walk's own coverage receipt, else the DEBUG fixture.
+    private var panelMap: WorldPanelMapSource? {
+        WorldPanelMap.source(live: world.coverage)
+    }
+
+    /// FOW-RING: read once; off is today's panel exactly.
+    private static let dialSwitch = WorldCaptureDialSwitch.current
+
+    /// The capture dial's inputs, or `nil` with its switch off.
+    private var panelDial: WorldPanelDial? {
+        guard Self.dialSwitch.on else { return nil }
+        return WorldPanelDial(awaiting: world.coverageAwaited)
+    }
+
+    private var hostInputs: WorldInlineHost.Inputs {
+        let phase = panelPhase
+        return WorldInlineHost.Inputs(
+            target: phase.target, isReady: phase.isReady, scenePhase: scenePhase,
+            pickerShown: isShowingWorlds, isOnScreen: isOnScreen)
+    }
+
+    private var buildInProgress: Bool? {
+        if case .finalizing(_, let buildInProgress) = world.state { return buildInProgress }
         return nil
+    }
+
+    @ViewBuilder
+    private var panel: some View {
+        WorldInlinePanel(
+            phase: panelPhase,
+            report: world.walkPresentation,
+            buildInProgress: buildInProgress,
+            isTowerReachable: isTowerReachable,
+            screenSaysOffline: captureSaysTowerIsOff,
+            showsHealth: showsHealthInPanel,
+            map: panelMap,
+            currentPiece: pieceGate.shown(world.currentPiece, walk: world.walkPresentation.walk,
+                                          isCapturing: isCapturingNow,
+                                          phase: panelPhase, state: world.state),
+            liveStrip: pieceGate.shown(world.liveStrip, beside: world.walkPresentation,
+                                       isCapturing: isCapturingNow, phase: panelPhase, state: world.state),
+            landed: world.landedOverlay?.value(beside: world.walkPresentation),
+            photo: world.photoFloorplan?.value(beside: world.walkPresentation),
+            dial: panelDial,
+            host: host,
+            dismissBanner: { world.dismissFinishBanner() },
+            bannerAnnounced: { walk in world.finishBannerAnnounced(for: walk) },
+            expand: { target in expand(target) }
+        ) {
+            #if DEBUG
+            CaptureHealthView(model: health, isLinked: isTowerReachable, isCapturing: isRunning)
+            #else
+            EmptyView()
+            #endif
+        }
+        .id(Self.panelID)
+    }
+
+    /// The capture control already says the Tower is not connected (its
+    /// `wb-capture-tower-line`): the panel then says it no third time.
+    ///
+    /// `false` in Release on purpose, not as a gap (review 3, LOW): Release
+    /// compiles no capture control, so no `wb-capture-tower-line` exists to
+    /// defer to. The rule -- never a THIRD "not connected" line -- then
+    /// leaves the panel's line as the second, beside the canvas's own.
+    private var captureSaysTowerIsOff: Bool {
+        #if DEBUG
+        guard !isTowerReachable else { return false }
+        return controlMode == .start
+            || WorldBuilderCaptureText.towerLine(status: tower.status, gaveUp: tower.reconnectGaveUp) != nil
+        #else
+        false
+        #endif
+    }
+
+    private var showsHealthInPanel: Bool {
+        #if DEBUG
+        showsCaptureHealth
+        #else
+        false
+        #endif
+    }
+
+    /// Full screen: the panel's web view moves into the cover (U-INLINE
+    /// §3.2), with the report's words and the walk they are about; the
+    /// cover shows them only over that walk's picture. Every route into the
+    /// cover -- the panel, the header's Picture, the canvas -- comes here.
+    /// Reduce Motion: no slide.
+    private func expand(_ target: WorldRenderTarget) {
+        var transaction = Transaction()
+        transaction.disablesAnimations = reduceMotion
+        withTransaction(transaction) {
+            host.expand(target, words: world.coverWords)
+        }
     }
 }
 
 // MARK: - DEBUG-only capture surface
+
+#if DEBUG
+/// The capture control's Tower sentences (U0.8 F04; manager 137 D1).
+enum WorldBuilderCaptureText {
+    static let framesRule = "Frames are sent only while it is connected; frames taken before then are not kept."
+
+    /// While a capture runs and the Tower is not connected: what happens to
+    /// the frames. `nil` while it is connected.
+    static func towerLine(status: TowerStatus, gaveUp: Bool) -> String? {
+        if status == .online { return nil }
+        if gaveUp { return "The phone has stopped trying to reconnect to the Tower. " + framesRule }
+        if status == .connecting { return "Connecting to the Tower. " + framesRule }
+        return "The Tower is not connected. " + framesRule
+    }
+
+    /// Beside a Start capture that is off because the Tower is not
+    /// connected: the reason and the next step.
+    static func startOffReason(status: TowerStatus, gaveUp: Bool) -> String {
+        if gaveUp {
+            return "Start is off while the Tower is not connected, and the phone has stopped trying to reconnect. "
+                + "Connect to it first."
+        }
+        if status == .connecting {
+            return "Start is off until the Tower is connected. The phone is connecting to it now."
+        }
+        return "Start is off while the Tower is not connected. Connect to it first."
+    }
+}
+#endif
 
 // The camera path is DEBUG-only in the model, so the capture half of this
 // workspace is gated to match. In Release the workspace still exists and still
@@ -280,6 +616,12 @@ private extension WorldBuilderWorkspaceView {
     /// read "Start", and a tap in it did nothing observable.
     var isRunning: Bool { glasses.isCaptureEngaged }
 
+    /// The capture-health panel is for a walk: a World Builder session the
+    /// Tower honoured, or a capture running on this phone.
+    var showsCaptureHealth: Bool {
+        (session.status == .active || isRunning) && !UITestHooks.hidesCaptureHealth
+    }
+
     /// What the wearer currently sees.
     @ViewBuilder
     var glassesPanel: some View {
@@ -288,17 +630,40 @@ private extension WorldBuilderWorkspaceView {
             ViewfinderCard(
                 frame: glasses.latestCapturedFrame,
                 isStreaming: isStreaming,
-                placeholderReason: placeholder
+                placeholderReason: placeholder,
+                isPausedByGlasses: glasses.captureClaim == .devicePaused
             )
         }
     }
 
-    var placeholder: String {
-        if !glasses.hasActiveDevice { return "Waiting for the glasses to become active." }
-        if glasses.cameraPermissionStatus != .granted {
-            return "Camera access is needed before a session can stream."
+    /// The viewfinder's sentence, so the placeholder and Start's hint cannot
+    /// drift apart.
+    static var waitingForGlasses: String { ViewfinderText.waitingForGlasses }
+
+    /// Start's VoiceOver hint: why it is off, or nothing.
+    var startHint: String {
+        if !glasses.hasActiveDevice { return Self.waitingForGlasses }
+        if !isTowerReachable {
+            return WorldBuilderCaptureText.startOffReason(status: tower.status, gaveUp: tower.reconnectGaveUp)
         }
-        return "Start a capture session to see what the glasses see."
+        return ""
+    }
+
+    /// Never "Start…" while the camera is on or coming up (U0.8 F05).
+    var placeholder: String {
+        ViewfinderText.placeholder(
+            isStreaming: isStreaming,
+            isEngaged: glasses.isCaptureEngaged,
+            isPausedByGlasses: glasses.captureClaim == .devicePaused,
+            hasActiveDevice: glasses.hasActiveDevice,
+            permission: glasses.cameraPermissionStatus,
+            noun: "capture session"
+        )
+    }
+
+    /// Stop, Stop while the glasses hold it paused, or Start (U0.8 F06).
+    var controlMode: CaptureControlMode {
+        CaptureControlMode.mode(isEngaged: glasses.isCaptureEngaged, claim: glasses.captureClaim)
     }
 
     /// Labelled for what it actually does. See the type's doc comment for why
@@ -306,7 +671,9 @@ private extension WorldBuilderWorkspaceView {
     @ViewBuilder
     var captureControl: some View {
         VStack(spacing: 8) {
-            if isRunning {
+            if controlMode != .start {
+                // A capture the glasses paused is still a capture: a Start
+                // then would be refused and do nothing observable (U0.8 F06).
                 Button {
                     glasses.stopCameraSession()
                 } label: {
@@ -315,8 +682,12 @@ private extension WorldBuilderWorkspaceView {
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 6)
                 }
-                .buttonStyle(.bordered)
+                .readableBorderedButton()
                 .disabled(glasses.cameraStreamState == .stopping)
+                if controlMode == .stopWhilePaused {
+                    HelperText(ViewfinderText.pausedControlLine(stopTitle: "Stop capture"))
+                        .accessibilityIdentifier("capture-paused-line")
+                }
             } else {
                 Button {
                     glasses.startCameraSession()
@@ -327,7 +698,14 @@ private extension WorldBuilderWorkspaceView {
                         .padding(.vertical, 6)
                 }
                 .buttonStyle(.borderedProminent)
-                .disabled(!glasses.hasActiveDevice)
+                // Off while the Tower is not connected, too (manager 137 D1):
+                // a capture started then streams frames nobody keeps. Start
+                // never does nothing; it is off, with the reason beside it.
+                .disabled(!glasses.hasActiveDevice || !isTowerReachable)
+                // Why it is disabled, at the control, for VoiceOver. On screen
+                // the viewfinder above says the glasses' reason, and the line
+                // under this control says the Tower's.
+                .accessibilityHint(startHint)
             }
 
             // Neither string claims a build. The Tower reconstructs in a
@@ -341,27 +719,40 @@ private extension WorldBuilderWorkspaceView {
                     : "Streams frames to the Tower. What it builds from them is reported above."
             )
 
-            if !glasses.hasActiveDevice && !isRunning {
-                HelperText("Waiting for the glasses to become active.")
-            } else if glasses.cameraPermissionStatus == .denied && !isRunning {
+            if controlMode == .start && !isTowerReachable {
+                // Start is off because of the Tower (D1): the reason, beside
+                // the control, and the way to end it. First, because it holds
+                // whether or not the glasses are active -- the viewfinder
+                // above already gives the glasses' reason.
+                HelperText(WorldBuilderCaptureText.startOffReason(
+                    status: tower.status, gaveUp: tower.reconnectGaveUp
+                ))
+                .accessibilityIdentifier("wb-capture-tower-line")
+                if let recovery {
+                    TowerRecoveryButtons(actions: recovery, identifierPrefix: "wb-capture")
+                }
+            } else if !glasses.hasActiveDevice && controlMode == .start {
+                // Nothing: the viewfinder card at the top of this workspace
+                // is showing this very sentence, and it read twice on one
+                // screen (UX audit, wb-capture-idle). Kept as a branch so the
+                // advice below still never shows while the glasses are away.
+                EmptyView()
+            } else if glasses.cameraPermissionStatus == .denied && controlMode == .start {
                 // Advice, not a `.disabled` condition — see the equivalent
                 // branch in `HomeWorkspaceView.sessionControl`.
                 HelperText("Camera access is not granted. Allow it under Connections, then start capture.")
-            } else if tower.status != .online && tower.reconnectGaveUp {
-                // Distinct from the sentence below because the remedy is
-                // different. While the phone is still retrying, waiting is
-                // enough; once the reconnect budget is spent nothing will
-                // change until someone taps Connect, and a line that said only
-                // "not connected" — the same words in both cases — left the
-                // wearer waiting for a retry that was never coming.
-                HelperText("The phone has stopped trying to reconnect. Use Connect under Connections to retry.")
-            } else if tower.status != .online {
-                // The Tower must be online *before* capture starts: a
-                // `stream_start` sent while it is offline is dropped, and every
-                // frame after it is then suppressed for the whole session.
-                // Advice rather than a new `.disabled` condition, so the
-                // control's semantics stay what they were.
-                HelperText("The Tower is not connected. Frames from this session would not reach it.")
+            } else if let line = WorldBuilderCaptureText.towerLine(
+                status: tower.status, gaveUp: tower.reconnectGaveUp
+            ) {
+                // The Tower dropped mid-capture. What happens to the frames,
+                // truthfully: they are sent only while it is connected, and
+                // the ones taken before it reconnects are dropped and never
+                // stored -- a reconnect re-opens the stream bracket, so
+                // sending resumes (`ProjectManager`), but nothing refills the
+                // gap. The words differ once the phone has stopped retrying,
+                // because the remedy does: then only a tap on Connect helps.
+                HelperText(line)
+                    .accessibilityIdentifier("wb-capture-tower-line")
             }
         }
     }

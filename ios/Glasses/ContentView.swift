@@ -5,6 +5,7 @@
 //  Created by Tristan Varner on 8/18/26.
 //
 
+import Combine
 import SwiftUI
 
 /// Root view, owner of the app's object graph, and the persistent shell.
@@ -17,8 +18,8 @@ import SwiftUI
 /// `Wearables.configure()`, so `GlassesConnection` would touch the DAT SDK
 /// before it is configured.
 ///
-/// Everything else — the cartridge tray, the connection sheet, the developer
-/// tools, and now the workspace — is presented *over* or *inside* this view
+/// Everything else — the cartridge tray, the connection sheet, Settings, the
+/// developer tools, and now the workspace — is presented *over* or *inside* this view
 /// rather than replacing it, so the graph is never torn down.
 /// `GlassesConnection.deinit` stops the camera and the device session, which
 /// would kill a live stream. `GlassesConnection.init` logs
@@ -66,6 +67,7 @@ struct ContentView: View {
     private enum Destination: Int, Identifiable {
         case cartridges
         case connections
+        case settings
         #if DEBUG
         case developer
         #endif
@@ -75,6 +77,27 @@ struct ContentView: View {
 
     @State private var destination: Destination?
 
+    /// "How Glasses works": which cards are up, if any. All of the rules --
+    /// first launch only, never over a capture, Settings closes first -- are in
+    /// `OnboardingPresentation` and `OnboardingGate`, where they are tested.
+    @State private var onboarding = OnboardingPresentation()
+
+    /// Whether a capture is running or starting, kept current by the
+    /// onboarding `.task` below. Read by Settings' "How Glasses works" row.
+    @State private var isCaptureBusy = false
+
+    /// Connections or Settings, opened from the second card, over the cards.
+    private enum OnboardingLink: Int, Identifiable {
+        case connections
+        case settings
+
+        var id: Int { rawValue }
+    }
+
+    @State private var onboardingLink: OnboardingLink?
+
+    private let onboardingStore = OnboardingStore()
+
     /// The single source of truth for which workspace is showing. An id that is
     /// not in the catalog, or that this build has no workspace for, falls back
     /// to Home rather than showing an empty screen.
@@ -82,30 +105,82 @@ struct ContentView: View {
         Cartridge.workspaceCartridge(forID: selectedCartridgeID)
     }
 
+    /// Where the status bar goes: pinned under the navigation bar, or -- at
+    /// the accessibility sizes -- at the top of the scrolling content.
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+
+    /// Pinned, so the status stays in view while a long workspace is read.
+    /// It used to scroll away under the floating toolbar, with its values
+    /// behind the glass buttons (UX audit, shell-status-bar). At the
+    /// accessibility sizes its three rows take a third of the screen, which
+    /// is too much to hold there for good, so it scrolls with the content.
+    private var isStatusPinned: Bool { !dynamicTypeSize.isAccessibilitySize }
+
+    /// The root scroll view's visible height, for the World Builder panel's
+    /// stage (U-INLINE §1.1, B). Written only when it moved by half a point.
+    @State private var visibleHeight: CGFloat = 0
+
     var body: some View {
         NavigationStack {
+            ScrollViewReader { proxy in
             ScrollView {
                 VStack(spacing: 16) {
-                    ShellStatusBar(
-                        glasses: project.glassesConnection,
-                        tower: project.towerClient,
-                        onTap: { destination = .connections }
-                    )
+                    if !isStatusPinned {
+                        statusBar
+                    }
 
                     workspace
                 }
                 .padding(.horizontal, 16)
                 .padding(.bottom, 24)
             }
+            .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { height in
+                if MeasuredHeight.moved(from: visibleHeight, to: height) { visibleHeight = height }
+            }
+            // The World Builder panel: how tall the screen is, and how to
+            // bring the panel into view after a Saved worlds pin (U-INLINE
+            // §2.4). The proxy reaches the workspace only through here.
+            .environment(\.worldPanelViewport, WorldPanelViewport(
+                visibleHeight: visibleHeight,
+                scrollTo: { id in proxy.scrollTo(id, anchor: .top) }))
             .background(Color(.systemGroupedBackground))
             .scrollBounceBehavior(.basedOnSize)
+            // Connect and Settings for every "Not connected" panel in the
+            // workspace below (U0.8 F03). Actions only: the root still does
+            // not observe the Tower; the buttons' own leaf does.
+            .environment(\.towerRecovery, TowerRecoveryActions(
+                tower: project.towerClient,
+                openConnections: { destination = .connections },
+                openSettings: { destination = .settings }
+            ))
+            // A bar, not an inset: the scroll edge effect then extends under
+            // it, so content passing beneath is softened like it is under
+            // the navigation bar, rather than showing through between pills.
+            .safeAreaBar(edge: .top) {
+                if isStatusPinned {
+                    statusBar
+                        .padding(.horizontal, 16)
+                        .padding(.bottom, 8)
+                }
+            }
             .navigationTitle(selectedCartridge?.name ?? "Glasses")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { toolbar }
-            .sheet(item: $destination) { destination in
+            // `onDismiss` is where "How Glasses works" opens: Settings has
+            // to be gone before a full-screen cover can be presented.
+            .sheet(item: $destination, onDismiss: {
+                onboarding.sheetDismissed(isCaptureBusy: isCaptureBusyNow)
+            }) { destination in
                 sheet(for: destination)
             }
-            .modifier(GlassesErrorAlert(glasses: project.glassesConnection))
+            .fullScreenCover(item: onboardingShowing) { mode in
+                onboardingCards(mode)
+            }
+            .modifier(GlassesErrorAlert(
+                glasses: project.glassesConnection,
+                openConnections: { destination = .connections }
+            ))
+            }
         }
         // The app's only automatic side effect, in the one place it belongs.
         // `startAutomaticConnections()` is itself idempotent, so a re-run of
@@ -114,6 +189,49 @@ struct ContentView: View {
         .task {
             project.startAutomaticConnections()
         }
+        // The first-run cards, then the capture watch that keeps them off a
+        // capture. The root is never re-identified, so this runs once per
+        // launch and subscribes once rather than on every `body`; presenting
+        // the cards over it does not cancel it (checked in the Simulator).
+        .task {
+            // Without the slide-up: at a first launch the cards are the first
+            // screen, not something that happened to it.
+            var appearing = Transaction()
+            appearing.disablesAnimations = true
+            withTransaction(appearing) {
+                onboarding.launched(
+                    isSeen: onboardingStore.isSeen,
+                    launchArguments: ProcessInfo.processInfo.arguments,
+                    isCaptureBusy: isCaptureBusyNow
+                )
+            }
+            for await busy in captureBusyUpdates.values {
+                if busy != isCaptureBusy { isCaptureBusy = busy }
+                if busy { onboarding.captureChanged(isBusy: true) }
+            }
+        }
+    }
+
+    /// Half height, with full height a drag away -- except at the
+    /// accessibility sizes, where half an iPhone SE held about one row of the
+    /// drawer and World Builder was four drags down (O1 viewer check): there
+    /// the sheets open at full height.
+    private var sheetDetents: Set<PresentationDetent> {
+        dynamicTypeSize.isAccessibilitySize ? [.large] : [.medium, .large]
+    }
+
+    /// Opaque, for the two sheets that open at half height. There a sheet
+    /// is Liquid Glass, and the screen behind showed through its rows enough
+    /// to take their grey text under 4.5:1 (accessibility audit, U0.5); at
+    /// full height it is opaque anyway.
+    static let sheetBackground = Color(.systemGroupedBackground)
+
+    private var statusBar: some View {
+        ShellStatusBar(
+            glasses: project.glassesConnection,
+            tower: project.towerClient,
+            onTap: { destination = .connections }
+        )
     }
 
     // MARK: Workspace
@@ -253,7 +371,8 @@ struct ContentView: View {
                 glasses: project.glassesConnection,
                 tower: project.towerClient,
                 senderMetrics: project.senderMetrics,
-                onOpenConnections: { destination = .connections }
+                onOpenConnections: { destination = .connections },
+                onOpenSettings: { destination = .settings }
             )
         }
     }
@@ -271,7 +390,24 @@ struct ContentView: View {
             .accessibilityLabel("Cartridges")
         }
 
+        // Every build, every workspace: the one way to change the Tower's
+        // address, which is what "Tower unreachable" usually needs.
+        ToolbarItem(placement: .topBarTrailing) {
+            Button {
+                destination = .settings
+            } label: {
+                Label("Settings", systemImage: "gearshape")
+            }
+            .accessibilityLabel("Settings")
+        }
+
         #if DEBUG
+        // Shown only while an IMU log is open: the persistent recording sign.
+        // Trailing rather than principal, which would displace the title even
+        // when the badge is empty.
+        ToolbarItem(placement: .topBarTrailing) {
+            IMURecordingBadge(readout: project.glassesConnection.imuRecorderReadout)
+        }
         ToolbarItem(placement: .topBarTrailing) {
             Button {
                 destination = .developer
@@ -287,14 +423,32 @@ struct ContentView: View {
     private func sheet(for destination: Destination) -> some View {
         switch destination {
         case .cartridges:
-            CartridgeDrawerView(selectedCartridgeID: $selectedCartridgeID)
-                .presentationDetents([.medium, .large])
+            CartridgeDrawerView(
+                selectedCartridgeID: $selectedCartridgeID,
+                leavingNeedsConfirmation: {
+                    CartridgeLeaveRule.needsConfirmation(
+                        workspace: selectedCartridge?.workspace, claim: currentCaptureClaim
+                    )
+                },
+                stopCapture: { project.glassesConnection.stopCameraSession() }
+            )
+                .presentationDetents(sheetDetents)
+                .presentationBackground(Self.sheetBackground)
         case .connections:
             ConnectionSheet(
                 glasses: project.glassesConnection,
                 tower: project.towerClient
             )
-            .presentationDetents([.medium, .large])
+            .presentationDetents(sheetDetents)
+            .presentationBackground(Self.sheetBackground)
+        case .settings:
+            SettingsSheet(howItWorks: HowGlassesWorksEntry(
+                isAvailable: OnboardingGate.canReopen(isCaptureBusy: isCaptureBusy),
+                open: {
+                    onboarding.requestedFromSettings(isCaptureBusy: isCaptureBusyNow)
+                    self.destination = nil
+                }
+            ))
         #if DEBUG
         case .developer:
             DeveloperToolsView(
@@ -309,6 +463,77 @@ struct ContentView: View {
     }
 }
 
+// MARK: - How Glasses works
+
+extension ContentView {
+    private var onboardingShowing: Binding<OnboardingMode?> {
+        Binding(
+            get: { onboarding.showing },
+            set: { if $0 == nil { onboarding.coverDismissed() } }
+        )
+    }
+
+    /// The cards, with Connections and Settings opening over them from the
+    /// second card. Neither of those can open the cards again: Connections'
+    /// Settings has no entry, and this Settings is given none.
+    private func onboardingCards(_ mode: OnboardingMode) -> some View {
+        OnboardingView(
+            mode: mode,
+            onOpenConnections: { onboardingLink = .connections },
+            onOpenSettings: { onboardingLink = .settings },
+            onEnd: { end in onboarding.ended(end, store: onboardingStore) }
+        )
+        .sheet(item: $onboardingLink) { link in
+            switch link {
+            case .connections:
+                ConnectionSheet(
+                    glasses: project.glassesConnection,
+                    tower: project.towerClient
+                )
+                .presentationDetents(sheetDetents)
+                .presentationBackground(Self.sheetBackground)
+            case .settings:
+                SettingsSheet()
+            }
+        }
+    }
+
+    /// Read when asked rather than observed: observing `GlassesConnection`
+    /// here would re-render the whole shell at the capture rate (see
+    /// `ProjectManager.cancellables`).
+    private var isCaptureBusyNow: Bool {
+        OnboardingGate.isCaptureBusy(
+            claim: currentCaptureClaim,
+            recordingPhase: project.objectMemoryRecording.phase
+        )
+    }
+
+    private var currentCaptureClaim: CaptureClaim {
+        #if DEBUG
+        project.glassesConnection.captureClaim
+        #else
+        // The capture surface is DEBUG-only; a Release build has no capture.
+        .unclaimed
+        #endif
+    }
+
+    /// Every change of `isCaptureBusyNow`, and its value now. Built from the
+    /// published claim and Object Memory's phase, and de-duplicated, so it
+    /// fires when a capture starts or ends, never at the frame rate.
+    private var captureBusyUpdates: AnyPublisher<Bool, Never> {
+        #if DEBUG
+        let claims = project.glassesConnection.captureClaimUpdates
+        #else
+        let claims = Just(CaptureClaim.unclaimed).eraseToAnyPublisher()
+        #endif
+        return claims
+            .combineLatest(project.objectMemoryRecording.$phase)
+            .map { claim, phase in OnboardingGate.isCaptureBusy(claim: claim, recordingPhase: phase) }
+            .removeDuplicates()
+            .eraseToAnyPublisher()
+    }
+}
+
 /// Presents `GlassesConnection.errorMessage` as an alert.
 ///
 /// A modifier owning its own `@ObservedObject` rather than an `.alert` on the
@@ -316,8 +541,14 @@ struct ContentView: View {
 /// `ProjectManager`'s `objectWillChange` fan-in was removed so the shell would
 /// stop re-evaluating at the capture rate. The alert has to observe the object
 /// it reads, and this is the smallest thing that does.
+///
+/// Every glasses alert offers Connections (U0.8 F08): each `GlassesConnection`
+/// error is about registration, permission or the device, and Connections is
+/// where those are recovered. Navigation always works, so this is never a
+/// futile control.
 private struct GlassesErrorAlert: ViewModifier {
     @ObservedObject var glasses: GlassesConnection
+    let openConnections: () -> Void
 
     func body(content: Content) -> some View {
         content.alert(
@@ -329,7 +560,11 @@ private struct GlassesErrorAlert: ViewModifier {
                 }
             )
         ) {
-            Button("OK") { glasses.errorMessage = nil }
+            Button("Open Connections") {
+                glasses.errorMessage = nil
+                openConnections()
+            }
+            Button("OK", role: .cancel) { glasses.errorMessage = nil }
         } message: {
             Text(glasses.errorMessage ?? "")
         }

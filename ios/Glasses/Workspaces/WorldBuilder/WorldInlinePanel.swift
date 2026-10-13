@@ -1,0 +1,1182 @@
+//
+//  WorldInlinePanel.swift
+//  Glasses
+//
+//  U-INLINE (manager rulings 209 and 210): one World Builder panel for the
+//  whole walk, in Capture health's slot under the capture control. During
+//  the walk it is Capture health (and, later, the fog-of-war map); after
+//  Stop it shows the honest finishing progress (U0.6); when the world is
+//  ready the same panel cross-fades into the live 3D world inline, and a tap
+//  expands that same web view to full screen.
+//
+//  One web view at most (§4): `WorldInlineHost` creates it only while it is
+//  wanted and tears it down within 5 s off-screen, at once in the
+//  background, under Saved worlds, and when the workspace goes.
+//
+
+import Combine
+import SwiftUI
+import UIKit
+
+// MARK: - The host: one model, one web view
+
+/// Owns the panel's viewer model -- and through it the one `WKWebView` --
+/// and the expanded cover's state (U-INLINE §3.1, §4).
+@MainActor
+final class WorldInlineHost: ObservableObject {
+    enum Placement: Equatable { case inline, expanded }
+
+    /// What the workspace knows that decides whether the web view is wanted.
+    struct Inputs: Equatable {
+        var target: WorldRenderTarget?
+        var isReady = false
+        var scenePhase: ScenePhase = .active
+        var pickerShown = false
+        var isOnScreen = true
+    }
+
+    @Published private(set) var model: WorldRenderViewerModel?
+    /// Bound to the full-screen cover. Setting it `false` (Close) leaves the
+    /// web view in the cover for the slide-down; `coverDisappeared()` brings
+    /// it back.
+    @Published var isExpanded = false
+    /// Which container holds the web view: the panel's or the cover's.
+    @Published private(set) var placement: Placement = .inline
+    /// The cover shows one of the room's areas in the room's place (C1 E5,
+    /// REPLACE): the room's web view is held off meanwhile.
+    @Published private(set) var showsArea = false
+
+    private(set) var inputs = Inputs()
+    /// From `expand(_:)` until the cover has gone.
+    private(set) var coverIsUp = false
+    private(set) var expandedTarget: WorldRenderTarget?
+    /// The cover's words, bound to its picture's walk (review 3, HIGH).
+    private(set) var coverWords = WorldCoverBinding()
+    /// The panel has been off screen for `offscreenGrace`.
+    private(set) var offscreenExpired = false
+
+    private var lifecycle: Task<Void, Never>?
+    private var offscreen: Task<Void, Never>?
+    private var modelChanges: AnyCancellable?
+
+    let offscreenGrace: Duration
+    private let makeModel: @MainActor (WorldRenderTarget) -> WorldRenderViewerModel
+    private let run: @MainActor (WorldRenderViewerModel) async -> Void
+
+    init(
+        offscreenGrace: Duration = .seconds(5),
+        makeModel: @escaping @MainActor (WorldRenderTarget) -> WorldRenderViewerModel = {
+            WorldRenderViewerModel(target: $0)
+        },
+        run: @escaping @MainActor (WorldRenderViewerModel) async -> Void = WorldInlineHost.lifecycle
+    ) {
+        self.offscreenGrace = offscreenGrace
+        self.makeModel = makeModel
+        self.run = run
+    }
+
+    /// The model's life on screen: fetch, the areas row, then follow.
+    static func lifecycle(_ model: WorldRenderViewerModel) async {
+        await model.load()
+        guard !Task.isCancelled else { return }
+        await model.refreshComponents()
+        guard !Task.isCancelled else { return }
+        await model.followRevisions()
+    }
+
+    /// Whether the web view may exist now (U-INLINE §4).
+    var wantsWebView: Bool {
+        guard !showsArea else { return false }
+        guard coverIsUp || inputs.isOnScreen else { return false }
+        return WorldInlineWebPolicy.wantsWebView(
+            isReady: inputs.isReady, isExpanded: coverIsUp, panelVisible: !offscreenExpired,
+            scenePhase: inputs.scenePhase, pickerShown: inputs.pickerShown)
+    }
+
+    func update(_ next: Inputs) {
+        guard next != inputs else { return }
+        inputs = next
+        evaluate()
+    }
+
+    /// The panel entered or left the visible scroll area. Off screen it is
+    /// kept for `offscreenGrace`, then suspended; back on screen it is
+    /// wanted again (a new model and a fresh load: the imagery was dropped).
+    func visibilityChanged(_ visible: Bool) {
+        offscreen?.cancel()
+        offscreen = nil
+        if visible {
+            guard offscreenExpired else { return }
+            offscreenExpired = false
+            evaluate()
+            return
+        }
+        guard !offscreenExpired else { return }
+        let grace = offscreenGrace
+        offscreen = Task { [weak self] in
+            try? await Task.sleep(for: grace)
+            guard !Task.isCancelled, let self else { return }
+            self.offscreen = nil
+            self.offscreenExpired = true
+            self.evaluate()
+        }
+    }
+
+    /// Full screen: the same web view, moved into the cover (§3.2). `words`:
+    /// what the report says now, with the walk it says it about -- the cover
+    /// shows them only if that is the picture's walk.
+    func expand(_ target: WorldRenderTarget, words: WalkScoped<WorldCoverText> = WalkScoped(walk: nil, value: .init())) {
+        expandedTarget = target
+        coverWords.opened(picture: target, live: words)
+        coverIsUp = true
+        evaluate()
+        isExpanded = true
+    }
+
+    /// The cover is on screen: its container takes the web view.
+    func coverAppeared() {
+        placement = .expanded
+    }
+
+    /// The cover has gone (its `onDisappear`): back to the panel's container,
+    /// or torn down when the panel does not want it.
+    func coverDisappeared() {
+        isExpanded = false
+        coverIsUp = false
+        expandedTarget = nil
+        coverWords.closed()
+        showsArea = false
+        placement = .inline
+        evaluate()
+    }
+
+    /// The report now says `words`, about the walk they carry: the cover
+    /// keeps them only when that walk is its picture's.
+    func coverReported(_ words: WalkScoped<WorldCoverText>) {
+        guard coverIsUp else { return }
+        coverWords.reported(words)
+    }
+
+    func setShowsArea(_ shows: Bool) {
+        guard shows != showsArea else { return }
+        showsArea = shows
+        evaluate()
+    }
+
+    func evaluate() {
+        let target = coverIsUp ? (expandedTarget ?? inputs.target) : inputs.target
+        if wantsWebView, let target {
+            want(target)
+        } else {
+            suspend()
+        }
+    }
+
+    /// A model for `target`: the one held when it is the same target;
+    /// otherwise the old one is torn down BEFORE the new one exists.
+    func want(_ target: WorldRenderTarget) {
+        if let model, model.target == target { return }
+        suspend()
+        let model = makeModel(target)
+        self.model = model
+        // The panel draws from the model's state and chrome.
+        modelChanges = model.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }
+        let run = self.run
+        lifecycle = Task { await run(model) }
+    }
+
+    /// The model, only when it is `target`'s (review HIGH 2): until the
+    /// host catches up with a new phase it still holds the previous
+    /// target's page, and the panel never draws that under this phase.
+    func model(for target: WorldRenderTarget?) -> WorldRenderViewerModel? {
+        guard let model, let target, model.target == target else { return nil }
+        return model
+    }
+
+    /// Cancel the lifecycle, close the viewer (drops the imagery, PRIVACY
+    /// §3.6, and resets the chrome), tear the web view down (`close` to the
+    /// page's held `await`), forget the model.
+    func suspend() {
+        lifecycle?.cancel()
+        lifecycle = nil
+        modelChanges = nil
+        guard let model else { return }
+        self.model = nil
+        model.viewerClosed()
+    }
+}
+
+// MARK: - The scroll gate (U-INLINE §3.3)
+
+/// Inline, the screen's `ScrollView` would steal every vertical drag from
+/// the page. This pan decides first: horizontal drags and any two-finger
+/// gesture go to the page (the scroll view's pan must wait for this one to
+/// fail, and it does not); vertical drags fail it, and the screen scrolls --
+/// the page then receives `pointercancel` and stops cleanly.
+final class WorldInlineScrollGate: UIPanGestureRecognizer, UIGestureRecognizerDelegate {
+    /// Found when the container moves to a window; weak, a dynamic
+    /// dependency, so nothing outlives the gate.
+    weak var enclosingScrollView: UIScrollView?
+
+    /// Pure: whether a drag with this velocity and touch count belongs to
+    /// the page. A 45° drag is vertical.
+    nonisolated static func begins(velocity: CGPoint, touches: Int) -> Bool {
+        touches >= 2 || abs(velocity.x) > abs(velocity.y)
+    }
+
+    init() {
+        super.init(target: nil, action: nil)
+        cancelsTouchesInView = false
+        delaysTouchesBegan = false
+        delaysTouchesEnded = false
+        delegate = self
+    }
+
+    func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
+        Self.begins(velocity: velocity(in: view), touches: numberOfTouches)
+    }
+
+    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
+                           shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool {
+        true
+    }
+
+    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
+                           shouldBeRequiredToFailBy other: UIGestureRecognizer) -> Bool {
+        other === enclosingScrollView?.panGestureRecognizer
+    }
+}
+
+// MARK: - The screen's scroll view, as the panel needs it
+
+/// The visible height of the screen's scroll view (B, U-INLINE §1.1), and
+/// how to bring the panel into view after a Saved worlds pin (§2.4).
+struct WorldPanelViewport {
+    var visibleHeight: CGFloat = 0
+    var scrollTo: ((String) -> Void)?
+}
+
+extension EnvironmentValues {
+    @Entry var worldPanelViewport = WorldPanelViewport()
+}
+
+// MARK: - The fog-of-war slot
+
+/// S1's map slot: the walk's fog-of-war receipt (FOW v1). The fixture --
+/// §9's mid-walk receipt, labelled *Fixture map* -- draws only behind
+/// `-WBPanelMapFixture` (a DEBUG launch argument), and never over a real one.
+enum WorldPanelMap {
+    static let fixtureArgument = "-WBPanelMapFixture"
+
+    static var fixtureEnabled: Bool {
+        #if DEBUG
+        ProcessInfo.processInfo.arguments.contains(fixtureArgument)
+        #else
+        false
+        #endif
+    }
+
+    static func source(live: WorldCoverageReceipt?, fixtureEnabled: Bool = Self.fixtureEnabled)
+        -> WorldPanelMapSource? {
+        if let live { return .coverage(live) }
+        guard fixtureEnabled, let fixture = WorldCoverageReceipt.fixture else { return nil }
+        return .fixture(fixture)
+    }
+}
+
+// MARK: - The panel
+
+/// U-INLINE §1.1: rows 0-5 under the capture control. Every row is present
+/// only when the phase says so.
+struct WorldInlinePanel<Health: View>: View {
+    let phase: WorldPanelPhase
+    /// Everything the panel says, WITH the walk it is about: one value, so
+    /// the heading, the finish block, the banner and its announcement are
+    /// never one walk's words under another walk's identity (review 4).
+    let report: WalkScoped<WorldPresentation>
+    /// `lifecycle.build_in_progress` of a finalizing state, for the spinner.
+    let buildInProgress: Bool?
+    let isTowerReachable: Bool
+    /// The screen already says the Tower is not connected (the capture
+    /// control's line): the offline stage then shows only its actions.
+    let screenSaysOffline: Bool
+    /// Capture health is drawn while walking (a session or a capture).
+    let showsHealth: Bool
+    /// The walking map, when there is one. After Stop the panel draws no map.
+    let map: WorldPanelMapSource?
+    /// The current piece, already walk-scoped and live-gated: its own card
+    /// under the map, never in it (`WorldCurrentPiece`).
+    var currentPiece: WorldCurrentPiece? = nil
+    /// FOW v1.1 B1: the current segment's strip, gated like the piece (this
+    /// phone capturing, the walk's own): its own card under the piece.
+    var liveStrip: WorldImageryStrip? = nil
+    /// FOW v1.1 B2: landed thumbnails, the walk's own: over the map only.
+    var landed: WorldLandedOverlay? = nil
+    /// FOW v1.2: the photo floor plan, the walk's own: in the map only.
+    var photo: WorldPhotoDisplay? = nil
+    /// FOW-RING: the capture dial's inputs, or `nil` -- its switch off, and
+    /// the walking stage exactly as before (no toggle, no new element).
+    var dial: WorldPanelDial? = nil
+    @ObservedObject var host: WorldInlineHost
+    let dismissBanner: () -> Void
+    /// The away banner drawn for this walk was announced: never again for
+    /// it. The walk is the panel's own, the one the banner was drawn for.
+    let bannerAnnounced: (WorldFinishWalk?) -> Void
+    let expand: (WorldRenderTarget) -> Void
+    @ViewBuilder let health: () -> Health
+
+    @Environment(\.towerRecovery) private var recovery
+    @Environment(\.worldPanelViewport) private var viewport
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    @State private var width: CGFloat = 0
+    /// The page has been ready for the model's `renderTimeout` without a
+    /// drawn state: show it anyway, with its own message.
+    @State private var readyTimedOut = false
+    /// The finish block as it last stood while finishing, for its walk:
+    /// what the wait overlay shows until the world is drawn, so the
+    /// cross-fade starts from the picture the wearer was looking at, and
+    /// never from words recomputed for the settled world (which no longer
+    /// has a stage line) -- nor from another walk's wait.
+    @State private var finish = WorldPanelFinishMemory<FinishingBlock>()
+    /// FOW-RING §5: the walking stage's face with the dial on; Dial first.
+    @SceneStorage("wb-panel-tab") private var tab: WorldPanelTab = .dial
+    /// FOW-RING, kept photos: the photos the dial last showed, WITH their
+    /// walk -- read only beside a report of that walk, so another walk (or a
+    /// reset, which names none) starts with none.
+    @State private var keptDialPhotos: WalkScoped<WorldCaptureDialPhotos>?
+    /// The last dial drawn over a map and the photos it showed, WITH its
+    /// walk: dimmed in the stage after Stop, for that walk only.
+    @State private var finalDial: WalkScoped<WorldPanelDialShown>?
+    /// The newest placed view of the last landing whose photos were in hand,
+    /// WITH its walk: held while a newer receipt's photos are not in yet.
+    @State private var heldNewest: WalkScoped<WorldPanelHeldNewest>?
+
+    private var presentation: WorldPresentation { report.value }
+
+    /// What S2 draws: the spinner, the stage line, the elapsed line, or the
+    /// canvas's own sentence when there is no stage line.
+    struct FinishingBlock: Equatable {
+        var showsSpinner: Bool
+        var line: WorldFinishLine?
+        var stoppedAt: ContinuousClock.Instant?
+        var detail: String?
+        /// The Tower dropped: the offline notice stands in for the claims.
+        var offline = false
+
+        /// With the Tower gone (an open preview keeps the phase finishing),
+        /// the last stage, the spinner and the Tower's sentence are no
+        /// longer current: none is claimed, the elapsed clock stays (it is
+        /// the phone's), and the offline notice says why (review MED 3).
+        func reachable(_ towerReachable: Bool) -> FinishingBlock {
+            guard !towerReachable else { return self }
+            return FinishingBlock(showsSpinner: false, line: nil, stoppedAt: stoppedAt, detail: nil, offline: true)
+        }
+    }
+
+    /// The wait overlay's finish block over `target`: the saved one, under
+    /// the live block's reachability rule -- the Tower dropping during the
+    /// ready page's loading wait leaves no spinner or stage claimed over
+    /// it, and the offline notice says why (review 3, MED).
+    static func waitBlock(_ memory: WorldPanelFinishMemory<FinishingBlock>, over target: WorldRenderTarget,
+                          towerReachable: Bool) -> FinishingBlock? {
+        memory.overlay(for: target)?.reachable(towerReachable)
+    }
+
+    /// The finish block now, with the walk it is drawn for.
+    private var finishing: WalkScoped<FinishingBlock?> {
+        Self.finishing(report, phase: phase, buildInProgress: buildInProgress, towerReachable: isTowerReachable)
+    }
+
+    private var currentFinishing: FinishingBlock? { finishing.value }
+
+    /// S2's finish block -- the spinner, the stage line, the elapsed line --
+    /// drawn from the report and carried WITH its walk (review 4): the
+    /// progress shown and the walk it is recorded for are one value.
+    static func finishing(_ report: WalkScoped<WorldPresentation>, phase: WorldPanelPhase, buildInProgress: Bool?,
+                          towerReachable: Bool) -> WalkScoped<FinishingBlock?> {
+        report.map { presentation in
+            guard phase.isFinishing else { return nil }
+            return FinishingBlock(
+                showsSpinner: presentation.showsLiveBuild(buildInProgress: buildInProgress),
+                line: presentation.finishLine,
+                stoppedAt: presentation.stoppedAt,
+                detail: presentation.finishLine == nil
+                    ? WorldPresentation.finalizingDetail(buildInProgress: buildInProgress,
+                                                         photographic: presentation.photographic)
+                    : nil)
+            .reachable(towerReachable)
+        }
+    }
+
+    var body: some View {
+        VStack(spacing: 12) {
+            // Rows 0-4: one accessibility container, read in §5's order.
+            // Capture health stays its own container beside it: nested as the
+            // only child of this one, SwiftUI folded it in and its identity
+            // ("capture-health") was lost.
+            VStack(spacing: 12) {
+                if let banner = Self.awayBanner(report, phase: phase) {
+                    WorldFinishBannerView(text: banner.value,
+                                          announces: presentation.finishClock.announcesAwayBanner,
+                                          announced: { bannerAnnounced(banner.walk) }, dismiss: dismissBanner)
+                        .transition(reduceMotion ? .opacity : .move(edge: .top).combined(with: .opacity))
+                        .accessibilitySortPriority(100)
+                }
+                if phase.drawsCard {
+                    card
+                }
+            }
+            .accessibilityElement(children: .contain)
+            .accessibilityIdentifier("wb-panel")
+            // Under the full-screen world the panel is not there to read:
+            // its web view is in the cover, and its rows would be read twice.
+            .accessibilityHidden(host.placement == .expanded)
+            // Gated once, upstream: the walk's own, while it walks.
+            if let currentPiece {
+                WorldCurrentPieceView(piece: currentPiece)
+            }
+            if let liveStrip {
+                WorldImageryStripView(strip: liveStrip)
+            }
+            if case .walking = phase, showsHealth {
+                if Self.collapsesHealth(dial) {
+                    WorldCaptureHealthDisclosure(content: health)
+                } else {
+                    health()
+                }
+            }
+        }
+        .animation(reduceMotion ? nil : .easeInOut(duration: 0.25), value: showsBanner)
+        .onScrollVisibilityChange(threshold: 0.2) { visible in host.visibilityChanged(visible) }
+        .onChange(of: phase) { old, new in
+            // One announcement, unless the away banner says it.
+            if finish.phaseChanged(from: old, to: new), !showsBanner, let headline = presentation.headline {
+                AccessibilityNotification.Announcement(WorldFinishCopy.finished(headline: headline)).post()
+            }
+        }
+        .onChange(of: finishing, initial: true) { _, block in
+            finish.record(block)
+        }
+        .onChange(of: newestRecord, initial: true) { _, newest in
+            guard let newest else { return }
+            heldNewest = newest
+        }
+        .onChange(of: dialRecord, initial: true) { _, shown in
+            guard let shown else { return }
+            let next = Self.record(shown, fromLanding: currentOverlay != nil, over: finalDial)
+            finalDial = next
+            keptDialPhotos = next?.map(\.photos)
+        }
+        .onChange(of: webShown) { _, shown in
+            guard shown else { return }
+            // The wait overlay has gone with this commit: the chrome may now
+            // be told the page finished, so `activate` reaches the page only
+            // once the native chrome is visible (WORLDS §4c).
+            let model = host.model(for: phase.target)
+            Task { @MainActor in
+                await Task.yield()
+                model?.renderingPanelGone()
+            }
+        }
+        .task(id: readyKey) {
+            readyTimedOut = false
+            guard readyKey != nil, let timeout = host.model(for: phase.target)?.renderTimeout else { return }
+            try? await Task.sleep(for: timeout)
+            guard !Task.isCancelled else { return }
+            readyTimedOut = true
+        }
+    }
+
+    private var showsBanner: Bool { Self.awayBanner(report, phase: phase) != nil }
+
+    /// The away banner over `phase`, WITH the walk it is drawn for: the
+    /// report's clock, headline and walk are one value, so the walk marked
+    /// announced is always the walk whose banner was read (review 4).
+    static func awayBanner(_ report: WalkScoped<WorldPresentation>, phase: WorldPanelPhase) -> WalkScoped<String>? {
+        guard report.value.finishClock.showsAwayBanner, let headline = report.value.headline else { return nil }
+        switch phase {
+        case .ready, .failed: return report.map { _ in WorldFinishCopy.awayBanner(headline: headline) }
+        case .hidden, .walking, .finishing, .offline: return nil
+        }
+    }
+
+    // MARK: The card
+
+    private var card: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            // Row 1: the research marker, read directly -- in every chrome
+            // mode, a fallback included (U-INLINE §2.2, the everNative MED).
+            if let marker = host.model(for: phase.target)?.chrome.researchMarker {
+                WorldChromeResearchBand(marker: marker)
+                    .environment(\.colorScheme, .dark)
+                    .accessibilitySortPriority(95)
+            }
+            if let heading {
+                Text(heading)
+                    .font(.headline)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 10)
+                    .accessibilityAddTraits(.isHeader)
+                    .accessibilitySortPriority(90)
+                    .accessibilityIdentifier("wb-panel-headline")
+            }
+            if showsDialHeader {
+                WorldCaptureDialHeader(tab: postStop == nil ? $tab : .constant(.dial),
+                                       showsToggle: map != nil || postStop != nil, togglable: postStop == nil)
+                    .accessibilitySortPriority(85)
+            }
+            stage
+                .accessibilitySortPriority(80)
+            footer
+        }
+        .frame(maxWidth: .infinity)
+        .background(Color(.secondarySystemGroupedBackground))
+        .clipShape(RoundedRectangle(cornerRadius: 18))
+        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { new in
+            if MeasuredHeight.moved(from: width, to: new) { width = new }
+        }
+    }
+
+    /// The stage's own word, never one of the panel's (U-INLINE §2.2):
+    /// *Interrupted* is never "Saved".
+    private var heading: String? {
+        switch phase {
+        // FOW-RING after Stop: the dial's fixed title stays; the headline
+        // moves to the footer's second line.
+        case .finishing: return postStop == nil ? presentation.headline : nil
+        case .ready, .failed, .offline: return presentation.headline
+        case .hidden, .walking: return nil
+        }
+    }
+
+    /// FOW-RING: the title and the Dial|Map control above the walking stage.
+    private var showsDialHeader: Bool {
+        if postStop != nil { return true }
+        guard case .walking = phase, let dial else { return false }
+        return Self.drawsDial(dial, map: map)
+    }
+
+    /// FOW-RING after Stop: the walk's last dial and its photos, with the
+    /// switch on, while finishing, beside a report of that walk only.
+    private var postStop: WorldPanelDialShown? {
+        guard dial != nil, phase.isFinishing else { return nil }
+        return Self.postStopDial(finalDial, beside: report)
+    }
+
+    /// FOW-RING after Stop: the walk's last dial WITH the photos already
+    /// shown on it live -- only those in hand (nothing is fetched after
+    /// Stop), and only beside a report of the same walk. Photos of another
+    /// hero piece are never drawn: every sector then stays colour.
+    static func postStopDial<Report>(_ final: WalkScoped<WorldPanelDialShown>?,
+                                     beside report: WalkScoped<Report>) -> WorldPanelDialShown? {
+        guard let last = final?.value(beside: report) else { return nil }
+        guard last.photos.referenceSegment == last.dial.hero?.referenceSegment,
+              last.photos.frameRevision == last.dial.frameRevision else {
+            return WorldPanelDialShown(dial: last.dial, photos: .empty)
+        }
+        return last
+    }
+
+    /// FOW-RING: what the panel remembers of the dial drawn now. A report
+    /// naming no walk never overwrites a walk's record (read beside its own
+    /// walk only, a reset already shows none of it), and a dial drawn while
+    /// its landing's photos are not in yet never replaces a record of the
+    /// same walk that holds photos: they would be lost for good.
+    static func record(_ shown: WalkScoped<WorldPanelDialShown>, fromLanding: Bool,
+                       over previous: WalkScoped<WorldPanelDialShown>?) -> WalkScoped<WorldPanelDialShown>? {
+        guard shown.walk != nil else { return previous }
+        guard !fromLanding, let held = previous?.value(beside: shown), !held.photos.bySector.isEmpty else {
+            return shown
+        }
+        return previous
+    }
+
+    /// The newest placed view to hold: the current receipt's own landing's
+    /// `latest`, WITH the report's walk and the receipt's frame; `nil`
+    /// without a walk, an in-hand landing or a `latest`.
+    static func heldNewest<Report>(_ map: WorldPanelMapSource?, overlay: WorldLandedOverlay?,
+                                   beside report: WalkScoped<Report>) -> WalkScoped<WorldPanelHeldNewest>? {
+        guard report.walk != nil, let map, let overlay, let latest = overlay.latest else { return nil }
+        let newest = WorldCaptureDial.Newest(referenceSegment: latest.componentReferenceSegment, sector: latest.sector)
+        return report.map { _ in
+            WorldPanelHeldNewest(newest: newest, frameRevision: map.receipt.coverage.frameRevision)
+        }
+    }
+
+    /// FOW-RING: with the dial on, Capture health is one collapsed row that
+    /// opens to the same block; with it off, the block as it always was.
+    static func collapsesHealth(_ dial: WorldPanelDial?) -> Bool { dial != nil }
+
+    /// The dial as drawn now, and its photos, WITH the report's walk; `nil`
+    /// with the switch off.
+    private var shownDial: WalkScoped<WorldPanelDialShown>? {
+        guard dial != nil else { return nil }
+        return Self.shownDial(map, overlay: currentOverlay, kept: keptDialPhotos, held: heldNewest, beside: report)
+    }
+
+    /// B2's landing over the current receipt, or `nil` while it is not in.
+    private var currentOverlay: WorldLandedOverlay? { map.flatMap { Self.landed(landed, over: $0) } }
+
+    /// What is remembered: only a dial drawn over a map.
+    private var dialRecord: WalkScoped<WorldPanelDialShown>? {
+        map == nil ? nil : shownDial
+    }
+
+    private var newestRecord: WalkScoped<WorldPanelHeldNewest>? {
+        guard dial != nil else { return nil }
+        return Self.heldNewest(map, overlay: currentOverlay, beside: report)
+    }
+
+    private var stageHeight: CGFloat {
+        WorldPanelLayout.stageHeight(width: width, visibleHeight: viewport.visibleHeight)
+    }
+
+    // MARK: Row 3: the stage
+
+    @ViewBuilder
+    private var stage: some View {
+        let height = stageHeight
+        let fixed: Bool = {
+            switch phase {
+            case .ready, .walking: return true
+            case .finishing: return postStop != nil
+            case .hidden, .failed, .offline: return false
+            }
+        }()
+        ZStack(alignment: .topLeading) {
+            Color(WorldRenderLoadingPanel.pageBackground)
+            stageContent
+        }
+        .frame(maxWidth: .infinity)
+        .frame(height: fixed ? height : nil)
+        .frame(minHeight: fixed ? nil : height)
+        .clipShape(UnevenRoundedRectangle(topLeadingRadius: 18, topTrailingRadius: 18))
+        .environment(\.colorScheme, .dark)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("wb-panel-stage")
+    }
+
+    /// What the stage draws, by phase. The fog-of-war map belongs to the
+    /// walking capture only: after Stop, until the world is ready, the stage
+    /// is the loading view alone, and the ready world replaces it with no tap.
+    enum StageKind: Equatable { case none, map, loading, viewer, text, offline }
+
+    static func stageKind(_ phase: WorldPanelPhase) -> StageKind {
+        switch phase {
+        case .hidden: return .none
+        case .walking: return .map
+        case .finishing: return .loading
+        case .ready: return .viewer
+        case .failed: return .text
+        case .offline: return .offline
+        }
+    }
+
+    @ViewBuilder
+    private var stageContent: some View {
+        switch Self.stageKind(phase) {
+        case .none:
+            EmptyView()
+        case .map:
+            if let dial, let shown = shownDial?.value, Self.drawsDial(dial, map: map) {
+                WorldCaptureDialStage(dial: shown.dial, receipt: map?.receipt, photos: shown.photos, tab: tab) {
+                    if let map { coverageMap(map) }
+                }
+            } else if let map {
+                coverageMap(map)
+            }
+        case .loading:
+            if let block = currentFinishing {
+                if let last = postStop {
+                    // FOW-RING: the walk's last dial with the photos it
+                    // showed, dimmed, with no words over it (they are in the
+                    // footer); never touched, and read as its count alone.
+                    WorldCaptureDialView(dial: last.dial, receipt: nil, photos: last.photos, guides: false)
+                        .opacity(0.6)
+                        .allowsHitTesting(false)
+                } else {
+                    finishingContent(block, alwaysSpins: true)
+                }
+            }
+        case .viewer:
+            if case .ready(let target) = phase { readyContent(target) }
+        case .text:
+            if case .failed(let sentence) = phase {
+                stageText(sentence ?? host.model?.state.failureMessage ?? presentation.recoverability?.sentence ?? "")
+            }
+        case .offline:
+            VStack(alignment: .leading, spacing: 12) {
+                if let line = WorldPanelCopy.offlineLine(screenSaysOffline: screenSaysOffline) {
+                    Text(line)
+                        .font(.body)
+                        .foregroundStyle(WorldChromeStyle.text)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .accessibilityIdentifier("wb-panel-offline")
+                }
+                if let recovery {
+                    TowerRecoveryButtons(actions: recovery, identifierPrefix: "wb-panel")
+                        .environment(\.colorScheme, .light)
+                }
+            }
+            .padding(16)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    /// The walking map as FOW v1/v1.1/v1.2 draw it: the held photo plan's
+    /// receipt while one is held, B2's thumbnails and the photo plan over it.
+    @ViewBuilder
+    private func coverageMap(_ map: WorldPanelMapSource) -> some View {
+        let shownMap = Self.map(map, holding: photo)
+        WorldCoverageMapView(coverage: shownMap.receipt.coverage, isFrozen: false,
+                             landed: Self.landed(landed, over: shownMap),
+                             photo: Self.photo(photo?.plan, over: shownMap))
+    }
+
+    /// FOW-RING §6: the dial is drawn over a map, or before the first landing.
+    static func drawsDial(_ dial: WorldPanelDial, map: WorldPanelMapSource?) -> Bool {
+        map != nil || dial.awaiting
+    }
+
+    /// The dial of the CURRENT receipt (never a held one, §6), with B2's
+    /// photos and S3's top and walk cue only when `overlay` is that
+    /// receipt's own landing (`landed(_:over:)`); before the first landing,
+    /// twelve dashed segments. While the receipt's own landing is not in
+    /// (`overlay` nil), `held` -- the last landing's newest view, in the
+    /// same frame -- keeps the hero, the top and the hint where they were.
+    static func captureDial(_ map: WorldPanelMapSource?, overlay: WorldLandedOverlay?,
+                            held: WorldPanelHeldNewest? = nil) -> WorldCaptureDial {
+        guard let map else { return .awaiting }
+        var newest = overlay?.latest.map { WorldCaptureDial.Newest(referenceSegment: $0.componentReferenceSegment,
+                                                                   sector: $0.sector) }
+        if overlay == nil, let held, held.frameRevision == map.receipt.coverage.frameRevision {
+            newest = held.newest
+        }
+        return WorldCaptureDial(coverage: map.receipt.coverage, newest: newest, motionSector: overlay?.motionSector,
+                                photos: WorldCaptureDial.photos(overlay?.dialEntries ?? []))
+    }
+
+    /// FOW-RING, kept photos: the current receipt's dial and the photos it
+    /// shows, WITH the report's walk. `kept` counts only beside a report of
+    /// its own walk, and only for the same hero piece.
+    static func shownDial<Report>(_ map: WorldPanelMapSource?, overlay: WorldLandedOverlay?,
+                                  kept: WalkScoped<WorldCaptureDialPhotos>?,
+                                  held: WalkScoped<WorldPanelHeldNewest>? = nil,
+                                  beside report: WalkScoped<Report>) -> WalkScoped<WorldPanelDialShown> {
+        let dial = captureDial(map, overlay: overlay, held: held?.value(beside: report))
+        let photos = WorldCaptureDialPhotos(dial: dial, entries: overlay?.dialEntries ?? [],
+                                            keeping: kept?.value(beside: report))
+        return report.map { _ in WorldPanelDialShown(dial: dial, photos: photos) }
+    }
+
+    /// B2's thumbnails only over the live receipt they were placed on: never
+    /// over the DEBUG fixture, and never over another landing's grid.
+    static func landed(_ overlay: WorldLandedOverlay?, over map: WorldPanelMapSource) -> WorldLandedOverlay? {
+        guard let overlay, case .coverage(let receipt) = map, receipt.coverage == overlay.receipt.coverage
+        else { return nil }
+        return overlay
+    }
+
+    /// The photo floor plan only over the live receipt it was proved for:
+    /// never over the DEBUG fixture, and never over another landing's map.
+    static func photo(_ plan: WorldPhotoPlan?, over map: WorldPanelMapSource) -> WorldPhotoPlan? {
+        guard let plan, case .coverage(let receipt) = map, receipt.coverage == plan.receipt.coverage
+        else { return nil }
+        return plan
+    }
+
+    static func map(_ map: WorldPanelMapSource, holding photo: WorldPhotoDisplay?) -> WorldPanelMapSource {
+        guard case .coverage = map, let photo, photo.held != nil else { return map }
+        return .coverage(photo.plan.receipt)
+    }
+
+    /// S2: the loading view -- no map, no current piece: the finish block. Never a duration or an estimate.
+    private func finishingContent(_ block: FinishingBlock, alwaysSpins: Bool = false) -> some View {
+        ZStack(alignment: .topLeading) {
+            VStack(alignment: .leading, spacing: 10) {
+                // The post-Stop loading view always shows a progress indicator
+                // unless the Tower is gone; the ready page's wait keeps the
+                // honest live-build spinner.
+                WorldFinishLineView(showsSpinner: block.showsSpinner || (alwaysSpins && !block.offline), line: block.line,
+                                    stoppedAt: block.stoppedAt, style: .panel)
+                if let detail = block.detail {
+                    // The canvas's own true sentence: owed, unobservable, or
+                    // not reported.
+                    Text(detail)
+                        .font(.body)
+                        .foregroundStyle(WorldChromeStyle.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .accessibilityIdentifier("wb-panel-finishing-detail")
+                }
+                if block.offline {
+                    Text(WorldPanelCopy.finishingButOffline)
+                        .font(.body)
+                        .foregroundStyle(WorldChromeStyle.text)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .accessibilityIdentifier("wb-panel-finishing-offline")
+                }
+            }
+            .padding(16)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    private func stageText(_ text: String) -> some View {
+        Text(text)
+            .font(.body)
+            .foregroundStyle(WorldChromeStyle.text)
+            .fixedSize(horizontal: false, vertical: true)
+            .padding(16)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .accessibilityIdentifier("wb-panel-failed")
+    }
+
+    /// S3: the world, laid out at full size from the start and faded in at
+    /// `webShown`. Never `.hidden()`: WebKit throttles a hidden view and the
+    /// page would not draw.
+    @ViewBuilder
+    private func readyContent(_ target: WorldRenderTarget) -> some View {
+        if let model = host.model(for: target), let html = model.state.html {
+            let native = usesNativeChrome(model, html: html)
+            let shown = webShown
+            ZStack {
+                WorldRenderWebView(
+                    owner: model.web, html: html,
+                    attempt: model.renderAttempt, budgetToken: model.renderBudgetToken,
+                    isActive: host.placement == .inline, hosted: true, inline: true,
+                    onTap: native ? { expand(target) } : nil,
+                    onEvent: model.pageEvent)
+                    // The world itself first, then the inline chrome over it
+                    // (its dark line 60, its hint 55): U-INLINE §5, UI10
+                    // (review 2, MED 2).
+                    .accessibilitySortPriority(WorldPanelOrder.world)
+                    .overlay {
+                        if native {
+                            WorldChromeCanvasLayer(
+                                chrome: model.chrome, panel: .constant(nil),
+                                onAction: { model.bridge.receive(.tapped($0)) },
+                                onFirstStateDrawn: { model.bridge.receive(.firstStateDrawn) },
+                                banner: { EmptyView() }, areas: { EmptyView() }, details: { EmptyView() },
+                                presentation: .inline)
+                            .tint(Color.readableTint)
+                        }
+                    }
+                    .opacity(shown ? 1 : 0)
+                // Faded out and then gone, so nothing of the wait is left
+                // for VoiceOver or a touch once the world is shown.
+                if !shown {
+                    waitOverlay(for: target)
+                        .transition(.opacity)
+                }
+            }
+            .animation(reduceMotion ? nil : .easeInOut(duration: 0.35), value: shown)
+        } else if let failure = host.model(for: target)?.state.failureMessage {
+            stageText(failure)
+        } else {
+            waitOverlay(for: target)
+        }
+    }
+
+    /// Until the web view is shown: the finishing content when the world
+    /// came from ITS wait, otherwise a spinner and *Opening your world…* (a
+    /// fetch is genuinely in flight).
+    @ViewBuilder
+    private func waitOverlay(for target: WorldRenderTarget) -> some View {
+        if let block = Self.waitBlock(finish, over: target, towerReachable: isTowerReachable) {
+            finishingContent(block)
+                .background(Color(WorldRenderLoadingPanel.pageBackground))
+        } else {
+            VStack(spacing: 10) {
+                ProgressView().tint(WorldChromeStyle.text)
+                Text(WorldPanelCopy.opening)
+                    .font(.body)
+                    .foregroundStyle(WorldChromeStyle.text)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(Color(WorldRenderLoadingPanel.pageBackground))
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(WorldPanelCopy.openingLabel)
+            .accessibilityIdentifier("wb-panel-opening")
+        }
+    }
+
+    /// The page is drawn, or will never say: `.ready` and (today's chrome,
+    /// the page's first drawn state, or the model's render timeout).
+    private var webShown: Bool {
+        guard phase.isReady, let model = host.model(for: phase.target), case .ready = model.state else { return false }
+        return model.chrome.mode == .legacy || model.chrome.state?.drawn == true || readyTimedOut
+    }
+
+    /// Restarts the render-timeout wait for each model and each ready page.
+    private var readyKey: String? {
+        guard phase.isReady, let model = host.model(for: phase.target), case .ready = model.state else { return nil }
+        return "\(ObjectIdentifier(model).hashValue)-\(model.renderAttempt)-\(model.pageFinishedToken)"
+    }
+
+    private func usesNativeChrome(_ model: WorldRenderViewerModel, html: String) -> Bool {
+        !model.chrome.refusedForScreen && WorldChromeEcho.isOffered(in: html)
+    }
+
+    // MARK: Row 4: the footer
+
+    @ViewBuilder
+    private var footer: some View {
+        switch phase {
+        case .finishing(let target):
+            if let block = currentFinishing, postStop != nil {
+                // FOW-RING after Stop: the live footer's two lines, the
+                // legend and the button row, so the card keeps its height.
+                VStack(spacing: 0) {
+                    WorldCaptureDialFinishCaption(
+                        showsSpinner: !block.offline, status: Self.postStopStatus(block),
+                        headline: presentation.headline, stoppedAt: block.stoppedAt,
+                        spoken: { elapsed in
+                            block.offline ? WorldPanelCopy.finishingButOffline
+                                : WorldFinishCopy.spoken(showsSpinner: true, line: block.line, elapsed: elapsed)
+                        })
+                        .accessibilitySortPriority(70)
+                    dialButtonRow(target)
+                }
+            } else if let target {
+                footerRow(line: nil) {
+                    actionButton(WorldPreviewCopy.openPreview, hint: WorldPanelCopy.fullScreenHint,
+                                 identifier: "wb-panel-expand") { expand(target) }
+                }
+            }
+        case .ready(let target):
+            if let model = host.model(for: target), model.state.failureMessage != nil {
+                footerRow(line: nil) {
+                    actionButton(WorldPanelCopy.tryAgain, hint: nil, identifier: "wb-panel-retry") {
+                        Task { await model.load() }
+                    }
+                }
+            } else {
+                footerRow(line: readyLine) {
+                    actionButton(WorldPanelCopy.fullScreen, hint: WorldPanelCopy.fullScreenHint,
+                                 identifier: "wb-panel-expand") { expand(target) }
+                }
+            }
+        case .walking:
+            if let dial, let shown = shownDial?.value, Self.drawsDial(dial, map: map), map == nil || tab == .dial {
+                VStack(spacing: 0) {
+                    WorldCaptureDialCaption(dial: shown.dial, source: map)
+                    // The button row Stop brings, held now: nothing jumps.
+                    dialButtonRow(nil)
+                }
+            } else if let map {
+                let shownMap = Self.map(map, holding: photo)
+                WorldCoverageCaption(source: shownMap, stopped: false,
+                                     photoPieces: Self.photo(photo?.plan, over: shownMap)?.pieces.count ?? 0,
+                                     photoHeld: photo?.held)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 10)
+            }
+        case .hidden, .failed, .offline:
+            EmptyView()
+        }
+    }
+
+    /// FOW-RING after Stop, the status line: the stage line, else the
+    /// spinner's own short sentence (the canvas's longer one would break
+    /// the footer's two lines); with the Tower gone, the offline notice.
+    static func postStopStatus(_ block: FinishingBlock) -> String {
+        guard !block.offline else { return WorldPanelCopy.finishingButOffline }
+        return block.line?.text ?? WorldFinishCopy.finishing
+    }
+
+    /// The dial footer's button row: "Open the preview" after Stop, and
+    /// the same row held empty (hidden, never read) before it.
+    @ViewBuilder
+    private func dialButtonRow(_ target: WorldRenderTarget?) -> some View {
+        HStack(spacing: 0) {
+            Spacer(minLength: 0)
+            if let target {
+                actionButton(WorldPreviewCopy.openPreview, hint: WorldPanelCopy.fullScreenHint,
+                             identifier: "wb-panel-expand") { expand(target) }
+            } else {
+                actionButton(WorldPreviewCopy.openPreview, hint: nil, identifier: "wb-panel-button-room") {}
+                    .hidden()
+                    .accessibilityHidden(true)
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.bottom, 10)
+    }
+
+    /// The ready footer's one line: the Tower dropped under a loaded page,
+    /// or the page's status (native chrome), else nothing.
+    private var readyLine: (text: String, identifier: String)? {
+        if !isTowerReachable { return (WorldPanelCopy.readyButOffline, "wb-panel-footer-line") }
+        // The inline subset's rule (U-INLINE §3.4): never under a message.
+        guard let model = host.model(for: phase.target), model.chrome.isDrawingNative, let state = model.chrome.state,
+              let status = state.status,
+              WorldChromeCanvasLayer<EmptyView, EmptyView, EmptyView>.inlineElements(state).contains(.status)
+        else { return nil }
+        return (status, "world-chrome-status")
+    }
+
+    private func footerRow<Button: View>(line: (text: String, identifier: String)?,
+                                         @ViewBuilder button: () -> Button) -> some View {
+        let button = button()
+        return ViewThatFits(in: .horizontal) {
+            HStack(alignment: .center, spacing: 12) {
+                footerLine(line)
+                Spacer(minLength: 0)
+                button
+            }
+            VStack(alignment: .leading, spacing: 8) {
+                footerLine(line)
+                button
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    @ViewBuilder
+    private func footerLine(_ line: (text: String, identifier: String)?) -> some View {
+        if let line {
+            Text(verbatim: line.text)
+                .font(.caption.monospacedDigit())
+                .foregroundStyle(.readableSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+                // The page's status is the native chrome's pill, capped as
+                // the pill is (U1.1 168 #3); the Tower sentence is not.
+                .dynamicTypeSize(line.identifier == "world-chrome-status"
+                                 ? DynamicTypeSize.xSmall...DynamicTypeSize.accessibility2
+                                 : DynamicTypeSize.xSmall...DynamicTypeSize.accessibility5)
+                .accessibilityShowsLargeContentViewer()
+                .accessibilitySortPriority(70)
+                .accessibilityIdentifier(line.identifier)
+        }
+    }
+
+    private func actionButton(_ title: String, hint: String?, identifier: String,
+                              action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(title)
+                .font(.body.weight(.semibold))
+                .frame(minWidth: 44, minHeight: 44)
+        }
+        .readableBorderedButton()
+        .dynamicTypeSize(...DynamicTypeSize.accessibility1)
+        .accessibilityShowsLargeContentViewer()
+        .accessibilityInputLabels([title])
+        .accessibilityHint(hint ?? "")
+        .accessibilitySortPriority(60)
+        .accessibilityIdentifier(identifier)
+    }
+}
+
+// MARK: - Capture health, collapsed (FOW-RING)
+
+/// With the dial on: one "Capture health" row, collapsed by default, that
+/// opens to the same block. Collapsed, the block stays mounted at no height
+/// and unread, so its announcements still run exactly as before.
+struct WorldCaptureHealthDisclosure<Content: View>: View {
+    @ViewBuilder let content: () -> Content
+
+    @State private var expanded = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Button {
+                withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.2)) { expanded.toggle() }
+            } label: {
+                HStack(spacing: 8) {
+                    Text(WorldCaptureDialCopy.healthRow)
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(Color.primary)
+                    Spacer(minLength: 0)
+                    Image(systemName: "chevron.right")
+                        .font(.footnote.weight(.semibold))
+                        .foregroundStyle(Color.secondary)
+                        .rotationEffect(.degrees(expanded ? 90 : 0))
+                        .accessibilityHidden(true)
+                }
+                .padding(.horizontal, 12)
+                .frame(minHeight: 44)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 12))
+            .accessibilityValue(expanded ? "Expanded" : "Collapsed")
+            .accessibilityIdentifier("wb-panel-health-toggle")
+            content()
+                .frame(height: expanded ? nil : 0, alignment: .top)
+                .clipped()
+                .opacity(expanded ? 1 : 0)
+                .allowsHitTesting(expanded)
+                .accessibilityHidden(!expanded)
+        }
+    }
+}
+
+// MARK: - The cover
+
+/// The full-screen form of the panel's world: the SAME web view, moved here
+/// (U-INLINE §3.2). An area opened from the room's areas row REPLACES the
+/// room here (C1 E5): the room's web view is held off until *Back to the
+/// room*, so one web view still holds.
+struct WorldInlineCover: View {
+    @ObservedObject var host: WorldInlineHost
+    let title: String?
+    let note: String?
+    let notice: String?
+    let progress: WorldViewerProgress?
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    private struct ShownArea: Equatable {
+        let target: WorldRenderTarget
+        let opening: WorldAreaOpening
+    }
+
+    @State private var area: ShownArea?
+
+    var body: some View {
+        NavigationStack {
+            Group {
+                if let area {
+                    WorldRenderScene(
+                        target: area.target, area: area.opening,
+                        backToRoom: {
+                            self.area = nil
+                            host.setShowsArea(false)
+                        })
+                    .id(area.target.id)
+                } else if let model = host.model {
+                    WorldRenderScene(
+                        model: model, hosted: true, webIsActive: host.placement == .expanded,
+                        title: title, note: note, notice: notice, progress: progress,
+                        openArea: { target, opening in
+                            host.setShowsArea(true)
+                            area = ShownArea(target: target, opening: opening)
+                        })
+                    .id(ObjectIdentifier(model))
+                } else {
+                    Color(WorldRenderLoadingPanel.pageBackground)
+                        .ignoresSafeArea()
+                }
+            }
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Close") {
+                        var transaction = Transaction()
+                        transaction.disablesAnimations = reduceMotion
+                        withTransaction(transaction) { host.isExpanded = false }
+                    }
+                    .accessibilityIdentifier("wb-cover-close")
+                }
+            }
+        }
+        .onAppear { host.coverAppeared() }
+        .onDisappear { host.coverDisappeared() }
+    }
+}

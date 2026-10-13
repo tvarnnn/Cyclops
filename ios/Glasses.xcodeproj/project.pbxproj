@@ -12,6 +12,24 @@
 		3BFF591BCC38E53334D7805F /* MockTowerServer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7687C89BFB8192F1673EBEB1 /* MockTowerServer.swift */; };
 		4E8D7950967282CF51E8CBE3 /* WorldGeometryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0EBE6B82C2538A025B0E3C4C /* WorldGeometryTests.swift */; };
 		4B8ABCE8956142C6BB5B21E6 /* WorldPresentationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = FA7100E367E142E8A56BDC61 /* WorldPresentationTests.swift */; };
+		5C0A7E500000000000000005 /* WorldLookBackTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5C0A7E500000000000000006 /* WorldLookBackTests.swift */; };
+		0B02AD5E0000000000000001 /* TowerSettingsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0B02AD5E0000000000000002 /* TowerSettingsTests.swift */; };
+		0B03AD5E0000000000000001 /* OnboardingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0B03AD5E0000000000000002 /* OnboardingTests.swift */; };
+		0B05AD5E0000000000000001 /* AccessibilityContrastTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0B05AD5E0000000000000002 /* AccessibilityContrastTests.swift */; };
+		5C0A7E500000000000000003 /* WorldComponentsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5C0A7E500000000000000004 /* WorldComponentsTests.swift */; };
+		5C0A7E500000000000000007 /* WorldChromeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5C0A7E500000000000000008 /* WorldChromeTests.swift */; };
+		5C0A7E500000000000000001 /* WorldPhotographicTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5C0A7E500000000000000002 /* WorldPhotographicTests.swift */; };
+		2D0CA9E50000000000000001 /* CaptureHealthTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2D0CA9E50000000000000002 /* CaptureHealthTests.swift */; };
+		6A11AE000000000000000001 /* WorldFinishProgressTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6A11AE000000000000000002 /* WorldFinishProgressTests.swift */; };
+		6A11AE000000000000000003 /* WorldInlinePanelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6A11AE000000000000000004 /* WorldInlinePanelTests.swift */; };
+		6A11AF000000000000000001 /* WorldCoverageTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6A11AF000000000000000002 /* WorldCoverageTests.swift */; };
+		6A11AF100000000000000001 /* WorldCoverageFieldTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6A11AF100000000000000002 /* WorldCoverageFieldTests.swift */; };
+		6A11AF200000000000000001 /* CoverageBlocks in Resources */ = {isa = PBXBuildFile; fileRef = 6A11AF200000000000000002 /* CoverageBlocks */; };
+		6A11B1000000000000000001 /* WorldCurrentPieceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6A11B1000000000000000002 /* WorldCurrentPieceTests.swift */; };
+		6A11B2000000000000000001 /* WorldImageryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6A11B2000000000000000002 /* WorldImageryTests.swift */; };
+		6A11B4000000000000000001 /* WorldPhotoFloorplanTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6A11B4000000000000000002 /* WorldPhotoFloorplanTests.swift */; };
+		6A11B5000000000000000001 /* WorldCaptureDialTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6A11B5000000000000000002 /* WorldCaptureDialTests.swift */; };
+		6A11B5000000000000000003 /* WorldCaptureDialSnapshotTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6A11B5000000000000000004 /* WorldCaptureDialSnapshotTests.swift */; };
 		7F2D5E31A94C0B6683DF12A4 /* ObjectMemoryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C4A17E9B0D3F42A85B61E77C /* ObjectMemoryTests.swift */; };
 		9991A422AB42B22E2459E23D /* MWDATCore in Frameworks */ = {isa = PBXBuildFile; productRef = BC6D1772D314E7BCB789B652 /* MWDATCore */; };
 		D7881F047A369AE591F64541 /* CVLabContractTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3014A1C5D2A01699D4E7404 /* CVLabContractTests.swift */; };
@@ -22,6 +40,7 @@
 		D7881F027A369AE591F6453F /* SenderPipelineTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3014A1A5D2A01699D4E7402 /* SenderPipelineTests.swift */; };
 		D7881F037A369AE591F64540 /* WorldBuilderIntegrationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3014A1B5D2A01699D4E7403 /* WorldBuilderIntegrationTests.swift */; };
 		DAC121D4D405EEA501D3CE47 /* MWDATMockDevice in Frameworks */ = {isa = PBXBuildFile; productRef = AA6211B5720FCB42F8A57614 /* MWDATMockDevice */; };
+		D47A0DA70000000000000002 /* MWDATMotion in Frameworks */ = {isa = PBXBuildFile; productRef = D47A0DA70000000000000001 /* MWDATMotion */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -44,6 +63,24 @@
 /* Begin PBXFileReference section */
 		0EBE6B82C2538A025B0E3C4C /* WorldGeometryTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = WorldGeometryTests.swift; sourceTree = "<group>"; };
 		FA7100E367E142E8A56BDC61 /* WorldPresentationTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = WorldPresentationTests.swift; sourceTree = "<group>"; };
+		5C0A7E500000000000000006 /* WorldLookBackTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = WorldLookBackTests.swift; sourceTree = "<group>"; };
+		0B02AD5E0000000000000002 /* TowerSettingsTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = TowerSettingsTests.swift; sourceTree = "<group>"; };
+		0B03AD5E0000000000000002 /* OnboardingTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = OnboardingTests.swift; sourceTree = "<group>"; };
+		0B05AD5E0000000000000002 /* AccessibilityContrastTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = AccessibilityContrastTests.swift; sourceTree = "<group>"; };
+		5C0A7E500000000000000004 /* WorldComponentsTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = WorldComponentsTests.swift; sourceTree = "<group>"; };
+		5C0A7E500000000000000008 /* WorldChromeTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = WorldChromeTests.swift; sourceTree = "<group>"; };
+		5C0A7E500000000000000002 /* WorldPhotographicTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = WorldPhotographicTests.swift; sourceTree = "<group>"; };
+		2D0CA9E50000000000000002 /* CaptureHealthTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = CaptureHealthTests.swift; sourceTree = "<group>"; };
+		6A11AE000000000000000002 /* WorldFinishProgressTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = WorldFinishProgressTests.swift; sourceTree = "<group>"; };
+		6A11AE000000000000000004 /* WorldInlinePanelTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = WorldInlinePanelTests.swift; sourceTree = "<group>"; };
+		6A11AF000000000000000002 /* WorldCoverageTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = WorldCoverageTests.swift; sourceTree = "<group>"; };
+		6A11AF100000000000000002 /* WorldCoverageFieldTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = WorldCoverageFieldTests.swift; sourceTree = "<group>"; };
+		6A11AF200000000000000002 /* CoverageBlocks */ = {isa = PBXFileReference; lastKnownFileType = folder; path = Fixtures/CoverageBlocks; sourceTree = "<group>"; };
+		6A11B1000000000000000002 /* WorldCurrentPieceTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = WorldCurrentPieceTests.swift; sourceTree = "<group>"; };
+		6A11B2000000000000000002 /* WorldImageryTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = WorldImageryTests.swift; sourceTree = "<group>"; };
+		6A11B4000000000000000002 /* WorldPhotoFloorplanTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = WorldPhotoFloorplanTests.swift; sourceTree = "<group>"; };
+		6A11B5000000000000000002 /* WorldCaptureDialTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = WorldCaptureDialTests.swift; sourceTree = "<group>"; };
+		6A11B5000000000000000004 /* WorldCaptureDialSnapshotTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = WorldCaptureDialSnapshotTests.swift; sourceTree = "<group>"; };
 		C4A17E9B0D3F42A85B61E77C /* ObjectMemoryTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ObjectMemoryTests.swift; sourceTree = "<group>"; };
 		6A04FA35303507A5001B7C01 /* Glasses.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Glasses.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		7687C89BFB8192F1673EBEB1 /* MockTowerServer.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = MockTowerServer.swift; sourceTree = "<group>"; };
@@ -93,6 +130,7 @@
 				9991A422AB42B22E2459E23D /* MWDATCore in Frameworks */,
 				DAC121D4D405EEA501D3CE47 /* MWDATMockDevice in Frameworks */,
 				208C315C24B46F6FEC34B682 /* MWDATCamera in Frameworks */,
+				D47A0DA70000000000000002 /* MWDATMotion in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -157,6 +195,24 @@
 				E3014A1B5D2A01699D4E7403 /* WorldBuilderIntegrationTests.swift */,
 				0EBE6B82C2538A025B0E3C4C /* WorldGeometryTests.swift */,
 				FA7100E367E142E8A56BDC61 /* WorldPresentationTests.swift */,
+				5C0A7E500000000000000006 /* WorldLookBackTests.swift */,
+				0B02AD5E0000000000000002 /* TowerSettingsTests.swift */,
+				0B03AD5E0000000000000002 /* OnboardingTests.swift */,
+				0B05AD5E0000000000000002 /* AccessibilityContrastTests.swift */,
+				5C0A7E500000000000000004 /* WorldComponentsTests.swift */,
+				5C0A7E500000000000000008 /* WorldChromeTests.swift */,
+				5C0A7E500000000000000002 /* WorldPhotographicTests.swift */,
+				2D0CA9E50000000000000002 /* CaptureHealthTests.swift */,
+				6A11AE000000000000000002 /* WorldFinishProgressTests.swift */,
+				6A11AE000000000000000004 /* WorldInlinePanelTests.swift */,
+				6A11AF000000000000000002 /* WorldCoverageTests.swift */,
+				6A11AF100000000000000002 /* WorldCoverageFieldTests.swift */,
+				6A11AF200000000000000002 /* CoverageBlocks */,
+				6A11B1000000000000000002 /* WorldCurrentPieceTests.swift */,
+				6A11B2000000000000000002 /* WorldImageryTests.swift */,
+				6A11B4000000000000000002 /* WorldPhotoFloorplanTests.swift */,
+				6A11B5000000000000000002 /* WorldCaptureDialTests.swift */,
+				6A11B5000000000000000004 /* WorldCaptureDialSnapshotTests.swift */,
 			);
 			path = GlassesTests;
 			sourceTree = "<group>";
@@ -194,6 +250,7 @@
 			isa = PBXNativeTarget;
 			buildConfigurationList = 6A04FA40303507A7001B7C01 /* Build configuration list for PBXNativeTarget "Glasses" */;
 			buildPhases = (
+				7A11C0DE00010000000000A1 /* Derive Info.plist */,
 				6A04FA31303507A5001B7C01 /* Sources */,
 				6A04FA32303507A5001B7C01 /* Frameworks */,
 				6A04FA33303507A5001B7C01 /* Resources */,
@@ -210,6 +267,7 @@
 				BC6D1772D314E7BCB789B652 /* MWDATCore */,
 				AA6211B5720FCB42F8A57614 /* MWDATMockDevice */,
 				69A44D66C3F5ABDE23B6FE2C /* MWDATCamera */,
+				D47A0DA70000000000000001 /* MWDATMotion */,
 			);
 			productName = Glasses;
 			productReference = 6A04FA35303507A5001B7C01 /* Glasses.app */;
@@ -286,6 +344,7 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				6A11AF200000000000000001 /* CoverageBlocks in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -304,6 +363,29 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXResourcesBuildPhase section */
+
+/* Begin PBXShellScriptBuildPhase section */
+		7A11C0DE00010000000000A1 /* Derive Info.plist */ = {
+			isa = PBXShellScriptBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+				"$(SRCROOT)/Glasses/Info.plist",
+			);
+			name = "Derive Info.plist";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+				"$(DERIVED_FILE_DIR)/Info.plist",
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "# The app's Info.plist is Glasses/Info.plist, as reviewed, with ONE change in a\n# configuration whose GLASSES_ATS_ALLOWS_ARBITRARY_LOADS is YES (Debug):\n# NSAllowsLocalNetworking is removed and NSAllowsArbitraryLoads added.\n# Removed, not just added to: iOS ignores NSAllowsArbitraryLoads whenever\n# NSAllowsLocalNetworking is present. Release ships the source file unchanged.\n# See the ATS comment in Glasses/Info.plist.\nset -eu\nsrc=\"${SRCROOT}/Glasses/Info.plist\"\nout=\"${DERIVED_FILE_DIR}/Info.plist\"\nif [ \"${GLASSES_ATS_ALLOWS_ARBITRARY_LOADS:-NO}\" = \"YES\" ]; then\n  /usr/bin/plutil -remove NSAppTransportSecurity.NSAllowsLocalNetworking -o - \"$src\" \\\n    | /usr/bin/plutil -insert NSAppTransportSecurity.NSAllowsArbitraryLoads -bool YES -o - - > \"$out\"\nelse\n  /bin/cat \"$src\" > \"$out\"\nfi\n";
+		};
+/* End PBXShellScriptBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
 		6A04FA31303507A5001B7C01 /* Sources */ = {
@@ -328,6 +410,23 @@
 				D7881F037A369AE591F64540 /* WorldBuilderIntegrationTests.swift in Sources */,
 				4E8D7950967282CF51E8CBE3 /* WorldGeometryTests.swift in Sources */,
 				4B8ABCE8956142C6BB5B21E6 /* WorldPresentationTests.swift in Sources */,
+				5C0A7E500000000000000005 /* WorldLookBackTests.swift in Sources */,
+				0B02AD5E0000000000000001 /* TowerSettingsTests.swift in Sources */,
+				0B03AD5E0000000000000001 /* OnboardingTests.swift in Sources */,
+				0B05AD5E0000000000000001 /* AccessibilityContrastTests.swift in Sources */,
+				5C0A7E500000000000000003 /* WorldComponentsTests.swift in Sources */,
+				5C0A7E500000000000000007 /* WorldChromeTests.swift in Sources */,
+				5C0A7E500000000000000001 /* WorldPhotographicTests.swift in Sources */,
+				2D0CA9E50000000000000001 /* CaptureHealthTests.swift in Sources */,
+				6A11AE000000000000000001 /* WorldFinishProgressTests.swift in Sources */,
+				6A11AE000000000000000003 /* WorldInlinePanelTests.swift in Sources */,
+				6A11AF000000000000000001 /* WorldCoverageTests.swift in Sources */,
+				6A11AF100000000000000001 /* WorldCoverageFieldTests.swift in Sources */,
+				6A11B1000000000000000001 /* WorldCurrentPieceTests.swift in Sources */,
+				6A11B2000000000000000001 /* WorldImageryTests.swift in Sources */,
+				6A11B4000000000000000001 /* WorldPhotoFloorplanTests.swift in Sources */,
+				6A11B5000000000000000001 /* WorldCaptureDialTests.swift in Sources */,
+				6A11B5000000000000000003 /* WorldCaptureDialSnapshotTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -488,7 +587,8 @@
 				ENABLE_PREVIEWS = YES;
 				ENABLE_USER_SELECTED_FILES = readonly;
 				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_FILE = Glasses/Info.plist;
+				GLASSES_ATS_ALLOWS_ARBITRARY_LOADS = YES;
+				INFOPLIST_FILE = "$(DERIVED_FILE_DIR)/Info.plist";
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphoneos*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphonesimulator*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents[sdk=iphoneos*]" = YES;
@@ -532,7 +632,8 @@
 				ENABLE_PREVIEWS = YES;
 				ENABLE_USER_SELECTED_FILES = readonly;
 				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_FILE = Glasses/Info.plist;
+				GLASSES_ATS_ALLOWS_ARBITRARY_LOADS = NO;
+				INFOPLIST_FILE = "$(DERIVED_FILE_DIR)/Info.plist";
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphoneos*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphonesimulator*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents[sdk=iphoneos*]" = YES;
@@ -683,7 +784,7 @@
 			repositoryURL = "https://github.com/facebook/meta-wearables-dat-ios";
 			requirement = {
 				kind = exactVersion;
-				version = 0.9.0;
+				version = 1.0.0;
 			};
 		};
 /* End XCRemoteSwiftPackageReference section */
@@ -703,6 +804,11 @@
 			isa = XCSwiftPackageProductDependency;
 			package = 47E2DCADDDEC821ADD89F30C /* XCRemoteSwiftPackageReference "meta-wearables-dat-ios" */;
 			productName = MWDATCore;
+		};
+		D47A0DA70000000000000001 /* MWDATMotion */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 47E2DCADDDEC821ADD89F30C /* XCRemoteSwiftPackageReference "meta-wearables-dat-ios" */;
+			productName = MWDATMotion;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

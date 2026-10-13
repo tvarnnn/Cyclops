@@ -28,39 +28,56 @@ struct ShellStatusBar: View {
     @ObservedObject var tower: TowerClient
     let onTap: () -> Void
 
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+
+    /// Three across, or -- at the accessibility sizes, where a third of the
+    /// screen is too narrow for "Connected" -- one above the other, each
+    /// value with the full width.
+    private var isStacked: Bool { dynamicTypeSize.isAccessibilitySize }
+
     var body: some View {
+        let layout = isStacked
+            ? AnyLayout(VStackLayout(spacing: 8))
+            : AnyLayout(HStackLayout(spacing: 10))
+        let pill: StatusPill.Layout = isStacked ? .row : .column
+        let glassesPill = StateDisplay.glasses(glasses.registrationState, hasActiveDevice: hasActiveDevice)
         Button(action: onTap) {
-            HStack(spacing: 10) {
+            layout {
                 StatusPill(
                     title: "Glasses",
-                    value: StateDisplay.registration(glasses.registrationState),
-                    level: glassesLevel
+                    value: glassesPill.value,
+                    level: glassesPill.level,
+                    layout: pill
                 )
                 #if DEBUG
                 StatusPill(
                     title: "Camera",
                     value: cameraValue,
-                    level: cameraLevel
+                    level: cameraLevel,
+                    layout: pill
                 )
                 #endif
                 StatusPill(
                     title: "Tower",
                     value: StateDisplay.tower(tower.status),
-                    level: towerLevel
+                    level: towerLevel,
+                    layout: pill
                 )
             }
         }
         .buttonStyle(.plain)
         .accessibilityHint("Opens connection settings")
+        .accessibilityIdentifier("shell-status-bar")
     }
 
-    private var glassesLevel: StatusLevel {
-        switch glasses.registrationState {
-        case .registered: return .ok
-        case .registering: return .working
-        case .unavailable: return .problem
-        default: return .idle
-        }
+    /// Whether glasses are active on this phone: known only to the DEBUG
+    /// device model, so `nil` -- "Registered" -- in Release (U0.8 F07).
+    private var hasActiveDevice: Bool? {
+        #if DEBUG
+        glasses.hasActiveDevice
+        #else
+        nil
+        #endif
     }
 
     private var towerLevel: StatusLevel {

@@ -90,19 +90,39 @@ struct WorldCanvasView: View {
     var fragments = WorldFragmentsModel(segments: [])
     var geometryChunks: [String: WorldSegmentChunk] = [:]
 
-    /// The derived half of the screen: the stage word, the 3D ladder, the
+    /// The derived half of the screen -- the stage word, the 3D ladder, the
     /// account for a gallery with nothing in it, the final-solve sentence and
-    /// what survived. Built by `WorldBuilderViewModel.presentation` and by
-    /// nothing else, so this view composes no judgment of its own.
+    /// what survived -- WITH the walk it describes
+    /// (`WorldBuilderViewModel.walkPresentation`), so this view composes no
+    /// judgment of its own and pairs no picture with words on its own: its 3D
+    /// controls and their words come only from `WorldCanvasPictureOffer`.
     ///
-    /// Defaulted to `.empty` so previews and the states with no world in them
-    /// construct this view exactly as they did before.
-    var presentation: WorldPresentation = .empty
+    /// Defaulted to no walk and `.empty` so previews and the states with no
+    /// world in them construct this view exactly as they did before.
+    var report: WalkScoped<WorldPresentation> = WalkScoped(walk: nil, value: .empty)
 
     /// Opens the 3D world. `nil` in a context that cannot present a sheet —
     /// previews, and any future embedding — in which case the primary control
     /// is not drawn at all rather than drawn and inert.
     var openReconstruction: ((WorldRenderTarget) -> Void)? = nil
+
+    /// Asks the Tower again for a report, after the channel failed or the
+    /// first update is overdue (U0.8 F11, F13). `nil` draws no button.
+    var askAgain: (() -> Void)? = nil
+
+    /// Back to the live screen, where Start capture is, for a world with
+    /// nothing usable in it (U0.8 F12). `nil` draws no button: when following
+    /// live, Start capture is already on the screen.
+    var goToCapture: (() -> Void)? = nil
+
+    /// The first update has not come within `WorldBuilderViewModel
+    /// .awaitingBound` (U0.8 F13): the spinner gives way to a sentence.
+    var awaitingIsOverdue = false
+
+    /// The World Builder panel is narrating the finishing wait
+    /// (`WorldPanelPhase.narratesFinishing`): the `.finalizing` arm then
+    /// draws no spinner and no sentence of its own (review 2, MED 1).
+    var panelNarratesFinishing = false
 
     /// Whether the Diagnostics disclosure is open.
     ///
@@ -113,12 +133,21 @@ struct WorldCanvasView: View {
     /// expanded is a screen that has quietly gone back to being a debugger.
     @State private var isShowingDiagnostics = false
 
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+
     /// The stored world the Tower offered in place of a live one, when
     /// following live and nothing is live. Drawn in `.idle` as one line with
     /// an Open action and nowhere else — its rows and gallery arrive only
     /// after `openRecent` pins it, under the "Saved world" heading.
     var recentWorld: WorldRecentReference? = nil
     var openRecent: ((WorldRecentReference) -> Void)? = nil
+
+    private var presentation: WorldPresentation { report.value }
+
+    /// The 3D controls and their words, only for a picture of the report's
+    /// own walk (review 4: a Saved worlds pin names B's target while the
+    /// report is still A's).
+    private var pictureOffer: WorldCanvasPictureOffer? { WorldCanvasPictureOffer(report) }
 
     var body: some View {
         if let forcedPhase = availability.forcedPhase {
@@ -177,21 +206,45 @@ struct WorldCanvasView: View {
             }
 
         case .awaitingFirstUpdate:
-            // The one honest use of a progress indicator: frames really are
-            // going out and the Tower really has not answered yet.
-            HStack(spacing: 10) {
-                ProgressView()
-                Text(waitingHeadline)
+            if awaitingIsOverdue {
+                // Every spinner ends in a sentence (U0.8 F13): past the bound
+                // the wait is stated, with how long, and never guessed at.
+                Label(waitingHeadline, systemImage: "clock")
                     .font(.subheadline)
-                    .foregroundStyle(.secondary)
-            }
-            if let detail = waitingDetail {
-                detailText(detail)
+                    .foregroundStyle(.readableSecondary)
+                detailText(WorldCanvasText.overdue(
+                    binding: sessionBinding,
+                    seconds: Int(WorldBuilderViewModel.awaitingBound.components.seconds)
+                ))
+                if sessionBinding.allowsThroughTheGate {
+                    askAgainButton
+                }
+            } else {
+                // The one honest use of a progress indicator: frames really are
+                // going out and the Tower really has not answered yet.
+                HStack(spacing: 10) {
+                    ProgressView()
+                    Text(waitingHeadline)
+                        .font(.subheadline)
+                        .foregroundStyle(.readableSecondary)
+                }
+                if let detail = waitingDetail {
+                    detailText(detail)
+                }
             }
 
         case .receiving(let snapshot):
             stageHeadline(fallback: "Building", systemImage: "cube")
             worldName(snapshot)
+            // The live relocalizer, when tracking was lost (§8): "Finding where
+            // you are…", then linked back or not. Only ever for the walk this
+            // phone is streaming; the client publishes nothing otherwise.
+            if let line = presentation.recovery?.displayLine {
+                Label(line, systemImage: "location.viewfinder")
+                    .font(.subheadline)
+                    .foregroundStyle(.readableSecondary)
+                    .accessibilityIdentifier("world-recovery")
+            }
             reconstructionCard
             WorldSummaryView(snapshot: snapshot, isLive: true)
             diagnostics
@@ -228,26 +281,41 @@ struct WorldCanvasView: View {
             // thing the Tower had carefully declined to say.
             stageHeadline(fallback: "Finalizing", systemImage: "cube")
             worldName(snapshot)
-            if buildInProgress == true {
+            if !panelNarratesFinishing, presentation.showsLiveBuild(buildInProgress: buildInProgress) {
                 HStack(spacing: 10) {
                     ProgressView()
                     Text("The Tower is finishing this world.")
                         .font(.subheadline)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(.readableSecondary)
                 }
             }
             reconstructionCard
             WorldSummaryView(snapshot: snapshot, isLive: false)
-            if buildInProgress == true {
-                detailText("The Tower is still finishing this world: the final solve, the final build and the photographic reconstruction all run after the session stops, and these figures are not final.")
-            } else {
-                detailText("Capture has ended and these figures are not final. The Tower does not report whether a build is running, so this app cannot say whether one is.")
+            // Chosen by `WorldPresentation.finalizingDetail`, which says what
+            // the Tower actually reported: a live build, owed work, a probe
+            // that could not tell -- or, only for a Tower that sent neither,
+            // that it did not say. That last sentence used to be drawn for
+            // every non-`true` value, including `build_in_progress: false`
+            // from a Tower that had just reported nothing was running
+            // (Mac gate B0, F2).
+            // The panel says it, under the capture control, when it is
+            // narrating the wait: one voice (review 2, MED 1).
+            if !panelNarratesFinishing {
+                detailText(WorldPresentation.finalizingDetail(
+                    buildInProgress: buildInProgress, photographic: presentation.photographic))
             }
             diagnostics
 
         case .finalized(let snapshot):
             stageHeadline(fallback: "Saved", systemImage: "cube.fill")
             worldName(snapshot)
+            photographicFailureNote
+            // A finished world with nothing usable says what happened and
+            // what makes another one, as the interrupted one does (U0.8 F12).
+            if presentation.stage == .needsRetry, let sentence = presentation.recoverability?.sentence {
+                detailText(sentence)
+            }
+            goToCaptureButton
             reconstructionCard
             finalSolveNote
             WorldSummaryView(snapshot: snapshot, isLive: false)
@@ -268,6 +336,7 @@ struct WorldCanvasView: View {
                let sentence = recoverability.sentence {
                 detailText(sentence)
             }
+            goToCaptureButton
             reconstructionCard
             finalSolveNote
             // The Tower's own words for what happened, kept verbatim. Under the
@@ -285,13 +354,42 @@ struct WorldCanvasView: View {
             // whether a world is being built; headlining it "World building
             // failed" told a wearer whose walk was fine that it was not.
             // Everything else is the Tower's own report of a failure.
+            //
+            // A report this build cannot read is neither: it is fixed by an
+            // update, and says so (U0.8 F11).
             switch failure.kind {
             case .transport, .timedOut:
                 headline("World Builder is not reporting", systemImage: "antenna.radiowaves.left.and.right.slash")
-            case .notSupported, .towerReportedFailure, .undecodableResponse:
+                detailText(failure.message)
+                askAgainButton
+            case .notSupported, .undecodableResponse:
+                headline(WorldCanvasText.cannotReadHeadline, systemImage: "arrow.down.circle")
+                detailText(failure.message)
+                detailText(WorldCanvasText.updateFixesIt)
+            case .towerReportedFailure:
                 headline("World building failed", systemImage: "exclamationmark.triangle.fill")
+                detailText(failure.message)
             }
-            detailText(failure.message)
+        }
+    }
+
+    /// "Ask the Tower again" (U0.8 F11, F13), where the caller gave the way.
+    @ViewBuilder
+    private var askAgainButton: some View {
+        if let askAgain {
+            Button(WorldCanvasText.askAgain, action: askAgain)
+                .readableBorderedButton()
+                .accessibilityIdentifier("wb-ask-again")
+        }
+    }
+
+    /// "Go to capture" (U0.8 F12), for a world with nothing usable in it.
+    @ViewBuilder
+    private var goToCaptureButton: some View {
+        if presentation.stage == .needsRetry, let goToCapture {
+            Button(WorldCanvasText.goToCapture, action: goToCapture)
+                .readableBorderedButton()
+                .accessibilityIdentifier("wb-go-to-capture")
         }
     }
 
@@ -308,19 +406,26 @@ struct WorldCanvasView: View {
     /// One line, one action. `Last saved world: <title> · <state>` names what
     /// the Tower offered without drawing any of it; Open pins it, and the
     /// canvas then says "Saved world" over everything it shows.
+    ///
+    /// Wraps rather than being cut to two lines, and at the accessibility
+    /// sizes puts Open under the line rather than beside it.
     private func recentWorldLine(_ recent: WorldRecentReference) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: 8) {
+        let layout = dynamicTypeSize.isAccessibilitySize
+            ? AnyLayout(VStackLayout(alignment: .leading, spacing: 8))
+            : AnyLayout(HStackLayout(alignment: .firstTextBaseline, spacing: 8))
+        return layout {
             Text("Last saved world: \(recent.title) · \(recent.stateLabel)")
                 .font(.footnote)
-                .foregroundStyle(.secondary)
-                .lineLimit(2)
-                .truncationMode(.middle)
-            Spacer(minLength: 8)
+                .foregroundStyle(.readableSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
             if let openRecent {
                 Button("Open") { openRecent(recent) }
                     .font(.footnote)
-                    .buttonStyle(.bordered)
+                    .readableBorderedButton()
                     .accessibilityLabel("Open the last saved world")
+                    // Voice Control matches the visible word.
+                    .accessibilityInputLabels(["Open", "Open the last saved world"])
             }
         }
     }
@@ -388,21 +493,27 @@ struct WorldCanvasView: View {
     @ViewBuilder
     private var reconstructionCard: some View {
         VStack(alignment: .leading, spacing: 8) {
-            if let target = presentation.reconstruction.target, let open = openReconstruction {
+            // Nothing at all while the target and the report disagree: no
+            // control for one walk's picture under another walk's words.
+            if let offer = pictureOffer, let open = openReconstruction {
                 Button {
-                    open(target)
+                    open(offer.target)
                 } label: {
-                    Label(presentation.reconstruction.actionTitle, systemImage: "cube.transparent")
+                    // *Open the preview* while the world is unsettled (U0.6,
+                    // WORLDS §4a rule 8): never presented as the final world.
+                    Label(offer.openTitle, systemImage: "cube.transparent")
                         .font(.headline)
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 6)
                 }
                 .buttonStyle(.borderedProminent)
-                .accessibilityLabel("Open the 3D world")
-                if let note = reconstructionNote {
+                .accessibilityLabel(offer.openTitle)
+                .accessibilityInputLabels([offer.openTitle])
+                .accessibilityIdentifier("wb-open-3d")
+                if let note = offer.note {
                     Text(note)
                         .font(.footnote)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(.readableSecondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
             } else if let reason = reconstructionUnavailableReason {
@@ -411,31 +522,25 @@ struct WorldCanvasView: View {
                 // which is what the header's "Picture" button was.
                 Text(reason)
                     .font(.footnote)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.readableSecondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
     }
 
     /// `World <id>` and, when one is known, `Session <id>`, or `nil` when the
-    /// Tower has named neither. Built here rather than in the builder above for
-    /// the reason `reconstructionNote` gives.
+    /// Tower has named neither. Read through a property rather than bound
+    /// inside the builder above -- the pattern this codebase settled on after
+    /// a result-builder block with a binding in it caused trouble in Product
+    /// Shell V2. The session is the offered picture's, so never another
+    /// walk's beside this world's id.
     private var identifiers: String? {
         var lines: [String] = []
         if let worldID = state.snapshot?.worldID { lines.append("World \(worldID)") }
-        if let sessionID = presentation.reconstruction.target?.sessionID {
+        if let sessionID = pictureOffer?.target.sessionID {
             lines.append("Session \(sessionID)")
         }
         return lines.isEmpty ? nil : lines.joined(separator: "\n")
-    }
-
-    /// The `.partial` note, or `nil`. Read through a property rather than bound
-    /// inside the builder above — the pattern this codebase settled on after a
-    /// result-builder block with a binding in it caused trouble in Product
-    /// Shell V2.
-    private var reconstructionNote: String? {
-        if case .partial(_, let note) = presentation.reconstruction { return note }
-        return nil
     }
 
     private var reconstructionUnavailableReason: String? {
@@ -451,12 +556,36 @@ struct WorldCanvasView: View {
     /// since 2026-09-06 and read by no view until now. It is `null` on the
     /// field world, meaning the final solve never ran, and the phone presented
     /// that world as a finished one.
+    /// Under the headline of a saved world whose photographic build failed:
+    /// that waiting will not help, and the Tower's own reason. Nothing for any
+    /// other world -- a finished world does not need a line saying so.
+    @ViewBuilder
+    private var photographicFailureNote: some View {
+        if presentation.isSavedWithAnAreaStillFinishing {
+            // Normally reached through the `.finalizing` arm, whose sentence
+            // says it; kept here for a Tower that settles the walk's word
+            // before its areas.
+            detailText(WorldPhotographicCopy.areaStillFinishing())
+        }
+        if presentation.isSavedWithoutItsPhotographicVersion {
+            detailText(WorldPhotographicCopy.failedExplanation)
+            if case .failed(let detail) = presentation.photographic?.standing,
+               let reason = WorldPhotographicCopy.failedReason(detail) {
+                Text(reason)
+                    .font(.footnote)
+                    .foregroundStyle(.readableSecondary)
+                    .lineLimit(4)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
     @ViewBuilder
     private var finalSolveNote: some View {
         if let sentence = presentation.finalSolve.sentence {
             Text(sentence)
                 .font(.footnote)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(.readableSecondary)
                 .fixedSize(horizontal: false, vertical: true)
         }
     }
@@ -481,7 +610,7 @@ struct WorldCanvasView: View {
             VStack(alignment: .leading, spacing: 12) {
                 Text("The solver's own view: geometry per tracking segment, in the frames the solver placed them in. Not the world above.")
                     .font(.caption2)
-                    .foregroundStyle(.tertiary)
+                    .foregroundStyle(.readableSecondary)
                     .fixedSize(horizontal: false, vertical: true)
 
                 // The Tower's own page, opened straight into its diagnostics
@@ -495,14 +624,14 @@ struct WorldCanvasView: View {
                 // the rendering at the moment a page is opened costs a fetch
                 // that was going to happen regardless, and it puts the solver's
                 // view where the rest of the solver's output already is.
-                if let target = presentation.reconstruction.target, let open = openReconstruction {
+                if let offer = pictureOffer, let open = openReconstruction {
                     Button {
-                        open(target.showing(.diagnostics))
+                        open(offer.target.showing(.diagnostics))
                     } label: {
                         Label("Open the solver's 3D view", systemImage: "scope")
                             .font(.footnote)
                     }
-                    .buttonStyle(.bordered)
+                    .readableBorderedButton()
                     .accessibilityLabel("Open the solver's 3D view")
                 }
 
@@ -520,7 +649,7 @@ struct WorldCanvasView: View {
                 if let identifiers {
                     Text(identifiers)
                         .font(.caption2.monospaced())
-                        .foregroundStyle(.tertiary)
+                        .foregroundStyle(.readableSecondary)
                         .textSelection(.enabled)
                         .fixedSize(horizontal: false, vertical: true)
                 }
@@ -533,6 +662,9 @@ struct WorldCanvasView: View {
             .padding(.top, 8)
         }
         .font(.subheadline)
+        // The disclosure's label is text: the readable tint, not the system
+        // blue, which is about 4.0:1 on white (U0.5 review F2).
+        .tint(Color.readableTint)
         .accessibilityIdentifier("world-diagnostics")
     }
 
@@ -545,7 +677,7 @@ struct WorldCanvasView: View {
         // product concept and creates no dead UI to explain away later.
         Text(Self.futureDescription)
             .font(.footnote)
-            .foregroundStyle(.tertiary)
+            .foregroundStyle(.readableSecondary)
             .fixedSize(horizontal: false, vertical: true)
     }
 
@@ -570,7 +702,9 @@ struct WorldCanvasView: View {
     /// caller that passes only a state — is unchanged.
     private func stageHeadline(fallback: String, systemImage: String) -> some View {
         headline(
-            presentation.stage?.label ?? fallback,
+            // `headline`, not `stage.label`: over a saved world whose
+            // photographic build failed the word alone is the T3 defect.
+            presentation.headline ?? fallback,
             systemImage: presentation.stage?.systemImage ?? systemImage
         )
     }
@@ -582,7 +716,7 @@ struct WorldCanvasView: View {
         if let name = snapshot.name, !name.isEmpty {
             Text(name)
                 .font(.subheadline)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(.readableSecondary)
                 .lineLimit(2)
         }
     }
@@ -594,7 +728,7 @@ struct WorldCanvasView: View {
     private func detailText(_ text: String) -> some View {
         Text(text)
             .font(.subheadline)
-            .foregroundStyle(.secondary)
+            .foregroundStyle(.readableSecondary)
             .fixedSize(horizontal: false, vertical: true)
     }
 }
@@ -695,7 +829,7 @@ struct WorldSummaryView: View {
             if !isLive {
                 Text("Capture has ended.")
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.readableSecondary)
             }
         }
     }
@@ -788,7 +922,7 @@ struct WorldSummaryView: View {
     private func caption(_ text: String) -> some View {
         Text(text)
             .font(.caption)
-            .foregroundStyle(.tertiary)
+            .foregroundStyle(.readableSecondary)
             .fixedSize(horizontal: false, vertical: true)
     }
 
@@ -796,7 +930,7 @@ struct WorldSummaryView: View {
         HStack {
             Text(label)
                 .font(.subheadline)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(.readableSecondary)
             Spacer(minLength: 12)
             Text(value)
                 .font(.subheadline.weight(.medium))
@@ -813,4 +947,57 @@ struct WorldSummaryView: View {
         explanation: UnavailableWorldBuilderClient.reason
     )
     .padding()
+}
+
+// MARK: - The canvas's 3D controls (review 4)
+
+/// The canvas's 3D controls and the words beside them, for ONE walk: the
+/// ladder's target only when the report describes its walk
+/// (`WalkScoped.picture(_:)`), and the control's title and note only from
+/// that walk's words (`WalkScoped.value(for:)`). `nil` while they disagree --
+/// a Saved worlds pin names B's target at once while the report is still
+/// A's -- so the canvas then offers no picture and none of another walk's
+/// words (review 4, the remaining HIGH: it offered B's picture with A's
+/// stage, button wording and note).
+struct WorldCanvasPictureOffer: Equatable {
+    /// What both controls open (the 3D world, and its diagnostics view).
+    let target: WorldRenderTarget
+    /// *Open the preview* / the ladder's action title, for this walk.
+    let openTitle: String
+    /// The `.partial` note under the control, for this walk.
+    let note: String?
+
+    init?(_ report: WalkScoped<WorldPresentation>) {
+        guard let target = report.picture(report.value.reconstruction.target),
+              let words = report.value(for: target) else { return nil }
+        self.target = target
+        openTitle = words.openTitle
+        if case .partial(_, let note) = words.reconstruction { self.note = note } else { note = nil }
+    }
+}
+
+// MARK: - The canvas's words (U0.8 F11-F13)
+
+/// The canvas's new sentences and control words, in one place for U0.4.
+/// Each says what the phone knows and names the next step; none guesses why.
+enum WorldCanvasText {
+    static let askAgain = "Ask the Tower again"
+    static let goToCapture = "Go to capture"
+    static let cannotReadHeadline = "This app cannot read the Tower's World Builder report"
+    static let updateFixesIt = "Updating the app or the Tower fixes this."
+    /// The header's disabled Picture button, for VoiceOver (U0.8 F14).
+    static let pictureOffValue = "Not available: the Tower has not named a world with a 3D picture yet."
+
+    /// The sentence a wait ends in, once `seconds` have passed with no
+    /// first update, by what the phone knows about the capture.
+    static func overdue(binding: WorldSessionBinding, seconds: Int) -> String {
+        switch binding {
+        case .none, .bound:
+            return "No world update has arrived in \(seconds) seconds. The connection to the Tower is open; this screen cannot see why nothing has arrived."
+        case .awaiting:
+            return "The Tower has not started a world from these frames in \(seconds) seconds. The line under the capture button says whether World Builder is active there."
+        case .foreign:
+            return "After \(seconds) seconds the Tower is still reporting a world this phone cannot match to this capture. Stopping and starting capture begins a new one."
+        }
+    }
 }

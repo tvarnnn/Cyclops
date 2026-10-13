@@ -49,10 +49,29 @@ import os
 /// same layer in all four.
 @MainActor
 protocol WorldBuilderClient: CartridgeClient {
-    var state: WorldModelState { get }
+    /// The presented walk and everything the Tower said about it -- the
+    /// gated state, finalization, photographic word, processing stage and
+    /// stop clock -- as ONE value (review 4).
+    ///
+    /// ## Why one value, and not six publishers beside a walk
+    ///
+    /// Each of these was published on its own, and the walk they describe on
+    /// a seventh, ahead of the state. Every reader then had to re-pair them,
+    /// and three review rounds each found a surface that paired one walk's
+    /// picture with another walk's words or progress in the gap. Published
+    /// together, a reader cannot see a walk with another walk's state: the
+    /// pairing is a property of the value, not of the order of arrival.
+    ///
+    /// Why `finalization`, `photographic` and `processing` are in it at all:
+    /// the client dedupes `state` at the source, and each of them moves while
+    /// the snapshot stands still (`final_solve` `pending` → `solved`, `owed` →
+    /// `complete`, the processing stage). They are inputs in their own right;
+    /// they are simply never published apart from their walk.
+    var walkReport: WalkScoped<WorldWalkReport> { get }
 
-    /// Every state after the one `state` held when the view model was built.
-    var stateUpdates: AnyPublisher<WorldModelState, Never> { get }
+    /// Every `walkReport` after the one held when the view model was built,
+    /// each published once, after every part of it has moved.
+    var walkReportUpdates: AnyPublisher<WalkScoped<WorldWalkReport>, Never> { get }
 
     /// What this client has established about whether the world it is
     /// reporting belongs to the capture the phone currently has open.
@@ -97,39 +116,38 @@ protocol WorldBuilderClient: CartridgeClient {
     /// cannot pin, because such a client has nothing to offer either.
     var recentWorld: WorldRecentReference? { get }
 
-    /// The builder's own account of what happened after Stop, from the last
-    /// report. `nil` for a client with no Tower behind it and for a record
-    /// written before the builder kept one.
-    ///
-    /// ## Why this has a publisher beside it
-    ///
-    /// It did not, and the reasoning for that was wrong in a way that mattered.
-    /// The claim was that a finalization change always rides along with a state
-    /// change, so reading this property during a view body was enough, and the
-    /// worst case was a one-report lag.
-    ///
-    /// `TowerWorldBuilderClient.state` **dedupes at the source**
-    /// (`didSet { guard state != oldValue }`), and `WorldBuilderViewModel`
-    /// composes `presentation` as a computed property that nothing else
-    /// invalidates. So a Tower that flips `final_solve` from `pending` to
-    /// `solved` **without changing the snapshot** publishes nothing, redraws
-    /// nothing, and leaves "The final pass has not run yet." on screen
-    /// indefinitely — not for one report. That is precisely the multi-minute
-    /// window a long final solve occupies, which is the window the sentence
-    /// exists to describe.
-    ///
-    /// So finalization is an input in its own right, published like the other
-    /// five. `WorldBuilderViewModel` republishes it into a `@Published`, which
-    /// is what invalidates the view.
-    var finalization: WorldFinalizationReport? { get }
+    /// The away banner was read.
+    func dismissFinishBanner()
 
-    /// Every finalization report after the one `finalization` held when the
-    /// view model was built.
-    var finalizationUpdates: AnyPublisher<WorldFinalizationReport?, Never> { get }
+    /// The away banner drawn for `walk` was announced to VoiceOver: never
+    /// again for that walk. The screen passes the walk it drew the banner
+    /// for, not whichever walk is presented when the call lands.
+    func finishBannerAnnounced(for walk: WorldFinishWalk?)
+
+    /// The live relocalizer's episode (`tracking.recovery`) for the walk this
+    /// phone is streaming, or `nil` -- never for a saved or foreign world.
+    var recovery: WorldRecoveryReport? { get }
+
+    var recoveryUpdates: AnyPublisher<WorldRecoveryReport?, Never> { get }
+
+    /// The look-back banner for the walk this phone is streaming, or `nil`
+    /// -- never for a saved or foreign world. Shown with a haptic, never
+    /// spoken.
+    var lookBackBanner: WorldLookBackBanner? { get }
+
+    var lookBackBannerUpdates: AnyPublisher<WorldLookBackBanner?, Never> { get }
 
     /// Every value after the one `recentWorld` held when the view model was
     /// built.
     var recentWorldUpdates: AnyPublisher<WorldRecentReference?, Never> { get }
+
+    /// One `CaptureHealthSample` per report the Tower sends -- heartbeats
+    /// included, unlike `stateUpdates` -- for the capture-health panel
+    /// (U2-D0), which differences the counters on the phone's clock and needs
+    /// to know a report arrived even when nothing in it changed. `nil` when
+    /// what the panel holds stopped being live: the socket dropped, the
+    /// subscription restarted, the screen pinned a saved world.
+    var healthSamples: AnyPublisher<CaptureHealthSample?, Never> { get }
 
     /// Pin the world subscription to a stored world, and optionally to one of
     /// its sessions. A no-op for a client with no transport.
@@ -138,6 +156,11 @@ protocol WorldBuilderClient: CartridgeClient {
     /// Return to following the live world. A no-op for a client with no
     /// transport.
     func followLive()
+
+    /// Ask the Tower again for a World Builder report, after the channel
+    /// failed or the first update is overdue (U0.8 F11, F13). A no-op for a
+    /// client with no transport, and in any other state.
+    func askAgain()
 }
 
 extension WorldBuilderClient {
@@ -146,7 +169,7 @@ extension WorldBuilderClient {
     /// happens to be silent, not a finished one — the difference matters the
     /// day a real client replaces this and a completed publisher would have
     /// already torn the subscription down.
-    var stateUpdates: AnyPublisher<WorldModelState, Never> {
+    var walkReportUpdates: AnyPublisher<WalkScoped<WorldWalkReport>, Never> {
         Empty(completeImmediately: false).eraseToAnyPublisher()
     }
 
@@ -173,17 +196,30 @@ extension WorldBuilderClient {
     /// Nothing offered, ever, for a client with no Tower behind it.
     var recentWorld: WorldRecentReference? { nil }
 
-    /// A client with no Tower behind it has no builder to have finalized
-    /// anything. Absence, and never a fabricated `complete`.
-    var finalization: WorldFinalizationReport? { nil }
+    func dismissFinishBanner() {}
 
-    /// Never emits, for the reason every other default here does not: a
-    /// constant has no changes to announce.
-    var finalizationUpdates: AnyPublisher<WorldFinalizationReport?, Never> {
+    func finishBannerAnnounced(for walk: WorldFinishWalk?) {}
+
+    /// No live walk, no relocalizer.
+    var recovery: WorldRecoveryReport? { nil }
+
+    var recoveryUpdates: AnyPublisher<WorldRecoveryReport?, Never> {
+        Empty(completeImmediately: false).eraseToAnyPublisher()
+    }
+
+    /// No live walk, no look-back banner.
+    var lookBackBanner: WorldLookBackBanner? { nil }
+
+    var lookBackBannerUpdates: AnyPublisher<WorldLookBackBanner?, Never> {
         Empty(completeImmediately: false).eraseToAnyPublisher()
     }
 
     var recentWorldUpdates: AnyPublisher<WorldRecentReference?, Never> {
+        Empty(completeImmediately: false).eraseToAnyPublisher()
+    }
+
+    /// No Tower, no reports: the panel reads "—".
+    var healthSamples: AnyPublisher<CaptureHealthSample?, Never> {
         Empty(completeImmediately: false).eraseToAnyPublisher()
     }
 
@@ -196,6 +232,8 @@ extension WorldBuilderClient {
     func inspect(worldID: String, sessionID: String?) {}
 
     func followLive() {}
+
+    func askAgain() {}
 }
 
 /// A World Builder client with no Tower behind it.
@@ -208,7 +246,7 @@ extension WorldBuilderClient {
 /// Kept rather than deleted because "this build has no Tower-backed client for
 /// this cartridge" is still a state the other three cartridges are in, and
 /// because the shape of a client that reports one constant is the thing the
-/// protocol's default `stateUpdates` was written for.
+/// protocol's default `walkReportUpdates` was written for.
 @MainActor
 final class UnavailableWorldBuilderClient: WorldBuilderClient {
     /// Written for a person, not a log. The workspace shows this verbatim, so
@@ -228,7 +266,26 @@ final class UnavailableWorldBuilderClient: WorldBuilderClient {
 
     let state: WorldModelState = .unsupported(reason: UnavailableWorldBuilderClient.reason)
 
+    /// The constant above, naming no walk.
+    var walkReport: WalkScoped<WorldWalkReport> { .unreported(state) }
+
     init() {}
+}
+
+/// Why the saved-worlds list is not a fresh answer from the Tower (U0.8 F09).
+/// Worded by `WorldListText`; each case has its own next step.
+nonisolated enum WorldListProblem: Equatable {
+    /// The Tower answered 404: it has no world root, so it has none to list.
+    /// A settled answer, not a failure to reach it.
+    case noWorldRoot
+    /// The Tower answered, in a form this build cannot read.
+    case unreadable
+    /// The Tower answered with an error status other than 404: it was
+    /// reached, and failed to list. Asking again may help; Connections
+    /// cannot (U0.8 M-1).
+    case towerError(Int)
+    /// The Tower could not be reached.
+    case unreachable(String)
 }
 
 /// Publishes World Builder state into SwiftUI.
@@ -274,12 +331,17 @@ final class UnavailableWorldBuilderClient: WorldBuilderClient {
 /// rather than leaving it to inspection.
 @MainActor
 final class WorldBuilderViewModel: ObservableObject {
-    /// Seeded from the client and republished from `stateUpdates`. Nothing
-    /// republishes it yet — the only client reports a constant — but the path
-    /// exists, which is what makes "wiring a Tower-backed client is an
-    /// injection, not a change of shape" a true statement rather than an
-    /// aspiration.
-    @Published private(set) var state: WorldModelState
+    /// The presented walk and what the Tower said about it, republished from
+    /// the client as ONE value (review 4): one assignment, so no view ever
+    /// draws one walk's identity with another walk's state. Seeded from the
+    /// client; every value after it from `walkReportUpdates`.
+    ///
+    /// `state`, `finalization`, `photographic`, `processing`, `finishClock`
+    /// and `presentedWalk` are read from it, never stored beside it.
+    @Published private(set) var walkReport: WalkScoped<WorldWalkReport>
+
+    /// The gated state, from `walkReport`.
+    var state: WorldModelState { walkReport.value.state }
 
     /// Live vs. stored-world inspection. Seeded from the client and
     /// republished from `inspectionUpdates`, for the reason `state` is: the
@@ -288,13 +350,29 @@ final class WorldBuilderViewModel: ObservableObject {
 
     /// The stored worlds the Tower listed, newest first, or empty until
     /// `loadWorlds()` has answered. Empty is also what a Tower with no world
-    /// root reports; `worldListFailure` says which.
+    /// root reports; `worldListProblem` says which.
+    ///
+    /// A refresh that fails keeps the last list (U0.8 F09): the worlds it
+    /// named were real a moment ago, and blanking them to report a dropped
+    /// connection took away the very thing the person came to look at. Only
+    /// the Tower's own "no world root" answer clears it.
     @Published private(set) var worlds: [WorldListingEntry] = []
 
-    /// Why the last `loadWorlds()` produced nothing, in a sentence, or `nil`
-    /// after a listing that succeeded. `WorldListFetchError.notFound` is the
-    /// Tower's own answer — no world root configured — and is worded as that.
-    @Published private(set) var worldListFailure: String?
+    /// Why the last `loadWorlds()` did not answer with a list, or `nil` after
+    /// one that did.
+    @Published private(set) var worldListProblem: WorldListProblem?
+
+    /// When the Tower last answered with a list, so a stale one can say how
+    /// old it is. `nil` until one has.
+    @Published private(set) var worldsListedAt: Date?
+
+    /// `worldListProblem` in a sentence. Kept for existing tests
+    /// (`WorldListLoadLifecycleTests`).
+    var worldListFailure: String? {
+        worldListProblem.map {
+            WorldListText.sentence($0, listedAt: worldsListedAt, hasList: !worlds.isEmpty)
+        }
+    }
 
     /// Whether a `loadWorlds()` is in flight. The picker draws a progress
     /// indicator from it — honestly, because a request really is out — and
@@ -307,9 +385,33 @@ final class WorldBuilderViewModel: ObservableObject {
     /// and `open(worldID:sessionID:)` is what that action calls.
     @Published private(set) var recentWorld: WorldRecentReference?
 
-    /// The builder's account of finalization, republished from the client.
-    /// See `finalization` below for what reading it live cost.
-    @Published private(set) var finalization: WorldFinalizationReport?
+    /// The builder's account of finalization, from `walkReport`. See
+    /// `finalSolve` below for what reading it live off the client cost.
+    var finalization: WorldFinalizationReport? { walkReport.value.finalization }
+
+    /// The Tower's photographic word, from `walkReport`.
+    var photographic: WorldPhotographicReport? { walkReport.value.photographic }
+
+    /// The fog-of-war receipt, from `walkReport`: only for a report that
+    /// names its walk, so one walk's map is never shown for another.
+    var coverage: WorldCoverageReceipt? { walkReport.walk == nil ? nil : walkReport.value.coverage }
+
+    /// The capture dial's "before the first landing": the walk's own report
+    /// says `coverage: null` (the Tower's switch on, no landing yet).
+    var coverageAwaited: Bool { walkReport.walk != nil && coverage == nil && walkReport.value.coverageNotYet }
+
+    /// The live relocalizer's line, republished from the client.
+    @Published private(set) var recovery: WorldRecoveryReport?
+
+    /// The look-back banner, republished from the client.
+    @Published private(set) var lookBackBanner: WorldLookBackBanner?
+
+    /// `lifecycle.processing` (U0.6), from `walkReport`.
+    var processing: WorldProcessingReport? { walkReport.value.processing }
+
+    /// The followed walk's stop clock and away banner (U0.6), from
+    /// `walkReport`.
+    var finishClock: WorldFinishClock { walkReport.value.finishClock }
 
     /// The world whose interactive picture can be opened, or `nil` when none
     /// has been named yet.
@@ -323,6 +425,10 @@ final class WorldBuilderViewModel: ObservableObject {
     /// button that could not lead anywhere is not offered. `returnToLive()`
     /// clears it, and the next report re-earns it.
     @Published private(set) var renderTarget: WorldRenderTarget?
+
+    /// The walk the presented state describes (world and session), or `nil`:
+    /// `walkReport`'s, never published apart from it.
+    var presentedWalk: WorldFinishWalk? { walkReport.walk }
 
     /// Whether the world on screen belongs to the capture the phone has open.
     ///
@@ -385,6 +491,14 @@ final class WorldBuilderViewModel: ObservableObject {
     /// runtime references and tears nothing down, still stands.
     private let geometry: WorldGeometryClient
     private let geometryStore = WorldGeometryStore()
+    /// FOW v1.1 B's imagery (`WorldImagery.swift`): fed the geometry push
+    /// and the walk's coverage, and nothing else. Its switches OFF, it asks
+    /// for nothing.
+    let imageryModel: WorldImageryModel
+    /// FOW v1.2's photo floor plan (`WorldPhotoFloorplan.swift`): fed the
+    /// walk's coverage and the geometry push, and nothing else. Its switch
+    /// OFF, it asks for nothing.
+    let photoFloorplanModel: WorldPhotoFloorplanModel
     /// The saved-worlds list, over HTTP. A struct holding a `URL` and the
     /// shared session, like `geometry`, and defaulted for the same reason.
     private let library: WorldListClient
@@ -398,6 +512,20 @@ final class WorldBuilderViewModel: ObservableObject {
     /// world's revision never moves again, so leaving it set after a failure
     /// would make one refused request permanent.
     private var lastGeometryRevision: String?
+
+    /// The `geometry.revision` the Tower last named for `geometryOwner`, and
+    /// the `geometry_revision` the published manifest itself carries (what
+    /// the Tower returned, which mid-rebuild can be older than what was
+    /// asked for). Equal once the named revision's geometry has landed; apart
+    /// while a newer one is out, failed, or came back as another revision.
+    ///
+    /// Not `lastGeometryRevision`, which is a retry marker and is cleared
+    /// after a partial failure with the revision still on screen. The room map
+    /// keeps drawing the published revision through a silent refetch; the
+    /// current piece may not (Codex review HIGH): after a tracking break the
+    /// published last segment is no longer the current one.
+    @Published private(set) var namedGeometryRevision: String?
+    private(set) var publishedGeometryRevision: String?
 
     /// Whose geometry `fragmentsModel`, `geometryChunks` and the live
     /// `renderTarget` currently describe, or `nil` when they describe nobody's.
@@ -413,7 +541,7 @@ final class WorldBuilderViewModel: ObservableObject {
     ///
     /// Both halves of the address, not the world alone: derived geometry is
     /// per session, and two sessions of one world are two galleries.
-    private var geometryOwner: WorldRenderTarget?
+    private(set) var geometryOwner: WorldRenderTarget?
 
     /// The geometry fetch currently out, and the coordinates it was started
     /// for, or `nil` when none is.
@@ -458,22 +586,27 @@ final class WorldBuilderViewModel: ObservableObject {
     init(
         client: any WorldBuilderClient,
         geometry: WorldGeometryClient = WorldGeometryClient(),
-        library: WorldListClient = WorldListClient()
+        library: WorldListClient = WorldListClient(),
+        imagery: WorldImageryModel? = nil,
+        photoFloorplan: WorldPhotoFloorplanModel? = nil
     ) {
         self.client = client
-        self.state = client.state
+        self.imageryModel = imagery ?? WorldImageryModel()
+        self.photoFloorplanModel = photoFloorplan ?? WorldPhotoFloorplanModel()
+        self.walkReport = client.walkReport
         self.sessionBinding = client.sessionBinding
         self.inspection = client.inspection
         self.recentWorld = client.recentWorld
-        self.finalization = client.finalization
+        self.recovery = client.recovery
+        self.lookBackBanner = client.lookBackBanner
         self.geometry = geometry
         self.library = library
 
-        // The seeded state gets the same reading `stateDidChange` would give
+        // The seeded state gets the same reading `walkReportDidChange` would give
         // it. It did not, and the gap was visible: the client outlives the
         // view model (`CartridgeClients`), so a cartridge switch and back
         // builds a fresh view model over a client already holding a world —
-        // and `.noWorld → .notAddressed` lived only in `stateDidChange`, which
+        // and `.noWorld → .notAddressed` lived only in the change handler, which
         // runs on a *change*. The gallery said "There is no world on screen
         // for geometry to belong to" beside a world with figures until the
         // next heartbeat moved the state, and for a world with no geometry
@@ -484,11 +617,17 @@ final class WorldBuilderViewModel: ObservableObject {
         // coordinates, and the protocol publishes those on change only — it
         // keeps no current value to read back. It is re-earned from the next
         // coordinates, which for a live world arrive on the next heartbeat.
-        markWorldPresent(in: client.state)
+        markWorldPresent(in: walkReport.value.state)
+        // A seeded wait is bounded from now: this object cannot know when
+        // the client's began (U0.8 F13).
+        watchAwaiting(walkReport.value.state)
 
-        client.stateUpdates
+        // The value as the client holds it when this turn runs, not the one
+        // that scheduled it: a report published before a pin this object has
+        // already adopted (`open`) never rolls the screen back.
+        client.walkReportUpdates
             .receive(on: DispatchQueue.main)
-            .sink { [weak self] state in self?.stateDidChange(to: state) }
+            .sink { [weak self] _ in self?.adoptClientWalkReport() }
             .store(in: &cancellables)
 
         client.bindingUpdates
@@ -503,27 +642,127 @@ final class WorldBuilderViewModel: ObservableObject {
             .receive(on: DispatchQueue.main)
             .sink { [weak self] recent in self?.recentWorld = recent }
             .store(in: &cancellables)
-        client.finalizationUpdates
+        client.recoveryUpdates
             .receive(on: DispatchQueue.main)
             .sink { [weak self] report in
-                // The Tower re-sends the block on every heartbeat, and the
-                // client forwards it; a `@Published` assignment fires whether
-                // or not the value moved. Dropping the repeats here is what
-                // `IOS-TO-TOWER.md` promises ("iOS drops the repeats itself")
-                // and what keeps the view tree from re-rendering every ~2 s
-                // for the length of a final solve.
-                guard let self, self.finalization != report else { return }
-                self.finalization = report
+                guard let self, self.recovery != report else { return }
+                self.recovery = report
+            }
+            .store(in: &cancellables)
+        client.lookBackBannerUpdates
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] banner in
+                guard let self, self.lookBackBanner != banner else { return }
+                self.lookBackBanner = banner
             }
             .store(in: &cancellables)
         client.geometryUpdates
             .receive(on: DispatchQueue.main)
-            .sink { [weak self] coordinates in self?.fetchGeometry(at: coordinates) }
+            .sink { [weak self] coordinates in
+                self?.fetchGeometry(at: coordinates)
+                self?.imageryGeometryPushed(coordinates)
+            }
             .store(in: &cancellables)
+        imageryModel.objectWillChange
+            .sink { [weak self] _ in self?.objectWillChange.send() }
+            .store(in: &cancellables)
+        photoFloorplanModel.objectWillChange
+            .sink { [weak self] _ in self?.objectWillChange.send() }
+            .store(in: &cancellables)
+        imageryCoverageMoved()
     }
 
-    /// Republish the state, and forget the gallery when the state no longer
-    /// has a world for it to belong to.
+    /// The geometry push, for FOW v1.1 B: B1's trigger and B2's retry.
+    private func imageryGeometryPushed(_ coordinates: WorldGeometryCoordinates) {
+        guard case .receiving = state else { return }
+        imageryModel.geometryPushed(coordinates, receiving: true)
+        photoFloorplanModel.geometryPushed(coordinates, receiving: true)
+    }
+
+    /// The walk's coverage, for FOW v1.1 B2: a new landing is its trigger.
+    private func imageryCoverageMoved() {
+        guard case .receiving = state else { return }
+        imageryModel.coverageReported(walkReport.map { $0.coverage?.coverage }, receiving: true)
+        photoFloorplanModel.coverageReported(walkReport.map { $0.coverage }, receiving: true)
+    }
+
+    /// The away banner's OK.
+    func dismissFinishBanner() {
+        client.dismissFinishBanner()
+    }
+
+    func finishBannerAnnounced(for walk: WorldFinishWalk?) {
+        client.finishBannerAnnounced(for: walk)
+    }
+
+    /// The client's walk report, as it stands now.
+    private func adoptClientWalkReport() {
+        walkReportDidChange(to: client.walkReport)
+    }
+
+    /// The presented walk and its state moved -- together, as one value, in
+    /// one assignment. Then, in the order the screen depends on: what the
+    /// new walk means for the drawn gallery and picture target, then what
+    /// the new state means for them.
+    ///
+    /// Internal rather than private so a test can drive it without a client
+    /// that publishes.
+    func walkReportDidChange(to next: WalkScoped<WorldWalkReport>) {
+        guard next != walkReport else { return }
+        let walkMoved = next.walk != walkReport.walk
+        let stateMoved = next.value.state != walkReport.value.state
+        walkReport = next
+        if walkMoved { walkDidMove(to: next.walk) }
+        if stateMoved { stateDidMove(to: next.value.state) }
+        imageryCoverageMoved()
+    }
+
+    /// The report now describes `walk`. A drawn gallery -- and with it the
+    /// picture target -- that is another session's, of this world or any
+    /// other, goes before anything of the new walk's is fetched: a new
+    /// session of the same world is a new walk, and its stage must never be
+    /// paired with the previous session's picture (review HIGH 1). A
+    /// pinned world named without a session takes the session its report
+    /// names, so the panel can pair the two.
+    private func walkDidMove(to walk: WorldFinishWalk?) {
+        guard let walk else { return }
+        if let owner = geometryOwner, WorldFinishWalk(picture: owner) != walk {
+            forgetGeometry()
+        }
+        if case .inspecting(let worldID?) = inspection, worldID == walk.worldID,
+           let target = renderTarget, target.worldID == worldID, target.sessionID == nil {
+            renderTarget = WorldRenderTarget(worldID: worldID, sessionID: walk.sessionID)
+        }
+    }
+
+    /// The picture the World Builder panel -- and the header's Picture
+    /// button -- may show or offer under the current report's stage: the
+    /// ladder's target, only when the report describes its walk
+    /// (`WalkScoped.picture(_:)`, the one pairing rule).
+    var panelTarget: WorldRenderTarget? {
+        walkReport.picture(presentation.reconstruction.target)
+    }
+
+    /// Everything the screen says about the presented walk, with that walk.
+    /// The panel draws its words only from this.
+    var walkPresentation: WalkScoped<WorldPresentation> {
+        WalkScoped(walk: walkReport.walk, value: presentation)
+    }
+
+    /// What the full-screen cover may say over a picture, with the walk it
+    /// describes. The cover shows it only over that walk's picture
+    /// (`WorldCoverBinding`). The status channel's `lifecycle.finalization`
+    /// is the same record as the row's; when the Tower carries the v6
+    /// notice there too, the live screen's room shows it.
+    var coverWords: WalkScoped<WorldCoverText> {
+        let presentation = presentation
+        return WalkScoped(walk: walkReport.walk, value: WorldCoverText(
+            title: state.snapshot?.name, note: presentation.viewerNote, notice: finalization?.notice,
+            progress: viewerProgress, inProgress: presentation.stage?.isStillChanging == true))
+    }
+
+    /// Forget the gallery when the state no longer has a world for it to
+    /// belong to.
     ///
     /// `.idle`, `.failed` and `.unsupported` carry no snapshot and never will
     /// on their own; fragments left under them would be drawn the moment the
@@ -538,11 +777,8 @@ final class WorldBuilderViewModel: ObservableObject {
     /// because then no coordinates arrive to do it in `geometryDidChange`.
     /// That is the 2026-09-06 drift, on a Tower old enough to send no
     /// `selection` block.
-    ///
-    /// Internal rather than private so a test can drive it without a client
-    /// that publishes.
-    func stateDidChange(to state: WorldModelState) {
-        self.state = state
+    private func stateDidMove(to state: WorldModelState) {
+        watchAwaiting(state)
         switch state {
         case .idle, .failed, .unsupported:
             forgetGeometry()
@@ -563,6 +799,37 @@ final class WorldBuilderViewModel: ObservableObject {
         }
     }
 
+    // MARK: The bounded wait (U0.8 F13)
+
+    /// How long the first update may take before the canvas's spinner gives
+    /// way to a sentence. A UI test shortens it
+    /// (`GLASSES_UITEST_AWAITING_BOUND_SECONDS`).
+    static var awaitingBound: Duration = .seconds(30)
+
+    /// The first update has not arrived within `awaitingBound`.
+    @Published private(set) var awaitingIsOverdue = false
+
+    private var awaitingWatch: Task<Void, Never>?
+
+    /// Measured from the moment the state became `.awaitingFirstUpdate`, not
+    /// from each re-send of it: a resubscribe that republishes the wait does
+    /// not restart the clock. Any other state ends the wait.
+    private func watchAwaiting(_ state: WorldModelState) {
+        guard case .awaitingFirstUpdate = state else {
+            awaitingWatch?.cancel()
+            awaitingWatch = nil
+            awaitingIsOverdue = false
+            return
+        }
+        guard awaitingWatch == nil else { return }
+        let bound = Self.awaitingBound
+        awaitingWatch = Task { [weak self] in
+            try? await Task.sleep(for: bound)
+            guard !Task.isCancelled, let self, case .awaitingFirstUpdate = self.state else { return }
+            self.awaitingIsOverdue = true
+        }
+    }
+
     /// A world is on screen and nothing has addressed geometry for it.
     /// `.noWorld` is the state this object starts in and returns to; moving
     /// off it here is what turns "there is nothing to have geometry for" into
@@ -571,7 +838,7 @@ final class WorldBuilderViewModel: ObservableObject {
     ///
     /// Only from `.noWorld`, so a fetch in flight, a loaded manifest or a
     /// recorded failure is never overwritten by a heartbeat. Its own function
-    /// so that `init` and `stateDidChange` apply one rule rather than two
+    /// so that `init` and `stateDidMove` apply one rule rather than two
     /// copies of it — the seeded state used to skip it entirely.
     private func markWorldPresent(in state: WorldModelState) {
         guard state.snapshot != nil, geometryStatus == .noWorld else { return }
@@ -592,6 +859,8 @@ final class WorldBuilderViewModel: ObservableObject {
         inspection = mode
         // Whatever is being fetched belongs to the world just left as well.
         cancelGeometryFetch()
+        imageryModel.reset()
+        photoFloorplanModel.reset()
         clearGeometry()
         geometryOwner = nil
         switch mode {
@@ -735,6 +1004,8 @@ final class WorldBuilderViewModel: ObservableObject {
         }
         geometryOwner = named
         if renderTarget != named { renderTarget = named }
+        // Guarded like the target: the heartbeat repeats an unchanged revision.
+        if namedGeometryRevision != revision { namedGeometryRevision = revision }
 
         guard revision != lastGeometryRevision else { return }
         lastGeometryRevision = revision
@@ -911,6 +1182,12 @@ final class WorldBuilderViewModel: ObservableObject {
         // Checked again, for the same reason: the segment fetches above are the
         // slow part, and a newer manifest may have landed during them.
         guard isStillOurs(revision: revision, owner: named) else { return }
+        // The revision the Tower RETURNED, not the one asked for: the manifest
+        // route is not revision-pinned, so mid-rebuild it can answer with the
+        // previous build (Codex review HIGH). The map draws what arrived; the
+        // current piece stays off until the returned revision is the named
+        // one, and the retry is rearmed below so the next report asks again.
+        publishedGeometryRevision = manifest.geometryRevision
         geometryChunks = chunks
         // How many of the segments the manifest named have no chunk to draw.
         //
@@ -945,7 +1222,8 @@ final class WorldBuilderViewModel: ObservableObject {
         // The manifest path clears the marker for the same reason and under the
         // same staleness guard, so a newer update already in flight is not
         // stomped.
-        if anySegmentFailed, isStillOurs(revision: revision, owner: named) {
+        if anySegmentFailed || manifest.geometryRevision != revision,
+           isStillOurs(revision: revision, owner: named) {
             lastGeometryRevision = nil
         }
 
@@ -1001,21 +1279,25 @@ final class WorldBuilderViewModel: ObservableObject {
         }
         do {
             worlds = try await library.worlds().worlds
-            worldListFailure = nil
+            worldListProblem = nil
+            worldsListedAt = Date()
         } catch let error as WorldListFetchError {
-            worlds = []
             switch error {
             case .notFound:
-                worldListFailure = "The Tower answered that no world root is configured, so it has no saved worlds to list."
+                // The Tower's settled answer: it has no world root, so there
+                // is no list to keep.
+                worlds = []
+                worldListProblem = .noWorldRoot
             case .undecodable:
-                worldListFailure = "The Tower's world list could not be read as the contract this build implements."
+                worldListProblem = .unreadable
+            case .towerError(let status):
+                worldListProblem = .towerError(status)
             case .transport(let detail):
-                worldListFailure = "The world list could not be fetched: \(detail)"
+                worldListProblem = .unreachable(detail)
             }
             logWorldListFailure(worldListFailure ?? "\(error)")
         } catch {
-            worlds = []
-            worldListFailure = "The world list could not be fetched: \(error.localizedDescription)"
+            worldListProblem = .unreachable(error.localizedDescription)
             logWorldListFailure(error.localizedDescription)
         }
     }
@@ -1059,11 +1341,25 @@ final class WorldBuilderViewModel: ObservableObject {
         forgetGeometry()
     }
 
+    /// "Ask the Tower again", from the canvas (U0.8 F11, F13). A new
+    /// request is a new wait, so an overdue one starts its clock again.
+    func askTowerAgain() {
+        client.askAgain()
+        if awaitingIsOverdue, case .awaitingFirstUpdate = state {
+            awaitingWatch?.cancel()
+            awaitingWatch = nil
+            awaitingIsOverdue = false
+            watchAwaiting(state)
+        }
+    }
+
     /// Forget what is drawn and rearm the fetch. A fetch already in flight for
     /// the previous world finds the marker moved and publishes nothing —
     /// the same staleness guard `geometryDidChange` already relies on.
     private func clearGeometry() {
         lastGeometryRevision = nil
+        namedGeometryRevision = nil
+        publishedGeometryRevision = nil
         // `.notAddressed` and not `.noWorld`: this is called when the world
         // being looked at changes, and there is still a world — what there is
         // not, yet, is an address for its geometry. `forgetGeometry()` is the
@@ -1077,6 +1373,8 @@ final class WorldBuilderViewModel: ObservableObject {
     /// fetching for one, either.
     private func forgetGeometry() {
         cancelGeometryFetch()
+        imageryModel.reset()
+        photoFloorplanModel.reset()
         clearGeometry()
         geometryStatus = .noWorld
         geometryOwner = nil
@@ -1167,14 +1465,17 @@ final class WorldBuilderViewModel: ObservableObject {
     /// What this world is doing, in the normal surface's vocabulary. `nil` for
     /// the states that have no world in them.
     var stage: WorldStage? {
-        WorldStage.stage(for: state, evidence: evidence, finalization: finalization)
+        WorldStage.stage(
+            for: state, evidence: evidence, finalization: finalization, photographic: photographic
+        )
     }
 
     /// Which 3D reconstruction can be shown, best first. The primary thing on
     /// screen for a saved world.
     var reconstruction: WorldReconstruction {
         WorldReconstruction.ladder(
-            target: renderTarget, stage: stage, finalSolve: finalSolve, evidence: evidence
+            target: renderTarget, stage: stage, finalSolve: finalSolve, evidence: evidence,
+            photographic: photographic
         )
     }
 
@@ -1203,8 +1504,31 @@ final class WorldBuilderViewModel: ObservableObject {
             finalSolve: finalSolve,
             reconstruction: reconstruction,
             account: geometryAccount,
-            recoverability: recoverability
+            recoverability: recoverability,
+            photographic: photographic,
+            recovery: recovery,
+            lookBackBanner: lookBackBanner,
+            processing: processing,
+            finishLine: finishLine,
+            finishClock: finishClock
         )
+    }
+
+    /// The stage line under a finalizing world (IOS §3c).
+    var finishLine: WorldFinishLine? {
+        guard case .finalizing(_, let buildInProgress) = state else { return nil }
+        return WorldFinishLine.line(isFinalizing: true, buildInProgress: buildInProgress,
+                                    finalSolve: finalSolve, photographic: photographic, processing: processing)
+    }
+
+    /// What the 3D viewer opened from this screen is told about the wait.
+    var viewerProgress: WorldViewerProgress {
+        let p = presentation
+        return WorldViewerProgress(
+            isPreview: p.isPreview,
+            walkEnded: p.stage == .improving || p.stage == .finalizing,
+            line: p.finishLine, stoppedAt: p.stoppedAt,
+            noteSaysWalkTime: p.stage == .partial)
     }
 
     /// Why the cartridge is or is not usable, given the current connection.

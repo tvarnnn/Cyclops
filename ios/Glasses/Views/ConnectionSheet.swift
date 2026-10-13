@@ -26,6 +26,7 @@ struct ConnectionSheet: View {
     @ObservedObject var tower: TowerClient
 
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @State private var isConfirmingUnregister = false
 
     var body: some View {
@@ -73,20 +74,62 @@ struct ConnectionSheet: View {
                             }
                         }
                     )
-                } header: {
-                    Text("Connections")
+                    // Where "can't reach the Tower" is fixed when the address
+                    // is wrong for this network: Connect can only retry it.
+                    NavigationLink {
+                        SettingsView()
+                    } label: {
+                        // Not `LabeledContent`, whose one-line label is cut
+                        // off at the large sizes: the address goes under the
+                        // label at the accessibility sizes, and both wrap.
+                        let layout = dynamicTypeSize.isAccessibilitySize
+                            ? AnyLayout(VStackLayout(alignment: .leading, spacing: 2))
+                            : AnyLayout(HStackLayout(alignment: .firstTextBaseline))
+                        layout {
+                            Text("Tower address")
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                            Text(TowerConfiguration.authority)
+                                .font(.footnote.monospaced())
+                                .foregroundStyle(.readableSecondary)
+                        }
+                        .fixedSize(horizontal: false, vertical: true)
+                        .accessibilityElement(children: .combine)
+                    }
+                    .accessibilityHint("Opens Settings, to change or test the Tower's address")
+                    .accessibilityIdentifier("connections-tower-address")
                 } footer: {
-                    Text(towerFooter)
+                    // No "Connections" header: the navigation bar above says
+                    // it, and the two read as one title twice (UX audit,
+                    // connection-sheet).
+                    VStack(alignment: .leading, spacing: 6) {
+                        // The address the next launch uses, when a saved one
+                        // differs from the one in use (U0.8 F17). Its own
+                        // element, outside the row's combined layout.
+                        if let next = nextLaunchAuthority {
+                            Text(ConnectionsText.nextLaunch(next))
+                                .font(.footnote.monospaced())
+                                .foregroundStyle(.readableSecondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                                .accessibilityIdentifier("connections-next-address")
+                        }
+                        Text(towerFooter)
+                            .foregroundStyle(.readableSecondary)
+                    }
                 }
 
                 Section {
                     Button("Unregister from Meta AI", role: .destructive) {
                         isConfirmingUnregister = true
                     }
+                    .foregroundStyle(Color(uiColor: .readableDestructive))
                 } footer: {
                     Text("Unregistering means completing the full pairing flow again before the glasses can be used.")
+                        .foregroundStyle(.readableSecondary)
                 }
             }
+            // Register, Check and Connect are tinted text on a card; see
+            // `UIColor.readableTint`.
+            .tint(Color.readableTint)
             .navigationTitle("Connections")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -107,15 +150,30 @@ struct ConnectionSheet: View {
         }
     }
 
-    /// Names the endpoint. It is a hardcoded address that the configuration
-    /// itself expects to change between networks, so "can't reach the Tower" is
-    /// an unactionable mystery without it and a fixable problem with it.
+    /// Names the endpoint. The address changes between networks, so "can't
+    /// reach the Tower" is an unactionable mystery without it and a fixable
+    /// problem with it — fixed in Settings, one row up.
     private var towerFooter: String {
         let endpoint = TowerConfiguration.webSocketURL.absoluteString
+        // Connect retries the address in use; a newly saved one waits for
+        // the next launch, and that is said where Connect is (U0.8 F17).
+        let pending = nextLaunchAuthority == nil ? "" : ConnectionsText.savedAddressRule
         if case .failed(let message) = tower.status {
-            return "Could not reach \(endpoint)\n\(message)"
+            return "Could not reach \(endpoint)\n\(message)" + pending
         }
-        return "Tower endpoint: \(endpoint)"
+        return "Tower endpoint: \(endpoint)" + pending
+    }
+
+    /// The address the next launch will use, launched the way this one was,
+    /// when it is not the one in use; `nil` when they agree. The same
+    /// resolution Settings shows (`TowerSettingsModel.nextLaunch`).
+    private var nextLaunchAuthority: String? {
+        let next = TowerConfiguration.resolve(
+            overrideValue: TowerConfiguration.launchOverrideValue,
+            savedValue: TowerAddressStore().saved,
+            policy: .current
+        )
+        return next.authority == TowerConfiguration.authority ? nil : next.authority
     }
 
     private var cameraActionTitle: String {
@@ -132,5 +190,13 @@ struct ConnectionSheet: View {
         case .connecting: return "Cancel"
         case .offline, .failed: return "Connect"
         }
+    }
+}
+
+/// The Connections sheet's words about the next launch (U0.8 F17).
+enum ConnectionsText {
+    static func nextLaunch(_ authority: String) -> String { "Next launch: \(authority)" }
+    static var savedAddressRule: String {
+        " Connect retries \(TowerConfiguration.authority). The saved address is used after Glasses is closed and opened again."
     }
 }

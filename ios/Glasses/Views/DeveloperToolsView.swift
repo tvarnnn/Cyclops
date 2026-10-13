@@ -27,6 +27,9 @@ struct DeveloperToolsView: View {
 
     @Environment(\.dismiss) private var dismiss
 
+    /// The IMU-log purge asks first: it deletes files, even if only this app's.
+    @State private var isConfirmingIMUPurge = false
+
     var body: some View {
         NavigationStack {
             List {
@@ -34,6 +37,8 @@ struct DeveloperToolsView: View {
                 deviceHealthSection
                 mockDeviceSection
                 captureResolutionSection
+                motionProbeSection
+                imuRecorderSection
                 rawStateSection
                 towerSection
                 placeholderSection
@@ -164,7 +169,7 @@ struct DeveloperToolsView: View {
         } header: {
             Text("Device Health")
         } footer: {
-            Text("Glasses thermal is DAT's ThermalLevel — the only device-health value the pinned 0.9.0 SDK exposes. Glasses battery, charging state and any numeric temperature are not in that API, so they are absent rather than estimated. \"iPhone thermal\" at Serious or above means the system is throttling, which shows up in the sender rows above as encode and hop times growing.")
+            Text("Glasses thermal is DAT's ThermalLevel. The pinned 1.0.0 SDK also reports glasses battery and charging state, which this screen does not read yet, and no numeric temperature at all — so those are absent rather than estimated. \"iPhone thermal\" at Serious or above means the system is throttling, which shows up in the sender rows above as encode and hop times growing.")
         }
     }
 
@@ -260,7 +265,82 @@ struct DeveloperToolsView: View {
         return "Applies when capture next starts, and resets to Low when the app relaunches. Low is the rung every existing measurement was taken at. Raising it harms World Builder tracking and helps Document Memory's OCR — but the axis that matters most is privacy: frames reach the Tower at this resolution and are never downscaled, and while the Tower's dataset recorder is armed every one is written to disk unredacted. A higher rung means more identifiable bystanders in that recording. It is a developer control, not a product setting."
     }
 
+    // MARK: Motion (experimental)
+
+    /// The DAT 1.0.0 Motion spike: a switch and a readout, nothing more.
+    ///
+    /// Locked on `isCaptureSessionClaimed` for the same reason the resolution
+    /// picker is: Motion is attached once, when capture starts, so a change
+    /// while a session is held could not take effect and must not look as if
+    /// it had.
+    private var motionProbeSection: some View {
+        Section {
+            Toggle("Start Motion with capture", isOn: $glasses.motionProbeEnabled)
+                .disabled(glasses.isCaptureSessionClaimed)
+            MotionProbeRows(probe: glasses.motionProbe)
+        } header: {
+            Text("Motion (experimental)")
+        } footer: {
+            Text("DAT 1.0.0's experimental IMU capability, started beside the camera at 30 Hz when capture next starts. Off by default and off again after a relaunch. Samples stay on this phone: nothing is sent to the Tower and nothing is shown to the wearer. \"Received\" is measured on the phone's clock, \"Measured\" on the glasses' own; gyro is angular speed in rad/s. With the IMU log on, these rows show state only; the log's rows below carry the rate.")
+        }
+    }
+
+    // MARK: IMU log (walk-5 evidence)
+
+    /// The IMU recorder: its switch, what it is writing, and the purge.
+    ///
+    /// The switch is locked on `isCaptureSessionClaimed` for the probe's reason:
+    /// the recorder is created once, when capture starts. The purge is locked
+    /// while a recorder exists, so the file being written is never deleted.
+    private var imuRecorderSection: some View {
+        Section {
+            Toggle("Record IMU log with capture", isOn: $glasses.imuRecorderEnabled)
+                .disabled(glasses.isCaptureSessionClaimed)
+            IMURecorderRows(readout: glasses.imuRecorderReadout)
+            LabeledContent("Logs on this phone", value: imuInventoryText)
+            IMUPurgeButton(
+                readout: glasses.imuRecorderReadout,
+                isSessionClaimed: glasses.isCaptureSessionClaimed,
+                isConfirming: $isConfirmingIMUPurge
+            )
+            .confirmationDialog(
+                "Delete every IMU log on this phone?",
+                isPresented: $isConfirmingIMUPurge,
+                titleVisibility: .visible
+            ) {
+                Button("Delete all IMU logs", role: .destructive) {
+                    Task { await glasses.purgeIMULogs() }
+                }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("Removes Documents/imu-logs from this app on this phone. Copies already pulled to a Mac are not affected.")
+            }
+        } header: {
+            Text("IMU log (walk evidence)")
+        } footer: {
+            Text("Records the glasses' IMU at 60 Hz (30 Hz if 60 is refused) and the timing of every camera frame to one file per capture session in this app's Documents/imu-logs, for an offline join with the Tower's capture. Off by default and off again after a relaunch. Nothing is sent to the Tower. Motion is raw sensor data: the files are encrypted while the phone is locked, excluded from backup, capped at 200 MB or 30 minutes each and 1 GB in all, and a badge shows at the top of the app while one is being written.")
+        }
+        .onAppear { glasses.refreshIMULogInventory() }
+    }
+
+    private var imuInventoryText: String {
+        guard let inventory = glasses.imuLogInventory else { return "—" }
+        return "\(inventory.files) files, \(Self.megabytes(inventory.bytes))"
+    }
+
+    fileprivate static func megabytes(_ bytes: Int) -> String {
+        String(format: "%.1f MB", Double(bytes) / 1_000_000)
+    }
+
     // MARK: Raw state
+
+    /// DAT's nonblocking compatibility warning, which is logged here rather
+    /// than raised as an alert. "None" is a reading: the listener is live.
+    private var datWarningText: String {
+        guard let warning = glasses.datNonblockingWarning else { return "None" }
+        let time = warning.lastSeen.formatted(date: .omitted, time: .standard)
+        return "\(warning.description) ×\(warning.count), last \(time)"
+    }
 
     private var rawStateSection: some View {
         Section {
@@ -271,6 +351,7 @@ struct DeveloperToolsView: View {
             LabeledContent("Device Session", value: "\(glasses.deviceSessionState)")
             LabeledContent("Camera Stream", value: "\(glasses.cameraStreamState)")
             LabeledContent("Frames Received", value: "\(glasses.frameCount)")
+            LabeledContent("DAT warnings", value: datWarningText)
 
             Button("Check Camera Permission") {
                 glasses.checkCameraPermission()
@@ -292,6 +373,7 @@ struct DeveloperToolsView: View {
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.trailing)
             }
+            LabeledContent("Endpoint Source", value: "\(TowerConfiguration.resolution.source)")
             LabeledContent("Status", value: "\(tower.status)")
             LabeledContent("Streaming To Tower", value: tower.isStreamingToTower ? "Yes" : "No")
             // Labelled as per-bracket on purpose. It counts replies since the
@@ -323,7 +405,7 @@ struct DeveloperToolsView: View {
     /// A constant, hoisted off the view so it is not rebuilt on every render of
     /// a sheet that redraws at the Tower's reply rate while it is open.
     private static let towerFooter =
-        "The endpoint is compiled in and read-only. A configurable endpoint is a separate task. Everything below \"Frame Results\" is the Tower's own answer to GET /health at the moment the button was pressed — nothing polls, so it does not update on its own. \"\(Self.notSaid)\" means the field was missing from that answer, which is not a no and is not a zero. The dataset recorder is armed by the Tower's own TOWER_CAPTURE_ROOT setting when the Tower starts, and there is no way to arm or stop it from this app — which is why there is no control here, only a reading. While it is recording, every frame this phone sends is written to the Tower's disk unredacted."
+        "The endpoint is chosen once, at launch: GLASSES_TOWER_AUTHORITY if set, else the address saved in Settings, else the built-in one. Everything below \"Frame Results\" is the Tower's own answer to GET /health at the moment the button was pressed — nothing polls, so it does not update on its own. \"\(Self.notSaid)\" means the field was missing from that answer, which is not a no and is not a zero. The dataset recorder is armed by the Tower's own TOWER_CAPTURE_ROOT setting when the Tower starts, and there is no way to arm or stop it from this app — which is why there is no control here, only a reading. While it is recording, every frame this phone sends is written to the Tower's disk unredacted."
 
     // MARK: What the Tower says about itself
 
@@ -514,6 +596,88 @@ struct DeveloperToolsView: View {
         } footer: {
             Text("Placeholder type. Never assigned, so these never change. The real streaming state is Camera Stream above. Kept here rather than on the dashboard, where it contradicted the live frame counter.")
         }
+    }
+}
+
+/// The IMU recorder's readout, as its own view for the probe's reason: only
+/// these rows redraw when the recorder reports.
+private struct IMURecorderRows: View {
+    @ObservedObject var readout: IMURecorderReadout
+
+    var body: some View {
+        let s = readout.status
+        LabeledContent("Log state", value: Self.phase(s))
+        if !s.fileName.isEmpty {
+            LabeledContent("File", value: s.fileName)
+        }
+        LabeledContent("Size", value: DeveloperToolsView.megabytes(s.bytes))
+        LabeledContent("Motion lines", value: "\(s.counts.motionGlasses) glasses, \(s.counts.motionOther) other")
+        LabeledContent("Motion rate", value: Self.hz(s.motionRateHz, configured: s.motionConfiguredHz))
+        LabeledContent("Motion gaps", value: "\(s.counts.motionGapEvents) (~\(s.counts.motionEstimatedMissing) missing)")
+        LabeledContent("Frame lines", value: "\(s.counts.frames) (\(s.counts.framesSent) sent)")
+        LabeledContent("Camera epochs", value: "\(s.epochs)")
+    }
+
+    private static func phase(_ s: IMURecorderStatus) -> String {
+        switch s.phase {
+        case .idle: return "Off"
+        case .closed: return "Closed"
+        case .failed(let reason): return "Stopped: \(reason)"
+        case .refused(let reason): return "NOT RECORDING: \(reason)"
+        case .recording:
+            if let cap = s.capReason { return "Stopped at the \(cap) cap" }
+            return s.phoneLocked ? "Recording (phone locked)" : "Recording"
+        }
+    }
+
+    private static func hz(_ measured: Double?, configured: Int?) -> String {
+        let asked = configured.map { "\($0) Hz asked" } ?? "—"
+        guard let measured else { return asked }
+        return String(format: "%.1f Hz, ", measured) + asked
+    }
+}
+
+/// Its own view so it can observe the readout for the badge state without the
+/// whole screen doing so.
+private struct IMUPurgeButton: View {
+    @ObservedObject var readout: IMURecorderReadout
+    let isSessionClaimed: Bool
+    @Binding var isConfirming: Bool
+
+    var body: some View {
+        Button("Delete all IMU logs…", role: .destructive) {
+            isConfirming = true
+        }
+        .disabled(isSessionClaimed || readout.indicator != .off)
+    }
+}
+
+/// The Motion readout, as its own view so only these rows redraw when the
+/// probe republishes; the rest of Developer Tools does not observe it.
+private struct MotionProbeRows: View {
+    @ObservedObject var probe: MotionProbe
+
+    var body: some View {
+        let s = probe.snapshot
+        LabeledContent("Motion state", value: s.state)
+        if let error = s.lastError {
+            LabeledContent("Motion error", value: error)
+        }
+        LabeledContent("Samples", value: "\(s.samplesInWindow) in window, \(s.totalReceived) total")
+        LabeledContent("Received", value: Self.hz(s.arrivalRateHz))
+        LabeledContent("Measured", value: Self.hz(s.deviceRateHz))
+        LabeledContent("Gyro now", value: Self.radiansPerSecond(s.latestGyroMagnitude))
+        LabeledContent("Gyro peak (window)", value: Self.radiansPerSecond(s.peakGyroMagnitude))
+    }
+
+    private static func hz(_ value: Double?) -> String {
+        guard let value else { return "—" }
+        return String(format: "%.1f Hz", value)
+    }
+
+    private static func radiansPerSecond(_ value: Float?) -> String {
+        guard let value else { return "—" }
+        return String(format: "%.2f rad/s", value)
     }
 }
 

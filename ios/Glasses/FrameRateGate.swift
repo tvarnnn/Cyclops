@@ -75,7 +75,32 @@ struct FrameRateGate {
     /// So raise this to 15 once a physical run confirms the headroom, using
     /// the `Encode ms` and `Backlog` rows on the developer surface. It is a
     /// one-constant change; do not raise it on estimates alone.
-    static let towerTargetFPS: Double = 12
+    ///
+    /// The measuring run itself sets the build setting
+    /// `IOS_TOWER_TARGET_FPS` (or the launch environment's variable of the
+    /// same name), read once here; every reader -- the gate, the sender's
+    /// window, the IMU log's header, the Home text -- then agrees on it.
+    static let towerTargetFPS: Double = configuredTowerTargetFPS(
+        environment: ProcessInfo.processInfo.environment, info: Bundle.main.infoDictionary ?? [:])
+
+    /// The rate unless a build or launch says otherwise.
+    nonisolated static let defaultTowerTargetFPS: Double = 12
+    /// What `IOS_TOWER_TARGET_FPS` may set: a whole number of frames per
+    /// second in this range. Anything else -- empty, unset, out of range or
+    /// not a number -- keeps the default, so a default build is unchanged.
+    nonisolated static let towerTargetFPSRange = 6...24
+    nonisolated static let towerTargetFPSVariable = "IOS_TOWER_TARGET_FPS"
+    nonisolated static let towerTargetFPSInfoKey = "GlassesTowerTargetFPS"
+
+    /// The launch environment's value when it is valid, else the Info.plist
+    /// key's (`$(IOS_TOWER_TARGET_FPS)` at build time), else 12.
+    nonisolated static func configuredTowerTargetFPS(environment: [String: String] = [:],
+                                                     info: [String: Any] = [:]) -> Double {
+        for raw in [environment[towerTargetFPSVariable], info[towerTargetFPSInfoKey] as? String] {
+            if let raw, let fps = Int(raw), towerTargetFPSRange.contains(fps) { return Double(fps) }
+        }
+        return defaultTowerTargetFPS
+    }
 
     /// The time the next frame becomes eligible. `nil` before the first
     /// frame of a session, which is always admitted.

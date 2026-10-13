@@ -1,0 +1,407 @@
+//
+//  CaptureHealthTests.swift
+//  GlassesTests
+//
+//  U2-D0 "Capture health" (spec U2-D0-CAPTURE-HEALTH-SWIFT-SPEC-20261005 §3,
+//  tests 1-5): the panel's arithmetic on scripted samples and instants, the
+//  two decodes it adds, and its honesty about absent and old figures. No
+//  Tower; the client's half is in `TowerWorldBuilderClientTests`.
+//
+
+import XCTest
+
+@testable import Glasses
+
+final class CaptureHealthTests: XCTestCase {
+
+    private let t0 = ContinuousClock.now
+    private func at(_ seconds: Double) -> ContinuousClock.Instant { t0 + .milliseconds(Int(seconds * 1000)) }
+
+    private func sample(keyframes: Int? = nil, restarts: Int? = nil, recovery: WorldRecoveryReport? = nil,
+                        lag: WorldMapLag? = nil, world: String? = "w1", session: String? = "s1") -> CaptureHealthSample {
+        CaptureHealthSample(keyframeCount: keyframes, trackingRestarts: restarts, recovery: recovery, mapLag: lag,
+                            worldID: world, sessionID: session)
+    }
+
+    private func readout(_ history: CaptureHealthHistory, _ seconds: Double, linked: Bool = true,
+                         capturing: Bool = true) -> CaptureHealthReadout {
+        history.readout(now: at(seconds), isLinked: linked, isCapturing: capturing)
+    }
+
+    // MARK: 1. Pace and Stalled
+
+    /// A counter 0 → 30 over 60 s reads 30 keyframes/min; a 6 s pause shows
+    /// Stalled; resuming clears it.
+    func testTheRateIsTheRiseOverTheLastMinuteAndAPauseIsAStall() {
+        var history = CaptureHealthHistory()
+        for second in stride(from: 0, through: 60, by: 2) {
+            history.record(sample(keyframes: second / 2), at: at(Double(second)))
+        }
+        XCTAssertEqual(readout(history, 60).pace, "30 keyframes/min")
+        XCTAssertNil(readout(history, 60).stalled)
+
+        // Heartbeats, no new keyframe, for 6 s.
+        for second in [62.0, 64, 66] { history.record(sample(keyframes: 30), at: at(second)) }
+        XCTAssertEqual(readout(history, 64).stalled, nil, "4 s is not a stall")
+        XCTAssertEqual(readout(history, 66).stalled, "Stalled — no new keyframe for 6 s")
+        XCTAssertNil(readout(history, 66, capturing: false).stalled, "only while capturing")
+        // The window slides: the minute to 66 s rose from 3 to 30.
+        XCTAssertEqual(readout(history, 66).pace, "27 keyframes/min")
+
+        history.record(sample(keyframes: 31), at: at(67))
+        XCTAssertNil(readout(history, 67).stalled, "resuming clears it")
+        XCTAssertEqual(readout(history, 67).pace, "28 keyframes/min")
+    }
+
+    /// Watched for less than a minute: the rise since the first sample, per
+    /// minute -- and no rate at all over less than 10 s. A counter that goes
+    /// down is a new walk.
+    func testAShortWatchIsARateSinceItsStartAndANewWalkStartsAgain() {
+        var history = CaptureHealthHistory()
+        history.record(sample(keyframes: 4), at: at(0))
+        XCTAssertEqual(readout(history, 5).pace, "— keyframes/min", "5 s is too short for a rate")
+        history.record(sample(keyframes: 9), at: at(10))
+        XCTAssertEqual(readout(history, 10).pace, "30 keyframes/min", "5 in 10 s")
+        history.record(sample(keyframes: 1), at: at(12))
+        XCTAssertEqual(readout(history, 12).pace, "— keyframes/min", "a new walk, from its own first sample")
+        XCTAssertNil(readout(history, 12).stalled, "a new walk has not stalled")
+        history.record(sample(keyframes: 8), at: at(22))
+        XCTAssertEqual(readout(history, 22).pace, "42 keyframes/min", "7 in 10 s")
+    }
+
+    /// Review HIGH 1: another walk whose counters did NOT fall -- the same
+    /// keyframe count, more restarts -- is still another walk. Its identity
+    /// (world, session) says so, and every figure starts again: the pace
+    /// warms up from "—", no breaks are inherited, and the stall clock is
+    /// its own.
+    func testANewWalkWhoseCountersDoNotFallStartsEveryFigureAgain() {
+        var history = CaptureHealthHistory()
+        // Walk w1/s1: 20 keyframes in 40 s, 2 breaks at 20 s, then 8 s stalled.
+        for second in stride(from: 0, through: 48, by: 2) {
+            history.record(sample(keyframes: min(second, 40) / 2, restarts: second >= 20 ? 2 : 0,
+                                  world: "w1", session: "s1"), at: at(Double(second)))
+        }
+        XCTAssertEqual(readout(history, 48).pace, "25 keyframes/min")
+        XCTAssertEqual(readout(history, 48).breaks, "Breaks in the last 30 s: 2")
+        XCTAssertEqual(readout(history, 48).stalled, "Stalled — no new keyframe for 8 s")
+
+        // Walk w1/s2 starts at the same count, with more restarts.
+        history.record(sample(keyframes: 20, restarts: 3, world: "w1", session: "s2"), at: at(50))
+        let first = readout(history, 50)
+        XCTAssertEqual(first.pace, "— keyframes/min", "the new walk's pace warms up from its own first sample")
+        XCTAssertEqual(first.breaks, "Breaks in the last 30 s: —", "no break of the last walk is the new one's")
+        XCTAssertNil(first.breaksCount)
+        XCTAssertNil(first.stalled, "the last walk's stall is not the new one's")
+
+        for second in stride(from: 52, through: 60, by: 2) {
+            history.record(sample(keyframes: 20 + (second - 50) / 2, restarts: 3, world: "w1", session: "s2"),
+                           at: at(Double(second)))
+        }
+        XCTAssertEqual(readout(history, 60).pace, "30 keyframes/min", "5 in its own 10 s, not the last walk's minute")
+        XCTAssertEqual(readout(history, 60).breaks, "Breaks in the last 30 s: —", "no rise in the new walk")
+        XCTAssertNil(readout(history, 60).stalled)
+
+        // Another world, same session id and higher counters: another walk too.
+        history.record(sample(keyframes: 30, restarts: 4, world: "w2", session: "s2"), at: at(61))
+        XCTAssertEqual(readout(history, 61).pace, "— keyframes/min")
+        XCTAssertEqual(readout(history, 61).breaks, "Breaks in the last 30 s: —")
+    }
+
+    /// No figure at all: what a report about no walk this panel can follow
+    /// shows (`CaptureHealthSample.empty`), the map row hidden.
+    private func assertNoFigures(_ r: CaptureHealthReadout, _ why: String, line: UInt = #line) {
+        XCTAssertEqual(r.pace, "— keyframes/min", why, line: line)
+        XCTAssertNil(r.stalled, why, line: line)
+        XCTAssertEqual(r.breaks, "Breaks in the last 30 s: —", why, line: line)
+        XCTAssertNil(r.breaksCount, why, line: line)
+        XCTAssertEqual(r.lookBackCounts, "Look-back: —", why, line: line)
+        XCTAssertNil(r.lookBackLine, why, line: line)
+        XCTAssertNil(r.mapLag, why, line: line)
+    }
+
+    /// Codex HIGH (2026-10-05): a `receiving` report that does not name both
+    /// its world and its session is no walk's. Every figure reads "—" until
+    /// both ids arrive, and the walk then named starts from its own first
+    /// sample (a nil → id change is a new identity).
+    func testEveryFigureWaitsForBothIdsAndALateIdentityStartsAfresh() {
+        var history = CaptureHealthHistory()
+        let recovery = WorldRecoveryReport(state: .recovered, episode: 1,
+                                           counts: WorldRecoveryCounts(recovered: 1, timedOut: 0))
+        let lag = WorldMapLag(builtFromKeyframes: 0, keyframesNow: 5)
+        // 20 s of reports naming the world but not the session, then the
+        // session but not the world: counters rising all along.
+        for second in stride(from: 0, through: 20, by: 2) {
+            history.record(sample(keyframes: second, restarts: second / 4, recovery: recovery, lag: lag,
+                                  world: second < 10 ? "w1" : nil, session: second < 10 ? nil : "s1"),
+                           at: at(Double(second)))
+            assertNoFigures(readout(history, Double(second)), "no identity at \(second) s")
+        }
+
+        // Both ids arrive.
+        history.record(sample(keyframes: 22, restarts: 5, recovery: recovery, lag: lag, world: "w1", session: "s1"),
+                       at: at(22))
+        let first = readout(history, 22)
+        XCTAssertEqual(first.pace, "— keyframes/min", "the named walk warms up from its own first sample")
+        XCTAssertEqual(first.breaks, "Breaks in the last 30 s: —", "no break before identity is the walk's")
+        XCTAssertNil(first.stalled)
+        XCTAssertEqual(first.lookBackCounts, "linked back 1 · could not link 0", "this report's own figures show")
+        XCTAssertEqual(first.mapLag, "Map: 5 keyframes behind")
+        for second in stride(from: 24, through: 32, by: 2) {
+            history.record(sample(keyframes: 22 + (second - 22) / 2, restarts: 5, recovery: recovery, lag: lag,
+                                  world: "w1", session: "s1"), at: at(Double(second)))
+        }
+        XCTAssertEqual(readout(history, 32).pace, "30 keyframes/min", "5 in its own 10 s, not the unnamed reports' rise")
+        XCTAssertEqual(readout(history, 32).breaks, "Breaks in the last 30 s: —", "no rise since identity")
+    }
+
+    /// Codex HIGH (2026-10-05): two walks whose reports lack the same id
+    /// are not one walk -- two missing ids are not equal. Neither shows a
+    /// figure, and nothing of the first is the second's once its ids arrive.
+    func testWalksWithMissingIdsShareNoPaceBreaksOrStall() {
+        var history = CaptureHealthHistory()
+        // Walk A, its session never named: 0 → 20 keyframes over 40 s, two
+        // breaks at 20 s, then 8 s stalled.
+        for second in stride(from: 0, through: 48, by: 2) {
+            history.record(sample(keyframes: min(second, 40) / 2, restarts: second >= 20 ? 2 : 0,
+                                  world: "w1", session: nil), at: at(Double(second)))
+        }
+        assertNoFigures(readout(history, 48), "walk A never named its session")
+
+        // Walk B, the same world, its session not named either; counters higher.
+        for second in stride(from: 50, through: 58, by: 2) {
+            history.record(sample(keyframes: 20 + (second - 48), restarts: 3, world: "w1", session: nil),
+                           at: at(Double(second)))
+        }
+        assertNoFigures(readout(history, 58), "walk B is no walk's, and not walk A's")
+
+        // B's session is named.
+        history.record(sample(keyframes: 32, restarts: 3, world: "w1", session: "s2"), at: at(60))
+        let named = readout(history, 60)
+        XCTAssertEqual(named.pace, "— keyframes/min", "B's pace is its own, from its first named sample")
+        XCTAssertEqual(named.breaks, "Breaks in the last 30 s: —", "walk A's breaks are not B's")
+        XCTAssertNil(named.breaksCount)
+        XCTAssertNil(named.stalled, "walk A's stall is not B's")
+    }
+
+    // MARK: 1c. The look-back row when the relocalizer is off (the lead's decision, 2026-10-05)
+
+    /// A walk whose reports never carry `tracking.recovery` (the relocalizer
+    /// off): no look-back row at all, live or stale -- not "—" for the whole
+    /// walk. The other rows are unchanged.
+    func testTheLookBackRowIsHiddenForAWalkWithoutRecovery() {
+        var history = CaptureHealthHistory()
+        XCTAssertFalse(readout(history, 0).lookBackShown, "no report yet")
+        for second in stride(from: 0, through: 20, by: 2) {
+            history.record(sample(keyframes: second, restarts: 0,
+                                  lag: WorldMapLag(builtFromKeyframes: 0, keyframesNow: 5)), at: at(Double(second)))
+            XCTAssertFalse(readout(history, Double(second)).lookBackShown, "no recovery at \(second) s")
+        }
+        let live = readout(history, 20)
+        XCTAssertEqual(live.pace, "60 keyframes/min", "the other rows are as before")
+        XCTAssertEqual(live.mapLag, "Map: 5 keyframes behind")
+        XCTAssertFalse(readout(history, 30).lookBackShown, "stale, and still no look-back to speak of")
+        XCTAssertEqual(readout(history, 30).pace, "— keyframes/min")
+    }
+
+    /// A walk in which one report carries `tracking.recovery`: the row shows
+    /// from then on, by the normal rules -- "—" counts for a later report
+    /// without it, never hidden again. Another walk starts hidden again.
+    func testTheLookBackRowShowsOnceTheWalkCarriesRecovery() {
+        var history = CaptureHealthHistory()
+        history.record(sample(keyframes: 1), at: at(0))
+        XCTAssertFalse(readout(history, 0).lookBackShown)
+        let report = WorldRecoveryReport(state: .recovered, episode: 1,
+                                         counts: WorldRecoveryCounts(recovered: 1, timedOut: 0))
+        history.record(sample(keyframes: 2, recovery: report), at: at(2))
+        XCTAssertTrue(readout(history, 2).lookBackShown)
+        XCTAssertEqual(readout(history, 2).lookBackCounts, "linked back 1 · could not link 0")
+        history.record(sample(keyframes: 3), at: at(4))
+        XCTAssertTrue(readout(history, 4).lookBackShown, "once carried, the row stays for the walk")
+        XCTAssertEqual(readout(history, 4).lookBackCounts, "Look-back: —")
+
+        history.record(sample(keyframes: 4, world: "w1", session: "s2"), at: at(6))
+        XCTAssertFalse(readout(history, 6).lookBackShown, "another walk, no recovery yet")
+    }
+
+    /// Final-gate review of cb865eb (LOW): a report that names no walk is
+    /// about no walk. The walk heard before -- which carried recovery -- is
+    /// not retained for it, so the row is not shown for an unnamed report,
+    /// and the same walk named again starts afresh until it carries recovery.
+    func testAnUnnamedReportDoesNotKeepTheLastWalksLookBackRow() {
+        var history = CaptureHealthHistory()
+        let report = WorldRecoveryReport(state: .recovered, episode: 1,
+                                         counts: WorldRecoveryCounts(recovered: 1, timedOut: 0))
+        history.record(sample(keyframes: 2, recovery: report), at: at(0))
+        XCTAssertTrue(readout(history, 0).lookBackShown, "fixture: the walk carried recovery")
+        history.record(sample(keyframes: 3, world: nil, session: nil), at: at(2))
+        XCTAssertNil(history.walk, "no walk is named")
+        XCTAssertFalse(readout(history, 2).lookBackShown, "an unnamed report has no look-back row")
+        history.record(sample(keyframes: 3, session: nil), at: at(3))
+        XCTAssertFalse(readout(history, 3).lookBackShown, "half a name is no name")
+        history.record(sample(keyframes: 4), at: at(4))
+        XCTAssertFalse(readout(history, 4).lookBackShown, "named again: afresh, no recovery carried yet")
+        history.record(sample(keyframes: 5, recovery: report), at: at(6))
+        XCTAssertTrue(readout(history, 6).lookBackShown)
+        // A dropped link is not the Tower speaking: the row survives it.
+        history.invalidate()
+        XCTAssertTrue(readout(history, 7).lookBackShown)
+    }
+
+    /// A walk with recovery whose figures then go stale, lose the link, or
+    /// are invalidated: the row stays and reads "—". Hiding never stands in
+    /// for staleness.
+    func testAStaleLookBackRowReadsUnknownAndIsNotHidden() {
+        var history = CaptureHealthHistory()
+        let report = WorldRecoveryReport(state: .recovered, episode: 1,
+                                         counts: WorldRecoveryCounts(recovered: 1, timedOut: 0))
+        history.record(sample(keyframes: 2, recovery: report), at: at(0))
+        XCTAssertTrue(readout(history, 0).lookBackShown)
+        for (r, why) in [(readout(history, 6), "stale"), (readout(history, 1, linked: false), "no link")] {
+            XCTAssertTrue(r.lookBackShown, why)
+            XCTAssertEqual(r.lookBackCounts, "Look-back: —", why)
+            XCTAssertNil(r.lookBackLine, why)
+        }
+        history.invalidate()
+        let invalidated = readout(history, 1)
+        XCTAssertTrue(invalidated.lookBackShown, "invalidated")
+        XCTAssertEqual(invalidated.lookBackCounts, "Look-back: —")
+        XCTAssertEqual(invalidated.pace, "— keyframes/min")
+    }
+
+    // MARK: 2. Breaks in the last 30 s
+
+    /// Restarts +2 at 10 s and +1 at 35 s: 3 at 36 s, 1 at 41 s. Before the
+    /// panel has watched 30 s, a rise it saw is a floor and no rise is
+    /// unknown, never 0.
+    func testBreaksAreTheRiseOverTheLast30SecondsAndTheWindowSlides() {
+        var history = CaptureHealthHistory()
+        var restarts = 0
+        var seen: [Int: CaptureHealthReadout] = [:]
+        for second in 0...41 {
+            if second == 10 { restarts += 2 }
+            if second == 35 { restarts += 1 }
+            history.record(sample(keyframes: second, restarts: restarts), at: at(Double(second)))
+            seen[second] = readout(history, Double(second))
+        }
+        XCTAssertEqual(seen[5]?.breaks, "Breaks in the last 30 s: —", "5 s watched, nothing seen: unknown")
+        XCTAssertEqual(seen[5]?.breaksSpoken, "Breaks in the last 30 seconds: unknown")
+        XCTAssertNil(seen[5]?.breaksCount)
+        XCTAssertEqual(seen[12]?.breaks, "Breaks in the last 30 s: ≥ 2", "seen, but the window is not all watched")
+        XCTAssertEqual(seen[12]?.breaksSpoken, "Breaks in the last 30 seconds: at least 2")
+        XCTAssertEqual(seen[30]?.breaks, "Breaks in the last 30 s: 2")
+        XCTAssertEqual(seen[36]?.breaks, "Breaks in the last 30 s: 3")
+        XCTAssertEqual(seen[41]?.breaks, "Breaks in the last 30 s: 1")
+        XCTAssertEqual(seen[41]?.breaksSpoken, "Breaks in the last 30 seconds: 1")
+        XCTAssertEqual(seen[41]?.breaksCount, 1)
+        XCTAssertFalse(seen.values.contains { $0.breaks.contains("lost") }, "never \"Tracking: lost\"")
+    }
+
+    // MARK: 3. Look-back
+
+    func testTheLookBackRowShowsTheCountsAndNeverAZeroItWasNotSent() throws {
+        let block: [String: Any] = [
+            "state": "recovered", "episode": 3, "prompts_enabled": true, "prompt": NSNull(),
+            "counts": ["episodes": 3, "recovered": 2, "recovered_after_prompt": 1, "timed_out": 1,
+                       "prompts": 1, "withheld_by_limiter": 0, "withheld_disabled": 0],
+        ]
+        let json = try JSONSerialization.jsonObject(with: JSONSerialization.data(withJSONObject: block))
+        let report = try XCTUnwrap(WorldRecoveryReport(json: json))
+        XCTAssertEqual(report.counts, WorldRecoveryCounts(recovered: 2, timedOut: 1))
+
+        var history = CaptureHealthHistory()
+        history.record(sample(keyframes: 5, restarts: 0, recovery: report), at: at(0))
+        XCTAssertEqual(readout(history, 0).lookBackLine, "Linked back to what you saw before")
+        XCTAssertEqual(readout(history, 0).lookBackCounts, "linked back 2 · could not link 1")
+
+        var withoutCounts = block
+        withoutCounts["counts"] = nil
+        let bare = try XCTUnwrap(WorldRecoveryReport(json: withoutCounts))
+        XCTAssertNil(bare.counts)
+        XCTAssertNil(WorldRecoveryReport(json: block.merging(["counts": ["recovered": 2]]) { $1 })?.counts,
+                     "half a block is not a count")
+        history.record(sample(keyframes: 5, restarts: 0, recovery: bare), at: at(1))
+        XCTAssertEqual(readout(history, 1).lookBackCounts, "linked back — · could not link —")
+        history.record(sample(keyframes: 5, restarts: 0), at: at(2))
+        XCTAssertEqual(readout(history, 2).lookBackCounts, "Look-back: —")
+        XCTAssertNil(readout(history, 2).lookBackLine)
+    }
+
+    // MARK: 4. Map lag
+
+    func testTheMapLagIsTheDifferenceAndHiddenWhenNoneOrUnknown() {
+        XCTAssertEqual(WorldMapLag(geometry: ["built_from_keyframes": 117, "keyframes_now": 120])?.behind, 3)
+        XCTAssertNil(WorldMapLag(geometry: ["built_from_keyframes": NSNull(), "keyframes_now": 4]))
+        XCTAssertNil(WorldMapLag(geometry: ["keyframes_now": 4]))
+        XCTAssertNil(WorldMapLag(geometry: nil))
+        XCTAssertEqual(WorldMapLag(builtFromKeyframes: 12, keyframesNow: 10).behind, 0, "clamped at 0")
+
+        var history = CaptureHealthHistory()
+        history.record(sample(keyframes: 120, lag: WorldMapLag(builtFromKeyframes: 117, keyframesNow: 120)), at: at(0))
+        XCTAssertEqual(readout(history, 0).mapLag, "Map: 3 keyframes behind")
+        history.record(sample(keyframes: 120, lag: WorldMapLag(builtFromKeyframes: 119, keyframesNow: 120)), at: at(1))
+        XCTAssertEqual(readout(history, 1).mapLag, "Map: 1 keyframe behind")
+        history.record(sample(keyframes: 120, lag: WorldMapLag(builtFromKeyframes: 120, keyframesNow: 120)), at: at(2))
+        XCTAssertNil(readout(history, 2).mapLag, "equal: hidden")
+        history.record(sample(keyframes: 120), at: at(3))
+        XCTAssertNil(readout(history, 3).mapLag, "missing: hidden")
+    }
+
+    // MARK: 5. No link, and old figures
+
+    func testWithoutTheLinkOrWithOldReportsEveryFigureReadsUnknown() {
+        var history = CaptureHealthHistory()
+        let report = WorldRecoveryReport(state: .recovered, episode: 1, counts: WorldRecoveryCounts(recovered: 1, timedOut: 0))
+        for second in stride(from: 0.0, through: 10, by: 2) {
+            history.record(sample(keyframes: Int(second), restarts: 1, recovery: report,
+                                  lag: WorldMapLag(builtFromKeyframes: 0, keyframesNow: 5)), at: at(second))
+        }
+        let live = readout(history, 10)
+        XCTAssertEqual(live.link, "Tower: connected")
+        XCTAssertEqual(live.pace, "60 keyframes/min")
+
+        func assertUnknown(_ r: CaptureHealthReadout, _ why: String, line: UInt = #line) {
+            XCTAssertEqual(r.pace, "— keyframes/min", why, line: line)
+            XCTAssertNil(r.stalled, why, line: line)
+            XCTAssertEqual(r.breaks, "Breaks in the last 30 s: —", why, line: line)
+            XCTAssertEqual(r.lookBackCounts, "Look-back: —", why, line: line)
+            XCTAssertNil(r.lookBackLine, why, line: line)
+            XCTAssertEqual(r.mapLag, "Map: —", why, line: line)
+            XCTAssertNil(r.breaksCount, why, line: line)
+        }
+        let unlinked = readout(history, 10, linked: false)
+        XCTAssertEqual(unlinked.link, "Tower: not connected")
+        assertUnknown(unlinked, "no link")
+        XCTAssertEqual(readout(history, 15).pace, "40 keyframes/min", "5 s since the last report is still live")
+        assertUnknown(readout(history, 15.5), "a report older than 5 s is not live")
+        assertUnknown(CaptureHealthHistory().readout(now: at(0), isLinked: true, isCapturing: true), "no report yet")
+
+        // A report that says nothing about a live walk: unknown figures, and
+        // no stall claimed from a counter it did not send.
+        history.record(.empty, at: at(16))
+        let empty = readout(history, 16)
+        XCTAssertEqual(empty.pace, "— keyframes/min")
+        XCTAssertEqual(empty.breaks, "Breaks in the last 30 s: —")
+        XCTAssertNil(empty.stalled)
+        XCTAssertNil(empty.mapLag)
+    }
+
+    /// Only the Stalled and the Breaks rows are said aloud, at most once
+    /// every 10 s, and a breaks count is said only when it rises from a known
+    /// one.
+    func testAnnouncementsAreForStallsAndBreaksAtMostEveryTenSeconds() {
+        func readout(breaks: Int?, stalled: String? = nil) -> CaptureHealthReadout {
+            CaptureHealthReadout(link: "Tower: connected", pace: "1 keyframes/min", stalled: stalled,
+                                 breaks: "", breaksSpoken: "Breaks in the last 30 seconds: \(breaks ?? 0)",
+                                 lookBackLine: nil, lookBackCounts: "", mapLag: nil, breaksCount: breaks)
+        }
+        var announcer = CaptureHealthAnnouncer()
+        XCTAssertNil(announcer.announcement(from: readout(breaks: nil), to: readout(breaks: 2), at: at(0)),
+                     "the first known count is not news")
+        XCTAssertEqual(announcer.announcement(from: readout(breaks: 2), to: readout(breaks: 3), at: at(1)),
+                       "Breaks in the last 30 seconds: 3")
+        XCTAssertNil(announcer.announcement(from: readout(breaks: 3), to: readout(breaks: 4), at: at(5)), "10 s apart")
+        XCTAssertEqual(announcer.announcement(from: readout(breaks: 4), to: readout(breaks: 4, stalled: "Stalled — no new keyframe for 5 s"),
+                                              at: at(11)), "Stalled — no new keyframe for 5 s")
+        XCTAssertNil(announcer.announcement(from: readout(breaks: 4), to: readout(breaks: 3), at: at(30)), "a fall is not said")
+    }
+}

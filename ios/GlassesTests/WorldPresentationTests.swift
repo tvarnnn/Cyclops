@@ -451,6 +451,22 @@ final class WorldStageTests: XCTestCase {
             XCTAssertFalse(stage.isStillChanging, "\(stage.label)")
         }
     }
+
+    /// U0.8 F11: only the Tower's own report of a failed build is a stage.
+    /// A channel or decoding failure says nothing about the walk.
+    func testOnlyATowerReportedFailureIsAStage() {
+        for kind in [CartridgeFailure.Kind.transport, .timedOut, .notSupported, .undecodableResponse] {
+            XCTAssertNil(
+                WorldStage.stage(for: .failed(CartridgeFailure(kind: kind, message: "x")), evidence: nil, finalization: nil),
+                "\(kind)"
+            )
+        }
+        XCTAssertEqual(
+            WorldStage.stage(for: .failed(CartridgeFailure(kind: .towerReportedFailure, message: "x")),
+                             evidence: nil, finalization: nil),
+            .needsRetry
+        )
+    }
 }
 
 // MARK: - Recoverability, with no rebuild route to offer
@@ -485,6 +501,22 @@ final class WorldRecoverabilityTests: XCTestCase {
         XCTAssertNil(
             WorldRecoverability.of(stage: .building, evidence: FieldWalk.evidence, reason: nil).sentence
         )
+    }
+
+    /// U0.8 F12: a finalized world whose figures are all zero, with no
+    /// finalization record, is "Needs retry" -- and carries the sentence
+    /// that says what makes another one.
+    func testAFinalizedWorldWithNothingUsableCarriesItsSentence() {
+        let zeros = WorldSnapshot(
+            worldID: "w-zero", keyframeCount: 3,
+            geometry: WorldGeometryReport(representation: "sparse point cloud", elementCount: 0, isIncremental: false),
+            trajectory: WorldTrajectoryReport(poseCount: 0)
+        )
+        let evidence = WorldEvidence(snapshot: zeros)
+        let stage = WorldStage.stage(for: .finalized(zeros), evidence: evidence, finalization: nil)
+        XCTAssertEqual(stage, .needsRetry)
+        let sentence = WorldRecoverability.of(stage: .needsRetry, evidence: evidence, reason: nil).sentence
+        XCTAssertTrue(sentence?.contains("Walking the space again") == true, sentence ?? "nil")
     }
 }
 
@@ -578,13 +610,15 @@ final class WorldRenderViewAddressTests: XCTestCase {
         let url = WorldRenderClient.url(
             for: WorldRenderTarget(worldID: "w1", sessionID: "s1"), baseURL: Self.host
         )
+        // U1.1: the product page also asks for native chrome (WORLDS §4c).
         XCTAssertEqual(url?.absoluteString,
-                       "http://stub.invalid/worlds/w1/render?session_id=s1&viewer=appearance-1")
+                       "http://stub.invalid/worlds/w1/render?session_id=s1&viewer=appearance-1&wb-chrome=native")
 
         let unpinned = WorldRenderClient.url(
             for: WorldRenderTarget(worldID: "w1", sessionID: nil), baseURL: Self.host
         )
-        XCTAssertEqual(unpinned?.absoluteString, "http://stub.invalid/worlds/w1/render?viewer=appearance-1")
+        XCTAssertEqual(unpinned?.absoluteString,
+                       "http://stub.invalid/worlds/w1/render?viewer=appearance-1&wb-chrome=native")
     }
 
     func testTheDiagnosticsViewAsksForItByName() {
@@ -772,7 +806,7 @@ final class WorldBuilderViewModelGeometryStatusTests: XCTestCase {
     /// is situations 1 and 2, and it must not read as "nothing was mapped".
     func testAWorldStateWithNoAddressIsUnaddressedAndNotEmpty() {
         let model = viewModel()
-        model.stateDidChange(to: .interrupted(FieldWalk.snapshot, reason: "the builder exited"))
+        model.report(.interrupted(FieldWalk.snapshot, reason: "the builder exited"))
         XCTAssertEqual(model.geometryStatus, .notAddressed)
         XCTAssertNotEqual(model.geometryAccount.headline, "Nothing mapped yet")
         XCTAssertEqual(model.stage, .interrupted)
@@ -920,7 +954,7 @@ final class WorldBuilderViewModelGeometryStatusTests: XCTestCase {
         _ = await waitUntil { model.finalSolve == .solved }
 
         var republishes = 0
-        let cancellable = model.$finalization.dropFirst().sink { _ in republishes += 1 }
+        let cancellable = model.$walkReport.dropFirst().sink { _ in republishes += 1 }
         client.send(finalization: WorldFinalizationReport(state: .complete, finalSolve: "solved"))
         try? await Task.sleep(nanoseconds: 60_000_000)
         cancellable.cancel()
@@ -1087,10 +1121,10 @@ final class WorldListingBadgeAgreementTests: XCTestCase {
             "No geometry yet. The Tower may still build it for this walk.")
         XCTAssertEqual(
             WorldListingPresentation.noGeometryCaption(for: session(state: "interrupted", hasGeometry: false)),
-            "This walk's geometry is no longer on the Tower, so there is nothing to open.")
+            "This walk's geometry is no longer on the Tower, so there is nothing to open. Walking the space again makes a new one.")
         XCTAssertEqual(
             WorldListingPresentation.noGeometryCaption(for: session(state: "unbuilt", hasGeometry: false)),
-            "No geometry was built for this walk, so there is nothing to open.")
+            "No geometry was built for this walk, so there is nothing to open. Walking the space again makes a new one.")
     }
 }
 
@@ -1290,7 +1324,7 @@ final class WorldPickerOpenedNoteTests: XCTestCase {
         let note = WorldPickerView.note(
             forOpened: try session(state: "receiving"), target: target,
             pinnedStage: nil, pinnedReconstruction: nil)
-        XCTAssertEqual(note, "This world is still being built, so it will change.")
+        XCTAssertEqual(note, "Preview — this world is still being built, so it will change.")
     }
 
     /// Unchanged: a settled row says only what its final-pass record denies.

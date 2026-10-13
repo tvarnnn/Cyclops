@@ -15,6 +15,12 @@ import SwiftUI
 import MWDATCamera
 #endif
 
+/// Home's readiness words that are new in U0.8.
+enum HomeReadinessText {
+    static let noActiveGlasses = "The glasses are registered, but none are active on this phone. "
+        + "Make sure they are on, nearby and connected in the Meta AI app."
+}
+
 /// The workspace shown when no cartridge is loaded.
 ///
 /// Replaces the old dashboard. The difference is what it does when everything
@@ -37,14 +43,17 @@ struct HomeWorkspaceView: View {
     /// this view's refresh rate to the send rate.
     @ObservedObject var senderMetrics: SenderMetrics
     let onOpenConnections: () -> Void
+    /// Settings, where the Tower's address is. A failed Tower is usually the
+    /// wrong address for this network, and "Connections" can only retry it.
+    let onOpenSettings: () -> Void
 
     var body: some View {
         VStack(spacing: 16) {
             if let banner = failureBanner {
                 FailureBanner(
                     text: banner,
-                    actionTitle: "Connections",
-                    action: onOpenConnections
+                    actionTitle: "Tower settings",
+                    action: onOpenSettings
                 )
             }
 
@@ -55,7 +64,8 @@ struct HomeWorkspaceView: View {
                 ViewfinderCard(
                     frame: glasses.latestCapturedFrame,
                     isStreaming: glasses.cameraStreamState == .streaming,
-                    placeholderReason: viewfinderPlaceholder
+                    placeholderReason: viewfinderPlaceholder,
+                    isPausedByGlasses: glasses.captureClaim == .devicePaused
                 )
                 liveNumbers
             }
@@ -83,13 +93,13 @@ struct HomeWorkspaceView: View {
 
             Text(detail)
                 .font(.subheadline)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(.readableSecondary)
                 .fixedSize(horizontal: false, vertical: true)
 
             if let blocker {
                 Button(blocker.actionTitle, action: blocker.action)
                     .font(.subheadline.weight(.medium))
-                    .buttonStyle(.bordered)
+                    .readableBorderedButton()
                     .padding(.top, 2)
             }
         }
@@ -139,6 +149,18 @@ struct HomeWorkspaceView: View {
             )
         }
 
+        #if DEBUG
+        // Registered is not active: with no glasses active on this phone the
+        // session control is off, so "Ready" would be false (U0.8 F07).
+        if !glasses.hasActiveDevice {
+            return Blocker(
+                reason: HomeReadinessText.noActiveGlasses,
+                actionTitle: "Open connections",
+                action: onOpenConnections
+            )
+        }
+        #endif
+
         if tower.status != .online {
             return Blocker(
                 reason: "The Tower is not connected, so frames from a session would not reach it.",
@@ -181,10 +203,17 @@ private extension HomeWorkspaceView {
     /// read "Start", and a tap in it did nothing observable.
     var isRunning: Bool { glasses.isCaptureEngaged }
 
+    /// Stop, Stop while the glasses hold it paused, or Start (U0.8 F06).
+    var controlMode: CaptureControlMode {
+        CaptureControlMode.mode(isEngaged: glasses.isCaptureEngaged, claim: glasses.captureClaim)
+    }
+
     @ViewBuilder
     var sessionControl: some View {
         VStack(spacing: 10) {
-            if isRunning {
+            if controlMode != .start {
+                // A session the glasses paused is still a session: a Start
+                // then would be refused and do nothing observable (U0.8 F06).
                 Button {
                     glasses.stopCameraSession()
                 } label: {
@@ -193,8 +222,12 @@ private extension HomeWorkspaceView {
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 6)
                 }
-                .buttonStyle(.bordered)
+                .readableBorderedButton()
                 .disabled(isStopping)
+                if controlMode == .stopWhilePaused {
+                    HelperText(ViewfinderText.pausedControlLine(stopTitle: "Stop session"))
+                        .accessibilityIdentifier("capture-paused-line")
+                }
             } else {
                 Button {
                     glasses.startCameraSession()
@@ -208,9 +241,9 @@ private extension HomeWorkspaceView {
                 .disabled(!canStart)
             }
 
-            if !canStart && !isRunning {
-                HelperText("Waiting for the glasses to become active.")
-            } else if glasses.cameraPermissionStatus == .denied && !isRunning {
+            if !canStart && controlMode == .start {
+                HelperText(ViewfinderText.waitingForGlasses)
+            } else if glasses.cameraPermissionStatus == .denied && controlMode == .start {
                 // Stated rather than enforced with `.disabled`. A start that
                 // is refused now reports why and leaves the session clean, so
                 // an out-of-date reading here costs a tap and an explanation
@@ -347,7 +380,7 @@ private extension HomeWorkspaceView {
                 let caveat = (reading?.provenance ?? CVFrameReading.provenance).caveat {
                 Text("The experiment's figures above: \(caveat)")
                     .font(.caption2)
-                    .foregroundStyle(.tertiary)
+                    .foregroundStyle(.readableSecondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
@@ -360,14 +393,16 @@ private extension HomeWorkspaceView {
         return String(format: "%.1f", value)
     }
 
+    /// Never "Start…" while the camera is on or coming up (U0.8 F05).
     var viewfinderPlaceholder: String {
-        if !glasses.hasActiveDevice {
-            return "Waiting for the glasses to become active."
-        }
-        if glasses.cameraPermissionStatus != .granted {
-            return "Camera access is needed before a session can stream."
-        }
-        return "Start a session to see what the glasses see."
+        ViewfinderText.placeholder(
+            isStreaming: glasses.cameraStreamState == .streaming,
+            isEngaged: glasses.isCaptureEngaged,
+            isPausedByGlasses: glasses.captureClaim == .devicePaused,
+            hasActiveDevice: glasses.hasActiveDevice,
+            permission: glasses.cameraPermissionStatus,
+            noun: "session"
+        )
     }
 }
 #endif
