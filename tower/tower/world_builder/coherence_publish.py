@@ -1446,6 +1446,16 @@ def gate_and_publish(store, world_id: str, session_id: str, workspace, solution,
     guard = (scale_guard if scale_guard is not None else
              _final_scale_guard(store, world_id, session_id, solution, result, final=final,
                                 database_path=database_path, keyframes=keyframes))
+    if guard is None:
+        try:
+            solution, result = _pose_sanity_without_scale_guard(
+                store, world_id, session_id, workspace.root, solution, result,
+                final=final, keyframes=keyframes)
+        except Exception as exc:  # noqa: BLE001 -- a failed ON guard must not publish unfiltered geometry
+            logger.exception("[Tower][WorldBuilder] pose sanity could not guard %s/%s", world_id, session_id)
+            why = f"pose sanity failed: {type(exc).__name__}"
+            return None, {"pose_sanity": {"decision": "withheld", "why": type(exc).__name__},
+                          "publish": {"written": False, "why": why}}
     if guard is not None:
         # The guard's module is imported only here, with the switch on or shadow (review XR F1): off, the
         # publish step imports, reads and writes nothing it did not before.
@@ -1481,6 +1491,27 @@ def gate_and_publish(store, world_id: str, session_id: str, workspace, solution,
     return solution, dict(result.record, publish=published)
 
 
+def _pose_sanity_without_scale_guard(store, world_id, session_id, workspace_root, solution, result, *,
+                                     final: bool, keyframes):
+    """Apply the independent pose switch when the scale guard is off."""
+    if not final:
+        return solution, result
+    from tower.config import world_pose_sanity_setting  # noqa: PLC0415
+
+    if not world_pose_sanity_setting():
+        return solution, result
+    from tower.world_builder import pose_sanity  # noqa: PLC0415
+
+    session = store.read_session(world_id, session_id)
+    published, guarded, audit = pose_sanity.apply(
+        solution, result, keyframes=keyframes, session_id=session_id,
+        started_at=session.started_at)
+    if audit["state"] == "quarantined":
+        # Match the scale guard's record-before-solution ordering.
+        write_components(workspace_root, guarded.components)
+    return published, guarded
+
+
 def _final_scale_guard(store, world_id, session_id, solution, result, *, final: bool, database_path,
                        keyframes):
     """The final scale guard's outcome at the publish seam, or None when it is off (or this is not a final
@@ -1511,7 +1542,16 @@ def _records_before_publish(workspace_root, guard):
     returned unchanged."""
     from tower.world_builder import final_scale_guard as FSG  # noqa: PLC0415
 
-    if guard.solution is None or guard.decision != FSG.DECISION_PUBLISHED:
+    if guard.solution is None:
+        return guard
+    if guard.decision != FSG.DECISION_PUBLISHED:
+        pose = (getattr(guard.solution, "solve", None) or {}).get("pose_sanity") or {}
+        if guard.decision == FSG.DECISION_SHADOW and pose.get("state") == "quarantined":
+            try:
+                write_components(workspace_root, guard.result.components)
+            except Exception as exc:  # noqa: BLE001 -- do not publish a mismatched record
+                logger.exception("[Tower][WorldBuilder] pose sanity could not write its components record")
+                return FSG.withhold(guard, f"pose sanity's record could not be written ({type(exc).__name__})")
         return guard
     try:
         FSG.write_audit(workspace_root, guard.audit)
@@ -1739,6 +1779,16 @@ def regate_published(store, world_id: str, session_id: str, *, should_stop=None,
     record = dict(result.record, regate={"at": time.time(), "previous": previous})
     guard = _final_scale_guard(store, world_id, session_id, published, result, final=True,
                                database_path=database, keyframes=keyframes)
+    if guard is None:
+        try:
+            published, result = _pose_sanity_without_scale_guard(
+                store, world_id, session_id, workspace.root, published, result,
+                final=True, keyframes=keyframes)
+        except Exception as exc:  # noqa: BLE001 -- no unguarded replacement of the published solve
+            logger.exception("[Tower][WorldBuilder] pose sanity could not re-guard %s/%s", world_id, session_id)
+            return {"pose_sanity": {"decision": "withheld", "why": type(exc).__name__},
+                    "publish": {"written": False, "why": f"pose sanity failed: {type(exc).__name__}"},
+                    "withheld": True, "notice": None, "detail": "Pose sanity could not assess the room."}
     if guard is not None:
         from tower.world_builder import final_scale_guard as FSG  # noqa: PLC0415 -- on or shadow only
 

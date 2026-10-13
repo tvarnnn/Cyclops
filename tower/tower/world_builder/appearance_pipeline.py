@@ -334,12 +334,18 @@ def _build(store, world_id, session_id, root, params, should_stop, progress, for
     undistorter = A.Undistorter(intrinsics, cam)
 
     # -- candidates and the cheap hash pass ---------------------------------
+    from tower.config import world_pose_sanity_setting  # noqa: PLC0415
+
+    pose_sanity_on = world_pose_sanity_setting()
     excluded: list[dict] = []
     candidates = []
     for ki, kid in enumerate(solution.keyframe_ids):
         pose = (solution.poses or {}).get(kid)
         if not pose or pose.get("rotation") is None or pose.get("translation") is None:
             excluded.append({"ki": ki, "reason": "no-pose"})
+            continue
+        if pose_sanity_on and int(pose.get("component", 0)) != 0:
+            excluded.append({"ki": ki, "reason": "pose-sanity-unplaced"})
             continue
         rec = records.get(ki)
         if not rec or not rec.get("ok"):

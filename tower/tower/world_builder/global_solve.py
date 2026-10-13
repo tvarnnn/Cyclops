@@ -1882,6 +1882,10 @@ def frozen_draw_mapper(store, world_id: str, session_id: str, database_path, bas
 def _withheld_summary(record, workspace: SolveWorkspace) -> dict:
     """The solve's summary when the final scale guard withheld its candidate: `solved: false` with the
     guard's one-line reason (the builder's finalization detail) and its summary (no figures)."""
+    pose = (record or {}).get("pose_sanity")
+    if pose is not None:
+        return {"solved": False, "reason": f"pose sanity failed: {pose.get('why') or 'unknown cause'}",
+                "withheld": True, "pose_sanity": pose, "workspace": str(workspace.root)}
     from tower.world_builder import final_scale_guard as FSG  # noqa: PLC0415
 
     guard = (record or {}).get("final_scale_guard")

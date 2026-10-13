@@ -1459,7 +1459,12 @@ def run_fuse_stage(
     K = np.array([[cam["fx"], 0, cam["cx"]], [0, cam["fy"], cam["cy"]], [0, 0, 1]], float)
     W, H = int(cam["width"]), int(cam["height"])
 
-    recs = {r["ki"]: r for r in align["records"] if r.get("ok")}
+    from tower.config import world_pose_sanity_setting  # noqa: PLC0415
+
+    pose_sanity_on = world_pose_sanity_setting()
+    recs = {r["ki"]: r for r in align["records"] if r.get("ok") and (
+        not pose_sanity_on or (r.get("kid") in (solution.poses or {}) and
+                               int(solution.poses[r["kid"]].get("component", 0)) == params.component))}
     kept = sorted(
         ki for ki, r in recs.items()
         if r.get("held_out_rel") is not None

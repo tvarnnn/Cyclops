@@ -993,6 +993,10 @@ def audit_document(assessment: dict | None, *, mode_: str, decision: str, soluti
            "solved_at": getattr(solution, "solved_at", None),
            "inputs": inputs, "seconds": round(seconds, 3), "error": error}
     doc["assessment"] = _jsonable(assessment)
+    pose_sanity = ((getattr(solution, "solve", None) or {}).get("pose_sanity")
+                   if solution is not None else None)
+    if pose_sanity is not None:
+        doc["pose_sanity"] = _jsonable(pose_sanity)
     return doc
 
 
@@ -1125,7 +1129,20 @@ def guard_publication(store, world_id: str, session_id: str, solution, result, *
     assessment = None
     inputs: dict = {}
     depth = None
+    pose_audit = None
+    pose_pending = False
     try:
+        from tower.config import world_pose_sanity_setting  # noqa: PLC0415
+
+        if world_pose_sanity_setting():
+            from tower.world_builder import pose_sanity  # noqa: PLC0415
+
+            session = store.read_session(world_id, session_id)
+            pose_pending = True
+            solution, result, pose_audit = pose_sanity.apply(
+                solution, result, keyframes=keyframes, session_id=session_id,
+                started_at=session.started_at)
+            pose_pending = False
         name_of = CP._image_names(keyframes)
         metric_log, inputs = read_evidence(store, world_id, session_id, solution, result,
                                            database_path=database_path, name_of=name_of,
@@ -1149,6 +1166,8 @@ def guard_publication(store, world_id: str, session_id: str, solution, result, *
                           "masks_applied": g.get("masks_applied"), "metric_available": g.get("metric_available")}
         published, doc = apply(solution, assessment, session_id=session_id, keyframes=keyframes,
                                started_at=session.started_at, gate_block=gate_block, min_obs=params.min_obs)
+        if pose_audit is not None and pose_audit["state"] == "quarantined":
+            published = pose_sanity.enforce_sparse_quarantine(published, pose_audit["keyframe_ids"])
         secs = time.perf_counter() - started
         summ = summary(assessment, mode_=mode_, decision=DECISION_PUBLISHED, seconds=secs)
         doc["final_scale_guard"] = {"id": GUARD_ID, "params_digest": params.digest(),
@@ -1168,7 +1187,7 @@ def guard_publication(store, world_id: str, session_id: str, solution, result, *
         if not isinstance(exc, _Withhold):
             logger.exception("[Tower][WorldBuilder] the final scale guard failed on %s/%s (%s)",
                              world_id, session_id, mode_)
-        if mode_ == MODE_SHADOW:
+        if mode_ == MODE_SHADOW and not pose_pending:
             return GuardOutcome(mode_, DECISION_SHADOW, solution, result,
                                 summary(assessment, mode_=mode_, decision=DECISION_SHADOW, seconds=secs, error=why),
                                 audit_document(assessment, mode_=mode_, decision=DECISION_SHADOW, solution=solution,
