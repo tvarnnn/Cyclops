@@ -361,7 +361,9 @@ final class WorldCaptureDialTests: XCTestCase {
     }
 
     /// The walk cue is the tick alone: the value never names it.
-    func testTheWalkCueIsATick() {
+    /// The dial still decodes `landed.motion_sector` fail-closed, but draws no
+    /// travel arrow: the owner wants no directional guidance (round 3).
+    func testTheWalkCueIsDecodedButNotADirection() {
         let cue = dial(supported: [0, 1, 2], latest: 5, motion: 7)
         XCTAssertEqual(cue.motionSector, 7)
         XCTAssertEqual(Copy.accessibilityValue(cue), Copy.accessibilityValue(dial(supported: [0, 1, 2])))

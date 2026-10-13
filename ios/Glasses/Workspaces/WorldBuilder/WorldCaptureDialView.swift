@@ -389,14 +389,6 @@ struct WorldCaptureDialView: View {
                     .accessibilityHidden(true)
             }
         }
-        .overlay {
-            if guides, let motion = dial.motionSector {
-                WorldDialMotionTick(sector: motion, radius: geometry.radius)
-                    .frame(width: marks, height: marks)
-                    .allowsHitTesting(false)
-                    .accessibilityHidden(true)
-            }
-        }
     }
 
     private func segment(_ sector: Int, geometry: WorldDialGeometry) -> some View {
@@ -573,33 +565,6 @@ struct WorldDialTopMarker: View {
                          anchor: .leading)
         }
         .allowsHitTesting(false)
-    }
-}
-
-/// `landed.motion_sector`: a short white arrow just outside the rim,
-/// pointing outward, turning with the ring (§3.3).
-struct WorldDialMotionTick: View {
-    let sector: Int
-    let radius: CGFloat
-
-    var body: some View {
-        Canvas { context, size in
-            let centre = CGPoint(x: size.width / 2, y: size.height / 2)
-            let angle = AnnularSector.angle(of: sector)
-            let along = CGVector(dx: cos(angle), dy: sin(angle))
-            let across = CGVector(dx: -along.dy, dy: along.dx)
-            func at(_ r: CGFloat, _ side: CGFloat) -> CGPoint {
-                CGPoint(x: centre.x + along.dx * r + across.dx * side, y: centre.y + along.dy * r + across.dy * side)
-            }
-            var arrow = Path()
-            arrow.move(to: at(radius + 3, 0))
-            arrow.addLine(to: at(radius + 13, 0))
-            arrow.move(to: at(radius + 8.5, -4))
-            arrow.addLine(to: at(radius + 13, 0))
-            arrow.addLine(to: at(radius + 8.5, 4))
-            context.stroke(arrow, with: .color(.white.opacity(0.7)),
-                           style: StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round))
-        }
     }
 }
 
