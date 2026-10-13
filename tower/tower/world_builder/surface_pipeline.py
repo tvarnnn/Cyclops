@@ -31,6 +31,7 @@ import math
 import logging
 import os
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
@@ -555,6 +556,9 @@ class _Frames:
         # says whether the bound is trimming noise or eating the room.
         self.pixels_clipped_by_bound = 0
         self.pixels_offered_to_bound = 0
+        # The far-depth cap as measured by `_build` (`FarDepthCap`), or None:
+        # off, or not reached. Only a measured cap is recorded.
+        self.far_cap = None
         # Poses the solver placed nowhere near the rest of its own poses are
         # dropped HERE, before anything reads `items`, so the scene scale, the
         # consistency field, the transient masks and the fusion all see the
@@ -768,6 +772,11 @@ def surfacify(store, world_id: str, session_id: str, *,
         # surface stays as fused until `world_surface.py --world X` (then
         # `world_appearance.py`) is run for them.
         pdigest += "|" + FIT_GATE_ID
+        # The far-depth cap (`FarDepthCap`, default off). Appended only when on,
+        # so every digest written without it is unchanged.
+        far_cap = FarDepthCap.from_setting(_far_depth_cap_setting())
+        if far_cap is not None:
+            pdigest += "|" + far_cap.digest_token()
         if is_raw(params.imagery_source):
             # §6.6. `_params_digest` already carries it through
             # `digest_fields`; this is the spelling a human reads in
@@ -844,7 +853,7 @@ def surfacify(store, world_id: str, session_id: str, *,
             frames.consistency = consistency.summary()
 
         result = _build(root, frames, params, median_depth, voxel, trunc,
-                        seconds, should_stop, progress)
+                        seconds, should_stop, progress, far_cap=far_cap)
         if result.state != STATE_OK:
             return result
 
@@ -999,6 +1008,10 @@ def _outlier_record(frames: "_Frames", voxel: float = 0.0, coarsened: float = 1.
         record.update({"fusion_bound_lo": None, "fusion_bound_hi": None,
                        "fusion_bound_multiple": 0.0,
                        "fusion_bound_detail": "off: no bound was applied"})
+    # Only when the cap was on and measured: off writes exactly main's record.
+    far_cap = getattr(frames, "far_cap", None)
+    if far_cap is not None:
+        record["far_depth_cap"] = far_cap.record(coarsened)
     return record
 
 
@@ -1042,6 +1055,149 @@ def _fusion_bound(frames: "_Frames", solution, params: SurfaceParams,
         logger.info("[Tower][WorldBuilder][surface] fusing inside %s -- %s",
                     np.round(bound.hi - bound.lo, 3).tolist(), bound.detail)
     return bound
+
+
+FAR_DEPTH_CAP_ID = "far-depth-cap/1"
+
+
+def _far_depth_cap_setting() -> dict | None:
+    """`config.world_surface_far_depth_cap_setting`, read at build time."""
+    from tower.config import world_surface_far_depth_cap_setting  # noqa: PLC0415
+
+    return world_surface_far_depth_cap_setting()
+
+
+@dataclass
+class FarDepthCap:
+    """A depth sample deeper than `k x scene scale` allocates no block.
+
+    WHY. When the walk's depth would allocate more blocks than
+    `SurfaceParams.max_blocks`, the budget coarsens the WHOLE room's voxel,
+    and far depth is what pushes it there: the surface a frame measures, and
+    so the blocks it allocates, grows with the square of its depth. A few
+    far-looking keyframes -- the turn bridge's, mostly, and depth seen through
+    doorways -- out-allocate the room. Measured by the Windows lead: w9b
+    coarsened 2.9x, walk 9.2 1.65x (its fusion bound reached 105 m), the
+    kitchen 3.3x, every wall of them blocky.
+
+    ALLOCATION ONLY. A sample past the cap still integrates into any block a
+    nearer sample allocated, and the evidence filter and the plane snap still
+    see it, so every surface measured from inside the cap keeps all the
+    evidence it had; only surface that no frame saw from inside the cap is
+    not built. This is the safe direction of the asymmetry the fusion bound's
+    comment in `_Frames.prepared` names: a rule applied to integration alone
+    keys blocks nothing writes, a rule applied to allocation alone leaves a
+    far sample nothing to write into.
+
+    DEPTH, camera-frame z: the quantity `depth_bound` and `depth_validity`
+    already cut on, not the length of the ray. The scale is the stage's own
+    `median_depth` (`_scene_scale`), so the cap is gauge-free like every
+    other length here.
+
+    ONLY OVER BUDGET. It engages only when the walk without it would need
+    more blocks than the budget (`_allocate_blocks`), so a walk that fits is
+    built exactly as with the cap off and loses no far-only surface for
+    nothing; the record then says `not-needed`.
+
+    IT STANDS DOWN rather than eat a scene. When more than `max_drop` of the
+    valid samples lie beyond it, the cap is not trimming a far tail -- the
+    scene is out there (a long hall, a big space whose sparse depth undersells
+    it) -- and the build allocates exactly as with the cap off, and records
+    that. A cap that would leave no sample at all always stands down, so it
+    can never be what empties every frame.
+    """
+
+    k: float
+    max_drop: float
+    scene_scale: float = 0.0
+    samples_valid: int = 0
+    samples_beyond: int = 0
+    frames_measured: int = 0
+    frames_wholly_beyond: int = 0
+    stood_down: bool = False
+    engaged: bool = False
+
+    @classmethod
+    def from_setting(cls, setting: dict | None) -> "FarDepthCap | None":
+        if not setting:
+            return None
+        return cls(k=float(setting["k"]), max_drop=float(setting["max_drop"]))
+
+    @property
+    def cap(self) -> float:
+        return float(self.k) * float(self.scene_scale)
+
+    def digest_token(self) -> str:
+        return f"{FAR_DEPTH_CAP_ID}:k={self.k:g}:max-drop={self.max_drop:g}"
+
+    def measure(self, cached, scene_scale: float) -> float | None:
+        """Count the valid samples of `_build`'s cached frames beyond the cap,
+        decide, and return the depth to allocate under -- None when the cap
+        stands down, which is the cap off."""
+        self.scene_scale = float(scene_scale)
+        cap = self.cap
+        valid = beyond = frames = wholly = 0
+        for item in cached:
+            z, ok = item[0], item[1]
+            n_ok = int(ok.sum())
+            if not n_ok:
+                continue
+            n_far = int((ok & ~within_far_cap(z, cap)).sum())
+            valid += n_ok
+            beyond += n_far
+            frames += 1
+            wholly += int(n_far == n_ok)
+        self.samples_valid, self.samples_beyond = valid, beyond
+        self.frames_measured, self.frames_wholly_beyond = frames, wholly
+        self.stood_down = (not (cap > 0) or valid == 0 or beyond >= valid
+                           or beyond > self.max_drop * valid)
+        logger.info("[Tower][WorldBuilder][surface] far-depth cap %.4g (%g x scene scale "
+                    "%.4g): %d of %d valid samples beyond it (%.2f%%), %d of %d frames "
+                    "wholly; %s", cap, self.k, self.scene_scale, beyond, valid,
+                    100.0 * beyond / max(valid, 1), wholly, frames,
+                    "stood down" if self.stood_down else
+                    "armed for a walk over the block budget")
+        return None if self.stood_down else cap
+
+    def record(self, coarsened: float) -> dict:
+        valid = self.samples_valid
+        if self.stood_down:
+            detail = (f"stood down: {self.samples_beyond} of {valid} valid samples lie "
+                      f"beyond the cap, over the {self.max_drop:g} it may drop (and it "
+                      "may never drop all of them), so it is the scene, not a far "
+                      "tail; allocated as with the cap off")
+            state = "stood-down"
+        elif not self.engaged:
+            detail = ("not needed: the walk fit the block budget without it, so it "
+                      "allocated as with the cap off")
+            state = "not-needed"
+        else:
+            detail = ("the walk was over the block budget, so depth beyond the cap "
+                      "allocated no block; it still integrated into blocks nearer "
+                      "depth allocated")
+            state = "applied"
+        return {
+            "rule": FAR_DEPTH_CAP_ID,
+            "state": state,
+            "k": float(self.k),
+            "scene_scale": float(self.scene_scale),
+            "cap": float(self.cap),
+            "max_drop_fraction": float(self.max_drop),
+            "samples_valid": int(valid),
+            "samples_beyond_cap": int(self.samples_beyond),
+            "fraction_beyond_cap": round(self.samples_beyond / valid, 6) if valid else 0.0,
+            "frames_measured": int(self.frames_measured),
+            "frames_wholly_beyond_cap": int(self.frames_wholly_beyond),
+            # The voxel coarsening this build ended with, key range included
+            # (the same number as `detail.voxel_coarsened_by`).
+            "voxel_coarsened_by": round(float(coarsened), 4),
+            "detail": detail,
+        }
+
+
+def within_far_cap(z, cap: float):
+    """Which samples of a depth map are inside the cap. `z` may be float16."""
+    return z.float() <= float(cap)
 
 
 def _scene_scale(frames: "_Frames", solution) -> tuple[float, str]:
@@ -1153,21 +1309,171 @@ def _scale_note(store, world_id: str) -> dict:
     return scale
 
 
+def _band_floor(params, trel, vx, median_depth, median_held_out):
+    # With a depth-proportional band the absolute part is only the floor.
+    if trel > 0:
+        return params.trunc_voxels * vx
+    return truncation_for(params, vx, median_depth, median_held_out)
+
+
+def _new_volume(params, trel, voxel, median_depth, median_held_out, device):
+    return SurfaceVolume(voxel, _band_floor(params, trel, voxel, median_depth, median_held_out),
+                         device=device, trunc_rel=trel,
+                         trunc_max=params.trunc_max_voxels * voxel)
+
+
+@dataclass
+class _Allocation:
+    """What `_allocate_blocks` settled on: the volume and the block keys to
+    reserve in it -- or, when `refusal` is set, why nothing may be reserved --
+    and the coarsening it took either way."""
+
+    vol: object
+    keys: object
+    voxel: float
+    coarsened: float
+    key_coarsened: float
+    refusal: str | None = None
+    far_cap_engaged: bool = False
+
+
+def _allocate_blocks(vol, cached, K, params, voxel, trel, median_depth, median_held_out,
+                     device, *, far_cap: float | None = None,
+                     far_cap_always: bool = False) -> _Allocation:
+    """The block keys `_build` reserves, from its cached frames.
+
+    ONE DEFINITION for `_build` and for `scripts/surface_far_cap_recount.py`,
+    so a recount reports the arithmetic a build does, not a copy of it.
+
+    `far_cap`, when not None, is a depth beyond which a sample allocates no
+    block (`FarDepthCap`) -- engaged only when the walk without it is over
+    the block budget, which is the one thing it is for: a walk that fits
+    allocates exactly as with no cap and loses no far-only surface for
+    nothing. `far_cap_always` engages it from the first pass (the recount's
+    per-k block count). None allocates exactly as before the cap existed.
+    """
+    import torch
+
+    engaged = far_cap is not None and far_cap_always
+
+    def keys_for(vol, capped):
+        keys = [vol.blocks_for_depth(
+                    z.to(device).float(),
+                    (ok & within_far_cap(z, far_cap) if capped else ok).to(device),
+                    R, tt, K)
+                for z, ok, _img, R, tt, _w in cached]
+        return torch.unique(torch.cat(keys))
+
+    # Allocate within the block budget. If the walk's surface would need more
+    # blocks than `max_blocks`, coarsen the voxel -- block count scales with
+    # surface AREA, so by the square root of the overshoot -- and ask again.
+    # Allocation is about a second since key-space expansion, so a second pass
+    # is cheap, and it happens before a byte of field exists.
+    #
+    # THE SAME LOOP ANSWERS THE KEY RANGE. `block_key` refuses a grid whose
+    # block coordinates it cannot key without aliasing two cells together,
+    # and that refusal used to end the build -- the wearer of the bedroom
+    # walk whose solve put eleven of its 379 camera centres up to 53,026
+    # units out got nothing at all, and no appearance either, because the
+    # surface was not `ok`. The refusal is
+    # correct and stays; what was missing is that a scene too wide for the
+    # keys at THIS voxel may be perfectly keyable at a coarser one, exactly
+    # as a scene too big for the block budget is. Refusing is the last
+    # resort now, not the first response, and the coarsening is recorded.
+    #
+    # BUT ONLY SO FAR (`SurfaceParams.max_key_coarsening`). Uncapped, this
+    # loop will shrink a diverged scene until the room is a handful of blocks
+    # and publish it as `ok`, with a positive face count and an appearance
+    # built on top -- which is worse than the refusal it replaced. Past the
+    # cap the honest refusal is the answer, and it is the answer the
+    # stand-down paths of the pose gate rely on.
+    coarsened = 1.0
+    key_coarsened = 1.0
+    attempts = 12
+    cap = params.max_key_coarsening
+    for attempt in range(attempts):
+        try:
+            allk = keys_for(vol, engaged)
+            if (far_cap is not None and not engaged and params.max_blocks > 0
+                    and allk.numel() > params.max_blocks):
+                # Over budget: the far tail goes before the room's voxel does.
+                engaged = True
+                uncapped = allk.numel()
+                allk = keys_for(vol, True)
+                logger.info("[Tower][WorldBuilder][surface] %d blocks exceeds the budget "
+                            "of %d; the far-depth cap %.4g brings it to %d",
+                            uncapped, params.max_blocks, far_cap, allk.numel())
+        except SurfaceUnavailable as exc:
+            over = exc.key_overshoot
+            # Block coordinates scale as 1/voxel, so the overshoot IS the
+            # factor; 5% over it covers the truncation shell the allocation
+            # adds around each block.
+            factor = max(1.1, float(over) * 1.05) if over is not None else 0.0
+            if over is None or attempt == attempts - 1 or (
+                    cap > 0 and key_coarsened * factor > cap):
+                reason = exc.reason
+                if over is not None:
+                    reason += (
+                        f"; bringing it inside needs the voxel coarsened "
+                        f"x{key_coarsened * factor:.2f}, past the "
+                        f"x{cap:g} a surface may be coarsened for the key "
+                        "range (max_key_coarsening). A scene that wide after "
+                        "the pose gate and the fusion bound is a solve that "
+                        "came apart, and a coarser room would be published as "
+                        "though it were the room"
+                        if cap > 0 and factor and key_coarsened * factor > cap else
+                        f"; coarsening the voxel x{key_coarsened:.2f} over "
+                        f"{attempt + 1} attempts did not bring it inside")
+                logger.warning("[Tower][WorldBuilder][surface] %s", reason)
+                return _Allocation(vol, None, voxel, coarsened, key_coarsened, reason,
+                                   engaged)
+            coarsened *= factor
+            key_coarsened *= factor
+            voxel *= factor
+            logger.warning("[Tower][WorldBuilder][surface] the block grid is "
+                           "x%.2f too wide to key; voxel coarsened x%.2f to %.5f",
+                           float(over), coarsened, voxel)
+            vol = _new_volume(params, trel, voxel, median_depth, median_held_out, device)
+            continue
+        # The keys just computed always belong to `vol`'s voxel: the loop only
+        # coarsens when it will go round again, so it never reserves keys from
+        # the previous voxel size on its last pass.
+        if params.max_blocks <= 0 or allk.numel() <= params.max_blocks:
+            break
+        if attempt == attempts - 1:
+            # The budget is what stands between a pathological walk and an
+            # out-of-memory failure, so the last attempt does not quietly
+            # reserve over it. Refused by name; the previous surface stands.
+            reason = (f"the walk still needs {allk.numel()} blocks after "
+                      f"coarsening the voxel x{coarsened:.2f} over {attempts} "
+                      f"attempts, over the block budget of {params.max_blocks}; "
+                      "not built")
+            logger.warning("[Tower][WorldBuilder][surface] %s", reason)
+            return _Allocation(vol, None, voxel, coarsened, key_coarsened, reason, engaged)
+        # At least 10% a round: once the band's shell radius is a whole number of
+        # blocks, block count stops following voxel area smoothly and a pure
+        # square-root step can stall just above the budget.
+        factor = max(1.1, math.sqrt(allk.numel() / params.max_blocks) * 1.05)
+        coarsened *= factor
+        voxel *= factor
+        logger.info("[Tower][WorldBuilder][surface] %d blocks exceeds the budget of "
+                    "%d; voxel coarsened x%.2f to %.5f", allk.numel(),
+                    params.max_blocks, coarsened, voxel)
+        vol = _new_volume(params, trel, voxel, median_depth, median_held_out, device)
+    return _Allocation(vol, allk, voxel, coarsened, key_coarsened, None, engaged)
+
+
 def _build(root, frames, params, median_depth, voxel, trunc, seconds,
-           should_stop, progress) -> SurfaceResult:
+           should_stop, progress, far_cap: FarDepthCap | None = None) -> SurfaceResult:
     import torch
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     trel = truncation_rel(params, frames.median_held_out)
 
     def band_floor(vx):
-        # With a depth-proportional band the absolute part is only the floor.
-        if trel > 0:
-            return params.trunc_voxels * vx
-        return truncation_for(params, vx, median_depth, frames.median_held_out)
+        return _band_floor(params, trel, vx, median_depth, frames.median_held_out)
 
-    vol = SurfaceVolume(voxel, band_floor(voxel), device=device, trunc_rel=trel,
-                        trunc_max=params.trunc_max_voxels * voxel)
+    vol = _new_volume(params, trel, voxel, median_depth, frames.median_held_out, device)
 
     t = time.time()
     _status(root, state=STATE_RUNNING, stage=STAGE_FUSE)
@@ -1206,100 +1512,24 @@ def _build(root, frames, params, median_depth, voxel, trunc, seconds,
                       "the depth stage", record())
         return _unavailable(root, "no frame produced usable depth", record())
 
-    # Allocate within the block budget. If the walk's surface would need more
-    # blocks than `max_blocks`, coarsen the voxel -- block count scales with
-    # surface AREA, so by the square root of the overshoot -- and ask again.
-    # Allocation is about a second since key-space expansion, so a second pass
-    # is cheap, and it happens before a byte of field exists.
-    #
-    # THE SAME LOOP ANSWERS THE KEY RANGE. `block_key` refuses a grid whose
-    # block coordinates it cannot key without aliasing two cells together,
-    # and that refusal used to end the build -- the wearer of the bedroom
-    # walk whose solve put eleven of its 379 camera centres up to 53,026
-    # units out got nothing at all, and no appearance either, because the
-    # surface was not `ok`. The refusal is
-    # correct and stays; what was missing is that a scene too wide for the
-    # keys at THIS voxel may be perfectly keyable at a coarser one, exactly
-    # as a scene too big for the block budget is. Refusing is the last
-    # resort now, not the first response, and the coarsening is recorded.
-    #
-    # BUT ONLY SO FAR (`SurfaceParams.max_key_coarsening`). Uncapped, this
-    # loop will shrink a diverged scene until the room is a handful of blocks
-    # and publish it as `ok`, with a positive face count and an appearance
-    # built on top -- which is worse than the refusal it replaced. Past the
-    # cap the honest refusal is the answer, and it is the answer the
-    # stand-down paths of the pose gate rely on.
-    attempts = 12
-    cap = params.max_key_coarsening
-    for attempt in range(attempts):
-        try:
-            keys = [vol.blocks_for_depth(z.to(device).float(), ok.to(device), R, tt,
-                                         frames.K)
-                    for z, ok, _img, R, tt, _w in cached]
-            allk = torch.unique(torch.cat(keys))
-            del keys
-        except SurfaceUnavailable as exc:
-            over = exc.key_overshoot
-            # Block coordinates scale as 1/voxel, so the overshoot IS the
-            # factor; 5% over it covers the truncation shell the allocation
-            # adds around each block.
-            factor = max(1.1, float(over) * 1.05) if over is not None else 0.0
-            if over is None or attempt == attempts - 1 or (
-                    cap > 0 and key_coarsened * factor > cap):
-                reason = exc.reason
-                if over is not None:
-                    reason += (
-                        f"; bringing it inside needs the voxel coarsened "
-                        f"x{key_coarsened * factor:.2f}, past the "
-                        f"x{cap:g} a surface may be coarsened for the key "
-                        "range (max_key_coarsening). A scene that wide after "
-                        "the pose gate and the fusion bound is a solve that "
-                        "came apart, and a coarser room would be published as "
-                        "though it were the room"
-                        if cap > 0 and factor and key_coarsened * factor > cap else
-                        f"; coarsening the voxel x{key_coarsened:.2f} over "
-                        f"{attempt + 1} attempts did not bring it inside")
-                logger.warning("[Tower][WorldBuilder][surface] %s", reason)
-                return _unavailable(root, reason, record())
-            coarsened *= factor
-            key_coarsened *= factor
-            voxel *= factor
-            trunc = truncation_for(params, voxel, median_depth, frames.median_held_out)
-            logger.warning("[Tower][WorldBuilder][surface] the block grid is "
-                           "x%.2f too wide to key; voxel coarsened x%.2f to %.5f",
-                           float(over), coarsened, voxel)
-            vol = SurfaceVolume(voxel, band_floor(voxel), device=device, trunc_rel=trel,
-                                trunc_max=params.trunc_max_voxels * voxel)
-            continue
-        # The keys just computed always belong to `vol`'s voxel: the loop only
-        # coarsens when it will go round again, so it never reserves keys from
-        # the previous voxel size on its last pass.
-        if params.max_blocks <= 0 or allk.numel() <= params.max_blocks:
-            break
-        if attempt == attempts - 1:
-            # The budget is what stands between a pathological walk and an
-            # out-of-memory failure, so the last attempt does not quietly
-            # reserve over it. Refused by name; the previous surface stands.
-            reason = (f"the walk still needs {allk.numel()} blocks after "
-                      f"coarsening the voxel x{coarsened:.2f} over {attempts} "
-                      f"attempts, over the block budget of {params.max_blocks}; "
-                      "not built")
-            logger.warning("[Tower][WorldBuilder][surface] %s", reason)
-            return _unavailable(root, reason, record())
-        # At least 10% a round: once the band's shell radius is a whole number of
-        # blocks, block count stops following voxel area smoothly and a pure
-        # square-root step can stall just above the budget.
-        factor = max(1.1, math.sqrt(allk.numel() / params.max_blocks) * 1.05)
-        coarsened *= factor
-        voxel *= factor
-        trunc = truncation_for(params, voxel, median_depth, frames.median_held_out)
-        logger.info("[Tower][WorldBuilder][surface] %d blocks exceeds the budget of "
-                    "%d; voxel coarsened x%.2f to %.5f", allk.numel(),
-                    params.max_blocks, coarsened, voxel)
-        vol = SurfaceVolume(voxel, band_floor(voxel), device=device, trunc_rel=trel,
-                        trunc_max=params.trunc_max_voxels * voxel)
-    vol.reserve(allk)
-    del allk
+    # Allocate within the block budget (`_allocate_blocks`) -- under the
+    # far-depth cap when it is on, does not stand down, and the walk is over
+    # the budget without it. The cap is measured on the frames as they will be
+    # fused, and recorded on every return below.
+    alloc_cap = None
+    if far_cap is not None:
+        alloc_cap = far_cap.measure(cached, median_depth)
+        frames.far_cap = far_cap
+    alloc = _allocate_blocks(vol, cached, frames.K, params, voxel, trel, median_depth,
+                             frames.median_held_out, device, far_cap=alloc_cap)
+    vol, voxel = alloc.vol, alloc.voxel
+    coarsened, key_coarsened = alloc.coarsened, alloc.key_coarsened
+    if far_cap is not None:
+        far_cap.engaged = alloc.far_cap_engaged
+    if alloc.refusal is not None:
+        return _unavailable(root, alloc.refusal, record())
+    vol.reserve(alloc.keys)
+    del alloc
     # The band a sample at the scene scale actually got, cap included --
     # `truncation_for` is the uncapped request and overstated it whenever the
     # frames' error asked for more than `trunc_max_voxels`.
