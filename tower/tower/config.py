@@ -1126,6 +1126,25 @@ def world_guidance_imagery_unredacted_setting() -> bool:
     return os.environ.get(WORLD_GUIDANCE_IMAGERY_UNREDACTED_ENV) == "on"
 
 
+# FOW GUIDANCE COVERAGE, PENDING SEGMENTS (`world_builder/guidance_coverage.py`, read once
+# by its `CoverageWorker`; demo deploy 2026-10-12). The coverage receipt counts a keyframe
+# only once a global solve has REPLACED its whole tracker segment, and the merge replaces a
+# segment only when every member is inside the solve's horizon -- so with the keyframe turn
+# bridge's long segments almost nothing counts mid-walk (e2e10: 69 of 327 posed). Exactly
+# `on` also counts each keyframe of a `pending` segment that the named solve posed (>= 30
+# observations) in a component mapped to a registered, anchored reference, at the solve's
+# own pose carried through that reference's anchor (the pose coverage already computes to
+# check every replaced keyframe). Nothing else is counted or inferred. Same exact-'on' rule
+# as TOWER_WORLD_GUIDANCE_COVERAGE: any other value, including `1`/`true`, is off, and OFF
+# is today's receipt byte for byte. Needs TOWER_WORLD_GUIDANCE_COVERAGE=on to matter.
+WORLD_GUIDANCE_COVERAGE_PENDING_ENV = "TOWER_WORLD_GUIDANCE_COVERAGE_PENDING"
+
+
+def world_guidance_coverage_pending_setting() -> bool:
+    """True only when TOWER_WORLD_GUIDANCE_COVERAGE_PENDING is exactly `on`."""
+    return os.environ.get(WORLD_GUIDANCE_COVERAGE_PENDING_ENV) == "on"
+
+
 WORLD_FINAL_SCALE_GUARD_ENV = "TOWER_WORLD_FINAL_SCALE_GUARD"
 WORLD_FINAL_SCALE_GUARD_OFF = "off"
 WORLD_FINAL_SCALE_GUARD_SHADOW = "shadow"

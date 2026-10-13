@@ -308,10 +308,71 @@ def _dial(components, eligible, bins, ids, check):
             "latest": latest, "motion_sector": motion}
 
 
+def _pending_references(summary, anchors, placement_by_segment):
+    """Solve component -> registered reference segment, for the pending-segment rule.
+
+    A component maps only through a reference segment that has an anchor here
+    (registered, reliable, exactly one anchor row with a solve pose), whose own
+    placement is the identity reference of itself and names that component,
+    and whose manifest component row (when it names a component) agrees. A
+    component two references claim maps to neither."""
+    stated = {}
+    for row in summary["components"]:
+        stated.setdefault(row["reference_segment"], []).append(row.get("component"))
+    mapping, ambiguous = {}, set()
+    for ref in sorted(anchors):
+        placement = placement_by_segment[ref]
+        component = placement.get("evidence", {}).get("component")
+        if (isinstance(component, bool) or not isinstance(component, int) or
+                placement.get("reference_segment") != ref or
+                any(value is not None and value != component for value in stated.get(ref, ()))):
+            continue
+        if component in mapping:
+            ambiguous.add(component)
+        mapping[component] = ref
+    for component in ambiguous:
+        mapping.pop(component, None)
+    return mapping
+
+
+def _pending_entry(kid, row, source, summary, pending_refs, anchors):
+    """(ref, position, up, ray) for one keyframe of a pending segment, or None.
+
+    TOWER_WORLD_GUIDANCE_COVERAGE_PENDING only. The segment is one the named
+    solve has not replaced because some of its members are past the horizon
+    (merge's `pending`); the keyframe itself is posed by that solve with >= 30
+    observations, in a component that maps to a registered, anchored
+    reference. The pose is the solve's own, carried into the output frame
+    through that reference's anchor: the same `_solution_relative` that
+    checks every replaced keyframe. Nothing is inferred for anything else."""
+    segment = summary["segments"].get(str(row["segment_index"]))
+    if (not isinstance(segment, dict) or segment.get("replaced") is not False or
+            segment.get("state") != "pending"):
+        return None
+    observations = source.get("observations")
+    if isinstance(observations, bool) or not isinstance(observations, int) or observations < 30:
+        return None
+    component = source.get("component")
+    if isinstance(component, bool) or not isinstance(component, int):
+        return None
+    ref = pending_refs.get(component)
+    if ref is None or ref not in anchors:
+        return None
+    try:
+        position, up, ray = _solution_relative(source, anchors[ref])
+    except (ValueError, TypeError, KeyError, OverflowError):
+        return None
+    return ref, position, up, ray
+
+
 def compute_coverage(*, solution, manifest, placements, poses, keyframes,
                      geometry_revision, computed_at, check=lambda: None,
-                     eligible_out=None, dial_out=None):
-    """Pure computation from one coherent snapshot; invalid global identity refuses all."""
+                     eligible_out=None, dial_out=None, include_pending=False):
+    """Pure computation from one coherent snapshot; invalid global identity refuses all.
+
+    `include_pending` (TOWER_WORLD_GUIDANCE_COVERAGE_PENDING, exactly `on`)
+    also counts posed keyframes of not-yet-replaced segments; see
+    `_pending_entry`. False is today's computation, byte for byte."""
     summary = manifest["global_solve"]
     solved_at = float(summary["solved_at"])
     if (not math.isfinite(solved_at) or solved_at < 0 or
@@ -421,11 +482,20 @@ def compute_coverage(*, solution, manifest, placements, poses, keyframes,
                             candidates[0], placement_by_segment[ref])
         except (ValueError, TypeError, KeyError, OverflowError):
             continue
+    pending_refs = (_pending_references(summary, anchors, placement_by_segment)
+                    if include_pending else None)
     for kid in ids:
         check()
         if kid not in seen or kid not in source_poses or kid not in poses_by_id:
             continue
         row = poses_by_id[kid]
+        if pending_refs is not None and row["segment_index"] not in placement_by_segment:
+            # Without the switch every such keyframe is skipped below (no
+            # placement); with it, only a pending segment's posed keyframe counts.
+            entry = _pending_entry(kid, row, source_poses[kid], summary, pending_refs, anchors)
+            if entry is not None:
+                eligible[entry[0]].append((kid, *entry[1:]))
+            continue
         if row["status"] not in ("solved", "anchor"):
             continue
         # Local pose rows do not carry this solve's observation count. Merge
@@ -550,7 +620,8 @@ def _json(path, budget=None):
 
 def compute_from_tree(root, world_id, session_id, expected, geometry_revision,
                       clock=time.time, tree_tag=None, budget=None,
-                      eligible_out=None, tree_out=None, dial_out=None):
+                      eligible_out=None, tree_out=None, dial_out=None,
+                      include_pending=False):
     """Read without a builder lock; reject torn trees and never read image bytes.
 
     `tree_out` (FOW v1.2 photo floor plan only) receives the exact parsed files
@@ -593,7 +664,8 @@ def compute_from_tree(root, world_id, session_id, expected, geometry_revision,
                              placements=placed["placements"], poses=posed["poses"],
                              keyframes=keyframes, geometry_revision=actual_revision,
                              computed_at=clock(), check=budget.check,
-                             eligible_out=eligible_out, dial_out=dial_out)
+                             eligible_out=eligible_out, dial_out=dial_out,
+                             include_pending=include_pending)
     if tree_out is not None:
         tree_out.update(solution=solution, manifest=manifest,
                         placements=placed["placements"], poses=posed["poses"])
@@ -665,6 +737,10 @@ class CoverageWorker:
         self._retries = {}
         self._published = {}
         self._imagery_landed = os.environ.get("TOWER_WORLD_GUIDANCE_IMAGERY_LANDED") == "on"
+        # TOWER_WORLD_GUIDANCE_COVERAGE_PENDING (exactly `on`): count posed keyframes of
+        # pending segments. OFF passes nothing new, so every call is today's.
+        from tower.config import world_guidance_coverage_pending_setting
+        self._include_pending = world_guidance_coverage_pending_setting()
         self._imagery_state = None
         if self._imagery_landed:
             from tower.world_builder.guidance_imagery import state_for
@@ -826,6 +902,8 @@ class CoverageWorker:
                 wants_eligible = self._imagery_landed or self._photo_worker is not None
                 imagery_eligible = [] if wants_eligible else None
                 kwargs = ({"eligible_out": imagery_eligible} if wants_eligible else {})
+                if self._include_pending:
+                    kwargs["include_pending"] = True
                 dial = None
                 if self._imagery_landed:
                     # FOW dial (S3): B2's per-sector selection inputs.
