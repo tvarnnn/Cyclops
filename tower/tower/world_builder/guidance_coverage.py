@@ -274,7 +274,10 @@ def _dial(components, eligible, bins, ids, check):
     if not rows:
         return {}
     rows.sort(key=lambda row: row[0])
-    newest = next((row for row in reversed(rows) if bins[row[1]][1] is not None), None)
+    # `latest` must decode on the phone: a sector and a non-empty string id.
+    # Rows come only from drawn components, so its piece is always drawn.
+    newest = next((row for row in reversed(rows) if bins[row[1]][1] is not None and
+                   isinstance(row[1], str) and row[1]), None)
     hero = (newest or rows[-1])[2]
     component = drawn[hero]
     stations = {(s["y"], s["x"]) for s in component["stations"]}

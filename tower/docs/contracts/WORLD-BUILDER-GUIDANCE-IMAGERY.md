@@ -171,6 +171,28 @@ three; that block keeps the pre-S3 selection, a deterministic stride over the
 eligible keyframes, with at most 16 entries. An absent or out-of-range
 `sector` places no photo.
 
+**What the phone relies on (ios/fow-dial 7ea559c).** Each point below is
+pinned by a Tower test.
+- `entries` always has 1-16 items. A landing that would publish no entry
+  publishes nothing: `landed` stays the previous block, or `null` before the
+  first one. It is never `[]`, which the phone refuses.
+- `sector`, `latest.sector` and `motion_sector` are JSON integers 0-11, never
+  floats or booleans.
+- `latest` has all three fields, with a non-empty string `keyframe_id`, or it
+  is `null`.
+- `solved_at`, `geometry_revision` and `frame_revision` are copied from the
+  coverage receipt this block was selected from. A block kept after a failed
+  landing still carries its own, older triple. The phone sees that it no
+  longer matches the current receipt and does not use it.
+- `latest` and every entry name a drawn component: one listed in that
+  receipt's `components`. If the newest keyframe with a usable heading
+  belongs to a component the station cap dropped, `latest` comes from the
+  newest one in a drawn component instead.
+- With `TOWER_WORLD_GUIDANCE_IMAGERY_LANDED=on`, the coverage worker always
+  supplies the dial inputs, so every entry carries `sector`. If the dial
+  computation fails, that landing publishes no B2 block at all. It never falls
+  back to the stride selection, whose entries have no sector.
+
 ## Photo floor plan v1.2 (2026-10-12) -- default OFF, imagery_source unredacted
 
 **v1.2, default OFF, `imagery_source` "unredacted" (privacy deferred; TODO
