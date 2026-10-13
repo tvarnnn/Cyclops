@@ -66,6 +66,7 @@ from tower.world_builder.surface import (
     evidence_filter,
     hidden_low_weight,
     keep_faces,
+    prune_off_source_faces,
     weld_mesh,
     extract_sealed,
     fill_enclosed,
@@ -1482,6 +1483,9 @@ def _build(root, frames, params, median_depth, voxel, trunc, seconds,
     conf_files = []
     source = (V, F, C)
     mobile_fit = None
+    # `TOWER_WORLD_SURFACE_LONGFACE_PRUNE`: None when off, and off writes
+    # exactly what it always wrote (no record, no key in `detail`).
+    longface = {"levels": []} if _longface_prune_on() else None
     for level, target in enumerate(params.lod_face_targets):
         if _stopped(should_stop):
             # Pack is the longest stage and outlasts a hard stop's grace; it
@@ -1498,6 +1502,12 @@ def _build(root, frames, params, median_depth, voxel, trunc, seconds,
             Vl, Fl, Cl, buf, mobile_fit = _fit_mobile_page(
                 parent, (Vl, Fl, Cl), buf, target, params.mobile_page_bytes,
                 boundary_weight=params.lod_boundary_weight)
+        if longface is not None and target > 0:
+            # AFTER the fit, so it prunes the level that ships, and before the
+            # confidence and the write. Every decimated level, since the next
+            # one is decimated from this one.
+            Vl, Fl, Cl, buf = _prune_longfaces(longface, level, V, (Vl, Fl, Cl),
+                                               buf, voxel)
         source = (Vl, Fl, Cl)
         name = f"mesh_l{level}.{build_id}.bin"
         write_bytes_atomic(root / name, lambda handle, data=buf: handle.write(data))
@@ -1545,6 +1555,8 @@ def _build(root, frames, params, median_depth, voxel, trunc, seconds,
                            "truncation_rel": trel,
                            "evidence_filter": evidence_stats,
                            "mobile_page_fit": mobile_fit,
+                           **({"longface_prune": _longface_summary(longface)}
+                              if longface is not None else {}),
                            "depth_consistency": frames.consistency,
                            "plane_snap": _snap_summary(snap_stats),
                            **({"enclosed_fill": fill_stats} if fill_stats else {})}),
@@ -1618,6 +1630,65 @@ def _snap_summary(stats):
     keep["planes"] = [{k: (round(v, 4) if isinstance(v, float) else v) for k, v in p.items()}
                       for p in stats.get("planes", [])]
     return keep
+
+
+def _longface_prune_on() -> bool:
+    """`TOWER_WORLD_SURFACE_LONGFACE_PRUNE` (`config.world_surface_longface_prune_setting`)."""
+    try:
+        from tower.config import world_surface_longface_prune_setting  # noqa: PLC0415
+
+        return world_surface_longface_prune_setting()
+    except Exception:  # noqa: BLE001 -- a switch must never stop a build
+        logger.exception("[Tower][WorldBuilder][surface] could not read the long-face "
+                         "prune switch; building without it")
+        return False
+
+
+def _prune_longfaces(state: dict, level: int, V_ref, mesh, buf: bytes, voxel: float):
+    """One decimated level without its off-source faces (`surface.prune_off_source_faces`).
+
+    NEVER FAILS A BUILD: any error publishes the level unchanged, logs, and
+    says so in the record. Never grows the level: it only removes faces, and a
+    buffer that somehow came out larger is discarded for the one it replaces,
+    so a level that fitted the page still fits it.
+    """
+    Vl, Fl, Cl = mesh
+    try:
+        tree = state.get("_tree")
+        if tree is None:
+            from scipy.spatial import cKDTree  # noqa: PLC0415
+
+            tree = state["_tree"] = cKDTree(np.asarray(V_ref, np.float64))
+        V2, F2, C2, rec = prune_off_source_faces(V_ref, Vl, Fl, Cl, voxel, tree=tree)
+        rec["level"] = level
+        if rec["faces_removed"] and len(F2):
+            buf2 = write_mesh_bytes(V2, F2, C2, vertex_normals(V2, F2))
+            if len(buf2) <= len(buf):
+                rec["bytes_before"], rec["bytes_after"] = len(buf), len(buf2)
+                state["levels"].append(rec)
+                logger.info("[Tower][WorldBuilder][surface] long-face prune, level %d: "
+                            "removed %d of %d faces (%.3f%% of its area) that left the "
+                            "archive surface by more than %g voxels",
+                            level, rec["faces_removed"], rec["faces_in"],
+                            100.0 * rec["area_removed_frac"], rec["max_off_voxels"])
+                return V2, F2, C2, buf2
+            rec["kept_unchanged"] = "pruned buffer was not smaller"
+        elif rec["faces_removed"]:
+            rec["kept_unchanged"] = "every face would have been removed"
+        rec["faces_removed_published"] = 0
+        state["levels"].append(rec)
+    except Exception as exc:  # noqa: BLE001 -- publish unchanged, never crash the pack
+        logger.exception("[Tower][WorldBuilder][surface] long-face prune failed on "
+                         "level %d; publishing it unchanged", level)
+        state["levels"].append({"level": level, "error": f"{type(exc).__name__}: {exc}"})
+    return Vl, Fl, Cl, buf
+
+
+def _longface_summary(state):
+    """The manifest's `detail.longface_prune`: one record a decimated level."""
+    if state is None:
+        return None
+    return {"switch": "TOWER_WORLD_SURFACE_LONGFACE_PRUNE", "levels": state["levels"]}
 
 
 def _fit_mobile_page(parent, mesh, buf, target, page_bytes, attempts: int = 4,

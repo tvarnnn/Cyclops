@@ -1617,6 +1617,28 @@ def world_up_estimate_setting() -> str | None:
     return None
 
 
+# LONG-FACE PRUNE (CX-SHARDS-DIAG cause 1): after the phone level is fitted to its page, remove
+# every decimated face that LEAVES the archive surface -- some point of it more than
+# `surface.LONGFACE_MAX_OFF_VOXELS` voxels from every level-0 vertex -- and record the gap in the
+# manifest's `detail.longface_prune` as missing evidence (`surface.prune_off_source_faces`).
+# Long faces that lie ON the archive surface are kept: they are flat walls and floors. Read by
+# the surface pack stage per build, so it changes what the next build publishes and rebuilds
+# nothing already built (it is not in the params digest). Exactly `on` is on; unset, blank and
+# `off` are off, and off is today byte for byte; any other value is off and logged.
+WORLD_SURFACE_LONGFACE_PRUNE_ENV = "TOWER_WORLD_SURFACE_LONGFACE_PRUNE"
+
+
+def world_surface_longface_prune_setting() -> bool:
+    """`TOWER_WORLD_SURFACE_LONGFACE_PRUNE`: prune off-surface decimated faces. Off."""
+    value = os.environ.get(WORLD_SURFACE_LONGFACE_PRUNE_ENV)
+    if value == "on":
+        return True
+    if value is not None and value.strip() and value.strip().lower() != "off":
+        logger.warning("[Tower][Config] %s=%r is not exactly on; the long-face prune is off",
+                       WORLD_SURFACE_LONGFACE_PRUNE_ENV, value)
+    return False
+
+
 def _torch_threads(value: str | None) -> int | str:
     """"auto", or a non-negative integer. Garbage is "auto", not a crash.
 

@@ -2626,6 +2626,120 @@ def decimate(V, F, C, target_faces: int, boundary_weight: float = 1.0):
     return V2, F2, C2
 
 
+# -- the long-face prune (`TOWER_WORLD_SURFACE_LONGFACE_PRUNE`) ---------------
+#
+# WHAT IT REMOVES. A decimated face that spans space the archive surface does
+# not: some point of it lies farther than LONGFACE_MAX_OFF_VOXELS voxels from
+# every level-0 vertex. That is a face decimation stretched ACROSS a gap -- a
+# bridge over a doorway, a sheet from a shelf edge to the wall -- and nothing
+# measured it. A long face that lies ON the archive surface is a large flat
+# triangle on a wall or a floor, which is what quadric decimation is for, and
+# it is kept however long it is.
+#
+# WHY NOT EDGE LENGTH. Measured 2026-10-12 on five published surfaces (w9b,
+# w7b, the kitchen live world, two normal walk-7 draws; Glasses-scratch/
+# longface/): every level-2 face with an edge over 1 m lies on level 0 to
+# within 1.19 voxels at every point sampled at half-voxel spacing, and those
+# faces are 15-23% of the phone level's area on EVERY world, normal draws
+# included. An edge-length cut removes walls. In voxels the w9b tail is the
+# SHORTEST of the five (p99.9 longest edge 34 voxels against 69-86 on the
+# normal draws); its long faces are long in metres because its voxel was
+# coarsened 2.9x for the block budget.
+#
+# THRESHOLDS, in voxels (the source's own edge scale: the level-0 median edge
+# is 0.87-0.94 voxel on all five). The largest off-surface distance any
+# level-2 face reached on the five was 2.41 voxels (a normal draw), so 4.0 is
+# 1.66x above everything normal geometry did. A face whose longest edge is
+# under LONGFACE_MIN_EDGE_VOXELS cannot reach that from vertices that sit on
+# the surface, and is not tested. Samples are LONGFACE_SAMPLE_VOXELS apart
+# along each edge, at most LONGFACE_MAX_DIVISIONS divisions a face.
+LONGFACE_VERSION = 1
+LONGFACE_MAX_OFF_VOXELS = 4.0
+LONGFACE_MIN_EDGE_VOXELS = 4.0
+LONGFACE_SAMPLE_VOXELS = 1.0
+LONGFACE_MAX_DIVISIONS = 48
+_LONGFACE_CHUNK_POINTS = 2_000_000
+
+
+def _barycentric_grid(n: int) -> np.ndarray:
+    """(m, 3) barycentric weights of a regular grid with `n` divisions an edge."""
+    i, j = np.meshgrid(np.arange(n + 1), np.arange(n + 1), indexing="ij")
+    keep = (i + j) <= n
+    u = i[keep] / n
+    v = j[keep] / n
+    return np.stack([1.0 - u - v, u, v], 1)
+
+
+def off_source_faces(V_ref, V, F, voxel: float, *, tree=None,
+                     max_off_voxels: float = LONGFACE_MAX_OFF_VOXELS,
+                     min_edge_voxels: float = LONGFACE_MIN_EDGE_VOXELS,
+                     sample_voxels: float = LONGFACE_SAMPLE_VOXELS,
+                     max_divisions: int = LONGFACE_MAX_DIVISIONS):
+    """Which faces of (V, F) leave the reference surface, and by how much.
+
+    `V_ref` is the level-0 vertex set (or `tree`, a cKDTree over it, to share
+    one across levels). Returns (drop: bool[F], off: float[F] in voxels; 0 for
+    a face too short to test). Read-only.
+    """
+    V = np.asarray(V, np.float64)
+    F = np.asarray(F, np.int64)
+    drop = np.zeros(len(F), bool)
+    off = np.zeros(len(F), np.float64)
+    if not len(F) or voxel <= 0:
+        return drop, off
+    if tree is None:
+        from scipy.spatial import cKDTree  # noqa: PLC0415
+
+        tree = cKDTree(np.asarray(V_ref, np.float64))
+    a, b, c = V[F[:, 0]], V[F[:, 1]], V[F[:, 2]]
+    longest = np.maximum(np.maximum(np.linalg.norm(b - a, axis=1),
+                                    np.linalg.norm(c - b, axis=1)),
+                         np.linalg.norm(a - c, axis=1))
+    cand = np.flatnonzero(longest > min_edge_voxels * voxel)
+    if not len(cand):
+        return drop, off
+    div = np.clip(np.ceil(longest[cand] / (sample_voxels * voxel)), 1,
+                  max_divisions).astype(np.int64)
+    for n in np.unique(div):
+        faces = cand[div == n]
+        B = _barycentric_grid(int(n))
+        per = max(1, _LONGFACE_CHUNK_POINTS // len(B))
+        for s in range(0, len(faces), per):
+            fs = faces[s:s + per]
+            P = np.einsum("mk,fkd->fmd", B, V[F[fs]]).reshape(-1, 3)
+            d, _ = tree.query(P)
+            off[fs] = d.reshape(len(fs), len(B)).max(1) / voxel
+    drop = off > max_off_voxels
+    return drop, off
+
+
+def prune_off_source_faces(V_ref, V, F, C, voxel: float, *, tree=None):
+    """(V, F, C, record): the level without its off-source faces.
+
+    Only removes faces (and the vertices no kept face uses), so the level's
+    bytes can only shrink. The record says how much went, as area: the gap is
+    MISSING EVIDENCE and the page shows it as such, it is not filled.
+    """
+    t = time.time()
+    drop, off = off_source_faces(V_ref, V, F, voxel, tree=tree)
+    areas = _face_areas(V, F) if len(F) else np.zeros(0)
+    total = float(areas.sum())
+    record = {"version": LONGFACE_VERSION,
+              "max_off_voxels": LONGFACE_MAX_OFF_VOXELS,
+              "min_edge_voxels": LONGFACE_MIN_EDGE_VOXELS,
+              "faces_in": int(len(F)),
+              "faces_tested": int((off > 0).sum()),
+              "faces_removed": int(drop.sum()),
+              "area_removed_frac": (round(float(areas[drop].sum()) / total, 6)
+                                    if total > 0 else 0.0),
+              "worst_off_voxels": round(float(off.max()), 3) if len(off) else 0.0}
+    if drop.any():
+        V, F, C = keep_faces(V, F, C, ~drop)
+        V = np.asarray(V, np.float32)
+    record["seconds"] = round(time.time() - t, 2)
+    return V, F, C, record
+
+
 def vertex_normals(V, F):
     """Area-weighted vertex normals, quantised to int8 by the writer."""
     N = np.zeros_like(V, dtype=np.float32)
