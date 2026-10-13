@@ -1424,12 +1424,19 @@ def world_stage_timing_setting() -> bool:
 #   TOWER_WORLD_KEYFRAME_TURN_BRIDGE         exactly `on` enables the turn bridge; anything else is off.
 #   TOWER_WORLD_KEYFRAME_TURN_BRIDGE_OVERLAP the bridge's overlap bound, in (0, 1]; unset is the policy's.
 #   TOWER_WORLD_KEYFRAME_TURN_BRIDGE_FRAMES  the bridge's time bound in frames, an integer >= 1; unset is
-#                                            the policy's. The two tuning knobs are read only with the
-#                                            bridge on.
+#                                            the policy's.
+#   TOWER_WORLD_KEYFRAME_TURN_BRIDGE_MIN_SHARPNESS  the sharpest-blur floor a bridged frame must clear, a
+#                                            finite number > 0; unset is the policy's (3.0). Manager 392: the
+#                                            e2e9 fly-aways sat on bridged frames of sharpness 4-10.
+#   TOWER_WORLD_KEYFRAME_TURN_BRIDGE_MIN_FRAMES  frames since the last keyframe before a bridge, an
+#                                            integer >= 1; unset is the policy's (2).
+#                                            All four tuning knobs are read only with the bridge on.
 WORLD_KEYFRAME_MIN_SHARPNESS_ENV = "TOWER_WORLD_KEYFRAME_MIN_SHARPNESS"
 WORLD_KEYFRAME_TURN_BRIDGE_ENV = "TOWER_WORLD_KEYFRAME_TURN_BRIDGE"
 WORLD_KEYFRAME_TURN_BRIDGE_OVERLAP_ENV = "TOWER_WORLD_KEYFRAME_TURN_BRIDGE_OVERLAP"
 WORLD_KEYFRAME_TURN_BRIDGE_FRAMES_ENV = "TOWER_WORLD_KEYFRAME_TURN_BRIDGE_FRAMES"
+WORLD_KEYFRAME_TURN_BRIDGE_MIN_SHARPNESS_ENV = "TOWER_WORLD_KEYFRAME_TURN_BRIDGE_MIN_SHARPNESS"
+WORLD_KEYFRAME_TURN_BRIDGE_MIN_FRAMES_ENV = "TOWER_WORLD_KEYFRAME_TURN_BRIDGE_MIN_FRAMES"
 
 
 def _keyframe_float(name: str, *, low: float, high: float, low_open: bool) -> float | None:
@@ -1474,6 +1481,24 @@ def world_keyframe_policy_overrides() -> dict:
                 logger.warning(
                     "[Tower][Config] %s=%r is not an integer >= 1; ignoring it",
                     WORLD_KEYFRAME_TURN_BRIDGE_FRAMES_ENV, frames,
+                )
+        min_sharpness = _keyframe_float(
+            WORLD_KEYFRAME_TURN_BRIDGE_MIN_SHARPNESS_ENV, low=0.0, high=1e9, low_open=True
+        )
+        if min_sharpness is not None:
+            overrides["bridge_min_sharpness"] = min_sharpness
+        min_frames = os.environ.get(WORLD_KEYFRAME_TURN_BRIDGE_MIN_FRAMES_ENV)
+        if min_frames is not None and min_frames.strip():
+            try:
+                parsed_min = int(min_frames.strip())
+            except ValueError:
+                parsed_min = 0
+            if parsed_min >= 1:
+                overrides["bridge_min_frames"] = parsed_min
+            else:
+                logger.warning(
+                    "[Tower][Config] %s=%r is not an integer >= 1; ignoring it",
+                    WORLD_KEYFRAME_TURN_BRIDGE_MIN_FRAMES_ENV, min_frames,
                 )
     return overrides
 

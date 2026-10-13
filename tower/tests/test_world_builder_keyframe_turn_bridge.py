@@ -21,6 +21,8 @@ from tower.config import (
     WORLD_KEYFRAME_MIN_SHARPNESS_ENV,
     WORLD_KEYFRAME_TURN_BRIDGE_ENV,
     WORLD_KEYFRAME_TURN_BRIDGE_FRAMES_ENV,
+    WORLD_KEYFRAME_TURN_BRIDGE_MIN_FRAMES_ENV,
+    WORLD_KEYFRAME_TURN_BRIDGE_MIN_SHARPNESS_ENV,
     WORLD_KEYFRAME_TURN_BRIDGE_OVERLAP_ENV,
     world_keyframe_policy_overrides,
 )
@@ -38,6 +40,8 @@ ALL_ENV = (
     WORLD_KEYFRAME_MIN_SHARPNESS_ENV,
     WORLD_KEYFRAME_TURN_BRIDGE_ENV,
     WORLD_KEYFRAME_TURN_BRIDGE_FRAMES_ENV,
+    WORLD_KEYFRAME_TURN_BRIDGE_MIN_FRAMES_ENV,
+    WORLD_KEYFRAME_TURN_BRIDGE_MIN_SHARPNESS_ENV,
     WORLD_KEYFRAME_TURN_BRIDGE_OVERLAP_ENV,
 )
 
@@ -284,3 +288,35 @@ def test_bridge_seeds_a_segment_only_after_a_sustained_run():
     out = _run(KeyframeSelector(policy), [(_q(12.0), None)] * policy.bridge_max_frames)
     assert out[:-1] == [(REJECT, REASON_BLURRED)] * (policy.bridge_max_frames - 1)
     assert out[-1] == (ACCEPT, REASON_TURN_BRIDGE)
+
+
+# manager 392: the bridge's own floor and spacing are env knobs, read only with the bridge on.
+def test_bridge_min_knobs_read(monkeypatch):
+    monkeypatch.setenv(WORLD_KEYFRAME_TURN_BRIDGE_ENV, "on")
+    monkeypatch.setenv(WORLD_KEYFRAME_TURN_BRIDGE_MIN_SHARPNESS_ENV, "8")
+    monkeypatch.setenv(WORLD_KEYFRAME_TURN_BRIDGE_MIN_FRAMES_ENV, "3")
+    assert world_keyframe_policy_overrides() == {
+        "turn_bridge": True, "bridge_min_sharpness": 8.0, "bridge_min_frames": 3}
+
+
+def test_bridge_min_knobs_need_the_bridge(monkeypatch):
+    monkeypatch.setenv(WORLD_KEYFRAME_TURN_BRIDGE_MIN_SHARPNESS_ENV, "8")
+    monkeypatch.setenv(WORLD_KEYFRAME_TURN_BRIDGE_MIN_FRAMES_ENV, "3")
+    assert world_keyframe_policy_overrides() == {}
+
+
+@pytest.mark.parametrize("sharp, frames", [("0", "0"), ("-2", "x"), ("nan", "-1"), ("abc", "2.5"), (" ", " ")])
+def test_bad_bridge_min_knobs_are_unset(monkeypatch, sharp, frames):
+    monkeypatch.setenv(WORLD_KEYFRAME_TURN_BRIDGE_ENV, "on")
+    monkeypatch.setenv(WORLD_KEYFRAME_TURN_BRIDGE_MIN_SHARPNESS_ENV, sharp)
+    monkeypatch.setenv(WORLD_KEYFRAME_TURN_BRIDGE_MIN_FRAMES_ENV, frames)
+    assert world_keyframe_policy_overrides() == {"turn_bridge": True}
+
+
+def test_a_raised_bridge_floor_refuses_a_sharpness_4_bridge():
+    # The e2e9 fly-away at 295 s was a bridge frame of sharpness 4: floor 8 refuses it, floor 3 takes it.
+    low = KeyframePolicy(turn_bridge=True)
+    high = KeyframePolicy(turn_bridge=True, bridge_min_sharpness=8.0)
+    frames = [(_q(4.0), None)] * (low.bridge_max_frames + 2)
+    assert any(d == REASON_TURN_BRIDGE for _, d in _run(KeyframeSelector(low), frames)[1:])
+    assert not any(d == REASON_TURN_BRIDGE for _, d in _run(KeyframeSelector(high), frames)[1:])
