@@ -1,3 +1,0 @@
-# The all-pairs census artifact is 11 MB. Regenerate with:
-#   python scripts/research/slam_classical/covisibility_census.py
-covisibility_census.json
