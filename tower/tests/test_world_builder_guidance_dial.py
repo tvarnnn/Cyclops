@@ -379,7 +379,8 @@ def test_b2_dial_landing_keeps_the_80_ms_budget(state, monkeypatch):
     state.publish_landed("root", "home", "s9", RECEIPT, [], dial=_dial_block([(0, ("a",))]))
     previous = state.landed("home", "s9")
     ticks = iter([0.0, 0.0, 0.0, .081])
-    monkeypatch.setattr(imagery.time, "monotonic", lambda: next(ticks, .081))
+    # The budget is the job's CPU time (thread_time), not wall time.
+    monkeypatch.setattr(imagery.time, "thread_time", lambda: next(ticks, .081))
     state.publish_landed("root", "home", "s9", {**RECEIPT, "solved_at": 2e9}, [],
                          dial=_dial_block([(0, ("b",)), (1, ("c",))]))
     assert state.landed("home", "s9") == previous

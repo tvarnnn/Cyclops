@@ -666,9 +666,15 @@ class CoverageWorker:
         self._published = {}
         self._imagery_landed = os.environ.get("TOWER_WORLD_GUIDANCE_IMAGERY_LANDED") == "on"
         self._imagery_state = None
+        # One pending B2 retry (imagery-landed only): a landing whose tile job
+        # missed its budget is re-run once, at the next worker tick, for that
+        # same receipt; it is dropped if a newer receipt has published.
+        self._landed_retry = None
+        self._landed_over_budget = None
         if self._imagery_landed:
-            from tower.world_builder.guidance_imagery import state_for
+            from tower.world_builder.guidance_imagery import LANDED_OVER_BUDGET, state_for
             self._imagery_state = state_for(root)
+            self._landed_over_budget = LANDED_OVER_BUDGET
         # FOW v1.2 photo floor plan (TOWER_WORLD_PHOTO_FLOORPLAN, exactly `on`): its own
         # side worker, handed each NEWLY published receipt after publication. OFF imports
         # nothing and changes nothing here.
@@ -701,6 +707,36 @@ class CoverageWorker:
             self._condition.notify_all()
         if self._photo_worker is not None:
             self._photo_worker.shutdown()
+
+    def _retry_landed(self):
+        """Run the one owed B2 retry once its tick is due, unless a newer receipt
+        for that session has published since. Never holds the condition while
+        reading tiles, so status polls and offers are never blocked."""
+        world, session, candidate, block, eligible, dial, due = self._landed_retry
+        if self._retry_clock() < due:
+            return
+        self._landed_retry = None
+        with self._condition:
+            if self._stop.is_set():
+                return
+            receipt = self._receipts.get(candidate)
+            current = receipt is not None and self._published.get((world, session)) is receipt[1]
+            if current:
+                self._imagery_state.begin_landed(world, session)
+        if not current:
+            logger.info("world builder guidance: candidate=%r landed imagery retry dropped: "
+                        "a newer receipt published", candidate)
+            return
+        outcome = None
+        try:
+            outcome = self._imagery_state.publish_landed(self.root, world, session, block, eligible,
+                                                         cancelled=self._stop, dial=dial)
+        except Exception:
+            logger.exception("world builder guidance: landed imagery retry failed")
+        finally:
+            self._imagery_state.finish_landed(world, session)
+        logger.info("world builder guidance: candidate=%r landed imagery retry: %s",
+                    candidate, outcome)
 
     def _discover(self):
         """Inspect only status targets, off the status polling thread."""
@@ -793,6 +829,8 @@ class CoverageWorker:
                 self._discover()
             except Exception:
                 logger.exception("world builder guidance: discovery failed")
+            if self._landed_retry is not None:
+                self._retry_landed()
             with self._condition:
                 if self._stop.is_set():
                     break
@@ -888,15 +926,24 @@ class CoverageWorker:
             # Coverage is already published. Imagery can fail or miss its own
             # budget without delaying that receipt, Stop, or a status reply.
             if block is not None and disposition == "ok" and self._imagery_landed:
+                outcome = None
+                # A newer receipt supersedes any retry still owed for this session.
+                if self._landed_retry is not None and self._landed_retry[:2] == (world, session):
+                    self._landed_retry = None
                 try:
                     if not self._stop.is_set():
-                        self._imagery_state.publish_landed(self.root, world, session,
-                                                           block, imagery_eligible,
-                                                           cancelled=self._stop, dial=dial)
+                        outcome = self._imagery_state.publish_landed(
+                            self.root, world, session, block, imagery_eligible,
+                            cancelled=self._stop, dial=dial)
                 except Exception:
                     logger.exception("world builder guidance: landed imagery failed")
                 finally:
                     self._imagery_state.finish_landed(world, session)
+                if outcome == self._landed_over_budget:
+                    self._landed_retry = (world, session, candidate, block, imagery_eligible, dial,
+                                          self._retry_clock() + _DISCOVERY_INTERVAL_S)
+                    logger.warning("world builder guidance: candidate=%r landed imagery over "
+                                   "budget; one retry at the next tick", candidate)
             # The photo floor plan runs on its own thread: this is one enqueue.
             if block is not None and disposition == "ok" and self._photo_worker is not None:
                 try:

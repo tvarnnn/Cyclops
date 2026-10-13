@@ -33,6 +33,17 @@ MAX_HEIGHT = 90
 # at most this many reads per sector, all inside the unchanged 80 ms budget.
 DIAL_MAX_TILES = 12
 DIAL_CANDIDATES_PER_SECTOR = 3
+# B2's 80 ms budget is the tile job's own CPU time (this thread's
+# `time.thread_time()`), not wall time. The coverage worker runs at below-normal
+# priority, so under a live walk's load a ~2 ms job could miss an 80 ms
+# wall-clock budget by waiting for the CPU alone (e2e10 20:47:10). A wall-clock
+# cap still bounds the job, so a stalled read can never hang the worker.
+LANDED_CPU_BUDGET_S = .080
+LANDED_WALL_CAP_S = 1.0
+# publish_landed outcomes. Only LANDED_OVER_BUDGET is worth one retry.
+LANDED_PUBLISHED = "published"
+LANDED_OVER_BUDGET = "over_budget"
+LANDED_SKIPPED = "skipped"
 
 
 def contained_session_id(store, world_id, session_id):
@@ -205,13 +216,23 @@ class ImageryState:
         `dial` (FOW capture dial, S3) is coverage's `dial_out` for this receipt;
         the coverage worker always supplies it. With it, B2 carries one tile per
         set sector of the hero component plus `latest` and `motion_sector`.
-        Without it (a direct caller), the pre-S3 stride selection is used."""
+        Without it (a direct caller), the pre-S3 stride selection is used.
+
+        Returns LANDED_PUBLISHED, LANDED_OVER_BUDGET (the CPU budget or the
+        wall cap was exceeded; nothing published, the previous block stays) or
+        LANDED_SKIPPED (no tile, untrusted set, or cancelled)."""
         started = time.monotonic()
+        cpu_started = time.thread_time()
+
+        def over_budget():
+            return (time.thread_time() - cpu_started >= LANDED_CPU_BUDGET_S or
+                    time.monotonic() - started >= LANDED_WALL_CAP_S)
+
         store = WorldStore(root)
         image_set = store.keyframe_image_set(world_id, session_id)
         redaction = entry_redaction(image_set.redaction)
         if redaction is None:
-            return
+            return LANDED_SKIPPED
         if dial is None:
             # Spread thumbnails across the accepted solve horizon, deterministically.
             stride = max(1, (len(eligible) + MAX_TILES - 1) // MAX_TILES)
@@ -221,11 +242,16 @@ class ImageryState:
             slots = [(dial["reference_segment"], sector, kids[:DIAL_CANDIDATES_PER_SECTOR])
                      for sector, kids in dial.get("sectors", ())][:DIAL_MAX_TILES]
         entries, tiles = [], {}
+        exceeded = False
         for ref, sector, kids in slots:
-            if len(entries) >= MAX_TILES or time.monotonic() - started >= .080:
+            if len(entries) >= MAX_TILES:
+                break
+            if over_budget():
+                exceeded = True
                 break
             for kid in kids:
-                if time.monotonic() - started >= .080:
+                if over_budget():
+                    exceeded = True
                     break
                 blob = _tile(store, world_id, session_id, kid, image_set)
                 if blob is None:
@@ -239,9 +265,15 @@ class ImageryState:
                 entries.append(entry)
                 tiles[digest] = blob
                 break
-        if not entries or time.monotonic() - started > .080:
-            logger.warning("world guidance imagery: landing omitted after 80 ms budget")
-            return
+        if exceeded or over_budget():
+            logger.warning("world guidance imagery: landing omitted after budget "
+                           "(cpu_ms=%.1f wall_ms=%.1f)",
+                           (time.thread_time() - cpu_started) * 1000,
+                           (time.monotonic() - started) * 1000)
+            return LANDED_OVER_BUDGET
+        if not entries:
+            logger.warning("world guidance imagery: landing omitted, no tile")
+            return LANDED_SKIPPED
         block = {"solved_at": coverage["solved_at"],
                  "geometry_revision": coverage["geometry_revision"],
                  "frame_revision": coverage["frame_revision"], "entries": entries}
@@ -250,11 +282,12 @@ class ImageryState:
             block["motion_sector"] = dial.get("motion_sector")
         with self._lock:
             if cancelled is not None and cancelled.is_set():
-                return
-            if time.monotonic() - started > .080:
-                logger.warning("world guidance imagery: landing publication exceeded 80 ms")
-                return
+                return LANDED_SKIPPED
+            if over_budget():
+                logger.warning("world guidance imagery: landing publication exceeded its budget")
+                return LANDED_OVER_BUDGET
             self._landed[(world_id, session_id)] = (block, tiles)
+        return LANDED_PUBLISHED
 
     def begin_landed(self, world_id, session_id):
         """A coverage receipt is about to publish; expose its pending tile job."""

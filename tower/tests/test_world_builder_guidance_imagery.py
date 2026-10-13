@@ -307,7 +307,8 @@ def test_b2_budget_failure_keeps_previous(fake, monkeypatch):
     fake.publish_landed("root", "home", "s9", block, [("a", 0)])
     previous = fake.landed("home", "s9")
     ticks = iter([0.0, .081])
-    monkeypatch.setattr(imagery.time, "monotonic", lambda: next(ticks, .081))
+    # The budget is the job's CPU time (thread_time), not wall time.
+    monkeypatch.setattr(imagery.time, "thread_time", lambda: next(ticks, .081))
     fake.publish_landed("root", "home", "s9", {**block, "solved_at": 2.0}, [("b", 0)])
     assert fake.landed("home", "s9") == previous
 
