@@ -1,13 +1,13 @@
 # Glasses
 
-**Walk through a room wearing Meta smart glasses. A few minutes after you
-press Stop, your iPhone shows a photographic 3D model of that room that you
+**Walk through a room wearing Meta smart glasses. About 13 to 20 minutes after
+you press Stop, your iPhone shows a photographic 3D model of that room that you
 can explore.**
 
 This README has two halves. The first half explains the project in plain
 language. The second half, from [World Builder in depth](#world-builder-in-depth)
-on, is the technical account, and every claim in it is taken from the code or
-the contracts in this repository.
+on, is the technical account. Every claim in it is taken from the code and
+contracts in this repository, or from dated measurements of real walks.
 
 ---
 
@@ -267,7 +267,8 @@ Per-stage timing can be recorded with `TOWER_WORLD_STAGE_TIMING`
   the way *in*.
 - **Honest labels.** Every stored keyframe set records how it was redacted, and
   imagery that was not redacted is labelled `"unredacted"` wherever it is served.
-- **The demo walks are redacted.** Walk 9.3 (the demo's backup world) records
+- **The demo walks are redacted.** Walk 9.3 (the demo's backup world) and
+  walk 10 (the dress rehearsal) both record
   `faces-detected-and-filled/yunet-2023mar@0.30+plausibility3`.
   - For a period around 2026-09-21 the owner temporarily bypassed the
     redactor, so reconstruction quality could be judged on its own
@@ -356,11 +357,19 @@ Per-stage timing can be recorded with `TOWER_WORLD_STAGE_TIMING`
 
 ## Running it
 
-- **Tower (Windows):** see [`tower/README.md`](tower/README.md). In short:
-  `powershell -NoProfile -File scripts\setup_tower.ps1` once, then
-  `powershell -NoProfile -File scripts\start_tower.ps1` from `tower/`. Set
-  `TOWER_WORLD_ROOT=data/world_builder` in `tower/.env`, or World Builder is
-  reported as unsupported. Tests: `.venv\Scripts\python.exe -m pytest`.
+- **Which code.** On the Mac and the Tower the shared checkout (`Projects/Glasses`)
+  is on `main`. The demo baseline is the tag `demo-walk10-20261013`, the code
+  walk 10 was built with; later commits on `main` change documentation only.
+  New work happens in worktrees under `Projects/Glasses-worktrees/`, never in
+  the shared checkout.
+- **Tower (Windows):** see [`tower/README.md`](tower/README.md). In short, from
+  `tower/`: `powershell -NoProfile -File scripts\setup_tower.ps1` once, then
+  `powershell -NoProfile -File scripts\start_tower.ps1` each time. Setup
+  writes `tower/.env` with `TOWER_CAPTURE_ROOT=data` (without it nothing is
+  ever recorded) and `TOWER_WORLD_ROOT=data/world_builder` (without it World
+  Builder is reported as unsupported). The Tower is up when
+  `http://<tower>:8000/health` answers `"status": "ok"`. Tests:
+  `.venv\Scripts\python.exe -m pytest`.
 - **The demo configuration.** There is no single "demo mode". Every new
   behaviour ships behind its own default-off switch, so `start_tower.ps1` with a
   basic `.env` (just the capture and world roots) runs with all of them off.
@@ -388,6 +397,14 @@ Per-stage timing can be recorded with `TOWER_WORLD_STAGE_TIMING`
   address in Settings.
 - **A walk:** on the phone, open World Builder, press Start, walk, press Stop.
   The Tower attaches a builder to the capture by itself.
+- **Saved worlds.** Every world lives on the Tower in
+  `tower/data/world_builder/worlds/<world id>/` (the mesh under `surface/`, the
+  photos under `appearance/`, in the Tower's own binary formats, so they open
+  only through the Tower). The phone lists them under Saved worlds. To view
+  one in a desktop browser while the Tower runs, open
+  `http://<tower>:8000/worlds/<world id>/render?transport=tower`; without
+  `transport=tower` the photographic page fetches its photos through the
+  phone app's private channel, which a browser cannot open, so no photos load.
 
 ## Glossary
 
