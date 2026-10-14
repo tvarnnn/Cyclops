@@ -361,10 +361,13 @@ Per-stage timing can be recorded with `TOWER_WORLD_STAGE_TIMING`
   `powershell -NoProfile -File scripts\start_tower.ps1` from `tower/`. Set
   `TOWER_WORLD_ROOT=data/world_builder` in `tower/.env`, or World Builder is
   reported as unsupported. Tests: `.venv\Scripts\python.exe -m pytest`.
-- **The demo configuration.** Every new behaviour ships behind a default-off
-  switch, so a plain `start_tower.ps1` runs today's baseline without them. The
-  demo Tower is started with these set in its launcher, never in `.env`
-  (each is documented in [`tower/tower/config.py`](tower/tower/config.py)):
+- **The demo configuration.** There is no single "demo mode". Every new
+  behaviour ships behind its own default-off switch, so `start_tower.ps1` with a
+  basic `.env` (just the capture and world roots) runs with all of them off.
+  The demo is these switches, written as lines in the Tower's `tower/.env`
+  (gitignored, so they live on that machine, not in the repository). With them
+  there, a plain `start_tower.ps1` starts the demo; delete them to go back.
+  Each is documented in [`tower/tower/config.py`](tower/tower/config.py):
 
   | Switch | What it turns on |
   |---|---|
