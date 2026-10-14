@@ -24,3 +24,5 @@ Glasses-scratch/
 .Rhistory
 __pycache__/
 *.pyc
+.vscode/
+.vscode
