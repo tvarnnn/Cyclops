@@ -25,7 +25,7 @@ import logging
 import re
 from html import escape as html_escape
 
-from tower.config import world_native_chrome_setting, world_picture_basis_setting
+from tower.config import world_picture_basis_setting
 from tower.results.world_builder_geometry import contained_world_id
 from tower.world_builder.render import (
     DEFAULT_MAX_POINTS,
@@ -247,16 +247,16 @@ def viewer_draws_appearance(viewer: str | None) -> bool:
 
 # U1.1 native chrome (WORLD-BUILDER-WORLDS.md §4c). The phone asks with
 # `wb-chrome=native` on the PAGE request; the route passes the value through
-# untouched, and the adapter decides here -- the route may not import the
-# cartridge, so the switch is read on this side. Exactly `native` and the switch
-# on; `NATIVE`, `web`, `""` and anything else mean "not asked".
+# untouched, and the adapter decides here, because the route may not import the
+# cartridge. Exactly `native`; `NATIVE`, `web`, `""` and anything else mean
+# "not asked".
 CHROME_NATIVE = "native"
 
 
 def wants_native_chrome(chrome: str | None) -> bool:
     """Whether this page request gets the native-chrome variant, if it is an
-    appearance page (`TOWER_WORLD_NATIVE_CHROME`, read per request)."""
-    return chrome == CHROME_NATIVE and world_native_chrome_setting()
+    appearance page."""
+    return chrome == CHROME_NATIVE
 
 
 def _compose_native_chrome(page: str) -> str:
