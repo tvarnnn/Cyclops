@@ -112,16 +112,6 @@ enum WorldSessionBinding: Equatable, Sendable {
         case .bound(let id): return id
         }
     }
-
-    /// Whether the phone has a capture open at all.
-    var isBracketOpen: Bool { self != .none }
-
-    /// Whether the snapshot on the wire has been established as belonging to
-    /// some capture other than this phone's.
-    var isForeign: Bool {
-        if case .foreign = self { return true }
-        return false
-    }
 }
 
 // MARK: - The gate

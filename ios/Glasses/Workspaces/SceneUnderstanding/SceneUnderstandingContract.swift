@@ -55,9 +55,9 @@ nonisolated enum SceneUnderstandingContract {
 
     // MARK: Routes
     //
-    // Listed for completeness and **not called by this app**. `GET /scene`
-    // carries the same payload the subscription does, and the four POSTs are an
-    // operator surface: `docs/agent-handoffs/IOS-TO-TOWER.md` §6 (item 2) is explicit that opening a
+    // Listed for completeness and **not called by this app**. Nor is
+    // `GET /scene`, which carries the same payload the subscription does. The
+    // four POSTs are an operator surface: `docs/agent-handoffs/IOS-TO-TOWER.md` §6 (item 2) is explicit that opening a
     // cartridge on the phone sends nothing, and a Tower-side test asserts the
     // wire stays silent. The session follows the stream instead —
     // `stream_start` opens it, `stream_stop` or a disconnect ends it — which is
@@ -72,7 +72,6 @@ nonisolated enum SceneUnderstandingContract {
     // 2. A phone's `stream_stop` can already end a session an operator started
     //    by hand. Adding a second way for the phone to move the session makes
     //    that worse, not better.
-    static let statusRoute = "/scene"
     static let controlRoutes = ["/scene/start", "/scene/pause", "/scene/resume", "/scene/stop"]
 
     /// Why this app sends nothing, in a sentence a person could be shown.

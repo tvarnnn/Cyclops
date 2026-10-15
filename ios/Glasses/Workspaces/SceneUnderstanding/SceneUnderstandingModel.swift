@@ -665,9 +665,6 @@ struct SceneReading: Equatable, Sendable {
         for anything smaller than 2% of the frame. Most of a room is behind the \
         wearer.
         """
-
-    /// The one-line version, for a place a paragraph will not fit.
-    static let countCaveatShort = "A floor, not a total. Counts miss most of what is there."
 }
 
 // MARK: - State

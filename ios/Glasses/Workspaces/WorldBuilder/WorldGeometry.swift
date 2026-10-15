@@ -589,17 +589,6 @@ nonisolated struct WorldGeometryManifest: Equatable, Sendable {
     /// and the unit a reader supplies for themselves is metres.
     let scale: WorldGeometryScale
     let segments: [WorldSegmentSummary]
-
-    var resolvedSegments: [WorldSegmentSummary] {
-        segments.filter { $0.resolutionState == .resolved }
-    }
-
-    /// Segments that hold keyframes and recovered nothing. On the real walk
-    /// this was 32 of 51. They are counted, never placed: we know
-    /// reconstruction failed, not where it failed.
-    var unresolvedSegments: [WorldSegmentSummary] {
-        segments.filter { $0.resolutionState == .unresolved }
-    }
 }
 
 nonisolated struct WorldPose: Equatable, Sendable {

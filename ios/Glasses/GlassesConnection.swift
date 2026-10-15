@@ -776,10 +776,6 @@ final class GlassesConnection: ObservableObject {
         }
     }
 
-    func nameForDevice(_ id: DeviceIdentifier) -> String {
-        wearables.deviceForIdentifier(id)?.nameOrId() ?? "Unknown device"
-    }
-
     #if DEBUG
     func toggleMockDeviceKit() {
         print("[Glasses][MockDeviceKit] toggle tapped (currently enabled=\(mockDeviceKitEnabled))")

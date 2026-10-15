@@ -713,7 +713,4 @@ nonisolated enum ObjectMemorySessionState: Equatable, Sendable {
     /// "nothing is being followed" are different, and only one of them is
     /// something to tell a person about what is being recorded.
     var isFollowingACapture: Bool? { snapshot?.isFollowingACapture }
-
-    /// Whether a Start button can do anything at all on this Tower.
-    var isSupported: Bool { snapshot?.supported ?? false }
 }

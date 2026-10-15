@@ -91,10 +91,6 @@ nonisolated enum ObjectMemoryImageryContract {
     /// and neither did the meaning of any existing field.
     static let everyFilterMeaning = [appliedOnRead, appliedBeforePersistence]
 
-    /// `imagery_retention`. Carried rather than checked — see
-    /// `ObjectMemoryImageryDescription.imageryRetention`.
-    static let captureSideRetention = "capture-side"
-
     /// The token the Tower leaves in its URL templates.
     static let observationIDPlaceholder = "{observation_id}"
 }

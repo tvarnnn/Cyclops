@@ -117,7 +117,6 @@ nonisolated struct WorldCaptureDial: Equatable, Sendable {
         let sectors: [WorldCoverageEvidence]
 
         var supportedCount: Int { sectors.filter { $0 == .supported }.count }
-        var weakCount: Int { sectors.filter { $0 == .weak }.count }
         var name: String { WorldCoverageCopy.pieceName(index) }
 
         init(index: Int, component: WorldCoverage.Component) {
