@@ -69,7 +69,6 @@ def test_classical_reports_chain_broken_once(monkeypatch):
         KeyframeInput(
             keyframe_id=f"kf{i}",
             image_gray=cv2.cvtColor(img, cv2.COLOR_BGR2GRAY),
-            image_bgr=img,
         )
         for i, img in enumerate(images)
     ]
