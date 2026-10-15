@@ -9,7 +9,6 @@
 | Tower producer | `tower/tower/results/world_builder_geometry.py` |
 | Tower routes | `tower/tower/routes/geometry.py` |
 | iOS consumer | `ios/Glasses/Workspaces/WorldBuilder/WorldGeometry{,Client}.swift` |
-| Design record | `tower/docs/superpowers/specs/2026-08-25-world-builder-geometry-transport-design.md` |
 
 **Why this is a separate file from `WORLD-BUILDER-IOS.md`.** That document
 reconciles **one** contract (`world_builder.status/2026-09-10`) over **one**
@@ -279,8 +278,7 @@ than something to guess past.
 ## 8. Addendum 2026-09-06 — the global solve (additive, no identifier bump)
 
 The Tower now runs a global structure-from-motion solve over EVERY keyframe of
-a session (`tower/tower/world_builder/global_solve.py`; design record
-`tower/docs/superpowers/specs/2026-09-06-world-builder-global-solver-design.md`).
+a session (`tower/tower/world_builder/global_solve.py`).
 It reaches the wire **through the layers this contract already has** — per-
 segment geometry plus placements — so the identifier is unchanged and an
 older decoder reads exactly what it read before. What an older decoder sees

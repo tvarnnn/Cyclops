@@ -1,8 +1,7 @@
 """Cross-segment registration: the gate, the composition, and the refusals.
 
-The property these tests exist to protect is the one measured in
-docs/superpowers/research/2026-08-26-cross-segment-registration.md section 6:
-a WRONG Sim3 reprojects beautifully. Segment pair (30,50) on the real walk
+The property these tests exist to protect is a measured one: a WRONG
+Sim3 reprojects beautifully. Segment pair (30,50) on the real walk
 fits at 1.62 px with 88% of correspondences under 3 px and is wrong by a
 factor of 3.2 in scale. So fit quality cannot be allowed to admit a pair,
 and the tests below check that it structurally cannot -- not that some

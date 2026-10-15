@@ -90,10 +90,9 @@ def frames_in(seconds: float) -> int:
 # half a second, behind another person for a little less, and through a
 # head turn away and back for about one.
 #
-# Measured on 9,145 corpus frames
-# (`docs/superpowers/research/2026-08-26-tracker-retune.md`): raising
-# the budget from 5 frames to 12 cut the `person` ids created from 134
-# to 104, and count stability at 18 and 24 frames is identical to 12.
+# Measured on 9,145 corpus frames: raising the budget from 5 frames to
+# 12 cut the `person` ids created from 134 to 104, and count stability
+# at 18 and 24 frames is identical to 12.
 # 1.0 s is where continuity stops improving.
 MAX_ABSENCE_S = 1.0
 

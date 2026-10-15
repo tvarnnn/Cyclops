@@ -33,8 +33,8 @@ any number this script prints:
    bounded by round-trip time. That is fine against loopback and
    deliberately mirrors the Tower's own loop, but it means a run over a
    remote link measures RTT as much as capacity, and it is NOT a model
-   for how the iOS sender should behave. See
-   docs/superpowers/handoffs/2026-08-21-ios-observation-rate.md.
+   for how the iOS sender should behave: a sender that awaits each ack
+   is capped at 1/(RTT + processing) whatever its target rate.
 
 Requires the `dev` extra: pip install -e ".[dev]"
 """

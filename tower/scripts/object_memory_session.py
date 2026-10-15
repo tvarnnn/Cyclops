@@ -229,9 +229,7 @@ def _build_verifier(name: str, device: str):
     acceptance of correct labels and ~94% rejection of wrong ones over
     94 human-labelled crops -- but those 94 crops are from one home, and
     turning it on downloads ~600 MB of weights and takes ~620 MB of VRAM
-    on a GPU this cartridge shares. One environment variable enables it;
-    the evidence for doing so is in
-    `docs/superpowers/research/2026-08-27-object-memory-corpus-precision.md`.
+    on a GPU this cartridge shares. One environment variable enables it.
     """
     if name == "none":
         return None

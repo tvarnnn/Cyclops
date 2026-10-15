@@ -9,14 +9,14 @@ This is an OFFLINE dataset analysis, not a live Tower/WS run: the wire
 protocol only carries the scalar mean_relative_depth, but this experiment
 needs the full per-frame depth array. It drives `DepthEstimation` directly
 with its opt-in `capture_depth_array` hook, reusing the shipped inference
-path unmodified (see docs/superpowers/research/
-2026-08-20-world-builder-foundations.md, Experiment A).
+path unmodified.
 
 IMPORTANT -- what the numbers this prints do and do not mean:
 results from a public dataset clip are *feasibility evidence*, NOT
-physical-glasses/DAT validation. See docs/superpowers/research/
-2026-08-20-world-builder-dataset-selection.md for the dataset ruling, its
-limitations, and the acceptance gate requiring a re-run on real DAT footage.
+physical-glasses/DAT validation. A public clip differs from the platform
+in optics/FOV, encoding (DAT uses an adaptive bitrate ladder), resolution
+and frame rate (resampling mitigates, not eliminates), and scene regime.
+Acceptance requires a re-run on real DAT footage.
 
 Usage:
     .venv\\Scripts\\python.exe scripts/depth_temporal_consistency.py \\

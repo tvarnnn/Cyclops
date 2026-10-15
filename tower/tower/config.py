@@ -381,9 +381,8 @@ class Settings:
     #   capped at 2                               1.03 cores, 9.88 fps
     #
     # Four times the CPU for no throughput at all, which is exactly what
-    # `docs/superpowers/research/2026-08-26-scene-understanding-
-    # measurements.md` predicts: ssdlite320 at an internal 320 px is
-    # bound by kernel-launch overhead, not arithmetic, so more threads
+    # profiling the detector predicted: ssdlite320 at an internal 320 px
+    # is bound by kernel-launch overhead, not arithmetic, so more threads
     # buy nothing and cost a core each.
     #
     # WHAT THE ROW ABOVE DOES NOT SAY IS WHAT IT COSTS THE LAB, and the

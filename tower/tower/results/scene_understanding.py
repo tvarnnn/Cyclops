@@ -53,8 +53,7 @@ near anything".
 EVERY COUNT IS AN UNDERCOUNT AND MUST SAY SO
 
 Measured against a `fasterrcnn_resnet50_fpn_v2` oracle over 14,128 real
-frames (`docs/superpowers/research/2026-08-26-detector-oracle-and-the-
-size-floor.md`), the shipped detector's recall is 0.306 for `person`,
+frames, the shipped detector's recall is 0.306 for `person`,
 0.497 for `cell phone`, 0.209 for `tv`, and it is effectively blind below
 ~2% of frame area (recall 0.000 under 1%). Because the oracle shares COCO
 training data with the shipped model, 0.306 is an UPPER BOUND.

@@ -1604,8 +1604,7 @@ def create_app() -> FastAPI:
     )
     # Started here, not in `lifespan` above: TestClient(create_app()) used
     # without `with client:` (every pre-existing test in this repo) never
-    # runs ASGI lifespan events, leaving the module UNLOADED forever. See
-    # docs/superpowers/specs/2026-08-19-v0.8-module-container-design.md, "Wiring" Amendment.
+    # runs ASGI lifespan events, leaving the module UNLOADED forever.
     asyncio.run(app.state.module_container.load_and_start())
     app.include_router(health.router)
     app.include_router(cartridges.router)
