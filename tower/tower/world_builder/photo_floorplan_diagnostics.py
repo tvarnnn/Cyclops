@@ -5,7 +5,7 @@ any disposition. The worker computes a landing's diagnostics only AFTER that lan
 disposition is final (so even the time spent here cannot move a landing across the wall
 cap), from data the landing already produced, and any exception here is swallowed and
 logged. Pure: no I/O except `write_files` (and its read-only `session_write_gate`), which
-the worker calls only when TOWER_WORLD_PHOTO_FLOORPLAN_DIAGNOSTICS is exactly `on`.
+the worker calls after every landing.
 
 WHAT IS RECORDED
 
@@ -678,7 +678,7 @@ def walk_summary(records, *, world_id=None, session_id=None, generated_at=None):
 
 
 # ---------------------------------------------------------------------------
-# files (only with TOWER_WORLD_PHOTO_FLOORPLAN_DIAGNOSTICS=on)
+# files
 # ---------------------------------------------------------------------------
 
 

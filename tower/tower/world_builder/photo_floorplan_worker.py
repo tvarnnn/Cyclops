@@ -705,7 +705,7 @@ def component_summary(stats):
 
 @dataclasses.dataclass
 class _DiagWalk:
-    """One walk's diagnostics records (files on only) and how many are in its JSONL."""
+    """One walk's diagnostics records and how many are in its JSONL."""
 
     records: list = dataclasses.field(default_factory=list)
     written: int = 0
@@ -715,7 +715,7 @@ class PhotoFloorplanWorker:
     """One daemon builds each newly published coverage landing's photo plan."""
 
     def __init__(self, root, *, latest=None, state=None,
-                 wall_cap_s=LANDING_WALL_CAP_S, build=None, diagnostics_files=None):
+                 wall_cap_s=LANDING_WALL_CAP_S, build=None):
         self.root = root
         self.wall_cap_s = float(wall_cap_s)
         self._latest = latest
@@ -733,14 +733,9 @@ class PhotoFloorplanWorker:
         self._published_opaque_area = {}  # (world, session) -> {reference_segment: area}
         self._regress_streak = {}     # (world, session) -> consecutive regressed skips
         # New-scene diagnostics (photo_floorplan_diagnostics): bounded per-walk landing records
-        # (pair -> _DiagWalk), kept -- and written to the session -- only with
-        # TOWER_WORLD_PHOTO_FLOORPLAN_DIAGNOSTICS exactly `on`; off, the log line is all.
+        # (pair -> _DiagWalk), written to the session when `session_write_gate` allows.
         self._diag_records = OrderedDict()
         self._diag_pending = None
-        if diagnostics_files is None:
-            from tower.config import world_photo_floorplan_diagnostics_setting
-            diagnostics_files = world_photo_floorplan_diagnostics_setting()
-        self._diag_files = bool(diagnostics_files)
         self._thread = threading.Thread(target=self._run, name="world-photo-floorplan",
                                         daemon=True)
         self._thread.start()
@@ -908,14 +903,12 @@ class PhotoFloorplanWorker:
         return record
 
     def _report_diagnostics(self, pair, identity, record):
-        """One bounded log line per landing; with TOWER_WORLD_PHOTO_FLOORPLAN_DIAGNOSTICS=on also
-        the session's JSONL and per-walk summary. Never raises."""
+        """One bounded log line per landing, plus the session's JSONL and per-walk summary.
+        Never raises."""
         try:
             from tower.world_builder import photo_floorplan_diagnostics as diag
             logger.info("world photo floorplan diagnostics: world=%s session=%s landing=%r "
                         "record=%s", pair[0], pair[1], identity, diag._dumps(record))
-            if not self._diag_files:
-                return          # the log line is the record; nothing is retained
             walk = self._diag_records.get(pair)
             if walk is None:
                 walk = self._diag_records[pair] = _DiagWalk()

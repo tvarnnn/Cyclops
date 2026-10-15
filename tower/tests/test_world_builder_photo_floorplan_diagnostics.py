@@ -7,8 +7,8 @@ Two things are asserted per scene:
   1. the diagnostics flag the scene's condition, and only the conditions it has;
   2. the landing itself is what the code produced BEFORE the diagnostics existed: the plane,
      the frame gates, the warped frames and the opaque raster cells are pinned to the values
-     the base commit (f5b3211) produced on this same fixture, and the worker publishes
-     byte-identical manifests and tiles with the diagnostics files on and off.
+     the base commit (f5b3211) produced on this same fixture, and the worker, which writes
+     the diagnostics files, publishes the manifest and tiles the bare build produces.
 """
 
 from __future__ import annotations
@@ -23,7 +23,6 @@ import cv2
 import numpy as np
 import pytest
 
-from tower import config
 from tower.world_builder import photo_floorplan_diagnostics as diag
 from tower.world_builder import photo_floorplan_worker as pfw
 from tests.test_world_builder_photo_floorplan import _pitched_camera, _render
@@ -332,10 +331,9 @@ def _diag_lines(caplog):
             if r.getMessage().startswith("world photo floorplan diagnostics:")]
 
 
-def _run_worker(root, receipt, eligible, tree, stat, files, caplog, *, expect_lines):
+def _run_worker(root, receipt, eligible, tree, stat, caplog, *, expect_lines):
     state = pfw.PhotoFloorplanState()
-    worker = pfw.PhotoFloorplanWorker(root, latest=lambda w, s: receipt, state=state,
-                                      diagnostics_files=files)
+    worker = pfw.PhotoFloorplanWorker(root, latest=lambda w, s: receipt, state=state)
     try:
         with caplog.at_level("INFO", logger="tower.world_builder.photo_floorplan_worker"):
             worker.offer(WORLD, SESSION, receipt, eligible, tree, stat)
@@ -357,7 +355,7 @@ def test_the_worker_skips_the_files_when_another_writer_holds_the_world(tmp_path
     store = _session_record(tmp_path, lock="live", **SETTLED)   # e.g. a re-redaction running
     lock_before = store.lock_path(WORLD).read_bytes()
     try:
-        state, worker = _run_worker(tmp_path, receipt, eligible, tree, stat, True, caplog,
+        state, worker = _run_worker(tmp_path, receipt, eligible, tree, stat, caplog,
                                     expect_lines=1)
         assert store.lock_path(WORLD).read_bytes() == lock_before    # never touched
     finally:
@@ -378,7 +376,7 @@ def test_the_worker_skips_the_files_when_another_writer_holds_the_world(tmp_path
 def test_a_skipped_record_is_appended_by_the_next_permitted_write(tmp_path):
     store = _session_record(tmp_path, lock="live", **SETTLED)
     worker = pfw.PhotoFloorplanWorker(tmp_path, latest=lambda w, s: None,
-                                      state=pfw.PhotoFloorplanState(), diagnostics_files=True)
+                                      state=pfw.PhotoFloorplanState())
     try:
         pair = (WORLD, SESSION)
         worker._report_diagnostics(pair, (1.0, "g", 1), {"solved_at": 1.0, "components": []})
@@ -399,59 +397,47 @@ def test_a_skipped_record_is_appended_by_the_next_permitted_write(tmp_path):
 
 
 @pytest.mark.parametrize("name", ["split_level", "large_open_room"])
-def test_the_worker_publishes_the_same_bytes_with_diagnostics_files_on_and_off(
+def test_the_worker_publishes_the_bare_build_bytes_and_writes_the_files(
         tmp_path, name, caplog):
     cams, pts = SCENES[name]()
     tree, receipt, eligible, stat = _write_scene(tmp_path, cams, pts)
+    bare, bare_tiles, _ = pfw.build_landing(tmp_path, WORLD, SESSION, receipt, eligible,
+                                            json.loads(json.dumps(tree)), stat,
+                                            plane_memory={})
     store = _session_record(tmp_path, lock="live")      # a walk in progress holds the world
-    published = {}
     try:
-        for files in (False, True):
-            state, worker = _run_worker(tmp_path, receipt, eligible, tree, stat, files, caplog,
-                                        expect_lines=1 + int(files))
-            block = state.landed(WORLD, SESSION)
-            assert block is not None, worker.outcomes
-            digests = [c["digest"] for c in block["components"]]
-            published[files] = (pfw.manifest_bytes(block),
-                                [state.tile(WORLD, SESSION, d) for d in digests],
-                                worker.outcomes[(WORLD, SESSION)]["disposition"])
-            # the build's references are dropped once the diagnostics have read them
-            assert all(pfw.DIAG_INPUTS not in c
-                       for c in worker.outcomes[(WORLD, SESSION)]["components"])
-            # with the files off, nothing is retained either (the log line is the record)
-            assert bool(worker._diag_records) is files
-            session = diag.session_dir(tmp_path, WORLD, SESSION)
-            assert (session / diag.SUMMARY_FILENAME).is_file() is files
-            assert (session / diag.RECORDS_FILENAME).is_file() is files
+        state, worker = _run_worker(tmp_path, receipt, eligible, tree, stat, caplog,
+                                    expect_lines=1)
     finally:
         store.release_writer_lock(WORLD)
-    assert published[True] == published[False]
+    block = state.landed(WORLD, SESSION)
+    assert block is not None, worker.outcomes
+    assert worker.outcomes[(WORLD, SESSION)]["disposition"] == "ok"
+    digests = [c["digest"] for c in block["components"]]
+    assert pfw.manifest_bytes(block) == pfw.manifest_bytes(bare)
+    assert [state.tile(WORLD, SESSION, d) for d in digests] == [bare_tiles[d] for d in digests]
+    # the build's references are dropped once the diagnostics have read them
+    assert all(pfw.DIAG_INPUTS not in c
+               for c in worker.outcomes[(WORLD, SESSION)]["components"])
+    assert len(worker._diag_records[(WORLD, SESSION)].records) == 1
+    session = diag.session_dir(tmp_path, WORLD, SESSION)
+    assert (session / diag.RECORDS_FILENAME).is_file()
     summary = json.loads((diag.session_dir(tmp_path, WORLD, SESSION) / diag.SUMMARY_FILENAME)
                          .read_text(encoding="utf-8"))
     assert set(summary["flags_fired"]) == EXPECTED_FLAGS[name]
     assert summary["landings"]["published"] == 1
     assert summary["landing_lag_s"]["last"] > 0
     assert summary["final_landing"]["covers_all_accepted"] is True
-    # the log line is there either way, and bounded
+    # the log line is there too, and bounded
     lines = [r.getMessage() for r in caplog.records
              if r.getMessage().startswith("world photo floorplan diagnostics:")]
-    assert len(lines) == 2
+    assert len(lines) == 1
     assert all(len(line.split("record=", 1)[1]) <= diag.MAX_RECORD_BYTES for line in lines)
 
 
 # ---------------------------------------------------------------------------
 # the pieces
 # ---------------------------------------------------------------------------
-
-
-def test_only_exactly_on_enables_the_diagnostics_files(monkeypatch):
-    for value, expected in ((None, False), ("", False), ("1", False), ("true", False),
-                            ("ON", False), (" on", False), ("on", True)):
-        if value is None:
-            monkeypatch.delenv(config.WORLD_PHOTO_FLOORPLAN_DIAGNOSTICS_ENV, raising=False)
-        else:
-            monkeypatch.setenv(config.WORLD_PHOTO_FLOORPLAN_DIAGNOSTICS_ENV, value)
-        assert config.world_photo_floorplan_diagnostics_setting() is expected
 
 
 def test_a_one_level_walk_never_splits_into_two(monkeypatch):
