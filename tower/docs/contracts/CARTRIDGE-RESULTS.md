@@ -2218,7 +2218,7 @@ a disconnect comes from a new walk.
 - `stream_start` and `stream_stop` are exactly `{"type": "stream_start"}`
   and `{"type": "stream_stop"}`. The phone sends no session, world or
   device identity; the bracket is the only session delimiter and `seq`
-  the only per-frame correlator.
+  the per-frame sequence number.
 - **A `stream_stop` may never arrive.** A dropped socket produces none:
   the phone tears the connection down without one, because there is no
   socket left to send it on. A capture ended by a drop is an ordinary,
@@ -2248,11 +2248,13 @@ a disconnect comes from a new walk.
 2. **Text frames only**, a JSON **object** at the root, and a `type`
    string on every message. The phone drops binary frames, array roots
    and NDJSON silently, and logs and ignores an unknown `type`.
-3. `frame_result` keeps `seq`, `mean_intensity` and `processing_ms`. New
-   keys are ignored harmlessly (the additive rule, §1).
+3. `frame_result` always carries `seq` and `processing_ms`, and carries
+   `mean_intensity` whenever the result has a value for it (it is omitted
+   otherwise). New keys are ignored harmlessly (the additive rule, §1).
 4. **Never block the socket for 2 s.** When the phone's send window is full
    and its oldest send is 2 s old, it treats the socket as wedged and
-   replaces the connection. The send bounds in §8 are sized under this.
+   replaces the connection. §8 bounds a single send to 1 s and lock wait
+   plus send to 2 s: the same as this limit, not under it.
 5. Do not close the socket to signal anything. The phone turns a close
    into a failure and a bounded reconnect (§19.1).
 

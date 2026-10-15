@@ -293,9 +293,11 @@ glasses saw at that point on the path**. That is a recorded camera path
 with a real first-person view at every point on it, and
 `world_inspect.py --trajectory` renders it today.
 
-**None of it goes to the phone, and it should not yet.** The grounds:
-iOS links no 3D framework, has no pose schema, holds summary figures
-rather than arrays, and has no world storage, reload UI or world picker.
+**None of it goes to the phone, and it should not yet.** The grounds
+given when this was written -- iOS links no 3D framework, has no pose
+schema, holds summary figures rather than arrays, and has no world
+storage, reload UI or world picker -- are partly out of date: `WorldPose`
+exists and the app has Saved worlds and an `open(worldID:sessionID:)` path.
 A pose array "cannot be displayed and would be dropped". Building a
 transport for a consumer that does not exist is the fabricated contract
 this project refuses.
