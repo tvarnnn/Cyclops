@@ -336,8 +336,8 @@ class ScenePreview:
     happens once, at the moment the structure is derived, so no renderer
     has to be trusted with a second scale factor and no overlay can end up
     drawn in the wrong coordinate system -- which is the specific failure
-    `IOS-to-Tower.md` 2.5 refuses annotation geometry over: "a wrong
-    convention renders confidently in the wrong place".
+    `ios/docs/agent-handoffs/IOS-TO-TOWER.md` §2.5 refuses annotation geometry
+    over: "a wrong convention renders confidently in the wrong place".
     """
 
     structure: object
@@ -472,11 +472,12 @@ class ExperimentMetadata:
     whether the figure was measured or inferred. Keeping it here is what
     lets one test assert that every registered experiment has it.
 
-    `metric_units` is deliberately partial. `IOS-to-Tower.md` 0.5: iOS
-    "renders a figure with the unit the Tower names and BARE when it names
-    none -- a bare number being the honest rendering of an unlabelled
-    quantity". An ORB response and a relative inverse depth have no unit,
-    and inventing one for them would be worse than the bare number.
+    `metric_units` is deliberately partial.
+    `ios/docs/agent-handoffs/IOS-TO-TOWER.md` §0.5: iOS "renders a figure with
+    the unit the Tower names and BARE when it names none -- a bare number being
+    the honest rendering of an unlabelled quantity". An ORB response and a
+    relative inverse depth have no unit, and inventing one for them would be
+    worse than the bare number.
 
     `annotation_metric` names the metric that is an annotation COUNT, if
     the experiment produces one. Only `object_detection` does. A keypoint
@@ -1012,10 +1013,10 @@ _REGISTRY: dict[str, ExperimentRegistration] = {
             provenance=PROVENANCE_INFERRED,
             stateful=True,
             requires_model=True,
-            # Deliberately unitless. IOS-to-Tower.md 0.5: "metric is not
-            # metres". MiDaS-small emits relative inverse depth on an
-            # arbitrary scale, so a bare number is the honest rendering
-            # and any unit string here would be a claim about scale.
+            # Deliberately unitless. ios/docs/agent-handoffs/IOS-TO-TOWER.md
+            # §0.5: "metric is not metres". MiDaS-small emits relative inverse
+            # depth on an arbitrary scale, so a bare number is the honest
+            # rendering and any unit string here would be a claim about scale.
             headline_unit=None,
             # The same arbitrary scale, drawn. The preview is the one
             # place the unitlessness stops being a problem: nobody reads

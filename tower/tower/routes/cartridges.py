@@ -1,9 +1,9 @@
 """`GET /cartridges` -- the capability declaration, over HTTP.
 
 HTTP rather than only a WebSocket message, because of the third state in
-`IOS-to-Tower.md` 0.1: "the Tower offers a contract this build
-implements, but is **unreachable** -> 'connect'". A client that can only
-learn the contract set by opening the socket cannot distinguish that
+`ios/docs/agent-handoffs/IOS-TO-TOWER.md` §0.1: "the Tower offers a contract
+this build implements, but is **unreachable** -> 'connect'". A client that can
+only learn the contract set by opening the socket cannot distinguish that
 state from "not built yet" -- it would have to be connected to find out
 whether it should be connected.
 

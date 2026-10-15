@@ -22,9 +22,9 @@ The single most important fact about the second and third of those:
 
 (engine.py start_session, stop_session.) So DURING a live session those
 counts on disk are stale zeros. Reporting them would be the exact failure
-`IOS-to-Tower.md` 1.8 warns about -- "nil and 0 are different claims and
-are kept different all the way to the screen" -- with the added insult
-that the zero looks like a measurement. The live keyframe count is
+`ios/docs/agent-handoffs/IOS-TO-TOWER.md` §1.8 warns about -- "nil and 0 are
+different claims and are kept different all the way to the screen" -- with the
+added insult that the zero looks like a measurement. The live keyframe count is
 therefore counted from `keyframe_accepted` events instead, and
 `frames_observed` is reported as UNAVAILABLE while a session is live,
 because no event is written for an ordinary rejected frame (engine.py
@@ -148,11 +148,11 @@ CALIBRATION_UNKNOWN = "unknown"
 CALIBRATION_UNCALIBRATED = "uncalibrated"
 CALIBRATION_CALIBRATED = "calibrated"
 
-# iOS's vocabulary for scale (IOS-to-Tower.md 1.5), mapped from Tower's.
-# `unknown` maps to nothing on purpose: a figure that cannot be labelled
-# with one of the three is not sent as a distance at all, which leaves
-# iOS's rule -- "a figure that arrives unlabelled is simply not shown as a
-# distance" -- with nothing to catch.
+# iOS's vocabulary for scale (ios/docs/agent-handoffs/IOS-TO-TOWER.md §1.5),
+# mapped from Tower's. `unknown` maps to nothing on purpose: a figure that
+# cannot be labelled with one of the three is not sent as a distance at all,
+# which leaves iOS's rule -- "a figure that arrives unlabelled is simply not
+# shown as a distance" -- with nothing to catch.
 SCALE_SEMANTICS = {
     SCALE_RELATIVE: "relative",
     SCALE_ESTIMATED: "inferredMetric",
@@ -161,7 +161,7 @@ SCALE_SEMANTICS = {
 
 # Fields whose value advances without anything having happened. Excluded
 # from the change revision so a UI can tell new data from repeated data
-# (IOS-to-Tower.md 1.2).
+# (ios/docs/agent-handoffs/IOS-TO-TOWER.md §1.2).
 VOLATILE_PATHS = (
     "progress.mapping_seconds",
     "world_snapshot.mapping_seconds",
@@ -1224,9 +1224,9 @@ class WorldBuilderStatusProducer:
 def _world_block(world) -> dict:
     return {
         "world_id": world.world_id,
-        # None, never a derived name. IOS-to-Tower.md 1.2: "If the Tower
-        # does not name worlds, iOS shows no name rather than deriving
-        # one."
+        # None, never a derived name. ios/docs/agent-handoffs/IOS-TO-TOWER.md
+        # §1.2: "If the Tower does not name worlds, iOS shows no name rather
+        # than deriving one."
         "display_name": world.display_name,
         "schema_version": world.schema_version,
         "created_at": world.created_at,
@@ -1846,11 +1846,11 @@ def _lifecycle_from_the_record(*, holder, stopped, session, geometry_current,
     right now -- belongs to `_still_building`, which corrects this answer on
     every stopped arm. Callers want `_lifecycle`.
 
-    This is `IOS-to-Tower.md` 1.1's central ask -- "a start/stop/failed
-    signal **distinct from 'frames are arriving'**" -- and the writer lock
-    answers it exactly, because it is held for the lifetime of a mapping
-    session and by nothing else. Since 2026-09-06 the live builder keeps
-    it through finalization too (`engine.stop_session(hold_lock=True)`),
+    This is `ios/docs/agent-handoffs/IOS-TO-TOWER.md` §1.1's central ask -- "a
+    start/stop/failed signal **distinct from 'frames are arriving'**" -- and
+    the writer lock answers it exactly, because it is held for the lifetime of
+    a mapping session and by nothing else. Since 2026-09-06 the live builder
+    keeps it through finalization too (`engine.stop_session(hold_lock=True)`),
     and writes a `finalization` block on the record, so five states are
     now distinguishable on disk:
 
@@ -2419,8 +2419,9 @@ def _progress_block(session, events, counts_are_final: bool, now: float) -> dict
             dict(session.rejected_by_reason) if counts_are_final else None
         ),
         "journal_corrupt_lines": events["corrupt_lines"],
-        # On the TOWER's clock, per IOS-to-Tower.md 1.8: "the iPhone's idea
-        # of elapsed time is not the Tower's idea of mapping time".
+        # On the TOWER's clock, per ios/docs/agent-handoffs/IOS-TO-TOWER.md
+        # §1.8: "the iPhone's idea of elapsed time is not the Tower's idea of
+        # mapping time".
         "mapping_seconds": mapping_seconds,
         "mapping_seconds_unavailable_reason": clock_note,
         "mapping_clock": "tower",
@@ -2431,10 +2432,10 @@ def _progress_block(session, events, counts_are_final: bool, now: float) -> dict
 def _tracking_block(events) -> dict:
     """Coarse tracking state, and why `limited` is never sent.
 
-    `IOS-to-Tower.md` 1.6 accepts good / limited / lost. Tower emits only
-    two of the three plus unknown, because `tracking_lost` and
-    `keyframe_accepted` are real events with real meanings, while
-    "limited" would require a threshold on rejection rate that nobody has
+    `ios/docs/agent-handoffs/IOS-TO-TOWER.md` §1.6 accepts good / limited /
+    lost. Tower emits only two of the three plus unknown, because
+    `tracking_lost` and `keyframe_accepted` are real events with real meanings,
+    while "limited" would require a threshold on rejection rate that nobody has
     defined. Inventing one would put a state on screen that looks measured
     and is not -- and iOS explicitly refuses a percentage for that same
     reason.
@@ -2499,8 +2500,8 @@ def _calibration_block(session) -> dict:
         "calibrated_height": intrinsics.calibrated_height,
         "reprojection_rms_px": intrinsics.reprojection_rms_px,
         "view_count": intrinsics.view_count,
-        # No percentage, ever. IOS-to-Tower.md 1.5: "'62% calibrated'
-        # implies a denominator nobody has defined."
+        # No percentage, ever. ios/docs/agent-handoffs/IOS-TO-TOWER.md §1.5:
+        # "'62% calibrated' implies a denominator nobody has defined."
         "calibrating_ever_reported": False,
         "scope": "session",
     }
@@ -2536,9 +2537,9 @@ def _scale_block(world, *, attributable: bool = True) -> dict:
         "meters_per_unit": scale.meters_per_unit,
         "method": scale.method,
         "confidence": scale.confidence.value,
-        # The unit string IOS-to-Tower.md 0.5 requires beside every
-        # figure. Null when there is no unit at all, which is the honest
-        # value for a world with no solved pose.
+        # The unit string ios/docs/agent-handoffs/IOS-TO-TOWER.md §0.5 requires
+        # beside every figure. Null when there is no unit at all, which is the
+        # honest value for a world with no solved pose.
         "unit": None if scale.state == SCALE_UNKNOWN else "world units",
         "allows_metres": scale.allows_metres,
         "unavailable_reason": None,
@@ -2631,7 +2632,7 @@ def _geometry_block(manifest, current: bool, keyframes_now, *,
         "built_from_keyframes": manifest.get("keyframes"),
         "keyframes_now": keyframes_now,
         # The Tower's own word, displayed verbatim and never parsed
-        # (IOS-to-Tower.md 1.3).
+        # (ios/docs/agent-handoffs/IOS-TO-TOWER.md §1.3).
         "representation": GEOMETRY_REPRESENTATION,
         "element_count": manifest.get("points"),
         "element_name": "point",
@@ -2742,10 +2743,11 @@ def _trajectory_unavailable(reason: str) -> dict:
 def _persistence_block(world) -> dict:
     """Did the world survive the session? Always yes, and say so.
 
-    IOS-to-Tower.md 1.7 wants `session` / `saved(revision)` / `reloading`
-    kept distinct from "did not say", because "silence is not a promise
-    that a world was discarded". World Builder persists everything by
-    construction, so this is `saved` with the world's own revision.
+    ios/docs/agent-handoffs/IOS-TO-TOWER.md §1.7 wants `session` /
+    `saved(revision)` / `reloading` kept distinct from "did not say", because
+    "silence is not a promise that a world was discarded". World Builder
+    persists everything by construction, so this is `saved` with the world's
+    own revision.
     """
     return {
         "state": "saved",
@@ -2768,10 +2770,10 @@ def _persistence_block(world) -> dict:
 def _artifacts_block(store, world_id, session_id, world, session=None) -> dict:
     """What imagery exists, and why none of it is offered.
 
-    `IOS-to-Tower.md` 5 is the strictest rule in the document: an image
-    whose treatment is not stated is "handled exactly as strictly as raw
-    -- withheld", and there is "deliberately no `.probablySafe` and no
-    lenient default".
+    `ios/docs/agent-handoffs/IOS-TO-TOWER.md` §5 is the strictest rule in the
+    document: an image whose treatment is not stated is "handled exactly as
+    strictly as raw -- withheld", and there is "deliberately no `.probablySafe`
+    and no lenient default".
 
     Since 2026-08-23 keyframes are face-redacted before they are written,
     and the session records WHICH detector ran at WHICH threshold. That is

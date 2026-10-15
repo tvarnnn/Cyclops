@@ -298,7 +298,7 @@ transport for a consumer that does not exist is the fabricated contract
 this project refuses.
 
 **One of those five grounds is false and should stop being cited.** "iOS
-has no pose schema" -- and `IOS-to-Tower.md` §1.4's elaboration that a
+has no pose schema" -- and `ios/docs/agent-handoffs/IOS-TO-TOWER.md` §1.4's elaboration that a
 pose schema needs "position, rotation convention, handedness, coordinate
 frame and units -- five Tower decisions, each of which renders plausibly
 and wrongly if guessed" -- describes a decision that has already been

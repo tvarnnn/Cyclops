@@ -73,8 +73,8 @@ def test_the_catalog_order_is_stable():
 
 
 def test_ios_reads_three_fields_and_all_three_are_present():
-    """IOS-to-Tower.md 2.1: an opaque id, a name, and optionally a summary.
-    Nothing else, and nothing is parsed."""
+    """ios/docs/agent-handoffs/IOS-TO-TOWER.md §2.1: an opaque id, a name, and
+    optionally a summary. Nothing else, and nothing is parsed."""
     for entry in catalog.catalog():
         assert isinstance(entry["id"], str) and entry["id"]
         assert isinstance(entry["name"], str) and entry["name"]
@@ -172,10 +172,10 @@ def test_an_annotation_metric_is_a_count_not_a_rate():
 def test_a_unitless_headline_is_a_decision_not_an_omission():
     """`depth` emits relative inverse depth on an arbitrary scale.
 
-    IOS-to-Tower.md 0.5: iOS renders a figure BARE when the Tower names no
-    unit, because a bare number is the honest rendering of an unlabelled
-    quantity. A unit string here would be a claim about scale that
-    MiDaS-small does not support.
+    ios/docs/agent-handoffs/IOS-TO-TOWER.md §0.5: iOS renders a figure BARE
+    when the Tower names no unit, because a bare number is the honest rendering
+    of an unlabelled quantity. A unit string here would be a claim about scale
+    that MiDaS-small does not support.
     """
     assert experiment_metadata("depth").headline_unit is None
     for experiment_id in EXPERIMENTS:

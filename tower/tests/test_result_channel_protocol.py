@@ -61,7 +61,8 @@ def test_http_and_websocket_declare_byte_identical_capabilities(monkeypatch, bui
 
 
 def test_an_unconfigured_tower_still_offers_the_contract(monkeypatch):
-    """IOS-to-Tower.md 0.1's third state, which must not collapse into the first.
+    """ios/docs/agent-handoffs/IOS-TO-TOWER.md §0.1's third state, which must not
+    collapse into the first.
 
     "the Tower offers a contract this build implements, but is
      unreachable -> connect"
@@ -145,8 +146,9 @@ def test_the_world_builder_offer_stays_at_index_zero(monkeypatch, built):
 
 
 def test_the_declaration_says_results_are_snapshots(monkeypatch, built):
-    """IOS-to-Tower.md 1.3: a UI that assumes deltas draws a partial world
-    as a complete one. So the mode is declared, not implied."""
+    """ios/docs/agent-handoffs/IOS-TO-TOWER.md §1.3: a UI that assumes deltas
+    draws a partial world as a complete one. So the mode is declared, not
+    implied."""
     root, _, _ = built
     client = make_client(monkeypatch, root)
     offer = client.get("/cartridges").json()["cartridges"][0]
@@ -223,7 +225,8 @@ def test_seq_is_dense_per_subscription(monkeypatch, built):
 
 
 def test_revision_is_stable_while_nothing_changes(monkeypatch, built):
-    """IOS-to-Tower.md 1.2: distinguish new data from repeated data.
+    """ios/docs/agent-handoffs/IOS-TO-TOWER.md §1.2: distinguish new data from
+    repeated data.
 
     A finished world does not change, so its revision must not either --
     even though elapsed-time figures are re-sent by the heartbeat.
@@ -282,9 +285,9 @@ def test_an_unchanged_world_publishes_nothing_before_the_heartbeat(
     """The bandwidth half of the same rule.
 
     With no change and no heartbeat due, a poll pass must produce NO
-    message at all. IOS-to-Tower.md 4.8 asks the Tower to coalesce before
-    publishing; republishing an identical snapshot at poll rate is the
-    thing that asks for.
+    message at all. ios/docs/agent-handoffs/IOS-TO-TOWER.md §4.8 asks the Tower
+    to coalesce before publishing; republishing an identical snapshot at poll
+    rate is the thing that asks for.
     """
     root, _, _ = built
     client = make_client(monkeypatch, root)
@@ -518,7 +521,8 @@ def test_malformed_requests_are_refused_and_the_socket_survives(
 
 
 def test_an_unknown_message_type_is_answered_not_ignored(monkeypatch, built):
-    """IOS-to-Tower.md 2.2: iOS never lets a request silently no-op.
+    """ios/docs/agent-handoffs/IOS-TO-TOWER.md §2.2: iOS never lets a request
+    silently no-op.
 
     Before this channel, an unrecognised message produced a server-side
     log line no client could see, so "not implemented" and "lost in

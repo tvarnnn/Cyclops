@@ -331,8 +331,9 @@ async def _subscribe(message, websocket, sender, channel_holder) -> None:
         # A subscribe that cannot produce its first snapshot must SAY so.
         # The outer handler would have logged this and returned, leaving
         # the client waiting on a reply that was never coming -- the
-        # silent no-op IOS-to-Tower.md 2.2 rules out, and the worst of the
-        # available failures because nothing on either side reports it.
+        # silent no-op ios/docs/agent-handoffs/IOS-TO-TOWER.md §2.2 rules out,
+        # and the worst of the available failures because nothing on either
+        # side reports it.
         if isinstance(exc, SnapshotTimeout):
             # One line, and one line per target per 30 s. A phone
             # retrying every ~2.5 s against a wedged read logged a full

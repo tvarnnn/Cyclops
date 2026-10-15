@@ -8,7 +8,7 @@
 
 > **2026-08-23 — a structured result channel now exists.** The implemented
 > wire contract lives in **`docs/contracts/CARTRIDGE-RESULTS.md`**, and
-> every requirement in the repo-root `IOS-to-Tower.md` is classified in
+> every requirement in `ios/docs/agent-handoffs/IOS-TO-TOWER.md` is classified in
 > **`docs/contracts/IOS-TO-TOWER-RECONCILIATION.md`**. Sections 6.1, 6.2,
 > 6.4 and 6.9 below are updated in place; the rest of this document
 > describes surfaces that predate it and is unchanged.
@@ -643,7 +643,7 @@ these are implemented; do not code against them.
 >
 > Also **not** provided, deliberately: keyframes, poses, points, raw
 > events, and imagery. The channel carries states, counts and summaries.
-> `IOS-to-Tower.md` §1.4 marks a pose array NOT REQUESTED, and §5 requires
+> `ios/docs/agent-handoffs/IOS-TO-TOWER.md` §1.4 marks a pose array NOT REQUESTED, and §5 requires
 > unredacted imagery to be withheld.
 
 The four blockers, which still describe the LIVE MODULE path:
@@ -671,7 +671,7 @@ figures that update during the walk.
 counts rather than one:
 
 1. No geometry data is sent. `element_count` is a count; there are no
-   points and no poses on the wire, because `IOS-to-Tower.md` §1.4 marked
+   points and no poses on the wire, because `ios/docs/agent-handoffs/IOS-TO-TOWER.md` §1.4 marked
    a pose array NOT REQUESTED and no representation contract has been
    agreed.
 2. Without `--rebuild-every`, geometry does not exist until after Stop.
@@ -855,4 +855,4 @@ reports the state, so a client can at least display it truthfully.
    write, build, or join the frame path; two boundary tests enforce it.
 10. **No imagery crosses the wire while `redaction` is `"none"`.** An
     unstated or absent treatment means withhold, with no lenient default
-    (`IOS-to-Tower.md` §5).
+    (`ios/docs/agent-handoffs/IOS-TO-TOWER.md` §5).

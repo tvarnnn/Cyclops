@@ -7,10 +7,10 @@ boundary two tests exist to hold.
 
 WHY A CONTROL SURFACE EXISTS AT ALL, GIVEN THE PHONE SENDS NOTHING
 
-`IOS-to-Tower.md` 6.2 is explicit that opening a cartridge on the phone
-sends **nothing** -- "a test asserts the wire stays silent" -- so the
-phone cannot be the thing that starts a session. Two other consumers can,
-and both are real:
+`ios/docs/agent-handoffs/IOS-TO-TOWER.md` §6.2 is explicit that opening a
+cartridge on the phone sends **nothing** -- "a test asserts the wire stays
+silent" -- so the phone cannot be the thing that starts a session. Two other
+consumers can, and both are real:
 
   * a Mac operator, or curl, driving a physical test. Somebody has to be
     able to start a session, walk into a room and read the counts back,

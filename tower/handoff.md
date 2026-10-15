@@ -5,7 +5,7 @@ Builder backend perfection pass.
 
 **Purpose:** so the Tower→iOS boundary is not designed blind. This describes the
 **Swift that exists right now**, read directly from source — not the roadmap,
-not `IOS-to-Tower.md` (which is a *requirements* document written from the iOS
+not `ios/docs/agent-handoffs/IOS-TO-TOWER.md` (which is a *requirements* document written from the iOS
 side and is already stale about what Tower can do).
 
 **Scope:** only what is implemented and relevant to Tower / World Builder
