@@ -21,7 +21,7 @@ def _offer(worker, world, tag=(1, "digest"), horizon=4):
 def test_twelve_rotating_worlds_compute_once_and_publish_from_memo(monkeypatch, tmp_path):
     calls = []
 
-    def compute(root, world, session, expected, revision, clock, tag, budget):
+    def compute(root, world, session, expected, revision, clock, tag, budget, **_imagery):
         calls.append((world, tag))
         return {"world": world, "horizon_keyframes": expected[1]}
 
@@ -47,7 +47,7 @@ def _solve(worker, tag, solved_at=1000.0, horizon=4):
 
 
 def _geometry_compute(calls, fail_tags=()):
-    def compute(root, world, session, expected, revision, clock, tag, budget):
+    def compute(root, world, session, expected, revision, clock, tag, budget, **_imagery):
         calls.append((expected[0], tag))
         if tag in fail_tags:
             raise ValueError("solution input digest mismatch")
@@ -126,7 +126,7 @@ def test_sixty_rebuilds_of_one_solve_compute_once_until_the_next_solve(monkeypat
 
 def test_no_store_sweep_until_status_requests_a_target(monkeypatch, tmp_path):
     calls = []
-    monkeypatch.setattr(coverage, "compute_from_tree", lambda *args: calls.append(args))
+    monkeypatch.setattr(coverage, "compute_from_tree", lambda *args, **_imagery: calls.append(args))
     _land(tmp_path, "s", 1000.0, 221)
     worker = coverage.CoverageWorker(tmp_path)
     try:
@@ -141,7 +141,7 @@ def test_active_landing_precedes_rotating_old_worlds(monkeypatch, tmp_path):
     calls = []
     entered, release = threading.Event(), threading.Event()
 
-    def compute(root, world, session, expected, revision, clock, tag, budget):
+    def compute(root, world, session, expected, revision, clock, tag, budget, **_imagery):
         calls.append(world)
         if world == "old-0":
             entered.set()
@@ -171,7 +171,7 @@ def test_active_landing_precedes_rotating_old_worlds(monkeypatch, tmp_path):
 def test_thirty_seconds_of_rotating_polls_has_bounded_compute_calls(monkeypatch, tmp_path):
     calls = []
 
-    def compute(root, world, session, expected, revision, clock, tag, budget):
+    def compute(root, world, session, expected, revision, clock, tag, budget, **_imagery):
         calls.append(world)
         return {"world": world}
 
@@ -197,7 +197,7 @@ def test_new_tree_does_not_publish_older_inflight_receipt(monkeypatch, tmp_path)
     old_entered, release_old = threading.Event(), threading.Event()
     new_entered, release_new = threading.Event(), threading.Event()
 
-    def compute(root, world, session, expected, revision, clock, tag, budget):
+    def compute(root, world, session, expected, revision, clock, tag, budget, **_imagery):
         calls.append(tag)
         if tag == (1, "digest"):
             old_entered.set()

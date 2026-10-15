@@ -91,8 +91,7 @@ def state(monkeypatch, tmp_path):
     return fresh
 
 
-def _client(monkeypatch, *, landed=True):
-    monkeypatch.setenv("TOWER_WORLD_GUIDANCE_IMAGERY_LANDED", "on" if landed else "off")
+def _client(monkeypatch):
     monkeypatch.setenv("TOWER_WORLD_GUIDANCE_COVERAGE", "on")
     app = FastAPI()
     app.state.world_root = "synthetic-root"
@@ -170,7 +169,7 @@ def test_on_none_session_live_manifest_and_tile(state, monkeypatch):
     monkeypatch.setenv(ENV, "on")
     monkeypatch.setattr(imagery, "keyframe_image_bytes",
                         lambda *a, **kw: pytest.fail("the redaction boundary re-redacts `none`"))
-    client = _client(monkeypatch, landed=False)
+    client = _client(monkeypatch)
     reply = client.get(PATH + "/manifest")
     assert reply.status_code == 200
     live = reply.json()["live"]

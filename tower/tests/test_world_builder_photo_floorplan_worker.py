@@ -111,7 +111,6 @@ def test_off_starts_no_photo_worker_and_reads_no_extra_tree(monkeypatch, tmp_pat
     no photo worker or thread exists, and no photo state is touched."""
     monkeypatch.setenv("TOWER_WORLD_GUIDANCE_COVERAGE", "on")
     monkeypatch.setenv("TOWER_WORLD_PHOTO_FLOORPLAN", "off")
-    monkeypatch.delenv("TOWER_WORLD_GUIDANCE_IMAGERY_LANDED", raising=False)
     root = tmp_path / "worlds"
     world, session, _ = _landed_tree(root, _inputs())
     seen = []
@@ -131,7 +130,7 @@ def test_off_starts_no_photo_worker_and_reads_no_extra_tree(monkeypatch, tmp_pat
         worker = producer._coverage_worker
         assert worker._photo_worker is None
         assert _wait(lambda: producer.snapshot(world, session).payload["guidance"]["coverage"])
-        assert seen and all("tree_out" not in kw and "eligible_out" not in kw for kw in seen)
+        assert seen and all("tree_out" not in kw for kw in seen)
         assert photo_threads() <= before
         assert pfw.state_for(root).landed(world, session) is None
     finally:

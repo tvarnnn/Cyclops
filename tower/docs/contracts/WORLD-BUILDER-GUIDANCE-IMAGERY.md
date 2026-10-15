@@ -5,15 +5,14 @@ Authority: frozen `FOW-V11B-WIRE-AND-IOS-SPEC-20261007.md` with binding
 the iOS presentation is owned by the Mac lane.
 
 Both imagery routes are always registered and B1 (`live`) is always on.
-`TOWER_WORLD_GUIDANCE_IMAGERY_LANDED` defaults off and accepts only `on`.
-B2 also requires `TOWER_WORLD_GUIDANCE_COVERAGE=on` and its fully merged
-landed solve.
+B2 (`landed`) is on whenever `TOWER_WORLD_GUIDANCE_COVERAGE=on`, and needs
+its fully merged landed solve.
 
 ## Routes
 
 `GET /worlds/{world_id}/guidance/{session_id}/imagery/manifest` returns
-`{"version":1}` plus `live`, and `landed` if B2 is on.
-A disabled `landed` is omitted. `live` has `segment_index` and `entries` (possibly
+`{"version":1}` plus `live`, and `landed` if coverage is on.
+With coverage off, `landed` is omitted. `live` has `segment_index` and `entries` (possibly
 empty); `landed` is null before a qualifying landing. A missing or untrusted
 world/session answers 404. Both routes use no-store headers.
 
@@ -82,10 +81,9 @@ No manifest or tile is written to disk.
 ## B2 capture-dial selection (S3, 2026-10-12)
 
 Authority: `FOW-RING-SPEC-20261012.md` §7 S3 and manager mail 366. This is
-additive and sits under the existing `TOWER_WORLD_GUIDANCE_IMAGERY_LANDED`
-switch: there is no new switch, `version` stays 1, B1 is unchanged, and the
-coverage receipt is byte-identical with or without it. With the switch off,
-nothing below is computed.
+additive to B2: there is no switch of its own, `version` stays 1, B1 is
+unchanged, and the coverage receipt is byte-identical with or without it.
+With coverage off, nothing below is computed.
 
 The B2 `landed` block keeps `solved_at`, `geometry_revision`,
 `frame_revision` and `entries`. It adds:
@@ -188,10 +186,10 @@ pinned by a Tower test.
   receipt's `components`. If the newest keyframe with a usable heading
   belongs to a component the station cap dropped, `latest` comes from the
   newest one in a drawn component instead.
-- With `TOWER_WORLD_GUIDANCE_IMAGERY_LANDED=on`, the coverage worker always
-  supplies the dial inputs, so every entry carries `sector`. If the dial
-  computation fails, that landing publishes no B2 block at all. It never falls
-  back to the stride selection, whose entries have no sector.
+- The coverage worker always supplies the dial inputs, so every entry carries
+  `sector`. If the dial computation fails, that landing publishes no B2 block
+  at all. It never falls back to the stride selection, whose entries have no
+  sector.
 
 ## Photo floor plan v1.2 (2026-10-12) -- default OFF, imagery_source unredacted
 
