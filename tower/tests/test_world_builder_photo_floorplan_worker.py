@@ -71,6 +71,42 @@ def test_the_photo_floorplan_needs_coverage_on(monkeypatch):
     assert config.world_photo_floorplan_setting() is True
 
 
+@pytest.mark.parametrize("value", [None, "homography", "depth", "moge"])
+def test_the_worker_always_builds_the_homography_raster(monkeypatch, tmp_path, caplog, value):
+    """TOWER_WORLD_PHOTO_FLOORPLAN_METHOD is not read: any value gets the homography plan."""
+    if value is None:
+        monkeypatch.delenv("TOWER_WORLD_PHOTO_FLOORPLAN_METHOD", raising=False)
+    else:
+        monkeypatch.setenv("TOWER_WORLD_PHOTO_FLOORPLAN_METHOD", value)
+    _, tree, receipt, eligible, stat = _synthetic_solve(tmp_path)
+    expected, _, _ = pfw.build_landing(tmp_path, WORLD, SESSION, receipt, eligible,
+                                       json.loads(json.dumps(tree)), stat)
+    calls = []
+    real = pfw.homography_component
+
+    def spy(**kwargs):
+        calls.append(kwargs["receipt_component"]["reference_segment"])
+        return real(**kwargs)
+
+    monkeypatch.setattr(pfw, "homography_component", spy)
+    state = pfw.PhotoFloorplanState()
+    worker = pfw.PhotoFloorplanWorker(tmp_path, latest=lambda w, s: receipt, state=state,
+                                      diagnostics_files=False)
+    try:
+        with caplog.at_level("INFO", logger="tower.world_builder.photo_floorplan_worker"):
+            worker.offer(WORLD, SESSION, receipt, eligible, tree, stat)
+            assert _wait(lambda: any("components=" in r.getMessage() for r in caplog.records),
+                         timeout=30)
+    finally:
+        worker.shutdown()
+    assert worker.outcomes[(WORLD, SESSION)]["disposition"] == "ok"
+    assert calls == [0]
+    landed = state.landed(WORLD, SESSION)
+    assert landed == expected and landed["components"][0]["projected_keyframes"] > 0
+    line = next(r.getMessage() for r in caplog.records if "components=" in r.getMessage())
+    assert " method=homography " in line
+
+
 def test_off_starts_no_photo_worker_and_reads_no_extra_tree(monkeypatch, tmp_path):
     """Identical behaviour OFF: coverage computes exactly as before (no `tree_out`),
     no photo worker or thread exists, and no photo state is touched."""
