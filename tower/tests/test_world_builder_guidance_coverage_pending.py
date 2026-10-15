@@ -1,13 +1,13 @@
-"""TOWER_WORLD_GUIDANCE_COVERAGE_PENDING: coverage counts posed keyframes of pending segments.
+"""Coverage counts posed keyframes of pending segments.
 
 The merge replaces a tracker segment only when every member is inside the
-solve's horizon (`global_solve.merge`, mode `pending`); coverage counted a
-keyframe only once its segment was replaced. With the keyframe turn bridge's
-long segments a walk's coverage sat nearly empty (e2e10: 69 of 327 posed
-keyframes, 4/12 sectors). With the switch exactly `on`, a pending segment's
-keyframe counts when the named solve posed it (>= 30 observations) in a
-component that maps to a registered, anchored reference, at the solve's own
-pose carried through that reference's anchor. OFF is today's receipt.
+solve's horizon (`global_solve.merge`, mode `pending`). Counting a keyframe
+only once its segment is replaced leaves a walk with the keyframe turn
+bridge's long segments nearly empty (e2e10: 69 of 327 posed keyframes, 4/12
+sectors). So a pending segment's keyframe counts when the named solve posed it
+(>= 30 observations) in a component that maps to a registered, anchored
+reference, at the solve's own pose carried through that reference's anchor.
+`_off` (`include_pending=False`) is the replaced-segments-only baseline.
 """
 
 from __future__ import annotations
@@ -22,9 +22,9 @@ import pytest
 from tests.test_world_builder_guidance_coverage import (
     _digest, _inputs, _landed_tree, _source_transform)
 from tests.test_world_builder_guidance_dial import _camera
-from tower.config import world_guidance_coverage_pending_setting
 from tower.world_builder import guidance_coverage as coverage
 
+# The retired switch; the live .env may still set it, and it must change nothing.
 ENV = "TOWER_WORLD_GUIDANCE_COVERAGE_PENDING"
 
 
@@ -130,48 +130,20 @@ def _small(**kwargs):
 
 
 def _on(data, **kwargs):
-    return coverage.compute_coverage(**data, include_pending=True, **kwargs)
-
-
-def _off(data, **kwargs):
     return coverage.compute_coverage(**data, **kwargs)
 
 
-# --- the switch -------------------------------------------------------------------------
-
-@pytest.mark.parametrize("value, expected", [
-    (None, False), ("", False), ("1", False), ("true", False), ("ON", False),
-    (" on", False), ("off", False), ("on", True)])
-def test_switch_is_exactly_on(monkeypatch, value, expected):
-    if value is None:
-        monkeypatch.delenv(ENV, raising=False)
-    else:
-        monkeypatch.setenv(ENV, value)
-    assert world_guidance_coverage_pending_setting() is expected
+def _off(data, **kwargs):
+    return coverage.compute_coverage(**data, include_pending=False, **kwargs)
 
 
-# --- OFF is today ------------------------------------------------------------------------
-
-@pytest.mark.parametrize("data", [
-    _inputs(), _inputs(((0, 82), (17, 19)), unposed_in_horizon=12, pending=14),
-    _inputs(((0, 616),), unposed_in_horizon=368), _small()],
-    ids=["one", "mid", "stop", "pending-walk"])
-def test_off_receipt_is_the_default_receipt_byte_for_byte(data):
-    default = _off(data)
-    explicit = coverage.compute_coverage(**data, include_pending=False)
-    assert _bytes(explicit) == _bytes(default)
-
+# --- no pending segment ------------------------------------------------------------------
 
 @pytest.mark.parametrize("data", [
     _inputs(), _inputs(((0, 82), (17, 19)), unposed_in_horizon=12, pending=14),
     _inputs(((0, 616),), unposed_in_horizon=368)], ids=["one", "mid", "stop"])
 def test_on_changes_nothing_when_no_segment_is_pending(data):
     assert _bytes(_on(data)) == _bytes(_off(data))
-
-
-def test_off_never_counts_a_pending_segment():
-    block = _off(_small())
-    assert _posed(block) == 2
 
 
 # --- ON: what counts ---------------------------------------------------------------------
@@ -386,15 +358,15 @@ def test_pending_cannot_push_the_receipt_over_4096_bytes():
 
 # --- wiring ------------------------------------------------------------------------------
 
-def test_compute_from_tree_reads_the_switch_only_through_its_argument(tmp_path):
+def test_compute_from_tree_counts_pending_by_default(tmp_path):
     data = _small()
     root = tmp_path / "worlds"
     world, session, store = _landed_tree(root, data)
     stat = (store.world_dir(world) / "solve" / session / "solution.json").stat()
     expected = (1000.0, 6, (stat.st_size, stat.st_mtime_ns))
-    off = coverage.compute_from_tree(root, world, session, expected, None, lambda: 1000.12)
-    on = coverage.compute_from_tree(root, world, session, expected, None, lambda: 1000.12,
-                                    include_pending=True)
+    off = coverage.compute_from_tree(root, world, session, expected, None, lambda: 1000.12,
+                                     include_pending=False)
+    on = coverage.compute_from_tree(root, world, session, expected, None, lambda: 1000.12)
     assert _posed(off) == 2 and _posed(on) == 6
 
 
@@ -426,10 +398,6 @@ def _worker_kwargs(monkeypatch, tmp_path, value):
     return seen[0]
 
 
-def test_worker_off_passes_nothing_new(monkeypatch, tmp_path):
-    for value in (None, "1", "true"):
+def test_worker_takes_the_pending_default_whatever_the_env(monkeypatch, tmp_path):
+    for value in (None, "on", "off"):
         assert "include_pending" not in _worker_kwargs(monkeypatch, tmp_path, value)
-
-
-def test_worker_on_asks_for_pending(monkeypatch, tmp_path):
-    assert _worker_kwargs(monkeypatch, tmp_path, "on")["include_pending"] is True
