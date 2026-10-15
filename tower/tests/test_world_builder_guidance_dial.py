@@ -292,8 +292,21 @@ class _Store:
     def read_session(self, world, session):
         return type("Session", (), {"world_id": world})()
 
+    def read_keyframes(self, world, session):
+        return []
+
+    def read_derived(self, world, session, verify=False):
+        return {"poses": []}
+
     def keyframe_image_set(self, world, session):
         return type("ImageSet", (), {"redaction": self.redaction})()
+
+
+def _empty_live(monkeypatch):
+    """The route always builds B1 too: let it reach `_Store`, whose empty
+    journal makes the `live` block empty, so these tests see B2 alone."""
+    monkeypatch.setattr(imagery, "contained_world_id", lambda store, world: world)
+    monkeypatch.setattr(imagery, "contained_session_id", lambda store, world, session: session)
 
 
 @pytest.fixture
@@ -401,7 +414,7 @@ def test_b2_dial_wire_through_the_route(state, monkeypatch):
     monkeypatch.setattr(route, "contained_session_id", lambda store, world, session: session)
     monkeypatch.setattr(route, "label_is_trusted", lambda label: label == "faces-blurred")
     monkeypatch.setattr(route, "state_for", lambda root: state)
-    monkeypatch.setenv("TOWER_WORLD_GUIDANCE_IMAGERY_LIVE", "off")
+    _empty_live(monkeypatch)
     monkeypatch.setenv("TOWER_WORLD_GUIDANCE_IMAGERY_LANDED", "on")
     monkeypatch.setenv("TOWER_WORLD_GUIDANCE_COVERAGE", "on")
     state.publish_landed("root", "home", "s9", RECEIPT, [],
@@ -549,7 +562,6 @@ def _real_imagery_state(monkeypatch):
 
 def test_phone_contract_end_to_end_worker_state_and_route(monkeypatch, tmp_path):
     monkeypatch.setenv("TOWER_WORLD_GUIDANCE_IMAGERY_LANDED", "on")
-    monkeypatch.setenv("TOWER_WORLD_GUIDANCE_IMAGERY_LIVE", "off")
     monkeypatch.setenv("TOWER_WORLD_GUIDANCE_COVERAGE", "on")
     monkeypatch.delenv("TOWER_WORLD_PHOTO_FLOORPLAN", raising=False)
     state = _real_imagery_state(monkeypatch)
@@ -572,14 +584,15 @@ def test_phone_contract_end_to_end_worker_state_and_route(monkeypatch, tmp_path)
                         ("contained_session_id", lambda store, w, s: s),
                         ("label_is_trusted", lambda label: label == "faces-blurred")):
         monkeypatch.setattr(route, name, value)
+    _empty_live(monkeypatch)
     app = FastAPI()
     app.state.world_root = str(root)
     app.include_router(route.router)
     client = TestClient(app)
     response = client.get(f"/worlds/{world}/guidance/{session}/imagery/manifest")
     assert response.status_code == 200
-    assert '"entries":[]' not in response.text.replace(" ", "")
     landed = json.loads(response.text)["landed"]
+    assert '"entries":[]' not in json.dumps(landed, separators=(",", ":"))
     _phone_accepts(landed, receipt)
     assert len(landed["entries"]) == len(_union(receipt["components"][0]))  # one per set sector
     for entry in landed["entries"]:
