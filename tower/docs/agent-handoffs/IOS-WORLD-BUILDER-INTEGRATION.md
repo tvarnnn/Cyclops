@@ -215,7 +215,7 @@ that does not exist is the fabricated contract this project refuses".
 That rule is sound and it is why nothing was added tonight.
 
 But one of its five stated grounds has been falsified and should be
-recorded. It says iOS "has no pose schema", and `IOS-to-Tower.md` §1.4
+recorded. It says iOS "has no pose schema", and `ios/docs/agent-handoffs/IOS-TO-TOWER.md` §1.4
 elaborates: a pose schema needs position, rotation convention,
 handedness, coordinate frame and units — "five Tower decisions, each of
 which renders plausibly and wrongly if guessed".

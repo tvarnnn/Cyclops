@@ -1194,15 +1194,15 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                     channel_holder=channels,
                 )
             else:
-                # Answered, not merely logged. IOS-to-Tower.md 2.2: iOS
-                # "never lets a request silently no-op", and
-                # 04-MODULE-SYSTEM.md already requires an unsupported
-                # request to "produce a clear degraded/failed state rather
-                # than silently pretending" it applied. Until now this
-                # branch wrote a server-side log line that no client could
-                # see, so a phone asking for something this Tower does not
-                # implement could not tell that from a message lost in
-                # flight.
+                # Answered, not merely logged.
+                # ios/docs/agent-handoffs/IOS-TO-TOWER.md §2.2: iOS "never lets
+                # a request silently no-op", and 04-MODULE-SYSTEM.md already
+                # requires an unsupported request to "produce a clear
+                # degraded/failed state rather than silently pretending" it
+                # applied. Until now this branch wrote a server-side log line
+                # that no client could see, so a phone asking for something
+                # this Tower does not implement could not tell that from a
+                # message lost in flight.
                 logger.warning("received unknown message type: %s", message_type)
                 await sender.send(
                     {

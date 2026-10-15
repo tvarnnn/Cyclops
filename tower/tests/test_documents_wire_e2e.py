@@ -206,7 +206,8 @@ class TestTheListCarriesNoText:
         return _client(monkeypatch, document_root=tmp_path)
 
     def test_the_listing_reports_a_character_count_and_no_text(self, client):
-        """`IOS-to-Tower.md` 3.2, enforced rather than intended.
+        """`ios/docs/agent-handoffs/IOS-TO-TOWER.md` §3.2, enforced rather than
+        intended.
 
         Searching the serialised listing for a phrase that IS in the
         document, rather than checking for a `text` key: a text field

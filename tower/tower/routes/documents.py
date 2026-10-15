@@ -10,11 +10,11 @@ WHY HTTP AND NOT THE RESULT SOCKET
 `tower/routes/ws.py` gives the result sender and the frame path one
 shared `asyncio.Lock`, so a large result send directly delays the next
 `frame_result`. Document text is the largest thing this platform could
-put on that socket and the most sensitive: `IOS-to-Tower.md` 3.2 already
-requires that "the list carries a character count, not the text... Full
-text is fetched when a person opens one", which is the manifest/segment
-split World Builder's geometry uses, arrived at from the privacy side
-rather than the size side.
+put on that socket and the most sensitive:
+`ios/docs/agent-handoffs/IOS-TO-TOWER.md` §3.2 already requires that "the list
+carries a character count, not the text... Full text is fetched when a person
+opens one", which is the manifest/segment split World Builder's geometry uses,
+arrived at from the privacy side rather than the size side.
 
 So: the LIST is here and carries no text. ONE DOCUMENT is here and
 carries its pages. The session's progress is on the result channel, where

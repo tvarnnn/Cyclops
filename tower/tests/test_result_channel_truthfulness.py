@@ -239,7 +239,8 @@ def test_pose_count_is_not_poses_solved_and_not_the_keyframe_count(
 
 
 def test_no_pose_array_is_sent(monkeypatch, built):
-    """IOS-to-Tower.md 1.4 marks a pose array NOT REQUESTED.
+    """ios/docs/agent-handoffs/IOS-TO-TOWER.md §1.4 marks a pose array NOT
+    REQUESTED.
 
     A pose schema needs position, rotation convention, handedness, frame
     and units -- five Tower decisions, each of which renders plausibly and
@@ -267,7 +268,8 @@ def test_no_pose_array_is_sent(monkeypatch, built):
 
 
 def test_a_path_length_carries_its_unit_and_scale_semantics(monkeypatch, built):
-    """IOS-to-Tower.md 0.5 and 1.5: never a bare number, never metres."""
+    """ios/docs/agent-handoffs/IOS-TO-TOWER.md §0.5 and 1.5: never a bare
+    number, never metres."""
     root, _, _ = built
     payload = _payload(monkeypatch, root)
     path = payload["trajectory"]["path_length"]
@@ -470,7 +472,8 @@ def test_tracking_never_reports_limited(monkeypatch, built):
 def test_keyframe_imagery_is_reported_present_but_never_fetchable(
     monkeypatch, built
 ):
-    """IOS-to-Tower.md 5: an unstated treatment is not a treatment.
+    """ios/docs/agent-handoffs/IOS-TO-TOWER.md §5: an unstated treatment is not
+    a treatment.
 
     World Builder keyframes are written with redaction "none" -- raw
     first-person frames. So they are declared, and declared unfetchable,

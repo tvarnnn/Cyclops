@@ -1,4 +1,4 @@
-# Reconciliation of `IOS-to-Tower.md` — 2026-08-23
+# Reconciliation of `ios/docs/agent-handoffs/IOS-TO-TOWER.md` — 2026-08-23
 
 Every requirement in the iOS product shell's document, classified against
 what Tower actually does as of branch

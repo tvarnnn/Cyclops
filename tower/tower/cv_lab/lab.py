@@ -1503,9 +1503,9 @@ class CVLab:
 
         `artifact` is no longer always `null`, and the sentence that used
         to be here is worth keeping in view because it is the standard
-        this had to meet. It said: `IOS-to-Tower.md` 5 withholds any
-        image whose treatment is unstated, and artifact fetching itself
-        is UNKNOWN -- iOS "holds no URL, no id format, and no bytes,
+        this had to meet. It said: `ios/docs/agent-handoffs/IOS-TO-TOWER.md` §5
+        withholds any image whose treatment is unstated, and artifact fetching
+        itself is UNKNOWN -- iOS "holds no URL, no id format, and no bytes,
         because inventing a fetch scheme would be exactly the fabricated
         contract this work refuses to produce", so "serving an inline
         image here would be the Tower inventing that scheme
@@ -1525,9 +1525,9 @@ class CVLab:
           persisted and never re-served;
         - no image goes INLINE. What is here is a path, a media type and
           a treatment -- the bytes are a separate fetch a client makes
-          only if it wants one, which is what `IOS-to-Tower.md`'s own
-          `notFetched`/`fetching`/`available` state machine was written
-          around;
+          only if it wants one, which is what
+          `ios/docs/agent-handoffs/IOS-TO-TOWER.md`'s own
+          `notFetched`/`fetching`/`available` state machine was written around;
         - it is `null` again, with a reason, the moment there is nothing
           honest to put here -- previews off, or an experiment with
           nothing to draw.

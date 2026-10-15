@@ -48,7 +48,7 @@ blocked and is not what this is.
   it is omitted when empty. The next field follows the same rule.
 - **By default, no imagery crosses the wire while `redaction` is `"none"`.**
   An unstated or absent treatment means withhold, with no lenient default
-  (`IOS-to-Tower.md` §5). The only exceptions are opt-in and labelled as
+  (`ios/docs/agent-handoffs/IOS-TO-TOWER.md` §5). The only exceptions are opt-in and labelled as
   such: `TOWER_WORLD_GUIDANCE_IMAGERY_UNREDACTED=on` (guidance imagery from a
   session labelled `none`, marked `"redaction": "unredacted"`),
   `TOWER_WORLD_RAW_IMAGERY` / `TOWER_WORLD_RAW_IMAGERY_WORLDS` (raw local
@@ -105,7 +105,7 @@ Both surfaces call one function; a test asserts they are byte-identical.
 
 ### The three states, and how to tell them apart
 
-`IOS-to-Tower.md` §0.1 requires these to stay distinct because they call
+`ios/docs/agent-handoffs/IOS-TO-TOWER.md` §0.1 requires these to stay distinct because they call
 for opposite user responses.
 
 | You observe | State | Show |
@@ -265,7 +265,7 @@ There is **no capture timestamp anywhere in this system** — the frame
 protocol carries no time field. So `tower_sent_at`, `started_at`,
 `ended_at`, `built_at` and `mapping_seconds` are all Tower's clock.
 
-`IOS-to-Tower.md` §0.3 holds `observedAt` and `receivedAt` separately and
+`ios/docs/agent-handoffs/IOS-TO-TOWER.md` §0.3 holds `observedAt` and `receivedAt` separately and
 will never substitute one for the other. Nothing here is an observation
 time in the sensor sense. Render capture time as **unknown**.
 
@@ -282,7 +282,7 @@ time in the sensor sense. Render capture time as **unknown**.
   revisions mean it does not.
 - **`progress.mapping_seconds` is excluded from `revision`.** It advances
   continuously while a session is live, and including it would make every
-  poll look like a change — the exact failure `IOS-to-Tower.md` §1.2
+  poll look like a change — the exact failure `ios/docs/agent-handoffs/IOS-TO-TOWER.md` §1.2
   describes.
 - **`lifecycle.processing` is content, not volatile** (PROPOSED 2026-10-05, T-UX1, §10.1):
   it carries no timestamp, so the revision changes exactly when the builder moves to another
@@ -425,7 +425,7 @@ Snapshot computation runs in a worker thread, never on the event loop.
 1. **Read the socket.** One WebSocket is one TCP stream: if you stop
    reading, you block your own `frame_result`s too, and after 5 s your
    subscription is dropped.
-2. **Throttle rendering yourself.** `IOS-to-Tower.md` §4.8 is right that
+2. **Throttle rendering yourself.** `ios/docs/agent-handoffs/IOS-TO-TOWER.md` §4.8 is right that
    the receiving side needs its own throttle. Tower coalesces, but you
    should still not put a list diff on the main actor per message.
 3. **Unsubscribe when a workspace closes** if the connection outlives it.
@@ -912,7 +912,7 @@ A manifest missing any of `input_digest`, `session_id`, `keyframes`,
 asserted without the figures to show for it.
 
 **`trajectory`** — a summary. **No pose array is sent**, per
-`IOS-to-Tower.md` §1.4.
+`ios/docs/agent-handoffs/IOS-TO-TOWER.md` §1.4.
 
 | Field | Notes |
 |---|---|
@@ -994,7 +994,7 @@ frames, and only so that fill is removed, never moved; `none` never is. It is
 the same kind of process claim, and it does not make the imagery fetchable.
 
 They stay unfetchable regardless. A best-effort filter is not grounds to
-start shipping first-person imagery. `IOS-to-Tower.md` §5 requires an image whose treatment is not
+start shipping first-person imagery. `ios/docs/agent-handoffs/IOS-TO-TOWER.md` §5 requires an image whose treatment is not
 `redacted` to be **withheld**, with no lenient default. So the channel
 declares that the images exist and that they are not fetchable, and mints
 **no id and no URL** — inventing a fetch scheme would be exactly the
@@ -1214,7 +1214,7 @@ responses.
 
 ### 14.2 Starting and stopping
 
-The phone sends **nothing** to start a session; §6.2 of `IOS-to-Tower.md`
+The phone sends **nothing** to start a session; §6.2 of `ios/docs/agent-handoffs/IOS-TO-TOWER.md`
 is explicit that opening a cartridge on the phone is silent, and a test
 asserts the wire stays silent. Sessions are driven over HTTP:
 
@@ -1226,7 +1226,7 @@ asserts the wire stays silent. Sessions are driven over HTTP:
 | `POST /scene/resume` | observe again without reloading the model |
 | `POST /scene/stop` | end the session and **discard** the scene |
 
-**A phone does not call any of them.** `IOS-to-Tower.md` §6.2 is
+**A phone does not call any of them.** `ios/docs/agent-handoffs/IOS-TO-TOWER.md` §6.2 is
 explicit that opening a cartridge on the phone sends no verb. What it
 does send is a `result_subscribe` for `scene_understanding/live`, and
 since 2026-09-07 the session runs while **somebody is streaming AND
@@ -1374,7 +1374,7 @@ per-person position, sampled repeatedly, is a movement trace.
 `confidence`. There is no key anywhere in this payload that could hold an
 entity.
 
-This refuses `IOS-to-Tower.md` §4.1's session-scoped anonymous track
+This refuses `ios/docs/agent-handoffs/IOS-TO-TOWER.md` §4.1's session-scoped anonymous track
 handle. The refusal is delivered as a value rather than as silence
 because those are different instructions: "refused" means build a
 different screen, and "not implemented yet" means wait for the next
@@ -1489,7 +1489,7 @@ What is genuinely new is **joinability**. A stable `track_id` plus a
 timestamp lets a recipient assemble the per-person dwell timeline this
 cartridge refuses to keep — persists-nothing laundered onto the consumer.
 
-**This refuses something iOS asked for.** `IOS-to-Tower.md` §4.1 requests
+**This refuses something iOS asked for.** `ios/docs/agent-handoffs/IOS-TO-TOWER.md` §4.1 requests
 a session-scoped anonymous track handle, and §4.3 a signed bearing. V1
 serves neither. The consequence is concrete and is not hidden: iOS cannot
 render per-entity rows for people, only a count and an aggregate. If that
@@ -1499,7 +1499,7 @@ with a new identifier — not a field quietly populated later.
 ### 14.6 Cadence
 
 Published at the standard 0.5 s poll with the 2 s heartbeat, **not at
-frame rate**. `IOS-to-Tower.md` §4.8 asks the Tower to coalesce, and this
+frame rate**. `ios/docs/agent-handoffs/IOS-TO-TOWER.md` §4.8 asks the Tower to coalesce, and this
 is that: the result sender shares a lock with the frame path, and
 starving frame delivery is what forced World Builder's geometry onto HTTP.
 
@@ -1569,7 +1569,7 @@ agree:
 - **Size.** `tower/routes/ws.py` gives the result sender and the frame
   path one shared lock. Document text is the largest thing this platform
   could put on it.
-- **Privacy.** `IOS-to-Tower.md` §3.2: "The list carries a character
+- **Privacy.** `ios/docs/agent-handoffs/IOS-TO-TOWER.md` §3.2: "The list carries a character
   count, not the text, so a list of documents is not also a bulk transfer
   of every document's contents onto the phone."
 

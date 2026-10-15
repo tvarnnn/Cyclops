@@ -65,9 +65,9 @@ def test_the_world_builder_offer_is_still_first(monkeypatch):
 
 
 def test_a_tower_with_no_lab_offers_the_contract_and_reports_it_unavailable():
-    """The third state in IOS-to-Tower.md 0.1, which must not collapse into
-    the first: "offered, implemented, unreachable -> connect" is a
-    different instruction to a person than "not built yet"."""
+    """The third state in ios/docs/agent-handoffs/IOS-TO-TOWER.md §0.1, which
+    must not collapse into the first: "offered, implemented, unreachable ->
+    connect" is a different instruction to a person than "not built yet"."""
     declaration = registry.declare(None, cv_lab=None)
     offer = next(
         entry

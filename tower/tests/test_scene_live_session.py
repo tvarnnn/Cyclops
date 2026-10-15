@@ -223,8 +223,9 @@ class TestStopDiscardsTheScene:
     ):
         """Pause is the deliberately different case.
 
-        `IOS-to-Tower.md` 4.7 asks the Tower to keep `observing` and
-        `lastKnown` apart rather than flatten them. Pause is lastKnown.
+        `ios/docs/agent-handoffs/IOS-TO-TOWER.md` §4.7 asks the Tower to keep
+        `observing` and `lastKnown` apart rather than flatten them. Pause is
+        lastKnown.
         """
         live, engine = stopped_session()
         live.start()

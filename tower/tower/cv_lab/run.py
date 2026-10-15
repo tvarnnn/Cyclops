@@ -426,7 +426,7 @@ class LabRun:
             # meaningful aggregate", not "zero". See MetricKind.
             "value": value,
             # `null` means the quantity genuinely has no unit and is
-            # rendered bare. IOS-to-Tower.md 0.5.
+            # rendered bare. ios/docs/agent-handoffs/IOS-TO-TOWER.md §0.5.
             "unit": unit,
             # How this number was combined across frames, so a reader
             # knows whether they are looking at a mean, a total, or a

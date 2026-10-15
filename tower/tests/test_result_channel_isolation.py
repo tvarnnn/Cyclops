@@ -299,10 +299,10 @@ def test_one_connection_disconnecting_does_not_disturb_another(
 def test_the_result_channel_uses_no_gaze_or_identity_vocabulary():
     """The same ban the cartridges already carry, extended to the wire.
 
-    IOS-to-Tower.md 4.2 asks explicitly: do not send a field named `gaze`,
-    `looking_at` or `attention`, and 3.3 adds `viewing_duration` -- "the
-    name is the failure". A wire contract is the worst place for one,
-    because a phone ships against it.
+    ios/docs/agent-handoffs/IOS-TO-TOWER.md §4.2 asks explicitly: do not send a
+    field named `gaze`, `looking_at` or `attention`, and 3.3 adds
+    `viewing_duration` -- "the name is the failure". A wire contract is the
+    worst place for one, because a phone ships against it.
     """
     banned = (
         "looking_at",

@@ -346,9 +346,10 @@ def test_no_result_channel_payload_ever_carries_an_image(monkeypatch):
     **no image bytes ride the result channel.** The descriptor names a
     path, a media type and a treatment; the bytes are a separate fetch a
     client makes only if it wants one. That is the split
-    `IOS-to-Tower.md` 5's own `notFetched`/`fetching`/`available` state
-    machine was written around, and it is what keeps a 40 KB image off
-    the socket the frame path shares a lock with.
+    `ios/docs/agent-handoffs/IOS-TO-TOWER.md` §5's own
+    `notFetched`/`fetching`/`available` state machine was written around, and
+    it is what keeps a 40 KB image off the socket the frame path shares a lock
+    with.
     """
     client = make_client(monkeypatch, "feature_detection")
     lab = client.app.state.cv_lab

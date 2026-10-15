@@ -276,10 +276,10 @@ class OpticalFlowExperiment:
         if scene is not None:
             # In `scene` pixels, not frame pixels. The scale is applied
             # once, here, so no renderer is ever handed a second one --
-            # `IOS-to-Tower.md` 2.5 refuses annotation geometry precisely
-            # because "a wrong convention renders confidently in the wrong
-            # place", and one conversion in one place is how that stays
-            # true of a picture the Tower draws itself.
+            # `ios/docs/agent-handoffs/IOS-TO-TOWER.md` §2.5 refuses annotation
+            # geometry precisely because "a wrong convention renders
+            # confidently in the wrong place", and one conversion in one place
+            # is how that stays true of a picture the Tower draws itself.
             flow_scale = scene.size[0] / float(gray.shape[1] or 1)
             self._preview.offer(
                 FlowPreview(

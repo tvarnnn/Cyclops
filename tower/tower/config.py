@@ -418,10 +418,10 @@ class Settings:
     # ends it.
     #
     # ON by default, and the default is what makes this cartridge
-    # reachable from a phone at all. `IOS-to-Tower.md` 6.2: opening a
-    # cartridge on the phone sends NOTHING, and a test asserts the wire
-    # stays silent -- so a session that only an HTTP POST could start is
-    # a contract a phone can subscribe to and will watch report "not
+    # reachable from a phone at all. `ios/docs/agent-handoffs/IOS-TO-TOWER.md`
+    # §6.2: opening a cartridge on the phone sends NOTHING, and a test asserts
+    # the wire stays silent -- so a session that only an HTTP POST could start
+    # is a contract a phone can subscribe to and will watch report "not
     # observing" forever. That is not a safety property; it is a dead
     # product path, and an adversarial review found it as one.
     #
