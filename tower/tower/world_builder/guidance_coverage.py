@@ -744,14 +744,10 @@ class CoverageWorker:
         # dropped if a newer receipt has published.
         self._landed_retry = None
         self._landed_over_budget = LANDED_OVER_BUDGET
-        # FOW v1.2 photo floor plan (TOWER_WORLD_PHOTO_FLOORPLAN, exactly `on`): its own
-        # side worker, handed each NEWLY published receipt after publication. OFF imports
-        # nothing and changes nothing here.
-        self._photo_worker = None
-        from tower.config import world_photo_floorplan_setting
-        if world_photo_floorplan_setting():
-            from tower.world_builder.photo_floorplan_worker import PhotoFloorplanWorker
-            self._photo_worker = PhotoFloorplanWorker(root, latest=self.latest)
+        # FOW v1.2 photo floor plan: its own side worker, handed each NEWLY published
+        # receipt after publication. Imported here: that module imports this one.
+        from tower.world_builder.photo_floorplan_worker import PhotoFloorplanWorker
+        self._photo_worker = PhotoFloorplanWorker(root, latest=self.latest)
         self._thread = threading.Thread(target=self._run, name="world-guidance", daemon=True)
         self._thread.start()
 
@@ -774,8 +770,7 @@ class CoverageWorker:
             self._pending = None
             self._queued.clear()
             self._condition.notify_all()
-        if self._photo_worker is not None:
-            self._photo_worker.shutdown()
+        self._photo_worker.shutdown()
 
     def _retry_landed(self):
         """Run the one owed B2 retry once its tick is due, unless a newer receipt
@@ -938,11 +933,9 @@ class CoverageWorker:
                 imagery_eligible = []
                 # FOW dial (S3): B2's per-sector selection inputs.
                 dial = {}
-                kwargs = {"eligible_out": imagery_eligible, "dial_out": dial}
-                photo_tree = None
-                if self._photo_worker is not None:
-                    photo_tree = {}
-                    kwargs["tree_out"] = photo_tree
+                photo_tree = {}
+                kwargs = {"eligible_out": imagery_eligible, "dial_out": dial,
+                          "tree_out": photo_tree}
                 block = compute_from_tree(self.root, world, session,
                                           (solved_at, horizon, stat), revision,
                                           self.clock, tree_tag, budget, **kwargs)
@@ -1014,7 +1007,7 @@ class CoverageWorker:
                     logger.warning("world builder guidance: candidate=%r landed imagery over "
                                    "budget; one retry at the next tick", candidate)
             # The photo floor plan runs on its own thread: this is one enqueue.
-            if block is not None and disposition == "ok" and self._photo_worker is not None:
+            if block is not None and disposition == "ok":
                 try:
                     if not self._stop.is_set():
                         self._photo_worker.offer(world, session, block,

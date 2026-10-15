@@ -455,7 +455,6 @@ def _wait(predicate):
 
 
 def test_worker_hands_the_receipts_own_dial_to_b2(monkeypatch, tmp_path):
-    monkeypatch.delenv("TOWER_WORLD_PHOTO_FLOORPLAN", raising=False)
     sink = _Sink()
     monkeypatch.setattr(imagery, "state_for", lambda root: sink)
     data = _world(ROOM + [(0, "a", (2, 2), 95), (0, "b", (2, 2), 95)])
@@ -541,7 +540,6 @@ def _real_imagery_state(monkeypatch):
 
 def test_phone_contract_end_to_end_worker_state_and_route(monkeypatch, tmp_path):
     monkeypatch.setenv("TOWER_WORLD_GUIDANCE_COVERAGE", "on")
-    monkeypatch.delenv("TOWER_WORLD_PHOTO_FLOORPLAN", raising=False)
     state = _real_imagery_state(monkeypatch)
     frames = ROOM + [(0, f"k{i:02d}", (1 + i % 3, 1 + i // 3 % 3), 37*i) for i in range(30)]
     data = _world(frames)
@@ -648,7 +646,6 @@ def test_latest_requires_a_non_empty_string_id():
 
 
 def test_failed_dial_never_publishes_sectorless_entries(monkeypatch, tmp_path):
-    monkeypatch.delenv("TOWER_WORLD_PHOTO_FLOORPLAN", raising=False)
     state = _real_imagery_state(monkeypatch)
 
     def boom(*args):
