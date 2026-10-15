@@ -67,8 +67,11 @@ So the rule is **not** that identity may never be claimed. It is that this
 implementation does not support it, and the evidence says it should not try yet:
 the best frozen embeddings get 26.4% Recall@1 on small mass-produced objects,
 tracking IDF1 collapses from ~100% to ~40% from identical same-class distractors
-alone, and zero-shot egocentric object re-ID tops out at 45.3% mAP.
-`category-not-instance` is a measured position, not an inherited
+alone, and zero-shot egocentric object re-ID tops out at 45.3% mAP. Sources: a
+visual product search benchmark (arXiv 2603.17186, Table 3: 26.4% Recall@1),
+REMIND (arXiv 2607.09267; the IDF1 values are read off its Figure 4, so they are
+approximate), and zero-shot object re-ID in egocentric kitchen videos (arXiv
+2605.26383: 45.3% mAP). `category-not-instance` is a measured position, not an inherited
 prohibition — which matters, because a measured position can be revisited when
 the measurement changes, and it will need a **new contract identifier** when it
 is.

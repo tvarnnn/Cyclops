@@ -15,7 +15,7 @@ detector fired six times in 9,199 frames, every one of them wrong.
 
 The corpus is machine-local (`data/` is gitignored), so these skip where
 it is absent. That is a real limit and it is the reason the derivation is
-also written down in full beside `MIN_ROW_TRANSITIONS` in
+also summarised beside `MIN_ROW_TRANSITIONS` in
 `tower/document_memory/detect.py`.
 
 What is NOT here: a page. No capture in the corpus contains a sheet of
