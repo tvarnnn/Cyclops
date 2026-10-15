@@ -4,16 +4,16 @@ Authority: frozen `FOW-V11B-WIRE-AND-IOS-SPEC-20261007.md` with binding
 `FOW-V11B-AMEND-1-20261007.md`. This Tower implementation supplies B1 and B2;
 the iOS presentation is owned by the Mac lane.
 
-Both `TOWER_WORLD_GUIDANCE_IMAGERY_LIVE` and
-`TOWER_WORLD_GUIDANCE_IMAGERY_LANDED` default off and accept only `on`.
-With both off, neither imagery route is registered. B2 also requires
-`TOWER_WORLD_GUIDANCE_COVERAGE=on` and its fully merged landed solve.
+Both imagery routes are always registered and B1 (`live`) is always on.
+`TOWER_WORLD_GUIDANCE_IMAGERY_LANDED` defaults off and accepts only `on`.
+B2 also requires `TOWER_WORLD_GUIDANCE_COVERAGE=on` and its fully merged
+landed solve.
 
 ## Routes
 
 `GET /worlds/{world_id}/guidance/{session_id}/imagery/manifest` returns
-`{"version":1}` plus `live` if B1 is on and `landed` if B2 is on.
-Disabled keys are omitted. `live` has `segment_index` and `entries` (possibly
+`{"version":1}` plus `live`, and `landed` if B2 is on.
+A disabled `landed` is omitted. `live` has `segment_index` and `entries` (possibly
 empty); `landed` is null before a qualifying landing. A missing or untrusted
 world/session answers 404. Both routes use no-store headers.
 

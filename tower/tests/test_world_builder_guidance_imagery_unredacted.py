@@ -91,8 +91,7 @@ def state(monkeypatch, tmp_path):
     return fresh
 
 
-def _client(monkeypatch, *, live=True, landed=True):
-    monkeypatch.setenv("TOWER_WORLD_GUIDANCE_IMAGERY_LIVE", "on" if live else "off")
+def _client(monkeypatch, *, landed=True):
     monkeypatch.setenv("TOWER_WORLD_GUIDANCE_IMAGERY_LANDED", "on" if landed else "off")
     monkeypatch.setenv("TOWER_WORLD_GUIDANCE_COVERAGE", "on")
     app = FastAPI()
@@ -208,7 +207,7 @@ def test_on_none_tile_is_the_stored_keyframe_thumbnail(state, monkeypatch, tmp_p
 @pytest.mark.parametrize("dial", [True, False])
 def test_on_none_session_landed_manifest_and_tiles(state, monkeypatch, dial):
     monkeypatch.setenv(ENV, "on")
-    client = _client(monkeypatch, live=False)
+    client = _client(monkeypatch)
     _land(state, dial=dial)
     reply = client.get(PATH + "/manifest")
     assert reply.status_code == 200

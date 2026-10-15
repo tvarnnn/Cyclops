@@ -151,7 +151,7 @@ _RESULT_CHANNEL_ADAPTERS = frozenset(
         TOWER / "results" / "world_builder_appearance.py",
         # Added 2026-10-07: FOW v1.1 B guidance imagery (GET /worlds/{id}/guidance/
         # imagery/...), an adapter over the store named after the cartridge, serving
-        # the redacted thumbnail tiles; registered only when its switches are on.
+        # the redacted thumbnail tiles; always registered.
         TOWER / "results" / "world_builder_guidance_imagery.py",
         # Added 2026-10-12: FOW v1.2 photo floor plan (GET /worlds/{id}/guidance/
         # {session}/photo-floorplan/...), the same shape: an adapter named after the
