@@ -1,8 +1,7 @@
 """Asking a worker to stop without killing it, and owning what it spawned.
 
 Three things the supervisor learnt from the 2026-09-06 physical walk,
-each one measured rather than imagined (see
-`docs/superpowers/specs/2026-09-06-world-builder-live-history-lifecycle-design.md`):
+each one measured rather than imagined:
 
 1. **A soft stop is a request, not a deadline.** `request_stop` closes a
    worker's stdin and returns. The worker stays registered until it exits

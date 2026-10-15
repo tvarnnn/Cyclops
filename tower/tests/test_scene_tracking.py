@@ -293,9 +293,9 @@ class TestTheThresholdsAreDerivedNotGuessed:
     recounted as a new person, which is the one failure the counting
     requirement exists to prevent.
 
-    The sweep behind these values is in
-    `docs/superpowers/research/2026-08-26-tracker-retune.md`: 9,145 real
-    corpus frames, the shipped detector, every constant swept.
+    The sweep behind these values covered 9,145 real corpus frames, the
+    shipped detector, every constant swept; its headline is recorded at
+    `MAX_ABSENCE_S` in `tower/scene/tracking.py`.
     """
 
     def test_the_tracker_knows_the_measured_frame_interval(self):

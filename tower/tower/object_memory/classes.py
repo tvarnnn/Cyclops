@@ -14,8 +14,7 @@ dumped (`scripts/research/object_memory_corpus_dump.py`), grouped into
 temporally contiguous SIGHTINGS, and the strongest frame of each sighting
 was cropped onto a contact sheet
 (`scripts/research/sighting_contact_sheet.py`) and read by eye. The
-per-class results are in the table below and in
-`docs/superpowers/research/2026-08-27-object-memory-corpus-precision.md`.
+per-class results are in the table below.
 
 Two findings govern everything here.
 
@@ -214,8 +213,8 @@ CLASS_EVIDENCE: dict[str, ClassEvidence] = {
         correct=3,
         note=(
             "Three crops are one red gaming mouse; the fourth is an "
-            "AirPods case. Boxes are ~3% of frame, below the size floor "
-            "measured in 2026-08-26-detector-oracle-and-the-size-floor.md."
+            "AirPods case. Boxes are ~3% of frame, at the detector's "
+            "measured size floor (recall 0.080 for boxes of 2-5% of frame)."
         ),
     ),
     "cup": ClassEvidence(
@@ -430,8 +429,7 @@ PROMPT_FOR = {
 # vocabulary `owlv2-base-patch16-ensemble` accepts ~93% of correct labels
 # and rejects ~94% of wrong ones -- two figures rather than three, because
 # 81% of the positives in that set are two block assertions and a third
-# significant figure would be more precision than the labels carry. See
-# `docs/superpowers/research/2026-08-27-object-memory-corpus-precision.md`.
+# significant figure would be more precision than the labels carry.
 #
 # `human hand` is here as a DISTRACTOR and nothing else. A crop of
 # something held in a hand is the commonest confuser in this corpus, and

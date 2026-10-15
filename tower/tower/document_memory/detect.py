@@ -31,8 +31,7 @@ keyboard is the more glyph-like of the two.
 The gate still earns its place, because it is the only thing standing
 between a brick wall and OCR, but it earns it on a 10-wide window
 derived in `MIN_ROW_TRANSITIONS` below, not on an enormous margin.
-Evidence: `docs/superpowers/research/2026-08-26-document-gate-
-rederivation.md`, guarded by `tests/test_document_detect_corpus.py`.
+Guarded by `tests/test_document_detect_corpus.py`.
 """
 
 from dataclasses import dataclass
@@ -108,10 +107,11 @@ READABLE_PAGE_FLOOR = 36.0
 # window, not the order of magnitude the old comment claimed.
 #
 # THIS IS PINNED TO 360x640. Both edges are functions of how many pixels
-# the crop has: raise the stream or move to higher-resolution stills, as
-# `2026-08-26-document-memory-reality-check.md` recommends, and the
-# structure ceiling and the readable floor both move. Re-derive against
-# `tests/test_document_detect_corpus.py`'s real negatives, do not scale.
+# the crop has: raise the stream or move to higher-resolution stills (the
+# recommended route, since a higher-resolution stream would hurt World
+# Builder's tracking), and the structure ceiling and the readable floor
+# both move. Re-derive against `tests/test_document_detect_corpus.py`'s
+# real negatives, do not scale.
 MIN_ROW_TRANSITIONS = round((CORPUS_STRUCTURE_CEILING + READABLE_PAGE_FLOOR) / 2)
 
 

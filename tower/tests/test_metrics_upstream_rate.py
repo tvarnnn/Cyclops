@@ -10,8 +10,7 @@ sender behavior from `seq_gap_total`.
 
 Both figures are derived from `source_seq` (the DAT/capture frame index),
 which falls back to `seq` for every sender that exists today -- see
-tower/frames.py and
-docs/superpowers/handoffs/2026-08-20-source-seq-tx-seq-split.md.
+tower/frames.py.
 """
 from tower.metrics import SessionMetrics
 

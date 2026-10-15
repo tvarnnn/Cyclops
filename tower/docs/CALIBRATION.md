@@ -27,8 +27,6 @@ available, and reopening them wastes a day:
   different sensor readouts and the relationship between them is not
   published anywhere. A focal length derived from one and applied to the
   other is a fabricated number wearing the costume of a measurement.
-  (`docs/superpowers/research/2026-08-21-world-builder-readiness.md`
-  §5.3.)
 - **`fx = k × width` heuristics.** Same objection, with less evidence
   behind it.
 - **A default `K` in the classical backend.** `ClassicalTwoViewBackend.

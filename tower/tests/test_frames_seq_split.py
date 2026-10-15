@@ -2,8 +2,7 @@
 
 Additive and backward-compatible: a sender that only sends `seq` (every
 sender that exists today) must behave exactly as before. See
-07-PLATFORM-CONSTRAINTS.md Limitation 9 and
-docs/superpowers/handoffs/2026-08-20-source-seq-tx-seq-split.md.
+07-PLATFORM-CONSTRAINTS.md Limitation 9.
 """
 import base64
 import io

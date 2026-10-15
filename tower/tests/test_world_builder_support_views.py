@@ -5,9 +5,7 @@ number here says anything about the Ray-Ban camera.
 
 The association exists at solve time -- `classical.py`'s `observed` dict
 -- and used to die with the stack frame. Cross-segment registration
-needs it (docs/superpowers/research/2026-08-26-cross-segment-registration
-.md section 1), and re-deriving it costs a full re-solve, so it is
-persisted.
+needs it, and re-deriving it costs a full re-solve, so it is persisted.
 
 Two things this file is really checking.
 

@@ -8,10 +8,10 @@ unusable, and one that downloaded a model would fail on a train. Tests
 use `FixedTextRecogniser`; the real engine is exercised by an opt-in
 integration test.
 
-**Substitutability.** `docs/superpowers/research/2026-08-20-document-memory-design.md`
-surveyed the OCR field and deliberately did not select one, because the
-choice should follow measurement. The seam is how a later measurement can
-change the answer without touching the pipeline.
+**Substitutability.** The OCR field was surveyed and deliberately no
+engine was selected from the survey, because the choice should follow
+measurement. The seam is how a later measurement can change the answer
+without touching the pipeline.
 
 Everything here is **model inference, not measured fact**
 (`07-PLATFORM-CONSTRAINTS.md` Core Principle 2). Per-region confidence is
