@@ -22,6 +22,7 @@ from tower.world_builder.keyframes import (
     KeyframeSelector,
 )
 
+
 def _q(sharpness: float) -> FrameQuality:
     return FrameQuality(width=360, height=640, sharpness=sharpness)
 

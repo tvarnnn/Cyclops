@@ -29,6 +29,7 @@ from tower import config
 from tower.world_builder import relocalizer as R
 from tower.world_builder.engine import WorldBuilderEngine
 from tower.world_builder.events import EVENT_KINDS
+from tower.world_builder.keyframes import KeyframePolicy
 from tower.world_builder.records import CameraIntrinsics
 from tower.world_builder.store import WorldStore
 
@@ -802,7 +803,9 @@ def _engine_walk_golden(root, frames):
     intr = CameraIntrinsics(source="self_calibrated", model="pinhole", fx=float(K[0, 0]), fy=float(K[1, 1]),
                             cx=float(K[0, 2]), cy=float(K[1, 2]), calibrated_width=WIDTH, calibrated_height=HEIGHT)
     clock = _Clock()
-    engine = WorldBuilderEngine(WorldStore(root), clock=clock, relocalizer="prompt")  # options: the environment
+    # The golden pins the relocalizer's journal, not keyframe selection; recorded under KeyframePolicy().
+    engine = WorldBuilderEngine(WorldStore(root), policy=KeyframePolicy(), clock=clock,
+                                relocalizer="prompt")  # options: the environment
     wid = engine.create_world("golden")
     sid = engine.start_session(wid, intrinsics=intr, frame_source="synthetic", declared_size=(WIDTH, HEIGHT))
     for seq, jpeg in enumerate(frames):
