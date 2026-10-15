@@ -46,9 +46,15 @@ blocked and is not what this is.
   sender that omits `source_seq`/`tx_seq` must keep working; both fall back
   honestly. A receiver that has never heard of `metrics` must keep working;
   it is omitted when empty. The next field follows the same rule.
-- **No imagery crosses the wire while `redaction` is `"none"`.** An
-  unstated or absent treatment means withhold, with no lenient default
-  (`IOS-to-Tower.md` §5).
+- **By default, no imagery crosses the wire while `redaction` is `"none"`.**
+  An unstated or absent treatment means withhold, with no lenient default
+  (`IOS-to-Tower.md` §5). The only exceptions are opt-in and labelled as
+  such: `TOWER_WORLD_GUIDANCE_IMAGERY_UNREDACTED=on` (guidance imagery from a
+  session labelled `none`, marked `"redaction": "unredacted"`),
+  `TOWER_WORLD_RAW_IMAGERY` / `TOWER_WORLD_RAW_IMAGERY_WORLDS` (raw local
+  research appearance, marked; `docs/contracts/WORLD-BUILDER-APPEARANCE.md`
+  §6.6), and the CV Lab preview's `raw_ephemeral` imagery
+  (`EXPERIMENTAL-CV-LAB.md`).
 
 ---
 
