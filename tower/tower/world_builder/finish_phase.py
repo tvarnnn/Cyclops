@@ -1,16 +1,16 @@
-"""What the live builder is doing between Stop and the end of its final solve (T-UX1).
+"""What the live builder is doing between Stop and the end of its final solve.
 
 WORLD-BUILDER-WORLDS.md §2b; CARTRIDGE-RESULTS.md §10.1 `lifecycle.processing`. Behind
 `TOWER_WORLD_FINISH_STAGES`, off by default: off, nothing here writes a byte, and the
 status producer and the listing never call `read_phase` or `project`.
 
 WHY A FILE OF ITS OWN. After Stop the builder keeps the world's writer lock through the
-final solve (a child process) and the final build -- about 30 of the 45 minutes a long walk
-waits -- and nothing on disk said which part it was in. The stage lives in one small
+final solve (a child process) and the final build -- most of the wait after a long walk --
+and nothing else on disk says which part it is in. The stage lives in one small
 atomic file in the solve workspace, `<world>/solve/<session>/finish_phase.json`, so the
 session record, every product file and every solve output stay exactly what they were.
 
-WHY IT IS STAMPED (review H-1). A stage is only worth saying while the process that wrote
+WHY IT IS STAMPED. A stage is only worth saying while the process that wrote
 it is still the one doing the work. The file names three things:
 
 - the OWNER: the builder that holds the world lock (pid + process start time);
@@ -21,7 +21,7 @@ it is still the one doing the work. The file names three things:
 `project` says the stage only when the record is still `pending` under that epoch, the
 lock's live holder IS the owner, and the writer is still running. Anything else -- a child
 that died, a finisher or a re-finish holding the lock later, a file left behind -- and the
-answer is absent, and the phone says what it said before this existed.
+answer is absent, and the phone shows no stage.
 
 Only two processes can write: the builder parent (`PhaseWriter.for_builder`) and the
 final-solve child it spawned with `child_environment()` (`writer_from_environment`).
@@ -111,7 +111,7 @@ class PhaseWriter:
         self._warned = False
 
     @classmethod
-    def for_builder(cls, store, world_id: str, session_id: str) -> "PhaseWriter | None":
+    def for_builder(cls, store, world_id: str, session_id: str) -> PhaseWriter | None:
         """The builder parent's writer, or None.
 
         None unless `TOWER_WORLD_FINISH_STAGES` is on, the session record's `finalization`
@@ -183,7 +183,7 @@ class PhaseWriter:
 
 
 def writer_from_environment(store, world_id: str, session_id: str,
-                            environ=None) -> "PhaseWriter | None":
+                            environ=None) -> PhaseWriter | None:
     """The final-solve child's writer, or None.
 
     None unless TOKEN_ENV is present, parses, has this FORMAT, names this world and session,
