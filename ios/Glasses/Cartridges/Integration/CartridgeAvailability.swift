@@ -302,7 +302,7 @@ enum CartridgeAvailability: Equatable, Sendable {
 /// (Truthful State Only, docs/02-DEVELOPMENT-RULES.md) makes "the backend
 /// failed" a state the UI must be able to reach — a cartridge that can only
 /// render success and emptiness will render a failure as emptiness.
-struct CartridgeFailure: Equatable, Sendable, Error {
+nonisolated struct CartridgeFailure: Equatable, Sendable, Error {
     enum Kind: String, Equatable, Sendable, CaseIterable {
         /// This app refused locally, because the Tower has no contract for the
         /// thing being asked for.

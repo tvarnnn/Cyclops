@@ -1848,6 +1848,9 @@ final class WorldWebContainerView: UIView {
 /// can exist for one owner -- the panel's and the cover's -- and the active
 /// one adopts the web view; a container going away only releases it, unless
 /// the screen is not hosted, where it tears it down as before.
+// Explicit, like its owner's: with only the module default, the compiler
+// reads `onEvent` as non-Sendable when it is handed to `adopt`.
+@MainActor
 struct WorldRenderWebView: UIViewRepresentable {
     let owner: WorldWebViewOwner
     let html: String

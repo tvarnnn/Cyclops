@@ -52,7 +52,7 @@ import Foundation
 /// future view from rendering an inferred number as though it were measured:
 /// there is no way to show a figure without also having said where it came
 /// from.
-enum WorldScaleSemantics: Equatable, Sendable, CaseIterable {
+nonisolated enum WorldScaleSemantics: Equatable, Sendable, CaseIterable {
     /// Structure and layout without any claimed absolute scale. The honest
     /// default for multi-view geometry on monocular input.
     case relative
@@ -240,7 +240,7 @@ enum ObservationProvenance: Equatable, Sendable {
 /// is arrival time wearing observation time's label, which is precisely the
 /// conflation forbidden above. If the Tower does not report an observation
 /// time, this carries `nil` and the UI says the time is unknown.
-struct ObservationTime: Equatable, Sendable {
+nonisolated struct ObservationTime: Equatable, Sendable {
     /// When the glasses observed it, as reported by the Tower. `nil` when the
     /// Tower did not say.
     var observedAt: Date?
@@ -286,7 +286,7 @@ struct ObservationTime: Equatable, Sendable {
 ///
 /// So this measures the camera, and its `label` says so. There is no gaze
 /// signal on the current hardware and nothing here may imply one.
-struct ObservedDuration: Equatable, Sendable {
+nonisolated struct ObservedDuration: Equatable, Sendable {
     /// Seconds the subject was in frame, as reported by the Tower.
     let seconds: TimeInterval
 

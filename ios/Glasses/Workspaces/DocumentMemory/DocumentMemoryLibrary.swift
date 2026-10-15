@@ -37,7 +37,7 @@ import Foundation
 /// happened to see read as a statement about the world. On this platform that
 /// gap is the normal case, which is why `no_observation_note` is carried beside
 /// it and why this enum has three cases rather than two.
-enum DocumentLibraryAnswer: Equatable, Sendable {
+nonisolated enum DocumentLibraryAnswer: Equatable, Sendable {
     /// Documents were found. Render the list.
     case matched
     /// The memory was searched and nothing matched.
