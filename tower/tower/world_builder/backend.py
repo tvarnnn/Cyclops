@@ -101,10 +101,14 @@ class PointBlock:
     # Which 2-D feature in which keyframe produced which landmark: a flat
     # (M, 3) int32 table of rows [frame_index, feature_index,
     # landmark_index]. `None` means a backend does not report it, which is
-    # different from "this block was observed by nothing". Flat rather than
-    # ragged because consumers filter it by column, and because it is the one
-    # piece of solve state that cannot be pruned: 12 bytes a row against
-    # ~200 for a dict entry.
+    # different from "this block was observed by nothing".
+    #
+    # Flat and numpy-native rather than ragged (a dict, or a list per
+    # landmark): registration filters it by frame and joins it against
+    # matched feature indices, a boolean mask on a column; it costs 12 bytes
+    # a row against ~200 for a dict entry, and it is the one piece of solve
+    # state that CANNOT be pruned (_Chain.forget_before); and it round-trips
+    # to JSON as integers with no dtype contract to get wrong.
     #
     # CONVENTIONS, which a consumer has to know to join anything:
     #
@@ -175,11 +179,14 @@ class GeometryBackend(ABC):
 
     # -- the incremental seam --------------------------------------------
     #
-    # estimate_window() is a from-scratch solve, roughly O(N^1.2) in the
-    # window for the classical backend, so a walk rebuilt every k keyframes
-    # by re-solving pays O(N^2/k): asking for more live updates costs more.
-    # Over a 64-keyframe walk rebuilt every 4, extending measured 777 ms of
-    # backend work against 5920 ms for re-solving.
+    # estimate_window() is a from-scratch solve. Measured on this host
+    # (classical backend only, images already in RAM, 480x360 synthetic
+    # strafe), one solve costs 6.89 ms/kf at 4 keyframes rising to
+    # 10.02 ms/kf at 64 (27.6 -> 641.2 ms): roughly O(N^1.2). So a walk
+    # rebuilt every k keyframes by re-solving pays O(N^2/k), and asking for
+    # more live updates costs more. Total backend work over a walk at
+    # --rebuild-every 4, measured the same way, re-solving vs extending:
+    # 360 vs 152 ms at 16 keyframes, 1325 vs 316 ms at 32, 5920 vs 777 ms at 64.
     #
     # These four methods carry one solve across many calls, so a rebuild
     # is a flush rather than a re-solve. They are an OPTIMISATION and

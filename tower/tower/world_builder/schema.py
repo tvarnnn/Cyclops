@@ -18,8 +18,8 @@ SCHEMA_VERSION = 1
 
 # There is no capture timestamp anywhere on the wire (tower/frames.py has
 # no time field), so every timestamp World Builder writes is Tower-receipt
-# time. Naming the basis on every record keeps it from being read as
-# capture time once persisted.
+# time. Capture, arrival and processing time are distinct; naming the basis
+# on every record keeps them from being conflated once persisted.
 TIME_BASIS = "tower-receipt"
 
 # The pose contract, written into every world.json so the artifact is

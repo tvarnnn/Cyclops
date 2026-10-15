@@ -5,12 +5,11 @@ tails it and sees each keyframe and each state change as a line, in order.
 It needs no socket, no subscription lifecycle, no backpressure policy, and
 carries no risk of an unbounded queue.
 
-Deliberately NOT an in-process pub/sub bus. World Builder runs in its own
-build process (`scripts/world_build_session.py`), not as a per-frame module,
-and the per-frame result type is scalar-only, so nothing can subscribe
-in-process; a bus would be machinery with no consumer. Readers such as
-`tower/results/world_builder.py` read this journal from disk, and its events
-have stable ids and a closed kind set.
+Deliberately NOT an in-process pub/sub bus. There is no in-process
+subscriber today: World Builder runs in its own child process
+(`scripts/world_build_session.py`), and readers such as
+`tower/results/world_builder.py` read this journal from disk. A bus would be
+machinery with no consumer. The events have stable ids and a closed kind set.
 
 `event_id` is dense within a session on purpose: a gap means an event was
 genuinely dropped, not that the writer skipped a number. A consumer can

@@ -104,9 +104,10 @@ class UnposedBackend(GeometryBackend):
 
     # -- the incremental seam --------------------------------------------
     #
-    # The engine drives every backend through begin/extend/snapshot. Here a
-    # measurement depends only on the previous frame, so extend is O(1), and
-    # every pose stays withheld and no points are returned, as above.
+    # The engine drives every backend through begin/extend/snapshot, and the
+    # GeometryBackend default re-runs the whole window per keyframe. Here a
+    # measurement depends only on the previous frame, so this override makes
+    # extend O(1); every pose stays withheld and no points are returned.
 
     def begin(self, intrinsics: CameraIntrinsics) -> None:
         self.prepare(intrinsics)

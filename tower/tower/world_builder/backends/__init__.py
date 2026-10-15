@@ -65,9 +65,11 @@ def select_backend(
 
     if name == BACKEND_AUTO:
         # Recorded and announced exactly like the explicit request below,
-        # even though AUTO had no other choice: the operator's question is
-        # "why is there no geometry?", and the answer (nothing has
-        # calibrated this camera) must reach the session record.
+        # even though AUTO had no other choice. Returned silently with
+        # downgraded_from=None, a physical walk came back with 155
+        # keyframes, zero poses and zero points and nothing saying why. The
+        # operator's question is "why is there no geometry?", and the answer
+        # (nothing has calibrated this camera) must reach the session record.
         reason = (
             "no backend that solves poses can run without intrinsics, and "
             f"this session's intrinsics are source={intrinsics.source!r}; "

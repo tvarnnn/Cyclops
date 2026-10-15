@@ -143,25 +143,6 @@ def defer(fn):
     return wrapper
 
 
-def _nested_under_areas(parent, stage):
-    return parent is not None and parent.stage == "areas" and stage in ("surface", "appearance")
-
-
-def _run_sampled(fn, args, kwargs, sample, parent, token):
-    status = "ok"
-    try:
-        return fn(*args, **kwargs)
-    except BaseException:
-        status = "raised"
-        raise
-    finally:
-        try:
-            _active.reset(token)
-        except Exception:  # noqa: BLE001
-            pass
-        _finish(sample, parent, status)
-
-
 def timed(stage: str, *, store_arg: bool = True, final_only: bool = False):
     """Decorate a finish stage; unavailable identity falls back to the plain call."""
     if stage not in LIMITS:
@@ -174,7 +155,7 @@ def timed(stage: str, *, store_arg: bool = True, final_only: bool = False):
                 return fn(*args, **kwargs)
             try:
                 parent = _active.get()
-                skip = _nested_under_areas(parent, stage)
+                skip = parent is not None and parent.stage == "areas" and stage in ("surface", "appearance")
                 if store_arg:
                     skip = skip or len(args) < 3
                     identity = args[:3] if not skip else None
@@ -190,7 +171,18 @@ def timed(stage: str, *, store_arg: bool = True, final_only: bool = False):
                 return fn(*args, **kwargs)
             if skip:
                 return fn(*args, **kwargs)
-            return _run_sampled(fn, args, kwargs, sample, parent, token)
+            status = "ok"
+            try:
+                return fn(*args, **kwargs)
+            except BaseException:
+                status = "raised"
+                raise
+            finally:
+                try:
+                    _active.reset(token)
+                except Exception:  # noqa: BLE001
+                    pass
+                _finish(sample, parent, status)
         return wrapper
     return decorate
 
@@ -201,7 +193,7 @@ def measure(stage: str, store, world_id: str, session_id: str, fn, *args, **kwar
         return fn(*args, **kwargs)
     try:
         parent = _active.get()
-        skip = _nested_under_areas(parent, stage)
+        skip = parent is not None and parent.stage == "areas" and stage in ("surface", "appearance")
         if not skip:
             sample = _Sample(stage, (store, world_id, session_id), parent)
             token = _active.set(sample)
@@ -209,7 +201,18 @@ def measure(stage: str, store, world_id: str, session_id: str, fn, *args, **kwar
         return fn(*args, **kwargs)
     if skip:
         return fn(*args, **kwargs)
-    return _run_sampled(fn, args, kwargs, sample, parent, token)
+    status = "ok"
+    try:
+        return fn(*args, **kwargs)
+    except BaseException:
+        status = "raised"
+        raise
+    finally:
+        try:
+            _active.reset(token)
+        except Exception:  # noqa: BLE001
+            pass
+        _finish(sample, parent, status)
 
 
 def cached(name: str):
