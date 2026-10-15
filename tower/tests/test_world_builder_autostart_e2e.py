@@ -268,9 +268,10 @@ def test_the_running_world_is_reported_to_a_subscriber_while_it_builds(tower):
 def test_a_reconnect_keeps_one_world_and_one_worker(tower):
     """A WiFi hiccup mid-walk must not fork the walk into two worlds.
 
-    `handoff.md` 9.3 makes this the EXPECTED case on this link, not an
-    edge case: the socket dies, iOS reconnects in about half a second and
-    re-sends stream_start with `seq` continuing. The recorder declares
+    This is the EXPECTED case on this link, not an edge case
+    (`docs/contracts/CARTRIDGE-RESULTS.md` §19.2): the socket dies, iOS
+    reconnects in about half a second and re-sends stream_start with
+    `seq` continuing. The recorder declares
     the new capture a successor; the follower chains into it; and the
     supervisor must NOT start a second builder.
     """

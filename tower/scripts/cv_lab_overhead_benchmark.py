@@ -263,9 +263,9 @@ def measure_channel_cost(repeat: int) -> dict:
 def measure_memory(frames: int) -> dict:
     """Does a long run grow. Measured with TWO instruments, on purpose.
 
-    `handoff.md` 9.3 says a `stream_stop` MAY NEVER ARRIVE, so a run is
-    open for as long as the Tower is up. A run that grew per frame would
-    be the unbounded store this whole design avoids.
+    A `stream_stop` MAY NEVER ARRIVE (a dropped socket produces none), so
+    a run is open for as long as the Tower is up. A run that grew per
+    frame would be the unbounded store this whole design avoids.
 
     RSS alone cannot answer it. RSS is what the process has asked the OS
     for, and in a process running OpenCV and numpy that includes their own

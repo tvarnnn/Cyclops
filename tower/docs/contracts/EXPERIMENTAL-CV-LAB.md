@@ -942,8 +942,8 @@ for that reason, so comparing `run_id` alone is sufficient.
 
 **Everything a run accumulates is O(1) in frames.** A mean is a running
 total and a count; a maximum is a maximum. There is no frame list, no
-metric history and no sample buffer — `handoff.md` 9.3 says a
-`stream_stop` may never arrive, so "for the length of a run" means "for as
+metric history and no sample buffer — a `stream_stop` may never arrive
+(`CARTRIDGE-RESULTS.md` §19.2), so "for the length of a run" means "for as
 long as the Tower is up".
 
 **Cost on the wire.** The document is re-sent when its **revision**

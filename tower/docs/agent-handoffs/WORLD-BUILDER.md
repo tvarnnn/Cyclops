@@ -197,9 +197,10 @@ records `none`. Historical sessions keep `none` forever.
 
 ## 6. Capture and reconnection
 
-`handoff.md` §9.3 makes a mid-session reconnect the **expected** case:
-`stream_start` → frames → socket dies → new socket → `stream_start` again
-→ frames continuing from the previous `seq`, with **no `stream_stop`**.
+A mid-session reconnect is the **expected** case
+(`docs/contracts/CARTRIDGE-RESULTS.md` §19.2): `stream_start` → frames →
+socket dies → new socket → `stream_start` again → frames continuing from
+the previous `seq`, with **no `stream_stop`**.
 
 Two things make that survivable:
 
@@ -226,8 +227,10 @@ half: 24 frames observed, 1 session, 1 segment; and again end to end
 through a real socket, a real subprocess and a real world
 (`tests/test_world_builder_autostart_e2e.py`).
 
-The grace window is 90 s because `handoff.md` §6.4 puts iOS's total
-reconnect budget at ~45 s. Later than that is a new walk.
+The grace window is 90 s because iOS gives up reconnecting after about
+16 s against a refused connection and at most about 75 s against a host
+that never completes the upgrade (`docs/contracts/CARTRIDGE-RESULTS.md`
+§19.1). Later than that is a new walk.
 
 ### This is the part the physical walk validated
 
@@ -290,9 +293,11 @@ glasses saw at that point on the path**. That is a recorded camera path
 with a real first-person view at every point on it, and
 `world_inspect.py --trajectory` renders it today.
 
-**None of it goes to the phone, and it should not yet.** `handoff.md` §14:
-iOS links no 3D framework, has no pose schema, holds summary figures
-rather than arrays, and has no world storage, reload UI or world picker.
+**None of it goes to the phone, and it should not yet.** The grounds
+given when this was written -- iOS links no 3D framework, has no pose
+schema, holds summary figures rather than arrays, and has no world
+storage, reload UI or world picker -- are partly out of date: `WorldPose`
+exists and the app has Saved worlds and an `open(worldID:sessionID:)` path.
 A pose array "cannot be displayed and would be dropped". Building a
 transport for a consumer that does not exist is the fabricated contract
 this project refuses.

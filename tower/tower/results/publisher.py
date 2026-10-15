@@ -61,9 +61,10 @@ DEFAULT_HEARTBEAT_SECONDS = 2.0
 # reading. The subscription is closed rather than waited on.
 #
 # 1 second, and the number is a FRAME-PATH bound rather than a patience
-# setting. `handoff.md` 13.7 is explicit that blocking the socket for >2 s
-# makes iOS treat the connection as wedged and replace it, so this stays
-# comfortably under that with the lock wait added on top. The result sender holds the connection's send lock for
+# setting. Blocking the socket for >2 s makes iOS treat the connection as
+# wedged and replace it (`docs/contracts/CARTRIDGE-RESULTS.md` §19.3), so
+# this stays comfortably under that with the lock wait added on top. The
+# result sender holds the connection's send lock for
 # the duration of a send, so a stuck result is also the longest a
 # `frame_result` can queue behind one. Both are blocked anyway when the
 # client has stopped reading -- one socket is one TCP stream -- but this

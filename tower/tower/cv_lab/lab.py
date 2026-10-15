@@ -29,9 +29,10 @@ Three clocks' worth of care, in one place
 2. **A load is not.** A model-backed experiment's `load()` downloads
    weights and blocks; `depth` fetches 119 MB the first time. Awaiting
    that inside a connection's receive loop would stop that socket reading
-   for minutes, and `handoff.md` 13.7 says iOS replaces a connection it
-   cannot write to for two seconds. So `start()` validates, publishes
-   `starting`, and hands the load to a background task. The command
+   for minutes, and iOS replaces a connection it cannot write to for two
+   seconds (`docs/contracts/CARTRIDGE-RESULTS.md` §19.3). So `start()`
+   validates, publishes `starting`, and hands the load to a background
+   task. The command
    returns immediately; the outcome arrives as state, which is exactly
    the shape iOS's `run(_:)` already has.
 

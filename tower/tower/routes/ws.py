@@ -891,8 +891,8 @@ async def _start_capture(websocket, owner) -> None:
                 #
                 # And `disconnect` is the truth: the socket that opened the
                 # old capture is gone. The phone re-opened the bracket on a
-                # new one, which `handoff.md` 9.3 calls the EXPECTED case on
-                # this link.
+                # new one, which is the EXPECTED case on this link
+                # (`docs/contracts/CARTRIDGE-RESULTS.md` §19.2).
                 observer.stop(END_REASON_DISCONNECT)
             # Read before `start`, which clears it. The supervisor needs
             # the same lineage the manifest records, or it cannot tell a

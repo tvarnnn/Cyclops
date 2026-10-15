@@ -600,8 +600,8 @@ class ExperimentPreview:
     overwrites it; `take_preview` empties it. There is no list to append
     to and no size to check, so "the preview store grew" is not a state
     this can reach -- which matters more here than anywhere, because
-    `handoff.md` 9.3 says a `stream_stop` may never arrive and a run
-    therefore lasts as long as the Tower does.
+    a `stream_stop` may never arrive (a dropped socket produces none) and
+    a run therefore lasts as long as the Tower does.
 
     Never raises. `offer` is called from inside an experiment's `run()`,
     on the frame path, where `ModuleContainer` turns an unexpected

@@ -174,8 +174,8 @@ def test_record_frame_processing_error_increments_counter():
 def test_a_measurement_window_uses_constant_memory():
     """A window can live as long as the connection, so it must not grow.
 
-    `handoff.md` 9.3: a `stream_stop` MAY NEVER ARRIVE, because a dropped
-    socket produces none. So "until the window closes" can mean "until the
+    A `stream_stop` MAY NEVER ARRIVE, because a dropped socket produces
+    none. So "until the window closes" can mean "until the
     connection dies", and one float per frame per measurement is unbounded
     in principle. Only the mean and the maximum are ever reported and both
     are O(1) to maintain.

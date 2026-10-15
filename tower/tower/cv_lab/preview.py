@@ -54,9 +54,10 @@ grows: it costs the same one array and the same one buffer it cost while
 it was keeping up, and the frames it missed were dropped at the moment
 they were replaced rather than accumulated against its return.
 
-That matters more here than it sounds. `handoff.md` 9.3 says a
-`stream_stop` MAY NEVER ARRIVE, so "for the length of a run" means "for
-as long as the Tower is up". Anything per-frame would be unbounded.
+That matters more here than it sounds. A `stream_stop` MAY NEVER
+ARRIVE -- a dropped socket produces none -- so "for the length of a run"
+means "for as long as the Tower is up". Anything per-frame would be
+unbounded.
 
 Staleness is answered three ways, on purpose
 --------------------------------------------
