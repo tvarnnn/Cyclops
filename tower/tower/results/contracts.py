@@ -42,8 +42,7 @@ CARTRIDGE_DOCUMENT_MEMORY = "document_memory"
 # not an oversight. The name is what a session URL and a `/health` row
 # are keyed on, and both exist now; the socket DECLARATION is a separate
 # decision that breaks a pinned iOS test the moment it lands, so it waits
-# for the iOS lane to take both halves at once. See
-# `docs/agent-handoffs/OBJECT-MEMORY-MAC-HANDOFF.md` section 3.
+# for the iOS lane to take both halves at once.
 CARTRIDGE_OBJECT_MEMORY = "object_memory"
 CARTRIDGE_SCENE_UNDERSTANDING = "scene_understanding"
 

@@ -66,8 +66,7 @@ another lane, so promoting its file is not this lane's to do.
 The constants below are World Builder's, measured by it, and they are
 copied deliberately rather than tuned: two copies that disagree about a
 face-detection threshold would be worse than two copies that agree. The
-promotion trigger -- a third consumer -- is recorded in
-`docs/agent-handoffs/OBJECT-MEMORY-MAC-HANDOFF.md`.
+promotion trigger is a third consumer.
 
 WHAT MAY BE CLAIMED.
 

@@ -132,8 +132,8 @@ KEY_RANGE_REASON = (
     "the SfM gauge is arbitrary and this world's is too large for the "
     "chosen voxel fraction")
 """Unchanged wording, deliberately: it is what `status.json` has said since
-the guard existed and what `WORLD-BUILDER-LIVE-WORLD-VISUALIZATION.md` quotes
-verbatim. What is new is the overshoot that rides beside it."""
+the guard existed, and written records of past walks quote it verbatim.
+What is new is the overshoot that rides beside it."""
 
 
 def key_range_refusal(overshoot: float) -> SurfaceUnavailable:

@@ -836,12 +836,10 @@ class ClassicalTwoViewBackend(GeometryBackend):
     # solved by _extend() against the last EXTEND_REFERENCE_DEPTH keyframes
     # that HAVE poses plus the accumulated landmarks, and never looks
     # forward. There is no LOOP CLOSURE. There IS now a bundle
-    # adjustment -- see BUNDLE_WINDOW -- and the record that one was
-    # "measured at 0.00% drift improvement at 16, 32 and 104 keyframes"
-    # was true of the engine it was measured on, whose observation graph
-    # was a chain with a median covisibility span of 1
-    # (docs/agent-handoffs/WORLD-BUILDER.md section 10). At HEAD that
-    # graph is mean 4.67 views a landmark with 67.2% at three or more,
+    # adjustment -- see BUNDLE_WINDOW. An earlier engine measured one at
+    # "0.00% drift improvement at 16, 32 and 104 keyframes", but its
+    # observation graph was a chain with a median covisibility span of 1.
+    # This engine's graph is mean 4.67 views a landmark with 67.2% at three or more,
     # and the adjustment takes a forty-keyframe chain's rotation error
     # from 9.21 deg to 0.15 deg.
     #

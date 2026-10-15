@@ -1,18 +1,10 @@
 # World Builder — the Tower↔iOS boundary, reconciled
 
-> **iOS ENTRY POINT IS `docs/agent-handoffs/IOS-EXECUTION-PLAN.md`.**
-> This file is **REFERENCE**: deeper detail, still accurate except where
-> the plan says otherwise. Read the plan first — it says what to do now,
-> what is already settled, and what the Tower has measured and refused.
-> Where the two disagree, the plan wins.
-
 **Living document.** It describes the boundary as it exists now.
 
 **Status:** implemented on both sides and exercised end to end over a real
 socket. The Tower half has met the Ray-Ban camera; the iOS half of
-`world_builder.status/2026-09-10` has not yet been walked. See
-`docs/agent-handoffs/WORLD-BUILDER-INTEGRATION.md` for exactly what has and
-has not met hardware.
+`world_builder.status/2026-09-10` has not yet been walked.
 
 **The wire itself** is `tower/docs/contracts/CARTRIDGE-RESULTS.md`, which is
 the Tower's document and the authority on message shapes. This document is the
@@ -534,8 +526,7 @@ would hide a real fault behind an animation.
 **It is not a capture-id comparison, because the phone does not know its own
 capture id.** The Tower mints it when `stream_start` arrives and does not report
 it; the `stream_started` message that would carry it is deliberately
-unimplemented Tower-side (`tower/docs/agent-handoffs/IOS-WORLD-BUILDER-INTEGRATION.md`
-§5), and iOS does not ask for a field it has no consumer for.
+unimplemented Tower-side, and iOS does not ask for a field it has no consumer for.
 
 What the phone *can* establish is **liveness**, and the three facts above are
 jointly sufficient for it: the builder is attached at the moment the id is

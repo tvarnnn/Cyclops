@@ -31,14 +31,30 @@ That matters for what you can expect from it:
   own process, writing to disk; this channel polls those files. Latency is
   a poll interval, not a frame time.
 
-`TOWER-TO-IOS.md` §6.1 previously declared "any World Builder transport at
-all" BLOCKED. That entry conflated two separable things — a World Builder
-**transport**, and World Builder as a **live in-process module**. All four
-of its blockers (a `bytes`-only synchronous `process()`, a scalar
-`ExperimentResult`, a registry of one module, a lifecycle timeout too short
-for a build) are properties of the second. None of them bear on a reader
-that never joins the frame path. §6.1 is now resolved for the transport;
-the live-module half remains blocked and is not what this is.
+"Any World Builder transport at all" was once declared BLOCKED. That
+conflated two separable things — a World Builder **transport**, and World
+Builder as a **live in-process module**. All four of the blockers (a
+`bytes`-only synchronous `process()`, a scalar `ExperimentResult`, a
+registry of one module, a lifecycle timeout too short for a build) are
+properties of the second. None of them bear on a reader that never joins
+the frame path. The transport is resolved; the live-module half remains
+blocked and is not what this is.
+
+**Two standing rules for any change to this wire or to `frame_result`:**
+
+- **Additive changes only** while `frame_result` remains scalar-shaped. A
+  sender that omits `source_seq`/`tx_seq` must keep working; both fall back
+  honestly. A receiver that has never heard of `metrics` must keep working;
+  it is omitted when empty. The next field follows the same rule.
+- **By default, no imagery crosses the wire while `redaction` is `"none"`.**
+  An unstated or absent treatment means withhold, with no lenient default
+  (`IOS-to-Tower.md` §5). The only exceptions are opt-in and labelled as
+  such: `TOWER_WORLD_GUIDANCE_IMAGERY_UNREDACTED=on` (guidance imagery from a
+  session labelled `none`, marked `"redaction": "unredacted"`),
+  `TOWER_WORLD_RAW_IMAGERY` / `TOWER_WORLD_RAW_IMAGERY_WORLDS` (raw local
+  research appearance, marked; `docs/contracts/WORLD-BUILDER-APPEARANCE.md`
+  §6.6), and the CV Lab preview's `raw_ephemeral` imagery
+  (`EXPERIMENTAL-CV-LAB.md`).
 
 ---
 

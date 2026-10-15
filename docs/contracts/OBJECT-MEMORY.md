@@ -17,8 +17,7 @@
 
 **Status:** Tower half implemented and exercised against the real 55-observation
 corpus in `tower/data/object_memory`. The iOS half is **written and
-uncompiled** — there is no Swift toolchain on the machine it was authored on;
-see `docs/agent-handoffs/OBJECT-MEMORY-MAC-HANDOFF.md`.
+uncompiled** — there is no Swift toolchain on the machine it was authored on.
 
 **One correction the client found by reading the route rather than this
 document.** §4.4 below lists `confidence` as `low | medium | high`.
@@ -837,8 +836,8 @@ offers it.
 
 **The verifier default was reversed on 2026-08-29, and this closes a
 decision that was explicitly reserved.**
-`docs/agent-handoffs/OBJECT-MEMORY-HANDOFF.md` section 7.4 recorded
-turning the verifier on by default as an open question **for a human, not
+The Object Memory lane recorded turning the verifier on by default as an
+open question **for a human, not
 for an agent**: *"the default stays `none` because 94 crops from one home
 justify building it and not switching it on for everybody."* A human
 closed it. The 2026-08-29 product pass was instructed that OWLv2 is this

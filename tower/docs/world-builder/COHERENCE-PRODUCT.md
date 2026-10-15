@@ -646,8 +646,8 @@ Read §2.2 for what each one means.
     - **Known, open (V14 LOW-1).** On such a line, a user name replaced inside a POSIX, `~`
       or relative path stops the path patterns at the placeholder's bracket, and the file
       names after it survive. Nothing the Tower writes comes near 4000 characters; the
-      longest real text is 522. The fix is P3.12, in the handoff's backlog
-      (`docs/agent-handoffs/WORLD-BUILDER-COHERENCE.md` §6).
+      longest real text is 522. The fix is P3.12, not yet landed: move the cut back before
+      a name instead of replacing the name, and put the `...` on after the scrub.
     - The backslash pattern is anchored to a token start, and no pattern backtracks
       exponentially.
     - Every output on shorter text is unchanged: 62,366 texts compared with `a5001ab`, no

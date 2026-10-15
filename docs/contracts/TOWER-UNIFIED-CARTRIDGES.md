@@ -834,7 +834,7 @@ declaration.**
 ### 9.1 Query
 
 ```
-GET /object-memory/observations?object_class=&retention_days=&limit=
+GET /object-memory/observations?object_class=&retention_days=
 GET /object-memory/last-seen/{object_class}
 ```
 
