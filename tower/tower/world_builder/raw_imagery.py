@@ -3,14 +3,11 @@ redacted keyframes. Off by default, and never privacy-safe.
 
 WHY THIS EXISTS. The saved world's appearance normally comes from the
 wearer's REDACTED keyframes (`appearance.py`, contract
-`WORLD-BUILDER-APPEARANCE.md`). On the canonical capture that costs a great
-deal of the picture before any reconstruction runs: measured over its 398
-keyframes, 182 of them carry a solid fill, covering 27.5% of those frames on
-average and 93.8% at the worst, and the cross-frame consensus then withdraws
-what one frame hid from every other frame as well. The owner asked, on
-2026-09-21, for a path that proves what reconstruction quality the ORIGINAL
-local imagery supports, with the privacy implementation left in place and
-re-enablable rather than deleted.
+`WORLD-BUILDER-APPEARANCE.md`). Redaction fills discard picture the
+reconstruction needs, and the cross-frame consensus then withdraws what one
+frame hid from every other frame as well. This bypass exists to measure what
+reconstruction quality the ORIGINAL local imagery supports, with the privacy
+implementation left in place and re-enablable rather than deleted.
 
 SO THIS MODULE IS THE WHOLE BYPASS, AND IT IS THE ONLY PLACE THAT NAMES THE
 RAW FRAMES. `appearance.py` keeps its one provenance function and its static
@@ -39,6 +36,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -50,8 +48,9 @@ IMAGERY_REDACTED = "redacted"
 IMAGERY_RAW = "raw-local-research"
 IMAGERY_SOURCES = (IMAGERY_REDACTED, IMAGERY_RAW)
 
-# The environment flag. Absent, empty, "0", "false", "no" and "off" all mean
-# the default -- redacted. Anything else is read as a request for raw, and
+# The environment flag. Absent, empty, "0", "false", "no", "off" and "none"
+# (case-insensitive, surrounding whitespace ignored) all mean the default --
+# redacted. Anything else is read as a request for raw, and
 # that request is logged wherever it is honoured.
 RAW_IMAGERY_ENV = "TOWER_WORLD_RAW_IMAGERY"
 _FALSE = frozenset({"", "0", "false", "no", "off", "none"})
@@ -93,16 +92,14 @@ def imagery_source_from_env(environ=None) -> str:
     dataclass default is `redacted` always, so a params object built in a
     test or a library call never depends on the ambient environment.
     """
-    import os  # noqa: PLC0415
-
     if environ is None:
         environ = os.environ
     value = str(environ.get(RAW_IMAGERY_ENV, "")).strip().lower()
     return IMAGERY_REDACTED if value in _FALSE else IMAGERY_RAW
 
 
-# THE READ-PATH ALLOWLIST (manager 201 section 1, option C). Home worlds are
-# shown raw while a live walk stays redacted: a Tower serving the product
+# THE READ-PATH ALLOWLIST. Listed worlds can be shown raw while a live walk
+# stays redacted: a Tower serving the product
 # (`TOWER_WORLD_RAW_IMAGERY` off) may serve a raw-local-research artifact for
 # exactly the world ids listed here, comma-separated, and for no other world.
 # It is consulted by READERS only (`reader_imagery_source`). No build reads it:
@@ -133,8 +130,6 @@ def raw_imagery_worlds_from_env(environ=None) -> frozenset:
     space, an empty entry, a duplicate -- refuses every entry, because a list
     an operator mistyped is not a list anyone meant.
     """
-    import os  # noqa: PLC0415
-
     if environ is None:
         environ = os.environ
     value = environ.get(RAW_IMAGERY_WORLDS_ENV)
@@ -157,7 +152,7 @@ def reader_imagery_source(world_id, artifact_imagery: str, environ=None) -> str:
     (`appearance_pipeline.imagery_source_of`). The answer is:
 
     - `TOWER_WORLD_RAW_IMAGERY` on (a research Tower): `raw-local-research`
-      for every world, exactly as before; the allowlist is not consulted;
+      for every world; the allowlist is not consulted;
     - otherwise `raw-local-research` when, and only when, the artifact IS raw
       and `world_id` is on the allowlist -- so a listed world's redacted
       artifact is still served as redacted, never refused;
@@ -189,12 +184,11 @@ class RawKeyframeImages:
     """Where each keyframe's ORIGINAL local frame is, resolved once.
 
     `paths` is keyframe_id -> absolute path, already resolved against the
-    Tower root (or `TOWER_SOURCES_ROOT`) rather than the process cwd -- the
-    bug `global_solve.resolve_source_path` exists to close.
+    Tower root (or `TOWER_SOURCES_ROOT`), not the process cwd
+    (`global_solve.resolve_source_path`).
     """
 
     paths: dict
-    recorded: dict
     missing: tuple
     digest: str
 
@@ -204,9 +198,6 @@ class RawKeyframeImages:
         is not a redacted set. Goes wherever `KeyframeImageSet.cache_token`
         goes, so nothing cached for a redacted build is reused for this one."""
         return f"{IMAGERY_RAW}@{self.digest}"
-
-    def path(self, keyframe_id: str):
-        return self.paths.get(keyframe_id)
 
     def read(self, keyframe_id: str) -> bytes | None:
         path = self.paths.get(keyframe_id)
@@ -252,11 +243,11 @@ def resolve_raw_keyframes(store, world_id: str, session_id: str,
             "machine; raw-local-research imagery cannot be built")
     h = hashlib.sha1()
     for kid in sorted(paths):
-        p = Path(paths[kid])
+        p = paths[kid]
         try:
             size = p.stat().st_size
         except OSError:
             size = -1
         h.update(f"{kid}\t{p.name}\t{size}\n".encode())
-    return RawKeyframeImages(paths=paths, recorded=dict(recorded),
-                             missing=tuple(sorted(missing)), digest=h.hexdigest()[:16])
+    return RawKeyframeImages(paths=paths, missing=tuple(sorted(missing)),
+                             digest=h.hexdigest()[:16])
