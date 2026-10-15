@@ -478,28 +478,27 @@ def _camera_path(store, world_id: str, session_id: str, *, drop_counts: dict | N
 def _world_up(store, world_id: str, session_id: str, vertices, faces) -> list | None:
     """The vertical the page levels its horizon to.
 
-    Seeded by the cameras (`_camera_up`) and then measured on the surface
-    itself. A wearer at a desk looks down, and the mean camera up leans toward
-    what they looked at -- 26 degrees on the canonical world, which the phone
-    showed as a rolled room. Floors, ceilings and table tops are the surface's
-    own evidence of the vertical, and walls are the check: on the canonical
-    world the refinement took the median wall tilt from 13.1 to 4.6 degrees and
-    the median horizontal-surface tilt from 24.0 to 8.4 (area-weighted).
+    First the head-level vertical of every posed camera in the room's solver
+    frame, refined by the surface only a little (`_world_up_camera_right`).
+    When the cameras do not measure one, the fallback below.
+
+    The fallback is seeded by the mean camera up (`_camera_up`) and then
+    measured on the surface itself. A wearer at a desk looks down, and the mean
+    camera up leans toward what they looked at -- 26 degrees on the canonical
+    world, which the phone showed as a rolled room. Floors, ceilings and table
+    tops are the surface's own evidence of the vertical, and walls are the
+    check: on the canonical world the refinement took the median wall tilt from
+    13.1 to 4.6 degrees and the median horizontal-surface tilt from 24.0 to 8.4
+    (area-weighted).
 
     The refinement is kept only when the surface supports it: enough
     near-horizontal area, a bounded move from the seed, and walls that end up
     no less vertical than the seed left them. Otherwise the camera estimate
-    stands, as before.
-
-    `TOWER_WORLD_UP_ESTIMATE=camera_right_all` (`_world_up_camera_right`)
-    replaces the seed with the head-level vertical of every posed camera in the
-    room's solver frame and bounds the refinement to a small move from it;
-    when that vertical is not measurable it falls back to exactly this.
+    stands.
     """
-    if _up_estimate_setting() is not None:
-        chosen = _world_up_camera_right(store, world_id, session_id, vertices, faces)
-        if chosen is not None:
-            return chosen
+    chosen = _world_up_camera_right(store, world_id, session_id, vertices, faces)
+    if chosen is not None:
+        return chosen
     seed = _camera_up(store, world_id, session_id)
     if seed is None:
         return None
@@ -593,7 +592,7 @@ def _camera_up(store, world_id: str, session_id: str) -> list | None:
 
 
 # ---------------------------------------------------------------------------
-# TOWER_WORLD_UP_ESTIMATE=camera_right_all (tilt-up lane, manager 378)
+# The head-level vertical (`_world_up_camera_right`)
 # ---------------------------------------------------------------------------
 #
 # WHY. `_camera_up` is the mean camera -y, which leans toward wherever the wearer
@@ -609,7 +608,7 @@ def _camera_up(store, world_id: str, session_id: str) -> list | None:
 # vertical from either seed. On walk 9 and n1 that surface vertical is the bent
 # one -- 12 and 6 deg from the head-level vertical, with the well-observed walls
 # 6-15 deg off plumb under it and within ~2 deg under the head-level vertical
-# (Glasses-scratch/tilt-up/table.txt). So this option bounds the refinement too.
+# (Glasses-scratch/tilt-up/table.txt). So the refinement is bounded too.
 #
 #   1. CAMERAS: every posed camera of the room's SOLVER frame -- the solver
 #      component most room (component 0) cameras came from, with every piece the
@@ -621,27 +620,21 @@ def _camera_up(store, world_id: str, session_id: str) -> list | None:
 #      whatever its pitch: up is the least-variance direction of the x axes,
 #      signed by the mean camera up, re-estimated once without the 10 % least
 #      level-headed (`area_build.roll_free_up`'s rule and constants).
-#   3. DEGENERATE -> today: fewer than RF_MIN_CAMERAS cameras; x axes that do
-#      not span the horizontal (photo_floorplan's ROLL_FREE_MIN_SPREAD: every
-#      camera facing one way leaves the vertical undetermined about it); an
+#   3. DEGENERATE -> the fallback: fewer than RF_MIN_CAMERAS cameras; x axes
+#      that do not span the horizontal (photo_floorplan's ROLL_FREE_MIN_SPREAD:
+#      every camera facing one way leaves the vertical undetermined about it); an
 #      ill-conditioned least direction (RF_MIN_CONDITIONING); or a result more
 #      than ROLL_FREE_MAX_TILT_DEG from the mean camera up. Then `_world_up`
-#      runs exactly as it does with the option off.
+#      falls back to the mean camera up and its surface refinement.
 #   4. REFINEMENT: `surface_up` from that seed, kept only within
 #      CAMERA_RIGHT_MAX_REFINE_DEG of it (its own `max_move_deg`). The surface
 #      may fine-tune the head-level vertical, not overrule it. Measured moves:
 #      walk 7 1.99, n2 2.29 (kept: today's vertical within 0.01 deg); kitchen
 #      5.52, n1 5.89, walk 9 11.98 (refused). Any value in [2.3, 5.5) decides
 #      these five the same way.
-#   5. A MESH OLDER THAN THE SOLVE -> today (`_mesh_predates_solve`): the cameras'
-#      vertical is the current solve's frame, and a stale mesh is another's.
+#   5. A MESH OLDER THAN THE SOLVE -> the fallback (`_mesh_predates_solve`): the
+#      cameras' vertical is the current solve's frame, and a stale mesh is another's.
 CAMERA_RIGHT_MAX_REFINE_DEG = 4.0
-
-
-def _up_estimate_setting() -> str | None:
-    from tower.config import world_up_estimate_setting  # noqa: PLC0415
-
-    return world_up_estimate_setting()
 
 
 def _room_frame_rotations(solution) -> list:
@@ -742,10 +735,11 @@ def _mesh_predates_solve(store, world_id: str, session_id: str, solution) -> boo
     The surface is served while it is behind the solve (`surface_currency` reports,
     never enforces), e.g. between a final solve landing and the surface rebuilt from
     it -- the W7REG o1 copy was caught in exactly that state. A new solve is a new
-    gauge: today's estimate follows the mesh it draws (the refinement), but the
+    gauge: the fallback follows the mesh it draws (the refinement), but the
     cameras' vertical would be the NEW frame's, 16 deg off that mesh on o1. So the
-    option stands down unless the surface, and the appearance when there is one,
-    were both built at or after the solve (and the surface from its keyframes)."""
+    head-level vertical stands down unless the surface, and the appearance when
+    there is one, were both built at or after the solve (and the surface from its
+    keyframes)."""
     import math
 
     from tower.world_builder.appearance_pipeline import read_appearance_manifest  # noqa: PLC0415
@@ -773,12 +767,12 @@ def _mesh_predates_solve(store, world_id: str, session_id: str, solution) -> boo
 
 
 def _world_up_camera_right(store, world_id: str, session_id: str, vertices, faces) -> list | None:
-    """`_world_up` under `camera_right_all` (step 4 above); None = fall back to today's."""
+    """The head-level vertical, refined (step 4 above); None = use the fallback."""
     from tower.world_builder.global_solve import load_solution
 
     try:
         solution = load_solution(store, world_id, session_id)
-    except Exception:  # noqa: BLE001 -- today's estimate then decides
+    except Exception:  # noqa: BLE001 -- the fallback then decides
         return None
     if solution is None or _mesh_predates_solve(store, world_id, session_id, solution):
         return None

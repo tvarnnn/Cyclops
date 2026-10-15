@@ -1,11 +1,11 @@
-"""TOWER_WORLD_UP_ESTIMATE=camera_right_all: the page's vertical from the level head.
+"""The page's vertical from the level head.
 
 Walk 9's room piece faces the desk, looking down (yaw concentration 0.68, median
 pitch -19 deg), and its mean camera up leaned 15 deg from the head-level vertical
-(RUN review/W9-DIAG.md cause 6). The option measures the vertical as the direction
+(RUN review/W9-DIAG.md cause 6). The page measures the vertical as the direction
 the cameras' right axes are perpendicular to, over every camera of the room's
 solver frame -- including the views the gate or the final scale guard cut from the
-room -- and lets the surface refine it only a little. Off is today, byte for byte.
+room -- and lets the surface refine it only a little.
 """
 from __future__ import annotations
 
@@ -15,15 +15,10 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from tower import config as CFG
 from tower.world_builder import appearance_pipeline as AP
 from tower.world_builder import global_solve as GS
 from tower.world_builder import surface_pipeline as SP
 from tower.world_builder import surface_render as SR
-
-ENV = CFG.WORLD_UP_ESTIMATE_ENV
-ON = CFG.WORLD_UP_ESTIMATE_CAMERA_RIGHT_ALL
-
 
 # ---------------------------------------------------------------------------
 # synthetic cameras
@@ -102,7 +97,7 @@ def test_the_synthetic_camera_looks_down_when_pitched_down():
 
 def test_one_heading_looking_down_biases_the_mean_but_not_the_level_head():
     rots = desk_walk()
-    assert _angle(mean_camera_up(rots), UP) > 10.0, "today's estimate leans toward the desk"
+    assert _angle(mean_camera_up(rots), UP) > 10.0, "the mean camera up leans toward the desk"
     up = SR.camera_right_up(rots)
     assert up is not None
     assert _angle(up, UP) < 1.5
@@ -216,25 +211,14 @@ def solution(monkeypatch):
     return holder
 
 
-def test_off_is_todays_estimate_exactly(monkeypatch, solution):
-    V, F = room_surface(UP, tilt_deg=8.0)
-    seed = SR._camera_up(None, "w", "s")
-    refined = SR.surface_up(V, F, seed)
-    today = seed if refined is None else refined
-    calls = []
-    monkeypatch.setattr(SR, "_world_up_camera_right", lambda *a: calls.append(a) or [0.0, 0.0, 1.0])
-    for value in (None, "", "off", "on", "1", "true", "CAMERA_RIGHT_ALL", " camera_right_all", "camera_right"):
-        if value is None:
-            monkeypatch.delenv(ENV, raising=False)
-        else:
-            monkeypatch.setenv(ENV, value)
-        assert CFG.world_up_estimate_setting() is None
-        assert SR._world_up(None, "w", "s", V, F) == today
-    assert calls == [], "the option's code does not run when it is off"
+def _fallback(monkeypatch, V, F):
+    """What `_world_up` returns when the cameras measure no head-level vertical."""
+    with monkeypatch.context() as m:
+        m.setattr(SR, "_world_up_camera_right", lambda *a: None)
+        return SR._world_up(None, "w", "s", V, F)
 
 
-def test_on_uses_every_camera_of_the_room_solver_frame(monkeypatch, solution):
-    monkeypatch.setenv(ENV, ON)
+def test_uses_every_camera_of_the_room_solver_frame(monkeypatch, solution):
     room = [np.array(p["rotation"]).reshape(3, 3) for p in solution["solution"].poses.values()
             if p["component"] == 0]
     assert _angle(mean_camera_up(room), UP) > 15.0, "the trimmed room alone leans toward the desk"
@@ -245,18 +229,15 @@ def test_on_uses_every_camera_of_the_room_solver_frame(monkeypatch, solution):
     assert _angle(up, UP) < 0.5
 
 
-def test_on_bounds_the_surface_refinement(monkeypatch, solution):
-    """The surface's level faces 8 deg from the cameras' level head: today's
-    refinement follows the surface wholesale; the option keeps the head-level
+def test_bounds_the_surface_refinement(monkeypatch, solution):
+    """The surface's level faces 8 deg from the cameras' level head: the fallback's
+    refinement follows the surface wholesale; this keeps the head-level
     vertical. 2 deg is still the surface's to fine-tune."""
     seed = SR.camera_right_up(SR._room_frame_rotations(solution["solution"]))
     across = _frame(UP)[0]
     surface_up8 = _axis_rot(across, 8.0) @ UP
     V, F = room_surface(surface_up8)
-    monkeypatch.delenv(ENV, raising=False)
-    off = SR._world_up(None, "w", "s", V, F)
-    assert _angle(off, surface_up8) < 0.5
-    monkeypatch.setenv(ENV, ON)
+    assert _angle(_fallback(monkeypatch, V, F), surface_up8) < 0.5
     on = SR._world_up(None, "w", "s", V, F)
     assert on == seed and _angle(on, UP) < 1.0
 
@@ -266,29 +247,23 @@ def test_on_bounds_the_surface_refinement(monkeypatch, solution):
     assert on != seed and _angle(on, surface_up2) < 0.5
 
 
-def test_a_bent_solve_keeps_its_plumb_walls_under_the_option(monkeypatch, solution):
-    """Floor and ceiling 8 deg off, walls plumb (a bent solve): today levels to the
-    floor and leans the walls; the option keeps the walls plumb."""
+def test_a_bent_solve_keeps_its_plumb_walls(monkeypatch, solution):
+    """Floor and ceiling 8 deg off, walls plumb (a bent solve): the fallback levels to the
+    floor and leans the walls; the head-level vertical keeps the walls plumb."""
     V, F = room_surface(UP, tilt_deg=8.0)
-    monkeypatch.delenv(ENV, raising=False)
-    assert _angle(SR._world_up(None, "w", "s", V, F), UP) > 7.0
-    monkeypatch.setenv(ENV, ON)
+    assert _angle(_fallback(monkeypatch, V, F), UP) > 7.0
     assert _angle(SR._world_up(None, "w", "s", V, F), UP) < 1.0
 
 
-def test_on_falls_back_to_today_when_the_cameras_measure_nothing(monkeypatch, solution):
+def test_falls_back_when_the_cameras_measure_nothing(monkeypatch, solution):
     poses = {f"s:{i:08d}": _pose(camera(UP, 0.0, p), 0) for i, p in enumerate(np.linspace(-40, 0, 60))}
     solution["solution"] = _solution(poses)
     V, F = room_surface(UP, tilt_deg=8.0)
-    monkeypatch.delenv(ENV, raising=False)
-    off = SR._world_up(None, "w", "s", V, F)
-    monkeypatch.setenv(ENV, ON)
-    assert SR._world_up(None, "w", "s", V, F) == off
+    assert SR._world_up(None, "w", "s", V, F) == _fallback(monkeypatch, V, F)
 
 
-def test_on_without_a_solution_falls_back_to_today(monkeypatch, solution):
+def test_without_a_solution_falls_back(monkeypatch, solution):
     solution["solution"] = None
-    monkeypatch.setenv(ENV, ON)
     V, F = room_surface(UP)
     assert SR._world_up(None, "w", "s", V, F) is None
 
@@ -328,23 +303,20 @@ def test_unsupported_riders_are_left_out_when_there_are_enough_supported_cameras
     {"surface": None},
     {"appearance": {"built_at": 50.0}},                              # the proxy predates the solve
 ])
-def test_a_mesh_older_than_the_solve_falls_back_to_today(monkeypatch, solution, stale):
+def test_a_mesh_older_than_the_solve_falls_back(monkeypatch, solution, stale):
     """W7REG o1 was copied between its final solve and the surface rebuilt from it:
-    the cameras' vertical was 16 deg off the mesh drawn. Today's estimate measures the
+    the cameras' vertical was 16 deg off the mesh drawn. The fallback measures the
     mesh it draws, so it stands."""
     across = _frame(UP)[0]
     V, F = room_surface(_axis_rot(across, 20.0) @ UP)     # the mesh is another gauge
-    monkeypatch.delenv(ENV, raising=False)
-    off = SR._world_up(None, "w", "s", V, F)
-    monkeypatch.setenv(ENV, ON)
-    assert SR._world_up(None, "w", "s", V, F) != off, "current: the option decides"
+    off = _fallback(monkeypatch, V, F)
+    assert SR._world_up(None, "w", "s", V, F) != off, "current: the head-level vertical decides"
     solution.update(stale)
     assert SR._world_up(None, "w", "s", V, F) == off
 
 
 def test_no_appearance_is_not_stale(monkeypatch, solution):
     solution["appearance"] = None
-    monkeypatch.setenv(ENV, ON)
     V, F = room_surface(UP)
     assert _angle(SR._world_up(None, "w", "s", V, F), UP) < 0.5
     assert SR._mesh_predates_solve(None, "w", "s", solution["solution"]) is False
