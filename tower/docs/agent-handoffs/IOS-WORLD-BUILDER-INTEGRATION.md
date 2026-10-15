@@ -92,8 +92,8 @@ Sent by the Tower in response to `stream_start`. Note what this is
 `{"type":"stream_start"}`, pinned by
 `TowerClientTests.testStreamStartSendsExactPayloadOnce`, and nothing
 here asks iOS to supply an identity. The Tower mints it and reports it,
-which is the direction `handoff.md` §9.2 already specifies for world
-ids.
+which is the direction world ids already take: the phone sends no
+identity of any kind (`docs/contracts/CARTRIDGE-RESULTS.md` §19.2).
 
 It arrives as an ordinary inbound message in `handleInboundMessage`,
 alongside `frame_result`. `TowerClient` awaits no reply for anything but

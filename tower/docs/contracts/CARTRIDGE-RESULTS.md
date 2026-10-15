@@ -2182,6 +2182,80 @@ driven end to end through the real app in `tests/test_scene_wire_e2e.py`
 and `tests/test_documents_wire_e2e.py`; their sessions are tested in
 isolation in `tests/test_scene_live_session.py`.
 
+---
+
+## 19. What the Tower assumes about the phone's sender
+
+The frame path (`ping`/`pong`, `stream_start`, `frame`, `stream_stop`,
+`frame_result`) shares this socket. Several Tower bounds and behaviours
+are sized against how the phone's sender behaves on it, so they are
+written down here. This section describes the phone as it is
+(`ios/Glasses/TowerClient.swift`, `ProjectManager.swift`,
+`GlassesConnection.swift`); it adds nothing to what the Tower promises.
+
+### 19.1 Reconnect backoff
+
+- A dropped or wedged socket is re-established automatically, on a fixed
+  schedule: five attempts, delayed **0.5, 1, 2, 4 and 8 s**. After the
+  fifth the phone stops and stays failed until a person taps Connect.
+- Each attempt is bounded by a handshake watchdog of twice the 6 s
+  per-leg timeout (12 s). So the give-up point depends on how the host
+  fails: about **16 s** against a host that refuses the TCP connection,
+  up to about **75 s** against one that accepts TCP and never completes
+  the WebSocket upgrade.
+- The schedule is refilled only if the previous connection stayed online
+  for **30 s**, measured when it fails. A Tower that accepts a socket and
+  then wedges exhausts the schedule and is left alone.
+- The first attempt comes 0.5 s after a drop, so the new connection
+  routinely opens before the Tower has noticed the old one is dead.
+
+`RESUME_GRACE_SECONDS` (90 s, `tower/capture.py`) is longer than the
+longest give-up point: a `stream_start` that arrives later than that after
+a disconnect comes from a new walk.
+
+### 19.2 The stream bracket
+
+- `stream_start` and `stream_stop` are exactly `{"type": "stream_start"}`
+  and `{"type": "stream_stop"}`. The phone sends no session, world or
+  device identity; the bracket is the only session delimiter and `seq`
+  the only per-frame correlator.
+- **A `stream_stop` may never arrive.** A dropped socket produces none:
+  the phone tears the connection down without one, because there is no
+  socket left to send it on. A capture ended by a drop is an ordinary,
+  recoverable end, not an error.
+- **A repeated `stream_start` on a fresh connection means resume.** When
+  the socket is replaced while the camera is still streaming, the phone
+  re-opens the bracket on the new socket. The Tower sees `stream_start` →
+  frames → socket dies → new socket → `ping`/`pong` → `stream_start`
+  again → frames, with no `stream_stop` in between. That is the expected
+  case on a remote link, and it is one walk.
+- **`seq` keeps counting.** It continues across that reconnect and
+  restarts only when a new *camera* session starts. It is never reset by a
+  `stream_start`. It is not contiguous either: every frame the glasses
+  deliver gets a number, whether or not it is transmitted, and not every
+  `seq` gets a `frame_result`.
+- `stream_start` is sent once per open bracket, and only to a socket that
+  is online. If the Tower is unreachable when capture starts, no frame is
+  sent until the socket returns and the bracket is re-opened.
+
+### 19.3 Wire invariants the Tower preserves
+
+1. The first message on a new socket is the `pong`, sent in reply to the
+   phone's `ping` and within 6 s of it. **Every value in it is a JSON
+   string**: the phone reads the pong as a string-to-string object, so a
+   number or array fails the handshake and the phone reconnects. Extra
+   string keys are ignored. The Tower never speaks first (§2).
+2. **Text frames only**, a JSON **object** at the root, and a `type`
+   string on every message. The phone drops binary frames, array roots
+   and NDJSON silently, and logs and ignores an unknown `type`.
+3. `frame_result` keeps `seq`, `mean_intensity` and `processing_ms`. New
+   keys are ignored harmlessly (the additive rule, §1).
+4. **Never block the socket for 2 s.** When the phone's send window is full
+   and its oldest send is 2 s old, it treats the socket as wedged and
+   replaces the connection. The send bounds in §8 are sized under this.
+5. Do not close the socket to signal anything. The phone turns a close
+   into a failure and a bounded reconnect (§19.1).
+
 ## 2026-10-06 (WORLDS v8) — World Builder `guidance.coverage`
 
 `TOWER_WORLD_GUIDANCE_COVERAGE=on` adds `guidance: {"coverage": ...}` only

@@ -176,17 +176,17 @@ VOLATILE_PATHS = (
     "world_snapshot.revision",
 )
 
-# The Tower's own name for what it builds. `handoff.md` 9.5 says iOS
-# displays this VERBATIM and never matches it against a known set, so it
-# is prose for a person, not an identifier.
+# The Tower's own name for what it builds. iOS displays this VERBATIM and
+# never matches it against a known set, so it is prose for a person, not
+# an identifier.
 GEOMETRY_REPRESENTATION = "sparse point cloud"
 
 # --- the iOS projection ------------------------------------------------
 #
-# `handoff.md` 16 names the one contract shape that costs the phone
-# nothing: "a self-contained, coarsely-updated world report whose fields
-# map 1:1 onto WorldSnapshot, plus an explicit lifecycle state mapping
-# onto WorldModelState". Everything else in this payload is Tower-native
+# The one contract shape that costs the phone nothing is a
+# self-contained, coarsely-updated world report whose fields map 1:1 onto
+# iOS's `WorldSnapshot`, plus an explicit lifecycle state mapping onto its
+# `WorldModelState`. Everything else in this payload is Tower-native
 # and carries the EVIDENCE for these values; this block is the part iOS
 # decodes.
 #
@@ -199,7 +199,7 @@ GEOMETRY_REPRESENTATION = "sparse point cloud"
 # on the phone, where the knowledge is not, and where getting it wrong is
 # an App Store release rather than a Tower restart.
 
-# WorldModelState cases (handoff.md 8.2). `awaiting_first_update` is
+# iOS's WorldModelState cases. `awaiting_first_update` is
 # deliberately absent: it means "frames are going out and the Tower has
 # said nothing yet", which is a fact about the PHONE's own situation. Only
 # iOS can know it, and it reaches it by not having received a snapshot.
@@ -252,7 +252,7 @@ _MODEL_STATE_BY_LIFECYCLE = {
     LIFECYCLE_IDLE: MODEL_STATE_IDLE,
 }
 
-# WorldTrackingQuality (handoff.md 8.3). Tower's `unknown` is iOS's
+# iOS's WorldTrackingQuality. Tower's `unknown` is iOS's
 # `unavailable`; `limited` is never produced -- see _tracking_block.
 _IOS_TRACKING = {
     TRACKING_GOOD: "good",
@@ -726,9 +726,9 @@ class WorldBuilderStatusProducer:
 
         revision = compute_revision(payload, VOLATILE_PATHS)
         if payload.get("world_snapshot") is not None:
-            # iOS holds the revision INSIDE the snapshot (handoff.md 8.3),
-            # so it survives being handed around as one value. It is the
-            # same string the envelope carries.
+            # iOS holds the revision INSIDE the snapshot, so it survives
+            # being handed around as one value. It is the same string the
+            # envelope carries.
             payload["world_snapshot"]["revision"] = revision
         coverage = (payload.get("guidance") or {}).get("coverage")
         if coverage is not None and not _coverage_status_fits(payload):
@@ -3187,8 +3187,8 @@ def _attach_ios_projection(payload: dict) -> None:
             "pose_count": trajectory.get("pose_count"),
             "path_length": path.get("value") if path_available else None,
             "path_length_unit": path.get("unit") if path_available else None,
-            # Carried separately from the snapshot's scale, because
-            # handoff.md 9.6 says every spatial figure carries its own.
+            # Carried separately from the snapshot's scale, because every
+            # spatial figure carries its own.
             "scale": (
                 path.get("scale_semantics") if path_available else IOS_SCALE_UNKNOWN
             ),

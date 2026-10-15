@@ -3,8 +3,8 @@
 Four things this file is here to make true rather than to hope for.
 
 1. **Nothing grows.** One capture and one encoding exist at a time, for
-   the length of a run that `handoff.md` 9.3 says may never end. No list,
-   no queue, no directory.
+   the length of a run that may never end, because a `stream_stop` may
+   never arrive. No list, no queue, no directory.
 2. **A picture from run A never appears under run B's name.** Three
    independent guards -- run identity, an epoch, and age -- and a test
    for each, because the value of three is that no one of them is

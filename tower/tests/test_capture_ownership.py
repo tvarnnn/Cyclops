@@ -3,9 +3,9 @@
 The race is not hypothetical and the timing is not close. uvicorn does not
 learn a WebSocket is dead for 20-40 seconds (`ws_ping_interval` and
 `ws_ping_timeout` are both 20 s), while iOS reconnects in 0.5 s and
-re-sends `stream_start` -- `handoff.md` section 6.4 documents that backoff
-schedule, and section 9.3 says a repeat `stream_start` on a fresh
-connection is the EXPECTED case on this link, not an edge case.
+re-sends `stream_start` -- `docs/contracts/CARTRIDGE-RESULTS.md` §19.1
+records that backoff schedule, and §19.2 that a repeat `stream_start` on a
+fresh connection is the EXPECTED case on this link, not an edge case.
 
 So on any WiFi hiccup the ordering is:
 

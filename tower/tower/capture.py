@@ -59,10 +59,13 @@ END_REASON_BOUNDED_LIMIT = "bounded_limit"
 # How long after a capture ends by DISCONNECT a new `stream_start` is
 # treated as the same walk continuing.
 #
-# `handoff.md` 6.4: iOS retries on a [0.5, 1, 2, 4, 8] s backoff and gives
-# up after five attempts, which takes roughly 45 s because each attempt can
-# burn a 6 s pong timeout. 90 s is comfortably past the point where iOS has
-# stopped trying, so anything arriving later is genuinely a new walk.
+# iOS retries on a [0.5, 1, 2, 4, 8] s backoff and gives up after five
+# attempts. Each attempt is bounded by a 12 s handshake watchdog, so giving
+# up takes about 16 s against a refused connection and up to about 75 s
+# against a host that accepts TCP and never upgrades
+# (`docs/contracts/CARTRIDGE-RESULTS.md` §19.1). 90 s is past the point
+# where iOS has stopped trying, so anything arriving later is genuinely a
+# new walk.
 RESUME_GRACE_SECONDS = 90.0
 
 # How long a follower tolerates a capture whose manifest is still OPEN but
@@ -250,8 +253,9 @@ class CaptureRecorder:
     def resumable_capture(self) -> str | None:
         """The capture a new `stream_start` should declare itself a successor to.
 
-        `handoff.md` 9.3 makes a repeated `stream_start` on a fresh
-        connection the EXPECTED case on this link, not an edge case: iOS
+        A repeated `stream_start` on a fresh connection is the EXPECTED
+        case on this link, not an edge case
+        (`docs/contracts/CARTRIDGE-RESULTS.md` §19.2): iOS
         re-opens the stream bracket after a reconnect while the camera is
         still running, and `seq` continues from where it left off. Tower
         must treat that as one walk.

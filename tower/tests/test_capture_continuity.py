@@ -1,7 +1,7 @@
 """A WiFi hiccup mid-walk must produce ONE continuous world.
 
-`handoff.md` 9.3 states the shape plainly, and states it as the EXPECTED
-case rather than an edge case:
+The phone's sender has this shape, and it is the EXPECTED case rather than
+an edge case (`docs/contracts/CARTRIDGE-RESULTS.md` §19.2):
 
     stream_start -> frames -> socket dies -> new socket -> ping/pong ->
     stream_start AGAIN -> frames CONTINUING FROM THE PREVIOUS seq
@@ -89,7 +89,9 @@ def test_a_polite_stop_is_not_resumable(tmp_path):
 def test_a_reconnect_after_the_grace_window_is_a_new_walk(tmp_path):
     """Past the point where iOS has stopped retrying, it is a different walk.
 
-    handoff.md 6.4: iOS gives up after five attempts, roughly 45 s.
+    iOS gives up after five attempts: about 16 s against a refused
+    connection, up to about 75 s against a host that never upgrades
+    (`docs/contracts/CARTRIDGE-RESULTS.md` §19.1).
     """
     now = [1000.0]
     recorder = CaptureRecorder(tmp_path, clock=lambda: now[0])
@@ -229,7 +231,7 @@ def test_a_reconnect_over_the_wire_produces_one_continuous_frame_stream(client):
     """The whole hiccup, driven through the real app.
 
     Note what iOS does NOT do here: it sends no stream_stop (the socket
-    died), and seq CONTINUES rather than restarting -- handoff.md 9.3.
+    died), and seq CONTINUES rather than restarting.
     """
     data = _frame_payload()
     recorder = client.app.state.frame_observers[0]
