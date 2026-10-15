@@ -1,9 +1,9 @@
 #!/usr/bin/env python
 """Boot a REAL Tower with every cartridge configured, and walk all of them.
 
-An earlier single-cartridge CV Lab smoke proved one cartridge against a
-Tower a person had already started. This proves the UNIFICATION: that
-four cartridges merged from four branches coexist in one process, declare themselves
+`scripts/cv_lab_smoke.py` proved one cartridge against a Tower a person
+had already started. This proves the UNIFICATION: that four cartridges
+merged from four branches coexist in one process, declare themselves
 together, hold their own lifecycles apart, and shut down without leaving
 anything behind.
 
