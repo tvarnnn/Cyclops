@@ -5,23 +5,19 @@ tails it and sees each keyframe and each state change as a line, in order.
 It needs no socket, no subscription lifecycle, no backpressure policy, and
 carries no risk of an unbounded queue.
 
-Deliberately NOT an in-process pub/sub bus. Nothing subscribes in-process
-today, because World Builder is not registered as a production module --
-the wire contract is scalar-only and the lifecycle work that would change
-that is blocked. A bus would be machinery with no consumer. When the
-module contract opens up, this journal is what a publisher reads from, and
-the events already have stable ids and a closed kind set.
+Deliberately NOT an in-process pub/sub bus. World Builder runs in its own
+build process (`scripts/world_build_session.py`), not as a per-frame module,
+and the per-frame result type is scalar-only, so nothing can subscribe
+in-process; a bus would be machinery with no consumer. Readers such as
+`tower/results/world_builder.py` read this journal from disk, and its events
+have stable ids and a closed kind set.
 
 `event_id` is dense within a session on purpose: a gap means an event was
 genuinely dropped, not that the writer skipped a number. A consumer can
 therefore always tell that it missed something.
 """
 
-import logging
-
 from tower.world_builder.schema import SCHEMA_VERSION, TIME_BASIS
-
-logger = logging.getLogger(__name__)
 
 # Closed set. A kind outside it is a bug, not an extension point -- adding
 # one is a schema change, because consumers switch on these.
