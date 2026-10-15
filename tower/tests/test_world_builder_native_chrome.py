@@ -1,20 +1,20 @@
-"""U1.1 native chrome, the Tower side: the switch, the five insertions, the bridge.
+"""U1.1 native chrome, the Tower side: the request, the five insertions, the bridge.
 
 Contract: docs/contracts/WORLD-BUILDER-WORLDS.md §4c (v5 draft), COMPONENTS
 §5.1/§5.4 (v12 draft). Spec: RUN/lead/specs/U11-NATIVE-CHROME-SPEC-20261004.md §2.
 
-NO BIG BANG. `TOWER_WORLD_NATIVE_CHROME` is off by default, and off -- and every
-request that is not exactly `wb-chrome=native` on an appearance page -- is held
-to dc35d51's bytes by `golden/world_builder_native_chrome_dc35d51.json`, recorded
-on dc35d51 itself by `tests/wb_native_chrome_fixtures.py` (see its docstring).
-That golden is PERMANENT: re-record it only on a base commit whose page output
-legitimately changed, never from a tree whose chrome handling is under review.
+NO BIG BANG. Every request that is not exactly `wb-chrome=native` on an
+appearance page is held to dc35d51's bytes by
+`golden/world_builder_native_chrome_dc35d51.json`, recorded on dc35d51 itself by
+`tests/wb_native_chrome_fixtures.py` (see its docstring). That golden is
+PERMANENT: re-record it only on a base commit whose page output legitimately
+changed, never from a tree whose chrome handling is under review.
 
 THE ONE DOCUMENTED EXCEPTION: `/openapi.json`. Declaring the `wb-chrome` query
-parameter (spec §2.1) puts it in the OpenAPI document of the two page routes
-whatever the switch, so that one response differs from dc35d51 even when off. It
-is not in the golden; `test_openapi_is_the_one_off_difference` pins exactly what
-it gains (WORLDS §4c *Asking*, the v5 change log).
+parameter (spec §2.1) puts it in the OpenAPI document of the two page routes, so
+that one response differs from dc35d51. It is not in the golden;
+`test_openapi_declares_wb_chrome_on_the_two_page_routes` pins exactly what it
+gains (WORLDS §4c *Asking*, the v5 change log).
 
 The tests are numbered as the spec numbers them (N1-N16). Node tests honour
 `WB_NODE_REQUIRED=1`; the browser test (N14) skips without Chrome unless
@@ -93,19 +93,19 @@ def _same_but_length(a: dict, b: dict) -> bool:
     return strip(a) == strip(b)
 
 
-def _matrix(session, switch, *, native_on: bool):
-    """Every request of the golden matrix at `switch`: each response against the
-    golden, and against the same request without `wb-chrome`, in-suite."""
+def _matrix(session):
+    """Every request of the golden matrix: each response against the golden, and
+    against the same request without `wb-chrome`, in-suite."""
     golden = _golden()
     seen = set()
     changed = []
     for key, world, path, params, kind, env in F.requests():
-        plain = session.get(world, path, params, env, switch)
+        plain = session.get(world, path, params, env)
         for chrome in F.CHROME_VALUES:
             k = F.chrome_key(key, chrome)
             seen.add(k)
-            r = session.get(world, path, F.with_chrome(params, chrome), env, switch)
-            if native_on and chrome == "native" and kind == F.APPEARANCE:
+            r = session.get(world, path, F.with_chrome(params, chrome), env)
+            if chrome == "native" and kind == F.APPEARANCE:
                 assert r.content != plain.content, k
                 web = _reverse(r.content)
                 assert web == plain.content, k
@@ -119,37 +119,24 @@ def _matrix(session, switch, *, native_on: bool):
             assert sorted(r.headers.items()) == sorted(plain.headers.items()), k
     assert seen == set(golden), "the golden and the matrix name the same requests"
     for key, world, path, params, _kind, env in F.data_requests():
-        plain = session.get(world, path, params, env, switch)
+        plain = session.get(world, path, params, env)
         assert plain.status_code == 200, key
         for chrome in F.CHROME_VALUES:
-            r = session.get(world, path, F.with_chrome(params, chrome), env, switch)
+            r = session.get(world, path, F.with_chrome(params, chrome), env)
             assert (r.status_code, r.content, sorted(r.headers.items())) == \
                 (plain.status_code, plain.content, sorted(plain.headers.items())), (key, chrome)
     return changed
 
 
 # ---------------------------------------------------------------------------
-# N1 -- the switch
+# N1 -- the request
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("value,on", [
-    (None, False), ("", False), ("  ", False), ("0", False), ("false", False), ("no", False),
-    ("off", False), ("native", False), ("2", False),
-    ("1", True), ("true", True), ("TRUE", True), ("yes", True), ("on", True), (" On ", True),
-])
-def test_the_switch_is_off_unless_set(monkeypatch, value, on):
-    from tower import config
+def test_only_exactly_native_asks():
     from tower.results.world_builder_render import wants_native_chrome
 
-    assert config.WORLD_NATIVE_CHROME_ENV == F.SWITCH_ENV == "TOWER_WORLD_NATIVE_CHROME"
-    if value is None:
-        monkeypatch.delenv(F.SWITCH_ENV, raising=False)
-    else:
-        monkeypatch.setenv(F.SWITCH_ENV, value)
-    assert config.world_native_chrome_setting() is on
-    # exactly `native`, and only with the switch on
-    assert wants_native_chrome("native") is on
+    assert wants_native_chrome("native") is True
     for other in (None, "", "web", "NATIVE", "Native", " native", "native ", "x"):
         assert wants_native_chrome(other) is False, other
 
@@ -171,17 +158,10 @@ def test_the_golden_was_recorded_by_the_fixtures_on_the_base():
     assert len(pages) == 2 * 12 * len(F.CHROME_VALUES)
 
 
-@pytest.mark.parametrize("switch", [None, "0"])
-def test_off_every_chrome_request_is_byte_identical(session, switch):
-    assert _matrix(session, switch, native_on=False) == []
-
-
-@pytest.mark.parametrize("switch", [None, "0", "1"])
-def test_openapi_is_the_one_off_difference(session, switch):
-    """The documented exception to "off is dc35d51 byte for byte": the OpenAPI
-    document declares the optional `wb-chrome` on the two page routes, and on
-    nothing else, whatever the switch."""
-    doc = session.get("room", "/openapi.json", {}, {}, switch).json()
+def test_openapi_declares_wb_chrome_on_the_two_page_routes(session):
+    """The documented exception to "dc35d51 byte for byte": the OpenAPI document
+    declares the optional `wb-chrome` on the two page routes, and on nothing else."""
+    doc = session.get("room", "/openapi.json", {}, {}).json()
     declared = {(path, method) for path, ops in doc["paths"].items() for method, op in ops.items()
                 for prm in op.get("parameters", []) if prm["name"] == "wb-chrome"}
     assert declared == {("/worlds/{world_id}/render", "get"),
@@ -192,7 +172,7 @@ def test_openapi_is_the_one_off_difference(session, switch):
 
 
 def test_on_only_exactly_native_changes_the_page(session):
-    changed = _matrix(session, "1", native_on=True)
+    changed = _matrix(session)
     # the appearance pages, and nothing else: 6 kinds x 2 transports
     assert len(changed) == 12
     assert all(k.endswith("?wb-chrome='native'") for k in changed)
@@ -200,13 +180,13 @@ def test_on_only_exactly_native_changes_the_page(session):
 
 def test_lower_rungs_ignore_the_chrome_request(session):
     """LOW-7: pinned surface, a session with no appearance, the diagnostics view,
-    a client without `appearance-1` -- `native` with the switch on is the page
-    without it, and none carries the echo."""
+    a client without `appearance-1` -- `native` is the page without it, and none
+    carries the echo."""
     lower = [r for r in F.requests() if r[4] == F.LOWER]
     assert len(lower) == 12
     for key, world, path, params, _kind, env in lower:
-        plain = session.get(world, path, params, env, "1")
-        native = session.get(world, path, F.with_chrome(params, "native"), env, "1")
+        plain = session.get(world, path, params, env)
+        native = session.get(world, path, F.with_chrome(params, "native"), env)
         assert plain.status_code == 200 and native.content == plain.content, key
         assert _meta(native.text, "wb-representation") != "appearance", key
         assert _nc().ECHO not in native.text, key
@@ -230,8 +210,8 @@ def test_native_is_the_web_page_plus_exactly_five_insertions(session):
         assert replacement.count(anchor) <= 1
         assert replacement.replace(nc.INSERTED[name], "", 1) == anchor, name
     for key, world, path, params, _kind, env in _appearance_requests():
-        web = session.get(world, path, params, env, "1")
-        native = session.get(world, path, F.with_chrome(params, "native"), env, "1")
+        web = session.get(world, path, params, env)
+        native = session.get(world, path, F.with_chrome(params, "native"), env)
         assert web.status_code == native.status_code == 200, key
         assert _reverse(native.content) == web.content, key
         assert len(native.content) - len(web.content) == sum(
@@ -241,7 +221,7 @@ def test_native_is_the_web_page_plus_exactly_five_insertions(session):
 def test_the_echo_is_in_the_first_4096_characters_once(session):
     nc = _nc()
     for key, world, path, params, _kind, env in _appearance_requests():
-        page = session.get(world, path, F.with_chrome(params, "native"), env, "1").text
+        page = session.get(world, path, F.with_chrome(params, "native"), env).text
         assert page.count(nc.ECHO) == 1, key
         at = page.index(nc.ECHO)
         assert at + len(nc.ECHO) <= 4096 and _meta(page, "wb-chrome") == "native", key
@@ -252,7 +232,7 @@ def test_the_echo_is_in_the_first_4096_characters_once(session):
         assert rep < rev, key
         if key.startswith("area"):
             assert rev < head.index('<meta name="wb-area" '), key
-        web = session.get(world, path, params, env, "1").text
+        web = session.get(world, path, params, env).text
         assert "wb-chrome" not in web and _meta(web, "wb-chrome") is None, key
 
 
@@ -262,10 +242,10 @@ def test_one_revision_for_both_variants(session):
                               ("research/app", "research-revision")):
         _k, world, path, params, _kind, env = next(r for r in F.requests() if r[0] == page_key)
         _k, rworld, rpath, rparams, _kind, renv = next(r for r in F.requests() if r[0] == rev_key)
-        web = session.get(world, path, params, env, "1").text
-        native = session.get(world, path, F.with_chrome(params, "native"), env, "1").text
-        rev = session.get(rworld, rpath, rparams, renv, "1")
-        rev_native = session.get(rworld, rpath, F.with_chrome(rparams, "native"), renv, "1")
+        web = session.get(world, path, params, env).text
+        native = session.get(world, path, F.with_chrome(params, "native"), env).text
+        rev = session.get(rworld, rpath, rparams, renv)
+        rev_native = session.get(rworld, rpath, F.with_chrome(rparams, "native"), renv)
         assert rev.status_code == 200 and rev.content == rev_native.content, rev_key
         assert _meta(web, "wb-revision") == _meta(native, "wb-revision") \
             == rev.json()["revision"] is not None, page_key
@@ -273,8 +253,8 @@ def test_one_revision_for_both_variants(session):
 
 def test_the_headers_are_identical_across_variants(session):
     for key, world, path, params, _kind, env in _appearance_requests():
-        web = session.get(world, path, params, env, "1")
-        native = session.get(world, path, F.with_chrome(params, "native"), env, "1")
+        web = session.get(world, path, params, env)
+        native = session.get(world, path, F.with_chrome(params, "native"), env)
         for header in ("cache-control", "content-security-policy", "content-type"):
             assert web.headers[header] == native.headers[header], (key, header)
         meta = r'<meta http-equiv="Content-Security-Policy" content="([^"]*)">'
@@ -311,10 +291,10 @@ def test_an_anchor_miss_costs_the_echo_and_nothing_else(session, monkeypatch, ca
     for key, world, path, params, _kind, env in _appearance_requests():
         if not key.endswith("/app"):
             continue
-        web = session.get(world, path, params, env, "1")
+        web = session.get(world, path, params, env)
         caplog.clear()
         with caplog.at_level(logging.ERROR, logger="tower.world_builder.native_chrome"):
-            native = session.get(world, path, F.with_chrome(params, "native"), env, "1")
+            native = session.get(world, path, F.with_chrome(params, "native"), env)
         assert native.content == web.content and nc.ECHO not in native.text, (key, missing)
         assert sorted(native.headers.items()) == sorted(web.headers.items()), key
         errors = [r for r in caplog.records
@@ -342,8 +322,8 @@ def test_a_chrome_module_that_fails_serves_the_web_page(session, monkeypatch):
 
     monkeypatch.setattr(nc, "compose", boom)
     _k, world, path, params, _kind, env = next(r for r in F.requests() if r[0] == "room/app")
-    web = session.get(world, path, params, env, "1")
-    native = session.get(world, path, F.with_chrome(params, "native"), env, "1")
+    web = session.get(world, path, params, env)
+    native = session.get(world, path, F.with_chrome(params, "native"), env)
     assert native.status_code == 200 and native.content == web.content
 
 
@@ -612,7 +592,7 @@ def pages(session):
     out = {}
     for key in ("room/app", "area/app", "research/app", "room-with-areas/app"):
         _k, world, path, params, _kind, env = next(r for r in F.requests() if r[0] == key)
-        r = session.get(world, path, F.with_chrome(params, "native"), env, "1")
+        r = session.get(world, path, F.with_chrome(params, "native"), env)
         assert _nc().ECHO in r.text
         out[key.split("/")[0]] = r.text
     return out
@@ -1318,7 +1298,7 @@ def _in_browser(chrome, page: str, where: Path, *, handler: bool) -> dict:
 def test_the_bridge_in_a_browser(pages, session, tmp_path):
     chrome = _chrome_binary()
     _k, world, path, params, _kind, env = next(r for r in F.requests() if r[0] == "research/app")
-    web_page = session.get(world, path, params, env, "1").text
+    web_page = session.get(world, path, params, env).text
     for kind in ("room", "research"):
         native = _in_browser(chrome, pages[kind], tmp_path / kind, handler=True)
         assert native["hooks"]["view"] == "function" and native["hooks"]["words"] == "function", native
@@ -1352,7 +1332,7 @@ def test_the_bridge_in_a_browser(pages, session, tmp_path):
 
 def _room_web(session):
     _k, world, path, params, _kind, env = next(r for r in F.requests() if r[0] == "room/app")
-    return world, path, params, env, "1"
+    return world, path, params, env
 
 
 # ---------------------------------------------------------------------------
@@ -1489,7 +1469,7 @@ def test_the_hooks_on_a_page_that_draws(session, tmp_path):
 
     chrome = _chrome_binary()
     _k, world, path, params, _kind, env = next(r for r in F.requests() if r[0] == "room/tower")
-    page = session.get(world, path, F.with_chrome(params, "native"), env, "1").text
+    page = session.get(world, path, F.with_chrome(params, "native"), env).text
     assert _nc().ECHO in page
     page = page.replace("<title>", _DRAW_SHIM + "<title>", 1)
     url, reports, got, stop = _serve_drawing_page(_app(session.roots[world]), page)

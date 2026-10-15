@@ -1,9 +1,9 @@
 """The request matrix and the fixture worlds of U1.1's byte-identity golden.
 
-`tests/test_world_builder_native_chrome.py` holds the native-chrome switch
-(`TOWER_WORLD_NATIVE_CHROME`) to "off is today, byte for byte" against
-`golden/world_builder_native_chrome_dc35d51.json`. That golden was recorded by
-THIS FILE, copied unchanged into a detached worktree of dc35d51 -- the deployed
+`tests/test_world_builder_native_chrome.py` holds every request that is not
+exactly `wb-chrome=native` on an appearance page to "the page before native
+chrome, byte for byte" against `golden/world_builder_native_chrome_dc35d51.json`.
+That golden was recorded by THIS FILE, copied unchanged into a detached worktree of dc35d51 -- the deployed
 `world-builder/ux-tower-v1` before native chrome existed -- and run there:
 
     PYTHONPATH=<dc35d51 worktree>/tower python tests/wb_native_chrome_fixtures.py <out.json>
@@ -50,7 +50,6 @@ from tests.test_world_builder_appearance import (  # noqa: E402
     _paint_forbidden_sources,
 )
 
-SWITCH_ENV = "TOWER_WORLD_NATIVE_CHROME"
 RAW_ENV = "TOWER_WORLD_RAW_IMAGERY"
 V = "appearance-1"
 CHROME_VALUES = (None, "web", "native", "NATIVE", "", "x")
@@ -256,30 +255,26 @@ class Session:
         self.clients = {name: TestClient(_app(root)) for name, root in roots.items()}
         self.tokens = volatile(roots)
 
-    def get(self, world: str, path: str, params: dict, env: dict, switch):
-        saved = {k: os.environ.get(k) for k in (SWITCH_ENV, RAW_ENV)}
+    def get(self, world: str, path: str, params: dict, env: dict):
+        saved = os.environ.get(RAW_ENV)
         try:
-            for k in (SWITCH_ENV, RAW_ENV):
-                os.environ.pop(k, None)
-            if switch is not None:
-                os.environ[SWITCH_ENV] = switch
+            os.environ.pop(RAW_ENV, None)
             os.environ.update(env)
             return self.clients[world].get(path, params=params)
         finally:
-            for k, v in saved.items():
-                if v is None:
-                    os.environ.pop(k, None)
-                else:
-                    os.environ[k] = v
+            if saved is None:
+                os.environ.pop(RAW_ENV, None)
+            else:
+                os.environ[RAW_ENV] = saved
 
 
-def golden_outputs(tmp: Path, switch=None) -> dict:
-    """Every response of the matrix, described, with the switch set to `switch`."""
+def golden_outputs(tmp: Path) -> dict:
+    """Every response of the matrix, described."""
     session = Session(build_worlds(tmp))
     out = {}
     for key, world, path, params, _kind, env in requests():
         for chrome in CHROME_VALUES:
-            r = session.get(world, path, with_chrome(params, chrome), env, switch)
+            r = session.get(world, path, with_chrome(params, chrome), env)
             out[chrome_key(key, chrome)] = describe(r, session.tokens)
     return out
 
