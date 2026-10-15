@@ -45,7 +45,14 @@ Module-specific state should not automatically become global state.
 
 ### Initial Tower Stack
 
-Pinned for the first implementation: Python, FastAPI, WebSockets for real-time frame transport, OpenCV, PyTorch, and CUDA when GPU acceleration is required. Do not introduce gRPC, C++, distributed infrastructure, message brokers, or container orchestration speculatively. Revisit only if measurements expose a real limitation.
+Pinned for the first implementation: Python, FastAPI, WebSockets for
+real-time frame transport, OpenCV, and CUDA when GPU acceleration is
+required. PyTorch is an optional `ml` extra (`pip install -e ".[ml]"`),
+required only by a module that actually selects a model-backed CV
+experiment — the core transport/health/WS runtime has no dependency on
+it. Do not introduce gRPC, C++, distributed infrastructure, message
+brokers, or container orchestration speculatively — revisit only if
+measurements expose a real limitation.
 
 ## Module Switching
 
@@ -84,6 +91,19 @@ No sensor observations may be processed by a module while it is STARTING, STOPPI
 These are architectural requirements; exact timing constants are an implementation/measurement decision, not fixed here.
 
 **Lifecycle timeouts.** No lifecycle operation (LOADING, STOPPING, or equivalent) may block indefinitely. Each requires a bounded timeout. On timeout, the module transitions to a defined FAILED/unavailable state rather than hanging. A module timeout must not crash the persistent tower runtime.
+
+> **Known exception, stated rather than glossed (2026-08-22).** This
+> guarantee is **not currently true for a synchronous `_do_load()`**.
+> `ModuleContainer` wraps each lifecycle call in `asyncio.wait_for`, but
+> `asyncio.wait_for` cannot cancel synchronous CPU-bound work already
+> running on the event-loop thread — the timeout fires only *after* the
+> blocking call returns. `DepthEstimationModule._do_load()` calls
+> `torch.hub.load()` synchronously inside an `async def`, so a slow or
+> hanging model download is genuinely unbounded today. This is a **known,
+> named, deliberately unfixed gap**: it is the V1.1 lifecycle work, and
+> resolving it is a standing decision gate that also blocks Object Memory
+> Tasks 4–8. Do not treat the bullet above as describing current
+> behaviour for that path.
 
 **Reconnection.** Automatic reconnection (glasses session or tower connection) must use bounded/exponential backoff rather than a tight retry loop. Exact retry timing is an implementation decision.
 
@@ -132,6 +152,80 @@ Tower  -> READY / FAILED
 ```
 
 Exact protocol/API choices belong to that later milestone.
+
+## GPU / Acceleration Strategy
+
+Tower hardware currently includes an RTX 5070, expected to perform heavy CV/AI inference when available. NVIDIA acceleration is an **optional Tower capability, not a hard platform dependency** — the glasses platform (glasses, iPhone, module contracts, and CPU-only Tower code paths) must remain functional, testable, and deployable without a CUDA-capable GPU present.
+
+Philosophy governing every acceleration decision, not only NVIDIA's:
+
+```text
+build for correctness
+    |
+instrument
+    |
+profile
+    |
+identify bottlenecks
+    |
+accelerate only where measurements justify it
+```
+
+Do not adopt a GPU-acceleration technology because it is available or because the tower hardware supports it. Adopt it because profiling data (see Latency Instrumentation, below) identified a specific bottleneck that the technology specifically addresses.
+
+**Candidate technologies** — evaluate each on its own merits; this is not a commitment to use all of them:
+- **CUDA** — baseline GPU compute; already pinned as available "when GPU acceleration is required" (see Initial Tower Stack, above).
+- **PyTorch CUDA execution** — the natural first step once a model-based bottleneck is identified, since PyTorch is already the ML framework used by the optional `ml` extra (see Initial Tower Stack, above); lowest integration cost of this list.
+- **TensorRT** — inference-graph optimization/compilation; justified once a specific PyTorch model is profiled as the bottleneck and its inference time, not data movement or preprocessing, dominates.
+- **CV-CUDA** — GPU-accelerated classical CV/preprocessing operations; justified only if profiling shows CPU-side OpenCV preprocessing, not model inference, is the bottleneck.
+- **DeepStream** — a multi-stream video-analytics pipeline framework built for many concurrent camera feeds (e.g., NVR/edge-analytics deployments on Jetson-class hardware). The current architecture processes one glasses stream through one active module on one desktop Tower. DeepStream's pipeline/plugin model, GStreamer dependency, and multi-stream orchestration are unlikely to earn their integration and operational cost at this scale. **This is the weakest candidate on this list** — do not adopt it without a specific, measured multi-stream requirement that CUDA/PyTorch CUDA/TensorRT cannot satisfy.
+
+Evaluation of these candidates belongs in Experimental CV Lab (`docs/modules/EXPERIMENTAL-CV.md`), where bounded experiments can measure whether a given technology's integration cost is justified by an actual latency/throughput improvement. See also `02-DEVELOPMENT-RULES.md` Rule 17 — a documented technology candidate is not a mandate, and should be challenged if a later measurement shows it isn't justified.
+
+## Latency Instrumentation (Future Requirement)
+
+End-to-end latency is a first-class platform metric, not an incidental log line. This applies beyond CV: any latency-sensitive future module (e.g., a live Translator — see `03-ROADMAP.md` Phase 3 and `docs/modules/TRANSLATOR.md`) depends on the same measurement infrastructure.
+
+The platform should eventually be able to attribute latency to each stage of the pipeline:
+
+```text
+capture
+    |
+transport
+    |
+decode
+    |
+preprocessing
+    |
+inference
+    |
+postprocessing
+    |
+application/module processing
+    |
+response/output
+```
+
+Each stage should eventually carry enough timestamp/metric data to determine where latency actually originates, rather than only measuring a single aggregate figure. This mirrors the existing timestamp-provenance discipline in `07-PLATFORM-CONSTRAINTS.md` Limitation 9 (capture time, network arrival time, and processing time are conceptually distinct) and Limitation 15 (Sensor Authority / Provenance) — per-stage latency attribution is the same discipline applied to timing instead of identity/confidence.
+
+This is a documented architectural requirement, not an implemented capability. Do not build full per-stage instrumentation before it is the current milestone. V0.7 already reports two coarse figures (`cv_processing_ms`, `receive_to_result_ms`) as a starting point; per-stage breakdown is future work, informed by whichever stage those coarser measurements identify as the actual bottleneck.
+
+## Heterogeneous Compute & Graceful Degradation (Future Direction)
+
+The platform's compute hierarchy is intentionally uneven:
+
+```text
+Glasses — sensors, capture, minimal necessary device-side work
+iPhone  — DAT integration, connectivity/relay, UI/control, and
+          potentially lightweight inference where appropriate
+Tower   — heavy CV, GPU inference, local LLMs, reconstruction,
+          memory processing, and other computationally expensive
+          workloads
+```
+
+This mirrors `00-PROJECT-VISION.md`'s Responsibilities section; this section adds one point that document does not yet make explicit: **the architecture must not assume a Tower always exists.** A future module should eventually be able to detect available compute (Tower present/absent, GPU present/absent) and degrade gracefully — e.g., a lighter on-device experience, or a clear "heavy features unavailable" state — rather than failing opaquely or silently pretending full capability.
+
+This is a future direction, not a current requirement. Do not design a distributed compute scheduler, capability-negotiation protocol, or automatic workload placement system now. The current architecture — Tower assumed present, with `02-DEVELOPMENT-RULES.md` Rule 3's truthful-unavailable-state requirement already covering the "Tower absent" case — is sufficient until a real second compute target or a real Tower-optional use case exists.
 
 ## Privacy & Data Handling
 

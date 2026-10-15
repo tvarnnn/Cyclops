@@ -102,3 +102,16 @@ Every module and every future agent must respect `07-PLATFORM-CONSTRAINTS.md` �
 - capture time, network arrival time, and processing time are conceptually distinct and must not be conflated.
 
 Before claiming a workaround "solves" a limitation, classify it per `07-PLATFORM-CONSTRAINTS.md`'s workaround classification (MITIGATES / COMPENSATES / RECOVERS / VALIDATES / REQUIRES FUTURE HARDWARE-API) and state what it does not solve.
+
+## 17. Architecture Documents Are Current Best Design, Not Mandates
+
+`00-PROJECT-VISION.md` through `07-PLATFORM-CONSTRAINTS.md`, and the module docs under `docs/modules/`, record the current best design — not an unquestionable mandate. When implementing future work:
+- challenge unnecessary complexity;
+- identify assumptions in these documents that turn out to be incorrect;
+- point out an existing solution already present in the codebase before proposing a new one;
+- recommend a simpler approach when the documented one does not justify its cost;
+- identify performance/reliability risks in a documented approach;
+- challenge a technology choice that does not justify its dependency/complexity cost — NVIDIA acceleration technologies (`01-SYSTEM-ARCHITECTURE.md` — GPU / Acceleration Strategy) are the likeliest place this applies, but the rule is general;
+- explain the tradeoff before materially deviating from documented architecture, rather than silently doing something different.
+
+Optimize for the quality, maintainability, performance, and correctness of the system — not agreement with the documentation. Silent compliance with an approach known to be wrong is not deference; it is a failure to do the job.

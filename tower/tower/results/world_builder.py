@@ -2,8 +2,7 @@
 
 The web process does not build worlds and must not start. Reconstruction
 runs in its own process (`scripts/world_build_session.py`), which is the
-decision `plan.md` 28 protects and the closeout report defends at length:
-the frame path pays nothing for a rebuild precisely because the rebuild is
+decision `plan.md` 28 protects: the frame path pays nothing for a rebuild precisely because the rebuild is
 somewhere else. This module reads what that process has already persisted
 and shapes it for the wire. It calls no engine method, holds no engine
 object, and starts nothing.

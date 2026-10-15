@@ -2,7 +2,23 @@
 
 ## Status
 
-Longer-term module. Broader than Object Memory and likely dependent on several mature perception services. This module has the highest privacy exposure of the current module set (see Privacy below) — it must not begin real data collection until the retention/deletion policy in `06-PRIVACY-DATA.md` is actually implemented for this module, not merely documented.
+**PLANNED.** No code exists under `tower/`. Longer-term module.
+
+**Its neighbour now exists, and the boundary is sharp.** Scene
+Understanding (`docs/modules/SCENE-UNDERSTANDING.md`, built 2026-08-22)
+answers *"what is around me now"*; this module answers *"what did I
+encounter, and when"*. One is a live state, the other a history.
+
+Scene Understanding deliberately **persists nothing** -- no store, no
+journal, no imagery, enforced by test -- precisely so that the decision
+to keep a durable record of the physical world lands here, where the
+retention, purge and privacy policy this document already demands can be
+applied to it. Do not add a store to Scene Understanding; the day one is
+wanted is the day this module starts.
+
+What it leaves ready: anonymous tracking with counts that survive
+detector dropout, camera-relative relationships, and a documented set of
+relationships it REFUSES to assert with the evidence each would need. Broader than Object Memory and likely dependent on several mature perception services. This module has the highest privacy exposure of the current module set (see Privacy below) — it must not begin real data collection until the retention/deletion policy in `06-PRIVACY-DATA.md` is actually implemented for this module, not merely documented.
 
 ## Goal
 

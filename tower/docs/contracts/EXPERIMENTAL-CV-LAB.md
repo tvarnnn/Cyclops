@@ -208,7 +208,7 @@ an abandoned thread rather than a failed one.
 ### 3.2 `available` — the catalog
 
 One entry per registered experiment, sorted by `id`. **iOS holds no list
-of its own**: `docs/modules/EXPERIMENTAL-CV.md` calls its candidate list
+of its own**: `ios/Glasses/Project_Overview_Steps/docs/modules/EXPERIMENTAL-CV.md` calls its candidate list
 "intentionally broad", so any subset hard-coded on the phone would be the
 app asserting that those experiments exist.
 
@@ -1018,8 +1018,8 @@ visible.
 | The capability declaration | `tower/results/registry.py` |
 | `frame_result` provenance on the wire | `tower/routes/ws.py` |
 
-Adding an experiment: `guidelines/docs/modules/EXPERIMENTAL-CV.md`, "Adding
-a new experiment".
+Adding an experiment: `ios/Glasses/Project_Overview_Steps/docs/modules/EXPERIMENTAL-CV.md`,
+"Adding a new experiment".
 
 ---
 

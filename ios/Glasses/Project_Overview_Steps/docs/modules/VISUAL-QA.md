@@ -2,7 +2,8 @@
 
 ## Status
 
-Planned module. Comparatively heavy relative to other candidates — its pipeline includes speech-to-text, OCR/CV, multimodal reasoning, and text-to-speech, with a low end-to-end latency requirement. Not positioned as an early starter module; see `03-ROADMAP.md` Phase 3.
+**PLANNED.** No code exists anywhere under `tower/` for any stage of this
+pipeline. Everything below describes intent, not behaviour. Comparatively heavy relative to other candidates — its pipeline includes speech-to-text, OCR/CV, multimodal reasoning, and text-to-speech, with a low end-to-end latency requirement. Not positioned as an early starter module; see `03-ROADMAP.md` Phase 3.
 
 ## Goal
 

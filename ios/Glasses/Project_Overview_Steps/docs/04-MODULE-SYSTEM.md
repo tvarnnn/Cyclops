@@ -2,7 +2,22 @@
 
 ## Purpose
 
-The tower hosts a library of interchangeable applications. The long-term goal is for the iPhone to discover them dynamically and request activation; the initial implementation uses a single hardcoded module instead (see Discovery below and `03-ROADMAP.md`). One major module is active at a time in V1.
+The tower hosts a library of interchangeable applications — conceptually, the glasses platform is a host/runtime, and each module is a cartridge: the same glasses, the same streaming/session infrastructure, and a different loaded module produces a different capability. Swapping the active module changes what the platform does without changing how sensor data reaches it.
+
+Current and future module examples (each with its own specification under `docs/modules/`; see also `03-ROADMAP.md`): Experimental CV Lab, World Builder, Accessibility, Visual Q&A, Object Memory, Environmental Memory, and a future Translator module (`docs/modules/TRANSLATOR.md`) — plus modules not yet designed. This document defines the contract every module shares; it does not enumerate what any specific module does.
+
+Modules must reuse shared platform infrastructure rather than reimplementing it:
+- camera access;
+- streaming/transport;
+- session lifecycle;
+- networking;
+- common perception services, where a shared service is actually justified (see Model Resources, below);
+- memory services, where appropriate;
+- compute resources (Tower GPU/CPU allocation).
+
+The long-term goal is for the iPhone to discover the module library dynamically and request activation; the initial implementation uses a single hardcoded module instead (see Discovery below and `03-ROADMAP.md`). One major module is active at a time in V1.
+
+Do not design a complex plugin ABI now. The module contract below (descriptor, lifecycle, sensor profile, data behavior) is deliberately conceptual and should evolve incrementally as real modules are implemented, per `03-ROADMAP.md`'s "generalize only when justified" sequencing — not be replaced up front with a fully general plugin system.
 
 ## Module Descriptor
 
@@ -104,13 +119,20 @@ Frames captured during an unsafe transition are dropped by default, not injected
 
 Each module owns a data directory/storage namespace.
 
-Examples:
+The shape below was illustrative and the shipped modules did not adopt it.
+What they actually use, as of 2026-08-22:
 
 ```text
-modules/world_build/data/
-modules/accessibility/data/
-modules/object_memory/data/
+data/world_builder/worlds/<world_id>/...     (World Builder, DEFAULT_ROOT)
+data/world_builder/captures/<capture_id>/    (shared dataset recorder)
+<caller-supplied directory>                  (Object Memory ObservationStore)
 ```
+
+The principle held; the path convention did not. What matters is that a
+module owns its namespace and no module reads another's, not that the
+directories share a prefix. `ObservationStore` takes its directory as a
+constructor argument and hardcodes no default at all, which is the
+better shape — the owner of the data decides where it lives.
 
 Storage technology may differ by module. Do not impose a universal database prematurely.
 

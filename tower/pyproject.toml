@@ -115,7 +115,7 @@ ml = [
     # -- and CPU torch does not announce itself. It imports, it runs, and
     # every GPU figure in the docs silently becomes a CPU figure. That is
     # not hypothetical: it is how this venv arrived at torch 2.13.0+cpu
-    # and stayed there (weekend run report, item 5).
+    # and stayed there.
     #
     # cu132 rather than cu128: the RTX 5070 is Blackwell, sm_120. Verified
     # on this host 2026-08-26 -- get_device_capability() == (12, 0),

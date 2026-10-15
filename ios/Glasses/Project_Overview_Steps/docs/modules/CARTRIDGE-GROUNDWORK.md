@@ -5,7 +5,7 @@ authorizes implementing any cartridge named below. It records what the
 first major cartridge built, what is genuinely reusable, and — more
 importantly — which of its assumptions must **not** leak into the next one.
 
-Written 2026-08-22 alongside `reports/2026-08-22-world-builder-v1-report.md`.
+Written 2026-08-22.
 
 ---
 
@@ -120,8 +120,7 @@ prediction held on every point.
   640×480, and **0.429–0.810 at the 640×360 the glasses deliver**. Tilt
   barely matters once the page is warped; resolution dominates. Page
   *detection* still works at the delivered resolution — only *recognition*
-  is starved. Recorded as a requirement in
-  `docs/agent-handoffs/TOWER-TO-IOS.md` §6.8.
+  is starved. That is a requirement on the iOS/DAT side.
 - **What it adds for the next cartridge:** a working, measured OCR path
   behind a substitutable seam, and a lexical retrieval layer that refuses
   rather than guesses. Visual Q&A's `READ_TEXT` route can reuse both.
