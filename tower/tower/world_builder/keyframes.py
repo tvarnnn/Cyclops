@@ -188,8 +188,7 @@ class KeyframePolicy:
     # survival/overlap gates ahead of blur gives 40 -- all WORSE than the
     # 36-segment baseline. 77% of blur rejections occur when survival is
     # ALREADY below 0.15: blur was masking losses that had already
-    # happened, not causing them. The standing hypothesis in
-    # docs/agent-handoffs/WORLD-BUILDER.md section 9.4, "spurious
+    # happened, not causing them. The standing hypothesis, "spurious
     # `blurred` rejections cascading into `tracking_lost`", is refuted.
     # Do not retry it.
     #

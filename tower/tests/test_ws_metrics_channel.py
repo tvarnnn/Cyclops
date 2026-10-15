@@ -4,8 +4,8 @@
 "there is no non-scalar result channel" complaint traced back to this
 one type. `metrics` is additive and omitted when empty, so a client that
 has never heard of it is unaffected -- which is the rule
-`docs/agent-handoffs/TOWER-TO-IOS.md` §7 states for any wire change while
-the result type is still scalar-shaped.
+`tower/docs/contracts/CARTRIDGE-RESULTS.md` §1 states for any wire change
+while the result type is still scalar-shaped.
 """
 
 import base64

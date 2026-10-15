@@ -183,7 +183,7 @@ class TestResolutionIsTheBindingConstraint:
         assert delivered < high - 0.2, (
             f"delivered={delivered:.3f} high={high:.3f}; if the gap has "
             "closed, re-measure and update the resolution requirement in "
-            "docs/agent-handoffs/TOWER-TO-IOS.md"
+            "tower/docs/contracts/IOS-TO-TOWER-RECONCILIATION.md §3.2"
         )
 
     def test_the_page_is_still_DETECTED_at_the_delivered_resolution(

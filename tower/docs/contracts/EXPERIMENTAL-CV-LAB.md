@@ -166,7 +166,7 @@ snapshot**; there are no deltas to merge.
 | `idle` | nothing armed; a start would be accepted | `.idle(available:)` |
 | `starting` | a start was accepted, the experiment is loading | `.starting(experiment)` |
 | `running` | processing frames | `.running(run)` |
-| `paused` | armed and deliberately not processing | **`.paused(run)` — a new case; see `CV-LAB-IOS-HANDOFF.md` §4** |
+| `paused` | armed and deliberately not processing | **`.paused(run)` — a new case** |
 | `stopped` | the last run ended; its figures are final | `.completed(run)` |
 | `failed` | the last start failed, **or the running experiment raised on a frame**; the experiment is released and another start may be sent | `.failed(CartridgeFailure)` |
 

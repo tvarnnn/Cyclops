@@ -1,7 +1,7 @@
 """Saved means the photographic room is there. It must mean nothing else.
 
 THE THREE WAYS "SAVED" WAS A LIE, from the Mac/iOS validation of
-2026-09-22 (§7 of `WORLD-BUILDER-LIVE-WORLD-VISUALIZATION-MAC-VALIDATION.md`).
+2026-09-22.
 
 The serving path asked one present-tense question -- *is a photographic
 stage running right now?* -- and answered the wearer's question from it.

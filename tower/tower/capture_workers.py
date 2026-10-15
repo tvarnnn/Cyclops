@@ -29,8 +29,8 @@ stay green without an exemption. The argv and the gate both come from
 **The web process still does not build, and does not remember.** It
 supervises children that do. That separation is the reason a rebuild can
 take seconds without the frame path noticing, and it is the architecture
-decision `docs/agent-handoffs/WORLD-BUILDER.md` section 1 exists to
-protect.
+decision the three-process design (web process, build process,
+inspector) exists to protect.
 """
 
 import logging

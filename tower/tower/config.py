@@ -200,8 +200,8 @@ class Settings:
     # the shipped detector produced over the real corpus found a ceiling
     # fan detected as `airplane` at 0.99 and a laptop keyboard as
     # `remote` at 0.87, so a Tower with nothing to check those labels
-    # recorded neither -- and `docs/agent-handoffs/OBJECT-MEMORY-HANDOFF`
-    # section 7.4 recorded turning it on as an OPEN DECISION FOR A HUMAN,
+    # recorded neither -- and turning it on was recorded as an OPEN
+    # DECISION FOR A HUMAN,
     # explicitly not one an agent should close: "the default stays `none`
     # because 94 crops from one home justify building it and not
     # switching it on for everybody."

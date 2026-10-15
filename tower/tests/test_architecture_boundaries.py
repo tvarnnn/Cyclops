@@ -381,8 +381,8 @@ def test_world_builder_is_not_registered_as_a_production_module():
     joins the frame path, and shares its lifecycle and its failure
     domain. A supervised child shares none of those -- which is exactly
     why an expensive rebuild can run repeatedly mid-session without the
-    frame path noticing, the property `docs/agent-handoffs/WORLD-BUILDER.md`
-    section 1 exists to protect.
+    frame path noticing, the property the three-process design (web
+    process, build process, inspector) exists to protect.
 
     So the rule is now: main.py may name a worker as a COMMAND, and may
     say so in a comment, but must not import the cartridge, must not
