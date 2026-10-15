@@ -335,7 +335,7 @@ def _diag_lines(caplog):
 def _run_worker(root, receipt, eligible, tree, stat, files, caplog, *, expect_lines):
     state = pfw.PhotoFloorplanState()
     worker = pfw.PhotoFloorplanWorker(root, latest=lambda w, s: receipt, state=state,
-                                      method="homography", diagnostics_files=files)
+                                      diagnostics_files=files)
     try:
         with caplog.at_level("INFO", logger="tower.world_builder.photo_floorplan_worker"):
             worker.offer(WORLD, SESSION, receipt, eligible, tree, stat)
@@ -378,8 +378,7 @@ def test_the_worker_skips_the_files_when_another_writer_holds_the_world(tmp_path
 def test_a_skipped_record_is_appended_by_the_next_permitted_write(tmp_path):
     store = _session_record(tmp_path, lock="live", **SETTLED)
     worker = pfw.PhotoFloorplanWorker(tmp_path, latest=lambda w, s: None,
-                                      state=pfw.PhotoFloorplanState(), method="homography",
-                                      diagnostics_files=True)
+                                      state=pfw.PhotoFloorplanState(), diagnostics_files=True)
     try:
         pair = (WORLD, SESSION)
         worker._report_diagnostics(pair, (1.0, "g", 1), {"solved_at": 1.0, "components": []})
