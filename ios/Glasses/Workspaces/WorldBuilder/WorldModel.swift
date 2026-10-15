@@ -25,8 +25,7 @@ import Foundation
 /// needs the same rule, and one copy of it is the only safe number of copies.
 ///
 /// The full list of what the Tower must be able to report is in
-/// `docs/agent-handoffs/IOS-TO-TOWER.md`, which supersedes and extends the
-/// shorter list in `docs/agent-handoffs/product-shell-v2-handoff.md` section 10.
+/// `docs/agent-handoffs/IOS-TO-TOWER.md`, which is the complete list.
 
 // MARK: - Tracking
 

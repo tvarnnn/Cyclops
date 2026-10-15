@@ -77,7 +77,7 @@ extension SceneUnderstandingClient {
 /// ## What it sends: nothing but a subscription
 ///
 /// No `stream_start`, no `POST /scene/start`, no control message of any kind.
-/// `IOS-to-Tower.md` §6.2 is explicit that opening a cartridge on the phone
+/// `docs/agent-handoffs/IOS-TO-TOWER.md` §6 (item 2) is explicit that opening a cartridge on the phone
 /// sends nothing and a Tower-side test asserts the wire stays silent. The
 /// session follows the camera stream, which the app already opens and closes
 /// for its own reasons — see `SceneUnderstandingContract.phoneSendsNothingNote`

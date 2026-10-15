@@ -76,7 +76,7 @@ nonisolated enum ExperimentalCVContract {
     /// the status document meaning anything new, and the reverse.
     ///
     /// `artifact` was `null` on every earlier version of this contract, with a
-    /// stated reason — `IOS-to-Tower.md` §5 withheld any image whose treatment
+    /// stated reason — `docs/agent-handoffs/IOS-TO-TOWER.md` §5 withheld any image whose treatment
     /// was unstated, and said artifact fetching itself was UNKNOWN. This is
     /// that contract, landed on both sides at once with a document behind it,
     /// and the treatment is stated on every picture.

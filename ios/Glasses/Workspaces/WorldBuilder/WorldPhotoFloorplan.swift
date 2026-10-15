@@ -98,7 +98,7 @@ nonisolated struct WorldPhotoFloorplanLanded: Equatable, Sendable {
 }
 
 /// `kept`: the newest landing the Tower processed published no plan, and it
-/// keeps serving `landed` on purpose (TOWER_WORLD_PHOTO_FLOORPLAN_KEPT).
+/// keeps serving `landed` on purpose.
 nonisolated struct WorldPhotoFloorplanKept: Equatable, Sendable {
     enum Reason: Equatable, Sendable {
         case regressed, stalled, wallCap, superseded, failed, notNewer

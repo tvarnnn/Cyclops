@@ -57,7 +57,7 @@ nonisolated enum SceneUnderstandingContract {
     //
     // Listed for completeness and **not called by this app**. `GET /scene`
     // carries the same payload the subscription does, and the four POSTs are an
-    // operator surface: `IOS-to-Tower.md` §6.2 is explicit that opening a
+    // operator surface: `docs/agent-handoffs/IOS-TO-TOWER.md` §6 (item 2) is explicit that opening a
     // cartridge on the phone sends nothing, and a Tower-side test asserts the
     // wire stays silent. The session follows the stream instead —
     // `stream_start` opens it, `stream_stop` or a disconnect ends it — which is

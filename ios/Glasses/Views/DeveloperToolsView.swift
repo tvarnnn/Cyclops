@@ -224,8 +224,7 @@ struct DeveloperToolsView: View {
     /// globally is not the answer either: 73.3% of 720p frames fall below
     /// World Builder's absolute `min_sharpness` and are rejected as blurred.
     /// That conflict is a cross-cartridge decision, so this stays a developer
-    /// control rather than becoming a product setting. See
-    /// `docs/agent-handoffs/TOWER-LANE-HANDOFF-FROM-MAC.md` 2.3.
+    /// control rather than becoming a product setting.
     ///
     /// The picker is disabled on `isCaptureSessionClaimed` rather than on
     /// `isCaptureEngaged`, and the difference is the whole point.

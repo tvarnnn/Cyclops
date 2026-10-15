@@ -104,8 +104,7 @@ extension Cartridge {
     ///
     /// **`status` is taken from evidence, not from the specs.** Each value
     /// below is justified by what the Tower actually serves and what this build
-    /// actually implements, verified against a live Tower and recorded in
-    /// `docs/agent-handoffs/MAC-MEGA-INTEGRATION-FINAL.md`. Nothing here is
+    /// actually implements, verified against a live Tower. Nothing here is
     /// aspirational copy, and nothing here is a roadmap position any more —
     /// a spec saying "future" no longer makes a badge say it.
     static let catalog: [Cartridge] = [

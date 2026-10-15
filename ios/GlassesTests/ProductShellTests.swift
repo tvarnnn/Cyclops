@@ -2859,7 +2859,7 @@ final class CaptureResolutionPreferenceTests: XCTestCase {
 
     /// Ties the default rung to the physical evidence. The P3 clean walk
     /// recorded 108 frames, every one 360x640
-    /// (`docs/evidence/2026-08-26-p3-clean-walk-console.txt`). If DAT's `.low`
+    /// (from that walk's console log). If DAT's `.low`
     /// ever stops meaning that, the corpus and every figure derived from it
     /// stop being comparable, and this test is the tripwire.
     func testLowIsStillTheRungTheWalkWasMeasuredAt() {
