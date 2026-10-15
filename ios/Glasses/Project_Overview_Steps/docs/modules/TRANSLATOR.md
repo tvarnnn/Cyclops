@@ -9,11 +9,6 @@ the first planned cartridge whose primary input is not a camera frame,
 which is why its first prototype is deliberately specified to run on
 Tower-local microphone and speakers, entirely outside the glasses path.
 
-**Research plan (2026-08-22):**
-`docs/superpowers/plans/2026-08-22-translator-research-plan.md` — the four
-pipelines to benchmark, how to measure latency honestly, and the gate
-that must be passed before any glasses integration begins.
-
 **Measured host reality, so nobody starts down a dead end.** Every audio
 library is absent: no `sounddevice`, `pyaudio`, `soundfile`, `torchaudio`,
 `webrtcvad`, `silero_vad`, `faster_whisper`, `transformers`,
