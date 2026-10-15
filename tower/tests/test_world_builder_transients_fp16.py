@@ -1,16 +1,14 @@
 """fp16 autocast for the transient detectors' model forward calls.
 
-Module: `tower/world_builder/transients.py`. The switch is
-`TOWER_WORLD_TRANSIENTS_FP16` (`tower.config.world_transients_fp16_setting`),
-default off.
+Module: `tower/world_builder/transients.py`. Autocast is used on a CUDA
+device only (`T._fp16_enabled`).
 
 No real model is loaded here. Every test that exercises a backend's `run()`
 replaces the four `transformers` classes it imports with tiny fakes (via
 `sys.modules["transformers"]`, so nothing downloads and nothing needs a real
 CUDA device), and replaces `torch.autocast` with a fake that records whether
 it was entered around the model call. `T._fp16_enabled` is monkeypatched
-directly in those tests so they do not also have to drive the switch through
-the environment -- that parsing is covered on its own below.
+directly in those tests so they do not also need a CUDA device.
 """
 
 from __future__ import annotations
@@ -19,58 +17,21 @@ import sys
 import types
 
 import numpy as np
-import pytest
 
-import tower.config as config
 from tower.world_builder import transients as T
 
-FP16_ENV = config.WORLD_TRANSIENTS_FP16_ENV
-
 
 # ---------------------------------------------------------------------------
-# the switch
+# the device decision
 # ---------------------------------------------------------------------------
 
 
-def test_fp16_env_name():
-    assert FP16_ENV == "TOWER_WORLD_TRANSIENTS_FP16"
-
-
-@pytest.mark.parametrize("value, expected", [
-    (None, False),
-    ("", False),
-    ("on", True),
-    ("On", True),
-    ("ON", True),
-    ("1", True),
-    ("true", True),
-    ("yes", True),
-    ("off", False),
-    ("0", False),
-    ("false", False),
-    ("no", False),
-    ("banana", False),
-])
-def test_world_transients_fp16_setting_parses_exact_on(monkeypatch, value, expected):
-    if value is None:
-        monkeypatch.delenv(FP16_ENV, raising=False)
-    else:
-        monkeypatch.setenv(FP16_ENV, value)
-    assert config.world_transients_fp16_setting() is expected
-
-
-def test_fp16_enabled_is_false_on_cpu_regardless_of_switch(monkeypatch):
-    monkeypatch.setenv(FP16_ENV, "on")
+def test_fp16_enabled_is_false_on_cpu():
     assert T._fp16_enabled("cpu") is False
 
 
-def test_fp16_enabled_follows_the_switch_on_cuda(monkeypatch):
-    monkeypatch.setenv(FP16_ENV, "on")
+def test_fp16_enabled_is_true_on_cuda():
     assert T._fp16_enabled("cuda") is True
-    monkeypatch.setenv(FP16_ENV, "off")
-    assert T._fp16_enabled("cuda") is False
-    monkeypatch.delenv(FP16_ENV, raising=False)
-    assert T._fp16_enabled("cuda") is False
 
 
 def test_autocast_disabled_is_a_noop_context():
@@ -280,11 +241,11 @@ def _run_oneformer(monkeypatch, fp16: bool):
 
 
 # ---------------------------------------------------------------------------
-# off: no autocast, no cast
+# cpu (`_fp16_enabled` is False): no autocast, no cast
 # ---------------------------------------------------------------------------
 
 
-def test_gdino_and_sam_run_without_autocast_when_off(monkeypatch):
+def test_gdino_and_sam_run_without_autocast_on_cpu(monkeypatch):
     gdino_calls, sam_calls, cast_log, results = _run_gdsam(monkeypatch, fp16=False)
     assert gdino_calls == [False]
     assert sam_calls == [False]
@@ -292,7 +253,7 @@ def test_gdino_and_sam_run_without_autocast_when_off(monkeypatch):
     assert len(results) == 1
 
 
-def test_oneformer_runs_without_autocast_when_off(monkeypatch):
+def test_oneformer_runs_without_autocast_on_cpu(monkeypatch):
     model_calls, cast_log, results = _run_oneformer(monkeypatch, fp16=False)
     assert model_calls == [False]
     assert cast_log == []
@@ -300,7 +261,7 @@ def test_oneformer_runs_without_autocast_when_off(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# on: autocast wraps the forward call, outputs are cast back for post-process
+# cuda: autocast wraps the forward call, outputs are cast back for post-process
 # ---------------------------------------------------------------------------
 
 

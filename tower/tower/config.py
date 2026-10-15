@@ -1291,20 +1291,6 @@ def world_picture_basis_setting() -> bool:
     return _flag(WORLD_PICTURE_BASIS_ENV, default=False)
 
 
-# The transient-mask detectors' forward passes (`world_builder/transients.py`: OneFormer,
-# Grounding DINO, SAM). Read by each backend's `run()`. Off, and off is today's fp32 forward
-# calls byte for byte: no autocast context is entered at all. On a CPU device there is no
-# autocast regardless of this switch.
-WORLD_TRANSIENTS_FP16_ENV = "TOWER_WORLD_TRANSIENTS_FP16"
-
-
-def world_transients_fp16_setting() -> bool:
-    """`TOWER_WORLD_TRANSIENTS_FP16`: run the transient detectors' model forward calls under
-    `torch.autocast("cuda", dtype=torch.float16)`. Off. Post-processing is unaffected either
-    way: its inputs are cast back to float32 before it runs."""
-    return _flag(WORLD_TRANSIENTS_FP16_ENV, default=False)
-
-
 WORLD_RELOCALIZER_ENV = "TOWER_WORLD_RELOCALIZER"
 
 
