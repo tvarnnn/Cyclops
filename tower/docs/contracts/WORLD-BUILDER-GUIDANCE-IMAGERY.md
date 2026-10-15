@@ -203,10 +203,9 @@ against it). Deviations go through the lead first.
 Switches: `TOWER_WORLD_PHOTO_FLOORPLAN` accepts only `on`, and also needs
 `TOWER_WORLD_GUIDANCE_COVERAGE=on`. When it is off, neither route is
 registered, no photo worker starts, and the coverage worker reads and publishes
-exactly what it did before. `TOWER_WORLD_PHOTO_FLOORPLAN_METHOD` is
-`homography` (the default: the lower-image floor homography, CPU only) or
-`depth` (option 2, which needs the Exp1 live-depth cache). Any other value is
-treated as `homography` and logged.
+exactly what it did before. The raster is always the lower-image floor
+homography (CPU only); `TOWER_WORLD_PHOTO_FLOORPLAN_METHOD` is no longer read,
+so any value of it, set or unset, gives the same plan.
 
 ### Routes
 
