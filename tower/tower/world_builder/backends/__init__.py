@@ -45,11 +45,9 @@ def select_backend(
 ) -> BackendSelection:
     """Choose a backend, and say so the first time.
 
-    `announce` exists because selection is no longer a once-per-session
-    event. `build()` re-selects on every rebuild, and the Tower now
-    attaches a follower that rebuilds every few keyframes, so a walk that
-    used to log this once would log it sixty times. Loud once is the
-    point; loud sixty times is the noise that hides it.
+    `announce=False` is for rebuild-time re-selection: `build()` re-selects
+    on every rebuild, so the warning is logged once per session rather than
+    once per rebuild.
 
     The RETURNED selection is identical either way -- `downgraded_from`
     and `downgrade_reason` are always populated, so the session record is
@@ -61,27 +59,15 @@ def select_backend(
     if name == BACKEND_UNPOSED:
         return BackendSelection(UnposedBackend())
 
+    # AUTO and an explicit classical request agree whenever intrinsics are known.
+    if intrinsics.is_known:
+        return BackendSelection(ClassicalTwoViewBackend())
+
     if name == BACKEND_AUTO:
-        if intrinsics.is_known:
-            return BackendSelection(ClassicalTwoViewBackend())
-        # Announced, and recorded, exactly like the explicit request
-        # below. This branch used to return silently with
-        # downgraded_from=None, on the reasoning that AUTO choosing the
-        # only backend it CAN choose is a selection rather than a
-        # downgrade.
-        #
-        # That reasoning is defensible and it cost a night. On the
-        # 2026-08-24 physical walk AUTO landed here, the session recorded
-        # `backend_id: "unposed", downgraded_from: null`, and the world
-        # came back with 155 keyframes, zero poses and zero points with
-        # nothing anywhere saying why. The operator's question is "why is
-        # there no geometry?", and the answer -- "because nothing has
-        # calibrated this camera" -- was computed here and thrown away.
-        #
-        # Whether AUTO "downgraded" is a question about this function's
-        # vocabulary. Whether the reconstruction lost its geometry to
-        # missing intrinsics is a question about the world, and it has
-        # the same answer either way.
+        # Recorded and announced exactly like the explicit request below,
+        # even though AUTO had no other choice: the operator's question is
+        # "why is there no geometry?", and the answer (nothing has
+        # calibrated this camera) must reach the session record.
         reason = (
             "no backend that solves poses can run without intrinsics, and "
             f"this session's intrinsics are source={intrinsics.source!r}; "
@@ -90,23 +76,15 @@ def select_backend(
         )
         if announce:
             logger.warning("world builder: backend selected unposed -- %s", reason)
-        return BackendSelection(
-            UnposedBackend(),
-            downgraded_from=BACKEND_CLASSICAL,
-            downgrade_reason=reason,
+    else:
+        # Explicitly requested classical, without intrinsics.
+        reason = (
+            "classical backend requires intrinsics, but this session's "
+            f"intrinsics are source={intrinsics.source!r}; no intrinsics were "
+            "invented"
         )
-
-    # Explicitly requested classical.
-    if intrinsics.is_known:
-        return BackendSelection(ClassicalTwoViewBackend())
-
-    reason = (
-        "classical backend requires intrinsics, but this session's "
-        f"intrinsics are source={intrinsics.source!r}; no intrinsics were "
-        "invented"
-    )
-    if announce:
-        logger.warning("world builder: backend downgraded to unposed -- %s", reason)
+        if announce:
+            logger.warning("world builder: backend downgraded to unposed -- %s", reason)
     return BackendSelection(
         UnposedBackend(),
         downgraded_from=BACKEND_CLASSICAL,
