@@ -216,11 +216,9 @@ class WorldBuilderEngine:
         if monotonic is None:
             monotonic = time.monotonic if clock is time.time else clock
         self._mono = monotonic
-        # An injected policy is used as given. None builds one at each session
-        # start from the KF-TURNS environment overrides
-        # (config.world_keyframe_policy_overrides); unset is KeyframePolicy().
-        self._policy_injected = policy
-        self._policy = policy or KeyframePolicy()
+        # An injected policy is used as given. The default runs the turn
+        # bridge, so a fast head turn still links its keyframes.
+        self._policy = policy or KeyframePolicy(turn_bridge=True)
         self._backend_name = backend_name
         # A factory rather than an instance: a redactor holds a loaded
         # detector, and a session that never starts should not pay for
@@ -310,15 +308,6 @@ class WorldBuilderEngine:
                 "[Tower][WorldBuilder] persisting UNREDACTED keyframes: %s",
                 self._redactor.unavailable_reason,
             )
-        if self._policy_injected is None:
-            from tower.config import world_keyframe_policy_overrides
-
-            overrides = world_keyframe_policy_overrides()
-            self._policy = replace(KeyframePolicy(), **overrides)
-            if overrides:
-                logger.info(
-                    "[Tower][WorldBuilder] keyframe policy overrides: %s", overrides
-                )
         self._selector = KeyframeSelector(self._policy)
         self._tracker = FrameTracker()
         self._events = EventLog(

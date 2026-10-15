@@ -1,31 +1,17 @@
 """KF-TURNS: the keyframe blur floor and the turn bridge (W9-DIAG.md cause 1).
 
 Walk 9's 9 component breaks all sit on a turn where the blur gate rejected
-every frame between two keyframes 52-391 deg apart, with a ~45 deg FOV. Two
-env-gated changes, both off by default:
-
-* `TOWER_WORLD_KEYFRAME_MIN_SHARPNESS` -- the absolute blur floor (25 today).
-* `TOWER_WORLD_KEYFRAME_TURN_BRIDGE=on` -- a blurred frame is accepted when
-  the tracker says the view has turned far enough since the last keyframe.
-
-Unset must be today exactly; the offline replica over walk 9's 2626 stored
-frames reproduces the live 714 keyframes and the full rejection histogram
-(RUN experiments/KFTURNS/sim). These tests pin the mechanism.
+every frame between two keyframes 52-391 deg apart, with a ~45 deg FOV. The
+World Builder engine always runs the turn bridge: a blurred frame is accepted
+when the tracker says the view has turned far enough since the last keyframe.
+A bare `KeyframePolicy()` keeps it off, so these tests pin the mechanism by
+comparing the two.
 """
 
 import random
 
 import pytest
 
-from tower.config import (
-    WORLD_KEYFRAME_MIN_SHARPNESS_ENV,
-    WORLD_KEYFRAME_TURN_BRIDGE_ENV,
-    WORLD_KEYFRAME_TURN_BRIDGE_FRAMES_ENV,
-    WORLD_KEYFRAME_TURN_BRIDGE_MIN_FRAMES_ENV,
-    WORLD_KEYFRAME_TURN_BRIDGE_MIN_SHARPNESS_ENV,
-    WORLD_KEYFRAME_TURN_BRIDGE_OVERLAP_ENV,
-    world_keyframe_policy_overrides,
-)
 from tower.world_builder.frontend import FrameQuality, MotionSummary
 from tower.world_builder.keyframes import (
     ACCEPT,
@@ -35,22 +21,6 @@ from tower.world_builder.keyframes import (
     KeyframePolicy,
     KeyframeSelector,
 )
-
-ALL_ENV = (
-    WORLD_KEYFRAME_MIN_SHARPNESS_ENV,
-    WORLD_KEYFRAME_TURN_BRIDGE_ENV,
-    WORLD_KEYFRAME_TURN_BRIDGE_FRAMES_ENV,
-    WORLD_KEYFRAME_TURN_BRIDGE_MIN_FRAMES_ENV,
-    WORLD_KEYFRAME_TURN_BRIDGE_MIN_SHARPNESS_ENV,
-    WORLD_KEYFRAME_TURN_BRIDGE_OVERLAP_ENV,
-)
-
-
-@pytest.fixture(autouse=True)
-def _clean_env(monkeypatch):
-    for name in ALL_ENV:
-        monkeypatch.delenv(name, raising=False)
-
 
 def _q(sharpness: float) -> FrameQuality:
     return FrameQuality(width=360, height=640, sharpness=sharpness)
@@ -92,48 +62,12 @@ def _seeded(policy):
 # -- configuration ------------------------------------------------------------
 
 
-def test_unset_is_todays_policy():
-    assert world_keyframe_policy_overrides() == {}
+def test_policy_defaults():
     assert KeyframePolicy().min_sharpness == 25.0
     assert KeyframePolicy().turn_bridge is False
 
 
-def test_floor_and_bridge_read(monkeypatch):
-    monkeypatch.setenv(WORLD_KEYFRAME_MIN_SHARPNESS_ENV, "7")
-    monkeypatch.setenv(WORLD_KEYFRAME_TURN_BRIDGE_ENV, "on")
-    monkeypatch.setenv(WORLD_KEYFRAME_TURN_BRIDGE_OVERLAP_ENV, "0.4")
-    monkeypatch.setenv(WORLD_KEYFRAME_TURN_BRIDGE_FRAMES_ENV, "8")
-    assert world_keyframe_policy_overrides() == {
-        "min_sharpness": 7.0,
-        "turn_bridge": True,
-        "bridge_overlap_ratio": 0.4,
-        "bridge_max_frames": 8,
-    }
-
-
-@pytest.mark.parametrize("value", ["On", "1", "true", "yes", " on", "off", ""])
-def test_bridge_is_exactly_on(monkeypatch, value):
-    monkeypatch.setenv(WORLD_KEYFRAME_TURN_BRIDGE_ENV, value)
-    # The tuning knobs are read only with the bridge on.
-    monkeypatch.setenv(WORLD_KEYFRAME_TURN_BRIDGE_FRAMES_ENV, "8")
-    assert world_keyframe_policy_overrides() == {}
-
-
-@pytest.mark.parametrize("value", ["abc", "-1", "nan", "inf", " "])
-def test_bad_floor_is_unset(monkeypatch, value):
-    monkeypatch.setenv(WORLD_KEYFRAME_MIN_SHARPNESS_ENV, value)
-    assert world_keyframe_policy_overrides() == {}
-
-
-@pytest.mark.parametrize("overlap, frames", [("0", "0"), ("1.5", "x"), ("-0.2", "-3")])
-def test_bad_bridge_knobs_are_unset(monkeypatch, overlap, frames):
-    monkeypatch.setenv(WORLD_KEYFRAME_TURN_BRIDGE_ENV, "on")
-    monkeypatch.setenv(WORLD_KEYFRAME_TURN_BRIDGE_OVERLAP_ENV, overlap)
-    monkeypatch.setenv(WORLD_KEYFRAME_TURN_BRIDGE_FRAMES_ENV, frames)
-    assert world_keyframe_policy_overrides() == {"turn_bridge": True}
-
-
-def test_engine_builds_the_policy_from_the_environment(monkeypatch, tmp_path):
+def test_engine_runs_the_turn_bridge(monkeypatch, tmp_path):
     from tower.world_builder.engine import WorldBuilderEngine
     from tower.world_builder.store import WorldStore
 
@@ -146,16 +80,18 @@ def test_engine_builds_the_policy_from_the_environment(monkeypatch, tmp_path):
                                 relocalizer="off")
     world = engine.create_world()
     engine.start_session(world)
-    assert engine._selector.policy == KeyframePolicy()
+    assert engine._selector.policy == KeyframePolicy(turn_bridge=True)
     engine.stop_session()
 
-    monkeypatch.setenv(WORLD_KEYFRAME_MIN_SHARPNESS_ENV, "7")
-    monkeypatch.setenv(WORLD_KEYFRAME_TURN_BRIDGE_ENV, "on")
-    engine.start_session(world)
-    assert engine._selector.policy == KeyframePolicy(min_sharpness=7.0, turn_bridge=True)
-    engine.stop_session()
+    # Nothing in the environment tunes the policy; a leftover demo line is harmless.
+    for value in ("on", "off"):
+        monkeypatch.setenv("TOWER_WORLD_KEYFRAME_TURN_BRIDGE", value)
+        monkeypatch.setenv("TOWER_WORLD_KEYFRAME_MIN_SHARPNESS", "7")
+        engine.start_session(world)
+        assert engine._selector.policy == KeyframePolicy(turn_bridge=True)
+        engine.stop_session()
 
-    # An injected policy is used as given, whatever the environment says.
+    # An injected policy is used as given.
     injected = KeyframePolicy(min_sharpness=40.0)
     engine = WorldBuilderEngine(store, policy=injected, redactor_factory=_NoRedactor,
                                 frame_quality_log=False, relocalizer="off")
@@ -180,21 +116,6 @@ def _random_frames(seed: int, n: int = 3000):
                         tracked=rng.choice([None, 5, 0]) if rng.random() < 0.1 else None)
         frames.append((_q(sharp), motion))
     return frames
-
-
-@pytest.mark.parametrize("seed", range(5))
-def test_bridge_off_never_changes_a_decision(seed):
-    """Off, a frame below either blur test is always rejected as blurred --
-    exactly the gate as it was -- and a bridge accept is never produced."""
-    frames = _random_frames(seed)
-    off = _run(KeyframeSelector(KeyframePolicy()), frames)
-    assert all(reason != REASON_TURN_BRIDGE for _, reason in off)
-
-    # The same decisions as a selector whose bridge fields are changed but
-    # whose bridge is off: the fields are read only with the bridge on.
-    shadow = KeyframePolicy(bridge_min_sharpness=0.0, bridge_min_frames=0,
-                            bridge_overlap_ratio=1.0, bridge_max_frames=1)
-    assert _run(KeyframeSelector(shadow), frames) == off
 
 
 @pytest.mark.parametrize("seed", range(5))
@@ -288,29 +209,6 @@ def test_bridge_seeds_a_segment_only_after_a_sustained_run():
     out = _run(KeyframeSelector(policy), [(_q(12.0), None)] * policy.bridge_max_frames)
     assert out[:-1] == [(REJECT, REASON_BLURRED)] * (policy.bridge_max_frames - 1)
     assert out[-1] == (ACCEPT, REASON_TURN_BRIDGE)
-
-
-# manager 392: the bridge's own floor and spacing are env knobs, read only with the bridge on.
-def test_bridge_min_knobs_read(monkeypatch):
-    monkeypatch.setenv(WORLD_KEYFRAME_TURN_BRIDGE_ENV, "on")
-    monkeypatch.setenv(WORLD_KEYFRAME_TURN_BRIDGE_MIN_SHARPNESS_ENV, "8")
-    monkeypatch.setenv(WORLD_KEYFRAME_TURN_BRIDGE_MIN_FRAMES_ENV, "3")
-    assert world_keyframe_policy_overrides() == {
-        "turn_bridge": True, "bridge_min_sharpness": 8.0, "bridge_min_frames": 3}
-
-
-def test_bridge_min_knobs_need_the_bridge(monkeypatch):
-    monkeypatch.setenv(WORLD_KEYFRAME_TURN_BRIDGE_MIN_SHARPNESS_ENV, "8")
-    monkeypatch.setenv(WORLD_KEYFRAME_TURN_BRIDGE_MIN_FRAMES_ENV, "3")
-    assert world_keyframe_policy_overrides() == {}
-
-
-@pytest.mark.parametrize("sharp, frames", [("0", "0"), ("-2", "x"), ("nan", "-1"), ("abc", "2.5"), (" ", " ")])
-def test_bad_bridge_min_knobs_are_unset(monkeypatch, sharp, frames):
-    monkeypatch.setenv(WORLD_KEYFRAME_TURN_BRIDGE_ENV, "on")
-    monkeypatch.setenv(WORLD_KEYFRAME_TURN_BRIDGE_MIN_SHARPNESS_ENV, sharp)
-    monkeypatch.setenv(WORLD_KEYFRAME_TURN_BRIDGE_MIN_FRAMES_ENV, frames)
-    assert world_keyframe_policy_overrides() == {"turn_bridge": True}
 
 
 def test_a_raised_bridge_floor_refuses_a_sharpness_4_bridge():
