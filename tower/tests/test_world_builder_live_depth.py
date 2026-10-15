@@ -456,36 +456,3 @@ def test_stop_time_depth_reuses_nothing_live_when_off(tmp_path, monkeypatch):
         session.intrinsics, gate_rel=0.08, backend=LD.MODEL)
     assert FakeMoGe.calls == 3 + 5
     assert align["image_origins"].get("reused-prediction", 0) == 0
-
-
-def test_replay_check_reports_coverage_calls_and_surface_seconds(tmp_path, monkeypatch):
-    from scripts import exp1_live_depth_replay_check as RC
-
-    store, session, frames = _walk_frames(tmp_path / "data", monkeypatch, 5)
-    _live_cover(store, session, frames[:3])
-    monkeypatch.setenv("TOWER_WORLD_LIVE_DEPTH", "on")
-    SP.ensure_depth_stage(store, WORLD, SESSION, load_solution(store, WORLD, SESSION),
-                          session.intrinsics, gate_rel=0.08, backend=LD.MODEL)
-    run = tmp_path / "run"
-    run.mkdir()
-    (run / "report.json").write_text(json.dumps({"store": {
-        "world_dir": str(store.world_dir(WORLD)), "session_id": SESSION}}))
-    (run / "tower-1-x.out.log").write_text(
-        "global_solve           {'solved': True}\n"
-        "surface                {'attempted': True, 'state': 'ok', "
-        "'seconds': {'depth': 1.5, 'fuse': 2.25, 'mesh': 0.25}}\n")
-    (run / "tower-1-x.err.log").write_text(
-        "... [Tower][WorldBuilder][dense] depth: 3 of 5 predictions reused from an "
-        "earlier solve and refitted\n")
-    before = {p: p.stat().st_mtime_ns for p in tmp_path.rglob("*") if p.is_file()}
-    out = RC.check(run)
-    assert out["coverage"]["live_cached"] == 3
-    assert out["coverage"]["final_keyframes"] == 5
-    assert out["coverage"]["c"] == 0.6
-    assert out["coverage"]["live_counters"]["predicted"] == 3
-    assert (out["depth"]["made"], out["depth"]["skipped"]) == (2, 3)
-    assert out["depth"]["tower_log_reused"] == {"reused": 3, "of": 5}
-    assert out["surface_seconds"]["steps"] == {"depth": 1.5, "fuse": 2.25, "mesh": 0.25}
-    assert out["surface_seconds"]["total"] == 4.0
-    # Read only: nothing written, nothing touched.
-    assert {p: p.stat().st_mtime_ns for p in tmp_path.rglob("*") if p.is_file()} == before

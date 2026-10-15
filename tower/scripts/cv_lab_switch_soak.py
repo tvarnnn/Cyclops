@@ -56,10 +56,11 @@ this process, so the samples describe THIS process and the CUDA numbers
 are readable. It says nothing about uvicorn or about the wire.
 
 `--live --host H --port P [--tower-pid PID]` does the same walk against a
-Tower you started yourself, over `/ws`, using the message shapes
-`cv_lab_smoke.py` uses. The camera stream is started once and never
-stopped between switches, because a stream that survives a switch is the
-property under test. Threads and RSS come from the status document's
+Tower you started yourself, over `/ws`, using the CV Lab client's own
+message shapes (`cv_lab_status`, `cv_lab_start`, `cv_lab_stop`,
+`stream_start`/`stream_stop` and `frame`). The camera stream is started
+once and never stopped between switches, because a stream that survives a
+switch is the property under test. Threads and RSS come from the status document's
 `process` block when the Tower publishes one, and `run.arm_ms` likewise;
 either shows `n/a` on a Tower that predates them. With `--tower-pid` the
 process is also sampled from the OUTSIDE with psutil, which is the only

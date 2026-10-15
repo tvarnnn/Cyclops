@@ -793,9 +793,6 @@ scripts/
                           deliberately no separate query script
   scene_benchmark.py      Per-frame cost with and without orientation,
                           and count stability under detector dropout
-  world_builder_benchmark.py
-                          Stage timings for the World Builder pipeline
-                          (synthetic input; timings real, imagery rendered)
   world_builder_env_check.py
                           Read-only World Builder readiness diagnostic:
                           GPU visibility vs. torch's ability to reach it,
