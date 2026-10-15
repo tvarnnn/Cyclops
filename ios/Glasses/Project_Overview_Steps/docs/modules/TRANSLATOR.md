@@ -20,8 +20,8 @@ found sound *devices* (Realtek, NVIDIA) but the only PnP AudioEndpoint is
 a monitor — an output. **No capture endpoint is listed, so there is very
 likely no microphone attached.** This is the same shape as the finding
 that no webcam exists here, which shaped the entire World Builder run.
-Verify with a plugged-in microphone before writing code: the plan's own
-first stage is otherwise untestable.
+Verify with a plugged-in microphone before writing code: a Tower-local
+microphone prototype is otherwise untestable.
 
 Future module concept. Not scheduled on the current roadmap (see `03-ROADMAP.md` Phase 3 and Future Research) and not authorized for implementation. This is a specification seed, recorded so the module-system and roadmap documentation have a concrete place to point to — see `02-DEVELOPMENT-RULES.md` Rule 10 (No Premature Scope Expansion).
 

@@ -300,7 +300,9 @@ point is to be read.
   the corrected page image is opt-in and off. When enabled the record
   says `redaction: "none"`, because no redaction exists on this platform
   and a crop is not inherently safe: a photographed page routinely
-  contains a bystander, a second document, or a screen.
+  contains a bystander, a second document, or a screen. A stored page
+  image, if kept, must be redacted by its producer before it is offered
+  for display.
 - **Raw frames are never persisted by this cartridge.** They live in
   memory for the dwell window and are dropped.
 - **Real purge**, per document and whole-store, reporting what it could

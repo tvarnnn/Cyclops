@@ -92,9 +92,10 @@ The costed options are: (A) `asyncio.to_thread` in this module only;
 (C) pre-provisioned weights, accepting the gap; (D) deferring Object
 Memory until V1.1 lifecycle hardening; and (E) a separate, longer load
 timeout, which composes with A or B. The Experimental CV Lab load path
-now runs E + A (`LOAD_TIMEOUT_S = 120.0` in `tower/modules/container.py`,
-the experiment's load awaited off-thread); B, the contract change,
-remains V1.1 work. The Master Guide classifies choosing between them as
+uses the longer timeout (`LOAD_TIMEOUT_S = 120.0` in
+`tower/modules/container.py`) and its own dedicated off-thread loader
+(`ExperimentLoader` in `tower/cv_lab/loader.py`), not option A as
+defined here; B, the contract change, remains V1.1 work. The Master Guide classifies choosing between them as
 needing user judgement, so an agent must not resolve it autonomously.
 
 That gap is real for the *live* path: `Module.process()` receives raw
