@@ -2,7 +2,15 @@
 
 ## Status
 
-Future experimental assistive module. Not a validated safety or navigation device.
+**PLANNED**, and additionally **BLOCKED** on a capability that does not
+exist. No code exists under `tower/`. Beyond that, this module's defining
+requirement is minimum latency, and `Module.process()` is synchronous on
+the event loop with no worker, queue or executor anywhere in `tower/`.
+A genuine low-latency execution path is V1.0/V1.1 work and is the same
+blocker World Builder stops behind.
+
+Not a validated safety or navigation device, and nothing here may be
+represented as one (Rule 13).
 
 ## Goal
 

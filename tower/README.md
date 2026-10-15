@@ -17,8 +17,10 @@ and module-level failures are reported to the connected client via a
 
 Two offline research harnesses (`scripts/depth_temporal_consistency.py`,
 `scripts/feature_trackability.py`) analyse World Builder foundations against
-recorded footage; their measured results and validity limits are in
-`guidelines/docs/reports/V0.9.3-world-builder-experiments-1-2-report.md`.
+recorded footage. Their results so far were measured on a public
+head-mounted dataset clip (EPIC-KITCHENS-100 `P01_107`), not on these
+glasses, so they are feasibility evidence only until re-run on real DAT
+footage (`ios/Glasses/Project_Overview_Steps/docs/03-ROADMAP.md`, V0.9.3).
 
 ## Environment Setup
 
@@ -570,7 +572,7 @@ the current wire protocol there is no separate transmission-attempt
 counter, so a gap in `seq` cannot currently be attributed to intentional
 sender-side sampling, a sender-side drop, or genuine network/transit
 loss — they look identical on the wire. Do not interpret `seq_gap_total`
-as network loss. See `guidelines/docs/07-PLATFORM-CONSTRAINTS.md`
+as network loss. See `ios/Glasses/Project_Overview_Steps/docs/07-PLATFORM-CONSTRAINTS.md`
 Limitation 9 for the future `source_seq`/`tx_seq` protocol split that
 would be needed to actually distinguish these causes (not implemented).
 
@@ -591,8 +593,7 @@ Read together with `effective_fps`, these state the pipeline's behavior
 outright: the 2026-08-21 first physical-glasses remote run would have
 reported a `source_fps_estimate` of ~23.5 and a `sampling_stride_avg` of
 ~29.98 behind its `effective_fps` of 0.8 — a ~24 fps capture stream
-decimated 1-in-30. See
-`guidelines/docs/reports/2026-08-21-first-physical-glasses-remote-baseline.md`.
+decimated 1-in-30.
 
 These are **estimates**, labeled as such. Two specific traps:
 
@@ -635,9 +636,9 @@ Use `--duration-s 1200` (20 minutes) to `1800` (30 minutes) for the full
 roadmap target session length, and `--source mock-device-kit` /
 `--source iphone-camera` / `--source physical-glasses` when the frames
 actually come from those sources via the iOS app, so the resulting report
-is never mislabeled. See `guidelines/docs/reports/V0.7-sustained-streaming-report.md`
-for the report template — fill it in using this script's printed output
-combined with the Tower's own `[Tower][Session] final summary` log line.
+is never mislabeled. The script prints its own report; combine it with
+the Tower's own `[Tower][Session] final summary` log line for the
+Tower-side figures.
 
 A `synthetic-script` or `mock-device-kit` run validates the Tower's
 instrumentation and connection stability only; it does not establish
@@ -647,8 +648,7 @@ real-world V0.7 figures — see `07-PLATFORM-CONSTRAINTS.md` Limitation 12.
 
 ```text
 tower/
-  world_builder/          World Builder V1 engine (see
-                          guidelines/docs/reports/2026-08-22-world-builder-v1-report.md).
+  world_builder/          World Builder V1 engine.
                           Calibration-gated: no intrinsics means no poses,
                           and it says so rather than guessing.
   cv_lab/                 The Experimental CV Lab as a product surface:

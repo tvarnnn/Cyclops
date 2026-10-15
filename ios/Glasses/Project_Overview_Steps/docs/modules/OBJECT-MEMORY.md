@@ -2,7 +2,112 @@
 
 ## Status
 
-Planned module. Strong candidate for an early computer-vision course project because it is bounded enough to build incrementally while exercising detection, tracking, temporal reasoning, relevance filtering, and persistence.
+> ## CORRECTED AGAIN 2026-08-27 — it has a Start button, a policy and a picture
+>
+> Three of the gaps the 2026-08-26 note left open are closed, and one of
+> its own claims is corrected.
+>
+> - **The producer attaches itself.** `POST
+>   /cartridges/object_memory/session/{start,pause,resume,stop}` and a
+>   gated worker spec, so nobody copies a capture id into a second
+>   terminal. The observation root now has ONE default, handed to the
+>   producer and the read routes from the same settings object.
+> - **The two-class whitelist became a measured policy.** Every detection
+>   over all 18,821 real frames was dumped and the strongest crop of each
+>   sighting was READ BY EYE. A ceiling fan is `airplane` at 0.99 and
+>   `scissors` at 0.93; a white door is `refrigerator` at 0.95; the three
+>   highest-scoring `remote` sightings are all laptop keyboards. Score
+>   does not order correctness across classes, so the class list became
+>   tiers: written on the detector's word, written only if a second
+>   opinion agrees, context, or ignored. `person` is still excluded and
+>   still unreachable by any model.
+> - **The unit of memory is a SIGHTING**, not a 30-second timer.
+> - **The frame reference became a picture.**
+>   `/object-memory/observations/{id}/{imagery,frame,crop}`, face-filtered
+>   on read, refusing rather than degrading, and answering "the memory is
+>   kept and the picture is not" when capture-side retention has moved on.
+> - **Persistent identity is NOT "forbidden outright"** — a claim the
+>   contract document made and this brief does not. Limitation 6 of
+>   `07-PLATFORM-CONSTRAINTS.md` lists embeddings and
+>   confidence-scored association as MITIGATIONS. What this brief actually
+>   says is *"Do not claim unique-object identity unless the
+>   implementation actually supports it"*, which is a condition. It is
+>   still not claimed, now for a measured reason: best frozen embeddings
+>   get 26.4% Recall@1 on small mass-produced objects and tracking IDF1
+>   collapses to ~40% from identical distractors alone.
+> - **Still genuinely blocked:** the live in-process `Module` subclass and
+>   any WebSocket surface, on the lifecycle ruling below. The cartridge
+>   lifecycle added this run is a SESSION over an out-of-process producer;
+>   it does not touch that ruling and does not resolve it.
+
+> ## CORRECTED 2026-08-26 — the producer and the wire surface now exist
+>
+> This section said "Nothing currently produces an observation" and
+> marked both the producer and any HTTP surface **BLOCKED**. Two of those
+> three claims are now false; one is still true, and the distinction is
+> the whole point.
+>
+> **The blocker gates a live in-process `Module`, not the cartridge.**
+> Every other cartridge produces *out of process* by tailing a capture
+> journal. Object Memory now does the same via
+> `scripts/object_memory_session.py`, so the lifecycle ruling below is
+> **untouched and still pending** — it was never what gated producing
+> observations.
+>
+> - **55 real observations** from 9,199 real frames (29 `laptop`,
+>   26 `cell phone`), written and read back.
+> - **An HTTP read surface exists**: `tower/routes/observations.py`,
+>   registered as a fifth router. Read-only by construction — `purge`
+>   and `prune_expired` are unreachable from the wire, AST-enforced — and
+>   retention cannot be widened over HTTP.
+> - **Zero `person` records.** The `person` ruling is *sidestepped*, not
+>   resolved: a closed whitelist is enforced at the **store**, not merely
+>   at the filter, because a review found `append()` accepting a `person`
+>   record directly.
+> - **Still genuinely blocked:** the live in-process `Module` subclass and
+>   any WebSocket surface, on the lifecycle ruling described below.
+> - **Still missing:** an iOS surface.
+>
+> Detail: `docs/contracts/OBJECT-MEMORY.md`.
+
+**PARTIALLY IMPLEMENTED.** Bounded enough to build incrementally while
+exercising detection, tracking, temporal reasoning, relevance filtering
+and persistence. It produces and serves observations today; what remains
+blocked is running *live in process*.
+
+| Part | Status |
+|---|---|
+| Observation record schema, relevance filtering, observation store (append, read, `last_seen`, retention pruning, real `purge`) | **CURRENTLY IMPLEMENTED** — `tower/object_memory/{records,relevance,store}.py`, tested |
+| A detector producing observations | **IMPLEMENTED**, out of process — `scripts/object_memory_session.py`, 55 real observations |
+| An HTTP read surface | **IMPLEMENTED** — `tower/routes/observations.py`, read-only, retention non-wideable |
+| A `Module` subclass, wiring, any **WS** surface | **BLOCKED** on the lifecycle ruling |
+| Spatial anchors against a World Builder world | **PLANNED** — the contract is written down but no anchor exists yet |
+
+**The blocker, precisely.** Task 4 requires the module's `_do_load()` to
+load a detector synchronously, which reproduces the unbounded-blocking
+lifecycle gap `DepthEstimationModule` already has (see
+`01-SYSTEM-ARCHITECTURE.md` — Reliability Policies, Known exception).
+The costed options are: (A) `asyncio.to_thread` in this module only;
+(B) the same fix made centrally, for every module's `_do_load()`;
+(C) pre-provisioned weights, accepting the gap; (D) deferring Object
+Memory until V1.1 lifecycle hardening; and (E) a separate, longer load
+timeout, which composes with A or B. The Experimental CV Lab load path
+now runs E + A (`LOAD_TIMEOUT_S = 120.0` in `tower/modules/container.py`,
+the experiment's load awaited off-thread); B, the contract change,
+remains V1.1 work. The Master Guide classifies choosing between them as
+needing user judgement, so an agent must not resolve it autonomously.
+
+That gap is real for the *live* path: `Module.process()` receives raw
+JPEG bytes and no timestamp, sequence number or session id, so even a
+working in-process detector could not populate the fields the schema
+already has. The journal-follower sidesteps it by reading those fields
+from the capture journal, where they exist.
+
+**Before the first anchor is ever written**, add `anchor_keyframe_id` and
+`position_in_anchor_frame` to the anchor schema. Without them the first
+loop closure permanently and undetectably invalidates every earlier
+anchor, because a submap re-anchor is not a global similarity and cannot
+be composed forward. See `CARTRIDGE-GROUNDWORK.md` §4.
 
 ## Goal
 

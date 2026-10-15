@@ -35,6 +35,7 @@ Before modifying code:
    - raw sensor data is local-first; no third-party transmission without an explicit documented exception.
    - truthful states only; never fake metrics or connectivity.
    - Meta-specific code stays behind the DAT boundary.
+   - these documents describe the current best design, not an unquestionable mandate — challenge unnecessary complexity, flag incorrect assumptions, and explain tradeoffs before materially deviating (`02-DEVELOPMENT-RULES.md` Rule 17).
 
 7. Before implementation, summarize:
    - what currently exists;

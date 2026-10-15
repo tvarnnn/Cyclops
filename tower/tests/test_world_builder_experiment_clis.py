@@ -2,8 +2,8 @@
 
 These cover argument handling and the pure-numeric helpers only -- they do
 not run MiDaS or decode a real video, so they stay in the default (fast,
-no-model) suite. The experiments' actual measured results live in
-guidelines/docs/reports/V0.9.3-world-builder-experiments-1-2-report.md.
+no-model) suite, and they assert nothing about the experiments' measured
+results.
 """
 import subprocess
 import sys

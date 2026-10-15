@@ -1404,9 +1404,9 @@ class ClassicalTwoViewBackend(GeometryBackend):
             # findEssentialMat(USAC_MAGSAC)/solvePnPRansac(SQPNP) are
             # not seeded -- a committed test's own docstring claims
             # 1.32% where the same test now measures 1.62% on a
-            # different OpenCV build. Point at the report, which can
-            # carry the conditions; a bare number in a comment cannot.
-            # See reports/2026-08-22-world-builder-closeout.md 5.2.
+            # different OpenCV build. A bare number in a comment cannot
+            # carry its conditions; tests/test_world_builder_drift.py
+            # pins the shape of the error instead.
             reobserved[(current_index, index_current)] = landmark
 
         if len(object_points) < MIN_PNP_CORRESPONDENCES:

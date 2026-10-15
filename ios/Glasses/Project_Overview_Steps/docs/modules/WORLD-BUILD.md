@@ -2,11 +2,107 @@
 
 ## Status
 
-Future module. This is a concept/specification seed, not authorization to implement the entire system now.
+**PARTIALLY IMPLEMENTED** as of 2026-08-22. This document began as a
+concept seed and much of it still is one; the sections below are no longer
+uniformly aspirational, so read the split carefully.
+
+| Part | Status |
+|---|---|
+| Mapping engine — world/session/keyframe lifecycle, frame evaluation, keyframe selection, relative-scale geometry, persistence, cold reload, inspection | **CURRENTLY IMPLEMENTED** (`tower/world_builder/`, V1) |
+| ChArUco camera calibration | **CURRENTLY IMPLEMENTED** (`scripts/calibrate_charuco.py`) |
+| Incremental update stream and Tower-side live following | **CURRENTLY IMPLEMENTED** (`events.jsonl` + cursor, `world_inspect.py --follow`) |
+| Registration as a production module on the live frame path | **BLOCKED** — the module contract is a registry of one with a scalar result type. A test pins non-registration deliberately (`tests/test_architecture_boundaries.py`) |
+| Geometry transport to a phone | **IMPLEMENTED** on the Tower side — manifest + per-segment content-hashed chunks over HTTP, `world_builder.geometry/2026-08-25`, contract in `docs/contracts/` |
+| PC/phone viewer | **WRITTEN, NEVER COMPILED** — the iOS decoder, client, cache and fragments renderer exist; no Swift toolchain on the Tower host has ever built them |
+| Metric scale, loop closure, relocalisation, multi-session refinement | **PLANNED** |
+| Validation against real Ray-Ban footage | **PARTLY DONE — this line was wrong, corrected 2026-08-26.** See below |
+
+> **Correction, 2026-08-26.** "Every measurement to date is synthetic" is
+> no longer true, and World Builder is now the *most* real-data-validated
+> cartridge in the program. It has been run over **9,199 real frames**
+> across real captures:
+>
+> - Tracking was diagnosed and fixed on real footage — the tracker was
+>   losing *reach*, not the image (47 of 50 declared losses still had
+>   survival above the floor against the previous frame). Across five real
+>   captures: **151 -> 114 segments, poses 211 -> 265, points
+>   27,406 -> 42,100**.
+> - Calibration is solved, not blocked: `intrinsics/360x640.json`,
+>   self-calibrated over **511 views at 0.289 px RMS**.
+> - Cross-segment registration produces its first merged geometry on the
+>   real world: 51 segments, 19 with geometry, **3 registered carrying
+>   31.1% of all points** — and it refuses more than it admits.
+>
+> **What is still genuinely blocked on hardware** is narrower: eleven
+> physical checks, P1–P11. The three that matter: whether fragments appear *during* a walk (P3),
+> whether a deliberate sideways walk raises the registrable fraction
+> (P11 — 16 of 19 segments are refused because the wearer stood still, so
+> scale is unobservable), and whether a registered pair is actually
+> correct (P9 — nothing automated can catch a wrong Sim3; pair (30,50)
+> fits at 1.62 px while being **3.2x wrong on scale**).
+>
+> Separately: **no Swift in this repo has ever been compiled.** That gates
+> the viewer regardless of hardware.
 
 ## Goal
 
 Use first-person wearable camera observations to incrementally construct a spatial representation of environments the user traverses.
+
+## Session Model — superseded product ruling (2026-08-22)
+
+**For V1, a deliberate Start → Walk → Stop mapping session IS World Build.**
+
+The V1 product experience is explicitly: start World Builder, walk
+naturally around a room, watch the world build incrementally, stop, and
+have the world persist on the Tower for later reopening and inspection.
+
+This is a deliberate product decision recorded on 2026-08-22, and it
+supersedes the final paragraph of the Passive Operation Requirement below
+— the sentence ruling that a deliberate capture action "is not World
+Build". That earlier ruling is **preserved verbatim below, not erased**,
+because it records real design reasoning that still applies to everything
+except the session boundary.
+
+What the earlier requirement still governs, unchanged and binding:
+
+- The wearer is **not** directed *during* a session. No instruction to
+  scan a specific wall, rotate slowly, walk around an object, point the
+  camera somewhere specific, or complete a predefined capture sequence.
+- Within a session the wearer walks and looks **naturally**, and the
+  system — not the user — decides which ordinary frames are worth the
+  expensive path (see Relevance, below).
+- A session that degenerates into scanner-operator behaviour has failed
+  the premise, and that failure is still a product-integrity bug.
+
+What changed is only the **boundary**: an explicit start and stop are now
+permitted, and are how V1 scopes a mapping session to one room. Explicit
+start/stop also aligns the module with `06-PRIVACY-DATA.md`'s Explicit
+Dataset-Recording Session rules, which is a privacy improvement over
+implicit always-on accumulation: capture becomes visible and bounded
+rather than incidental.
+
+Passive, undirected accumulation across sessions remains the long-term
+direction; V1 does not foreclose it.
+
+## Passive Operation Requirement
+
+*(Historical. Superseded on its session-boundary clause only — see the
+Session Model ruling above. Retained in full.)*
+
+World Build must not behave like a traditional room-scanning application. Do not instruct the wearer to scan a specific wall, rotate slowly, walk around an object, point the camera somewhere specific, or complete any predefined capture sequence. The wearer uses the glasses normally; World Build incrementally accumulates spatial information from whatever the wearer naturally looks at.
+
+Illustrative behavior:
+
+```text
+enter room                                -> rough structure begins appearing
+look around naturally                     -> additional geometry becomes available
+observe an object again from a new angle  -> existing geometry becomes more
+                                              confident/refined
+return to the room later                  -> the persistent model can continue
+                                              improving
+```
+
+This is a product-integrity requirement, not only a UX preference: a system that requires scanner-operator behavior from the wearer has failed the platform's premise that the glasses are a normal-use device, not a capture tool. Any future capability that depends on the wearer performing a deliberate scan action is not World Build — it is a different feature and must be designed and labeled as one.
 
 ## Intended Inputs
 
@@ -85,12 +181,15 @@ Machine-learning monocular depth estimation is intended to partially compensate 
 
 ## Confidence / Uncertainty
 
-Spatial observations should eventually carry confidence/uncertainty information rather than being presented as uniformly reliable. Illustrative levels:
-- **high confidence**: repeatedly observed geometry supported by multiple viewpoints;
+Spatial observations should eventually carry confidence/uncertainty information rather than being presented as uniformly reliable. Illustrative levels, extended here to include the unmeasured case explicitly rather than treating it as merely "low confidence":
+- **unknown**: never observed; no geometry should be asserted here at all;
+- **low confidence**: single-frame inference, reflective surfaces, low light, motion blur, textureless regions, or conflicting estimates;
 - **medium confidence**: ML depth supported by some geometric constraints;
-- **low confidence**: single-frame inference, reflective surfaces, low light, motion blur, textureless regions, or conflicting estimates.
+- **high confidence**: repeatedly observed geometry supported by multiple viewpoints.
 
-World Build should prefer repeated observations and multi-view consistency over a single-frame depth prediction. The exact confidence representation/schema is not decided here — this section records the requirement that one must exist, not its implementation.
+**Unknown space must remain unknown.** World Build must not use generative AI, or any other technique, to fabricate geometry for a region the camera never observed — even when that geometry is statistically likely (for example, inferring the exact shape of the back of a couch that was never seen). A region with no observation is represented as unknown/unmapped, not filled in with a plausible guess. This is both a technical requirement — an unobserved region is architecturally the same case as `07-PLATFORM-CONSTRAINTS.md` Core Principle 3 (absence of observation ≠ observation of absence), extended here to mean absence of observation is also not license to invent one — and a product-integrity requirement: World Build's value depends on the wearer being able to trust that what it shows was actually seen, not synthesized.
+
+Repeated observations from multiple independent viewpoints raise a region's confidence toward high; a single viewpoint keeps it at low confidence; a region never observed stays unknown until it is actually observed. World Build should prefer repeated observations and multi-view consistency over a single-frame depth prediction. The exact confidence representation/schema is not decided here — this section records the requirement that one must exist, not its implementation.
 
 ## Real-Time vs. Asynchronous Processing
 
@@ -137,6 +236,8 @@ Storage format is intentionally undecided until the implemented pipeline require
 
 Continuous video is highly redundant. World Build may eventually use keyframe/relevance selection so only observations that improve the map receive expensive processing or long-term storage.
 
+This is also the mechanism that reconciles the Passive Operation Requirement (above) with computational cost. The wearer is not asked to slow down, hold still, or scan deliberately — so the system, not the user, is responsible for deciding which ordinary frames are worth the expensive path (SLAM refinement, semantic segmentation, depth estimation) versus lightweight live tracking only. This is a genuine tension worth naming explicitly: "passive" and "always run the full heavy pipeline" are in conflict, and keyframe/relevance selection plus the Real-Time vs. Asynchronous split above is the intended resolution, not a fully general SLAM system running on every frame.
+
 ## Output
 
 Possible outputs:
@@ -146,6 +247,61 @@ Possible outputs:
 - minimal audio/status feedback.
 
 Any output that includes a distance/measurement must be labeled according to the relative / inferred-metric / measured-metric distinction above — never presented as measured when it is inferred.
+
+## Live Visualization (Future)
+
+World Build should eventually support a live PC and/or phone visualization: while the wearer naturally moves through an environment, the reconstructed world progressively appears in a viewer.
+
+```text
+Glasses -> iPhone -> Tower reconstruction -> world-state updates -> PC/phone viewer
+```
+
+Conceptual viewer content, once built:
+- reconstructed geometry;
+- color/texture where available;
+- mapped vs. unmapped areas (see Confidence / Uncertainty, above — an unknown region should render as unknown, never as blank-as-if-absent and never as fabricated);
+- current camera/glasses pose;
+- semantic objects, once semantic understanding is part of the pipeline;
+- confidence/quality information.
+
+Prefer incremental world-state updates/deltas over repeatedly transmitting the complete world representation, consistent with the platform's general preference for bounded, freshness-oriented data flow (`01-SYSTEM-ARCHITECTURE.md` — Reliability Policies).
+
+**Status update, 2026-08-22.** The premise of the sentence this
+paragraph used to carry — "it depends on a working reconstruction pipeline
+that does not yet exist" — is no longer true. The pipeline exists and runs
+end to end offline, and the Tower half of live viewing is built: the
+append-only event journal is an incremental update stream, `read_events`
+takes a cursor, `world_build_session.py --follow-capture` builds a world
+while frames are still arriving, and `world_inspect.py --follow` watches
+it happen from a separate process.
+
+**The conclusion still holds, for a different reason.** Do not implement
+the PC/phone viewer yet — not because there is nothing to show, but
+because there is **no transport to show it over**. `frame_result` carries
+five scalars and World Builder is not a registered module, so no world
+data can reach a phone at all.
+
+The preference for incremental deltas over whole-world transmission,
+stated above, is already how the persisted representation works — a viewer
+built later inherits it rather than needing it retrofitted.
+
+## Relationship to Object Memory / Environmental Memory (Future)
+
+`docs/modules/ENVIRONMENTAL-MEMORY.md` already reserves this relationship as an explicit future architecture evolution, not an assumed dependency ("If World Build later exposes a stable shared spatial service, environmental observations may optionally reference spatial locations."); this section records World Build's side of the same boundary.
+
+Today, Object Memory and Environmental Memory record observations independent of any spatial map (e.g., "keys detected at timestamp X"). If World Build later exposes a stable shared spatial service, an observation could instead be associated with spatial context:
+
+```text
+Object: keys
+Location: spatial coordinate / mapped surface
+Semantic location: kitchen counter
+Last observed: timestamp
+Confidence: value
+```
+
+This could eventually support queries like "where did I leave my keys?" answered from structured spatial-memory association rather than exhaustive replay/search across raw video.
+
+This is future architecture, not a current implementation requirement. It depends on World Build and Object/Environmental Memory each independently reaching a stable, bounded first version before any explicit shared-service design is proposed — do not couple them prematurely, for the same reason `docs/modules/ENVIRONMENTAL-MEMORY.md` gives for not merging Object Memory and Environmental Memory prematurely.
 
 ## Hardware Suitability
 

@@ -351,6 +351,18 @@ streaming session. **Unsafe:** anything spanning a stop.
 
 This is a requirement statement for the future frame-transport protocol (explicitly out of scope for the current camera-proof milestone), not an implemented mechanism.
 
+**2026-08-19 V0.7 finding — the single `seq` field is already insufficient.** The current wire protocol's `seq` field is, in the deployed iOS sender, the DAT/source capture-frame index (`frameCount` of incoming VideoFrames) — but the sender only forwards roughly 1-in-30 of them (a throttled capture -> transmit branch), so the Tower normally receives `seq` like 1, 30, 60, 90, ... by design. Under the current single-field protocol this is indistinguishable from network/transit loss or a sender-side drop — all three look identical as a gap in `seq`. A future frame-transport protocol revision should carry two distinct fields instead of one:
+- `source_seq`: the original DAT/capture frame index (what `seq` currently is).
+- `tx_seq`: a dense counter incremented once per frame message actually transmitted by the iPhone, independent of `source_seq`.
+
+With that split, gaps in `source_seq` would describe intentional source sampling/selection (expected, not an error), while gaps in `tx_seq` would identify frame messages the phone attempted to send but the Tower never received (genuine transit loss). Not implemented as of V0.7 — V0.7 deliberately made no wire-protocol change; see the Tower's `seq_gap_total` metric, which explicitly cannot attribute cause under the current single-field protocol, and `03-ROADMAP.md` V0.7.
+
+**2026-08-20/21 status update — Tower half done, iOS half outstanding.** The Tower now *accepts* optional `source_seq`/`tx_seq` fields and reports `tx_seq_gap_total` (commit `0346c05`), but the iOS sender does not yet send them, so `tx_seq_gap_total` still reads `null` and **genuine transit loss remains formally unmeasured on this platform**.
+
+Separately, the Tower can now estimate the two quantities it *can* derive without any protocol change: `sampling_stride_avg` (capture frames elapsed per frame received) and `source_fps_estimate` (the upstream capture rate being sampled), both computed from `source_seq` with its fallback to `seq`. These do not distinguish sampling from loss — only the `tx_seq` split can do that — but they do remove the need to infer the *sender's throttle* by hand from `seq_gap_total`. Added 2026-08-21 after the first physical-glasses remote run required exactly that arithmetic.
+
+**2026-08-21 finding — the 1-in-30 stride is the platform's observation-rate bottleneck, and it is rate-independent of the transport.** The first physical-glasses run delivered 0.8 fps over a remote Tailscale path; the 2026-08-19 LAN soak delivered 0.81 fps. A fixed decimation stride bounds delivered rate to capture-rate ÷ stride regardless of available bandwidth, so improving the link cannot improve the observation rate. Note also that the "1-in-30" mechanism itself has still never been read off the Swift source (Rule 4) — the wire arithmetic confirms the *effective* stride is ~30 but not whether it is implemented as a frame-count stride or a timer.
+
 **Classification:** MITIGATES (once implemented) — cannot fully eliminate latency, only make its effect measurable/correctable.
 
 **What it improves (once implemented):** Enables correct temporal ordering and latency-aware reasoning.
