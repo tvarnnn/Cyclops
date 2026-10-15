@@ -895,7 +895,7 @@ final class WorldPhotoFloorplanModelTests: XCTestCase {
     func testACartridgeSwitchStartsEmpty() async {
         Stub.set(delay: 0.6, for: Self.manifestA)
         var old: WorldPhotoFloorplanModel? = model()
-        weak var gone = old
+        weak let gone = old
         report(old!, stop)
         await expect { Stub.count(Self.manifestA) == 1 }
         old = nil

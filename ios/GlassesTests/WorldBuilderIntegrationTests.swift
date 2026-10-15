@@ -9,6 +9,7 @@
 //
 
 import Combine
+import os
 import WebKit
 import XCTest
 
@@ -490,7 +491,7 @@ final class TowerWorldBuilderClientTests: XCTestCase {
         // does: a client that re-subscribes gets `sub-2`, and a heartbeat
         // for `sub-1` after that is one it has left. A constant `sub-1`
         // here once hid exactly that race.
-        var subscribeCount = 0
+        let subscribeCount = OSAllocatedUnfairLock(initialState: 0)
         server.onText = { text in
             recorder?.record(text)
             guard
@@ -504,7 +505,7 @@ final class TowerWorldBuilderClientTests: XCTestCase {
             case "cartridges":
                 // Asked once per connection, so a reconnect starts the
                 // numbering again, as the Tower's per-connection channel does.
-                subscribeCount = 0
+                subscribeCount.withLock { $0 = 0 }
                 server.send(text: """
                     {"type":"cartridges",
                      "envelope_contract":"cartridge_results.envelope/2026-08-23",
@@ -514,7 +515,7 @@ final class TowerWorldBuilderClientTests: XCTestCase {
                      "not_offered":[]}
                     """)
             case "result_subscribe":
-                subscribeCount += 1
+                let subscription = subscribeCount.withLock { count in count += 1; return count }
                 // Echoed from the request, as the Tower's ack does
                 // (`routes/results_ws.py`): the pin on the ack is what says
                 // which subscribe it answers, and a mock that always said
@@ -524,7 +525,7 @@ final class TowerWorldBuilderClientTests: XCTestCase {
                 server.send(text: """
                     {"type":"result_subscribed",
                      "envelope_contract":"cartridge_results.envelope/2026-08-23",
-                     "subscription_id":"sub-\(subscribeCount)","cartridge":"world_builder",
+                     "subscription_id":"sub-\(subscription)","cartridge":"world_builder",
                      "result_type":"status","contract":"\(contract)",
                      "snapshot_only":true,"world_id":\(world),"session_id":\(session),
                      "cursor_status":"absent"}
@@ -3556,7 +3557,7 @@ final class TowerWorldBuilderLiveHistoryTests: XCTestCase {
     /// subscription numbering as the Tower does it. Every subscribe is acked,
     /// in order, which is what lets the C3 tests below open two.
     private func serve(_ server: MockTowerServer, recorder: MessageRecorder? = nil) {
-        var subscribeCount = 0
+        let subscribeCount = OSAllocatedUnfairLock(initialState: 0)
         server.onText = { text in
             recorder?.record(text)
             guard
@@ -3568,7 +3569,7 @@ final class TowerWorldBuilderLiveHistoryTests: XCTestCase {
             case "ping":
                 server.send(text: #"{"type":"pong"}"#)
             case "cartridges":
-                subscribeCount = 0
+                subscribeCount.withLock { $0 = 0 }
                 server.send(text: """
                     {"type":"cartridges",
                      "envelope_contract":"cartridge_results.envelope/2026-08-23",
@@ -3578,7 +3579,7 @@ final class TowerWorldBuilderLiveHistoryTests: XCTestCase {
                      "not_offered":[]}
                     """)
             case "result_subscribe":
-                subscribeCount += 1
+                let subscription = subscribeCount.withLock { count in count += 1; return count }
                 let worldID = json["world_id"] as? String
                 let world = worldID.map { "\"\($0)\"" } ?? "null"
                 // The session too: the Tower echoes both halves of the pin.
@@ -3586,7 +3587,7 @@ final class TowerWorldBuilderLiveHistoryTests: XCTestCase {
                 server.send(text: """
                     {"type":"result_subscribed",
                      "envelope_contract":"cartridge_results.envelope/2026-08-23",
-                     "subscription_id":"sub-\(subscribeCount)","cartridge":"world_builder",
+                     "subscription_id":"sub-\(subscription)","cartridge":"world_builder",
                      "result_type":"status","contract":"\(Self.contract)",
                      "snapshot_only":true,"world_id":\(world),"session_id":\(session),
                      "cursor_status":"absent"}

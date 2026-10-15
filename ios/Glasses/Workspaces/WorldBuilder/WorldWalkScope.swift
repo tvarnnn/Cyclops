@@ -69,7 +69,7 @@ nonisolated struct WalkScoped<Value> {
 extension WalkScoped: Equatable where Value: Equatable {}
 extension WalkScoped: Sendable where Value: Sendable {}
 
-extension WorldFinishWalk {
+nonisolated extension WorldFinishWalk {
     /// The walk a picture shows, or `nil` for a picture naming no session.
     init?(picture: WorldRenderTarget) {
         guard let sessionID = picture.sessionID else { return nil }

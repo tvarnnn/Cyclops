@@ -1506,8 +1506,8 @@ enum ObjectMemoryCopy {
         noPicturesOffered,
         unreadableImageryAnswer,
     ]
-        + CartridgeSessionAction.allCases.map(actionButton)
-        + CartridgeSessionAction.allCases.map(idempotentNoOpLine)
+        + CartridgeSessionAction.allCases.map { actionButton($0) }
+        + CartridgeSessionAction.allCases.map { idempotentNoOpLine($0) }
         // The composed lifecycle. Folded in here rather than given a test of
         // its own, so that the sentences written beside a Start button are held
         // to exactly the same claims as the sentences written beside a record.

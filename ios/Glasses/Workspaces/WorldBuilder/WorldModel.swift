@@ -34,7 +34,7 @@ import Foundation
 ///
 /// Deliberately coarse. A percentage would imply a calibrated confidence model
 /// that neither side has defined.
-enum WorldTrackingQuality: Equatable, Sendable {
+nonisolated enum WorldTrackingQuality: Equatable, Sendable {
     case good
     case limited
     case lost
@@ -64,7 +64,7 @@ enum WorldTrackingQuality: Equatable, Sendable {
 ///
 /// Note the deliberate absence of a progress percentage. "Calibrating, 62%"
 /// implies a measurable denominator, and no such quantity has been defined.
-enum WorldCalibrationState: Equatable, Sendable, CaseIterable {
+nonisolated enum WorldCalibrationState: Equatable, Sendable, CaseIterable {
     /// The Tower has not reported calibration at all. Not the same as
     /// uncalibrated — one is silence, the other is a report.
     case unknown
@@ -115,7 +115,7 @@ enum WorldCalibrationState: Equatable, Sendable, CaseIterable {
 /// The consequence is that a workspace can honestly say "the Tower reports a
 /// representation of this kind, and this build cannot draw it" — a true and
 /// useful statement — instead of either drawing nothing or drawing a guess.
-struct WorldGeometryReport: Equatable, Sendable {
+nonisolated struct WorldGeometryReport: Equatable, Sendable {
     /// The Tower's own name for what it built. Displayed verbatim, never
     /// parsed, never matched against a known set.
     var representation: String?
@@ -173,7 +173,7 @@ struct WorldGeometryReport: Equatable, Sendable {
 /// separate. `posesAnchor` is reported *beside* `poseCount`, never folded into
 /// it, which is what lets an uncalibrated walk read as "36 segment origins, no
 /// trajectory" instead of as a path.
-struct WorldTrajectoryReport: Equatable, Sendable {
+nonisolated struct WorldTrajectoryReport: Equatable, Sendable {
     /// Poses carrying a position that is **evidence**: every solved pose, plus
     /// the anchor of each segment that solved something.
     ///
@@ -326,7 +326,7 @@ struct WorldTrajectoryReport: Equatable, Sendable {
 /// owns its storage namespace); iOS stores no world data and must not imply it
 /// could. These cases describe only what the Tower reported about its own
 /// storage.
-enum WorldPersistenceState: Equatable, Sendable {
+nonisolated enum WorldPersistenceState: Equatable, Sendable {
     /// The Tower did not say. The honest default, and distinct from `.session`:
     /// silence is not a promise that the world is discarded.
     case unknown
@@ -382,7 +382,7 @@ enum WorldInspectionMode: Equatable, Sendable {
 /// keyframe count must not force the UI to invent a world name, a tracking
 /// verdict, or a scale. Absent means absent, and the views render it as such
 /// (docs/02-DEVELOPMENT-RULES.md Rule 3).
-struct WorldSnapshot: Equatable, Sendable {
+nonisolated struct WorldSnapshot: Equatable, Sendable {
     /// Human-readable name, if the Tower names worlds at all.
     var name: String?
     /// Stable identifier for the world being built, if it has one.
@@ -481,7 +481,7 @@ struct WorldSnapshot: Equatable, Sendable {
 /// view is written once against the full lifecycle instead of being rebuilt
 /// when the contract lands. They are unreachable today by construction: the
 /// only `WorldBuilderClient` that exists returns `.unsupported` and nothing else.
-enum WorldModelState: Equatable, Sendable {
+nonisolated enum WorldModelState: Equatable, Sendable {
     /// No Tower-side world builder exists. Carries the reason so the view never
     /// has to compose an explanation of its own.
     case unsupported(reason: String)

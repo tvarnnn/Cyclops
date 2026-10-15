@@ -263,7 +263,7 @@ nonisolated enum WorldPhotoFloorplanWire {
     /// by its bytes, the declared pixel size, and an alpha channel.
     @concurrent static func rasterOffMain(_ data: Data, for component: WorldPhotoFloorplanComponent) async throws -> UIImage {
         #if DEBUG
-        offMainProbe = !Thread.isMainThread
+        offMainProbe = pthread_main_np() == 0
         #endif
         return try raster(data, for: component)
     }

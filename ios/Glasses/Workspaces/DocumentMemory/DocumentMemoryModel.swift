@@ -44,7 +44,7 @@ import Foundation
 /// text itself is fetched when a person opens one, so a list of documents is
 /// not also a bulk transfer of every document's contents into the phone's
 /// memory.
-enum DocumentTextAvailability: Equatable, Sendable {
+nonisolated enum DocumentTextAvailability: Equatable, Sendable {
     /// The record has no pages. Distinct from `.notReadable`: silence is not a
     /// verdict.
     case unknown
@@ -118,7 +118,7 @@ enum DocumentTextAvailability: Equatable, Sendable {
 /// this "must be an explicit architecture evolution, not an assumed
 /// dependency". So it is optional here, nothing requires it, and no view
 /// degrades without it. Document Memory does not depend on World Builder.
-struct DocumentSourceContext: Equatable, Sendable {
+nonisolated struct DocumentSourceContext: Equatable, Sendable {
     /// The Tower's session identifier, opaque.
     var sessionID: String?
     /// The world this observation belongs to, if a world existed and the Tower
@@ -246,7 +246,8 @@ struct RememberedDocument: Equatable, Identifiable, Sendable {
     /// hold pages OCR looked at and could not read.
     var pagesReadable: Int? = nil
 
-    init(
+    // The nonisolated wire decoder builds these.
+    nonisolated init(
         id: String,
         title: String? = nil,
         summary: String? = nil,

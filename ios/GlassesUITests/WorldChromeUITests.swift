@@ -761,14 +761,14 @@ final class WorldChromeUITests: XCTestCase {
         return effect()
     }
 
-    /// Slow drags in the right-hand margin, up then down, until `element`
-    /// can be hit.
-    @discardableResult
     /// iPhone-geometry tests skip on an iPad (the iPhone 17 Pro Simulator runs them).
     private func skipOnAnIPad(_ why: String) throws {
         if UIDevice.current.userInterfaceIdiom == .pad { throw XCTSkip("iPhone geometry: \(why)") }
     }
 
+    /// Slow drags in the right-hand margin, up then down, until `element`
+    /// can be hit.
+    @discardableResult
     private func reveal(_ element: XCUIElement, attempts: Int = 12) -> Bool {
         if element.waitForExistence(timeout: 5), element.isHittable { return true }
         for direction in [(0.85, 0.45), (0.45, 0.85)] {

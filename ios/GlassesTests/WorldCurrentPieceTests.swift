@@ -271,6 +271,7 @@ final class WorldCurrentPieceTests: XCTestCase {
     /// inputs, then the gate observes the change (SwiftUI's `onChange` runs
     /// after the render that saw it) and the panel draws again. Every draw is
     /// a sample.
+    @MainActor
     private struct Screen {
         var gate = WorldCurrentPieceGate()
         var isCapturing = false

@@ -19,7 +19,7 @@ import Foundation
 /// this build asserts anyway — `imagery_served: false`, `capture_id_validated:
 /// false`, `joinable: true`. Those default to the value the contract fixes, so
 /// a decode gap cannot turn "no image is served" into "an image might be".
-enum DocumentMemoryDecoder {
+nonisolated enum DocumentMemoryDecoder {
 
     // MARK: The library
 
