@@ -90,8 +90,7 @@ def test_the_worker_always_builds_the_homography_raster(monkeypatch, tmp_path, c
 
     monkeypatch.setattr(pfw, "homography_component", spy)
     state = pfw.PhotoFloorplanState()
-    worker = pfw.PhotoFloorplanWorker(tmp_path, latest=lambda w, s: receipt, state=state,
-                                      diagnostics_files=False)
+    worker = pfw.PhotoFloorplanWorker(tmp_path, latest=lambda w, s: receipt, state=state)
     try:
         with caplog.at_level("INFO", logger="tower.world_builder.photo_floorplan_worker"):
             worker.offer(WORLD, SESSION, receipt, eligible, tree, stat)

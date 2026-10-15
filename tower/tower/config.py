@@ -1073,24 +1073,6 @@ def world_photo_floorplan_setting() -> bool:
             and os.environ.get("TOWER_WORLD_GUIDANCE_COVERAGE") == "on")
 
 
-# PHOTO FLOOR PLAN NEW-SCENE DIAGNOSTICS FILES (`world_builder/photo_floorplan_diagnostics.py`;
-# manager 349 lane A). Diagnostics only: no published byte, wire field or decision depends on
-# it. The per-landing diagnostics LOG line is written whenever the photo floor plan runs;
-# exactly `on` here ALSO writes `photo_floorplan_diagnostics.jsonl` (one bounded record per
-# landing) and `photo_floorplan_diagnostics.json` (the per-walk summary and its new-scene
-# flags, rewritten after every landing, so after the final solve's landing it is the walk's)
-# into an EXISTING `worlds/<world>/sessions/<session>/` directory, and only when a READ-ONLY
-# check of the world's writer lock says no other writer holds the world
-# (`photo_floorplan_diagnostics.session_write_gate`). Any other value: no file, and no
-# landing records kept in memory (the log line is all).
-WORLD_PHOTO_FLOORPLAN_DIAGNOSTICS_ENV = "TOWER_WORLD_PHOTO_FLOORPLAN_DIAGNOSTICS"
-
-
-def world_photo_floorplan_diagnostics_setting() -> bool:
-    """True only when TOWER_WORLD_PHOTO_FLOORPLAN_DIAGNOSTICS is exactly `on`."""
-    return os.environ.get(WORLD_PHOTO_FLOORPLAN_DIAGNOSTICS_ENV) == "on"
-
-
 # FOW GUIDANCE IMAGERY, UNREDACTED SESSIONS (`world_builder/guidance_imagery.py` and
 # `results/world_builder_guidance_imagery.py`; owner decision for the demo deploy: privacy is
 # deferred and redaction bypassed, so walks record `session.json` `redaction: "none"`).
