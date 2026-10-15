@@ -1022,9 +1022,9 @@ def test_a_reopened_world_carries_the_replay_data_it_has(monkeypatch, built):
     Tower where something can actually read it.
     """
     root, world_id, session_id = built
-    from tower.world_builder.inspect import open_world
+    from tower.world_builder.inspect import WorldView
 
-    trajectory = open_world(root, world_id).trajectory(session_id)
+    trajectory = WorldView(WorldStore(root), world_id).trajectory(session_id)
     assert trajectory, "precondition: the session has keyframes"
     for row in trajectory:
         assert row["image_relpath"], "a path point with no observed frame"
