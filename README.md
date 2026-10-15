@@ -57,6 +57,101 @@ walk of about three and a half minutes (walk 10, the dress rehearsal) took
 **13.1 minutes** from Stop to the photographic world on a freshly started Tower.
 A previously built world (walk 9.3) is kept as the backup.
 
+## How a walk becomes a 3D room, step by step
+
+The Tower never draws a picture of the room. It builds two things: a 3D
+**surface** (a triangle mesh) and a set of **prepared photos**. The phone then
+draws the room itself, live, from wherever you move the view. Each step below
+links to its technical detail in [World Builder in depth](#world-builder-in-depth).
+
+**While you walk**
+
+1. **The glasses see.** The glasses' one camera streams to the iPhone app
+   through Meta's toolkit. The app sends the frames on to the Tower as JPEG
+   pictures, about 12 a second, over one WebSocket.
+2. **The Tower keeps the useful pictures.** Every frame is tracked cheaply: how
+   sharp it is, and how far things moved since the last one. Only a frame that
+   is sharp and shows enough new view becomes a **keyframe**. Keyframes are the
+   pictures everything else is built from; walk 9.3 kept 1,212 of them.
+3. **Faces are blacked out first.** Before a keyframe is written to disk, a face
+   detector (YuNet) fills every face it finds with solid black, so everything
+   built from keyframes is built from redacted pictures
+   ([Privacy and safety](#privacy-and-safety)).
+4. **It works out where the camera was.** For every keyframe the Tower solves
+   where the camera stood and which way it pointed, by finding the same
+   features in many pictures and triangulating them (**structure-from-motion**).
+   A quick update runs every 4 keyframes; every 50 or more new keyframes, a full
+   solve of the whole walk runs in the background. The matched features also
+   become a sparse cloud of 3D points, the skeleton the later steps fit to.
+5. **A preview builds as you go.** Each time a full solve finishes, a lighter
+   version of steps 7 to 11 rebuilds a preview room, and the phone's capture
+   dial fills in.
+
+**After you press Stop** (13 to 20 minutes, measured)
+
+6. **One final solve over every keyframe** (about 5 minutes on a 4-minute
+   walk). Then the **scale guard** checks the result: a piece of the walk that
+   came out at the wrong size (a mirror can cause this) is kept as a separate
+   piece instead of being drawn into the room at the wrong size. This is a
+   Tower switch (`TOWER_WORLD_FINAL_SCALE_GUARD`), on in the demo.
+7. **Depth for every keyframe.** A neural network (**MoGe-2**) predicts how far
+   away every pixel is, from the single picture. Each frame's depth is then
+   stretched and shifted to agree with the 3D points from step 4, so all the
+   frames share one set of units.
+8. **Remove the wearer** (about 5 minutes on a 4-minute walk, the longest single
+   stage). Detection models (Grounding DINO, SAM 2.1 and OneFormer) find your
+   own hands, arms and the phone in your hand in every keyframe. Those pixels
+   count for nothing from here on, in the surface and in the photos.
+9. **Fuse all the depths into one surface.** First a small, smooth correction
+   per frame makes the frames agree about where each wall is (uncorrected, they
+   disagree enough to crumple walls). Then space is divided into small cubes
+   (**voxels**), each about 1/200 of the typical camera-to-surface distance,
+   and every keyframe's depth votes on where surfaces are. It also votes for the
+   empty space in front of them, which erases floating junk and things that
+   moved. This is a **TSDF** (truncated signed distance field), built on the GPU.
+10. **Turn it into a mesh.** **Marching cubes** turns the voxels into triangles.
+    Small loose bits are removed, the mesh is smoothed without rounding its
+    edges, and large well-measured flat areas such as walls and the floor are
+    snapped flat. Then it is simplified: the phone gets a version that fits
+    6 MiB (about 238,000 triangles). Holes stay holes, so a place no camera saw
+    is never invented.
+11. **Prepare the photos.** The keyframes are straightened (lens distortion
+    removed). Every pixel that must not be painted (a blacked-out face, a hand,
+    the phone) is made transparent, and each keyframe gets an exposure
+    correction so the photos match. The Tower works out which part of the mesh
+    each keyframe actually saw. Then it picks up to 128 keyframes that together
+    cover the surface, most of it from at least two angles, and compresses them
+    in a format the phone's GPU reads directly.
+12. **Saved.** The world is stored on the Tower
+    ([Saved worlds](#running-it)) and appears in the phone's Saved worlds list.
+
+**When you open it on the phone**
+
+13. **The phone draws the room live.** The app downloads the mesh and the chosen
+    photos over HTTP, and a WebGL page running on the phone's GPU draws them.
+    For each point on the screen, the page:
+    - finds the keyframes that saw that point. It checks each keyframe's own
+      depth, so a wall hidden behind a chair is not painted with the chair;
+    - blends the best four, favouring the cameras whose viewing angle is closest
+      to yours (**unstructured lumigraph rendering**);
+    - compares their colours, so a colour that disagrees with most of them
+      counts for less (an object that moved during the walk is played down).
+
+    The mesh is never lit or shaded. Wherever a photo covers it, every colour on
+    the screen comes from a real photo projected back onto it; that is what
+    makes the room look photographic. A place no kept photo saw is drawn as a
+    flat grey haze, not filled in with invented detail.
+14. **Which way is up.** The glasses have no motion sensor, so the Tower works
+    out "up" from the cameras. A head barely tilts sideways, so each camera's
+    left-right axis is close to level, and up is the direction most nearly at
+    right angles to all of them, then nudged at most 4 degrees to fit level
+    surfaces such as the floor. This is the `TOWER_WORLD_UP_ESTIMATE` switch, on
+    in the demo.
+
+If the photos are not ready yet (or never built), the phone shows the next best
+thing the world has: the bare surface, then a dense point cloud, then the
+sparse points.
+
 ## Architecture
 
 ```mermaid
