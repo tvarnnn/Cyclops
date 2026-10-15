@@ -1391,7 +1391,7 @@ def gate_and_publish(store, world_id: str, session_id: str, workspace, solution,
                      should_stop=None, consensus: ConsensusPlan | None = None,
                      stopped: bool = False, why_deferred: str | None = None,
                      keep_on_stop: bool = False, draw_0: GateResult | None = None,
-                     gate_results: list | None = None, scale_guard=None) -> tuple[object, dict | None]:
+                     gate_results: list | None = None) -> tuple[object, dict | None]:
     """The final solve's publish step, in one call (`global_solve.solve` makes it in place of
     `write_solution`): the gate when `gate_setting_for(final, gate)`, then `write(workspace, solution)`,
     then the record and the depth hand-off. Returns (the published solution, its gate record or None).
@@ -1414,12 +1414,7 @@ def gate_and_publish(store, world_id: str, session_id: str, workspace, solution,
     `draw_0` and `gate_results` (review V11, LOW-1; the solve's two passes, `_publish_draw_0_first`):
     `draw_0` is `gate_by_consensus`'s -- draw 0's gate result from the earlier pass, so draw 0 is gated once
     -- and ignored without a consensus plan. `gate_results`, a list the caller owns, is given the gate
-    result (its `draw_0` is what the second pass hands back). Neither changes what is published.
-
-    `scale_guard` (ADAPTIVE SELECT, `solve_select.py`; ungated final solves only): the final scale guard's
-    outcome, already computed by the selection for the draw to publish -- exactly what `_final_scale_guard`
-    would return for it -- so the candidate is not guarded twice. None, the default, is today's: the guard
-    runs here."""
+    result (its `draw_0` is what the second pass hands back). Neither changes what is published."""
     result = None
     if gate_setting_for(final, gate):
         if consensus is not None and int(consensus.draws) >= 2:
@@ -1443,9 +1438,8 @@ def gate_and_publish(store, world_id: str, session_id: str, workspace, solution,
         if hasattr(solution, "gate"):
             solution.gate = result.record
         solution.timing = dict(getattr(solution, "timing", None) or {}, gate_s=result.record.get("seconds"))
-    guard = (scale_guard if scale_guard is not None else
-             _final_scale_guard(store, world_id, session_id, solution, result, final=final,
-                                database_path=database_path, keyframes=keyframes))
+    guard = _final_scale_guard(store, world_id, session_id, solution, result, final=final,
+                               database_path=database_path, keyframes=keyframes)
     if guard is not None:
         # The guard's module is imported only here, with the switch on or shadow (review XR F1): off, the
         # publish step imports, reads and writes nothing it did not before.

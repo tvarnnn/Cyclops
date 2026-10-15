@@ -1,5 +1,4 @@
 import logging
-import math
 import os
 from dataclasses import dataclass
 from pathlib import Path
@@ -1136,87 +1135,6 @@ def world_final_scale_guard_setting() -> str:
             WORLD_FINAL_SCALE_GUARD_ENV, value,
         )
     return WORLD_FINAL_SCALE_GUARD_OFF
-
-
-# ADAPTIVE SELECT (`world_builder/solve_select.py`; brief CX-SOLVE-SELECT, evidence SEL-REPORT
-# 2026-10-12): best-of-N final solve, chosen by the final scale guard. Read by the final solve
-# itself, and only for an UNGATED, single-draw final solve with the guard `on`. Two values:
-#   off         -- unset, blank, `0`, `false`, `no`, `off`, and anything unrecognised (logged).
-#                  Today's final solve, byte for byte: nothing new is read, written or recorded.
-#   adaptive:N  -- N in 1..6, exactly. Draw 1 is today's final solve and guard. When the guard
-#                  isolates fewer keyframes than the trigger (below) nothing else happens (byte
-#                  for byte as off). At or above it, N further mapper draws run on
-#                  copies of the already-matched database, at most `WORLD_SOLVE_SELECT_PARALLEL` at
-#                  a time, each guarded; the best by the pre-fixed score is published, ties to
-#                  draw 1, through the existing publish step.
-# The extra draws have a hard wall budget, `TOWER_WORLD_SOLVE_SELECT_BUDGET_S` (default 240 s; a
-# positive number of seconds up to 3600, anything else is the default, logged): past it, the draws
-# still running are killed and the best finished draw so far is published.
-WORLD_SOLVE_SELECT_ENV = "TOWER_WORLD_SOLVE_SELECT"
-WORLD_SOLVE_SELECT_BUDGET_ENV = "TOWER_WORLD_SOLVE_SELECT_BUDGET_S"
-WORLD_SOLVE_SELECT_OFF = "off"
-WORLD_SOLVE_SELECT_ADAPTIVE = "adaptive"
-WORLD_SOLVE_SELECT_MAX_DRAWS = 6
-WORLD_SOLVE_SELECT_BUDGET_DEFAULT_S = 240.0
-WORLD_SOLVE_SELECT_BUDGET_MAX_S = 3600.0
-# The trigger is a FRACTION of the room the guard judged (`solve_select.trigger_threshold`):
-# draw 1 triggers when it isolates >= max(TRIGGER_MIN_KF, ceil(TRIGGER_FRAC x the room's supported
-# keyframes)). As a fraction GOOD draws isolated 4.6-10.6% (walk 7 83/972, walk 8 43-99/937) and
-# WELDED draws 28-44% (walk 8 >= 265/937, walk 7 429/972); an absolute count does not survive a
-# denser keyframe policy (the turn bridge: ~1.4-1.5x keyframes, a good draw's bathroom ~120-145).
-# The floor keeps a tiny walk from triggering on noise.
-WORLD_SOLVE_SELECT_TRIGGER_FRAC = 0.18
-WORLD_SOLVE_SELECT_TRIGGER_MIN_KF = 60
-# The absolute rule (SEL-REPORT: GOOD draws isolated 43-99 keyframes, WELDED draws >= 265), used only
-# when the guard's assessment records no room size to take the fraction of.
-WORLD_SOLVE_SELECT_TRIGGER_KF = 150
-# Extra draws mapped at once, each on every core (SEL-REPORT: 3 in parallel cost ~1.4-1.5x one).
-WORLD_SOLVE_SELECT_PARALLEL = 3
-
-
-def world_solve_select_setting() -> tuple[str, int]:
-    """`TOWER_WORLD_SOLVE_SELECT`: `("off", 0)` (the default) or `("adaptive", N)`, N extra draws.
-
-    Exactly `adaptive:<N>` with N one of 1..6 (case and surrounding blanks aside). Unset, blank
-    or a spelling of false is off, silently; anything else -- `adaptive:0`, `adaptive:7`,
-    `adaptive:01`, `on`, garbage -- is off and logged: a typo never multiplies a finish."""
-    value = os.environ.get(WORLD_SOLVE_SELECT_ENV)
-    if value is None or not value.strip():
-        return WORLD_SOLVE_SELECT_OFF, 0
-    word = value.strip().lower()
-    if word in ("0", "false", "no", "off"):
-        return WORLD_SOLVE_SELECT_OFF, 0
-    prefix = WORLD_SOLVE_SELECT_ADAPTIVE + ":"
-    allowed = tuple(str(n) for n in range(1, WORLD_SOLVE_SELECT_MAX_DRAWS + 1))
-    if word.startswith(prefix) and word[len(prefix):] in allowed:
-        return WORLD_SOLVE_SELECT_ADAPTIVE, int(word[len(prefix):])
-    logger.warning(
-        "[Tower][Config] %s=%r is not off or adaptive:N (N 1..%d); treating it as off",
-        WORLD_SOLVE_SELECT_ENV, value, WORLD_SOLVE_SELECT_MAX_DRAWS,
-    )
-    return WORLD_SOLVE_SELECT_OFF, 0
-
-
-def world_solve_select_budget_setting() -> float:
-    """`TOWER_WORLD_SOLVE_SELECT_BUDGET_S`: the extra draws' wall budget in seconds. 240.
-
-    A finite number in (0, 3600]. Unset or blank is the default, silently; anything else is the
-    default and logged."""
-    value = os.environ.get(WORLD_SOLVE_SELECT_BUDGET_ENV)
-    if value is None or not value.strip():
-        return WORLD_SOLVE_SELECT_BUDGET_DEFAULT_S
-    try:
-        seconds = float(value.strip())
-    except ValueError:
-        seconds = math.nan
-    if math.isfinite(seconds) and 0 < seconds <= WORLD_SOLVE_SELECT_BUDGET_MAX_S:
-        return seconds
-    logger.warning(
-        "[Tower][Config] %s=%r is not a number of seconds in (0, %g]; treating it as %g",
-        WORLD_SOLVE_SELECT_BUDGET_ENV, value, WORLD_SOLVE_SELECT_BUDGET_MAX_S,
-        WORLD_SOLVE_SELECT_BUDGET_DEFAULT_S,
-    )
-    return WORLD_SOLVE_SELECT_BUDGET_DEFAULT_S
 
 
 # The AREA builds (`world_builder/area_build.py`, WORLD-BUILDER-COMPONENTS.md
