@@ -765,7 +765,8 @@ def build_world_render(store: WorldStore, world_id: str, session_id: str | None,
     5. From the starting rung down, each rung is tried and the first page
        that composes is returned. A rung that is absent or cannot be built
        is stepped past; a surface or dense artifact built from a keyframe
-       set the session no longer reads is treated as absent until rebuilt.
+       set the session no longer reads is stepped past too until rebuilt,
+       except that PINNING that stale rung raises `WorldRenderUnavailable`.
        A PINNED `representation` whose viewer reports it cannot be served
        raises `WorldRenderUnavailable` instead of answering another rung,
        because a caller that names the rung is asking for that page. The
