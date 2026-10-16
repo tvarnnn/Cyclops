@@ -42,10 +42,9 @@ MIN_INLIERS = 15
 
 # The per-landmark reprojection bar. This is the same 3.0 px budget
 # solvePnPRansac already uses to call a POSE an inlier
-# (classical.PNP_REPROJECTION_ERROR_PX) -- applied to the landmark that
-# comes out, which nothing did before.
+# (classical.PNP_REPROJECTION_ERROR_PX), applied to the landmark that
+# comes out.
 MAX_LANDMARK_REPROJECTION_PX = 3.0
-
 
 ORB_FEATURES = 1500
 LOWE_RATIO = 0.75
@@ -112,11 +111,10 @@ def match_indices(
 def homography_ratio(points_a: np.ndarray, points_b: np.ndarray) -> float | None:
     """ORB-SLAM's r_H = H_inliers / (H_inliers + F_inliers).
 
-    Recorded for continuity with V0.9.3, which measured it, and NOT used
-    as a gate. Measured on synthetic indoor scenes it saturates at
-    0.471-0.499 across the full range from total degeneracy to healthy
-    parallax, so the conventional 0.45 threshold classifies every pair as
-    rotation-dominant and separates nothing.
+    Recorded, and NOT used as a gate. Measured on synthetic indoor scenes
+    it saturates at 0.471-0.499 across the full range from total
+    degeneracy to healthy parallax, so the conventional 0.45 threshold
+    classifies every pair as rotation-dominant and separates nothing.
 
     That is not a defect in r_H; it is r_H answering its actual question.
     A homography suffices whenever the scene is EITHER purely rotating OR
@@ -127,29 +125,23 @@ def homography_ratio(points_a: np.ndarray, points_b: np.ndarray) -> float | None
     if len(points_a) < 8:
         return None
 
-    # THE MODEL IS CHECKED BEFORE THE MASK, AND THAT IS THE WHOLE POINT.
+    # THE MODEL IS CHECKED BEFORE THE MASK.
     #
     # When RANSAC cannot fit at all it returns model=None and, on OpenCV
     # 5, leaves the mask buffer UNWRITTEN rather than zeroing it. Reading
-    # it then yields whatever was in that memory: measured here on a real
-    # pair (capture 22e9d428, keyframes 00000345 x 00001824), 242 Lowe
-    # matches landing on 3 distinct locations in a keyframe holding only
-    # 5 ORB features, so neither F (needs 8 in general position) nor H
-    # (needs 4) can fit. The mask came back uint8 with 46 distinct values
-    # summing to 9552 -- on 242 elements, where a binary mask cannot
-    # exceed 242.
+    # it then yields whatever was in that memory: measured on a real pair
+    # (capture 22e9d428, keyframes 00000345 x 00001824), 242 Lowe matches
+    # landing on 3 distinct locations in a keyframe holding only 5 ORB
+    # features, so neither F (needs 8 in general position) nor H (needs 4)
+    # can fit. The mask came back uint8 with 46 distinct values summing to
+    # 9552 -- on 242 elements, where a binary mask cannot exceed 242.
     #
     # It is NON-DETERMINISTIC and self-heals within a warm process: the
     # buffer is dirty on first use and zeroed after, so 50 identical
     # calls in one process show it once. Measured one call per FRESH
     # process: 30/40 corrupt in one run, 37/40 and 34/40 in others, with
-    # sums to 32,880.
-    #
-    # `mask.sum()` on garbage is a plausible-looking number, so this
-    # never raised. It is currently latent -- r_h is recorded and nothing
-    # reads it -- and it is fixed here because it is free while in this
-    # file, and because a non-deterministic wrong number is miserable to
-    # debug once something does depend on it.
+    # sums to 32,880. `mask.sum()` on garbage is a plausible-looking
+    # number, so nothing raises.
     h_model, h_mask = cv2.findHomography(points_a, points_b, cv2.RANSAC, 3.0)
     f_model, f_mask = cv2.findFundamentalMat(
         points_a, points_b, cv2.FM_RANSAC, 3.0, 0.99
@@ -217,10 +209,9 @@ def motion_direction(rotation: np.ndarray, translation: np.ndarray) -> np.ndarra
     direction the camera travelled. The motion, in camera 1's frame, is
     -R.T @ t.
 
-    Isolated in one function because getting it wrong is silent: an early
-    probe reported a 179 deg translation error that was entirely this
-    conversion, while the underlying geometry was already correct to
-    0.075 deg.
+    Isolated in one function because getting it wrong is silent: a
+    179 deg translation error can be entirely this conversion while the
+    underlying geometry is correct to 0.075 deg.
     """
     direction = -rotation.T @ np.asarray(translation, dtype=np.float64).reshape(3)
     norm = np.linalg.norm(direction)
@@ -250,9 +241,9 @@ def min_parallax_deg(camera_matrix, pixel_noise_px: float = RANSAC_THRESHOLD_PX)
     imprecise but real geometry. Measured on the real corpus, gating
     landmarks at 0.5 deg discards 37-44% of all points while a gate at
     this bound discards 8-9%, and both recover essentially the same
-    fragment legibility. This project has already ruled on that trade
-    once: loss-grace-3 was rejected for destroying a third of the
-    reconstruction (keyframes.py:117-136). Same trade, same verdict.
+    fragment legibility. It is the same trade as a loss grace of 3 frames,
+    which destroys a third of the reconstruction
+    (`keyframes.KeyframePolicy.loss_grace_frames`).
 
     Scales with focal length, so it stays correct if the delivered
     resolution ever changes -- unlike a hardcoded pixel or degree bar.
@@ -315,8 +306,8 @@ def landmark_gate(
     # Shape is validated, not coerced. A (3, N) array reshapes to (N, 3)
     # perfectly cleanly and yields a mask of the CORRECT LENGTH, so a
     # transposed argument would sail through, reject every landmark, and
-    # leave counts that look self-consistent. _triangulate_new builds its
-    # observation arrays transposed (classical.py:706), so this is one
+    # leave counts that look self-consistent. `_triangulate_new` builds its
+    # observation arrays transposed (backends/classical.py), so this is one
     # careless argument away, and it fails toward silent deletion.
     xyz = np.asarray(xyz, dtype=np.float64)
     if xyz.ndim != 2 or xyz.shape[1] != 3:
@@ -345,8 +336,7 @@ def landmark_gate(
     angles = np.degrees(np.arccos(np.clip(cosines, -1.0, 1.0)))
     # A zero baseline, or a camera centre coincident with the landmark,
     # makes the cosine non-finite. Treat that as zero parallax rather than
-    # letting a NaN compare False by accident -- the outcome is the same
-    # but the reason is now stated.
+    # letting a NaN compare False by accident.
     angles = np.where(np.isfinite(angles), angles, 0.0)
     parallax_ok = angles >= min_angle_deg
 
@@ -411,11 +401,11 @@ def triangulate_points(
 
     # The gate JUDGES; it does not filter here.
     #
-    # An earlier revision dropped failing landmarks at this point. Measured
-    # over the pinned eight, that cost 26 solved poses (346 -> 320) across
-    # four captures: chain extension needs >= MIN_PNP_CORRESPONDENCES 3-D
-    # to 2-D correspondences against EXISTING landmarks, so removing them
-    # from the map starves PnP and breaks chains early.
+    # Dropping failing landmarks here, measured over the pinned eight,
+    # costs 26 solved poses (346 -> 320) across four captures: chain
+    # extension needs >= MIN_PNP_CORRESPONDENCES 3-D to 2-D
+    # correspondences against EXISTING landmarks, so removing them from
+    # the map starves PnP and breaks chains early.
     #
     # A landmark whose depth is unconstrained is still a perfectly good
     # correspondence anchor -- its bearing is fine, only its distance is
