@@ -12,9 +12,9 @@ Two things are measured, and the second is the one that matters:
   1. The cheap path -- detection per frame, which runs on every frame.
   2. Read quality against KNOWN text, swept over frame size and tilt.
 
-The sweep exists because the answer was surprising: tilt barely matters
-once the page is warped, and RESOLUTION dominates. The glasses deliver
-640x360 today, and that is not enough to read a page.
+The sweep shows that tilt barely matters once the page is warped, and
+RESOLUTION dominates. The glasses deliver 640x360, and that is not enough
+to read a page.
 
     .venv\Scripts\python.exe scripts/document_memory_benchmark.py
     .venv\Scripts\python.exe scripts/document_memory_benchmark.py --format json
@@ -37,7 +37,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from tests import document_fixtures as fx  # noqa: E402
 from tower.document_memory.detect import detect_page, warp_page  # noqa: E402
 
-# The resolution the glasses actually deliver today, first.
+# The delivered resolution first.
 FRAME_SIZES = [(640, 360), (640, 480), (896, 504), (1280, 720)]
 TILTS = [0.0, 0.5, 1.0]
 DOCUMENTS = {
