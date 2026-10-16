@@ -1,6 +1,6 @@
 """What a live cartridge costs a Tower that is also serving frames.
 
-Two cartridges now attach a worker thread to the frame path, and the
+Two cartridges attach a worker thread to the frame path, and the
 question a deployment actually has is not "how fast is the detector" --
 `scripts/scene_benchmark.py` answers that -- but **"can this keep up with
 the glasses, and does it grow?"** Those are different questions and this
@@ -36,7 +36,7 @@ Accuracy. Nothing here compares a count or a transcript against ground
 truth; `scripts/scene_benchmark.py` and
 `scripts/document_memory_benchmark.py` own that, and the detector's
 recall against an oracle is recorded in `tower/results/scene_understanding.py`
-and `docs/contracts/CARTRIDGE-RESULTS.md` section 14.4.
+and `tower/docs/contracts/CARTRIDGE-RESULTS.md` section 14.4.
 
 NOTHING IS WRITTEN unless `--document-root` is given, and Scene
 Understanding cannot write at all.
