@@ -274,6 +274,20 @@ class ObjectMemoryEngine:
         source_seq: int | None = None,
         relpath: str | None = None,
     ) -> list[ObjectObservation]:
+        """Process one frame and return the observations written for it.
+
+        Decodes the JPEG (an undecodable frame is counted and returns nothing),
+        then, in order: collects any verification verdicts that arrived since the
+        last frame; closes sightings that have gone stale, by the frame's own
+        clock, and settles each; runs the detector; and for each detection asks
+        the relevance policy whether to record it. A kept detection becomes a
+        `Look` (box as a fraction of the frame, with a crop taken from this
+        frame) and is folded into the sighting tracker. `_consider` then writes
+        the sighting once it is mature or verified, asks for a verification, or
+        refreshes one already written. `received_at` is the capture journal's
+        receipt time; without it the processing clock is used. Returns the
+        `ObjectObservation` records written on this call.
+        """
         frame = self._decode(raw_bytes)
         if frame is None:
             self.frames_undecodable += 1
