@@ -223,7 +223,8 @@ final class TowerSceneUnderstandingClient: SceneUnderstandingClient {
 
     /// Idempotent by construction: every path into it is guarded by the same
     /// two flags, so a status change and a republished declaration racing each
-    /// other cannot open two subscriptions.
+    /// other cannot open two subscriptions. Leaving the screen does not clear
+    /// the in-flight flag either; see `workspaceVisibilityChanged`.
     private func subscribeIfPossible() {
         guard workspaceVisible else { return }
         guard tower.status == .online, subscription.id == nil, !subscription.isSubscribing else { return }
@@ -281,6 +282,22 @@ final class TowerSceneUnderstandingClient: SceneUnderstandingClient {
 
     // MARK: Visibility
 
+    /// Opens the live subscription when the Scene screen appears and closes it
+    /// when the screen goes, which is what starts and stops the Tower's people
+    /// detector.
+    ///
+    /// How: a change of visibility only (a repeat is ignored). Appearing
+    /// subscribes, through every gate in `subscribeIfPossible`. Leaving sends
+    /// `result_unsubscribe` for the open subscription, if there is one, and
+    /// discards the reading.
+    ///
+    /// Why leaving keeps an unanswered subscribe marked in flight
+    /// (`subscription.isSubscribing` is left as it is): that subscribe will
+    /// still be answered. If the screen is still gone when its ack lands,
+    /// `adoptOrClose` closes it; if the screen came back, it is adopted. A
+    /// return inside that window therefore sends no second subscribe, and so
+    /// can never leave two subscriptions open for one screen, one of them
+    /// orphaned for the life of the socket.
     func workspaceVisibilityChanged(isVisible: Bool) {
         guard isVisible != workspaceVisible else { return }
         workspaceVisible = isVisible
@@ -288,19 +305,17 @@ final class TowerSceneUnderstandingClient: SceneUnderstandingClient {
             subscribeIfPossible()
             return
         }
-        // Leaving the screen ends the subscription, which — with no other
-        // watcher — ends the Tower's session and releases its detector. The
-        // unsubscribe is best-effort and its `result_unsubscribed` is ignored
-        // by construction: `subscription.id` is cleared here, so the ack for
-        // the old id matches nothing. The Tower treats a closed socket as
-        // sufficient cleanup anyway; this spares it a session nobody is
-        // reading. The reading is discarded for the same reason a stop
-        // discards it: nothing is refreshing it any more.
+        // With no other watcher, the unsubscribe ends the Tower's session and
+        // releases its detector. It is best-effort, and its
+        // `result_unsubscribed` matches nothing, because `subscription.id` is
+        // cleared here. The Tower treats a closed socket as sufficient cleanup
+        // anyway; this spares it a session nobody is reading. The reading is
+        // discarded for the same reason a stop discards it: nothing is
+        // refreshing it any more.
         if let id = subscription.id {
             tower.unsubscribeFromResults(subscriptionID: id)
         }
         subscription.id = nil
-        subscription.isSubscribing = false
         heldSessionID = nil
         state = .idle(nil)
     }
@@ -316,39 +331,7 @@ final class TowerSceneUnderstandingClient: SceneUnderstandingClient {
 
         case .subscribed(let ack):
             guard ack.cartridge == SceneUnderstandingContract.towerCartridge else { return }
-            // An ack that arrives after the screen has gone must be closed,
-            // not adopted.
-            //
-            // `workspaceVisibilityChanged(false)` can only send an unsubscribe
-            // for an id it has, and between the subscribe and its ack there is
-            // no id yet — so leaving in that window sends nothing and clears
-            // flags that were already clear. Adopting the ack here then opened
-            // a subscription belonging to a screen that no longer exists.
-            // Nothing closed it until the wearer next opened this screen and
-            // left it again: the visibility call is guarded on a change, so
-            // leaving twice in a row does nothing, and `subscribeIfPossible`
-            // is the only other path. A wearer who did not come back left the
-            // watcher running for the life of the socket.
-            //
-            // That is the whole point of the cartridge undone by a race: the
-            // Tower runs its detector while somebody streams AND somebody
-            // watches, so a watcher nobody has retracted keeps a people
-            // detector running for the rest of the walk.
-            //
-            // **Not closed by this guard**, and recorded rather than fixed
-            // here: appear, leave, and return *before* the first ack, and two
-            // subscribes are outstanding. Both acks now arrive while visible,
-            // both are adopted, and the second overwrites `subscription.id` —
-            // orphaning the first. The durable answer is a generation token on
-            // the outstanding subscribe rather than the `isSubscribing`
-            // boolean, which is a wider change than this lane should make.
-            guard workspaceVisible else {
-                tower.unsubscribeFromResults(subscriptionID: ack.subscriptionID)
-                subscription.isSubscribing = false
-                return
-            }
-            subscription.id = ack.subscriptionID
-            subscription.isSubscribing = false
+            adoptOrClose(ack)
 
         case .unsubscribed(let id):
             guard id == subscription.id else { return }
@@ -370,6 +353,35 @@ final class TowerSceneUnderstandingClient: SceneUnderstandingClient {
             ) else { return }
             apply(error)
         }
+    }
+
+    /// Takes the Tower's answer to a `result_subscribe`: adopts the
+    /// subscription, or closes it, so that at most one is ever open.
+    ///
+    /// How: the answer ends the subscribe in flight. The ack is adopted only
+    /// while the screen is showing and no subscription is open; otherwise it
+    /// is closed at once with `result_unsubscribe`.
+    ///
+    /// Why each close:
+    /// - **The screen has gone.** Leaving can only unsubscribe an id it holds,
+    ///   and before the ack there is none. Adopted, this ack would be a watcher
+    ///   that belongs to no screen, and nothing would retract it before the
+    ///   socket closed.
+    /// - **A subscription is already open.** Two subscribes can be out at once
+    ///   when the Tower closes a subscription (`channel_failed`,
+    ///   `consumer_too_slow`) while another subscribe still awaits its ack: the
+    ///   resubscribe goes out beside it. Writing this id over the open one
+    ///   would orphan the open one.
+    ///
+    /// Either orphan would keep a people detector running, because the Tower
+    /// runs one while somebody streams and somebody watches.
+    private func adoptOrClose(_ ack: CartridgeSubscriptionAck) {
+        subscription.isSubscribing = false
+        guard workspaceVisible, subscription.id == nil else {
+            tower.unsubscribeFromResults(subscriptionID: ack.subscriptionID)
+            return
+        }
+        subscription.id = ack.subscriptionID
     }
 
     private func apply(_ envelope: CartridgeResultEnvelope) {
