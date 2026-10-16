@@ -13,8 +13,8 @@ import MWDATCamera
 /// Human-readable presentation strings for runtime state the app already
 /// tracks.
 ///
-/// The dashboard used to interpolate DAT enums directly (`"\(registrationState)"`),
-/// which rendered raw Swift case names like `waitingForDevice` at the user and
+/// Interpolating DAT enums directly (`"\(registrationState)"`) would put raw
+/// Swift case names like `waitingForDevice` in front of the user, and they
 /// read poorly under VoiceOver. Mapping lives here rather than in a view so it
 /// is testable and so no screen invents a state that the model cannot report.
 enum StateDisplay {
@@ -31,7 +31,7 @@ enum StateDisplay {
         }
     }
 
-    /// The shell's Glasses pill (U0.8 F07). "Registered" says Meta AI knows
+    /// The shell's Glasses pill. "Registered" says Meta AI knows
     /// the glasses, not that any are on this phone now: with a device model
     /// (DEBUG), a registered state is told apart as "Active" or "Not
     /// active". `hasActiveDevice` is `nil` in Release, which has none.
@@ -68,6 +68,17 @@ enum StateDisplay {
         }
     }
 
+    /// The Tower pill's colour and symbol. One mapping for every pill that
+    /// shows the Tower, so the same state is never two colours on one screen.
+    static func towerLevel(_ status: TowerStatus) -> StatusLevel {
+        switch status {
+        case .online: return .ok
+        case .connecting: return .working
+        case .failed: return .problem
+        case .offline: return .idle
+        }
+    }
+
     /// The full failure text, for the error banner. Separate from `tower(_:)`
     /// so a long URLSession message never widens a status pill.
     static func towerFailureDetail(_ status: TowerStatus) -> String? {
@@ -77,19 +88,7 @@ enum StateDisplay {
 
     #if DEBUG
 
-    // MARK: Session (DEBUG-only, mirroring the model's own gating)
-
-    static func deviceSession(_ state: DeviceSessionState) -> String {
-        switch state {
-        case .idle: return "Idle"
-        case .starting: return "Starting…"
-        case .started: return "Started"
-        case .paused: return "Paused"
-        case .stopping: return "Stopping…"
-        case .stopped: return "Stopped"
-        @unknown default: return "Unknown"
-        }
-    }
+    // MARK: Camera (DEBUG-only, mirroring the model's own gating)
 
     static func cameraStream(_ state: MWDATCamera.StreamState) -> String {
         switch state {

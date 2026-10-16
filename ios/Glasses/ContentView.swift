@@ -19,8 +19,8 @@ import SwiftUI
 /// before it is configured.
 ///
 /// Everything else — the cartridge tray, the connection sheet, Settings, the
-/// developer tools, and now the workspace — is presented *over* or *inside* this view
-/// rather than replacing it, so the graph is never torn down.
+/// developer tools and the workspace — is presented *over* or *inside* this
+/// view rather than replacing it, so the graph is never torn down.
 /// `GlassesConnection.deinit` stops the camera and the device session, which
 /// would kill a live stream. `GlassesConnection.init` logs
 /// `[Glasses][Init] GlassesConnection created`, and that line must appear
@@ -35,12 +35,12 @@ import SwiftUI
 ///   re-evaluation, discarding all but the first — each discarded instance
 ///   having already spawned DAT tasks and then run its `deinit`);
 /// - applying `.id(...)` at or above this view;
-/// - a second scene. `TARGETED_DEVICE_FAMILY` includes iPad and visionOS, and
-///   the app does not disable multiple scenes, so a second window would mean a
-///   second `ContentView` identity and therefore a second `GlassesConnection`
-///   and Tower socket against one set of glasses. "Once per launch" is really
-///   "once per scene" — see the handoff for the build-setting fix, which needs
-///   a real build to verify.
+/// - a second scene. `TARGETED_DEVICE_FAMILY` includes iPad, and the app does
+///   not disable multiple scenes, so a second window would mean a second
+///   `ContentView` identity and therefore a second `GlassesConnection` and
+///   Tower socket against one set of glasses. "Once per launch" is really
+///   "once per scene". Disabling multiple scenes is a build-setting change,
+///   not yet made, that needs a real build to verify.
 ///
 /// Switching workspaces does neither. The switch happens *below* `project`, so
 /// a cartridge change swaps a subtree while the runtime graph — and any live
@@ -110,76 +110,76 @@ struct ContentView: View {
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     /// Pinned, so the status stays in view while a long workspace is read.
-    /// It used to scroll away under the floating toolbar, with its values
-    /// behind the glass buttons (UX audit, shell-status-bar). At the
-    /// accessibility sizes its three rows take a third of the screen, which
-    /// is too much to hold there for good, so it scrolls with the content.
+    /// Scrolling, it passed under the floating toolbar, with its values
+    /// behind the glass buttons. At the accessibility sizes its three rows
+    /// take a third of the screen, which is too much to hold there for good,
+    /// so it scrolls with the content.
     private var isStatusPinned: Bool { !dynamicTypeSize.isAccessibilitySize }
 
     /// The root scroll view's visible height, for the World Builder panel's
-    /// stage (U-INLINE §1.1, B). Written only when it moved by half a point.
+    /// stage. Written only when it moved by half a point.
     @State private var visibleHeight: CGFloat = 0
 
     var body: some View {
         NavigationStack {
             ScrollViewReader { proxy in
-            ScrollView {
-                VStack(spacing: 16) {
-                    if !isStatusPinned {
-                        statusBar
-                    }
+                ScrollView {
+                    VStack(spacing: 16) {
+                        if !isStatusPinned {
+                            statusBar
+                        }
 
-                    workspace
+                        workspace
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.bottom, 24)
                 }
-                .padding(.horizontal, 16)
-                .padding(.bottom, 24)
-            }
-            .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { height in
-                if MeasuredHeight.moved(from: visibleHeight, to: height) { visibleHeight = height }
-            }
-            // The World Builder panel: how tall the screen is, and how to
-            // bring the panel into view after a Saved worlds pin (U-INLINE
-            // §2.4). The proxy reaches the workspace only through here.
-            .environment(\.worldPanelViewport, WorldPanelViewport(
-                visibleHeight: visibleHeight,
-                scrollTo: { id in proxy.scrollTo(id, anchor: .top) }))
-            .background(Color(.systemGroupedBackground))
-            .scrollBounceBehavior(.basedOnSize)
-            // Connect and Settings for every "Not connected" panel in the
-            // workspace below (U0.8 F03). Actions only: the root still does
-            // not observe the Tower; the buttons' own leaf does.
-            .environment(\.towerRecovery, TowerRecoveryActions(
-                tower: project.towerClient,
-                openConnections: { destination = .connections },
-                openSettings: { destination = .settings }
-            ))
-            // A bar, not an inset: the scroll edge effect then extends under
-            // it, so content passing beneath is softened like it is under
-            // the navigation bar, rather than showing through between pills.
-            .safeAreaBar(edge: .top) {
-                if isStatusPinned {
-                    statusBar
-                        .padding(.horizontal, 16)
-                        .padding(.bottom, 8)
+                .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { height in
+                    if MeasuredHeight.moved(from: visibleHeight, to: height) { visibleHeight = height }
                 }
-            }
-            .navigationTitle(selectedCartridge?.name ?? "Glasses")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar { toolbar }
-            // `onDismiss` is where "How Glasses works" opens: Settings has
-            // to be gone before a full-screen cover can be presented.
-            .sheet(item: $destination, onDismiss: {
-                onboarding.sheetDismissed(isCaptureBusy: isCaptureBusyNow)
-            }) { destination in
-                sheet(for: destination)
-            }
-            .fullScreenCover(item: onboardingShowing) { mode in
-                onboardingCards(mode)
-            }
-            .modifier(GlassesErrorAlert(
-                glasses: project.glassesConnection,
-                openConnections: { destination = .connections }
-            ))
+                // The World Builder panel: how tall the screen is, and how to
+                // bring the panel into view after a Saved worlds pin. The
+                // proxy reaches the workspace only through here.
+                .environment(\.worldPanelViewport, WorldPanelViewport(
+                    visibleHeight: visibleHeight,
+                    scrollTo: { id in proxy.scrollTo(id, anchor: .top) }))
+                .background(Color(.systemGroupedBackground))
+                .scrollBounceBehavior(.basedOnSize)
+                // Connect and Settings for every "Not connected" panel in the
+                // workspace below. Actions only: the root still does not
+                // observe the Tower; the buttons' own leaf does.
+                .environment(\.towerRecovery, TowerRecoveryActions(
+                    tower: project.towerClient,
+                    openConnections: { destination = .connections },
+                    openSettings: { destination = .settings }
+                ))
+                // A bar, not an inset: the scroll edge effect then extends under
+                // it, so content passing beneath is softened like it is under
+                // the navigation bar, rather than showing through between pills.
+                .safeAreaBar(edge: .top) {
+                    if isStatusPinned {
+                        statusBar
+                            .padding(.horizontal, 16)
+                            .padding(.bottom, 8)
+                    }
+                }
+                .navigationTitle(selectedCartridge?.name ?? "Glasses")
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar { toolbar }
+                // `onDismiss` is where "How Glasses works" opens: Settings has
+                // to be gone before a full-screen cover can be presented.
+                .sheet(item: $destination, onDismiss: {
+                    onboarding.sheetDismissed(isCaptureBusy: isCaptureBusyNow)
+                }) { destination in
+                    sheet(for: destination)
+                }
+                .fullScreenCover(item: onboardingShowing) { mode in
+                    onboardingCards(mode)
+                }
+                .modifier(GlassesErrorAlert(
+                    glasses: project.glassesConnection,
+                    openConnections: { destination = .connections }
+                ))
             }
         }
         // The app's only automatic side effect, in the one place it belongs.
@@ -214,15 +214,15 @@ struct ContentView: View {
 
     /// Half height, with full height a drag away -- except at the
     /// accessibility sizes, where half an iPhone SE held about one row of the
-    /// drawer and World Builder was four drags down (O1 viewer check): there
-    /// the sheets open at full height.
+    /// drawer and World Builder was four drags down: there the sheets open at
+    /// full height.
     private var sheetDetents: Set<PresentationDetent> {
         dynamicTypeSize.isAccessibilitySize ? [.large] : [.medium, .large]
     }
 
     /// Opaque, for the two sheets that open at half height. There a sheet
     /// is Liquid Glass, and the screen behind showed through its rows enough
-    /// to take their grey text under 4.5:1 (accessibility audit, U0.5); at
+    /// to take their grey text under 4.5:1 in the accessibility audit; at
     /// full height it is opaque anyway.
     static let sheetBackground = Color(.systemGroupedBackground)
 
@@ -258,62 +258,39 @@ struct ContentView: View {
             // Switching over the unwrapped value rather than the optional keeps
             // the exhaustiveness check that forces a new case to be handled,
             // without relying on how enum-case patterns match an Optional.
+            //
+            // There is exactly one camera pipeline and one owner of it,
+            // `GlassesConnection`. Every workspace that can start a capture
+            // reaches it through `startCameraSession()` and
+            // `stopCameraSession()` and touches DAT no other way. A workspace
+            // that is not handed the connection, or an owner built on it, has
+            // no way to start one.
+            //
+            // Clients come from `project.cartridgeClients` so they outlive the
+            // workspace's `@StateObject`, which a cartridge switch destroys.
+            //
+            // A workspace that needs only "is the Tower reachable" gets that
+            // fact from `TowerReachabilityReader`, not the `TowerClient`:
+            // observing the client would invalidate the subtree at the Tower's
+            // ~12 Hz reply rate, on the main actor, for a value that changes
+            // almost never. See its doc comment.
             switch workspace {
             case .worldBuilder:
+                // The live viewfinder and a capture button, so the connection.
                 WorldBuilderWorkspaceView(
                     glasses: project.glassesConnection,
                     tower: project.towerClient,
                     client: project.cartridgeClients.worldBuilder
                 )
-            // Two of the four workspaces below receive no `glasses`, and
-            // that omission is load-bearing rather than incidental. World
-            // Builder shows the live viewfinder and owns a capture button, so
-            // it needs the connection. Document Memory and Scene Understanding
-            // show what the Tower knows; neither has a session control, and
-            // neither is handed the object that could start one.
-            //
-            // Object Memory is the exception, and it was made one deliberately.
-            // It is the only cartridge with a Start button that *means*
-            // something on the Tower — a producer that reads a recording and
-            // writes observations — and until this change that button started
-            // the producer and nothing else. Pressing it with no capture running
-            // gave a session that was honestly `active` with
-            // `attached_capture_id: null`: it worked, and it remembered nothing,
-            // and the only way to make it do anything was to leave for Home and
-            // press a differently-named button there first. A cartridge whose
-            // primary control cannot complete its own job is not a product, so
-            // Object Memory now composes both halves in one tap. See
-            // `ObjectMemoryRecordingCoordinator`.
-            //
-            // The Experimental CV Lab joined for a plainer reason: an
-            // experiment is fed by the camera, and a person who had to leave
-            // for Home to start it and come back to read the result was
-            // crossing three screens for one question. Its `CVCameraCard`
-            // starts and stops the camera through the same two calls, and its
-            // Pause is a frame gate on `TowerClient`, not a camera operation.
-            //
-            // So the count is **four**, not three: Home, World Builder, Object
-            // Memory and the Experimental CV Lab. The invariant that actually
-            // matters is unchanged and is the one worth restating — there is
-            // still exactly one camera pipeline and one owner of it,
-            // `GlassesConnection`, and every one of those four reaches it
-            // through `startCameraSession()` and `stopCameraSession()` and
-            // touches DAT no other way. Object Memory additionally refuses to
-            // start a capture that another workspace already started, and
-            // refuses to stop one it did not start itself.
-            //
-            // The client comes from `project.cartridgeClients` so it outlives
-            // the workspace's `@StateObject`, which a cartridge switch
-            // destroys.
-            //
-            // Experimental CV Lab is the one of these that also takes
-            // `tower`, and it takes both `tower` and `glasses` as plain values
-            // rather than as something to observe. The Tower's per-frame reply
-            // carries the running experiment's own result, and that workspace
-            // is where someone goes to read it — so leaf panels inside it
-            // observe, and the workspace body does not. See
-            // `ExperimentalCVWorkspaceView.tower` and `.glasses`.
             case .experimentalCV:
+                // An experiment is fed by the camera: its `CVCameraCard`
+                // starts and stops it through the same two calls, and its
+                // Pause is a frame gate on `TowerClient`, not a camera
+                // operation. `tower` and `glasses` arrive as plain values
+                // rather than as something to observe: the Tower's per-frame
+                // reply carries the experiment's result, so leaf panels inside
+                // observe and the workspace body does not. See
+                // `ExperimentalCVWorkspaceView.tower` and `.glasses`.
                 TowerReachabilityReader(tower: project.towerClient) { isTowerReachable in
                     ExperimentalCVWorkspaceView(
                         isTowerReachable: isTowerReachable,
@@ -322,13 +299,12 @@ struct ContentView: View {
                         client: project.cartridgeClients.experimentalCV
                     )
                 }
-            // The three below take no `tower` at all. They need one fact from it
-            // — is it reachable — and observing a `TowerClient` to read that
-            // would invalidate the subtree at the Tower's ~12 Hz reply rate, on
-            // the main actor, for a value that changes almost never.
-            // `TowerReachabilityReader` is the smallest thing that has to
-            // observe, and it passes the fact down. See its doc comment.
             case .documentMemory:
+                // Start and Stop also drive the camera, through the same
+                // `GlassesConnection` (`documentMemoryCamera`, `nil` in
+                // Release). Whether this screen started the running capture
+                // is held on `ProjectManager` (`documentMemoryCameraClaim`),
+                // for the reason given at `.objectMemory`.
                 TowerReachabilityReader(tower: project.towerClient) { isTowerReachable in
                     DocumentMemoryWorkspaceView(
                         isTowerReachable: isTowerReachable,
@@ -338,26 +314,27 @@ struct ContentView: View {
                     )
                 }
             case .sceneUnderstanding:
+                // Shows what the Tower knows. No session control, and not
+                // handed anything that could start a capture.
                 TowerReachabilityReader(tower: project.towerClient) { isTowerReachable in
                     SceneUnderstandingWorkspaceView(
                         isTowerReachable: isTowerReachable,
                         client: project.cartridgeClients.sceneUnderstanding
                     )
                 }
-            // Object Memory takes both: `glasses`, because its Start button
-            // starts a capture, and the reachability *fact* rather than the
-            // `TowerClient` itself, because its records arrive over HTTP and
-            // observing the socket would invalidate this subtree at the Tower's
-            // reply rate for a value that changes almost never.
-            //
-            // The coordinator is passed, not the connection. It is built on
-            // `ProjectManager` from the same single `GlassesConnection` every
-            // other screen uses — there is no second one — and it is owned
-            // there rather than by this view because whether this app started
-            // the running capture must survive a person opening Home and
-            // coming back. A view-owned one would be rebuilt believing it had
-            // started nothing, and its Stop would leave the glasses recording.
             case .objectMemory:
+                // Its Start composes the Tower producer and the camera in one
+                // tap (`ObjectMemoryRecordingCoordinator`). It refuses to start
+                // a capture another workspace already started, and to stop one
+                // it did not start itself.
+                //
+                // The coordinator is passed, not the connection. It is built on
+                // `ProjectManager` from the same single `GlassesConnection`
+                // every other screen uses, and owned there rather than by this
+                // view because whether this app started the running capture
+                // must survive a person opening Home and coming back. A
+                // view-owned one would be rebuilt believing it had started
+                // nothing, and its Stop would leave the glasses recording.
                 TowerReachabilityReader(tower: project.towerClient) { isTowerReachable in
                     ObjectMemoryWorkspaceView(
                         isTowerReachable: isTowerReachable,
@@ -430,10 +407,17 @@ struct ContentView: View {
                         workspace: selectedCartridge?.workspace, claim: currentCaptureClaim
                     )
                 },
-                stopCapture: { project.glassesConnection.stopCameraSession() }
+                stopCapture: {
+                    #if DEBUG
+                    project.glassesConnection.stopCameraSession()
+                    #else
+                    // No camera session in Release, and its claim is always
+                    // `.unclaimed`, so the alert that calls this never shows.
+                    #endif
+                }
             )
-                .presentationDetents(sheetDetents)
-                .presentationBackground(Self.sheetBackground)
+            .presentationDetents(sheetDetents)
+            .presentationBackground(Self.sheetBackground)
         case .connections:
             ConnectionSheet(
                 glasses: project.glassesConnection,
@@ -537,15 +521,15 @@ extension ContentView {
 /// Presents `GlassesConnection.errorMessage` as an alert.
 ///
 /// A modifier owning its own `@ObservedObject` rather than an `.alert` on the
-/// root view, because the root no longer re-renders when a child changes:
-/// `ProjectManager`'s `objectWillChange` fan-in was removed so the shell would
-/// stop re-evaluating at the capture rate. The alert has to observe the object
-/// it reads, and this is the smallest thing that does.
+/// root view, because the root does not re-render when a child changes:
+/// `ProjectManager` has no `objectWillChange` fan-in, so the shell does not
+/// re-evaluate at the capture rate. The alert has to observe the object it
+/// reads, and this is the smallest thing that does.
 ///
-/// Every glasses alert offers Connections (U0.8 F08): each `GlassesConnection`
-/// error is about registration, permission or the device, and Connections is
-/// where those are recovered. Navigation always works, so this is never a
-/// futile control.
+/// Every glasses alert offers Connections: each `GlassesConnection` error is
+/// about registration, permission or the device, and Connections is where
+/// those are recovered. Navigation always works, so this is never a futile
+/// control.
 private struct GlassesErrorAlert: ViewModifier {
     @ObservedObject var glasses: GlassesConnection
     let openConnections: () -> Void

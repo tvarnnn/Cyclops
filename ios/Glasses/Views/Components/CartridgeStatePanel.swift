@@ -6,16 +6,15 @@
 import SwiftUI
 
 /// The panel every cartridge workspace uses to say that the Tower has nothing
-/// for it.
+/// for it: when its availability alone settles what it can show
+/// (`CartridgeAvailability.forcedPhase` — no contract, a contract this build
+/// cannot read, or no connection).
 ///
 /// ## Why this is shared and the workspaces are not
 ///
-/// Four workspaces need to render "there is nothing here yet", and it is the
-/// only screen state any of them can reach today. Four hand-written versions
-/// would drift into four different explanations of the same single fact — and
-/// the fact is *shared*: the Tower has no module runtime, so no cartridge has a
-/// contract. One panel, one wording, one place to change when that stops being
-/// true.
+/// Every cartridge workspace needs to render "there is nothing here", and
+/// hand-written versions would drift into different explanations of the same
+/// fact. One panel, one wording, one place to change.
 ///
 /// What is emphatically **not** shared is the workspace itself. A generic
 /// cartridge screen driven by descriptor metadata is the plugin framework this
@@ -47,7 +46,7 @@ struct CartridgeStatePanel: View {
     /// deliberately phrased as a conditional rather than a promise.
     var futureDescription: String?
 
-    /// Connect and Settings, from the root (U0.8 F03). `nil` in previews.
+    /// Connect and Settings, from the root. `nil` in previews.
     @Environment(\.towerRecovery) private var recovery
 
     var body: some View {

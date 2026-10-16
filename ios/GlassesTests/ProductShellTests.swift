@@ -170,6 +170,16 @@ final class StateDisplayTests: XCTestCase {
         XCTAssertEqual(StateDisplay.tower(.connecting), "Connecting…")
         XCTAssertEqual(StateDisplay.tower(.online), "Connected")
     }
+
+    /// The shell's Tower pill and the CV Lab's Tower row share this one
+    /// mapping, so the same state is never two colours on one screen.
+    @MainActor
+    func testTowerStatusLevels() {
+        XCTAssertEqual(StateDisplay.towerLevel(.online), .ok)
+        XCTAssertEqual(StateDisplay.towerLevel(.connecting), .working)
+        XCTAssertEqual(StateDisplay.towerLevel(.offline), .idle)
+        XCTAssertEqual(StateDisplay.towerLevel(.failed("Connection lost")), .problem)
+    }
 }
 
 // MARK: - Workspaces

@@ -5,14 +5,8 @@
 
 import SwiftUI
 
-/// Small views shared by the shell and by every workspace.
-///
-/// These were `private` inside `SessionView`. That file is gone — its status
-/// row became the persistent shell, its setup rows moved behind
-/// `ConnectionSheet`, and its body became `HomeWorkspaceView` — and these
-/// pieces are now needed in more than one of those places. Promoting them is
-/// what stops each workspace from growing its own slightly different section
-/// heading.
+// Small views shared by the shell and by every workspace, so that no
+// workspace grows its own slightly different section heading.
 
 /// A quiet uppercase heading above a group.
 struct SectionLabel: View {
@@ -68,7 +62,7 @@ struct SetupRow: View {
 
             // The action under the words at the accessibility sizes: a
             // trailing column left the detail so narrow that "unavailable"
-            // broke into "unavail- able" (UX audit, connection-sheet).
+            // broke into "unavail- able".
             if dynamicTypeSize.isAccessibilitySize {
                 VStack(alignment: .leading, spacing: 6) {
                     words
