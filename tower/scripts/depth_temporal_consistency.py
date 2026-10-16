@@ -67,12 +67,11 @@ def _resize_to_platform_budget(frame: np.ndarray) -> np.ndarray:
 def _normalize_minmax(depth: np.ndarray) -> np.ndarray:
     """Min-max normalize to [0, 1].
 
-    WARNING -- deliberately retained but NOT the default: the scale is set
-    by two single pixels, so one flickering outlier shifts every pixel in
-    the frame. Measured on a 128x256 grid, changing one pixel out of 32768
-    moves the whole-frame mean absolute difference by ~0.33, several times
-    the raw flicker signal being measured. Kept only so the robust variants
-    can be compared against it.
+    WARNING -- kept as the comparison baseline for the robust variants: the
+    scale is set by two single pixels, so one flickering outlier shifts every
+    pixel in the frame. Measured on a 128x256 grid, changing one pixel out of
+    32768 moves the whole-frame mean absolute difference by ~0.33, several
+    times the raw flicker signal being measured.
     """
     lo = float(depth.min())
     hi = float(depth.max())
