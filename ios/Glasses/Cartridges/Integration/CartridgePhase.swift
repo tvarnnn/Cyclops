@@ -41,7 +41,8 @@ import Foundation
 /// with cases covering every cartridge's lifecycle, which is how a small shared
 /// vocabulary becomes a plugin framework.
 enum CartridgePhase: String, Equatable, Sendable, CaseIterable {
-    /// The Tower cannot do this. Two causes reach it:
+    /// This Tower offers this app nothing it can use for the cartridge. Two
+    /// causes reach it:
     ///
     /// - **no contract**: the Tower declared none for this cartridge. The
     ///   honest answer for the three cartridges with no Tower code anywhere
