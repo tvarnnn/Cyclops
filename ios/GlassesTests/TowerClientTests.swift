@@ -2684,15 +2684,9 @@ final class TowerClientTests: XCTestCase {
         client.disconnect()
     }
 
-    /// `frame_error` reaches a consumer instead of being logged and discarded.
-    ///
-    /// It had **no case at all**: every one fell through to `default:` as an
-    /// unknown message type. A paused Lab, an arming model and an undecodable
-    /// frame were therefore indistinguishable from silence.
-    ///
-    /// And it is not a failure. Nothing about the connection, the send window
-    /// or the reply counters may move — a Lab paused for five minutes has not
-    /// failed hundreds of times.
+    /// `frame_error` reaches a consumer without becoming a connection failure.
+    /// A refused frame leaves the send window and reply counters unchanged;
+    /// a Lab paused for five minutes has not failed hundreds of times.
     func testAFrameErrorIsDeliveredAndCostsTheFramePathNothing() async throws {
         let server = try MockTowerServer()
         let port = try await server.start()
@@ -2725,6 +2719,65 @@ final class TowerClientTests: XCTestCase {
         )
 
         client.disconnect()
+    }
+
+    /// Repeated refusals still reach event consumers, while the frame panel
+    /// only needs a new value when its reason changes or its capture advances.
+    func testFrameRefusalPublishesOnChangeAndAtDisplayCadence() async throws {
+        let server = try MockTowerServer()
+        let port = try await server.start()
+        respondToPing(server)
+        defer { server.stop() }
+
+        let client = TowerClient(metrics: SenderMetrics())
+        let events = collectCVLabEvents(client)
+        client.connect(to: url(port: port))
+        await expect { client.status == .online }
+
+        var published: [TowerFrameRefusal?] = []
+        let publication = client.$latestFrameRefusal.dropFirst().sink { published.append($0) }
+        defer { publication.cancel(); client.disconnect() }
+
+        func send(_ sequence: Int, reason: String) {
+            server.send(text: """
+                {"type":"frame_error","seq":\(sequence),"reason":"\(reason)",
+                 "message":"\(reason)"}
+                """)
+        }
+
+        send(1, reason: "cv_lab_paused")
+        await expect { events.all.count == 1 }
+        XCTAssertEqual(published.count, 1)
+        XCTAssertEqual(client.latestFrameRefusal?.sequence, 1)
+
+        send(2, reason: "cv_lab_paused")
+        send(3, reason: "cv_lab_paused")
+        await expect { events.all.count == 3 }
+        XCTAssertEqual(published.count, 1, "same reason republished for every frame")
+
+        send(4, reason: "cv_lab_starting")
+        await expect { events.all.count == 4 }
+        XCTAssertEqual(published.count, 2, "a different refusal kind was not shown immediately")
+        XCTAssertEqual(client.latestFrameRefusal?.sequence, 4)
+
+        send(5, reason: "unexpected_reason_a")
+        await expect { events.all.count == 5 }
+        XCTAssertEqual(published.count, 3)
+        send(6, reason: "unexpected_reason_b")
+        await expect { events.all.count == 6 }
+        XCTAssertEqual(published.count, 4, "a different reason of the same kind was hidden")
+
+        // A timer lets the production cadence elapse without sleeping the test
+        // executor. The last sequence must eventually reach the panel.
+        await withCheckedContinuation { continuation in
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.1) {
+                continuation.resume()
+            }
+        }
+        send(7, reason: "unexpected_reason_b")
+        await expect { events.all.count == 7 }
+        XCTAssertEqual(published.count, 5)
+        XCTAssertEqual(client.latestFrameRefusal?.sequence, 7)
     }
 
     /// A frame that failed validation before its `seq` was readable reports a

@@ -9,14 +9,9 @@
 //  the refusals a real Tower sent for an unknown experiment and a stale run,
 //  and the `frame_result` / `frame_error` a real frame produced.
 //
-//  What is deliberately NOT tested here is a better/worse verdict, because
-//  there is no longer any code that could produce one. `CVMetric` carries no
-//  `baseline`, no `higherIsBetter` and no `comparison`; the Tower sends those
-//  fields as `null` on every metric, always, and a comparison against nothing
-//  is the "declaring an approach 'better' without a measurement" that
-//  `docs/modules/EXPERIMENTAL-CV.md` rules out. Deleting the machinery rather
-//  than relying on the nulls is what makes its absence a property of the build
-//  instead of a property of today's payload.
+//  `CVMetric` carries no `baseline`, `higherIsBetter` or `comparison` because
+//  the Tower sends those fields as `null`; a comparison without a reference
+//  would violate `docs/modules/EXPERIMENTAL-CV.md`.
 //
 
 import UIKit
@@ -611,7 +606,7 @@ final class CVLabContractTests: XCTestCase {
         XCTAssertNotNil(annotation.artifactUnavailableReason)
     }
 
-    /// The catalog says which experiments have one, before anything is armed.
+    /// The catalog preview hint is decoded even though the picker does not display it.
     func testTheCatalogSaysWhichExperimentsHaveALiveView() throws {
         let available = try liveStatus().available
         XCTAssertFalse(available.isEmpty)
