@@ -27,11 +27,10 @@ capture id is None -- and the adapter publishes
 `capture_id_validated: false` alongside it rather than implying a pointer
 that resolves.
 
-**4. Retention is enforced HERE, on a real cadence.** Before this existed,
-`prune_expired` had exactly one production caller -- the end of
-`scripts/document_memory_session.py` -- so a long-running Tower would
-never have pruned at all. This session prunes at start and after every
-document it records.
+**4. Retention is enforced HERE, on a real cadence.** Retention otherwise
+runs only at the end of `scripts/document_memory_session.py`, which a
+long-running Tower never reaches, so this session prunes at start and
+after every document it records.
 
 **5. A session nobody is streaming to winds itself down.** The OCR reader
 holds ~1.4 GB of GPU memory while loaded. A session started by a phone
@@ -155,7 +154,6 @@ class DocumentLive(LiveSession):
         self._prune_incomplete = False
         self._ocr_device = None
         self._idle_timer: threading.Timer | None = None
-        self._idle_stops = 0
         # True only while the idle timer's own thread is inside `stop()`,
         # so `_on_pause` knows not to run OCR there.
         self._idle_abandon = False
@@ -244,7 +242,6 @@ class DocumentLive(LiveSession):
             "[Tower][Document] stopping an idle session: no stream for %.0f s",
             self._idle_stop_s,
         )
-        self._idle_stops += 1
         self._idle_abandon = True
         try:
             self.stop()
@@ -321,18 +318,18 @@ class DocumentLive(LiveSession):
     def _on_pause(self, engine) -> None:
         """Close an open dwell rather than losing it.
 
-        Returns a document id when a dwell qualified. It is not counted
-        into `documents_recorded` here and that is deliberate: the count
-        a status reports is of documents this SESSION recorded while
-        observing, and a flush at teardown is reported separately as
-        `flushed_document_id` so an operator can see that the last
-        document arrived because the session ended rather than because
-        the wearer looked away.
+        Records the dwell as `flushed_document_id` when one qualified. It
+        is not counted into `documents_recorded` here and that is
+        deliberate: the count a status reports is of documents this
+        SESSION recorded while observing, and a flush at teardown is
+        reported separately as `flushed_document_id` so an operator can
+        see that the last document arrived because the session ended
+        rather than because the wearer looked away.
         """
         if self._idle_abandon:
             # The idle timer's thread. No OCR here: a torch thread pool
             # built on a `threading.Timer` thread is never reclaimed, and
-            # the dwell it would read ended ten minutes ago in any case.
+            # the dwell it would read ended at least `idle_stop_s` ago.
             if engine.abandon():
                 logger.warning(
                     "[Tower][Document] an idle stop dropped a dwell that "
