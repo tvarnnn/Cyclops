@@ -19,12 +19,11 @@ import Foundation
 /// is no progress to report and nothing accumulates, which is why the state
 /// vocabulary below has no `finalizing` and no `finalized`.
 ///
-/// ## What this file used to contain, and why it does not any more
+/// ## Why there is no per-entity type here
 ///
-/// It used to model `SceneEntity`, `SceneRelationship`, `SceneTrackID`,
-/// `ScenePosition` and `SceneFrameOfReference`: per-entity rows, each with a
-/// track handle, a bearing and a distance. The Tower refuses every one of them,
-/// and refuses them **structurally** —
+/// No entity, relationship, track handle, bearing or distance is modelled,
+/// and none should be. The Tower refuses every one of them, and refuses them
+/// **structurally** —
 ///
 /// > There is no key anywhere in this payload that could hold an entity or a
 /// > relation.
@@ -39,13 +38,13 @@ import Foundation
 ///
 /// Types that can never be filled are not harmless. They are an invitation:
 /// the next person to read them concludes the data is coming and builds the
-/// screen that waits for it. Worse, `SceneTrackID` plus a timestamp is exactly
+/// screen that waits for it. Worse, a track handle plus a timestamp is exactly
 /// the joinable pair the Tower refuses to publish — a stable handle lets a
 /// recipient assemble the per-person dwell timeline this cartridge keeps none
 /// of. Modelling the shape is the first half of laundering persists-nothing
-/// onto the consumer. So they are gone, and what replaced them is the
-/// aggregate the wire actually carries: a count, a per-label side histogram,
-/// and a people block that is a count and nothing else.
+/// onto the consumer. What is modelled is the aggregate the wire actually
+/// carries: a count, a per-label side histogram, and a people block that is a
+/// count and nothing else.
 ///
 /// ## What remains, and what each surviving rule is for
 ///
@@ -280,9 +279,9 @@ struct ScenePeople: Equatable, Sendable {
 
     /// Person boxes cut off by the bottom edge with no head region in view,
     /// kept OUT of `count`. From a camera worn at head height that is most
-    /// often the wearer's own hands, arms, lap or legs. Since 2026-09-07;
-    /// defaults to 0 for an older Tower, which is the reading that adds
-    /// nothing rather than the one that invents something.
+    /// often the wearer's own hands, arms, lap or legs. Defaults to 0 for an
+    /// older Tower, which is the reading that adds nothing rather than the one
+    /// that invents something.
     var partialBottomEdge: Int = 0
     /// How many counted people are `large`, `medium`, `small` or `unknown`
     /// in the frame — sizes in the picture, never distances. Empty for an
@@ -341,7 +340,10 @@ struct ScenePeople: Equatable, Sendable {
 /// They are kept in this enum rather than deleted precisely because
 /// `facing_states_withheld` is data on the wire — the app has to be able to
 /// name what is withheld in order to say it is withheld. `isReportedByTower`
-/// is what stops a screen from rendering a bucket that does not exist.
+/// is the check a screen that draws a row per case must make, so it never
+/// renders a bucket that does not exist. Today's screen does not draw from
+/// this enum: it shows the two published figures, `facing_wearer` and
+/// `facing_unknown`, and the undifferentiated remainder.
 enum SceneFacing: Equatable, Sendable, CaseIterable {
     /// The Tower reported no orientation for these.
     case unknown
@@ -612,15 +614,12 @@ struct SceneReading: Equatable, Sendable {
 
     /// The Tower's disclosure for the case where the aggregate IS a person.
     ///
-    /// `single_person_note` has been on the wire since 2026-09-07 and nothing
-    /// on this side read it, which made the sentence the design depends on
-    /// dead code on the only client there is. It is the answer to the privacy
-    /// reviewer's accepted limitation: with exactly one person in view, "1 on
-    /// your left, 1 large, 1 appears to be facing your direction" is an
-    /// aggregate of one, and therefore a description of that person for as
-    /// long as they stand there. The Tower says so; the phone has to show it,
-    /// because the wearer is the only one who can see both the sentence and
-    /// the person.
+    /// The privacy design accepts one limitation: with exactly one person in
+    /// view, "1 on your left, 1 large, 1 appears to be facing your direction"
+    /// is an aggregate of one, and therefore a description of that person for
+    /// as long as they stand there. The Tower says so in `single_person_note`;
+    /// the phone has to show it, because the wearer is the only one who can
+    /// see both the sentence and the person.
     ///
     /// Optional because an older Tower does not send it, and carried
     /// verbatim rather than restated: it is the Tower's claim about its own
@@ -727,12 +726,13 @@ enum SceneUnderstandingState: Equatable, Sendable {
             // 'torch'"*.
             //
             // Corrected in the **sentence**, not in the state. Routing it to
-            // `.failed` was tried and is wrong: the Tower keeps
-            // `failure_reason` across a stop, so a session that failed, was
-            // restarted successfully and then stopped normally would report a
-            // failure it had recovered from — and it would put a
-            // `.failed` state where `.idle` belongs, weakening the
-            // stop-discards invariant to fix a copy problem.
+            // `.failed` would be wrong: the Tower keeps `failure_reason`
+            // across a stop, so a session that failed, was restarted
+            // successfully and then stopped normally would report a failure
+            // it had recovered from — and it would put a `.failed` state
+            // where `.idle` belongs, weakening the stop-discards invariant to
+            // fix a copy problem.
+            //
             // `stopped` ONLY. An `unrecognised` state must still yield `nil` so
             // it reaches the screen as the Tower's own prose rather than being
             // assigned one of the known headlines — that is the whole reason
@@ -747,9 +747,8 @@ enum SceneUnderstandingState: Equatable, Sendable {
             return Self.silence(for: reading.unavailableReason)
         // A Tower-reported failure IS one of the five silences, and reaching it
         // needs its own line because a failed lifecycle is routed to `.failed`
-        // rather than to `.idle` — so the `unavailableReason` path above never
-        // sees it, and this returned `nil` for one of the five cases the type
-        // exists to tell apart.
+        // rather than to `.idle`, so the `unavailableReason` path above never
+        // sees it.
         //
         // `failure.message` is the Tower's own `lifecycle.failure_reason`
         // (see `forReading`), not prose invented here, which is what makes it
@@ -797,9 +796,15 @@ enum SceneUnderstandingState: Equatable, Sendable {
 
     /// The **only** way a decode path turns a reading into a state.
     ///
-    /// Centralised precisely so the stop-discards rule is written once. A
-    /// `switch` at each call site is a rule that holds until somebody adds a
-    /// call site.
+    /// How: by the reading's `lifecycle.state`. `failed` → `.failed` with the
+    /// Tower's own reason; `starting` → `.awaitingFirstScene`; `running` →
+    /// `.observing` with a scene, `.awaitingFirstScene` without one; `paused`
+    /// → `.lastKnown` when it kept a scene, else `.idle`; `stopped` and any
+    /// unrecognised state → `.idle`, carrying the reading only for its reason.
+    ///
+    /// Why one constructor: it is where "stop discards, pause keeps" is
+    /// enforced, so the rule is written once. A `switch` at each call site is
+    /// a rule that holds until somebody adds a call site.
     static func forReading(_ reading: SceneReading) -> SceneUnderstandingState {
         switch reading.lifecycle.state {
         case .failed:

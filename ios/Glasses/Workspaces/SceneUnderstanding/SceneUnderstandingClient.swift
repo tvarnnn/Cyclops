@@ -79,10 +79,11 @@ extension SceneUnderstandingClient {
 /// No `stream_start`, no `POST /scene/start`, no control message of any kind.
 /// `docs/agent-handoffs/IOS-TO-TOWER.md` §6 (item 2) is explicit that opening a cartridge on the phone
 /// sends nothing and a Tower-side test asserts the wire stays silent. The
-/// session follows the camera stream, which the app already opens and closes
-/// for its own reasons — see `SceneUnderstandingContract.phoneSendsNothingNote`
-/// for the two measured reasons a Start button here would be worse than
-/// useless.
+/// session runs while somebody streams and somebody watches: the camera
+/// stream the app already opens and closes for its own reasons, and the
+/// subscription this client holds while the Scene screen is open. See
+/// `SceneUnderstandingContract.phoneSendsNothingNote` for the two measured
+/// reasons a Start button here would be worse than useless.
 ///
 /// ## What it refuses to keep: everything, the moment a session ends
 ///
@@ -134,16 +135,15 @@ final class TowerSceneUnderstandingClient: SceneUnderstandingClient {
     private var heldSessionID: Int?
     /// Whether the Scene Understanding screen is on screen right now.
     ///
-    /// **This is what starts and stops the detector on the Tower.** Since
-    /// 2026-09-07 a Tower runs a scene session only while somebody is
-    /// STREAMING and somebody is WATCHING, and a `result_subscribe` for the
-    /// live scene is what "watching" means. Subscribing at connection time —
-    /// what this client did before — kept a people detector running behind
-    /// World Builder's and the CV Lab's camera for as long as the app was
-    /// connected. So the subscription is opened when this screen appears and
-    /// closed when it disappears; the socket, the declaration and the
-    /// resubscribe budget all still gate it, but none of them can open it
-    /// while this is `false`.
+    /// **This is what starts and stops the detector on the Tower.** A Tower
+    /// runs a scene session only while somebody is STREAMING and somebody is
+    /// WATCHING, and a `result_subscribe` for the live scene is what
+    /// "watching" means. Subscribing at connection time would keep a people
+    /// detector running behind World Builder's and the CV Lab's camera for as
+    /// long as the app was connected. So the subscription is opened when this
+    /// screen appears and closed when it disappears; the socket, the
+    /// declaration and the resubscribe budget all still gate it, but none of
+    /// them can open it while this is `false`.
     private var workspaceVisible = false
 
     init(tower: TowerClient) {
@@ -174,22 +174,20 @@ final class TowerSceneUnderstandingClient: SceneUnderstandingClient {
     /// Resolved against the Tower's **live** declaration.
     ///
     /// It goes through `CartridgeAvailability.resolve` — the shared precedence —
-    /// with this cartridge's own contract rather than through
-    /// `TowerCapabilities.supported`, because that table is owned by the
-    /// integration layer and this client must not reach across a boundary to
-    /// register itself in it. When the integration layer adds
-    /// `"scene-understanding": SceneUnderstandingContract.towerCartridge` and
-    /// the identifier to `supported`, the two answers agree by construction —
-    /// both read the same declaration and the same constant.
+    /// with this cartridge's own socket offer and identifier rather than
+    /// through `TowerCapabilities`, because those tables are owned by the
+    /// integration layer and this client must not reach across a boundary into
+    /// them. They map `scene-understanding` to the same
+    /// `SceneUnderstandingContract.towerCartridge` and list the same
+    /// identifier, so both read the same declaration and the same constants.
     func availability(isTowerReachable: Bool) -> CartridgeAvailability {
         CartridgeAvailability.resolve(
             declared: declaredContract,
             supported: [SceneUnderstandingContract.identifier],
             isTowerReachable: isTowerReachable,
             // This build implements the contract, so a silent socket means
-            // "nobody has asked yet", not "no such contract" — the exact
-            // case `knownToThisBuild` exists for, and the one this client
-            // used to get wrong on a cold launch.
+            // "nobody has asked yet", not "no such contract": the exact case
+            // `knownToThisBuild` exists for, which a cold launch reaches.
             knownToThisBuild: true
         )
     }
@@ -255,9 +253,10 @@ final class TowerSceneUnderstandingClient: SceneUnderstandingClient {
             return
         }
         guard offer.available else {
-            // Offered and unserveable — `TOWER_SCENE_UNDERSTANDING` unset,
-            // typically. The Tower's own prose names the variable that would
-            // fix it, so it is shown verbatim rather than paraphrased.
+            // Offered and unserveable: switched off
+            // (`TOWER_SCENE_UNDERSTANDING=off`), or the session could not be
+            // constructed. The Tower's own prose names the variable or what
+            // failed, so it is shown verbatim rather than paraphrased.
             state = .unsupported(
                 reason: offer.unavailableReason ?? Self.unexplainedUnavailable
             )
@@ -468,22 +467,16 @@ final class TowerSceneUnderstandingClient: SceneUnderstandingClient {
 /// this codebase, and it is not shipped, not behind a flag, and not in
 /// `#if DEBUG`.
 ///
-/// ## The sentence that used to be here, and why it was deleted
+/// ## What its reason may and may not say
 ///
-/// > "The Tower does not analyse scenes yet. Its only reply to a frame is a
-/// > single brightness measurement, so nothing about anyone the glasses pass
-/// > ever reaches this app."
-///
-/// Every clause of that is now false. The Tower has a detector, a tracker and a
-/// typed live contract; its reply to a frame is no longer one brightness
-/// figure; and a count of the people in front of the wearer does reach this app
-/// when the cartridge is enabled. Leaving it on screen would have been a
-/// privacy assurance about bystanders, on the one screen whose subject is
-/// bystanders, that stopped being true.
-///
-/// What replaced it says only what is observable from here: this Tower has
-/// declared nothing. It makes no claim about what any Tower stores, because
-/// this app has no channel through which it could know that.
+/// Only what is observable from here: this Tower has declared nothing. It
+/// makes no claim about what any Tower does or stores, because this app has no
+/// channel through which it could know that. A sentence such as "the Tower
+/// does not analyse scenes" or "nothing about anyone the glasses pass reaches
+/// this app" would be a privacy assurance about bystanders, on the one screen
+/// whose subject is bystanders, and it is false: the Tower has a detector, a
+/// tracker and a typed live contract, and a count of the people in front of
+/// the wearer does reach this app when the cartridge is enabled.
 @MainActor
 final class UnavailableSceneUnderstandingClient: SceneUnderstandingClient {
     static let reason = """

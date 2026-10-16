@@ -12,8 +12,7 @@ import SwiftUI
 /// ## The three things this screen exists to get right
 ///
 /// 1. **Every count is a floor.** `count_is_lower_bound` is `true` on every
-///    payload, and it appeared **zero times** in this app until this screen was
-///    rewritten. An undercount published without disclosure looks exactly like
+///    payload. An undercount published without disclosure looks exactly like
 ///    a quiet room, so the disclosure sits with the counts rather than under a
 ///    disclosure triangle, and the measured recall figures are shown beside it.
 /// 2. **Five silences, five sentences.** "Stopped", "still loading", "failed",
@@ -352,19 +351,12 @@ struct SceneReadingView: View {
 
     // MARK: The disclosure
 
-    /// `count_is_lower_bound`, rendered where a person sees it.
-    ///
-    /// This is the obligation §12.3 of the contract names, and the reason it is
-    /// not a footnote: an undercount published without disclosure looks exactly
-    /// like a quiet room, and a footnote below three limitation paragraphs is
-    /// the same as no disclosure at all.
     /// The Tower's single-person note, shown only when it applies.
     ///
-    /// The privacy review accepted one limitation: with exactly one person in
+    /// The privacy design accepts one limitation: with exactly one person in
     /// view, the side, size and facing aggregates describe that person for as
     /// long as they are in view. The Tower publishes the sentence that says
-    /// so in `single_person_note`, and until now nothing on this side read
-    /// it, so the disclosure the acceptance rested on reached nobody.
+    /// so in `single_person_note`, and this is where it reaches the wearer.
     ///
     /// Shown only at a count of one, because that is the case it is about;
     /// beside a count of four it would be noise, and noise is how a
@@ -385,6 +377,12 @@ struct SceneReadingView: View {
         }
     }
 
+    /// `count_is_lower_bound`, rendered where a person sees it.
+    ///
+    /// This is the obligation §12.3 of the contract names, and the reason it is
+    /// not a footnote: an undercount published without disclosure looks exactly
+    /// like a quiet room, and a footnote below three limitation paragraphs is
+    /// the same as no disclosure at all.
     @ViewBuilder
     private var lowerBoundDisclosure: some View {
         if reading.countIsLowerBound {

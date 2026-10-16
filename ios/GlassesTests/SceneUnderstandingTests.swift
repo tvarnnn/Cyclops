@@ -1094,7 +1094,7 @@ final class SceneUnderstandingClientTests: XCTestCase {
     }
 }
 
-// MARK: - 2026-09-07 additions
+// MARK: - Additions: people fields, wording, visibility
 
 // @MainActor, like every other test class in this file. The app target
 // sets SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor, so the decoder, the
@@ -1165,8 +1165,7 @@ final class SceneUnderstandingAdditionsTests: XCTestCase {
     /// only while somebody streams AND somebody watches, the detector then
     /// runs for as long as the socket lives.
     ///
-    /// The lane shipped it in that state. This test fails if it returns:
-    /// it calls through the existential and asserts the override ran.
+    /// This test calls through the existential and asserts the override ran.
     func testVisibilityReachesTheConformerThroughAnExistential() {
         final class Recorder: SceneUnderstandingClient {
             var seen: [Bool] = []

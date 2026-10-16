@@ -104,7 +104,20 @@ nonisolated enum SceneUnderstandingContract {
 /// `failure_reason`, `people.facing_wearer`, and the scene block itself.
 enum SceneUnderstandingDecoder {
 
-    /// The whole payload, or `nil` when it cannot be read as this contract.
+    /// The whole payload as one `SceneReading`, or `nil` when it cannot be read
+    /// as this contract.
+    ///
+    /// How: the required keys and the lifecycle first; then the six constants
+    /// of the self-description, each compared with this build's; then the
+    /// scene block (`observation(from:reportedClasses:)`) when
+    /// `scene_available` is `true`, or the reason there is none when it is
+    /// `false`; then the remaining fields, with `nil` kept wherever the wire
+    /// may say `null`.
+    ///
+    /// Why all or nothing: a payload that is not this contract is refused
+    /// whole rather than decoded in part. A partial scene is a quieter room on
+    /// screen, with nothing to say anything was missed; a refusal reaches the
+    /// screen as a failure the person can see.
     static func reading(from payload: [String: Any]) -> SceneReading? {
         guard
             let claim = payload["claim"] as? String,
@@ -317,8 +330,8 @@ enum SceneUnderstandingDecoder {
             facingStatesWithheld: json["facing_states_withheld"] as? [String] ?? [],
             facingStatesWithheldReason: json["facing_states_withheld_reason"] as? String,
             facingNote: json["facing_note"] as? String,
-            // 2026-09-07 additions, every one optional: an older Tower omits
-            // them and the defaults add nothing.
+            // Later additions, every one optional: an older Tower omits them
+            // and the defaults add nothing.
             partialBottomEdge: json["partial_bottom_edge"] as? Int ?? 0,
             byApparentSize: json["by_apparent_size"] as? [String: Int] ?? [:],
             apparentSizeNote: json["apparent_size_note"] as? String,
