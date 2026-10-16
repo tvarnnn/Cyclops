@@ -22,8 +22,10 @@ human types it.
 
 THE IMAGERY ROUTES SERVE PIXELS.
 
-Every other route here returns only a POINTER to a frame. Three rules
-govern the imagery routes:
+`/frame` and `/crop` serve image bytes. The other three routes return
+JSON only -- the records, the last sighting and the imagery descriptor
+-- and none of them carries a picture. Three rules govern the two
+image routes:
 
   * every picture passes a face filter on the way out, and a Tower whose
     filter cannot run serves NOTHING rather than an unfiltered
@@ -183,10 +185,11 @@ _NO_STORE = {"Cache-Control": "no-store"}
 # most of this repository's tests. The failure has to be a REFUSAL, never
 # an AttributeError and never a raw frame.
 #
-# `path=""` means "no model", explicitly: `Path("")` is `Path(".")` and
-# `Path(".").exists()` is True, so an empty path would otherwise report
-# itself AVAILABLE and refuse only because
-# `cv2.FaceDetectorYN.create(".")` happens to raise.
+# `path=""` means "no model", explicitly, because `imagery.FaceFilter`
+# checks for a blank path. Without that check `Path("")` is `Path(".")`
+# and `Path(".").exists()` is True, so an empty path would report itself
+# AVAILABLE and refuse only because `cv2.FaceDetectorYN.create(".")`
+# happens to raise.
 _REFUSING_FILTER = build_face_filter(path="")
 
 
