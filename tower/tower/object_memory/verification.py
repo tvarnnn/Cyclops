@@ -148,13 +148,13 @@ class Verifier(Protocol):
 
 
 class RefusingVerifier:
-    """Agrees with nothing. The default, and not a stub.
+    """Agrees with nothing. Not a stub.
 
     A Tower with no semantic model genuinely cannot tell a remote from a
-    laptop keyboard, and this is what saying so looks like. It makes the
-    no-verifier configuration a real, tested path rather than a `None`
-    check scattered through the producer -- and it means the behaviour of
-    a Tower without a model is exercised by the same tests as one with.
+    laptop keyboard, and this is what saying so looks like. The producer
+    currently expresses "no verifier" as `None` (the engine and
+    `_build_verifier` do), so this class is the drop-in for a caller that
+    wants a real object instead; the tests pin its verdict.
     """
 
     name = "none"
@@ -217,7 +217,6 @@ class ScriptedVerifier:
 class _Job:
     sighting: object
     crop: object
-    submitted_at: float
 
 
 class VerificationQueue:
@@ -254,14 +253,10 @@ class VerificationQueue:
         # Jobs submitted whose verdict has not yet been PUBLISHED.
         #
         # One counter rather than "the queue is empty and nothing is in
-        # flight", because those are two observations and there were two
-        # windows between them. It was `_in_flight`, incremented after
-        # `_pending.get()` returned -- so a job could be off the queue and
-        # not yet counted, and `wait_idle` would say idle while a verdict
-        # was still coming. Moving the decrement past `_done.put` closed
-        # the tail of that window and left the head open; a single counter
-        # incremented BEFORE the put and decremented AFTER the publish has
-        # no window at either end.
+        # flight", because those are two observations with a gap at each
+        # end of the worker's handling of a job. Incremented BEFORE the
+        # put and decremented AFTER the publish, a single counter has no
+        # window at either end.
         self._outstanding = 0
         self._lock = threading.Lock()
 
@@ -325,13 +320,12 @@ class VerificationQueue:
             self.submitted += 1
             # Counted here too, and it must be: `_run_one` decrements in
             # a `finally`, so a synchronous submit that skipped the
-            # increment drove the counter negative and `wait_idle` --
-            # which asks for exactly zero -- never returned again. Seven
-            # engine tests sat out a 30-second timeout apiece before this
-            # line existed.
+            # increment would drive the counter negative and `wait_idle`
+            # -- which asks for exactly zero -- would never return again
+            # (seven engine tests would each sit out a 30-second timeout).
             with self._lock:
                 self._outstanding += 1
-            self._run_one(_Job(sighting, crop, self._clock()))
+            self._run_one(_Job(sighting, crop))
             return True
 
         while self._pending.qsize() >= self._max_pending:
@@ -355,7 +349,7 @@ class VerificationQueue:
         # when a job exists and nothing knows about it.
         with self._lock:
             self._outstanding += 1
-        self._pending.put(_Job(sighting, crop, self._clock()))
+        self._pending.put(_Job(sighting, crop))
         self.peak_pending = max(self.peak_pending, self._pending.qsize())
         return True
 
@@ -429,13 +423,11 @@ class VerificationQueue:
     def _run_one(self, job: _Job) -> None:
         """Verify one job, publish the verdict, then stop counting it.
 
-        The `finally` is not optional. An earlier version dropped it to
-        get the publish before the decrement, and that leaked the counter
-        forever on any `BaseException` -- a `KeyboardInterrupt` inside the
-        model would leave `wait_idle` unable to return True again, and in
-        threaded mode the worker would die silently holding the count.
-        Publishing inside the `try` and decrementing in the `finally`
-        gets both.
+        The `finally` is not optional: without it any `BaseException` (a
+        `KeyboardInterrupt` inside the model, say) would leave `wait_idle`
+        unable to return True again, and in threaded mode the worker would
+        die silently holding the count. Publishing inside the `try` and
+        decrementing in the `finally` gets both.
         """
         started = self._clock()
         try:
@@ -494,10 +486,10 @@ class VerificationQueue:
 #     owlv2-base            0.949         0.857        126       842 MB
 #     llmdet-tiny           0.407         1.000      3,091     1,643 MB
 #
-# Both over the SHIPPED vocabulary. An earlier run of this benchmark used
-# a hand-copied 34-word list while `verifier_vocabulary()` returned 31,
-# so its figures described a configuration that does not ship; the bench
-# now imports the list. Re-running changed nothing but llmdet's latency.
+# Both over the SHIPPED vocabulary (31 words; a hand-copied 34-word list
+# diverged from `verifier_vocabulary()`'s 31, so the bench imports the
+# list rather than copying it). Re-running over the shipped list changed
+# nothing but llmdet's latency.
 #
 # The gap is architectural rather than incidental. OWLv2 embeds each
 # prompt SEPARATELY and scores it against the image's object queries, so
@@ -537,7 +529,7 @@ OWLV2_REPO = "google/owlv2-base-patch16-ensemble"
 # accuracy by at most 0.015, and 0.45 stays optimal under every group
 # relabelling tried. Two audits disagreed about how many adversarial
 # flips it takes to push balanced accuracy below 0.90 -- one said seven,
-# one said three -- so neither number is quoted here.
+# one said three -- so no count is quoted here.
 #
 # It is still a threshold fitted to 94 crops from ONE home, and it should
 # be re-measured against any corpus with a different camera, a different
