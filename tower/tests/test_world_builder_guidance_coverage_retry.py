@@ -59,7 +59,9 @@ def _dispositions(caplog):
 def _stop(worker):
     worker.shutdown()
     worker._thread.join(1)
+    worker._photo_worker._thread.join(1)
     assert not worker._thread.is_alive()
+    assert not worker._photo_worker._thread.is_alive()
 
 
 def test_deadline_miss_retries_same_candidate_and_advances_block(monkeypatch, tmp_path):

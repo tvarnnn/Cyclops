@@ -47,6 +47,7 @@ from tower.routes import (
     guidance_imagery,
     health,
     observations,
+    photo_floorplan,
     scene,
     sessions,
     ws,
@@ -1617,11 +1618,7 @@ def create_app() -> FastAPI:
     app.include_router(cv_lab_preview.router)
     app.include_router(geometry.router)
     app.include_router(guidance_imagery.router)
-    # FOW v1.2 photo floor plan: exactly `on` (and coverage on), else no route at all.
-    from tower.config import world_photo_floorplan_setting
-    if world_photo_floorplan_setting():
-        from tower.routes import photo_floorplan
-        app.include_router(photo_floorplan.router)
+    app.include_router(photo_floorplan.router)
     app.include_router(observations.router)
     app.include_router(sessions.router)
     app.include_router(scene.router)

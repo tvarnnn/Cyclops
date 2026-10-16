@@ -136,7 +136,6 @@ class _Sink:
 
 
 def _worker(monkeypatch, tmp_path, sink):
-    monkeypatch.delenv("TOWER_WORLD_PHOTO_FLOORPLAN", raising=False)
     monkeypatch.setattr(imagery, "state_for", lambda root: sink)
 
     def compute(root, world, session, expected, revision, clock, tag, budget, **kwargs):

@@ -1055,21 +1055,6 @@ def world_anchor_verify_setting() -> frozenset:
 #              ON still withholds (the last published solution stands) on a failure: an exception,
 #              or a relabel that leaves no room. (v1's pose quarantine and "no certifiable room ->
 #              withhold" survive only in the offline shadow CLI's `assess`.)
-# FOW v1.2 PHOTO FLOOR PLAN (`world_builder/photo_floorplan_worker.py`; design
-# FOW-V12-PHOTO-FLOORPLAN-DESIGN-20261012, wire mail 303). Exactly `on` enables it, the
-# same exact-'on' rule as TOWER_WORLD_GUIDANCE_COVERAGE: any other value,
-# including `1`/`true`, is off, so OFF is byte-for-byte today's Tower (no route, no
-# worker, no import). It also needs TOWER_WORLD_GUIDANCE_COVERAGE=on, because a photo
-# plan exists only for a published coverage landing. The raster is the CPU-only
-# lower-image floor homography.
-WORLD_PHOTO_FLOORPLAN_ENV = "TOWER_WORLD_PHOTO_FLOORPLAN"
-
-
-def world_photo_floorplan_setting() -> bool:
-    """True only when both TOWER_WORLD_PHOTO_FLOORPLAN and TOWER_WORLD_GUIDANCE_COVERAGE
-    are exactly `on`."""
-    return (os.environ.get(WORLD_PHOTO_FLOORPLAN_ENV) == "on"
-            and os.environ.get("TOWER_WORLD_GUIDANCE_COVERAGE") == "on")
 
 
 # FOW GUIDANCE IMAGERY, UNREDACTED SESSIONS (`world_builder/guidance_imagery.py` and

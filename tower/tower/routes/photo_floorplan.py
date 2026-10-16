@@ -1,5 +1,4 @@
-"""FOW v1.2 photo floor plan routes (registered by main.py only when
-TOWER_WORLD_PHOTO_FLOORPLAN is exactly `on`).
+"""FOW v1.2 photo floor plan routes (always registered by main.py).
 
 The handlers live in the result-channel adapter
 `tower.results.world_builder_photo_floorplan`; this module only re-exports its

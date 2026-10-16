@@ -191,18 +191,17 @@ pinned by a Tower test.
   at all. It never falls back to the stride selection, whose entries have no
   sector.
 
-## Photo floor plan v1.2 (2026-10-12) -- default OFF, imagery_source unredacted
+## Photo floor plan v1.2 (2026-10-12) -- imagery_source unredacted
 
-**v1.2, default OFF, `imagery_source` "unredacted" (privacy deferred; TODO
+**v1.2, `imagery_source` "unredacted" (privacy deferred; TODO
 redaction).** Authority: FOW-V12-PHOTO-FLOORPLAN-DESIGN-20261012 and the
 frozen wire in mail 303 (the iOS client, `codex/fow-v12-ios` a1a82bc, is built
 against it). Deviations go through the lead first.
 
-Switches: `TOWER_WORLD_PHOTO_FLOORPLAN` accepts only `on`, and also needs
-`TOWER_WORLD_GUIDANCE_COVERAGE=on`. When it is off, neither route is
-registered, no photo worker starts, and the coverage worker reads and publishes
-exactly what it did before. The raster is always the lower-image floor
-homography (CPU only); `TOWER_WORLD_PHOTO_FLOORPLAN_METHOD` is no longer read,
+Switches: the photo floor plan is on whenever
+`TOWER_WORLD_GUIDANCE_COVERAGE=on`. Both routes are always registered; with
+coverage off they answer 404 and no photo worker starts. The raster is always
+the lower-image floor homography (CPU only); `TOWER_WORLD_PHOTO_FLOORPLAN_METHOD` is no longer read,
 so any value of it, set or unset, gives the same plan.
 
 ### Routes
