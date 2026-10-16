@@ -42,6 +42,11 @@ like a version skew; a null is an answer.
 import time
 
 from tower.object_memory import imagery
+# The refusal REASONS are re-exported here rather than imported by the
+# route. `tower/routes/observations.py` reaches only this adapter, and
+# `test_the_object_memory_route_reaches_only_its_adapter` is what keeps
+# that true -- a route that imported the cartridge "just for a constant"
+# is how the boundary goes.
 from tower.object_memory.imagery import (  # noqa: F401
     FILTER_UNAVAILABLE,
     IMAGERY_EXPIRED,
@@ -68,12 +73,11 @@ def recorded_classes_for(verifier: str) -> tuple[str, ...]:
     """
     return recordable_classes(verifier != "none")
 
-# Opaque and dated, in the style of `world_builder.geometry/2026-08-25`.
-# Compared for equality only: never parsed, never ordered, never used to
-# infer that one contract is newer than another.
+# Opaque. Compared for equality only: never parsed, never ordered, never
+# used to infer that one contract is newer than another.
 OBSERVATIONS_CONTRACT = "object_memory.observations/2026-08-26"
 
-# The three sentences above, as values a decoder can switch on.
+# The module docstring's three claims, as values a decoder can switch on.
 CATEGORY_CLAIM = "category-was-visible-once"
 IDENTITY_SCOPE = "category-not-instance"
 ABSENCE_MEANING = "not-observed-by-this-cartridge"
@@ -173,9 +177,8 @@ def _where(observation) -> dict:
 def _observation_view(observation) -> dict:
     return {
         # The handle the imagery routes take. Derived from the three
-        # values that already identify a sighting, so the 64 records
-        # written before this field existed have one too, permanently,
-        # with no migration and no rewrite of a wearer's memory.
+        # values that already identify a sighting, so older records have
+        # one too with no migration and no rewrite of a wearer's memory.
         "observation_id": observation.observation_id,
         "object_class": observation.object_class,
         "claim": CATEGORY_CLAIM,
@@ -275,10 +278,10 @@ def build_observations(
     wearer will be shown, which is everything on this wire.
 
     `since` IS THE ANSWER TO "WHAT DID THIS RECORDING REMEMBER", and it is
-    why a failed recording can no longer wear a full store's history as its
-    own. A physical run once recorded ZERO observations while the app kept
-    showing 116 old ones, so "nothing happened" and "everything is fine"
-    looked identical. A client that stamps a session's `started_at` and asks
+    what stops a failed recording wearing a full store's history as its
+    own: a physical run that recorded ZERO observations while the app kept
+    showing 116 old ones made "nothing happened" and "everything is fine"
+    look identical. A client that stamps a session's `started_at` and asks
     `since=<that>` gets exactly the records THIS recording created --
     `recorded_at` is the Tower-receipt moment a record was first written, on
     the same clock as `started_at` -- so an empty answer is an honest empty
@@ -321,7 +324,15 @@ def build_last_seen(
 ) -> dict:
     """When a category was last in view, or an honest silence.
 
-    There is no 404 case here and that is a product decision, not an
+    WHAT: the newest stored observation of `object_class`, or an explicit
+    `observed: false` rather than a claim of absence.
+
+    HOW: ask the store for the class's last sighting, build the shared
+    envelope (retention view, recorded classes), then add `object_class`,
+    `recordable` (whether this Tower ever writes that class), `observed`,
+    the observation view or None, and `where` hoisted to the top level.
+
+    WHY: there is no 404 case and that is a product decision, not an
     oversight. "No record of a laptop" answered as Not Found reads as
     "there is no laptop", which is a claim about the world this cartridge
     cannot make. The resource -- what Object Memory knows about a class --
@@ -353,9 +364,8 @@ def build_last_seen(
 
 # --- resolving a record back to the picture it came from -----------------
 #
-# The pointer was always on the record. What was missing is the step that
-# turns it into something a person can look at -- and the reason that is
-# worth building is measured rather than assumed: MemPal's last-seen
+# The pointer on the record is turned into something a person can look at.
+# Why that is worth serving, from MemPal's measurements: its last-seen
 # images showed the true location only 53% of the time and still moved
 # retrieval accuracy from 0.81 to 0.95, with people searching 1.1 rooms
 # instead of 1.9. A wrong-but-plausible picture plus a human beats a
@@ -363,12 +373,6 @@ def build_last_seen(
 #
 # Everything here refuses rather than degrades. There is no path that
 # serves an unfiltered first-person frame.
-#
-# The refusal REASONS are re-exported above rather than imported by the
-# route. `tower/routes/observations.py` reaches only this adapter, and
-# `test_the_object_memory_route_reaches_only_its_adapter` is what keeps
-# that true -- a route that imported the cartridge "just for a constant"
-# is how the boundary goes.
 
 IMAGERY_CONTRACT = "object_memory.imagery/2026-08-27"
 
@@ -378,7 +382,7 @@ IMAGERY_CONTRACT = "object_memory.imagery/2026-08-27"
 # where in a room -- the same claim `where` already makes.
 IMAGERY_CLAIM = "frame-from-the-recording-this-record-was-derived-from"
 
-# And WHEN the filter ran, which stopped being one answer on 2026-08-29.
+# And WHEN the filter ran, which is not one answer for every source.
 #
 # `tower/world_builder/redaction.py` runs before persistence and earns
 # the name privacy transformation. A capture frame is the other case: the
@@ -517,15 +521,12 @@ def build_imagery_view(
 
     `available` DESCRIBES WHAT CAN BE SERVED, NOT WHAT `/frame` HOLDS.
 
-    That distinction did not exist until keyframes did, and getting it
-    wrong made the whole feature invisible in the one case it was built
-    for. The view route used to describe a `/frame` render. A record
-    whose recording had been deleted but whose owned crop was sitting on
-    disk therefore answered `available: false`, and the shipped iOS
-    loader gates on exactly that -- `guard description.available else {
-    .noPicture }` -- so it would never have asked `/crop` and the wearer
-    would have been told the picture was gone while it was being held for
-    them.
+    The shipped iOS loader gates on it -- `guard description.available
+    else { .noPicture }`. Describing only a `/frame` render would answer
+    `available: false` for a record whose recording had been deleted but
+    whose owned crop was sitting on disk; the loader would never ask
+    `/crop`, and the wearer would be told the picture was gone while it
+    was being held for them.
 
     So the view is built from a CROP render, which consults the owned
     keyframe and falls back to the capture frame. `frame_available` is
@@ -580,16 +581,14 @@ def build_imagery_view(
         # it is where in a picture, never where in a room.
         "bounding_box_normalized": list(box) if box is not None else None,
         # WHICH STORE ACTUALLY SERVED THESE BYTES, and therefore whose
-        # retention governs them. Not a constant any more, and it must
-        # not be: a crop served from this cartridge's own keyframe
-        # expires with the record and is deleted by `purge()`, while a
-        # frame served out of `data/captures/` may vanish on a schedule
-        # nothing here sets. Asserting one answer for both would be
-        # telling a client the wrong thing half the time.
+        # retention governs them. Not a constant: a crop served from this
+        # cartridge's own keyframe expires with the record and is deleted
+        # by `purge()`, while a frame served out of `data/captures/` may
+        # vanish on a schedule nothing here sets. Asserting one answer for
+        # both would tell a client the wrong thing half the time.
         #
         # `capture-side` remains the answer for every whole frame and for
-        # every record with no keyframe, which is every record written
-        # before keyframes existed -- so a decoder that only knows that
+        # every record with no keyframe, so a decoder that only knows that
         # value keeps working.
         "imagery_retention": (
             RETENTION_OBJECT_MEMORY if owned else RETENTION_CAPTURE_SIDE
