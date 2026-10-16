@@ -667,8 +667,9 @@ final class WorldBuilderViewModel: ObservableObject {
     /// The geometry push, heartbeat included, forwarded while a walk is
     /// receiving: a new revision is the live imagery's trigger, and each push
     /// retries a coverage landing the manifest did not carry yet (imagery and
-    /// photo floor plan) a bounded number of times: each model caps it with
-    /// its own `landingRetries` (3).
+    /// photo floor plan). Each model allows its own `landingRetries` (3)
+    /// attempts; the photo floor plan also keeps asking on every push while it
+    /// holds a `kept` notice for that landing.
     private func imageryGeometryPushed(_ coordinates: WorldGeometryCoordinates) {
         guard case .receiving = state else { return }
         imageryModel.geometryPushed(coordinates, receiving: true)
