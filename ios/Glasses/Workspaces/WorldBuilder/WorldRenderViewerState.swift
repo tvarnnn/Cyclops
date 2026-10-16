@@ -1,3 +1,5 @@
+import Foundation
+
 // MARK: - The viewer's state
 
 /// What the viewer sheet knows. The failure carries its sentence so the view
