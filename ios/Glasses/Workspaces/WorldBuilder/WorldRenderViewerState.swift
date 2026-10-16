@@ -351,6 +351,3 @@ nonisolated extension WorldRenderFetchError {
     /// What FastAPI answers for a path no route serves.
     static let unmatchedRouteDetail = "Not Found"
 }
-
-/// Owns one fetch of one page. Created by the sheet and destroyed with it;
-/// it holds a string, not a connection, so losing it loses nothing.

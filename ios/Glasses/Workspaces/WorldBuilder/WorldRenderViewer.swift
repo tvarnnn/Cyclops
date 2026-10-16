@@ -7,9 +7,9 @@ import Foundation
 import SwiftUI
 import UIKit
 
-/// The screen composes the state in `WorldRenderViewerState.swift`, the fetch and
-/// lifecycle in `WorldRenderViewerModel.swift`, and the owned WebKit view in
-/// `WorldRenderWebView.swift`. The same web view spans rendering and ready.
+// The screen composes the state in `WorldRenderViewerState.swift`, the fetch and
+// lifecycle in `WorldRenderViewerModel.swift`, and the owned WebKit view in
+// `WorldRenderWebView.swift`. The same web view spans rendering and ready.
 
 // MARK: - The 3D world on screen
 
@@ -105,7 +105,7 @@ struct WorldRenderScene: View {
     /// the page. The loading panel counts each step from here.
     @State private var waitingSince = Date.now
 
-    /// `finalization.notice` for the walk this room belongs to (§8): what
+    /// `finalization.notice` for the walk this room belongs to (COMPONENTS §8): what
     /// the Tower could not do and who can fix it, shown verbatim below the
     /// room caption as a plain note. `nil` shows nothing -- every older world,
     /// and every walk with nothing owed -- and an area viewer never shows it.
@@ -195,9 +195,9 @@ struct WorldRenderScene: View {
         return title ?? "Saved world"
     }
 
-    /// Compose the viewer around one stable web view. The native or legacy
-    /// chrome occupies the bands around `content`; height caps and a single
-    /// lifecycle task keep the picture visible while the model changes state.
+    /// Compose the viewer around one stable web view. Height caps and
+    /// `layoutPriority` keep the picture visible; one `.task` (skipped when
+    /// hosted) runs load, component refresh, then the revision follower.
     var body: some View {
         let native = usesNativeChrome
         VStack(spacing: 0) {
@@ -363,7 +363,7 @@ struct WorldRenderScene: View {
                 .font(.caption2)
                 .foregroundStyle(.readableSecondary)
                 .fixedSize(horizontal: false, vertical: true)
-            // The walk's notice (§8): verbatim, below the room caption, a
+            // The walk's notice (COMPONENTS §8): verbatim, below the room caption, a
             // plain note and not an error -- no icon, no tint, no control.
             if let notice {
                 Text(notice)
@@ -647,7 +647,7 @@ struct WorldRenderScene: View {
                 //
                 // A segmented control stood here, bound to `model.show(_:)`.
                 // It worked and it was the wrong control, for two independent
-                // reasons that keep the explanation accurate for the wearer.
+                // reasons.
                 //
                 // **It refetched the world to change one token.** Switching the
                 // view changes `WorldRenderTarget.id`, which restarts

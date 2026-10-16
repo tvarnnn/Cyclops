@@ -245,7 +245,10 @@ struct WorldRenderWebView: UIViewRepresentable {
     /// the data store and the scheme registration are tested without a view.
     static func makeConfiguration(assets: WorldAssetSchemeHandler, bridge: WorldChromeBridge) -> WKWebViewConfiguration {
         let configuration = WKWebViewConfiguration()
-        // The default store is persistent; this viewer uses memory only.
+        // The default store is persistent; for privacy, this viewer keeps
+        // first-person room imagery in memory, off disk
+        // (`ios/Glasses/Project_Overview_Steps/docs/06-PRIVACY-DATA.md`,
+        // "Raw Frame/Audio Retention"; `WORLD-BUILDER-IOS.md` §10).
         configuration.websiteDataStore = .nonPersistent()
         // Must be registered before the web view exists.
         configuration.setURLSchemeHandler(assets, forURLScheme: WorldAssetScheme.name)

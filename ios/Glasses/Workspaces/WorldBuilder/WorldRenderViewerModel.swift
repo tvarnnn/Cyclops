@@ -175,8 +175,9 @@ nonisolated struct WorldRenderClient {
     /// Ephemeral and cache-less (`WorldAssetClient.sharedUncachedSession`), not
     /// `.shared`: the appearance page's configuration names the imagery it
     /// fetches, and `URLSession.shared` writes responses to a disk cache unless
-    /// told otherwise. The viewer cache is scoped to one open screen
-    /// (`WORLD-BUILDER-IOS.md` §10).
+    /// told otherwise. For privacy, first-person room imagery stays in memory,
+    /// not a disk cache (`ios/Glasses/Project_Overview_Steps/docs/06-PRIVACY-DATA.md`,
+    /// "Raw Frame/Audio Retention"; `WORLD-BUILDER-IOS.md` §10).
     var session: URLSession = WorldAssetClient.sharedUncachedSession
     /// Longer than the list's ten seconds: a page for a full walk is a few
     /// megabytes of point coordinates, and a slow link is not a stalled one
@@ -188,7 +189,9 @@ nonisolated struct WorldRenderClient {
             throw WorldRenderFetchError.badAddress
         }
         // Local AND remote caches ignored, for the reason `WorldGeometryClient`
-        // gives and for the viewer's memory policy (`WORLD-BUILDER-IOS.md` §10);
+        // gives and for privacy: first-person room imagery stays out of disk
+        // caches (`ios/Glasses/Project_Overview_Steps/docs/06-PRIVACY-DATA.md`,
+        // "Raw Frame/Audio Retention"; `WORLD-BUILDER-IOS.md` §10);
         // the Tower also answers `Cache-Control:
         // no-store`, and a world under construction changes with every build.
         let request = Self.request(url, timeout: timeout)
@@ -392,6 +395,8 @@ nonisolated struct WorldRenderClient {
     }
 }
 
+/// Owns one fetch of one page. Created by the sheet and destroyed with it;
+/// it holds a string, not a connection, so losing it loses nothing.
 @MainActor
 final class WorldRenderViewerModel: ObservableObject {
     @Published private(set) var state: WorldRenderViewerState = .fetching {
@@ -1114,9 +1119,10 @@ final class WorldRenderViewerModel: ObservableObject {
     // would only have been an optimisation of a timer.
 
     /// Fetch this target's page and start a bounded render. It clears the
-    /// previous attempt, checks the returned page's session and area, then
-    /// enters rendering or reports a retryable failure. Fetch success alone
-    /// never claims the web view has drawn the world.
+    /// previous attempt, refetches once if an appearance page lacks its session,
+    /// and checks the returned page's session and area. It then enters rendering
+    /// or reports a failure with retryability set by the failure path. Fetch
+    /// success alone never claims the web view has drawn the world.
     func load() async {
         renderWatchdog?.cancel()
         renderWatchdog = nil
