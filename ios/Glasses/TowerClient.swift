@@ -35,9 +35,22 @@ enum TowerStatus: Equatable {
 /// The one socket carries three message families, demultiplexed by `type` in
 /// `handleInboundMessage`: the frame path (`frame` out, which only a DEBUG
 /// build sends; `frame_result` and `frame_error` in), the CV Lab control
-/// plane, and the read-only result channel. Neither of the last two may
-/// affect the frame path. Their decoders live in `TowerSocketMessages.swift`
-/// and `CartridgeResultChannel.swift`; `GET /health` in `TowerHealth.swift`.
+/// plane, and the read-only result channel.
+///
+/// Neither of the last two touches the send path: nothing they do changes the
+/// connection's `status`, the send window, the stream bracket or `tx_seq`,
+/// and a control or result message that fails to send is logged, never
+/// escalated. (The frame hold, `pauseFrameSending()`, is a separate call on
+/// this client, not a control-plane message.) The CV Lab does decide which
+/// `frame_result`s are accepted: a status document sets the watched run
+/// (`watchCVLabRun`), `handleFrameResult` discards a result from any other run
+/// before it is published or counted as a reply, and a change of run clears
+/// the held reading and refusal. Status documents reach that gate as
+/// `cv_lab_status`, inside a `cv_lab_error`, or through the CV Lab cartridge
+/// client when one arrives on the result channel.
+///
+/// The decoders live in `TowerSocketMessages.swift` and
+/// `CartridgeResultChannel.swift`; `GET /health` in `TowerHealth.swift`.
 @MainActor
 final class TowerClient: NSObject, ObservableObject {
     @Published private(set) var status: TowerStatus = .offline
@@ -1650,9 +1663,10 @@ final class TowerClient: NSObject, ObservableObject {
 
     // MARK: Inbound: CV Lab control plane
     //
-    // Both handlers are additive, neither can affect the frame path, and
-    // both pass the status document through undecoded — this file owns the
-    // transport, the cartridge owns the contract.
+    // Both handlers are additive and neither touches the send path. Both can
+    // move the run gate (`watchCVLabRun`) that decides which `frame_result`s
+    // are accepted, and both pass the status document through undecoded —
+    // this file owns the transport, the cartridge owns the contract.
 
     private func handleCVLabStatus(_ json: [String: Any]) {
         guard let reply = CVLabControlReply(json: json) else {
@@ -1695,10 +1709,12 @@ final class TowerClient: NSObject, ObservableObject {
 
     // MARK: Inbound: result channel
     //
-    // Every handler below is additive and none of them can affect the frame
-    // path: they decode, publish, and return. Nothing here touches
-    // `status`, the send window, or the stream bracket — which is the iOS
-    // half of the guarantee the contract makes on the Tower side.
+    // Every handler below is additive: they decode, publish, and return.
+    // Nothing here touches `status`, the send window, the stream bracket or
+    // the run gate — which is the iOS half of the guarantee the contract
+    // makes on the Tower side. (A subscriber can still move the run gate: the
+    // CV Lab cartridge client calls `watchCVLabRun` with a status it receives
+    // here.)
 
     private func handleCartridgeDeclaration(_ json: [String: Any]) {
         let declaration = TowerCartridgeDeclaration(json: json)
@@ -1837,6 +1853,7 @@ final class TowerClient: NSObject, ObservableObject {
         // so carrying the counter across a reconnect would present the frames
         // this client never sent on the old socket as a gap on the new one —
         // manufacturing exactly the transit loss `tx_seq` exists to measure.
+        // A physical walk has reconnected mid-session.
         txSequence = 0
 
         #if DEBUG

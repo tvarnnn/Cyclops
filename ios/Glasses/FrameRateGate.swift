@@ -78,9 +78,14 @@ struct FrameRateGate {
     /// base64, JSON serialisation and a viewfinder render: an *estimated*
     /// 15–25 ms, roughly 20–30% of the main thread at 12 fps and uncomfortable
     /// at 15. Bandwidth is an *estimated* ~2 Mbit/s sustained at 12, ~2.5 at 15,
-    /// over a remote Tailscale path. Neither figure is measured; the developer
-    /// surface's `Encode ms` and `Backlog` rows measure them, and 15 needs a
-    /// physical run showing the headroom first.
+    /// over a remote Tailscale path. Neither estimate has been measured. The
+    /// developer surface measures parts of them: `Encode ms` times the JPEG
+    /// encode, base64 and JSON serialisation only (not `makeUIImage` or the
+    /// viewfinder render), so it is one part of the 15–25 ms; `Backlog` counts
+    /// selected frames not yet accounted for, and climbs when the pipeline
+    /// falls behind; `Uplink` is the JSON bytes handed to the socket per
+    /// second, without WebSocket or TCP framing. 15 needs a physical run
+    /// showing the headroom first.
     static let towerTargetFPS: Double = configuredTowerTargetFPS(
         environment: ProcessInfo.processInfo.environment, info: Bundle.main.infoDictionary ?? [:])
 
