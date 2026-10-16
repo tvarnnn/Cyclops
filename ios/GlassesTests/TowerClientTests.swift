@@ -3298,6 +3298,426 @@ final class TowerClientTests: XCTestCase {
     }
 }
 
+// MARK: - Characterization: the frame send path and the inbound dispatch
+//
+// Written against `sendFrame` and `handleInboundMessage` as they stood before
+// each was split into named steps, and run green on that code first. Each test
+// pins a branch the tests above leave unasserted: exactly what reaches the
+// wire, what each kind of drop costs, what an ignored message leaves alone,
+// and which state a handler has updated by the time it publishes.
+
+extension TowerClientTests {
+
+    /// Every raw `frame` text the recorder saw, in order.
+    private func frameTexts(_ recorder: MessageRecorder) -> [String] {
+        recorder.all.filter { decode($0)?["type"] as? String == "frame" }
+    }
+
+    /// A frame on the wire is the seven keys the Tower parses, the image is
+    /// base64 of a quality-0.5 JPEG, and `wireBytes` is the size of the message.
+    ///
+    /// Not compared byte for byte against a stored string: the payload is a
+    /// Swift dictionary, whose iteration order differs from one instance to
+    /// the next, so the key order on the wire has never been fixed. The decoded
+    /// object is, and so is the length, which also pins the serialisation
+    /// options (`JSONSerialization` escapes the `/` in base64).
+    func testAFrameOnTheWireIsTheSevenKeysTheTowerParses() async throws {
+        let server = try MockTowerServer()
+        let recorder = attachRecorder(server)
+        let port = try await server.start()
+        defer { server.stop() }
+
+        let metrics = SenderMetrics()
+        let client = TowerClient(metrics: metrics)
+        client.connect(to: url(port: port))
+        await expect { client.status == .online }
+        metrics.begin()
+        client.sendStreamStart()
+
+        let image = makeTestImage()
+        // Width and height differ from each other and from the image, so a
+        // swap or a re-measure would show.
+        client.sendFrame(image, width: 2, height: 3, sequence: 41)
+        await expect { self.frameTexts(recorder).count == 1 }
+        guard let text = frameTexts(recorder).first, let frame = decode(text) else {
+            return XCTFail("no frame reached the server")
+        }
+
+        let jpeg = try XCTUnwrap(image.jpegData(compressionQuality: 0.5))
+        let expected: [String: Any] = [
+            "type": "frame",
+            "seq": 41,
+            "tx_seq": 0,
+            "width": 2,
+            "height": 3,
+            "format": "jpeg",
+            "data": jpeg.base64EncodedString(),
+        ]
+        XCTAssertEqual(Set(frame.keys), Set(expected.keys))
+        XCTAssertEqual(frame["type"] as? String, "frame")
+        XCTAssertEqual(frame["seq"] as? Int, 41)
+        XCTAssertEqual(frame["tx_seq"] as? Int, 0)
+        XCTAssertEqual(frame["width"] as? Int, 2)
+        XCTAssertEqual(frame["height"] as? Int, 3)
+        XCTAssertEqual(frame["format"] as? String, "jpeg")
+        XCTAssertEqual(frame["data"] as? String, jpeg.base64EncodedString())
+        XCTAssertEqual(
+            text.utf8.count,
+            try JSONSerialization.data(withJSONObject: expected).count,
+            "the message is not the default serialisation of those seven values"
+        )
+
+        let snapshot = metrics.currentSnapshot
+        XCTAssertEqual(snapshot.wireBytes, text.utf8.count, "wireBytes is not the size of the message sent")
+        XCTAssertEqual(snapshot.sendAttempts, 1)
+        XCTAssertEqual(snapshot.framesEncoded, 1)
+        XCTAssertEqual(snapshot.encodeFailures, 0)
+        XCTAssertEqual(snapshot.sendWindowDrops, 0)
+        XCTAssertEqual(snapshot.sessionGateDrops, 0)
+        await expect { metrics.currentSnapshot.sendSuccesses == 1 }
+        XCTAssertEqual(metrics.currentSnapshot.slotSamples, 1)
+
+        client.disconnect()
+    }
+
+    /// A frame that cannot be encoded reaches a terminal outcome as an encode
+    /// failure, and takes neither a send-window slot nor a `tx_seq`.
+    func testAFrameThatCannotBeEncodedTakesNoSlotAndNoTransmitNumber() async throws {
+        let server = try MockTowerServer()
+        let recorder = attachRecorder(server)
+        let port = try await server.start()
+        defer { server.stop() }
+
+        let metrics = SenderMetrics()
+        // A window of one: had the failed frame kept a slot, the next frame
+        // would be dropped for a full window.
+        let client = TowerClient(metrics: metrics, maxFramesInFlight: 1)
+        client.connect(to: url(port: port))
+        await expect { client.status == .online }
+        metrics.begin()
+        client.sendStreamStart()
+
+        // No bitmap behind it, so there is nothing for `jpegData` to encode.
+        let unencodable = UIImage()
+        XCTAssertNil(unencodable.jpegData(compressionQuality: 0.5), "the fixture must fail to encode")
+        client.sendFrame(unencodable, width: 2, height: 2, sequence: 1)
+
+        var snapshot = metrics.currentSnapshot
+        XCTAssertEqual(snapshot.encodeFailures, 1)
+        XCTAssertEqual(snapshot.framesEncoded, 0)
+        XCTAssertEqual(snapshot.sendAttempts, 0)
+        XCTAssertEqual(snapshot.wireBytes, 0)
+        XCTAssertEqual(snapshot.sendWindowDrops, 0)
+        XCTAssertEqual(snapshot.sessionGateDrops, 0)
+        XCTAssertEqual(snapshot.stallRecoveries, 0)
+
+        client.sendFrame(makeTestImage(), width: 2, height: 2, sequence: 2)
+        snapshot = metrics.currentSnapshot
+        XCTAssertEqual(snapshot.sendAttempts, 1)
+        XCTAssertEqual(snapshot.sendWindowDrops, 0, "the failed frame kept its send-window slot")
+        XCTAssertEqual(snapshot.framesEncoded, 1)
+
+        await expect { self.frames(recorder).count == 1 }
+        XCTAssertEqual(frames(recorder).first?["seq"] as? Int, 2)
+        XCTAssertEqual(frames(recorder).first?["tx_seq"] as? Int, 0, "the failed frame consumed a transmit number")
+
+        client.disconnect()
+    }
+
+    /// Each of the three session gates (not online, no `stream_start`, paused)
+    /// counts one session-gate drop, encodes nothing, sends nothing, and
+    /// consumes no `tx_seq`.
+    func testEachSessionGateCountsOneDropAndSpendsNothing() async throws {
+        let server = try MockTowerServer()
+        let recorder = attachRecorder(server)
+        let port = try await server.start()
+        defer { server.stop() }
+
+        let metrics = SenderMetrics()
+        let client = TowerClient(metrics: metrics)
+        metrics.begin()
+
+        // 1. Not online.
+        client.sendFrame(makeTestImage(), width: 2, height: 2, sequence: 1)
+        XCTAssertEqual(metrics.currentSnapshot.sessionGateDrops, 1)
+
+        // 2. Online, but no `stream_start` sent.
+        client.connect(to: url(port: port))
+        await expect { client.status == .online }
+        client.sendFrame(makeTestImage(), width: 2, height: 2, sequence: 2)
+        XCTAssertEqual(metrics.currentSnapshot.sessionGateDrops, 2)
+
+        // 3. Bracket open, frame sending paused.
+        client.sendStreamStart()
+        client.pauseFrameSending()
+        client.sendFrame(makeTestImage(), width: 2, height: 2, sequence: 3)
+        XCTAssertEqual(metrics.currentSnapshot.sessionGateDrops, 3)
+
+        let gated = metrics.currentSnapshot
+        XCTAssertEqual(gated.framesEncoded, 0, "a gated frame was encoded")
+        XCTAssertEqual(gated.encodeFailures, 0)
+        XCTAssertEqual(gated.sendAttempts, 0)
+        XCTAssertEqual(gated.wireBytes, 0)
+        XCTAssertEqual(gated.sendWindowDrops, 0)
+        XCTAssertEqual(gated.stallRecoveries, 0)
+
+        client.resumeFrameSending()
+        client.sendFrame(makeTestImage(), width: 2, height: 2, sequence: 4)
+        await expect { self.frames(recorder).count == 1 }
+        XCTAssertEqual(frames(recorder).first?["seq"] as? Int, 4)
+        XCTAssertEqual(frames(recorder).first?["tx_seq"] as? Int, 0, "a gated frame consumed a transmit number")
+        XCTAssertEqual(metrics.currentSnapshot.sessionGateDrops, 3)
+
+        client.disconnect()
+    }
+
+    /// A binary frame, a text that is not JSON, a JSON value that is not an
+    /// object, an object with no string `type`, and an unknown `type` are all
+    /// ignored: nothing is published, counted or cached, and the socket stays up.
+    func testAMessageThatIsNotATypedJSONObjectIsIgnored() async throws {
+        let server = try MockTowerServer()
+        let port = try await server.start()
+        respondToPing(server)
+        defer { server.stop() }
+
+        let metrics = SenderMetrics()
+        let client = TowerClient(metrics: metrics)
+        let results = collectEvents(client)
+        let cvLab = collectCVLabEvents(client)
+        client.connect(to: url(port: port))
+        await expect { client.status == .online }
+
+        // Binary, although its bytes would decode as a frame_result.
+        server.send(data: Data(#"{"type":"frame_result","seq":1}"#.utf8))
+        server.send(text: "not json at all")
+        server.send(text: "[1, 2, 3]")
+        server.send(text: #"{"seq":1,"mean_intensity":0.2}"#)
+        server.send(text: #"{"type":7,"seq":1}"#)
+        server.send(text: #"{"type":"frame_result_v2","seq":1}"#)
+        // Handled in arrival order, so once this one has landed every message
+        // above has been handled.
+        server.send(text: #"{"type":"frame_result","seq":2,"mean_intensity":0.4,"processing_ms":1.0}"#)
+        await expect { client.latestFrameResult?.sequence == 2 }
+
+        XCTAssertEqual(client.frameResultCount, 1, "an ignored message was counted as a reply")
+        XCTAssertEqual(metrics.currentSnapshot.frameResults, 1)
+        XCTAssertTrue(results.all.isEmpty, "an ignored message was published: \(results.all)")
+        XCTAssertTrue(cvLab.all.isEmpty, "an ignored message was published: \(cvLab.all)")
+        XCTAssertNil(client.cartridgeDeclaration)
+        XCTAssertNil(client.latestFrameRefusal)
+        XCTAssertNil(client.watchedCVLabRunID)
+        XCTAssertEqual(client.status, .online)
+
+        client.disconnect()
+    }
+
+    /// `result_unsubscribed` is published only when it carries a string
+    /// `subscription_id`; `protocol_error` is logged and publishes nothing.
+    func testAnUnsubscribeNeedsItsIDAndAProtocolErrorPublishesNothing() async throws {
+        let server = try MockTowerServer()
+        let port = try await server.start()
+        respondToPing(server)
+        defer { server.stop() }
+
+        let client = TowerClient(metrics: SenderMetrics())
+        let results = collectEvents(client)
+        let cvLab = collectCVLabEvents(client)
+        client.connect(to: url(port: port))
+        await expect { client.status == .online }
+
+        server.send(text: #"{"type":"result_unsubscribed"}"#)
+        server.send(text: #"{"type":"result_unsubscribed","subscription_id":7}"#)
+        server.send(text: #"{"type":"protocol_error","reason":"unknown_message_type","message_type":"frame_v9"}"#)
+        server.send(text: #"{"type":"protocol_error"}"#)
+        server.send(text: #"{"type":"result_unsubscribed","subscription_id":"sub-9"}"#)
+        server.send(text: #"{"type":"frame_result","seq":3,"mean_intensity":0.4,"processing_ms":1.0}"#)
+        await expect { client.latestFrameResult?.sequence == 3 }
+
+        XCTAssertEqual(results.all.count, 1, "expected exactly one event, got \(results.all)")
+        guard case .unsubscribed(subscriptionID: let id) = results.all.first else {
+            return XCTFail("expected the unsubscribe, got \(results.all)")
+        }
+        XCTAssertEqual(id, "sub-9")
+        XCTAssertTrue(cvLab.all.isEmpty)
+        XCTAssertNil(client.cartridgeDeclaration)
+        XCTAssertEqual(client.status, .online)
+
+        client.disconnect()
+    }
+
+    /// A known `type` whose decoder refuses the message publishes nothing and
+    /// changes nothing: `frame_error` without a `reason`, `cv_lab_status`
+    /// without a `status`, `cv_lab_error` without a `reason`, and
+    /// `result_subscribed` without its three required fields.
+    func testAKnownTypeThatCannotBeDecodedPublishesNothing() async throws {
+        let server = try MockTowerServer()
+        let port = try await server.start()
+        respondToPing(server)
+        defer { server.stop() }
+
+        let client = TowerClient(metrics: SenderMetrics())
+        let results = collectEvents(client)
+        let cvLab = collectCVLabEvents(client)
+        client.connect(to: url(port: port))
+        await expect { client.status == .online }
+
+        server.send(text: #"{"type":"frame_error","seq":3,"message":"no reason"}"#)
+        server.send(text: #"{"type":"cv_lab_status","contract":"experimental_cv.status/2026-08-27"}"#)
+        server.send(text: #"{"type":"cv_lab_error","message":"no reason","status":{"lifecycle":{"run_id":"x-1"}}}"#)
+        server.send(text: #"{"type":"result_subscribed","subscription_id":"sub-1"}"#)
+        server.send(text: #"{"type":"frame_result","seq":4,"mean_intensity":0.4,"processing_ms":1.0}"#)
+        await expect { client.latestFrameResult?.sequence == 4 }
+
+        XCTAssertTrue(results.all.isEmpty, "an undecodable message was published: \(results.all)")
+        XCTAssertTrue(cvLab.all.isEmpty, "an undecodable message was published: \(cvLab.all)")
+        XCTAssertNil(client.latestFrameRefusal)
+        XCTAssertNil(client.watchedCVLabRunID, "an undecodable refusal moved the run watch")
+        XCTAssertEqual(client.status, .online)
+
+        client.disconnect()
+    }
+
+    /// Each handler has updated its own state by the time its event is
+    /// published, so a consumer reacting to the event reads the new state.
+    func testEachHandlerUpdatesItsStateBeforeItPublishes() async throws {
+        let server = try MockTowerServer()
+        let port = try await server.start()
+        respondToPing(server)
+        defer { server.stop() }
+
+        let client = TowerClient(metrics: SenderMetrics())
+        let probe = PublishTimeProbe()
+        client.cartridgeResults
+            .sink { event in
+                if case .declaration = event {
+                    probe.notes.append("declaration cached=\(client.cartridgeDeclaration != nil)")
+                }
+            }
+            .store(in: &probe.cancellables)
+        client.cvLabEvents
+            .sink { event in
+                switch event {
+                case .status(let reply):
+                    probe.notes.append(
+                        "status watched=\(client.watchedCVLabRunID ?? "none") reply=\(reply.runID ?? "none")"
+                    )
+                case .refused(let refusal):
+                    probe.notes.append(
+                        "refused watched=\(client.watchedCVLabRunID ?? "none") reason=\(refusal.reason)"
+                    )
+                case .frameRefused(let refusal):
+                    probe.notes.append(
+                        "frameRefused held=\(client.latestFrameRefusal?.reason ?? "none") reason=\(refusal.reason)"
+                    )
+                }
+            }
+            .store(in: &probe.cancellables)
+        client.connect(to: url(port: port))
+        await expect { client.status == .online }
+
+        server.send(text: declarationJSON)
+        server.send(text: cvLabStatusJSON(runID: "f863dcc35bce-2"))
+        server.send(text: #"{"type":"frame_error","seq":5,"reason":"cv_lab_paused","message":"paused"}"#)
+        server.send(text: """
+            {"type":"cv_lab_error","reason":"lab_busy","message":"busy","command":"cv_lab_start",
+             "status":{"lifecycle":{"state":"running","run_id":"f863dcc35bce-3"}}}
+            """)
+        await expect { probe.notes.count == 4 }
+
+        XCTAssertEqual(probe.notes, [
+            "declaration cached=true",
+            "status watched=f863dcc35bce-2 reply=f863dcc35bce-2",
+            "frameRefused held=cv_lab_paused reason=cv_lab_paused",
+            "refused watched=f863dcc35bce-3 reason=lab_busy",
+        ])
+        // The refusal's document moved the run, and a new run drops the held
+        // refusal with the reading.
+        XCTAssertNil(client.latestFrameRefusal)
+
+        client.disconnect()
+    }
+
+    /// Only a `frame_result` that passes the run gate answers the held refusal
+    /// and is counted; a discarded one touches neither.
+    func testOnlyAResultThatPassesTheGateAnswersTheRefusalAndIsCounted() async throws {
+        let server = try MockTowerServer()
+        let port = try await server.start()
+        respondToPing(server)
+        defer { server.stop() }
+
+        let metrics = SenderMetrics()
+        let client = TowerClient(metrics: metrics)
+        client.connect(to: url(port: port))
+        await expect { client.status == .online }
+        // Before the status: opening a bracket clears the run watch.
+        client.sendStreamStart()
+
+        server.send(text: cvLabStatusJSON(runID: "f863dcc35bce-2"))
+        server.send(text: #"{"type":"frame_error","seq":1,"reason":"cv_lab_starting","message":"arming"}"#)
+        await expect { client.latestFrameRefusal != nil }
+        XCTAssertEqual(client.watchedCVLabRunID, "f863dcc35bce-2")
+        let repliesBefore = metrics.currentSnapshot.frameResults
+
+        server.send(text: frameResultJSON(seq: 30, runID: "f863dcc35bce-1", resultSeq: 7))
+        await expect { client.staleFrameResultCount == 1 }
+        XCTAssertEqual(
+            client.latestFrameRefusal?.reason, "cv_lab_starting",
+            "a discarded result answered the refusal"
+        )
+        XCTAssertEqual(client.frameResultCount, 0)
+        XCTAssertNil(client.latestFrameResult)
+        XCTAssertEqual(metrics.currentSnapshot.frameResults, repliesBefore, "a discarded result was counted")
+
+        server.send(text: frameResultJSON(seq: 60, runID: "f863dcc35bce-2", resultSeq: 1))
+        await expect { client.frameResultCount == 1 }
+        XCTAssertNil(client.latestFrameRefusal, "a result that passed the gate left the refusal standing")
+        XCTAssertEqual(client.latestFrameResult?.sequence, 60)
+        XCTAssertEqual(metrics.currentSnapshot.frameResults, repliesBefore + 1)
+        XCTAssertEqual(client.staleFrameResultCount, 1)
+
+        client.disconnect()
+    }
+
+    /// A `cv_lab_error` with no document leaves the run watch alone; one whose
+    /// document names no run clears it.
+    func testARefusalMovesTheRunWatchOnlyThroughItsDocument() async throws {
+        let server = try MockTowerServer()
+        let port = try await server.start()
+        respondToPing(server)
+        defer { server.stop() }
+
+        let client = TowerClient(metrics: SenderMetrics())
+        let events = collectCVLabEvents(client)
+        client.connect(to: url(port: port))
+        await expect { client.status == .online }
+
+        server.send(text: cvLabStatusJSON(runID: "f863dcc35bce-2"))
+        server.send(text: #"{"type":"cv_lab_error","reason":"internal_error","message":"boom","command":"cv_lab_stop"}"#)
+        await expect { events.all.count == 2 }
+        XCTAssertEqual(client.watchedCVLabRunID, "f863dcc35bce-2", "a refusal with no document moved the run watch")
+        guard case .refused(let refusal) = events.all[1] else {
+            return XCTFail("expected the refusal second, got \(events.all)")
+        }
+        XCTAssertNil(refusal.status)
+
+        server.send(text: """
+            {"type":"cv_lab_error","reason":"invalid_state","message":"idle","command":"cv_lab_pause",
+             "status":{"lifecycle":{"state":"idle","run_id":null}}}
+            """)
+        await expect { events.all.count == 3 }
+        XCTAssertNil(client.watchedCVLabRunID, "a document naming no run must clear the watch")
+
+        client.disconnect()
+    }
+}
+
+/// What a publish-time observer saw, in order.
+@MainActor
+private final class PublishTimeProbe {
+    var notes: [String] = []
+    var cancellables: Set<AnyCancellable> = []
+}
+
 /// Collects CV Lab control-plane events in arrival order.
 ///
 /// A class for the reason `EventRecorder` is one: a `sink` appends from an
