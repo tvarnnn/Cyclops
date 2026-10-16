@@ -1,6 +1,8 @@
 """One-shot PyTorch/CUDA verification for this Tower machine.
 
-Run manually once before implementing any model-backed experiment:
+Checks that torch imports, reports its CUDA runtime, device and capability,
+and runs a tiny matmul on the GPU. Exits non-zero when CUDA is unavailable.
+Run manually:
     .venv\\Scripts\\python.exe scripts/verify_cuda.py
 
 Not part of the pytest suite -- this needs a real GPU and a real torch
