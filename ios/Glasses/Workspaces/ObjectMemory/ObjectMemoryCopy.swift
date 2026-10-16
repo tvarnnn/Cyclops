@@ -1025,21 +1025,6 @@ enum ObjectMemoryCopy {
         }
     }
 
-    /// An action that was honoured and moved nothing.
-    ///
-    /// **This is not an error and must never be drawn as one.** A second Start
-    /// answers 200 with `changed: false`; so does a second Pause, and so does
-    /// Stop from stopped. Every one of those is the Tower saying "you already
-    /// have what you asked for".
-    static func idempotentNoOpLine(_ action: CartridgeSessionAction) -> String {
-        switch action {
-        case .start: return "Already remembering. Nothing needed to change."
-        case .pause: return "Already paused. Nothing needed to change."
-        case .resume: return "Already remembering. Nothing needed to change."
-        case .stop: return "Already stopped. Nothing needed to change."
-        }
-    }
-
     /// Why an action could not be honoured.
     ///
     /// **Worded from the action and the state actually reached, never from
@@ -1507,7 +1492,6 @@ enum ObjectMemoryCopy {
         unreadableImageryAnswer,
     ]
         + CartridgeSessionAction.allCases.map { actionButton($0) }
-        + CartridgeSessionAction.allCases.map { idempotentNoOpLine($0) }
         // The composed lifecycle. Folded in here rather than given a test of
         // its own, so that the sentences written beside a Start button are held
         // to exactly the same claims as the sentences written beside a record.

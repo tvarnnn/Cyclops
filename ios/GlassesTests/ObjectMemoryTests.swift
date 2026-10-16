@@ -3101,17 +3101,6 @@ final class ObjectMemorySessionAndPictureCopyTests: XCTestCase {
         )
     }
 
-    /// The idempotent no-op is worded as success, because it is one.
-    func testAnIdempotentNoOpReadsAsSuccessRatherThanAsAnError() {
-        for action in CartridgeSessionAction.allCases {
-            let line = ObjectMemoryCopy.idempotentNoOpLine(action).lowercased()
-            XCTAssertFalse(line.contains("error"), line)
-            XCTAssertFalse(line.contains("failed"), line)
-            XCTAssertFalse(line.contains("could not"), line)
-            XCTAssertTrue(line.contains("nothing needed to change"), line)
-        }
-    }
-
     /// The session id is not a capture id and is never shown as one — the same
     /// discipline `frameLine` applies for the same reason.
     func testTheSessionIdentifierIsNeverShownAsARecording() throws {
