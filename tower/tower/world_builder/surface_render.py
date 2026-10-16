@@ -43,10 +43,10 @@ MOBILE_BYTE_BUDGET = MOBILE_PAGE_BYTES
 # world; the allowance is generous because under-estimating it is the failure.
 PAGE_CONFIG_ALLOWANCE = 64 * 1024
 
-# The template's share of the page estimate, fixed: every surface the Tower's
-# CRLF checkout built since fc99d20 was packed with it (detail.mobile_page_fit:
-# overhead 98,112 B).
-# Fixed, not measured (WORLD-BUILDER-SURFACE.md §8, v3): the phone level's mesh
+# The template's share of the page estimate, fixed: surfaces built on the
+# Tower's CRLF checkout are packed with it (detail.mobile_page_fit: overhead
+# 98,112 B).
+# Fixed, not measured (WORLD-BUILDER-SURFACE.md §8): the phone level's mesh
 # budget is 3/4 of what the estimate leaves of the page, so a measured template
 # let every copy edit move geometry, and a CRLF checkout measured one byte a
 # line more than an LF one although the page is composed from the same text.
@@ -111,16 +111,16 @@ def js_object_literal(value: dict) -> str:
 # ---------------------------------------------------------------------------
 #
 # THE TEMPLATES ARE NOT EDITED, and that is the design. A page for a session with
-# no components record -- every saved world today (§7 rule 1) -- must be the page
-# it was, byte for byte. So the two captions the contract adds are applied at
-# composition time, and only to the pages that carry them, by replacing exact
-# fragments of the template ("anchors") that each occur exactly once in it:
+# no components record (§7 rule 1) must be the page it was, byte for byte. So
+# the two captions the contract adds are applied at composition time, and only
+# to the pages that carry them, by replacing exact fragments of the template
+# ("anchors") that each occur exactly once in it:
 #
 #   - the ROOM page of a session with at least one `shown_as: "area"` entry gains
 #     " · N more areas shown separately" (§4);
 #   - an AREA page gets its header "Area k of N — not placed in the room", the
-#     not-to-scale caption from P2-PX's wording, "Face the area", and the
-#     levelling note when its vertical could not be estimated (§5.4).
+#     not-to-scale caption, "Face the area", and the levelling note when its
+#     vertical could not be estimated (§5.4).
 #
 # `captions` is None for every other page, and then nothing is touched.
 # `tests/test_world_builder_component_captions.py` holds every anchor to "exactly
@@ -157,7 +157,7 @@ def area_header(area: dict) -> str:
 
 
 def area_caption(area: dict, first_clause: str) -> str:
-    """The area rung's caption (§5.4, P2-PX's wording): `first_clause`, when in
+    """The area rung's caption (§5.4): `first_clause`, when in
     this walk it was captured, that it is shown on its own and not to scale, and
     the levelling note when its vertical could not be estimated."""
     when = ""
@@ -338,12 +338,12 @@ def _room_poses(solution, *, fallback: bool = True):
     the page opened on, walked and levelled to them all.
 
     A pose whose component is not a number is not the room's. A solution with no
-    room-component pose at all gets every pose, as before this filter: the page
-    walks something rather than nothing (Codex review of the fix, HIGH/MED).
+    room-component pose at all gets every pose: the page walks something rather
+    than nothing.
 
-    `fallback=False` (the pose quarantine's `path` part; RVPQ MED, manager 102
-    §3): the room's poses only -- no room-component pose is an empty dict, never
-    another component's poses."""
+    `fallback=False` (the pose quarantine's `path` part): the room's poses only
+    -- no room-component pose is an empty dict, never another component's
+    poses."""
     poses = solution.poses or {}
 
     def _in_room(pose) -> bool:
@@ -360,7 +360,7 @@ def _room_poses(solution, *, fallback: bool = True):
 
 def _pose_quarantine_on() -> bool:
     """Whether `TOWER_WORLD_POSE_QUARANTINE` (`config.world_pose_quarantine_setting`) turns on its `path` part;
-    off = today's camera path."""
+    off = the room's poses unquarantined (`_room_poses` with its fallback)."""
     from tower.config import world_pose_quarantine_setting  # noqa: PLC0415
 
     return "path" in world_pose_quarantine_setting()
@@ -377,7 +377,7 @@ def _log_path_drops(world_id: str, session_id: str, counts: dict) -> None:
 
 
 def viewable_poses(poses: dict, *, drop_counts: dict | None = None) -> dict:
-    """The room's poses a viewer may stand at (RUN P5-PQ RULE.md (a') v4; manager 096 §2 (a), 102 §2).
+    """The room's poses a viewer may stand at.
 
     Only PUBLISHED, SUPPORTED poses -- at least `global_solve.MIN_IMAGE_OBSERVATIONS` observations, the
     publication floor -- and, among them, only those within `surface.OUTLIER_RADIUS_MULTIPLE` (10) x their
@@ -389,14 +389,14 @@ def viewable_poses(poses: dict, *, drop_counts: dict | None = None) -> dict:
         apart"; for a list of places to stand, an impossible pose is never one, however many there are.
       * `detach=0`: the 2.5 x p95 detachment term is OFF. It is measured on the same poses, so once impossible
         poses are over ~5 % of them the p95 IS an impossible pose and the term clears them all (8 of 96 kept, in
-        the round-1 test). The price: a capture that dwells may not OFFER some of its far legitimate poses --
+        a test with it on). The price: a capture that dwells may not OFFER some of its far legitimate poses --
         navigation only; the list is not a reconstruction input and nothing leaves the room.
       * the floor is KEPT: under `surface.MIN_ROBUST_POSES` (8) poses, or with every pose in one place, nothing
         is dropped. The median fails only when impossible poses are the majority.
 
-    WHY. Walk 4 put six impossible poses in the page's camera list -- four bed poses 0.6-9.4 M units out and
-    two unsupported riders ~2,000 units out -- because the list took every pose of component 0. They build the
-    movement tube and the prev/next stepping, and a step onto one lands in black. Walk 3 had the same class
+    WHY. A list of every pose of component 0 held six impossible poses on walk 4 -- four bed poses 0.6-9.4 M
+    units out and two unsupported riders ~2,000 units out. The list builds the movement tube and the prev/next
+    stepping, and a step onto one lands in black. Walk 3 had the same class
     (s2400: 0 observations, 2,936 x the median radius), kept out of its list only by decimation."""
     from tower.world_builder.global_solve import MIN_IMAGE_OBSERVATIONS  # noqa: PLC0415
     from tower.world_builder.surface import robust_pose_outliers  # noqa: PLC0415
@@ -446,8 +446,8 @@ def _camera_path(store, world_id: str, session_id: str, *, drop_counts: dict | N
     import numpy as np
 
     if _pose_quarantine_on():
-        # The pose quarantine's `path` part: the room's poses ONLY (no fallback to another component's --
-        # RVPQ MED), and of those only the ones a viewer may stand at.
+        # The pose quarantine's `path` part: the room's poses ONLY (no fallback to another component's),
+        # and of those only the ones a viewer may stand at.
         room = _room_poses(solution, fallback=False)
         counts = {"off_component_0": len(solution.poses or {}) - len(room)}
         poses = viewable_poses(room, drop_counts=counts)
@@ -469,8 +469,8 @@ def _camera_path(store, world_id: str, session_id: str, *, drop_counts: dict | N
         forward = R.T @ np.array([0.0, 0.0, 1.0])
         out.append([round(float(v), 5) for v in (*centre, *forward)])
     # A few hundred is plenty to step through and keeps the page small. The
-    # ceiling division is what makes 240 a cap: floor division gave a step of 1
-    # for any walk under 480 keyframes and sent all of them.
+    # ceiling division is what makes 240 a cap: floor division gives a step of 1
+    # for any walk under 480 keyframes and sends all of them.
     step = max(1, -(-len(out) // 240))
     return out[::step]
 
@@ -598,17 +598,17 @@ def _camera_up(store, world_id: str, session_id: str) -> list | None:
 # WHY. `_camera_up` is the mean camera -y, which leans toward wherever the wearer
 # mostly looked: R-bar x sin|pitch| for a yaw concentration R-bar. Walk 9's room
 # piece faces the desk (R-bar 0.68, median pitch -19 deg) and its mean is 15 deg
-# from the head-level vertical (RUN review/W9-DIAG.md cause 6). Worse, the room
-# piece is what the evidence gate and the final scale guard LEFT: walk 7 replayed
-# through b845edb (W7REG n1) kept 543 desk-heavy views of 972 and levelled to them.
+# from the head-level vertical. Worse, the room piece is what the evidence gate
+# and the final scale guard LEFT: walk 7 replayed (W7REG n1) kept 543 desk-heavy
+# views of 972 and levelled to them.
 #
 # The seed is not the whole story: `surface_up` then moves the vertical to the
 # area-weighted normal of the surface's near-horizontal faces, and on every world
 # measured (walk 9, walk 7, the kitchen, W7REG n1/n2) it converges to the same
 # vertical from either seed. On walk 9 and n1 that surface vertical is the bent
 # one -- 12 and 6 deg from the head-level vertical, with the well-observed walls
-# 6-15 deg off plumb under it and within ~2 deg under the head-level vertical
-# (Glasses-scratch/tilt-up/table.txt). So the refinement is bounded too.
+# 6-15 deg off plumb under it and within ~2 deg under the head-level vertical.
+# So the refinement is bounded too.
 #
 #   1. CAMERAS: every posed camera of the room's SOLVER frame -- the solver
 #      component most room (component 0) cameras came from, with every piece the
@@ -629,7 +629,7 @@ def _camera_up(store, world_id: str, session_id: str) -> list | None:
 #   4. REFINEMENT: `surface_up` from that seed, kept only within
 #      CAMERA_RIGHT_MAX_REFINE_DEG of it (its own `max_move_deg`). The surface
 #      may fine-tune the head-level vertical, not overrule it. Measured moves:
-#      walk 7 1.99, n2 2.29 (kept: today's vertical within 0.01 deg); kitchen
+#      walk 7 1.99, n2 2.29 (kept: within 0.01 deg of the fallback's); kitchen
 #      5.52, n1 5.89, walk 9 11.98 (refused). Any value in [2.3, 5.5) decides
 #      these five the same way.
 #   5. A MESH OLDER THAN THE SOLVE -> the fallback (`_mesh_predates_solve`): the
@@ -734,7 +734,7 @@ def _mesh_predates_solve(store, world_id: str, session_id: str, solution) -> boo
 
     The surface is served while it is behind the solve (`surface_currency` reports,
     never enforces), e.g. between a final solve landing and the surface rebuilt from
-    it -- the W7REG o1 copy was caught in exactly that state. A new solve is a new
+    it -- the W7REG o1 copy was in exactly that state. A new solve is a new
     gauge: the fallback follows the mesh it draws (the refinement), but the
     cameras' vertical would be the NEW frame's, 16 deg off that mesh on o1. So the
     head-level vertical stands down unless the surface, and the appearance when
@@ -796,8 +796,8 @@ def build_surface_page(store, world_id: str, session_id: str, *,
     """One self-contained HTML page with the mesh inside it.
 
     `captions` (WORLD-BUILDER-COMPONENTS.md §4/§5.4, `apply_surface_captions`) is
-    None for every page without components, which is then composed exactly as
-    before."""
+    None for every page without components, which is then composed with no
+    caption applied."""
     template_path = viewer_template_path()
     if not template_path.exists():
         raise SurfaceViewerUnavailable("the surface viewer template is not installed")
@@ -812,9 +812,9 @@ def build_surface_page(store, world_id: str, session_id: str, *,
         template = apply_surface_captions(template, captions)
 
     # `max_points` is the worlds contract's budget knob and must not be
-    # ignored just because this representation is not made of points. It was
-    # dropped on the dense path once and `max_points=1` returned a 6 MB page.
-    # Here it selects a coarser rung, converted at the dense point format's
+    # ignored just because this representation is not made of points: ignored,
+    # `max_points=1` returns a 6 MB page (measured on the dense path). Here it
+    # selects a coarser rung, converted at the dense point format's
     # 16 bytes a point so one `max_points` buys a comparable page on either
     # rung, and it only ever moves the budget downwards.
     if max_points is not None:
