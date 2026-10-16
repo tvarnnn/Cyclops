@@ -338,7 +338,7 @@ final class TowerClient: NSObject, ObservableObject {
     var maxFramesInFlight: Int { sendWindow.capacity }
 
     /// Per-frame logging cadence, in send calls. At the target rate this path
-    /// runs ~12 times a second and `print` with string interpolation is not
+    /// runs ~15 times a second and `print` with string interpolation is not
     /// free, so routine success and routine drops are decimated. The
     /// authoritative per-stage counts live in `metrics`.
     private static let frameLogStride = 12

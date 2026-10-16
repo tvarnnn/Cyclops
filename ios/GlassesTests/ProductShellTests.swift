@@ -2205,7 +2205,7 @@ final class ExperimentalCVModelTests: XCTestCase {
     }
 
     /// The Tower's additive measurements arrive as a dictionary, which has no
-    /// stable order. A list of numbers that reshuffles itself twelve times a
+    /// stable order. A list of numbers that reshuffles itself fifteen times a
     /// second is unreadable, and an unnamed one is a bare number again.
     func testMeasurementsKeepTheirTowerGivenNamesInAStableOrder() {
         let reading = CVFrameReading(
@@ -2224,7 +2224,7 @@ final class ExperimentalCVModelTests: XCTestCase {
     /// caption. When the row identity was that trimmed caption, `ForEach` saw
     /// duplicate ids and the sort key was equal for both; `sorted(by:)` is not
     /// stable, so the two rows could swap places on every reply. That is the
-    /// exact twelve-times-a-second reshuffle the sort was added to prevent.
+    /// exact fifteen-times-a-second reshuffle the sort was added to prevent.
     func testKeysDifferingOnlyInWhitespaceStayDistinctAndTotallyOrdered() {
         let reading = CVFrameReading(frameResult(metrics: ["edges": 1, " edges": 2]))
 

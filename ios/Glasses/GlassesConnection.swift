@@ -1460,7 +1460,7 @@ final class GlassesConnection: ObservableObject {
                     self.metrics.recordDecodeFailure()
                     // Failures are counted unconditionally but logged on the
                     // same cadence as everything else: at the target rate an
-                    // unguarded print here would flood the console 12 times a
+                    // unguarded print here would flood the console 15 times a
                     // second. `metrics.decodeFailures` is the real record.
                     if shouldLog {
                         print("[Glasses][Camera] frame received #\(sequence) dimensions=unknown")
