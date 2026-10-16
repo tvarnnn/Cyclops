@@ -154,6 +154,15 @@ class SceneEngine:
     def observe(self, frame_bgr, *, received_at: float | None = None) -> SceneState:
         """One frame in, the current scene out.
 
+        Runs the detector on the frame, updates the tracker with the detections,
+        and assigns each track a left/centre/right placement from the frame
+        width. When an orientation estimator is configured and its interval has
+        elapsed, it estimates each person's facing from face visibility. The
+        confirmed tracks are then split into whole tracks and people cut off at the
+        bottom edge (`partial_people`), counted per label, and related to one
+        another. Returns that as a `SceneState` stamped with `received_at` (or the
+        engine clock).
+
         Returns the state rather than storing it. A caller that wants the
         previous state has to have kept it, which is the correct default
         for something whose whole claim is to describe *now*.
