@@ -45,8 +45,12 @@ import Foundation
 /// delay, so `pts` deltas and `hostNow` deltas would move together and their
 /// difference would be near zero. A capture-side stamp is regular regardless of
 /// how irregularly the frame arrives, so its deltas stay clean while arrival
-/// deltas scatter. **`jitterResidual` is that difference, and it is the
-/// measurement this probe exists for.**
+/// deltas scatter. **The summary's `residual(d_pts-d_host)` is that
+/// difference, and it is the measurement this probe exists for.**
+///
+/// The `[PTSProbe]` console lines are the probe's only output. Keep them
+/// `print`s (stdout), word for word: 07-PLATFORM-CONSTRAINTS.md §9 was
+/// measured by reading them.
 nonisolated final class FramePTSProbe {
 
     static let shared = FramePTSProbe()
@@ -72,12 +76,14 @@ nonisolated final class FramePTSProbe {
     /// This is the whole reconnect experiment. World Builder chains captures
     /// across a reconnect, so whether the capture clock's epoch survives one
     /// decides whether a PTS from before the drop is comparable with one after
-    /// it. Two outcomes, and they are not close together:
+    /// it. The session boundary line names one of three outcomes:
     ///
-    /// - **device-persistent** — the new session's first PTS is roughly the old
+    /// - **free-running** — the new session's first PTS is roughly the old
     ///   session's last PTS plus the wall-clock gap, so `d_pts ≈ d_host`.
-    /// - **per-session** — the count restarts, so `d_pts` is negative or far
-    ///   smaller than `d_host`.
+    /// - **per-session** — the count restarts, so `d_pts` is negative.
+    /// - **suspended but monotonic** — `d_pts` is positive and far smaller
+    ///   than `d_host`: the clock neither resets nor measures the gap. This is
+    ///   what a stop measured (07-PLATFORM-CONSTRAINTS.md §9.1).
     private var previousSessionEnd: (pts: Double, host: Double, seq: Int)?
     private var sessionIndex = 1
 
@@ -87,17 +93,14 @@ nonisolated final class FramePTSProbe {
 
     /// A PTS gap this large counts as a break in the capture clock.
     ///
-    /// **Measured, not guessed.** The first version of this compared `d_pts`
-    /// against `d_host` and called a break when the former exceeded the latter
-    /// five-fold. Over a 45 s run that fired 24 times and every one was a false
-    /// positive: `d_pts` was the nominal 0.04166 s while `d_host` was 2-8 ms,
-    /// which is a *burst arrival* of evenly-captured frames, not a clock event.
-    /// Comparing the capture clock to the arrival clock was the error — they
-    /// are the two things this probe exists to show are independent.
-    ///
-    /// A genuine break is now judged on the capture clock alone: time running
-    /// backwards, or a gap far longer than any frame interval this stream uses
-    /// (24 fps nominal, worst observed 0.05 s).
+    /// Judged on the capture clock alone: time running backwards, or a gap far
+    /// longer than any frame interval this stream uses (24 fps nominal, worst
+    /// observed 0.05 s). Never against `d_host`: a break called when `d_pts`
+    /// exceeded `d_host` five-fold fired 24 times over a 45 s run, every one a
+    /// false positive — `d_pts` was the nominal 0.04166 s while `d_host` was
+    /// 2-8 ms, a *burst arrival* of evenly-captured frames, not a clock event.
+    /// The capture and arrival clocks are the two things this probe exists to
+    /// show are independent.
     private static let discontinuityGap: Double = 1.0
 
     func record(sampleBuffer: CMSampleBuffer, hostNow: Double) {
@@ -142,10 +145,10 @@ nonisolated final class FramePTSProbe {
             if let previous = previousSessionEnd {
                 let dPTS = pts - previous.pts
                 let dHost = hostNow - previous.host
-                // Three outcomes, not two. The third was found by measurement
-                // and is the one that matters: the clock neither resets nor
-                // tracks wall time, so it stays monotonic across a stop while
-                // silently understating how long the stop was.
+                // Three outcomes; see `previousSessionEnd`. The third is the
+                // one that matters: the clock neither resets nor tracks wall
+                // time, so it stays monotonic across a stop while silently
+                // understating how long the stop was.
                 let ratio = dHost > 0 ? dPTS / dHost * 100 : 0
                 let verdict: String
                 if dPTS < 0 {

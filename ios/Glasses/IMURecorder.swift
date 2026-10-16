@@ -4,10 +4,12 @@
 //
 
 // Entire file is DEBUG-only, like the Motion probe beside it and the Developer
-// Tools switch that arms it. It is walk-5 evidence tooling: the glasses IMU and
-// the timing of every camera frame, written to a file on this phone and joined
+// Tools switch that arms it. It is evidence tooling: the glasses IMU and the
+// timing of every camera frame, written to a file on this phone and joined
 // offline with the Tower's own capture. Nothing here is sent to the Tower (no
-// contract change), shown to a wearer, or played as a sound or a haptic.
+// contract change), shown to a wearer, or played as a sound or a haptic. Its
+// `[Glasses][IMURec]` lines are `print`s, like the rest of that console, so a
+// stdout capture of a walk holds them in order with the camera's.
 #if DEBUG
 
 import Combine
@@ -523,7 +525,7 @@ nonisolated struct IMUIOAudit: Equatable, Sendable {
 /// ## Why not on the recorder's queue
 ///
 /// The stream-state and frame listeners each hop to the main actor in their
-/// own `Task`, and nothing orders two such `Task`s. When the epoch was decided
+/// own `Task`, and nothing orders two such `Task`s. Were the epoch decided
 /// after those hops, the first frame of a resume could reach the log ahead of
 /// the `.streaming` that opened its epoch and be written under the old one --
 /// silently, because the PTS freezes across a camera stop instead of
@@ -590,8 +592,8 @@ nonisolated struct IMUCameraEpochs: Sendable {
     /// Every `StreamState`, with the time read on DAT's thread.
     ///
     /// Any state but `streaming`, once the epoch has frames, is a marker
-    /// (`starting` included: a resume may pass through it, and it used to be
-    /// excluded, which left every such resume in the epoch before it) --
+    /// (`starting` included: a resume may pass through it, and excluding it
+    /// would leave every such resume in the epoch before it) --
     /// except `starting` while a frame's epoch waits for its `streaming`,
     /// which is that same resume arriving. A `streaming` after a marker opens
     /// the next epoch, unless a frame already has, in which case it joins.
@@ -645,7 +647,7 @@ nonisolated struct IMUCameraEpochs: Sendable {
 /// Whether the log's file may be written, from the Data Protection class it
 /// reports once created (and, if that was wrong, once set on the file).
 ///
-/// Walk 5 depends on the file staying writable through a lock, which only
+/// A walk depends on the file staying writable through a lock, which only
 /// `completeUnlessOpen` (held open) guarantees. A file under `.complete`
 /// would record normally until the pocketed phone locked and then fail --
 /// the walk would look recorded and not be. So on a phone anything but
@@ -700,11 +702,11 @@ nonisolated enum IMUProtectionVerdict: Equatable, Sendable {
 /// encrypted at rest with `FileProtectionType.completeUnlessOpen` (Data
 /// Protection's "Protected Unless Open" class) and excluded from backup.
 ///
-/// Not `.complete`. Walk 5 is walked with the phone in a pocket, so the phone
-/// locks within minutes, and a `.complete` file cannot be written once it has:
-/// the recorder used to close on lock and hold every later line in memory
-/// until the unlock, so a pocketed walk lived in RAM -- lost to a crash or a
-/// jetsam, and truncated at a 32 MB hold near 30 minutes. A
+/// Not `.complete`. A walk is recorded with the phone in a pocket, so the
+/// phone locks within minutes, and a `.complete` file cannot be written once it
+/// has: every later line would have to be held in memory until the unlock,
+/// where a crash or a jetsam loses it, and a 32 MB hold truncates a walk near
+/// 30 minutes. A
 /// `completeUnlessOpen` file stays writable through a lock **for as long as it
 /// stays open**, and once closed it cannot be opened again until the phone is
 /// unlocked. So the file is created by the one `open` that writes it, that
@@ -715,8 +717,10 @@ nonisolated enum IMUProtectionVerdict: Equatable, Sendable {
 /// Data Protection.
 ///
 /// State below `queue` is confined to it; that is what the `@unchecked` asserts.
-/// The camera epoch is the exception: it lives behind its own lock, because it
-/// is decided on DAT's threads (`IMUCameraEpochs`).
+/// Two exceptions, each behind its own lock: the camera epoch, because it is
+/// decided on DAT's threads (`IMUCameraEpochs`), and the observer tokens,
+/// because they are installed on the caller's thread. Not an actor: the log's
+/// order is the order of `queue.async` calls, and a serial queue keeps it FIFO.
 nonisolated final class IMURecorder: @unchecked Sendable {
 
     struct Limits: Equatable, Sendable {
@@ -872,8 +876,8 @@ nonisolated final class IMURecorder: @unchecked Sendable {
     /// it earlier, at creation, and then samples the lock state
     /// (`noteProtectedDataSampled`) -- in that order, so a lock between the
     /// two is caught by one or the other and never missed. Installing them in
-    /// the queued open, as before, left a window in which a lock reported
-    /// nothing and the log said "unlocked".
+    /// the queued open would leave a window in which a lock reported nothing
+    /// and the log said "unlocked".
     func installObservers() {
         let center = NotificationCenter.default
         observerLock.lock()
@@ -1091,7 +1095,7 @@ nonisolated final class IMURecorder: @unchecked Sendable {
             // `completeUnlessOpen` file cannot be reopened while the phone is
             // locked.
             // `Darwin.` because `open(header:)` is this class's own. 0o644 is
-            // what `createFile` gives a file, so `pull_imu_logs.sh` reads it as before.
+            // what `createFile` gives a file, so `pull_imu_logs.sh` can read it.
             let descriptor = Darwin.open(url.path, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0o644)
             guard descriptor >= 0 else {
                 throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO, userInfo: [NSFilePathErrorKey: url.path])
@@ -1118,7 +1122,7 @@ nonisolated final class IMURecorder: @unchecked Sendable {
         }
         guard failure == nil else { return }
         // What protected the file on this phone, whether it was locked when
-        // the file was made, and what could not be set: the walk-5 pre-flight
+        // the file was made, and what could not be set: the walk pre-flight
         // reads this line.
         let fileOpen: [(String, IMUJSON)] = [
             ("protection", .optionalString(fileProtection?.rawValue)),
@@ -1406,7 +1410,7 @@ nonisolated final class IMURecorder: @unchecked Sendable {
         guard !protectedDataAvailable else { return }
         protectedDataAvailable = true
         // `bytes_written` against the lock's: what reached the disk while the
-        // phone was locked. The walk-5 pre-flight reads this pair.
+        // phone was locked. The walk pre-flight reads this pair.
         eventOnQueue("protected_data_available", monoNs: DispatchTime.now().uptimeNanoseconds, fields: [
             ("bytes_written", .int(bytesWritten)),
         ])

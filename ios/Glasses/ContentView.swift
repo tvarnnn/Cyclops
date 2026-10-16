@@ -454,7 +454,6 @@ struct ContentView: View {
             DeveloperToolsView(
                 glasses: project.glassesConnection,
                 tower: project.towerClient,
-                stream: project.streamManager,
                 senderMetrics: project.senderMetrics,
                 health: project.deviceHealth
             )
