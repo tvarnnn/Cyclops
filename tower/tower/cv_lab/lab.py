@@ -508,6 +508,16 @@ class CVLab:
     def process(self, raw_bytes: bytes):
         """Run the armed experiment over one frame, or refuse it legibly.
 
+        When the Lab is not `running` (or has no experiment) the frame is counted
+        as refused and a `FrameProcessingError` carries the state's refusal reason
+        and message. Otherwise it tells the experiment whether to build a preview,
+        runs it on the raw bytes, records the result against the run, builds the
+        frame's provenance, and returns the experiment's result. An experiment
+        that refuses the frame with `FrameProcessingError` leaves the run going;
+        any other exception ends the run (state `failed`) and surfaces as a
+        refused frame, so the module itself is not marked FAILED. A provenance
+        fault is logged and the frame is answered without provenance.
+
         Synchronous and free of awaits, which is load-bearing: it is what
         makes a switch unable to interleave inside a frame, and what makes
         `frame_provenance()` describe this frame.
@@ -781,6 +791,14 @@ class CVLab:
 
     def start(self, experiment_id, *, origin: str = ORIGIN_CLIENT_REQUEST):
         """Arm an experiment. Returns as soon as the request is decided.
+
+        Checks in order: the Lab is available, `experiment_id` is a non-empty
+        string, it is registered, its optional extra is installed if it needs a
+        model, and no other start is in flight. Any failure returns a refused
+        `CommandOutcome` with a typed reason. Otherwise it opens a run (recording
+        `origin`), drops the previous experiment, moves to `starting`, schedules
+        `_arm` on the event loop to load the experiment and publish the outcome,
+        and returns an accepted outcome with the current status.
 
         Synchronous on purpose. The load runs in a background task, so a
         `depth` start that spends two minutes downloading weights does not
