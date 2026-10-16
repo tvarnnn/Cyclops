@@ -64,7 +64,6 @@ class KeyframeInput:
 
     keyframe_id: str
     image_gray: np.ndarray
-    image_bgr: np.ndarray | None = None
 
 
 @dataclass(frozen=True)
@@ -93,32 +92,25 @@ class PoseEstimate:
     cheirality_fraction: float | None = None
     r_h: float | None = None
 
-    @property
-    def is_solved(self) -> bool:
-        return self.rotation is not None and self.translation is not None
-
 
 @dataclass(frozen=True)
 class PointBlock:
     """Triangulated structure in the window's local frame."""
 
     xyz: np.ndarray
-    rgb: np.ndarray | None = None
     # Which 2-D feature in which keyframe produced which landmark: a flat
     # (M, 3) int32 table of rows [frame_index, feature_index,
     # landmark_index]. `None` means a backend does not report it, which is
     # different from "this block was observed by nothing".
     #
     # Flat and numpy-native rather than ragged (a dict, or a list per
-    # landmark) for three reasons: it is the shape every consumer wants
-    # anyway -- registration filters it by frame and joins it against
-    # matched feature indices, which is a boolean mask on a column; it
-    # costs 12 bytes a row instead of ~200 for a dict entry, and this
-    # table is the one piece of solve state that CANNOT be pruned
-    # (_Chain.forget_before); and it round-trips to JSON as integers with
-    # no dtype contract to get wrong.
+    # landmark): registration filters it by frame and joins it against
+    # matched feature indices, a boolean mask on a column; it costs 12 bytes
+    # a row against ~200 for a dict entry, and it is the one piece of solve
+    # state that CANNOT be pruned (_Chain.forget_before); and it round-trips
+    # to JSON as integers with no dtype contract to get wrong.
     #
-    # CONVENTIONS, both of which a consumer has to know to join anything:
+    # CONVENTIONS, which a consumer has to know to join anything:
     #
     #   frame_index    position within the window this block was solved
     #                  from, 0 == the anchor. NOT session-relative -- a
@@ -167,7 +159,6 @@ class GeometryEstimate:
 
     poses: tuple[PoseEstimate, ...]
     points: PointBlock | None = None
-    intrinsics_estimate: CameraIntrinsics | None = None
     scale_is_metric: bool = False
     diagnostics: dict = field(default_factory=dict)
 
@@ -188,29 +179,15 @@ class GeometryBackend(ABC):
 
     # -- the incremental seam --------------------------------------------
     #
-    # estimate_window() is a from-scratch solve, and build() called it on
-    # every rebuild. Measured on this host, classical backend only, images
-    # already in RAM, 480x360 synthetic strafe:
-    #
-    #     keyframes     total     per kf
-    #         4        27.6 ms    6.89 ms
-    #         8        54.9 ms    6.87 ms
-    #        16       133.2 ms    8.33 ms
-    #        32       302.7 ms    9.46 ms
-    #        64       641.2 ms   10.02 ms
-    #
-    # Roughly O(N^1.2) for ONE solve, so a walk rebuilt every k keyframes
-    # paid O(N^2/k) and asking for MORE live updates cost strictly more
-    # than the walk. Total backend work over a walk at --rebuild-every 4,
-    # measured the same way:
-    #
-    #     keyframes    re-solving    extending
-    #        16           360 ms       152 ms
-    #        32          1325 ms       316 ms
-    #        64          5920 ms       777 ms
-    #
-    # That is why the rebuild cadence defaulted to zero, and why nothing
-    # appeared on the 2026-08-24 walk until it had ended.
+    # estimate_window() is a from-scratch solve. Measured on this host
+    # (classical backend only, images already in RAM, 480x360 synthetic
+    # strafe), one solve costs (total, per keyframe): 4 kf 27.6 ms /
+    # 6.89 ms, 8 kf 54.9 / 6.87, 16 kf 133.2 / 8.33, 32 kf 302.7 / 9.46,
+    # 64 kf 641.2 / 10.02: roughly O(N^1.2). So a walk
+    # rebuilt every k keyframes by re-solving pays O(N^2/k), and asking for
+    # more live updates costs more. Total backend work over a walk at
+    # --rebuild-every 4, measured the same way, re-solving vs extending:
+    # 360 vs 152 ms at 16 keyframes, 1325 vs 316 ms at 32, 5920 vs 777 ms at 64.
     #
     # These four methods carry one solve across many calls, so a rebuild
     # is a flush rather than a re-solve. They are an OPTIMISATION and

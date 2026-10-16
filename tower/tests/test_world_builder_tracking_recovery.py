@@ -72,7 +72,6 @@ def _walk(count=12, step=0.12):
         KeyframeInput(
             keyframe_id=f"kf{i}",
             image_gray=cv2.cvtColor(image, cv2.COLOR_BGR2GRAY),
-            image_bgr=image,
         )
         for i, image in enumerate(images)
     ]
@@ -94,7 +93,6 @@ def _noise_frame(keyframe_id, seed=7):
     return KeyframeInput(
         keyframe_id=keyframe_id,
         image_gray=gray,
-        image_bgr=cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR),
     )
 
 

@@ -167,7 +167,6 @@ def _frames(images, prefix="kf"):
         KeyframeInput(
             keyframe_id=f"{prefix}{index}",
             image_gray=cv2.cvtColor(image, cv2.COLOR_BGR2GRAY),
-            image_bgr=image,
         )
         for index, image in enumerate(images)
     ]
@@ -187,7 +186,6 @@ def _noise(keyframe_id, seed):
     return KeyframeInput(
         keyframe_id=keyframe_id,
         image_gray=gray,
-        image_bgr=cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR),
     )
 
 
@@ -198,7 +196,6 @@ def _occluded(keyframe_id, seed):
     return KeyframeInput(
         keyframe_id=keyframe_id,
         image_gray=cv2.GaussianBlur(gray, (5, 5), 0),
-        image_bgr=cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR),
     )
 
 

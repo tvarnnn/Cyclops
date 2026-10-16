@@ -1,8 +1,7 @@
 """The cheap per-frame path: decode, score quality, track, summarise motion.
 
-Runs on every delivered frame. Measured at roughly 5 ms per frame at
-360x640 against a ~300 ms delivered interval, so it is not a compute
-problem and nothing here is optimised for speed at the cost of clarity.
+Runs on every delivered frame, at roughly 5 ms per 360x640 frame against
+a ~300 ms delivered interval, so nothing here trades clarity for speed.
 
 Two disciplines govern this module:
 
@@ -32,17 +31,17 @@ TRACK_MIN_DISTANCE = 7
 LK_WINDOW = (21, 21)
 # Level 4, not 3. Lucas-Kanade's capture range is roughly
 # winSize/2 * 2**maxLevel: ~80 px at level 3, ~160 px at level 4.
-# Displacement p99 on the 2026-08-25 walk is 85 px -- just past level 3,
-# which is the worst possible place for it to sit.
+# Displacement p99 on a real walk is 85 px, just past level 3.
 #
-# This matters because the reference frame does NOT advance every frame.
-# It advances on an accept (`engine.py:283`), so a run of blurred frames
-# freezes it while the camera keeps moving: median 7, mean 12.4, max 89
-# frames stale at the moment loss was declared. The tracker is then asked
-# to cross that entire gap in one call.
+# Displacement is that large because the reference does NOT advance every
+# frame. It advances only on an accepted keyframe, so a run of blurred
+# frames freezes it while the camera keeps moving: median 7, mean 12.4,
+# max 89 frames stale at the moment loss was declared. The tracker is then
+# asked to cross that entire gap in one call.
 #
-# Measured on the real walk: 51 -> 40 segments, 4.85 ms either way (the
-# extra pyramid level is free at this resolution), one added keyframe.
+# Measured on that walk: 51 -> 40 segments and one added keyframe, at
+# 4.85 ms per frame either way (the extra pyramid level is free at this
+# resolution).
 LK_MAX_LEVEL = 4
 
 # Forward-backward consistency threshold in pixels. A track that does not
@@ -50,36 +49,31 @@ LK_MAX_LEVEL = 4
 # a coincidence.
 #
 # 3.0, not 1.0. Round-trip error grows with the distance travelled, and a
-# stale reference (see LK_MAX_LEVEL above) makes long hops routine rather
-# than exceptional -- so a 1.0 px budget calibrated for adjacent frames
-# rejects tracks that are real, turning recoverable drift into declared
-# loss. 47 of the 50 losses on the real walk still had frame-to-frame
-# survival above the 0.05 floor; only 3 were genuine.
-#
+# stale reference (see LK_MAX_LEVEL above) makes long hops routine, so a
+# 1.0 px budget calibrated for adjacent frames rejects real tracks and turns
+# recoverable drift into declared loss: 47 of 50 losses on a real walk still
+# had frame-to-frame survival above the 0.05 floor, and only 3 were genuine.
 # 3.0 is still an eighth of the 21 px search window, so it discriminates.
-# Measured with the pyramid change: 51 -> 33 segments on that walk, and
+# Together with the pyramid change: 51 -> 33 segments on that walk, and
 # 171 -> 130 across eight captures.
 #
-# THIS HALF IS NOT FREE, and an earlier version of this comment claimed it
-# was on confounded evidence. Against a known warp, raising 1.0 -> 3.0 at a
-# FIXED pyramid level roughly doubles the gross-outlier rate: 0.97% -> 1.74%
-# of surviving tracks land beyond 20 px of truth. The pyramid change cuts
-# that rate about 6x (6.27% -> 0.97%), so the pair together is a net ~3.6x
-# purity improvement -- but the forward-backward half is the weaker and
-# costlier half of it, buying only 40 -> 33 segments.
+# It is NOT free. Against a known warp, 1.0 -> 3.0 at a FIXED pyramid level
+# roughly doubles the gross-outlier rate: 0.97% -> 1.74% of surviving tracks
+# land beyond 20 px of truth. The pyramid change cuts that rate about 6x
+# (6.27% -> 0.97%), so the pair is a net ~3.6x purity gain, but this is the
+# weaker and costlier half of it, buying only 40 -> 33 segments.
 #
-# What bounds the damage is that LK tracks never reach the solve.
+# Two things bound the damage. LK tracks never reach the solve:
 # `backends/classical.py` re-detects ORB and matches independently, so this
-# tolerance decides which frames are PROMOTED, not which correspondences
-# are triangulated. And it does not splice: on unrelated frames the
-# combined change discriminates BETTER than the baseline, not worse.
+# tolerance decides which frames are PROMOTED, not which correspondences are
+# triangulated. And it does not splice: on unrelated frames the combined
+# change discriminates BETTER than the baseline, not worse.
 #
-# (The retired claim, recorded so nobody re-derives it: intra-segment
-# solvable pairs rose 46% -> 53% and triangulation angle 0.43 -> 0.63 deg.
-# That is confounded. Fewer segments means longer segments means a
-# wider-baseline pair population -- median keyframe gap 6 -> 9 -- and
-# triangulation angle rises with baseline by construction. It is exactly
-# what zero change in track quality would produce.)
+# Not evidence for this value: intra-segment solvable pairs rose 46% -> 53%
+# and triangulation angle 0.43 -> 0.63 deg, but that is confounded. Fewer
+# segments means longer segments and a wider-baseline pair population
+# (median keyframe gap 6 -> 9), and triangulation angle rises with baseline
+# by construction; zero change in track quality would produce the same.
 FORWARD_BACKWARD_MAX_PX = 3.0
 
 # Below this many surviving tracks nothing downstream is meaningful.
@@ -115,12 +109,11 @@ class MotionSummary:
     "this motion carries no baseline" -- which is the one thing a keyframe
     policy most needs to know and cannot get from displacement.
 
-    Measured separation: 0.107 and 0.120 px for genuinely zero-baseline
-    pairs, versus 0.305 to 0.765 px once the camera actually translated.
-    Meanwhile raw displacement measured 12.4 px under that SAME pure
-    rotation -- larger than the 4.3 px measured for a real 5 cm sideways
-    step. Displacement alone would promote exactly the frames that carry
-    no geometry.
+    Measured: 0.107 and 0.120 px for genuinely zero-baseline pairs, versus
+    0.305 to 0.765 px once the camera translated. Raw displacement was
+    12.4 px under that SAME pure rotation -- larger than the 4.3 px of a
+    real 5 cm sideways step -- so displacement alone would promote exactly
+    the frames that carry no geometry.
 
     It is a rotation DETECTOR, not a parallax magnitude: it is not
     monotonic in baseline, because at wide baselines the surviving tracks
@@ -171,63 +164,52 @@ def measure_sharpness(gray: np.ndarray) -> float:
 
     WHY CV_16S AND meanStdDev RATHER THAN CV_64F AND .var()
 
-    This runs on EVERY delivered frame, and the previous form was 7.6% of
-    a full replay: a 640x360 float64 Laplacian is a 1.8 MB allocation per
-    frame, and reducing it in numpy costs more than computing it.
-
-    MEASURED on 120 real Ray-Ban frames: **1.429 ms -> 0.193 ms per
-    frame, 7.40x**, saving ~2.3 s of a 32 s replay of the canonical
-    capture.
+    Cost: this runs on EVERY delivered frame. A 640x360 float64 Laplacian
+    is a 1.8 MB allocation per frame, and reducing it in numpy costs more
+    than computing it; the CV_64F form was 7.6% of a full replay. On 120
+    real Ray-Ban frames this form measured 1.429 -> 0.193 ms per frame (7.40x),
+    ~2.3 s of a 32 s replay of the canonical capture.
 
     The intermediate is EXACT, not merely close. The input is 8-bit and
     `ksize` defaults to 1, so the kernel is [[0,1,0],[1,-4,1],[0,1,0]] and
     the output is bounded by +/-4*255 = +/-1020 against int16's +/-32767 --
-    saturation is unreachable. Verified rather than argued:
+    saturation is unreachable. Verified as well as argued:
     `np.array_equal(Laplacian(g, CV_64F), Laplacian(g, CV_16S))` is True
     on real frames, whose observed range was -497..324.
 
-    The variance then differs only in the last bits of a float64 --
-    measured max relative error **6.22e-16** across all 9,372 corpus
-    frames -- because `meanStdDev` accumulates in float64 exactly as
-    `.var()` does.
+    The variance then differs only in the last bits of a float64 -- max
+    relative error 6.22e-16 across 9,372 corpus frames -- because
+    `meanStdDev` accumulates in float64 exactly as `.var()` does.
 
-    That matters because this value is compared against an absolute floor
-    and a rolling ratio, so a frame sitting EXACTLY on a threshold could
-    in principle flip. IT CANNOT, and the reason is stronger than the
-    empirical check: the CV_16S Laplacian is INTEGER, so the variance of
-    N such values lies on a lattice of spacing 1/N**2 -- **1.884e-11 at
-    360x640, about 5,300x coarser than one ULP at the 25.0 floor.** A
-    disagreement of order 1e-15 cannot move a value across a bar when the
-    representable values near it are 1.9e-11 apart.
-
-    Empirically, across all 9,372 corpus frames: **zero flips**, closest
-    approach 24.96532, minimum safety factor 4.9e12 against the floor.
+    That cannot flip a threshold comparison (absolute floor or rolling
+    ratio), and the reason is stronger than the empirical check: the CV_16S
+    Laplacian is INTEGER, so the variance of N such values lies on a lattice
+    of spacing 1/N**2 -- 1.884e-11 at 360x640, about 5,300x coarser than one
+    ULP at the 25.0 floor. Empirically, across the same 9,372 frames: zero
+    flips, closest approach 24.96532, minimum safety factor 4.9e12 against
+    the floor.
 
     THAT GUARANTEE IS RESOLUTION-DEPENDENT. The spacing is 1/N**2, so it
     shrinks as the frame grows: comfortable at 360x640, weaker at 1080p,
     gone above roughly 30 megapixels. DAT's adaptive ladder changes
-    resolution mid-stream, so this needs re-checking if a much larger
-    frame size is ever adopted -- the empirical margin would survive, the
-    proof would not.
+    resolution mid-stream, so re-check this if a much larger frame size is
+    adopted -- the empirical margin would survive, the proof would not.
     """
     if gray.dtype != np.uint8 or gray.ndim != 2:
         # NOT a defensive nicety. Violating this fails THREE ways, and the
-        # worst one is silent. MEASURED against the previous
-        # CV_64F/.var() form on the same array:
+        # worst one is silent. Measured against the CV_64F/.var() form on
+        # the same array:
         #
         #   3-channel colour  109635.12 -> 110448.25   7.4e-3 relative
         #   int16            6.89e9    -> 9.06e8       8.7e-1 relative
         #   uint16 / float64                           raises cv2.error
         #
-        # The colour case is the quiet one: `meanStdDev` returns a
-        # PER-CHANNEL deviation and `[0, 0]` would silently take channel
-        # zero, where `.var()` pooled all three -- a plausible number,
-        # twelve orders of magnitude outside the 6.2e-16 agreement this
-        # function's exactness argument claims.
-        #
-        # `decode_gray` uses IMREAD_GRAYSCALE so the product path cannot
-        # get here, and a test pins that. This guards the fact that the
-        # function is public and annotated only `np.ndarray`.
+        # Colour is the quiet one: `meanStdDev` returns a PER-CHANNEL
+        # deviation and `[0, 0]` takes channel zero, where `.var()` pooled
+        # all three -- a plausible number, twelve orders of magnitude outside
+        # the 6.2e-16 agreement above. `decode_gray` uses IMREAD_GRAYSCALE so
+        # the product path cannot get here, and a test pins that; this guards
+        # a public function annotated only `np.ndarray`.
         raise ValueError(
             "measure_sharpness requires 8-bit single-channel input; got "
             f"dtype={gray.dtype}, ndim={gray.ndim}. The CV_16S intermediate "
@@ -347,10 +329,6 @@ class FrameTracker:
     @property
     def has_reference(self) -> bool:
         return self._reference_gray is not None
-
-    @property
-    def seed_count(self) -> int:
-        return 0 if self._seeds is None else int(len(self._seeds))
 
     def set_reference(self, gray: np.ndarray) -> None:
         self._reference_gray = gray.copy()

@@ -87,8 +87,7 @@ class UnposedBackend(GeometryBackend):
         # evidence.
         poses = [PoseEstimate(keyframe_id=window[0].keyframe_id, status=POSE_STATUS_ANCHOR)]
 
-        previous = window[0]
-        previous_features = detect_and_describe(previous.image_gray)
+        previous_features = detect_and_describe(window[0].image_gray)
 
         for current in window[1:]:
             current_features = detect_and_describe(current.image_gray)
@@ -97,7 +96,7 @@ class UnposedBackend(GeometryBackend):
                     previous_features, current_features, current.keyframe_id
                 )
             )
-            previous, previous_features = current, current_features
+            previous_features = current_features
 
         return GeometryEstimate(
             poses=tuple(poses), points=None, diagnostics={"reason": WITHHELD}
@@ -105,14 +104,10 @@ class UnposedBackend(GeometryBackend):
 
     # -- the incremental seam --------------------------------------------
     #
-    # Trivial here, and it has to exist anyway: the engine carries one
-    # live solve across observe() calls for whichever backend it was
-    # given, and the default in GeometryBackend re-runs the whole window
-    # per keyframe. This backend's per-pair measurements depend only on
-    # the frame before, so there is nothing to re-run.
-    #
-    # It withholds every pose and returns no points regardless -- that is
-    # the whole point of it, and being incremental does not soften it.
+    # The engine drives every backend through begin/extend/snapshot, and the
+    # GeometryBackend default re-runs the whole window per keyframe. Here a
+    # measurement depends only on the previous frame, so this override makes
+    # extend O(1); every pose stays withheld and no points are returned.
 
     def begin(self, intrinsics: CameraIntrinsics) -> None:
         self.prepare(intrinsics)
