@@ -18,13 +18,6 @@ import UIKit
 import os
 #endif
 
-/// Wraps the Meta Wearables DAT `WearablesInterface` and exposes registration
-/// and device-availability state to the rest of the app. This is the only
-/// type in the app that talks to DAT directly — the boundary described in
-/// docs/05-DAT-INTEGRATION.md.
-///
-/// Scope is intentionally limited to registration/connection state. Camera
-/// streaming is not implemented here.
 #if DEBUG
 /// One decoded frame, ready for Tower transmission. Carries dimensions
 /// derived directly from the `CMSampleBuffer` format description (the same
@@ -36,36 +29,30 @@ struct CapturedFrame {
     let width: Int
     let height: Int
 }
-#endif
 
-#if DEBUG
 /// Which rung of DAT's resolution enum the *next* capture session requests.
 ///
 /// ## Why this exists, and why it is DEBUG-only
 ///
 /// `StreamingResolution` is a **fixed three-case enum chosen once**, in the
 /// `StreamConfiguration` handed to `session.addCamera(config:)`. It is not an
-/// adaptive ladder: nothing in DAT renegotiates it mid-stream, and the P3
-/// clean walk recorded **108 frames, every one 360x640, with zero variation**
-/// (recorded in the console log of that walk). The app had this
-/// value hardcoded to `.low`, so changing it required an edit and a rebuild.
+/// adaptive ladder: nothing in DAT renegotiates it mid-stream, and a measured
+/// walk delivered **108 frames, every one 360x640, with zero variation**.
 ///
-/// That hardcoding blocks a measurement the Tower lane needs. Document
-/// Memory's word recall is **0.429-0.810 at 360x640 and 0.957-1.000 at
-/// 1280x720**, so its central premise cannot be tested at all without a way to
-/// raise the rung on a device. Meanwhile 720p is *actively harmful* to World
-/// Builder tracking — `min_sharpness = 25.0` is absolute and **73.3%** of 720p
-/// frames are rejected as blurred.
+/// The rung trades two cartridges against each other. Document Memory's word
+/// recall is **0.429-0.810 at 360x640 and 0.957-1.000 at 1280x720**, so its
+/// central premise cannot be tested without raising the rung on a device.
+/// Meanwhile 720p is *actively harmful* to World Builder tracking —
+/// `min_sharpness = 25.0` is absolute and **73.3%** of 720p frames are
+/// rejected as blurred.
 ///
 /// Those two facts do not reconcile at a single rung, and choosing between
-/// them is a cross-cartridge product decision that is not iOS's to make alone
-/// (both figures are stated above). So this is
-/// deliberately **a developer control, not a product setting**: it makes the
-/// experiment runnable without pre-empting the decision.
+/// them is a cross-cartridge product decision that is not iOS's to make alone.
+/// So this is deliberately **a developer control, not a product setting**: it
+/// makes the experiment runnable without pre-empting the decision.
 ///
 /// ## The privacy consequence, which is the one that actually matters
 ///
-/// This was reviewed and the first draft of this comment was found to omit it.
 /// The rung is not merely an image-quality dial. `TowerClient.sendFrame` sends
 /// the frame at its full captured size with **no downscale anywhere**, and when
 /// the Tower's dataset recorder is armed it fsyncs those bytes to disk
@@ -74,15 +61,15 @@ struct CapturedFrame {
 /// times the pixels** of the default.
 ///
 /// So raising the rung raises the fidelity of unredacted, first-person imagery
-/// of bystanders in a recording that persists. Face redaction does exist on the
-/// Tower now, but it is applied only to World Builder's keyframe corpus, in
-/// `_persist_keyframe`; the recorder's copy is written upstream of it and is
-/// never redacted, so both copies coexist on disk.
+/// of bystanders in a recording that persists. Face redaction on the Tower is
+/// applied only to World Builder's keyframe corpus, in `_persist_keyframe`;
+/// the recorder's copy is written upstream of it and is never redacted, so
+/// both copies coexist on disk.
 ///
 /// That is why the footer on this control says so in plain words rather than
-/// presenting the choice as OCR-versus-tracking, which is how it was first
-/// written and which is a complete-sounding account that omits the axis a
-/// person would most want to know about.
+/// presenting the choice as OCR-versus-tracking, which would be a
+/// complete-sounding account that omits the axis a person would most want to
+/// know about.
 ///
 /// `.low` remains the default, so World Builder's physically-proven path is
 /// unchanged unless someone deliberately changes it.
@@ -135,16 +122,14 @@ enum CaptureResolutionPreference: String, CaseIterable, Identifiable, Sendable {
 /// ## Why this exists beside `isCaptureEngaged` and `isCaptureSessionClaimed`
 ///
 /// Those two are `Bool`s, and a `Bool` cannot tell the two "not running" cases
-/// apart — which is the defect this type was added to fix.
-/// `isCaptureEngaged` excludes `.paused`, so during a **device-initiated
-/// pause** both Home and World Builder flip their primary control back to
-/// "Start capture", and a tap on it hits `startCameraSession()`'s
-/// `guard deviceSession == nil` and does nothing observable at all: a silent
+/// apart. `isCaptureEngaged` excludes `.paused`, so during a
+/// **device-initiated pause** a primary control built on it would read
+/// "Start capture", and a tap on it would hit `startCameraSession()`'s
+/// `guard deviceSession == nil` and do nothing observable at all: a silent
 /// no-op offered as the primary action.
 ///
-/// `.devicePaused` is not a state **this app** can leave, and the difference
-/// between that and "the SDK has no such call" is one this comment used to
-/// blur. Two separate facts, kept separate on purpose:
+/// `.devicePaused` is not a state **this app** can leave. That rests on two
+/// separate facts, kept separate on purpose:
 ///
 /// 1. **What is documented.** `docs/05-DAT-INTEGRATION.md` §104-107 and
 ///    `07-PLATFORM-CONSTRAINTS.md` §146 record the pause as *device-initiated*
@@ -158,17 +143,14 @@ enum CaptureResolutionPreference: String, CaseIterable, Identifiable, Sendable {
 ///
 /// Together those support exactly one claim: **this app has no resume to
 /// offer**, which is what every screen here is written from. They do not
-/// support "DAT exposes none". The previous wording — "there is no override to
-/// write" — argued that from the list of calls this app happens to make, and a
-/// list of one's own calls proves nothing about somebody else's SDK. If a
-/// resume is ever found in DAT, what changes is this comment and the four calls
-/// above; the documented device behaviour and the sentences on screen today
-/// stay as they are. Until then a screen that finds `.devicePaused` says what
-/// it is and waits.
+/// support "DAT exposes none": a list of one's own calls proves nothing about
+/// somebody else's SDK. If a resume is ever found in DAT, what changes is this
+/// comment and the four calls above; the documented device behaviour and the
+/// sentences on screen stay as they are. Until then a screen that finds
+/// `.devicePaused` says what it is and waits.
 ///
 /// Deliberately not an `Optional<Bool>` or a pair of flags: a caller that has
-/// to spell `.devicePaused` cannot fall into the `default` clause that
-/// swallowed this case the first time.
+/// to spell `.devicePaused` cannot let a `default` clause swallow it.
 nonisolated enum CaptureClaim: Equatable, Sendable {
     /// No session and no stream. A Start here is a real start.
     case unclaimed
@@ -186,16 +168,18 @@ nonisolated enum CaptureClaim: Equatable, Sendable {
 ///
 /// ## Why this is a value and not just a `print`
 ///
-/// Every refusal below already logged to the console, and three of them also
-/// wrote `errorMessage`. But the first one — a session already existing —
-/// logged and **returned silently**, so a caller had no way to tell "already
-/// running" from "the device is paused" from "it started", and a composed
-/// caller such as `ObjectMemoryRecordingCoordinator` could not word a truthful
-/// sentence about what had just happened. A machine-readable answer is the
-/// difference between a screen that explains and one that shrugs.
+/// Every refusal `startCameraSession()` makes (directly, or through the
+/// failed-start teardown after it returns) logs to the console, and three of
+/// those cases also write `errorMessage`. A refusal a caller synthesises (see
+/// below) does neither here. But a session already existing writes nothing a
+/// caller can read, so without this a caller could not tell "already running"
+/// from "the device is paused" from "it started", and a composed caller such as
+/// `ObjectMemoryRecordingCoordinator` could not word a truthful sentence about
+/// what had just happened. A machine-readable answer is the difference between
+/// a screen that explains and one that shrugs.
 ///
-/// The console logging is unchanged and still happens. This is carried
-/// alongside it, in `GlassesConnection.lastCaptureStartRefusal`.
+/// `startCameraSession()`'s refusals are carried alongside their console line,
+/// in `GlassesConnection.lastCaptureStartRefusal`.
 ///
 /// ## Two of these are also written by a caller, not only by this file
 ///
@@ -225,9 +209,8 @@ nonisolated enum CaptureStartRefusal: Equatable, Sendable {
     ///
     /// A caller that reads `CaptureClaim.ending` before it calls can tell the
     /// two apart, which is why this is synthesised there rather than returned
-    /// from here. `ObjectMemoryRecordingCoordinator` used to fold `.ending` in
-    /// with `.running` and record "somebody else owns it" — the wearer got no
-    /// camera, no refusal, and a Start that reported nothing at all.
+    /// from here. Folding `.ending` in with `.running` would record "somebody
+    /// else owns it": no camera, no refusal, and a Start that reports nothing.
     case captureIsShuttingDown
     /// `AutoDeviceSelector` has not yielded an eligible device yet.
     case noActiveDevice
@@ -246,10 +229,10 @@ nonisolated enum CaptureStartRefusal: Equatable, Sendable {
 /// are on versions outside the recommended compatibility range. Not blocking.
 /// The session can continue ... Prompt the user to update occasionally rather
 /// than block the session." It arrives through the same session error listener
-/// as the terminal errors, and that listener wrote every error to
-/// `errorMessage`, which the root view presents as the modal "Something went
-/// wrong" -- mid-capture, for a session that is working. So this one case is
-/// logged and counted here, for Developer Tools, and nothing else changes.
+/// as the terminal errors, and that listener writes errors to `errorMessage`,
+/// which the root view presents as the modal "Something went wrong" --
+/// mid-capture, for a session that is working. So this one case is logged and
+/// counted here instead, for Developer Tools.
 nonisolated struct DATNonblockingWarning: Equatable, Sendable {
     let description: String
     var count: Int
@@ -259,6 +242,16 @@ nonisolated struct DATNonblockingWarning: Equatable, Sendable {
 }
 #endif
 
+/// Wraps the Meta Wearables DAT `WearablesInterface`: registration, device
+/// availability, camera permission and, in DEBUG builds, the capture session
+/// (camera stream, Motion, the IMU recorder). This is the only type in the app
+/// that talks to DAT directly — the boundary described in
+/// docs/05-DAT-INTEGRATION.md.
+///
+/// Its `[Glasses][…]` console lines are DEBUG-only `print`s on purpose: the
+/// cold-launch and walk procedures read them from stdout
+/// (`devicectl device process launch --console`), which `os.Logger` does not
+/// write to.
 @MainActor
 final class GlassesConnection: ObservableObject {
     @Published private(set) var registrationState: RegistrationState
@@ -271,8 +264,7 @@ final class GlassesConnection: ObservableObject {
 
     /// The alert when a capture is started with no active glasses. Mock
     /// Device Kit is named only when it is the device in use: on real
-    /// glasses it is a developer tool the person has never heard of
-    /// (U0.8 F08).
+    /// glasses it is a developer tool the person has never heard of.
     static func noActiveDeviceSentence(mockDeviceKitEnabled: Bool) -> String {
         mockDeviceKitEnabled
             ? "No eligible glasses device yet. Make sure Mock Device Kit is enabled, paired, powered on, and donned, then wait a moment for the device to become active."
@@ -292,9 +284,6 @@ final class GlassesConnection: ObservableObject {
     // MARK: Camera session (proof-of-path milestone; DEBUG-only for now)
 
     @Published private(set) var deviceSessionState: DeviceSessionState = .idle
-    // Explicitly qualified: this app already declares its own `StreamState`
-    // (Glasses/StreamManager.swift, unrelated to DAT) which would otherwise
-    // shadow MWDATCamera's type of the same name.
     @Published private(set) var cameraStreamState: MWDATCamera.StreamState = .stopped
 
     /// Why the last `startCameraSession()` did not proceed, or `nil` if it did.
@@ -337,10 +326,10 @@ final class GlassesConnection: ObservableObject {
     /// `Device.addDeviceStateListener(_:)`.
     ///
     /// Through DAT 0.9.0 this was the *only* proactive health signal DAT
-    /// exposed for the device. 1.0.0 adds battery level, charging, don and
-    /// hinge state to `DeviceState`; this app does not read them yet, so they
-    /// stay absent rather than shown. No numeric temperature exists in either
-    /// release. Everything else health-shaped is *reactive*:
+    /// exposed for the device. 1.0.0's `DeviceState` adds battery level,
+    /// charging, don and hinge state; only the IMU log records them
+    /// (`lastDeviceState`), and no screen shows them. No numeric temperature
+    /// exists in either release. Everything else health-shaped is *reactive*:
     /// `DeviceSessionError` carries `thermalCritical`, `thermalEmergency`,
     /// `peakPowerShutdown` and `batteryCritical`, and 1.0.0's `StreamError`
     /// carries `thermalHot`, `peakPowerLimit` and `batteryLow`, but those
@@ -384,7 +373,8 @@ final class GlassesConnection: ObservableObject {
     private var motionSamplesTask: Task<Void, Never>?
     private let motionTokenBag = ListenerTokenBag()
 
-    /// Whether a Motion capability is attached to the current session.
+    /// Test seam: whether a Motion capability is attached to the current
+    /// session. `motion` is private.
     var isMotionAttached: Bool { motion != nil }
 
     /// The rate Motion was attached at, while it is attached.
@@ -398,7 +388,7 @@ final class GlassesConnection: ObservableObject {
     /// Whether the one run-time fallback (60 Hz to 30 Hz) has been used.
     private var motionFellBack = false
 
-    // MARK: IMU recorder (walk-5 evidence; DEBUG-only, default OFF)
+    // MARK: IMU recorder (DEBUG-only, default OFF)
 
     /// Whether the **next** capture session also records the glasses IMU and
     /// the timing of every camera frame to `Documents/imu-logs/`, one file per
@@ -465,8 +455,8 @@ final class GlassesConnection: ObservableObject {
     /// no longer this connection's; see `observeSession`.
     private(set) var staleSessionCallbacksDropped = 0
 
-    /// The session this connection holds, for a test that must deliver a
-    /// callback from it after it has been replaced.
+    /// Test seam: the session this connection holds, for a test that must
+    /// deliver a callback from it after it has been replaced.
     var deviceSessionForTesting: DeviceSession? { deviceSession }
 
     /// Fires once when the camera stream is confirmed live (`StreamState
@@ -495,19 +485,19 @@ final class GlassesConnection: ObservableObject {
     /// the start of every session so cadence never carries across sessions.
     private var frameRateGate = FrameRateGate(targetFPS: FrameRateGate.towerTargetFPS)
 
-    /// Console-logging cadence, independent of transmission: until this task
-    /// the same `% 30` condition governed both, which is what held Tower
-    /// delivery at 24/30 ≈ 0.8 fps. Logging stays at ~1 Hz per category
-    /// because `print` on the main actor is not free at 24 Hz; the
-    /// authoritative per-stage counts live in `metrics`.
+    /// Console-logging cadence, independent of transmission: one condition
+    /// must never govern both. A shared `% 30` held Tower delivery at
+    /// 24/30 ≈ 0.8 fps. Logging stays at ~1 Hz per category because `print`
+    /// on the main actor is not free at 24 Hz; the authoritative per-stage
+    /// counts live in `metrics`.
     ///
     /// Time-based rather than every Nth sequence number, because a sequence
     /// stride aliases against the rate gate. At a 24 fps source the gate
     /// admits every other frame, so sequences 1, 3, 5, … are selected and
-    /// 2, 4, 6, … are skipped — and an even stride like the old 30 therefore
-    /// lands *only* on skipped frames. The selected-frame line, the one
-    /// carrying the frame dimensions that proved the physical path works,
-    /// would never print again after frame #1.
+    /// 2, 4, 6, … are skipped — and an even stride such as 30 therefore lands
+    /// *only* on skipped frames. The selected-frame line, the one carrying the
+    /// frame dimensions that prove the physical path works, would never print
+    /// again after frame #1.
     private static let logInterval: TimeInterval = 1.0
     private var lastSelectedLogAt: TimeInterval = -.infinity
     private var lastSkippedLogAt: TimeInterval = -.infinity
@@ -547,13 +537,9 @@ final class GlassesConnection: ObservableObject {
         // of these lines must appear per app launch: this type owns the camera
         // and the device session, and its `deinit` stops both, so a second
         // construction means a SwiftUI change has started tearing the runtime
-        // graph down mid-session. The smoke test used to infer this from the
-        // first registration-state line, which is a weaker signal because it
-        // depends on DAT emitting.
+        // graph down mid-session. Cold-launch checks read this exact line.
         print("[Glasses][Init] GlassesConnection created")
-        #endif
 
-        #if DEBUG
         mockDeviceKitEnabled = MockDeviceKit.shared.isEnabled
         isMockDevicePaired = !MockDeviceKit.shared.pairedDevices.isEmpty
 
@@ -693,12 +679,11 @@ final class GlassesConnection: ObservableObject {
     /// ("No wearable devices have been discovered or registered") until DAT
     /// has a device to answer *for*. The automatic read in
     /// `ProjectManager.startAutomaticConnections()` runs from a SwiftUI
-    /// `.task` at first view appearance, which on real hardware is reliably
-    /// *before* discovery completes — the throw was observed on every cold
-    /// launch on a physical iPhone. Nothing re-read it afterwards, so
-    /// `cameraPermissionStatus` stayed `nil` for the whole process and
-    /// `beginCameraStream` refused every session for a permission the user
-    /// had already granted.
+    /// `.task` at first view appearance, which on a physical iPhone is
+    /// reliably *before* discovery completes, so that read throws on every
+    /// cold launch. Without a re-read `cameraPermissionStatus` would stay
+    /// `nil` for the whole process and `beginCameraStream` would refuse every
+    /// session for a permission the user had already granted.
     ///
     /// Driven by device availability rather than by a one-shot edge, because
     /// no single edge is reliably the right moment:
@@ -743,8 +728,7 @@ final class GlassesConnection: ObservableObject {
     /// Rebuilt whenever the device list changes, and seeded from each
     /// device's current `linkState`: glasses that are already connected when
     /// the list arrives may never emit a change, and waiting for one would
-    /// reintroduce exactly the "waits for an event that already happened"
-    /// defect this fixes.
+    /// wait for an event that already happened.
     private func observeLinkStates(for devices: [DeviceIdentifier]) {
         linkStateTokenBag.clear()
         for identifier in devices {
@@ -795,7 +779,7 @@ final class GlassesConnection: ObservableObject {
     /// Pairs one mock Ray-Ban Meta device, then powers it on and dons it —
     /// the same two follow-up steps the official CameraAccess sample's
     /// MockDeviceCardViewModel performs before a mock device is usable.
-    /// Does not configure a camera feed — streaming is not implemented here.
+    /// Does not configure a camera feed; `configureMockCameraFeed()` does.
     func pairMockGlasses() {
         print("[Glasses][MockDeviceKit] pairGlasses(model: .rayBanMeta) called")
         do {
@@ -818,14 +802,14 @@ final class GlassesConnection: ObservableObject {
     }
 
     /// Takes the paired mock off the wearer's head, which is how DAT pauses
-    /// a capture on its own. For UI tests only (U0.8 H2).
+    /// a capture on its own. For UI tests only.
     func doffMockGlassesForUITest() {
         print("[Glasses][MockDeviceKit] doff() for a UI test")
         pairedMockDevice?.doff()
     }
 
-    /// Gives the paired mock a video file to stream, for UI tests only (U0.8
-    /// F15). Without a feed, DAT's mock fails every stream at once with
+    /// Gives the paired mock a video file to stream, for UI tests only.
+    /// Without a feed, DAT's mock fails every stream at once with
     /// "Critical error, the stream should end", which the app rightly shows
     /// as a glasses alert: a harness gap, not a capture a test can use.
     func setMockCameraFeedForUITest(fileURL: URL) {
@@ -846,7 +830,6 @@ final class GlassesConnection: ObservableObject {
         for device in paired {
             print("[Glasses][Camera][Diag]   pairedDevice.deviceIdentifier = \(device.deviceIdentifier)")
         }
-        print("[Glasses][Camera][Diag]   power/don state: not exposed as a readable property on MockGlasses/MockDevice in any confirmed source; only write-only powerOn()/don() actions exist")
         print("[Glasses][Camera][Diag] pairedMockDevice (our retained ref) = \(String(describing: pairedMockDevice?.deviceIdentifier))")
         print("[Glasses][Camera][Diag] wearables.devices.count = \(wearables.devices.count) ids=\(wearables.devices)")
         print("[Glasses][Camera][Diag] self.devices (last devicesStream value) = \(devices.count) ids=\(devices)")
@@ -866,14 +849,14 @@ final class GlassesConnection: ObservableObject {
     /// Whether a capture session is currently claimed, from the tap that asks
     /// for one until it is fully torn down.
     ///
-    /// The workspaces used to decide Start-vs-Stop from `cameraStreamState`
-    /// alone. That leaves a window — `session.start()` has been called but
+    /// Reads the session state as well as `cameraStreamState`. From the
+    /// stream alone there is a window — `session.start()` has been called but
     /// the camera stream has not yet reached `.starting` — in which a session
-    /// exists and the button still reads "Start capture". A tap in that
+    /// exists and the button would still read "Start capture". A tap in that
     /// window is refused by `startCameraSession()`'s `deviceSession == nil`
     /// guard and does nothing observable, which is the silent no-op the
-    /// primary action must never be. Including the session state closes it:
-    /// the control flips to Stop the moment a session is claimed.
+    /// primary action must never be. With the session state the control
+    /// flips to Stop the moment a session is claimed.
     var isCaptureEngaged: Bool {
         switch deviceSessionState {
         case .starting, .started: return true
@@ -916,8 +899,7 @@ final class GlassesConnection: ObservableObject {
     /// Both switches are exhaustive rather than `default`-terminated. Both DAT
     /// enums are `@frozen`, so this cannot silently acquire an unhandled case —
     /// and writing every case out is what makes a future reader confront
-    /// `.paused` instead of inheriting a `default` that quietly swallowed it,
-    /// which is how this defect was introduced in the first place.
+    /// `.paused` instead of inheriting a `default` that quietly swallows it.
     var isCaptureSessionClaimed: Bool {
         Self.isCaptureSessionClaimed(
             session: deviceSessionState,
@@ -987,8 +969,8 @@ final class GlassesConnection: ObservableObject {
     /// a camera sending nothing.
     ///
     /// Both switches are exhaustive rather than `default`-terminated, for the
-    /// reason written out at `isCaptureSessionClaimed`: a `default` is how
-    /// `.paused` got swallowed in the first place.
+    /// reason written out at `isCaptureSessionClaimed`: a `default` would
+    /// swallow `.paused`.
     nonisolated static func captureClaim(
         session: DeviceSessionState,
         stream: MWDATCamera.StreamState
@@ -1023,14 +1005,13 @@ final class GlassesConnection: ObservableObject {
     ///
     /// ## It records why it refused
     ///
-    /// Every `return` below now also sets `lastCaptureStartRefusal`. Nothing
-    /// else about the behaviour of the Home and World Builder call sites
-    /// changes — the `print`s are the same, `errorMessage` is written in
-    /// exactly the same places, and the method still returns `Void`, so both
-    /// compile untouched and neither has to read the new value. What changes is that the **first** guard is no longer silent
-    /// to code: a session already existing and a session the *device* has
-    /// paused used to be one indistinguishable no-op, and the second of those
-    /// is the case a person most needs explained.
+    /// Every refusal below also sets `lastCaptureStartRefusal`, beside its
+    /// `print` and any `errorMessage`; the method still returns `Void`, so
+    /// a call site that does not care need not read it. That keeps the
+    /// **first** guard from being silent to code: a session already existing
+    /// and a session the *device* has paused would otherwise be one
+    /// indistinguishable no-op, and the second of those is the case a person
+    /// most needs explained.
     func startCameraSession() {
         // Scope out any stale error from a prior attempt so it can't be
         // misattributed to whatever the user does next. The refusal goes with
@@ -1090,19 +1071,17 @@ final class GlassesConnection: ObservableObject {
             // start, keeping it would wedge capture: `deviceSession` held,
             // `.starting` forever, every Start refused as `.alreadyRunning`,
             // and no alert. So a watchdog gives it DAT's start window and then
-            // takes the failure path this catch used to take. Raised by
-            // `createSession`, there is no session to keep, so it falls through
-            // to the failure path below like every other error.
+            // takes the failure path below. Raised by `createSession`, there is
+            // no session to keep, so it falls through to the failure path below
+            // like every other error.
             if let session = deviceSession, Self.isNonblockingWarning(error) {
                 noteNonblockingWarning("\(error)", source: "session.start()")
                 armSessionStartWatchdog(for: session, warning: "\(error)")
                 return
             }
             // Untyped: `createSession` and `start()` throw `DeviceSessionError`
-            // and nothing else, so `catch let error as DeviceSessionError` was
-            // a test the compiler proves is always true. The clause was already
-            // exhaustive — this function does not rethrow — so dropping the
-            // pattern changes nothing but the warning.
+            // and nothing else, so `catch let error as DeviceSessionError`
+            // would be a test the compiler proves always true, and warns about.
             print("[Glasses][Camera] session creation/start failed: \(error.localizedDescription)")
             lastCaptureStartRefusal = .datRefused(error.localizedDescription)
             errorMessage = error.localizedDescription
@@ -1237,8 +1216,8 @@ final class GlassesConnection: ObservableObject {
     }
 
     /// Whether DAT documents this session error as nonblocking: the session
-    /// continues, and the right response is a log line, not an alert. Today
-    /// that is exactly `dwaOutOfStuRange`; every other case is unchanged.
+    /// continues, and the right response is a log line, not an alert. That is
+    /// exactly `dwaOutOfStuRange`.
     nonisolated static func isNonblockingWarning(_ error: DeviceSessionError) -> Bool {
         if case .dwaOutOfStuRange = error { return true }
         return false
@@ -1253,7 +1232,7 @@ final class GlassesConnection: ObservableObject {
     ///
     /// Internal rather than private so a test can drive it: DAT's own session
     /// cannot be made to publish a chosen error. Everything but a nonblocking
-    /// warning is written to `errorMessage` exactly as before.
+    /// warning is written to `errorMessage`.
     func handleSessionError(_ error: DeviceSessionError) {
         if Self.isNonblockingWarning(error) {
             noteNonblockingWarning(error.description, source: "session error listener")
@@ -1294,9 +1273,7 @@ final class GlassesConnection: ObservableObject {
             return
         }
 
-        // Read from `captureResolution` rather than the former hardcoded
-        // `.low`. The default is still `.low`, so this is a no-op unless a
-        // developer deliberately changed it; see `CaptureResolutionPreference`
+        // `.low` unless a developer changed it; see `CaptureResolutionPreference`
         // for why the control exists and why it is not a product setting.
         let requestedResolution = captureResolution
         let config = StreamConfiguration(
@@ -1371,19 +1348,17 @@ final class GlassesConnection: ObservableObject {
     /// the workspaces — which derive Start/Stop from `cameraStreamState`,
     /// still `.stopped` because the stream never started — keep offering
     /// Start and never offer Stop. Nothing can clear the session, so capture
-    /// is dead for the rest of the process.
-    ///
-    /// This was observed on a physical iPhone: one refused start, then
-    /// twelve consecutive taps that each logged "session already exists" and
-    /// changed nothing on screen. It is a latent defect in how a failed
-    /// start leaves the session invariant; a stale camera permission is simply
-    /// the first thing that reached it.
+    /// is dead for the rest of the process. On a physical iPhone that was one
+    /// refused start, then twelve consecutive taps that each logged "session
+    /// already exists" and changed nothing on screen. Every such failure comes
+    /// here: a camera permission not granted, a refused `addCamera`, and the
+    /// start watchdog.
     ///
     /// Teardown is synchronous rather than waiting for the session's
     /// `.stopped` callback, because that callback is exactly what may not
-    /// arrive for a session that never got going — and waiting for it is
-    /// what left the invariant broken. `session.stop()` is still called, on
-    /// a captured reference, so DAT releases the session too.
+    /// arrive for a session that never got going, and waiting for it would
+    /// leave the invariant broken. `session.stop()` is still called, on a
+    /// captured reference, so DAT releases the session too.
     ///
     /// `refusal` is carried beside `reason` rather than derived from it: the
     /// reason is a sentence written for a person and the refusal is a value
@@ -1447,8 +1422,7 @@ final class GlassesConnection: ObservableObject {
 
                 // Sequence numbers are DAT callback ordinals: every delivered
                 // frame gets one, whether or not it is transmitted. That is
-                // what lets the Tower compute the source rate from `seq` gaps,
-                // and it is deliberately unchanged.
+                // what lets the Tower compute the source rate from `seq` gaps.
                 self.frameCount += 1
                 let sequence = self.frameCount
                 self.metrics.recordCapture(sequence: sequence)
@@ -1539,7 +1513,7 @@ final class GlassesConnection: ObservableObject {
     /// session, for the probe's readout, the IMU recorder, or both.
     ///
     /// With the recorder on, 60 Hz is asked for first and 30 Hz if `addMotion`
-    /// refuses it; with only the probe, 30 Hz as before. Every attempt is kept
+    /// refuses it; with only the probe, 30 Hz. Every attempt is kept
     /// for the log's header.
     ///
     /// Every failure here is logged and shown in the probe's own readout, and
@@ -1607,8 +1581,10 @@ final class GlassesConnection: ObservableObject {
             }.store(in: motionTokenBag)
             // Detached so the receipt time is read as the sample leaves DAT's
             // stream, before the hop to the main actor adds its own queueing
-            // — the same reason `FramePTSProbe` samples on DAT's thread. The
-            // stream finishes when the session tears down; the task is also
+            // — the same reason `FramePTSProbe` samples on DAT's thread. A
+            // plain `Task` here would inherit the main actor (and its
+            // priority), which is exactly the hop this avoids. The stream
+            // finishes when the session tears down; the task is also
             // cancelled in `cleanupCameraSession()`.
             //
             // With the recorder on, the probe's readout is not fed: it awaits
@@ -1696,7 +1672,8 @@ final class GlassesConnection: ObservableObject {
         return rates[index + 1]
     }
 
-    /// Samples of any source received since Motion was last attached.
+    /// Test seam: samples of any source received since Motion was last
+    /// attached. `motionSampleCount` is private.
     var motionSamplesSinceAttach: Int { motionSampleCount.withLock { $0 } }
 
     /// The recorder's 60 Hz refused at run time rather than by `addMotion`:
@@ -1813,7 +1790,8 @@ final class GlassesConnection: ObservableObject {
     }
 
     /// Re-reads how many logs this phone holds. The read is file I/O, so it
-    /// runs off the main actor.
+    /// runs off the main actor: detached, because a plain `Task` here would
+    /// inherit the main actor and do the I/O on it.
     func refreshIMULogInventory() {
         let base = imuLogBaseDirectory
         Task.detached { [weak self] in
@@ -1825,7 +1803,9 @@ final class GlassesConnection: ObservableObject {
     /// Deletes every IMU log on this phone, off the main actor, and returns
     /// what was deleted. Local to this app's own container; nothing else is
     /// touched. Refused (`nil`) while a capture session holds a recorder, so
-    /// the file being written is never pulled out from under it.
+    /// the file being written is never pulled out from under it. Both reads
+    /// are detached for `refreshIMULogInventory()`'s reason and awaited in
+    /// turn, so the inventory is read after the purge has finished.
     @discardableResult
     func purgeIMULogs() async -> IMULogInventory? {
         guard imuRecorder == nil else {
@@ -1867,14 +1847,13 @@ final class GlassesConnection: ObservableObject {
 
         // A DAT-initiated stop — glasses folded or doffed, Bluetooth lost, a
         // stream error — arrives here without ever passing through
-        // `stopCameraSession()`, which until now was the only place
-        // `cameraStreamDidStop` fired. That left the Tower's stream bracket
-        // open, which then suppressed the *next* session's `stream_start`
-        // while `frameCount` restarted at 0 — the Tower would see sequence
-        // numbers rewind inside what it still considered one session, making
-        // its own seq-gap and FPS figures unreadable. `sendStreamStop()` is
-        // idempotent, so the ordinary Stop path reaching here second is a
-        // no-op.
+        // `stopCameraSession()`, so the stop is signalled here too. Otherwise
+        // the Tower's stream bracket stays open, which suppresses the *next*
+        // session's `stream_start` while `frameCount` restarts at 0 — the
+        // Tower would see sequence numbers rewind inside what it still
+        // considers one session, making its own seq-gap and FPS figures
+        // unreadable. `sendStreamStop()` is idempotent, so the ordinary Stop
+        // path reaching here second is a no-op.
         if hadCamera {
             cameraStreamDidStop.send(())
         }

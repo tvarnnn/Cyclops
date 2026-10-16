@@ -148,13 +148,6 @@ nonisolated struct CartridgeSessionRefusalReason: RawRepresentable, Equatable, S
     static let notPaused = CartridgeSessionRefusalReason(rawValue: "not-paused")
     /// The verb is not one of the four.
     static let unknownAction = CartridgeSessionRefusalReason(rawValue: "unknown-action")
-
-    /// The two the wire and the document disagree between. Grouped so a test
-    /// can assert that both produce the same sentence rather than asserting
-    /// each separately and letting the second rot.
-    static let interchangeableStateRefusals: [CartridgeSessionRefusalReason] = [
-        .notActive, .notPaused,
-    ]
 }
 
 // MARK: - The snapshot
@@ -344,17 +337,6 @@ nonisolated struct CartridgeSessionSnapshot: Equatable, Sendable {
         // this alarm would be the one narrowing that makes it useless.
         guard !following.isEmpty else { return false }
         return state == .paused || state == .stopped
-    }
-
-    /// Whether the action that produced this snapshot was honoured and moved
-    /// nothing. `nil` on a read, where the question does not arise.
-    ///
-    /// Exists so the one caller does not write `snapshot.changed == false`,
-    /// which is `true` for a `GET` under Optional comparison and would report
-    /// every refresh as a double tap.
-    var wasAnIdempotentNoOp: Bool? {
-        guard let changed else { return nil }
-        return !changed
     }
 
     /// The four verbs the Tower offered that this build can actually send.

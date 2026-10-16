@@ -10,12 +10,11 @@ import UIKit
 /// iPhone-side health signals for the streaming session: thermal pressure,
 /// Low Power Mode, and battery.
 ///
-/// Exists because a five-minute physical run left the glasses noticeably warm
-/// and there was no way to tell, after the fact, whether the phone had been
-/// throttling too. A sender rate that decays over minutes and a device that
-/// heats over minutes are the same shape, and without telemetry they are
-/// indistinguishable from each other — and from a network that simply got
-/// worse.
+/// A five-minute physical run left the glasses noticeably warm, and a sender
+/// rate that decays over minutes and a device that heats over minutes are the
+/// same shape: without telemetry they are indistinguishable from each other —
+/// and from a network that simply got worse. This says, after the fact,
+/// whether the phone was throttling too.
 ///
 /// Deliberately **only** the phone. The glasses have their own thermal
 /// telemetry, but it arrives through Meta DAT, which by

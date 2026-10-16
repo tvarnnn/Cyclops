@@ -13,8 +13,8 @@ import MWDATCore
 import SwiftUI
 
 /// What the viewfinder says when there is no frame to show, and what its
-/// corner badge says (U0.8 F05). One place, so World Builder and Home cannot
-/// drift apart, and so no state says "Start…" while the camera is on.
+/// corner badge says. One place, so World Builder and Home cannot drift
+/// apart, and so no state says "Start…" while the camera is on.
 enum ViewfinderText {
     static let waitingForGlasses = "Waiting for the glasses to become active."
     static let waitingForFirstFrame = "Camera on. Waiting for the first frame from the glasses."
@@ -34,14 +34,14 @@ enum ViewfinderText {
         return "Start a \(noun) to see what the glasses see."
     }
 
-    /// Under Stop while the glasses hold the capture paused (U0.8 F06).
+    /// Under Stop while the glasses hold the capture paused.
     /// `stopTitle` is the control's own word: "Stop capture" or "Stop session".
     static func pausedControlLine(stopTitle: String) -> String {
         "The glasses paused this capture. It resumes on its own; \(stopTitle) ends it."
     }
 }
 
-/// Which capture control a workspace draws (U0.8 F06). A capture the glasses
+/// Which capture control a workspace draws. A capture the glasses
 /// paused is still claimed -- a Start then is refused and does nothing
 /// observable -- so it offers Stop, never Start.
 enum CaptureControlMode: Equatable {

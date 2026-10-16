@@ -59,7 +59,7 @@ final class WorldCoverageFieldTests: XCTestCase {
         XCTAssertEqual(field.weakDirections, 2)
         XCTAssertEqual(field.seenDirections, 4)
         XCTAssertEqual(field.totalDirections, 24)
-        XCTAssertEqual(field.accessibilitySummary, "Seen in 4 of 24 directions at 2 places")
+        XCTAssertEqual(WorldCoverageField.summary(for: [first]), "Seen in 4 of 24 directions at 2 places")
         let second = component([
             Station(x: 2, y: 2, keyframes: 2, weakMask: 0, supportedMask: 1),
         ])
@@ -68,13 +68,14 @@ final class WorldCoverageFieldTests: XCTestCase {
     }
 
     func testEmptyComponentHasNoFieldAndAZeroSummary() {
-        let field = WorldCoverageField(component: component([]))
+        let empty = component([])
+        let field = WorldCoverageField(component: empty)
         XCTAssertTrue(field.stations.isEmpty)
         XCTAssertTrue(field.wedges.isEmpty)
         XCTAssertEqual(field.stationCount, 0)
         XCTAssertEqual(field.seenDirections, 0)
         XCTAssertEqual(field.totalDirections, 0)
-        XCTAssertEqual(field.accessibilitySummary, "Seen in 0 of 0 directions at 0 places")
+        XCTAssertEqual(WorldCoverageField.summary(for: [empty]), "Seen in 0 of 0 directions at 0 places")
     }
 
     func testRealCoverageBlocksParseAndMatchMaskCounts() throws {

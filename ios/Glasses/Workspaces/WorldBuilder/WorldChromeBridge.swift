@@ -89,21 +89,14 @@ final class WorldChromeModel: ObservableObject {
     /// The overlay draws page-derived chrome only in this mode.
     var isDrawingNative: Bool { mode == .native && state != nil && hello != nil }
 
-    /// Whether the CURRENT build's imagery is known not to be redacted: the
-    /// latest served header, or the page's latest word, says so. Today's
-    /// caption then makes no redaction claim. Unlike the research marker this
-    /// is NOT sticky: a raw page replaced by a redacted build in the same
-    /// viewer says "faces redacted" again once the header and the page both
-    /// say redacted (Codex MED, 2026-10-05). Either source saying raw wins,
-    /// so the caption never claims a redaction one of them denies.
-    var imageryIsRaw: Bool { imageryRaw == true }
-
     /// What this viewer knows about the CURRENT build's redaction, for the
-    /// caption: `true` not redacted (either source says so -- raw wins),
-    /// `false` redacted (a source says so and none says raw), `nil` when
-    /// neither the served header nor the page has spoken. `nil` is worded as
-    /// unknown, never as a redaction claim (final-gate review of cb865eb,
-    /// LOW).
+    /// caption: `true` not redacted (either source says so -- raw wins, so
+    /// the caption never claims a redaction one of them denies), `false`
+    /// redacted (a source says so and none says raw), `nil` when neither the
+    /// served header nor the page has spoken. `nil` is worded as unknown,
+    /// never as a redaction claim. Unlike the research marker this is NOT
+    /// sticky: a raw page replaced by a redacted build in the same viewer
+    /// reads `false` again once the header and the page both say redacted.
     var imageryRaw: Bool? {
         if headerSaysRaw == true || pageSaysRaw == true { return true }
         if headerSaysRaw == false || pageSaysRaw == false { return false }
@@ -272,7 +265,8 @@ final class WorldChromeBridge {
         self.session = WorldChromeSession(kind: kind, pageURL: pageURL)
     }
 
-    /// Whether an `await` is held, and how many replies are owed. For tests.
+    /// Test seam: whether an `await` is held, and how many replies are owed.
+    /// `replies` is private.
     var outstandingReplies: Int { replies.count }
 
     func receive(_ input: WorldChromeSession.Input) {

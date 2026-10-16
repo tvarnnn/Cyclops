@@ -93,9 +93,6 @@ struct WorldCoverageField {
     var stationCount: Int { stations.count }
     var seenDirections: Int { supportedDirections + weakDirections }
     var totalDirections: Int { stationCount * WorldCoverage.sectors }
-    var accessibilitySummary: String {
-        Self.summary(seen: seenDirections, total: totalDirections, places: stationCount)
-    }
 
     init(component: WorldCoverage.Component) {
         var stations: [CGPoint] = []
@@ -360,14 +357,6 @@ struct WorldCoverageCaption: View {
                 .font(.footnote)
                 .foregroundStyle(Color.primary)
                 .fixedSize(horizontal: false, vertical: true)
-        }
-    }
-
-    static func legendWord(_ evidence: WorldCoverageEvidence) -> String {
-        switch evidence {
-        case .unconfirmed: return WorldCoverageCopy.unconfirmed
-        case .weak: return WorldCoverageCopy.weak
-        case .supported: return WorldCoverageCopy.supported
         }
     }
 }

@@ -9,16 +9,14 @@ import SwiftUI
 ///
 /// ## What selecting a cartridge does, and does not do
 ///
-/// Choosing a cartridge here changes **which workspace this app shows**. It
-/// sends nothing to the Tower, selects no module there, and changes no Tower
-/// state — there is no module-selection message in the protocol, and inventing
-/// one is forbidden (docs/08-IOS-CARTRIDGE-SHELL.md). The Tower's vocabulary is
-/// still exactly `ping`, `pong`, `frame`, `frame_result`, `stream_start`,
-/// `stream_stop`.
+/// Choosing a cartridge here changes **which workspace this app shows**. The
+/// choice itself sends nothing to the Tower and selects no module there —
+/// there is no module-selection message in the protocol, and inventing one is
+/// forbidden (docs/08-IOS-CARTRIDGE-SHELL.md). What a workspace does once it
+/// opens is its own; the footer below says it to the person choosing.
 ///
-/// The two were once fully independent, which is how a row came to be tappable
-/// while its badge read "Future". They are no longer: a cartridge with nothing
-/// to open cannot be `.readyToTest`, and one that ships a workspace is never
+/// The badge and being tappable are tied: a cartridge with nothing to open
+/// cannot be `.readyToTest`, and one that ships a workspace is never
 /// `.notBuilt`. `CartridgeCatalogTests` pins that in both directions.
 /// The badge describes the *module's* position on the Tower roadmap; being
 /// tappable describes whether *this app* ships a screen for it. Only cartridges
@@ -32,12 +30,12 @@ struct CartridgeDrawerView: View {
     @Binding var selectedCartridgeID: String
 
     /// Whether leaving the workspace on screen must ask first: a World
-    /// Builder capture is running (U0.8 F15, manager 137 D3). Read at the tap.
+    /// Builder capture is running. Read at the tap.
     var leavingNeedsConfirmation: () -> Bool = { false }
 
     /// Stops the glasses camera, for "Stop capture". Leaving World Builder
     /// then asks the Tower to stop building, so both end together: the camera
-    /// never keeps streaming with no build (D3).
+    /// never keeps streaming with no build.
     var stopCapture: () -> Void = {}
 
     /// The row tapped while a capture runs, waiting on the alert.
@@ -84,66 +82,36 @@ struct CartridgeDrawerView: View {
                     Text("Modules")
                         .foregroundStyle(.readableSecondary)
                 } footer: {
-                    // The middle clause of this footer used to read: "It does
-                    // not start anything on the Tower — the Tower chooses what
-                    // it runs at startup and this app cannot ask it for
-                    // anything else."
-                    //
-                    // That was true when written and is now false in the worst
-                    // direction. This build sends `cv_lab_start`,
-                    // `POST /documents-session/start` and
-                    // `POST /cartridges/object_memory/session/start`, and three
-                    // workspaces draw a Start control.
-                    //
-                    // It is not merely stale — it is the sentence a person
-                    // reads *before* deciding whether opening a screen can make
-                    // the Tower begin recording. Telling someone the app cannot
-                    // ask the Tower for anything, on a build that can ask it to
-                    // start keeping what its camera sees, is the one direction
-                    // this claim must never be wrong in.
-                    //
-                    // What survives is the true and useful half: opening a
-                    // cartridge is not itself a *recording*. The recording
-                    // verbs are deliberate and live inside the workspace.
-                    //
-                    // Corrected again on 2026-09-08, in the same direction and
-                    // for the same reason. "Opening one does not start
-                    // anything on the Tower by itself" had become false for
-                    // two of the five, and the hedge that followed it — "but
-                    // some workspaces can, and they say so where the control
-                    // is" — pointed at the Start controls, which is not where
-                    // this happens:
+                    // A person reads this *before* deciding whether opening a
+                    // screen can make the Tower begin recording, so it must
+                    // never understate what opening does. Opening a cartridge
+                    // is not itself a recording, and the recording verbs
+                    // (`cv_lab_start`, `POST /documents-session/start`,
+                    // `POST /cartridges/object_memory/session/start`) live
+                    // inside the workspaces. But two workspaces set the Tower
+                    // working from `.onAppear`, with no control touched:
                     //
                     //   * World Builder POSTs its cartridge session `start`
-                    //     from `.onAppear` (`WorldBuilderSessionController.
-                    //     workspaceDidAppear`). An active session is precisely
-                    //     what lets a builder attach to a capture, so opening
-                    //     the screen while a camera is streaming starts a
-                    //     world-build worker. No control was touched.
-                    //   * Scene Understanding subscribes to the live scene
-                    //     from `.onAppear`, and on this Tower a subscription
-                    //     *is* the watcher half of "somebody streams and
-                    //     somebody watches" — so opening the screen over an
-                    //     open stream loads and runs a people detector.
+                    //     (`WorldBuilderSessionController.workspaceDidAppear`).
+                    //     An active session is what lets a builder attach to a
+                    //     capture, so opening the screen while a camera is
+                    //     streaming starts a world-build worker. That worker
+                    //     writes: launched with `--root <world_root>`
+                    //     (`tower/tower/main.py`), it opens a `WorldStore` on it
+                    //     and writes sources, placements and a solve log — the
+                    //     worlds "Saved worlds" lists. So opening this screen
+                    //     over a live capture can put a reconstruction on the
+                    //     Tower's disk.
+                    //   * Scene Understanding subscribes to the live scene, and
+                    //     a subscription *is* the watcher half of "somebody
+                    //     streams and somebody watches", so opening the screen
+                    //     over an open stream loads and runs a people detector.
+                    //     It keeps nothing, and its own screen says so.
                     //
-                    // **The two are not alike on retention, and an earlier
-                    // draft of this very sentence got that wrong.** It said
-                    // "neither keeps anything", generalising from the fact
-                    // that a `CartridgeSession` is not itself persisted. That
-                    // is a different fact. World Builder's session is the gate
-                    // on the world-build worker (`tower/tower/main.py`), and
-                    // that worker exists to write: it is launched with
-                    // `--root <world_root>`, opens a `WorldStore` on it, and
-                    // writes sources, placements and a solve log — the very
-                    // worlds "Saved worlds" later lists. So opening this
-                    // screen over a live capture can put a reconstruction on
-                    // the Tower's disk.
-                    //
-                    // Scene Understanding really does keep nothing, and its
-                    // own screen says so. Saying it about both would be an
-                    // active reassurance that is false, in the one direction
-                    // this claim must never be wrong in — worse than the
-                    // stale-but-conservative sentence it replaced.
+                    // That a `CartridgeSession` is not itself persisted does
+                    // not mean nothing is kept: saying "keeps nothing" of both
+                    // would be a false reassurance, in the one direction this
+                    // sentence must never be wrong in.
                     Text("Opening a cartridge changes this app's workspace. Two of them also set the Tower working as they open: World Builder activates its session, and Scene Understanding starts watching the scene — so if a camera is already streaming, opening those is enough. They differ in what is left behind: Scene Understanding keeps nothing, while World Builder's session is what lets the Tower build and save a world from a capture that is already running. Recording is otherwise a deliberate act, and those controls live inside the workspace. Badges describe this app: \u{201C}Ready to test\u{201D} means there is something here to try, not that the Tower you are connected to is serving it right now. Each workspace says what that Tower can actually do.")
                         .foregroundStyle(.readableSecondary)
                         .padding(.top, 4)
@@ -157,12 +125,12 @@ struct CartridgeDrawerView: View {
                 }
             }
             // Leaving World Builder mid-capture asks first, and "Stop capture"
-            // stops the camera and the build together (U0.8 F15, D3).
+            // stops the camera and the build together.
             //
             // An alert, not a `confirmationDialog`: on iOS 26 a confirmation
             // dialog can present as a popover, and a popover drops its
-            // `.cancel` button (tapping outside stands in for it). D3 needs
-            // both choices on screen, and an alert always draws both.
+            // `.cancel` button (tapping outside stands in for it). Both
+            // choices must be on screen, and an alert always draws both.
             .alert(
                 CartridgeLeaveText.title,
                 isPresented: Binding(
@@ -198,7 +166,7 @@ struct CartridgeDrawerView: View {
     }
 }
 
-/// The words of the leave-mid-capture alert (U0.8 F15; manager 137 D3).
+/// The words of the leave-mid-capture alert.
 enum CartridgeLeaveText {
     static let title = "Leave and stop the capture?"
     static let message = "Leaving World Builder stops the glasses camera and asks the Tower to stop building a world from this capture."
@@ -206,7 +174,7 @@ enum CartridgeLeaveText {
     static let keepCapturing = "Keep capturing"
 }
 
-/// When leaving the workspace on screen must ask first (U0.8 F15): only World
+/// When leaving the workspace on screen must ask first: only World
 /// Builder, and only while its capture runs or the glasses hold it paused.
 /// Leaving there would ask the Tower to stop building while the camera kept
 /// streaming.

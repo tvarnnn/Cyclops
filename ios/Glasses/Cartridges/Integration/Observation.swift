@@ -30,13 +30,11 @@ import Foundation
 
 /// How a spatial figure was arrived at.
 ///
-/// **Moved here from `Workspaces/WorldBuilder/WorldModel.swift` unchanged.**
-/// Nothing about it is renamed or re-cased; only its file changed. It moved
-/// because Scene Understanding needs the identical distinction the moment it
-/// reports a distance to a tracked entity, and a second copy of a rule this
-/// load-bearing is how the two copies come to disagree. It stays spelled
-/// `World…` because that is the name every existing call site and test uses,
-/// and a rename would be churn in exchange for nothing.
+/// Shared rather than World Builder's own because Scene Understanding needs the
+/// identical distinction the moment it reports a distance to a tracked entity,
+/// and a second copy of a rule this load-bearing is how the two copies come to
+/// disagree. Spelled `World…` because that is the name every call site and
+/// test uses.
 ///
 /// This is not presentation garnish. `docs/modules/WORLD-BUILD.md` makes it a
 /// hard requirement: the target glasses are **monocular RGB only**, with no
@@ -52,7 +50,7 @@ import Foundation
 /// future view from rendering an inferred number as though it were measured:
 /// there is no way to show a figure without also having said where it came
 /// from.
-enum WorldScaleSemantics: Equatable, Sendable, CaseIterable {
+nonisolated enum WorldScaleSemantics: Equatable, Sendable, CaseIterable {
     /// Structure and layout without any claimed absolute scale. The honest
     /// default for multi-view geometry on monocular input.
     case relative
@@ -192,21 +190,21 @@ enum ObservationProvenance: Equatable, Sendable {
     /// Clamping is not the same as hiding: an out-of-range confidence is a Tower
     /// defect worth seeing in a log, and the decode site — not this formatter —
     /// is where it should be noticed.
-    /// ## The old clamp did not clamp
     ///
-    /// This was `min(max(value, 0), 1)`, and the comment above asserted the
-    /// range was handled. **Swift's `min`/`max` propagate NaN** — every
-    /// comparison with NaN is false, so `min(max(.nan, 0), 1) == .nan` — and
-    /// `Int(Double.nan.rounded())` is a **trap**, not a garbage number. So did
-    /// `+∞`, and so does any finite value past `Int.max` (`1e300` is legal JSON
-    /// that `JSONSerialization` hands over as a `Double`).
+    /// ## Why `isFinite` comes before the clamp
+    ///
+    /// The clamp alone does not clamp everything. **Swift's `min`/`max`
+    /// propagate NaN** — every comparison with NaN is false, so
+    /// `min(max(.nan, 0), 1) == .nan` — and `Int(Double.nan.rounded())` is a
+    /// **trap**, not a garbage number, as is `Int` of `+∞` or of any value past
+    /// `Int.max` (`1e300` is legal JSON that `JSONSerialization` hands over as
+    /// a `Double`).
     ///
     /// This formatter is reached from `confidence`, `best_score`,
     /// `detector_score`, verification scores, `bounding_box_normalized`, and
-    /// Object Memory's **required** `subject_obscured` — so a single malformed
-    /// number anywhere on those paths crashed the app rather than rendering
-    /// oddly. Wire data is not trusted input, and a formatter is the wrong
-    /// place to find that out.
+    /// Object Memory's **required** `subject_obscured`, so without the guard a
+    /// single malformed number anywhere on those paths would crash the app.
+    /// Wire data is not trusted input.
     ///
     /// `isFinite` first, then the clamp. A non-finite value is not rendered as
     /// a percentage at all, because there is no percentage it could honestly
@@ -240,7 +238,7 @@ enum ObservationProvenance: Equatable, Sendable {
 /// is arrival time wearing observation time's label, which is precisely the
 /// conflation forbidden above. If the Tower does not report an observation
 /// time, this carries `nil` and the UI says the time is unknown.
-struct ObservationTime: Equatable, Sendable {
+nonisolated struct ObservationTime: Equatable, Sendable {
     /// When the glasses observed it, as reported by the Tower. `nil` when the
     /// Tower did not say.
     var observedAt: Date?
@@ -259,10 +257,6 @@ struct ObservationTime: Equatable, Sendable {
     /// which `receivedAt` can be silently promoted: a caller that wants to show
     /// arrival time has to name it.
     var displayableObservationTime: Date? { observedAt }
-
-    /// True when the report carries no observation time at all — the case a
-    /// view must render as "time unknown" rather than falling back to arrival.
-    var isObservationTimeUnknown: Bool { observedAt == nil }
 }
 
 // MARK: - Duration in view
@@ -286,15 +280,15 @@ struct ObservationTime: Equatable, Sendable {
 ///
 /// So this measures the camera, and its `label` says so. There is no gaze
 /// signal on the current hardware and nothing here may imply one.
-struct ObservedDuration: Equatable, Sendable {
+nonisolated struct ObservedDuration: Equatable, Sendable {
     /// Seconds the subject was in frame, as reported by the Tower.
     let seconds: TimeInterval
 
-    /// `max(0, …)` neutralises NaN by accident (the comparison is false, so the
-    /// `0` wins) but passes `+∞` and `1e300` straight through — and `label`
-    /// below does `Int(seconds.rounded())`, which **traps** on both. This runs
-    /// on every document record, so one malformed `observed_seconds` from the
-    /// Tower took the app down rather than showing a strange duration.
+    /// `isFinite` first: `max(0, …)` alone neutralises NaN by accident (the
+    /// comparison is false, so the `0` wins) but passes `+∞` and `1e300`
+    /// straight through — and `label` below does `Int(seconds.rounded())`,
+    /// which **traps** on both. This runs on every document record, so one
+    /// malformed `observed_seconds` from the Tower must not crash the app.
     ///
     /// A non-finite duration becomes 0 rather than being rejected: this type is
     /// a rendering detail on a row that has other true things to say, and

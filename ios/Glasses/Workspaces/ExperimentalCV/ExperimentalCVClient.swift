@@ -348,35 +348,8 @@ final class TowerExperimentalCVClient: ExperimentalCVClient {
     /// `Self.replyBoundSeconds`, except in a test that cannot wait ten seconds.
     private let replyBound: TimeInterval
 
-    /// The open subscription on the **current** socket, or `nil`. The Tower's
-    /// ids restart at `sub-1` on every connection, so nothing keeps one across
-    /// a drop.
-    private var subscriptionID: String?
-    /// A `result_subscribe` has been sent and not yet answered. Without this a
-    /// declaration republished while the ack is in flight would open a second
-    /// subscription for the same cartridge.
-    private var isSubscribing = false
-    /// Resubscribes spent on this connection, and the cap.
-    ///
-    /// `channel_failed` and `consumer_too_slow` are the two errors the Tower
-    /// sends **unsolicited**, after which the subscription is gone and a new
-    /// `result_subscribe` is the only way to resume — the Tower says exactly
-    /// that in the message text. Clearing the flags without resubscribing
-    /// leaves the socket up, the cartridge silent, and nothing to retrigger it:
-    /// `subscribeIfPossible()` is only reached from the declaration sink and
-    /// from going `.online`, and neither fires on a mid-connection error.
-    ///
-    /// `consumer_too_slow` is not exotic — it fires when this phone does not
-    /// accept a result inside the send timeout, which is a backgrounded or
-    /// thermally-throttled phone, i.e. the normal state of a device on a walk.
-    ///
-    /// Bounded rather than unlimited, and matched to `TowerWorldBuilderClient`
-    /// deliberately: a Tower that closes a subscription three times on one
-    /// connection is not going to be fixed by a fourth attempt, and an
-    /// unbounded retry against the Tower's 8-subscription cap is how a client
-    /// starves its own siblings.
-    private var resubscribesUsed = 0
-    private static let resubscribeBudget = 3
+    /// This cartridge's subscription on the result channel.
+    private var subscription = CartridgeResultSubscription()
 
     /// Monotonic for the life of this client — deliberately not reset per
     /// connection, so an id can never be reused across a reconnect — and
@@ -664,15 +637,7 @@ final class TowerExperimentalCVClient: ExperimentalCVClient {
 
     private func connectionChanged(to status: TowerStatus) {
         guard status == .online else {
-            // The subscription belonged to a socket that is gone. Nothing is
-            // sent to close it — the Tower treats a closed socket as sufficient
-            // cleanup.
-            subscriptionID = nil
-            isSubscribing = false
-            // A fresh connection gets a fresh budget: the cap exists to stop a
-            // hopeless retry loop within one socket, not to remember a bad
-            // socket forever.
-            resubscribesUsed = 0
+            subscription.connectionLost()
             // The **document** is dropped, unlike World Builder's last report.
             // A CV Lab status carries `source.receiving_frames`,
             // `clients_connected` and a run's elapsed time, all of which
@@ -703,7 +668,7 @@ final class TowerExperimentalCVClient: ExperimentalCVClient {
     /// two flags, so a status change and a republished declaration racing each
     /// other cannot open two subscriptions.
     private func subscribeIfPossible() {
-        guard tower.status == .online, subscriptionID == nil, !isSubscribing else { return }
+        guard tower.status == .online, subscription.id == nil, !subscription.isSubscribing else { return }
         guard let offer else {
             // The Tower said nothing about the CV Lab. Availability already
             // renders that as `.noContract`; there is nothing to subscribe to.
@@ -726,7 +691,7 @@ final class TowerExperimentalCVClient: ExperimentalCVClient {
             return
         }
 
-        isSubscribing = true
+        subscription.isSubscribing = true
         tower.subscribeToResults(
             cartridge: offer.cartridge,
             resultType: offer.resultType,
@@ -800,12 +765,12 @@ final class TowerExperimentalCVClient: ExperimentalCVClient {
 
         case .subscribed(let ack):
             guard ack.cartridge == ExperimentalCVContract.towerCartridge else { return }
-            subscriptionID = ack.subscriptionID
-            isSubscribing = false
+            subscription.id = ack.subscriptionID
+            subscription.isSubscribing = false
 
         case .unsubscribed(let id):
-            guard id == subscriptionID else { return }
-            subscriptionID = nil
+            guard id == subscription.id else { return }
+            subscription.id = nil
 
         case .result(let envelope):
             guard envelope.cartridge == ExperimentalCVContract.towerCartridge else { return }
@@ -852,62 +817,29 @@ final class TowerExperimentalCVClient: ExperimentalCVClient {
             apply(pushed)
 
         case .failed(let error):
-            guard isOurs(error) else { return }
+            guard error.belongs(
+                toTowerCartridge: ExperimentalCVContract.towerCartridge,
+                openSubscriptionID: subscription.id
+            ) else { return }
             // A result-channel failure is about the **subscription**, not about
             // the Lab: the commands and `cv_lab_status` still work, and the
             // screen keeps whatever document it last read rather than being
             // emptied by a transport problem one layer below it. That reasoning
             // is why `state` is deliberately untouched here.
             if error.closesSubscription {
-                subscriptionID = nil
-                isSubscribing = false
-                // The Tower closed this subscription and its own message says to
-                // subscribe again to resume. Nothing else will: `subscribeIfPossible()`
-                // is reached only from the declaration sink and from going `.online`,
-                // and the socket is still up, so without this the cartridge goes
-                // permanently silent on a live connection.
-                guard resubscribesUsed < Self.resubscribeBudget else {
-                    state = .failed(
-                        CartridgeFailure(
-                                kind: .transport,
-                                message: """
-                                    The Tower closed this cartridge's result subscription \
-                                    \(Self.resubscribeBudget) times on one connection. \
-                                    Reconnecting is what resolves it.
-                                    """
-                        )
-                    )
-                    return
+                // The Tower's message says to subscribe again to resume, and nothing
+                // else reacts to this error.
+                if let exhausted = subscription.closedByTower() {
+                    state = .failed(exhausted)
+                } else {
+                    subscribeIfPossible()
                 }
-                resubscribesUsed += 1
-                subscribeIfPossible()
                 return
             }
-            // But the in-flight attempt is over either way, and this cleared
-            // nothing at all before — so any refused subscribe left
-            // `isSubscribing == true` and `subscribeIfPossible()` returned at
-            // its first guard for the rest of the connection. The Lab kept
-            // showing the document it read at connect time, forever, with no
-            // retry and nothing on screen to say so.
-            //
-            // `snapshot_failed` is the reachable transient: the Tower sends it
-            // instead of `result_subscribed` when the first snapshot raises.
-            isSubscribing = false
+            // Any error of ours ends an in-flight subscribe attempt; see
+            // `CartridgeResultSubscription.isSubscribing`.
+            subscription.isSubscribing = false
         }
-    }
-
-    /// Whether a result-channel error belongs to this cartridge.
-    ///
-    /// Matched on either name or subscription id because the Tower's extras are
-    /// reason-dependent. An error carrying neither is not claimed —
-    /// attributing another cartridge's failure to this one would be a
-    /// fabricated report about the Tower.
-    private func isOurs(_ error: CartridgeResultError) -> Bool {
-        if let cartridge = error.cartridge {
-            return cartridge == ExperimentalCVContract.towerCartridge
-        }
-        if let id = error.subscriptionID { return id == subscriptionID }
-        return false
     }
 
     // MARK: Projection

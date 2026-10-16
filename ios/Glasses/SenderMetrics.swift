@@ -12,10 +12,10 @@ import Foundation
 /// (see the extension below) rather than stored, so a snapshot can never
 /// disagree with itself.
 ///
-/// The Tower reports what it *received*. Before this existed there was no way
-/// to tell a Tower-side loss from an iOS-side decision, which is exactly how a
-/// deliberate 1-in-30 sampling stride went unnoticed as a 0.8 fps "bottleneck".
-/// Each counter below marks one place a frame can stop travelling.
+/// The Tower reports what it *received*. Without this there is no way to tell
+/// a Tower-side loss from an iOS-side decision: a deliberate 1-in-30 sampling
+/// stride reads, from the Tower, like a 0.8 fps bottleneck. Each counter below
+/// marks one place a frame can stop travelling.
 struct SenderMetricsSnapshot: Equatable, Sendable {
 
     // MARK: Capture
@@ -83,8 +83,7 @@ struct SenderMetricsSnapshot: Equatable, Sendable {
     /// `URLSessionWebSocketTask.send` invoking its completion handler —
     /// measured *inside* that handler, before hopping to the main actor.
     ///
-    /// This is the transport's own write time, and it is the single most
-    /// important number this pipeline was not measuring. The send window's
+    /// This is the transport's own write time. The send window's
     /// capacity divided by the slot lifetime *is* the achievable send rate
     /// (see `SendWindow`), so a rate below target is either this being large
     /// or the window being small, and nothing else.
@@ -98,15 +97,14 @@ struct SenderMetricsSnapshot: Equatable, Sendable {
     /// The slot is held for this whole span, so this, not `sendLatency`, is
     /// the true rate denominator. Recorded separately because the difference
     /// between the two attributes a shortfall to the *network* or to *main-actor
-    /// congestion*, which are opposite diagnoses with opposite fixes and were
-    /// previously indistinguishable.
+    /// congestion*, which are opposite diagnoses with opposite fixes.
     var slotLifetimeSecondsTotal: Double = 0
     var slotLifetimeSecondsMax: Double = 0
 
     /// Times a full, non-draining send window caused the connection to be torn
-    /// down. Each one is a stall that would previously have blocked the
-    /// pipeline for as long as the peer took to resume — 52 seconds, in the
-    /// physical baseline.
+    /// down. Each one is a stall that would otherwise block the pipeline for
+    /// as long as the peer takes to resume, which has been recorded at 52
+    /// seconds.
     ///
     /// Counts the teardown, not the recovery: whether a new connection follows
     /// depends on `TowerClient.autoReconnect`, which the app enables and the
@@ -204,8 +202,8 @@ extension SenderMetricsSnapshot {
         return Double(capacity) / (lifetime / 1000)
     }
 
-    /// Fraction of captured frames that reached the socket. The 0.8 fps
-    /// baseline run would have reported ≈ 0.033 here.
+    /// Fraction of captured frames that reached the socket. A 0.8 fps send
+    /// rate from a 24 fps capture reads ≈ 0.033 here.
     var deliveredFraction: Double? {
         guard framesCaptured > 0 else { return nil }
         return Double(sendSuccesses) / Double(framesCaptured)

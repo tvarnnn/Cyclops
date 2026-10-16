@@ -96,6 +96,19 @@ final class MockTowerServer: @unchecked Sendable {
         )
     }
 
+    /// Sends one WebSocket binary frame to the connected client.
+    func send(data: Data) {
+        guard let connection else { return }
+        let metadata = NWProtocolWebSocket.Metadata(opcode: .binary)
+        let context = NWConnection.ContentContext(identifier: "binary", metadata: [metadata])
+        connection.send(
+            content: data,
+            contentContext: context,
+            isComplete: true,
+            completion: .contentProcessed { _ in }
+        )
+    }
+
     /// Abruptly drops the connection with no close handshake, to exercise
     /// the client's receive-failure / send-failure paths.
     func dropConnection() {

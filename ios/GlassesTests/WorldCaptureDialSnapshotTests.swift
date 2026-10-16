@@ -20,6 +20,7 @@ final class WorldCaptureDialSnapshotTests: XCTestCase {
     private static let width: CGFloat = 402
     private static let walk = WorldFinishWalk(worldID: "w1", sessionID: "s9")
 
+    @MainActor
     private struct Scene {
         var name: String
         var block: String?

@@ -91,7 +91,10 @@ struct CVExperiment: Equatable, Identifiable, Sendable {
     /// What kind of live picture this experiment can draw, or `nil` for one
     /// that draws none. Declared in the catalog so the picker can say "this
     /// one has a live view" **before** anybody commits to a two-minute model
-    /// load to find out.
+    /// load to find out. A promise about what a preview would be, not that one
+    /// exists: that is `run.annotation.artifact`, which stays `.absent` until
+    /// the Tower serves a preview descriptor; meanwhile the Tower's reason is
+    /// `run.annotation.artifactUnavailableReason`.
     ///
     /// `nil` is a real answer and not a gap: `baseline` will never have a
     /// picture, deliberately, because it is the control every other
@@ -159,13 +162,6 @@ struct CVExperiment: Equatable, Identifiable, Sendable {
 
     /// Whether a start for this experiment would be refused before it began.
     var isStartable: Bool { isAvailable }
-
-    /// Whether starting this would put a live picture on screen.
-    ///
-    /// A promise about what a preview would BE, not that one exists: whether
-    /// one exists right now is `run.annotation.artifact`, which is `nil` with
-    /// a reason until a frame has actually been through.
-    var hasLiveView: Bool { previewKind != nil }
 }
 
 /// Reads `provenance` off any of the three places the Tower states it — a

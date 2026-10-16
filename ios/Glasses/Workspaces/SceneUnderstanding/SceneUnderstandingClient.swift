@@ -128,34 +128,8 @@ final class TowerSceneUnderstandingClient: SceneUnderstandingClient {
     private let tower: TowerClient
     private var cancellables: Set<AnyCancellable> = []
 
-    /// The open subscription on the **current** socket, or `nil`. The Tower's
-    /// ids restart at `sub-1` on every connection, so nothing survives a drop.
-    private var subscriptionID: String?
-    /// A `result_subscribe` is in flight. Without this, a declaration
-    /// republished while the ack is outstanding opens a second subscription for
-    /// the same cartridge.
-    private var isSubscribing = false
-    /// Resubscribes spent on this connection, and the cap.
-    ///
-    /// `channel_failed` and `consumer_too_slow` are the two errors the Tower
-    /// sends **unsolicited**, after which the subscription is gone and a new
-    /// `result_subscribe` is the only way to resume — the Tower says exactly
-    /// that in the message text. Clearing the flags without resubscribing
-    /// leaves the socket up, the cartridge silent, and nothing to retrigger it:
-    /// `subscribeIfPossible()` is only reached from the declaration sink and
-    /// from going `.online`, and neither fires on a mid-connection error.
-    ///
-    /// `consumer_too_slow` is not exotic — it fires when this phone does not
-    /// accept a result inside the send timeout, which is a backgrounded or
-    /// thermally-throttled phone, i.e. the normal state of a device on a walk.
-    ///
-    /// Bounded rather than unlimited, and matched to `TowerWorldBuilderClient`
-    /// deliberately: a Tower that closes a subscription three times on one
-    /// connection is not going to be fixed by a fourth attempt, and an
-    /// unbounded retry against the Tower's 8-subscription cap is how a client
-    /// starves its own siblings.
-    private var resubscribesUsed = 0
-    private static let resubscribeBudget = 3
+    /// This cartridge's subscription on the result channel.
+    private var subscription = CartridgeResultSubscription()
     /// The tracking session the held reading belongs to. See the type note.
     private var heldSessionID: Int?
     /// Whether the Scene Understanding screen is on screen right now.
@@ -232,12 +206,7 @@ final class TowerSceneUnderstandingClient: SceneUnderstandingClient {
 
     private func connectionChanged(to status: TowerStatus) {
         guard status == .online else {
-            subscriptionID = nil
-            isSubscribing = false
-            // A fresh connection gets a fresh budget: the cap exists to stop a
-            // hopeless retry loop within one socket, not to remember a bad
-            // socket forever.
-            resubscribesUsed = 0
+            subscription.connectionLost()
             // The discard that World Builder does not do. A dropped socket ends
             // the session that produced this scene — `stream_stop` or a
             // disconnect is how a wearable's session normally ends — so the
@@ -257,7 +226,7 @@ final class TowerSceneUnderstandingClient: SceneUnderstandingClient {
     /// other cannot open two subscriptions.
     private func subscribeIfPossible() {
         guard workspaceVisible else { return }
-        guard tower.status == .online, subscriptionID == nil, !isSubscribing else { return }
+        guard tower.status == .online, subscription.id == nil, !subscription.isSubscribing else { return }
         guard let declaration = tower.cartridgeDeclaration else { return }
         guard
             let offer = declaration.offer(
@@ -294,7 +263,7 @@ final class TowerSceneUnderstandingClient: SceneUnderstandingClient {
             return
         }
 
-        isSubscribing = true
+        subscription.isSubscribing = true
         // A new subscription is answered with a complete snapshot, so whatever
         // was held describes a socket that is gone.
         heldSessionID = nil
@@ -322,16 +291,16 @@ final class TowerSceneUnderstandingClient: SceneUnderstandingClient {
         // Leaving the screen ends the subscription, which — with no other
         // watcher — ends the Tower's session and releases its detector. The
         // unsubscribe is best-effort and its `result_unsubscribed` is ignored
-        // by construction: `subscriptionID` is cleared here, so the ack for
+        // by construction: `subscription.id` is cleared here, so the ack for
         // the old id matches nothing. The Tower treats a closed socket as
         // sufficient cleanup anyway; this spares it a session nobody is
         // reading. The reading is discarded for the same reason a stop
         // discards it: nothing is refreshing it any more.
-        if let id = subscriptionID {
+        if let id = subscription.id {
             tower.unsubscribeFromResults(subscriptionID: id)
         }
-        subscriptionID = nil
-        isSubscribing = false
+        subscription.id = nil
+        subscription.isSubscribing = false
         heldSessionID = nil
         state = .idle(nil)
     }
@@ -369,21 +338,21 @@ final class TowerSceneUnderstandingClient: SceneUnderstandingClient {
             // **Not closed by this guard**, and recorded rather than fixed
             // here: appear, leave, and return *before* the first ack, and two
             // subscribes are outstanding. Both acks now arrive while visible,
-            // both are adopted, and the second overwrites `subscriptionID` —
+            // both are adopted, and the second overwrites `subscription.id` —
             // orphaning the first. The durable answer is a generation token on
             // the outstanding subscribe rather than the `isSubscribing`
             // boolean, which is a wider change than this lane should make.
             guard workspaceVisible else {
                 tower.unsubscribeFromResults(subscriptionID: ack.subscriptionID)
-                isSubscribing = false
+                subscription.isSubscribing = false
                 return
             }
-            subscriptionID = ack.subscriptionID
-            isSubscribing = false
+            subscription.id = ack.subscriptionID
+            subscription.isSubscribing = false
 
         case .unsubscribed(let id):
-            guard id == subscriptionID else { return }
-            subscriptionID = nil
+            guard id == subscription.id else { return }
+            subscription.id = nil
             // The subscription is gone, so nothing is refreshing this scene.
             // Holding it would leave a live-looking count that stopped being
             // fed, which is the same failure as caching across a stop.
@@ -395,24 +364,12 @@ final class TowerSceneUnderstandingClient: SceneUnderstandingClient {
             apply(envelope)
 
         case .failed(let error):
-            guard isOurs(error) else { return }
+            guard error.belongs(
+                toTowerCartridge: SceneUnderstandingContract.towerCartridge,
+                openSubscriptionID: subscription.id
+            ) else { return }
             apply(error)
         }
-    }
-
-    /// Whether an error belongs to this cartridge.
-    ///
-    /// Matched on either name or subscription id because the Tower's extras are
-    /// reason-dependent: `unknown_subscription` names only the subscription and
-    /// the two unsolicited errors name both. An error carrying neither is not
-    /// claimed — attributing another cartridge's failure to this one would be a
-    /// fabricated report about the Tower.
-    private func isOurs(_ error: CartridgeResultError) -> Bool {
-        if let cartridge = error.cartridge {
-            return cartridge == SceneUnderstandingContract.towerCartridge
-        }
-        if let id = error.subscriptionID { return id == subscriptionID }
-        return false
     }
 
     private func apply(_ envelope: CartridgeResultEnvelope) {
@@ -466,50 +423,18 @@ final class TowerSceneUnderstandingClient: SceneUnderstandingClient {
 
     private func apply(_ error: CartridgeResultError) {
         if error.closesSubscription {
-            subscriptionID = nil
-            isSubscribing = false
-            // The Tower closed this subscription and its own message says to
-            // subscribe again to resume. Nothing else will: `subscribeIfPossible()`
-            // is reached only from the declaration sink and from going `.online`,
-            // and the socket is still up, so without this the cartridge goes
-            // permanently silent on a live connection.
-            guard resubscribesUsed < Self.resubscribeBudget else {
-                state = .failed(
-                    CartridgeFailure(
-                        kind: .transport,
-                        message: """
-                            The Tower closed this cartridge's result subscription \
-                            \(Self.resubscribeBudget) times on one connection. \
-                            Reconnecting is what resolves it.
-                            """
-                    )
-                )
-                return
+            // The Tower's message says to subscribe again to resume, and nothing
+            // else reacts to this error.
+            if let exhausted = subscription.closedByTower() {
+                state = .failed(exhausted)
+            } else {
+                subscribeIfPossible()
             }
-            resubscribesUsed += 1
-            subscribeIfPossible()
             return
         }
-        // Any error of ours ends an in-flight subscribe attempt.
-        //
-        // `closesSubscription` answers a different question -- "is an
-        // ESTABLISHED subscription now gone?" -- and is true for only two
-        // reasons. Using it alone to clear `isSubscribing` left the flag
-        // stuck `true` for every other refusal, and `subscribeIfPossible()`
-        // guards on `!isSubscribing`, so **the cartridge never retried for
-        // the life of the connection**.
-        //
-        // That is reachable on transients, not just on permanent faults:
-        // the Tower sends `snapshot_failed` INSTEAD of `result_subscribed`
-        // when the first snapshot raises, which is exactly the case that
-        // must recover. `contract_mismatch`, `unknown_cartridge`,
-        // `cartridge_unavailable` and `too_many_subscriptions` all behaved
-        // the same way.
-        //
-        // Clearing it unconditionally is correct because the Tower answers
-        // a `result_subscribe` with either an ack or an error: once an
-        // error of ours arrives, nothing is in flight any more.
-        isSubscribing = false
+        // Any error of ours ends an in-flight subscribe attempt; see
+        // `CartridgeResultSubscription.isSubscribing`.
+        subscription.isSubscribing = false
         heldSessionID = nil
         state = .failed(
             CartridgeFailure(

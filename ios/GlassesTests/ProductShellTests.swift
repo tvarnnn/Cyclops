@@ -170,6 +170,16 @@ final class StateDisplayTests: XCTestCase {
         XCTAssertEqual(StateDisplay.tower(.connecting), "Connecting…")
         XCTAssertEqual(StateDisplay.tower(.online), "Connected")
     }
+
+    /// The shell's Tower pill and the CV Lab's Tower row share this one
+    /// mapping, so the same state is never two colours on one screen.
+    @MainActor
+    func testTowerStatusLevels() {
+        XCTAssertEqual(StateDisplay.towerLevel(.online), .ok)
+        XCTAssertEqual(StateDisplay.towerLevel(.connecting), .working)
+        XCTAssertEqual(StateDisplay.towerLevel(.offline), .idle)
+        XCTAssertEqual(StateDisplay.towerLevel(.failed("Connection lost")), .problem)
+    }
 }
 
 // MARK: - Workspaces
@@ -545,9 +555,8 @@ final class WorldModelTests: XCTestCase {
             .failed(CartridgeFailure(kind: .transport, message: "boom")),
         ]
         for state in empty {
-            XCTAssertFalse(state.hasWorld, "\(state) claims a world")
             XCTAssertFalse(state.isReceivingUpdates, "\(state) claims live updates")
-            XCTAssertNil(state.snapshot, "\(state) produced a snapshot from nothing")
+            XCTAssertNil(state.snapshot, "\(state) claims a world: it produced a snapshot from nothing")
         }
     }
 
@@ -562,7 +571,6 @@ final class WorldModelTests: XCTestCase {
 
     func testAWorldSurvivesFinalisationSoItStaysInspectable() {
         let snapshot = WorldSnapshot(name: "Bedroom", keyframeCount: 37)
-        XCTAssertTrue(WorldModelState.finalized(snapshot).hasWorld)
         XCTAssertEqual(WorldModelState.finalized(snapshot).snapshot, snapshot)
     }
 
@@ -601,7 +609,7 @@ final class WorldModelTests: XCTestCase {
             return XCTFail("expected .unsupported, got \(client.state)")
         }
         XCTAssertFalse(reason.isEmpty, "an unsupported state must explain itself")
-        XCTAssertFalse(client.state.hasWorld)
+        XCTAssertNil(client.state.snapshot)
         XCTAssertFalse(client.state.isReceivingUpdates)
     }
 }
@@ -1287,7 +1295,7 @@ final class CartridgeClientTests: XCTestCase {
                 cartridgeID: world.cartridgeID,
                 phase: world.state.phase,
                 reason: UnavailableWorldBuilderClient.reason,
-                hasData: world.state.snapshot != nil || world.state.hasWorld
+                hasData: world.state.snapshot != nil
             ),
             ClientCase(
                 cartridgeID: cv.cartridgeID,
@@ -1836,14 +1844,12 @@ final class ObservationTimeTests: XCTestCase {
     func testArrivalTimeIsNeverShownAsObservationTime() {
         let arrivalOnly = ObservationTime(observedAt: nil, receivedAt: Date())
         XCTAssertNil(arrivalOnly.displayableObservationTime)
-        XCTAssertTrue(arrivalOnly.isObservationTimeUnknown)
     }
 
     func testAReportedObservationTimeIsUsed() {
         let observed = Date(timeIntervalSince1970: 1_000)
         let time = ObservationTime(observedAt: observed, receivedAt: Date())
         XCTAssertEqual(time.displayableObservationTime, observed)
-        XCTAssertFalse(time.isObservationTimeUnknown)
     }
 
     /// A default carries neither, which is the honest starting point.
@@ -1851,7 +1857,6 @@ final class ObservationTimeTests: XCTestCase {
         let time = ObservationTime()
         XCTAssertNil(time.displayableObservationTime)
         XCTAssertNil(time.receivedAt)
-        XCTAssertTrue(time.isObservationTimeUnknown)
     }
 }
 
@@ -1910,7 +1915,6 @@ final class WorldModelIntegrationTests: XCTestCase {
     func testFinalizingIsWorkButNotLiveObservation() {
         let state = WorldModelState.finalizing(WorldSnapshot(keyframeCount: 9))
         XCTAssertFalse(state.isReceivingUpdates, "finalizing claimed live observation")
-        XCTAssertTrue(state.hasWorld)
         XCTAssertNotNil(state.snapshot)
         XCTAssertEqual(state.phase, .live, "finalizing is the Tower working")
     }
@@ -1948,39 +1952,10 @@ final class WorldModelIntegrationTests: XCTestCase {
         for state in empty {
             XCTAssertFalse(state.phase.mayCarryData)
             XCTAssertNil(state.snapshot)
-            XCTAssertFalse(state.hasWorld)
         }
     }
 
-    // MARK: Calibration and metric display
-
-    /// Both gates, together. An uncalibrated figure is not a rough figure, it is
-    /// an unanchored one; and a relative figure is not a distance at all.
-    func testAMetricFigureNeedsBothCalibrationAndMetricScale() {
-        XCTAssertTrue(
-            WorldSnapshot(scale: .inferredMetric, calibration: .calibrated).permitsMetricDisplay
-        )
-        XCTAssertFalse(
-            WorldSnapshot(scale: .inferredMetric, calibration: .calibrating).permitsMetricDisplay,
-            "an uncalibrated pipeline produced a displayable distance"
-        )
-        XCTAssertFalse(
-            WorldSnapshot(scale: .relative, calibration: .calibrated).permitsMetricDisplay,
-            "a relative figure was treated as a distance"
-        )
-        XCTAssertFalse(
-            WorldSnapshot(scale: .unknown, calibration: .calibrated).permitsMetricDisplay
-        )
-    }
-
-    /// Only a calibrated pipeline permits spatial figures, and "not reported" is
-    /// not a permission.
-    func testOnlyCalibratedPermitsSpatialFigures() {
-        XCTAssertTrue(WorldCalibrationState.calibrated.permitsSpatialFigures)
-        for state in [WorldCalibrationState.unknown, .uncalibrated, .calibrating] {
-            XCTAssertFalse(state.permitsSpatialFigures, "\(state) permitted a spatial figure")
-        }
-    }
+    // MARK: Calibration
 
     /// Silence and a report are different claims and must read differently.
     func testUnknownCalibrationIsNotDressedUpAsUncalibrated() {
@@ -2469,9 +2444,6 @@ final class DocumentMemoryModelTests: XCTestCase {
             DocumentTextAvailability.unknown.displayName,
             DocumentTextAvailability.notReadable.displayName
         )
-        XCTAssertFalse(DocumentTextAvailability.unknown.hasText)
-        XCTAssertFalse(DocumentTextAvailability.notReadable.hasText)
-        XCTAssertTrue(DocumentTextAvailability.extracted(characterCount: nil).hasText)
     }
 
     /// The list carries a count, never the text. A list of documents must not
@@ -2490,9 +2462,9 @@ final class DocumentMemoryModelTests: XCTestCase {
     /// A document's thumbnail obeys the same rule as every other stored image.
     func testAnUnredactedThumbnailIsWithheld() {
         let raw = RememberedDocument(id: "1", thumbnail: .available(.rawEphemeral))
-        XCTAssertFalse(raw.isThumbnailDisplayable)
+        XCTAssertFalse(raw.thumbnail.isDisplayable)
         let redacted = RememberedDocument(id: "1", thumbnail: .available(.redacted))
-        XCTAssertTrue(redacted.isThumbnailDisplayable)
+        XCTAssertTrue(redacted.thumbnail.isDisplayable)
     }
 
     /// Observation time never falls back to arrival time, at the document level.
@@ -2502,7 +2474,6 @@ final class DocumentMemoryModelTests: XCTestCase {
             time: ObservationTime(observedAt: nil, receivedAt: Date())
         )
         XCTAssertNil(document.time.displayableObservationTime)
-        XCTAssertTrue(document.time.isObservationTimeUnknown)
     }
 
     /// Time queries are ranges. "This morning" is not an instant, and answering
@@ -5145,3 +5116,345 @@ final class DeadEndsTests: XCTestCase {
     }
 }
 #endif
+
+// MARK: - Result-subscription bookkeeping, over a real socket
+
+/// The result-channel bookkeeping Document Memory, the CV Lab and Scene
+/// Understanding keep, driven against a real socket: a subscription the Tower
+/// closes is reopened up to the budget and then reported, and a refused
+/// subscribe does not stop the client trying again.
+///
+/// World Builder keeps its own bookkeeping and has its own tests in
+/// `WorldBuilderIntegrationTests`.
+@MainActor
+final class CartridgeResultSubscriptionSocketTests: XCTestCase {
+
+    /// One cartridge client under test.
+    private struct Subject {
+        let towerCartridge: String
+        let resultType: String
+        let contract: String
+        /// Builds the client and does whatever makes it want a subscription.
+        let open: @MainActor (TowerClient) -> AnyObject
+        /// The failure the client's state carries, when it is `.failed`.
+        let failure: @MainActor (AnyObject) -> CartridgeFailure?
+    }
+
+    private static let documentMemory = Subject(
+        towerCartridge: DocumentMemoryContract.towerCartridge,
+        resultType: DocumentMemoryContract.resultType,
+        contract: DocumentMemoryContract.statusIdentifier,
+        open: { TowerDocumentMemoryClient(tower: $0) },
+        failure: { client in
+            guard case .failed(let failure) = (client as! TowerDocumentMemoryClient).state else { return nil }
+            return failure
+        }
+    )
+
+    private static let experimentalCV = Subject(
+        towerCartridge: ExperimentalCVContract.towerCartridge,
+        resultType: ExperimentalCVContract.resultType,
+        contract: ExperimentalCVContract.status,
+        open: { TowerExperimentalCVClient(tower: $0) },
+        failure: { client in
+            guard case .failed(let failure) = (client as! TowerExperimentalCVClient).state else { return nil }
+            return failure
+        }
+    )
+
+    private static let sceneUnderstanding = Subject(
+        towerCartridge: SceneUnderstandingContract.towerCartridge,
+        resultType: SceneUnderstandingContract.resultType,
+        contract: SceneUnderstandingContract.identifier,
+        open: { tower in
+            let client = TowerSceneUnderstandingClient(tower: tower)
+            // The scene subscription opens only while its screen is showing.
+            client.workspaceVisibilityChanged(isVisible: true)
+            return client
+        },
+        failure: { client in
+            guard case .failed(let failure) = (client as! TowerSceneUnderstandingClient).state else { return nil }
+            return failure
+        }
+    )
+
+    // MARK: A subscription the Tower closes
+
+    func testDocumentMemoryReopensAClosedSubscriptionThreeTimesThenReports() async throws {
+        try await assertReopensThenReports(Self.documentMemory)
+    }
+
+    func testTheCVLabReopensAClosedSubscriptionThreeTimesThenReports() async throws {
+        try await assertReopensThenReports(Self.experimentalCV)
+    }
+
+    func testSceneUnderstandingReopensAClosedSubscriptionThreeTimesThenReports() async throws {
+        try await assertReopensThenReports(Self.sceneUnderstanding)
+    }
+
+    // MARK: A subscribe the Tower refuses
+
+    func testDocumentMemorySubscribesAgainAfterARefusedSubscribe() async throws {
+        try await assertSubscribesAgainAfterARefusal(Self.documentMemory)
+    }
+
+    func testTheCVLabSubscribesAgainAfterARefusedSubscribe() async throws {
+        try await assertSubscribesAgainAfterARefusal(Self.experimentalCV)
+    }
+
+    func testSceneUnderstandingSubscribesAgainAfterARefusedSubscribe() async throws {
+        try await assertSubscribesAgainAfterARefusal(Self.sceneUnderstanding)
+    }
+
+    // MARK: The two scenarios
+
+    /// `channel_failed` closes the subscription. The client opens a new one
+    /// three times on one connection; the fourth close is reported instead,
+    /// and no fifth subscribe is sent.
+    private func assertReopensThenReports(
+        _ subject: Subject, file: StaticString = #filePath, line: UInt = #line
+    ) async throws {
+        let bench = try await connect(subject, acknowledgesSubscribes: true, file: file, line: line)
+        defer { bench.stop() }
+        let client = subject.open(bench.tower)
+
+        var opened = await waitUntil { bench.subscribes == 1 }
+        XCTAssertTrue(opened, "the first subscribe reached the wire", file: file, line: line)
+
+        for closed in 1...3 {
+            bench.server.send(text: Self.resultError(subject, reason: "channel_failed", subscriptionID: "sub-\(closed)"))
+            opened = await waitUntil { bench.subscribes == closed + 1 }
+            XCTAssertTrue(opened, "close \(closed) of 3 opens a new subscription", file: file, line: line)
+        }
+        XCTAssertNil(subject.failure(client), "within the budget nothing is reported", file: file, line: line)
+
+        bench.server.send(text: Self.resultError(subject, reason: "channel_failed", subscriptionID: "sub-4"))
+        let reported = await waitUntil { subject.failure(client) != nil }
+        XCTAssertTrue(reported, "the close past the budget is reported", file: file, line: line)
+        let failure = subject.failure(client)
+        XCTAssertEqual(failure?.kind, .transport, file: file, line: line)
+        XCTAssertEqual(
+            failure?.message,
+            "The Tower closed this cartridge's result subscription 3 times on one connection. "
+                + "Reconnecting is what resolves it.",
+            file: file, line: line
+        )
+        XCTAssertEqual(bench.subscribes, 4, "a spent budget sends no fifth subscribe", file: file, line: line)
+        withExtendedLifetime(client) {}
+    }
+
+    /// `snapshot_failed` is what the Tower sends instead of the ack when the
+    /// first snapshot raises. It ends the attempt, so the next declaration
+    /// opens a subscription again. A client still marked as subscribing
+    /// would ignore it for the life of the connection.
+    private func assertSubscribesAgainAfterARefusal(
+        _ subject: Subject, file: StaticString = #filePath, line: UInt = #line
+    ) async throws {
+        let bench = try await connect(subject, acknowledgesSubscribes: false, file: file, line: line)
+        defer { bench.stop() }
+        let client = subject.open(bench.tower)
+
+        let opened = await waitUntil { bench.subscribes == 1 }
+        XCTAssertTrue(opened, "the first subscribe reached the wire", file: file, line: line)
+
+        bench.server.send(text: Self.resultError(subject, reason: "snapshot_failed", subscriptionID: nil))
+        bench.server.send(text: Self.declaration(subject))
+
+        let retried = await waitUntil { bench.subscribes == 2 }
+        XCTAssertTrue(retried, "a refused subscribe does not stop the client subscribing again", file: file, line: line)
+        withExtendedLifetime(client) {}
+    }
+
+    // MARK: Bench
+
+    @MainActor
+    private final class Bench {
+        let server: MockTowerServer
+        let tower: TowerClient
+        let recorder: MessageRecorder
+
+        init(server: MockTowerServer, tower: TowerClient, recorder: MessageRecorder) {
+            self.server = server
+            self.tower = tower
+            self.recorder = recorder
+        }
+
+        /// `result_subscribe` messages the client has sent.
+        var subscribes: Int { CartridgeResultSubscriptionSocketTests.subscribes(in: recorder.all) }
+
+        func stop() {
+            tower.disconnect()
+            server.stop()
+        }
+    }
+
+    /// Answers the handshake and the capability request with a declaration
+    /// offering `subject`, and, when asked to, acknowledges every subscribe
+    /// as `sub-1`, `sub-2`, … in order.
+    ///
+    /// A reply is sent **before** the message it answers is recorded, so a
+    /// test that has seen a subscribe on the wire knows its ack is already
+    /// ahead of anything the test sends next.
+    private func connect(
+        _ subject: Subject, acknowledgesSubscribes: Bool, file: StaticString, line: UInt
+    ) async throws -> Bench {
+        let server = try MockTowerServer()
+        let port = try await server.start()
+        let recorder = MessageRecorder()
+        let declaration = Self.declaration(subject)
+        let towerCartridge = subject.towerCartridge
+        let resultType = subject.resultType
+        let contract = subject.contract
+        server.onText = { text in
+            let type = CartridgeResultSubscriptionSocketTests.messageType(of: text)
+            if type == "ping" {
+                server.send(text: #"{"type":"pong"}"#)
+            } else if type == "cartridges" {
+                server.send(text: declaration)
+            } else if type == "result_subscribe", acknowledgesSubscribes {
+                let id = "sub-\(CartridgeResultSubscriptionSocketTests.subscribes(in: recorder.all) + 1)"
+                server.send(text: CartridgeResultSubscriptionSocketTests.json([
+                    "type": "result_subscribed", "subscription_id": id, "cartridge": towerCartridge,
+                    "result_type": resultType, "contract": contract,
+                ]))
+            }
+            recorder.record(text)
+        }
+
+        let tower = TowerClient(metrics: SenderMetrics())
+        tower.connect(to: URL(string: "ws://127.0.0.1:\(port)/")!)
+        let online = await waitUntil { tower.status == .online && tower.cartridgeDeclaration != nil }
+        XCTAssertTrue(online, "the client came online and the Tower declared its cartridges", file: file, line: line)
+        return Bench(server: server, tower: tower, recorder: recorder)
+    }
+
+    private func waitUntil(timeout: TimeInterval = 3, _ condition: @MainActor () -> Bool) async -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if condition() { return true }
+            try? await Task.sleep(nanoseconds: 10_000_000)
+        }
+        return condition()
+    }
+
+    // MARK: Wire
+
+    private nonisolated static func declaration(_ subject: Subject) -> String {
+        json([
+            "type": "cartridges",
+            "envelope_contract": "cartridge_results.envelope/2026-08-23",
+            "cartridges": [[
+                "cartridge": subject.towerCartridge, "result_type": subject.resultType,
+                "contract": subject.contract, "available": true, "snapshot_only": true,
+            ] as [String: Any]],
+            "not_offered": [] as [Any],
+            "http_contracts": [] as [Any],
+        ])
+    }
+
+    private nonisolated static func resultError(_ subject: Subject, reason: String, subscriptionID: String?) -> String {
+        var message: [String: Any] = [
+            "type": "result_error", "reason": reason, "message": "The Tower reported \(reason).",
+            "cartridge": subject.towerCartridge, "result_type": subject.resultType,
+        ]
+        if let subscriptionID { message["subscription_id"] = subscriptionID }
+        return json(message)
+    }
+
+    private nonisolated static func subscribes(in messages: [String]) -> Int {
+        messages.filter { messageType(of: $0) == "result_subscribe" }.count
+    }
+
+    private nonisolated static func messageType(of text: String) -> String? {
+        guard
+            let data = text.data(using: .utf8),
+            let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { return nil }
+        return object["type"] as? String
+    }
+
+    private nonisolated static func json(_ object: [String: Any]) -> String {
+        let data = try! JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
+        return String(decoding: data, as: UTF8.self)
+    }
+}
+
+// MARK: - Result-subscription bookkeeping, without a socket
+
+/// `CartridgeResultSubscription` and `CartridgeResultError.belongs`, the two
+/// pieces of result-channel bookkeeping the cartridge clients share.
+@MainActor
+final class CartridgeResultSubscriptionTests: XCTestCase {
+
+    func testTheTowerMayCloseASubscriptionThreeTimesPerConnection() {
+        var subscription = CartridgeResultSubscription()
+        XCTAssertEqual(CartridgeResultSubscription.resubscribeBudget, 3)
+        for close in 1...3 {
+            subscription.id = "sub-\(close)"
+            subscription.isSubscribing = true
+            XCTAssertNil(subscription.closedByTower(), "close \(close) of 3: the caller subscribes again")
+            XCTAssertNil(subscription.id, "the closed subscription is gone")
+            XCTAssertFalse(subscription.isSubscribing, "and nothing is in flight")
+        }
+
+        subscription.id = "sub-4"
+        let failure = subscription.closedByTower()
+        XCTAssertEqual(failure?.kind, .transport)
+        XCTAssertEqual(
+            failure?.message,
+            "The Tower closed this cartridge's result subscription 3 times on one connection. "
+                + "Reconnecting is what resolves it."
+        )
+        XCTAssertNil(subscription.id, "a spent budget still clears the closed subscription")
+        XCTAssertNotNil(subscription.closedByTower(), "and stays spent for the rest of the connection")
+    }
+
+    func testANewConnectionGetsAFreshBudget() {
+        var subscription = CartridgeResultSubscription()
+        for _ in 1...3 { XCTAssertNil(subscription.closedByTower()) }
+        subscription.id = "sub-9"
+        subscription.isSubscribing = true
+
+        subscription.connectionLost()
+
+        XCTAssertNil(subscription.id)
+        XCTAssertFalse(subscription.isSubscribing)
+        XCTAssertNil(subscription.closedByTower(), "the next connection may reopen a closed subscription again")
+    }
+
+    func testAnErrorBelongsByItsCartridgeNameFirstAndOnlyThenByItsSubscription() throws {
+        func error(cartridge: String?, subscriptionID: String?) throws -> CartridgeResultError {
+            var json: [String: Any] = ["reason": "channel_failed"]
+            if let cartridge { json["cartridge"] = cartridge }
+            if let subscriptionID { json["subscription_id"] = subscriptionID }
+            return try XCTUnwrap(CartridgeResultError(json: json))
+        }
+        let ours = SceneUnderstandingContract.towerCartridge
+
+        // A name decides alone.
+        XCTAssertTrue(try error(cartridge: ours, subscriptionID: nil)
+            .belongs(toTowerCartridge: ours, openSubscriptionID: nil))
+        XCTAssertTrue(try error(cartridge: ours, subscriptionID: "sub-9")
+            .belongs(toTowerCartridge: ours, openSubscriptionID: "sub-1"))
+        XCTAssertFalse(
+            try error(cartridge: WorldBuilderResultContract.towerCartridge, subscriptionID: "sub-1")
+                .belongs(toTowerCartridge: ours, openSubscriptionID: "sub-1"),
+            "another cartridge's error is not ours, whatever subscription id it carries"
+        )
+
+        // Without a name, the subscription id decides.
+        XCTAssertTrue(try error(cartridge: nil, subscriptionID: "sub-1")
+            .belongs(toTowerCartridge: ours, openSubscriptionID: "sub-1"))
+        XCTAssertFalse(try error(cartridge: nil, subscriptionID: "sub-2")
+            .belongs(toTowerCartridge: ours, openSubscriptionID: "sub-1"))
+        XCTAssertFalse(
+            try error(cartridge: nil, subscriptionID: "sub-1")
+                .belongs(toTowerCartridge: ours, openSubscriptionID: nil),
+            "with nothing open, no subscription id is ours"
+        )
+
+        // With neither, nothing is claimed.
+        XCTAssertFalse(try error(cartridge: nil, subscriptionID: nil)
+            .belongs(toTowerCartridge: ours, openSubscriptionID: "sub-1"))
+    }
+}

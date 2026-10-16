@@ -19,8 +19,8 @@ import Foundation
 ///
 /// What *is* genuinely shared is the coarse question a shell asks about any
 /// cartridge: is there nothing here, is something in flight, is there data, did
-/// it fail? That question has the same seven answers for all four cartridges, and
-/// the app needs it in exactly two places:
+/// it fail? That question has the same answers for every cartridge, and the app
+/// needs it in exactly two places:
 ///
 /// 1. shared presentation — one panel that renders "nothing yet" identically
 ///    everywhere, so a new cartridge cannot invent its own slightly different
@@ -41,41 +41,32 @@ import Foundation
 /// with cases covering every cartridge's lifecycle, which is how a small shared
 /// vocabulary becomes a plugin framework.
 enum CartridgePhase: String, Equatable, Sendable, CaseIterable {
-    /// The Tower cannot do this at all — no module runtime, or no declared
-    /// contract for this cartridge.
+    /// This Tower offers this app nothing it can use for the cartridge. Two
+    /// causes reach it:
     ///
-    /// This was once documented as "the only reachable phase for every
-    /// cartridge in the app", and that has stopped being true. A live Tower
-    /// declares `world_builder.status/2026-08-25` on `GET /cartridges` and this
-    /// build implements it, so World Builder resolves past this case and
-    /// reaches `.live`/`.settled` with real data. Object Memory reaches its own
-    /// states over HTTP without passing through here at all.
+    /// - **no contract**: the Tower declared none for this cartridge. The
+    ///   honest answer for the three cartridges with no Tower code anywhere
+    ///   (Visual Q&A, Accessibility, Environmental Memory), and for any Tower
+    ///   that genuinely has not heard of a cartridge;
+    /// - **declared but not served**: the Tower knows the cartridge and says it
+    ///   cannot serve it — an offer marked `available: false`, a status
+    ///   document whose lifecycle is `unavailable`, a refusal or error saying
+    ///   the cartridge is unavailable, or a route that answers that nothing is
+    ///   configured. The Tower's own reason, where it gave one, is what the
+    ///   screen shows.
     ///
-    /// **It is no longer the answer for any cartridge with Tower code behind
-    /// it.** That sentence has now been rewritten twice by the same force, and
-    /// the pattern is worth naming: each time a Tower lane finished, a case
-    /// documented as "the permanent state of things" turned out to describe a
-    /// Tuesday. As of the 2026-08-27 unification the Tower declares four
-    /// contracts, `not_offered` is `[]`, and Experimental CV Lab, Document
-    /// Memory and Scene Understanding all resolve past this case with clients
-    /// that decode them.
-    ///
-    /// What it is still the honest answer for: the three cartridges with no
-    /// Tower code anywhere (Visual Q&A, Accessibility, Environmental Memory),
-    /// and any Tower that genuinely has not heard of a cartridge.
-    ///
-    /// **Object Memory does not pass through here**, and its absence is not an
-    /// oversight — it is undeclared on the socket by the Tower's own design and
-    /// reaches its states over HTTP.
+    /// **Object Memory never reaches it through a declaration**: it is
+    /// undeclared on the socket by the Tower's own design, and lands here only
+    /// when its HTTP routes answer that no object memory is configured.
     case unsupported
     /// The capability exists but the Tower cannot be reached right now.
     ///
     /// Separate from `unsupported` because the two call for opposite responses
     /// — one waits for a Tower that may never do this, the other waits for a
     /// connection — and a shell that draws them identically tells a user to
-    /// reconnect when reconnecting cannot help, or the reverse. The explanation
-    /// strings distinguished them before this case existed; the headline and
-    /// the glyph did not, which is most of what a person actually reads.
+    /// reconnect when reconnecting cannot help, or the reverse. The headline
+    /// and the glyph are most of what a person actually reads, so the
+    /// explanation string cannot carry the distinction alone.
     case disconnected
     /// The Tower does this, under an agreement this build cannot read.
     ///
@@ -86,9 +77,6 @@ enum CartridgePhase: String, Equatable, Sendable, CaseIterable {
     /// the app is behind", which a person can act on immediately — and
     /// rendering it as "Nothing yet" tells someone a feature does not exist
     /// when in fact they are one update away from it.
-    ///
-    /// The explanation string always distinguished them. The headline and the
-    /// glyph — which is most of what anyone actually reads — did not.
     case needsUpdate
     /// The capability exists but nothing has been asked of it yet.
     case idle

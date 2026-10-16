@@ -7,19 +7,6 @@ import Foundation
 
 /// What the Tower has told this app it can do, per cartridge.
 ///
-/// ## The single place the answer "nothing" is written down
-///
-/// The Tower declares no cartridge contracts, because it has no module runtime
-/// to declare them for. That is one fact, and it belongs in one file rather
-/// than restated in four clients where it would rot at different rates.
-///
-/// It is written as a lookup rather than as four hardcoded `.noContract`
-/// literals so that the arrival of a real contract is an edit *here* plus a
-/// client that can decode it — not a hunt through every cartridge for the place
-/// its unavailability was hardcoded.
-///
-/// ## Where a declaration now comes from
-///
 /// The Tower declares its capabilities over the socket that is already open:
 /// `{"type":"cartridges"}` after the pong, answered with the offers in
 /// `TowerCartridgeDeclaration`. That is a *reply to a question about
@@ -29,30 +16,22 @@ import Foundation
 /// configures anything on the Tower, and the drawer is still the static
 /// `Cartridge.catalog`.
 ///
-/// So there are two sources, and they answer for different cartridges:
+/// Two sources answer:
 ///
-/// - `declared` — the local table, for cartridges the Tower offers no contract
-///   for. Still empty, and still the whole truth for the three of them.
-/// - `availability(for:declaredBy:isTowerReachable:)` — resolved against a live
-///   declaration, for the cartridges the Tower does offer. The declaration is
-///   cached on `TowerClient`, which is the object that owns the socket it
-///   arrived on; caching it in a mutable static here would put connection state
-///   in a namespace nothing can scope to a connection.
+/// - `declared`, a local table. Empty, and kept empty by rule (see there).
+/// - `availability(for:declaredBy:isTowerReachable:)`, resolved against the
+///   live declaration. The declaration is cached on `TowerClient`, which is the
+///   object that owns the socket it arrived on; caching it in a mutable static
+///   here would put connection state in a namespace nothing can scope to a
+///   connection.
 enum TowerCapabilities {
 
     /// Contracts declared by a local table rather than by the Tower.
     ///
-    /// **Still empty, and now empty for a better reason than before.**
-    ///
-    /// This used to say the table was "the whole truth for Experimental CV Lab,
-    /// Document Memory and Scene Understanding", because the Tower listed all
-    /// three under `not_offered`. That premise is gone: the unified Tower
-    /// declares all three over the wire, and `not_offered` is `[]`.
-    ///
-    /// What survives is the *rule*, which was always the point — a contract
-    /// this app can reach is declared by the Tower, never hardcoded here.
-    /// Duplicating one as a compile-time constant creates a second answer that
-    /// can disagree with the Tower's, and the disagreement would be silent.
+    /// **Empty by rule:** a contract this app can reach is declared by the
+    /// Tower, never hardcoded here. Duplicating one as a compile-time constant
+    /// creates a second answer that can disagree with the Tower's, and the
+    /// disagreement would be silent.
     ///
     /// **Object Memory is the deliberate exception, and it is not here either.**
     /// It is undeclared on purpose (the Tower's own §9), reached entirely over
@@ -69,14 +48,8 @@ enum TowerCapabilities {
     /// offering `world_builder.status/2026-10-…` would land there rather than
     /// being decoded on a guess.
     ///
-    /// ## Why this went from one entry to five
-    ///
-    /// The test that pinned this set to a single element said, in its own
-    /// words, that a second contract appearing "is still a review and not a
-    /// silent widening". That review happened: four Tower lanes were unified on
-    /// 2026-08-27, `GET /cartridges` went from one offer to four with
-    /// `not_offered` empty, and each cartridge got a client that decodes its
-    /// contract rather than a stub that refuses it.
+    /// A test pins this set, so widening it is a reviewed change, never a
+    /// silent one.
     ///
     /// `document_memory` contributes **two** identifiers because the Tower
     /// declares two, deliberately: `status` is small and pushed on the socket,
@@ -163,12 +136,12 @@ enum TowerCapabilities {
         return nil
     }
 
-    /// Availability for one cartridge, given the current connection.
+    /// Availability for one cartridge from the local table alone, with no live
+    /// declaration.
     ///
-    /// The entry point for the three cartridges the Tower declares nothing for,
-    /// so the precedence rules in `CartridgeAvailability.resolve` apply
-    /// uniformly and no cartridge can quietly decide it is available on
-    /// different grounds.
+    /// What the `CartridgeClient` default answers with, so the precedence rules
+    /// in `CartridgeAvailability.resolve` apply uniformly and no cartridge can
+    /// quietly decide it is available on different grounds.
     static func availability(for cartridgeID: String, isTowerReachable: Bool) -> CartridgeAvailability {
         availability(for: cartridgeID, declaredBy: nil, isTowerReachable: isTowerReachable)
     }
@@ -217,8 +190,8 @@ enum TowerCapabilities {
 /// one is where the real work is described.
 ///
 /// `@MainActor` and `AnyObject` to match `TowerClient` and `GlassesConnection`:
-/// a real implementation will hold a subscription and publish into SwiftUI on
-/// the main actor, as those already do.
+/// a Tower-backed implementation holds connection state and publishes into
+/// SwiftUI on the main actor, as those do.
 @MainActor
 protocol CartridgeClient: AnyObject {
     /// The catalog id from `Cartridge.catalog`. Used to look the cartridge's
@@ -233,8 +206,11 @@ protocol CartridgeClient: AnyObject {
 }
 
 extension CartridgeClient {
-    /// The default every client uses today, and the reason `TowerCapabilities`
-    /// is a lookup: a client does not get to decide it is available.
+    /// The default, used by the unavailable stubs, and the reason
+    /// `TowerCapabilities` is a lookup: a client does not get to decide it is
+    /// available. The Tower-backed clients override it with what the Tower
+    /// told them: the live declaration, or, for Object Memory, what its HTTP
+    /// routes answered.
     func availability(isTowerReachable: Bool) -> CartridgeAvailability {
         TowerCapabilities.availability(for: cartridgeID, isTowerReachable: isTowerReachable)
     }

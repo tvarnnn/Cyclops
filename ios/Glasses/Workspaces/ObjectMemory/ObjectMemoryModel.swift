@@ -533,15 +533,6 @@ enum ObjectMemoryAnswer: Equatable, Sendable {
         case .lastSeen(let answer): return answer.envelope
         }
     }
-
-    /// Whether the answer carries any record at all. An answer that carries
-    /// none is still an answer — see `ObjectMemoryCopy` for how it is worded.
-    var hasRecord: Bool {
-        switch self {
-        case .listing(let listing): return !listing.isEmpty
-        case .lastSeen(let answer): return answer.observation != nil
-        }
-    }
 }
 
 // MARK: - Decoding

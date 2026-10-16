@@ -12,666 +12,12 @@ import Foundation
 import UIKit
 #endif
 
-/// One `frame_result` message, as the Tower actually sends it today.
-///
-/// Not a guess at a future protocol — every field here is one the Tower
-/// builds in `tower/tower/routes/ws.py:148-165`, and every one is optional (or
-/// empty-by-default) because the decoder must not fabricate a value the
-/// message omitted.
-///
-/// ## The earlier version of this comment was wrong, and it cost a cartridge
-///
-/// It read: *"The Tower's whole per-frame vocabulary is `seq`,
-/// `mean_intensity` and `processing_ms` — it runs one fixed handler and has no
-/// module runtime."* Both halves were false. `ws.py` sends **five keys
-/// unconditionally** — `seq`, `processing_ms`, `result_value`, `result_label`
-/// and `stage_ms` — and adds `mean_intensity` and `metrics` when the
-/// experiment produced them. The Tower does have a module runtime:
-/// `tower/tower/main.py` builds a `ModuleContainer` around a live
-/// `ExperimentalCVModule`, and a running Tower reports `module_state: active`
-/// on `/health`.
-///
-/// So `result_value` and `result_label` — the experiment's own answer, the
-/// only thing the Tower says about what it *concluded* rather than how long it
-/// took — were arriving on every single frame and being dropped on the floor,
-/// while the Experimental CV Lab workspace told the wearer the Tower "cannot
-/// run experiments yet".
-///
-/// The Tower's registry used to say the same thing from its side:
-/// `experimental_cv` was `not_offered` on the result channel because *"results
-/// already reach the client on `frame_result`"*. **That has changed.** A Tower
-/// speaking `experimental_cv.status/2026-08-27` offers the cartridge, and every
-/// `frame_result` now carries a `cv_lab` block naming the run, the experiment
-/// and the provenance that produced the numbers beside it — see `cvLab` below.
-/// Everything that was on this message before is still there, unchanged, in the
-/// same place.
-struct TowerFrameResult: Equatable, Sendable {
-    /// The frame this result answers, matching the `seq` the app sent.
-    let sequence: Int?
-    /// Mean pixel intensity, 0...1. Present only when the experiment reported
-    /// one — `nil` means the experiment said nothing, never that the frame was
-    /// dark.
-    let meanIntensity: Double?
-    /// How long the Tower spent on the frame.
-    let processingMs: Double?
-    /// The experiment's headline number. Its meaning is the experiment's, not
-    /// this app's: it is paired with `resultLabel` and must never be rendered
-    /// without it, because a bare number implies a unit nobody promised.
-    let resultValue: Double?
-    /// The experiment's own name for what it measured. The one piece of
-    /// provenance on this channel.
-    let resultLabel: String?
-    /// Per-stage timings inside the Tower's own processing, name -> ms.
-    /// Empty when the Tower sent an empty object; there is no distinction on
-    /// the wire between empty and absent, and none is invented here.
-    let stageMs: [String: Double]
-    /// Additive measurements, name -> number, omitted entirely when empty.
-    /// Deliberately numbers only: `ws.py` calls this "a MEASUREMENT channel,
-    /// not the structured result channel", and the structured one is blocked
-    /// on module-contract work this app must not pre-empt.
-    let metrics: [String: Double]
-    /// Who produced this number, and for which run.
-    ///
-    /// `nil` from a Tower that runs no CV Lab — the block is additive and
-    /// omitted entirely rather than nulled. Every field of it is read in
-    /// `TowerFrameResultProvenance`, and one of them, `runID`, is read by this
-    /// client itself: see `watchedCVLabRunID`.
-    let cvLab: TowerFrameResultProvenance?
-}
-
-/// The `cv_lab` block on a `frame_result` —
-/// `experimental_cv.frame_result/2026-08-27`.
-///
-/// ## What this closes
-///
-/// Before it, the Tower's per-frame reply named the *number* and not the
-/// experiment: `result_value` with `result_label` beside it, and no way to tell
-/// which of eight experiments produced them, on which run, measured or
-/// inferred. A result from a previous experiment could be read as a result from
-/// the current one, and the Experimental CV Lab workspace said so on screen
-/// because it was true.
-///
-/// ## The one rule a client must not get wrong
-///
-/// > **Discard any `frame_result` whose `cv_lab.run_id` is not the run you are
-/// > watching.**
-///
-/// The Tower makes this structural rather than checked: a new experiment is a
-/// new run, and the old experiment is released **before** the new run id is
-/// published, so no result computed by one experiment can carry another's name.
-/// The client-side rule exists for the case the Tower cannot cover — a
-/// reconnect to a **restarted** Tower, which starts counting runs again from 1.
-/// `runID` is `"<tower_instance_id>-<n>"` and `towerInstanceID` is part of it
-/// for exactly that reason, which is why comparing `runID` alone is sufficient
-/// and no separate instance check is needed.
-///
-/// The gate itself is in `handleInboundMessage`, not here: a value type cannot
-/// know which run is being watched.
-struct TowerFrameResultProvenance: Equatable, Sendable {
-    /// Opaque, compared for equality only.
-    let contract: String?
-    /// Which Tower. Already inside `runID`; carried because a client that
-    /// reports a run id to a person should be able to say which machine it
-    /// belongs to.
-    let towerInstanceID: String?
-    /// `"<tower_instance_id>-<n>"`. The run this result belongs to.
-    let runID: String?
-    /// **Dense within the run, from 1.**
-    ///
-    /// This is the field that orders results. The message's own `seq` is the
-    /// phone's capture index and **skips by design** — the sender forwards one
-    /// frame in thirty — so it cannot order anything. That the two are
-    /// different numbers with different meanings on the same message is the
-    /// single easiest thing to get wrong here.
-    let resultSeq: Int?
-    let experimentID: String?
-    /// The Tower's own name for the experiment, for display.
-    let experimentName: String?
-    /// `measured` or `inferred`, as a string. Interpreted by the cartridge that
-    /// owns the contract — this file does not know what an experiment is.
-    let provenance: String?
-    /// `opencv` or `torch`.
-    let backend: String?
-    /// What the experiment actually ran on, or `nil` when it holds nothing.
-    /// Distinct from `deviceRequested`, which is a *request*: `auto` is the
-    /// question, and this is the answer.
-    let device: String?
-    let deviceRequested: String?
-    /// The experiment's own name for the number, repeated here so the block is
-    /// self-contained.
-    let resultLabel: String?
-    let processingMs: Double?
-    /// When the **Tower** received the frame. `timeBasis` says so on every
-    /// block, because there is no capture timestamp anywhere on this wire —
-    /// `tower/frames.py` carries no time field.
-    let towerReceivedAt: Double?
-    let timeBasis: String?
-
-    init?(json: [String: Any]) {
-        // Nothing is required. A block that arrived with only a `run_id` still
-        // gates correctly, and a block with everything but one field still
-        // displays the rest — the alternative, refusing the whole block on a
-        // missing optional, would silently turn a gated result into an ungated
-        // one, which is the failure this type exists to prevent.
-        self.contract = json["contract"] as? String
-        self.towerInstanceID = json["tower_instance_id"] as? String
-        self.runID = json["run_id"] as? String
-        self.resultSeq = json["result_seq"] as? Int
-        self.experimentID = json["experiment_id"] as? String
-        self.experimentName = json["experiment_name"] as? String
-        self.provenance = json["provenance"] as? String
-        self.backend = json["backend"] as? String
-        self.device = json["device"] as? String
-        self.deviceRequested = json["device_requested"] as? String
-        self.resultLabel = json["result_label"] as? String
-        self.processingMs = json["processing_ms"] as? Double
-        self.towerReceivedAt = json["tower_received_at"] as? Double
-        self.timeBasis = json["time_basis"] as? String
-    }
-}
-
-// MARK: - The frame path's refusals
-
-/// One `frame_error`: the Tower answering a frame it did not process.
-///
-/// ## Why this had to be added
-///
-/// `handleInboundMessage` had **no case for it**. Every `frame_error` the Tower
-/// has ever sent fell through to `default:`, was logged as an unknown message
-/// type, and was discarded — so "the Lab is paused", "that frame was
-/// undecodable" and "the socket is wedged" were indistinguishable from this
-/// side, and the answer to *"I pressed Start and nothing happened"* was on the
-/// wire and being thrown away.
-///
-/// ## Refusal, not failure
-///
-/// Six of the nine reasons are the CV Lab declining a frame on purpose. The
-/// Tower is explicit that these are counted under `frames_rejected` and **not**
-/// under `frame_processing_errors` — *"a Lab paused for five minutes has not
-/// failed hundreds of times"* — and this client owes the same discipline:
-/// nothing here touches `status`, the send window, the stream bracket or
-/// `SenderMetrics`' error counters. It decodes, publishes, and returns.
-///
-/// The nine reasons are interpreted by the cartridge that owns the CV Lab
-/// contract, not here. This file decodes three fields and knows what none of
-/// them mean.
-struct TowerFrameRefusal: Equatable, Sendable {
-    /// The frame this answers — the phone's **capture index**, and `nil` when
-    /// the frame failed validation before its `seq` was even readable. The
-    /// Tower reports null rather than inventing one.
-    let sequence: Int?
-    /// The Tower's code: `cv_lab_idle`, `cv_lab_starting`, `cv_lab_paused`,
-    /// `cv_lab_stopped`, `cv_lab_failed`, `cv_lab_unavailable`,
-    /// `invalid_frame`, `frame_skipped` or `module_unavailable`.
-    ///
-    /// Kept as a **string**, like every other refusal vocabulary this client
-    /// carries: a code this build does not recognise must still reach a person
-    /// rather than being collapsed into "unknown".
-    let reason: String
-    /// Prose for a person. The Tower's message says what to send next.
-    let message: String
-
-    init?(json: [String: Any]) {
-        guard let reason = json["reason"] as? String else { return nil }
-        self.sequence = json["seq"] as? Int
-        self.reason = reason
-        self.message = json["message"] as? String ?? reason
-    }
-}
-
-// MARK: - The CV Lab control plane
-
-/// A `cv_lab_status` message: the Lab's whole state, in one snapshot.
-///
-/// ## `acceptedCommand` is the field that makes this two messages
-///
-/// The Tower uses one name for one document, whichever direction it is
-/// travelling and whatever prompted it — a read, an accepted command, or a push
-/// on the result channel. `acceptedCommand` is present **only** on a reply to a
-/// command, and it is therefore the only way to tell an answer from a pushed
-/// state. A client that treated every arriving document as an answer would
-/// report "started" every two seconds for as long as the Lab was running.
-///
-/// Verified against a live Tower: a plain `cv_lab_status` read comes back with
-/// no `accepted_command` at all, while `cv_lab_start`/`pause`/`resume`/`stop`
-/// each echo their own name.
-///
-/// The `status` document itself is passed through **undecoded**, for the same
-/// reason `CartridgeResultEnvelope.payload` is: this file owns the transport
-/// and the cartridge owns the contract. Nothing here knows what an experiment
-/// is. The one exception is `runID`, which the frame path needs — see
-/// `watchedCVLabRunID`.
-struct CVLabControlReply {
-    /// The status document's contract identifier. Opaque.
-    let contract: String?
-    /// The **control vocabulary's** identifier, which versions separately from
-    /// the document's precisely so a client can implement the read-only half
-    /// and never send a command.
-    let controlContract: String?
-    /// Echoed from the request, when one was sent and was at most 64
-    /// characters. **A longer one is dropped, not refused** — the command still
-    /// applies and the reply simply carries none — which is why this client
-    /// bounds its own ids rather than relying on noticing the absence.
-    let requestID: String?
-    /// The command this answers, or `nil` when the document was pushed or read.
-    let acceptedCommand: String?
-    /// The whole document, undecoded.
-    let status: [String: Any]
-
-    init?(json: [String: Any]) {
-        guard let status = json["status"] as? [String: Any] else { return nil }
-        self.contract = json["contract"] as? String
-        self.controlContract = json["control_contract"] as? String
-        self.requestID = json["request_id"] as? String
-        self.acceptedCommand = json["accepted_command"] as? String
-        self.status = status
-    }
-
-    /// `lifecycle.run_id`, the one field this file reads out of the document.
-    ///
-    /// Read here rather than in the cartridge because the **frame path** needs
-    /// it, and the frame path is this file's. It is a single traversal of two
-    /// keys; it does not make this client cartridge-aware in any other respect.
-    var runID: String? {
-        (status["lifecycle"] as? [String: Any])?["run_id"] as? String
-    }
-
-    /// `lifecycle.state`, read only so a log line says something useful.
-    var lifecycleState: String? {
-        (status["lifecycle"] as? [String: Any])?["state"] as? String
-    }
-}
-
-/// A `cv_lab_error`: a refusal.
-///
-/// > **Every one of the eight reasons means the request did not take effect.
-/// > There is no partial application.**
-///
-/// Which is why this carries the unchanged `status`: a refused client never has
-/// to guess what state it is now in, and nothing in this app has to model a
-/// half-applied command. Even the `lab_unavailable` refusal from a Tower with
-/// no Lab at all carries a document — a hollow one, with the real contract
-/// identifiers in it — so a decoder is entitled to require the field. It is
-/// still optional here, because a refusal that arrived without one is worth
-/// showing rather than dropping.
-struct CVLabControlRefusal {
-    /// `malformed_request`, `unknown_experiment`, `experiment_unavailable`,
-    /// `lab_busy`, `invalid_state`, `stale_run`, `lab_unavailable` or
-    /// `internal_error`. A string, so a ninth reaches a person as itself.
-    let reason: String
-    /// Prose for a person, from the Tower. The only text that knows *which*
-    /// module was missing or *which* run is current.
-    let message: String
-    /// Which command was refused. Lets a refusal be attributed to a button even
-    /// when no `request_id` was sent.
-    let command: String?
-    let requestID: String?
-    let controlContract: String?
-    /// `unknown_experiment` only: the ids this Tower does have.
-    let available: [String]
-    /// `experiment_unavailable` only.
-    let experimentID: String?
-    /// `stale_run` only: the run the Lab is actually on now. A stale `run_id`
-    /// is refused rather than applied to whichever run is current, so a Stop
-    /// drawn against a run that has already been replaced cannot end the one
-    /// that replaced it.
-    let currentRunID: String?
-    /// The document, unchanged. Undecoded, for the reason `CVLabControlReply`
-    /// gives.
-    let status: [String: Any]?
-
-    init?(json: [String: Any]) {
-        guard let reason = json["reason"] as? String else { return nil }
-        self.reason = reason
-        self.message = json["message"] as? String ?? reason
-        self.command = json["command"] as? String
-        self.requestID = json["request_id"] as? String
-        self.controlContract = json["control_contract"] as? String
-        self.available = json["available"] as? [String] ?? []
-        self.experimentID = json["experiment_id"] as? String
-        self.currentRunID = json["current_run_id"] as? String
-        self.status = json["status"] as? [String: Any]
-    }
-}
-
-/// Everything the CV Lab's control plane delivers, as one stream.
-///
-/// One subject rather than three published properties, for the reason
-/// `CartridgeResultEvent` gives: ordering between them is load-bearing. A
-/// `cv_lab_error` and the pushed status that follows it must not be observed
-/// out of order, or a client would file the refusal against the wrong state.
-///
-/// `frameRefused` rides this stream too. A `frame_error` is a frame-path
-/// message and six of its nine reasons are the Lab's own — *"the Lab is
-/// paused"* is the answer to *"why is there no result"*, which is a CV Lab
-/// question wherever it arrives from.
-enum CVLabEvent {
-    /// A status document: an answer to a command when `acceptedCommand` is
-    /// non-nil, a read or a push otherwise.
-    case status(CVLabControlReply)
-    /// A refused command. The request did not take effect.
-    case refused(CVLabControlRefusal)
-    /// A frame the Tower did not process.
-    case frameRefused(TowerFrameRefusal)
-}
-
 /// Connection status to the Tower (the project's base-station/hub service).
 enum TowerStatus: Equatable {
     case offline
     case connecting
     case online
     case failed(String)
-}
-
-// MARK: - The Tower's own state, as reported by GET /health
-
-/// Something the Tower's health report may or may not have mentioned.
-///
-/// ## Why three cases where a `nil` would fit
-///
-/// `GET /health` makes genuinely different statements about a subsystem, and
-/// the difference is the whole reason this type exists:
-///
-/// - The key is **missing**. This Tower's health route says nothing about the
-///   subsystem at all — an older build, or one whose shape has moved on. We
-///   were not told.
-/// - The key is present and **null**. The Tower is telling us something
-///   specific: nothing is registered. `tower/tower/routes/health.py` is
-///   explicit that `capture: null` means no recorder exists, "which is
-///   different from a registered recorder that is idle", and that collapsing
-///   the two would make "we are definitely not recording" indistinguishable
-///   from "we are armed and one `stream_start` away".
-/// - The key is present and carries an **object**, which may still leave any
-///   individual field unsaid.
-///
-/// Folding the first two into one `nil` would answer a privacy question with a
-/// shrug dressed up as a fact. `tower/docs/contracts/IOS-TO-TOWER-RECONCILIATION.md` §1.8 is a worked
-/// example of the same failure in the other direction: reading the obvious
-/// field there would have reported a confident, wrong **0**.
-nonisolated enum TowerReported<Value: Equatable & Sendable>: Equatable, Sendable {
-    /// The report did not mention this at all.
-    case unreported
-    /// The report mentioned it and said there is nothing there.
-    case absent
-    /// The report carried a value, whose own fields may still be unsaid.
-    case present(Value)
-    /// The report carried something this app could not read as this shape.
-    /// Not the same as silence: the Tower spoke and we failed to understand.
-    case unreadable
-
-    var value: Value? {
-        if case .present(let value) = self { return value }
-        return nil
-    }
-}
-
-/// The Tower's dataset recorder, as `/health` reports it.
-///
-/// ## Why every field is optional
-///
-/// Because the Tower's own error path sends `{"armed": true, "error":
-/// "unavailable"}` — armed, and nothing else known — and because an omitted
-/// `recording` must never be read as "not recording" on the one screen a
-/// person would consult to find out. This is the project's `nil ≠ 0` rule at
-/// the point where it costs the most to get wrong: while the recorder is
-/// armed, the Tower fsyncs every frame it receives to disk **unredacted**
-/// (`tower/tower/capture.py` declares `retains_raw_imagery: true`,
-/// `redaction: "none"`, and tags the manifest `raw-imagery`,
-/// `first-person`).
-///
-/// ## There is deliberately no way to arm it from here
-///
-/// `TOWER_CAPTURE_ROOT` arms the recorder at Tower start-up and
-/// `stream_start`/`stream_stop` bound each recording; the reconciliation
-/// document lists arming from iOS as **BLOCKED**, with no route to call. A
-/// control on this side would be a fabricated capability, so this type is a
-/// reading and nothing else.
-nonisolated struct TowerCaptureState: Equatable, Sendable {
-    /// A recorder is registered and will write whenever a stream is running.
-    let armed: Bool?
-    /// Frames are being written **right now**.
-    let recording: Bool?
-    /// The recording the counts below belong to.
-    ///
-    /// `TowerReported` rather than `String?`, because **three** different
-    /// things arrive in this one field and only two of them are a `nil`:
-    ///
-    /// - `.present(id)` — a recording is open and this is its id.
-    /// - `.absent` — the key arrived carrying `null`. That is a *positive*
-    ///   statement: `tower/tower/routes/health.py` emits `capture_id` on every
-    ///   success, and sends `null` in exactly one situation — a recorder is
-    ///   registered and has not opened a recording yet.
-    /// - `.unreported` — the key was not there at all, which happens only on
-    ///   the Tower's `.error` branch (`{"armed": true, "error": "unavailable"}`)
-    ///   and means the Tower could not read its own recorder.
-    ///
-    /// Flattening the middle two into one Optional is the same
-    /// `unreported`-vs-`absent` conflation this enum exists to prevent, one
-    /// level down at the field: it renders "The Tower did not say" over an
-    /// answer the Tower gave clearly.
-    ///
-    /// `framesWritten` and `bytesWritten` below stay plain Optionals on
-    /// purpose. They are `0` — a real, sent zero — in that same no-recording
-    /// case, and absent only on the `.error` branch, so for them one `nil`
-    /// carries exactly one meaning.
-    let captureID: TowerReported<String>
-    /// Frames written to disk in the latest recording. `nil` is "the Tower did
-    /// not say"; `0` is the Tower saying zero, and the two must not be drawn
-    /// the same way.
-    let framesWritten: Int?
-    let bytesWritten: Int?
-    /// The Tower could not read its own recorder's state. It still knows the
-    /// recorder is registered, which is why `armed` can be true beside this.
-    let error: String?
-}
-
-/// Whether anything on the Tower is turning captures into anything.
-///
-/// `enabled: false` means nothing is configured to follow a capture;
-/// `enabled: true` with no workers is correct between walks and wrong during
-/// one. Carried here because it answers "why isn't World Builder changing?"
-/// from the phone, which was previously only answerable by noticing that no
-/// world directory had appeared on a machine nobody was looking at.
-nonisolated struct TowerCaptureWorkers: Equatable, Sendable {
-    let enabled: Bool?
-    /// How many workers are running. `nil` when the Tower sent no `workers`
-    /// list at all — an empty list it *did* send is a real `0`.
-    let workerCount: Int?
-    let error: String?
-}
-
-/// One `GET /health` answer.
-///
-/// Every field is optional and nothing is defaulted, because this type's only
-/// job is to say what the Tower said. A build that omits a field has not
-/// claimed anything about it.
-nonisolated struct TowerHealth: Equatable, Sendable {
-    let status: String?
-    let service: String?
-    let version: String?
-    /// The module runtime's state, e.g. `active`.
-    let moduleState: String?
-    /// Which module is loaded, e.g. `experimental-cv`.
-    let moduleID: String?
-    let capture: TowerReported<TowerCaptureState>
-    let captureWorkers: TowerReported<TowerCaptureWorkers>
-}
-
-/// Why a health read did not produce an answer.
-///
-/// The same split `ObjectMemoryFetchError` keeps, minus the cases that have no
-/// meaning here: `/health` has no contract field to disagree about and no 404
-/// that means anything but "this is not a Tower". Two cases, and they are not
-/// interchangeable — an answer that arrived and could not be read is a
-/// disagreement about the answer, not a failure to get one, and only the
-/// second is evidence about the network.
-nonisolated enum TowerHealthFetchError: Error, Equatable {
-    /// The answer arrived and could not be read as a health report.
-    case undecodable
-    /// The request did not complete, or the Tower refused it.
-    case transport(String)
-}
-
-/// Turns a `/health` body into what the Tower said, and nothing more.
-///
-/// Split out from the HTTP client so the shapes that actually matter — a
-/// missing `capture`, an explicit null, an error object, a count the Tower
-/// omitted — are testable against real payloads without standing up a server.
-nonisolated enum TowerHealthDecoder {
-
-    /// - Throws: `TowerHealthFetchError.undecodable` when the bytes are not a
-    ///   JSON object. A *well-formed* object that mentions nothing is not an
-    ///   error: it decodes to a health report in which everything is unsaid,
-    ///   which is the truth about it.
-    static func health(from data: Data) throws -> TowerHealth {
-        // Parsed in its own `do` because `jsonObject(with:)` throws on a
-        // malformed body rather than returning something the cast rejects,
-        // and that throw must not be relabelled as a transport failure — the
-        // Tower answered.
-        let parsed: Any
-        do {
-            parsed = try JSONSerialization.jsonObject(with: data)
-        } catch {
-            throw TowerHealthFetchError.undecodable
-        }
-        guard let json = parsed as? [String: Any] else {
-            throw TowerHealthFetchError.undecodable
-        }
-        return health(from: json)
-    }
-
-    static func health(from json: [String: Any]) -> TowerHealth {
-        TowerHealth(
-            status: json["status"] as? String,
-            service: json["service"] as? String,
-            version: json["version"] as? String,
-            moduleState: json["module_state"] as? String,
-            moduleID: json["module_id"] as? String,
-            capture: reported(json, key: "capture", as: captureState),
-            captureWorkers: reported(json, key: "capture_workers", as: captureWorkers)
-        )
-    }
-
-    /// The three-way read that `TowerReported` exists for, plus the fourth
-    /// case for a value that is neither an object nor a null.
-    private static func reported<Value>(
-        _ json: [String: Any], key: String, as decode: ([String: Any]) -> Value
-    ) -> TowerReported<Value> {
-        guard let raw = json[key] else { return .unreported }
-        if raw is NSNull { return .absent }
-        guard let object = raw as? [String: Any] else { return .unreadable }
-        return .present(decode(object))
-    }
-
-    private static func captureState(from json: [String: Any]) -> TowerCaptureState {
-        TowerCaptureState(
-            armed: json["armed"] as? Bool,
-            recording: json["recording"] as? Bool,
-            // Null on the wire until the recorder opens its first recording,
-            // and that null is an answer rather than a silence — see
-            // `TowerCaptureState.captureID`.
-            captureID: reportedString(json, key: "capture_id"),
-            framesWritten: json["frames_written"] as? Int,
-            bytesWritten: json["bytes_written"] as? Int,
-            error: json["error"] as? String
-        )
-    }
-
-    /// The same three-way read for a field whose value is a bare string rather
-    /// than an object.
-    ///
-    /// Separate from `reported(_:key:as:)` because that one's `decode` closure
-    /// takes a dictionary — a scalar has no fields to project — and because the
-    /// `.unreadable` case here means something narrower: the key arrived
-    /// carrying neither a string nor a null, which is the Tower speaking in a
-    /// shape this app cannot read.
-    private static func reportedString(
-        _ json: [String: Any], key: String
-    ) -> TowerReported<String> {
-        guard let raw = json[key] else { return .unreported }
-        if raw is NSNull { return .absent }
-        guard let string = raw as? String else { return .unreadable }
-        return .present(string)
-    }
-
-    private static func captureWorkers(from json: [String: Any]) -> TowerCaptureWorkers {
-        TowerCaptureWorkers(
-            enabled: json["enabled"] as? Bool,
-            // `nil` when no list was sent; `0` when an empty one was. The
-            // Tower distinguishes them and so does this.
-            workerCount: (json["workers"] as? [Any])?.count,
-            error: json["error"] as? String
-        )
-    }
-}
-
-/// The one `GET`, and nothing else.
-///
-/// ## Read-only, and structurally so
-///
-/// There is no method here that changes anything on the Tower, and there is
-/// nothing on the Tower's side to call: the dataset recorder is armed by
-/// `TOWER_CAPTURE_ROOT` at start-up. This type can report the recorder's state
-/// and can never alter it.
-///
-/// ## Why this mirrors `ObjectMemoryHTTPClient` rather than inventing anything
-///
-/// Same shape, same `JSONSerialization` decoding, same injectable
-/// `URLSession`, same timeout policy. A second, differently-opinionated
-/// networking layer in one app is two places for that policy to be wrong.
-///
-/// ## Bounded, and uncached
-///
-/// Rule 15. The request carries an explicit timeout and
-/// `reloadIgnoringLocalCacheData` — a health answer served out of a URL cache
-/// would report a recorder as idle after it had started writing, which is the
-/// single worst staleness this particular reading can carry.
-nonisolated struct TowerHealthHTTPClient {
-    var baseURL: URL = TowerConfiguration.httpBaseURL
-    var session: URLSession = .shared
-    /// Long enough for a Tailscale round trip, short enough that a dead Tower
-    /// becomes a visible state rather than a spinner nobody can end. Matches
-    /// `ObjectMemoryHTTPClient.timeout` deliberately.
-    var timeout: TimeInterval = 10
-
-    func health() async throws -> TowerHealth {
-        let request = URLRequest(
-            url: baseURL.appendingPathComponent("health"),
-            cachePolicy: .reloadIgnoringLocalCacheData,
-            timeoutInterval: timeout
-        )
-
-        do {
-            let (data, response) = try await session.data(for: request)
-            if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
-                throw TowerHealthFetchError.transport("The Tower answered \(http.statusCode).")
-            }
-            return try TowerHealthDecoder.health(from: data)
-        } catch let error as TowerHealthFetchError {
-            throw error
-        } catch {
-            throw TowerHealthFetchError.transport(error.localizedDescription)
-        }
-    }
-}
-
-/// What a screen showing the Tower's state should be showing.
-///
-/// Four cases because there are four different things to say, and three of
-/// them are routinely drawn as the fourth: "nobody has asked", "we are
-/// asking", "here is what it said" and "we asked and could not find out" are
-/// not the same, and a screen that renders the first and last identically has
-/// turned a failure into silence.
-nonisolated enum TowerHealthState: Equatable, Sendable {
-    /// Nothing has been asked. **Not** "the Tower is fine", and not "the
-    /// recorder is off".
-    case notFetched
-    case fetching
-    /// An answer, stamped with when it arrived — because this reading goes
-    /// stale the moment a capture starts, and an unstamped one invites being
-    /// read as current.
-    case fetched(TowerHealth, at: Date)
-    case failed(TowerHealthFetchError, at: Date)
 }
 
 /// WebSocket client for the Tower connection. Validates connectivity with an
@@ -684,8 +30,27 @@ nonisolated enum TowerHealthState: Equatable, Sendable {
 /// close *frame*, so the receive loop is the one that catches a dropped link.
 ///
 /// A dropped or wedged connection is re-established automatically when
-/// `autoReconnect` is set, on a bounded backoff. This does not implement the
-/// future frame-streaming protocol beyond what's described here.
+/// `autoReconnect` is set, on a bounded backoff.
+///
+/// The one socket carries three message families, demultiplexed by `type` in
+/// `handleInboundMessage`: the frame path (`frame` out, which only a DEBUG
+/// build sends; `frame_result` and `frame_error` in), the CV Lab control
+/// plane, and the read-only result channel.
+///
+/// Neither of the last two touches the send path: nothing they do changes the
+/// connection's `status`, the send window, the stream bracket or `tx_seq`,
+/// and a control or result message that fails to send is logged, never
+/// escalated. (The frame hold, `pauseFrameSending()`, is a separate call on
+/// this client, not a control-plane message.) The CV Lab does decide which
+/// `frame_result`s are accepted: a status document sets the watched run
+/// (`watchCVLabRun`), `handleFrameResult` discards a result from any other run
+/// before it is published or counted as a reply, and a change of run clears
+/// the held reading and refusal. Status documents reach that gate as
+/// `cv_lab_status`, inside a `cv_lab_error`, or through the CV Lab cartridge
+/// client when one arrives on the result channel.
+///
+/// The decoders live in `TowerSocketMessages.swift` and
+/// `CartridgeResultChannel.swift`; `GET /health` in `TowerHealth.swift`.
 @MainActor
 final class TowerClient: NSObject, ObservableObject {
     @Published private(set) var status: TowerStatus = .offline
@@ -696,11 +61,11 @@ final class TowerClient: NSObject, ObservableObject {
     /// `status` cannot say this. It is `.failed(message)` from the first
     /// dropped socket to the last refused retry and after, so a screen
     /// reading it could only say "not connected" — the same words while the
-    /// phone was still retrying and after it had stopped. The only signal at
-    /// the give-up point was a log line, and the wearer does not read the
-    /// log. The World Builder capture control reads this to say, instead,
-    /// that a tap on Connect is now the only thing that will bring the Tower
-    /// back.
+    /// phone was still retrying and after it had stopped. Without this the
+    /// only signal at the give-up point would be a log line, which the wearer
+    /// does not read. The World Builder capture control reads this to say,
+    /// instead, that a tap on Connect is now the only thing that will bring
+    /// the Tower back.
     ///
     /// Set in exactly one place, the give-up branch of `scheduleReconnect`.
     /// Cleared wherever a socket is actually opened — `openConnection`, which
@@ -712,21 +77,19 @@ final class TowerClient: NSObject, ObservableObject {
     #if DEBUG
     /// How many `frame_result` messages the receive loop has processed — the
     /// only end-to-end proof that the Tower received a frame and replied.
-    /// `@Published` so the dashboard can show it live; it is otherwise
-    /// unchanged, and nothing reads it to make a decision. It now invalidates
-    /// the view tree at the Tower's reply rate (target ~12 Hz), which is the
-    /// same order as `GlassesConnection.frameCount` has always done at 24 Hz.
+    /// `@Published` so the dashboard can show it live; nothing reads it to
+    /// make a decision. It invalidates the view tree at the Tower's reply
+    /// rate (target ~12 Hz), the same order as `GlassesConnection.frameCount`
+    /// does at 24 Hz.
     @Published private(set) var frameResultCount = 0
 
     /// The most recent `frame_result` the Tower returned.
     ///
-    /// The Tower's reply already carries a `mean_intensity`, and until now it
-    /// was formatted into a decimated log line and thrown away. It is the only
-    /// thing the Tower currently says *about a frame's content*, which makes it
-    /// the one piece of real evidence the app can show that the round trip is
-    /// doing something rather than merely completing. Surfacing it is what lets
-    /// a workspace describe what the Tower actually does today without
-    /// inventing a capability it does not have.
+    /// The Tower's own reading of a frame's content, which makes it the
+    /// evidence the app can show that the round trip is doing something
+    /// rather than merely completing. Surfacing it lets a workspace describe
+    /// what the Tower actually does without inventing a capability it does
+    /// not have.
     ///
     /// Republished at the reply rate, like `frameResultCount` beside it.
     ///
@@ -860,13 +223,13 @@ final class TowerClient: NSObject, ObservableObject {
     ///
     /// The send window's capacity is `targetFPS * this` (see
     /// `SendWindow.capacity(forTargetFPS:latencyBudget:)`), so this constant —
-    /// not a frame count — is the reviewable decision. At the 12 fps target it
-    /// yields a capacity of 4.
+    /// not a frame count — is the reviewable decision. At the default 12 fps
+    /// target it yields a capacity of 4.
     ///
-    /// 1/3 s is chosen against the physical baseline, where the measured send
-    /// completion time was ~290 ms early in a run. A capacity of 2 against a
-    /// 290 ms slot lifetime admits 6.9 fps, which is what that run delivered;
-    /// covering that latency at the target rate needs 4 slots. It is
+    /// 1/3 s covers the ~290 ms send completion time measured early in a run
+    /// on a physical link: a capacity of 2 against a 290 ms slot lifetime
+    /// admits 6.9 fps, which is what that run delivered, and covering that
+    /// latency at 12 fps needs 4 slots. It is
     /// deliberately not larger: at 12 fps every extra slot is another 83 ms a
     /// frame can be stale before it is even written.
     static let outboundLatencyBudget: TimeInterval = 1.0 / 3.0
@@ -879,8 +242,8 @@ final class TowerClient: NSObject, ObservableObject {
     /// deliberately reluctant threshold rather than a latency target. 2 s is
     /// long enough that ordinary congestion, a cellular handover or a Tailscale
     /// path change is ridden out rather than answered with a reconnect, and
-    /// short enough that the 52-second peer stall the physical baseline
-    /// recorded is cut to about 4% of its cost.
+    /// short enough to cut a recorded 52-second peer-side stall to about 4% of
+    /// its cost.
     ///
     /// Anything above this is unrecoverable staleness regardless: a frame
     /// written 2 s after it was captured is not a real-time frame, so nothing
@@ -918,26 +281,20 @@ final class TowerClient: NSObject, ObservableObject {
     /// Sent as `tx_seq` beside `seq`. `seq` is the DAT capture index, and this
     /// sender forwards only a fraction of those, so a gap in `seq` at the
     /// Tower has three indistinguishable causes: deliberate sampling, a
-    /// sender-side drop, or genuine transit loss. `tower/metrics.py` has
-    /// carried the receiving half of the fix since 2026-08-19 and says so in
-    /// its own docstring — *"Under the CURRENT wire protocol … a gap in seq
-    /// cannot be attributed to any single cause"* — while pointing at the
-    /// `source_seq`/`tx_seq` split as what would settle it. **This sender
-    /// never sent it.** `tx_seq` is absent from every Swift file in the app.
+    /// sender-side drop, or genuine transit loss. Those are opposite
+    /// diagnoses with opposite fixes, and the Tower (`tower/metrics.py`,
+    /// `tx_seq_gap_total`) tells them apart by this field.
     ///
-    /// The cost of that showed up on the 2026-09-09 physical walk. Of the
-    /// frames the glasses captured, roughly half never reached the Tower —
-    /// capture `6a1b544c` recorded 474 of 953 source indices, `dd885cca` 2,391
-    /// of 4,801 — and one of the resulting gaps was 410 source frames, 17
-    /// seconds, which split the reconstruction in two. Nothing in the
-    /// artifacts can say whether this app declined to send those frames or the
-    /// link lost them, because `tx_seq` was null on every recorded row. Those
-    /// are opposite diagnoses with opposite fixes.
+    /// The scale of the question: on one physical walk roughly half the
+    /// captured frames never reached the Tower — 474 of 953 source indices on
+    /// one capture, 2,391 of 4,801 on another — and one gap was 410 source
+    /// frames, 17 seconds, which split the reconstruction in two. Without
+    /// `tx_seq` nothing could say which of the three causes it was.
     ///
     /// Dense over frames SENT, which is what makes it diagnostic: a gap here
-    /// is transit loss and nothing else. So it is incremented at the send
-    /// itself, not when a frame is picked up — every `return` above the send
-    /// leaves the number unclaimed for the next frame to use.
+    /// is transit loss and nothing else. So it is claimed at the send itself
+    /// (`transmit`), not when a frame is picked up — every earlier step that
+    /// ends a frame leaves the number unclaimed for the next frame to use.
     private var txSequence: Int = 0
 
     /// When `sendFrame` last ran, used only to tell a wedged socket from a
@@ -1074,8 +431,7 @@ final class TowerClient: NSObject, ObservableObject {
     /// timeouts it backs up. So the give-up point depends on how the host
     /// fails: ~16 s against one that refuses the TCP connection outright,
     /// and up to ~75 s against one that accepts TCP and never completes the
-    /// WebSocket upgrade. (An earlier version of this comment quoted a 6 s
-    /// pong timeout and ~45 s; the watchdog replaced that bound.)
+    /// WebSocket upgrade.
     private static let reconnectBackoff: [TimeInterval] = [0.5, 1, 2, 4, 8]
 
     /// The schedule this instance runs. The shipped one unless a test
@@ -1093,16 +449,9 @@ final class TowerClient: NSObject, ObservableObject {
         )
     }
 
-    override init() {
-        self.metrics = SenderMetrics()
-        self.sendWindow = SendWindow(
-            capacity: Self.defaultMaxFramesInFlight,
-            stallTimeout: Self.sendStallTimeout
-        )
-        self.autoReconnect = false
-        self.handshakeLegTimeout = Self.defaultHandshakeLegTimeout
-        self.reconnectBackoff = Self.reconnectBackoff
-        super.init()
+    /// Every setting at its shipped value, with metrics of its own.
+    override convenience init() {
+        self.init(metrics: SenderMetrics())
     }
 
     /// - Parameters:
@@ -1151,12 +500,11 @@ final class TowerClient: NSObject, ObservableObject {
     /// a deliberate tap on Connect is the user saying to try again.
     func connect(to url: URL? = nil) {
         let url = url ?? TowerConfiguration.webSocketURL
-        // Refilled only when this call is actually going to open a socket. It
-        // used to be reset unconditionally, before `openConnection`'s
-        // `.connecting` guard — so a redundant tap during an in-flight connect
-        // did nothing visible while silently resurrecting an exhausted
-        // schedule. The budget is meant to say "I have stopped trying"; a
-        // no-op must not undo that.
+        // Refilled only when this call is actually going to open a socket. A
+        // redundant tap during an in-flight connect opens nothing (see
+        // `openConnection`'s `.connecting` guard), so it must not resurrect an
+        // exhausted schedule either. The budget is meant to say "I have
+        // stopped trying"; a no-op must not undo that.
         if status != .connecting { reconnectAttempt = 0 }
         openConnection(to: url)
     }
@@ -1256,12 +604,11 @@ final class TowerClient: NSObject, ObservableObject {
     ///
     /// `fail(_:task:)` tears the connection down, which makes the pending calls
     /// error out, sets `.failed`, and lets `scheduleReconnect` advance. Without
-    /// it a hung connect parked the client in `.connecting` permanently: the
-    /// attempt budget was never spent, nothing tried again, and nothing said so.
-    ///
-    /// Found while decomposing a real 9-second reconnect on a physical walk,
-    /// ~8.5 s of which was spent in `.connecting`. This does not make that walk
-    /// faster — it makes the failure terminate.
+    /// it a hung connect would park the client in `.connecting` permanently:
+    /// the attempt budget never spent, nothing trying again, and nothing
+    /// saying so. A 9-second reconnect has been measured with ~8.5 s of it
+    /// spent in `.connecting`; this does not make that faster — it makes a
+    /// hung connect terminate.
     private func armHandshakeWatchdog(for task: URLSessionWebSocketTask) {
         handshakeWatchdog?.cancel()
         // Both legs plus room for the ordinary case to finish on its own, so
@@ -1358,45 +705,75 @@ final class TowerClient: NSObject, ObservableObject {
     }
 
     #if DEBUG
-    /// Sends one already-decoded camera frame to the Tower as a JSON text
-    /// message over the existing open WebSocket connection — the same
-    /// connection/`send` path validated by the ping/pong milestone. No new
-    /// networking, no binary framing: this reuses `webSocketTask.send(.string(...))`
-    /// exactly as `validateConnection` already does.
+    /// Sends one camera frame to the Tower as a JSON text message on the open
+    /// socket: `type` `frame`, `seq`, `tx_seq`, `width`, `height`, `format`
+    /// `jpeg`, and `data`, the base64 of a quality-0.5 JPEG. One frame at a
+    /// time: no batching, no binary framing, no rate adaptation (see
+    /// docs/03-ROADMAP.md V0.7 for where those belong).
     ///
-    /// Minimal proof-of-path only: one JPEG-encoded, base64-in-JSON frame at
-    /// a time. Not batching, not compressing beyond a fixed JPEG quality, not
-    /// adapting rate — see docs/03-ROADMAP.md V0.7 for where that belongs.
+    /// Four steps. Each one that ends the frame records exactly one terminal
+    /// outcome in `metrics`, so `framesUnaccounted` stays truthful:
+    ///
+    /// 1. `passSessionGates`: online, inside a stream bracket, not paused.
+    ///    Otherwise a session-gate drop.
+    /// 2. `passSendWindow`: backpressure. A stalled window replaces the
+    ///    connection; a full one drops the frame. Either way a send-window drop.
+    /// 3. `encodeFrame`: JPEG, base64, JSON. Otherwise an encode failure.
+    /// 4. `transmit`: reserves the slot, claims the `tx_seq`, sends.
+    ///    `finishFrameSend` records the completion.
+    ///
+    /// Main-actor isolated with no suspension point, so no other frame can
+    /// take the slot between steps 2 and 4, or the same `tx_seq`.
     func sendFrame(_ image: UIImage, width: Int, height: Int, sequence: Int) {
         frameLogCounter += 1
         let shouldLog = frameLogCounter % Self.frameLogStride == 1
 
+        guard let task = passSessionGates(sequence: sequence, shouldLog: shouldLog) else { return }
+        guard passSendWindow(task: task, sequence: sequence, shouldLog: shouldLog) else { return }
+        guard let frame = encodeFrame(image, width: width, height: height, sequence: sequence) else { return }
+        transmit(frame, on: task, shouldLog: shouldLog)
+    }
+
+    /// Step 1 of `sendFrame`: the three session gates.
+    ///
+    /// - Returns: the socket to send on, or `nil` once a session-gate drop has
+    ///   been counted.
+    private func passSessionGates(sequence: Int, shouldLog: Bool) -> URLSessionWebSocketTask? {
         guard status == .online, let task = webSocketTask else {
             metrics.recordSessionGateDrop()
             if shouldLog {
                 log("frame #\(sequence) not sent — Tower not online (status=\(status))")
             }
-            return
+            return nil
         }
         guard isStreamingToTower else {
             metrics.recordSessionGateDrop()
             if shouldLog {
                 log("frame #\(sequence) not sent — no stream_start sent yet (or stream_stop already sent)")
             }
-            return
+            return nil
         }
         guard !isFrameSendingPaused else {
             // A person closed the gate. Not an error, and not a stall: the
             // socket is fine and nothing is queued. Counted as a session-gate
             // drop for the reason `pauseFrameSending()` gives, and checked
-            // before the stall test below so a long hold cannot be misread as
-            // a socket that stopped draining.
+            // before the stall test in step 2 so a long hold cannot be misread
+            // as a socket that stopped draining.
             metrics.recordSessionGateDrop()
             if shouldLog {
                 log("frame #\(sequence) held — frame sending is paused")
             }
-            return
+            return nil
         }
+        return task
+    }
+
+    /// Step 2 of `sendFrame`: backpressure. A stalled window replaces the
+    /// connection; a full one drops the frame.
+    ///
+    /// - Returns: whether the window has room. `false` once a send-window drop
+    ///   has been counted.
+    private func passSendWindow(task: URLSessionWebSocketTask, sequence: Int, shouldLog: Bool) -> Bool {
         let now = MonotonicClock.now
 
         // How long since the previous frame was offered. This is the main
@@ -1409,8 +786,8 @@ final class TowerClient: NSObject, ObservableObject {
         // `stallTimeout` is a socket that is not draining. There is no way to
         // cancel the outstanding sends individually, so the connection is the
         // unit of recovery — and without this the pipeline simply reports
-        // send-window drops for as long as the peer takes to resume, which in
-        // the physical baseline was 52 seconds.
+        // send-window drops for as long as the peer takes to resume, which
+        // has been recorded at 52 seconds.
         //
         // Checked here, on the send path, rather than from a timer: this runs
         // at the selection rate whenever there are frames to send, which is
@@ -1427,32 +804,8 @@ final class TowerClient: NSObject, ObservableObject {
         // pulse to judge yet.
         let mainActorWasResponsive = (sinceLastFrame ?? .infinity) <= Self.mainActorGapAllowance
         if mainActorWasResponsive, sendWindow.isStalled(at: now) {
-            let age = sendWindow.oldestAge(at: now) ?? 0
-            // The healthy distribution alongside the verdict. A stall is only
-            // interpretable against what this link normally does: an oldest-slot
-            // age of 2 s means one thing when the running max is 90 ms and quite
-            // another when it is 1.8 s. These rows exist on the developer
-            // surface and had never been recorded next to an actual stall.
-            let snapshot = metrics.snapshot
-            let slotMax: String = snapshot.slotLifetimeMsMax.map { String(format: "%.0f", $0) } ?? "-"
-            let sendMax: String = snapshot.sendLatencyMsMax.map { String(format: "%.0f", $0) } ?? "-"
-            let ageText: String = String(format: "%.1f", age)
-            let outstanding: Int = sendWindow.inFlight
-            let priorRecoveries: Int = snapshot.stallRecoveries
-            let diagnosis: String = "slot ms max \(slotMax), send ms max \(sendMax), prior stall recoveries \(priorRecoveries)"
-            log("send window stalled — \(outstanding) sends outstanding, oldest \(ageText)s (\(diagnosis)); replacing the connection")
-            // This frame still has to reach a terminal outcome, or every stall
-            // would leave one selected frame permanently unaccounted for and
-            // `framesUnaccounted` would drift upwards — the one number that
-            // exists to prove frames are not quietly queueing. A window drop is
-            // the honest label: `isStalled` implies `isFull`, so the frame was
-            // dropped for a full window, exactly like the ones before it.
-            metrics.recordSendWindowDrop()
-            // Recorded after the teardown it describes, so the counter can only
-            // ever report recoveries that actually happened.
-            fail("Send stalled for \(String(format: "%.1f", age))s", task: task)
-            metrics.recordStallRecovery()
-            return
+            replaceStalledConnection(task: task, at: now)
+            return false
         }
 
         // Checked before encoding, so a frame we are going to drop never costs
@@ -1462,25 +815,81 @@ final class TowerClient: NSObject, ObservableObject {
             if shouldLog {
                 log("frame #\(sequence) dropped — \(sendWindow.inFlight) sends already in flight (window \(sendWindow.capacity))")
             }
-            return
+            return false
         }
+        return true
+    }
 
-        // Read again rather than reusing `now`, so the encode figure covers the
-        // encode and nothing else — `now` was taken before the stall and
-        // window checks above.
+    /// The stall branch of step 2: logs the verdict beside the healthy
+    /// distribution, accounts for the frame that found the stall, and replaces
+    /// the connection.
+    private func replaceStalledConnection(task: URLSessionWebSocketTask, at now: TimeInterval) {
+        let age = sendWindow.oldestAge(at: now) ?? 0
+        // The healthy distribution alongside the verdict, from the same rows
+        // the developer surface shows. A stall is only interpretable against
+        // what this link normally does: an oldest-slot age of 2 s means one
+        // thing when the running max is 90 ms and quite another when it is
+        // 1.8 s.
+        let snapshot = metrics.snapshot
+        let slotMax: String = snapshot.slotLifetimeMsMax.map { String(format: "%.0f", $0) } ?? "-"
+        let sendMax: String = snapshot.sendLatencyMsMax.map { String(format: "%.0f", $0) } ?? "-"
+        let ageText: String = String(format: "%.1f", age)
+        let outstanding: Int = sendWindow.inFlight
+        let priorRecoveries: Int = snapshot.stallRecoveries
+        let diagnosis: String = "slot ms max \(slotMax), send ms max \(sendMax), prior stall recoveries \(priorRecoveries)"
+        log("send window stalled — \(outstanding) sends outstanding, oldest \(ageText)s (\(diagnosis)); replacing the connection")
+        // This frame still has to reach a terminal outcome, or every stall
+        // would leave one selected frame permanently unaccounted for and
+        // `framesUnaccounted` would drift upwards — the one number that
+        // exists to prove frames are not quietly queueing. A window drop is
+        // the honest label: `isStalled` implies `isFull`, so the frame was
+        // dropped for a full window, exactly like the ones before it.
+        metrics.recordSendWindowDrop()
+        // Recorded after the teardown it describes, so the counter can only
+        // ever report recoveries that actually happened.
+        fail("Send stalled for \(String(format: "%.1f", age))s", task: task)
+        metrics.recordStallRecovery()
+    }
+
+    /// One frame, encoded and not yet sent: what step 3 hands to step 4.
+    private struct EncodedFrame {
+        let sequence: Int
+        let width: Int
+        let height: Int
+        /// The `tx_seq` inside `text`. Read, not yet claimed: see `transmit`.
+        let txSeq: Int
+        /// The whole message, as the socket sends it.
+        let text: String
+        /// Size of the serialised JSON, which is what `wireBytes` counts.
+        let wireBytes: Int
+        let jpegBytes: Int
+        /// When encoding finished. Also the instant the send-window slot is
+        /// reserved: one clock read ends the encode figure and starts the slot
+        /// timings.
+        let encodedAt: TimeInterval
+    }
+
+    /// Step 3 of `sendFrame`: JPEG, base64 and JSON, timed into `metrics`.
+    ///
+    /// - Returns: the encoded frame, or `nil` once an encode failure has been
+    ///   counted.
+    private func encodeFrame(_ image: UIImage, width: Int, height: Int, sequence: Int) -> EncodedFrame? {
+        // A clock read of its own, so the encode figure covers the encode and
+        // nothing else: step 2's `now` was taken before the stall and window
+        // checks.
         let encodeStart = MonotonicClock.now
         guard let jpegData = image.jpegData(compressionQuality: 0.5) else {
             metrics.recordEncodeFailure()
             log("frame #\(sequence) failed to encode as JPEG")
-            return
+            return nil
         }
 
-        // Read, not yet claimed. Every `return` between here and the send
-        // below leaves this number for the next frame, so `tx_seq` stays dense
-        // over frames the socket actually received. Claiming it here instead
-        // would make an encode failure or a closed send window look identical
-        // to transit loss at the Tower — the precise confusion `txSequence`
-        // exists to remove.
+        // Read, not yet claimed: `transmit` claims it. Every `return` between
+        // here and the send leaves this number for the next frame, so `tx_seq`
+        // stays dense over frames the socket actually received. Claiming it
+        // here instead would make an encode failure or a closed send window
+        // look identical to transit loss at the Tower — the precise confusion
+        // `txSequence` exists to remove.
         let txSeq = txSequence
         let payload: [String: Any] = [
             "type": "frame",
@@ -1498,12 +907,29 @@ final class TowerClient: NSObject, ObservableObject {
         else {
             metrics.recordEncodeFailure()
             log("frame #\(sequence) failed to serialize JSON payload")
-            return
+            return nil
         }
-        let reservedAt = MonotonicClock.now
-        metrics.recordEncode(seconds: reservedAt - encodeStart)
+        let encodedAt = MonotonicClock.now
+        metrics.recordEncode(seconds: encodedAt - encodeStart)
+        return EncodedFrame(
+            sequence: sequence,
+            width: width,
+            height: height,
+            txSeq: txSeq,
+            text: jsonText,
+            wireBytes: jsonData.count,
+            jpegBytes: jpegData.count,
+            encodedAt: encodedAt
+        )
+    }
 
-        // Cannot fail: the window was checked not-full a few lines above and
+    /// Step 4 of `sendFrame`: reserves the slot, claims the `tx_seq`, and hands
+    /// the frame to the socket. The completion is recorded by `finishFrameSend`.
+    private func transmit(_ frame: EncodedFrame, on task: URLSessionWebSocketTask, shouldLog: Bool) {
+        let sequence = frame.sequence
+        let reservedAt = frame.encodedAt
+
+        // Cannot fail: `passSendWindow` checked the window not-full and
         // nothing else can reserve in between — `sendFrame` is main-actor
         // isolated and contains no suspension point. Handled rather than
         // force-unwrapped so a future edit that breaks that property loses a
@@ -1513,7 +939,7 @@ final class TowerClient: NSObject, ObservableObject {
             log("frame #\(sequence) dropped — send window closed between check and reserve")
             return
         }
-        metrics.recordSendAttempt(wireBytes: jsonData.count)
+        metrics.recordSendAttempt(wireBytes: frame.wireBytes)
         // Claimed here, at the last statement before the frame goes out. The
         // window is reserved, the JSON exists, and nothing between this line
         // and `task.send` can decline to send. `sendFrame` is main-actor
@@ -1521,16 +947,15 @@ final class TowerClient: NSObject, ObservableObject {
         // and take the same number.
         txSequence += 1
         if shouldLog {
-            log("frame #\(sequence) (tx \(txSeq)) sending \(jsonData.count) bytes (\(width)x\(height), jpeg \(jpegData.count) bytes)")
+            log("frame #\(sequence) (tx \(frame.txSeq)) sending \(frame.wireBytes) bytes (\(frame.width)x\(frame.height), jpeg \(frame.jpegBytes) bytes)")
         }
 
-        task.send(.string(jsonText)) { [weak self] error in
+        task.send(.string(frame.text)) { [weak self] error in
             // Sampled here, in the transport's own completion handler, before
             // the main-actor hop. That is the whole point: the difference
             // between this instant and the one measured after the hop
             // separates "the network is slow" from "the main actor is busy",
-            // which are opposite diagnoses and were previously folded into a
-            // single unmeasured number.
+            // which are opposite diagnoses.
             let completedAt = MonotonicClock.now
             // `[weak self]` on the Task itself, not inherited from the send
             // completion's capture. A weak capture is a mutable binding, and
@@ -1539,39 +964,60 @@ final class TowerClient: NSObject, ObservableObject {
             // here is evaluated when the Task is created, which is allowed,
             // and keeps the lifetime semantics identical.
             Task { @MainActor [weak self] in
-                guard let self else { return }
-                // A completion for a socket this client no longer owns: its
-                // reservation was already cleared by teardown, so `release`
-                // returns nil and the slot count is left alone — otherwise
-                // this would credit a slot on the *next* connection and
-                // permanently widen its window. The outcome is also not this
-                // connection's to report — but it still has to be *recorded*,
-                // or the frame would look permanently in flight and the
-                // accounting invariant would false-alarm after every
-                // disconnect.
-                let releasedAt = MonotonicClock.now
-                guard
-                    self.isCurrent(task),
-                    let slotLifetime = self.sendWindow.release(token, at: releasedAt)
-                else {
-                    self.metrics.recordSendAbandoned()
-                    return
-                }
-                self.metrics.recordSlotTiming(
-                    sendLatency: completedAt - reservedAt,
-                    slotLifetime: slotLifetime
+                self?.finishFrameSend(
+                    token: token,
+                    task: task,
+                    reservedAt: reservedAt,
+                    completedAt: completedAt,
+                    error: error,
+                    sequence: sequence,
+                    shouldLog: shouldLog
                 )
+            }
+        }
+    }
 
-                if let error {
-                    self.metrics.recordSendFailure()
-                    self.log("frame #\(sequence) send failed: \(error.localizedDescription)")
-                    self.fail("Send failed: \(error.localizedDescription)", task: task)
-                } else {
-                    self.metrics.recordSendSuccess()
-                    if shouldLog {
-                        self.log("frame #\(sequence) sent")
-                    }
-                }
+    /// The main-actor half of a frame send's completion: returns the slot and
+    /// records the outcome.
+    private func finishFrameSend(
+        token: Int,
+        task: URLSessionWebSocketTask,
+        reservedAt: TimeInterval,
+        completedAt: TimeInterval,
+        error: (any Error)?,
+        sequence: Int,
+        shouldLog: Bool
+    ) {
+        // A completion for a socket this client no longer owns: its
+        // reservation was already cleared by teardown, so `release`
+        // returns nil and the slot count is left alone — otherwise
+        // this would credit a slot on the *next* connection and
+        // permanently widen its window. The outcome is also not this
+        // connection's to report — but it still has to be *recorded*,
+        // or the frame would look permanently in flight and the
+        // accounting invariant would false-alarm after every
+        // disconnect.
+        let releasedAt = MonotonicClock.now
+        guard
+            isCurrent(task),
+            let slotLifetime = sendWindow.release(token, at: releasedAt)
+        else {
+            metrics.recordSendAbandoned()
+            return
+        }
+        metrics.recordSlotTiming(
+            sendLatency: completedAt - reservedAt,
+            slotLifetime: slotLifetime
+        )
+
+        if let error {
+            metrics.recordSendFailure()
+            log("frame #\(sequence) send failed: \(error.localizedDescription)")
+            fail("Send failed: \(error.localizedDescription)", task: task)
+        } else {
+            metrics.recordSendSuccess()
+            if shouldLog {
+                log("frame #\(sequence) sent")
             }
         }
     }
@@ -1586,17 +1032,16 @@ final class TowerClient: NSObject, ObservableObject {
             log("stream_start suppressed — already streaming")
             return
         }
-        // The flag is set only if the marker actually reached a socket.
-        // Setting it first meant a start attempted while the Tower was
-        // offline left `isStreamingToTower == true` with the Tower never
-        // having been told, so every frame of that session was forwarded
-        // outside any stream bracket and the eventual `stream_stop` was
-        // unmatched.
+        // The flag is set only if the marker actually reached a socket. Set
+        // first, a start attempted while the Tower was offline would leave
+        // `isStreamingToTower == true` with the Tower never told, so every
+        // frame of that session would go out outside any stream bracket and
+        // the eventual `stream_stop` would be unmatched.
         guard sendLifecycleMarker(type: "stream_start") else { return }
         isStreamingToTower = true
         // Scoped to one stream bracket, which is a narrower thing than a
-        // camera session now that a dropped connection reopens the bracket on
-        // its own. The product screen therefore reads
+        // camera session: a dropped connection reopens the bracket on its
+        // own. The product screen therefore reads
         // `SenderMetrics.frameResults` instead; this counter stays per-bracket
         // and is shown only on the developer surface, where "replies on the
         // current bracket" is the useful reading. A lifetime-cumulative
@@ -1683,26 +1128,26 @@ final class TowerClient: NSObject, ObservableObject {
     /// to gate against, and holding the previous one would discard the results
     /// of whatever starts next.
     ///
-    /// ## Why this is not `private`, and why that is the whole fix
+    /// ## Why this is not `private`
     ///
-    /// It was, and the two callers below are both `cv_lab_status` messages.
-    /// **The Tower sends `cv_lab_status` only in reply to a message on that
-    /// same connection** (`tower/routes/cv_lab_ws.py`) — there is no unsolicited
-    /// push. So those two callers cover exactly one case: a run change *this
+    /// The two callers in this file are both `cv_lab_status` messages, and
+    /// **the Tower sends `cv_lab_status` only in reply to a message on that
+    /// same connection** (`tower/routes/cv_lab_ws.py`) — there is no
+    /// unsolicited push. So they cover exactly one case: a run change *this
     /// phone caused*.
     ///
     /// The Lab has **one slot shared by every connection, and last start wins**.
     /// A run change caused by anyone else — a second operator, the bench's own
     /// `cv_lab_smoke.py` — reaches this app only as a `cartridge_result` on the
-    /// subscription. With the gate private, nothing on that path could update
-    /// it, and the consequences were silent and severe:
+    /// subscription. If nothing on that path could update the gate:
     ///
-    ///  - every subsequent `frame_result` carried the new run and was
+    ///  - every subsequent `frame_result` would carry the new run and be
     ///    discarded, so `SenderMetrics.frameResults` — the counter the product
-    ///    screen reads — **froze while frames were being answered normally**;
-    ///  - `latestFrameResult` was never cleared, so the card kept showing the
-    ///    **previous experiment's figures**, indefinitely, while the panel above
-    ///    it correctly updated to the new experiment's name with a `live` badge.
+    ///    screen reads — **would freeze while frames were being answered
+    ///    normally**;
+    ///  - `latestFrameResult` would never be cleared, so the card would keep
+    ///    showing the **previous experiment's figures** under the new
+    ///    experiment's name.
     ///
     /// That is precisely the outcome this gate exists to prevent — a number
     /// from the wrong experiment on a screen — produced *by* the gate.
@@ -1749,7 +1194,7 @@ final class TowerClient: NSObject, ObservableObject {
             return false
         }
         task.send(.string(jsonText)) { [weak self] error in
-            // Re-captured weakly here for the same reason as in `sendFrame`.
+            // Re-captured weakly here for the same reason as in `transmit`.
             Task { @MainActor [weak self] in
                 guard let self else { return }
                 if let error {
@@ -1926,7 +1371,7 @@ final class TowerClient: NSObject, ObservableObject {
     ///
     /// Kept as a named wrapper rather than folded into
     /// `sendUnescalatedMessage`: "these three are the result channel" is a fact
-    /// worth keeping visible now that a fourth kind of message — the CV Lab's
+    /// worth keeping visible, because a fourth kind of message — the CV Lab's
     /// commands, which are **not** on the result channel — shares the same send
     /// discipline.
     private func sendResultMessage(_ object: [String: Any], label: String) {
@@ -1994,30 +1439,26 @@ final class TowerClient: NSObject, ObservableObject {
                 return
             }
 
-            // Leg timings, because a reconnect's cost was guessed once and the
-            // guess was wrong. A 9-second outage on the walk was attributed to
-            // "the reconnect"; decomposing the console showed ~8.5 s of it was
-            // spent in `.connecting` — i.e. a brand-new socket could not
-            // complete its upgrade either — which means the teardown decision
-            // cost well under a second and something about the path or the peer
-            // cost the rest. Three hypotheses fit that (a new flow paying SYN
-            // retransmission, a Tower event loop blocked in reconstruction, a
-            // genuinely dead link) and they imply different fixes, so the next
-            // walk must not have to guess again.
+            // Leg timings, so a slow reconnect can be decomposed rather than
+            // guessed at. One 9-second outage decomposed to ~8.5 s in
+            // `.connecting` — a brand-new socket could not complete its upgrade
+            // either — so the teardown decision cost well under a second and
+            // the path or the peer cost the rest. Three hypotheses fit that (a
+            // new flow paying SYN retransmission, a Tower event loop blocked in
+            // reconstruction, a genuinely dead link), and they imply different
+            // fixes.
             let handshakeBegan = MonotonicClock.now
 
             // NOT wrapped in `withTimeout`, deliberately — `armHandshakeWatchdog`
             // is what bounds this.
             //
             // This `send` cannot return until TCP connect and the HTTP Upgrade
-            // have completed, so it *is* the connect leg, and it had no
-            // deadline at all. Wrapping it in `withTimeout` was tried first and
-            // **does not work**: a throwing task group must await its remaining
+            // have completed, so it *is* the connect leg. `withTimeout` **does
+            // not bound it**: a throwing task group must await its remaining
             // child before it can propagate the sleeper's error, and that child
-            // is the call that is stuck. Measured rather than reasoned —
-            // against a listener that accepts TCP and never upgrades, a
-            // one-second `withTimeout` here left the client `.connecting` for
-            // the full twelve seconds the test was willing to wait.
+            // is the call that is stuck. Measured against a listener that
+            // accepts TCP and never upgrades: a one-second `withTimeout` here
+            // still left the client `.connecting` twelve seconds later.
             //
             // The same caveat applies to the pong's `withTimeout` below. It is
             // kept because it does bound the ordinary case; it is simply not
@@ -2120,234 +1561,222 @@ final class TowerClient: NSObject, ObservableObject {
         }
 
         switch type {
-        case "frame_result":
-            // Decimated on the same 1-in-`frameLogStride` cadence as the send
-            // path. This arrives once per delivered frame, so at the target
-            // rate an unguarded line here is ~12 prints a second — and the
-            // string builds two `Optional.map` allocations before `print` even
-            // takes its lock. `metrics.frameResults` is the real count.
-            let seq = json["seq"] as? Int
-            let meanIntensity = json["mean_intensity"] as? Double
-            let processingMs = json["processing_ms"] as? Double
-            let resultValue = json["result_value"] as? Double
-            let resultLabel = json["result_label"] as? String
-            // `?? [:]` rather than an optional: the Tower sends `stage_ms`
-            // unconditionally but may send it empty, and `metrics` is omitted
-            // when empty. Both mean "no stages/measurements to report", so
-            // collapsing absent and empty here loses nothing.
-            let stageMs = json["stage_ms"] as? [String: Double] ?? [:]
-            // Not `metrics`: that name is this client's `SenderMetrics`, and
-            // shadowing it here silently rebinds every use below.
-            let extraMetrics = json["metrics"] as? [String: Double] ?? [:]
-            // Additive, and omitted entirely by a Tower that runs no Lab. An
-            // `if let` rather than `flatMap(TowerFrameResultProvenance.init)`
-            // for the isolation reason `TowerCartridgeDeclaration.init` gives.
-            var cvLab: TowerFrameResultProvenance?
-            if let rawCVLab = json["cv_lab"] as? [String: Any] {
-                cvLab = TowerFrameResultProvenance(json: rawCVLab)
-            }
-
-            // >>> The staleness gate. <<<
-            //
-            // A result belonging to a run this client is not watching is
-            // discarded here and reaches nothing below — not the published
-            // reading, not the reply counter, not the metrics. It is the whole
-            // of the rule the contract states in one line, and the reason it
-            // sits at the top of this case rather than at the point of display
-            // is that there is more than one consumer downstream and a gate per
-            // consumer is a gate somebody forgets.
-            //
-            // `watchedCVLabRunID == nil` means no status has ever been read, so
-            // there is no run being watched and nothing to contradict — every
-            // result is passed through. A reply with no `cv_lab` block at all
-            // is passed through for the same reason: a Tower that attaches no
-            // provenance has made no claim about which run this belongs to, and
-            // discarding it would drop every result from a Tower running no Lab.
-            if let watched = watchedCVLabRunID, let runID = cvLab?.runID, runID != watched {
-                staleFrameResultCount += 1
-                log(
-                    "frame_result discarded: run \(runID) is not the watched run "
-                        + "\(watched) (stale results so far: \(staleFrameResultCount))"
-                )
-                return
-            }
-
-            resultLogCounter += 1
-            if resultLogCounter % Self.frameLogStride == 1 {
-                log(
-                    "frame_result received: seq=\(seq.map(String.init) ?? "?")"
-                        + " mean_intensity=\(meanIntensity.map { String($0) } ?? "?")"
-                        + " processing_ms=\(processingMs.map { String($0) } ?? "?")"
-                )
-            }
-            #if DEBUG
-            frameResultCount += 1
-            // Decoding moved above the log gate so the value is kept for every
-            // reply rather than only for the one-in-twelve that gets logged —
-            // the counters were always exact and the surfaced value has to be
-            // too. It is three optional casts on an existing dictionary, at the
-            // reply rate; the publish that follows is the only real cost, and
-            // it is the same order as `frameResultCount` next to it.
-            latestFrameResult = TowerFrameResult(
-                sequence: seq,
-                meanIntensity: meanIntensity,
-                processingMs: processingMs,
-                resultValue: resultValue,
-                resultLabel: resultLabel,
-                stageMs: stageMs,
-                metrics: extraMetrics,
-                cvLab: cvLab
-            )
-            #endif
-            // A result cleared the gate, so whatever refusal was last on screen
-            // has been answered. Cleared here rather than left to age: "the Lab
-            // is paused" beside a fresh reading is two claims that cannot both
-            // be current.
-            latestFrameRefusal = nil
-            metrics.recordFrameResult()
-
-        case "frame_error":
-            // The case that did not exist. Every `frame_error` the Tower has
-            // ever sent fell through to `default:` below and was logged as an
-            // unknown message type — so the Lab's six refusal codes, which are
-            // the answer to "I pressed Start and nothing happened", were
-            // arriving and being discarded.
-            //
-            // **Refusals are not failures**, and nothing here treats them as
-            // such: no `fail()`, no send-window change, no stream-bracket
-            // change, and `metrics` is not told a frame failed. The Tower
-            // counts these under `frames_rejected` and deliberately not under
-            // `frame_processing_errors`, for the reason it gives in one line —
-            // a Lab paused for five minutes has not failed hundreds of times —
-            // and a client that counted them as errors would reproduce exactly
-            // the number the Tower fixed.
-            guard let refusal = TowerFrameRefusal(json: json) else {
-                log("frame_error could not be decoded")
-                return
-            }
-            // Not decimated. These arrive at the refusal rate, which is the
-            // sender's ~0.8 frames per second and not the 12 Hz reply rate, and
-            // each one is a state change worth seeing in full.
-            log(
-                "frame_error: seq=\(refusal.sequence.map(String.init) ?? "?")"
-                    + " reason=\(refusal.reason) — \(refusal.message)"
-            )
-            latestFrameRefusal = refusal
-            cvLabControlEvents.send(.frameRefused(refusal))
-
-        // MARK: CV Lab control plane
-        //
-        // Two more cases that did not exist. Both are additive, neither can
-        // affect the frame path, and both pass the status document through
-        // undecoded — this file owns the transport, the cartridge owns the
-        // contract.
-
-        case "cv_lab_status":
-            guard let reply = CVLabControlReply(json: json) else {
-                log("cv_lab_status could not be decoded")
-                return
-            }
-            log(
-                "cv_lab_status: state=\(reply.lifecycleState ?? "?")"
-                    + " run=\(reply.runID ?? "none")"
-                    // The field that separates an answer from a push. Logged
-                    // because reading a pushed heartbeat as the answer to a
-                    // command is the mistake this field exists to prevent, and
-                    // a log that does not distinguish them cannot show it.
-                    + " accepted_command=\(reply.acceptedCommand ?? "—")"
-                    + " request_id=\(reply.requestID ?? "—")"
-            )
-            watchCVLabRun(reply.runID)
-            cvLabControlEvents.send(.status(reply))
-
-        case "cv_lab_error":
-            guard let refusal = CVLabControlRefusal(json: json) else {
-                log("cv_lab_error could not be decoded")
-                return
-            }
-            // Every one of the eight reasons means the request did not take
-            // effect, so nothing is applied here — not even optimistically. The
-            // refusal carries the unchanged document and the run watch is
-            // updated from it, which is the same path an accepted command
-            // takes: state comes from the document, never from the command.
-            log(
-                "cv_lab_error: \(refusal.reason) for \(refusal.command ?? "?")"
-                    + " — \(refusal.message)"
-            )
-            if let status = refusal.status {
-                watchCVLabRun((status["lifecycle"] as? [String: Any])?["run_id"] as? String)
-            }
-            cvLabControlEvents.send(.refused(refusal))
-
-        // MARK: Result channel
-        //
-        // Every case below is additive and none of them can affect the frame
-        // path: they decode, publish, and return. Nothing here touches
-        // `status`, the send window, or the stream bracket — which is the iOS
-        // half of the guarantee the contract makes on the Tower side.
-
-        case "cartridges":
-            let declaration = TowerCartridgeDeclaration(json: json)
-            log(
-                "cartridges declared: "
-                    + declaration.offers
-                    .map { "\($0.cartridge)/\($0.resultType) available=\($0.available)" }
-                    .joined(separator: ", ")
-            )
-            cartridgeDeclaration = declaration
-            resultEvents.send(.declaration(declaration))
-
-        case "result_subscribed":
-            guard let ack = CartridgeSubscriptionAck(json: json) else {
-                log("result_subscribed could not be decoded")
-                return
-            }
-            log("result_subscribed: \(ack.subscriptionID) \(ack.cartridge)/\(ack.resultType)")
-            resultEvents.send(.subscribed(ack))
-
-        case "result_unsubscribed":
-            guard let id = json["subscription_id"] as? String else { return }
-            log("result_unsubscribed: \(id)")
-            resultEvents.send(.unsubscribed(subscriptionID: id))
-
-        case "cartridge_result":
-            guard let envelope = CartridgeResultEnvelope(json: json) else {
-                log("cartridge_result could not be decoded")
-                return
-            }
-            // Decimated like `frame_result`, and for a weaker reason: this
-            // arrives at most twice a second. One line per change rather than
-            // one per heartbeat is still the useful reading.
-            if envelope.revisionChanged {
-                log(
-                    "cartridge_result: \(envelope.cartridge)/\(envelope.resultType)"
-                        + " seq=\(envelope.sequence.map(String.init) ?? "?")"
-                        + " revision=\(envelope.revision ?? "?")"
-                        + " coalesced=\(envelope.coalesced)"
-                )
-            }
-            resultEvents.send(.result(envelope))
-
-        case "result_error":
-            guard let error = CartridgeResultError(json: json) else {
-                log("result_error could not be decoded")
-                return
-            }
-            log("result_error: \(error.reason) — \(error.message)")
-            resultEvents.send(.failed(error))
-
-        case "protocol_error":
-            // The Tower telling us it does not implement something we sent.
-            // Additive on its side and non-fatal on ours: previously an
-            // unrecognised message produced only a server-side log line, so
-            // "not implemented" and "lost in flight" were indistinguishable
-            // from here.
-            let messageType = json["message_type"].map { String(describing: $0) } ?? "nil"
-            log("protocol_error from Tower: \(json["reason"] as? String ?? "?") for \(messageType)")
-
-        default:
-            log("unknown message type: \(type)")
+        case "frame_result": handleFrameResult(json)
+        case "frame_error": handleFrameError(json)
+        case "cv_lab_status": handleCVLabStatus(json)
+        case "cv_lab_error": handleCVLabError(json)
+        case "cartridges": handleCartridgeDeclaration(json)
+        case "result_subscribed": handleResultSubscribed(json)
+        case "result_unsubscribed": handleResultUnsubscribed(json)
+        case "cartridge_result": handleCartridgeResult(json)
+        case "result_error": handleResultError(json)
+        case "protocol_error": handleProtocolError(json)
+        default: log("unknown message type: \(type)")
         }
+    }
+
+    // MARK: Inbound: the frame path
+
+    private func handleFrameResult(_ json: [String: Any]) {
+        let result = TowerFrameResult(json: json)
+
+        // >>> The staleness gate. <<<
+        //
+        // A result belonging to a run this client is not watching is
+        // discarded here and reaches nothing below — not the published
+        // reading, not the reply counter, not the metrics. It is the whole
+        // of the rule the contract states in one line, and the reason it
+        // sits at the top of this handler rather than at the point of display
+        // is that there is more than one consumer downstream and a gate per
+        // consumer is a gate somebody forgets.
+        //
+        // `watchedCVLabRunID == nil` means no status has ever been read, so
+        // there is no run being watched and nothing to contradict — every
+        // result is passed through. A reply with no `cv_lab` block at all
+        // is passed through for the same reason: a Tower that attaches no
+        // provenance has made no claim about which run this belongs to, and
+        // discarding it would drop every result from a Tower running no Lab.
+        if let watched = watchedCVLabRunID, let runID = result.cvLab?.runID, runID != watched {
+            staleFrameResultCount += 1
+            log(
+                "frame_result discarded: run \(runID) is not the watched run "
+                    + "\(watched) (stale results so far: \(staleFrameResultCount))"
+            )
+            return
+        }
+
+        // Decimated on the same 1-in-`frameLogStride` cadence as the send
+        // path. This arrives once per delivered frame, so at the target
+        // rate an unguarded line here is ~12 prints a second — and the
+        // string builds two `Optional.map` allocations before `print` even
+        // takes its lock. `metrics.frameResults` is the real count.
+        resultLogCounter += 1
+        if resultLogCounter % Self.frameLogStride == 1 {
+            log(
+                "frame_result received: seq=\(result.sequence.map(String.init) ?? "?")"
+                    + " mean_intensity=\(result.meanIntensity.map { String($0) } ?? "?")"
+                    + " processing_ms=\(result.processingMs.map { String($0) } ?? "?")"
+            )
+        }
+        #if DEBUG
+        frameResultCount += 1
+        // Kept for every reply, not only the one-in-twelve that is logged:
+        // the counters are exact and the surfaced value has to be too. The
+        // publish is the only real cost, the same order as `frameResultCount`
+        // next to it.
+        latestFrameResult = result
+        #endif
+        // A result cleared the gate, so whatever refusal was last on screen
+        // has been answered. Cleared here rather than left to age: "the Lab
+        // is paused" beside a fresh reading is two claims that cannot both
+        // be current.
+        latestFrameRefusal = nil
+        metrics.recordFrameResult()
+    }
+
+    private func handleFrameError(_ json: [String: Any]) {
+        // The Lab's six refusal codes arrive here, and they are the answer to
+        // "I pressed Start and nothing happened".
+        //
+        // **Refusals are not failures**, and nothing here treats them as
+        // such: no `fail()`, no send-window change, no stream-bracket
+        // change, and `metrics` is not told a frame failed. The Tower
+        // counts these under `frames_rejected` and deliberately not under
+        // `frame_processing_errors`, for the reason it gives in one line —
+        // a Lab paused for five minutes has not failed hundreds of times —
+        // and a client that counted them as errors would report exactly the
+        // inflated count the Tower avoids.
+        guard let refusal = TowerFrameRefusal(json: json) else {
+            log("frame_error could not be decoded")
+            return
+        }
+        // Not decimated, unlike `frame_result`. While the Lab refuses every
+        // frame (idle, arming, paused) these arrive at the send rate — the
+        // same ~12 Hz as replies at the default target — one line each.
+        log(
+            "frame_error: seq=\(refusal.sequence.map(String.init) ?? "?")"
+                + " reason=\(refusal.reason) — \(refusal.message)"
+        )
+        latestFrameRefusal = refusal
+        cvLabControlEvents.send(.frameRefused(refusal))
+    }
+
+    // MARK: Inbound: CV Lab control plane
+    //
+    // Both handlers are additive and neither touches the send path. Both can
+    // move the run gate (`watchCVLabRun`) that decides which `frame_result`s
+    // are accepted, and both pass the status document through undecoded —
+    // this file owns the transport, the cartridge owns the contract.
+
+    private func handleCVLabStatus(_ json: [String: Any]) {
+        guard let reply = CVLabControlReply(json: json) else {
+            log("cv_lab_status could not be decoded")
+            return
+        }
+        log(
+            "cv_lab_status: state=\(reply.lifecycleState ?? "?")"
+                + " run=\(reply.runID ?? "none")"
+                // The field that separates an answer from a push. Logged
+                // because reading a pushed heartbeat as the answer to a
+                // command is the mistake this field exists to prevent, and
+                // a log that does not distinguish them cannot show it.
+                + " accepted_command=\(reply.acceptedCommand ?? "—")"
+                + " request_id=\(reply.requestID ?? "—")"
+        )
+        watchCVLabRun(reply.runID)
+        cvLabControlEvents.send(.status(reply))
+    }
+
+    private func handleCVLabError(_ json: [String: Any]) {
+        guard let refusal = CVLabControlRefusal(json: json) else {
+            log("cv_lab_error could not be decoded")
+            return
+        }
+        // Every one of the eight reasons means the request did not take
+        // effect, so nothing is applied here — not even optimistically. The
+        // refusal carries the unchanged document and the run watch is
+        // updated from it, which is the same path an accepted command
+        // takes: state comes from the document, never from the command.
+        log(
+            "cv_lab_error: \(refusal.reason) for \(refusal.command ?? "?")"
+                + " — \(refusal.message)"
+        )
+        if let status = refusal.status {
+            watchCVLabRun(CVLabControlReply.runID(in: status))
+        }
+        cvLabControlEvents.send(.refused(refusal))
+    }
+
+    // MARK: Inbound: result channel
+    //
+    // Every handler below is additive: they decode, publish, and return.
+    // Nothing here touches `status`, the send window, the stream bracket or
+    // the run gate — which is the iOS half of the guarantee the contract
+    // makes on the Tower side. (A subscriber can still move the run gate: the
+    // CV Lab cartridge client calls `watchCVLabRun` with a status it receives
+    // here.)
+
+    private func handleCartridgeDeclaration(_ json: [String: Any]) {
+        let declaration = TowerCartridgeDeclaration(json: json)
+        log(
+            "cartridges declared: "
+                + declaration.offers
+                .map { "\($0.cartridge)/\($0.resultType) available=\($0.available)" }
+                .joined(separator: ", ")
+        )
+        cartridgeDeclaration = declaration
+        resultEvents.send(.declaration(declaration))
+    }
+
+    private func handleResultSubscribed(_ json: [String: Any]) {
+        guard let ack = CartridgeSubscriptionAck(json: json) else {
+            log("result_subscribed could not be decoded")
+            return
+        }
+        log("result_subscribed: \(ack.subscriptionID) \(ack.cartridge)/\(ack.resultType)")
+        resultEvents.send(.subscribed(ack))
+    }
+
+    private func handleResultUnsubscribed(_ json: [String: Any]) {
+        guard let id = json["subscription_id"] as? String else { return }
+        log("result_unsubscribed: \(id)")
+        resultEvents.send(.unsubscribed(subscriptionID: id))
+    }
+
+    private func handleCartridgeResult(_ json: [String: Any]) {
+        guard let envelope = CartridgeResultEnvelope(json: json) else {
+            log("cartridge_result could not be decoded")
+            return
+        }
+        // Decimated like `frame_result`, and for a weaker reason: this
+        // arrives at most twice a second. One line per change rather than
+        // one per heartbeat is still the useful reading.
+        if envelope.revisionChanged {
+            log(
+                "cartridge_result: \(envelope.cartridge)/\(envelope.resultType)"
+                    + " seq=\(envelope.sequence.map(String.init) ?? "?")"
+                    + " revision=\(envelope.revision ?? "?")"
+                    + " coalesced=\(envelope.coalesced)"
+            )
+        }
+        resultEvents.send(.result(envelope))
+    }
+
+    private func handleResultError(_ json: [String: Any]) {
+        guard let error = CartridgeResultError(json: json) else {
+            log("result_error could not be decoded")
+            return
+        }
+        log("result_error: \(error.reason) — \(error.message)")
+        resultEvents.send(.failed(error))
+    }
+
+    private func handleProtocolError(_ json: [String: Any]) {
+        // The Tower telling us it does not implement something we sent.
+        // Additive on its side and non-fatal on ours: it is what tells "not
+        // implemented" from "lost in flight" on this side.
+        let messageType = json["message_type"].map { String(describing: $0) } ?? "nil"
+        log("protocol_error from Tower: \(json["reason"] as? String ?? "?") for \(messageType)")
     }
 
     /// True only if `task` is still the socket this client currently owns —
@@ -2394,11 +1823,10 @@ final class TowerClient: NSObject, ObservableObject {
         // `URLSession` retains its delegate — this object — until it is
         // invalidated. Dropping the reference is not enough: without this, the
         // session, its delegate queue and this client all outlive every
-        // teardown, once per connect. That was survivable when connecting was
-        // something the user did by tapping; it is not now that `autoReconnect`
-        // re-opens on a schedule whose budget refills after every 30s of
-        // healthy connection, which is once per drop on exactly the flaky link
-        // this client was built for.
+        // teardown, once per connect — and `autoReconnect` re-opens on a
+        // schedule whose budget refills after every 30s of healthy connection,
+        // which is once per drop on exactly the flaky link this client was
+        // built for.
         //
         // `invalidateAndCancel` rather than `finishTasksAndInvalidate`: the
         // only task was cancelled on the line above, so there is nothing left
@@ -2425,7 +1853,7 @@ final class TowerClient: NSObject, ObservableObject {
         // so carrying the counter across a reconnect would present the frames
         // this client never sent on the old socket as a gap on the new one —
         // manufacturing exactly the transit loss `tx_seq` exists to measure.
-        // The 2026-09-09 walk reconnected once, mid-session.
+        // A physical walk has reconnected mid-session.
         txSequence = 0
 
         #if DEBUG
@@ -2439,8 +1867,8 @@ final class TowerClient: NSObject, ObservableObject {
         // Scoped to the socket that carried it, for the same reason as the
         // line above. `HomeWorkspaceView` renders this under the caption
         // "latest Tower reply", and a reading from a connection that is gone
-        // is not the latest anything. It was cleared only by the stream
-        // bracket, so a socket that dropped mid-capture left the dead
+        // is not the latest anything. The stream bracket alone would not
+        // clear it: a socket that drops mid-capture would leave the dead
         // connection's number on screen for the whole outage — and forever
         // once the reconnect budget is spent, because no `stream_stop` is
         // ever sent for a socket that is not there.
@@ -2519,8 +1947,7 @@ final class TowerClient: NSObject, ObservableObject {
             // single bounded await rather than a loop, which is what makes
             // that safe here — a `guard let self` outside an unbounded `for
             // await` is the shape that promotes a weak capture to a strong one
-            // for the task's whole life, and three of those were removed from
-            // this file.
+            // for the task's whole life.
             guard let self else { return }
             self.healthTask = nil
             // A cancelled read has no answer to report — but it cannot simply

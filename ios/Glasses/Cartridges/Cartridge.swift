@@ -7,35 +7,12 @@ import Foundation
 
 /// What a person can do with a cartridge in this build.
 ///
-/// ## Why this stopped being a roadmap vocabulary
-///
-/// This enum used to be `.next` / `.planned` / `.future` — "Up next",
-/// "Planned", "Future" — and its doc said an `.available` case would violate
-/// Rule 3 because *"no module runtime exists on either side yet: the Tower's
-/// module container is V0.8 and the first module is V0.9."*
-///
-/// **That premise is refuted by the wire.** A Tower probed on 2026-08-26
-/// reports `module_state: "active"` with `module_id: "experimental-cv"` — the
-/// container exists and a module is running in it — and `GET /cartridges`
-/// declares `world_builder.status/2026-08-25` with `available: true`, which
-/// this build implements and has drawn 7,086 live points from during a
-/// physical walk. Three cartridges now reach a person; refusing to say so was
-/// the Rule 3 violation, not the reverse.
-///
-/// ## Why the axis changed, and not just the words
-///
-/// The old values answered *"where does this module sit on the Tower
-/// roadmap?"* The drawer is a product surface, and a person reading a badge
-/// there is asking *"is there anything here for me right now?"* Those are
-/// different questions, and answering the first in the second's place produced
-/// a badge set that was actively inverted: **Visual Q&A read "Planned" — a
-/// readier-sounding word — while having no Tower code at all, and World
-/// Builder read "Future" while being the one cartridge with a device-validated
-/// walk behind it.**
-///
-/// Roadmap position has not been lost. It lives in `docs/03-ROADMAP.md` and
-/// each cartridge's `specPath`, which is where a roadmap belongs. It is no
-/// longer rendered to a wearer as though it were a capability.
+/// A badge in the drawer answers *"is there anything here for me right now?"*,
+/// not *"where does this module sit on the Tower roadmap?"*. Answering the
+/// second in the first's place misleads: a roadmap word such as "Planned"
+/// sounds ready even on a cartridge with no Tower code at all. Roadmap position
+/// lives in `docs/03-ROADMAP.md` and each cartridge's spec, and is never
+/// rendered to a wearer as though it were a capability.
 ///
 /// ## What these values are NOT
 ///
@@ -83,43 +60,35 @@ nonisolated enum CartridgeStatus: Equatable, CaseIterable {
 ///
 /// Static catalog data. `status` describes what a person can do with the
 /// cartridge in this build and carries no runtime behaviour; `workspace`
-/// describes whether *this app* has a screen for it. The two are no longer
-/// independent — a cartridge with nothing to open cannot be ready to test, and
+/// describes whether *this app* has a screen for it. The two are not
+/// independent: a cartridge with nothing to open cannot be ready to test, and
 /// `CartridgeCatalogTests` pins that correspondence in both directions.
 struct Cartridge: Identifiable, Equatable {
     let id: String
     let name: String
     let summary: String
     let status: CartridgeStatus
-    /// Where this module is defined, so the drawer can cite a real source.
+    /// The module's spec. Not shown in the drawer.
+    /// `testEveryCartridgeCitesASpecThatExists` checks every path against a
+    /// hardcoded list of spec paths; a test bundle cannot see the repository,
+    /// so nothing checks that the file exists.
     let specPath: String
     /// The workspace this app can open for the cartridge, or `nil` if the app
-    /// has no screen for it — in which case its drawer row stays informational,
-    /// exactly as every row was before workspaces existed.
+    /// has no screen for it, in which case its drawer row is informational.
     var workspace: CartridgeWorkspace? = nil
 }
 
 extension Cartridge {
     /// Names and ordering follow the module specs in docs/modules/.
     ///
-    /// **`status` is taken from evidence, not from the specs.** Each value
-    /// below is justified by what the Tower actually serves and what this build
-    /// actually implements, verified against a live Tower. Nothing here is
-    /// aspirational copy, and nothing here is a roadmap position any more —
-    /// a spec saying "future" no longer makes a badge say it.
+    /// **`status` comes from evidence, not from the specs:** what the Tower
+    /// serves and what this build implements. A spec's roadmap position never
+    /// sets a badge.
     static let catalog: [Cartridge] = [
-        // `.readyToTest`, and it is the least arguable entry in the catalog:
-        // this is the **only module the Tower is actually running**. A live
-        // Tower reports `module_state: "active"`, `module_id: "experimental-cv"`,
-        // and its chosen experiment's answer arrives in `frame_result` on every
-        // frame — now rendered in this cartridge's own workspace rather than
-        // only on Home.
-        //
-        // What a person cannot do is choose, start or stop an experiment: the
-        // Tower picks one at its own startup and offers no message to ask for
-        // another. The workspace says exactly that. "Ready to test" is still
-        // the honest badge — there is something here to try — and the nuance
-        // belongs on the screen, not in a capsule.
+        // `.readyToTest`: the Tower runs this module, and its experiment's
+        // answer arrives in `frame_result` on every frame and is rendered in
+        // this cartridge's workspace. What a person can and cannot do with it
+        // is said on that screen, not in a capsule.
         Cartridge(
             id: "experimental-cv",
             name: "Experimental CV Lab",
@@ -128,24 +97,17 @@ extension Cartridge {
             specPath: "docs/modules/EXPERIMENTAL-CV.md",
             workspace: .experimentalCV
         ),
-        // The summary used to read "Remembers where objects were last seen",
-        // which is the claim the cartridge's own contract spends four sections
-        // refusing. `spatial_ref` is null in every payload it can produce and
-        // is actively nulled on read: nothing here knows where anything is.
-        // The drawer row is the first sentence a person reads about this
-        // module, so it is the first place the overclaim had to go.
+        // The summary claims no location: `spatial_ref` is null in every
+        // payload the contract can produce and is nulled on read, so nothing
+        // here knows where anything is. The drawer row is the first sentence a
+        // person reads about this module.
         //
-        // `.readyToTest`. The old comment here said "the Tower serving two
-        // read-only routes is not the module runtime arriving" — which was
-        // about the roadmap, and the roadmap is no longer what this field
-        // answers. Two live HTTP routes, a real decoder pinned against a real
-        // Tower's bytes, and a workspace that queries them is precisely
-        // something a person can try.
-        //
-        // Note the current Tower answers 404 (`no object memory root is
-        // configured`) and the workspace renders that truthfully, by test. That
-        // is a fact about one Tower's configuration, not about this build —
-        // see `CartridgeStatus`'s doc on why the badge does not track it.
+        // `.readyToTest`: two live HTTP routes, a decoder pinned against a real
+        // Tower's bytes, and a workspace that queries them. A Tower with no
+        // object memory root answers 404 (`no object memory root is
+        // configured`) and the workspace renders that; it is a fact about one
+        // Tower's configuration, not this build, so the badge does not track
+        // it (see `CartridgeStatus`).
         Cartridge(
             id: "object-memory",
             name: "Object Memory",
@@ -161,12 +123,8 @@ extension Cartridge {
             status: .notBuilt,
             specPath: "docs/modules/VISUAL-QA.md"
         ),
-        // `.readyToTest`, and this is the entry whose old value was most
-        // wrong. It read "Future" while being **the only cartridge in this
-        // catalog with physical evidence behind it**: it is the one contract
-        // `GET /cartridges` offers, and a clean walk on 2026-08-26 drew 7,086
-        // points across 28 segments live, with a 92.2% geometry cache hit rate
-        // and zero transport failures.
+        // `.readyToTest`: the Tower offers its contract and this build has
+        // walked it on a device.
         //
         // Named "World Builder" here, while the spec file it cites is titled
         // "World Build". Same module; the product surface and the Tower work
@@ -202,32 +160,18 @@ extension Cartridge {
         // seed, which says what it takes from its parent and what it leaves
         // behind.
         //
-        // Both were `.awaitingTower`, on the grounds that the Tower listed them
-        // under `not_offered` — Document Memory having no typed contract, and
-        // Scene Understanding persisting nothing so the channel that reads
-        // persisted state had nothing to read.
+        // Both are `.readyToTest` on the same terms as the others: the Tower
+        // declares their contracts and this build decodes them. Document
+        // Memory declares `document_memory.status` on the socket and
+        // `document_memory.library` under `http_contracts`. Scene
+        // Understanding declares a `live` result rather than a `status` one:
+        // the payload is the answer itself, so a cartridge that persists
+        // nothing can still say what it can see right now. Neither badge
+        // promises that a given Tower is configured for it; that is resolved
+        // per connection by `CartridgeAvailability.resolve`.
         //
-        // **That Tower decision was made on 2026-08-27 and both premises are
-        // gone.** `not_offered` is now `[]`. Document Memory declares
-        // `document_memory.status/2026-09-07` on the socket *and*
-        // `document_memory.library/2026-09-07` under a new `http_contracts`
-        // block. Scene Understanding declares `scene_understanding.live/…` —
-        // and the persistence objection turned out to be answered by the
-        // result *type*: `live` rather than `status`, where the payload IS the
-        // answer rather than progress toward a stored one. A cartridge that
-        // persists nothing can still say what it can see right now.
-        //
-        // Both now have clients that decode those contracts, so both are
-        // `.readyToTest` on the same terms as the other three: this build
-        // implements them and can show real Tower data. Neither badge promises
-        // the Tower you happen to be connected to is configured for it — that
-        // is resolved per-connection by `CartridgeAvailability.resolve` and
-        // rendered inside the workspace, which is the separation this whole
-        // type exists to keep.
-        //
-        // What has NOT changed is the distinction from `.notBuilt`, which is
-        // still load-bearing for the three entries above that have no Tower
-        // code anywhere. Those are a backend away, not a decision away.
+        // `.notBuilt` stays distinct for the three entries above with no Tower
+        // code anywhere: those are a backend away, not a decision away.
         Cartridge(
             id: "document-memory",
             name: "Document Memory",

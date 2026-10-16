@@ -5,7 +5,7 @@
 
 import SwiftUI
 
-/// The words of the Tower's recovery controls (U0.8 F03).
+/// The words of the Tower's recovery controls.
 enum TowerRecoveryText {
     static let connect = "Connect to Tower"
     static let connecting = "Connecting…"

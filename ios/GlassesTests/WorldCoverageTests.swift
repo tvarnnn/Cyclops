@@ -236,11 +236,9 @@ final class WorldCoverageTests: XCTestCase {
         XCTAssertEqual(WorldCoverageCopy.label(r, at: t0, stopped: false), "Map through keyframe 113 · updated 12 s ago")
         let thirty = t0.advanced(by: .seconds(18))
         XCTAssertEqual(r.age(at: thirty), 30)
-        XCTAssertEqual(r.isStale(at: thirty), false, "exactly 30 s: dated, not stale")
         XCTAssertEqual(WorldCoverageCopy.label(r, at: thirty, stopped: false),
-                       "Map through keyframe 113 · updated 30 s ago")
+                       "Map through keyframe 113 · updated 30 s ago", "exactly 30 s: dated, not stale")
         let past = t0.advanced(by: .milliseconds(18_500))
-        XCTAssertEqual(r.isStale(at: past), true)
         XCTAssertEqual(WorldCoverageCopy.label(r, at: past, stopped: false),
                        "Map through keyframe 113 · updated 30 s ago · stale")
         XCTAssertEqual(WorldCoverageCopy.label(r, at: t0.advanced(by: .seconds(288)), stopped: false),
@@ -253,7 +251,6 @@ final class WorldCoverageTests: XCTestCase {
     func testWithoutAMeasuredClockTheAgeIsUnavailableNeverFresh() {
         let r = receipt(mid, accepted: 127, sentAfterSolve: nil)
         XCTAssertNil(r.age(at: t0))
-        XCTAssertNil(r.isStale(at: t0))
         XCTAssertEqual(WorldCoverageCopy.label(r, at: t0, stopped: false, timeZone: TimeZone(identifier: "UTC")!),
                        "Map through keyframe 113 · solved at 22:40:00 Tower time · age unavailable")
     }
@@ -384,7 +381,7 @@ final class WorldCoverageTests: XCTestCase {
         capped["components_omitted"] = 2
         capped["stations_omitted"] = 1
         words += [FOWFixtures.status(capped).coverage.flatMap(WorldCoverageCopy.notDrawn)].compactMap { $0 }
-        words += WorldCoverageEvidence.allCases.map(WorldCoverageCaption.legendWord)
+        words += [WorldCoverageCopy.unconfirmed, WorldCoverageCopy.weak, WorldCoverageCopy.supported]
         words += [WorldCoverageCopy.fixture, WorldCoverageCopy.pieceName(0), WorldCoverageCopy.mapName,
                   WorldCoverageCopy.mapValue(mid), WorldCoverageCopy.mapValue(stop)]
         XCTAssertGreaterThan(words.count, 30)
@@ -393,7 +390,7 @@ final class WorldCoverageTests: XCTestCase {
                 XCTAssertFalse(word.lowercased().contains(phrase), "\"\(word)\" says \"\(phrase)\"")
             }
         }
-        XCTAssertEqual(WorldCoverageCaption.legendWord(.unconfirmed), "Not yet seen by a finished solve",
+        XCTAssertEqual(WorldCoverageCopy.unconfirmed, "Not yet seen by a finished solve",
                        "grey is unconfirmed at this solve, never a proved hole")
     }
 

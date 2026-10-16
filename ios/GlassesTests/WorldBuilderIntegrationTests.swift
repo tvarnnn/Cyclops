@@ -9,6 +9,7 @@
 //
 
 import Combine
+import os
 import WebKit
 import XCTest
 
@@ -226,7 +227,6 @@ final class WorldBuilderPayloadTests: XCTestCase {
     func testRelativeScaleIsNeverRenderableAsMetres() {
         let snapshot = WorldBuilderResultDecoder.snapshot(from: fullSnapshot())
         XCTAssertEqual(snapshot.scale, .relative)
-        XCTAssertFalse(snapshot.permitsMetricDisplay, "a relative world claimed metric display")
         XCTAssertFalse(
             snapshot.trajectory.distanceDisplayable,
             "a relative path length claimed to be a distance"
@@ -415,7 +415,6 @@ final class WorldBuilderPayloadTests: XCTestCase {
 
         // And what a person would actually be shown, which is the assertion
         // that would catch a decode that "worked" into an unrenderable state.
-        XCTAssertFalse(snapshot.permitsMetricDisplay, "a synthetic relative world claimed metres")
         XCTAssertTrue(snapshot.trajectory.labelledFigureDisplayable)
         XCTAssertEqual(
             ReportedFigure.format(
@@ -441,7 +440,6 @@ final class WorldBuilderPayloadTests: XCTestCase {
         let state = WorldBuilderResultDecoder.modelState(from: json)
         XCTAssertEqual(state, .idle)
         XCTAssertNil(state?.snapshot)
-        XCTAssertFalse(state?.hasWorld ?? true)
         XCTAssertFalse(state?.phase.mayCarryData ?? true)
     }
 
@@ -490,7 +488,7 @@ final class TowerWorldBuilderClientTests: XCTestCase {
         // does: a client that re-subscribes gets `sub-2`, and a heartbeat
         // for `sub-1` after that is one it has left. A constant `sub-1`
         // here once hid exactly that race.
-        var subscribeCount = 0
+        let subscribeCount = OSAllocatedUnfairLock(initialState: 0)
         server.onText = { text in
             recorder?.record(text)
             guard
@@ -504,7 +502,7 @@ final class TowerWorldBuilderClientTests: XCTestCase {
             case "cartridges":
                 // Asked once per connection, so a reconnect starts the
                 // numbering again, as the Tower's per-connection channel does.
-                subscribeCount = 0
+                subscribeCount.withLock { $0 = 0 }
                 server.send(text: """
                     {"type":"cartridges",
                      "envelope_contract":"cartridge_results.envelope/2026-08-23",
@@ -514,7 +512,7 @@ final class TowerWorldBuilderClientTests: XCTestCase {
                      "not_offered":[]}
                     """)
             case "result_subscribe":
-                subscribeCount += 1
+                let subscription = subscribeCount.withLock { count in count += 1; return count }
                 // Echoed from the request, as the Tower's ack does
                 // (`routes/results_ws.py`): the pin on the ack is what says
                 // which subscribe it answers, and a mock that always said
@@ -524,7 +522,7 @@ final class TowerWorldBuilderClientTests: XCTestCase {
                 server.send(text: """
                     {"type":"result_subscribed",
                      "envelope_contract":"cartridge_results.envelope/2026-08-23",
-                     "subscription_id":"sub-\(subscribeCount)","cartridge":"world_builder",
+                     "subscription_id":"sub-\(subscription)","cartridge":"world_builder",
                      "result_type":"status","contract":"\(contract)",
                      "snapshot_only":true,"world_id":\(world),"session_id":\(session),
                      "cursor_status":"absent"}
@@ -643,7 +641,7 @@ final class TowerWorldBuilderClientTests: XCTestCase {
             return false
         }
         XCTAssertEqual(client.state.phase, .settled)
-        XCTAssertTrue(client.state.hasWorld)
+        XCTAssertNotNil(client.state.snapshot)
 
         XCTAssertEqual(
             seen,
@@ -1052,7 +1050,7 @@ final class TowerWorldBuilderClientTests: XCTestCase {
             "a Tower that is reachable but silent is a timeout, not a transport failure"
         )
         XCTAssertEqual(tower.status, .online, "the socket was healthy throughout")
-        XCTAssertFalse(client.state.hasWorld)
+        XCTAssertNil(client.state.snapshot)
 
         tower.disconnect()
     }
@@ -1227,8 +1225,8 @@ final class TowerWorldBuilderClientTests: XCTestCase {
             client.state, .awaitingFirstUpdate,
             "the partial update silently collapsed the world into a spinner"
         )
-        XCTAssertFalse(
-            client.state.hasWorld,
+        XCTAssertNil(
+            client.state.snapshot,
             "a world must not survive as a fact assembled from a piece that was refused"
         )
 
@@ -1726,7 +1724,7 @@ final class TowerWorldBuilderClientTests: XCTestCase {
             seq: 1, modelState: "finalized", keyframes: 40, revision: "r1", subscription: "sub-3"
         ))
         await expect("the pinned subscription's snapshot never reached the screen") {
-            client.state.hasWorld
+            client.state.snapshot != nil
         }
         // ... and the two unpinned ones are closed, the pinned one kept.
         await expect("the unpinned subscriptions were not closed") {
@@ -1882,7 +1880,7 @@ final class TowerWorldBuilderClientTests: XCTestCase {
         }
         guard case .failed(let failure) = client.state else { return XCTFail("no failure") }
         XCTAssertEqual(failure.kind, .undecodableResponse)
-        XCTAssertFalse(client.state.hasWorld)
+        XCTAssertNil(client.state.snapshot)
 
         tower.disconnect()
     }
@@ -2292,10 +2290,6 @@ final class WorldBuilderContract20260825Tests: XCTestCase {
             snapshot.trajectory.isAnchorsOnly,
             "36 anchors with no solved pose did not read as origins-without-a-trajectory"
         )
-        XCTAssertFalse(
-            snapshot.trajectory.hasPositionedPoses,
-            "a build that positioned no camera claimed a camera path"
-        )
     }
 
     /// `null` and `0` are different claims all the way to the screen: one is
@@ -2418,7 +2412,7 @@ final class WorldBuilderContract20260825Tests: XCTestCase {
 
         let presented = WorldSessionGate.presented(.finalized(snapshot), binding: binding)
         XCTAssertEqual(presented, .awaitingFirstUpdate)
-        XCTAssertFalse(presented.hasWorld, "a foreign world was rendered as this session's")
+        XCTAssertNil(presented.snapshot, "a foreign world was rendered as this session's")
     }
 
     /// A live capture, still open, with a capture directory behind it, while
@@ -2656,7 +2650,7 @@ final class TowerWorldBuilderSessionBindingTests: XCTestCase {
             client.state, .awaitingFirstUpdate,
             "a finished world from another capture was rendered as this session's"
         )
-        XCTAssertFalse(client.state.hasWorld)
+        XCTAssertNil(client.state.snapshot)
 
         tower.sendStreamStop()
         tower.disconnect()
@@ -3304,7 +3298,6 @@ final class WorldBuilderContract20260906PayloadTests: XCTestCase {
         XCTAssertEqual(snapshot.geometry.elementCount, 17_674)
         XCTAssertTrue(reason.hasPrefix("the process building this world exited"))
 
-        XCTAssertTrue(state.hasWorld)
         XCTAssertNotNil(state.snapshot)
         XCTAssertFalse(state.isReceivingUpdates, "an interrupted world claimed live updates")
         XCTAssertEqual(state.phase, .settled)
@@ -3401,14 +3394,13 @@ final class WorldBuilderContract20260906PayloadTests: XCTestCase {
         XCTAssertEqual(selection.sessionID, "s-newest")
         XCTAssertEqual(selection.reason, "nothing is live; this is the most recently updated world")
         XCTAssertTrue(selection.isHistoryOfferedAsLive)
-        XCTAssertFalse(selection.isCurrentWorld)
         XCTAssertTrue(selection.mode.isRecognised)
 
-        for word in ["live", "finalizing"] {
+        for (word, mode) in [("live", WorldSelectionMode.live), ("finalizing", WorldSelectionMode.finalizing)] {
             let current = WorldBuilderResultDecoder.selection(from: interruptedPayload(
                 selection: ["mode": word, "world_id": "w", "session_id": NSNull(), "reason": "r"]
             ))
-            XCTAssertTrue(current.isCurrentWorld, word)
+            XCTAssertEqual(current.mode, mode, word)
             XCTAssertFalse(current.isHistoryOfferedAsLive, word)
             XCTAssertNil(current.sessionID)
         }
@@ -3419,7 +3411,6 @@ final class WorldBuilderContract20260906PayloadTests: XCTestCase {
         ])
         XCTAssertEqual(none.mode, WorldSelectionMode.none)
         XCTAssertNil(none.worldID)
-        XCTAssertFalse(none.isCurrentWorld)
         XCTAssertFalse(none.isHistoryOfferedAsLive)
     }
 
@@ -3431,7 +3422,6 @@ final class WorldBuilderContract20260906PayloadTests: XCTestCase {
         XCTAssertEqual(absent.mode, .unknown)
         XCTAssertFalse(absent.mode.isRecognised)
         XCTAssertNotEqual(absent.mode, WorldSelectionMode.none)
-        XCTAssertFalse(absent.isCurrentWorld)
         XCTAssertFalse(absent.isHistoryOfferedAsLive)
 
         let modeless = WorldBuilderResultDecoder.selection(from: interruptedPayload(
@@ -3449,7 +3439,6 @@ final class WorldBuilderContract20260906PayloadTests: XCTestCase {
         XCTAssertEqual(odd.mode.rawValue, "replaying")
         XCTAssertFalse(odd.mode.isRecognised)
         XCTAssertNotEqual(odd.mode, .unknown)
-        XCTAssertFalse(odd.isCurrentWorld)
         XCTAssertFalse(odd.isHistoryOfferedAsLive)
     }
 
@@ -3556,7 +3545,7 @@ final class TowerWorldBuilderLiveHistoryTests: XCTestCase {
     /// subscription numbering as the Tower does it. Every subscribe is acked,
     /// in order, which is what lets the C3 tests below open two.
     private func serve(_ server: MockTowerServer, recorder: MessageRecorder? = nil) {
-        var subscribeCount = 0
+        let subscribeCount = OSAllocatedUnfairLock(initialState: 0)
         server.onText = { text in
             recorder?.record(text)
             guard
@@ -3568,7 +3557,7 @@ final class TowerWorldBuilderLiveHistoryTests: XCTestCase {
             case "ping":
                 server.send(text: #"{"type":"pong"}"#)
             case "cartridges":
-                subscribeCount = 0
+                subscribeCount.withLock { $0 = 0 }
                 server.send(text: """
                     {"type":"cartridges",
                      "envelope_contract":"cartridge_results.envelope/2026-08-23",
@@ -3578,7 +3567,7 @@ final class TowerWorldBuilderLiveHistoryTests: XCTestCase {
                      "not_offered":[]}
                     """)
             case "result_subscribe":
-                subscribeCount += 1
+                let subscription = subscribeCount.withLock { count in count += 1; return count }
                 let worldID = json["world_id"] as? String
                 let world = worldID.map { "\"\($0)\"" } ?? "null"
                 // The session too: the Tower echoes both halves of the pin.
@@ -3586,7 +3575,7 @@ final class TowerWorldBuilderLiveHistoryTests: XCTestCase {
                 server.send(text: """
                     {"type":"result_subscribed",
                      "envelope_contract":"cartridge_results.envelope/2026-08-23",
-                     "subscription_id":"sub-\(subscribeCount)","cartridge":"world_builder",
+                     "subscription_id":"sub-\(subscription)","cartridge":"world_builder",
                      "result_type":"status","contract":"\(Self.contract)",
                      "snapshot_only":true,"world_id":\(world),"session_id":\(session),
                      "cursor_status":"absent"}
@@ -3714,7 +3703,9 @@ final class TowerWorldBuilderLiveHistoryTests: XCTestCase {
         let tower = TowerClient(metrics: SenderMetrics())
         let client = TowerWorldBuilderClient(tower: tower)
         var published: [WorldPhotographicReport?] = []
-        let cancellable = client.photographicUpdates.sink { published.append($0) }
+        // Read off the walk report: the one channel the screen reads.
+        let cancellable = client.walkReportUpdates.map(\.value.photographic).removeDuplicates()
+            .sink { published.append($0) }
         defer { cancellable.cancel() }
         tower.connect(to: url(port: port))
         await expect { client.state == .awaitingFirstUpdate }
@@ -3942,7 +3933,7 @@ final class TowerWorldBuilderLiveHistoryTests: XCTestCase {
         await expect { client.recentWorld != nil }
 
         XCTAssertEqual(client.state, .idle, "history was drawn as the live world")
-        XCTAssertFalse(client.state.hasWorld)
+        XCTAssertNil(client.state.snapshot)
         XCTAssertEqual(client.sessionBinding, WorldSessionBinding.none)
         XCTAssertEqual(client.inspection, .live)
         XCTAssertEqual(client.selection?.mode, .latest)
@@ -4007,7 +3998,7 @@ final class TowerWorldBuilderLiveHistoryTests: XCTestCase {
             if case .finalized = client.state { return true }
             return false
         }
-        XCTAssertTrue(client.state.hasWorld)
+        XCTAssertNotNil(client.state.snapshot)
         XCTAssertNil(client.recentWorld, "the world on screen was also offered as 'last saved'")
         XCTAssertEqual(client.inspection, .live)
         XCTAssertEqual(client.selection?.mode, .latest)
@@ -4152,7 +4143,7 @@ final class TowerWorldBuilderLiveHistoryTests: XCTestCase {
             endedAt: 1788895122.0, buildInProgress: true,
             reason: "the builder is finishing this world"
         ))
-        await expect { client.state.hasWorld }
+        await expect { client.state.snapshot != nil }
         guard case .finalizing(let snapshot, let building) = client.state else {
             return XCTFail("finalizing presented as \(client.state)")
         }
@@ -4183,7 +4174,7 @@ final class TowerWorldBuilderLiveHistoryTests: XCTestCase {
             revision: "r1", geometryRevision: "g1", selection: nil,
             endedAt: 1788895000.0
         ))
-        await expect { client.state.hasWorld }
+        await expect { client.state.snapshot != nil }
         guard case .finalized = client.state else { return XCTFail("presented as \(client.state)") }
         XCTAssertEqual(client.selection, .unknown)
         XCTAssertNil(client.recentWorld)
@@ -4252,7 +4243,7 @@ final class TowerWorldBuilderLiveHistoryTests: XCTestCase {
             keyframes: 463, revision: "r463", geometryRevision: "g463", selection: "pinned",
             reason: "the process building this world exited without stopping its session"
         ))
-        await expect { client.state.hasWorld }
+        await expect { client.state.snapshot != nil }
         guard case .interrupted(let snapshot, let reason) = client.state else {
             return XCTFail("presented as \(client.state)")
         }
@@ -4287,7 +4278,7 @@ final class TowerWorldBuilderLiveHistoryTests: XCTestCase {
             keyframes: 143, revision: "r1", geometryRevision: "g1", selection: "pinned",
             endedAt: 1788895000.0
         ))
-        await expect { client.state.hasWorld }
+        await expect { client.state.snapshot != nil }
 
         client.followLive()
         XCTAssertEqual(client.state, .awaitingFirstUpdate)
@@ -6571,7 +6562,7 @@ final class WorldAssetTransportTests: XCTestCase {
         XCTAssertNil(session.urlCache)
         XCTAssertNil(session.httpCookieStorage)
         XCTAssertEqual(session.requestCachePolicy, .reloadIgnoringLocalAndRemoteCacheData)
-        XCTAssertEqual(WorldAssetSchemeHandler.cacheLimit, 64 << 20)
+        XCTAssertEqual(WorldAssetMemory.limit, 64 << 20)
     }
 
     func testTheHandlerReachesOnlyTheSessionThePageDraws() {
@@ -6692,7 +6683,7 @@ final class WorldAssetTransportTests: XCTestCase {
         let chunk = WorldAssetRequest.appearanceChunk(digest: Self.digest)
         _ = try await assets.answer(.appearanceManifest, sessionID: "s1")
         _ = try await assets.answer(chunk, sessionID: "s1")
-        XCTAssertGreaterThan(assets.cacheBytes, 0)
+        XCTAssertGreaterThan(assets.memory.bytes, 0)
 
         let stale = #"{"detail": "appearance is stale against the session's redaction record"}"#
         StubbedGeometryProtocol.set(route: Self.manifestPath, to: (404, stale))
@@ -6700,7 +6691,7 @@ final class WorldAssetTransportTests: XCTestCase {
         later()
         let refused = try await assets.answer(chunk, sessionID: "s1")
         XCTAssertEqual(refused.status, 404, "the withdrawn bundle was not answered from memory")
-        XCTAssertEqual(assets.cacheBytes, 0)
+        XCTAssertEqual(assets.memory.bytes, 0)
         XCTAssertEqual(StubbedGeometryProtocol.requestCount(for: Self.chunkPath), 2)
     }
 
@@ -6717,7 +6708,7 @@ final class WorldAssetTransportTests: XCTestCase {
         _ = try await assets.answer(.appearanceManifest, sessionID: "s1")
         _ = try await assets.answer(chunk, sessionID: "s1")
         _ = try await assets.answer(.renderRevision, sessionID: "s1")
-        XCTAssertEqual(assets.cacheBytes, 0)
+        XCTAssertEqual(assets.memory.bytes, 0)
         _ = try await assets.answer(chunk, sessionID: "s1")
         XCTAssertEqual(StubbedGeometryProtocol.requestCount(for: Self.chunkPath), 2)
     }
@@ -6764,14 +6755,14 @@ final class WorldAssetTransportTests: XCTestCase {
         StubbedGeometryProtocol.reset(routes: [Self.manifestPath: (200, "{}"),
                                                Self.chunkPath: (200, "bytes")])
         _ = try? await assets.answer(.appearanceChunk(digest: Self.digest), sessionID: "s1")
-        XCTAssertGreaterThan(assets.cacheBytes, 0, "fixture: something is held")
+        XCTAssertGreaterThan(assets.memory.bytes, 0, "fixture: something is held")
         XCTAssertTrue(assets.isAttached)
 
         // The web view is torn down. The copy survives -- the viewer may be
         // about to build another web view -- but nothing may be answered.
         assets.detach()
         XCTAssertFalse(assets.isAttached, "no scheme task is answered after dismantleUIView")
-        XCTAssertGreaterThan(assets.cacheBytes, 0,
+        XCTAssertGreaterThan(assets.memory.bytes, 0,
                              "a new web view for the same viewer must not re-download 13 MB")
         assets.attach()
         XCTAssertTrue(assets.isAttached)
@@ -6780,7 +6771,7 @@ final class WorldAssetTransportTests: XCTestCase {
         // say the copy dies here, and before this nothing called `dropCache()`
         // at all.
         assets.tearDown()
-        XCTAssertEqual(assets.cacheBytes, 0, "the imagery is dropped when the viewer closes")
+        XCTAssertEqual(assets.memory.bytes, 0, "the imagery is dropped when the viewer closes")
         XCTAssertNil(assets.servedAppearanceToPageAt, "and so is its authorisation")
         XCTAssertTrue(assets.isAttached,
                       "`.onDisappear` also fires when the screen is merely covered: dropping the "

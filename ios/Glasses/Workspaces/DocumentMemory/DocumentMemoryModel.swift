@@ -44,7 +44,7 @@ import Foundation
 /// text itself is fetched when a person opens one, so a list of documents is
 /// not also a bulk transfer of every document's contents into the phone's
 /// memory.
-enum DocumentTextAvailability: Equatable, Sendable {
+nonisolated enum DocumentTextAvailability: Equatable, Sendable {
     /// The record has no pages. Distinct from `.notReadable`: silence is not a
     /// verdict.
     case unknown
@@ -69,11 +69,6 @@ enum DocumentTextAvailability: Equatable, Sendable {
         // a verdict about the page.
         default: self = .unknown
         }
-    }
-
-    var hasText: Bool {
-        if case .extracted = self { return true }
-        return false
     }
 
     var displayName: String {
@@ -118,7 +113,7 @@ enum DocumentTextAvailability: Equatable, Sendable {
 /// this "must be an explicit architecture evolution, not an assumed
 /// dependency". So it is optional here, nothing requires it, and no view
 /// degrades without it. Document Memory does not depend on World Builder.
-struct DocumentSourceContext: Equatable, Sendable {
+nonisolated struct DocumentSourceContext: Equatable, Sendable {
     /// The Tower's session identifier, opaque.
     var sessionID: String?
     /// The world this observation belongs to, if a world existed and the Tower
@@ -246,7 +241,8 @@ struct RememberedDocument: Equatable, Identifiable, Sendable {
     /// hold pages OCR looked at and could not read.
     var pagesReadable: Int? = nil
 
-    init(
+    // The nonisolated wire decoder builds these.
+    nonisolated init(
         id: String,
         title: String? = nil,
         summary: String? = nil,
@@ -307,10 +303,6 @@ struct RememberedDocument: Equatable, Identifiable, Sendable {
     /// What to put on a row. Never an invented name — "Untitled document"
     /// describes the record, which is all this app knows.
     var displayTitle: String { title ?? "Untitled document" }
-
-    /// Whether the thumbnail may be drawn. Delegates entirely to the artifact,
-    /// so the rule lives in one place for every cartridge that shows an image.
-    var isThumbnailDisplayable: Bool { thumbnail.isDisplayable }
 
     /// The caption a summary is owed.
     ///

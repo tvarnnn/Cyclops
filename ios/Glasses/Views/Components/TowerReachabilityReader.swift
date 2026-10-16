@@ -15,19 +15,17 @@ import SwiftUI
 ///
 /// `TowerClient` publishes `frameResultCount` and `latestFrameResult` **once per
 /// reply**, at the ~12 Hz target rate while a session is streaming. Any view
-/// observing it is invalidated at that rate. And leaving a workspace does not
-/// stop capture (that is deliberate — see the Product Shell V2 handoff §8), so
-/// "start capture in World Builder, then look at Scene Understanding" is an
-/// ordinary path, not a corner case. The three cartridge workspaces with no
-/// capture control would have been re-evaluating at reply rate to read a value
-/// that changes almost never — and that cost lands on the main actor, which is
-/// the actor the sender's send-window completions hop back to in order to
-/// release their slots.
+/// observing it is invalidated at that rate. And leaving a workspace
+/// deliberately does not stop capture, so "start capture in World Builder,
+/// then look at Scene Understanding" is an ordinary path, not a corner case. A
+/// workspace that only needs reachability would re-evaluate at reply rate to
+/// read a value that changes almost never — and that cost lands on the main
+/// actor, which is the actor the sender's send-window completions hop back to
+/// in order to release their slots.
 ///
-/// Product Shell V2 removed `ProjectManager`'s `objectWillChange` fan-in for
-/// exactly this reason, and its own review caught a dead `tower` dependency
-/// once already. This is the same defect, and the same fix: observe the object
-/// in the smallest thing that has to, and pass the *fact* down.
+/// `ProjectManager` has no `objectWillChange` fan-in for the same reason, and
+/// this follows the same rule: observe the object in the smallest thing that
+/// has to, and pass the *fact* down.
 ///
 /// The workspace below receives a `Bool`. When only `frameResultCount` changed,
 /// that `Bool` is unchanged, and SwiftUI can skip re-running the workspace's

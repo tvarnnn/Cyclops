@@ -134,7 +134,7 @@ struct WorldPanelFinishMemory<Block: Equatable>: Equatable {
 }
 
 /// What the full-screen cover says over its picture.
-struct WorldCoverText: Equatable {
+nonisolated struct WorldCoverText: Equatable {
     var title: String?
     var note: String?
     var notice: String?

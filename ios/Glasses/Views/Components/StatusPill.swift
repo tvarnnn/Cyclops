@@ -40,7 +40,7 @@ struct StatusPill: View {
     /// title over value, three across. `.row` gives the value the whole width
     /// of the screen, for the accessibility text sizes, where a third of the
     /// width broke "Connected" into "Con- nected" and "unavailable" into
-    /// "unavail- able" (UX audit, shell-status-bar).
+    /// "unavail- able".
     enum Layout {
         case column
         case row

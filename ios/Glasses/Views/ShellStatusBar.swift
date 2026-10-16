@@ -60,7 +60,7 @@ struct ShellStatusBar: View {
                 StatusPill(
                     title: "Tower",
                     value: StateDisplay.tower(tower.status),
-                    level: towerLevel,
+                    level: StateDisplay.towerLevel(tower.status),
                     layout: pill
                 )
             }
@@ -71,22 +71,13 @@ struct ShellStatusBar: View {
     }
 
     /// Whether glasses are active on this phone: known only to the DEBUG
-    /// device model, so `nil` -- "Registered" -- in Release (U0.8 F07).
+    /// device model, so `nil` -- "Registered" -- in Release.
     private var hasActiveDevice: Bool? {
         #if DEBUG
         glasses.hasActiveDevice
         #else
         nil
         #endif
-    }
-
-    private var towerLevel: StatusLevel {
-        switch tower.status {
-        case .online: return .ok
-        case .connecting: return .working
-        case .failed: return .problem
-        case .offline: return .idle
-        }
     }
 
     #if DEBUG

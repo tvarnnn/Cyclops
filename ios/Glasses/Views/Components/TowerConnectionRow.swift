@@ -53,12 +53,13 @@ enum CVTowerConnectionLabel {
 ///
 /// ## What it offers
 ///
-/// The state in one of four words with the shell's colour mapping, the
-/// failure detail when there is one, the endpoint in use — an address that
-/// changes between networks (Settings sets it), so "cannot reach the Tower" is
-/// a mystery without it and a fixable problem with it — and the one action `ConnectionSheet` would offer for the same state.
-/// Nothing here that the sheet does not do; it is here so a person running an
-/// experiment does not have to leave the Lab to do it.
+/// The state in one of four words with the shell's colour mapping
+/// (`StateDisplay.towerLevel`), the failure detail when there is one, the
+/// endpoint in use — an address that changes between networks (Settings sets
+/// it), so "cannot reach the Tower" is a mystery without it and a fixable
+/// problem with it — and the one action `ConnectionSheet` would offer for the
+/// same state. Nothing here that the sheet does not do; it is here so a person
+/// running an experiment does not have to leave the Lab to do it.
 struct TowerConnectionRow: View {
     @ObservedObject var tower: TowerClient
 
@@ -67,7 +68,7 @@ struct TowerConnectionRow: View {
             StatusPill(
                 title: "Tower",
                 value: CVTowerConnectionLabel.text(for: tower.status),
-                level: level
+                level: StateDisplay.towerLevel(tower.status)
             )
             .frame(maxWidth: 132)
 
@@ -96,18 +97,6 @@ struct TowerConnectionRow: View {
             .padding(.vertical, 4)
         }
         .accessibilityElement(children: .contain)
-    }
-
-    /// The shell's mapping, so the same state is never two colours on one
-    /// screen. `ShellStatusBar.towerLevel` is private to the shell; four lines
-    /// here are cheaper than a shared type for one switch.
-    private var level: StatusLevel {
-        switch tower.status {
-        case .online: return .ok
-        case .connecting: return .working
-        case .failed: return .problem
-        case .offline: return .idle
-        }
     }
 
     /// `host:port` rather than the whole URL: the scheme and path are the same

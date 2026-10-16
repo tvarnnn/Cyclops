@@ -33,7 +33,7 @@ import Foundation
 ///
 /// Deliberately coarse. A percentage would imply a calibrated confidence model
 /// that neither side has defined.
-enum WorldTrackingQuality: Equatable, Sendable {
+nonisolated enum WorldTrackingQuality: Equatable, Sendable {
     case good
     case limited
     case lost
@@ -52,18 +52,21 @@ enum WorldTrackingQuality: Equatable, Sendable {
 
 // MARK: - Calibration
 
-/// Whether the Tower has established the reference it needs before any spatial
-/// figure means anything.
+/// Whether the Tower has calibrated the camera. Calibration unlocks *poses*,
+/// not size: without it no pose is solved, and with it the scale is still not
+/// metric on this hardware (`TOWER-UNIFIED-CARTRIDGES.md` §5.3). The panel
+/// shows it as a row when reported and gates no figure on it. Whether a
+/// figure may be shown is decided by the Tower's unit, with the scale's
+/// explanation beneath it (`WorldTrajectoryReport.labelledFigureDisplayable`,
+/// `WORLD-BUILDER-IOS.md` §4).
 ///
 /// Coarse for the same reason tracking is: the calibration *procedure* is the
 /// Tower's to design — it may be an initialisation motion, a known-object
 /// reference, a plane fit, or nothing at all — and iOS must not presume which.
-/// What the UI needs is only whether a figure is yet trustworthy enough to
-/// show, and that has four honest answers.
 ///
 /// Note the deliberate absence of a progress percentage. "Calibrating, 62%"
 /// implies a measurable denominator, and no such quantity has been defined.
-enum WorldCalibrationState: Equatable, Sendable, CaseIterable {
+nonisolated enum WorldCalibrationState: Equatable, Sendable, CaseIterable {
     /// The Tower has not reported calibration at all. Not the same as
     /// uncalibrated — one is silence, the other is a report.
     case unknown
@@ -85,11 +88,6 @@ enum WorldCalibrationState: Equatable, Sendable, CaseIterable {
         case .calibrated: return "Calibrated"
         }
     }
-
-    /// Whether spatial figures derived under this calibration may be shown at
-    /// all. False for everything but `.calibrated`: an uncalibrated figure is
-    /// not a rough figure, it is an unanchored one.
-    var permitsSpatialFigures: Bool { self == .calibrated }
 }
 
 // MARK: - Geometry
@@ -114,7 +112,7 @@ enum WorldCalibrationState: Equatable, Sendable, CaseIterable {
 /// The consequence is that a workspace can honestly say "the Tower reports a
 /// representation of this kind, and this build cannot draw it" — a true and
 /// useful statement — instead of either drawing nothing or drawing a guess.
-struct WorldGeometryReport: Equatable, Sendable {
+nonisolated struct WorldGeometryReport: Equatable, Sendable {
     /// The Tower's own name for what it built. Displayed verbatim, never
     /// parsed, never matched against a known set.
     var representation: String?
@@ -172,7 +170,7 @@ struct WorldGeometryReport: Equatable, Sendable {
 /// separate. `posesAnchor` is reported *beside* `poseCount`, never folded into
 /// it, which is what lets an uncalibrated walk read as "36 segment origins, no
 /// trajectory" instead of as a path.
-struct WorldTrajectoryReport: Equatable, Sendable {
+nonisolated struct WorldTrajectoryReport: Equatable, Sendable {
     /// Poses carrying a position that is **evidence**: every solved pose, plus
     /// the anchor of each segment that solved something.
     ///
@@ -292,14 +290,6 @@ struct WorldTrajectoryReport: Equatable, Sendable {
         return scale != .unknown
     }
 
-    /// Whether the Tower positioned a camera anywhere at all.
-    ///
-    /// `false` for `poseCount == 0`, which is the uncalibrated case, and also
-    /// `false` when the count is absent — "no trajectory to draw" is the same
-    /// answer either way, and the two are still distinguished everywhere the
-    /// difference is a claim rather than a drawing decision.
-    var hasPositionedPoses: Bool { (poseCount ?? 0) > 0 }
-
     /// The uncalibrated outcome, named: the build produced segment origins and
     /// positioned no camera.
     ///
@@ -325,7 +315,7 @@ struct WorldTrajectoryReport: Equatable, Sendable {
 /// owns its storage namespace); iOS stores no world data and must not imply it
 /// could. These cases describe only what the Tower reported about its own
 /// storage.
-enum WorldPersistenceState: Equatable, Sendable {
+nonisolated enum WorldPersistenceState: Equatable, Sendable {
     /// The Tower did not say. The honest default, and distinct from `.session`:
     /// silence is not a promise that the world is discarded.
     case unknown
@@ -381,7 +371,7 @@ enum WorldInspectionMode: Equatable, Sendable {
 /// keyframe count must not force the UI to invent a world name, a tracking
 /// verdict, or a scale. Absent means absent, and the views render it as such
 /// (docs/02-DEVELOPMENT-RULES.md Rule 3).
-struct WorldSnapshot: Equatable, Sendable {
+nonisolated struct WorldSnapshot: Equatable, Sendable {
     /// Human-readable name, if the Tower names worlds at all.
     var name: String?
     /// Stable identifier for the world being built, if it has one.
@@ -453,18 +443,6 @@ struct WorldSnapshot: Equatable, Sendable {
             && !trajectory.hasReport
             && persistence == .unknown
     }
-
-    /// Whether any spatial figure in this snapshot may be presented as a
-    /// distance.
-    ///
-    /// Both gates, in one place so no view can satisfy one and forget the
-    /// other: the pipeline has to have a reference (`calibration`) *and* the
-    /// figure has to claim metric provenance (`scale`). On the current
-    /// monocular hardware the honest outcome is usually `false`, and a `false`
-    /// here means the layout omits the row rather than dashing it.
-    var permitsMetricDisplay: Bool {
-        calibration.permitsSpatialFigures && (scale == .inferredMetric || scale == .measuredMetric)
-    }
 }
 
 // MARK: - State
@@ -480,7 +458,7 @@ struct WorldSnapshot: Equatable, Sendable {
 /// view is written once against the full lifecycle instead of being rebuilt
 /// when the contract lands. They are unreachable today by construction: the
 /// only `WorldBuilderClient` that exists returns `.unsupported` and nothing else.
-enum WorldModelState: Equatable, Sendable {
+nonisolated enum WorldModelState: Equatable, Sendable {
     /// No Tower-side world builder exists. Carries the reason so the view never
     /// has to compose an explanation of its own.
     case unsupported(reason: String)
@@ -532,7 +510,8 @@ enum WorldModelState: Equatable, Sendable {
     /// and the three call for different responses.
     case failed(CartridgeFailure)
 
-    /// The snapshot to draw metrics from, when there is one.
+    /// The snapshot to draw metrics from, when there is one. Non-`nil` exactly
+    /// when a world exists to look at, mapped or finished.
     var snapshot: WorldSnapshot? {
         switch self {
         case .receiving(let snapshot),
@@ -545,9 +524,10 @@ enum WorldModelState: Equatable, Sendable {
         }
     }
 
-    /// Whether the Tower is currently contributing to a world. Drives the
-    /// "live" affordance, and must be false in every state where the app would
-    /// otherwise be implying activity it cannot verify.
+    /// Whether the Tower is currently contributing to a world: `.receiving`
+    /// and nothing else. It must be false in every state where the app would
+    /// otherwise be implying activity it cannot verify. Production views match
+    /// `.receiving` themselves; tests read the rule here.
     ///
     /// False in `.finalizing`: the Tower is working, but it is not observing,
     /// and a badge that says "live" while the camera is off is a lie about the
@@ -556,14 +536,6 @@ enum WorldModelState: Equatable, Sendable {
     var isReceivingUpdates: Bool {
         if case .receiving = self { return true }
         return false
-    }
-
-    /// Whether a world exists to look at, mapped or finished.
-    var hasWorld: Bool {
-        switch self {
-        case .receiving, .finalizing, .finalized, .interrupted: return true
-        case .unsupported, .idle, .awaitingFirstUpdate, .failed: return false
-        }
     }
 
     /// The shared coarse phase, for the shell's generic panel and for the

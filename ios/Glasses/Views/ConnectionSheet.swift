@@ -7,20 +7,17 @@ import MWDATCore
 import SwiftUI
 
 /// Every manual connection control, off the primary surface but always one tap
-/// away.
+/// away: tapping the shell status bar opens it.
 ///
-/// The old dashboard presented these three rows as a permanent setup checklist.
-/// With registration state streamed from launch, camera permission read
-/// automatically, and the Tower dialled automatically, a checklist is the wrong
-/// resting state — it turns a solved problem into a chore. So the rows moved
-/// here, reached by tapping the shell status bar.
+/// Registration state streams from launch, camera permission is read
+/// automatically and the Tower is dialled automatically, so a permanent setup
+/// checklist on the main screen would turn a solved problem into a chore.
 ///
-/// Moving them must not make them unreachable, and that is the point of this
-/// sheet rather than deleting them outright. The Tower's reconnect schedule is
-/// bounded and ends at a visible `.failed`; `startAutomaticConnections()` runs
-/// once per process and will not restart it. Manual retry is therefore the only
-/// recovery, and it has to exist somewhere a person can find. Every row keeps
-/// its action live in every state, exactly as before.
+/// The rows must still be reachable, which is why they live here rather than
+/// nowhere. The Tower's reconnect schedule is bounded and ends at a visible
+/// `.failed`; `startAutomaticConnections()` runs once per process and will not
+/// restart it. Manual retry is therefore the only recovery, and it has to exist
+/// somewhere a person can find. Every row keeps its action live in every state.
 struct ConnectionSheet: View {
     @ObservedObject var glasses: GlassesConnection
     @ObservedObject var tower: TowerClient
@@ -99,12 +96,11 @@ struct ConnectionSheet: View {
                     .accessibilityIdentifier("connections-tower-address")
                 } footer: {
                     // No "Connections" header: the navigation bar above says
-                    // it, and the two read as one title twice (UX audit,
-                    // connection-sheet).
+                    // it, and the two read as one title twice.
                     VStack(alignment: .leading, spacing: 6) {
                         // The address the next launch uses, when a saved one
-                        // differs from the one in use (U0.8 F17). Its own
-                        // element, outside the row's combined layout.
+                        // differs from the one in use. Its own element,
+                        // outside the row's combined layout.
                         if let next = nextLaunchAuthority {
                             Text(ConnectionsText.nextLaunch(next))
                                 .font(.footnote.monospaced())
@@ -156,7 +152,7 @@ struct ConnectionSheet: View {
     private var towerFooter: String {
         let endpoint = TowerConfiguration.webSocketURL.absoluteString
         // Connect retries the address in use; a newly saved one waits for
-        // the next launch, and that is said where Connect is (U0.8 F17).
+        // the next launch, and that is said where Connect is.
         let pending = nextLaunchAuthority == nil ? "" : ConnectionsText.savedAddressRule
         if case .failed(let message) = tower.status {
             return "Could not reach \(endpoint)\n\(message)" + pending
@@ -193,7 +189,7 @@ struct ConnectionSheet: View {
     }
 }
 
-/// The Connections sheet's words about the next launch (U0.8 F17).
+/// The Connections sheet's words about the next launch.
 enum ConnectionsText {
     static func nextLaunch(_ authority: String) -> String { "Next launch: \(authority)" }
     static var savedAddressRule: String {

@@ -1031,14 +1031,14 @@ final class WorldChromeTests: XCTestCase {
     func testTodaysScreenShowsTheResearchMarkerTheHeaderRaised() {
         let legacy = WorldChromeModel()
         XCTAssertNil(legacy.legacyResearchMarker)
-        XCTAssertFalse(legacy.imageryIsRaw)
+        XCTAssertNil(legacy.imageryRaw)
         legacy.raiseResearch(headerWarning: "The header's sentence")
-        XCTAssertTrue(legacy.imageryIsRaw)
+        XCTAssertEqual(legacy.imageryRaw, true)
         XCTAssertEqual(legacy.mode, .legacy)
         XCTAssertFalse(legacy.everNative)
         XCTAssertEqual(legacy.legacyResearchMarker, "The header's sentence")
         legacy.viewerClosed()
-        XCTAssertFalse(legacy.imageryIsRaw)
+        XCTAssertNil(legacy.imageryRaw)
         XCTAssertNil(legacy.legacyResearchMarker)
         XCTAssertFalse(legacy.rawByHeader)
 
@@ -1055,7 +1055,7 @@ final class WorldChromeTests: XCTestCase {
         XCTAssertNil(model.imageryRaw, "after the fallback the page's word is forgotten; nobody else has spoken")
         XCTAssertEqual(model.researchMarker, "The page's marker", "the marker itself is sticky")
         model.raiseResearch(headerWarning: "The header's sentence")
-        XCTAssertTrue(model.imageryIsRaw, "the header says not redacted")
+        XCTAssertEqual(model.imageryRaw, true, "the header says not redacted")
         XCTAssertEqual(model.legacyResearchMarker, "The page's marker", "the header raised it; the page's words")
         bridge.receive(.teardown)
     }
@@ -1070,7 +1070,7 @@ final class WorldChromeTests: XCTestCase {
         bridge.receive(.pageWillLoad(echo: true))
         bridge.receive(body: Self.webKit(Self.helloBody(raw: true, marker: "The page's marker")),
                        frame: Self.frame) { _, _ in }
-        XCTAssertTrue(model.imageryIsRaw, "fixture: the page said raw")
+        XCTAssertEqual(model.imageryRaw, true, "fixture: the page said raw")
         bridge.receive(.timer(.noState))
         XCTAssertEqual(model.mode, .legacy, "fixture: the fallback")
         model.noteImagery("redacted", warning: nil)
@@ -1080,7 +1080,7 @@ final class WorldChromeTests: XCTestCase {
         // A new page has not spoken either.
         let next = WorldChromeModel()
         next.publishState(Self.decodedState(Self.stateFields(raw: true, marker: "M")))
-        XCTAssertTrue(next.imageryIsRaw)
+        XCTAssertEqual(next.imageryRaw, true)
         next.setMode(.pending)
         XCTAssertNil(next.imageryRaw, "a new page's redaction is not the last page's")
         bridge.receive(.teardown)
@@ -1125,7 +1125,7 @@ final class WorldChromeTests: XCTestCase {
         let viewer = WorldRenderViewerModel(target: WorldRenderTarget(worldID: "w1", sessionID: "s1"),
                                             assets: handler)
         func caption() -> String {
-            WorldRenderRepresentation.caption(for: .appearance, rawImagery: viewer.chrome.imageryIsRaw)
+            WorldRenderRepresentation.caption(for: .appearance, rawImagery: viewer.chrome.imageryRaw)
         }
         // Today's screen (no native chrome): the served header is the only
         // source, end to end through the scheme handler.
@@ -1143,11 +1143,11 @@ final class WorldChromeTests: XCTestCase {
         // manifest and the page's next state.
         let model = WorldChromeModel()
         model.publishState(Self.decodedState(Self.stateFields(raw: true, marker: "The page's marker")))
-        XCTAssertTrue(model.imageryIsRaw)
+        XCTAssertEqual(model.imageryRaw, true)
         model.noteImagery("redacted", warning: nil)
-        XCTAssertTrue(model.imageryIsRaw, "the page has not spoken for the new build yet")
+        XCTAssertEqual(model.imageryRaw, true, "the page has not spoken for the new build yet")
         model.publishState(Self.decodedState(Self.stateFields(raw: false)))
-        XCTAssertFalse(model.imageryIsRaw, "the page and the manifest both say redacted")
+        XCTAssertEqual(model.imageryRaw, false, "the page and the manifest both say redacted")
         XCTAssertEqual(model.researchMarker, "The page's marker", "the marker is sticky")
     }
 
