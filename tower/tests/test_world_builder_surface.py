@@ -535,9 +535,9 @@ class TestExtractionVisitsOnlyTilesThatHoldField:
             self._full_grid_non_empty(bc, lo, hi, self.TILE)
 
     def test_a_restricted_box_still_sees_blocks_just_outside_it(self):
-        """The live path passes `only_blocks`: the box comes from those, but
-        the tiles read the WHOLE field, so a block just past the box's corner
-        is still read through the halo of the box's last tile."""
+        """When the box comes from a subset of the blocks, the tiles still
+        read the WHOLE field, so a block just past the box's corner is still
+        read through the halo of the box's last tile."""
         rng = np.random.default_rng(5)
         allb = rng.integers(0, 60, size=(400, 3))
         sel = allb[:40]
