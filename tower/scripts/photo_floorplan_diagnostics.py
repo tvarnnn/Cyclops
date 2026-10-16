@@ -17,7 +17,7 @@ Reads only; writes nothing but `--out` (or stdout). CPU only. Example:
 
   set CUDA_VISIBLE_DEVICES=-1 & set PYTHONPATH=%CD%
   python scripts\\photo_floorplan_diagnostics.py --log ...\\tower.err.log ^
-      --root ...\\w8-e2e6-d\\world_builder --world 8db9... --session 09ce... --out summary.json
+      --root <data-root> --world <id> --session <id> --out summary.json
 """
 
 from __future__ import annotations
