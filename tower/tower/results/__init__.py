@@ -69,11 +69,16 @@ def make_snapshot_for(
     CV Lab status, World Builder status, Scene Understanding live,
     Document Memory status. Each arm returns a `Snapshot` (payload plus
     revision, plus `volatile_fields` for the live and document arms), or
-    an explicit `unavailable` snapshot when its source was not supplied;
-    an unwired pair also yields `unavailable`. The World Builder producer
-    is built here when `world_root` is given; the others are built on
-    first poll and reused, because the World Builder producer holds a
-    small per-target cache that a per-poll producer would discard. The
+    an explicit `unavailable` snapshot when its required input is missing
+    (`world_root`, `scene_source`, `document_root`; a missing `cv_lab` gives
+    the CV Lab's own status payload saying it is unavailable); an unwired
+    pair also yields `unavailable`. The World Builder producer is built
+    here when `world_root` is given, because it holds a small per-target
+    cache that a per-poll producer would discard; the CV Lab and Document
+    Memory producers are built on first poll and reused; Scene
+    Understanding builds its payload directly from `scene_source` on each
+    poll. Document Memory needs only `document_root`: without
+    `document_source` it still reports the library's status. The
     callable also carries a `shutdown_guidance` attribute that forwards to
     the World Builder producer's own `shutdown_guidance`, if one exists.
 
