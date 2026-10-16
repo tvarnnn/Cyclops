@@ -1,12 +1,10 @@
 """Start, Pause and Stop for a cartridge, over HTTP.
 
-**The first mutating surface in this Tower, and the smallest one that
-closes the gap.** Everything else here is a `GET` or a socket
-subscription, because until now nothing a wearer could press existed:
-producers were started by a human typing a command against a capture id
-copied out of a directory listing. That is not a product, and it was
-measured as not being one -- the 2026-08-26 physical run remembered 64
-observations and every one of them required a second terminal.
+**The control surface for a cartridge session: Start, Pause and Stop.**
+Without it a producer is started by a human typing a command against a
+capture id copied out of a directory listing, which is not a product: a
+physical run that remembered 64 observations needed a second terminal for
+every one of them.
 
 **Cartridge-blind.** This module imports no cartridge and names none. It
 looks a session up by the cartridge id in the path and asks it to apply
