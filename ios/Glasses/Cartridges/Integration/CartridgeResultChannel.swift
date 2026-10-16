@@ -7,7 +7,7 @@ import Foundation
 
 /// The Tower's structured result channel, as it actually exists on the wire.
 ///
-/// Contract: `docs/contracts/CARTRIDGE-RESULTS.md`, envelope
+/// Contract: `tower/docs/contracts/CARTRIDGE-RESULTS.md`, envelope
 /// `cartridge_results.envelope/2026-08-23`. Every type here is a decoding of a
 /// message the Tower genuinely sends today — verified against
 /// `tower/tower/results/` and `tower/tower/routes/results_ws.py`, not against a
@@ -95,9 +95,9 @@ struct TowerCartridgeOffer: Equatable, Sendable {
 /// and `object_memory.observations/2026-08-26` are the same shape and are
 /// declared nowhere — declaring them would mean moving their identifiers out of
 /// adapter modules into the Tower's `contracts.py`, and its `registry.py` must
-/// stay cartridge-blind so it cannot import an adapter. Those two lanes own the
-/// move. Until they make it, this app hard-codes those two identifiers, and
-/// **their absence from this list is not evidence they are unavailable.**
+/// stay cartridge-blind so it cannot import an adapter. So this app hard-codes
+/// those two identifiers, and **their absence from this list is not evidence
+/// they are unavailable.**
 struct TowerHTTPContractOffer: Equatable, Sendable {
     /// The Tower's name for the cartridge, in the Tower's vocabulary.
     let cartridge: String
@@ -136,12 +136,9 @@ struct TowerHTTPContractOffer: Equatable, Sendable {
 /// resolves `.noContract`. Decoding it would create a second way to ask a
 /// question that already has one answer.
 ///
-/// **That reasoning survived the unification, and is now trivially true:**
-/// `not_offered` is `[]` on the current Tower, and empty is a *claim* — every
-/// cartridge in that build with a wire contract now offers it. A cartridge
-/// belongs in `not_offered` only while it can say nothing at all; one that can
-/// say "I have observed nothing, and here is precisely why" belongs in
-/// `cartridges`, available or not.
+/// A cartridge belongs in `not_offered` only while it can say nothing at all;
+/// one that can say "I have observed nothing, and here is precisely why"
+/// belongs in `cartridges`, available or not.
 struct TowerCartridgeDeclaration: Equatable, Sendable {
     let envelopeContract: String?
     let offers: [TowerCartridgeOffer]
@@ -321,6 +318,21 @@ struct CartridgeResultError: Equatable, Sendable {
     /// gone and a new `result_subscribe` is the only way to resume.
     var closesSubscription: Bool {
         reason == "consumer_too_slow" || reason == "channel_failed"
+    }
+
+    /// Whether this error belongs to the cartridge the Tower calls
+    /// `towerCartridge`, whose open subscription is `openSubscriptionID`.
+    ///
+    /// The name decides when the error carries one; otherwise the subscription
+    /// id does. The Tower's extras are reason-dependent: `unknown_subscription`
+    /// names only the subscription, and the two unsolicited errors name both.
+    /// An error carrying neither is not claimed: attributing another
+    /// cartridge's failure to this one would be a fabricated report about the
+    /// Tower.
+    func belongs(toTowerCartridge towerCartridge: String, openSubscriptionID: String?) -> Bool {
+        if let cartridge { return cartridge == towerCartridge }
+        if let subscriptionID { return subscriptionID == openSubscriptionID }
+        return false
     }
 }
 

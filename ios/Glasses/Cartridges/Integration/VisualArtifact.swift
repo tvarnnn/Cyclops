@@ -65,9 +65,8 @@ nonisolated enum RedactionState: String, Equatable, Sendable, CaseIterable {
     /// Two of the three cases qualify, and that is not a relaxation: it is
     /// what `rawEphemeral` was defined for. Its own documentation says
     /// *"Permitted only for the live, in-memory view of what the wearer
-    /// currently sees"*, and until there was such a view nothing had cause to
-    /// ask. `unknown` does not qualify, here as everywhere, because an
-    /// unstated treatment is not a treatment.
+    /// currently sees"*. `unknown` does not qualify, here as everywhere,
+    /// because an unstated treatment is not a treatment.
     ///
     /// The obligation this carries is on the CALLER and cannot be checked
     /// here: a surface that asks this question must not persist, cache or
@@ -170,9 +169,7 @@ enum VisualArtifactState: Equatable, Sendable {
         switch self {
         case .absent:
             return nil
-        case .notFetched(let redaction), .fetching(let redaction):
-            return redaction.isDisplayableWhenPersisted ? nil : redaction.explanation
-        case .available(let redaction):
+        case .notFetched(let redaction), .fetching(let redaction), .available(let redaction):
             return redaction.isDisplayableWhenPersisted ? nil : redaction.explanation
         case .failed(let failure):
             return failure.message
