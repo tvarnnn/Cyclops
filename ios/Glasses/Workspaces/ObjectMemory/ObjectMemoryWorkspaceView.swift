@@ -665,7 +665,7 @@ struct ObjectMemorySessionPanel: View {
                     ? "record.circle.fill" : "record.circle"
             )
             .font(.subheadline)
-            .foregroundStyle(snapshot.isFollowingACapture ? .primary : .secondary)
+            .foregroundStyle(snapshot.isFollowingACapture ? AnyShapeStyle(.primary) : AnyShapeStyle(.readableSecondary))
             .fixedSize(horizontal: false, vertical: true)
 
             // Intent, second and labelled as intent by its own sentence.
@@ -866,7 +866,7 @@ struct ObjectMemoryRecordingPanel: View {
                 ? "record.circle.fill" : "record.circle"
         )
         .font(.subheadline)
-        .foregroundStyle(reading.phase.isFollowingACapture ? .primary : .secondary)
+        .foregroundStyle(reading.phase.isFollowingACapture ? AnyShapeStyle(.primary) : AnyShapeStyle(.readableSecondary))
         .fixedSize(horizontal: false, vertical: true)
     }
 

@@ -630,7 +630,7 @@ struct ExperimentalCVWorkspaceView: View {
             HStack(spacing: 8) {
                 Text(experiment.name)
                     .font(.body.weight(.medium))
-                    .foregroundStyle(experiment.isStartable ? .primary : .secondary)
+                    .foregroundStyle(experiment.isStartable ? AnyShapeStyle(.primary) : AnyShapeStyle(.readableSecondary))
                 // Declared before it runs, which is the useful moment: this
                 // says whether the numbers it is about to produce will be
                 // measurements or model output.
