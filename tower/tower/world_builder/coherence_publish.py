@@ -1,8 +1,8 @@
 """Depth before publish, the evidence gate on the final solve, and the components record.
 
-WHAT. With `TOWER_WORLD_SOLVE_GATE` on (`config.world_solve_gate_setting`; OFF by default, and off means
-today's solve byte for byte), the FINAL solve of a session is not published as the solver returned it.
-Between the mapper and `write_solution` (`global_solve.solve`):
+WHAT. With `TOWER_WORLD_SOLVE_GATE` on (`config.world_solve_gate_setting`; off by default), the FINAL solve
+of a session is not published as the solver returned it. Between the mapper and `write_solution`
+(`global_solve.solve`):
 
   1. DEPTH BEFORE PUBLISH. The product depth stage (`dense_pipeline.run_depth_stage`, MoGe-2 ViT-L, told
      the solve camera's FoV: `DenseParams.known_fov`) runs on the CANDIDATE solve, over every posed keyframe
@@ -13,17 +13,25 @@ Between the mapper and `write_solution` (`global_solve.solve`):
      database's verified inlier matches, the candidate's poses and those predictions.
   3. THE GATE. `coherence_gate.apply_gate` with the solve database's verified links and their two-view
      rotations, the metric scale, and `masks_applied` -- true only when the solve's transient masks were
-     `applied` (`transients.state`; `partial` and `unavailable` are the fail-safe, manager 011).
+     `applied` (`transients.state`; `partial` and `unavailable` are the fail-safe).
   4. RELABEL. Every posed keyframe's `component` becomes its gate label (0 = the room), each 3-D point
      goes with the majority label of its observers, and `components` is rebuilt per label. Coordinates
      are untouched: an unplaced piece keeps the solver's frame, which is simply no longer claimed to be the
      room's. `merge` and every stage after it then publish the pieces as separate components -- nothing is
      merged into the room that the gate did not attach.
 
+With the gate off, steps 1-4 do not run: no depth stage, no evidence gate, no gate record. A FINAL solve is
+still checked by the final scale guard (`final_scale_guard.guard_publication`, called by `gate_and_publish`
+after the gate, the consensus and the anchor verification and before `write`), which can relabel pieces into
+unplaced components, write the components record or withhold the publication; a background solve is written
+as the solver returned it. This module also holds the seed consensus (`gate_by_consensus`), the
+anchor-verification call (`anchor_verified`), the re-gate in place (`regate_published`), the notice sentences
+(`publish_notice`) and the client-safe text (`client_safe_detail`).
+
 After `write_solution`:
 
   5. `solve/<session>/components.json` (contract `WORLD-BUILDER-COMPONENTS.md` §2, the record shape
-     `components.read_components_record` reads -- agent PA's reader), written ONCE per published solve.
+     `components.read_components_record` reads), written ONCE per published solve.
   6. THE SURFACE REUSES THE DEPTH. `dense/<session>/align.json` is stamped with the published solve's
      `input_digest` and cache key and cut to the room's keyframes, so the final surface
      (`surfacify` with `SurfaceParams(depth_known_fov=True)`) finds it current and predicts nothing. The
@@ -33,12 +41,14 @@ After `write_solution`:
 FAIL-SAFES (contract §2.2): masks not `applied` -> nothing attached, reason `masks-unavailable`; depth
 unavailable, stopped or no camera with a ratio -> nothing attached, reason `scale-unavailable`. Both still
 write components (the room = the anchor block; every other piece unplaced), and neither is silent: the row's
-finalization detail says what is missing and who can fix it (`publish_notice`, review V8 M2). Only a depth
+finalization detail says what is missing and who can fix it (`publish_notice`). Only a depth
 stage that did not finish owes a re-gate in place (`retryable`); a shortfall with depth in hand, a walk
-with no camera intrinsics or a solve with no camera (review V11, LOW-15), and the masks fail-safe, do not
+with no camera intrinsics or a solve with no camera, and the masks fail-safe, do not
 (a re-gate would reproduce them). A failure of the gate ITSELF
-(an exception) publishes the solve exactly as the solver returned it, with `gate.state: "failed"` and no
-components record -- `components: null`, "not computed", which is what every older world says.
+(an exception) drops the gate's output: the solve goes on as the solver returned it, with `gate.state:
+"failed"` and no gate components (`components: None` on the gate result). The final scale guard that follows
+then builds the components record from the solver's own components (component 0 the room, every other
+solver component `solved-separately`).
 
 THRESHOLDS: none new. The gate's are `GateParams` (evidence cited there); the scale's are the harness's
 (`ScaleParams`); the area floor (30 keyframes or 5 s), the 2.0 s span join and the 8-span cap are the
@@ -67,8 +77,8 @@ from tower.world_builder import stage_timing
 logger = logging.getLogger(__name__)
 
 COMPONENTS_FILENAME = "components.json"
-# What a solution published WITHOUT the gate does to the record of the solution it replaces: moves it
-# aside (never deletes it), so no reader pairs an old record with a new solve.
+# What a solution published WITHOUT a gate result (a background solve) does to the record of the solution
+# it replaces: moves it aside (never deletes it), so no reader pairs an old record with a new solve.
 SUPERSEDED_FILENAME = "components.superseded.json"
 CONTRACT = "world_builder.components/2026-09-23"
 RECORD = "wb-components-record/1"
@@ -83,7 +93,7 @@ DEPTH_OK = "ok"
 DEPTH_UNAVAILABLE = "unavailable"
 DEPTH_STOPPED = "stopped"
 # The depth causes (`_depth_cause`) no re-gate in place can cure: it re-runs on the same walk, which still has
-# no camera intrinsics, and the same solve, which still has no camera (review V11, LOW-15). The gate records
+# no camera intrinsics, and the same solve, which still has no camera. The gate records
 # them NOT `retryable`, so the finisher never re-runs them; the notice says who can fix them (`_OWNERS`).
 DEPTH_CAUSES_NOT_RETRYABLE = ("depth-no-intrinsics", "depth-no-camera")
 
@@ -126,7 +136,7 @@ class GateResult:
     gated: dict | None = None
     candidate: object = None
     consensus_detail: dict | None = None
-    # In memory only (review V11, LOW-1): on a result of `gate_by_consensus`, draw 0's own gate result as its
+    # In memory only: on a result of `gate_by_consensus`, draw 0's own gate result as its
     # gate returned it -- before any consensus record, owed cause or publish touched it -- so that a second
     # pass over the same solve (`global_solve._publish_draw_0_first`) hands it back (`draw_0=`) instead of
     # gating draw 0 again.
@@ -200,14 +210,14 @@ def run_gate_depth(store, world_id: str, session_id: str, solution, intrinsics, 
     writes is UNSTAMPED (no `input_digest`, no `cache_key`): until `hand_depth_to_surface` stamps it after
     publish, no stage reads it as a cache. Raises `DepthUnavailable` with the reason.
 
-    THE PREDICTIONS COME FROM THE PREDICTION CACHE (`dense_pipeline.PREDICTIONS_DIRNAME`; review V8 H2,
-    R3), keyed by the exact pixels the network is shown: a re-finish, a re-gate and every draw of a
+    THE PREDICTIONS COME FROM THE PREDICTION CACHE (`dense_pipeline.PREDICTIONS_DIRNAME`), keyed by the
+    exact pixels the network is shown: a re-finish, a re-gate and every draw of a
     consensus read the prediction the first gated build made, and only the fit to THIS solve is redone.
     The older reuse path (`reusable_predictions`, offered from a previous `align.json`) is not taken
     here: a prediction it offers may predate the cache, and then two builds of one walk could disagree
     on it.
 
-    `hold` (review V10, L-17): a list the caller owns. On success the surface lock is NOT released
+    `hold`: a list the caller owns. On success the surface lock is NOT released
     here but appended to it, and the caller releases it once it has READ `work/` -- the gate, after
     its metric scale (`_gate`). Released here, a densify could replace `work/<ki>_pred.npy` between
     this stage and that read. On failure the lock is always released here."""
@@ -250,7 +260,7 @@ def run_gate_depth(store, world_id: str, session_id: str, solution, intrinsics, 
 
 
 # The product depth stage itself, for `_gate` to tell it from a caller's `depth_runner` (a test's fake, or the
-# consensus's re-use of a draw's depth): only the product stage is handed the surface lock to keep (L-17).
+# consensus's re-use of a draw's depth): only the product stage is handed the surface lock to keep.
 _PRODUCT_DEPTH_RUNNER = run_gate_depth
 
 
@@ -293,8 +303,8 @@ def hand_depth_to_surface(store, world_id: str, session_id: str, solution, depth
     stamped["digest"] = solution.input_digest
     stamped["cache_key"] = _depth_cache_key(solution.input_digest, dparams, align.get("keyframe_image_set"),
                                             align.get("redaction_trust"))
-    # WHICH SOLVE (review V7, M3): `input_digest` names the keyframes only, and two solves
-    # of the same keyframes are two solves.
+    # WHICH SOLVE: `input_digest` names the keyframes only, and two solves
+    # of the same keyframes are two solves, hence `solve_identity`.
     from tower.world_builder.global_solve import solve_identity  # noqa: PLC0415
 
     stamped["solve_identity"] = solve_identity(solution)
@@ -469,7 +479,7 @@ def components_document(session_id: str, solution, labels_by_kid: dict[str, int]
         "contract": CONTRACT,
         "session_id": session_id,
         # Which published solve this record describes: the reader refuses a record whose solve is not
-        # the published one (review V7, L-d).
+        # the published one.
         "input_digest": solution.input_digest,
         "solved_at": solution.solved_at,
         "solve_identity": _identity(solution),
@@ -517,9 +527,8 @@ def retire_components(workspace_root) -> bool:
 def retire_consensus(workspace_root) -> bool:
     """A solution published without a consensus detail moves the previous `consensus.json` aside, to
     `CONSENSUS_SUPERSEDED_FILENAME` (a move, never a delete; only the latest superseded copy is kept),
-    exactly as `retire_components` does for the
-    components record: an old record of per-draw decisions must not sit beside a new solve (review V11,
-    LOW-4). True when one was moved."""
+    as `retire_components` does for the components record: an old record of per-draw decisions must not
+    sit beside a new solve. True when one was moved."""
     path = Path(workspace_root) / CONSENSUS_FILENAME
     if not path.exists():
         return False
@@ -547,8 +556,8 @@ def gate_final_solution(store, world_id: str, session_id: str, solution, *, data
     with the depth and scale it already has). `withhold` and `room`: `coherence_gate.apply_gate`'s consensus
     hooks. `link_reader(database_path, camera, min_inliers) -> (links, rotations)` replaces `read_links`
     (the consensus reads the one frozen database once for all its draws). `seal` and `link_units`: the anchor
-    verification's hooks (`anchor_verify.py`; None, the default, is today's gate); `link_units` None with the
-    switch's `imports` part on is read from the database here."""
+    verification's hooks (`anchor_verify.py`; None, the default, is the gate without them); `link_units` None
+    with the switch's `imports` part on is read from the database here."""
     params = params or CG.GateParams()
     started = time.perf_counter()
     try:
@@ -556,14 +565,14 @@ def gate_final_solution(store, world_id: str, session_id: str, solution, *, data
                      should_stop=should_stop, params=params, depth_runner=depth_runner or run_gate_depth,
                      metric_fn=metric_fn or measure_metric_scale, started=started, withhold=withhold,
                      room=room, link_reader=link_reader or read_links, seal=seal, link_units=link_units)
-    except Exception as exc:  # noqa: BLE001 -- a broken gate publishes today's solve and says so
+    except Exception as exc:  # noqa: BLE001 -- a broken gate passes the solver's solve on and says so
         logger.exception("[Tower][WorldBuilder] the evidence gate failed on %s/%s; the final solve is "
                          "published as the solver returned it, with no components record",
                          world_id, session_id)
         return GateResult(solution=solution, components=None, record={
             "state": GATE_STATE_FAILED, "detail": f"{type(exc).__name__}: {exc}", "gate": CG.GATE_ID,
             "params": params.to_json(), "params_digest": params.digest(),
-            # Owes a re-gate (review V7, L-c): the finisher runs it in place when idle.
+            # Owes a re-gate: the finisher runs it in place when idle.
             "retryable": True, "cause": CAUSE_GATE_FAILED,
             "seconds": round(time.perf_counter() - started, 3)})
 
@@ -577,6 +586,7 @@ def read_links(database_path, camera, min_inliers: int) -> tuple[dict, dict]:
 def _gate(store, world_id, session_id, solution, *, database_path, keyframes, should_stop, params,
           depth_runner, metric_fn, started, withhold=None, room=None, link_reader=read_links, seal=None,
           link_units=None) -> GateResult:
+    """Steps 1-4 of the module docstring; raises (`gate_final_solution` catches it)."""
     transients = solution.transients or {}
     masks_state = transients.get("state")
     masks_applied = masks_state == "applied"
@@ -584,8 +594,8 @@ def _gate(store, world_id, session_id, solution, *, database_path, keyframes, sh
     session = store.read_session(world_id, session_id)
 
     # 1. depth before publish, and 2. the metric scale that reads its predictions -- both under the
-    # session's surface lock when the product depth stage runs (review V10, L-17: it used to be released
-    # between them, so a densify could replace `work/` before the scale read it).
+    # session's surface lock when the product depth stage runs: a densify could replace `work/` between
+    # the two, so the lock is held from the depth stage through the scale read.
     held: list = []
     try:
         t = time.perf_counter()
@@ -603,8 +613,8 @@ def _gate(store, world_id, session_id, solution, *, database_path, keyframes, sh
                                  "frames": align.get("targets"), "image_origins": align.get("image_origins")})
             cache = align.get("prediction_cache")
             if isinstance(cache, dict):
-                # Where the predictions came from (R3): the cache, or the network this time -- and how many
-                # could not be written to the cache (review V10, L-18; absent from a stage that predates it).
+                # Where the predictions came from: the cache, or the network this time -- and how many
+                # could not be written to the cache (absent from a stage that predates it).
                 depth_record["predictions"] = {"token": cache.get("token"), "cached": cache.get("hits"),
                                                "predicted": cache.get("predicted")}
                 if "write_failed" in cache:
@@ -639,6 +649,7 @@ def _gate(store, world_id, session_id, solution, *, database_path, keyframes, sh
     t = time.perf_counter()
     links, rotations = link_reader(database_path, solution.camera, params.min_link_inliers)
     model = solve_model(solution, name_of)
+    # `room` (the allow-list) is passed only together with `withhold` or `seal`.
     hooks = {"withhold": withhold, "room": room} if withhold else {}
     if seal:
         # The anchor verification's seal re-gate (`anchor_verify.py`): the consensus's withhold unchanged,
@@ -654,7 +665,7 @@ def _gate(store, world_id, session_id, solution, *, database_path, keyframes, sh
         hooks["link_units"] = link_units
     quarantine = _pose_quarantine_on(PQ_RIDERS)
     if quarantine:
-        # The pose quarantine's rider rule (RUN P5-PQ RULE.md (b)): a rider never defaults to the room label.
+        # The pose quarantine's rider rule: a rider never defaults to the room label.
         hooks["rider_min_shared"] = RIDER_MIN_SHARED
     result = CG.apply_gate(model, links, metric_log, link_rotations=rotations, masks_applied=masks_applied,
                            params=params, **hooks)
@@ -669,13 +680,13 @@ def _gate(store, world_id, session_id, solution, *, database_path, keyframes, sh
     counts = {"placed": 0, "area": 0, "none": 0}
     for e in (doc or {}).get("components", []):
         counts["placed" if e["state"] == CG_PLACED else e["shown_as"]] += 1
-    # RETRYABLE (review V7, H1b): the scale fail-safe caused by the DEPTH STAGE -- the network
+    # RETRYABLE: the scale fail-safe caused by the DEPTH STAGE -- the network
     # missing, CUDA out of memory, the surface lock held, a stop -- is not the world's
     # fault, and the finisher owes it a re-gate in place. The masks fail-safe is the
     # solve's: a re-gate in place cannot mask it (an owner re-finishes; `publish_notice`).
     #
     # A fail-safe WITH DEPTH IN HAND (fewer than `min_metric_fraction` of the supported
-    # cameras with a level) is deliberately NOT retryable (review V8, M2a). The depth
+    # cameras with a level) is deliberately NOT retryable. The depth
     # stage ran to the end, and it is deterministic on the same keyframes: the frames it
     # leaves without a prediction are missing, undecodable or re-sized images, never a
     # transient; and the ratios come from this solve's own inlier pairs. A re-gate in place
@@ -684,7 +695,7 @@ def _gate(store, world_id, session_id, solution, *, database_path, keyframes, sh
     # (`NOTICE_SCALE_SHORT`).
     #
     # Nor is a depth stage that could not START for the walk's or the solve's own reason: no camera
-    # intrinsics, no solve camera (review V11, LOW-15; `DEPTH_CAUSES_NOT_RETRYABLE`). The re-gate in place
+    # intrinsics, no solve camera (`DEPTH_CAUSES_NOT_RETRYABLE`). The re-gate in place
     # runs on the same walk and the same solve, so it would fail the same way; its sentence already says
     # re-running the gate would not change this, and names the owner who can.
     retryable = bool(masks_applied and depth is None
@@ -714,7 +725,7 @@ def _gate(store, world_id, session_id, solution, *, database_path, keyframes, sh
         # units the redundancy test counted the relocalizer's imported pairs as.
         record["import_units"] = import_units
     if quarantine:
-        # Tower-internal, additive, only with the switch on (RUN P5-PQ RULE.md (b)): how many riders the rest
+        # Tower-internal, additive, only with the switch on: how many riders the rest
         # rule left unplaced instead of handing them a label they have no attachment to.
         record["pose_quarantine"] = {
             "rider_min_shared": RIDER_MIN_SHARED,
@@ -726,9 +737,9 @@ def _gate(store, world_id, session_id, solution, *, database_path, keyframes, sh
 @stage_timing.timed("p4")
 def anchor_verified(store, world_id: str, session_id: str, result: GateResult, *, database_path, keyframes,
                     workspace_root, params: "CG.GateParams | None" = None) -> GateResult:
-    """The anchor verification (`anchor_verify.verify_published`; RUN P4-IV RULE.md) on a published gate result --
+    """The anchor verification (`anchor_verify.verify_published`) on a published gate result --
     once, on the chosen draw, after the consensus -- when `TOWER_WORLD_ANCHOR_VERIFY` turns on any of its parts
-    beyond the gate's own (`imports`). Off: `result`, untouched (today's publish, byte for byte). Never raises.
+    beyond the gate's own (`imports`). Off: returns `result` unchanged. Never raises.
 
     The seal re-gate is `gate_final_solution` on the same candidate with the same depth and scale (CPU only, as the
     consensus's withhold re-gate), the consensus's withhold unchanged, the seal, and the room's cameras."""
@@ -754,8 +765,8 @@ def anchor_verified(store, world_id: str, session_id: str, result: GateResult, *
                                workspace_root=workspace_root, min_obs=params.min_obs, gp=params, **extra)
 
 
-# THE POSE QUARANTINE (`TOWER_WORLD_POSE_QUARANTINE`; RUN P5-PQ RULE.md; manager 095 §2 as corrected by 096 §2).
-# Off: today's gate, anchor verification and camera path, byte for byte. On:
+# THE POSE QUARANTINE (`TOWER_WORLD_POSE_QUARANTINE`).
+# Off: the gate, anchor verification and camera path are unchanged. On:
 #   (b) part `riders`, here, in every gate (`_gate`): a rider (< min_obs observations) takes a label only through
 #       at least RIDER_MIN_SHARED 3-D points shared with one supported camera of its solver component -- never the
 #       room's label by default;
@@ -765,19 +776,18 @@ def anchor_verified(store, world_id: str, session_id: str, result: GateResult, *
 #   (a) part `path`, at render time (`surface_render.viewable_poses`).
 # RIDER_MIN_SHARED = 3: a 6-DoF pose is fixed by its observations of known points only from 3 points up (P3P, the
 # minimal problem). The control b2a75ab4 agrees over its 7 acc2 runs: every rider sharing >= 3 points lies inside
-# the room's own envelope (<= 7.19 x its median radius; published max 7.55), while riders sharing none reach 256.8 x
-# (RUN experiments/P5-PQ/out/control_dist.json).
+# the room's own envelope (<= 7.19 x its median radius; published max 7.55), while riders sharing none reach 256.8 x.
 RIDER_MIN_SHARED = 3
 
 
-# The switch's parts this module reads (`config.WORLD_POSE_QUARANTINE_PARTS`; manager 098).
+# The switch's parts this module reads (`config.WORLD_POSE_QUARANTINE_PARTS`).
 PQ_RIDERS = "riders"
 PQ_SEAL = "seal"
 
 
 def _pose_quarantine_on(part: str) -> bool:
     """Whether `TOWER_WORLD_POSE_QUARANTINE` (`config.world_pose_quarantine_setting`) turns `part` on;
-    off = today's publish."""
+    off = the publish is unchanged."""
     from tower.config import world_pose_quarantine_setting  # noqa: PLC0415
 
     return part in world_pose_quarantine_setting()
@@ -791,35 +801,35 @@ def _anchor_verify_parts() -> frozenset:
 
 
 # ---------------------------------------------------------------------------
-# the consensus: attachment decided by a majority of mapper seeds (review V8 H2; manager 019)
+# the consensus: attachment decided by a majority of mapper seeds
 #
 # WHY. On 6839fb8f the closet (138 keyframes) detached in ONE of five mapper seeds on one frozen database and
-# the same depth (RUN P3-PF, var step 1: room 526 / 526 / 361 / 525 / 526), so which room a finish published
-# depended on the seed. A decision that flips with the seed rests on marginal evidence. Majority of 3 mapper
-# seeds, over all 10 triples, gave a room of 525-526 and no group of >= 30 keyframes flipped (P3-PF step 3).
+# the same depth (room of 526 / 526 / 361 / 525 / 526 keyframes over the five seeds), so which room a finish
+# published depended on the seed. A decision that flips with the seed rests on marginal evidence. Majority of 3
+# mapper seeds, over all 10 triples, gave a room of 525-526 and no group of >= 30 keyframes flipped.
 #
 # THE RULE (no threshold of its own). With `TOWER_WORLD_SOLVE_CONSENSUS` = N >= 2 on a gated, seeded final solve:
 #   1. DRAWS: N candidates on the SAME frozen database, masks and depth predictions, mapper seeds s, s+1, ...
-#      (DRAW_UNIT: PF's decomposition put the flips on the mapper seed alone). Draw 0 is the solve's own.
+#      (DRAW_UNIT: the flips came from the mapper seed alone). Draw 0 is the solve's own.
 #   2. Each draw is gated as usual (`gate_final_solution`; its depth stage re-fits the kept predictions; the
 #      database's links and rotations are read once for every draw).
-#   3. VOTES (review V9, M-1): only a draw whose gate ATTACHED votes (`attach: true`). A draw whose gate took a
+#   3. VOTES: only a draw whose gate ATTACHED votes (`attach: true`). A draw whose gate took a
 #      fail-safe (depth unavailable or stopped, a metric fraction under half), failed, could not be mapped or was
 #      skipped has no attachment to vote with -- counting it would vote every piece "detached". Per published
 #      keyframe, "attached to the room" in each voting draw; consensus = a strict majority of the VOTING draws.
 #      Fewer voting draws than requested: `partial`, with the count; fewer than 2: draw 0 is published as one
 #      draw would be. A stop that cost a draw its vote, or a further draw whose gate could not finish for a
-#      RETRYABLE cause (review V10, L-1): draw 0 is published, `deferred` (the re-gate in place runs the
+#      RETRYABLE cause: draw 0 is published, `deferred` (the re-gate in place runs the
 #      consensus) -- never a vote of the draws that happened to finish.
 #   4. PUBLISH the draw whose attach vector agrees with the consensus on the most keyframes (ties: the lowest
 #      draw). Its GROUPS -- the gate's own candidate groups in its room, and each of its unplaced components --
 #      are voted on by keyframe overlap (a group is attached in a draw when most of its keyframes are). A group
 #      of its room that fewer than a strict majority of draws attached is WITHHELD whole, whatever its unanimous
-#      keyframes (review V10, MED-4: the `kept` exception of P3.6 let one boundary keyframe keep a minority group
-#      in the room; RV9-A P6's cost is accepted as conservative). The count of its keyframes every voting draw
+#      keyframes (a per-keyframe exception would let one boundary keyframe keep a minority group in the room;
+#      the cost of withholding whole is accepted as conservative). The count of its keyframes every voting draw
 #      attached is recorded (`unanimous_keyframes`), for audit only. The room's anchor group is never withheld. A
 #      group the majority attached but the published draw did not stays unplaced: no geometry is invented.
-#   5. THE WITHHOLD RE-GATE (review V9, H-1). The chosen draw is gated again (the same depth and scale, CPU only)
+#   5. THE WITHHOLD RE-GATE. The chosen draw is gated again (the same depth and scale, CPU only)
 #      with the withheld groups SEALED (each a piece of its own; `coherence_gate.apply_gate(withhold=...)`) and the
 #      room ALLOW-LISTED (only the chosen room's groups may join it: `room=...`). It is published only if, per
 #      published keyframe, (a) no keyframe outside the chosen room is attached, (b) the room is exactly the chosen
@@ -829,26 +839,26 @@ def _anchor_verify_parts() -> frozenset:
 #      `no-verified-link` whatever its links). Otherwise the consensus is `not-applied`, with why, and the chosen
 #      draw is published as it was gated.
 #   6. RECORD `gate.consensus` (additive, Tower-internal §2.5), and each draw's per-round gate decisions in
-#      `solve/<session>/consensus.json` (review V8 LOW: "gate per-round decisions not persisted"). Every state
+#      `solve/<session>/consensus.json`. Every state
 #      carries the vote keys (`groups`, `pieces`, `detached`, `ambiguous`, `held_against_majority`; empty when it
-#      did not vote -- review V10, L-4). On `not-applied` a group the vote would have withheld reads `not-withheld`.
+#      did not vote). On `not-applied` a group the vote would have withheld reads `not-withheld`.
 # A consensus whose first draw took a fail-safe (nothing attached) has nothing to vote on: `not-needed`, or
 # `deferred` when that fail-safe is owed a re-gate -- the re-gate in place then runs the consensus.
 #
-# A STOP NEVER REACHES DRAW 0 OF A STOPPED CONSENSUS (review V10, MED-1b). With `stopped` (the solve's draw loop,
+# A STOP NEVER REACHES DRAW 0 OF A STOPPED CONSENSUS. With `stopped` (the solve's draw loop,
 # and its early publish), draw 0 is gated as N = 1 gates it -- WITHOUT the stop, which would otherwise stop draw
 # 0's own depth stage and publish its scale fail-safe. And a writer that already published this solve
 # (`regate_published`; `gate_and_publish(keep_on_stop=True)`) writes NOTHING when a stop reached draw 0's depth
 # stage: a published room is never replaced by an anchor-only fail-safe because a capture started.
 #
-# HELD AGAINST THE MAJORITY (review V9, M-2; manager 025, decision 2; reporting only, no rule).
+# HELD AGAINST THE MAJORITY (reporting only, no rule).
 # `gate.consensus.held_against_majority` counts the published keyframes in the PUBLISHED room that a strict
 # majority of the VOTING draws did not attach -- anchor-absorbed keyframes included, which no group names and the
 # consensus cannot withhold (the anchor is never withheld). It is the visible size of the residual risk: marginal
 # pieces inside the anchor block are not re-verified by the vote.
 
 CONSENSUS_FILENAME = "consensus.json"
-# Where a published solve whose gate wrote no per-draw detail moves an older `consensus.json` (review V11, LOW-4):
+# Where a published solve whose gate wrote no per-draw detail moves an older `consensus.json`:
 # aside, never deleted, as `SUPERSEDED_FILENAME` is for the components record.
 CONSENSUS_SUPERSEDED_FILENAME = "consensus.superseded.json"
 CONSENSUS_RECORD = "wb-gate-consensus/1"
@@ -865,16 +875,16 @@ CONSENSUS_NOT_APPLIED = "not-applied"  # the withhold re-gate failed its checks;
 CAUSE_CONSENSUS_DEFERRED = "consensus-deferred"
 WHY_STOPPED = ("a stop was asked for before the further draws voted; draw 0 is published as one draw would "
                "be, and the re-gate in place runs the consensus")
-# Review V10, L-1: a further draw's gate could not finish for a cause a re-run can cure (its depth stage: GPU
+# A further draw's gate could not finish for a cause a re-run can cure (its depth stage: GPU
 # memory, the surface lock, the network; or the gate itself failed), so it could not vote.
 WHY_DRAW_UNFINISHED = ("a further draw's gate could not finish (a cause the re-gate in place can cure), so it "
                        "could not vote; draw 0 is published as one draw would be, and the re-gate in place runs "
                        "the consensus")
-# Review V10, MED-1(a) (the solve's early publish, `stopped=True, why_deferred=WHY_PUBLISHED_FIRST`): draw 0 is
+# The solve's early publish (`stopped=True, why_deferred=WHY_PUBLISHED_FIRST`): draw 0 is
 # published before any further draw is mapped, so a kill during the draws still leaves a finished world.
 WHY_PUBLISHED_FIRST = ("draw 0 is published first, before the further draws are mapped; the consensus replaces "
                        "it once they have voted, and if they never do the re-gate in place runs it")
-# Review V10, MED-1(b): what `gate_and_publish(keep_on_stop=True)` and `regate_published` say when a stop reached
+# What `gate_and_publish(keep_on_stop=True)` and `regate_published` say when a stop reached
 # draw 0's own depth stage and they therefore wrote nothing.
 WHY_KEPT_ON_STOP = ("a stop reached draw 0's depth stage, so nothing was published; the solve published before "
                     "stands")
@@ -882,13 +892,13 @@ DECISION_ANCHOR = "anchor"
 DECISION_ATTACHED = "attached"
 DECISION_SEED_UNSTABLE = CG.REASON_SEED_UNSTABLE
 DECISION_UNPLACED = "unplaced"
-# Review V10, L-4: the vote would have withheld this room group (`seed-unstable`), but the withhold re-gate failed
+# The vote would have withheld this room group (`seed-unstable`), but the withhold re-gate failed
 # its checks (consensus `not-applied`), so the chosen draw is published as it was gated -- the group in its room.
 DECISION_NOT_WITHHELD = "not-withheld"
 
 
 def _no_vote() -> dict:
-    """The vote keys every consensus record carries, whatever its state (review V10, L-4): a state that did not
+    """The vote keys every consensus record carries, whatever its state: a state that did not
     vote has them empty, so no reader needs a per-state key list."""
     return {"groups": [], "pieces": [], "detached": [], "ambiguous": [], "held_against_majority": 0}
 
@@ -903,7 +913,7 @@ class ConsensusPlan:
     map_draw: Callable | None = None
     refusal: str | None = None
     unit: str = DRAW_UNIT_MAPPER_SEED
-    # The draws' seeds in draw order, when they are not `seed, seed + 1, ...` (review V10, L-5: a re-gate of a
+    # The draws' seeds in draw order, when they are not `seed, seed + 1, ...` (a re-gate of a
     # published draw k maps its own seed as draw 0 and the others' after it). None: `seed + k`.
     seed_list: list | None = None
 
@@ -924,7 +934,7 @@ def _room_kids(solution, min_obs: int) -> set:
 
 
 def draw_votes(result) -> bool:
-    """Whether a gated draw votes (review V9, M-1): its gate ran (`applied`, with its groups) and ATTACHED --
+    """Whether a gated draw votes: its gate ran (`applied`, with its groups) and ATTACHED --
     not a fail-safe, whose room is the anchor block alone whatever the evidence says."""
     record = getattr(result, "record", None) or {}
     return (record.get("state") == GATE_STATE_APPLIED and getattr(result, "gated", None) is not None
@@ -979,11 +989,11 @@ def decide_consensus(results: list, *, kid_of_name: dict, min_obs: int = 30) -> 
             elif u["in_room"] and majority:
                 decision = DECISION_ATTACHED
             elif u["in_room"]:
-                # THE GROUP-LEVEL VOTE DECIDES (review V10, MED-4): a room group fewer than a strict majority
+                # THE GROUP-LEVEL VOTE DECIDES: a room group fewer than a strict majority
                 # of the voting draws attached is withheld whole, whatever its unanimous keyframes -- the gate's
                 # unit is the group, and one boundary keyframe every seed happens to hold must not keep a
-                # minority attachment in the room (RV9-A P6's cost is accepted as conservative). How many of its
-                # keyframes every voting draw attached is recorded, for audit only.
+                # minority attachment in the room (the cost of withholding whole is accepted as conservative).
+                # How many of its keyframes every voting draw attached is recorded, for audit only.
                 decision = DECISION_SEED_UNSTABLE
                 extra["unanimous_keyframes"] = sum(1 for kid in kids if votes.get(kid, 0) == n)
             else:
@@ -998,7 +1008,7 @@ def decide_consensus(results: list, *, kid_of_name: dict, min_obs: int = 30) -> 
                            "ambiguous": 0 < yes < n, "decision": decision, **extra,
                            **({"label": u["label"]} if "label" in u else {})})
     # THE FLIPS THE PUBLISHED DRAW'S GROUPS CANNOT SHOW (reporting only). A piece another draw left out of
-    # its room may sit inside the published draw's anchor block (6839fb8f's closet: its own piece in mapper
+    # its room may sit inside the published draw's anchor block (on 6839fb8f, the closet: its own piece in mapper
     # seed 2, part of the room's block in seeds 0 and 1), where no group of the published draw names it.
     # Every other draw's unplaced piece the draws disagree on is listed with its votes, and whether the
     # published room holds it against the majority (`against_majority`: the anchor is never withheld).
@@ -1038,8 +1048,8 @@ def decide_consensus(results: list, *, kid_of_name: dict, min_obs: int = 30) -> 
 
 
 def held_against_majority(room_kids, tally: dict, voting_draws: int) -> int:
-    """How many keyframes of a published room a strict majority of the VOTING draws did not attach (review
-    V9, M-2): `2 * (n - attached votes) > n`. Anchor-absorbed keyframes count like any other."""
+    """How many keyframes of a published room a strict majority of the VOTING draws did not attach:
+    `2 * (n - attached votes) > n`. Anchor-absorbed keyframes count like any other."""
     n = int(voting_draws)
     return sum(1 for kid in room_kids if 2 * (n - int(tally.get(kid, 0))) > n)
 
@@ -1053,7 +1063,7 @@ def _owe_consensus(result: GateResult) -> GateResult:
 
 
 def _untouched_copy(result: GateResult) -> GateResult:
-    """A copy of a gate result that nothing later done to the original reaches (review V11, LOW-1). The
+    """A copy of a gate result that nothing later done to the original reaches. The
     consensus and the publish REPLACE a result's `record`, `consensus_detail`, and its solution's `gate` and
     `timing` -- none of them is edited in place -- so a copy of the result, its record and its solution is
     enough; the poses and the arrays are shared, and nothing writes to them."""
@@ -1072,7 +1082,7 @@ def _room_anchor(result) -> str | None:
 
 
 def withhold_refusal(chosen: GateResult, regated: GateResult, withheld_kids: set, *, min_obs: int) -> str | None:
-    """Why the withhold re-gate may NOT be published (review V9, H-1), or None when it may: per published
+    """Why the withhold re-gate may NOT be published, or None when it may: per published
     keyframe, it attaches nothing outside the chosen room, its room is exactly the chosen room minus the
     withheld groups, and every withheld keyframe is published with `seed-unstable` as its only reason."""
     if regated.record.get("state") != GATE_STATE_APPLIED or regated.components is None:
@@ -1102,7 +1112,7 @@ def keep_outside_pieces(chosen: GateResult, regated: GateResult, withheld_kids: 
     """A piece outside the chosen room is published as the chosen draw published it: the same keyframes, and
     the REASONS the chosen draw's gate gave it (patched into `regated`'s components record and its solution's
     `components[*].gate_reasons`). The re-gate re-decides such a piece against the smaller room, and a group
-    the allow-list bars would otherwise read `no-verified-link` whatever its links (RV9 probe, case 1). Returns
+    the allow-list bars would otherwise read `no-verified-link` whatever its links. Returns
     why not (the re-gate changed such a piece's keyframes), or None when every one was kept."""
     if chosen.components is None or regated.components is None:
         return "a draw has no components record"
@@ -1136,7 +1146,7 @@ def keep_outside_pieces(chosen: GateResult, regated: GateResult, withheld_kids: 
 def draw_0_stopped(result) -> bool:
     """Whether a stop reached the depth stage of the gate that produced `result` (draw 0's, for a consensus:
     only draw 0's record is published with its own depth). Such a result is the scale fail-safe, and a writer
-    that already published this solve must not replace it with that (review V10, MED-1b)."""
+    that already published this solve must not replace it with that."""
     record = getattr(result, "record", None) or {}
     depth = record.get("depth")
     return (record.get("state") == GATE_STATE_APPLIED and isinstance(depth, dict)
@@ -1152,17 +1162,17 @@ def gate_by_consensus(store, world_id: str, session_id: str, solution, *, plan: 
     gave it. The published result's record carries `consensus`; `consensus_detail` holds what
     `after_publish` persists. `gate_runner` replaces `gate_final_solution` (tests).
 
-    `stopped` (review V9, M-3; the solve's draw loop): a stop was asked for before the further draws -- none
+    `stopped` (the solve's draw loop): a stop was asked for before the further draws -- none
     is mapped, and draw 0 is published as N = 1 publishes it, `deferred`. Draw 0 is then gated WITHOUT
-    `should_stop` (review V10, MED-1b), exactly as N = 1 gates it: handed on, the stop reached draw 0's own
-    depth stage and published its scale fail-safe, so this branch was unreachable. `why_deferred` replaces
+    `should_stop`, exactly as N = 1 gates it: handed on, the stop would reach draw 0's own
+    depth stage and publish its scale fail-safe, so this branch would be unreachable. `why_deferred` replaces
     the record's `why` (`WHY_STOPPED`) -- the solve's early publish says `WHY_PUBLISHED_FIRST`.
 
     `should_stop` is asked between the further draws and reaches their gates: a stop there publishes draw 0,
     `deferred`, and the re-gate in place owes the consensus. So does a further draw whose gate could not
-    finish for a retryable cause (review V10, L-1).
+    finish for a retryable cause.
 
-    `draw_0` (review V11, LOW-1): draw 0's gate result from an earlier pass over THIS solve -- the `draw_0`
+    `draw_0`: draw 0's gate result from an earlier pass over THIS solve -- the `draw_0`
     of the result that pass returned. Draw 0 is then not gated again: it is the draw the earlier pass gated
     and published, so a transient failure (the surface lock, GPU memory) can no longer turn it into an
     anchor-only fail-safe the second time, and what the record says it cost is what it cost -- its
@@ -1176,7 +1186,7 @@ def gate_by_consensus(store, world_id: str, session_id: str, solution, *, plan: 
     seeds = plan.seeds()
     requested = int(plan.draws)
     base = {"record": CONSENSUS_RECORD, "requested": requested, "unit": plan.unit, "seeds": seeds}
-    # THE ONE FROZEN DATABASE IS READ ONCE (review V9 LOW, per-draw waste): every draw has the same links and
+    # THE ONE FROZEN DATABASE IS READ ONCE: every draw has the same links and
     # two-view rotations; only its poses differ.
     link_cache: dict = {}
 
@@ -1195,11 +1205,11 @@ def gate_by_consensus(store, world_id: str, session_id: str, solution, *, plan: 
                    params=params, **kw)
 
     if draw_0 is not None:
-        # DRAW 0 IS GATED ONCE (review V11, LOW-1): the earlier pass's gate of it, as that gate returned it.
+        # DRAW 0 IS GATED ONCE: the earlier pass's gate of it, as that gate returned it.
         first = _untouched_copy(draw_0)
         draw_0_s = _seconds(first.record.get("seconds"))
     else:
-        # A stop already asked for does not reach draw 0 (MED-1b): it is gated as N = 1 gates it.
+        # A stop already asked for does not reach draw 0: it is gated as N = 1 gates it.
         first = gate(solution, should_stop=None) if stopped else gate(solution)
         draw_0_s = 0.0
     untouched = _untouched_copy(first)
@@ -1225,7 +1235,7 @@ def gate_by_consensus(store, world_id: str, session_id: str, solution, *, plan: 
                     if owed else "the gate attached nothing to the room (a fail-safe): there is nothing to "
                                  "vote on")})
     if stopped:
-        # A STOP BEFORE THE FURTHER DRAWS (review V9, M-1 and M-3): draw 0 is published as N = 1
+        # A STOP BEFORE THE FURTHER DRAWS: draw 0 is published as N = 1
         # would publish it, and the consensus is owed to the re-gate in place.
         return done(_owe_consensus(first), {"state": CONSENSUS_DEFERRED, "why": why_deferred or WHY_STOPPED})
     name_of = _image_names(keyframes)
@@ -1233,13 +1243,13 @@ def gate_by_consensus(store, world_id: str, session_id: str, solution, *, plan: 
     results = [first]
     draws = [{"draw": 0, "seed": seeds[0], "map_s": None, "gate_s": first.record.get("seconds")}]
     stop_cost_a_vote = False
-    unfinished = False          # a further draw's gate could not finish, for a retryable cause (L-1)
+    unfinished = False          # a further draw's gate could not finish, for a retryable cause
     for k in range(1, requested):
         if should_stop is not None and should_stop():
             draws.append({"draw": k, "seed": seeds[k], "skipped": "a stop was asked for"})
             stop_cost_a_vote = True
             break
-        # T-UX1: pass k+1 of N. A no-op without the builder's final-solve writer installed --
+        # Pass k+1 of N. A no-op without the builder's final-solve writer installed --
         # the finisher's `regate_published` reaches this loop with none.
         from tower.world_builder import finish_phase  # noqa: PLC0415
 
@@ -1260,7 +1270,7 @@ def gate_by_consensus(store, world_id: str, session_id: str, solution, *, plan: 
             stop_cost_a_vote = True          # the stop reached this draw's depth stage: it cannot vote
         elif not draw_votes(result) and result.record.get("retryable"):
             # Its gate could not finish for a cause a re-run can cure -- GPU memory, the surface lock, the
-            # network, or the gate itself failing (review V10, L-1). A vote of the draws that did finish
+            # network, or the gate itself failing. A vote of the draws that did finish
             # would publish a smaller electorate for good (with 2 voters a strict majority is unanimity).
             unfinished = True
     mapped = [d for d in draws if "map_s" in d]          # one per entry of `results`, in draw order
@@ -1282,15 +1292,15 @@ def gate_by_consensus(store, world_id: str, session_id: str, solution, *, plan: 
                 "draws": [dict(info, rounds=(r.gated or {}).get("rounds")) for info, r in zip(mapped, results)]}
 
     if (stop_cost_a_vote or unfinished) and len(voting) < requested:
-        # A stop cost a draw its vote (review V9, M-1), or a draw's gate could not finish for a retryable
-        # cause (review V10, L-1): draw 0, as one draw publishes it; owed to the re-gate in place.
+        # A stop cost a draw its vote, or a draw's gate could not finish for a retryable
+        # cause: draw 0, as one draw publishes it; owed to the re-gate in place.
         published = _owe_consensus(first)
         why = WHY_STOPPED if stop_cost_a_vote else WHY_DRAW_UNFINISHED
         return done(published, {"state": CONSENSUS_DEFERRED, "why": why, "draws": draws,
                                 "votes": {"draws": len(voting)}, "chosen": {"draw": 0, "seed": seeds[0]}},
                     detail_of(published))
     if len(voting) < 2:
-        # Nothing to vote with but draw 0 (review V9, M-1): published unchanged, not owed.
+        # Nothing to vote with but draw 0: published unchanged, not owed.
         return done(first, {"state": CONSENSUS_PARTIAL, "draws": draws, "votes": {"draws": len(voting)},
                             "chosen": {"draw": 0, "seed": seeds[0]}, "groups": [], "pieces": [],
                             "detached": [], "ambiguous": [], "held_against_majority": 0,
@@ -1302,7 +1312,7 @@ def gate_by_consensus(store, world_id: str, session_id: str, solution, *, plan: 
     ambiguous = [g["first_keyframe"] for g in groups if g["ambiguous"]]
     for p in decision["pieces"]:
         if p["first_keyframe"] not in ambiguous:
-            ambiguous.append(p["first_keyframe"])       # M-2: a disputed piece is ambiguous too
+            ambiguous.append(p["first_keyframe"])       # a disputed piece is ambiguous too
     record = {"state": CONSENSUS_APPLIED if len(voting) == requested else CONSENSUS_PARTIAL,
               "draws": draws,
               "votes": {"draws": len(voting), "keyframes": decision["keyframes"],
@@ -1339,7 +1349,7 @@ def gate_by_consensus(store, world_id: str, session_id: str, solution, *, plan: 
             record["why"] = (f"withholding the seed-unstable groups failed its check ({refusal}); the chosen "
                              "draw is published as it was gated")
             record["detached"] = []
-            # The groups the vote would have withheld are published in the room (review V10, L-4): their
+            # The groups the vote would have withheld are published in the room: their
             # decision says so, and their votes still say why they were in dispute.
             record["groups"] = [dict(g, decision=DECISION_NOT_WITHHELD) if g["decision"] == DECISION_SEED_UNSTABLE
                                 else g for g in groups]
@@ -1353,10 +1363,10 @@ def gate_by_consensus(store, world_id: str, session_id: str, solution, *, plan: 
 
 def after_publish(store, world_id: str, session_id: str, workspace_root, solution,
                   result: GateResult | None) -> dict:
-    """Steps 5-6, after `write_solution` published `solution`. Never raises. Without a gate result (the
-    gate off) a previous record is moved aside; with one, the record is written once and the depth is
-    handed to the surface. A previous `consensus.json` is moved aside whenever this solve has no
-    per-draw detail to write in its place (review V11, LOW-4)."""
+    """Steps 5-6, after `write_solution` published `solution`. Never raises. Without a result (no gate and
+    no guard: a background solve) a previous components record is moved aside; with one, the record is
+    written once and the depth is handed to the surface. A previous `consensus.json` is moved aside
+    whenever this solve has no per-draw detail to write in its place."""
     out: dict = {}
     try:
         if result is None or result.components is None:
@@ -1365,9 +1375,9 @@ def after_publish(store, world_id: str, session_id: str, workspace_root, solutio
             write_components(workspace_root, result.components)
             out["components_written"] = True
         if result is None or result.consensus_detail is None:
-            # AN OLDER `consensus.json` DOES NOT DESCRIBE THIS SOLVE (review V11, LOW-4): a solve published
+            # AN OLDER `consensus.json` DOES NOT DESCRIBE THIS SOLVE: a solve published
             # with no per-draw detail -- N = 1, the gate off, a consensus deferred, not needed or not run,
-            # and the solve's early publish of draw 0 (review V10, MED-1a) -- moves it aside, so no reader
+            # and the solve's early publish of draw 0 -- moves it aside, so no reader
             # pairs the old per-draw decisions with this solve. Said only when there was one.
             if retire_consensus(workspace_root):
                 out["consensus_retired"] = True
@@ -1392,27 +1402,44 @@ def gate_and_publish(store, world_id: str, session_id: str, workspace, solution,
                      stopped: bool = False, why_deferred: str | None = None,
                      keep_on_stop: bool = False, draw_0: GateResult | None = None,
                      gate_results: list | None = None) -> tuple[object, dict | None]:
-    """The final solve's publish step, in one call (`global_solve.solve` makes it in place of
-    `write_solution`): the gate when `gate_setting_for(final, gate)`, then the final scale guard on a final
-    solve, then `write(workspace, solution)`, then the record and the depth hand-off. Returns (the published
-    solution, its gate record or None).
+    """The final solve's publish step, in one call: gate the candidate, check it with the final scale guard,
+    write it, then write its records (`global_solve.solve` makes this call in place of `write_solution`).
+
+    HOW. Inputs: `solution` is the candidate and `final` says whether it is a final solve; `gate` forces the
+    gate on or off (None: `gate_setting_for(final, gate)`); `database_path` and `keyframes` feed the gate;
+    `write(workspace, solution)` is the caller's solution writer. Steps: (1) when the gate is on, the gate
+    (`gate_final_solution`, or `gate_by_consensus` for a plan of two or more draws), then the anchor
+    verification (`anchor_verified`) unless a stop reached draw 0's depth stage; the gate's result replaces
+    `solution`, and `solution.gate` and `solution.timing["gate_s"]` are set from its record; (2) on a final
+    solve, the final scale guard (`_final_scale_guard`), whose audit and components record are written
+    before the solution (`_records_before_publish`); (3) `write(workspace, solution)`; (4) `after_publish`,
+    which writes the components record, the consensus detail and the depth hand-off. Output: `(the
+    published solution, its gate record or None)`; the record carries `publish`, what `after_publish` did,
+    and is None when there was no gate result with a record (the gate off, whether or not the guard ran).
+    When nothing is written the solution is None and the record's `publish` says so: `{"written": False,
+    "why": ...}`, either because the guard withheld the publication (the record then carries
+    `final_scale_guard`), or because of `keep_on_stop`.
+
+    WHY. The guard sits after the gate and before `write` because it checks the outcome that is actually
+    about to be published. Its records are written before the solution, so that a half-recorded publication
+    is never published: if either write fails, the guard's outcome becomes a withhold.
 
     With the gate off and not final this is `write(workspace, solution)` and nothing else, except that a
     components record left by an earlier gated solve is moved aside: it does not describe this solve.
 
     `consensus`: a plan of two or more draws (`TOWER_WORLD_SOLVE_CONSENSUS`) gates by `gate_by_consensus`;
-    None, the default, is the single gate of today. `stopped` and `why_deferred`: `gate_by_consensus`'s -- a
-    stop was asked for before the further draws (or the solve publishes draw 0 first, review V10 MED-1a):
+    None, the default, is the single gate. `stopped` and `why_deferred`: `gate_by_consensus`'s -- a
+    stop was asked for before the further draws (or the solve publishes draw 0 first):
     draw 0 is gated without the stop and published as N = 1 would, the consensus `deferred`. Ignored
     without a consensus plan.
 
-    `keep_on_stop` (review V10, MED-1b; for a caller that ALREADY published this solve, such as the solve's
+    `keep_on_stop` (for a caller that ALREADY published this solve, such as the solve's
     second pass after its early publish): when a stop reached the depth stage of draw 0's gate, nothing is
     written -- not the solution, not the record, not the depth -- and `(None, record)` is returned, the
-    record's `publish` saying so (`{"written": False, "why": WHY_KEPT_ON_STOP}`). False, the default, is
-    today's: such a result is published (a stop never loses a finish that has nothing published yet).
+    record's `publish` saying so (`{"written": False, "why": WHY_KEPT_ON_STOP}`). False, the default: such a
+    result is published (a stop never loses a finish that has nothing published yet).
 
-    `draw_0` and `gate_results` (review V11, LOW-1; the solve's two passes, `_publish_draw_0_first`):
+    `draw_0` and `gate_results` (the solve's two passes, `_publish_draw_0_first`):
     `draw_0` is `gate_by_consensus`'s -- draw 0's gate result from the earlier pass, so draw 0 is gated once
     -- and ignored without a consensus plan. `gate_results`, a list the caller owns, is given the gate
     result (its `draw_0` is what the second pass hands back). Neither changes what is published."""
@@ -1480,8 +1507,8 @@ def _final_scale_guard(store, world_id, session_id, solution, result, *, final: 
 
 
 def _records_before_publish(workspace_root, guard):
-    """A publication the guard CHANGED writes its audit and its components record BEFORE the solution (review
-    XR F7): the reader takes a components record only beside the solution whose `solve_identity` it names, so
+    """A publication the guard CHANGED writes its audit and its components record BEFORE the solution: the
+    reader takes a components record only beside the solution whose `solve_identity` it names, so
     until the solution lands the new record reads as absent, and once it lands both agree. If either write
     fails, nothing is published: the outcome becomes a withhold (the guard is fail-closed). A withhold is
     returned unchanged."""
@@ -1514,7 +1541,7 @@ def _write_guard_audit(workspace_root, guard) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# the re-gate, in place (review V7, H1b and L-c)
+# the re-gate, in place
 
 
 def regate_owed(store, world_id: str, session_id: str) -> str | None:
@@ -1530,7 +1557,7 @@ def regate_owed(store, world_id: str, session_id: str) -> str | None:
     gate = (meta or {}).get("gate")
     if not isinstance(gate, dict) or not gate.get("retryable"):
         return None
-    return gate.get("cause") or ("gate-failed" if gate.get("state") == GATE_STATE_FAILED
+    return gate.get("cause") or (CAUSE_GATE_FAILED if gate.get("state") == GATE_STATE_FAILED
                                  else CAUSE_DEPTH_UNAVAILABLE)
 
 
@@ -1571,11 +1598,11 @@ def _owed_consensus(solution) -> tuple[int, list | None]:
     for; (1, None) when it asked for none, or its record is not readable as one. The seeds are None
     when the record names none (an unseeded solve).
 
-    CAPPED (review V10, L-5) by the setting's own rule (`config.WORLD_SOLVE_CONSENSUS_VALUES`: 1, 3, 5
+    CAPPED by the setting's own rule (`config.WORLD_SOLVE_CONSENSUS_VALUES`: 1, 3, 5
     or 7): a record that asked for anything else -- an old record with N = 30 -- is re-gated as one
-    draw, and logged, exactly as `TOWER_WORLD_SOLVE_CONSENSUS` would treat that value today.
+    draw, and logged, exactly as `TOWER_WORLD_SOLVE_CONSENSUS` treats that value.
 
-    THE PUBLISHED SOLVE IS DRAW 0 (review V10, L-5). A consensus may publish its draw k (seed s + k),
+    THE PUBLISHED SOLVE IS DRAW 0. A consensus may publish its draw k (seed s + k),
     and then `solver_candidate` of the published solve IS draw k. Its own seed (`solve.seed`) goes
     first, and the others of the record's seeds follow in their order: draw k's seed is never mapped a
     second time, and seed s is not skipped."""
@@ -1621,7 +1648,7 @@ def _regate_inputs(store, world_id: str, session_id: str):
 
     A consensus the re-gate will run (`requested` >= 2, seeded) needs the camera its draws are
     mapped with: without one it is refused here, read-only, rather than raising inside
-    `regate_published` after the finisher has counted the attempt (review V9 LOW)."""
+    `regate_published` after the finisher has counted the attempt."""
     from tower.world_builder.global_solve import load_solution, workspace_for  # noqa: PLC0415
 
     solution = load_solution(store, world_id, session_id)
@@ -1640,8 +1667,8 @@ def _regate_inputs(store, world_id: str, session_id: str):
 
 def regate_refusal(store, world_id: str, session_id: str) -> str | None:
     """Would a re-gate of this session be refused, and why: the reason `regate_published`
-    would raise `RegateRefused` with, word for word, or None when it would start. READ-ONLY
-    (review V8, FIN's OPEN 3): no lock, no write, no GPU -- for a finisher that must decide
+    would raise `RegateRefused` with, word for word, or None when it would start. READ-ONLY:
+    no lock, no write, no GPU -- for a finisher that must decide
     before it takes the world's lock. `regate_published` still re-asks under the lock."""
     try:
         _regate_inputs(store, world_id, session_id)
@@ -1659,12 +1686,19 @@ def regate_published(store, world_id: str, session_id: str, *, should_stop=None,
     the gate fails again). Raises `RegateRefused` before doing anything it cannot finish
     (`regate_refusal` is the same test, read-only).
 
-    A STOP THAT REACHED DRAW 0'S DEPTH STAGE WRITES NOTHING (review V10, MED-1b). Its gate took
+    A STOP THAT REACHED DRAW 0'S DEPTH STAGE WRITES NOTHING. Its gate took
     the scale fail-safe -- the anchor block alone -- only because a capture started; published, it
     replaced a room the solve had already published (a `consensus-deferred` world's attached draw
     0). So nothing is written, and the result says `stopped: True` with the published record's
     own `notice` and `detail`: the row is unchanged, the re-gate is still owed, and the attempt is
-    the stop's (the finisher gives back an attempt a stop ended, `forgive_attempt`)."""
+    the stop's (the finisher gives back an attempt a stop ended, `forgive_attempt`).
+
+    Returns one of three dicts, each with `gate` (the previous or new gate record's `state`, `retryable`,
+    `cause`, `metric_available`, `attach` and `components`), `publish`, `notice` and `detail`: STOPPED
+    (`stopped: True`, `publish.written` False), WITHHELD (the final scale guard refused the candidate:
+    `withheld: True`, `final_scale_guard` its summary, `publish.written` False, `notice` the guard's
+    `NOTICE_WITHHELD`, `detail` its reason), or PUBLISHED (`publish` is what `after_publish` did, `notice`
+    and `detail` the row's sentence after the re-gate)."""
     from tower.world_builder.global_solve import write_solution  # noqa: PLC0415
 
     solution, workspace, database = _regate_inputs(store, world_id, session_id)
@@ -1673,11 +1707,11 @@ def regate_published(store, world_id: str, session_id: str, *, should_stop=None,
     candidate = solver_candidate(solution)
     requested, seeds = _owed_consensus(solution)
     if requested >= 2:
-        # A solve that asked for a consensus is re-gated BY consensus (review V9, M-1), whatever
+        # A solve that asked for a consensus is re-gated BY consensus, whatever
         # its record says -- `deferred` by its first draw's fail-safe or by a stop, or anything
         # else: a single gate here would publish one draw where the solve asked for N. Its draws
         # are mapped now, on the database the published solve mapped; the published solve is
-        # draw 0, with its own seed (L-5).
+        # draw 0, with its own seed.
         from tower.world_builder.global_solve import frozen_draw_mapper  # noqa: PLC0415
 
         plan = ConsensusPlan(draws=requested, seed=None if seeds is None else seeds[0], seed_list=seeds,
@@ -1739,30 +1773,30 @@ def regate_published(store, world_id: str, session_id: str, *, should_stop=None,
 
 
 # ---------------------------------------------------------------------------
-# what the row says (review V7, H2 and L-c; review V9, M-4 and M-8; manager 025, decision 3)
+# what the row says
 
 #
-# EVERY FAIL-SAFE SAYS SO (review V8, M2). A published gated solve that is not "masks
+# EVERY FAIL-SAFE SAYS SO. A published gated solve that is not "masks
 # applied and metric scale available" attaches nothing to the room, and the row says
 # what is missing and WHO can fix it -- the idle Tower (a re-gate in place), an owner
 # (a re-finish, or a new walk), or an operator first (a Tower that cannot run the
 # masks) -- in contract §2.2's order: masks, then scale. No metric figure (§2.4 rule 6).
 #
-# A CLOSED SET (review V9, M-4). `finalization.notice` is shown on the phone word for word,
+# A CLOSED SET. `finalization.notice` is shown on the phone word for word,
 # and contract §3.1 says the notice never carries an error string: `<why>` is a short
 # Tower-written phrase. So every sentence a notice can hold is one of `NOTICE_SENTENCES`,
 # keyed by its cause, and a notice is some of them joined by "; " in §2.2's order. The raw
 # text a cause was recorded with -- an exception, a path, a memory figure -- stays where it
 # was recorded (`gate.detail`, `gate.depth.detail`, `transients.detail` in solution.json).
 # `publish_detail`, the diagnostic twin for the finalization's `detail`, carries it only as
-# `client_safe_detail` makes it: one line, no path, no traceback, short (review V10, MED-5 --
-# `detail` DOES reach the phone and the unauthenticated socket, inside `lifecycle.finalization`
-# and, for an interrupted session, inside `lifecycle.reason`; and the `GET /worlds` row, review
-# V11, MED-B). The only numbers a sentence
+# `client_safe_detail` makes it: one line, no path, no traceback, short (`detail` DOES reach
+# the phone and the unauthenticated socket, inside `lifecycle.finalization`
+# and, for an interrupted session, inside `lifecycle.reason`; and the `GET /worlds` row).
+# The only numbers a sentence
 # carries are IMAGE counts, which an owner can read ("12 of 400 images"); the camera counts
 # behind a scale shortfall stay in the detail. Every sentence is one line, with no slash or
 # backslash, no exception class name, no `key=value` pair, and far under the phone's
-# 700-character guard (Mac tips de1b045 and 3bb4431: `WorldTowerText` swaps any Tower text
+# 700-character guard (the phone's `WorldTowerText` swaps any Tower text
 # that has one of those for a generic sentence; `NOTICE_SENTENCES` must never trip it).
 
 _BY_OWNER = "an owner can re-finish this walk"
@@ -1804,8 +1838,8 @@ NOTICE_PHRASES: dict[str, str] = {
     "depth-no-intrinsics": "the walk has no camera intrinsics",
     "depth-no-camera": "the solve has no camera",
     "scale-short": "too few images had a metric depth",
-    # Review V10, L-1: owed by a stop, by a further draw's retryable failure, or by the solve's early
-    # publish of draw 0 (MED-1a) -- "did not finish" is true of each; "was stopped" was not.
+    # Owed by a stop, by a further draw's retryable failure, or by the solve's early
+    # publish of draw 0 -- "did not finish" is true of each; "was stopped" was not.
     "consensus-deferred": "the consensus of mapper seeds did not finish",
 }
 
@@ -1844,7 +1878,7 @@ _OWNERS: dict[str, str] = {
     **{c: _BY_IDLE_TOWER for c in ("gate-failed", "gate-failed-database", "gate-failed-memory",
                                    "consensus-deferred")},
     **{c: _BY_IDLE_REGATE for c in NOTICE_PHRASES if c.startswith("depth-")},
-    # NO IDLE RE-RUN ALONE CAN FIX THESE (review V10, L-19b): the gate is re-run on the same walk and the
+    # NO IDLE RE-RUN ALONE CAN FIX THESE: the gate is re-run on the same walk and the
     # same solve, which still have no intrinsics or no camera, on a Tower that still has no depth model. So
     # the sentence names who can: an owner (a new walk; a re-finish, which solves again and so has a
     # camera), or an operator first -- once the model is installed, the idle re-run the record still owes
@@ -1865,16 +1899,10 @@ NOTICE_MASKS_OOM = NOTICE_SENTENCES["masks-gpu-oom"]
 NOTICE_MASKS_OFF = NOTICE_SENTENCES["masks-off"]
 NOTICE_MASKS_FALLBACK = NOTICE_SENTENCES["masks-fallback"]
 NOTICE_MASKS_PARTIAL = NOTICE_SENTENCES["masks-partial"]
-NOTICE_MASKS_NONE = NOTICE_SENTENCES["masks-none"]
-NOTICE_MASKS_EXCLUDED = NOTICE_SENTENCES["masks-excluded"]
-NOTICE_SCALE_SHORT_FIXED = NOTICE_SENTENCES["scale-short"]
-NOTICE_CONSENSUS_DEFERRED = NOTICE_SENTENCES["consensus-deferred"]
 # The DIAGNOSTIC templates (`publish_detail`, the finalization's `detail`): `{why}` is the raw
 # text the cause was recorded with. Never in a notice.
 NOTICE_MASKS_UNAVAILABLE = ("masks were not applied ({why}); an operator can make the transient "
                             "detector run on this Tower, then an owner can re-finish this walk")
-NOTICE_REGATE = ("the evidence gate could not measure metric scale ({why}); "
-                 "the Tower re-runs the gate when it is idle")
 NOTICE_SCALE_SHORT = ("the evidence gate had too little metric scale to place pieces by it "
                       "({why}); the depth stage ran to the end, so re-running the gate would not "
                       "change this; an owner can re-capture this walk")
@@ -1884,24 +1912,24 @@ _GATE_CAUSES = (CAUSE_DEPTH_UNAVAILABLE, CAUSE_GATE_FAILED, CAUSE_CONSENSUS_DEFE
 
 
 def _dict(value) -> dict:
-    """A record's sub-record, or {} when it is absent or not a dict (review V10, L-19d: a malformed
-    `gate.depth` made `publish_notice` raise)."""
+    """A record's sub-record, or {} when it is absent or not a dict (a malformed `gate.depth` must not make
+    `publish_notice` raise)."""
     return value if isinstance(value, dict) else {}
 
 
 # ---------------------------------------------------------------------------
-# raw text made client-safe (review V10, MED-5)
+# raw text made client-safe
 #
 # `finalization.detail` reaches the phone and the unauthenticated `/ws` socket (inside
 # `lifecycle.finalization`, and inside `lifecycle.reason` for an interrupted session), and the
 # unauthenticated `GET /worlds` listing (the session row's `finalization`, with its `notice`:
-# `client_safe_finalization`, review V11, MED-B), so the raw
+# `client_safe_finalization`), so the raw
 # text it quotes is made client-safe the way `logging_config.client_safe_reason` makes an exception
 # client-safe, but for TEXT, which is what a record holds: no path (and so no user name: the paths
 # that carry one are home directories), no traceback, one line. The full text stays in the
 # Tower's log and in solution.json's own records (`gate.detail`, `gate.depth.detail`,
 # `transients.detail`), which are Tower-internal. Text with none of those comes back unchanged, so
-# an old record whose detail is already clean renders byte for byte as before.
+# a record whose detail is already clean renders byte for byte.
 
 # A `why` in `publish_detail` is the exception class and a SHORT message. OPEN: a presentation
 # bound, not a measured one -- torch's CUDA out-of-memory message runs to about 500 characters,
@@ -1914,14 +1942,14 @@ _EXCEPTION_NAME = re.compile(r"\b(?:[A-Za-z_]\w*\.)*[A-Z]\w*(?:Error|Exception|I
 # A CamelCase name directly followed by ": " -- how `f"{type(exc).__name__}: {exc}"` begins, whatever the
 # suffix (`DepthModelUnavailable: ...`).
 # `[A-Z][A-Za-z0-9]*` after the first word, not `(?:[A-Z][A-Za-z0-9]*)+`: the same strings, but the nested
-# form backtracked exponentially on a run of capitals (review V12, RV12-B LOW-B: 33 characters took a second).
+# form backtracked exponentially on a run of capitals (33 characters took a second).
 _CLASS_PREFIX = re.compile(r"\b(?:[A-Za-z_]\w*\.)*[A-Z][a-z0-9]+[A-Z][A-Za-z0-9]*:\s")
 _WIN_ERROR = re.compile(r"\[WinError -?\d+\]\s*")
 _ERRNO = re.compile(r"\[Errno -?\d+\]\s*")
-# Line breaks other than CR and LF (review V11, LOW-16): VT, FF, the file, group and record separators, NEL, and
+# Line breaks other than CR and LF: VT, FF, the file, group and record separators, NEL, and
 # the Unicode line and paragraph separators. Each is a space in a client-safe text.
 _OTHER_LINE_BREAKS = str.maketrans({c: " " for c in "\x0b\x0c\x1c\x1d\x1e\x85\u2028\u2029"})
-# A traceback frame (`File "C:\x.py", line 3, in f`), quoted path and all (review V11, LOW-16).
+# A traceback frame (`File "C:\x.py", line 3, in f`), quoted path and all.
 _FRAME = re.compile(r"""File\s+(["'])[^"'\r\n]*\1,\s*line\s+\d+(?:,\s*in\s+[^\s,;]+)?""")
 _QUOTED_PATH = re.compile(r"""(['"])(?:[A-Za-z]:[\\/]|\\\\|~[\w.-]*[\\/]|/)[^'"\r\n]*\1""")
 _UNQUOTED_PATHS = (
@@ -1931,22 +1959,22 @@ _UNQUOTED_PATHS = (
     re.compile(r"""(?<![\w.-])~[\w.-]*[\\/][^\s'"]*"""),
     # an absolute POSIX path of two or more parts (not a URL's: its slashes follow ':' or '/' or a host)
     re.compile(r"""(?<![\w:/.-])/(?:[\w.@+-]+/)+[\w.@+-]*"""),
-    # a RELATIVE POSIX path (review V11, LOW-16): two or more separators (`data/worlds/w/points.json`), or one
+    # a RELATIVE POSIX path: two or more separators (`data/worlds/w/points.json`), or one
     # before a file name with an extension (`images/00000042.jpg`) -- never a fraction (`3/4`), a model id
     # (`IDEA-Research/grounding-dino-base`), or a part of a URL or of an absolute path (what precedes it)
     re.compile(r"""(?<![\w.@+:/~\\-])(?:[\w.@+-]+/){2,}[\w.@+-]*"""),
     re.compile(r"""(?<![\w.@+:/~\\-])[\w.@+-]+/[\w@+-][\w.@+-]*\.[A-Za-z][A-Za-z0-9]{0,7}(?![\w/])"""),
     # anything else with a backslash in it: a UNC path, a relative Windows path. Tried at the start of a token
-    # only: the same matches, but unanchored it rescanned a long token from every character in it (review V12,
-    # RV12-B LOW-A: 100k characters held the Tower for 20 s)
+    # only: the same matches, but unanchored it rescanned a long token from every character in it (100k
+    # characters held the Tower for 20 s)
     re.compile(r"""(?<![^\s'"])[^\s'"]*\\[^\s'"]*"""),
 )
 # The words after a space that are still the same path: each holds a separator (`C:\Program Files\x`), or is a
-# file name with an extension (`C:\Users\x\my file.txt`, review V11, LOW-16).
+# file name with an extension (`C:\Users\x\my file.txt`).
 _PATH_TAIL = re.compile(r"""(?:\s+(?:[^\s'"]*[\\/][^\s'"]*"""
                         r"""|[^\s'"\\/]*\.[A-Za-z][A-Za-z0-9]{0,7}(?=$|[\s)\]},;:'"]|\.(?:$|\s))))*""")
 # A path that ends at a user's own directory (`C:\Users\John`, `/home/John`) and the capitalised words after it,
-# which are the rest of a spaced name (`C:\Users\John Smith`, review V11, LOW-16).
+# which are the rest of a spaced name (`C:\Users\John Smith`).
 _USER_DIR_END = re.compile(r"""(?:^|[\\/])(?:users|home)[\\/][^\\/]+$""", re.IGNORECASE)
 _NAME_WORDS = re.compile(r"""(?:\s+[A-Z][^\s'"\\/]*)+""")
 # Sentence punctuation a path match takes with it (`...\x.py);`): given back, unless it closes a bracket the
@@ -1954,17 +1982,17 @@ _NAME_WORDS = re.compile(r"""(?:\s+[A-Z][^\s'"\\/]*)+""")
 _CLOSING = {")": "(", "]": "[", "}": "{"}
 _TRAILING = ")]},;.:"
 # The longest one-line text the path and class-name patterns run on. Several of them are quadratic in the length
-# of the text (review V12, RV12-B LOW-A: 100,000 characters held the whole Tower for about a minute, `re` keeping
-# the GIL; review V13 NOTE-2: so is the user-directory growth in `_scrub_paths` on spaced text). Every text the
+# of the text (100,000 characters held the whole Tower for about a minute, `re` keeping
+# the GIL; so is the user-directory growth in `_scrub_paths` on spaced text). Every text the
 # Tower writes itself is far shorter, and a client's copy is at most `FINALIZATION_TEXT_MAX_CHARS` anyway. Longer
 # text is cut by `_bounded`, after the passes that are linear in its length.
 SCRUB_MAX_CHARS = 4000
-# The end of an exception class name: where `_one_line` looks back for the name (review V13, NOTE-1).
+# The end of an exception class name: where `_one_line` looks back for the name.
 _EXCEPTION_SUFFIX = re.compile(r"(?:Error|Exception|Interrupt|Exit|Warning)\b")
 
 
 USER_PLACEHOLDER = "[user]"
-# What `owner_facing_detail` says in their place: plain words, no brackets (review V11, LOW-17).
+# What `owner_facing_detail` says in their place: plain words, no brackets.
 OWNER_PATH_WORDS = "a path"
 OWNER_USER_WORDS = "a user name"
 
@@ -1988,7 +2016,7 @@ def _user_names() -> set[str]:
 
 def _exception_lines(text: str) -> list[str]:
     """The non-empty lines of a traceback that are not its frames: a `File "...", line N` line, and the
-    indented source and caret lines under it, are left out (review V11, LOW-16), and so is a line of
+    indented source and caret lines under it, are left out, and so is a line of
     punctuation alone (the header's own colon)."""
     out, under_frame = [], False
     for raw in text.splitlines():
@@ -2022,7 +2050,6 @@ def _one_line(text: str) -> str:
         else:
             # the exception is the last class name. `_EXCEPTION_NAME` is quadratic on a long dotted run, so it runs
             # only on the `SCRUB_MAX_CHARS` before the last class-name ending, however long the message after it
-            # (RV12-B LOW-A; review V13, NOTE-1)
             end = None
             for m in _EXCEPTION_SUFFIX.finditer(rest):
                 end = m.end()
@@ -2034,7 +2061,7 @@ def _one_line(text: str) -> str:
 
 
 def _without_frames(text: str) -> str:
-    """`text` without the traceback frames left in one line of it (review V11, LOW-16)."""
+    """`text` without the traceback frames left in one line of it."""
     if not _FRAME.search(text):
         return text
     out = re.sub(r"\s{2,}", " ", _FRAME.sub("", text)).strip(" ,;:")
@@ -2043,8 +2070,8 @@ def _without_frames(text: str) -> str:
 
 def _given_back(path: str) -> tuple[str, str]:
     """`path` without the sentence punctuation its match took with it, and that punctuation: a closing
-    bracket the path did not open, and `;`, `,`, `.` and `:` at its end (review V11, LOW-16). The brackets are
-    counted once, not once per character given back (review V12, RV12-B LOW-A)."""
+    bracket the path did not open, and `;`, `,`, `.` and `:` at its end. The brackets are
+    counted once, not once per character given back."""
     end = len(path)
     opened = {opener: path.count(opener) for opener in _CLOSING.values()}
     closed = {closer: path.count(closer) for closer in _CLOSING}
@@ -2087,6 +2114,7 @@ def _scrub_paths(text: str) -> str:
 
 
 def _shorten(text: str, max_chars: int) -> str:
+    """`text` cut at a word boundary with an ellipsis, at most `max_chars` long."""
     if len(text) <= max_chars:
         return text
     cut = text[:max(1, max_chars - 3)]
@@ -2103,12 +2131,11 @@ def _scrub_names(text: str) -> str:
 
 
 def _bounded(text: str) -> str:
-    """One line of text at most `SCRUB_MAX_CHARS` long, for the patterns that are not linear in its length (review
-    V12, RV12-B LOW-A). Text within the bound is returned as it is. Longer text first goes through the passes that
+    """One line of text at most `SCRUB_MAX_CHARS` long, for the patterns that are not linear in its length.
+    Text within the bound is returned as it is. Longer text first goes through the passes that
     ARE linear and that a cut could defeat, over its whole length: traceback frames, quoted paths (a cut could take
     the closing quote) and this machine's user names (a cut could split one). Then it keeps its whole words up to
-    the bound; a word the bound would split goes with the rest, so no path or name is left half-cut (review V13,
-    LOW-1)."""
+    the bound; a word the bound would split goes with the rest, so no path or name is left half-cut."""
     if len(text) <= SCRUB_MAX_CHARS:
         return text
     text = _scrub_names(_QUOTED_PATH.sub(r"\1" + PATH_PLACEHOLDER + r"\1", _without_frames(text)))
@@ -2122,7 +2149,7 @@ def _bounded(text: str) -> str:
 
 
 def client_safe_detail(text, *, max_chars: int | None = None) -> str:
-    """Raw diagnostic text made safe for a client (review V10, MED-5): ONE line (a traceback is
+    """Raw diagnostic text made safe for a client: ONE line (a traceback is
     reduced to the text before it and its last line, the exception; other multi-line text to its
     first line; every other line break is a space, and no traceback frame is left), NO PATH (drive,
     UNC, home, absolute and relative POSIX paths, quoted or not, become `PATH_PLACEHOLDER`, and with
@@ -2147,10 +2174,9 @@ def client_safe_detail(text, *, max_chars: int | None = None) -> str:
 
 def owner_facing_detail(text) -> str:
     """`client_safe_detail`, then without the exception class names -- for a sentence an OWNER reads
-    (`lifecycle.reason`, the phone's `model_state_reason`; review V10, MED-5, and the lead's
-    preference given the Mac's `WorldTowerText` guard of 3bb4431, which swaps any Tower text holding a
-    class name for a generic sentence). "RuntimeError: CUDA out of memory" reads "CUDA out of
-    memory". And WITHOUT SQUARE BRACKETS (review V11, LOW-17: that guard reads brackets as JSON): a
+    (`lifecycle.reason`, the phone's `model_state_reason`; the phone's `WorldTowerText` guard
+    swaps any Tower text holding a class name for a generic sentence). "RuntimeError: CUDA out of
+    memory" reads "CUDA out of memory". And WITHOUT SQUARE BRACKETS (that guard reads brackets as JSON): a
     path reads "a path" and a user name "a user name", `[Errno N]` goes the way `[WinError N]` does,
     and no "(: " is left where a class name was. Text with no path, traceback, line break, class name
     or bracket, at most `SCRUB_MAX_CHARS` long, is returned unchanged."""
@@ -2173,18 +2199,17 @@ def owner_facing_detail(text) -> str:
     return owner.strip(" :;,")
 
 
-# The phone's text guard (`WorldTowerText`, Mac tips de1b045 and 3bb4431) replaces any Tower text longer than
-# this with a generic sentence. The listing row's `finalization.detail` and `.notice` are bounded to it (review
-# V11, MED-B); every closed-set notice is far shorter (`test_world_builder_notice_closed_set`).
+# The phone's text guard (`WorldTowerText`) replaces any Tower text longer than
+# this with a generic sentence. The listing row's `finalization.detail` and `.notice` are bounded to it;
+# every closed-set notice is far shorter (`test_world_builder_notice_closed_set`).
 FINALIZATION_TEXT_MAX_CHARS = 700
 
 
 def client_safe_finalization(finalization):
-    """A session's `finalization` record as a client is sent it (review V11, MED-B: the `GET /worlds` row
-    sent it raw): a COPY whose `detail` and `notice` are `client_safe_detail` of the record's, at most
+    """A session's `finalization` record as a client is sent it (as in the `GET /worlds` row): a COPY whose `detail` and `notice` are `client_safe_detail` of the record's, at most
     `FINALIZATION_TEXT_MAX_CHARS` long. The record on disk is not touched. A record whose texts have
     nothing to scrub (every clean detail, every closed-set notice) is returned as it is, the same object,
-    so it is sent byte for byte as before; so is anything that is not a dict, and a text that is not a
+    so it is sent byte for byte; so is anything that is not a dict, and a text that is not a
     string."""
     if not isinstance(finalization, dict):
         return finalization
@@ -2215,7 +2240,7 @@ def _masks_cause_unavailable(transients: dict) -> str:
     if cause == "gpu-oom":
         return "masks-gpu-oom"
     if low == "no solver image could be masked":
-        # Written before `none_masked` existed (review V9, M-8): absent keys, today's sentence.
+        # Written before `none_masked` existed: with its keys absent, this sentence.
         return "masks-no-image"
     if cause == "detector-failed":
         return "masks-detector-failed"
@@ -2232,9 +2257,8 @@ def _masks_cause_unavailable(transients: dict) -> str:
 
 def _masks_cause(transients: dict, gate: dict) -> str | None:
     """The masks fail-safe's cause (a key of `NOTICE_SENTENCES`), or None. The GPU-out-of-memory
-    one is said whatever the gate did (as before); every other only when the gate ran without
-    masks: applied with `masks_applied` False, or FAILED on a solve whose masks were not applied
-    (review V9 LOW: a failed gate used to drop the masks cause)."""
+    one is said whatever the gate did; every other only when the gate ran without
+    masks: applied with `masks_applied` False, or FAILED on a solve whose masks were not applied."""
     if transients.get("retryable") and transients.get("cause") == "gpu-oom":
         return "masks-gpu-oom"
     if gate.get("state") == GATE_STATE_APPLIED:
@@ -2251,7 +2275,7 @@ def _masks_cause(transients: dict, gate: dict) -> str | None:
     if state == "applied":
         return None                 # an inconsistent record: nothing true to say
     if transients.get("none_masked"):
-        # No image could be masked (review V9, M-8): the images' owner, not the detector's.
+        # No image could be masked: the images' owner, not the detector's.
         return "masks-none"
     if state == "partial":
         if transients.get("rule_fallback"):
@@ -2264,8 +2288,8 @@ def _masks_cause(transients: dict, gate: dict) -> str | None:
 
 def _exclusion_cause(transients: dict, gate: dict) -> str | None:
     """Images left out of the solve because they could not be masked, once there are enough of
-    them to say so (`transients.exclusion_notice_due`, review V9 M-8: at least max(3, 2 %) of the
-    images; the masks stage decides it). Absent: today's behaviour, nothing said. Only for a
+    them to say so (`transients.exclusion_notice_due`: at least max(3, 2 %) of the
+    images; the masks stage decides it). Absent: nothing said. Only for a
     solve the gate ran on, like every masks sentence but the OOM one."""
     if not transients.get("exclusion_notice_due") or transients.get("none_masked"):
         return None
@@ -2327,8 +2351,8 @@ def _gate_cause(gate: dict) -> str | None:
 
 def _depth_cause_not_retryable(gate: dict) -> str | None:
     """The cause of a scale fail-safe whose depth stage could not start for the walk's or the solve's own
-    reason (`DEPTH_CAUSES_NOT_RETRYABLE`), which the gate records NOT retryable (review V11, LOW-15), or None.
-    Its notice is the one the same record said while it was retryable: exactly the records that were."""
+    reason (`DEPTH_CAUSES_NOT_RETRYABLE`), which the gate records NOT retryable, or None.
+    These records say the notice they said while they were retryable."""
     if gate.get("state") != GATE_STATE_APPLIED or gate.get("retryable") or not gate.get("masks_applied"):
         return None
     depth = _dict(gate.get("depth"))
@@ -2354,9 +2378,8 @@ def notice_causes(summary: dict | None) -> list[str]:
     gate = summary.get("gate") or {}
     if not isinstance(transients, dict) or not isinstance(gate, dict):
         return []
-    causes = [c for c in (_masks_cause(transients, gate), _exclusion_cause(transients, gate),
-                          _gate_cause(gate)) if c]
-    return causes
+    return [c for c in (_masks_cause(transients, gate), _exclusion_cause(transients, gate),
+                        _gate_cause(gate)) if c]
 
 
 def _sentence(cause: str, transients: dict) -> str:
@@ -2370,7 +2393,7 @@ def publish_notice(summary: dict | None) -> str | None:
     """The session's `finalization.notice` (the phone shows it word for word), when the published
     solve owes something an owner, an operator or the idle Tower will do, or took a fail-safe
     nobody can undo but a new walk, else None. Only sentences of the closed set
-    `NOTICE_SENTENCES`: no exception text, path or figure but an image count (review V9, M-4)."""
+    `NOTICE_SENTENCES`: no exception text, path or figure but an image count."""
     causes = notice_causes(summary)
     if not causes:
         return None
@@ -2383,8 +2406,7 @@ def publish_detail(summary: dict | None) -> str | None:
     client-safe (`client_safe_detail`), in place of its fixed phrase: the DIAGNOSTIC twin, for the
     finalization's `detail`. That field DOES reach clients -- the `GET /worlds` row and `/ws`
     `lifecycle.finalization` send it, and `lifecycle.reason`, which the phone shows on an interrupted
-    session, quotes it owner-facing (`owner_facing_detail`; review V10, MED-5; V11, MED-B). What
-    `publish_notice` said before review V9, M-4. None exactly when `publish_notice` is None."""
+    session, quotes it owner-facing (`owner_facing_detail`). None exactly when `publish_notice` is None."""
     causes = notice_causes(summary)
     if not causes:
         return None
@@ -2392,7 +2414,7 @@ def publish_detail(summary: dict | None) -> str | None:
     gate = _dict((summary or {}).get("gate"))
 
     def why(*values, default: str) -> str:
-        # The raw text, CLIENT-SAFE (review V10, MED-5): one line, no path, no traceback, short. It
+        # The raw text, CLIENT-SAFE: one line, no path, no traceback, short. It
         # keeps the exception class and its message -- the diagnostics -- and nothing that names a
         # file, a directory or the user whose home it is.
         raw = next((v for v in values if v), None)
@@ -2410,7 +2432,7 @@ def publish_detail(summary: dict | None) -> str | None:
         elif c.startswith("gate-failed"):
             parts.append(NOTICE_GATE_FAILED.format(why=why(gate.get("detail"), default="an error")))
         elif c.startswith("depth-"):
-            # Who fixes it is the cause's (review V10, L-19b): the idle re-gate, or an owner or operator.
+            # Who fixes it is the cause's: the idle re-gate, or an owner or operator.
             text = why(_dict(gate.get("depth")).get("detail"), gate.get("cause"), default="no depth")
             parts.append(f"{_NO_SCALE.format(text)}; {_OWNERS[c]}")
         elif c == "scale-short":
@@ -2441,7 +2463,7 @@ def _is_gate_record(record: dict) -> bool:
 def notice_cause_phrase(record: dict | None) -> str:
     """The fixed phrase (`NOTICE_PHRASES`) that names the cause of a GATE record (`solution.gate`)
     or a TRANSIENTS record (`solution.transients`): never the record's raw text. For the
-    finisher's given-up sentence (review V9, M-4). A gate record that failed, or owes a re-gate,
+    finisher's given-up sentence. A gate record that failed, or owes a re-gate,
     always has one; a record with nothing to say gives "" (a caller asks only about a cause)."""
     r = record if isinstance(record, dict) else {}
     if not r:
