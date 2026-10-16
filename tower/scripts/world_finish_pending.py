@@ -6,7 +6,7 @@
         [--no-appearance] [--keep-depth-work] [--dry-run]
         [--stop-on-stdin-close] [--format json|text]
 
-WHY THIS EXISTS, AND WHAT IT COST NOT TO HAVE IT.
+WHY THIS EXISTS.
 
 The surface and the appearance -- the stages that turn a scatter of feature
 points into the room the wearer walked through -- run exactly ONCE, in the
@@ -14,18 +14,15 @@ builder child, in the six to sixteen minutes after Stop and after the world
 writer lock is released. That ordering is deliberate: the lock is dropped so
 the phone can read the world while they build.
 
-What was missing is what happens when that child does not survive those
-sixteen minutes. Nothing retried it. Not `scripts/world_finalize.py`, which
-rebuilds the SPARSE derived tree and never runs a surface. Not the serving
-path, which is strictly read-only -- `tower/results/world_builder*.py`
-performs no write and spawns no process, and never generates on demand. Not
-the Tower at startup, which had no reconciliation of any kind. A Tower
-shutdown, a machine sleep, a crash, or the supervisor's thirty-second stop
-grace discarded the work permanently, and the world stayed sparse forever
-beside a session record proudly saying `finalization: complete`.
-
-It happened for real on 2026-09-22: the owner shut the Tower down eight
-minutes into a build, and the next start recovered nothing.
+If that child does not survive those sixteen minutes (a Tower shutdown, a
+machine sleep, a crash, or the supervisor's thirty-second stop grace) nothing
+else retries it. `scripts/world_finalize.py` rebuilds only the SPARSE derived
+tree and never runs a surface. The serving path is strictly read-only --
+`tower/results/world_builder*.py` performs no write, spawns no process and
+never generates on demand. The Tower at startup does no reconciliation of any
+kind. Without this tool the work is discarded permanently and the world stays
+sparse beside a session record saying `finalization: complete`. Observed: a
+Tower shut down eight minutes into a build recovered nothing at the next start.
 
 WHAT IT DOES
 
@@ -58,14 +55,12 @@ given back, from the stop watcher's own thread, in the five seconds before
 `terminate_tree` arrives. See `forgive_attempt`.
 
 AND FORGIVENESS IS ITSELF BOUNDED, because unconditional it made the attempt
-bound unreachable in the one case that bound exists for. On 2026-09-22 this
-tool deadlocked in the native loader, did nothing at all, was killed by the
-stop grace and was forgiven -- at every Tower start, leaving `{"attempts": 0,
-"detail": "attempt given back: stopped (stdin-closed)"}` on disk after all of
-them. The world would have said "Improving" across unlimited restarts. After
-`--max-forgiven` stops the attempts count anyway, the retry bound is reached,
-and the world reports honestly as a photographic build that failed. See
-`DEFAULT_MAX_FORGIVEN`.
+bound unreachable in the one case that bound exists for: a finisher that
+hangs at every start and is stopped politely would be forgiven at every
+start, with the ledger reading `attempts: 0` after all of them and the world
+saying "Improving" across unlimited restarts. After `--max-forgiven` stops the
+attempts count anyway, the retry bound is reached, and the world reports
+honestly as a photographic build that failed. See `DEFAULT_MAX_FORGIVEN`.
 
 IT NEVER INVENTS WORK, AND IT IS NOT A NO-OP EITHER. Those two failures pull
 in opposite directions and `assess` has to hold both.
@@ -73,17 +68,18 @@ in opposite directions and `assess` has to hold both.
 A session with no stage record and no photographic artifact is NOT owed:
 absent is not a state in the vocabulary, it means "a Tower that never tried
 to make a picture of this", and reading it as "interrupted" would queue tens
-of hours of GPU against 165 worlds that are finished and fine.
+of hours of GPU against the 165 worlds on the reference machine that are
+finished and fine.
 
-But the stage record was added on 2026-09-22 and is written by nothing that
-has run yet, so selecting on it ALONE made this tool a no-op on the only
-interrupted world in existence -- including the very one the incident above
-is about, whose `surface/<session>/status.json` had said `stopped` since 82
-seconds after its finalization completed. So there is a second signal, and it
-is safe for exactly the same reason the first is: `surface_pipeline` alone
-writes that file, so a Tower that never ran a photographic stage cannot have
-left one. Measured: 166 worlds here, ONE with a `surface/` directory, and it
-is the interrupted one. See `interrupted_stage_on_disk`.
+But a session written before the stage record existed has no such record, so
+selecting on it ALONE would make this tool a no-op on exactly the interrupted
+world it exists for (measured: that world's `surface/<session>/status.json`
+had said `stopped` since 82 seconds after its finalization completed). So there
+is a second signal, and it is safe for exactly the same reason the first is:
+`surface_pipeline` alone writes that file, so a Tower that never ran a
+photographic stage cannot have left one. Measured: 166 worlds here, ONE with a
+`surface/` directory, and it is the interrupted one. See
+`interrupted_stage_on_disk`.
 
 Exit status is 0 whenever the run itself was sound and left nothing it could
 have done -- including a run that found nothing owed, which is the common
@@ -94,20 +90,19 @@ at the next idle moment" (`tower/main.py`, `CHORE_EXIT_MORE_OWED`), and 4
 (`EXIT_WAITING`) as "try again after a backoff": what is left is waiting on
 somebody else -- another writer, an owner's re-finish in progress.
 
-WITH THE EVIDENCE GATE ON (review V8, `test_world_builder_finish_pending_gate.py`).
-A re-gate that cannot start is decided before any work and spends nothing (M1a);
-since review V9 it is said on the row once -- the idle Tower cannot re-run it, an
-owner can re-finish -- and then owes nothing, instead of waiting for ever behind
-the chore's backoff. A re-gate at its attempt bound is given up on the row and
-stops hiding the room and areas behind it (M1b); the room is owed from before
-the re-gate publishes, so no interruption leaves it stale (M1c), and the row's
-sentence is put right when the room is rebuilt if the re-gate could not write it
-(V9); and a world an owner is re-finishing is left alone (M3b). A world whose
-solve carries no gate record, and that nobody is re-finishing, takes none of
-these paths.
+WITH THE EVIDENCE GATE ON (`test_world_builder_finish_pending_gate.py`). A
+re-gate that cannot start is decided before any work and spends nothing; it is
+said on the row once -- the idle Tower cannot re-run it, an owner can
+re-finish -- and then owes nothing, instead of waiting for ever behind the
+chore's backoff. A re-gate at its attempt bound is given up on the row and
+stops hiding the room and areas behind it; the room is owed from before the
+re-gate publishes, so no interruption leaves it stale, and the row's sentence
+is put right when the room is rebuilt if the re-gate could not write it; and a
+world an owner is re-finishing is left alone. A world whose solve carries no
+gate record, and that nobody is re-finishing, takes none of these paths.
 
-A RE-FINISH THAT DIED BEFORE IT PUBLISHED (review V9, M-5; `test_world_builder_
-refinish_v9.py`) is put back first -- what it set aside, under the world's lock
+A RE-FINISH THAT DIED BEFORE IT PUBLISHED (`test_world_builder_refinish_v9.py`)
+is put back first -- what it set aside, under the world's lock
 (`world_refinish.recover_dead_refinish`) -- and nothing is built from what it
 left; a put-back that cannot complete parks the session and says so on the row.
 """
@@ -171,57 +166,49 @@ INTERRUPTED_STATES = (STAGE_STATE_RUNNING, STAGE_STATE_STOPPED)
 # kill, a driver that falls over -- and the second attempt is genuinely often
 # the one that lands.
 #
-# AN ATTEMPT IS SPENT ONLY WHEN THIS TOOL WAS LEFT ALONE AND STILL DID NOT
-# FINISH. See `forgive_attempt`: the expected event on every boot is "the
-# wearer went for a walk", and counting that would retire a perfectly
-# recoverable world to `failed` in three ordinary days.
+# An attempt is spent only when this tool was left alone and still did not
+# finish; see `forgive_attempt` (counting "the wearer went for a walk" would
+# retire a perfectly recoverable world to `failed` in three ordinary days).
 DEFAULT_MAX_ATTEMPTS = 3
 
 # HOW MANY TIMES FORGIVENESS ITSELF MAY BE GRANTED, AND WHY THE BOUND ABOVE
-# WAS WORTH NOTHING WITHOUT THIS ONE.
+# IS WORTH NOTHING WITHOUT THIS ONE.
 #
-# `forgive_attempt` gives the attempt back whenever a stop was REQUESTED, and
-# that is right for the event it was written for. It is also unconditional,
-# and on 2026-09-22 that made the attempt bound unreachable IN THE ONE CASE IT
-# EXISTS FOR. The finisher deadlocked loading OpenBLAS -- `surfacify` pulling
-# it in through moge -> scipy.linalg -- behind its own stdin watcher's parked
-# read on descriptor 0 (`tower/stdin_stop.py` has the mechanism and the fix),
-# and sat at 0% CPU making no progress whatever.
-# Every Tower start ran it again, every start ended in a stop, and every stop
-# handed the attempt back. The ledger on disk read, after all of them:
+# `forgive_attempt` gives the attempt back whenever a stop was REQUESTED. That
+# is right for the event it exists for, but it is unconditional, so for a
+# finisher that hangs and is stopped politely at every Tower start the attempt
+# bound is unreachable -- the one case it exists for. Measured case: the
+# finisher deadlocked loading OpenBLAS (`surfacify` pulling it in through
+# moge -> scipy.linalg) behind its own stdin watcher's parked read on
+# descriptor 0 (`tower/stdin_stop.py` has the mechanism and the fix), and sat
+# at 0% CPU making no progress. Every start ran it again, every start ended in
+# a stop, and every stop handed the attempt back: `attempts` stayed at 0 on
+# disk after all of them, so the world would have reported "Improving" across
+# unlimited restarts with nothing on disk saying why. The root cause is fixed
+# (see `tower/native_prewarm.py` and the prewarm call in `main`); this is the
+# containment, so that the NEXT thing that hangs or gets killed instantly
+# cannot imply progress for ever either.
 #
-#     {"attempts": 0, "detail": "attempt given back: stopped (stdin-closed)"}
+# FIVE. The event being forgiven is "boot the Tower, then go for a walk",
+# which ends this process on an ordinary start; a busy day is a handful of
+# Tower starts, not fifty. Five free passes means a genuinely recoverable
+# world survives a whole day of ordinary use -- and several such days, because
+# ONE start that is left alone long enough to finish clears the world out of
+# the owed set entirely and the counters stop mattering. Past five, the
+# attempts accumulate normally and the three above apply, so a world that is
+# truly unfinishable is retired to `failed` after nine starts: roughly two to
+# three ordinary days, rather than never.
 #
-# Zero. The counter that was the only mechanism able to retire that world
-# never passed zero, so the world would have reported "Improving" across
-# unlimited restarts, for ever, with nothing on disk saying why. The root
-# cause is fixed (see `tower/native_prewarm.py` and the prewarm call in
-# `main`); this is the containment, so that the NEXT thing that hangs or gets
-# killed instantly cannot imply progress for ever either.
-#
-# FIVE, AGAINST THE REAL NUMBERS. The event being forgiven is "boot the Tower,
-# then go for a walk", which ends this process on an ordinary start; a busy
-# day is a handful of Tower starts, not fifty. Five free passes means a
-# genuinely recoverable world survives a whole day of ordinary use -- and
-# several such days, because ONE start that is left alone long enough to
-# finish clears the world out of the owed set entirely and the counters stop
-# mattering. Past five, the attempts accumulate normally and the three above
-# apply, so a world that is truly unfinishable is retired to `failed` after
-# nine starts: roughly two to three ordinary days, rather than never.
-#
-# WHY A COUNTER AND NOT A PROGRESS TEST. The obvious better rule is "forgive
-# only an attempt that actually got somewhere", and the material is nearly
-# there: `surface_pipeline._status` stamps `updated_at` into
-# `<world>/<stage>/<session>/status.json` at each step, so the finisher could
-# sample it before the stage and again from the stop watcher's thread. It is
-# the wrong rule anyway, and would have been wrong here in BOTH directions.
-# The hang produced no status file at all, but neither does an honest stop
-# forty seconds into a start -- the wearer pressed Start before `surfacify`
-# reached its first write -- and treating that as a spent attempt puts back
-# exactly the "three ordinary days retire a recoverable world" failure
-# `forgive_attempt` exists to prevent. In the other direction a status file
-# proves only that the process wrote one line before it wedged, which the
-# deadlock would eventually have managed too. Progress is also not a fact the
+# WHY A COUNTER AND NOT A PROGRESS TEST. "Forgive only an attempt that
+# actually got somewhere" (sample `surface_pipeline._status`'s `updated_at` in
+# `<world>/<stage>/<session>/status.json` before the stage and again from the
+# stop watcher's thread) is wrong in BOTH directions. The hang produced no
+# status file at all, but neither does an honest stop forty seconds into a
+# start -- the wearer pressed Start before `surfacify` reached its first write
+# -- and treating that as a spent attempt puts back exactly the "three
+# ordinary days retire a recoverable world" failure `forgive_attempt` exists
+# to prevent. In the other direction a status file proves only that the
+# process wrote one line before it wedged. Progress is also not a fact the
 # watcher thread can establish cheaply under a five-second `terminate_tree`
 # grace: it would be a second read of a file another thread may be mid-write
 # on. So the bound is on the number of forgiven attempts -- a fact this tool
@@ -248,11 +235,11 @@ EXIT_MORE_OWED = 3
 # is what this wants: not nothing-to-do, and not a spawn every tick while a
 # foreign writer holds the lock.
 EXIT_WAITING = 4
-# Two more with the evidence gate on (review V8), and both are "somebody else must act
+# Two more with the evidence gate on, and both are "somebody else must act
 # first", never "run me again now": a re-gate that cannot start (its solve will not load,
 # or the solve's database is gone -- an owner's re-finish), and a world an owner is
 # re-finishing right now. `EXIT_MORE_OWED` is a respawn with no backoff; reporting either
-# of these as owed made the refused world loop and starved every other one (M1a).
+# of these as owed made the refused world loop and starved every other one.
 REGATE_REFUSED = "regate-refused"
 REFINISH_IN_PROGRESS_CODE = "refinish-in-progress"
 WAITING_CODES = ("locked", "building-now", REGATE_REFUSED, REFINISH_IN_PROGRESS_CODE)
@@ -332,10 +319,9 @@ def _read_ledger(store: WorldStore, world_id: str) -> tuple[dict, bool]:
         return {}, True
     if not isinstance(data, dict) or not isinstance(data.get("sessions"), dict):
         return {}, True
-    # Every ENTRY too. An entry that is not an object used to reach
-    # `_counter`'s `entry.get` and raise out of `survey` -- one malformed
-    # line took down the survey of EVERY world on the Tower, not just its
-    # own (adversarial review, 2026-09-23).
+    # Every ENTRY too: an entry that is not an object would reach `_counter`'s
+    # `entry.get` and raise out of `survey`, so one malformed line would take
+    # down the survey of EVERY world on the Tower, not just its own.
     if not all(isinstance(entry, dict) for entry in data["sessions"].values()):
         return {}, True
     return data["sessions"], False
@@ -344,14 +330,12 @@ def _read_ledger(store: WorldStore, world_id: str) -> tuple[dict, bool]:
 def _counter(entry: dict, field: str) -> int:
     """One counter out of a ledger entry, treating anything else as zero.
 
-    ABSENT IS ZERO, AND THAT IS WHAT KEEPS OLD LEDGERS READABLE. `forgiven`
-    was added on 2026-09-22 to a file that already exists beside every world
-    this tool has ever touched, and those entries have `attempts` and
-    `detail` and nothing else. They are not corrupt and they are not a
-    special case: a session nobody has forgiven yet has been forgiven zero
-    times, which is exactly what the new field would have said. `bool` is
-    excluded because `True` is an `int` in Python and a counter of `True` is
-    a bug, not a count.
+    ABSENT IS ZERO, AND THAT IS WHAT KEEPS OLD LEDGERS READABLE. An entry
+    written before `forgiven` existed has `attempts` and `detail` and nothing
+    else. It is not corrupt and not a special case: a session nobody has
+    forgiven yet has been forgiven zero times, which is exactly what the new
+    field would have said. `bool` is excluded because `True` is an `int` in
+    Python and a counter of `True` is a bug, not a count.
     """
     value = entry.get(field)
     return value if isinstance(value, int) and not isinstance(value, bool) else 0
@@ -373,8 +357,9 @@ def read_forgiven(store: WorldStore, world_id: str, session_id: str) -> int | No
     this tool left alone and still did not finish", which is what the retry
     bound is about. `forgiven` is "how many times did this tool run and end
     in a stop", which is what tells a hung finisher apart from a wearer who
-    keeps going for walks -- the distinction the incident of 2026-09-22 had
-    no way to make, because every one of those runs left `attempts` at zero.
+    keeps going for walks -- the distinction a finisher that hangs at every
+    start could not otherwise make, because every one of those runs leaves
+    `attempts` at zero.
     """
     sessions, unreadable = _read_ledger(store, world_id)
     if unreadable:
@@ -407,32 +392,29 @@ def record_attempt(
     counting.
 
     RAISES rather than shrugging when it cannot write. An attempt that could
-    not be counted is an UNCOUNTED attempt, and a read-only or full disk made
-    this the one path that turned the bound into its opposite: every boot
-    started the same six-minute stage, none of them was ever counted, and the
-    bound never advanced. The caller refuses the work instead.
+    not be counted is an UNCOUNTED attempt, and a read-only or full disk would
+    turn the bound into its opposite: every boot would start the same
+    six-minute stage, none of them ever counted, and the bound would never
+    advance. The caller refuses the work instead.
     """
     with _LEDGER_LOCK:
         sessions, unreadable = _read_ledger(store, world_id)
         if unreadable:
-            # AN UNREADABLE LEDGER IS SET ASIDE, NOT OBEYED FOR EVER. It used
-            # to make `assess` refuse the world permanently while the serving
-            # path, reading the stage record, called it `owed` -- "Improving"
-            # with nothing that would ever end it (two reviewers, 2026-09-23).
-            # Now it is moved beside itself, untouched, and counting starts
-            # again from this attempt: the retry bound still applies, from
-            # here. Called under the world's writer lock, so nothing else is
-            # writing it.
+            # AN UNREADABLE LEDGER IS SET ASIDE, NOT OBEYED FOR EVER. Obeyed,
+            # it would make `assess` refuse the world permanently while the
+            # serving path, reading the stage record, called it `owed` --
+            # "Improving" with nothing that would ever end it. It is moved
+            # beside itself, untouched, and counting starts again from this
+            # attempt: the retry bound still applies, from here. Called under
+            # the world's writer lock, so nothing else is writing it.
             _set_aside_unreadable_ledger(store, world_id)
             sessions = {}
         sessions = dict(sessions)
-        # THE ENTRY IS EDITED, NOT REPLACED. It used to be rewritten whole,
-        # which was harmless while `attempts` was the only number in it and
-        # fatal the moment it was not: `forgiven` is written by the stop
-        # watcher on the way out of one run and read by the next one, so a
-        # `record_attempt` that dropped it would reset the forgiveness bound
-        # to zero at the start of every attempt -- restoring, exactly, the
-        # unreachable bound of 2026-09-22 through a different door.
+        # THE ENTRY IS EDITED, NOT REPLACED: `forgiven` is written by the
+        # stop watcher on the way out of one run and read by the next one, so
+        # a `record_attempt` that dropped it would reset the forgiveness bound
+        # to zero at the start of every attempt and restore the unreachable
+        # attempt bound `DEFAULT_MAX_FORGIVEN` exists to prevent.
         entry = dict(sessions.get(session_id) or {})
         count = _counter(entry, "attempts") + 1
         entry["attempts"] = count
@@ -480,15 +462,13 @@ def forgive_attempt(
     no stop request behind, which is precisely what makes them the failure
     the bound was written for.
 
-    AND FORGIVENESS IS ITSELF BOUNDED, because unconditional it made the
-    retry bound unreachable in the one case that bound exists for. On
-    2026-09-22 a finisher deadlocked in the native loader, did nothing at
-    all, was killed by the stop grace, and was forgiven -- at every single
-    Tower start, leaving `{"attempts": 0, "detail": "attempt given back:
-    stopped (stdin-closed)"}` on disk however many times it ran. A stop
-    request is evidence that THIS run was interrupted; it is not evidence
-    that the run would ever have finished, and after `max_forgiven` of them
-    this tool stops accepting it as such. The attempt then stands, the
+    AND FORGIVENESS IS ITSELF BOUNDED, because unconditional it makes the
+    retry bound unreachable in the one case that bound exists for: a finisher
+    that hangs and is killed by the stop grace would be forgiven at every
+    single Tower start, leaving `attempts` at 0 on disk however many times it
+    ran. A stop request is evidence that THIS run was interrupted; it is not
+    evidence that the run would ever have finished, and after `max_forgiven`
+    of them this tool stops accepting it as such. The attempt then stands, the
     attempts accumulate, `assess` reaches the retry bound and `_retire`
     writes `failed` -- so the world reports honestly as a photographic build
     that did not happen, instead of "Improving" for ever. See
@@ -566,17 +546,13 @@ def interrupted_stage_on_disk(store: WorldStore, world_id: str,
 
     WHY THIS EXISTS, AND WHAT SELECTING ON THE RECORD ALONE COST.
 
-    `Session.stages` was added on 2026-09-22 and is the precise signal. It
-    is also, on the day it was added, written by nothing that has run yet.
-    An adversarial review measured the first version of this tool against the
-    real root: 70 sessions, ZERO owed -- and the skipped list included world
-    2f447162 / session cb308801, the Tower shut down eight minutes into a
-    build that this whole tool was written for. Its
-    `surface/cb308801.../status.json` had said `{"state": "stopped", "stage":
+    `Session.stages` is the precise signal, but a session written before it
+    existed has no such record, and selecting on it alone measured as a no-op
+    on the real root: 70 sessions, ZERO owed -- the skipped list included the
+    one world whose Tower was shut down eight minutes into a build, whose
+    `surface/<session>/status.json` had said `{"state": "stopped", "stage":
     "depth"}` since 82 seconds after its finalization completed. A selector
-    that is a no-op on the only evidence in existence has protected nothing,
-    and would have stayed a no-op until a Tower carrying the new record had
-    itself been interrupted.
+    that is a no-op on the only evidence in existence has protected nothing.
 
     IT CANNOT WIDEN THE NET, which is the property that makes it safe. The
     stage-record clause exists to guarantee that a historical backlog cannot
@@ -603,7 +579,7 @@ def interrupted_stage_on_disk(store: WorldStore, world_id: str,
             # Lazily, and ONLY HERE: `surface_pipeline` pulls in the whole
             # reconstruction stack, and the answer for almost every session is
             # "there is no such file". Imported up front, a module that failed
-            # to import took down the judgement of every historical world
+            # to import would take down the judgement of every historical world
             # rather than of the one session with a `running` status to judge.
             from tower.world_builder.surface_pipeline import (  # noqa: PLC0415
                 status_is_stale,
@@ -645,7 +621,7 @@ def assess(
             f"the session record is unreadable: {type(exc).__name__}: {exc}",
         )
 
-    # AN OWNER IS RE-FINISHING THIS WORLD (review V8, M3b). Asked first, so the whole
+    # AN OWNER IS RE-FINISHING THIS WORLD. Asked first, so the whole
     # re-finish -- its steps and the lock gaps between them -- reads as one waiting answer,
     # whatever the session record says at the instant this looks. See
     # `refinish_in_progress`.
@@ -655,7 +631,7 @@ def assess(
                     refinish)
         return no(REFINISH_IN_PROGRESS_CODE,
                   f"{refinish}; the finisher stays out of a world while it is re-finished")
-    # A RE-FINISH OF THIS SESSION THAT DIED BEFORE IT PUBLISHED (review V9, M-5), or whose
+    # A RE-FINISH OF THIS SESSION THAT DIED BEFORE IT PUBLISHED, or whose
     # put-back could not complete: its set-aside result is owed back first, and nothing is
     # built over what it left.
     left = _assess_refinish(store, world_id, session_id, session, max_attempts=max_attempts)
@@ -680,7 +656,7 @@ def assess(
         # `final_surface_stages` refuses without a solve and records
         # `unavailable`. Queuing it would take a lock to write that down again.
         #
-        # EXCEPT A ROW THAT SAYS SO FALSELY (review V11, MED-A; `stale_final_solve`): the
+        # EXCEPT A ROW THAT SAYS SO FALSELY (`stale_final_solve`): the
         # builder's final-solve child published a consensus solve's draw 0 and was then
         # ended, and the row was written as if it had published nothing. That session is
         # assessed as the solved session it is -- its owed consensus first -- and the
@@ -691,16 +667,16 @@ def assess(
             "needs a global solve and there is none"
         )
 
-    # A GATED SOLVE THAT OWES ITS GATE AGAIN (review V7, H1b and L-c): the depth stage could
+    # A GATED SOLVE THAT OWES ITS GATE AGAIN: the depth stage could
     # not give it a metric scale (the network missing, CUDA out of memory, the surface lock
     # held), or the gate itself raised. Asked before the photographic stages because the
     # re-gate can move pieces out of the room, which the room's stages then rebuild. Only a
     # solve the gate RAN on can owe one: this tool never computes components for a world
     # the gate never saw. A solve that lost its MASKS owes nothing here -- that needs a new
-    # solve, which an owner runs attended (`world_refinish.py`; V7, H2).
+    # solve, which an owner runs attended (`world_refinish.py`).
     #
-    # A RE-GATE THE FINISHER CANNOT RUN HIDES NOTHING (review V8, M1a and M1b; review V9,
-    # LOW). Given up at its attempt bound, or refused because its solve will not load or
+    # A RE-GATE THE FINISHER CANNOT RUN HIDES NOTHING. Given up at its attempt bound, or
+    # refused because its solve will not load or
     # its database is gone, it is `exhausted` until the row says so (`_retire_regate`,
     # once, in the same run) and then owes nothing: the room and the areas behind it are
     # asked exactly as for a world with no gate, in that same run (`main`'s worklist).
@@ -727,11 +703,11 @@ def _assess_room(store: WorldStore, world_id: str, session_id: str, session, *,
     # file over the record would resurrect worlds that are already done.
     #
     # THE STAGE'S OWN ARTIFACT otherwise. `stages` absent is not a state in
-    # the vocabulary -- it means "a Tower that never recorded this", which is
-    # every session written before 2026-09-22 -- but it is not the same fact
-    # as "no photographic work was ever attempted", and conflating the two is
-    # what made the first version of this tool a no-op on the one world the
-    # incident was about. See `interrupted_stage_on_disk`: a
+    # the vocabulary -- it means "a Tower that never recorded this", as on every
+    # session written before the record existed -- but it is not the same fact
+    # as "no photographic work was ever attempted", and conflating the two
+    # makes this tool a no-op on an interrupted world that has no record. See
+    # `interrupted_stage_on_disk`: a
     # `surface/<session>/status.json` cannot exist on a Tower that never ran
     # the stage, so this reads the same guarantee off a different file.
     #
@@ -762,7 +738,7 @@ def _assess_room(store: WorldStore, world_id: str, session_id: str, session, *,
         if stage is None:
             # ASKED HERE, not only below. `interrupted_stage_on_disk` reads a
             # LIVE `running` status as "not interrupted", which is correct --
-            # and would then have been reported as "no Tower ever tried to
+            # and would then be reported as "no Tower ever tried to
             # make a picture of this", which is the opposite of true. The
             # probe is worth its cost on this branch alone: three sessions on
             # the real root reach it.
@@ -935,11 +911,12 @@ def _assess_areas(store: WorldStore, world_id: str, session_id: str, session, *,
                    attempts=attempts)
 
 
-# -- a re-gate owed to a gate that could not finish (review V7, H1b and L-c) ------------
+# -- a re-gate owed to a gate that could not finish --------------------------------------
 #
 # The evidence gate's scale fail-safe publishes the room as its unsplit anchor block, which
-# on GT's masked arms leaves [129, 89, 120, 44] misplaced where the gate leaves [24, 0, 0,
-# 38] (V7) -- tolerable for an interim publish, not as a world's final answer. When it was
+# on the masked ground-truth arms leaves [129, 89, 120, 44] cameras misplaced where the gate
+# leaves [24, 0, 0, 38] -- tolerable for an interim publish, not as a world's final answer.
+# When it was
 # caused by the depth stage (`gate.retryable`, `gate.cause` depth-unavailable) or the gate
 # raised (gate-failed), the session is owed ONE thing: the depth stage and the gate run
 # again IN PLACE on the published solve (`coherence_publish.regate_published`) -- the solve
@@ -947,7 +924,7 @@ def _assess_areas(store: WorldStore, world_id: str, session_id: str, session, *,
 # are rebuilt from it; its areas are owed by the new record. Under the writer lock, on its
 # own attempt ledger key, bounded like every other stage.
 #
-# There is deliberately no unattended RE-SOLVE (V7, H2): a solve that lost its masks keeps
+# There is deliberately no unattended RE-SOLVE: a solve that lost its masks keeps
 # `transients.retryable` and says so on the row; an owner re-finishes it attended.
 
 REGATE_STAGE = "regate"
@@ -963,7 +940,7 @@ def _assess_regate(store: WorldStore, world_id: str, session_id: str, session, *
     includes every solve the gate never ran on, and a re-gate given up on the record.
 
     Reads only. Every answer that is not `owed-regate` is decided HERE, before any lock,
-    attempt or warm is spent on it (review V8, M1a)."""
+    attempt or warm is spent on it."""
     from tower.world_builder.coherence_publish import regate_owed  # noqa: PLC0415
 
     try:
@@ -986,13 +963,13 @@ def _assess_regate(store: WorldStore, world_id: str, session_id: str, session, *
                        code="locked", stage=REGATE_STAGE)
     attempts = read_attempts(store, world_id, regate_ledger_key(session_id)) or 0
     if attempts >= max_attempts:
-        # GIVEN UP, AND SAID SO ON THE ROW (review V8, M1b). The published fail-safe stands.
+        # GIVEN UP, AND SAID SO ON THE ROW. The published fail-safe stands.
         # What the row said until now was `publish_notice`'s promise that the idle Tower
         # re-runs the gate, which is no longer true -- so the bound is `exhausted` until
         # `_retire_regate` has put the given-up sentence in its place. THE RECORD IS THE
         # SENTENCE: once the finalization's `notice` (contract v6, §3.1 -- the phone's
         # copy; `detail` carries it too) says it, the re-gate owes nothing and `assess`
-        # asks the room and the areas behind it, which it used to hide for ever.
+        # asks the room and the areas behind it.
         # `notice`, not `detail`: a re-mark that has nothing to say about the solve (a
         # `--skip-solve` repair) writes its own `detail` and keeps the notice, and must
         # not undo the give-up. A new publish that puts the promise back (a hand-run
@@ -1010,12 +987,12 @@ def _assess_regate(store: WorldStore, world_id: str, session_id: str, session, *
     refusal = _regate_refusal(store, world_id, session_id)
     if refusal is not None:
         # Never owed: the run never counts an attempt or warms the native stack for it, and
-        # this answer is read-only (M1a). But a refusal is PERMANENT until an owner
-        # re-finishes the walk (review V9, LOW), so it is said on the row ONCE and then
-        # asks nothing more. It used to be WAITING for ever: the row kept promising "the
-        # Tower re-runs the gate when it is idle", and every run exited `EXIT_WAITING`,
+        # this answer is read-only. But a refusal is PERMANENT until an owner
+        # re-finishes the walk, so it is said on the row ONCE and then
+        # asks nothing more. Waiting for ever instead would keep the row promising "the
+        # Tower re-runs the gate when it is idle" while every run exits `EXIT_WAITING`,
         # which drives the Tower's chore backoff up to an hour -- delaying every other
-        # owed world with it (RV9-E F2). Now it is `exhausted` until `_retire_regate` has
+        # owed world with it. So it is `exhausted` until `_retire_regate` has
         # put the refused sentence in place of the promise (under the lock, once); after
         # that it owes nothing, and the room and areas behind it are asked as for a world
         # with no gate. A new publish that puts the promise back is corrected again.
@@ -1044,12 +1021,12 @@ def _published_meta(store: WorldStore, world_id: str, session_id: str) -> dict:
     return meta if isinstance(meta, dict) else {}
 
 
-# -- a final solve the row says was not published (review V11, MED-A) ----------------
+# -- a final solve the row says was not published ------------------------------------------
 #
 # A consensus final solve publishes its draw 0 FIRST, `consensus-deferred` and owed, and
 # only then maps its further draws (`global_solve._publish_draw_0_first`) -- minutes in
-# which the builder's final-solve CHILD has published and is still working. Until P3.8 a
-# hard stop that terminated it was recorded `skipped`, "... the last background solution
+# which the builder's final-solve CHILD has published and is still working. A hard stop
+# that terminated it used to be recorded `skipped`, "... the last background solution
 # stands", and a child that exited without a summary `failed`, "world_solve.py exited
 # <n>", whatever it had published. `assess` then answered `no-final-solve`: the consensus
 # the published solve owes never ran, the room was never built, and the row said
@@ -1066,7 +1043,8 @@ def _published_meta(store: WorldStore, world_id: str, session_id: str) -> dict:
 # lock rewrites the row as the builder now writes it (`_heal_final_solve`). Not by time:
 # the row keeps no launch time, and the two halves are each unique to this path. An
 # owner's `--skip-solve` repair (`skipped`, its own sentence), a single-draw or ungated
-# solve, and every other row take today's path exactly.
+# solve, and every other row take today's path exactly. The two patterns below are
+# coupled word for word to the sentences `world_build_session.py` writes.
 STALE_FINAL_SOLVE_DETAILS = {
     FINAL_SOLVE_SKIPPED: re.compile(r"final solve terminated: hard stop \(.*\) during "
                                     r"finalization; the last background solution stands"),
@@ -1140,9 +1118,9 @@ def _regate_refusal(store: WorldStore, world_id: str, session_id: str) -> str | 
     only.
 
     `coherence_publish.regate_refusal` -- the ONE statement of the refusals, which
-    `regate_published` asks too (H2, 2897bf2): the published solve does not load as a
-    gated solution, or the feature database it was solved from is gone. It used to be
-    restated here word for word; tests still hold every copy to one answer on every shape
+    `regate_published` asks too: the published solve does not load as a
+    gated solution, or the feature database it was solved from is gone. Tests hold
+    every copy to one answer on every shape
     (`test_the_read_only_refusal_agrees_with_regate_published`,
     `test_world_builder_regate_refusal.py`). `regate_published` still refuses under the
     lock, and `finish_regate` still gives that attempt back -- this only moves the common
@@ -1156,7 +1134,7 @@ def _regate_refusal(store: WorldStore, world_id: str, session_id: str) -> str | 
 # `publish_notice` states it, and the owner's way out instead of the idle Tower's promise.
 REGATE_GIVEN_UP = ("{what}; the idle Tower re-ran the gate {attempts} times without "
                    "finishing it and has stopped trying; an owner can re-finish this walk")
-# ... and once the finisher finds it CANNOT re-run the gate at all (review V9, LOW): the
+# ... and once the finisher finds it CANNOT re-run the gate at all: the
 # published solve does not load as a gated solution, or its feature database is gone.
 # Nothing the idle Tower can do changes that, so the promise goes at once.
 REGATE_REFUSED_NOTICE = ("{what}; the idle Tower cannot re-run the gate on this solve; an "
@@ -1166,9 +1144,9 @@ REGATE_REFUSED_NOTICE = ("{what}; the idle Tower cannot re-run the gate on this 
 def _regate_sentence(meta: dict, ending: str, **fields) -> str:
     """The masks sentences the published solve owes (exactly as `publish_notice` words them),
     then the gate's fixed clause with `ending` in place of the idle Tower's promise. ONLY
-    FIXED PHRASES (review V9, M-4): the clause is `coherence_publish.regate_clause`, which
-    names the cause by `notice_cause_phrase`, never by the gate's raw `detail` -- which held
-    an exception string, a path, GiB figures, and reached the phone word for word."""
+    FIXED PHRASES: the clause is `coherence_publish.regate_clause`, which
+    names the cause by `notice_cause_phrase`, never by the gate's raw `detail` -- which
+    can hold an exception string or a path and would reach the phone word for word."""
     from tower.world_builder import coherence_publish as CP  # noqa: PLC0415
 
     gate = (meta or {}).get("gate") or {}
@@ -1181,8 +1159,8 @@ def _regate_sentence(meta: dict, ending: str, **fields) -> str:
 
 
 def regate_given_up_notice(meta: dict, attempts: int) -> str:
-    """The finalization notice (and detail) for a re-gate given up at its bound (review V8,
-    M1b): `publish_notice`'s sentence for the same record, with its promise -- "the Tower
+    """The finalization notice (and detail) for a re-gate given up at its bound:
+    `publish_notice`'s sentence for the same record, with its promise -- "the Tower
     re-runs the gate when it is idle" -- replaced by what is now true. Deterministic in the
     published record and the count, because it is also the record that the give-up happened
     (`_assess_regate`)."""
@@ -1196,10 +1174,9 @@ def regate_refused_notice(meta: dict) -> str:
 
 def regate_retired_detail(notice: str, label: str, why) -> str:
     """The finalization's `detail` for a re-gate given up or refused: its `notice`, and WHY
-    -- the refusal, or the gate's own record -- which used to be in neither field (review
-    V10, L-10b: `detail` was written equal to `notice`). The reason is SCRUBBED as every
+    -- the refusal, or the gate's own record. The reason is SCRUBBED as every
     diagnostic that can reach a client is (`coherence_publish.client_safe_detail`: one
-    line, no path, short); `notice` keeps only fixed phrases (review V9, M-4)."""
+    line, no path, short); `notice` keeps only fixed phrases."""
     from tower.world_builder import coherence_publish as CP  # noqa: PLC0415
 
     safe = CP.client_safe_detail(why, max_chars=CP.WHY_MAX_CHARS) if why else ""
@@ -1221,7 +1198,7 @@ def _gate_why(meta: dict) -> str | None:
     return None
 
 
-# -- a re-finish in progress (review V8, M3b) --------------------------
+# -- a re-finish in progress ---------------------------------------------
 #
 # `scripts/world_refinish.py` rebuilds one session in steps, and between them it holds no
 # lock: after step 1 (the previous solve set aside, the room's stages recorded `stopped`
@@ -1231,7 +1208,7 @@ def _gate_why(meta: dict) -> str | None:
 # from a solve that was set aside or not yet rebuilt, and holding the lock the re-finish's
 # next step then could not take.
 #
-# WHAT "IN PROGRESS" MEANS, from PF's `world_refinish.py` (3abe763): its ledger,
+# WHAT "IN PROGRESS" MEANS, from `world_refinish.py`: its ledger,
 # `<world>/refinish/<stamp>/refinish.json` -- `state`, and the `process` (pid and start
 # time) that wrote it -- and the room marker it writes. Per ledger, in this order:
 #
@@ -1255,8 +1232,9 @@ def _gate_why(meta: dict) -> str | None:
 # in both directions: with the marker on the room the finisher stays out (a live re-finish
 # is never interfered with, which is the failure that can end in a half-restored world),
 # and without it the world takes today's path (a corrupt file cannot park a world on
-# "Improving" for ever). Only the pre-3abe763 ledger that died between its steps still
-# looks live; its owner re-runs the re-finish, which a set-aside solve needs anyway.
+# "Improving" for ever). Only a ledger written before the process was recorded that died
+# between its steps still looks live; its owner re-runs the re-finish, which a set-aside
+# solve needs anyway.
 
 
 def refinish_in_progress(store: WorldStore, world_id: str) -> str | None:
@@ -1290,8 +1268,8 @@ def refinish_in_progress(store: WorldStore, world_id: str) -> str | None:
         where = f"{WR.REFINISH_DIRNAME}/{aside.name}/{WR.LEDGER_FILENAME}"
         if state in WR.LEDGER_TERMINAL_STATES:
             continue
-        # The re-finish's own process OR the final solve's child it started (review V10,
-        # Q3): a child running on after its parent was killed may still publish.
+        # The re-finish's own process OR the final solve's child it started: a child
+        # running on after its parent was killed may still publish.
         liveness = (WR.refinish_liveness(ledger) if ledger is not None
                     else {"alive": None, "process": None, "child": None})
         alive = liveness["alive"]
@@ -1326,7 +1304,7 @@ def _refinish_under_the_lock(store: WorldStore, verdict: Verdict, report: dict) 
     busy = refinish_in_progress(store, verdict.world_id)
     if busy is None and verdict.stage != REFINISH_STAGE:
         # ... or a re-finish of THIS session died since the survey, before it published:
-        # nothing is built until the next run has put its set-aside result back (M-5).
+        # nothing is built until the next run has put its set-aside result back.
         WR = _refinish_module()
         dead = None if WR is None else WR.dead_before_publish(store, verdict.world_id,
                                                               verdict.session_id)
@@ -1355,14 +1333,14 @@ def _room_marked(store: WorldStore, world_id: str, marker: str) -> str | None:
     return None
 
 
-# -- a re-finish that died before it published (review V9, M-5) ------------------------
+# -- a re-finish that died before it published ---------------------------------------
 #
 # A hard kill in the re-finish's step 1 or 2 (a console closed, a reboot) leaves the solve
 # set aside, the room marked `stopped`, and the ledger at `setting-aside` or `set-aside`
 # with a process that is gone. `refinish_in_progress` rightly stops holding the world for
-# it -- but the stopped room was then owed, and this tool ran the room's stages on a
-# session with NO solution: `surface: unavailable` in the live status, the ledger never
-# moving on, no notice (RV9-D probe C, RV9-E F4). Now that session owes one thing first:
+# it -- but the stopped room is then owed, and without a put-back this tool would run the
+# room's stages on a session with NO solution (`surface: unavailable` in the live status,
+# the ledger never moving on, no notice). So that session owes one thing first:
 # putting back what the re-finish set aside (`world_refinish.recover_dead_refinish`, under
 # the lock -- see there for why restoring, not parking), on its own attempt ledger key.
 # A put-back that cannot complete PARKS the session: its room is never built from what is
@@ -1451,7 +1429,7 @@ def _assess_refinish(store: WorldStore, world_id: str, session_id: str, session,
 
 
 def finish_refinish_restore(store: WorldStore, verdict: Verdict) -> dict:
-    """Put back what a dead re-finish set aside, under the world's lock (M-5). No GPU and no
+    """Put back what a dead re-finish set aside, under the world's lock. No GPU and no
     native warm: moves and a record. A put-back that cannot complete parks the session and
     says so on the row. `finished` is True once the ledger is terminal."""
     WR = _refinish_module()
@@ -1475,13 +1453,13 @@ def finish_refinish_restore(store: WorldStore, verdict: Verdict) -> dict:
         if dead is None:
             report.update({"finished": True, "reason": "nothing is owed back any more"})
             return report
-        # AN ATTEMPT THAT CANNOT BE COUNTED IS STILL MADE, HERE (review V10, L-7). Elsewhere
+        # AN ATTEMPT THAT CANNOT BE COUNTED IS STILL MADE, HERE. Elsewhere
         # an uncounted attempt is refused, because an uncounted six-minute GPU stage is the
         # loop the bound exists for. A put-back is not that: no GPU, a few moves, and it
         # reads the disk, so every run that gets anywhere leaves less to do and a killed one
-        # is finished by the next. Refusing it for a read-only `finish_attempts.json` left
-        # the world with its solve set aside, exited 1 at every run, and the chore's backoff
-        # starved every other world. The bound still applies wherever it can be counted.
+        # is finished by the next. Refusing it for a read-only `finish_attempts.json` would leave
+        # the world with its solve set aside, exit 1 at every run, and let the chore's backoff
+        # starve every other world. The bound still applies wherever it can be counted.
         counted = True
         try:
             report["attempts"] = record_attempt(
@@ -1573,7 +1551,7 @@ def _give_back_attempt(store: WorldStore, world_id: str, key: str, *, detail: st
 
 
 # What the room's stages say between the moment the re-gate is about to publish and the
-# moment the room is rebuilt from it (review V8, M1c).
+# moment the room is rebuilt from it.
 REGATE_IN_PROGRESS = ("re-gate in progress (scripts/world_finish_pending.py): the evidence "
                       "gate is re-run on the published solve, and the room is rebuilt from "
                       "it afterwards")
@@ -1606,17 +1584,18 @@ def _put_room_record_back(store: WorldStore, world_id: str, session_id: str,
 def _reconcile_regate_notice(store: WorldStore, engine, world_id: str,
                              session_id: str) -> dict | None:
     """Bring the row's sentence up to the published solve after a re-gate that published and
-    did not get to write it (review V9, LOW; RV9-E F3). Under the caller's lock.
+    did not get to write it. Under the caller's lock.
 
     `finish_regate` writes the notice right after `regate_published` replaces the solve. A
     write that fails there (a sharing violation, a read-only `session.json`), or a kill
-    between the two, left the OLD sentence -- "the Tower re-runs the gate when it is idle"
-    -- over a solve that owes nothing, for ever: the next run rebuilt the room and nothing
-    ever looked at the notice again. The room it marked `REGATE_IN_PROGRESS` before the
-    publish is the trace such a re-gate always leaves, so the room's rebuild asks: a re-gate
-    marked this room, the solve owes no re-gate now, so its notice is exactly what
-    `regate_published` said for it -- `publish_notice` (and `publish_detail`) of the
-    published record. Written when it differs; None when there was nothing to reconcile."""
+    between the two, would leave the OLD sentence -- "the Tower re-runs the gate when it is
+    idle" -- over a solve that owes nothing, for ever: the next run rebuilds the room and
+    nothing else ever looks at the notice again. The room it marked `REGATE_IN_PROGRESS`
+    before the publish is the trace such a re-gate always leaves, so the room's rebuild
+    asks: a re-gate marked this room, the solve owes no re-gate now, so its notice is
+    exactly what `regate_published` said for it -- `publish_notice` (and `publish_detail`)
+    of the published record. Written when it differs; None when there was nothing to
+    reconcile."""
     from tower.world_builder import coherence_publish as CP  # noqa: PLC0415
 
     session = store.read_session(world_id, session_id)
@@ -1650,12 +1629,12 @@ def finish_regate(store: WorldStore, verdict: Verdict, *, appearance: bool, prun
     tree (`engine.build`) and the room's stages (`final_surface_stages`) from the relabelled
     solve. A refusal before any work (`RegateRefused`) gives the attempt back: waiting.
 
-    THE ROOM IS OWED FROM BEFORE THE PUBLISH (review V8, M1c). Its stages are recorded
+    THE ROOM IS OWED FROM BEFORE THE PUBLISH. Its stages are recorded
     `stopped` (`REGATE_IN_PROGRESS`) under this lock, right before `regate_published`
     replaces the solve and its components. A stop, a crash or a kill anywhere after that --
     between the publish and the rebuild there is no `finally` a `terminate_tree` would run
-    -- leaves a room the next run rebuilds from the new partition, where it used to leave
-    the OLD room standing over the new solve with nothing owed. The mark is the builder's
+    -- leaves a room the next run rebuilds from the new partition, rather than the
+    OLD room standing over the new solve with nothing owed. The mark is the builder's
     own discipline (`mark_stage` `running` before a stage) and `world_refinish.py`'s."""
     from tower.world_builder import coherence_publish as CP  # noqa: PLC0415
 
@@ -1676,7 +1655,7 @@ def finish_regate(store: WorldStore, verdict: Verdict, *, appearance: bool, prun
         if _refinish_under_the_lock(store, verdict, report):
             return report
         # A row that says the final solve published nothing, over the consensus solve it did
-        # publish (review V11, MED-A), is put right first. Decided before the re-gate
+        # publish, is put right first. Decided before the re-gate
         # rewrites the record, so the re-mark below keeps `solved` even if this write fails.
         stale = stale_final_solve(store, verdict.world_id, verdict.session_id,
                                   store.read_session(verdict.world_id,
@@ -1720,7 +1699,7 @@ def finish_regate(store: WorldStore, verdict: Verdict, *, appearance: bool, prun
             return report
         if _regate_wrote_nothing(report["regate"]):
             # A stop reached the re-gate's draw-0 depth stage, and `regate_published` wrote
-            # NOTHING (review V10, MED-1b): the published solve, its room and its row stand as
+            # NOTHING: the published solve, its room and its row stand as
             # they were, and the re-gate is still owed. So nothing is written here either --
             # not the row's sentence, and the room's mark goes back as for a refusal. The
             # attempt is the stop's, given back by `forgive_attempt` on the way out.
@@ -1734,12 +1713,12 @@ def finish_regate(store: WorldStore, verdict: Verdict, *, appearance: bool, prun
                            "reason": f"stopped ({stop_request.source}); nothing was written"})
             return report
         # The row's sentence follows the re-gate: cleared, or the new reason -- in `detail`
-        # as before, and in `notice` (contract v6, §3.1), which a re-gate that owes nothing
+        # and in `notice` (contract v6, §3.1), which a re-gate that owes nothing
         # any more REMOVES (`None`). The re-gate ran the gate, so this is always a gated
         # solve's notice.
-        # (Review V9, M-4: `regate_published` returns the phone's fixed-phrase `notice` and
+        # (`regate_published` returns the phone's fixed-phrase `notice` and
         # its diagnostic twin `detail`, which keeps the raw text; a result without a
-        # `detail` is taken at its notice, as before.) A failure of this write after the
+        # `detail` is taken at its notice.) A failure of this write after the
         # publish is reconciled by the room's rebuild (`_reconcile_regate_notice`).
         fin = store.read_session(verdict.world_id, verdict.session_id).finalization or {}
         if fin.get("state"):
@@ -1751,7 +1730,7 @@ def finish_regate(store: WorldStore, verdict: Verdict, *, appearance: bool, prun
                                      detail=result.get("detail", notice), notice=notice)
         if stop_request.asked:
             # The room stays `stopped` -- owed -- and the next run rebuilds it from the new
-            # partition (M1c).
+            # partition.
             report.update({"finished": False, "reason": f"stopped ({stop_request.source})"})
             return report
         report["build"] = {"poses_solved": getattr(engine.build(verdict.world_id, verdict.session_id),
@@ -1776,8 +1755,8 @@ def finish_regate(store: WorldStore, verdict: Verdict, *, appearance: bool, prun
 
 def _regate_wrote_nothing(result) -> bool:
     """Whether `regate_published` returned without writing anything: the result of a stop
-    that reached draw 0's depth stage (`stopped`, `publish.written` False; review V10,
-    MED-1b). A result without those keys (any re-gate before V10) wrote what it returned."""
+    that reached draw 0's depth stage (`stopped`, `publish.written` False). A result
+    without those keys wrote what it returned."""
     if not isinstance(result, dict) or not result.get("stopped"):
         return False
     publish = result.get("publish")
@@ -1808,7 +1787,7 @@ def build_session_areas(store: WorldStore, world_id: str, session_id: str, *,
     # The depth the area's levelling runs must be the depth its surface stage will
     # ask for, or the predictions are made twice: `final_surface_stages` asks for the
     # FoV-told depth exactly when the evidence gate is on.
-    # Keyed on the published solve's gate record, as the room's surface is (review V7, L-a).
+    # Keyed on the published solve's gate record, as the room's surface is.
     from scripts.world_build_session import _solution_gated  # noqa: PLC0415
 
     known_fov = _solution_gated(store, world_id, session_id)
@@ -1850,7 +1829,7 @@ def finish_areas(store: WorldStore, verdict: Verdict, *, appearance: bool,
     try:
         if _refinish_under_the_lock(store, verdict, report):
             return report
-        _heal_quietly(store, engine, verdict, report)      # review V11, MED-A (see `finish`)
+        _heal_quietly(store, engine, verdict, report)
         try:
             report["attempts"] = record_attempt(store, verdict.world_id, key,
                                                 detail="finishing this session's areas")
@@ -1918,7 +1897,7 @@ def _retire_areas(store: WorldStore, verdict: Verdict, max_attempts: int) -> dic
 
 
 def _retire_regate(store: WorldStore, verdict: Verdict, max_attempts: int) -> dict:
-    """`_retire` for a re-gate at its bound (review V8, M1b): the row's promise that the
+    """`_retire` for a re-gate at its bound: the row's promise that the
     idle Tower re-runs the gate is replaced by the given-up sentence -- the existing notice
     mechanism, the session's finalization detail -- once, under the lock, after
     re-assessing underneath it. Nothing else changes: the published fail-safe stands, and
@@ -1949,7 +1928,7 @@ def _retire_regate(store: WorldStore, verdict: Verdict, max_attempts: int) -> di
         fin = store.read_session(verdict.world_id, verdict.session_id).finalization or {}
         WorldBuilderEngine(store).mark_finalization(
             verdict.world_id, verdict.session_id, state=fin["state"],
-            # `solved` for a row that said the published solve was not (V11, MED-A): the
+            # `solved` for a row that said the published solve was not: the
             # given-up sentence replaces its detail, so it would not be recognised again.
             final_solve=_final_solve_word(store, verdict.world_id, verdict.session_id, fin),
             detail=detail, notice=notice)
@@ -1968,9 +1947,10 @@ def survey(store: WorldStore, *, max_attempts: int = DEFAULT_MAX_ATTEMPTS) -> li
                 verdicts.append(
                     assess(store, world_id, session_id, max_attempts=max_attempts))
             except Exception as exc:  # noqa: BLE001 -- one session, not the root
-                # ONE SESSION'S PROBLEM STAYS ONE SESSION'S. An exception here
-                # used to end the whole survey, so every owed world on the
-                # Tower waited on the one that could not be read.
+                # ONE SESSION'S PROBLEM STAYS ONE SESSION'S. An exception on
+                # one session becomes an `assess-error` verdict instead of ending
+                # the survey, so every owed world on the Tower is not left waiting
+                # on the one that could not be read.
                 logger.warning(
                     "[Tower][WorldBuilder] could not assess %s/%s: %s: %s",
                     world_id, session_id, type(exc).__name__, exc,
@@ -2129,10 +2109,10 @@ def finish(
         if _refinish_under_the_lock(store, verdict, report):
             return report
         # A row that says the final solve published nothing, over the consensus solve it did
-        # publish (review V11, MED-A): put right before the room is built from that solve.
+        # publish: put right before the room is built from that solve.
         _heal_quietly(store, engine, verdict, report)
         # A re-gate that published and could not write its notice left this room marked;
-        # its sentence is put right before the room is rebuilt (review V9, LOW). A record
+        # its sentence is put right before the room is rebuilt. A record
         # fix, so never fatal: the room is what this run is for.
         try:
             reconciled = _reconcile_regate_notice(store, engine, verdict.world_id,
@@ -2151,10 +2131,9 @@ def finish(
             )
         except Exception as exc:  # noqa: BLE001
             # AN UNCOUNTED ATTEMPT IS AN UNBOUNDED ONE. A read-only or full
-            # disk made this raise before any work began, so nothing was
-            # counted, the bound never advanced, and every boot started the
-            # same six-minute stage again -- the loop the bound exists to
-            # prevent, arriving through the bound's own front door. A root
+            # disk makes this raise before any work began; starting anyway
+            # would repeat the same six-minute stage at every boot with the
+            # bound never advancing, so the run refuses to start. A root
             # that cannot be written to has nowhere to put a surface either.
             report.update({
                 "finished": False,
@@ -2171,17 +2150,15 @@ def finish(
             ),
         )
         # THE WARM, AFTER THE ATTEMPT IS COUNTED. It is the native imports and
-        # the CUDA attach -- exactly the class of work that hung on 2026-09-22
-        # -- and it used to run before `record_attempt`, so a hang in it was a
-        # stall the Tower could kill but the ledger never counted: retried
-        # for ever, never retired (review, 2026-09-23). Since
+        # the CUDA attach, and a hang in it is then counted by the ledger
+        # rather than retried for ever and never retired. Since
         # `tower/stdin_stop.py` it no longer has to precede the stop watcher.
         prewarm_world_builder()
         report["stages"] = final_surface_stages(
             store, verdict.world_id, verdict.session_id,
             # Guaranteed by `assess`: a session is not owed unless its
             # finalization recorded a SOLVED final solve -- or one the row
-            # denied, healed above (`stale_final_solve`, review V11 MED-A).
+            # denied, healed above (`stale_final_solve`).
             solved=True,
             appearance=appearance,
             prune_depth_work=prune_depth_work,
@@ -2296,7 +2273,7 @@ def main(argv=None, *, stop_request=None) -> int:
         "owed": [v.as_dict() for v in verdicts if v.owed],
         # COUNTS, NOT SENTENCES. This process inherits the Tower's stdout and
         # runs at every start, and the root it reads has seventy sessions on
-        # the machine this was written for -- so the full list of reasons was
+        # the reference machine -- so the full list of reasons was
         # five hundred lines of console at every boot, in front of the one
         # line that matters. The sentences are still one `--dry-run` away.
         "skipped": collections.Counter(v.code for v in verdicts if not v.owed),
@@ -2313,11 +2290,9 @@ def main(argv=None, *, stop_request=None) -> int:
     # `tower/main.py` promises that "a Tower with nothing owed spawns a
     # process that reads some small JSON files, prints an empty report and
     # exits", and that is the common case by a wide margin: measured on the
-    # root this was written against, 70 sessions, survey 0.04 s, **zero**
+    # reference root, 70 sessions, survey 0.04 s, **zero**
     # owed. Warming the native stack before finding that out cost 1.4 s and
-    # some 650 MB of resident torch at every single Tower start, for nothing
-    # -- a regression an adversarial reviewer caught in the first version of
-    # this change.
+    # some 650 MB of resident torch at every single Tower start, for nothing.
     #
     # WHAT IS GIVEN UP, AND WHY IT IS AFFORDABLE. The watcher is armed after
     # the survey rather than before it, so a stop asked for during those
@@ -2344,7 +2319,7 @@ def main(argv=None, *, stop_request=None) -> int:
 
     retire_failures = 0
     retire_waiting = 0
-    # A WORKLIST, because retiring a re-gate can uncover more (review V8, M1b): once its
+    # A WORKLIST, because retiring a re-gate can uncover more: once its
     # give-up is on the record, the same session is asked again, and the room or areas it
     # was hiding are finished -- or retired -- in THIS run rather than at the next start.
     # Bounded: a given-up re-gate is never `exhausted` again, so each session re-enters
@@ -2392,7 +2367,7 @@ def main(argv=None, *, stop_request=None) -> int:
     done = 0
     # Worlds this run found busy -- another writer holding the lock, or an owner's
     # re-finish -- whose other sessions would only meet the same answer, so they are not
-    # picked again in this run (review V8, M1a).
+    # picked again in this run.
     held = set()
     # ONE AT A TIME, and the stop checked between each. A run asked to stop
     # between two worlds stops there rather than starting a second
@@ -2417,18 +2392,18 @@ def main(argv=None, *, stop_request=None) -> int:
         if outcome.get("waiting"):
             # Refused before it began (a re-gate whose solve went, a lock another writer
             # took): no work was done, so it does not spend the run's budget, and the run
-            # goes on to the next owed world. It used to count, and with another world
-            # owed the run exited EXIT_MORE_OWED -- a respawn with no backoff that picked
-            # the same refused world first, every time, and starved the rest (review V8,
-            # M1a). The Tower asks again after its backoff (EXIT_WAITING).
+            # goes on to the next owed world. Counting it would make a run with another
+            # world owed exit EXIT_MORE_OWED -- a respawn with no backoff that picked
+            # the same refused world first, every time, and starved the rest.
+            # The Tower asks again after its backoff (EXIT_WAITING).
             retire_waiting += 1
             if outcome.get("world_busy"):
                 held.add(verdict.world_id)
             continue
         if verdict.stage == REFINISH_STAGE:
-            # A put-back is moves and a record, not a build (M-5): WHATEVER it did, it does
-            # not spend the run's budget (review V10, L-7: one that failed used to, at every
-            # run, and the next owed world never came up). One that did not finish is a
+            # A put-back is moves and a record, not a build: WHATEVER it did, it does
+            # not spend the run's budget (counting one that failed would repeat it at every
+            # run, and the next owed world would never come up). One that did not finish is a
             # failure of this run (exit 1); whatever a restored session owes is asked now, in
             # this run (appended, so this loop reaches it).
             if not outcome.get("finished"):
