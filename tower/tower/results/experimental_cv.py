@@ -5,18 +5,15 @@ CV Lab surface serves -- `GET /cv-lab`, the socket's `cv_lab_status`
 reply, and this -- and a producer that reshaped it here would create a
 third version of the truth that only the result channel ever sees.
 
-**This is the first producer in this package that reads LIVE state rather
-than files.** The package header says the channel is "a read-only
-reporting surface over state other processes have already persisted", and
-that sentence is now half right: it is still read-only, still writes
-nothing, still runs no cartridge and still touches no frame. What changed
-is where the state lives. World Builder's producer reads a directory
-another process wrote; this one reads an object in this process that the
-frame path mutates. The distinction that matters is not disk-versus-
-memory, it is that neither producer can alter what it reports --
-`test_the_result_channel_never_writes` and
+**Unlike World Builder's producer, this one reads LIVE state rather than
+files.** It is still read-only, still writes nothing, still runs no
+cartridge and still touches no frame. World Builder's producer reads a
+directory another process wrote; this one reads an object in this process
+that the frame path mutates. The distinction that matters is not
+disk-versus-memory, it is that neither producer can alter what it
+reports -- `test_the_result_channel_never_writes` and
 `test_the_module_container_is_untouched_by_a_subscription` are the two
-gates on that, and both still hold.
+gates on that.
 
 The concurrency this introduces is real and is handled where the state
 is, not here: `ResultHub.poll_once` computes snapshots with
@@ -30,14 +27,12 @@ drift from the content -- but three of the figures in it advance with
 WALL CLOCK rather than with anything happening, and those are excluded
 before hashing.
 
-An earlier version of this module claimed the opposite: "every figure
-that moves here moves because a frame was processed". It does not.
 `elapsed_s` and the two throughput rates derived from it change on every
-read, so `compute_revision` produced a new value on every poll and
-`revision_changed: true` -- the field the channel defines as "news, not a
-heartbeat" -- fired twice a second on a Lab that had seen no frame at
-all. Measured over the wire: four polls, zero new frames, four distinct
-revisions.
+read, so left in the hash `compute_revision` would produce a new value on
+every poll and `revision_changed: true` -- the field the channel defines
+as "news, not a heartbeat" -- would fire twice a second on a Lab that had
+seen no frame at all (measured over the wire without the exclusion: four
+polls, zero new frames, four distinct revisions).
 
 `capacity_fps` is NOT excluded: it is derived from measured per-frame
 cost alone and moves only when a frame is processed. Nor is
@@ -89,9 +84,8 @@ def unavailable_payload(reason: str) -> dict:
     The contract identifiers are REAL, not null. They describe what this
     BUILD speaks, which is true whether or not a Lab is loaded -- and the
     whole point of iOS's third state ("offered, implemented, unreachable")
-    is that those are separable. An earlier version nulled them, which
-    would have handed a client an identifier to compare for equality that
-    could never equal anything.
+    is that those are separable. Nulling them would hand a client an
+    identifier to compare for equality that could never equal anything.
 
     Used by the result channel's producer and by the control-plane
     handler, so that a refusal on a Tower with no Lab still carries a
