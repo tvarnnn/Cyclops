@@ -28,6 +28,10 @@ nonisolated enum DocumentMemoryDecoder {
     /// Read the constants, decode listing and detail records from their own
     /// locations, then form the response. An unreadable answer returns `nil`
     /// rather than an empty library because absence must not be invented.
+    /// `nil` becomes `DocumentMemoryFetchError.undecodable`, which the workspace
+    /// renders as a failure: an unreadable answer and an empty memory are
+    /// different facts, and turning the first into the second would state
+    /// something about the wearer's memory that is only a decode gap.
     static func library(from json: [String: Any]) -> DocumentLibraryResponse? {
         guard
             let contract = json["contract"] as? String,
@@ -51,7 +55,9 @@ nonisolated enum DocumentMemoryDecoder {
         let notes = recordNotes(from: json["record_notes"])
         let receivedAt = Date()
 
-        // The same decoder handles listing rows and detail records.
+        // One decoder serves listing rows and detail records, so a field shown
+        // on a row cannot be read differently from the same field on a detail
+        // screen.
         let documents = decodedDocuments(from: json, receivedAt: receivedAt, notes: notes)
 
         var single: RememberedDocument?
@@ -59,7 +65,10 @@ nonisolated enum DocumentMemoryDecoder {
             single = document(from: raw, receivedAt: receivedAt, notes: notes)
         }
 
-        // Pages live inside the detail document, not at the response root.
+        // Pages live inside the detail document, not at the response root: the
+        // Tower builds `payload["document"] = dict(_summary_view(...), pages=[...])`
+        // (`tower/tower/results/document_memory.py`), and its wire test asserts
+        // `payload["document"]["pages"][0]["text"]`.
         let pages = decodedPages(from: json)
 
         return DocumentLibraryResponse(
@@ -103,8 +112,8 @@ nonisolated enum DocumentMemoryDecoder {
             sufficientEvidence: json["sufficient_evidence"] as? Bool,
             matchKind: json["match_kind"] as? String,
             reason: json["reason"] as? String,
-            // Read this configuration-dependent cap: this Tower reports 48,
-            // and a fixed client value could describe a different cap.
+            // Read the cap: this Tower's `SNIPPET_MAX_CHARS` constant is 48,
+            // and a fixed client value could describe a different Tower's cap.
             snippetMaxChars: json["snippet_max_chars"] as? Int,
             document: single,
             pages: pages,

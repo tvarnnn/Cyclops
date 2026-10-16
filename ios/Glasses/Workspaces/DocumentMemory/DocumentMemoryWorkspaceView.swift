@@ -445,7 +445,7 @@ struct DocumentRow: View {
     /// The envelope's hoisted `record_notes`, keyed by the field each qualifies.
     var notes: [String: String] = [:]
     /// `snippet_max_chars`, off the envelope. **Read, never hard-coded** — it
-    /// is 48 today and it is configuration-dependent.
+    /// is the Tower's `SNIPPET_MAX_CHARS` (48 today) and may change with the Tower.
     var snippetMaxChars: Int?
 
     var body: some View {
@@ -569,7 +569,7 @@ struct DocumentRow: View {
     ///
     /// A match with no evidence is a number a client has to trust. The snippet
     /// is bounded and the bound is published beside it — read off the envelope
-    /// here because it is configuration-dependent.
+    /// here because the Tower defines it (`SNIPPET_MAX_CHARS`).
     @ViewBuilder
     private func matchEvidence(_ match: DocumentMatchEvidence) -> some View {
         VStack(alignment: .leading, spacing: 2) {
@@ -841,6 +841,16 @@ struct DocumentSessionPanel: View {
     /// The camera establishes only that a page was in view. This session has
     /// no `following` field to confirm liveness, so paused and stopped labels
     /// avoid an absolute claim about what the producer is doing.
+    ///
+    /// `state` is what somebody asked for, not proof of what the recorder is
+    /// doing: a Pause whose producer ignores `SIGTERM` still answers 200 with
+    /// `state: "paused"` while recording, which is why Object Memory reads
+    /// `following` instead. This session block carries no `following`.
+    ///
+    /// The asymmetry is deliberate. `running` is stated plainly because a false
+    /// "recording" costs nothing, while a false "not recording" tells someone
+    /// they are not being recorded when they may be, the one direction this
+    /// screen must never be confidently wrong in.
     private var headline: String {
         switch session.state {
         case "running": return "Recording pages that come into view"

@@ -350,7 +350,7 @@ struct DocumentLibraryResponse: Equatable, Sendable {
     let matchKind: String?
     let reason: String?
     /// **48 on this Tower, and read rather than hard-coded** (§12.10): the
-    /// configuration-dependent bound comes from this response.
+    /// bound is the Tower's `SNIPPET_MAX_CHARS` module constant, published here.
     let snippetMaxChars: Int?
 
     // Single-document only.
