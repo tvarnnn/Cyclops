@@ -2684,7 +2684,8 @@ final class TowerClientTests: XCTestCase {
         client.disconnect()
     }
 
-    /// `frame_error` reaches a consumer without becoming a connection failure.
+    /// `frame_error` reaches a consumer: otherwise a paused Lab, an arming
+    /// model and an undecodable frame are indistinguishable from silence.
     /// A refused frame leaves the send window and reply counters unchanged;
     /// a Lab paused for five minutes has not failed hundreds of times.
     func testAFrameErrorIsDeliveredAndCostsTheFramePathNothing() async throws {
@@ -2721,63 +2722,128 @@ final class TowerClientTests: XCTestCase {
         client.disconnect()
     }
 
-    /// Repeated refusals still reach event consumers, while the frame panel
-    /// only needs a new value when its reason changes or its capture advances.
-    func testFrameRefusalPublishesOnChangeAndAtDisplayCadence() async throws {
-        let server = try MockTowerServer()
-        let port = try await server.start()
-        respondToPing(server)
-        defer { server.stop() }
-
-        let client = TowerClient(metrics: SenderMetrics())
+    /// Every refusal reaches event consumers, while the frame panel refreshes
+    /// immediately for a new reason and at the bounded cadence for repeats.
+    func testFrameRefusalPublishesOnChangeAndAtDisplayCadence() {
+        let clock = FrameRefusalTestClock()
+        let scheduler = ManualFrameRefusalScheduler()
+        let client = TowerClient(
+            metrics: SenderMetrics(),
+            frameRefusalNow: { clock.now },
+            frameRefusalScheduler: scheduler
+        )
         let events = collectCVLabEvents(client)
-        client.connect(to: url(port: port))
-        await expect { client.status == .online }
-
         var published: [TowerFrameRefusal?] = []
         let publication = client.$latestFrameRefusal.dropFirst().sink { published.append($0) }
-        defer { publication.cancel(); client.disconnect() }
+        defer { publication.cancel() }
 
         func send(_ sequence: Int, reason: String) {
-            server.send(text: """
-                {"type":"frame_error","seq":\(sequence),"reason":"\(reason)",
-                 "message":"\(reason)"}
-                """)
+            client.handleFrameError([
+                "type": "frame_error", "seq": sequence,
+                "reason": reason, "message": reason,
+            ])
         }
 
         send(1, reason: "cv_lab_paused")
-        await expect { events.all.count == 1 }
+        XCTAssertEqual(events.all.count, 1)
         XCTAssertEqual(published.count, 1)
         XCTAssertEqual(client.latestFrameRefusal?.sequence, 1)
 
+        clock.now = 0.1
         send(2, reason: "cv_lab_paused")
+        clock.now = 0.2
         send(3, reason: "cv_lab_paused")
-        await expect { events.all.count == 3 }
+        XCTAssertEqual(events.all.count, 3)
         XCTAssertEqual(published.count, 1, "same reason republished for every frame")
+        XCTAssertEqual(scheduler.activeCount, 1, "one window scheduled more than once")
 
+        clock.now = 0.3
         send(4, reason: "cv_lab_starting")
-        await expect { events.all.count == 4 }
+        XCTAssertEqual(events.all.count, 4)
         XCTAssertEqual(published.count, 2, "a different refusal kind was not shown immediately")
         XCTAssertEqual(client.latestFrameRefusal?.sequence, 4)
+        XCTAssertEqual(scheduler.activeCount, 0, "a new reason left the old trailing update armed")
+        scheduler.fireNextEvenIfCancelled()
+        XCTAssertEqual(client.latestFrameRefusal?.sequence, 4)
+        XCTAssertEqual(published.count, 2)
 
+        clock.now = 0.4
         send(5, reason: "unexpected_reason_a")
-        await expect { events.all.count == 5 }
+        XCTAssertEqual(events.all.count, 5)
         XCTAssertEqual(published.count, 3)
+        clock.now = 0.5
         send(6, reason: "unexpected_reason_b")
-        await expect { events.all.count == 6 }
+        XCTAssertEqual(events.all.count, 6)
         XCTAssertEqual(published.count, 4, "a different reason of the same kind was hidden")
 
-        // A timer lets the production cadence elapse without sleeping the test
-        // executor. The last sequence must eventually reach the panel.
-        await withCheckedContinuation { continuation in
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1.1) {
-                continuation.resume()
-            }
-        }
+        clock.now = 0.6
         send(7, reason: "unexpected_reason_b")
-        await expect { events.all.count == 7 }
+        XCTAssertEqual(events.all.count, 7)
+        XCTAssertEqual(published.count, 4)
+        XCTAssertEqual(scheduler.activeCount, 1)
+
+        clock.now = 1.6
+        send(8, reason: "unexpected_reason_b")
+        XCTAssertEqual(events.all.count, 8)
         XCTAssertEqual(published.count, 5)
-        XCTAssertEqual(client.latestFrameRefusal?.sequence, 7)
+        XCTAssertEqual(client.latestFrameRefusal?.sequence, 8)
+        XCTAssertEqual(scheduler.activeCount, 0)
+        scheduler.fireNextEvenIfCancelled()
+        XCTAssertEqual(published.count, 5)
+    }
+
+    /// The last suppressed diagnostic reaches the panel even if no more frames
+    /// arrive, and a run change cannot resurrect one from the old run.
+    func testFrameRefusalTrailingPublishAndClearCancellation() {
+        let clock = FrameRefusalTestClock()
+        let scheduler = ManualFrameRefusalScheduler()
+        let client = TowerClient(
+            metrics: SenderMetrics(),
+            frameRefusalNow: { clock.now },
+            frameRefusalScheduler: scheduler
+        )
+        let events = collectCVLabEvents(client)
+        var published: [TowerFrameRefusal?] = []
+        let publication = client.$latestFrameRefusal.dropFirst().sink { published.append($0) }
+        defer { publication.cancel() }
+
+        func send(_ sequence: Int) {
+            client.handleFrameError([
+                "type": "frame_error", "seq": sequence,
+                "reason": "invalid_frame", "message": "frame #\(sequence) unsupported format",
+            ])
+        }
+
+        send(10)
+        XCTAssertEqual(events.all.count, 1)
+        XCTAssertEqual(client.latestFrameRefusal?.sequence, 10)
+
+        clock.now = 0.2
+        send(11)
+        clock.now = 0.3
+        send(12)
+        XCTAssertEqual(events.all.count, 3)
+        XCTAssertEqual(published.count, 1)
+        XCTAssertEqual(scheduler.activeCount, 1)
+        XCTAssertEqual(scheduler.totalScheduled, 1, "each suppressed reply scheduled a flush")
+
+        clock.now = 1.0
+        scheduler.fireNext()
+        XCTAssertEqual(published.count, 2)
+        XCTAssertEqual(client.latestFrameRefusal?.sequence, 12)
+        XCTAssertEqual(client.latestFrameRefusal?.message, "frame #12 unsupported format")
+
+        clock.now = 1.1
+        send(13)
+        XCTAssertEqual(events.all.count, 4)
+        XCTAssertEqual(scheduler.activeCount, 1)
+        client.watchCVLabRun("new-run")
+        XCTAssertNil(client.latestFrameRefusal)
+        XCTAssertEqual(scheduler.activeCount, 0)
+        let publicationsAfterClear = published.count
+        scheduler.fireNextEvenIfCancelled()
+        XCTAssertNil(client.latestFrameRefusal, "a cleared refusal returned from a queued callback")
+        XCTAssertEqual(published.count, publicationsAfterClear)
     }
 
     /// A frame that failed validation before its `seq` was readable reports a
@@ -3769,6 +3835,47 @@ extension TowerClientTests {
 private final class PublishTimeProbe {
     var notes: [String] = []
     var cancellables: Set<AnyCancellable> = []
+}
+
+@MainActor
+private final class FrameRefusalTestClock {
+    var now: TimeInterval = 0
+}
+
+@MainActor
+private final class ManualFrameRefusalScheduler: FrameRefusalScheduling {
+    private final class Scheduled {
+        let action: @MainActor @Sendable () -> Void
+        var cancelled = false
+
+        init(action: @escaping @MainActor @Sendable () -> Void) {
+            self.action = action
+        }
+    }
+
+    private var queue: [Scheduled] = []
+    private(set) var totalScheduled = 0
+    var activeCount: Int { queue.filter { !$0.cancelled }.count }
+
+    func schedule(
+        after delay: TimeInterval,
+        _ action: @escaping @MainActor @Sendable () -> Void
+    ) -> @MainActor () -> Void {
+        let scheduled = Scheduled(action: action)
+        queue.append(scheduled)
+        totalScheduled += 1
+        return { scheduled.cancelled = true }
+    }
+
+    func fireNext() {
+        let scheduled = queue.removeFirst()
+        if !scheduled.cancelled { scheduled.action() }
+    }
+
+    /// Simulates a callback already enqueued when cancellation reaches GCD.
+    func fireNextEvenIfCancelled() {
+        queue.removeFirst().action()
+    }
 }
 
 /// Collects CV Lab control-plane events in arrival order.

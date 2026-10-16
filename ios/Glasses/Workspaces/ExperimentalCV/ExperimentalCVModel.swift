@@ -212,9 +212,12 @@ nonisolated enum CVWireProvenance {
 /// > a measurement" that `EXPERIMENTAL-CV.md` rules out. Offline corpus
 /// > comparison is `scripts/cv_lab_benchmark.py`, and it is not this channel.
 ///
-/// No comparison or confidence renderer is present because this contract
-/// carries no reference run or confidence; `ObservationProvenance.inferred`
-/// therefore receives `nil` confidence here.
+/// The `baseline`, `higherIsBetter` and `comparison` machinery is absent from
+/// the build, so a non-null payload cannot activate a verdict. A comparison
+/// without a measured reference is what `docs/modules/EXPERIMENTAL-CV.md` rules out;
+/// verdict code belongs with a future contract that carries such a reference.
+/// This contract carries no confidence, so `ObservationProvenance.inferred`
+/// receives `nil` confidence here.
 struct CVMetric: Equatable, Identifiable, Sendable {
     /// The Tower's label. Displayed verbatim. **iOS matches on no metric name,
     /// ever.**

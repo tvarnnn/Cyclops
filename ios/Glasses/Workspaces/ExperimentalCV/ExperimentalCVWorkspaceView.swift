@@ -19,9 +19,9 @@ import SwiftUI
 /// Two things this screen still refuses to do, and both are the Tower's
 /// position as much as this app's:
 ///
-/// 1. **No better/worse verdict.** `baseline`, `higher_is_better` and
-///    `confidence` are `null` on every metric because the Lab holds no
-///    reference run to compare against; see `CVMetric`.
+/// 1. **No better/worse verdict.** The build carries no baseline, direction or
+///    comparison renderer because there is no measured reference run. Payload
+///    values cannot activate a verdict; see `CVMetric`.
 /// 2. **No photographic frame.** `CVLivePreviewPanel` draws derived views:
 ///    an edge map, a colourised depth map, or an overlay
 ///    over a line drawing of the room. The Tower serves no photograph on this
@@ -204,8 +204,8 @@ struct ExperimentalCVWorkspaceView: View {
         .accessibilityElement(children: .combine)
     }
 
-    // The frame path is `#if DEBUG`, so Release can read Lab status but cannot
-    // feed an experiment. Keep the subtitle specific to each build.
+    // Release can still read honest Lab status, so the `#if DEBUG` frame path
+    // changes this subtitle rather than removing the whole workspace.
 
     #if DEBUG
     private static let headerSubtitle = """
@@ -834,7 +834,8 @@ private struct CVFrameReadingPanel: View {
     /// `result_seq` is the Tower's dense counter within a run, from 1, and
     /// orders its readings. The phone's `seq` is a capture index; selection
     /// can leave gaps such as 30, 60, 90 without a loss. The caption names it
-    /// as a capture index so the two sequences stay distinct.
+    /// as a capture index so the two sequences stay distinct; it is the only
+    /// thread back to a particular captured frame.
     @ViewBuilder
     private func provenanceRows(_ reading: CVFrameReading) -> some View {
         VStack(alignment: .leading, spacing: 2) {

@@ -9,9 +9,10 @@
 //  the refusals a real Tower sent for an unknown experiment and a stale run,
 //  and the `frame_result` / `frame_error` a real frame produced.
 //
-//  `CVMetric` carries no `baseline`, `higherIsBetter` or `comparison` because
-//  the Tower sends those fields as `null`; a comparison without a reference
-//  would violate `docs/modules/EXPERIMENTAL-CV.md`.
+//  `CVMetric` has no `baseline`, `higherIsBetter` or `comparison` machinery.
+//  Its absence is a property of the build, not of today's null payloads:
+//  a comparison without a measured reference violates
+//  `docs/modules/EXPERIMENTAL-CV.md`.
 //
 
 import UIKit
