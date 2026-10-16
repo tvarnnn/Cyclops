@@ -813,7 +813,7 @@ final class SceneLifecycleTests: XCTestCase {
         for state: SceneLifecycleState in [.stopped, .starting, .running, .failed, .unrecognised("x")] {
             XCTAssertFalse(
                 state.mayHoldLastKnownScene,
-                "\(state.wireValue) was allowed to hold a scene past its session"
+                "\(state) was allowed to hold a scene past its session"
             )
         }
     }
@@ -1079,14 +1079,12 @@ final class SceneUnderstandingClientTests: XCTestCase {
     }
 
     /// **The phone sends nothing to open this cartridge.** The four control
-    /// routes exist and belong to an operator; this app knows their names and
-    /// calls none of them.
+    /// routes exist and belong to an operator; this app calls none of them.
     ///
     /// Asserted as a property of the client's surface rather than of the wire,
     /// because there is no method here that could send one: `SceneUnderstandingClient`
     /// has no verb at all, which is the strongest form this can take.
     func testThisAppHasNoWayToStartOrStopASceneSession() {
-        XCTAssertEqual(SceneUnderstandingContract.controlRoutes.count, 4)
         XCTAssertTrue(
             SceneUnderstandingContract.phoneSendsNothingNote.lowercased().contains("never starts")
         )

@@ -99,17 +99,6 @@ enum SceneLifecycleState: Equatable, Sendable {
         }
     }
 
-    var wireValue: String {
-        switch self {
-        case .stopped: return "stopped"
-        case .starting: return "starting"
-        case .running: return "running"
-        case .paused: return "paused"
-        case .failed: return "failed"
-        case .unrecognised(let word): return word
-        }
-    }
-
     /// The **only** state in which a scene may be shown as "last known".
     ///
     /// This property is the enforcement point for the rule in §4 of the
@@ -525,6 +514,9 @@ struct SceneObservation: Equatable, Sendable {
 /// Why there is no scene. **Four distinct situations**, and a client that
 /// flattened them would show an empty room for all four — when only one of them
 /// is even about a room, and that one is not in this enum.
+///
+/// The four known cases reach the screen as a `SceneSilence`, which carries
+/// the headline and the fallback sentence. `.unrecognised` maps to none.
 enum SceneUnavailableReason: Equatable, Sendable {
     /// Stopped. The last scene was **discarded**, not kept.
     case stopped
@@ -537,19 +529,6 @@ enum SceneUnavailableReason: Equatable, Sendable {
     case runningButNoFrameYet
     /// A state this build did not recognise, with whatever the Tower said.
     case unrecognised(String)
-
-    /// The Tower's prose is preferred wherever it exists; this is the headline
-    /// above it, and the four differ because they call for four different
-    /// things to be said to a person.
-    var headline: String {
-        switch self {
-        case .stopped: return "Not observing"
-        case .stillLoading: return "Still loading"
-        case .failed: return "Scene reading failed"
-        case .runningButNoFrameYet: return "No frame yet"
-        case .unrecognised: return "Unavailable"
-        }
-    }
 }
 
 /// One complete Scene Understanding payload, decoded.
@@ -705,16 +684,6 @@ enum SceneUnderstandingState: Equatable, Sendable {
     /// any decode path uses.
     case lastKnown(SceneReading)
     case failed(CartridgeFailure)
-
-    /// The reading behind whatever is on screen, if there is one.
-    var reading: SceneReading? {
-        switch self {
-        case .idle(let reading): return reading
-        case .awaitingFirstScene(let reading), .observing(let reading), .lastKnown(let reading):
-            return reading
-        case .unsupported, .failed: return nil
-        }
-    }
 
     /// The scene, when one is being shown. `nil` in every state that has none —
     /// including `.idle`, which may still carry the reading that says *why*.

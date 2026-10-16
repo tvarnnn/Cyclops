@@ -53,28 +53,29 @@ nonisolated enum SceneUnderstandingContract {
     /// Every timestamp on this wire. There is no capture clock.
     static let timeBasis = "tower-receipt"
 
-    // MARK: Routes
-    //
-    // Listed for completeness and **not called by this app**. Nor is
-    // `GET /scene`, which carries the same payload the subscription does. The
-    // four POSTs are an operator surface: `docs/agent-handoffs/IOS-TO-TOWER.md` §6 (item 2) is explicit that opening a
-    // cartridge on the phone sends nothing, and a Tower-side test asserts the
-    // wire stays silent. The session follows the stream instead —
-    // `stream_start` opens it, `stream_stop` or a disconnect ends it — which is
-    // the normal case for a wearable.
-    //
-    // Two further reasons not to grow a Start button here, both measured:
-    //
-    // 1. `POST /scene/resume` on a stopped scene answers **200 with
-    //    `state: "stopped"` and no refusal field**. A client keyed on the
-    //    status code would report success for a verb that did nothing. The
-    //    cheapest way to get that right is not to send it.
-    // 2. A phone's `stream_stop` can already end a session an operator started
-    //    by hand. Adding a second way for the phone to move the session makes
-    //    that worse, not better.
-    static let controlRoutes = ["/scene/start", "/scene/pause", "/scene/resume", "/scene/stop"]
+    // MARK: The phone sends nothing
 
     /// Why this app sends nothing, in a sentence a person could be shown.
+    ///
+    /// The Tower's `POST /scene/{start,pause,resume,stop}` routes are an
+    /// operator surface and **this app calls none of them**. Nor does it call
+    /// `GET /scene`, which carries the same payload the subscription does.
+    /// `docs/agent-handoffs/IOS-TO-TOWER.md` §6 (item 2) is explicit that
+    /// opening a cartridge on the phone sends nothing, and a Tower-side test
+    /// asserts the wire stays silent. The session runs while somebody streams
+    /// (`stream_start` until `stream_stop` or a disconnect) and somebody
+    /// watches (the live subscription), which is the normal case for a
+    /// wearable.
+    ///
+    /// Two further reasons not to grow a Start button here, both measured:
+    ///
+    /// 1. `POST /scene/resume` on a stopped scene answers **200 with
+    ///    `state: "stopped"` and no refusal field**. A client keyed on the
+    ///    status code would report success for a verb that did nothing. The
+    ///    cheapest way to get that right is not to send it.
+    /// 2. A phone's `stream_stop` can already end a session an operator started
+    ///    by hand. Adding a second way for the phone to move the session makes
+    ///    that worse, not better.
     static let phoneSendsNothingNote = """
         This app never starts or stops the Tower's scene reading. The session \
         follows the camera stream, and the controls belong to whoever runs the \
@@ -144,28 +145,9 @@ enum SceneUnderstandingDecoder {
         let unavailableText = payload["scene_unavailable_reason"] as? String
 
         if sceneAvailable {
-            // `counts`, `where` and `people` are non-null together with
-            // `scene_available: true`. A payload where they disagree is not a
-            // half-scene to be rendered carefully; it is a payload this build
-            // does not understand.
-            guard
-                let rawCounts = payload["counts"] as? [String: Any],
-                let rawWhere = payload["where"] as? [String: Any],
-                let rawPeople = payload["people"] as? [String: Any],
-                let people = self.people(from: rawPeople)
+            guard let scene = self.observation(from: payload, reportedClasses: reportedClasses)
             else { return nil }
-
-            observation = SceneObservation(
-                // Ordered by `reported_classes` rather than by the dictionary,
-                // which has no order. The Tower's order is fixed at build time,
-                // so a reader's eye stays in the same place between readings.
-                counts: reportedClasses.map { label in
-                    SceneClassCount(label: label, count: rawCounts[label] as? Int ?? 0)
-                },
-                positions: positions(from: rawWhere, ordering: reportedClasses),
-                people: people,
-                scoreThreshold: payload["score_threshold"] as? Double
-            )
+            observation = scene
             unavailableReason = nil
         } else {
             observation = nil
@@ -257,6 +239,36 @@ enum SceneUnderstandingDecoder {
     }
 
     // MARK: The scene
+
+    /// The scene block of a payload whose `scene_available` is `true`, or `nil`
+    /// when it is incomplete.
+    ///
+    /// `counts`, `where` and `people` are non-null together with
+    /// `scene_available: true`. A payload where they disagree is not a
+    /// half-scene to be rendered carefully; it is a payload this build does
+    /// not understand, and `nil` makes the caller refuse it whole.
+    static func observation(
+        from payload: [String: Any], reportedClasses: [String]
+    ) -> SceneObservation? {
+        guard
+            let rawCounts = payload["counts"] as? [String: Any],
+            let rawWhere = payload["where"] as? [String: Any],
+            let rawPeople = payload["people"] as? [String: Any],
+            let people = self.people(from: rawPeople)
+        else { return nil }
+
+        return SceneObservation(
+            // Ordered by `reported_classes` rather than by the dictionary,
+            // which has no order. The Tower's order is fixed at build time,
+            // so a reader's eye stays in the same place between readings.
+            counts: reportedClasses.map { label in
+                SceneClassCount(label: label, count: rawCounts[label] as? Int ?? 0)
+            },
+            positions: positions(from: rawWhere, ordering: reportedClasses),
+            people: people,
+            scoreThreshold: payload["score_threshold"] as? Double
+        )
+    }
 
     /// `where` → one row per non-person label, in the class list's order.
     ///
