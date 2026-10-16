@@ -137,8 +137,7 @@ class LabRun:
     Mutated only from the event loop (the frame path and the command
     handlers both run there) and read from a worker thread by the result
     channel's poller. Nothing in here takes a lock, and `CVLab` does not
-    hold one while reading these counters either -- an earlier version of
-    this comment claimed it did, and it does not.
+    hold one while reading these counters either.
 
     What makes that safe is not a lock. It is that the reader reads each
     counter ONCE into a local and derives `frames_offered` from those
@@ -181,18 +180,16 @@ class LabRun:
         # and `frames_offered` DERIVED from them rather than stored --
         # which is the only way the sum can be trusted.
         #
-        # It used to be a fourth counter, incremented on arrival and the
-        # others on the outcome. The status document is built on a worker
-        # thread while the frame path runs on the loop, so a snapshot
-        # taken between those two increments published four numbers that
-        # did not add up: measured at 2,741 such snapshots over a run
-        # with a 2 ms experiment. The invariant below is the whole
-        # diagnostic -- offered 0 means the stream is not reaching the Lab
-        # at all, offered>0 with processed 0 means it is and the Lab is
-        # refusing -- and an invariant that is false 2,741 times is not
-        # one. Locking the frame path to fix a diagnostic would have been
-        # paying in the wrong currency; deriving it costs nothing and is
-        # true by construction.
+        # A stored fourth counter, incremented on arrival while the others
+        # are incremented on the outcome, would let a snapshot taken
+        # between those two increments publish four numbers that do not
+        # add up (the status document is built on a worker thread while
+        # the frame path runs on the loop): 2,741 such snapshots were
+        # measured over a run with a 2 ms experiment. The invariant below
+        # is the whole diagnostic -- offered 0 means the stream is not
+        # reaching the Lab at all, offered>0 with processed 0 means it is
+        # and the Lab is refusing. Deriving it costs nothing and is true
+        # by construction.
         #
         # A frame currently being processed is therefore not yet counted
         # anywhere, which is correct: its outcome is not known.
@@ -298,8 +295,8 @@ class LabRun:
         not a number in this file: a name is added only if
         `classify_metric` recognises it, which means only if the
         experiment declared it in its own `METRIC_KINDS`. That is a
-        compile-time set -- twelve entries at its largest. An arbitrary
-        cap on top of it would never fire.
+        compile-time set -- fourteen entries at its largest
+        (`optical_flow`). An arbitrary cap on top of it would never fire.
         """
         accumulator = self._metrics.get(name)
         if accumulator is None:
@@ -307,9 +304,9 @@ class LabRun:
                 kind = classify_metric(self.experiment_id, name)
             except UnclassifiedMetricError:
                 # Loud in the log, visible on the wire, and NOT folded in
-                # under a guessed default -- guessing is what let fifteen
-                # mis-summed rates go unnoticed before `MetricKind`
-                # existed. Recorded once per name per run.
+                # under a guessed default -- guessing a default is what let
+                # fifteen mis-summed rates go unnoticed. Recorded once per
+                # name per run.
                 if (
                     name not in self._unclassified
                     and len(self._unclassified) < MAX_UNCLASSIFIED_REPORTED
