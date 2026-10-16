@@ -1,8 +1,8 @@
 """The Experimental CV Lab as a product surface rather than a variable.
 
-The experiment is chosen at runtime by a client command, and every
-result names the run that produced it; nothing about the choice lives in
-the process environment.
+The experiment is chosen at runtime by a client command
+(`TOWER_CV_EXPERIMENT` names only the startup default), and every result
+names the run that produced it.
 
 Six modules, in dependency order:
 
