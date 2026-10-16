@@ -7,7 +7,7 @@ cartridge's name into `main.py`'s import list, which is the boundary
 cartridge is reached only through `tower/results/object_memory.py`, the
 adapter named after it.
 
-Both handlers are declared `def` rather than `async def` on purpose.
+Every handler is declared `def` rather than `async def` on purpose.
 FastAPI runs a sync endpoint in its threadpool, which keeps the JSONL
 read off the event loop with no executor of our own -- the same reason
 `tower/routes/geometry.py` gives for the same choice. An `async def`
@@ -20,10 +20,10 @@ and `test_no_wire_module_can_reach_purge_or_prune` fails if it ever
 does. Deletion stays with `scripts/object_query.py --purge-all`, where a
 human types it.
 
-THE IMAGERY ROUTES SERVE PIXELS, AND THAT IS NEW.
+THE IMAGERY ROUTES SERVE PIXELS.
 
-Until now this cartridge exposed a POINTER to a frame and never the
-frame. Three rules hold that step:
+Every other route here returns only a POINTER to a frame. Three rules
+govern the imagery routes:
 
   * every picture passes a face filter on the way out, and a Tower whose
     filter cannot run serves NOTHING rather than an unfiltered
@@ -183,12 +183,10 @@ _NO_STORE = {"Cache-Control": "no-store"}
 # most of this repository's tests. The failure has to be a REFUSAL, never
 # an AttributeError and never a raw frame.
 #
-# `path=""` means "no model", explicitly, since `imagery.FaceFilter` grew
-# a blank check. It did not always: `Path("")` is `Path(".")` and
-# `Path(".").exists()` is True, so this reported itself AVAILABLE and
-# refused only because `cv2.FaceDetectorYN.create(".")` happened to
-# raise. Every test that asserted a refusal here was passing for that
-# reason rather than for this one.
+# `path=""` means "no model", explicitly: `Path("")` is `Path(".")` and
+# `Path(".").exists()` is True, so an empty path would otherwise report
+# itself AVAILABLE and refuse only because
+# `cv2.FaceDetectorYN.create(".")` happens to raise.
 _REFUSING_FILTER = build_face_filter(path="")
 
 
@@ -211,8 +209,7 @@ def _keyframes(request: Request):
     `observation_root` the store comes from, so the two cannot point at
     different directories.
 
-    None is not a failure. It means "look in the capture tree", which is
-    what every request did before keyframes existed.
+    None is not a failure. It means "look in the capture tree".
     """
     return getattr(request.app.state, "object_memory_keyframes", None)
 
@@ -249,12 +246,11 @@ def imagery_view(observation_id: str, request: Request) -> dict:
     way, and a 404 here would read as "no such memory". A handle that
     matched nothing is the exception, and is a real 404.
     """
-    # A CROP render, not a frame one, and the difference is the whole
-    # reason keyframes are reachable at all. See `build_imagery_view`:
-    # describing a `/frame` render here reported `available: false` for
-    # every record whose recording had been deleted, including the ones
-    # holding an owned crop -- and the shipped iOS loader gates on that
-    # boolean and would never have asked for the crop.
+    # A CROP render, not a frame one. See `build_imagery_view`: describing
+    # a `/frame` render here reports `available: false` for every record
+    # whose recording has been deleted, including the ones holding an
+    # owned crop, and the iOS loader gates on that boolean, so it would
+    # never ask for the crop.
     observation, image = _imagery(request, observation_id, crop=True)
     if observation is None:
         raise HTTPException(
