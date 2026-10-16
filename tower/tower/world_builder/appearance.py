@@ -13,12 +13,11 @@ this stage that opens a keyframe image, and it opens exactly one directory:
 undistorted), a capture, `sources.json`, or the depth stage's `undist/` (which
 holds TELEA-inpainted pixels inside the fill -- invented content). This is
 enforced by a static test over this module and the pipeline, not only by this
-paragraph: an earlier dense stage asserted the same boundary in a docstring and
-then read around it.
+paragraph.
 
 THE ONE EXCEPTION IS NAMED, OFF BY DEFAULT, AND LABELLED. `AppearanceParams.
 imagery_source` is `redacted` unless a caller asks for `raw-local-research`:
-the owner-sanctioned research bypass (2026-09-21) that builds from the
+the owner-sanctioned research bypass that builds from the
 ORIGINAL local capture frames, so the campaign can measure what reconstruction
 quality that imagery supports. Everything that bypass needs -- where the
 original frames are, what the artifact is then called, and why it is not
@@ -28,12 +27,16 @@ not ask for it behaves as it did before. An artifact built that way says so in
 its manifest, its params digest, its served header and the page's caption, and
 a reader that wants redacted appearance refuses it.
 
-Measured on the canonical capture by the fix-it privacy lane
-(`Glasses-scratch/wb-final-recon/fixit/privacy/PRIVACY.md`): the solve's images
-are the raw frames (177 of 181 filled frames non-black inside the fill), the
-undist frames are inpainted inside it (mean 69.8 against 5.2), and stored fill
-masks miss solid boxes that touch dark scene in 7 of 395 frames. Each rule
-below answers one of those measurements.
+Measured on the canonical capture: the solve's images are the raw frames (177
+of 181 filled frames non-black inside the fill), the undist frames are
+inpainted inside it (mean 69.8 against 5.2), and stored fill masks miss solid
+boxes that touch dark scene in 7 of 395 frames. Each rule below answers one of
+those measurements.
+
+Contents, in order: params and the redaction label allowlist; provenance
+(`keyframe_source`); proxy depth and the cross-frame redaction consensus;
+occluders and transient votes; exposure; selection; encoding and the chunk
+format.
 """
 
 from __future__ import annotations
@@ -49,7 +52,6 @@ from tower.world_builder.raw_imagery import (
     IMAGERY_REDACTED,
     IMAGERY_SOURCES,
     RAW_LABEL,
-    RAW_UNOBSERVED_RULE,
     is_raw,
 )
 
@@ -64,8 +66,8 @@ _YUNET = "faces-detected-and-filled/yunet-2023mar@0.30"
 
 # EXACT strings, versioned here, each with the measurement that admitted it.
 # A detector or gate that is not in this table is NOT trusted, whatever its
-# name suggests: `dense_pipeline` used `label != "none"`, which trusted any
-# string at all, including the one gate measured to be weak (L2).
+# name suggests: a `label != "none"` test would trust any string at all,
+# including the one gate measured to be weak (`RERUN_REDACTION_LABELS`).
 TRUSTED_REDACTION_LABELS = {
     _YUNET: "ungated; fills a superset of every later gate",
     f"{_YUNET}+plausibility1": "0 of 3,232 held-out close faces lost",
@@ -110,8 +112,7 @@ UNOBSERVED_RULE = f"fill2|nearblack{NEARBLACK_MAX}open{NEARBLACK_OPEN}|dilate{UN
 # A face is redacted per FRAME. The detector runs on each keyframe alone, so a
 # face found in keyframe A and MISSED in keyframe B is filled in A and
 # published by B -- and the page, blending by view, draws B's pixels at the
-# very pose where A hid them. Measured on the canonical world by the fix-it
-# cross-frame lane (`Glasses-scratch/wb-final-recon/fixit/privleak/PRIVLEAK.md`):
+# very pose where A hid them. Measured on the canonical world:
 # 99.4% of the surface some keyframe's fill covered is published by another
 # keyframe, and the one real face in that capture -- a printed portrait,
 # detected and filled in 17 keyframes -- is published, recognisably, by 86
@@ -206,8 +207,8 @@ class AppearanceParams:
     #   `off`        per-frame redaction only -- what a build did before this
     #                mask existed.
     #
-    # DEFAULT `off` since 2026-09-21, by the owner's instruction to defer privacy
-    # preprocessing until the reconstruction itself is convincing. The rule works
+    # DEFAULT `off`: privacy preprocessing is deferred until the reconstruction
+    # itself is convincing. The rule works
     # (it closed a measured leak: a face redacted in one frame was published by 86
     # others) but on this capture it costs a third of the shelf, the posters and
     # the bed: appearance `seen>=1` 97.69% -> 86.32%, walk-view haze 0.55% ->
@@ -230,8 +231,7 @@ class AppearanceParams:
     # The voxel side, in pixels at the median proxy depth. With
     # `consensus_dilate_cells` it is the whole tolerance of the rule: about
     # 6 px at the median depth here, which is where the cost stops falling
-    # (PRIVLEAK.md: 17.3% of the published texels at 6 px a voxel, 14.6% at 3,
-    # 13.6% at 2).
+    # (17.3% of the published texels at 6 px a voxel, 14.6% at 3, 13.6% at 2).
     consensus_voxel_px: float = 3.0
     consensus_dilate_cells: int = 1
     consensus_dilate_px: int = 2
@@ -387,8 +387,7 @@ def pixel_trust_token(label: str | None, redactor_label: str | None = None,
     bytes were used, `rerun:<label or none>&<redactor label>` when they were
     redacted again first. Two stages with equal tokens read equal pixels from
     equal stored bytes; a label change at Stop (`none` -> the real label)
-    changes the token, so nothing cached under one is reused under the other
-    (review 1, M3).
+    changes the token, so nothing cached under one is reused under the other.
 
     The research bypass gets a token of its own shape, naming the exact set of
     original frames. It shares no prefix with either redacted spelling, so a
@@ -624,7 +623,7 @@ def keyframe_source(store, world_id: str, session_id: str, keyframe_id: str, ki:
 
     if policy.trusted:
         if stored_fill is None:
-            # A MISSING MASK IS NOT AN EMPTY ONE (privacy L4).
+            # A MISSING MASK IS NOT AN EMPTY ONE.
             out.refused = REFUSED_NO_FILL_MASK
             return out
         fill = stored_fill
@@ -756,7 +755,7 @@ def consensus_regions(unobserved: np.ndarray, zp: np.ndarray, params: "Appearanc
       world: all 20 eye-labelled printed-face regions are at most 9.95% of
       their frame, and the regions that make the union unaffordable are
       56-84%. What this does NOT cover is a face close enough to fill more
-      than a tenth of the frame -- PRIVLEAK.md §7;
+      than a tenth of the frame;
     - not the wearer's own hand, arm or phone, which the transient detector
       recognises (`transients.py`, 97.7% hand/arm pixel recall). A redaction
       box over the wearer's own hand is a false positive by construction, and
@@ -1683,6 +1682,7 @@ def encode_astc(rgba: np.ndarray, quality: float = ASTC_QUALITY, threads: int = 
 
 
 def decode_astc(blocks: bytes, width: int, height: int) -> np.ndarray:
+    """Reference decoder: the tests use it to check the alpha ring survives ASTC."""
     from astc_encoder import (  # noqa: PLC0415
         ASTCConfig,
         ASTCContext,
@@ -1721,6 +1721,7 @@ def encode_webp(rgba: np.ndarray, quality: int = WEBP_QUALITY) -> bytes:
 
 
 def decode_webp(data: bytes) -> np.ndarray:
+    """Reference decoder: the tests use it to check alpha survives WebP."""
     import cv2  # noqa: PLC0415
 
     img = cv2.imdecode(np.frombuffer(data, np.uint8), cv2.IMREAD_UNCHANGED)
