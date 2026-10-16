@@ -1,8 +1,7 @@
 #!/usr/bin/env python
 """World Builder -> CV Lab -> World Builder, on ONE Tower, many times.
 
-The requirement this measures (2026-09-06, after the first physical test of
-the combined stack): the Tower is a long-lived host. Switching cartridges
+The requirement this measures: the Tower is a long-lived host. Switching cartridges
 from the phone must never need a Tower restart, an environment variable,
 a killed worker or an app restart -- and repeated switching must not leak
 processes, threads or memory, must not leave a builder following a camera
@@ -46,7 +45,6 @@ import asyncio
 import base64
 import io
 import json
-import os
 import shutil
 import signal
 import socket
