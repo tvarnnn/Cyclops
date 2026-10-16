@@ -199,7 +199,9 @@ def _read(store, world_id: str, session_id: str):
     # check below can stand in for the other. The session check is anchored
     # on `derived_dir(world_id)`, so an escaped `world_id` moves the anchor
     # and the session check still passes relative to the escaped base,
-    # serving a complete world from outside the configured root.
+    # serving a complete world from outside the configured root (measured:
+    # `..\..\elsewhere\worlds\victim`, its `%5C` form and an absolute
+    # `C:\elsewhere\worlds\victim` all answered 200).
     #
     # `world_id` is a PATH parameter, so Starlette's `[^/]+` excludes a
     # forward slash -- and on Windows, the only platform this Tower ships

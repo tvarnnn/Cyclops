@@ -295,7 +295,7 @@ class _FileCache:
     #
     # The entries are NOT all small: a real manifest measured **63.5 KB**,
     # against 768 bytes for an events summary. 256 entries is ~7 MiB worst
-    # case. The eviction below is one-at-a-time and least-recently-used, so
+    # case; the bound before it was 64 entries. The eviction below is one-at-a-time and least-recently-used, so
     # crossing the bound costs one re-read rather than every reader's.
     MAX_ENTRIES = 256
 
@@ -751,7 +751,9 @@ class WorldBuilderStatusProducer:
         # order `store.derived_currency` and
         # `world_builder_geometry._session_manifest` use; the opposite
         # order gives `ready` beside a 404, and a route serving geometry
-        # the phone was told was still finalizing. Four readers, one rule.
+        # the phone was told was still finalizing (the readers picked
+        # different manifests in each of the eleven states where the two
+        # copies disagree). Four readers, one rule.
         manifest = self._files.read(
             "validated-manifest",
             store.session_manifest_path(world.world_id, session_id),
@@ -1369,7 +1371,9 @@ def _photographic_build_evidence(store, world_id, session_id):
 
     THE LOCK IS NOT THE ONLY EVIDENCE THAT A WORLD IS STILL BEING BUILT, and
     treating it as the only evidence would make a phone say "Saved" over a
-    reconstruction that is up to sixteen minutes away.
+    reconstruction that is up to sixteen minutes away (a wearer read "Saved"
+    ninety seconds after pressing Stop, with the surface build still to
+    run).
 
     The ordering that opens the gap is CORRECT and must stay:
     `scripts/world_build_session.py` marks finalization complete and releases
@@ -1789,7 +1793,7 @@ def _lifecycle_from_the_record(*, holder, stopped, session, geometry_current,
     the writer lock answers it exactly, because it is held for the lifetime of
     a mapping session and by nothing else. The live builder keeps it through
     finalization too (`engine.stop_session(hold_lock=True)`), and writes a
-    `finalization` block on the record, so these states are distinguishable
+    `finalization` block on the record, so five states are distinguishable
     on disk:
 
         lock alive, not stopped                 -> receiving
@@ -2107,7 +2111,8 @@ def _lifecycle_from_the_record(*, holder, stopped, session, geometry_current,
         # list, a schema version from the future, a required key set to
         # null. `_validate_manifest` gives a corrupt manifest a clean
         # refusal, so this branch must not turn it into a confident wrong
-        # sentence about a manifest "naming another session".
+        # sentence about a manifest "naming another session" (it did, for
+        # each of the four corrupt shapes).
         #
         # Neither case can judge currency, and the difference does not
         # change what to do, so both get this state -- and the evidence
@@ -3145,7 +3150,10 @@ def _pose_count(manifest):
     positioned = manifest.get("poses_positioned")
     if isinstance(positioned, bool) or not isinstance(positioned, int):
         # A manifest without poses_positioned predates the rule; absent is
-        # the only honest answer for it.
+        # the only honest answer for it. The old arithmetic (keyframes -
+        # poses_refused) counted a segment ANCHOR, one per segment, as a
+        # camera position: "Camera poses: 36" on a world whose manifest
+        # read poses_solved: 0.
         return None
     return max(0, positioned)
 

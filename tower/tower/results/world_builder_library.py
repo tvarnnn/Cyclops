@@ -503,7 +503,9 @@ def session_state(session, *, live: bool, has_geometry: bool, manifest=None,
     ):
         # `final_solve == solved` AS WELL, because that is the panel's
         # rule: a Tower shut down mid-walk writes `complete` with
-        # `final_solve: skipped`, which the panel calls "Interrupted".
+        # `final_solve: skipped`, which the panel calls
+        # "Interrupted" (five record shapes built to test this all
+        # disagreed with the picker).
         # BEFORE the end-reason check, because a completed finalization
         # outranks how the capture ended -- the status producer's own rule
         # (`world_builder.py`, "a completed finalization outranks how the

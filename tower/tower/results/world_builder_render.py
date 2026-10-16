@@ -51,7 +51,8 @@ logger = logging.getLogger(__name__)
 #
 # 40,000 comes from timing the page's own `draw()` -- the function an orbit
 # drag calls once per frame -- on the recovered field world in desktop
-# Chrome, 1920x819, by cloning its segments to reach each count:
+# Chrome, 1920x819, by cloning its segments to reach each count (80,000
+# was the first guess, before it was measured):
 #
 #      19,329 pts    6.2 ms   161 fps
 #      38,658 pts   13.6 ms    74 fps
