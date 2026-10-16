@@ -6,9 +6,8 @@ Synthetic frames carry no motion blur, no rolling shutter, no auto-exposure
 hunting, and no JPEG artefacts at the quality the phone actually sends. A
 number measured on them describes the renderer.
 
-This walks `data/captures/` instead -- 18 captures and ~9,199 real
-Ray-Ban frames at 360x640 that, until now, no detector or OCR had ever
-been run against.
+This walks `data/captures/` instead -- real Ray-Ban frames at 360x640
+(18 captures and ~9,199 frames in the corpus when this was written).
 
     python scripts/capture_corpus_benchmark.py object_detection
     python scripts/capture_corpus_benchmark.py depth --per-capture-limit 50
@@ -43,18 +42,17 @@ from tower.experiments import (  # noqa: E402
     classify_metric,
 )
 
-# How to combine a metric across frames is NOT decided here. It used to
-# be: an allowlist of names, everything else summed. Eight of its eleven
-# names were dead, fifteen rate-like metrics were being summed, and
-# `tracked_fraction` -- a quantity that cannot exceed 1 -- was reported
-# as 768 over the real corpus. A name is not evidence of what a number
-# means; the experiment that produced it is, and it now says so in its
-# own METRIC_KINDS. A metric that says nothing raises here rather than
-# defaulting to a plausible, meaningless total.
+# How to combine a metric across frames is NOT decided here. A name is not
+# evidence of what a number means; the experiment that produced it is, and
+# it says so in its own METRIC_KINDS. A metric that says nothing raises here
+# rather than defaulting to a plausible, meaningless total. (The superseded
+# name allowlist, with everything else summed, had eight of its eleven names
+# dead and summed fifteen rate-like metrics, so `tracked_fraction` -- a
+# quantity that cannot exceed 1 -- came out as 768 over the real corpus.)
 
 # A CONSTANT with more distinct values than this is not a constant, and
-# whatever it is, accumulating one entry per frame for 9,199 frames is
-# not a report. The corpus holds a handful of resolutions, so the ceiling
+# whatever it is, accumulating one entry per frame across the corpus (~9,199
+# frames when this was written) is not a report. The corpus holds a handful of resolutions, so the ceiling
 # is loose enough never to fire on a correct declaration.
 _MAX_CONSTANT_VALUES = 16
 
