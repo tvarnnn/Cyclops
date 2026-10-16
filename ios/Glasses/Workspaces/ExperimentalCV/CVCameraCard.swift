@@ -17,13 +17,8 @@ import MWDATCamera
 
 /// The camera, from inside the Experimental CV Lab.
 ///
-/// ## Why this exists
-///
-/// An experiment is fed by the glasses camera, and until this card a person
-/// running one started the camera on Home, walked to the Lab to choose an
-/// experiment, and walked back to Home to stop it. Three screens for one
-/// question. The card puts the four controls a bench run needs — Start, Pause,
-/// Resume, Stop — beside the experiment they feed.
+/// An experiment is fed by the glasses camera, so its Start, Pause, Resume and
+/// Stop controls sit beside the experiment they feed.
 ///
 /// ## What each control actually does
 ///

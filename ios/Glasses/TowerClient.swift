@@ -20,6 +20,26 @@ enum TowerStatus: Equatable {
     case failed(String)
 }
 
+@MainActor
+protocol FrameRefusalScheduling {
+    func schedule(
+        after delay: TimeInterval,
+        _ action: @escaping @MainActor @Sendable () -> Void
+    ) -> @MainActor @Sendable () -> Void
+}
+
+@MainActor
+private struct MainQueueFrameRefusalScheduler: FrameRefusalScheduling {
+    func schedule(
+        after delay: TimeInterval,
+        _ action: @escaping @MainActor @Sendable () -> Void
+    ) -> @MainActor @Sendable () -> Void {
+        let item = DispatchWorkItem { Task { @MainActor in action() } }
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: item)
+        return { item.cancel() }
+    }
+}
+
 /// WebSocket client for the Tower connection. Validates connectivity with an
 /// initial ping/pong handshake, then keeps a continuous receive loop running
 /// for as long as the connection is online so the client can observe
@@ -111,10 +131,20 @@ final class TowerClient: NSObject, ObservableObject {
     /// keeps the CV Lab client free of a second conditional-compilation branch
     /// in the middle of its state machine.
     ///
-    /// Cleared alongside `latestFrameResult` at all three points, for the same
-    /// reason: a refusal from a bracket that has closed is not the current
-    /// answer to anything.
+    /// Cleared at stream start and stop, connection teardown, run change and
+    /// after a valid `frame_result`: an earlier refusal is not the current
+    /// answer in a new bracket or run, or beside a fresh reading. Each clear
+    /// also cancels a pending refresh so the old answer cannot return.
     @Published private(set) var latestFrameRefusal: TowerFrameRefusal?
+    /// A one-second window bounds redraws and logs while preserving a useful
+    /// capture number when the Tower refuses frames at the send rate.
+    private static let frameRefusalPublishInterval: TimeInterval = 1.0
+    private var lastFrameRefusalPublishedAt: TimeInterval?
+    private var pendingFrameRefusal: TowerFrameRefusal?
+    private var cancelFrameRefusalFlush: (@MainActor @Sendable () -> Void)?
+    private var frameRefusalFlushToken = 0
+    private let frameRefusalNow: () -> TimeInterval
+    private let frameRefusalScheduler: any FrameRefusalScheduling
 
     /// The CV Lab run this client is watching, or `nil`.
     ///
@@ -464,19 +494,22 @@ final class TowerClient: NSObject, ObservableObject {
     ///   - autoReconnect: See the property of the same name.
     ///   - reconnectBackoff: Overridable so a test can spend the reconnect
     ///     budget in well under a second. `nil` uses the shipped schedule.
+    ///   - frameRefusalNow: Monotonic clock for refusal display cadence;
+    ///     injectable so the cadence can be exercised without waiting.
+    ///   - frameRefusalScheduler: Schedules one cancellable trailing refresh;
+    ///     injectable so a test can fire or cancel it without waiting.
     ///
-    /// The overrides are `nil`-defaulted and resolved in the body rather than
-    /// being computed default arguments: default arguments are evaluated
-    /// outside this type's actor, and `defaultMaxFramesInFlight` reads
-    /// main-actor-isolated configuration. `GlassesConnection.init` avoids the
-    /// same trap for the same reason.
+    /// Actor-isolated defaults are resolved in the body rather than in default
+    /// arguments, which are evaluated outside this type's actor.
     init(
         metrics: SenderMetrics,
         maxFramesInFlight: Int? = nil,
         stallTimeout: TimeInterval? = nil,
         autoReconnect: Bool = false,
         handshakeLegTimeout: Int? = nil,
-        reconnectBackoff: [TimeInterval]? = nil
+        reconnectBackoff: [TimeInterval]? = nil,
+        frameRefusalNow: @escaping () -> TimeInterval = { MonotonicClock.now },
+        frameRefusalScheduler: (any FrameRefusalScheduling)? = nil
     ) {
         self.metrics = metrics
         self.handshakeLegTimeout = handshakeLegTimeout ?? Self.defaultHandshakeLegTimeout
@@ -486,6 +519,8 @@ final class TowerClient: NSObject, ObservableObject {
             stallTimeout: stallTimeout ?? Self.sendStallTimeout
         )
         self.autoReconnect = autoReconnect
+        self.frameRefusalNow = frameRefusalNow
+        self.frameRefusalScheduler = frameRefusalScheduler ?? MainQueueFrameRefusalScheduler()
         super.init()
     }
 
@@ -1104,7 +1139,7 @@ final class TowerClient: NSObject, ObservableObject {
     /// reaches perfectly well.
     private func clearCVLabRunWatch() {
         watchedCVLabRunID = nil
-        latestFrameRefusal = nil
+        clearFrameRefusal()
     }
 
     /// Adopt the run the Tower's status document says is current.
@@ -1167,7 +1202,7 @@ final class TowerClient: NSObject, ObservableObject {
         #if DEBUG
         latestFrameResult = nil
         #endif
-        latestFrameRefusal = nil
+        clearFrameRefusal()
     }
 
     #if DEBUG
@@ -1630,35 +1665,85 @@ final class TowerClient: NSObject, ObservableObject {
         // has been answered. Cleared here rather than left to age: "the Lab
         // is paused" beside a fresh reading is two claims that cannot both
         // be current.
-        latestFrameRefusal = nil
+        clearFrameRefusal()
         metrics.recordFrameResult()
     }
 
-    private func handleFrameError(_ json: [String: Any]) {
-        // The Lab's six refusal codes arrive here, and they are the answer to
-        // "I pressed Start and nothing happened".
-        //
-        // **Refusals are not failures**, and nothing here treats them as
-        // such: no `fail()`, no send-window change, no stream-bracket
-        // change, and `metrics` is not told a frame failed. The Tower
-        // counts these under `frames_rejected` and deliberately not under
-        // `frame_processing_errors`, for the reason it gives in one line —
-        // a Lab paused for five minutes has not failed hundreds of times —
-        // and a client that counted them as errors would report exactly the
-        // inflated count the Tower avoids.
+    /// Publishes changed refusals immediately and the latest repeat by the end of its window.
+    /// Decodes each reply -> checks reason and cadence -> publishes or replaces
+    /// the pending value; every decoded reply still reaches CV Lab consumers.
+    // Internal so cadence tests can deliver decoded wire fields synchronously;
+    // socket delivery is covered by the frame_error transport test.
+    func handleFrameError(_ json: [String: Any]) {
+        // A paused Lab for five minutes has not failed hundreds of times.
+        // Refusals leave the send window and reply counters intact; the Tower
+        // counts each under frames_rejected, not frame_processing_errors.
         guard let refusal = TowerFrameRefusal(json: json) else {
             log("frame_error could not be decoded")
             return
         }
-        // Not decimated, unlike `frame_result`. While the Lab refuses every
-        // frame (idle, arming, paused) these arrive at the send rate — the
-        // same ~12 Hz as replies at the default target — one line each.
+        let now = frameRefusalNow()
+        let changed = latestFrameRefusal?.reason != refusal.reason
+        let refreshDue = lastFrameRefusalPublishedAt.map {
+            now - $0 >= Self.frameRefusalPublishInterval
+        } ?? true
+        if changed || refreshDue {
+            cancelPendingFrameRefusal()
+            publishFrameRefusal(refusal, at: now)
+        } else {
+            pendingFrameRefusal = refusal
+            if cancelFrameRefusalFlush == nil, let lastFrameRefusalPublishedAt {
+                schedulePendingFrameRefusal(
+                    after: max(0, Self.frameRefusalPublishInterval - (now - lastFrameRefusalPublishedAt))
+                )
+            }
+        }
+        cvLabControlEvents.send(.frameRefused(refusal))
+    }
+
+    private func publishFrameRefusal(_ refusal: TowerFrameRefusal, at now: TimeInterval) {
+        latestFrameRefusal = refusal
+        lastFrameRefusalPublishedAt = now
         log(
             "frame_error: seq=\(refusal.sequence.map(String.init) ?? "?")"
                 + " reason=\(refusal.reason) — \(refusal.message)"
         )
-        latestFrameRefusal = refusal
-        cvLabControlEvents.send(.frameRefused(refusal))
+    }
+
+    private func schedulePendingFrameRefusal(after delay: TimeInterval) {
+        frameRefusalFlushToken &+= 1
+        let token = frameRefusalFlushToken
+        cancelFrameRefusalFlush = frameRefusalScheduler.schedule(after: delay) { [weak self] in
+            self?.flushPendingFrameRefusal(token: token)
+        }
+    }
+
+    private func flushPendingFrameRefusal(token: Int) {
+        guard token == frameRefusalFlushToken, let pendingFrameRefusal else { return }
+        cancelFrameRefusalFlush = nil
+        let now = frameRefusalNow()
+        if let lastFrameRefusalPublishedAt {
+            let remaining = Self.frameRefusalPublishInterval - (now - lastFrameRefusalPublishedAt)
+            if remaining > 0 {
+                schedulePendingFrameRefusal(after: remaining)
+                return
+            }
+        }
+        self.pendingFrameRefusal = nil
+        publishFrameRefusal(pendingFrameRefusal, at: now)
+    }
+
+    private func cancelPendingFrameRefusal() {
+        pendingFrameRefusal = nil
+        cancelFrameRefusalFlush?()
+        cancelFrameRefusalFlush = nil
+        frameRefusalFlushToken &+= 1
+    }
+
+    private func clearFrameRefusal() {
+        cancelPendingFrameRefusal()
+        latestFrameRefusal = nil
+        lastFrameRefusalPublishedAt = nil
     }
 
     // MARK: Inbound: CV Lab control plane

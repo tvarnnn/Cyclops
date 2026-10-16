@@ -10,13 +10,8 @@ import UIKit
 
 /// The CV Lab's live view: what the algorithm is looking at, drawn.
 ///
-/// ## What this replaces
-///
-/// A screen of numbers. `edge_density: 0.071` is a true statement about a
-/// frame and it tells a person wearing the glasses nothing about whether the
-/// algorithm can see the doorway they are standing in. This is the panel that
-/// answers that question, and everything else on the screen moved down to make
-/// room for it.
+/// A picture shows what the algorithm saw; a figure such as
+/// `edge_density: 0.071` alone cannot answer that question.
 ///
 /// ## Why this file holds no imagery it did not just draw
 ///
@@ -49,8 +44,7 @@ import UIKit
 
 /// What the Tower says a preview would be, before any bytes are fetched.
 ///
-/// Read off `run.annotation.artifact`, which was `null` on every previous
-/// version of this contract. See `EXPERIMENTAL-CV-LAB.md` §5.
+/// Read from `run.annotation.artifact`; see `EXPERIMENTAL-CV-LAB.md` §5.
 nonisolated struct CVLivePreview: Equatable, Sendable {
     /// `experimental_cv.preview/2026-08-29`. Opaque, compared for equality.
     /// A mismatch means this build cannot read what the Tower is offering, and
@@ -596,17 +590,10 @@ final class CVLivePreviewLoader: ObservableObject {
 
 /// The live view, drawn large and first.
 ///
-/// ## Hierarchy, and why the picture is at the top
+/// ## Hierarchy
 ///
-/// This workspace used to open with a list of numbers at equal weight —
-/// `edge_density`, `spatial_coverage`, `entropy_bits`, `mean_relative_depth`,
-/// backend, device, model, three timings and a capacity — every one of them
-/// true and none of them answering the question a person wearing the glasses
-/// is actually asking, which is *"can it see the doorway?"*
-///
-/// So: the picture, then a few figures that say whether it is healthy, then
-/// everything else behind a disclosure. The diagnostics did not go away. They
-/// stopped being the first thing.
+/// The picture answers what the algorithm sees; health figures follow, with
+/// diagnostic detail behind a disclosure.
 ///
 /// ## What it will not do
 ///

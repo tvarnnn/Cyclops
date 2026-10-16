@@ -3,13 +3,14 @@
 //  GlassesTests
 //
 
+import Combine
 import XCTest
 
 @testable import Glasses
 
 // MARK: - Fixtures
 
-/// Payloads curled off a **running Tower** on 2026-08-27 with
+/// Payloads from a **running Tower** with
 /// `TOWER_DOCUMENT_ROOT` set and an empty library — which is the expected
 /// state of this cartridge on this platform, not a degraded one.
 ///
@@ -477,10 +478,8 @@ enum DocumentFixtures {
         document["word_count"] = 8
         // Nested inside the document, which is where the Tower puts it:
         // `payload["document"] = dict(_summary_view(...), pages=[...])`.
-        // This fixture used to set `payload["pages"]` at the top level, which
-        // no Tower has ever sent -- it was written to match the decoder, and
-        // the decoder was reading the wrong level, so the two agreed and the
-        // page text never arrived on a device.
+        // A top-level `pages` field would hide the detail text from the
+        // decoder because the Tower nests pages inside `document`.
         document["pages"] = [[
             "page_index": 0,
             // Empty text with zero regions is the readable-nothing case, which
@@ -595,8 +594,7 @@ final class DocumentAnswerTests: XCTestCase {
 
 // MARK: - The limitation that must not be hidden
 
-/// §8.3. It appeared **zero times** in this app before this work, while every
-/// response carried it.
+/// §8.3. Every response carries recording limitations, including empty ones.
 @MainActor
 final class DocumentLimitationTests: XCTestCase {
 
@@ -618,7 +616,7 @@ final class DocumentLimitationTests: XCTestCase {
     }
 
     /// The premise is **untested, not disproved**, and the wire says both
-    /// halves: six false positives in 9,199 frames, zero after the gate was
+    /// halves: 6 false positives in 9,199 frames, 0 after the gate was
     /// re-derived, and no capture that has ever contained a sheet of paper.
     func testTheLimitationsSayTheDetectorHasNeverSeenAPositive() throws {
         let response = try XCTUnwrap(DocumentMemoryDecoder.library(from: DocumentFixtures.recent))
@@ -671,9 +669,9 @@ final class DocumentLimitationTests: XCTestCase {
 @MainActor
 final class DocumentFieldTests: XCTestCase {
 
-    /// **48, off the envelope.** The contract prose said 160 for months while
-    /// the code said 48, and the instruction that resolved it was to read the
-    /// field rather than the prose.
+    /// **48, off the envelope.** The Tower publishes its cap
+    /// (`snippet_max_chars`, its `SNIPPET_MAX_CHARS`), so the decoder reads
+    /// the payload field rather than assuming 48.
     func testTheSnippetCapIsReadFromThePayload() throws {
         let response = try XCTUnwrap(DocumentMemoryDecoder.library(from: DocumentFixtures.search))
         XCTAssertEqual(response.snippetMaxChars, 48)
@@ -1068,8 +1066,7 @@ final class DocumentSessionTests: XCTestCase {
         XCTAssertNil(DocumentMemoryDecoder.status(from: drifted))
     }
 
-    /// The 2026-09-07 additions decode, and their absence decodes to the
-    /// defaults a 2026-08-27-shaped payload implies.
+    /// Optional live-update fields decode, and absence yields their defaults.
     func testTheLiveUpdateFieldsDecodeWithDefaults() throws {
         let bare = try XCTUnwrap(
             DocumentMemoryDecoder.status(from: DocumentFixtures.socketStatus)
@@ -1390,9 +1387,8 @@ final class DocumentContractTests: XCTestCase {
         }
     }
 
-    /// The claim is `a-page-was-in-view-and-was-ocred`, **not** "was read". The
-    /// contract document carried the older spelling until 2026-08-27, five keys
-    /// above the note saying the camera cannot establish it.
+    /// The claim is `a-page-was-in-view-and-was-ocred`, **not** "was read": the
+    /// camera cannot establish the wearer's attention.
     func testTheRetiredWasReadClaimIsRefusedRatherThanRendered() throws {
         let response = try XCTUnwrap(DocumentMemoryDecoder.library(from: DocumentFixtures.recent))
         XCTAssertEqual(response.claim, "a-page-was-in-view-and-was-ocred")
@@ -1431,14 +1427,107 @@ final class DocumentContractTests: XCTestCase {
 @MainActor
 final class DocumentMemoryClientTests: XCTestCase {
 
-    /// The stub says only what is observable from here, and neither of the two
-    /// false claims that used to be on it.
-    ///
-    /// The retired sentence was: *"The Tower keeps no document memory, so there
-    /// is nothing to search. This app sends camera frames to the Tower while a
-    /// session is running; it reads no text from them and receives none back."*
-    /// The Tower has a document store, a journal, six routes and a typed
-    /// contract, and a search receives titles, snippets and page text.
+    /// A named cartridge owns its error even when an inconsistent frame also
+    /// repeats this client's subscription id. Status from this subscription
+    /// must remain current; another cartridge cannot invalidate it.
+    func testAnotherCartridgesNamedErrorCannotClearDocumentStatus() async throws {
+        let (server, port, recorder) = try await configuredServer()
+
+        let tower = TowerClient(metrics: SenderMetrics())
+        tower.connect(to: URL(string: "ws://127.0.0.1:\(port)/")!)
+        defer {
+            tower.disconnect()
+            server.stop()
+        }
+        let online = await waitUntil { tower.status == .online && tower.cartridgeDeclaration != nil }
+        XCTAssertTrue(online)
+        let client = TowerDocumentMemoryClient(tower: tower)
+        let received = await waitUntil { client.session?.state == "stopped" }
+        XCTAssertTrue(received, "the Document Memory status arrived before the conflicting error")
+
+        let events = EventRecorder()
+        events.cancellable = tower.cartridgeResults.sink { events.record($0) }
+        server.send(text: #"{"type":"result_error","reason":"snapshot_failed","message":"other cartridge failed","cartridge":"experimental_cv","result_type":"status","subscription_id":"sub-1"}"#)
+        let delivered = await waitUntil {
+            events.all.contains { if case .failed = $0 { return true }; return false }
+        }
+        XCTAssertTrue(delivered)
+        await Task.yield()
+        XCTAssertEqual(client.session?.state, "stopped")
+        XCTAssertEqual(recorder.all.filter { $0.contains("result_subscribe") }.count, 1)
+        withExtendedLifetime(client) {}
+    }
+
+    private func configuredServer() async throws -> (MockTowerServer, UInt16, MessageRecorder) {
+        let server = try MockTowerServer()
+        let port = try await server.start()
+        let recorder = MessageRecorder()
+        let declaration = try Self.json([
+            "type": "cartridges",
+            "envelope_contract": "cartridge_results.envelope/2026-08-23",
+            "cartridges": [[
+                "cartridge": DocumentMemoryContract.towerCartridge,
+                "result_type": DocumentMemoryContract.resultType,
+                "contract": DocumentMemoryContract.statusIdentifier,
+                "available": true,
+                "snapshot_only": true,
+            ] as [String: Any]],
+            "not_offered": [] as [Any],
+            "http_contracts": [] as [Any],
+        ])
+        let ack = try Self.json([
+            "type": "result_subscribed",
+            "subscription_id": "sub-1",
+            "cartridge": DocumentMemoryContract.towerCartridge,
+            "result_type": DocumentMemoryContract.resultType,
+            "contract": DocumentMemoryContract.statusIdentifier,
+        ])
+        let snapshot = try Self.json([
+            "type": "cartridge_result",
+            "subscription_id": "sub-1",
+            "cartridge": DocumentMemoryContract.towerCartridge,
+            "result_type": DocumentMemoryContract.resultType,
+            "snapshot": true,
+            "payload": DocumentFixtures.socketStatus,
+        ])
+        server.onText = { text in
+            recorder.record(text)
+            guard
+                let data = text.data(using: .utf8),
+                let message = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                let type = message["type"] as? String
+            else { return }
+            switch type {
+            case "ping": server.send(text: #"{"type":"pong"}"#)
+            case "cartridges": server.send(text: declaration)
+            case "result_subscribe":
+                server.send(text: ack)
+                server.send(text: snapshot)
+            default: break
+            }
+        }
+
+        return (server, port, recorder)
+    }
+
+    private func waitUntil(
+        timeout: TimeInterval = 3, _ condition: @MainActor () -> Bool
+    ) async -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if condition() { return true }
+            try? await Task.sleep(nanoseconds: 10_000_000)
+        }
+        return condition()
+    }
+
+    private static func json(_ object: [String: Any]) throws -> String {
+        let data = try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
+        return String(decoding: data, as: UTF8.self)
+    }
+
+    /// The stub reports the missing declaration without claiming the Tower
+    /// stores nothing; a search can serve titles, snippets and page text.
     func testTheStubMakesNoClaimAboutWhatAnyTowerStores() {
         let reason = UnavailableDocumentMemoryClient.reason.lowercased()
         XCTAssertFalse(reason.contains("keeps no document memory"), "the retired sentence is still shipping")

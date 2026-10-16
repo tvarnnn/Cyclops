@@ -813,7 +813,7 @@ final class SceneLifecycleTests: XCTestCase {
         for state: SceneLifecycleState in [.stopped, .starting, .running, .failed, .unrecognised("x")] {
             XCTAssertFalse(
                 state.mayHoldLastKnownScene,
-                "\(state.wireValue) was allowed to hold a scene past its session"
+                "\(state) was allowed to hold a scene past its session"
             )
         }
     }
@@ -1079,14 +1079,12 @@ final class SceneUnderstandingClientTests: XCTestCase {
     }
 
     /// **The phone sends nothing to open this cartridge.** The four control
-    /// routes exist and belong to an operator; this app knows their names and
-    /// calls none of them.
+    /// routes exist and belong to an operator; this app calls none of them.
     ///
     /// Asserted as a property of the client's surface rather than of the wire,
     /// because there is no method here that could send one: `SceneUnderstandingClient`
     /// has no verb at all, which is the strongest form this can take.
     func testThisAppHasNoWayToStartOrStopASceneSession() {
-        XCTAssertEqual(SceneUnderstandingContract.controlRoutes.count, 4)
         XCTAssertTrue(
             SceneUnderstandingContract.phoneSendsNothingNote.lowercased().contains("never starts")
         )
@@ -1096,7 +1094,7 @@ final class SceneUnderstandingClientTests: XCTestCase {
     }
 }
 
-// MARK: - 2026-09-07 additions
+// MARK: - Additions: people fields, wording, visibility
 
 // @MainActor, like every other test class in this file. The app target
 // sets SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor, so the decoder, the
@@ -1167,8 +1165,7 @@ final class SceneUnderstandingAdditionsTests: XCTestCase {
     /// only while somebody streams AND somebody watches, the detector then
     /// runs for as long as the socket lives.
     ///
-    /// The lane shipped it in that state. This test fails if it returns:
-    /// it calls through the existential and asserts the override ran.
+    /// This test calls through the existential and asserts the override ran.
     func testVisibilityReachesTheConformerThroughAnExistential() {
         final class Recorder: SceneUnderstandingClient {
             var seen: [Bool] = []
@@ -1193,15 +1190,19 @@ final class SceneUnderstandingAdditionsTests: XCTestCase {
     }
 }
 
-// MARK: - The subscribe/leave race
+// MARK: - The subscribe/leave races
 
-/// A `result_subscribed` that arrives after the screen has gone must be
-/// closed, not adopted.
+/// At most one live subscription, and none once the screen has gone.
 ///
-/// Driven against a real socket rather than a stub, because the defect lives
-/// in the gap between two wire messages and nothing smaller than the wire can
-/// reproduce it: `TowerSceneUnderstandingClient` holds a concrete
-/// `TowerClient`, and the window under test is the one where a
+/// On this cartridge a live subscription is a *watcher*, and the Tower runs a
+/// people detector while somebody streams and somebody watches. A
+/// subscription nothing retracts keeps that detector running for as long as
+/// the socket lives.
+///
+/// Driven against a real socket rather than a stub, because these defects
+/// live in the gap between wire messages and nothing smaller than the wire can
+/// reproduce them: `TowerSceneUnderstandingClient` holds a concrete
+/// `TowerClient`, and each window under test is one where a
 /// `result_subscribe` is out and its ack has not come back.
 @MainActor
 final class SceneSubscribeRaceTests: XCTestCase {
@@ -1221,8 +1222,8 @@ final class SceneSubscribeRaceTests: XCTestCase {
     }
 
     /// Answers the handshake ping and the capability request, records the rest,
-    /// and deliberately does **not** answer `result_subscribe` — the ack is
-    /// sent by hand, after the screen has gone.
+    /// and deliberately does **not** answer `result_subscribe`: each test sends
+    /// the acks by hand, at the moment its race needs them.
     private func serve(_ server: MockTowerServer, _ recorder: MessageRecorder) {
         server.onText = { text in
             recorder.record(text)
@@ -1242,23 +1243,39 @@ final class SceneSubscribeRaceTests: XCTestCase {
         }
     }
 
-    /// Leave the screen while the subscribe is still in flight, then let the
-    /// ack land.
-    ///
-    /// `workspaceVisibilityChanged(false)` can only unsubscribe an id it
-    /// holds, and in this window there is no id yet — so it sends nothing.
-    /// Before the fix the ack handler then assigned `subscriptionID`, opening
-    /// a subscription for a screen that no longer existed. Nothing could close
-    /// it afterwards: the visibility call is guarded on a *change*, so it will
-    /// not fire again, and `subscribeIfPossible` is the only other path. The
-    /// watcher lived as long as the socket, and on this cartridge a watcher is
-    /// what keeps a people detector running.
-    func testAnAckArrivingAfterTheScreenIsGoneIsClosedRatherThanAdopted() async throws {
+    // MARK: Bench
+
+    /// A Tower on a local socket, a `TowerClient` online and declared against
+    /// it, the Scene client under test, and every result-channel event the
+    /// `TowerClient` has delivered.
+    @MainActor
+    private struct Bench {
+        let server: MockTowerServer
+        let recorder: MessageRecorder
+        let tower: TowerClient
+        let scene: TowerSceneUnderstandingClient
+        let events: EventRecorder
+
+        /// Acks delivered to the client. The client handles each one in the
+        /// same delivery, so once this count is reached it has handled them.
+        var acksDelivered: Int {
+            events.all.filter { event in
+                if case .subscribed = event { return true }
+                return false
+            }.count
+        }
+
+        func stop() {
+            tower.disconnect()
+            server.stop()
+        }
+    }
+
+    private func makeBench() async throws -> Bench {
         let server = try MockTowerServer()
         let port = try await server.start()
         let recorder = MessageRecorder()
         serve(server, recorder)
-        defer { server.stop() }
 
         let tower = TowerClient()
         tower.connect(to: url(port: port))
@@ -1269,22 +1286,83 @@ final class SceneSubscribeRaceTests: XCTestCase {
         let declared = await waitUntil { tower.cartridgeDeclaration != nil }
         XCTAssertTrue(declared, "the Tower declared its cartridges")
 
+        let events = EventRecorder()
+        events.cancellable = tower.cartridgeResults.sink { events.record($0) }
+        return Bench(server: server, recorder: recorder, tower: tower, scene: scene, events: events)
+    }
+
+    /// Returns once everything the client sent before this call has reached
+    /// the Tower. The socket delivers in order, so once a capability request
+    /// sent now is recorded, every message sent before it already is.
+    private func flush(_ bench: Bench) async {
+        let before = Self.sent("cartridges", in: bench.recorder).count
+        bench.tower.requestCartridgeDeclaration()
+        let flushed = await waitUntil { Self.sent("cartridges", in: bench.recorder).count > before }
+        XCTAssertTrue(flushed, "the client's messages reached the Tower")
+    }
+
+    // MARK: The wire, from the Tower's side
+
+    private static func ack(_ subscriptionID: String) -> String {
+        #"{"type":"result_subscribed","subscription_id":"\#(subscriptionID)","cartridge":"scene_understanding","result_type":"live","contract":"scene_understanding.live/2026-08-27"}"#
+    }
+
+    /// Sent unsolicited; closes the subscription it names.
+    private static func channelFailed(_ subscriptionID: String) -> String {
+        #"{"type":"result_error","reason":"channel_failed","message":"The Tower reported channel_failed.","cartridge":"scene_understanding","result_type":"live","subscription_id":"\#(subscriptionID)"}"#
+    }
+
+    /// The client's messages of one `type`, in the order they reached the Tower.
+    private static func sent(_ type: String, in recorder: MessageRecorder) -> [[String: Any]] {
+        recorder.all.compactMap { text in
+            guard
+                let data = text.data(using: .utf8),
+                let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                json["type"] as? String == type
+            else { return nil }
+            return json
+        }
+    }
+
+    /// The subscriptions the Tower still holds: every id it acknowledged, less
+    /// every id the client unsubscribed.
+    private static func open(acknowledged: [String], in recorder: MessageRecorder) -> Set<String> {
+        let unsubscribed = sent("result_unsubscribe", in: recorder)
+            .compactMap { $0["subscription_id"] as? String }
+        return Set(acknowledged).subtracting(unsubscribed)
+    }
+
+    // MARK: The races
+
+    /// Leave the screen while the subscribe is still in flight, then let the
+    /// ack land.
+    ///
+    /// `workspaceVisibilityChanged(false)` can only unsubscribe an id it
+    /// holds, and in this window there is no id yet, so it sends nothing. An
+    /// ack adopted afterwards would open a subscription for a screen that no
+    /// longer exists, and nothing could close it: the visibility call is
+    /// guarded on a *change*, so it does not fire again, and
+    /// `subscribeIfPossible` is the only other path.
+    func testAnAckArrivingAfterTheScreenIsGoneIsClosedRatherThanAdopted() async throws {
+        let bench = try await makeBench()
+        defer { bench.stop() }
+
         // The screen appears: a `result_subscribe` goes out and is left
         // unanswered, which is the window under test.
-        scene.workspaceVisibilityChanged(isVisible: true)
+        bench.scene.workspaceVisibilityChanged(isVisible: true)
         let subscribed = await waitUntil {
-            recorder.all.contains { $0.contains("result_subscribe") }
+            bench.recorder.all.contains { $0.contains("result_subscribe") }
         }
         XCTAssertTrue(subscribed, "the subscribe reached the wire")
 
         // The wearer leaves before the ack.
-        scene.workspaceVisibilityChanged(isVisible: false)
+        bench.scene.workspaceVisibilityChanged(isVisible: false)
 
         // Only now does the Tower answer.
-        server.send(text: #"{"type":"result_subscribed","subscription_id":"sub-1","cartridge":"scene_understanding","result_type":"live","contract":"scene_understanding.live/2026-08-27"}"#)
+        bench.server.send(text: Self.ack("sub-1"))
 
         let closed = await waitUntil {
-            recorder.all.contains { $0.contains("result_unsubscribe") && $0.contains("sub-1") }
+            bench.recorder.all.contains { $0.contains("result_unsubscribe") && $0.contains("sub-1") }
         }
         XCTAssertTrue(
             closed,
@@ -1292,7 +1370,102 @@ final class SceneSubscribeRaceTests: XCTestCase {
                 + "leaves a watcher nothing can retract, and the Tower keeps a "
                 + "people detector running for as long as the socket lives."
         )
+    }
 
-        tower.disconnect()
+    /// Appear, leave and return, all before the first ack.
+    ///
+    /// Leaving cannot unsubscribe what has not been acknowledged. A client that
+    /// also forgot the subscribe was still in flight sends a second one on the
+    /// return; the Tower answers both, both acks land while the screen is
+    /// showing, and adopting the second orphans the first.
+    func testReturningBeforeTheFirstAckLeavesAtMostOneSubscriptionOpen() async throws {
+        let bench = try await makeBench()
+        defer { bench.stop() }
+
+        bench.scene.workspaceVisibilityChanged(isVisible: true)
+        let subscribed = await waitUntil { Self.sent("result_subscribe", in: bench.recorder).count == 1 }
+        XCTAssertTrue(subscribed, "the subscribe reached the wire")
+
+        // The wearer leaves and comes straight back, before the Tower answers.
+        bench.scene.workspaceVisibilityChanged(isVisible: false)
+        bench.scene.workspaceVisibilityChanged(isVisible: true)
+        await flush(bench)
+
+        // The Tower answers every subscribe it received, in order.
+        let asked = Self.sent("result_subscribe", in: bench.recorder).count
+        let acknowledged = (1...asked).map { "sub-\($0)" }
+        for id in acknowledged { bench.server.send(text: Self.ack(id)) }
+        let handled = await waitUntil { bench.acksDelivered == acknowledged.count }
+        XCTAssertTrue(handled, "every ack reached the client")
+        await flush(bench)
+
+        XCTAssertLessThanOrEqual(
+            Self.open(acknowledged: acknowledged, in: bench.recorder).count, 1,
+            "one screen holds two subscriptions"
+        )
+
+        // Leaving for good must leave nothing open.
+        bench.scene.workspaceVisibilityChanged(isVisible: false)
+        await flush(bench)
+        XCTAssertEqual(
+            Self.open(acknowledged: acknowledged, in: bench.recorder), [],
+            "a subscription outlived the screen. Nothing retracts it, and the "
+                + "Tower keeps a people detector running for as long as the socket lives."
+        )
+    }
+
+    /// An ack that arrives while a subscription is already open is closed, not
+    /// written over the open one.
+    ///
+    /// Two subscribes can be out at once whenever the Tower closes a
+    /// subscription (`channel_failed`) while another subscribe still awaits its
+    /// ack: the client opens a replacement beside it. Here the close names the
+    /// subscription the wearer has just left, sent by the Tower before it read
+    /// the unsubscribe.
+    func testAnAckArrivingWhileASubscriptionIsOpenIsClosedRatherThanAdopted() async throws {
+        let bench = try await makeBench()
+        defer { bench.stop() }
+
+        // Watching, with sub-1 open.
+        bench.scene.workspaceVisibilityChanged(isVisible: true)
+        var subscribed = await waitUntil { Self.sent("result_subscribe", in: bench.recorder).count == 1 }
+        XCTAssertTrue(subscribed, "the first subscribe reached the wire")
+        bench.server.send(text: Self.ack("sub-1"))
+        var handled = await waitUntil { bench.acksDelivered == 1 }
+        XCTAssertTrue(handled, "the first ack reached the client")
+
+        // Leave (sub-1 is unsubscribed), then return (a second subscribe).
+        bench.scene.workspaceVisibilityChanged(isVisible: false)
+        bench.scene.workspaceVisibilityChanged(isVisible: true)
+        subscribed = await waitUntil { Self.sent("result_subscribe", in: bench.recorder).count == 2 }
+        XCTAssertTrue(subscribed, "the return subscribed again")
+
+        // The Tower closed sub-1 before it read the unsubscribe. The client
+        // treats the close as its own and subscribes again: a third subscribe,
+        // with the second still unanswered.
+        bench.server.send(text: Self.channelFailed("sub-1"))
+        subscribed = await waitUntil { Self.sent("result_subscribe", in: bench.recorder).count == 3 }
+        XCTAssertTrue(subscribed, "the close was answered with a resubscribe")
+
+        // The Tower answers both, in order.
+        bench.server.send(text: Self.ack("sub-2"))
+        bench.server.send(text: Self.ack("sub-3"))
+        handled = await waitUntil { bench.acksDelivered == 3 }
+        XCTAssertTrue(handled, "both acks reached the client")
+        await flush(bench)
+
+        let acknowledged = ["sub-1", "sub-2", "sub-3"]
+        XCTAssertLessThanOrEqual(
+            Self.open(acknowledged: acknowledged, in: bench.recorder).count, 1,
+            "one screen holds two subscriptions"
+        )
+
+        bench.scene.workspaceVisibilityChanged(isVisible: false)
+        await flush(bench)
+        XCTAssertEqual(
+            Self.open(acknowledged: acknowledged, in: bench.recorder), [],
+            "a subscription outlived the screen. Nothing retracts it, and the "
+                + "Tower keeps a people detector running for as long as the socket lives."
+        )
     }
 }

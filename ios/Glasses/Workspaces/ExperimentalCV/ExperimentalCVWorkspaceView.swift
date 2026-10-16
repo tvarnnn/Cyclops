@@ -11,30 +11,19 @@ import SwiftUI
 ///
 /// ## What this screen may and may not claim
 ///
-/// It used to open by saying the Tower "runs exactly one experiment, and it
-/// chose which one when it started", that there was "no message to list the
-/// experiments, pick a different one, or start or stop the one that is
-/// running", and that "the reply names the *number*, not the experiment, so
-/// this screen cannot even say which one produced it".
-///
-/// **Every one of those sentences is now false.** `cv_lab_status` lists the
-/// experiments; `cv_lab_start` selects and arms one, replacing whatever ran;
-/// pause, resume and stop are requests with legible refusals; and every
-/// `frame_result` carries a `cv_lab` block naming the experiment, the run and
-/// the provenance. So the copy is gone along with the limitation it described.
-/// What replaced it is not a promise — it is the Tower's own document, drawn
-/// field for field.
+/// `cv_lab_status` lists the experiments; `cv_lab_start` selects and arms one;
+/// pause, resume and stop are requests with legible refusals. Each Lab
+/// `frame_result` names the experiment, run and provenance. The screen draws
+/// the Tower's document rather than inventing these details.
 ///
 /// Two things this screen still refuses to do, and both are the Tower's
 /// position as much as this app's:
 ///
-/// 1. **No better/worse verdict.** `baseline`, `higher_is_better` and
-///    `confidence` are `null` on every metric, always, because the Lab holds no
-///    reference run to compare against. The machinery that would have rendered
-///    a verdict is deleted rather than left dormant — see `CVMetric`.
-/// 2. **No photographic frame, ever.** There *is* a live view now — see
-///    `CVLivePreviewPanel` — and it is the first thing on the screen. What it
-///    draws is derived: an edge map, a colourised depth map, or an overlay
+/// 1. **No better/worse verdict.** The build carries no baseline, direction or
+///    comparison renderer because there is no measured reference run. Payload
+///    values cannot activate a verdict; see `CVMetric`.
+/// 2. **No photographic frame.** `CVLivePreviewPanel` draws derived views:
+///    an edge map, a colourised depth map, or an overlay
 ///    over a line drawing of the room. The Tower serves no photograph on this
 ///    path, every picture states its treatment, and this app draws none whose
 ///    treatment it could not read. An experiment still gets no privacy
@@ -44,8 +33,7 @@ import SwiftUI
 /// ## Debug and Release are genuinely different products here
 ///
 /// The frame path is `#if DEBUG` (`ProjectManager`), so **a Release build has
-/// no camera, sends no frame, and receives no `frame_result`.** That predates
-/// this work and is not fixed by it. What this screen does about it:
+/// no camera, sends no frame, and receives no `frame_result`.** This screen:
 ///
 /// - the read-only half is drawn in full, because it is fully reachable: the
 ///   declaration, the subscription and the status document do not depend on
@@ -57,17 +45,12 @@ import SwiftUI
 ///   be streaming and `source.receiving_frames` to be true, and the first half
 ///   is permanently false here.
 ///
-/// ## The camera card, and what it does and does not change
+/// ## The camera card
 ///
-/// This workspace used to carry no capture control at all, and said so here.
-/// It now mounts a `CVCameraCard`, because a person running an experiment
-/// otherwise had to leave for Home to start the camera that feeds it and come
-/// back to read the result — three screens for one question. What has **not**
-/// changed is the shape of the invariant: one button, the one
-/// `GlassesConnection`, reached through `startCameraSession()` and
-/// `stopCameraSession()` exactly as Home and World Builder reach it, and no
-/// `.onAppear` anywhere. Starting an *experiment* still opens no camera — that
-/// is a request to the Tower about what to compute — and the card's own Pause
+/// `CVCameraCard` controls the same `GlassesConnection` as Home and World
+/// Builder through `startCameraSession()` and `stopCameraSession()`, with no
+/// `.onAppear` capture. Starting an *experiment* opens no camera: it requests
+/// Tower computation. The card's own Pause
 /// is a frame gate on `TowerClient`, not a camera operation at all; see
 /// `TowerClient.isFrameSendingPaused` for why.
 struct ExperimentalCVWorkspaceView: View {
@@ -80,12 +63,12 @@ struct ExperimentalCVWorkspaceView: View {
     /// whole trick that lets this workspace show a live figure without paying
     /// for it everywhere.
     ///
-    /// `TowerClient` republishes once per reply, at the ~12 Hz target rate while
+    /// `TowerClient` republishes frame results at the ~12 Hz target rate while
     /// a session streams. Observing it here would re-evaluate this entire body
     /// at that rate — the experiment panel, the unavailable panel, all of it —
     /// on the main actor the frame sender needs. Instead the reference is passed
     /// down to `CVFrameReadingPanel`, a leaf that holds nothing else, and only
-    /// that leaf is invalidated when a reply lands. SwiftUI compares this stored
+    /// that leaf is invalidated when a reading is published. SwiftUI compares this stored
     /// reference by identity, so a reply does not re-run this body at all.
     let tower: TowerClient
 
@@ -123,12 +106,8 @@ struct ExperimentalCVWorkspaceView: View {
             // its own, so the reply-rate invalidation stops there.
             TowerConnectionRow(tower: tower)
 
-            // FIRST among the Lab's own panels, because it is the answer to
-            // the question a person wearing the glasses is actually asking. This
-            // screen used to open with eleven numbers at equal weight, every
-            // one of them true and none of them saying whether the algorithm
-            // could see the doorway. The numbers did not go away; they stopped
-            // being the first thing.
+            // A picture answers what the algorithm can see, so it precedes
+            // the numeric readings when one is available.
             if let live = livePreview {
                 CVLivePreviewPanel(
                     preview: live.preview,
@@ -225,21 +204,8 @@ struct ExperimentalCVWorkspaceView: View {
         .accessibilityElement(children: .combine)
     }
 
-    // MARK: The one sentence that is still only true in one configuration
-    //
-    // The four strings that used to be compiled twice are down to one, and the
-    // reduction is the measure of what changed. Three of them existed to
-    // describe a *protocol* limitation — no list, no request, no provenance —
-    // that turned out to differ between builds only in whether a result could
-    // arrive to be un-labelled. The protocol limitation is gone, so those three
-    // are gone.
-    //
-    // This one remains because the difference it describes is real and
-    // structural: the frame path is `#if DEBUG`, so a Release build genuinely
-    // cannot feed an experiment. Gating the whole workspace out of Release would
-    // still be the wrong repair — the read-only half is honest and useful there,
-    // and it is exactly what the Tower versions the control vocabulary
-    // separately to support.
+    // Release can still read honest Lab status, so the `#if DEBUG` frame path
+    // changes this subtitle rather than removing the whole workspace.
 
     #if DEBUG
     private static let headerSubtitle = """
@@ -804,11 +770,8 @@ private struct CVFrameReadingPanel: View {
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 } else if let refusal = tower.latestFrameRefusal {
-                    // The `frame_error` case that did not exist until now. Every
-                    // one of these used to be logged as an unknown message type
-                    // and discarded, so this panel said "no frame has been
-                    // answered yet" while the Tower was answering every single
-                    // one with a reason.
+                    // A refusal is an answer to a frame and has a reason and
+                    // capture number worth showing when there is no result.
                     refusalRows(refusal)
                 } else {
                     // No spinner and no zeroes. Nothing is in flight, so a
@@ -868,17 +831,11 @@ private struct CVFrameReadingPanel: View {
 
     /// Where this reading sits in its run, and where the numbers came from.
     ///
-    /// ## The line that used to read "From frame 30."
-    ///
-    /// It was drawn from the wire's `seq`, which is the **phone's capture
-    /// index**, and the sender forwards one frame in thirty by design — so
-    /// consecutive replies read 30, 60, 90 and the gaps were not losses. Worse,
-    /// that number is chosen by the sender and cannot order results at all.
-    ///
-    /// `result_seq` is the Tower's own dense counter within the run, from 1,
-    /// and it is what says whether a reading is newer than the last. The
-    /// capture index is still drawn, because it is the only thread back to a
-    /// specific captured frame — under a caption that says what it is.
+    /// `result_seq` is the Tower's dense counter within a run, from 1, and
+    /// orders its readings. The phone's `seq` is a capture index; selection
+    /// can leave gaps such as 30, 60, 90 without a loss. The caption names it
+    /// as a capture index so the two sequences stay distinct; it is the only
+    /// thread back to a particular captured frame.
     @ViewBuilder
     private func provenanceRows(_ reading: CVFrameReading) -> some View {
         VStack(alignment: .leading, spacing: 2) {
@@ -1035,8 +992,7 @@ struct CVTag: View {
 /// metrics carry `baseline: null` and `higher_is_better: null` on every metric,
 /// always, and a comparison against nothing is the *"declaring an approach
 /// 'better' without a measurement"* that `docs/modules/EXPERIMENTAL-CV.md`
-/// rules out. This view used to render exactly that when both fields arrived;
-/// the fields never will, and the renderer is gone rather than dormant.
+/// rules out. No verdict renderer is present.
 ///
 /// **A zero standing in for a null.** Every timing and every rate on this
 /// contract is nullable, and the Tower is emphatic that *"`null` is 'nothing has
@@ -1062,16 +1018,8 @@ struct CVRunSummaryView: View {
                     .foregroundStyle(.secondary)
             }
 
-            // DIAGNOSTICS: everything else, collapsed.
-            //
-            // Collapsed, not deleted, and the distinction is the whole design.
-            // Every figure below was on the screen before this change and every
-            // one of them earns its place while somebody is debugging: the
-            // stage timings, the resolved device beside the requested one, the
-            // frame counters whose invariant is the diagnostic. What they did
-            // not earn is being the FIRST thing, at the same weight as the
-            // headline, on a screen whose purpose is to show what the algorithm
-            // sees.
+            // Keep stage timings, device choice and frame counters available
+            // for diagnosis without giving them the headline's visual weight.
             DisclosureGroup {
                 diagnostics
                     .padding(.top, 8)

@@ -8,15 +8,12 @@ import Foundation
 /// The Experimental CV Lab's domain types, decoded from the Tower's status
 /// document.
 ///
-/// **This file used to open by saying nothing in it was a Tower protocol.** It
-/// is now the opposite, and the change is the whole point of this work: the
-/// Tower declares `experimental_cv.status/2026-08-27`, enumerates its
-/// experiments with stable ids, and attaches provenance to every figure. So
-/// these types are read off that document rather than invented ahead of it, and
-/// `ExperimentalCVContract` names the three agreements they answer to.
+/// The Tower declares `experimental_cv.status/2026-08-27`, enumerates its
+/// experiments with stable ids, and attaches provenance to every figure.
+/// These types decode that document; `ExperimentalCVContract` names the
+/// agreements they answer to.
 ///
-/// What has **not** changed is where the list of experiments comes from. This
-/// file still hard-codes no experiment, no algorithm and no metric name.
+/// This file hard-codes no experiment, algorithm or metric name.
 /// `docs/modules/EXPERIMENTAL-CV.md` calls its candidate list "intentionally
 /// broad"; picking any subset here would make the iOS app the place the
 /// experiment list is decided, which is exactly backwards. The Tower names its
@@ -33,8 +30,7 @@ import Foundation
 /// That one is enforced in the type system — see `CVMetric.provenance`, which
 /// is not optional and has no default.
 ///
-/// The other rule that used to be enforced here — *"avoid declaring an approach
-/// 'better' without a measurement"* — is now enforced by **deletion**. See
+/// No type here can declare an approach better without a measurement; see
 /// `CVMetric`.
 
 // MARK: - Experiment identity
@@ -89,11 +85,10 @@ struct CVExperiment: Equatable, Identifiable, Sendable {
     /// which module is missing.
     var unavailableReason: String?
     /// What kind of live picture this experiment can draw, or `nil` for one
-    /// that draws none. Declared in the catalog so the picker can say "this
-    /// one has a live view" **before** anybody commits to a two-minute model
-    /// load to find out. A promise about what a preview would be, not that one
-    /// exists: that is `run.annotation.artifact`, which stays `.absent` until
-    /// the Tower serves a preview descriptor; meanwhile the Tower's reason is
+    /// that draws none. Decoded from the catalog but not displayed in the
+    /// picker; it is a hint about what a preview would be, not that one exists.
+    /// That is `run.annotation.artifact`, which stays `.absent` until the Tower
+    /// serves a preview descriptor; meanwhile the Tower's reason is
     /// `run.annotation.artifactUnavailableReason`.
     ///
     /// `nil` is a real answer and not a gap: `baseline` will never have a
@@ -101,7 +96,7 @@ struct CVExperiment: Equatable, Identifiable, Sendable {
     /// experiment's cost is read against and drawing one would roughly double
     /// what it costs.
     ///
-    /// Displayed, never switched on. The Tower's vocabulary is open.
+    /// The Tower's vocabulary is open; this field does not control UI behavior.
     var previewKind: String?
 
     init(
@@ -209,11 +204,6 @@ nonisolated enum CVWireProvenance {
 ///
 /// ## Why there is no `baseline`, and no better/worse verdict
 ///
-/// There used to be. `baseline`, `higherIsBetter`, a `comparison` property and
-/// a `Comparison` enum that rendered *"Better by 0.4"* / *"Worse by 0.4"* — all
-/// of it written against a contract that did not exist yet, and all of it
-/// **deleted** now that the contract does.
-///
 /// The Tower's position is unambiguous and is not a temporary gap:
 ///
 /// > `baseline` and `higher_is_better` — **always `null`**, and this is not an
@@ -222,15 +212,12 @@ nonisolated enum CVWireProvenance {
 /// > a measurement" that `EXPERIMENTAL-CV.md` rules out. Offline corpus
 /// > comparison is `scripts/cv_lab_benchmark.py`, and it is not this channel.
 ///
-/// Keeping the machinery and relying on the nulls to keep it quiet would leave
-/// a verdict renderer one non-null field away from firing, in a cartridge whose
-/// entire purpose is not to claim more than was measured. Deleting it means the
-/// verdict has no code path at all. If a future contract carries a reference
-/// run, this comes back **with** that contract.
-///
-/// `confidence` is deleted for the same reason and by the same rule: always
-/// `null`, so `ObservationProvenance.inferred(confidence:)` is only ever
-/// constructed with `nil` here.
+/// The `baseline`, `higherIsBetter` and `comparison` machinery is absent from
+/// the build, so a non-null payload cannot activate a verdict. A comparison
+/// without a measured reference is what `docs/modules/EXPERIMENTAL-CV.md` rules out;
+/// verdict code belongs with a future contract that carries such a reference.
+/// This contract carries no confidence, so `ObservationProvenance.inferred`
+/// receives `nil` confidence here.
 struct CVMetric: Equatable, Identifiable, Sendable {
     /// The Tower's label. Displayed verbatim. **iOS matches on no metric name,
     /// ever.**
@@ -406,14 +393,7 @@ struct CVMetric: Equatable, Identifiable, Sendable {
 /// is the count the Tower reports and the state of the rendered image it
 /// produced, which is enough for the workspace to be honest about both.
 ///
-/// `artifact` used to be `null` in this contract, always, because no
-/// redaction-state vocabulary was shared between the two sides and no artifact
-/// fetch contract existed on either. Both now do — landed together, in one
-/// change, with `EXPERIMENTAL-CV-LAB.md` §5 written down — so this carries a
-/// real descriptor whenever the running experiment has a picture and the Tower
-/// is serving one.
-///
-/// **What did not change is the strictness.** The descriptor names a path, not
+/// The descriptor names a path, not
 /// an image: no bytes ride the result channel, and the treatment is stated on
 /// every one of them. An experiment still gets no privacy exemption for being a
 /// debug surface, `artifactUnavailableReason` still carries the Tower's own
@@ -862,22 +842,14 @@ enum CVLabDiagnosis: Equatable, Sendable {
 /// The running experiment's own answer for one frame, as the Tower's per-frame
 /// reply reports it.
 ///
-/// ## Why this is still a separate type from `ExperimentalCVState`
+/// ## Why this is separate from `ExperimentalCVState`
 ///
-/// It used to be separate because the frame channel had **no contract behind it
-/// and no provenance attached**, and folding it into the cartridge state would
-/// have meant either inventing a state the Tower never offered or letting
-/// `.unsupported` carry a payload.
-///
-/// Half of that reason is now gone: `frame_result` carries a `cv_lab` block
-/// under `experimental_cv.frame_result/2026-08-27`, with provenance, the
-/// experiment's id and name, and the run it belongs to. The other half stands,
-/// and is why the split survives: **it is a different transport with a
-/// different contract identifier and a different rate.** The status document
-/// arrives ~1.3 times a second and describes a run; this arrives per frame and
-/// describes one frame. The Tower versions the two separately for exactly that
-/// reason, and a client that merged them would be unable to implement the
-/// read-only half alone — which is what a Release build with no camera is.
+/// `frame_result` carries a `cv_lab` block under
+/// `experimental_cv.frame_result/2026-08-27`, with provenance, experiment and
+/// run identity. It has a different transport, contract identifier and rate
+/// from status: the status document arrives ~1.3 times a second and describes
+/// a run; this arrives per frame and describes one frame. Keeping them separate
+/// lets a Release build implement the read-only status path without a camera.
 ///
 /// ## The pair rule
 ///
@@ -935,18 +907,9 @@ struct CVFrameReading: Equatable, Sendable {
 
     /// Which result this is **within its run**: dense, from 1.
     ///
-    /// ## The field that replaced `sequence`, and why the swap matters
-    ///
-    /// This type used to carry the wire's `seq` under the name `sequence` and
-    /// the workspace drew it as *"From frame 30."* That number is the **phone's
-    /// capture index**, and the sender forwards one frame in thirty by design —
-    /// so consecutive replies read 30, 60, 90, and the gaps are not losses.
-    /// Worse, the index is chosen by the sender and says nothing about the
-    /// order the Tower produced results in, so it **cannot order results**. The
-    /// Tower says so in as many words.
-    ///
-    /// `result_seq` is the Tower's own dense counter for this run, and it is
-    /// what says whether a reading is newer than the one already on screen.
+    /// `result_seq` is the Tower's dense counter for this run and orders its
+    /// readings. The phone's capture index (`seq`) may read 30, 60, 90 after
+    /// selection; those gaps are not losses and cannot order Tower results.
     /// `nil` when the reply carried no `cv_lab` block at all — a Tower running
     /// no Lab.
     let resultSeq: Int?
@@ -961,10 +924,7 @@ struct CVFrameReading: Equatable, Sendable {
     /// shown at all lives in `TowerClient`; this is carried so a view can say
     /// which run it is looking at.
     let runID: String?
-    /// The experiment that produced it, in the Tower's own words. **This is
-    /// what the old screen could not say**: the reply used to name the number
-    /// and not the experiment, so the workspace could not report which one
-    /// produced it.
+    /// The experiment that produced it, in the Tower's own words.
     let experimentName: String?
     let experimentID: String?
     /// The experiment's headline answer, or `nil` when either half of the pair
@@ -997,20 +957,9 @@ struct CVFrameReading: Equatable, Sendable {
 
     /// The provenance of a reply that carried **no** `cv_lab` block.
     ///
-    /// This used to be the provenance of every reply, because `frame_result`
-    /// had no provenance field at all and Rule 16 does not permit silence to be
-    /// read as "measured". A Tower speaking
-    /// `experimental_cv.frame_result/2026-08-27` now states it on every frame,
-    /// so the instance property above is the one to read.
-    ///
-    /// It stays for the Tower that does not: an older build, or one running no
-    /// Lab. `.unknown` is still the honest answer there, and the caveat it
-    /// carries is still owed wherever those figures are drawn.
-    ///
-    /// **`HomeWorkspaceView` reads this static.** That is not wrong — it states
-    /// the strongest caveat, which is never a lie — but it understates what a
-    /// current Tower says, and moving it to the instance property is noted in
-    /// this cartridge's handoff.
+    /// A reply without a `cv_lab` block makes no provenance claim, so it is
+    /// `.unknown` rather than presumed measured. `HomeWorkspaceView` uses this
+    /// conservative static value; Lab readings use the instance provenance.
     static let provenance: ObservationProvenance = .unknown
 
     /// Whether the Tower reported anything at all about the frame.

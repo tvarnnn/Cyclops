@@ -149,43 +149,12 @@ extension ExperimentalCVClient {
 
 /// The stand-in for a Tower that does not offer the Experimental CV Lab.
 ///
-/// ## The sentence that used to be here, and why it had to go
-///
-/// This type shipped a refusal that read, in both of its two compiled forms:
-///
-/// > what does not exist yet is a way to list the experiments, request one, or
-/// > read a result with provenance attached
-///
-/// **All three of those exist.** `cv_lab_status` lists the experiments with
-/// their ids, names, summaries and per-experiment availability; `cv_lab_start`
-/// requests one; and every `frame_result` carries a `cv_lab` block whose
-/// `provenance` field is *required and never omitted*. The sentence was written
-/// against a Tower that listed `experimental_cv` under `not_offered`, and it
-/// went on being shipped after that stopped being true — which is precisely the
-/// failure mode Rule 3 exists to prevent, told to a wearer in the app's own
-/// voice.
-///
-/// So the string is gone, and so is the claim behind it. What is left is the
-/// one thing this type can still honestly say: **this Tower has not offered the
-/// cartridge to this connection.** That is a statement about a declaration, not
-/// about the platform, and it is true exactly when it is used — this client is
-/// the fallback `CartridgeClients` constructs when nothing Tower-backed was
-/// injected.
-///
-/// It still declares **no experiments**, and that has not changed: the Tower is
-/// the registry, and a picker populated from a hardcoded list is a claim that
-/// those specific experiments exist.
+/// Used when this Tower has not offered the cartridge to this connection.
+/// It declares no experiments because the Tower owns the registry.
 @MainActor
 final class UnavailableExperimentalCVClient: ExperimentalCVClient {
-    /// Compiled once, not twice.
-    ///
-    /// The two versions this used to have differed in a clause about whether
-    /// *this build* sends frames — which mattered when the sentence was about
-    /// reading per-frame results. It is not any more: not having been offered
-    /// the cartridge is a fact about the Tower's declaration, and a Release
-    /// build and a Debug build are told exactly the same thing about it. The
-    /// build-specific half of the truth belongs where it is build-specific,
-    /// which is the workspace's own copy about frames.
+    /// A missing Tower declaration has the same meaning in Debug and Release;
+    /// the workspace describes build-specific frame availability separately.
     static let reason = """
         This Tower has not offered the Experimental CV Lab on this connection, \
         so there is no catalog of experiments to list and nothing to start. A \
@@ -664,9 +633,9 @@ final class TowerExperimentalCVClient: ExperimentalCVClient {
         refreshStatus()
     }
 
-    /// Idempotent by construction: every path into it is guarded by the same
-    /// two flags, so a status change and a republished declaration racing each
-    /// other cannot open two subscriptions.
+    /// Opens the CV Lab result subscription when the socket and offer permit it.
+    /// Checks connection, in-flight state and contract -> sends one subscribe;
+    /// the shared guards prevent status and declaration updates opening two.
     private func subscribeIfPossible() {
         guard tower.status == .online, subscription.id == nil, !subscription.isSubscribing else { return }
         guard let offer else {
@@ -902,12 +871,9 @@ final class TowerExperimentalCVClient: ExperimentalCVClient {
         statusSubject.send(status)
     }
 
-    /// The seven Tower lifecycle states, projected onto this app's six cases.
-    ///
-    /// The one place they disagree is deliberate and is the Tower's own
-    /// decision: it says `stopped` and this says `.completed`, because *"a
-    /// bench run does not complete; it is stopped by a person"*. The Tower says
-    /// what happened; iOS renders it with the case its state machine has.
+    /// Maps one Tower status document to the workspace state shown to a person.
+    /// Reads lifecycle and run -> selects the matching state or a safe fallback;
+    /// `stopped` maps to `.completed` because that case retains final figures.
     static func project(_ document: CVLabStatus) -> ExperimentalCVState {
         let runOrNil = document.run
         switch document.lifecycle.state {

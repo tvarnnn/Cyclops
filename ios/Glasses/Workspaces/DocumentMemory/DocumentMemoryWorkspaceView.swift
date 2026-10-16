@@ -17,7 +17,7 @@ import SwiftUI
 /// > empty library as "no documents yet" is inviting a person to wait for
 /// > something that is not coming.
 ///
-/// On 9,199 frames of real first-person footage the page detector fired six
+/// On 9,199 frames of real first-person footage the page detector fired 6
 /// times and every one was a false positive — a venetian blind and a backlit
 /// laptop keyboard. After the gate was re-derived it fires zero times, and no
 /// capture on this platform has ever contained a sheet of paper. Separately, at
@@ -39,7 +39,7 @@ import SwiftUI
 ///
 /// The recorder's Start/Stop is here, and the camera's is not: this cartridge
 /// writes, its session does **not** follow the stream, and a session that
-/// persists what a wearer read gets an explicit start. Starting the recorder
+/// persists observed pages gets an explicit start. Starting the recorder
 /// does not start the camera, and this screen cannot.
 struct DocumentMemoryWorkspaceView: View {
     /// A value, not the connection — see `TowerReachabilityReader`.
@@ -232,73 +232,7 @@ struct DocumentResultsView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            switch result.evidence {
-            case .matched:
-                ForEach(result.documents) { document in
-                    DocumentRow(
-                        document: document,
-                        notes: result.response?.recordNotes ?? [:],
-                        snippetMaxChars: result.response?.snippetMaxChars
-                    )
-                }
-                if let caveat = result.query.matchingCaveat {
-                    Text(caveat)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-                if result.response?.isPossiblyTruncated == true,
-                   let reason = result.response?.paginationReason {
-                    // There is no cursor, so a truncated listing can only be
-                    // detected by arithmetic. The Tower publishes that
-                    // arithmetic rather than leaving a client to invent it.
-                    Text("This list may be cut short. \(reason)")
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-
-            case .notFound, .noObservation:
-                // Two different sentences for two different facts. Collapsing
-                // them into "No results" would let a gap in what the glasses
-                // happened to see read as a statement about the world.
-                Label(
-                    result.evidence == .notFound ? "Nothing matched" : "Never observed",
-                    systemImage: result.evidence == .notFound ? "magnifyingglass" : "eye.slash"
-                )
-                .font(.headline)
-
-                // The Tower's own sentence wins where it has one, because it
-                // is more specific: it says *this Tower has recorded no
-                // documents at all*, which is a stronger and more useful
-                // statement than the generic one.
-                Text(result.response?.noObservationNote ?? result.evidence.explanation)
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-
-                if result.evidence == .noObservation {
-                    // Said explicitly, every time, because this is the one
-                    // sentence the closed vocabulary exists for.
-                    Text("Never observed is not the same as the document not existing. The glasses may simply never have seen it.")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-
-                if let response = result.response,
-                   response.sufficientEvidence == false,
-                   result.evidence == .notFound {
-                    // `sufficient_evidence: false` with `not_found` is a query
-                    // whose terms nothing contained; with `no_observation` it
-                    // is an empty memory. Two different things, and the Tower
-                    // distinguishes them so a client can.
-                    Text("The memory was searched and none of those words appeared in it.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-            }
+            answerContent
 
             // Attached to every answer, not just the empty ones. A list of two
             // documents from a detector that has never fired on a real page is
@@ -314,16 +248,85 @@ struct DocumentResultsView: View {
             }
         }
     }
+
+    @ViewBuilder
+    private var answerContent: some View {
+        switch result.evidence {
+        case .matched:
+            ForEach(result.documents) { document in
+                DocumentRow(
+                    document: document,
+                    notes: result.response?.recordNotes ?? [:],
+                    snippetMaxChars: result.response?.snippetMaxChars
+                )
+            }
+            if let caveat = result.query.matchingCaveat {
+                Text(caveat)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            if result.response?.isPossiblyTruncated == true,
+               let reason = result.response?.paginationReason {
+                // There is no cursor, so a truncated listing can only be
+                // detected by arithmetic. The Tower publishes that
+                // arithmetic rather than leaving a client to invent it.
+                Text("This list may be cut short. \(reason)")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+        case .notFound, .noObservation:
+            // Two different sentences for two different facts. Collapsing
+            // them into "No results" would let a gap in what the glasses
+            // happened to see read as a statement about the world.
+            Label(
+                result.evidence == .notFound ? "Nothing matched" : "Never observed",
+                systemImage: result.evidence == .notFound ? "magnifyingglass" : "eye.slash"
+            )
+            .font(.headline)
+
+            // The Tower's own sentence wins where it has one, because it
+            // is more specific: it says *this Tower has recorded no
+            // documents at all*, which is a stronger and more useful
+            // statement than the generic one.
+            Text(result.response?.noObservationNote ?? result.evidence.explanation)
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            if result.evidence == .noObservation {
+                // Said explicitly, every time, because this is the one
+                // sentence the closed vocabulary exists for.
+                Text("Never observed is not the same as the document not existing. The glasses may simply never have seen it.")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            if let response = result.response,
+               response.sufficientEvidence == false,
+               result.evidence == .notFound {
+                // `sufficient_evidence: false` with `not_found` is a query
+                // whose terms nothing contained; with `no_observation` it
+                // is an empty memory. Two different things, and the Tower
+                // distinguishes them so a client can.
+                Text("The memory was searched and none of those words appeared in it.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
 }
 
 // MARK: - The limitation that must not be hidden
 
 /// `recording_limitations`, rendered where a person sees them.
 ///
-/// This appeared **zero times** in this app before this screen was rewritten,
-/// while every response carried it. It is the single most important thing this
-/// cartridge has to say, and it is most important precisely when there is
-/// nothing else on screen.
+/// Limitations accompany even empty answers because the detector has not
+/// produced a validated positive on this platform.
 struct DocumentLimitationsView: View {
     let limitations: [DocumentRecordingLimitation]
     var measurement: DocumentRecordingMeasurement?
@@ -434,16 +437,15 @@ struct DocumentEnvelopeFootnotes: View {
 
 /// One document, with the caveats the envelope hoisted off it.
 ///
-/// `record_notes` was moved to the envelope because repeating 2,351 bytes of
-/// identical prose on every record made a 200-document listing 488 KB. **The
-/// caveats were hoisted, never deleted** — so a row renders them from the
-/// envelope rather than from itself, and none of them may be dropped.
+/// The envelope carries the caveats: repeating 2,351 bytes on every record
+/// made a 200-document listing 488 KB; the hoisted form measured 249 KB.
+/// A row renders those notes with the document so none are lost.
 struct DocumentRow: View {
     let document: RememberedDocument
     /// The envelope's hoisted `record_notes`, keyed by the field each qualifies.
     var notes: [String: String] = [:]
     /// `snippet_max_chars`, off the envelope. **Read, never hard-coded** — it
-    /// is 48 today and it is configuration-dependent.
+    /// is the Tower's `SNIPPET_MAX_CHARS` (48 today) and may change with the Tower.
     var snippetMaxChars: Int?
 
     var body: some View {
@@ -464,47 +466,8 @@ struct DocumentRow: View {
 
             if let match = document.match { matchEvidence(match) }
 
-            if let summary = document.summary {
-                Text(summary)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                if let caption = document.summaryCaption {
-                    Text(caption)
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-            } else if document.summaryAvailable, let withheld = notes["summary_withheld"] {
-                // Not silence. A listing withholds the summary on purpose, and
-                // the reason is worth one line rather than an unexplained gap.
-                Text(withheld)
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-
-            HStack(spacing: 10) {
-                Text(observedLabel)
-                if let duration = document.observedDuration {
-                    Text(duration.label)
-                }
-                Text(document.text.displayName)
-                if document.sightingCount > 1 {
-                    // A later look at the same page joined this record rather
-                    // than becoming a second one.
-                    Text("Seen \(document.sightingCount) times")
-                }
-                if let pages = document.pagesObserved, pages > 1 {
-                    if let readable = document.pagesReadable {
-                        Text("\(readable) of \(pages) pages readable")
-                    } else {
-                        Text("\(pages) pages")
-                    }
-                }
-            }
-            .font(.caption2)
-            .foregroundStyle(.tertiary)
+            summaryDetails
+            observationDetails
 
             // `not_readable` is a real answer, and a row that showed only the
             // words "No readable text" would read as a failure.
@@ -550,6 +513,51 @@ struct DocumentRow: View {
         .accessibilityElement(children: .combine)
     }
 
+    @ViewBuilder
+    private var summaryDetails: some View {
+        if let summary = document.summary {
+            Text(summary)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            if let caption = document.summaryCaption {
+                Text(caption)
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        } else if document.summaryAvailable, let withheld = notes["summary_withheld"] {
+            // A listing withholds the summary on purpose; say why.
+            Text(withheld)
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private var observationDetails: some View {
+        HStack(spacing: 10) {
+            Text(observedLabel)
+            if let duration = document.observedDuration {
+                Text(duration.label)
+            }
+            Text(document.text.displayName)
+            if document.sightingCount > 1 {
+                // A later look at the same page joined this record.
+                Text("Seen \(document.sightingCount) times")
+            }
+            if let pages = document.pagesObserved, pages > 1 {
+                if let readable = document.pagesReadable {
+                    Text("\(readable) of \(pages) pages readable")
+                } else {
+                    Text("\(pages) pages")
+                }
+            }
+        }
+        .font(.caption2)
+        .foregroundStyle(.tertiary)
+    }
+
     private var titleProvenance: String {
         guard let max = document.titleMaxChars else {
             return "Taken from the page's own first line of text."
@@ -561,8 +569,7 @@ struct DocumentRow: View {
     ///
     /// A match with no evidence is a number a client has to trust. The snippet
     /// is bounded and the bound is published beside it — read off the envelope
-    /// here rather than assumed, because it is configuration-dependent and the
-    /// contract prose disagreed with the code about its value for months.
+    /// here because the Tower defines it (`SNIPPET_MAX_CHARS`).
     @ViewBuilder
     private func matchEvidence(_ match: DocumentMatchEvidence) -> some View {
         VStack(alignment: .leading, spacing: 2) {
@@ -746,138 +753,111 @@ struct DocumentSessionPanel: View {
                 }
             }
 
-            HStack(spacing: 10) {
-                if let recorded = session.documentsRecorded {
-                    Text("\(recorded) recorded")
-                }
-                if let resighted = session.documentsResighted, resighted > 0 {
-                    Text("\(resighted) seen again")
-                }
-                if let unreadable = session.dwellsUnreadable, unreadable > 0 {
-                    Text("\(unreadable) not readable")
-                }
-                if let device = session.ocrDevice {
-                    Text("OCR on \(device)")
-                }
-            }
-            .font(.caption2)
-            .foregroundStyle(.tertiary)
-            .monospacedDigit()
-
-            if let cameraNote {
-                Text(cameraNote)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            if session.idleStopPending {
-                Text("No camera is streaming to the Tower. The recorder will stop itself unless one starts.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-
-            if session.loadOverdue {
-                // Not a failure. The recogniser takes about five seconds to
-                // construct and a first-run download is slower still.
-                Text("The text recogniser is still loading. That is slow, not broken.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            if let failure = session.failureReason {
-                Text(failure)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            if session.inDwell {
-                Text("A page is in view now. Stopping will keep it — the page in progress is written out, not discarded.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            if let flushed = session.flushedDocumentID {
-                Text("The last stop wrote out the page that was still in view (\(flushed)).")
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            if session.retentionIncomplete {
-                // Reported rather than logged: a deletion that quietly failed
-                // looks exactly like one that was kept.
-                Text("Some records past the retention window could not be deleted, so they are still on the Tower.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            if !session.followsStream {
-                Text("Recording is started here, not by the camera. Connecting the glasses does not begin keeping what comes into view.")
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
+            statusCounts
+            statusDetails
         }
     }
 
-    /// The state, in words, from `state` — with the qualification that `state`
-    /// is what somebody asked for.
+    private var statusCounts: some View {
+        HStack(spacing: 10) {
+            if let recorded = session.documentsRecorded {
+                Text("\(recorded) recorded")
+            }
+            if let resighted = session.documentsResighted, resighted > 0 {
+                Text("\(resighted) seen again")
+            }
+            if let unreadable = session.dwellsUnreadable, unreadable > 0 {
+                Text("\(unreadable) not readable")
+            }
+            if let device = session.ocrDevice {
+                Text("OCR on \(device)")
+            }
+        }
+        .font(.caption2)
+        .foregroundStyle(.tertiary)
+        .monospacedDigit()
+    }
+
+    @ViewBuilder
+    private var statusDetails: some View {
+        if let cameraNote {
+            Text(cameraNote)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        if session.idleStopPending {
+            Text("No camera is streaming to the Tower. The recorder will stop itself unless one starts.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+
+        if session.loadOverdue {
+            // Not a failure. The recogniser takes about five seconds to
+            // construct and a first-run download is slower still.
+            Text("The text recogniser is still loading. That is slow, not broken.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        if let failure = session.failureReason {
+            Text(failure)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        if session.inDwell {
+            Text("A page is in view now. Stopping will keep it — the page in progress is written out, not discarded.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        if let flushed = session.flushedDocumentID {
+            Text("The last stop wrote out the page that was still in view (\(flushed)).")
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        if session.retentionIncomplete {
+            // Reported rather than logged: a deletion that quietly failed
+            // looks exactly like one that was kept.
+            Text("Some records past the retention window could not be deleted, so they are still on the Tower.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        if !session.followsStream {
+            Text("Recording is started here, not by the camera. Connecting the glasses does not begin keeping what comes into view.")
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    /// Describes the reported recorder state without claiming that the wearer
+    /// read a page or that a pause definitely stopped recording.
     ///
-    /// ## None of these may say "read"
+    /// The camera establishes only that a page was in view. This session has
+    /// no `following` field to confirm liveness, so paused and stopped labels
+    /// avoid an absolute claim about what the producer is doing.
     ///
-    /// This headline said **"Recording what is read"** and two strings above it
-    /// said "keeping what you read" and "the reading in progress". All three
-    /// were wrong in the same way, and the proof is 700 lines away in this
-    /// app's own decoder: `DocumentMemoryDecoder` **refuses a Tower** whose
-    /// `claim` says a document was read, because the contract's claim is
-    /// `a-page-was-in-view-and-was-ocred` and the older spelling was the
-    /// stronger claim.
+    /// `state` is what somebody asked for, not proof of what the recorder is
+    /// doing: a Pause whose producer ignores `SIGTERM` still answers 200 with
+    /// `state: "paused"` while recording, which is why Object Memory reads
+    /// `following` instead. This session block carries no `following`.
     ///
-    /// So this build declined the claim on the wire and then made it in its own
-    /// voice. The Tower is explicit that it cannot be made — `record_notes`
-    /// carries *"This platform cannot establish that the wearer looked at it,
-    /// noticed it, or read it"* — and this very screen's header already says
-    /// *"Being in view is not the same as your having read it"*, which the old
-    /// headline directly contradicted.
-    ///
-    /// A camera that sees a page establishes that a page was in view. It
-    /// establishes nothing whatever about a person's attention.
-    /// ## The two negative cases may not be stated absolutely
-    ///
-    /// These read *"Paused. Nothing is being recorded."* and *"Not recording."*
-    /// — absolute claims about whether a wearer is being recorded, derived from
-    /// `state`, which is **what somebody asked for**. The doc line above said so
-    /// and none of the rendered strings carried the qualification.
-    ///
-    /// The contract is explicit that a Pause whose producer ignores `SIGTERM`
-    /// answers 200 with `state: "paused"` while still recording, and Object
-    /// Memory renders liveness from `following` for exactly that reason.
-    ///
-    /// **Document Memory's session block carries no `following`** — it is not
-    /// the generic `cartridge_session.control` surface and declares no
-    /// `state_means`, checked on the live wire. So the corroborating field is
-    /// genuinely unavailable here, and the honest move is not to fake it but to
-    /// stop overstating: "the recorder was asked to stop" is true of an intent
-    /// field; "nothing is being recorded" is a claim about the world.
-    ///
-    /// The asymmetry is deliberate. `running` may be stated plainly, because
-    /// the failure direction there is harmless — a session that says it is
-    /// recording and is not costs a person nothing. The reverse tells someone
-    /// they are not being recorded when they may be, and that is the one
-    /// direction this screen must never be confidently wrong in.
+    /// The asymmetry is deliberate. `running` is stated plainly because a false
+    /// "recording" costs nothing, while a false "not recording" tells someone
+    /// they are not being recorded when they may be, the one direction this
+    /// screen must never be confidently wrong in.
     private var headline: String {
         switch session.state {
         case "running": return "Recording pages that come into view"
         case "starting": return "Starting the text recogniser"
         case "paused": return "Pause was requested. The Tower does not report whether the recorder has stopped."
-        // NOT "Stop was requested" unconditionally. `stopped` is also where a
-        // session lands when the engine could not load — the bench Tower right
-        // now reports `state: "stopped"` with `failure_reason: "…No module
-        // named 'easyocr'"`, and nobody requested anything. The old copy ("Not
-        // recording.") was merely incomplete; attributing it to a human action
-        // is a positive false claim, and `failure_reason` is rendered as a
-        // caption directly underneath, so the screen would contradict itself
-        // in two adjacent lines with the false one in bold.
+        // A load failure can also yield `stopped` without anyone pressing Stop;
+        // the reason below the headline explains that case.
         case "stopped":
             return session.failureReason == nil
                 ? "Stop was requested. Everything already recorded is kept."
