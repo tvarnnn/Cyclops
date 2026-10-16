@@ -70,10 +70,8 @@ async def handle(message: dict, *, websocket, sender) -> None:
             #
             # It carries a `status` like every other refusal, and that is
             # not decoration: the contract says every `cv_lab_error`
-            # carries one, so a client is entitled to require the field.
-            # This branch omitted it, which would have made a hand-written
-            # decoder drop the whole refusal -- on exactly the Tower
-            # configuration the refusal exists to describe.
+            # carries one, so a client is entitled to require the field,
+            # and a hand-written decoder drops a refusal without one.
             await _error(
                 sender,
                 ERR_LAB_UNAVAILABLE,
@@ -130,11 +128,10 @@ async def handle(message: dict, *, websocket, sender) -> None:
         # connection that is successfully answering frames because
         # somebody sent a bad start request.
         #
-        # Logged AND answered. Swallowing it silently left a client that
-        # sent a `request_id` waiting forever for a reply that was never
-        # coming, which is the one outcome this module's own header calls
-        # out as worse than a failure. Best-effort: if this send fails too
-        # the connection is already going.
+        # Logged AND answered: swallowing it silently would leave a client
+        # that sent a `request_id` waiting forever for a reply that is
+        # never coming. Best-effort: if this send fails too the connection
+        # is already going.
         logger.exception(
             "[Tower][CVLab] handler failed for %r; the connection continues",
             message_type,
@@ -142,10 +139,8 @@ async def handle(message: dict, *, websocket, sender) -> None:
         try:
             # `internal_error`, not `lab_unavailable`. The second is
             # terminal -- iOS renders it as "this Tower cannot do this" --
-            # and a handler bug is not that. And it carries a `status`
-            # like every other refusal: omitting it here would be the
-            # same defect this branch was added to fix, two lines down
-            # from the fix.
+            # and a handler bug is not that. It carries a `status` too,
+            # like every other refusal.
             await _error(
                 sender,
                 ERR_INTERNAL,
