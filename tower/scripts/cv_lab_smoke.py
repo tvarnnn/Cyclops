@@ -22,7 +22,7 @@ phone still shows nothing, the fault is between the phone and the Tower.
 
     # in another
     .venv\\Scripts\\python.exe scripts/cv_lab_smoke.py
-    .venv\\Scripts\\python.exe scripts/cv_lab_smoke.py --host 100.110.156.55
+    .venv\\Scripts\\python.exe scripts/cv_lab_smoke.py --host <tower-host>
     .venv\\Scripts\\python.exe scripts/cv_lab_smoke.py --experiment depth --frames 5
 
 Exit code 0 means every step did what the contract says it does.
@@ -33,15 +33,11 @@ import asyncio
 import base64
 import io
 import json
-import sys
 import urllib.error
 import urllib.request
-from pathlib import Path
 
 import numpy as np
 from PIL import Image
-
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 WIDTH, HEIGHT = 640, 360
 
@@ -71,14 +67,11 @@ async def _drain(ws, expect, limit: int = 40, timeout: float = 20.0) -> dict:
     """The next message of an acceptable type, skipping the rest.
 
     `expect` is a type or a tuple of them, and passing a tuple is usually
-    right. The first version of this waited for ONE type, and the first
-    time the Tower answered a command with `cv_lab_error` instead of
-    `cv_lab_status` -- which is exactly what the contract says it does
-    when a command does not apply -- this function skipped the reply it
-    was given and blocked until the socket died.
+    right: the Tower answers a command that does not apply with
+    `cv_lab_error` instead of `cv_lab_status`, as the contract says. Waiting
+    for ONE type would skip that reply and block until the socket died.
 
-    That is a bug worth naming rather than quietly fixing, because it is
-    the same bug an iOS client will write: wherever you expect
+    An iOS client has the same obligation: wherever you expect
     `cv_lab_status`, a `cv_lab_error` may arrive instead, and it carries
     the status anyway.
     """
