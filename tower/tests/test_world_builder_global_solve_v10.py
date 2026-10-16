@@ -291,6 +291,7 @@ def raw_planned(walked, tmp_path):
     return walked
 
 
+@pytest.mark.usefixtures("final_scale_guard_bypassed")
 def test_a_feature_clear_that_fails_stays_owed_and_the_next_solve_heals_it(raw_planned, colmap,
                                                                            monkeypatch):
     """RV10-B M7-1: another writer holds the walk database while the solve clears the rewritten
@@ -346,6 +347,7 @@ def test_a_kill_between_the_rewrite_and_the_clear_leaves_the_clear_owed(raw_plan
     assert GS.FEATURES_CLEAR_OWED_KEY not in _record_json(s)
 
 
+@pytest.mark.usefixtures("final_scale_guard_bypassed")
 def test_a_solve_that_owes_nothing_writes_no_owed_key(raw_planned, colmap):
     first = GS.solve(raw_planned.store, raw_planned.world_id, raw_planned.session_id, final=True)
     assert first["solve"]["solver_images_rewritten"]["features_cleared"] == {"images": 1, "pairs": 2}
@@ -357,6 +359,7 @@ def test_a_solve_that_owes_nothing_writes_no_owed_key(raw_planned, colmap):
 # L-12: an image this solve cannot replace does not make it raise
 
 
+@pytest.mark.usefixtures("final_scale_guard_bypassed")
 def test_an_image_the_solve_cannot_replace_is_left_and_the_solve_goes_on(raw_planned, colmap,
                                                                          monkeypatch):
     """RV10-B M7-3, portable: replacing 00000002.jpg fails (another process holds it). With a
@@ -385,6 +388,7 @@ def test_an_image_the_solve_cannot_replace_is_left_and_the_solve_goes_on(raw_pla
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="Windows share modes")
+@pytest.mark.usefixtures("final_scale_guard_bypassed")
 def test_an_exclusively_held_image_with_a_record_does_not_make_the_solve_raise(walked, colmap,
                                                                               monkeypatch):
     """RV10-B M7-3 as it was found: a handle with no sharing on one solver image, and a record."""
@@ -511,6 +515,7 @@ def _geometry_rows(db, pid):
         con.close()
 
 
+@pytest.mark.usefixtures("final_scale_guard_bypassed")
 def test_a_revisit_matcher_that_fails_after_writing_is_still_floored(walked, colmap, monkeypatch,
                                                                      stub_gate):
     """RV10-B P6: COLMAP's matcher writes a listed pair (20 inliers, under the floor of 50) and
@@ -535,6 +540,7 @@ def test_a_revisit_matcher_that_fails_after_writing_is_still_floored(walked, col
     assert colmap.calls("global_mapping")[0][2] == mapped.name
 
 
+@pytest.mark.usefixtures("final_scale_guard_bypassed")
 def test_earlier_imports_are_cleared_before_the_re_extracted_database_is_matched(session, colmap,
                                                                                  monkeypatch,
                                                                                  stub_gate):
@@ -601,6 +607,7 @@ def test_earlier_imports_are_cleared_before_the_re_extracted_database_is_matched
 # L-16 / L-16b: the frozen matching's end check, and the rule
 
 
+@pytest.mark.usefixtures("final_scale_guard_bypassed")
 def test_the_end_check_compares_with_the_digest_the_freeze_check_accepted(walked, colmap,
                                                                           monkeypatch):
     """RV10-B Q1: inside the window, a lockless hand-run solve matches into the walk database

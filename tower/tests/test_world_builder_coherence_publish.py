@@ -7,10 +7,13 @@ Pinned here:
   * the components record holds the contract's shape (checked with the READER's own parser,
     `components.parse_components`, so the writer and the reader cannot drift);
   * the fail-safes: masks `partial` / `unavailable` / absent -> `masks-unavailable`, depth unavailable ->
-    `scale-unavailable`, a broken gate -> today's solve with no record;
+    `scale-unavailable`, a broken gate -> the solver's solve and no gate components record
+    (`gate.state: failed`; at publish, the components record is the final scale guard's);
   * the surface stage reuses the gate's depth (a cache hit: the network is never called);
-  * saved worlds: no record is `components: null`, and a solve published without the gate retires an old
-    record rather than leaving it to describe the new solve.
+  * saved worlds: no record is `components: null`, and a background solve (never gated, never guarded)
+    retires an old record rather than leaving it to describe the new solve;
+  * every final publication runs the final scale guard, which writes its audit and the components record
+    BEFORE the solution (contract COMPONENTS §2.6 rule 4a), gated or not.
 """
 
 from __future__ import annotations
@@ -25,6 +28,7 @@ import pytest
 
 from tower.world_builder import coherence_gate as CG
 from tower.world_builder import coherence_publish as CP
+from tower.world_builder import final_scale_guard as FSG
 from tower.world_builder.components import parse_components
 
 SID = "s1"
@@ -102,6 +106,17 @@ def _links(n_a, n_b, cross):
 class _Store:
     def read_session(self, world_id, session_id):
         return SimpleNamespace(started_at=1000.0, intrinsics=None)
+
+
+class _WorldStore(_Store):
+    """`_Store` with a world directory, which a final publication needs: the final scale guard looks for the
+    session's live depth cache under it (absent here, so the guard has no metric evidence)."""
+
+    def __init__(self, root):
+        self.root = Path(root)
+
+    def world_dir(self, world_id):
+        return self.root / world_id
 
 
 def _run(monkeypatch, *, n_a=30, n_b=20, cross=((29, 30),), level_b=0.0, transients=("state", "applied"),
@@ -443,19 +458,18 @@ def test_the_final_surface_asks_for_the_gates_depth_only_for_a_gated_solve(tmp_p
         assert seen["depth_known_fov"] is True
 
 
-def test_surfacify_takes_the_fov_choice_into_its_params_digest(tmp_path):
-    """`surfacify(depth_known_fov=True)` builds with `SurfaceParams(depth_known_fov=True)`: the digest says
-    so, and a surface built without it is not "already built" for it."""
+def test_surfacify_takes_the_known_fov_into_its_params_digest(tmp_path):
+    """`surfacify` always builds with `SurfaceParams(depth_known_fov=True)`: the digest says so, and a
+    depth stage that was not told the FoV is not a cache for it."""
     from tests.test_world_builder_surface_pipeline import SESSION, WORLD, _params, _synthetic_world
     from tower.world_builder import surface_pipeline as SP
 
     store = _synthetic_world(tmp_path, digest="final-solve")
     SP.surfacify(store, WORLD, SESSION, params=_params(), force=True)
-    before = SP.read_surface_manifest(store, WORLD, SESSION)["params_digest"]
-    assert "depth-fov" not in before
-    # the synthetic depth stage was not told the FoV, so the FoV-known surface must not reuse it
+    assert "depth-fov" in SP.read_surface_manifest(store, WORLD, SESSION)["params_digest"]
     dense = store.world_dir(WORLD) / "dense" / SESSION
     align = json.loads((dense / "align.json").read_text())
+    align.pop("known_fov")
     from tower.world_builder.global_solve import load_solution
     from tower.world_builder.dense import DenseParams
 
@@ -463,18 +477,50 @@ def test_surfacify_takes_the_fov_choice_into_its_params_digest(tmp_path):
                                       DenseParams(known_fov=True))
 
 
-def test_the_publish_step_with_the_gate_off_is_todays_write(tmp_path, monkeypatch):
+def _guarded_names():
+    return sorted([CP.COMPONENTS_FILENAME, FSG.AUDIT_FILENAME])
+
+
+def test_the_publish_step_with_the_gate_off(tmp_path, monkeypatch):
+    """The gate off. A background solve is `write(workspace, solution)` and nothing else. A final solve is
+    still guarded: the final scale guard's audit and the components record land BEFORE the solution, and
+    with no metric evidence the whole room is published `uncertified`, nothing isolated. No gate record."""
     monkeypatch.delenv("TOWER_WORLD_SOLVE_GATE", raising=False)
+    store = _WorldStore(tmp_path / "worlds")
+    ws = SimpleNamespace(root=tmp_path / "solve")
+    ws.root.mkdir()
     solution = _solution()
     writes = []
-    ws = SimpleNamespace(root=tmp_path)
-    out, record = CP.gate_and_publish(_Store(), "w1", SID, ws, solution, final=True, database_path="db",
+    out, record = CP.gate_and_publish(store, "w1", SID, ws, solution, final=False, database_path="db",
                                       keyframes=_keyframes(50), write=lambda w, s: writes.append(s))
     assert out is solution and record is None and writes == [solution]
-    assert list(tmp_path.iterdir()) == []
+    assert list(ws.root.iterdir()) == []
+
+    writes.clear()
+    on_disk = []
+
+    def write(w, s):
+        on_disk.append(sorted(p.name for p in ws.root.iterdir()))
+        writes.append(s)
+
+    out, record = CP.gate_and_publish(store, "w1", SID, ws, solution, final=True, database_path="db",
+                                      keyframes=_keyframes(50), write=write)
+    assert record is None and writes == [out]
+    assert on_disk == [_guarded_names()], "the guard's records land BEFORE the solution"
+    assert sorted(p.name for p in ws.root.iterdir()) == _guarded_names()
+    guard = out.solve["final_scale_guard"]
+    assert guard["decision"] == FSG.DECISION_PUBLISHED and guard["pieces_isolated"] == 0
+    assert guard["scale_status"] == FSG.SCALE_UNCERTIFIED and guard["evidence"] == FSG.EVIDENCE_NONE
+    assert {k for k, p in out.poses.items() if p["component"] == 0} == set(solution.poses)
+    doc = json.loads((ws.root / CP.COMPONENTS_FILENAME).read_text())
+    assert parse_components(doc) is not None
+    assert [e["state"] for e in doc["components"]] == ["placed"]
+    assert doc["components"][0]["final_scale_guard"]["scale_status"] == FSG.SCALE_UNCERTIFIED
+    audit = json.loads((ws.root / FSG.AUDIT_FILENAME).read_text())
+    assert audit["decision"] == FSG.DECISION_PUBLISHED and audit["assessment"]["pieces"] == []
 
 
-def test_the_publish_step_with_the_gate_on_writes_the_gated_solve_then_the_record(tmp_path, monkeypatch):
+def test_the_publish_step_with_the_gate_on_writes_its_records_then_the_gated_solve(tmp_path, monkeypatch):
     monkeypatch.setenv("TOWER_WORLD_SOLVE_GATE", "1")
     solution = _solution()
     links = _links(30, 20, ((29, 30),))
@@ -487,23 +533,27 @@ def test_the_publish_step_with_the_gate_on_writes_the_gated_solve_then_the_recor
 
     monkeypatch.setattr(CP, "run_gate_depth", no_depth)
     order = []
-    ws = SimpleNamespace(root=tmp_path)
+    store = _WorldStore(tmp_path / "worlds")
+    ws = SimpleNamespace(root=tmp_path / "solve")
+    ws.root.mkdir()
 
     def write(w, s):
-        order.append(("write", (tmp_path / CP.COMPONENTS_FILENAME).exists()))
+        order.append(("write", sorted(p.name for p in ws.root.iterdir())))
 
-    out, record = CP.gate_and_publish(_Store(), "w1", SID, ws, solution, final=True, database_path="db",
+    out, record = CP.gate_and_publish(store, "w1", SID, ws, solution, final=True, database_path="db",
                                       keyframes=_keyframes(50), write=write)
-    assert order == [("write", False)], "the solution is published BEFORE its record"
+    assert order == [("write", _guarded_names())], \
+        "the components record and the guard's audit land BEFORE the solution (COMPONENTS §2.6 rule 4a)"
     assert record["state"] == CP.GATE_STATE_APPLIED
     assert record["publish"] == {"components_written": True}
+    assert record["final_scale_guard"]["decision"] == FSG.DECISION_PUBLISHED
     assert out.timing["gate_s"] == record["seconds"]
-    doc = json.loads((tmp_path / CP.COMPONENTS_FILENAME).read_text())
+    doc = json.loads((ws.root / CP.COMPONENTS_FILENAME).read_text())
     assert [e["reasons"] for e in doc["components"]] == [[], [CG.REASON_SCALE_UNAVAILABLE]]
     # a background solve never runs the gate, whatever the setting
-    out2, record2 = CP.gate_and_publish(_Store(), "w1", SID, ws, _solution(), final=False, database_path="db",
+    out2, record2 = CP.gate_and_publish(store, "w1", SID, ws, _solution(), final=False, database_path="db",
                                         keyframes=_keyframes(50), write=lambda w, s: None)
-    assert record2 is None and (tmp_path / CP.SUPERSEDED_FILENAME).exists()
+    assert record2 is None and (ws.root / CP.SUPERSEDED_FILENAME).exists()
 
 
 class _FovBackend:
@@ -642,19 +692,56 @@ def _stub_gate(monkeypatch, calls):
     monkeypatch.setattr(CP, "gate_final_solution", fake)
 
 
+def _map_a_room(monkeypatch):
+    """The fake pycolmap (`colmap`) maps nothing, and the final scale guard withholds a candidate with no
+    room. This mapper gives every keyframe a supported pose in one room (the seam tests' candidate), so a
+    final solve of `session` publishes through the real guard."""
+    from tests.test_world_builder_final_scale_guard import _walk_centers
+    from tests.test_world_builder_final_scale_guard_seam import _candidate
+    from tower.world_builder import global_solve as GS
+
+    def map_candidate(pycolmap, database_path, workspace, sparse_dir, keyframes, *, seed, threads,
+                      input_digest, min_image_observations, camera):
+        n = len(keyframes)
+        sol = _candidate(keyframes, camera, centers=_walk_centers(n, step=0.01), islands=[(0, n)])
+        sol.input_digest = input_digest
+        return sol
+
+    monkeypatch.setattr(GS, "_map_candidate", map_candidate)
+
+
+def _guard_published(workspace) -> dict:
+    """The final scale guard published this solve: its audit, and a components record the reader takes,
+    the whole room placed and `uncertified` (the fake walk has no metric evidence)."""
+    meta = json.loads(workspace.solution_path.read_text(encoding="utf-8"))
+    assert meta["solve"]["final_scale_guard"]["decision"] == FSG.DECISION_PUBLISHED
+    audit = json.loads((workspace.root / FSG.AUDIT_FILENAME).read_text(encoding="utf-8"))
+    assert audit["decision"] == FSG.DECISION_PUBLISHED and audit["solve_identity"] == meta["solve_identity"]
+    doc = json.loads((workspace.root / CP.COMPONENTS_FILENAME).read_text(encoding="utf-8"))
+    assert parse_components(doc) is not None and doc["solve_identity"] == meta["solve_identity"]
+    (placed,) = [e for e in doc["components"] if e["state"] == "placed"]
+    assert placed["final_scale_guard"]["scale_status"] == FSG.SCALE_UNCERTIFIED
+    return meta
+
+
 def test_the_final_solve_runs_the_gate_before_publishing_when_the_setting_is_on(session, colmap, monkeypatch):
+    """The gate setting on: the final solve runs the gate, then the real final scale guard publishes it.
+    The stub gate measures no scale, so the guard has no evidence and the room is `uncertified`."""
     from tower.world_builder import global_solve as GS
 
     monkeypatch.setenv("TOWER_WORLD_SOLVE_GATE", "1")
+    _map_a_room(monkeypatch)
     calls = []
     _stub_gate(monkeypatch, calls)
     summary = GS.solve(session.store, session.world_id, session.session_id, final=True)
     assert calls == [{"database": "database.db", "keyframes": 4}]
-    assert summary["gate"]["state"] == CP.GATE_STATE_APPLIED
-    meta = json.loads(session.workspace.solution_path.read_text(encoding="utf-8"))
+    assert summary["gate"]["state"] == CP.GATE_STATE_APPLIED and summary["solved"] is True
+    meta = _guard_published(session.workspace)
     assert meta["gate"]["state"] == CP.GATE_STATE_APPLIED and "gate_s" in meta["timing"]
-    assert parse_components(json.loads((session.workspace.root / CP.COMPONENTS_FILENAME).read_text())) \
-        is not None
+    assert meta["gate"]["final_scale_guard"]["decision"] == FSG.DECISION_PUBLISHED
+    audit = json.loads((session.workspace.root / FSG.AUDIT_FILENAME).read_text(encoding="utf-8"))
+    assert audit["inputs"]["source"] == FSG.EVIDENCE_NONE
+    assert audit["inputs"]["gate_state"] == CP.GATE_STATE_APPLIED
     # a background solve of the same session never runs it, and retires the record it would contradict
     calls.clear()
     summary = GS.solve(session.store, session.world_id, session.session_id, final=False)
@@ -662,17 +749,21 @@ def test_the_final_solve_runs_the_gate_before_publishing_when_the_setting_is_on(
     assert not (session.workspace.root / CP.COMPONENTS_FILENAME).exists()
 
 
-def test_with_the_setting_off_the_final_solve_publishes_as_today(session, colmap, monkeypatch):
+def test_with_the_setting_off_the_final_solve_is_ungated_and_guarded(session, colmap, monkeypatch):
+    """The gate setting off: the final solve runs no gate and carries no gate record. Its components record
+    is the final scale guard's (contract COMPONENTS v13: an UNGATED final solve also writes one)."""
     from tower.world_builder import global_solve as GS
 
     monkeypatch.delenv("TOWER_WORLD_SOLVE_GATE", raising=False)
+    _map_a_room(monkeypatch)
     calls = []
     _stub_gate(monkeypatch, calls)
     summary = GS.solve(session.store, session.world_id, session.session_id, final=True)
-    assert calls == [] and summary["gate"] is None
-    meta = json.loads(session.workspace.solution_path.read_text(encoding="utf-8"))
+    assert calls == [] and summary["gate"] is None and summary["solved"] is True
+    meta = _guard_published(session.workspace)
     assert "gate" not in meta and "gate_s" not in meta["timing"]
-    assert sorted(p.name for p in session.workspace.root.iterdir() if "components" in p.name) == []
+    assert sorted(p.name for p in session.workspace.root.iterdir() if "components" in p.name) == \
+        [CP.COMPONENTS_FILENAME]
 
 
 def test_an_explicit_argument_wins_over_the_setting(session, colmap, monkeypatch):
@@ -685,16 +776,28 @@ def test_an_explicit_argument_wins_over_the_setting(session, colmap, monkeypatch
     assert len(calls) == 1
 
 
-def test_a_real_gate_that_cannot_read_its_database_publishes_todays_solve(session, colmap, monkeypatch):
-    """The real gate on the fake solver's empty database: the gate fails, and the solve is still published,
-    as the solver returned it, with `gate.state: failed` and no components record (`components: null`)."""
+def test_a_real_gate_that_cannot_read_its_database_publishes_the_solve_uncertified(session, colmap, monkeypatch):
+    """The real gate on the fake solver's empty database: the gate fails, and the solve is still published
+    with `gate.state: failed`. A failed gate is no evidence, so the final scale guard publishes the room as
+    the solver placed it, `uncertified`, with the guard's components record."""
     from tower.world_builder import global_solve as GS
 
     monkeypatch.setenv("TOWER_WORLD_SOLVE_GATE", "1")
+    _map_a_room(monkeypatch)
+
+    def no_depth(*a, **kw):
+        raise CP.DepthUnavailable("no GPU in this test")
+
+    monkeypatch.setattr(CP, "run_gate_depth", no_depth)
     summary = GS.solve(session.store, session.world_id, session.session_id, final=True)
     assert summary["solved"] is True
     assert summary["gate"]["state"] == CP.GATE_STATE_FAILED
-    assert not (session.workspace.root / CP.COMPONENTS_FILENAME).exists()
+    assert "no such table" in summary["gate"]["detail"], "the gate failed on its database, not on depth"
+    meta = _guard_published(session.workspace)
+    assert meta["solve"]["final_scale_guard"]["pieces_isolated"] == 0
+    audit = json.loads((session.workspace.root / FSG.AUDIT_FILENAME).read_text(encoding="utf-8"))
+    assert audit["inputs"]["source"] == FSG.EVIDENCE_NONE
+    assert audit["inputs"]["gate_state"] == CP.GATE_STATE_FAILED
     assert GS.load_solution(session.store, session.world_id, session.session_id).gate["state"] == "failed"
 
 
@@ -893,6 +996,8 @@ def test_the_re_gate_runs_in_place_from_the_solvers_partition(tmp_path, monkeypa
                              components=doc)
 
     monkeypatch.setattr(store, "read_keyframes", lambda w, s: _keyframes(50), raising=False)
+    # The final scale guard reads the session's start (its capture spans), as the gate runner does.
+    monkeypatch.setattr(store, "read_session", lambda w, s: SimpleNamespace(started_at=1000.0), raising=False)
     out = CP.regate_published(store, "w1", SID, gate_runner=gate_runner)
     assert seen == {"components": {0}, "database": "database.db"}, "the solver's partition, the solve's DB"
     again = GS.load_solution(store, "w1", SID)
@@ -902,7 +1007,8 @@ def test_the_re_gate_runs_in_place_from_the_solvers_partition(tmp_path, monkeypa
     doc = json.loads((ws.root / CP.COMPONENTS_FILENAME).read_text())
     meta = json.loads(ws.solution_path.read_text())
     assert doc["solve_identity"] == meta["solve_identity"] == GS.solve_identity(again)
-    assert sorted(p.name for p in ws.root.iterdir()) == sorted(set(before) | {CP.COMPONENTS_FILENAME})
+    assert sorted(p.name for p in ws.root.iterdir()) == \
+        sorted(set(before) | {CP.COMPONENTS_FILENAME, FSG.AUDIT_FILENAME})
 
 
 def test_a_re_gate_that_cannot_start_is_waiting_and_spends_no_attempt(tmp_path):
@@ -1043,13 +1149,13 @@ def test_a_depth_stamp_of_another_solve_of_the_same_keyframes_is_not_this_ones(t
     dense = store.world_dir(WORLD) / "dense" / SESSION
     align = json.loads((dense / "align.json").read_text())
     sol = load_solution(store, WORLD, SESSION)
-    assert SP._depth_cache_usable(align, dense, sol, DenseParams()), "ungated: as before"
+    assert SP._depth_cache_usable(align, dense, sol, DenseParams(known_fov=True)), "ungated: as before"
     gated_a = dc.replace(sol, gate={"state": "applied"})
     gated_b = dc.replace(gated_a, solved_at=gated_a.solved_at + 1.0)          # a re-solve, same keyframes
     stamped = dict(align, solve_identity=solve_identity(gated_a))
-    assert SP._depth_cache_usable(stamped, dense, gated_a, DenseParams())
-    assert not SP._depth_cache_usable(stamped, dense, gated_b, DenseParams())
-    assert not SP._depth_cache_usable(align, dense, gated_a, DenseParams()), "unstamped is not a gated solve's"
+    assert SP._depth_cache_usable(stamped, dense, gated_a, DenseParams(known_fov=True))
+    assert not SP._depth_cache_usable(stamped, dense, gated_b, DenseParams(known_fov=True))
+    assert not SP._depth_cache_usable(align, dense, gated_a, DenseParams(known_fov=True)), "unstamped is not a gated solve's"
 
 
 def test_the_components_reader_refuses_a_record_of_another_solve(tmp_path, monkeypatch):

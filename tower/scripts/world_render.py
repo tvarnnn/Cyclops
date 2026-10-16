@@ -77,7 +77,6 @@ from tower.world_builder.store import WorldStore  # noqa: E402
 # tests keep their names; this file owns the PLY/PNG/plotly writers and
 # the CLI.
 from tower.world_builder.render import (  # noqa: E402,F401
-    CAMERA_COLOUR,
     DEFAULT_MAX_POINTS,
     FRUSTUM_DEPTH_FRACTION,
     PALETTE,
@@ -407,7 +406,7 @@ def write_html_plotly(path: Path, frames: list, unregistered: list, ordering: li
                       title: str) -> str:
     import plotly.graph_objects as go  # noqa: PLC0415
 
-    descriptors = _html_frames(frames, unregistered, ordering)
+    descriptors = _html_frames(frames, unregistered)
     fig = go.Figure()
     groups = []           # trace indices per frame
     for descriptor in descriptors:

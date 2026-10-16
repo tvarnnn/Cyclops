@@ -65,6 +65,7 @@ def _no_links(monkeypatch):
 # the default: nothing new
 
 
+@pytest.mark.usefixtures("final_scale_guard_bypassed")
 def test_an_unseeded_final_solve_neither_reads_nor_writes_a_record(walked, colmap):
     summary = _solve(walked, final=True)
     assert colmap.log == _todays_trace(walked)
@@ -88,6 +89,7 @@ def test_a_background_solve_never_freezes(walked, colmap):
 
 
 @pytest.mark.parametrize("masked", [False, True])
+@pytest.mark.usefixtures("final_scale_guard_bypassed")
 def test_a_seeded_final_solve_freezes_and_the_next_maps_it_without_matching(walked, colmap, masked):
     run = (lambda: _masked(walked, StubDetector(), seed=7)) if masked else \
         (lambda: _solve(walked, final=True, seed=7))
@@ -139,6 +141,7 @@ CHANGES = {
 
 
 @pytest.mark.parametrize("change", sorted(CHANGES))
+@pytest.mark.usefixtures("final_scale_guard_bypassed")
 def test_any_change_matches_again_and_freezes_the_new_state(walked, colmap, change):
     kwargs, mutate, why = CHANGES[change]
     _solve(walked, final=True, seed=7)
@@ -157,6 +160,7 @@ def test_any_change_matches_again_and_freezes_the_new_state(walked, colmap, chan
 
 
 @pytest.mark.parametrize("masked", [False, True])
+@pytest.mark.usefixtures("final_scale_guard_bypassed")
 def test_a_walk_database_written_after_the_freeze_check_is_not_called_frozen(walked, colmap,
                                                                              monkeypatch, masked):
     """Review V9 Q1: the freeze check reads the walk database before extraction; the mask
@@ -181,6 +185,7 @@ def test_a_walk_database_written_after_the_freeze_check_is_not_called_frozen(wal
     assert summary["solve"]["matching_detail"] == GS.FROZEN_REFUSAL_CHANGED_UNDER_THE_SOLVE
 
 
+@pytest.mark.usefixtures("final_scale_guard_bypassed")
 def test_a_new_pycolmap_matches_again(walked, colmap):
     _solve(walked, final=True, seed=7)
     colmap.__version__ = "fake-2"
@@ -190,6 +195,7 @@ def test_a_new_pycolmap_matches_again(walked, colmap):
     assert "(pycolmap)" in summary["solve"]["matching_detail"]
 
 
+@pytest.mark.usefixtures("final_scale_guard_bypassed")
 def test_revisit_links_leave_the_walk_databases_frozen_matching_alone(walked, colmap, monkeypatch):
     """Review V9 M-10: the imported links never enter the walk database, so they are not in
     its key. A frozen walk database STAYS frozen when the relocalizer lists links; they are
@@ -215,6 +221,7 @@ def test_revisit_links_leave_the_walk_databases_frozen_matching_alone(walked, co
 
 
 @pytest.mark.parametrize("imported", [False, True])
+@pytest.mark.usefixtures("final_scale_guard_bypassed")
 def test_a_record_frozen_before_v9_m10(walked, colmap, imported):
     """A record written at 6d4b567 carries `revisit_pairs` in its key. Without an import the
     walk database it describes is exactly what today's key describes, and it stays frozen;
@@ -250,6 +257,7 @@ def test_the_verification_seed_stays_in_the_key_and_says_why():
 
 
 @pytest.mark.parametrize("masked", [False, True])
+@pytest.mark.usefixtures("final_scale_guard_bypassed")
 def test_an_unreadable_solver_image_refuses_the_freeze_and_the_solve_goes_on(walked, colmap,
                                                                              monkeypatch, masked):
     from tower.world_builder import solve_masks as SM
@@ -276,6 +284,7 @@ def test_an_unreadable_solver_image_refuses_the_freeze_and_the_solve_goes_on(wal
     assert _calls(colmap)[:2] == ["extract_features", "match_sequential"]
 
 
+@pytest.mark.usefixtures("final_scale_guard_bypassed")
 def test_an_unreadable_database_is_matched_and_not_frozen(session, colmap):
     """The fake's database is an empty file: nothing to freeze, and the solve goes on."""
     summary = _solve(session, final=True, seed=7)
@@ -286,6 +295,7 @@ def test_an_unreadable_database_is_matched_and_not_frozen(session, colmap):
     assert not (session.workspace.root / GS.FROZEN_MATCHING_FILENAME).exists()
 
 
+@pytest.mark.usefixtures("final_scale_guard_bypassed")
 def test_a_re_extracted_masked_database_is_never_frozen(session, colmap):
     summary = _masked(session, StubDetector(), seed=7)
     assert summary["solve"]["masking"] == "re-extracted"
@@ -397,6 +407,7 @@ def no_attempt_ledger(monkeypatch):
     monkeypatch.setattr(wr, "_restart_attempts", lambda *a, **k: {})
 
 
+@pytest.mark.usefixtures("final_scale_guard_bypassed")
 def test_a_refinish_maps_the_frozen_matching_and_hits_every_cached_mask(walked, colmap,
                                                                        no_attempt_ledger):
     stub = StubDetector()

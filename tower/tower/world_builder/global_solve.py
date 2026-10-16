@@ -1033,7 +1033,7 @@ def write_solution(workspace: SolveWorkspace, solution: Solution) -> None:
         # ungated solution.json is byte-for-byte what it was.
         meta["solve_identity"] = solve_identity(solution)
     elif isinstance(solution.solve, dict) and "final_scale_guard" in solution.solve:
-        # An ungated solve the final scale guard published (on only): it writes a components
+        # An ungated solve the final scale guard published: it writes a components
         # record and stamps the depth, both of which name the solve.
         meta["solve_identity"] = solve_identity(solution)
     write_json_atomic(workspace.solution_path, meta)
@@ -1640,7 +1640,7 @@ def solve(
             database_path=database_path, keyframes=keyframes, write=write_solution,
             consensus=plan, **stop_kw)
     if solution is None:
-        # THE FINAL SCALE GUARD WITHHELD THE CANDIDATE (`final_scale_guard`, on; unreachable off):
+        # THE FINAL SCALE GUARD WITHHELD THE CANDIDATE (`final_scale_guard`):
         # nothing was published, and the solution published before stands.
         return _withheld_summary(_gate_record, workspace)
     return {

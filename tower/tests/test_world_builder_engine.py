@@ -375,8 +375,8 @@ class TestBuildAndReload:
         manifest = store.read_derived_manifest(world_id)
 
         assert manifest["input_digest"]
-        assert store.derived_is_current(world_id, manifest["input_digest"])
-        assert not store.derived_is_current(world_id, "some-other-digest")
+        assert store.derived_currency(world_id, manifest["input_digest"]) is True
+        assert store.derived_currency(world_id, "some-other-digest") is not True
 
     def test_rebuilding_a_purged_world_fails_loudly(
         self, tmp_path, walk_jpegs, intrinsics

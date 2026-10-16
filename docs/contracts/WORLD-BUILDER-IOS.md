@@ -829,8 +829,9 @@ fallback above then absorbs.
 
 Decode `guidance.coverage` under the existing
 `world_builder.status/2026-09-10` payload. Unknown status fields remain
-ignorable. Absent `guidance` means the Tower switch is off or no session is
-selected; `coverage:null` means no qualifying completed receipt is available.
+ignorable. The Tower sends `guidance` for every selected session; absent
+`guidance` means no session is selected; `coverage:null` means no qualifying
+completed receipt is available.
 A nonnull block is a replacement, never a delta. Drop malformed known fields,
 any component with `stations:[]`, or masks that overlap or exceed twelve bits.
 Use the block's `geometry_revision` only as the receipt's provenance; fetch

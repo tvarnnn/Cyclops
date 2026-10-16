@@ -2,34 +2,33 @@
 gate and the consensus, and seal what the evidence says the solve misplaced (`TOWER_WORLD_ANCHOR_VERIFY`; OFF by
 default, and off is today's gate byte for byte).
 
-WHY. The gate never re-verifies the block it starts from. On 6839fb8f the anchor absorbed a bed stretch that
-independent image evidence puts 15-32 deg off (manager 071); on walk 3 the bathroom sits INSIDE the anchor at x2.9
-the room's scale (manager 081 section 1): `scale_split`'s binary segmentation cannot see a middle stretch shorter than
-both of its flanks, and the attach-time level test is never applied to the reference.
+WHY. The gate never re-verifies the block it starts from. On world 6839fb8f the anchor absorbed a bed stretch that
+independent image evidence puts 15-32 deg off; on walk 3 the bathroom sits INSIDE the anchor at x2.9 the room's
+scale: `scale_split`'s binary segmentation cannot see a middle stretch shorter than both of its flanks, and the
+attach-time level test is never applied to the reference.
 
-THE RULE is RUN `experiments/P4-IV/RULE.md` (declared 2026-09-25; `VerifyParams` digest 8efd726d8a1548d8), with
-part (a) replaced by `RULE-a2.md` (digest 8f5d494796345cd7), ported from their reference implementation
-`scripts/iv_rule.py` and the harness's matcher (`coherence_eval/eval_pairs.py`,
-PORTED, never imported). On the published room of the chosen draw (its kept set: the anchor group plus every
-attached group, the gate's own groups with label 0):
+THE RULE (`VerifyParams` digest 8efd726d8a1548d8), with part (a) replaced by the a2 test (`a2_digest`
+8f5d494796345cd7), is ported, not imported, from the experiment harness's rule (`RULE.md`) and matcher. On the
+published room of the chosen draw (its kept set: the anchor group plus every attached group, the gate's own groups
+with label 0):
 
   (c) `motion`: consecutive kept cameras at most 2 s apart that moved more than 2.0 m/s * dt + 0.3 m or turned more
       than 300 deg/s * dt + 30 deg are FLAGGED (human walking and head-turn bounds, the harness's metrics.PARAMS; the
       metres are the gate's own metric level). A flag only adds a cut point to (a) and (b); it never places.
   (a) `scale`: the anchor's cameras are cut into capture runs; each run is split by the product's own
       `coherence_gate.scale_split`; each segment with >= 10 ratios is compared with the REST of the anchor by
-      RULE-a2.md's test (digest 8f5d494796345cd7; it replaces RULE.md's `scale_levels_differ`, which failed the
-      control): the sign-test confidence intervals of the two median levels (alpha 0.05 each) must be separated by
-      more than log 1.25. The segment with the largest gap is SEALED as `scale-mismatch`, repeatedly. GUARD: if
-      what would be sealed holds half or more of the anchor's cameras with a ratio, nothing is (no majority level).
+      the a2 test (it replaces the rule's original `scale_levels_differ`, which failed the control): the sign-test
+      confidence intervals of the two median levels (alpha 0.05 each) must be separated by more than log 1.25. The
+      segment with the largest gap is SEALED as `scale-mismatch`, repeatedly. GUARD: if what would be sealed
+      holds half or more of the anchor's cameras with a ratio, nothing is (no majority level).
   (b) `images`: the kept set (less (a)'s seals) is cut into verification groups (capture runs, windows of 30, at
       least 5), and each group is judged against the rest of the kept set on MASKED image-only two-view evidence:
       the harness's base tier with every keypoint under the solve's transient mask dropped before matching. Only
       REVISIT pairs count. Direct pairs decide at >= 3 pairs over >= 3 group and 3 partner cameras (rotation
       median > 4.66 deg, or translation-direction median > 23.22 deg, contradicts); else two-hop chains through one
       revisit leg (median > 23.04 deg contradicts); else the group is unverifiable and left as today. The worst
-      contradicted group is sealed (`IMAGE_SEAL_REASON`: `link-contradicted`, manager 086), and the rest are
-      judged again (peeling).
+      contradicted group is sealed (`IMAGE_SEAL_REASON`: `link-contradicted`), and the rest are judged again
+      (peeling).
   THE SEAL RE-GATE: `coherence_gate.apply_gate` again on the same candidate, links, levels and depth, with the
       consensus's `withhold` unchanged, the new `seal` hook and the room's cameras as the allow-list; published
       only if its post-checks hold (`seal_refusal`: the room shrinks to a subset of the chosen room minus the sealed
@@ -38,7 +37,7 @@ attached group, the gate's own groups with label 0):
   (i) `imports`: in the gate itself (every draw): the pairs one relocalizer import created are ONE evidence unit
       in `coherence_gate.redundant_links` (`import_link_units`).
 
-Every bound is RULE.md's (thresholds from the control b2a75ab4 only; see there). The record is `gate.anchor_verify`
+Every bound is the rule's (thresholds calibrated on the control b2a75ab4 only). The record is `gate.anchor_verify`
 (Tower-internal, additive, only when on). CPU only; the DINOv2-small retrieval descriptor runs on the CPU from the
 local Hugging Face cache and is NEVER substituted: if it cannot load, the verification fails and says so.
 """
@@ -69,17 +68,17 @@ PART_IMAGES = "images"
 PART_MOTION = "motion"
 PART_IMPORTS = "imports"
 
-# THE ONE LINE: the reason a group the images contradict is sealed with. Manager 086 (walk 4): the contract's existing
-# `link-contradicted` -- a new closed-set reason (RULE.md section 6's `image-contradicted`) would need the contract
-# and a Mac G4 first, so it is never written. Which part sealed a piece is recorded Tower-side only
+# THE ONE LINE: the reason a group the images contradict is sealed with: the contract's existing
+# `link-contradicted`. A new closed-set reason (`image-contradicted`) would change the contract and the app first, so
+# it is never written. Which part sealed a piece is recorded Tower-side only
 # (`gate.anchor_verify.sealed_groups[*].source`), never in the components record.
 IMAGE_SEAL_REASON = CG.REASON_LINK_CONTRADICTED
 SCALE_SEAL_REASON = CG.REASON_SCALE_MISMATCH
 SOURCE_IMAGES = "anchor-image-verification"
 SOURCE_SCALE = "anchor-scale-segmentation"
-# THE POSE QUARANTINE's part `seal` (`TOWER_WORLD_POSE_QUARANTINE`; RUN P5-PQ RULE.md (c'), v3; manager 096 §2 (c),
-# 100): an impossible-speed motion flag seals an image-unverifiable group whose flag partner is in an image-confirmed
-# group. Its reason is the images' (no new reason string); the source is recorded Tower-side only.
+# THE POSE QUARANTINE's part `seal` (`TOWER_WORLD_POSE_QUARANTINE`; rule (c')): an impossible-speed motion flag
+# seals an image-unverifiable group whose flag partner is in an image-confirmed group. Its reason is the images' (no
+# new reason string); the source is recorded Tower-side only.
 MOTION_SEAL_REASON = CG.REASON_LINK_CONTRADICTED
 SOURCE_MOTION = "anchor-motion-unverifiable"
 
@@ -95,11 +94,11 @@ STATE_FAILED = "failed"              # an error (`detail`); the room is publishe
 MAX_ROUNDS = 3
 
 
-# PART (a) IS RULE-a2.md (P4-IV, declared 02:12, digest 8f5d494796345cd7), which replaces RULE.md section 3.2's level
-# test: the declared `scale_levels_differ` read per-camera level NOISE as a x3.73 step on the control (P4-IV
-# PHASE2.md). A segment differs from the rest of the anchor only when the distribution-free (sign-test) confidence
-# intervals of the two MEDIAN levels, coverage >= 1 - alpha each, are separated by more than log(scale_step_factor).
-# alpha 0.05 is RULE-a2.md section 3's choice, on the control's 7 runs alone (0 keyframes sealed on each).
+# PART (a) IS THE a2 TEST (digest 8f5d494796345cd7), which replaces the rule's original level test: its
+# `scale_levels_differ` read per-camera level NOISE as a x3.73 step on the control. A segment differs from the rest of
+# the anchor only when the distribution-free (sign-test) confidence intervals of the two MEDIAN levels, coverage
+# >= 1 - alpha each, are separated by more than log(scale_step_factor). alpha 0.05 was chosen on the control's 7 runs
+# alone (0 keyframes sealed on each). `A2_SPEC` is hashed into `a2_digest`: its keys and values are the rule.
 A2_ALPHA = 0.05
 A2_SPEC = {"test": "median-ci-sign", "alpha": A2_ALPHA, "gap_bound": "log(scale_step_factor)=log(1.25)",
            "rest_interval": True, "segments": "capture runs (cuts i-v) x product scale_split, unchanged",
@@ -108,7 +107,7 @@ A2_SPEC = {"test": "median-ci-sign", "alpha": A2_ALPHA, "gap_bound": "log(scale_
 
 
 def a2_digest(vp: "VerifyParams | None" = None) -> str:
-    """RULE-a2.md section 5: sha1[:16] of the sorted JSON {"verify": VerifyParams, "a2": A2_SPEC}."""
+    """sha1[:16] of the sorted JSON {"verify": VerifyParams, "a2": A2_SPEC}."""
     doc = {"verify": (vp or VerifyParams()).to_json(), "a2": A2_SPEC}
     return hashlib.sha1(json.dumps(doc, sort_keys=True).encode()).hexdigest()[:16]
 
@@ -116,7 +115,7 @@ def a2_digest(vp: "VerifyParams | None" = None) -> str:
 
 @dataclass(frozen=True)
 class VerifyParams:
-    """RULE.md section 4.6, digest 8efd726d8a1548d8 (sha1[:16] of the sorted JSON of these fields)."""
+    """`digest()` is sha1[:16] of the sorted JSON of these fields: 8efd726d8a1548d8 at these defaults."""
 
     # --- the verification groups ---
     window: int = 30              # longest run, in kept cameras (the harness's revisit_window)
@@ -132,7 +131,7 @@ class VerifyParams:
     min_pairs: int = 3
     min_distinct: int = 3
     max_middles: int = 10
-    # --- thresholds (the control b2a75ab4 only; RULE.md section 4.5, calibrate_control.py) ---
+    # --- thresholds (calibrated on the control b2a75ab4 only) ---
     theta_rot_deg: float = 4.66
     theta_t_deg: float = 23.22
     theta_2hop_deg: float = 23.04
@@ -146,7 +145,7 @@ class VerifyParams:
 
 @dataclass(frozen=True)
 class MotionParams:
-    """RULE.md section 5: human bounds (the harness's metrics.PARAMS), never fitted to a walk."""
+    """Human walking and head-turn bounds (the harness's metrics.PARAMS), never fitted to a walk."""
 
     v_max_mps: float = 2.0
     margin_m: float = 0.3
@@ -915,19 +914,19 @@ def _room_w(result, x: Inputs) -> list[int]:
 
 def impossible_speed(flag: dict, mp: MotionParams) -> bool:
     """A motion flag whose TRANSLATION breaks the human speed bound (`v_max_mps * dt + margin_m`), as opposed to one
-    raised by the head-turn bound alone (RUN P5-PQ RULE.md (c))."""
+    raised by the head-turn bound alone."""
     return float(flag["metres"]) > mp.v_max_mps * float(flag["dt"]) + mp.margin_m
 
 
 def motion_sealed_groups(groups: list, verdicts: list, flags: list, mp: MotionParams) -> dict:
-    """RUN P5-PQ RULE.md (c') (v3; manager 100): {group index: [the flags that seal it]}. A group is sealed when the
+    """Rule (c'): {group index: [the flags that seal it]}. A group is sealed when the
     images found it UNVERIFIABLE and it holds an endpoint of an impossible-speed flag whose OTHER endpoint is in a
     DIFFERENT group the images CONFIRMED -- the images placed the other side, and no human moved between the two poses,
     so the unverified side is what the solve misplaced.
 
     Nothing else seals: a flag with both ends in one group (the merge of small runs joined it across the flag) says
-    only that ONE of its two poses is wrong, not that the group is -- v2's clause for it sealed nine probably-correct
-    walk-3 desk keyframes, and is withdrawn; a flag between two unverifiable groups does not say which side is wrong;
+    only that ONE of its two poses is wrong, not that the group is (sealing on it sealed nine probably-correct desk
+    keyframes on walk 3); a flag between two unverifiable groups does not say which side is wrong;
     a flag into a contradicted group is left to that group's own seal."""
     group_of = {int(c): gi for gi, g in enumerate(groups) for c in g}
     out: dict = {}
@@ -1206,8 +1205,7 @@ def verify_published(result, *, keyframes, parts, regate: Callable, workspace_ro
         cap_hit = False
         before = _room_kids(result.solution, min_obs)
         while True:
-            new, rd = (analyse(cur, x, pairs, parts, vp, mp, gp, motion_seal=True) if motion_seal
-                       else analyse(cur, x, pairs, parts, vp, mp, gp))
+            new, rd = analyse(cur, x, pairs, parts, vp, mp, gp, motion_seal=motion_seal)
             new = {w: why for w, why in new.items() if w not in seal_w}
             rd["sealed_new"] = {why: sum(1 for v in new.values() if v == why) for why in sorted(set(new.values()))}
             rounds.append(rd)
@@ -1238,7 +1236,7 @@ def verify_published(result, *, keyframes, parts, regate: Callable, workspace_ro
                 break
             cur = regated
         sealed_kids = {x.kids[w]: why for w, why in seal_w.items()}
-        # Which part sealed which piece, with its statistic (manager 086): Tower-internal only, never in the
+        # Which part sealed which piece, with its statistic: Tower-internal only, never in the
         # components record, whose reason is the contract's.
         sealed_groups = [dict(g, round=k + 1) for k, rd in enumerate(rounds) for g in rd.get("sealed_groups") or []
                          if any(kid in sealed_kids for kid in g["keyframe_ids"])]

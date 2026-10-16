@@ -5,10 +5,9 @@ Design: FOW-V12-PHOTO-FLOORPLAN-DESIGN-20261012 ("Landing, live stretch and cost
 WORLD-BUILDER-GUIDANCE-IMAGERY.md "Photo floor plan v1.2".
 Raster core: `tower.world_builder.photo_floorplan` (pure).
 
-Every `CoverageWorker` (the status producer builds one only with
-`TOWER_WORLD_GUIDANCE_COVERAGE=on`) owns ONE `PhotoFloorplanWorker` and, after it has
-published a NEW coverage receipt, hands it that landing with `offer()` -- a constant-time
-enqueue. Everything below runs on this module's own daemon thread:
+Every `CoverageWorker` (the status producer builds one) owns ONE `PhotoFloorplanWorker`
+and, after it has published a NEW coverage receipt, hands it that landing with
+`offer()` -- a constant-time enqueue. Everything below runs on this module's own daemon thread:
 
   - never on a status request, the capture path, the coverage worker's 250 ms
     budget or the imagery worker's 80 ms budget;

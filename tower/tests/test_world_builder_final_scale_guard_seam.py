@@ -1,5 +1,5 @@
 """The final scale guard AT THE PUBLISH SEAM, end to end through `global_solve.solve` and
-`coherence_publish.regate_published`, with the guard ON (and shadow).
+`coherence_publish.regate_published`.
 
 Only the external engines are faked (pycolmap, the mapper, the gate's links, the depth stage, the metric
 scale; on an ungated solve the live depth cache's metric log, `FSG._live_cache_evidence`). Pinned (v2, Exp1
@@ -7,9 +7,7 @@ slice 4: evidence is READ, never made at publish):
   * THE VETO CASE: the walk-3-shaped fixture through the live product's final solve (unmasked, ungated,
     one draw) WITH live-cache evidence: zero bathroom keyframes in the published room; the pieces are
     explicit components the product's own reader takes; the audit names them; the short desk stretch stays
-    attached and is flagged uncertified on the placed component; no depth stage runs; the same walk OFF
-    keeps the bathroom in the room;
-  * shadow publishes exactly what off publishes, and writes the audit;
+    attached and is flagged uncertified on the placed component; no depth stage runs;
   * no evidence (or too little) publishes the room `uncertified`, isolates nothing and never runs depth; a
     failed gate is no evidence; an exception -> nothing written, the solution published before stands,
     `solved: false` with a one-line reason;
@@ -20,7 +18,6 @@ slice 4: evidence is READ, never made at publish):
 
 from __future__ import annotations
 
-import io
 import json
 import math
 import sqlite3
@@ -44,7 +41,6 @@ from tests.test_world_builder_solve_masks import (  # noqa: F401 -- fixtures and
     _KEYPOINTS,
     colmap,
 )
-from tower import config
 from tower.world_builder import coherence_gate as CG
 from tower.world_builder import coherence_publish as CP
 from tower.world_builder import final_scale_guard as FSG
@@ -53,7 +49,6 @@ from tower.world_builder import relocalizer
 from tower.world_builder.components import parse_components, read_components_record
 from tower.world_builder.records import Keyframe
 
-SWITCH = config.WORLD_FINAL_SCALE_GUARD_ENV
 P = FSG.GuardParams()
 
 
@@ -195,8 +190,7 @@ def _walk(root: Path, n: int, colmap, monkeypatch):
 @pytest.fixture(autouse=True)
 def _switches(monkeypatch):
     for name in ("TOWER_WORLD_SOLVE_GATE", "TOWER_WORLD_SOLVE_MASKS", "TOWER_WORLD_SOLVE_SEED",
-                 "TOWER_WORLD_SOLVE_CONSENSUS", "TOWER_WORLD_ANCHOR_VERIFY", "TOWER_WORLD_POSE_QUARANTINE",
-                 SWITCH):
+                 "TOWER_WORLD_SOLVE_CONSENSUS", "TOWER_WORLD_ANCHOR_VERIFY", "TOWER_WORLD_POSE_QUARANTINE"):
         monkeypatch.delenv(name, raising=False)
     from scripts import world_refinish as wr
 
@@ -250,14 +244,13 @@ def _placed(comp):
 
 def test_a_sustained_out_of_band_ratio_stretch_is_isolated_by_the_live_products_final_solve(
         tmp_path, colmap, monkeypatch):
-    """THE VETO CASE, end to end: the simple solve (unmasked, ungated, one draw) with the guard ON and the
+    """THE VETO CASE, end to end: the simple solve (unmasked, ungated, one draw) with the
     walk's live depth cache as its evidence (v2 predicts no depth at publish). A scale-ratio case: the
     ratios are shaped like the historical walk-3 fixture (sustained x3.19 / x2.40 stretches, a short x3.13
     one), and the `bathroom` names below only label those index ranges."""
     eng = _Engines(monkeypatch, n=W3_N, levels=_w3_levels_named())
     s = _walk(tmp_path / "w", W3_N, colmap, monkeypatch)
     _live_evidence(monkeypatch, _w3_levels_named())
-    monkeypatch.setenv(SWITCH, "on")
     out = _simple(s)
     assert out["solved"] is True
     meta, comp, audit = _published(s)
@@ -305,46 +298,11 @@ def test_a_sustained_out_of_band_ratio_stretch_is_isolated_by_the_live_products_
     assert eng.depth_calls == 0 and eng.metric_calls == 0
 
 
-def test_off_the_same_walk_publishes_the_bathroom_in_the_room(tmp_path, colmap, monkeypatch):
-    _Engines(monkeypatch, n=W3_N, levels=_w3_levels_named())
-    s = _walk(tmp_path / "w", W3_N, colmap, monkeypatch)
-    _simple(s)
-    meta, comp, audit = _published(s)
-    assert len(_room_ids(meta)) == W3_N and comp is None and audit is None
-
-
-def test_shadow_publishes_what_off_publishes_and_writes_the_audit(tmp_path, colmap, monkeypatch):
-    _Engines(monkeypatch, n=W3_N, levels=_w3_levels_named())
-    s_off = _walk(tmp_path / "a", W3_N, colmap, monkeypatch)
-    _simple(s_off)
-    s_sh = _walk(tmp_path / "b", W3_N, colmap, monkeypatch)
-    _live_evidence(monkeypatch, _w3_levels_named())
-    monkeypatch.setenv(SWITCH, "shadow")
-    out = _simple(s_sh)
-    off, _, _ = _published(s_off)
-    sh, comp, audit = _published(s_sh)
-    for doc in (off, sh):
-        doc.pop("solved_at"), doc.pop("timing")
-    assert json.dumps(off, sort_keys=True).replace(s_off.session_id, "S") == \
-        json.dumps(sh, sort_keys=True).replace(s_sh.session_id, "S")
-    assert comp is None and out["solved"] is True and "final_scale_guard" not in out
-    assert audit["mode"] == "shadow" and audit["decision"] == "shadow"
-    # what ON would have isolated: the bathroom (x3.19, the doorway, x2.40: one plateau); the short desk
-    # stretch would have stayed attached, uncertified (v2)
-    sid = s_sh.session_id
-    assert {k for p in audit["assessment"]["pieces"] for k in p["keyframe_ids"]} == \
-        {f"{sid}:{i:08d}" for i in W3_BATHROOM}
-    arrays_off = np.load(io.BytesIO(s_off.workspace.arrays_path.read_bytes()))
-    arrays_sh = np.load(io.BytesIO(s_sh.workspace.arrays_path.read_bytes()))
-    assert all(np.array_equal(arrays_off[k], arrays_sh[k]) for k in arrays_off.files)
-
-
 def test_too_little_evidence_publishes_the_room_uncertified_and_never_withholds(tmp_path, colmap, monkeypatch):
     """v2: 5 ratios certify nothing and isolate nothing; the room is published, flagged (was: withheld)."""
     eng = _Engines(monkeypatch, n=60, levels={})
     s = _walk(tmp_path / "w", 60, colmap, monkeypatch)
     _live_evidence(monkeypatch, {f"{i:08d}.jpg": 0.0 for i in range(5)})
-    monkeypatch.setenv(SWITCH, "on")
     out = _simple(s)
     meta, comp, audit = _published(s)
     assert out["solved"] is True and len(_room_ids(meta)) == 60
@@ -361,28 +319,16 @@ def test_on_without_evidence_runs_no_depth_and_publishes_uncertified(tmp_path, c
     runs at publish -- even one that would fail -- and the room is published `uncertified`, never PASS."""
     eng = _Engines(monkeypatch, n=60, levels={f"{i:08d}.jpg": 0.0 for i in range(60)}, depth_fails=True)
     s = _walk(tmp_path / "w", 60, colmap, monkeypatch)
-    monkeypatch.setenv(SWITCH, "on")
     out = _simple(s)
     meta, comp, audit = _published(s)
     assert out["solved"] is True and len(_room_ids(meta)) == 60
     assert eng.depth_calls == 0 and eng.metric_calls == 0
-    # TOWER_WORLD_LIVE_DEPTH is unset here, so a live cache is not even looked for (lead gate: only `on` is evidence).
-    assert audit["inputs"]["source"] == FSG.EVIDENCE_NONE and audit["inputs"]["live"]["state"] == "live-depth-not-on"
+    # The walk's live depth worker predicted nothing (no test loads a depth model), so its cache is no evidence.
+    assert audit["inputs"]["source"] == FSG.EVIDENCE_NONE and audit["inputs"]["live"]["state"] == "incompatible"
     assert audit["assessment"]["scale_status"] == FSG.SCALE_UNCERTIFIED
     status = _placed(comp)["final_scale_guard"]
     assert status["scale_status"] == FSG.SCALE_UNCERTIFIED and status["evidence"] == FSG.EVIDENCE_NONE
     assert status["uncertified_spans"][0]["kind"] == FSG.UNCERTIFIED_NO_EVIDENCE
-
-
-def test_shadow_without_evidence_publishes_unchanged(tmp_path, colmap, monkeypatch):
-    eng = _Engines(monkeypatch, n=60, levels={}, depth_fails=True)
-    s = _walk(tmp_path / "w", 60, colmap, monkeypatch)
-    monkeypatch.setenv(SWITCH, "shadow")
-    out = _simple(s)
-    meta, comp, audit = _published(s)
-    assert out["solved"] is True and len(_room_ids(meta)) == 60 and comp is None
-    assert audit["decision"] == "shadow" and audit["error"] is None
-    assert audit["assessment"]["scale_status"] == FSG.SCALE_UNCERTIFIED and eng.depth_calls == 0
 
 
 def test_an_exception_inside_the_guard_withholds(tmp_path, colmap, monkeypatch):
@@ -393,9 +339,19 @@ def test_an_exception_inside_the_guard_withholds(tmp_path, colmap, monkeypatch):
         raise RuntimeError("boom")
 
     monkeypatch.setattr(FSG, "apply", broken)
-    monkeypatch.setenv(SWITCH, "on")
     out = _simple(s)
     assert out["solved"] is False and "RuntimeError" in out["reason"]
+
+
+def test_a_final_solve_that_maps_nothing_is_withheld(tmp_path, colmap, monkeypatch):
+    """The fake mapper alone (`colmap`, no `_Engines`) maps nothing: the candidate has no room, so nothing is
+    written and the walk's solution stands (why other stages' tests use `final_scale_guard_bypassed`)."""
+    s = _walk(tmp_path / "w", 40, colmap, monkeypatch)
+    before = s.workspace.solution_path.read_bytes()
+    out = _simple(s)
+    assert out["solved"] is False and out["withheld"] is True
+    assert "no published room" in out["reason"]
+    assert s.workspace.solution_path.read_bytes() == before
 
 
 # gated ---------------------------------------------------------------------
@@ -428,21 +384,24 @@ def test_the_gated_publish_isolates_a_plateau_the_gate_kept(tmp_path, colmap, mo
     median moves), the guard does not."""
     eng = _Engines(monkeypatch, n=G_A + G_B, levels=_gated_levels(),
                    islands=[(0, G_A), (G_A, G_A + G_B)], links=_gated_links())
-    s = _walk(tmp_path / "off", G_A + G_B, colmap, monkeypatch)
-    _gated(s)
-    off_meta, off_comp, _ = _published(s)
-    sid = s.session_id
-    plateau = {f"{sid}:{i:08d}" for i in range(20, 32)}
-    assert plateau <= _room_ids(off_meta), "the gate itself refused the plateau: the fixture tests nothing"
-    gate_unplaced = [e for e in off_comp["components"] if e["state"] == "unplaced"]
+    s = _walk(tmp_path / "w", G_A + G_B, colmap, monkeypatch)
+    handed = []
+    real = FSG.guard_publication
 
-    s = _walk(tmp_path / "on", G_A + G_B, colmap, monkeypatch)
-    monkeypatch.setenv(SWITCH, "on")
+    def spy(store, world_id, session_id, solution, result, **k):
+        handed.append(result)                           # the gate's outcome, before the guard
+        return real(store, world_id, session_id, solution, result, **k)
+
+    monkeypatch.setattr(FSG, "guard_publication", spy)
     eng.metric_calls = 0
     _gated(s)
-    meta, comp, audit = _published(s)
+    (gate,) = handed
     sid = s.session_id
     plateau = {f"{sid}:{i:08d}" for i in range(20, 32)}
+    assert plateau <= _room_ids({"poses": gate.solution.poses}), \
+        "the gate itself refused the plateau: the fixture tests nothing"
+    gate_unplaced = [e for e in gate.components["components"] if e["state"] == "unplaced"]
+    meta, comp, audit = _published(s)
     assert not (plateau & _room_ids(meta))
     assert eng.metric_calls == 1, "the guard measured again instead of reusing the gate's scale"
     reasons = {e["reason"] for e in comp["components"] if e["state"] == "unplaced"}
@@ -466,7 +425,6 @@ def test_a_gate_that_failed_is_no_evidence_and_publishes_uncertified_when_on(tmp
         raise RuntimeError("gate broke")
 
     monkeypatch.setattr(CP, "_gate", broken)
-    monkeypatch.setenv(SWITCH, "on")
     eng.depth_calls = 0
     out = _gated(s)
     meta, comp, audit = _published(s)
@@ -488,7 +446,6 @@ def test_the_consensus_guards_its_early_draw_0_and_its_final_publish(tmp_path, c
         return out
 
     monkeypatch.setattr(FSG, "guard_publication", spy)
-    monkeypatch.setenv(SWITCH, "on")
     out = _gated(s, consensus=3)
     assert calls == ["published", "published"]          # draw 0 first, then the vote
     meta, comp, _ = _published(s)
@@ -498,13 +455,14 @@ def test_the_consensus_guards_its_early_draw_0_and_its_final_publish(tmp_path, c
 
 
 def test_the_regate_in_place_is_guarded(tmp_path, colmap, monkeypatch):
-    _Engines(monkeypatch, n=G_A + G_B, levels=_gated_levels(), islands=[(0, G_A), (G_A, G_A + G_B)],
+    levels = _gated_levels(plateau=(20, 32, 1.0))
+    _Engines(monkeypatch, n=G_A + G_B, levels=levels, islands=[(0, G_A), (G_A, G_A + G_B)],
              links=_gated_links())
     s = _walk(tmp_path / "w", G_A + G_B, colmap, monkeypatch)
-    _gated(s)                                           # published OFF: the plateau is in the room
+    _gated(s)                                           # no plateau measured yet: it is in the room
     plateau = {f"{s.session_id}:{i:08d}" for i in range(20, 32)}
     assert plateau <= _room_ids(_published(s)[0])
-    monkeypatch.setenv(SWITCH, "on")
+    levels.update(_gated_levels())                      # the re-gate measures the x2 plateau
     out = CP.regate_published(s.store, s.world_id, s.session_id)
     meta, comp, audit = _published(s)
     assert not (plateau & _room_ids(meta))
@@ -523,7 +481,6 @@ def test_a_withheld_regate_writes_nothing_and_is_not_a_stop(tmp_path, colmap, mo
         raise ValueError("the relabelled candidate has no published room")
 
     monkeypatch.setattr(FSG, "apply", no_room)
-    monkeypatch.setenv(SWITCH, "on")
     out = CP.regate_published(s.store, s.world_id, s.session_id)
     assert out["withheld"] is True and out["publish"]["written"] is False and not out.get("stopped")
     assert s.workspace.solution_path.read_bytes() == before
@@ -532,11 +489,10 @@ def test_a_withheld_regate_writes_nothing_and_is_not_a_stop(tmp_path, colmap, mo
 
 
 def test_a_background_solve_is_never_guarded(tmp_path, colmap, monkeypatch):
-    """Only a FINAL solve's publication is guarded: the walk's background solves publish as today, even
-    with the guard on (and they run no depth stage for it)."""
+    """Only a FINAL solve's publication is guarded: the walk's background solves are not (and they run no
+    depth stage for it)."""
     eng = _Engines(monkeypatch, n=W3_N, levels=_w3_levels_named())
     s = _walk(tmp_path / "w", W3_N, colmap, monkeypatch)
-    monkeypatch.setenv(SWITCH, "on")
     eng.depth_calls = eng.metric_calls = 0
     out = GS.solve(s.store, s.world_id, s.session_id, final=False, input_digest="walk-digest")
     meta, comp, audit = _published(s)

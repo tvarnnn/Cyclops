@@ -701,6 +701,7 @@ def test_t9a_t9b_a_consensus_of_three_marks_every_pass_and_a_frozen_solve_never_
     assert again.seen[0] == ("preparing", None) and again.seen[1] == ("placing", None)
 
 
+@pytest.mark.usefixtures("final_scale_guard_bypassed")
 def test_t9c_an_ungated_final_solve_has_no_checking(session, colmap, no_links, tmp_path):
     from tower.world_builder import global_solve as GS
 

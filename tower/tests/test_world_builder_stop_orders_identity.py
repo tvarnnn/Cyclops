@@ -52,6 +52,7 @@ import pytest
 import scripts.world_build_session as builder_script
 import tower.world_builder.engine as engine_module
 from scripts.world_build_session import StopRequest
+from tests.conftest import without_live_depth
 from tower.world_builder.intrinsics_store import IntrinsicsStore
 
 FRAMES = 24
@@ -297,6 +298,7 @@ def _observed(exit_code, report, root, workdir, caplog):
         if path.is_file():
             masked = _mask_bytes(path.read_bytes(), workdir)
             files[path.relative_to(root).as_posix()] = hashlib.sha256(masked).hexdigest()
+    files = without_live_depth(files)  # the live depth worker's sidecar postdates the golden
     (events_path,) = list(root.glob("worlds/*/sessions/*/events.jsonl"))
     events = []
     for line in events_path.read_text(encoding="utf-8").splitlines():

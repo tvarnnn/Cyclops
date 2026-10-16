@@ -16,6 +16,7 @@ import time
 import pytest
 
 from tests import synthetic_scene as ss
+from tests.conftest import no_depth_model_env
 from tower.world_builder.engine import WorldBuilderEngine
 from tower.world_builder.records import (
     FINALIZATION_COMPLETE,
@@ -364,7 +365,7 @@ def test_a_builder_that_was_not_asked_for_a_surface_says_so_on_the_record(tmp_pa
     result = subprocess.run(
         [sys.executable, "scripts/world_build_session.py", "--synthetic",
          "--synthetic-frames", "8", "--root", str(tmp_path), "--format", "json"],
-        capture_output=True, text=True,
+        capture_output=True, text=True, env=no_depth_model_env(),
     )
     assert result.returncode == 0, result.stderr
     report = json.loads(result.stdout)

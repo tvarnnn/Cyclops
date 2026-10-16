@@ -126,12 +126,6 @@ def _holder_alive(pid, written_at) -> bool:
     return _holder_is_running(pid, None, lock_written_at=written_at)
 
 
-def _pid_is_running(pid: int) -> bool:
-    from tower.world_builder.dense_pipeline import _pid_is_running as probe
-
-    return probe(pid)
-
-
 def _status(root: Path, **fields) -> None:
     """Write the stage's state where a cold reader can find it.
 
@@ -255,17 +249,17 @@ def ensure_depth_stage(store, world_id: str, session_id: str, solution,
     is built from them, and they are the expensive part -- 68 s of GPU on this
     corpus. A surface build and a point build of the same session should pay
     for them once.
+
+    The stage is always told the solve camera's FoV, as the live depth worker
+    is, so `known_fov` has no effect.
     """
     from tower.world_builder.dense import DenseParams
     from tower.world_builder.dense_pipeline import dense_dir, run_depth_stage
-    import os
-
-    live_on = os.environ.get("TOWER_WORLD_LIVE_DEPTH", "off") == "on"
 
     root = dense_dir(store, world_id, session_id)
     root.mkdir(parents=True, exist_ok=True)
     dparams = DenseParams(gate_rel=gate_rel, imagery_source=imagery_source,
-                          known_fov=bool(known_fov or live_on),
+                          known_fov=True,
                           **({"backend": backend} if backend else {}))
 
     align_path = root / "align.json"
@@ -290,25 +284,20 @@ def ensure_depth_stage(store, world_id: str, session_id: str, solution,
     # Never `prior=cached`: `prior` resumes whole records, fits included, and
     # a cache that was not usable above is by definition for another solve.
     # Its PREDICTIONS are still good and are reused; the fits are redone.
-    fov_identity = dparams.known_fov
-    if live_on:
-        import math
-
-        try:
-            camera = solution.camera
-            fov_identity = round(math.degrees(2.0 * math.atan(
-                int(camera["width"]) / (2.0 * float(camera["fx"])))), 6)
-        except (TypeError, KeyError, ValueError, ZeroDivisionError):
-            fov_identity = None
+    try:
+        camera = solution.camera
+        fov_identity = round(math.degrees(2.0 * math.atan(
+            int(camera["width"]) / (2.0 * float(camera["fx"])))), 6)
+    except (TypeError, KeyError, ValueError, ZeroDivisionError):
+        fov_identity = None
     offers = reusable_predictions(
         align_path, dparams.backend, dparams.imagery_source,
         known_fov=fov_identity)
-    if live_on and dparams.known_fov:
-        from tower.world_builder.live_depth import offer_live_predictions
+    from tower.world_builder.live_depth import offer_live_predictions
 
-        offers.update(offer_live_predictions(
-            store, world_id, session_id, solution, intrinsics, root,
-            imagery_source=dparams.imagery_source, trust=trust))
+    offers.update(offer_live_predictions(
+        store, world_id, session_id, solution, intrinsics, root,
+        imagery_source=dparams.imagery_source, trust=trust))
     align = run_depth_stage(store, world_id, session_id, solution, intrinsics,
                             dparams, root, should_stop=should_stop,
                             progress=progress, prior=None,
@@ -701,20 +690,14 @@ def surfacify(store, world_id: str, session_id: str, *,
               depth_known_fov: bool | None = None) -> SurfaceResult:
     """Build the surface of one solved session. Idempotent, stop-aware.
 
-    `depth_known_fov`, when not None, sets `params.depth_known_fov` (the depth
-    stage told the solve camera's FoV): the builder passes the evidence gate's
-    setting here, so the final surface reuses the depth stage the gate ran."""
+    `params.depth_known_fov` is always set: `ensure_depth_stage` always tells
+    the depth stage the solve camera's FoV, and the surface digest must say so.
+    `depth_known_fov` therefore has no effect."""
     import dataclasses  # noqa: PLC0415
 
     from tower.world_builder.global_solve import load_solution
 
-    params = params or SurfaceParams()
-    if depth_known_fov is not None and bool(depth_known_fov) != params.depth_known_fov:
-        params = dataclasses.replace(params, depth_known_fov=bool(depth_known_fov))
-    import os
-    if os.environ.get("TOWER_WORLD_LIVE_DEPTH", "off") == "on":
-        # Keep the surface digest aligned with ensure_depth_stage's FoV mode.
-        params = dataclasses.replace(params, depth_known_fov=True)
+    params = dataclasses.replace(params or SurfaceParams(), depth_known_fov=True)
     root = surface_dir(store, world_id, session_id)
     root.mkdir(parents=True, exist_ok=True)
     seconds: dict = {}

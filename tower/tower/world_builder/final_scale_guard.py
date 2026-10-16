@@ -1,8 +1,8 @@
-"""The final-solve scale and pose PUBLICATION guard (`TOWER_WORLD_FINAL_SCALE_GUARD`, off by default).
+"""The final-solve scale and pose PUBLICATION guard, run at every final publication.
 
 V2 (Exp1 slice 4; design RUN review/codex/cx-SCALE-GUARD-V2-DESIGN-20261007.md) IS THE RULE THE SEAM RUNS
-(`guard_publication`, `assess_v2`); the description below is v1's and still holds for v1's `assess` (the
-offline shadow CLI) except where v2 says otherwise:
+(`guard_publication`, `assess_v2`); the description below is v1's and still holds for v1's `assess`
+except where v2 says otherwise:
   * EVIDENCE IS READ, NEVER MADE (`read_evidence`): the applied gate's `metric_log` first, else the session's
     live depth cache under a full identity match (`live_depth.compatible_live_records`), else none. No depth
     stage runs at publish.
@@ -13,7 +13,7 @@ offline shadow CLI) except where v2 says otherwise:
   * EVERYTHING ELSE STAYS ATTACHED and is recorded `uncertified`, in `final_scale_guard.json` and on the
     placed component of `components.json` (`placed_scale_status`). No pose-only quarantine (pose screen
     recorded only). No evidence: the room is `uncertified` (never PASS), nothing is isolated, nothing is
-    withheld. ON still withholds on a failure (an exception, a relabel that leaves no room).
+    withheld. It still withholds on a failure (an exception, a relabel that leaves no room).
 
 WHY. The evidence gate decides which pieces of a final solve to attach to the room, but it does not check
 the result it publishes: the historical walk-3 bathroom was published inside the room at x2.56 relative to
@@ -66,24 +66,20 @@ WHAT IT MEASURES, on the candidate's ROOM (component 0, supported cameras: >= 30
      moves two otherwise coherent sides together.
   6. If the remaining room has fewer than 10 ratios, nothing is certified: the candidate is WITHHELD.
 
-WHAT IT DOES (`on`). Each isolated piece becomes its own unplaced component (its own label; coordinates
+WHAT IT DOES. Each isolated piece becomes its own unplaced component (its own label; coordinates
 untouched; its points go with the majority of their observers, `coherence_publish.relabel_solution`), with
 the new reason, in the components record (`components.json`, contract §2) -- written on an ungated solve
 too, where every other solver component is `solved-separately`. Captured imagery is never dropped. A
 withheld candidate is not written at all (`publish.written: false`): the last published solution stands,
 and the solve reports `solved: false` with the reason, which the builder records as the finalization's
-detail. ON IS FAIL-CLOSED: no depth, too few ratios, a failed gate, a relabel that leaves no room, or any
-exception withholds. `shadow` measures and writes the audit but publishes exactly what off publishes.
+detail. IT IS FAIL-CLOSED: no depth, too few ratios, a failed gate, a relabel that leaves no room, or any
+exception withholds.
 
 THE AUDIT (`solve/<session>/final_scale_guard.json`, Tower-internal, keyed to the published or withheld
 solve's identity): the params and digest, the reference, every plateau and piece with its keyframe ids,
 journal indices, ratio count, median ratio, bootstrap interval, class and decision, the pose flags and
 warnings, and the timing -- so a scorer can see which segments were isolated and why. No ratio or metric
 figure ever reaches the components record or the phone (contract §2.4 rule 6).
-
-OFF performs no new read, write, serialization, timestamp or record change: `mode()` reads only the
-environment, and every caller does nothing else when it says `off`
-(`tests/test_world_builder_final_scale_guard_off_identity.py`, golden recorded on 324f4a6).
 """
 
 from __future__ import annotations
@@ -101,7 +97,7 @@ import numpy as np
 
 logger = logging.getLogger(__name__)
 
-# v2 (Exp1 slice 4) is the rule the publish seam runs; v1's `assess` stays only for the offline shadow CLI.
+# v2 (Exp1 slice 4) is the rule the publish seam runs; v1's `assess` is not run there.
 GUARD_ID = "final-scale-guard/2"
 GUARD_ID_V1 = "final-scale-guard/1"
 RECORD = "wb-final-scale-guard/2"
@@ -126,8 +122,7 @@ UNCERTIFIED_NO_CORE = "no-certified-core"
 UNCERTIFIED_EXCURSION = "excursion"
 UNCERTIFIED_RETEST_LIMIT = "retest-limit"
 
-MODE_OFF = "off"
-MODE_SHADOW = "shadow"
+# The `mode` the summary and the audit record.
 MODE_ON = "on"
 
 # Contract COMPONENTS §2.2 (vNEXT): after every existing reason in precedence.
@@ -141,7 +136,6 @@ IN, LOW, HIGH = "in", "low", "high"
 
 DECISION_PUBLISHED = "published"
 DECISION_WITHHELD = "withheld"
-DECISION_SHADOW = "shadow"
 
 # F6 (review XR): the row's `finalization.notice` after a withhold. The solution published before -- the
 # walk's background solve, never checked by this guard -- still stands, so the phone is told, in a closed
@@ -202,14 +196,6 @@ class GuardParams:
     def digest(self) -> str:
         doc = {"guard": GUARD_ID, **self.to_json()}
         return hashlib.sha1(json.dumps(doc, sort_keys=True).encode()).hexdigest()[:16]
-
-
-def mode() -> str:
-    """`TOWER_WORLD_FINAL_SCALE_GUARD` (`config.world_final_scale_guard_setting`): off, shadow or on.
-    Reads the environment only."""
-    from tower.config import world_final_scale_guard_setting  # noqa: PLC0415
-
-    return world_final_scale_guard_setting()
 
 
 # ---------------------------------------------------------------------------
@@ -1030,7 +1016,7 @@ def write_audit(workspace_root, document: dict) -> Path:
 @dataclass
 class GuardOutcome:
     mode: str
-    decision: str                  # published | withheld | shadow
+    decision: str                  # published | withheld
     solution: object               # what to publish (None when withheld)
     result: object                 # the GateResult to hand `after_publish` (None: today's ungated publish)
     summary: dict
@@ -1072,10 +1058,6 @@ def _live_cache_evidence(store, world_id, session_id, solution, *, database_path
     from tower.world_builder.coherence_publish import _depth_params  # noqa: PLC0415
     from tower.world_builder.dense_pipeline import dense_dir, depth_trust_now  # noqa: PLC0415
 
-    if LD.mode() != "on":
-        # Exp1 design §5 / prereg arm L: a shadow (or off) live cache measures the worker's cost only;
-        # it is never evidence for the guard (lead gate, 2026-10-08).
-        return {}, {"state": "live-depth-not-on", "mode": LD.mode()}
     root = dense_dir(store, world_id, session_id)
     align = root / "live_depth" / "align.json"
     if not align.is_file():
@@ -1110,13 +1092,12 @@ def _live_metric_scale(solution, name_of: dict, database_path, live_work, ki_of_
     return out
 
 
-def guard_publication(store, world_id: str, session_id: str, solution, result, *, mode_: str, database_path,
+def guard_publication(store, world_id: str, session_id: str, solution, result, *, database_path,
                       keyframes, params: GuardParams | None = None, live_metric_fn=None) -> GuardOutcome:
     """The guard (v2) at the publish seam. `solution`: what would be published; `result`: its GateResult,
     or None on an ungated solve. Reads existing evidence only (`read_evidence`): it predicts no depth. Never
-    withholds on scale: without evidence the room is published `uncertified`. Never raises: in `on`, a
-    failure (an exception, a relabel that leaves no room) withholds; in `shadow`, it is recorded and the
-    candidate is published unchanged."""
+    withholds on scale: without evidence the room is published `uncertified`. Never raises: a failure (an
+    exception, a relabel that leaves no room) withholds."""
     from tower.world_builder import coherence_publish as CP  # noqa: PLC0415
     from tower.world_builder.coherence_publish import GateResult  # noqa: PLC0415
 
@@ -1133,12 +1114,6 @@ def guard_publication(store, world_id: str, session_id: str, solution, result, *
         groups_of = gate_groups(result.gated) if result is not None else None
         cams = room_cameras(solution, keyframes, name_of, groups_of=groups_of, min_obs=params.min_obs)
         assessment = dict(assess_v2(cams, metric_log, params), evidence=inputs["source"])
-        if mode_ == MODE_SHADOW:
-            secs = time.perf_counter() - started
-            return GuardOutcome(mode_, DECISION_SHADOW, solution, result,
-                                summary(assessment, mode_=mode_, decision=DECISION_SHADOW, seconds=secs),
-                                audit_document(assessment, mode_=mode_, decision=DECISION_SHADOW,
-                                               solution=solution, inputs=inputs, seconds=secs), depth)
         if assessment["decision"] != "publish":
             raise _Withhold(assessment["why"])
         session = store.read_session(world_id, session_id)
@@ -1150,7 +1125,7 @@ def guard_publication(store, world_id: str, session_id: str, solution, result, *
         published, doc = apply(solution, assessment, session_id=session_id, keyframes=keyframes,
                                started_at=session.started_at, gate_block=gate_block, min_obs=params.min_obs)
         secs = time.perf_counter() - started
-        summ = summary(assessment, mode_=mode_, decision=DECISION_PUBLISHED, seconds=secs)
+        summ = summary(assessment, mode_=MODE_ON, decision=DECISION_PUBLISHED, seconds=secs)
         doc["final_scale_guard"] = {"id": GUARD_ID, "params_digest": params.digest(),
                                     "pieces_isolated": summ["pieces_isolated"], "audit": AUDIT_FILENAME,
                                     "scale_status": summ["scale_status"]}
@@ -1159,31 +1134,26 @@ def guard_publication(store, world_id: str, session_id: str, solution, result, *
             new_result = dataclasses.replace(result, solution=published, components=doc)
         else:
             new_result = GateResult(solution=published, record={}, components=doc, depth=depth)
-        return GuardOutcome(mode_, DECISION_PUBLISHED, published, new_result, summ,
-                            audit_document(assessment, mode_=mode_, decision=DECISION_PUBLISHED,
+        return GuardOutcome(MODE_ON, DECISION_PUBLISHED, published, new_result, summ,
+                            audit_document(assessment, mode_=MODE_ON, decision=DECISION_PUBLISHED,
                                            solution=published, inputs=inputs, seconds=secs), depth)
-    except Exception as exc:  # noqa: BLE001 -- ON is fail-closed; shadow publishes unchanged
+    except Exception as exc:  # noqa: BLE001 -- fail-closed
         secs = time.perf_counter() - started
         why = str(exc) if isinstance(exc, _Withhold) else f"{type(exc).__name__}: {exc}"
         if not isinstance(exc, _Withhold):
             logger.exception("[Tower][WorldBuilder] the final scale guard failed on %s/%s (%s)",
-                             world_id, session_id, mode_)
-        if mode_ == MODE_SHADOW:
-            return GuardOutcome(mode_, DECISION_SHADOW, solution, result,
-                                summary(assessment, mode_=mode_, decision=DECISION_SHADOW, seconds=secs, error=why),
-                                audit_document(assessment, mode_=mode_, decision=DECISION_SHADOW, solution=solution,
-                                               inputs=inputs, seconds=secs, error=why), depth)
+                             world_id, session_id, MODE_ON)
         logger.warning("[Tower][WorldBuilder] the final scale guard WITHHELD %s/%s: %s", world_id, session_id, why)
-        summ = summary(assessment, mode_=mode_, decision=DECISION_WITHHELD, seconds=secs,
+        summ = summary(assessment, mode_=MODE_ON, decision=DECISION_WITHHELD, seconds=secs,
                        error=None if isinstance(exc, _Withhold) else why)
         summ["why"] = why
-        return GuardOutcome(mode_, DECISION_WITHHELD, None, None, summ,
-                            audit_document(assessment, mode_=mode_, decision=DECISION_WITHHELD, solution=solution,
+        return GuardOutcome(MODE_ON, DECISION_WITHHELD, None, None, summ,
+                            audit_document(assessment, mode_=MODE_ON, decision=DECISION_WITHHELD, solution=solution,
                                            inputs=inputs, seconds=secs, error=why), depth)
 
 
 def withhold(outcome: "GuardOutcome", why: str) -> "GuardOutcome":
-    """`outcome` turned into a withhold (on): nothing to publish, the summary and the audit say why."""
+    """`outcome` turned into a withhold: nothing to publish, the summary and the audit say why."""
     summ = dict(outcome.summary, decision=DECISION_WITHHELD, why=why)
     audit = dict(outcome.audit, decision=DECISION_WITHHELD, error=why)
     return GuardOutcome(outcome.mode, DECISION_WITHHELD, None, None, summ, audit, outcome.depth)

@@ -21,23 +21,22 @@ otherwise.
 
 ## A refused keyframe is not a dead coordinate frame
 
-This backend used to latch. The first keyframe whose pose could not be
-solved set `_Chain.broken`, and every keyframe after it returned
-`unavailable` from an early return that skipped ORB detection entirely.
-The engine's only available response was to cut a new segment -- a new
-coordinate frame, a new arbitrary unit, another fragment the viewer
-cannot connect.
+A one-way latch -- the first keyframe whose pose could not be solved sets
+`_Chain.broken`, and every keyframe after it returns `unavailable` from an
+early return that skips ORB detection entirely -- leaves the engine only
+one response: cut a new segment, a new coordinate frame, a new arbitrary
+unit, another fragment the viewer cannot connect.
 
-Measured across every calibrated session in the corpus: 1,949 refused
-poses, of which 1,812 -- 93% -- were keyframes at which NO SOLVER EVER
-RAN. Only 137 were an actual attempt that failed. On the 2026-09-01
+Measured with that latch across every calibrated session in the corpus:
+1,949 refused poses, of which 1,812 -- 93% -- were keyframes at which NO
+SOLVER EVER RAN. Only 137 were an actual attempt that failed. On the
 long-loop walk the manifest's own split is 21 root against 60 cascaded.
 
-So the latch is replaced by a bounded recovery state, which is the
+So this backend has a bounded recovery state instead, which is the
 structure every mature monocular SLAM system converges on (ORB-SLAM3's
 RECENTLY_LOST between OK and LOST; stella_vslam's tracker retrying
-against the local map before its relocalizer). Two things changed and
-nothing else did:
+against the local map before its relocalizer). It differs from the latch
+in two things and nothing else:
 
 1. **References are the last `EXTEND_REFERENCE_DEPTH` keyframes that
    actually HAVE a pose.** A keyframe that refused contributes no
@@ -53,14 +52,13 @@ nothing else did:
 
 WHAT WAS TRIED AND ABANDONED, because it is the obvious next move:
 feeding all DEPTH references' correspondences into one PnP. It made the
-reconstruction worse. The numbers that comparison produced are
-WITHDRAWN -- an adversarial review found the two runs differed in the
-recovery budget as well, so nothing was isolated -- but the argument for
+reconstruction worse. That comparison's numbers isolate nothing -- its
+two runs differed in the recovery budget as well -- but the argument for
 not retrying it casually stands, and `_extend` carries it.
 
 NO ACCEPTANCE THRESHOLD MOVED. `MIN_PNP_CORRESPONDENCES`,
 `PNP_REPROJECTION_ERROR_PX`, `MIN_INLIERS`, `MIN_INLIER_RATIO` and
-`MIN_TRIANGULATION_ANGLE_DEG` are the values they were. Recovery is
+`MIN_TRIANGULATION_ANGLE_DEG` apply unchanged under recovery. Recovery is
 asking the question again on a later keyframe against a reference that
 still has coordinates; it is not lowering the bar for the answer. That
 distinction is the whole safety argument, and
@@ -115,12 +113,11 @@ MIN_PNP_CORRESPONDENCES = 12
 PNP_REPROJECTION_ERROR_PX = 3.0
 
 # How many ACCEPTED keyframes back this backend will look for further
-# sightings of landmarks it already has. 1 restores the historical
-# behaviour exactly -- match the previous keyframe and nothing else --
-# and is the control the benchmark neutralises to.
+# sightings of landmarks it already has. 1 = match the previous keyframe
+# and nothing else, which is the control the benchmark neutralises to.
 #
 # WHY THIS EXISTS. 66.1% of landmarks were seen by exactly two views
-# (measured on the previous engine; the HEAD figure is Stage 0's job). A
+# (measured on the previous engine). A
 # two-view landmark is exactly determined -- two rays, one intersection
 # -- so it constrains nothing, which is why a bundle adjuster measured
 # 0.00% improvement here: two-thirds of the map was invisible to it by
@@ -132,8 +129,7 @@ PNP_REPROJECTION_ERROR_PX = 3.0
 # 49.5 / 47.8% at gaps 1 / 2 / 3 before decaying. Gaps 1-3 are flat and
 # cheap. Past that the right instrument is retrieval, not a wider sweep.
 #
-# WHAT IT COSTS. It is NOT pose-neutral, and an earlier draft of this
-# comment claiming otherwise was wrong. The older references' associations
+# WHAT IT COSTS. It is NOT pose-neutral. The older references' associations
 # are merged into `observed`, which the next keyframe's PnP draws
 # correspondences from, so later poses can move. Withholding them keeps
 # poses frozen and publishes a support table naming one image point as two
@@ -143,7 +139,7 @@ PNP_REPROJECTION_ERROR_PX = 3.0
 #
 # STILL POST-SOLVE, and deliberately. Feeding these references into the
 # PnP itself was measured and refused -- see `_extend`'s docstring for
-# the numbers. DEPTH sets the width of the support table, not the width
+# why. DEPTH sets the width of the support table, not the width
 # of the pose solve.
 #
 # MEASURED, 30 real segments, DEPTH 1 -> 3: >=3-view share rose on 18
@@ -172,8 +168,7 @@ EXTEND_REFERENCE_DEPTH = 3
 # before it will consider the map lost; COLMAP retries a failed image
 # max_reg_trials = 3 times and re-queues it behind fresher candidates.
 #
-# WHY 1, WHICH IS THE VALUE THE ADVERSARIAL MEASUREMENT SUPPORTS AND
-# NOTHING LARGER IS.
+# WHY 1: THE MEASUREMENTS BELOW SUPPORT IT AND NOTHING LARGER.
 #
 # This constant is exactly the largest REFERENCE GAP a solve may be
 # admitted at: skip k refused keyframes and the next pose is solved
@@ -211,7 +206,7 @@ EXTEND_REFERENCE_DEPTH = 3
 # pipeline owns says that pose is excellent.
 #
 # The corpus agrees from the other direction. At 8, with the bundle
-# adjustment running, the 2026-09-01 walk's dominant connected component
+# adjustment running, the long-loop walk's dominant connected component
 # falls from 53.5% of the geometry to 30.5%, and the drawer walk's from
 # 55.8% to 27.2%. Recovery makes the world tidier -- 30 segments to 23 --
 # and less true, which is exactly the trade this project refuses.
@@ -234,7 +229,7 @@ MAX_RECOVERY_KEYFRAMES = 1
 
 # -- drift control ----------------------------------------------------
 #
-# THE MEASUREMENT THAT PUT THIS HERE. On a clean synthetic strafe, with
+# WHY. On a clean synthetic strafe, with
 # nothing refused and nothing blurred, this backend's forward-only chain
 # drifts monotonically:
 #
@@ -257,13 +252,12 @@ MAX_RECOVERY_KEYFRAMES = 1
 # spent making the piece less placeable. Fewer segments without drift
 # control is a worse world that looks like a better one.
 #
-# THE FIX IS BUNDLE ADJUSTMENT, and the record said it would not work:
-# a prior attempt measured 0.00% improvement and blamed an observation
-# graph whose median covisibility span is 1. That was true then. It is
-# not true now -- EXTEND_REFERENCE_DEPTH's guided re-observation built
-# the graph the earlier attempt lacked. Measured on the same walk at
-# HEAD: mean 4.67 views a landmark, 67.2% with three or more, span
-# median 3 / p90 9. And the drift is REACHABLE: the same observations
+# THE FIX IS BUNDLE ADJUSTMENT. It needs a multi-view graph: on an
+# observation graph whose median covisibility span is 1 an adjustment
+# measured 0.00% improvement. EXTEND_REFERENCE_DEPTH's guided
+# re-observation builds that graph. Measured on the same walk with it:
+# mean 4.67 views a landmark, 67.2% with three or more, span median
+# 3 / p90 9. And the drift is REACHABLE: the same observations
 # reprojected through GROUND-TRUTH poses give RMS 0.49 px against 0.95
 # px for the solved ones, so the solved reconstruction is not at the
 # minimum.
@@ -288,7 +282,7 @@ BUNDLE_ANCHOR_CAMERAS = 2
 
 # Run the adjustment once every this many accepted keyframes. 1 is
 # every keyframe; the cost is real and it is paid per KEYFRAME, not per
-# frame. See the report for the measured cost at each cadence.
+# frame.
 BUNDLE_EVERY = 3
 
 # LM iterations per adjustment. Bounded rather than run to convergence:
@@ -442,7 +436,7 @@ def _local_adjust(camera_matrix, absolute, landmarks, landmark_ok,
     older observers are outside the window and cannot move to follow it,
     so adjusting it to fit only its recent observers silently breaks
     every support row those cameras published -- measured on the drawer
-    walk, before this rule existed, as published reprojection p99 3.97 ->
+    walk without this rule as published reprojection p99 3.97 ->
     12.40 px and rows over the 3 px gate 1.8% -> 10.4%, while the pose
     error genuinely improved at the same time. It is the exact shape of
     the failure this whole branch exists to avoid: a number that looks
@@ -459,8 +453,8 @@ def _local_adjust(camera_matrix, absolute, landmarks, landmark_ok,
     under-constrained landmark slides along its viewing ray at almost no
     cost in reprojection -- a two-view point has exactly that degenerate
     direction -- and the publication gate that would have caught it ran
-    at creation time. Measured on the pinned eight-capture corpus before
-    this demotion existed: the worst bbox blowup, full extent over the
+    at creation time. Measured on the pinned eight-capture corpus without
+    this demotion: the worst bbox blowup, full extent over the
     p2-p98 core, went 11.0 to 35.2 while every reprojection statistic
     improved. Points reprojecting perfectly from a hundred metres behind
     the wall is precisely the failure this branch exists not to ship.
@@ -489,7 +483,7 @@ def _local_adjust(camera_matrix, absolute, landmarks, landmark_ok,
         return None
 
     # COMPACT the landmarks to the ones this window can see. A segment
-    # can hold tens of thousands of landmarks -- the 2026-09-01 walk's
+    # can hold tens of thousands of landmarks -- the long-loop walk's
     # largest holds about six thousand -- and the optimiser allocates a
     # 3x3 block and its inverse for every one it is handed. Passing the
     # whole map would make the cost of an adjustment grow with the LENGTH
@@ -541,7 +535,7 @@ def _local_adjust(camera_matrix, absolute, landmarks, landmark_ok,
         #
         # `landmark_ok[index]` is what makes the count a DEMOTION rather
         # than a restatement: a landmark that was already unpublishable
-        # is not refused twice, and counting it twice is what broke the
+        # is not refused twice, and counting it twice would break the
         # manifest's accounting identity.
         if point_ok is None or point_ok[position] or not landmark_ok[index]:
             continue
@@ -835,18 +829,17 @@ class ClassicalTwoViewBackend(GeometryBackend):
     # estimate_window() above is already strictly forward-only: frame i is
     # solved by _extend() against the last EXTEND_REFERENCE_DEPTH keyframes
     # that HAVE poses plus the accumulated landmarks, and never looks
-    # forward. There is no LOOP CLOSURE. There IS now a bundle
-    # adjustment -- see BUNDLE_WINDOW. An earlier engine measured one at
-    # "0.00% drift improvement at 16, 32 and 104 keyframes", but its
-    # observation graph was a chain with a median covisibility span of 1.
-    # This engine's graph is mean 4.67 views a landmark with 67.2% at three or more,
-    # and the adjustment takes a forty-keyframe chain's rotation error
-    # from 9.21 deg to 0.15 deg.
+    # forward. There is no LOOP CLOSURE. There IS a bundle adjustment --
+    # see BUNDLE_WINDOW. Over an observation graph that is a chain with a
+    # median covisibility span of 1, one measured "0.00% drift improvement
+    # at 16, 32 and 104 keyframes". This engine's graph is mean 4.67 views
+    # a landmark with 67.2% at three or more, and the adjustment takes a
+    # forty-keyframe chain's rotation error from 9.21 deg to 0.15 deg.
     #
     # So `absolute`, `landmarks` and `observed` really are the entire
-    # carried state, and the only reason a rebuild re-paid for all of it
-    # was that they were local variables. _Chain is those three promoted
-    # to instance state, and nothing else.
+    # carried state; estimate_window holds them as local variables, so a
+    # rebuild re-pays for all of it. _Chain is those three promoted to
+    # instance state, and nothing else.
     #
     # The methods below reuse the SAME _estimate_pair and _extend helpers
     # estimate_window uses, so the two paths cannot drift in their
@@ -1003,15 +996,15 @@ class ClassicalTwoViewBackend(GeometryBackend):
         chain.count += 1
         if pose.status in (POSE_STATUS_SOLVED, POSE_STATUS_ANCHOR):
             # ONLY a keyframe that has a pose becomes a reference. This is
-            # the invariant every mature system holds and this backend did
-            # not: ORB-SLAM's reference keyframe is set in
+            # the invariant every mature system holds: ORB-SLAM's
+            # reference keyframe is set in
             # CreateNewKeyFrame() and in UpdateLocalKeyFrames(), both
             # reachable only after a successful track; DSO's coarse
             # tracking reference is set only from makeKeyFrame(), after
             # the window optimisation. A frame with no entry in
             # `absolute` yields no 3-D correspondence, so promoting it
-            # would guarantee the NEXT solve fails too -- which is how
-            # one refusal used to become a permanent fork.
+            # would guarantee the NEXT solve fails too, turning one
+            # refusal into a permanent fork.
             chain.failures = 0
             chain.references.insert(0, (index, features))
             del chain.references[EXTEND_REFERENCE_DEPTH:]
@@ -1031,7 +1024,7 @@ class ClassicalTwoViewBackend(GeometryBackend):
                 and pose.status == POSE_STATUS_SOLVED
             ):
                 # Drift control, on the KEYFRAME path. See BUNDLE_WINDOW
-                # for the measurement that put it here: without it a
+                # for the measurement: without it a
                 # chain of forty keyframes is warped by tens of degrees
                 # and contracted by a factor of three, and every extra
                 # keyframe of continuity recovery buys is spent making
@@ -1050,8 +1043,8 @@ class ClassicalTwoViewBackend(GeometryBackend):
             if chain.failures >= MAX_RECOVERY_KEYFRAMES:
                 chain.broken = pose.degeneracy
         # THE DELTA IS WHAT THIS KEYFRAME BELIEVED, NOT WHAT THE MAP
-        # NOW SAYS, and that distinction arrived with the bundle
-        # adjustment. `pose` and `new_points` are captured before
+        # NOW SAYS, because of the bundle adjustment. `pose` and
+        # `new_points` are captured before
         # `_local_adjust` moves `chain.absolute` and `chain.landmarks`
         # and before `_rewrite_poses` rebuilds `chain.poses`, so on a
         # forty-keyframe synthetic strafe every solved delta pose
@@ -1070,9 +1063,7 @@ class ClassicalTwoViewBackend(GeometryBackend):
             pose=pose,
             # An EDGE. extend() returns early above when the chain is
             # already broken, so reaching here with chain.broken set
-            # means THIS keyframe broke it. A `not was_broken` guard
-            # used to sit here and was dead code -- it was evaluated
-            # after that early return, so it was always False.
+            # means THIS keyframe broke it.
             chain_broken=chain.broken is not None,
             new_points=_publishable_block(
                 new_points, new_points_ok, [_support_block(delta_support)]
@@ -1111,12 +1102,8 @@ class ClassicalTwoViewBackend(GeometryBackend):
         """
         tally["low_parallax"] += counts.get("low_parallax", 0)
         tally["high_reprojection"] += counts.get("high_reprojection", 0)
-        # `kept` is what entered the MAP. Refusals are a subset of it --
-        # a refused landmark is still in the map, just not publishable --
-        # so it must not be added again here.
         tally["produced"] += kept
         return tally
-
 
     class _PairResult:
         __slots__ = (
@@ -1187,9 +1174,10 @@ class ClassicalTwoViewBackend(GeometryBackend):
         # recoverPose takes `mask` as BOTH input and output: it narrows it
         # in place with a cheirality test bounded by an undocumented
         # `distanceThresh` default of 50 baselines. Reading `mask` after
-        # the call therefore does NOT give the epipolar inlier count, and
-        # the field persisted as `inlier_ratio` was measuring cheirality.
-        # Measured, one scene, ORB matches at 640x360:
+        # the call therefore does NOT give the epipolar inlier count, so
+        # `inlier_ratio` is taken from a copy made before it; read after,
+        # it would measure cheirality. Measured, one scene, ORB matches at
+        # 640x360:
         #
         #   baseline   matches   epipolar inliers   ratio AFTER recoverPose
         #     0.02 m      1160     1134  (0.978)              0.001
@@ -1199,10 +1187,9 @@ class ClassicalTwoViewBackend(GeometryBackend):
         #     0.30 m       987      958  (0.971)              0.971
         #
         # At short baselines nearly every correspondence is a genuine
-        # epipolar inlier and the reported "inlier ratio" is three orders
-        # of magnitude smaller. It was a measurement of baseline over
-        # depth wearing another field's name -- which also explains two
-        # historical results recorded as facts about geometry.
+        # epipolar inlier and the ratio after recoverPose is three orders
+        # of magnitude smaller: a measurement of baseline over depth, not
+        # of inliers.
         epipolar_mask = mask.copy()
         cheirality, rotation, translation, _ = cv2.recoverPose(
             essential, points_a, points_b, camera_matrix, mask=mask
@@ -1213,12 +1200,10 @@ class ClassicalTwoViewBackend(GeometryBackend):
 
         kept = mask.ravel() > 0
         inliers = int(kept.sum())
-        # What the gate below has always actually used, now carried in the
-        # field that was already declared for it. `KeyframeEdge`'s own
-        # comment describes `cheirality_fraction` as "the fraction of
-        # correspondences passing recoverPose's cheirality check" -- which
-        # is exactly this, and which the code was instead putting into
-        # `inlier_ratio` while filling this field with something else.
+        # What the gate below uses, carried in the field declared for it:
+        # `KeyframeEdge`'s own comment describes `cheirality_fraction` as
+        # "the fraction of correspondences passing recoverPose's
+        # cheirality check" -- which is exactly this.
         cheirality_ratio = inliers / matches if matches else 0.0
         translation = np.asarray(translation, dtype=np.float64).reshape(3)
 
@@ -1245,13 +1230,12 @@ class ClassicalTwoViewBackend(GeometryBackend):
         # rotation recoverPose still returns a confident translation whose
         # direction is meaningless -- measured 62 and 106 degrees of error
         # on pairs that reported no other complaint.
-        # Gated on the CHEIRALITY ratio, which is what this condition has
-        # always used -- the constant is simply named for the wrong thing.
-        # Deliberately unchanged: correcting the reporting is a separate
-        # act from changing which poses are accepted, and the second needs
-        # a sweep this did not have. Note the consequence, measured: a real
-        # sideways strafe at a 4-6 cm baseline recovers direction to within
-        # 2 degrees and is still refused here.
+        # Gated on the CHEIRALITY ratio -- `MIN_INLIER_RATIO` is named for
+        # the epipolar ratio but applied to this one. Deliberately
+        # unchanged: changing which poses are accepted needs a sweep of
+        # its own. Note the consequence, measured: a real sideways strafe
+        # at a 4-6 cm baseline recovers direction to within 2 degrees and
+        # is still refused here.
         degenerate = (
             inliers < MIN_INLIERS
             or cheirality_ratio < MIN_INLIER_RATIO
@@ -1323,35 +1307,33 @@ class ClassicalTwoViewBackend(GeometryBackend):
         pose is solved against; the rest supply further sightings AFTER
         the solve, through `_reobserve_against_pose`.
 
-        WHAT CHANGED, AND WHAT DELIBERATELY DID NOT
+        WHICH REFERENCE, AND HOW MANY
 
-        What changed is WHICH keyframe `references[0]` is. It used to be
-        `current - 1` unconditionally. It is now the nearest keyframe
-        that actually has coordinates, so a keyframe whose pose refused
-        is stepped over rather than becoming a reference that cannot
-        supply a single 3-D correspondence. That is the whole recovery
-        mechanism, and it is the invariant every mature system holds:
+        `references[0]` is the nearest keyframe that actually has
+        coordinates, not `current - 1` unconditionally, so a keyframe
+        whose pose refused is stepped over rather than becoming a
+        reference that cannot supply a single 3-D correspondence. That is
+        the whole recovery mechanism, and it is the invariant every
+        mature system holds:
         ORB-SLAM sets its reference keyframe only in CreateNewKeyFrame()
         and UpdateLocalKeyFrames(), both reachable only after a
         successful track; DSO sets its coarse tracking reference only
         from makeKeyFrame(), after the window optimisation.
 
-        What deliberately did NOT change is the number of references the
-        PnP itself draws correspondences from: ONE.
+        The number of references the PnP itself draws correspondences
+        from is deliberately ONE.
 
         Feeding all DEPTH references into a single PnP was implemented
         and tried, because it is the obvious widening and because
         ORB-SLAM's TrackLocalMap is exactly that idea done properly. It
         made the reconstruction worse and was abandoned.
 
-        THE NUMBERS THAT COMPARISON PRODUCED ARE WITHDRAWN. An
-        adversarial review found the two runs differed in the RECOVERY
-        BUDGET as well as in the reference count, and the recovery
-        budget is worth tens of points of dominant-component share on
-        its own, so the comparison isolated nothing. The variant is no
-        longer in the tree and has not been re-measured cleanly. What
-        remains is the argument, which stands on its own and is the
-        reason not to try it again casually:
+        THAT COMPARISON ISOLATED NOTHING: its two runs differed in the
+        RECOVERY BUDGET as well as in the reference count, and the
+        recovery budget is worth tens of points of dominant-component
+        share on its own. The variant is not in the tree and has not been
+        re-measured cleanly. What remains is the argument, which stands
+        on its own and is the reason not to try it again casually:
 
         TrackLocalMap is not "match more keyframes". It projects
         landmarks through a PREDICTED pose and searches a small radius
@@ -1399,11 +1381,11 @@ class ClassicalTwoViewBackend(GeometryBackend):
             # roughly doubling the point count with duplicates of the
             # same structure and badly degrading the trajectory.
             #
-            # Deliberately no percentage here. The figures this
-            # comment used to carry were single-run measurements, and
+            # Deliberately no percentage here: a single-run figure
+            # does not reproduce, because
             # findEssentialMat(USAC_MAGSAC)/solvePnPRansac(SQPNP) are
             # not seeded -- a committed test's own docstring claims
-            # 1.32% where the same test now measures 1.62% on a
+            # 1.32% where the same test measures 1.62% on a
             # different OpenCV build. A bare number in a comment cannot
             # carry its conditions; tests/test_world_builder_drift.py
             # pins the shape of the error instead.
@@ -1427,8 +1409,8 @@ class ClassicalTwoViewBackend(GeometryBackend):
 
         # `reobserved` is built ABOVE, before the solve, because
         # observed.update(reobserved) is what lets the NEXT keyframe find
-        # correspondences at all -- starving it is what cost 26 solved
-        # poses when the landmark gate first filtered the map.
+        # correspondences at all -- starving it cost 26 solved poses
+        # when the landmark gate filtered the map.
         #
         # Publication is a different question. An association the solver's
         # own RANSAC called an outlier is not evidence, and support.json
@@ -1497,7 +1479,7 @@ class ClassicalTwoViewBackend(GeometryBackend):
         # was solved against, admitted only if they reproject through
         # that pose. This runs after the solve and cannot change it --
         # see _reobserve_against_pose, and see this method's docstring
-        # for the measurement that says it must stay that way.
+        # for why it must stay that way.
         # Published on the same terms as the inliers above, because it
         # passed the same reprojection bar those inliers were selected by.
         guided = self._reobserve_against_pose(
@@ -1514,9 +1496,9 @@ class ClassicalTwoViewBackend(GeometryBackend):
         # Merged into `reobserved`, and so into the caller's `observed`,
         # and NOT only into the published support.
         #
-        # The pose-neutral variant was built first and measured, because
-        # it looked strictly safer: keep guided rows out of `observed`
-        # and no later pose can move. It produces an INCONSISTENT support
+        # The pose-neutral variant looks strictly safer -- keep guided
+        # rows out of `observed` and no later pose can move -- and was
+        # measured. It produces an INCONSISTENT support
         # table. `observed` is what the next keyframe consults to decide
         # whether a feature already has a landmark; a guided row withheld
         # from it means the next step finds nothing, triangulates the
@@ -1532,8 +1514,8 @@ class ClassicalTwoViewBackend(GeometryBackend):
         #
         # So the association goes where associations go. The cost is that
         # a guided row becomes a correspondence for the NEXT pose solve,
-        # which means this change is no longer provably pose-neutral and
-        # has to be measured across the corpus rather than argued.
+        # so this is not provably pose-neutral and has to be measured
+        # across the corpus rather than argued.
         reobserved.update(guided)
         published_reobserved.update(guided)
 
@@ -1576,11 +1558,10 @@ class ClassicalTwoViewBackend(GeometryBackend):
 
         WHAT THIS IS, AND WHAT IT DELIBERATELY IS NOT
 
-        The obvious way to widen this backend is to feed several
-        references' correspondences into ONE PnP. That is a different and
-        larger change: it alters the pose directly, and pricing it
-        honestly means measuring it across the corpus. It is a reasonable
-        eventual move and it is not this.
+        It is not the obvious widening -- feeding several references'
+        correspondences into ONE PnP. That is a different and larger
+        change: it alters the pose directly, and pricing it honestly
+        means measuring it across the corpus.
 
         This runs AFTER the pose is solved, so it does not participate in
         solving THIS keyframe. It does, however, affect LATER ones: what
@@ -1864,7 +1845,7 @@ class _Chain:
         # the shortfall between "every delta appended" and what
         # snapshot() publishes, which is the invariant
         # test_extend_reports_only_the_structure_that_keyframe_added
-        # now asserts.
+        # asserts.
         self.demoted = 0
         self.landmark_ok = []
         # The frame each landmark was FIRST seen from, index-aligned with
@@ -1890,7 +1871,7 @@ class _Chain:
         # this IS the output. A list of small arrays rather than one
         # grown array so appending stays O(m) with no reallocation, and
         # rather than a list of tuples so the cost is 12 bytes a row
-        # instead of the ~200 a dict entry cost before the prune.
+        # instead of the ~200 a dict entry costs.
         self.support: list = []
         self.poses: list[PoseEstimate] = []
         # Degeneracy of the refusal that exhausted the recovery budget,
@@ -1913,9 +1894,8 @@ class _Chain:
         would delete exactly the correspondences recovery needs. It is
         still a constant: `references` is capped at DEPTH.
 
-        The retained window was one frame when this backend matched only
-        its immediate predecessor. It is now DEPTH frames, so the
-        constant below is DEPTH times larger -- still a constant, which
+        The retained window is DEPTH frames, so the constant is DEPTH
+        times the one-frame window measured below -- still a constant, which
         is the property that matters and the one
         test_retained_state_does_not_grow_with_the_number_of_keyframes
         asserts. At DEPTH = 3 that is ~0.45 MB against the ~0.15 MB the

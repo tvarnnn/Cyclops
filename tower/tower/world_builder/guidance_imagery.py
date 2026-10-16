@@ -28,16 +28,16 @@ MAX_TILES = 16
 MAX_BYTES = 16 * 1024
 MAX_WIDTH = 160
 MAX_HEIGHT = 90
-# FOW capture dial (S3): one B2 tile per set sector, so at most 12. A sector
-# whose newest candidate has no redacted tile falls back to the next newest,
-# at most this many reads per sector, all inside the unchanged 80 ms budget.
+# FOW capture dial: one tile per set sector, so at most 12. A sector whose
+# newest candidate has no redacted tile falls back to the next newest, at most
+# this many reads per sector, all inside the 80 ms budget.
 DIAL_MAX_TILES = 12
 DIAL_CANDIDATES_PER_SECTOR = 3
-# B2's 80 ms budget is the tile job's own CPU time (this thread's
+# The 80 ms landed-tile budget is the tile job's own CPU time (this thread's
 # `time.thread_time()`), not wall time. The coverage worker runs at below-normal
 # priority, so under a live walk's load a ~2 ms job could miss an 80 ms
-# wall-clock budget by waiting for the CPU alone (e2e10 20:47:10). A wall-clock
-# cap still bounds the job, so a stalled read can never hang the worker.
+# wall-clock budget by waiting for the CPU alone. A wall-clock cap still bounds
+# the job, so a stalled read can never hang the worker.
 LANDED_CPU_BUDGET_S = .080
 LANDED_WALL_CAP_S = 1.0
 # publish_landed outcomes. Only LANDED_OVER_BUDGET is worth one retry.
@@ -161,15 +161,14 @@ class ImageryState:
                 return {"segment_index": previous[0], "entries": previous[1]}
             if previous and previous[0] != segment:
                 # A break clears pictures, not the one-new-tile-per-second budget.
-                self._live[pair] = (segment, [], {},
-                                    previous[3] if len(previous) > 3 else float("-inf"))
+                self._live[pair] = (segment, [], {}, previous[3])
                 return {"segment_index": segment, "entries": []}
             old_tiles = previous[2] if previous else {}
-            last_new = previous[3] if previous and len(previous) > 3 else float("-inf")
+            last_new = previous[3] if previous else float("-inf")
         redaction = entry_redaction(image_set.redaction)
         if redaction is None:
-            # Untrusted (and not a served `none` set): no pictures, as before,
-            # where every tile read refused.
+            # Untrusted (and not a served `none` set): no tiles, because each
+            # `_tile` read refuses; the entries keep the "redacted" label.
             redaction = "redacted"
         entries, tiles = [], {}
         now = time.monotonic()
@@ -213,10 +212,11 @@ class ImageryState:
                        cancelled=None, dial=None):
         """Called after coverage publication, within an 80 ms imagery budget.
 
-        `dial` (FOW capture dial, S3) is coverage's `dial_out` for this receipt;
-        the coverage worker always supplies it. With it, B2 carries one tile per
-        set sector of the hero component plus `latest` and `motion_sector`.
-        Without it (a direct caller), the pre-S3 stride selection is used.
+        `dial` is coverage's `dial_out` for this receipt; the coverage worker
+        always supplies it. With it, the landed block carries one tile per set
+        sector of the hero component plus `latest` and `motion_sector`.
+        Without it (a direct caller), tiles are spread across the accepted
+        solve horizon by stride.
 
         Returns LANDED_PUBLISHED, LANDED_OVER_BUDGET (the CPU budget or the
         wall cap was exceeded; nothing published, the previous block stays) or

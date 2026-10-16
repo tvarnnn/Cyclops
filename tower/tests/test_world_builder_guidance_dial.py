@@ -415,7 +415,6 @@ def test_b2_dial_wire_through_the_route(state, monkeypatch):
     monkeypatch.setattr(route, "label_is_trusted", lambda label: label == "faces-blurred")
     monkeypatch.setattr(route, "state_for", lambda root: state)
     _empty_live(monkeypatch)
-    monkeypatch.setenv("TOWER_WORLD_GUIDANCE_COVERAGE", "on")
     state.publish_landed("root", "home", "s9", RECEIPT, [],
                          dial=_dial_block([(3, ("k3",))], motion=None))
     app = FastAPI()
@@ -539,7 +538,6 @@ def _real_imagery_state(monkeypatch):
 
 
 def test_phone_contract_end_to_end_worker_state_and_route(monkeypatch, tmp_path):
-    monkeypatch.setenv("TOWER_WORLD_GUIDANCE_COVERAGE", "on")
     state = _real_imagery_state(monkeypatch)
     frames = ROOM + [(0, f"k{i:02d}", (1 + i % 3, 1 + i // 3 % 3), 37*i) for i in range(30)]
     data = _world(frames)

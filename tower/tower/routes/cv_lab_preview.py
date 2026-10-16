@@ -26,8 +26,8 @@ pipeline down" is structural rather than a promise. Making this
 `async def` would put the encoder on the loop and silently undo the
 entire design.
 
-Two routes, and the second one is the interesting one
-------------------------------------------------------
+Two routes
+----------
 `GET /cv-lab/preview` is the bytes. `GET /cv-lab/preview/status` is the
 descriptor without them -- the same "answer before you download"
 split `observations.py` makes between `/imagery` and `/frame`, and the
@@ -73,7 +73,7 @@ router = APIRouter()
 # The reason VALUE is on the body in every case and a client should switch
 # on that rather than on the code -- the rule `observations.py` states for
 # its own imagery routes, for the same reason: a status code is a class of
-# answer and these are five different answers.
+# answer and these are different answers.
 _PREVIEW_STATUS = {
     PREVIEW_NOT_VISUAL: 404,
     PREVIEW_RUN_CHANGED: 409,

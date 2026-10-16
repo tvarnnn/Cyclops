@@ -1,4 +1,4 @@
-"""FOW v1.2 slice 1: the photo floor-plan raster, pure core.
+"""The photo floor-plan raster, pure core.
 
 Two paths share the basis, bounds, orientation, per-cell selection, alpha
 and encoding rules below: option (2), the depth-projected raster
@@ -6,8 +6,9 @@ and encoding rules below: option (2), the depth-projected raster
 lower-image floor homography (`estimate_floor_plane` +
 `build_homography_raster`, documented at its own section further down).
 
-Design: ``FOW-V12-PHOTO-FLOORPLAN-DESIGN-20261012.md``, "Raster and evidence".
-Wire: ``303-v12-wire-contract.md`` (the geometry this module must match exactly).
+The design's "Raster and evidence" rules are quoted below as "design". The
+wire geometry this module must match exactly is the guidance-imagery
+contract (``tower/docs/contracts/WORLD-BUILDER-GUIDANCE-IMAGERY.md``).
 
 This module does no I/O, touches no Tower state and makes no network calls.
 Every input is a plain value: one component's basis and (unpadded) bounds, as
@@ -42,9 +43,8 @@ GEOMETRY CONVENTIONS (must match the coverage receipt and the wire exactly):
     rotation-only directions (surface normals) use the same combination
     without the ``scale`` factor and without ``position``.
 
-GATES (design "Raster and evidence", starting values, unvalidated on a real
-walk -- see the module docstring's thresholds section for exactly which ones
-this probe uses and why):
+GATES of ``build_raster`` (the design's starting values, not validated on a
+real walk; the constants below say which value each gate uses and why):
 
   - reject a pixel with no finite, positive depth, or marked invalid (fill,
     cache miss, failed per-frame fit);
@@ -100,7 +100,7 @@ rejects ceilings."""
 GRAZING_COS_MIN = 0.35
 """A single-view admission requires a "non-grazing" view: the cosine between
 the viewing ray and the surface normal must be at least this. (The design
-names the requirement without a number; this probe picks one and says so.)"""
+names the requirement without a number; 0.35 is this module's choice.)"""
 
 PATCH_CONSISTENCY_FRAC = 0.05
 """A single-view admission also requires its local 3x3 depth patch (in the
@@ -434,10 +434,9 @@ def build_raster(*, origin_xyz, up_xyz, forward_xyz, bounds_xy, keyframes,
 # ===========================================================================
 # Fallback (3): the lower-image FLOOR HOMOGRAPHY.
 #
-# Design: "Decision" table, row "Fallback (3)", plus the shared "Raster and
-# evidence" rules (basis, padded square bounds, column/row orientation,
-# alpha 0 = unseen, >= 2 keyframes or one non-grazing view, single-view
-# desaturation -- all reused from option (2) above, not forked).
+# The shared "Raster and evidence" rules (basis, padded square bounds,
+# column/row orientation, alpha 0 = unseen, >= 2 keyframes or one non-grazing
+# view, single-view desaturation) are reused from option (2) above.
 #
 # No depth model, no GPU. Per displayed registered component:
 #
@@ -523,9 +522,9 @@ leaves its plane normal undetermined about that line."""
 
 FLOOR_PLANE_MAX_TILT_LOOSE_DEG = 20.0
 """The tilt window when neither the camera-centre plane NOR the roll-free vertical is
-usable (only the receipt `up` is left). Original rationale: when the camera-centre plane is NOT usable (a partial live
-trajectory: walk 8 / e2e2 landings 0-2 had spread 0.03-0.05, flatness 0.70 or a
-min-variance axis 54 deg off up). The fallback references are biased: the receipt
+usable (only the receipt `up` is left), as on a partial live trajectory (walk 8 /
+e2e2 landings 0-2 had spread 0.03-0.05, flatness 0.70 or a min-variance axis 54
+deg off up). The fallback references are biased: the receipt
 `up` (mean camera up axis) sat 10-13 deg off the camera plane on e2e2, the roll-free
 vertical 7-8 deg. A 10 deg window could exclude the true floor; 20 deg holds it,
 and the camera-height consistency check still rejects a wrongly tilted plane."""
@@ -542,7 +541,7 @@ DECOY_LAYER_MIN_FRACTION = 0.5
 DECOY_LAYER_MIN_CELLS = 3
 DECOY_LAYER_MIN_BREADTH = 0.5
 DECOY_MAX_ROUNDS = 4
-"""Furniture DECOY rule for the LOOSE path (no usable camera plane; review MED-2).
+"""Furniture DECOY rule for the LOOSE path (no usable camera plane).
 The lower-envelope allowance lets up to 10% of the candidates lie below a plane, so
 a long, dense table can beat a sparsely textured floor. On the loose path a plane is
 refused when the points more than one tolerance below it form a LAYER -- >= 10
@@ -555,8 +554,8 @@ scoring subsample, and again on the REFINED plane against all candidates (a tilt
 hypothesis can hide the floor's layer; its least-squares refinement cannot). A refused
 height excludes every hypothesis within three tolerances of it; at most 4 rounds,
 then the plane is refused. Scattered noise below a floor is not a layer. On the camera-plane path
-the rule is not applied: there a layer below is walk 8's misplaced closet, and the
-room floor above it is the right answer (PROBE-REPORT p2probe-h)."""
+the rule is not applied: there a layer below is a misplaced piece (walk 8's closet),
+and the room floor above it is the right answer."""
 
 ROLL_FREE_MIN_SPREAD = 0.05
 ROLL_FREE_MAX_FLATNESS = 0.1
@@ -612,11 +611,10 @@ below a floor) and the frame is rejected. Points above the plane are allowed
 FURNITURE_MASK_DEFAULT = False
 FURNITURE_ABOVE_TOL_FRAC = 0.12
 FURNITURE_BLOCK_PX = 16
-"""Bottom-band FURNITURE MASK (OPT-IN, default OFF; Phase B item 6). Before/after on
-walk 8 (p2probe-h/maskband/before_after_side_by_side.jpg) was NOT a clear improvement:
-it removed most of R0's closet-clothes smear but cut blocky, staircase holes, left the
-desk and bookshelf smears largely in place, and changed G2 little -- so, per the lead's
-rule (mail 308), it is not on by default. The bottom 40% of most
+"""Bottom-band FURNITURE MASK (OPT-IN, default OFF). Before/after on walk 8 was NOT a
+clear improvement: it removed most of R0's closet-clothes smear but cut blocky,
+staircase holes, left the desk and bookshelf smears largely in place, and changed G2
+little -- so it is not on by default. The bottom 40% of most
 walk-8 downward frames shows furniture, not floor (R0: a median 3% of a frame's own
 band points lie on the plane), and a homography flattens it onto the floor. Each
 frame's band is cut into 16x16-pixel blocks at the <= 256x144 sample size (about
@@ -816,13 +814,13 @@ def estimate_floor_plane(*, points_xyz, camera_positions, up_xyz, forward_xyz, b
     right = right / max(float(np.linalg.norm(right)), EPS)
     pts = np.asarray(points_xyz, dtype=np.float64).reshape(-1, 3)
     pts = pts[np.all(np.isfinite(pts), axis=1)]
-    # ORDER-INVARIANT (review MED-4): canonicalise the points by an exact lexsort on
+    # ORDER-INVARIANT: canonicalise the points by an exact lexsort on
     # xyz before the budget subsample and the RANSAC draws, so a permuted input
     # gives the same plane.
     pts = pts[np.lexsort((pts[:, 2], pts[:, 1], pts[:, 0]))]
     cams = np.asarray(camera_positions, dtype=np.float64).reshape(-1, 3)
     finite_cams = np.all(np.isfinite(cams), axis=1)
-    # WALK ORDER (review MED-1): the nearest-camera stride below assumes cameras in
+    # WALK ORDER: the nearest-camera stride below assumes cameras in
     # walk order, so sort them by the caller's `camera_order` (keyframe index in the
     # solve), else canonically by position -- never by whatever order arrived.
     if camera_order is not None and len(camera_order) == len(cams):
@@ -850,7 +848,7 @@ def estimate_floor_plane(*, points_xyz, camera_positions, up_xyz, forward_xyz, b
             stats["reference_normal"] = "roll_free"
         else:
             # Only the pitch-biased receipt `up` is left: widen the window. With the
-            # roll-free vertical the normal 10 deg window holds (review MED-2: a
+            # roll-free vertical the normal 10 deg window holds (a
             # near-collinear walk cannot constrain tilt about its own axis, and a
             # 15-20 deg plane can straddle a table top and the floor).
             max_tilt_deg = max(max_tilt_deg, FLOOR_PLANE_MAX_TILT_LOOSE_DEG)
@@ -974,7 +972,7 @@ def estimate_floor_plane(*, points_xyz, camera_positions, up_xyz, forward_xyz, b
                 stats["refined"] = True
         if not loose:
             break
-        # MED-2, after refinement: the refined plane lies parallel to the surface it
+        # After refinement: the refined plane lies parallel to the surface it
         # fits (a table top is parallel to the floor), so a floor below it is a layer
         # in ITS residuals even if the raw hypothesis was tilted enough to hide it.
         tol_f = tol_frac * h_med
@@ -1107,9 +1105,9 @@ def fallback_floor_plane(*, failed, camera_positions, band_drops_by_frame, frame
     above_frac = float(np.mean(above > 0))
     cv = float(1.4826 * np.median(np.abs(above - med)) / max(med, EPS))
     if med <= EPS or above_frac < CAMERA_ABOVE_MIN_FRAC or cv > CAMERA_HEIGHT_MAX_CV:
-        # e2e4 landing 4: a solve whose cameras are not at one height above ANY level
-        # plane (CV 0.52, 11% below it) -- the fallback then warped 53 frames into
-        # 0.4% opaque cells and replaced a good plan. Refuse it, like an estimated plane.
+        # Cameras not at one height above ANY level plane: refuse it, like an estimated
+        # plane. On e2e4 landing 4 (CV 0.52, 11% below it) the fallback warped 53 frames
+        # into 0.4% opaque cells and replaced a good plan.
         reason = (f"{failed.reason}; fallback refused: cameras inconsistent with it "
                   f"(above {above_frac:.2f} < {CAMERA_ABOVE_MIN_FRAC} or height CV "
                   f"{cv:.2f} > {CAMERA_HEIGHT_MAX_CV})")
@@ -1117,8 +1115,8 @@ def fallback_floor_plane(*, failed, camera_positions, band_drops_by_frame, frame
                      camera_height_cv=cv, reason=reason)
         return FloorPlane(ok=False, reason=reason, stats=stats)
     stats.update(source="fallback_camera_drop", camera_height_median=med,
-                 camera_above_fraction=float(np.mean(above > 0)),
-                 camera_height_cv=float(1.4826 * np.median(np.abs(above - med)) / max(med, EPS)),
+                 camera_above_fraction=above_frac,
+                 camera_height_cv=cv,
                  reason="ok (fallback: camera trajectory)")
     return FloorPlane(ok=True, reason="ok (fallback: camera trajectory)",
                       normal=tuple(float(v) for v in n), offset=offset, stats=stats)
@@ -1225,8 +1223,8 @@ def build_homography_raster(*, origin_xyz, up_xyz, forward_xyz, bounds_xy, plane
     n = np.asarray(plane.normal, dtype=np.float64)
     d = float(plane.offset)
     n_up = float(n @ up)
-    # Frames whose own drops BUILT a fallback plane are exempt from the pose gate
-    # (review MED-3); every other frame is checked against it as usual.
+    # Frames whose own drops BUILT a fallback plane are exempt from the pose gate;
+    # every other frame is checked against it as usual.
     fallback_ids = (set(plane.stats.get("fallback_frame_ids") or ())
                     if plane.stats.get("source") == "fallback_camera_drop" else set())
     if n_up <= 0.1:

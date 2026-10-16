@@ -15,7 +15,8 @@ exactly these, which a reader must exclude when comparing two finishes:
                     gate.metric_scale.seconds; transients.seconds.*;
                     transients.filter.seconds; transients.database and solve.database
                     (a per-solve masked database, `database.masked.p<pid>.<nonce>.db`);
-                    transients.filter.swept (names of earlier solves' databases)
+                    transients.filter.swept (names of earlier solves' databases);
+                    solve.final_scale_guard.seconds, gate.final_scale_guard.seconds
     components.json solved_at; solve_identity
   THE FIRST RE-FINISH OF A WORLD AGAINST A LATER ONE (cold caches, the same result):
                     solve.matching and solve.matching_detail ("matched" -> "frozen");
@@ -62,6 +63,7 @@ EVERY_RUN = (
     ("solution", "transients", "seconds"), ("solution", "transients", "filter", "seconds"),
     ("solution", "transients", "database"), ("solution", "solve", "database"),
     ("solution", "transients", "filter", "swept"),
+    ("solution", "solve", "final_scale_guard", "seconds"), ("solution", "gate", "final_scale_guard", "seconds"),
     ("components", "solved_at"), ("components", "solve_identity"),
 )
 COLD_AGAINST_WARM = EVERY_RUN + (

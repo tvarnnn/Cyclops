@@ -521,7 +521,8 @@ class _CountingClock(_Clock):
 
 
 @pytest.mark.parametrize("mode", [None, "off"])
-def test_with_the_relocalizer_off_no_frame_path_touches_it(tmp_path, room_frames, monkeypatch, mode):
+def test_with_the_relocalizer_off_no_frame_path_touches_it(tmp_path, room_frames, monkeypatch, mode,
+                                                          live_depth_on_its_own_clock):
     """Off (the default) runs no relocalizer code on ANY frame path -- a
     loss, a rejected frame of either kind, a keyframe -- not merely writes
     nothing: its factory is never called, and its duration clock is read

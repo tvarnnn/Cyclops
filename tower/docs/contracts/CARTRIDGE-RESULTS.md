@@ -2260,12 +2260,9 @@ a disconnect comes from a new walk.
 
 ## 2026-10-06 (WORLDS v8) — World Builder `guidance.coverage`
 
-`TOWER_WORLD_GUIDANCE_COVERAGE=on` adds `guidance: {"coverage": ...}` only
-for a selected session in the existing `world_builder.status/2026-09-10`
-payload. Any other switch value is OFF. OFF leaves every payload and envelope
-byte-identical to `324f4a6`, including no-session and stopped states. ON
-publishes `coverage:null` until one global solve has landed, been merged into
-the derived tree, and passed a consistent read. A stopped session without one
+A selected session's status in the existing `world_builder.status/2026-09-10`
+payload always carries `guidance: {"coverage": ...}`. It publishes
+`coverage:null` until one global solve has landed, been merged into the derived tree, and passed a consistent read. A stopped session without one
 also has `coverage:null`; no session omits `guidance`. Coverage is nonvolatile,
 so a changed block changes the status envelope revision. `age_seconds` is
 never on the wire. A later local rebuild may change `geometry.revision` but

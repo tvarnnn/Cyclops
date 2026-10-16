@@ -26,7 +26,6 @@ observe() a future module adapter would.
 """
 
 import logging
-import os
 import time
 from dataclasses import dataclass, field, replace
 
@@ -335,14 +334,12 @@ class WorldBuilderEngine:
         if self._live_depth is not None:
             self._live_depth.close()
             self._live_depth = None
-        if os.environ.get("TOWER_WORLD_LIVE_DEPTH", "off") in ("shadow", "on"):
-            # OFF never imports the depth worker or starts a thread.
-            from tower.world_builder.live_depth import LiveDepthWorker
+        from tower.world_builder.live_depth import LiveDepthWorker
 
-            self._live_depth = LiveDepthWorker(
-                self._store, session.world_id, session.session_id,
-                session.intrinsics, monotonic=self._mono,
-            )
+        self._live_depth = LiveDepthWorker(
+            self._store, session.world_id, session.session_id,
+            session.intrinsics, monotonic=self._mono,
+        )
         return session.session_id
 
     def observe(

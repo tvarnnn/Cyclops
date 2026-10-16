@@ -1,5 +1,5 @@
 """The final scale guard v2 (Exp1 slice 4; design RUN review/codex/cx-SCALE-GUARD-V2-DESIGN-20261007.md),
-the rule `TOWER_WORLD_FINAL_SCALE_GUARD` (on / shadow) now runs at the publish seam.
+the rule the publish seam runs.
 
 Pinned here:
   * the rule: a plateau is isolated only with >= 10 finite ratios AND a median outside the inclusive
@@ -12,9 +12,6 @@ Pinned here:
     (`live_depth.compatible_live_records`), nothing is written, and an identity mismatch is no evidence;
   * at the seam: the uncertified flag reaches BOTH `final_scale_guard.json` and the placed component in
     `components.json`, and no depth stage runs at publish.
-
-The OFF identity, extended to a world holding a live depth cache, is in
-`test_world_builder_final_scale_guard_off_identity.py`.
 """
 
 from __future__ import annotations
@@ -27,7 +24,6 @@ import pytest
 
 from tests.test_world_builder_final_scale_guard import _cams, _ids, _levels
 from tests.test_world_builder_final_scale_guard_seam import (  # noqa: F401 -- fixtures and helpers
-    SWITCH,
     _Engines,
     _live_evidence,
     _placed,
@@ -163,7 +159,6 @@ def _read_live(walk_, **kw):
 
 
 def test_the_live_cache_is_read_in_place_under_its_full_identity(walk, monkeypatch):  # noqa: F811
-    monkeypatch.setenv("TOWER_WORLD_LIVE_DEPTH", "on")
     store = walk[0]
     worker = _predict_one(walk)
     seen = {}
@@ -185,7 +180,6 @@ def test_the_live_cache_is_read_in_place_under_its_full_identity(walk, monkeypat
 
 
 def test_a_live_cache_of_another_fov_is_no_evidence(walk, monkeypatch):  # noqa: F811
-    monkeypatch.setenv("TOWER_WORLD_LIVE_DEPTH", "on")
     worker = _predict_one(walk)
     doc = json.loads((worker.root / "align.json").read_text(encoding="utf-8"))
     doc["known_fov"] += 0.01
@@ -196,21 +190,7 @@ def test_a_live_cache_of_another_fov_is_no_evidence(walk, monkeypatch):  # noqa:
 
 
 def test_no_live_cache_is_absent(walk, monkeypatch):  # noqa: F811
-    monkeypatch.setenv("TOWER_WORLD_LIVE_DEPTH", "on")
     assert _read_live(walk) == ({}, {"state": "absent"})
-
-
-@pytest.mark.parametrize("mode", [None, "off", "shadow", "On"])
-def test_a_live_cache_is_no_evidence_unless_live_depth_is_on(walk, monkeypatch, mode):  # noqa: F811
-    """Arm L (shadow) measures the worker only: its cache must never reach the guard (lead gate)."""
-    _predict_one(walk)
-    if mode is None:
-        monkeypatch.delenv("TOWER_WORLD_LIVE_DEPTH", raising=False)
-    else:
-        monkeypatch.setenv("TOWER_WORLD_LIVE_DEPTH", mode)
-    called = []
-    log, record = _read_live(walk, live_metric_fn=lambda *a: called.append(a))
-    assert log == {} and record["state"] == "live-depth-not-on" and called == []
 
 
 # ---------------------------------------------------------------------------
@@ -222,7 +202,6 @@ def test_walk7_shapes_at_the_seam_flag_the_placed_component_and_predict_no_depth
     eng = _Engines(monkeypatch, n=W7_N, levels={})
     s = _walk(tmp_path / "w", W7_N, colmap, monkeypatch)
     _live_evidence(monkeypatch, _w7_levels())
-    monkeypatch.setenv(SWITCH, "on")
     out = _simple(s)
     assert out["solved"] is True
     meta, comp, audit = _published(s)

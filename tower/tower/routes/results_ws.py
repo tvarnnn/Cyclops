@@ -3,8 +3,8 @@
 Kept out of `ws.py` on purpose. That module owns the frame path -- the
 latency-measured, privacy-sensitive part of this system -- and the result
 channel is a side surface that must be able to fail without implicating
-it. Separate module, separate failure domain, and `ws.py` gains four small
-dispatch branches rather than three hundred lines.
+it. Separate module, separate failure domain, and `ws.py` gains one
+dispatch branch rather than three hundred lines.
 
 Every handler here returns without raising -- with ONE exception that is
 not a result-channel problem at all. A malformed subscribe, an unknown
@@ -68,9 +68,9 @@ _LAST_FIRST_SNAPSHOT_WARNING: dict = {}
 # How much of a client-supplied identifier comes back in a refusal.
 #
 # `cartridge`, `result_type` and `subscription_id` are echoed into both a
-# message string and a field, and were bounded by nothing. MEASURED at
-# exactly 2.00x and unbounded: a 1,000,000-character `cartridge` produced
-# a 2,000,311-character reply.
+# message string and a field, so they must be bounded. MEASURED unbounded,
+# at exactly 2.00x: a 1,000,000-character `cartridge` produced a
+# 2,000,311-character reply.
 #
 # It costs more than its size. These replies are sent while holding the
 # send lock the FRAME PATH shares, so an oversized echo is paid by every
@@ -164,9 +164,8 @@ async def _subscribe(message, websocket, sender, channel_holder) -> None:
     # Bounded HERE, once, rather than at each of the eight sites that echo
     # them. A guard applied per call site is a guard someone adds a ninth
     # call site next to, and the ninth one is the hole -- this function
-    # already echoes `cartridge` and `result_type` into six different
-    # refusals, and an audit that listed the sites missed
-    # `requested_contract` below.
+    # echoes `cartridge` and `result_type` into six different refusals,
+    # and a list of the sites misses `requested_contract` below.
     #
     # Safe to rebind before the lookup rather than only on the way out:
     # every cartridge and result type this Tower serves is a short
@@ -186,10 +185,8 @@ async def _subscribe(message, websocket, sender, channel_holder) -> None:
         return
 
     # These two are bounded HERE rather than with the pair above only
-    # because they are read here -- and that gap is exactly the failure
-    # the comment above predicts. The first version of this guard bound
-    # four fields at the top of the handler and these two were declared
-    # eleven lines further down, checked for TYPE and echoed verbatim.
+    # because they are read here, after their type checks; they are
+    # checked for TYPE first and must not be echoed verbatim.
     #
     # They are the WORSE half, because a subscribe carrying them
     # SUCCEEDS. Measured: 2,000,000 characters in, 4,001,438 bytes back --
@@ -311,11 +308,11 @@ async def _subscribe(message, websocket, sender, channel_holder) -> None:
     try:
         # THE SAME DEADLINE THE POLL LOOP HAS, because this runs inline in
         # the connection's message loop: while it waits, nothing else on
-        # this socket is answered. A reviewer injected a 3 s stall and
-        # watched a frame sent behind a subscribe wait the full 3 s for
-        # its `frame_result`, and iOS sends `result_subscribe` on every
-        # reconnect of the World Builder screen. A wedged read here hung
-        # that phone's socket outright. `TimeoutError` is an `Exception`,
+        # this socket is answered. Measured with an injected 3 s stall: a
+        # frame sent behind a subscribe waited the full 3 s for its
+        # `frame_result`, and iOS sends `result_subscribe` on every
+        # reconnect of the World Builder screen, so a wedged read here
+        # hangs that phone's socket outright. `TimeoutError` is an `Exception`,
         # so it takes the reply below rather than leaving the client
         # waiting on an answer that never comes. The thread outlives the
         # cancel -- bounded at one per subscribe attempt, which is
@@ -336,10 +333,10 @@ async def _subscribe(message, websocket, sender, channel_holder) -> None:
         # side reports it.
         if isinstance(exc, SnapshotTimeout):
             # One line, and one line per target per 30 s. A phone
-            # retrying every ~2.5 s against a wedged read logged a full
-            # traceback per attempt -- a reviewer counted 216 lines a
-            # minute; shortened to one line each it was still 120 a
-            # minute from one flapping client.
+            # retrying every ~2.5 s against a wedged read logs a full
+            # traceback per attempt (216 lines a minute counted), and one
+            # line per attempt is still 120 a minute from one flapping
+            # client.
             key = (cartridge, result_type, world_id, session_id)
             now = time.monotonic()
             last = _LAST_FIRST_SNAPSHOT_WARNING.get(key)
@@ -404,9 +401,9 @@ def _first_snapshot_failure_message(exc: BaseException) -> str:
     waited on and whether this connection was refused, and that text is
     written for the wire. Anything else -- including a `TimeoutError` a
     PRODUCER raised from a socket or a filesystem call -- is named by
-    type only: its text may be a stack of internals, and a reviewer
-    measured 534 bytes of path, errno and pid going out when the first
-    version matched on `TimeoutError` alone.
+    type only: its text may be a stack of internals, and matching on
+    `TimeoutError` alone was measured sending 534 bytes of path, errno
+    and pid out.
     """
     if isinstance(exc, SnapshotTimeout):
         return str(exc)
