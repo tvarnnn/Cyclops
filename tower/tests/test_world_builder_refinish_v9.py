@@ -781,6 +781,9 @@ def test_low_a_refused_regate_stops_promising_and_stops_waiting(tmp_path, refusa
 def _clean_gate_runner(store, world_id, session_id, candidate, **kwargs):
     from tower.world_builder import coherence_publish as CP
 
+    # The final scale guard publishes a room of supported cameras only (>= 30 observations); the fixture's
+    # have 10, so the re-gate would be withheld for want of a room.
+    candidate = dataclasses.replace(candidate, poses={k: dict(p, observations=30) for k, p in candidate.poses.items()})
     record = {"state": CP.GATE_STATE_APPLIED, "retryable": False, "cause": None,
               "masks_applied": True, "metric_available": True, "attach": True,
               "depth": {"state": CP.DEPTH_OK}, "components": None}

@@ -1,12 +1,10 @@
-"""The final-solve scale and pose publication guard (`world_builder/final_scale_guard.py`): the setting
-and the PURE assessment.
+"""The final-solve scale and pose publication guard (`world_builder/final_scale_guard.py`): the PURE
+assessment.
 
-Design: RUN review/codex/cx-SCALE-GUARD-DESIGN-20261006.md. The OFF identity is pinned in
-`test_world_builder_final_scale_guard_off_identity.py` (golden recorded on 324f4a6); the publish seam,
-end to end, in `test_world_builder_final_scale_guard_seam.py`.
+Design: RUN review/codex/cx-SCALE-GUARD-DESIGN-20261006.md. The publish seam, end to end, is in
+`test_world_builder_final_scale_guard_seam.py`.
 
 Pinned here:
-  * the setting: off by default, `shadow`, `on`; a typo is off;
   * thresholds [0.8, 1.25] (inclusive) and the clear boundary 0.75 / 1.333, the 10-ratio rule on both
     sides, borderline is `final-scale-uncertified` never `final-scale-outlier`, a short stretch inherits
     only inside the band and between certified plateaus, plateaus never cross gate groups, the reference is
@@ -24,33 +22,16 @@ import math
 import numpy as np
 import pytest
 
-from tower import config
 from tower.world_builder import coherence_gate as CG
 from tower.world_builder import final_scale_guard as FSG
 
-SWITCH = config.WORLD_FINAL_SCALE_GUARD_ENV
 P = FSG.GuardParams()
 L = math.log
 
 
 # ---------------------------------------------------------------------------
-# the setting
+# the params
 # ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize("value, expected", [
-    (None, "off"), ("", "off"), ("  ", "off"), ("0", "off"), ("false", "off"), ("no", "off"), ("off", "off"),
-    ("garbage", "off"), ("enforce", "off"), ("shadow", "shadow"), (" SHADOW ", "shadow"),
-    ("on", "on"), ("1", "on"), ("true", "on"), ("yes", "on"), ("ON", "on"),
-])
-def test_the_setting_is_off_unless_asked(monkeypatch, value, expected):
-    if value is None:
-        monkeypatch.delenv(SWITCH, raising=False)
-    else:
-        monkeypatch.setenv(SWITCH, value)
-    assert config.world_final_scale_guard_setting() == expected
-    assert FSG.mode() == expected
-    assert SWITCH == "TOWER_WORLD_FINAL_SCALE_GUARD"
 
 
 def test_the_params_are_the_designs_and_are_digested():

@@ -2,8 +2,9 @@
 and the publish step's outputs -- `solution.json`, `components.json`, `consensus.json`, the gate record and
 `apply_gate`'s own result, with and without the consensus's hooks -- are what the product wrote BEFORE the anchor
 verification existed, recorded from the d649f9f working tree by RUN/experiments/P4-PROD/golden_record.py
-(`wb_anchor_verify_fixtures.golden_outputs`). The only exclusions are the comparison's ALWAYS set (timestamps,
-timings, paths)."""
+(`wb_anchor_verify_fixtures.golden_outputs`), plus the `final_scale_guard` fields the final scale guard adds to
+every final publication (nothing isolated here). The only exclusions are the comparison's ALWAYS set
+(timestamps, timings, paths)."""
 
 from __future__ import annotations
 

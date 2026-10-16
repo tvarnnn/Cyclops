@@ -367,6 +367,7 @@ def test_runless_stage_never_joins_a_finish_begun_before_this_process(tmp_path, 
     assert set(doc["finishes"][1]["stages"]) == {"surface", "appearance"}
 
 
+@pytest.mark.usefixtures("final_scale_guard_bypassed")
 def test_cold_and_warm_mask_counts_are_initial_lookups_only(session, colmap, monkeypatch):
     from tower.world_builder.transients import TransientParams
 
@@ -392,11 +393,13 @@ def test_cold_and_warm_mask_counts_are_initial_lookups_only(session, colmap, mon
 def test_final_solve_product_bytes_are_identical_on_and_off(
         tmp_path, monkeypatch, session, colmap):
     from tower.world_builder import global_solve as GS
+    from tower.world_builder.final_scale_guard import AUDIT_FILENAME
     from tower.world_builder.store import WorldStore
-    from tests.test_world_builder_coherence_publish import _stub_gate
+    from tests.test_world_builder_coherence_publish import _map_a_room, _stub_gate
 
     calls = []
     _stub_gate(monkeypatch, calls)  # deterministic CPU gate; product writers remain real
+    _map_a_room(monkeypatch)        # a room the real final scale guard publishes
     monkeypatch.setattr(time, "time", lambda: 1234.5)
     monkeypatch.setattr(time, "perf_counter", lambda: 20.0)
 
@@ -412,13 +415,16 @@ def test_final_solve_product_bytes_are_identical_on_and_off(
         workspace = GS.workspace_for(store, session.world_id, session.session_id)
         payload = {p.name: p.read_bytes() for p in workspace.root.iterdir()
                    if p.is_file() and p.name in {
-                       "solution.json", "components.json", "points.bin", "observations.bin"}}
+                       "solution.json", "components.json", "points.bin", "observations.bin",
+                       AUDIT_FILENAME}}
         return result, payload, store.session_dir(session.world_id, session.session_id)
 
     off_result, off_payload, off_session = run("off")
     on_result, on_payload, on_session = run("on")
     assert off_result["solved"] and on_result["solved"]
     assert off_payload and "solution.json" in off_payload and "components.json" in off_payload
+    assert AUDIT_FILENAME in off_payload
+    assert json.loads(off_payload["solution.json"])["solve"]["final_scale_guard"]["decision"] == "published"
     assert on_payload == off_payload
     assert (off_session / "events.jsonl").read_bytes() == (on_session / "events.jsonl").read_bytes()
     assert not (off_session / timing.FILENAME).exists()

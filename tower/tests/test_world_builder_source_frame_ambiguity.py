@@ -127,6 +127,7 @@ def _captures(tmp_path, *, repeated: bool):
     return dirs
 
 
+@pytest.mark.usefixtures("final_scale_guard_bypassed")
 def test_a_solve_takes_the_stored_keyframe_for_a_repeated_name_and_says_so(session, colmap, tmp_path):
     summary = _solve(session, final=True, capture_dirs=_captures(tmp_path, repeated=True))
     assert summary["solved"] is True
@@ -138,6 +139,7 @@ def test_a_solve_takes_the_stored_keyframe_for_a_repeated_name_and_says_so(sessi
         assert 60 < float(img.mean()) < 200 and float(img.std()) > 30
 
 
+@pytest.mark.usefixtures("final_scale_guard_bypassed")
 def test_a_solve_with_unique_names_records_nothing_new(session, colmap, tmp_path):
     summary = _solve(session, final=True, capture_dirs=_captures(tmp_path, repeated=False))
     assert "frames_ambiguous_by_name" not in _solution_json(session)["solve"]

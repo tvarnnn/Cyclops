@@ -26,6 +26,7 @@ from tests import wb_anchor_verify_fixtures as F
 from tower.world_builder import anchor_verify as AV
 from tower.world_builder import coherence_gate as CG
 from tower.world_builder import coherence_publish as CP
+from tower.world_builder import final_scale_guard as FSG
 
 GP = CG.GateParams()
 VP = AV.VerifyParams()
@@ -663,7 +664,10 @@ def test_without_the_flag_the_same_stretch_stays(tmp_path, monkeypatch):
     _, record, comps, _ = _publish_on(
         tmp_path, monkeypatch, value="scale,images", n=n, cross=((10, 45), (10, 46), (11, 46)), levels=levels,
         pairs={"pairs": F.chain_pairs(n)}, centres=_jump_centres(n, 25, 5.0))
-    assert record["anchor_verify"]["sealed_kf"] == 0 and _by_first(comps) == {0: (60, [], "room")}
+    # The anchor verification leaves the x2 stretch in; the final scale guard then takes it out, under its own
+    # reason, never `scale-mismatch`.
+    assert record["anchor_verify"]["sealed_kf"] == 0
+    assert _by_first(comps) == {0: (50, [], "room"), 25: (10, [FSG.REASON_SCALE_OUTLIER], "none")}
 
 
 def test_motion_alone_flags_and_seals_nothing(tmp_path, monkeypatch):
@@ -674,7 +678,9 @@ def test_motion_alone_flags_and_seals_nothing(tmp_path, monkeypatch):
         pairs={"pairs": F.chain_pairs(n)}, centres=_jump_centres(n, 25, 5.0))
     av = record["anchor_verify"]
     assert len(av["motion_flags"]) == 1 and av["sealed_kf"] == 0 and built == []
-    assert _by_first(comps) == {0: (60, [], "room")} and "import_units" not in record
+    # Taken out by the final scale guard, not sealed by the anchor verification (as above).
+    assert _by_first(comps) == {0: (50, [], "room"), 25: (10, [FSG.REASON_SCALE_OUTLIER], "none")}
+    assert "import_units" not in record
 
 
 # ---------------------------------------------------------------------------------------------------------------

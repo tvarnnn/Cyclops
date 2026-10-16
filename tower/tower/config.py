@@ -1036,27 +1036,6 @@ def world_anchor_verify_setting() -> frozenset:
     return frozenset()
 
 
-# THE FINAL-SOLVE SCALE AND POSE PUBLICATION GUARD (`world_builder/final_scale_guard.py`;
-# design RUN review/codex/cx-SCALE-GUARD-DESIGN-20261006.md, manager 234). Read by the
-# final solve itself (and by the re-gate in place), at its publish step. Three values:
-#   off     -- unset, blank, `0`, `false`, `no`, `off`, and anything unrecognised (logged).
-#              Today's publish, byte for byte: nothing new is read, written or recorded.
-#   shadow  -- the guard measures the publication candidate and writes its audit
-#              (`solve/<session>/final_scale_guard.json`), and the solve is published
-#              exactly as with the guard off.
-#   on      -- `on`, `1`, `true`, `yes`: enforcement, by the v2 rule (`assess_v2`, design RUN
-#              review/codex/cx-SCALE-GUARD-V2-DESIGN-20261007.md). Only a MEASURED scale
-#              stretch leaves the room as an explicit separate component: >= 10 metric ratios,
-#              median outside [0.8, 1.25], and a bootstrap interval against the certified core
-#              that excludes 1. Everything else -- short or unmeasured stretches, out-of-band
-#              plateaus whose interval includes 1, a room with no metric evidence -- STAYS
-#              ATTACHED and is recorded `uncertified` (audit and `placed_scale_status`). The pose
-#              screen is recorded only; v2 isolates nothing on pose. v2 never withholds on scale;
-#              ON still withholds (the last published solution stands) on a failure: an exception,
-#              or a relabel that leaves no room. (v1's pose quarantine and "no certifiable room ->
-#              withhold" survive only in the offline shadow CLI's `assess`.)
-
-
 # FOW GUIDANCE IMAGERY, UNREDACTED SESSIONS (`world_builder/guidance_imagery.py` and
 # `results/world_builder_guidance_imagery.py`; owner decision for the demo deploy: privacy is
 # deferred and redaction bypassed, so walks record `session.json` `redaction: "none"`).
@@ -1073,34 +1052,6 @@ WORLD_GUIDANCE_IMAGERY_UNREDACTED_ENV = "TOWER_WORLD_GUIDANCE_IMAGERY_UNREDACTED
 def world_guidance_imagery_unredacted_setting() -> bool:
     """True only when TOWER_WORLD_GUIDANCE_IMAGERY_UNREDACTED is exactly `on`."""
     return os.environ.get(WORLD_GUIDANCE_IMAGERY_UNREDACTED_ENV) == "on"
-
-
-WORLD_FINAL_SCALE_GUARD_ENV = "TOWER_WORLD_FINAL_SCALE_GUARD"
-WORLD_FINAL_SCALE_GUARD_OFF = "off"
-WORLD_FINAL_SCALE_GUARD_SHADOW = "shadow"
-WORLD_FINAL_SCALE_GUARD_ON = "on"
-
-
-def world_final_scale_guard_setting() -> str:
-    """`TOWER_WORLD_FINAL_SCALE_GUARD`: `off` (the default), `shadow` or `on`.
-
-    A spelling of true is `on`, exactly as `_flag` reads it; `shadow` is the only other
-    word. Anything else is off, and logged unless it is a spelling of false: a typo never
-    turns enforcement on, and it is still visible."""
-    value = os.environ.get(WORLD_FINAL_SCALE_GUARD_ENV)
-    if value is None or not value.strip():
-        return WORLD_FINAL_SCALE_GUARD_OFF
-    word = value.strip().lower()
-    if word in ("1", "true", "yes", "on"):
-        return WORLD_FINAL_SCALE_GUARD_ON
-    if word == WORLD_FINAL_SCALE_GUARD_SHADOW:
-        return WORLD_FINAL_SCALE_GUARD_SHADOW
-    if word not in ("0", "false", "no", "off"):
-        logger.warning(
-            "[Tower][Config] %s=%r is not off, shadow or on; treating it as off",
-            WORLD_FINAL_SCALE_GUARD_ENV, value,
-        )
-    return WORLD_FINAL_SCALE_GUARD_OFF
 
 
 # The AREA builds (`world_builder/area_build.py`, WORLD-BUILDER-COMPONENTS.md
