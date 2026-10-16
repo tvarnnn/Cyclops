@@ -253,15 +253,15 @@ final class TowerClient: NSObject, ObservableObject {
     ///
     /// The send window's capacity is `targetFPS * this` (see
     /// `SendWindow.capacity(forTargetFPS:latencyBudget:)`), so this constant —
-    /// not a frame count — is the reviewable decision. At the default 12 fps
-    /// target it yields a capacity of 4.
+    /// not a frame count — is the reviewable decision. At the default 15 fps
+    /// target it yields a capacity of 5.
     ///
     /// 1/3 s covers the ~290 ms send completion time measured early in a run
     /// on a physical link: a capacity of 2 against a 290 ms slot lifetime
     /// admits 6.9 fps, which is what that run delivered, and covering that
-    /// latency at 12 fps needs 4 slots. It is
-    /// deliberately not larger: at 12 fps every extra slot is another 83 ms a
-    /// frame can be stale before it is even written.
+    /// latency at 15 fps needs 5 slots. It is deliberately not larger: at
+    /// 15 fps every extra slot is another 67 ms a frame can be stale before it
+    /// is even written.
     static let outboundLatencyBudget: TimeInterval = 1.0 / 3.0
 
     /// How long a *full* send window may go without a single completion before
@@ -291,12 +291,12 @@ final class TowerClient: NSObject, ObservableObject {
     /// would be the worst possible reading of the evidence.
     ///
     /// A main-actor stall is directly observable here: `sendFrame` is called at
-    /// the selection rate (~83 ms apart at 12 fps), so a gap far larger than
+    /// the selection rate (~67 ms apart at 15 fps), so a gap far larger than
     /// that means this actor was not running. When that happens the stall
     /// verdict is skipped for one frame, by which time the completion hops
     /// queued during the hitch have run and released their slots.
     ///
-    /// 1 s is ~12 missed frames — far beyond any normal scheduling jitter, and
+    /// 1 s is ~15 missed frames — far beyond any normal scheduling jitter, and
     /// well under `sendStallTimeout`, so a genuine transport stall is still
     /// caught on the very next frame.
     static let mainActorGapAllowance: TimeInterval = 1.0

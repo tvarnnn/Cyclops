@@ -41,23 +41,6 @@
 		<string>5W593MH533</string>
 	</dict>
 
-	<!-- The commit this build was made from, for the DEBUG IMU log's header.
-	     Empty unless the build passes GLASSES_BUILD_SHA=<sha> to xcodebuild. -->
-	<!-- FOW v1.1 B phone switches for home-screen launches: "on" only when the
-	     build passes IOS_FOW_ROOM_IMAGERY_LIVE=on / _LANDED=on to xcodebuild. -->
-	<key>GlassesFOWImageryLive</key>
-	<string>$(IOS_FOW_ROOM_IMAGERY_LIVE)</string>
-	<key>GlassesFOWImageryLanded</key>
-	<string>$(IOS_FOW_ROOM_IMAGERY_LANDED)</string>
-	<!-- FOW v1.2 photo floor plan, the phone's switch for home-screen launches:
-	     "on" only when the build passes IOS_FOW_PHOTO_FLOORPLAN=on to xcodebuild. -->
-	<key>GlassesFOWPhotoFloorplan</key>
-	<string>$(IOS_FOW_PHOTO_FLOORPLAN)</string>
-	<!-- FOW capture dial, the phone's switch for home-screen launches: "on"
-	     only when the build passes IOS_FOW_DIAL=on to xcodebuild. It also
-	     turns on the B2 landed fetch, whose tiles are the dial's photos. -->
-	<key>GlassesFOWDial</key>
-	<string>$(IOS_FOW_DIAL)</string>
 	<!-- The capture dial's Dial|Map control: shown only when the build passes
 	     IOS_FOW_MAP_TAB=on to xcodebuild; anything else, unset included,
 	     hides it and the dial is the only face. -->
@@ -65,9 +48,11 @@
 	<string>$(IOS_FOW_MAP_TAB)</string>
 	<!-- The Tower send rate for a measured run: a whole number 6...24 only
 	     when the build passes IOS_TOWER_TARGET_FPS=<n> to xcodebuild;
-	     anything else (unset included) keeps FrameRateGate's 12. -->
+	     anything else (unset included) keeps FrameRateGate's 15. -->
 	<key>GlassesTowerTargetFPS</key>
 	<string>$(IOS_TOWER_TARGET_FPS)</string>
+	<!-- The commit this build was made from, for the DEBUG IMU log's header.
+	     Empty unless the build passes GLASSES_BUILD_SHA=<sha> to xcodebuild. -->
 	<key>GlassesBuildSHA</key>
 	<string>$(GLASSES_BUILD_SHA)</string>
 

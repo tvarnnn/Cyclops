@@ -847,10 +847,10 @@ private struct CVFrameReadingPanel: View {
             if let captureIndex = reading.captureIndex {
                 // NOT "one frame in thirty". That stride was deleted --
                 // `FrameRateGate` says so in its own words -- and replaced by a
-                // rate gate at `towerTargetFPS` (12). At a 24 fps source that
-                // is roughly one frame in two, so the old sentence told a
-                // reader 28 captures were skipped between consecutive numbers
-                // when the real figure is about one.
+                // rate gate at `towerTargetFPS` (15 by default). At a 24 fps
+                // source that is roughly five frames in eight, so the old
+                // sentence told a reader 28 captures were skipped between
+                // consecutive numbers when the real figure is under one.
                 //
                 // Worth naming the failure mode, because it is not the usual
                 // one: this is a claim about THIS APP, not about the Tower, and

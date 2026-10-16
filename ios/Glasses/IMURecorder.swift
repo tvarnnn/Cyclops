@@ -393,7 +393,7 @@ nonisolated struct IMULogHeader: Sendable {
                 ("mono_ns", .string("phone DispatchTime.uptimeNanoseconds when the event was noted")),
             ])),
             ("seq_semantics", .string("the app's 1-based DAT frame ordinal for this capture session: GlassesConnection.frameCount, sent to the Tower as frame.seq, which the Tower stores as source_seq in frames.jsonl (the app sends no source_seq)")),
-            ("sent_semantics", .string("true when the 12 fps gate selected the frame and it was decoded and handed to TowerClient.sendFrame; the Tower may still not have received it (offline, send window, paused) -- frames.jsonl is the truth for receipt")),
+            ("sent_semantics", .string("true when the tower_target_fps rate gate selected the frame and it was decoded and handed to TowerClient.sendFrame; the Tower may still not have received it (offline, send window, paused) -- frames.jsonl is the truth for receipt")),
             ("epoch_semantics", .string("a new UUID at each camera start: stream.start(), and every later return to streaming from any other state (a pause, a stop, starting, waitingForDevice) once the epoch has frames; the first streaming after stream.start() is that start. A frame's epoch is taken on DAT's callback thread when it arrives, in DAT's order against the stream states. The PTS freezes across a camera stop rather than resetting, so an epoch boundary is not visible in pts_us")),
         ])
     }

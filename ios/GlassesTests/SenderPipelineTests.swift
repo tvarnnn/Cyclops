@@ -81,9 +81,8 @@ final class FrameRateGateTests: XCTestCase {
     }
 
     /// The roadmap's V0.7 figure is ~15 fps, which does not divide 24 evenly.
-    /// Proving the mechanism holds it exactly is what makes raising
-    /// `towerTargetFPS` a one-constant change rather than a redesign — the
-    /// shipped 12 is a headroom decision, not a limit of the gate.
+    /// Proving the mechanism holds it exactly is what makes the default of 15
+    /// one constant rather than a redesign of the gate.
     func testTargetIsHeldAtTheRoadmapFifteenFPS() {
         for sourceFPS in [24.0, 30.0] {
             let seconds = 60.0
@@ -202,20 +201,20 @@ final class FrameRateGateTests: XCTestCase {
 
     /// `IOS_TOWER_TARGET_FPS` (launch environment) or `GlassesTowerTargetFPS`
     /// (the build's Info.plist key): a whole number in 6...24, else the
-    /// default 12. The parser alone, so the host's own settings never matter.
-    func testTheTowerTargetCanBeSetForAMeasuredRunAndOtherwiseStays12() {
+    /// default 15. The parser alone, so the host's own settings never matter.
+    func testTheTowerTargetCanBeSetForAMeasuredRunAndOtherwiseStays15() {
         typealias Gate = FrameRateGate
         let key = Gate.towerTargetFPSInfoKey, variable = Gate.towerTargetFPSVariable
-        XCTAssertEqual(Gate.defaultTowerTargetFPS, 12)
-        XCTAssertEqual(Gate.configuredTowerTargetFPS(environment: [:], info: [:]), 12, "unset")
-        XCTAssertEqual(Gate.configuredTowerTargetFPS(environment: [:], info: [key: ""]), 12, "an empty build setting")
+        XCTAssertEqual(Gate.defaultTowerTargetFPS, 15)
+        XCTAssertEqual(Gate.configuredTowerTargetFPS(environment: [:], info: [:]), 15, "unset")
+        XCTAssertEqual(Gate.configuredTowerTargetFPS(environment: [:], info: [key: ""]), 15, "an empty build setting")
         XCTAssertEqual(Gate.configuredTowerTargetFPS(environment: [:], info: [key: "15"]), 15)
         XCTAssertEqual(Gate.configuredTowerTargetFPS(environment: [variable: "15"], info: [:]), 15)
         XCTAssertEqual(Gate.configuredTowerTargetFPS(environment: [:], info: [key: "6"]), 6)
         XCTAssertEqual(Gate.configuredTowerTargetFPS(environment: [:], info: [key: "24"]), 24)
         for bad in ["0", "5", "25", "99", "-15", "abc", "15.5", " 15", "1e1"] {
-            XCTAssertEqual(Gate.configuredTowerTargetFPS(environment: [:], info: [key: bad]), 12, bad)
-            XCTAssertEqual(Gate.configuredTowerTargetFPS(environment: [variable: bad], info: [:]), 12, bad)
+            XCTAssertEqual(Gate.configuredTowerTargetFPS(environment: [:], info: [key: bad]), 15, bad)
+            XCTAssertEqual(Gate.configuredTowerTargetFPS(environment: [variable: bad], info: [:]), 15, bad)
         }
         XCTAssertEqual(Gate.configuredTowerTargetFPS(environment: [variable: "abc"], info: [key: "15"]), 15,
                        "an invalid launch value falls back to the build's")
@@ -657,7 +656,7 @@ final class SendWindowTests: XCTestCase {
     /// measured slot lifetimes produces exactly the rates that run reported —
     /// which is what identified the window, rather than the encoder or the
     /// gate, as the constraint. The same latencies with the latency-budgeted
-    /// capacity clear the 12 fps target.
+    /// capacity clear the default 15 fps target.
     ///
     /// This is a statement about the design, not about the device: it will
     /// keep holding on any machine, because it divides two constants.
@@ -760,8 +759,9 @@ final class SlotTimingMetricsTests: XCTestCase {
             "the baseline window and the baseline latency must reproduce the baseline rate"
         )
         XCTAssertGreaterThanOrEqual(
-            try XCTUnwrap(metrics.currentSnapshot.windowLimitedFPS(capacity: 4)),
-            FrameRateGate.towerTargetFPS
+            try XCTUnwrap(metrics.currentSnapshot.windowLimitedFPS(capacity: TowerClient.defaultMaxFramesInFlight)),
+            FrameRateGate.towerTargetFPS,
+            "the shipped window must clear the target at the baseline latency"
         )
     }
 

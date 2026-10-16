@@ -5,7 +5,9 @@
 //  U2-D0 "Capture health" on the live-capture mock: `MockTowerHTTPServer`
 //  answers the World Builder session start and speaks the result socket,
 //  sending World Builder reports as the Tower does (spec §3, tests 6 and 7,
-//  and the panel's honesty on a real socket). No Tower needed.
+//  and the panel's honesty on a real socket). No Tower needed. The walking
+//  panel draws Capture health as one collapsed row (`wb-panel-health-toggle`)
+//  that opens to the block (`capture-health`).
 //
 
 import UIKit
@@ -39,6 +41,7 @@ final class CaptureHealthUITests: XCTestCase {
     /// to "—" within the panel's 5 s, while the link itself is still up.
     func testThePanelReadsTheLiveWalkAndGoesBlankWhenReportsStop() throws {
         openWorldBuilder(session: true, keyframesPerReport: 1)
+        openHealth()
         let panel = element("capture-health")
         XCTAssertTrue(panel.waitForExistence(timeout: 20), "the panel, with a session active")
         let pace = element("capture-health-pace")
@@ -88,7 +91,7 @@ final class CaptureHealthUITests: XCTestCase {
         XCTAssertTrue(start.waitForExistence(timeout: 15), "the capture control")
         XCTAssertTrue(waitFor(timeout: 10) { self.element("wb-session-footnote").exists }, "the session line")
         Thread.sleep(forTimeInterval: 3)
-        XCTAssertFalse(element("capture-health").exists, "no session: no panel")
+        XCTAssertFalse(element("wb-panel-health-toggle").exists, "no session: no panel")
         let without = start.frame
         let footnoteWithout = element("wb-session-footnote").frame
         shoot("capture-health-\(name)-off")
@@ -96,7 +99,7 @@ final class CaptureHealthUITests: XCTestCase {
         reports.stop()
 
         openWorldBuilder(session: true, size: size)
-        let panel = element("capture-health")
+        let panel = element("wb-panel-health-toggle")
         XCTAssertTrue(panel.waitForExistence(timeout: 20), "a session: the panel")
         Thread.sleep(forTimeInterval: 2)
         let with = app.buttons["Start capture"].frame
@@ -133,7 +136,7 @@ final class CaptureHealthUITests: XCTestCase {
     /// worlds button), so a scroll changes neither figure.
     private func assertStopWithThePanel(size: String?, name: String, oneScroll: Bool) throws {
         let off = try startCapture(size: size, hidePanel: true)
-        XCTAssertFalse(element("capture-health").exists, "the panel is held off")
+        XCTAssertFalse(element("wb-panel-health-toggle").exists, "the panel is held off")
         let without = off.stop.frame.minY - off.top.frame.minY
         let heightWithout = off.stop.frame.height
         shoot("capture-health-stop-\(name)-off")
@@ -141,7 +144,7 @@ final class CaptureHealthUITests: XCTestCase {
 
         let on = try startCapture(size: size, hidePanel: false)
         let stop = on.stop
-        let panel = element("capture-health")
+        let panel = element("wb-panel-health-toggle")
         XCTAssertTrue(panel.exists, "a capture: the panel")
         let with = stop.frame.minY - on.top.frame.minY
         let window = app.windows.firstMatch.frame
@@ -158,7 +161,8 @@ final class CaptureHealthUITests: XCTestCase {
         for _ in 0..<6 where abs(top.frame.minY - on.topAtFirst) > 0.5 { app.swipeDown(velocity: .fast) }
         XCTAssertTrue(waitFor(timeout: 5) { abs(top.frame.minY - on.topAtFirst) <= 0.5 }, "back at the top")
         Thread.sleep(forTimeInterval: 1)
-        let first = element("capture-health-link")
+        // The panel's first row: Capture health's collapsed row itself.
+        let first = panel
         print("U2D0-STOP|\(name)|at-top|stop-hittable=\(stop.isHittable)|first-row-hittable=\(first.isHittable)")
 
         // ONE scroll: a drag up most of the window, held so nothing coasts.
@@ -198,7 +202,7 @@ final class CaptureHealthUITests: XCTestCase {
         let stop = app.buttons["Stop capture"]
         XCTAssertTrue(stop.waitForExistence(timeout: 15), "the capture started")
         if !hidePanel {
-            XCTAssertTrue(element("capture-health").waitForExistence(timeout: 10), "a capture: the panel")
+            XCTAssertTrue(element("wb-panel-health-toggle").waitForExistence(timeout: 10), "a capture: the panel")
         }
         Thread.sleep(forTimeInterval: 3)
         return (stop, top, topAtFirst)
@@ -345,6 +349,14 @@ final class CaptureHealthUITests: XCTestCase {
             from.press(forDuration: 0.1, thenDragTo: to, withVelocity: .slow, thenHoldForDuration: 0.1)
         }
         return isClear()
+    }
+
+    /// Opens Capture health's collapsed row to the block.
+    private func openHealth() {
+        let row = element("wb-panel-health-toggle")
+        XCTAssertTrue(row.waitForExistence(timeout: 20), "the Capture health row")
+        XCTAssertTrue(reveal(row), "the row on screen")
+        XCTAssertTrue(tap(row, until: self.element("capture-health").exists), "the row opens to the block")
     }
 
     @discardableResult

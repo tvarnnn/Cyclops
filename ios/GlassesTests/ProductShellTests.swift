@@ -4726,7 +4726,7 @@ final class IMURecorderMockDeviceTests: XCTestCase {
         let sent = Set(frames.filter { $0["sent"] as? Bool == true }.compactMap { $0["seq"] as? Int })
         XCTAssertEqual(sent, Set(forwarded).intersection(Set(seqs)), "sent flags disagree with what was forwarded")
         XCTAssertGreaterThan(sent.count, 0)
-        XCTAssertLessThan(sent.count, seqs.count, "the 12 fps gate forwarded every frame of a 24 fps stream")
+        XCTAssertLessThan(sent.count, seqs.count, "the 15 fps gate forwarded every frame of a 24 fps stream")
 
         // And the wire: every frame the Tower received carries a `seq` the log
         // marks as sent, and no `source_seq`, so the Tower's `frames.py` stores

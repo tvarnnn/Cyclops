@@ -25,34 +25,10 @@
 
 import Foundation
 
-// MARK: - The switch
-
-/// The phone's switch for the dial, `IOS_FOW_DIAL` (environment) or the
-/// `GlassesFOWDial` Info.plist key a home-screen build fills from the same
-/// build setting. `on` exactly; anything else, an empty setting included,
-/// is off, and off is today's panel exactly: no toggle, no new element.
-nonisolated struct WorldCaptureDialSwitch: Equatable, Sendable {
-    static let variable = "IOS_FOW_DIAL"
-    static let infoKey = "GlassesFOWDial"
-    static let off = Self(on: false)
-
-    let on: Bool
-
-    init(on: Bool) { self.on = on }
-
-    init(environment: [String: String], info: [String: Any] = [:]) {
-        on = environment[Self.variable] == "on" || info[Self.infoKey] as? String == "on"
-    }
-
-    static var current: Self {
-        Self(environment: ProcessInfo.processInfo.environment, info: Bundle.main.infoDictionary ?? [:])
-    }
-}
-
 /// The Dial|Map control's switch, `IOS_FOW_MAP_TAB` (environment) or the
 /// `GlassesFOWMapTab` Info.plist key filled from the same build setting.
 /// `on` exactly shows the control; anything else, unset included, hides it
-/// and the dial is the walking stage's only face. Read only with the dial on.
+/// and the dial is the walking stage's only face.
 nonisolated struct WorldDialMapTabSwitch: Equatable, Sendable {
     static let variable = "IOS_FOW_MAP_TAB"
     static let infoKey = "GlassesFOWMapTab"
@@ -70,13 +46,12 @@ nonisolated struct WorldDialMapTabSwitch: Equatable, Sendable {
     }
 }
 
-/// The two faces of the walking stage when the dial is on (§5).
+/// The two faces of the walking stage (§5).
 nonisolated enum WorldPanelTab: String, CaseIterable, Sendable {
     case dial, map
 }
 
-/// What the panel needs for the dial beyond the map: `nil` is the switch
-/// off. The flag is already the walk's own (the view model's gate).
+/// What the panel needs for the dial beyond the map.
 nonisolated struct WorldPanelDial: Equatable, Sendable {
     /// `guidance.coverage: null` for the walk being received: the Tower's
     /// switch is on and no landing has merged yet (§6 "Before the first
@@ -385,12 +360,12 @@ nonisolated enum WorldCaptureDialCopy {
     static let catchingUp = "catching up"
     static let recentTitle = "Recently captured"
     static let closePhoto = "Close"
-    /// With the dial on, Capture health's one collapsed row.
+    /// Capture health's one collapsed row.
     static let healthRow = "Capture health"
 
     /// Above this many seconds the footer says "catching up" instead of the
-    /// age. The dial's own threshold: the map's `WorldCoverageReceipt
-    /// .staleAfter` is unchanged, so the switch OFF is today's panel exactly.
+    /// age. The dial's own threshold, separate from the map's
+    /// `WorldCoverageReceipt.staleAfter`.
     static let staleAfter: Double = 90
 
     static func tabName(_ tab: WorldPanelTab) -> String {
