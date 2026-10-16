@@ -444,7 +444,7 @@ async def _drain(ws, expect, limit: int = 200, timeout: float = 30.0) -> dict:
     The socket also pushes result-channel envelopes and whatever else the
     Tower learns to send; anything not in `expect` is skipped. Where a
     `cv_lab_status` is expected a `cv_lab_error` may arrive instead and
-    carries the status anyway -- the smoke script's lesson, kept.
+    carries the status anyway.
     """
     wanted = (expect,) if isinstance(expect, str) else tuple(expect)
     for _ in range(limit):
