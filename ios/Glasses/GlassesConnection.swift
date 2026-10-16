@@ -168,16 +168,18 @@ nonisolated enum CaptureClaim: Equatable, Sendable {
 ///
 /// ## Why this is a value and not just a `print`
 ///
-/// Every refusal logs to the console, and three of them also write
-/// `errorMessage`. But a session already existing writes nothing a caller can
-/// read, so without this a caller could not tell "already running" from "the
-/// device is paused" from "it started", and a composed caller such as
+/// Every refusal `startCameraSession()` makes (directly, or through the
+/// failed-start teardown after it returns) logs to the console, and three of
+/// those cases also write `errorMessage`. A refusal a caller synthesises (see
+/// below) does neither here. But a session already existing writes nothing a
+/// caller can read, so without this a caller could not tell "already running"
+/// from "the device is paused" from "it started", and a composed caller such as
 /// `ObjectMemoryRecordingCoordinator` could not word a truthful sentence about
 /// what had just happened. A machine-readable answer is the difference between
 /// a screen that explains and one that shrugs.
 ///
-/// It is carried alongside the console logging, in
-/// `GlassesConnection.lastCaptureStartRefusal`.
+/// `startCameraSession()`'s refusals are carried alongside their console line,
+/// in `GlassesConnection.lastCaptureStartRefusal`.
 ///
 /// ## Two of these are also written by a caller, not only by this file
 ///

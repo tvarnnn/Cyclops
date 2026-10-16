@@ -76,14 +76,20 @@ nonisolated final class FramePTSProbe {
     /// This is the whole reconnect experiment. World Builder chains captures
     /// across a reconnect, so whether the capture clock's epoch survives one
     /// decides whether a PTS from before the drop is comparable with one after
-    /// it. The session boundary line names one of three outcomes:
+    /// it. The session boundary line's `VERDICT` is one of four, tested in
+    /// this order:
     ///
-    /// - **free-running** — the new session's first PTS is roughly the old
-    ///   session's last PTS plus the wall-clock gap, so `d_pts ≈ d_host`.
-    /// - **per-session** — the count restarts, so `d_pts` is negative.
-    /// - **suspended but monotonic** — `d_pts` is positive and far smaller
-    ///   than `d_host`: the clock neither resets nor measures the gap. This is
-    ///   what a stop measured (07-PLATFORM-CONSTRAINTS.md §9.1).
+    /// - **PER-SESSION** — `d_pts` is negative: the count restarted.
+    /// - **FREE-RUNNING** — `d_pts` is within 0.5 s of a positive `d_host`:
+    ///   the new session's first PTS is the old session's last PTS plus the
+    ///   wall-clock gap.
+    /// - **SUSPENDED-BUT-MONOTONIC** — `d_pts` is not negative and at least
+    ///   0.5 s short of a positive `d_host`: the clock neither resets nor
+    ///   measures the gap. This is what a stop measured
+    ///   (07-PLATFORM-CONSTRAINTS.md §9.1).
+    /// - **UNEXPLAINED** — anything else: `d_pts` at least 0.5 s beyond
+    ///   `d_host` (the clock advanced further than wall time), or a `d_host`
+    ///   that is not positive.
     private var previousSessionEnd: (pts: Double, host: Double, seq: Int)?
     private var sessionIndex = 1
 
@@ -145,7 +151,7 @@ nonisolated final class FramePTSProbe {
             if let previous = previousSessionEnd {
                 let dPTS = pts - previous.pts
                 let dHost = hostNow - previous.host
-                // Three outcomes; see `previousSessionEnd`. The third is the
+                // Four verdicts; see `previousSessionEnd`. The third is the
                 // one that matters: the clock neither resets nor tracks wall
                 // time, so it stays monotonic across a stop while silently
                 // understating how long the stop was.
