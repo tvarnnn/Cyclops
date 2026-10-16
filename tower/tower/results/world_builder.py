@@ -589,9 +589,9 @@ class WorldBuilderStatusProducer:
         repeated data. Files go through the stat-gated `_FileCache`, so a
         poll costs a few `stat()` calls rather than a journal parse.
 
-        A world this build cannot read -- an unknown schema, a missing key,
-        a record field of the wrong type -- is a real answer, not a crash:
-        it becomes one `unavailable` snapshot with a client-safe reason.
+        A world this build cannot read while building the payload -- an
+        unknown schema, a missing key -- is a real answer, not a crash: it
+        becomes one `unavailable` snapshot with a client-safe reason.
         Letting it escape would reach the publisher's consecutive-failure
         counter and eventually end the subscription.
         """
@@ -3149,6 +3149,8 @@ def _pose_count(manifest):
 
 
 def _keyframes_digest(store, world_id, session_id):
+    from tower.world_builder.store import compute_input_digest
+
     try:
         return compute_input_digest(store.read_keyframes(world_id, session_id))
     except (WorldStoreError, KeyError, ValueError, OSError):
