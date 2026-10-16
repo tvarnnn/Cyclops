@@ -14,12 +14,12 @@ import Foundation
 import MWDATCamera
 #endif
 
-/// Root app-level state container. Owns the connection, stream, and tower
-/// managers so the dashboard has a single source of truth to observe.
+/// Root app-level state container. Owns the glasses connection, the Tower
+/// client and what they share, so one graph outlives every screen; views
+/// observe the children they need, not this.
 @MainActor
 final class ProjectManager: ObservableObject {
     let glassesConnection: GlassesConnection
-    let streamManager: StreamManager
     let towerClient: TowerClient
 
     /// Sender-side instrumentation for the whole capture → transmit path.
@@ -117,7 +117,6 @@ final class ProjectManager: ObservableObject {
     /// built with, so a test can wire its own; the default graph shares one.
     init(
         glassesConnection: GlassesConnection? = nil,
-        streamManager: StreamManager? = nil,
         towerClient: TowerClient? = nil,
         senderMetrics: SenderMetrics? = nil,
         cartridgeClients: CartridgeClients? = nil
@@ -125,7 +124,6 @@ final class ProjectManager: ObservableObject {
         let metrics = senderMetrics ?? SenderMetrics()
         self.senderMetrics = metrics
         self.glassesConnection = glassesConnection ?? GlassesConnection(metrics: metrics)
-        self.streamManager = streamManager ?? StreamManager()
         // `autoReconnect` is opted into here rather than defaulted on inside
         // `TowerClient`, so that unit tests asserting "a dropped connection
         // settles at .failed" keep asserting about a settled value. In the app

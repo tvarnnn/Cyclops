@@ -21,7 +21,6 @@ import SwiftUI
 struct DeveloperToolsView: View {
     @ObservedObject var glasses: GlassesConnection
     @ObservedObject var tower: TowerClient
-    @ObservedObject var stream: StreamManager
     @ObservedObject var senderMetrics: SenderMetrics
     @ObservedObject var health: DeviceHealth
 
@@ -41,7 +40,6 @@ struct DeveloperToolsView: View {
                 imuRecorderSection
                 rawStateSection
                 towerSection
-                placeholderSection
             }
             .navigationTitle("Developer")
             .navigationBarTitleDisplayMode(.inline)
@@ -581,19 +579,6 @@ struct DeveloperToolsView: View {
             return "The Tower answered, and the answer could not be read as a health report. Nothing is shown rather than something guessed."
         case .transport(let description):
             return "The Tower did not answer: \(description)"
-        }
-    }
-
-    // MARK: Placeholders
-
-    private var placeholderSection: some View {
-        Section {
-            LabeledContent("State", value: "\(stream.state)")
-            LabeledContent("Metrics", value: stream.metrics.map { "\($0)" } ?? "nil")
-        } header: {
-            Text("StreamManager")
-        } footer: {
-            Text("Placeholder type. Never assigned, so these never change. The real streaming state is Camera Stream above. Kept here rather than on the dashboard, where it contradicted the live frame counter.")
         }
     }
 }
