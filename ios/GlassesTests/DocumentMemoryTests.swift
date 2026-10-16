@@ -669,8 +669,9 @@ final class DocumentLimitationTests: XCTestCase {
 @MainActor
 final class DocumentFieldTests: XCTestCase {
 
-    /// **48, off the envelope.** The bound is configurable, so the decoder
-    /// reads the payload field rather than assuming 48.
+    /// **48, off the envelope.** The Tower publishes its cap
+    /// (`snippet_max_chars`, its `SNIPPET_MAX_CHARS`), so the decoder reads
+    /// the payload field rather than assuming 48.
     func testTheSnippetCapIsReadFromThePayload() throws {
         let response = try XCTUnwrap(DocumentMemoryDecoder.library(from: DocumentFixtures.search))
         XCTAssertEqual(response.snippetMaxChars, 48)
