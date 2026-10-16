@@ -1,16 +1,14 @@
 #!/usr/bin/env python
 """Five cartridges, one Tower, over and over — the switch nobody could test.
 
-Each of the four autonomous lanes proved its own cartridge starts and stops
-cleanly. None of them could prove the FIVE coexist, because each had only its
-own branch. This is that test, and it is the reason the all-cartridges
-integration exists as a lane rather than as four merges.
+This checks that the FIVE cartridges coexist on one Tower, rather than each
+starting and stopping cleanly on its own.
 
-`cartridge_switch_soak.py` (World Builder's) walks World Builder against the
-CV Lab and is kept as it is; this is its sibling and reuses its vocabulary --
-the same sampler, the same lock report, the same verdict shape -- so a reader
-of one can read the other. What is new is the other three cartridges and, more
-importantly, the assertions BETWEEN them.
+`cartridge_switch_soak.py` walks World Builder against the CV Lab; this is its
+sibling and reuses its vocabulary -- the same sampler, the same lock report,
+the same verdict shape -- so a reader of one can read the other. What this adds
+is the other three cartridges (Object Memory, Document Memory, Scene
+Understanding) and, more importantly, the assertions BETWEEN them.
 
 One cycle, in the order a wearer would move:
 
@@ -108,9 +106,7 @@ def start_tower(port: int, root: Path, log_path: Path) -> subprocess.Popen:
     `TOWER_SCENE_AUTOSTART=false`. That flag does not merely stop Scene
     Understanding following a stream -- `SceneLive._reconcile` returns
     early on it, so the whole demand path is off and only
-    `POST /scene/start` can run a session. Borrowing that Tower made this
-    script wait ninety seconds for a session the configuration had
-    disabled, and report the product for it. The demand model IS the thing
+    `POST /scene/start` can run a session. The demand model IS the thing
     under test here, so it is left on.
 
     `TOWER_DOCUMENT_AUTOSTART` stays off, which is its shipped default and
@@ -197,9 +193,9 @@ async def _await_until(predicate, timeout: float, poll: float = 0.25) -> bool:
     long as it waits -- and a model load or a bounded stop join is long
     enough that the client stops answering the server's keepalive ping and
     the socket is closed under us with `1011 keepalive ping timeout`. That
-    reads exactly like a Tower that stalled, and on the first run of this
-    script it was mistaken for one; the Tower's own log showed it answering
-    `/scene` 200 throughout. The waiting happens on a thread instead.
+    reads exactly like a Tower that stalled, although the Tower's own log
+    showed it answering `/scene` 200 throughout. The waiting happens on a
+    thread instead.
     """
     return await asyncio.to_thread(_wait_until, predicate, timeout, poll)
 
@@ -276,9 +272,8 @@ async def soak(args, base: str, tower_pid: int | None, root: Path, findings: lis
             await ws.send(json.dumps({"type": "stream_start"}))
             seq, _ = await _feed(ws, frames, args.frames, seq)
             row = record(cycle, "cv_lab")
-            # THE CV LAB IS STREAMING AND NOTHING ELSE MAY WAKE UP. This is
-            # the exact defect the World Builder gate closed: before it, this
-            # capture attached a builder and ran background global solves.
+            # THE CV LAB IS STREAMING AND NOTHING ELSE MAY WAKE UP. The World
+            # Builder gate: a CV Lab capture must not attach a builder.
             nothing_unrelated(cycle, "cv_lab", row)
             tower_still_serving(cycle, "cv_lab")
             await ws.send(json.dumps({"type": "cv_lab_stop"}))
@@ -396,9 +391,8 @@ async def soak(args, base: str, tower_pid: int | None, root: Path, findings: lis
             record(cycle, "document_memory_left", stopped=stopped, documents=after_count)
 
             # -- Scene Understanding --------------------------------------
-            # A stream with NO watcher must leave it stopped. This is the
-            # defect the lane closed and the one a merge could silently undo,
-            # because the watcher hooks run through the result channel.
+            # A stream with NO watcher must leave it stopped; the watcher hooks
+            # run through the result channel.
             await ws.send(json.dumps({"type": "stream_start"}))
             seq, _ = await _feed(ws, frames, args.frames, seq)
             await _quiet(ws)
