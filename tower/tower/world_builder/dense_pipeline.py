@@ -1813,7 +1813,23 @@ def densify(
     progress: Callable[[str, int, int], None] | None = None,
     force: bool = False,
 ) -> DenseResult:
-    """Densify one solved session. Idempotent, resumable, stop-aware."""
+    """Densify one solved session into a point cloud anchored to the global solve.
+
+    Idempotent, resumable, stop-aware. Takes the dense lock and the surface
+    lock (dense output lives under the surface build's lock); if either is
+    held it returns `unavailable`. It needs a global solution and session
+    intrinsics, and inherits the world's scale unchanged. If a manifest
+    already exists from this solve (same input digest, parameters and keyframe
+    image set) with all its level files, that result is returned and nothing
+    is rebuilt, unless `force`. Otherwise three stages run with an `align.json`
+    / `fuse.json` cache each, reused when their cache key still matches:
+    depth (per-keyframe depth fitted to the solve), fuse (merge the aligned
+    depth into points) and pack (write the point levels and manifest). Unless
+    `keep_intermediates`, the work files are pruned afterwards. `should_stop`
+    ends it after a stage as `stopped`. A missing prerequisite is returned as
+    `unavailable`; any other error is returned as `failed` and never raised
+    into finalization. Status is written to `status.json` throughout.
+    """
     from tower.world_builder.global_solve import load_solution
 
     params = params or DenseParams()
