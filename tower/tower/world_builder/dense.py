@@ -66,12 +66,11 @@ and a stop leaves a legible `status.json` rather than a half-written artifact.
 
 from __future__ import annotations
 
-import json
 import logging
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Callable, Iterable
+from typing import Callable
 
 import numpy as np
 
@@ -127,20 +126,20 @@ class DenseParams:
     #     depth-anything-v2-small     6.50%              235 / 395
     #     moge2-vitl                  2.60%              317 / 399
     #
-    # It also beats the CC-BY-NC checkpoints this lane refused to ship, so
+    # It also beats the CC-BY-NC checkpoints, which are not shipped, so
     # there is no accuracy being traded away for the licence -- only gained.
     #
     # The margin over `da3mono-large` (Apache-2.0) is NOT robust across rooms:
     # scored on two held-out solves the two are indistinguishable, and DA3-mono
     # is 2.7x faster in two thirds of the VRAM. MoGe stays the default because
     # it is never worse and this stage runs off the interactive path. On a
-    # smaller card, switch. D15 carries the table.
+    # smaller card, switch. 03-DECISIONS.md D15 carries the table.
     backend: str = "moge2-vitl"
     # Reject a frame whose HELD-OUT relative depth residual exceeds this.
     # Across the seven worlds 0.08 keeps 50-74% of posed frames; a regularised
     # refit rescued only one of the rejects, which is the evidence that the
     # rejects are genuinely unreliable rather than merely ill-conditioned.
-    # NOTE the metric it gates is also the metric this lane reports: the
+    # NOTE the metric it gates is also the metric this stage reports: the
     # residual quoted anywhere is the median of the frames that PASSED, so it
     # improves as this number falls and the reconstruction gets worse.
     # 01-EVIDENCE.md section 11.3 prints both ends.
@@ -152,10 +151,10 @@ class DenseParams:
     max_grazing_deg: float = 80.0
     erode_px: int = 1
     # How far past the depth range of a frame's OWN sparse points a pixel may
-    # sit and still be used. "The network only interpolates" was an overstatement
-    # before this existed: nothing clamped a pixel to the range the solve had
-    # bracketed, and 11-18% of surviving pixels per frame fell outside it, up to
-    # 5.18x past the farthest sparse point. Consensus removed about 92% of those,
+    # sit and still be used. Without it "the network only interpolates" is an
+    # overstatement: nothing clamps a pixel to the range the solve bracketed,
+    # and 11-18% of surviving pixels per frame fell outside it, up to 5.18x
+    # past the farthest sparse point. Consensus removed about 92% of those,
     # but 4.4% of the shipped cloud was still geometry no solved point bracketed.
     # 1.5 keeps honest near/far margin around the sparse hull and refuses the rest.
     max_extrapolation: float = 1.5
@@ -168,11 +167,11 @@ class DenseParams:
     # rest of the frame, not to recover the hole.
     inpaint_redaction_fill: bool = True
     # Tell a network that can take it (MoGe: `fov_x`) the SOLVE CAMERA'S field
-    # of view instead of letting it estimate one per frame. Off: today's
-    # prediction, byte for byte. On: what the evidence gate's metric scale
-    # needs (`coherence_scale.py`). Measured on the control world (run
-    # wb-coherence-run-2026-09-23, P3-PG `depth_diag.py`, against the run's
-    # harness depth cache: the same checkpoint told the FoV, on raw frames):
+    # of view instead of letting it estimate one per frame. Off: the
+    # prediction made without this option, byte for byte. On: what the
+    # evidence gate's metric scale needs (`coherence_scale.py`). Measured on
+    # the control world (against a harness depth cache: the same checkpoint
+    # told the FoV, on raw frames):
     # with the FoV left to the network, the per-frame metric depth of frames
     # with no redaction fill differs by p10-p90 x0.99-x1.56 (median x1.19) --
     # a per-frame level noise the size of the gate's x1.25 bound; told the
@@ -188,7 +187,8 @@ class DenseParams:
     # world by re-fusing from cached depth: 16/24/32 buy 6-11% more points
     # and about a point of coverage, and cost 37% on the p90 depth error
     # (12.7% -> 17.4%). A more distant camera is a weaker witness, so the
-    # points only a wider search rescues are the worse ones. D20.
+    # points only a wider search rescues are the worse ones. 03-DECISIONS.md
+    # D20.
     neighbours: int = 10
     # How closely a neighbouring camera must agree, as a fraction of depth.
     # 0.05 rather than the obvious 0.03, measured on two independent walks:
@@ -227,16 +227,15 @@ class DenseParams:
     # lowest confidence any surviving point can carry is `min_views`, which is
     # 3 -- measured as the minimum on all eight artifacts. This threshold is
     # therefore INERT at its default and kept as a floor a stricter operator
-    # can raise, not as a filter that is doing work today. The contract used to
-    # advertise it as one.
+    # can raise, not as a filter that is doing work today.
     min_confidence: int = 2
     # The packed ladder also drops points outside this central percentile box
     # on each axis. It exists because a handful of points at extreme depth,
     # surviving consensus because several nearby frames made the SAME error,
     # otherwise stretch the bounding box and with it the viewer's whole opening
-    # framing. It was hard-coded and undeclared, which meant a filter that
-    # removes real observations did not appear in the manifest, in the params,
-    # or in the format's list of the four things it refuses.
+    # framing. It is declared here because a filter that removes real
+    # observations must appear in the manifest, in the params, and in the
+    # format's list of the four things it refuses.
     pack_percentile: float = 0.2
 
     # -- housekeeping ------------------------------------------------------
@@ -280,8 +279,8 @@ class DenseResult:
     align_rel_median: float | None = None
     stopped_after: str | None = None
     # True when this run found a complete artifact from the same solve and the
-    # same parameters and did nothing. Additive, and worth reporting: a caller
-    # that sees zero seconds and thousands of points should be told why.
+    # same parameters and did nothing: a caller that sees zero seconds and
+    # thousands of points should be told why.
     reused: bool = False
 
     def as_dict(self) -> dict:
@@ -302,7 +301,7 @@ class DepthModelUnavailable(DenseUnavailable):
     while this says every later build on this machine will fail the same way
     until someone installs something or the network comes back -- which is
     what lets the surface stage mark it permanent and the live worker stop
-    relaunching a child that cannot succeed (review 3, e2e m1 and m2).
+    relaunching a child that cannot succeed.
     """
 
 
@@ -376,9 +375,10 @@ def load_hub_weights(name: str, model_id: str, load: Callable[[], object], *,
     cache, and logging what a first-run download cost.
 
     The default backend's weights are about 1.3 GB and are fetched on first
-    use. Before this, a machine that was offline on its first walk raised the
-    hub's own `LocalEntryNotFoundError`, which the surface stage recorded as an
-    ordinary failure, so the live worker relaunched a child on every solve.
+    use. Unconverted, the hub's own `LocalEntryNotFoundError` on a machine
+    that is offline on its first walk would be recorded by the surface stage as
+    an ordinary failure, and the live worker would relaunch a child on every
+    solve.
 
     Other hub-loaded models use the same rule with their own `what`, `error`
     (the exception their stage treats as "this machine cannot run it") and
@@ -510,9 +510,8 @@ class MoGeBackend(DepthBackend):
 
     kind = "depth"
     # `predict(rgb, fov_x=...)` conditions the point map on a known horizontal
-    # field of view (degrees), as the run's harness depth cache does
-    # (`coherence_eval/eval_depth.py`). Without it MoGe estimates the FoV per
-    # frame (`DenseParams.known_fov`).
+    # field of view (degrees). Without it MoGe estimates the FoV per frame
+    # (`DenseParams.known_fov`).
     accepts_fov = True
 
     def __init__(self, model_id: str, name: str, licence: str,
@@ -550,7 +549,7 @@ class MoGeBackend(DepthBackend):
         self._load()
         t = self._torch.tensor(rgb / 255.0, dtype=self._torch.float32,
                                device=self._device).permute(2, 0, 1)
-        # `fov_x` only when given, so the default call is exactly today's.
+        # `fov_x` only when given, so the default call is unchanged.
         extra = {"fov_x": float(fov_x)} if fov_x is not None else {}
         with self._torch.no_grad():
             out = self._model.infer(t, resolution_level=self.resolution_level,
@@ -575,6 +574,11 @@ class DepthAnything3Backend(DepthBackend):
     Licence care: DA3's own `DEFAULT_MODEL` is `DA3NESTED-GIANT-LARGE-1.1`,
     which is CC-BY-NC. It is never used here -- the checkpoint is always passed
     explicitly, and only Apache-2.0 ones are registered.
+
+    Not wired into `dense_pipeline`, which calls only `predict`: a run that
+    selects a `da3-*` backend raises NotImplementedError at its first uncached
+    frame until a windowed dispatch exists. 03-DECISIONS.md D16 keeps the
+    windowed interface on purpose.
     """
 
     windowed = True
@@ -855,9 +859,7 @@ def voxel_reduce(X: np.ndarray, C: np.ndarray, F: np.ndarray, voxel: float):
         # Outside the packing's range two different cells share a key and the
         # reduction silently MERGES them -- points from opposite ends of a
         # scene averaged into one. Demonstrated on a two-cluster cloud three
-        # million units apart: 329 distinct cells, 231 returned. The predictor
-        # in `dense_render` guarded this and the function that actually does
-        # the work did not, which is the wrong way round.
+        # million units apart: 329 distinct cells, 231 returned.
         uniq, inverse = np.unique(g, axis=0, return_inverse=True)
         key = inverse.astype(np.int64)
     else:
@@ -880,8 +882,8 @@ def voxel_reduce(X: np.ndarray, C: np.ndarray, F: np.ndarray, voxel: float):
 
 # Exactly 16 bytes: 3 x float32 + 4 x uint8. The three colour bytes plus the
 # confidence byte already fill the word, so there is no padding field -- adding
-# one made the record 17 bytes while the manifest still advertised a stride of
-# 16, which would have sheared every point in the viewer.
+# one would make the record 17 bytes while the manifest advertises a stride of
+# 16, shearing every point in the viewer.
 POINT_DTYPE = np.dtype(
     [("x", "<f4"), ("y", "<f4"), ("z", "<f4"),
      ("r", "u1"), ("g", "u1"), ("b", "u1"), ("c", "u1")]
