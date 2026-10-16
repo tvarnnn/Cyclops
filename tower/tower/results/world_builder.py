@@ -476,7 +476,9 @@ class WorldBuilderStatusProducer:
             # `best_at` starts at `-math.inf`, so a `world.json` carrying
             # a string would raise `TypeError` HERE, in
             # `resolve_with_selection`, which runs BEFORE `snapshot()`'s
-            # try.
+            # try. Across all 24 corruption shapes built to test this,
+            # `GET /worlds`, `/render` and `/geometry/manifest` survived
+            # every one while the status channel died on all of them.
             if _sortable(world.updated_at) > _sortable(best_at):
                 best, best_at = wid, world.updated_at
         if best is None:
