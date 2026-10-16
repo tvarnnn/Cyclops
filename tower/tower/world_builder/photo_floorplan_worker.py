@@ -1,9 +1,7 @@
 """FOW v1.2 photo floor plan: landing inputs, landing builder, side worker, published state.
 
-Design: FOW-V12-PHOTO-FLOORPLAN-DESIGN-20261012 ("Landing, live stretch and cost";
-"Wire, identity and iOS"). Wire: mail 303, tower/docs/contracts/
-WORLD-BUILDER-GUIDANCE-IMAGERY.md "Photo floor plan v1.2".
-Raster core: `tower.world_builder.photo_floorplan` (pure).
+Contract: tower/docs/contracts/WORLD-BUILDER-GUIDANCE-IMAGERY.md, "Photo floor plan
+v1.2". Raster core: `tower.world_builder.photo_floorplan` (pure).
 
 Every `CoverageWorker` (the status producer builds one) owns ONE `PhotoFloorplanWorker`
 and, after it has published a NEW coverage receipt, hands it that landing with
@@ -11,8 +9,8 @@ and, after it has published a NEW coverage receipt, hands it that landing with
 
   - never on a status request, the capture path, the coverage worker's 250 ms
     budget or the imagery worker's 80 ms budget;
-  - one landing at a time, with a 1.5 s WALL cap from the start of its job. The cap
-    is cooperative: `check()` runs between components, between frames and around
+  - one landing at a time, with an 8 s WALL cap (`LANDING_WALL_CAP_S`) from the start
+    of its job. The cap is cooperative: `check()` runs between components, between frames and around
     each read, so an overrun stops at the next check, publishes nothing, and the
     prior dated plan stays. A single uninterruptible step (one image decode, one
     `np.load` of the solve arrays) can overshoot the cap by that step;
@@ -37,8 +35,8 @@ written therefore skips this landing (its own landing will follow) rather than
 mixing two solves.
 
 IMAGERY: the solve's own undistorted solver images (`solve/<session>/images`), which
-are RAW camera pixels: `imagery_source` is "unredacted". Privacy is deferred for the
-walk-9 demo; redaction is a TODO, never an implied property of these bytes.
+are RAW camera pixels: `imagery_source` is "unredacted", and redaction is never an
+implied property of these bytes.
 """
 
 from __future__ import annotations
@@ -73,11 +71,13 @@ logger = logging.getLogger(__name__)
 
 MAX_COMPONENTS = 16
 MANIFEST_MAX_BYTES = 8 * 1024
-# Manager 323 (walk-8 e2e, 2026-10-12): 1.5 s skipped 3 of 4 live landings under load. The job is a side thread and
+# A 1.5 s cap skipped 3 of 4 live landings under load (walk-8 live run). The job is a side thread and
 # landings are >= 15 s apart, so 8 s cannot pile up; a newer landing still cancels the job in flight.
 LANDING_WALL_CAP_S = 8.0
 MAX_SELECTED = 64
 TARGET_PIXEL_BUDGET = 256 * 144
+# A solve point is used only with a track length >= MIN_TRACK_LENGTH and a
+# reprojection error <= MAX_POINT_ERROR_PX.
 MIN_TRACK_LENGTH = 3
 MAX_POINT_ERROR_PX = 2.0
 ARRAYS_MAX_BYTES = 64 * 1024 * 1024
@@ -100,11 +100,11 @@ a plane is never more than 2 landings stale."""
 
 REGRESS_MIN_RATIO = 0.25
 REGRESS_MIN_PRIOR_OPAQUE = 0.02
-# Escape valve (guard review MED, manager 336): after this many CONSECUTIVE regressed skips for one
-# session the next regressed landing publishes anyway -- a fresh but worse plan beats a plan frozen
-# for the rest of the walk -- and its opacity becomes the new baseline.
+# Escape valve: after this many CONSECUTIVE regressed skips for one session the next regressed
+# landing publishes anyway -- a fresh but worse plan beats a plan frozen for the rest of the
+# walk -- and its opacity becomes the new baseline.
 REGRESS_MAX_CONSECUTIVE_SKIPS = 3
-"""NEVER-REGRESS guard (e2e4 10:37:47: a landing published a 0.4%-opaque main room
+"""NEVER-REGRESS guard (live run e2e4: a landing published a 0.4%-opaque main room
 over a 55% one, and the phone showed gray for ~5 min). A landing is skipped -- the
 prior plan stays, with its prior date -- if any component it shares (same
 `reference_segment`) with the last PUBLISHED landing comes out below 25% of that
@@ -149,6 +149,9 @@ def select_spatial(entries, forward, right, limit=MAX_SELECTED):
 
 
 def _tree_index(tree):
+    """(poses by keyframe id, registered placements by segment index) of `tree`,
+    cached under `tree["_index"]` (a mutation of the caller's dict; harmless
+    because the tree is a private copy per job)."""
     index = tree.get("_index")
     if index is None:
         index = tree["_index"] = (
@@ -220,6 +223,7 @@ def load_frame_image(images_dir: Path, kid: str, camera: dict):
 
 
 def _umeyama(src, dst):
+    """`(scale, R, t)` of the similarity with dst ~ scale * R @ src + t."""
     mu_s, mu_d = src.mean(0), dst.mean(0)
     xs, xd = src - mu_s, dst - mu_d
     U, S_, Vt = np.linalg.svd(xd.T @ xs / len(src))
@@ -232,6 +236,7 @@ def _umeyama(src, dst):
 
 
 def plane_memory_reuses(stats):
+    """The reuse count AFTER this landing: `_reuses_before` plus one."""
     return int(stats.get("_reuses_before", 0)) + 1
 
 
@@ -279,10 +284,12 @@ def reuse_plane(memory, entries):
 def homography_component(*, receipt_component, entries, tree, arrays, keyframe_index,
                          camera, images_dir, check=None, furniture_mask=None,
                          plane_memory=None, diag_out=None):
-    """Fallback (3) for one displayed component.
+    """Place one displayed component's eligible keyframes, carry or estimate the
+    floor plane, choose and load frames, and warp them onto the plane.
 
-    Returns (RasterResult, FloorPlane, frames, stats). `diag_out` (a dict, diagnostics only)
-    receives this component's bottom-band SfM point reader."""
+    Returns (RasterResult, FloorPlane, frames, stats). `plane_memory` (a dict, mutated:
+    cleared or updated) carries the previous landing's plane for reuse. `diag_out` (a
+    dict, diagnostics only) receives this component's bottom-band SfM point reader."""
     forward = np.asarray(receipt_component["forward_xyz"], np.float64)
     up = np.asarray(receipt_component["up_xyz"], np.float64)
     right = np.cross(forward, up)
@@ -489,7 +496,25 @@ def read_landing_arrays(solve_dir: Path, solution_stat, solution_meta, check=Non
 
 def build_landing(root, world_id, session_id, receipt, eligible, tree, solution_stat,
                   check=None, plane_memory=None):
-    """(manifest block, {digest: (bytes, mime)}, per-component stats) for one landing."""
+    """Build the photo floor plan of one coverage landing: returns (manifest block,
+    {digest: (bytes, mime)}, per-component stats).
+
+    WHAT: reads the landing's own solve arrays (`read_landing_arrays`, guarded by the
+    stat of `solution.json`), takes up to `MAX_COMPONENTS` (16) receipt components in
+    reference-segment order, places each component's eligible keyframes
+    (`placed_entries`), runs `homography_component`, encodes one tile per component
+    (`encode_tile`; a tile over the cap is omitted and logged), content-addresses it by
+    SHA-256 and assembles the manifest block, whose identity is copied from the receipt
+    and which is refused above `MANIFEST_MAX_BYTES` (8 KiB).
+
+    Inputs: `receipt` (the coverage block), `eligible` ([(kid, ref)]), `tree` (the parsed
+    files coverage computed from), `solution_stat`, `check` (cancellation and wall-cap
+    hook), `plane_memory` (per-reference memory, mutated). `LandingSkipped` publishes
+    nothing; `check` raises `LandingOverrun` on the wall cap or a cancellation.
+
+    WHY: the stats carry `DIAG_INPUTS` references for the post-landing diagnostics;
+    `arrays_ms` is charged to the first component only; coordinates are rounded to 1e-6
+    to keep 16 components inside 8 KiB."""
     solve_dir = Path(root) / "worlds" / world_id / "solve" / session_id
     solution = tree["solution"]
     camera = solution.get("camera")
@@ -678,8 +703,9 @@ def regression(prior, stats, prior_area=None):
 
 
 def component_summary(stats):
-    """One compact JSON line per landing for the disposition log: a live run must never
-    be blind again (e2e2: three `ok` landings that projected nothing, with no clue why)."""
+    """One compact JSON line per landing for the disposition log: every landing logs
+    why a plane or tile came out as it did, so an `ok` landing that projected nothing
+    is never opaque."""
     rows = []
     for c in stats or ():
         plane = c.get("plane") or {}
