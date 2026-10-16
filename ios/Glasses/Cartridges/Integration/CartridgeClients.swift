@@ -15,8 +15,8 @@ import Foundation
 /// connection (Object Memory, its last answer) and whatever it has accumulated
 /// — a partly-built world, a live set of scene tracks, a query result.
 /// Destroying that on a cartridge switch loses work and, worse, tears down a
-/// subscription the user did not ask to end. So anything that must *outlive* the workspace belongs on
-/// `ProjectManager`, not in a view's `@StateObject`.
+/// subscription the user did not ask to end. So anything that must *outlive*
+/// the workspace belongs on `ProjectManager`, not in a view's `@StateObject`.
 ///
 /// Injected rather than defaulted at the point of use: a default argument on
 /// each view model making `UnavailableFooClient()` constructible there would
