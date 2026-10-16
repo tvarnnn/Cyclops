@@ -149,6 +149,8 @@ def _synthetic_world(tmp_path, *, n_frames=8, digest="digest-1", with_dense=True
         (dense / "align.json").write_text(json.dumps({
             "kind": "depth", "camera": camera, "backend": DenseParams().backend,
             "input_digest": digest, "fill_rule": FILL_RULE, "records": records,
+            # The depth stage is always told the solve camera's FoV, and records it.
+            "known_fov": round(float(np.degrees(2.0 * np.arctan(w / (2.0 * float(K[0, 0]))))), 6),
             # What the depth stage records about the label it read under
             # (review 1, M3): the stored bytes of this session's trusted label.
             "redaction": "faces-detected-and-filled/yunet-2023mar@0.30+plausibility1", "keyframes_were_redacted_at_capture": True}))
@@ -285,9 +287,9 @@ class TestACompletedBuildIsReusedAndRebuiltExactlyWhenItShouldBe:
         dense = store.world_dir(WORLD) / "dense" / SESSION
         align = json.loads((dense / "align.json").read_text())
         solution = load_solution(store, WORLD, SESSION)
-        assert SP._depth_cache_usable(align, dense, solution, DenseParams())
+        assert SP._depth_cache_usable(align, dense, solution, DenseParams(known_fov=True))
         shutil.rmtree(dense / "work")
-        assert not SP._depth_cache_usable(align, dense, solution, DenseParams())
+        assert not SP._depth_cache_usable(align, dense, solution, DenseParams(known_fov=True))
 
 
 class TestAStopLeavesNothingThatLooksFinished:
@@ -818,9 +820,10 @@ class _CountingBackend:
     windowed = False
     window_size = 0
     kind = "depth"
+    accepts_fov = True
     calls = 0
 
-    def predict(self, rgb):
+    def predict(self, rgb, fov_x=None):
         type(self).calls += 1
         return np.full(rgb.shape[:2], 2.0, np.float32)
 
@@ -846,7 +849,7 @@ class TestTheDepthCacheBelongsToOneSolve:
         else:
             align["input_digest"] = cached_digest
         (dense / "align.json").write_text(json.dumps(align))
-        return store, dense, DenseParams(backend=_CountingBackend.name)
+        return store, dense, DenseParams(backend=_CountingBackend.name, known_fov=True)
 
     def test_an_unnamed_cache_is_not_a_match(self, tmp_path):
         from tower.world_builder.global_solve import load_solution
@@ -901,7 +904,7 @@ class TestTheDepthCacheBelongsToOneSolve:
         align = json.loads((dense / "align.json").read_text())
         align["records"][0]["kid"] = "someone-else:00000000"
         (dense / "align.json").write_text(json.dumps(align))
-        mapping = reusable_predictions(dense / "align.json", _CountingBackend.name)
+        mapping = reusable_predictions(dense / "align.json", _CountingBackend.name, known_fov=True)
         assert mapping[0][0] == "someone-else:00000000"
         assert mapping[0][0] != f"{SESSION}:{0:08d}"
 
@@ -1537,11 +1540,11 @@ class TestTheFillMaskSurvivesALiveBuild:
         align_path = store.world_dir(WORLD) / "dense" / SESSION / "align.json"
         a = json.loads(align_path.read_text())
         backend = a["backend"]
-        assert len(reusable_predictions(align_path, backend)) == len(a["records"])
+        assert len(reusable_predictions(align_path, backend, known_fov=True)) == len(a["records"])
         for r in a["records"]:
             r.pop("fill_rule")
         align_path.write_text(json.dumps(a))
-        assert reusable_predictions(align_path, backend) == {}
+        assert reusable_predictions(align_path, backend, known_fov=True) == {}
 
     def test_a_depth_stage_made_under_an_earlier_fill_rule_is_not_a_cache(self, tmp_path):
         from tower.world_builder.dense import DenseParams
@@ -1552,9 +1555,9 @@ class TestTheFillMaskSurvivesALiveBuild:
         dense = store.world_dir(WORLD) / "dense" / SESSION
         a = json.loads((dense / "align.json").read_text())
         solution = load_solution(store, WORLD, SESSION)
-        assert SP._depth_cache_usable(a, dense, solution, DenseParams())
+        assert SP._depth_cache_usable(a, dense, solution, DenseParams(known_fov=True))
         a.pop("fill_rule")
-        assert not SP._depth_cache_usable(a, dense, solution, DenseParams())
+        assert not SP._depth_cache_usable(a, dense, solution, DenseParams(known_fov=True))
         # densify's own cache test is the key
         assert f"fill{FILL_RULE}" in _depth_cache_key("d", DenseParams())
 

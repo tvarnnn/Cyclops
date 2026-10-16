@@ -9,12 +9,15 @@ import json
 import subprocess
 import sys
 
+from tests.conftest import no_depth_model_env
+
 
 def _run(script, *args):
     return subprocess.run(
         [sys.executable, f"scripts/{script}", *args],
         capture_output=True,
         text=True,
+        env=no_depth_model_env(),
     )
 
 

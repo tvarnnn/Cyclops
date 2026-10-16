@@ -56,6 +56,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.conftest import without_live_depth
+
 GOLDEN = Path(__file__).parent / "golden" / "world_builder_finish_stages_5c0dc12.json"
 RECORD_ENV = "WB_FINISH_STAGES_RECORD"
 SWITCHES = ("TOWER_WORLD_FINISH_STAGES", "TOWER_WORLD_PICTURE_BASIS",
@@ -398,6 +400,7 @@ def _run_builder(order, rendered, workdir, monkeypatch, *, solve_every=0, stub_s
         if path.is_file():
             files[path.relative_to(root).as_posix()] = hashlib.sha256(
                 _mask(path.read_bytes(), workdir)).hexdigest()
+    files = without_live_depth(files)  # the live depth worker's sidecar postdates the golden
     (events_path,) = list(root.glob("worlds/*/sessions/*/events.jsonl"))
     events = []
     for line in events_path.read_text(encoding="utf-8").splitlines():

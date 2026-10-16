@@ -1,4 +1,4 @@
-"""Exp1 worker, cache identity, OFF isolation and GPU back-off."""
+"""Exp1 worker, cache identity and GPU back-off."""
 
 import hashlib
 import json
@@ -92,21 +92,15 @@ def test_worker_writes_reader_shape_and_numeric_fov(walk):
     assert document["live"]["predicted"] == 1
 
 
-@pytest.mark.parametrize("setting", ["shadow", "on"])
-def test_shadow_ignores_live_prediction_on_reuses_it(walk, monkeypatch, setting):
+def test_the_depth_stage_reuses_a_live_prediction(walk):
     store, session, _, _ = walk
     _predict_one(walk)
-    monkeypatch.setenv("TOWER_WORLD_LIVE_DEPTH", setting)
     align, _work = SP.ensure_depth_stage(
         store, WORLD, SESSION, load_solution(store, WORLD, SESSION),
         session.intrinsics, gate_rel=0.08, backend=LD.MODEL)
-    assert FakeMoGe.calls == (2 if setting == "shadow" else 1)
+    assert FakeMoGe.calls == 1
     assert align["records"][0]["kid"] == f"{SESSION}:00000000"
-    assert align["image_origins"].get("reused-prediction", 0) == (setting == "on")
-    if setting == "shadow":
-        assert (store.world_dir(WORLD) / "dense" / SESSION /
-                "live_depth" / "align.json").is_file()
-        assert align.get("known_fov") is None
+    assert align["image_origins"].get("reused-prediction", 0) == 1
 
 
 def test_numeric_fov_is_part_of_live_identity(walk, monkeypatch):
@@ -115,7 +109,6 @@ def test_numeric_fov_is_part_of_live_identity(walk, monkeypatch):
     document = json.loads((worker.root / "align.json").read_text())
     document["known_fov"] += 0.01
     (worker.root / "align.json").write_text(json.dumps(document))
-    monkeypatch.setenv("TOWER_WORLD_LIVE_DEPTH", "on")
     SP.ensure_depth_stage(store, WORLD, SESSION, load_solution(store, WORLD, SESSION),
                           session.intrinsics, gate_rel=0.08, backend=LD.MODEL)
     assert FakeMoGe.calls == 2
@@ -129,7 +122,6 @@ def test_changed_image_is_not_offered(walk, monkeypatch):
     ok, changed = cv2.imencode(".jpg", image)
     assert ok
     (store.images_dir(WORLD, SESSION) / "00000000.jpg").write_bytes(changed.tobytes())
-    monkeypatch.setenv("TOWER_WORLD_LIVE_DEPTH", "on")
     SP.ensure_depth_stage(store, WORLD, SESSION, load_solution(store, WORLD, SESSION),
                           session.intrinsics, gate_rel=0.08, backend=LD.MODEL)
     assert FakeMoGe.calls == 2
@@ -147,56 +139,6 @@ def test_final_solve_index_is_mapped_from_kid(walk):
         imagery_source="redacted", trust=f"trusted:{LABEL}")
     assert offers == {1: (keyframe.keyframe_id, hashlib.sha1(walk[3]).hexdigest())}
     assert (root / "work" / "depth" / "00001_pred.npy").is_file()
-
-
-def test_off_never_imports_worker_or_installs_hook(walk, monkeypatch):
-    import builtins
-    from tower.world_builder import engine as E
-    from tower.world_builder.redaction import RedactionResult
-
-    class Redactor:
-        available = True
-        unavailable_reason = None
-
-        def redact(self, image):
-            return RedactionResult(image, LABEL, 0)
-
-    class FakeWorker:
-        starts = 0
-        submissions = 0
-
-        def __init__(self, *args, **kwargs):
-            type(self).starts += 1
-
-        def submit(self, *args):
-            type(self).submissions += 1
-
-        def close(self):
-            pass
-
-    monkeypatch.setattr(LD, "LiveDepthWorker", FakeWorker)
-    store, session, _, pixels = walk
-    original_import = builtins.__import__
-
-    def guarded_import(name, *args, **kwargs):
-        if name == "tower.world_builder.live_depth":
-            raise AssertionError("OFF imported the depth worker")
-        return original_import(name, *args, **kwargs)
-
-    for value in (None, "off", "misspelled"):
-        if value is None:
-            monkeypatch.delenv("TOWER_WORLD_LIVE_DEPTH", raising=False)
-        else:
-            monkeypatch.setenv("TOWER_WORLD_LIVE_DEPTH", value)
-        monkeypatch.setattr(builtins, "__import__", guarded_import)
-        engine = E.WorldBuilderEngine(store, redactor_factory=Redactor)
-        world = engine.create_world()
-        engine.start_session(world, intrinsics=session.intrinsics)
-        engine.observe(pixels, source_seq=0)
-        engine.stop_session()
-        assert engine._live_depth is None
-        assert LD.mode() == "off"
-    assert FakeWorker.starts == FakeWorker.submissions == 0
 
 
 def test_active_hook_submits_confirmed_keyframe(walk, monkeypatch):
@@ -222,7 +164,6 @@ def test_active_hook_submits_confirmed_keyframe(walk, monkeypatch):
         def close(self):
             pass
 
-    monkeypatch.setenv("TOWER_WORLD_LIVE_DEPTH", "shadow")
     monkeypatch.setattr(LD, "LiveDepthWorker", FakeWorker)
     store, session, _, pixels = walk
     engine = E.WorldBuilderEngine(store, redactor_factory=Redactor)
@@ -356,39 +297,6 @@ def test_model_load_failure_disables_the_worker(walk):
     assert counters["failed"] == counters["skipped"] == 1
 
 
-# -- lead gate follow-up: the switch is exact ---------------------------------
-
-@pytest.mark.parametrize("value", ["On", "ON", "Shadow", "SHADOW", " on", "on "])
-def test_switch_is_exact_lowercase_spelling(walk, monkeypatch, value):
-    """Only the exact strings `shadow` / `on` arm Exp1; `On` is off everywhere."""
-    from tower.world_builder import engine as E
-    from tower.world_builder.redaction import RedactionResult
-
-    class Redactor:
-        available = True
-        unavailable_reason = None
-
-        def redact(self, image):
-            return RedactionResult(image, LABEL, 0)
-
-    store, session, _, pixels = walk
-    _predict_one(walk)
-    monkeypatch.setenv("TOWER_WORLD_LIVE_DEPTH", value)
-    assert LD.mode() == "off"
-    engine = E.WorldBuilderEngine(store, redactor_factory=Redactor)
-    engine.start_session(engine.create_world(), intrinsics=session.intrinsics)
-    assert engine._live_depth is None
-    engine.stop_session()
-    align, _work = SP.ensure_depth_stage(
-        store, WORLD, SESSION, load_solution(store, WORLD, SESSION),
-        session.intrinsics, gate_rel=0.08, backend=LD.MODEL)
-    # Not offered: the live prediction is ignored and the frame re-predicted,
-    # and the stage stays in its OFF (unknown-FoV) mode.
-    assert FakeMoGe.calls == 2
-    assert align["image_origins"].get("reused-prediction", 0) == 0
-    assert align.get("known_fov") is None
-
-
 # -- slice 3: the Stop-time skip, measured ------------------------------------
 
 def _walk_frames(tmp_path, monkeypatch, n):
@@ -432,7 +340,6 @@ def test_stop_time_depth_skips_live_covered_pairs_and_predicts_only_the_tail(
     store, session, frames = _walk_frames(tmp_path, monkeypatch, 5)
     _live_cover(store, session, frames[:3])          # the walk so far
     assert FakeMoGe.calls == 3
-    monkeypatch.setenv("TOWER_WORLD_LIVE_DEPTH", "on")
     align, _work = SP.ensure_depth_stage(
         store, WORLD, SESSION, load_solution(store, WORLD, SESSION),
         session.intrinsics, gate_rel=0.08, backend=LD.MODEL)
@@ -445,14 +352,3 @@ def test_stop_time_depth_skips_live_covered_pairs_and_predicts_only_the_tail(
     for kid, record in by_kid.items():
         if "image_origin" in record:
             assert (record["image_origin"] == "reused-prediction") == (kid in covered)
-
-
-def test_stop_time_depth_reuses_nothing_live_when_off(tmp_path, monkeypatch):
-    store, session, frames = _walk_frames(tmp_path, monkeypatch, 5)
-    _live_cover(store, session, frames[:3])
-    monkeypatch.delenv("TOWER_WORLD_LIVE_DEPTH", raising=False)
-    align, _work = SP.ensure_depth_stage(
-        store, WORLD, SESSION, load_solution(store, WORLD, SESSION),
-        session.intrinsics, gate_rel=0.08, backend=LD.MODEL)
-    assert FakeMoGe.calls == 3 + 5
-    assert align["image_origins"].get("reused-prediction", 0) == 0

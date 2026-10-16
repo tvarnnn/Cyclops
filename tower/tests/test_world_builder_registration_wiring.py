@@ -28,6 +28,7 @@ from scripts.world_registration import (  # noqa: E402
     NO_VISUAL_LINK,
     SupportMissingError,
 )
+from tests.conftest import no_depth_model_env
 
 
 def _run(script, *args):
@@ -35,6 +36,7 @@ def _run(script, *args):
         [sys.executable, f"scripts/{script}", *args],
         capture_output=True,
         text=True,
+        env=no_depth_model_env(),
     )
 
 

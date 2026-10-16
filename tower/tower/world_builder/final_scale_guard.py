@@ -1072,10 +1072,6 @@ def _live_cache_evidence(store, world_id, session_id, solution, *, database_path
     from tower.world_builder.coherence_publish import _depth_params  # noqa: PLC0415
     from tower.world_builder.dense_pipeline import dense_dir, depth_trust_now  # noqa: PLC0415
 
-    if LD.mode() != "on":
-        # Exp1 design §5 / prereg arm L: a shadow (or off) live cache measures the worker's cost only;
-        # it is never evidence for the guard (lead gate, 2026-10-08).
-        return {}, {"state": "live-depth-not-on", "mode": LD.mode()}
     root = dense_dir(store, world_id, session_id)
     align = root / "live_depth" / "align.json"
     if not align.is_file():

@@ -20,6 +20,7 @@ from PIL import Image
 from tower.capture import CaptureRecorder
 from tower.world_builder.store import WorldStore
 from tests import synthetic_scene as ss
+from tests.conftest import no_depth_model_env
 
 WIDTH, HEIGHT = 160, 120
 
@@ -29,6 +30,7 @@ def _run(script, *args):
         [sys.executable, f"scripts/{script}", *args],
         capture_output=True,
         text=True,
+        env=no_depth_model_env(),
     )
 
 

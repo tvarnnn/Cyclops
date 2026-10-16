@@ -443,19 +443,18 @@ def test_the_final_surface_asks_for_the_gates_depth_only_for_a_gated_solve(tmp_p
         assert seen["depth_known_fov"] is True
 
 
-def test_surfacify_takes_the_fov_choice_into_its_params_digest(tmp_path):
-    """`surfacify(depth_known_fov=True)` builds with `SurfaceParams(depth_known_fov=True)`: the digest says
-    so, and a surface built without it is not "already built" for it."""
+def test_surfacify_takes_the_known_fov_into_its_params_digest(tmp_path):
+    """`surfacify` always builds with `SurfaceParams(depth_known_fov=True)`: the digest says so, and a
+    depth stage that was not told the FoV is not a cache for it."""
     from tests.test_world_builder_surface_pipeline import SESSION, WORLD, _params, _synthetic_world
     from tower.world_builder import surface_pipeline as SP
 
     store = _synthetic_world(tmp_path, digest="final-solve")
     SP.surfacify(store, WORLD, SESSION, params=_params(), force=True)
-    before = SP.read_surface_manifest(store, WORLD, SESSION)["params_digest"]
-    assert "depth-fov" not in before
-    # the synthetic depth stage was not told the FoV, so the FoV-known surface must not reuse it
+    assert "depth-fov" in SP.read_surface_manifest(store, WORLD, SESSION)["params_digest"]
     dense = store.world_dir(WORLD) / "dense" / SESSION
     align = json.loads((dense / "align.json").read_text())
+    align.pop("known_fov")
     from tower.world_builder.global_solve import load_solution
     from tower.world_builder.dense import DenseParams
 
@@ -1043,13 +1042,13 @@ def test_a_depth_stamp_of_another_solve_of_the_same_keyframes_is_not_this_ones(t
     dense = store.world_dir(WORLD) / "dense" / SESSION
     align = json.loads((dense / "align.json").read_text())
     sol = load_solution(store, WORLD, SESSION)
-    assert SP._depth_cache_usable(align, dense, sol, DenseParams()), "ungated: as before"
+    assert SP._depth_cache_usable(align, dense, sol, DenseParams(known_fov=True)), "ungated: as before"
     gated_a = dc.replace(sol, gate={"state": "applied"})
     gated_b = dc.replace(gated_a, solved_at=gated_a.solved_at + 1.0)          # a re-solve, same keyframes
     stamped = dict(align, solve_identity=solve_identity(gated_a))
-    assert SP._depth_cache_usable(stamped, dense, gated_a, DenseParams())
-    assert not SP._depth_cache_usable(stamped, dense, gated_b, DenseParams())
-    assert not SP._depth_cache_usable(align, dense, gated_a, DenseParams()), "unstamped is not a gated solve's"
+    assert SP._depth_cache_usable(stamped, dense, gated_a, DenseParams(known_fov=True))
+    assert not SP._depth_cache_usable(stamped, dense, gated_b, DenseParams(known_fov=True))
+    assert not SP._depth_cache_usable(align, dense, gated_a, DenseParams(known_fov=True)), "unstamped is not a gated solve's"
 
 
 def test_the_components_reader_refuses_a_record_of_another_solve(tmp_path, monkeypatch):
