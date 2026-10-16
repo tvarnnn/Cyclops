@@ -159,16 +159,10 @@ def start_tower(port: int, roots: dict, log_path: Path) -> subprocess.Popen:
     env["TOWER_DOCUMENT_AUTOSTART"] = "false"
     # ON, which is the SHIPPED DEFAULT, so a real world-build worker
     # attaches when a capture opens and the shutdown check at the end has
-    # something to be about.
-    #
-    # This was `false` in the first version of this script, and a reviewer
-    # showed what that cost: with no autobuild and the object-memory
-    # session stopped before the only capture opened, ZERO capture workers
-    # ever existed -- so "no child process outlives the Tower", the one
-    # check that would catch a leaked producer, passed because there was
-    # nothing to leak. A green check that cannot fail is worse than no
-    # check, and this script is the gate the Mac handoff tells people to
-    # trust.
+    # something to be about. With it off, and the object-memory session
+    # stopped before the only capture opened, ZERO capture workers would
+    # exist, so "no child process outlives the Tower", the one check that
+    # would catch a leaked producer, could not fail.
     env["TOWER_WORLD_AUTOBUILD"] = "true"
 
     return subprocess.Popen(
@@ -192,8 +186,7 @@ def start_tower(port: int, roots: dict, log_path: Path) -> subprocess.Popen:
         # at around 64 KB and the WORKER blocks on write -- so the Tower
         # blocks detaching it, and the whole thing wedges. That is not a
         # Tower defect; it is this script holding the other end of a pipe
-        # it never reads. It only became reachable when autobuild was
-        # switched on, which is the point of switching it on.
+        # it never reads.
         stdout=log_path.open("w", encoding="utf-8", errors="replace"),
         stderr=subprocess.STDOUT,
         # Its own process group, so CTRL_BREAK_EVENT can be delivered to
@@ -572,25 +565,17 @@ async def check_worker_lifecycle_and_shutdown(process, port: int, checks: Checks
 
     THE POINT OF THIS FUNCTION IS THAT IT CAN FAIL.
 
-    The first version of this script asserted "no child process outlives
-    the Tower" after a run in which no capture worker had ever existed --
-    autobuild was off and the object-memory session was stopped before the
-    only capture opened. The assertion passed because there was nothing to
-    leak. A reviewer caught it, and it is the exact failure mode this
-    script exists to catch in others.
-
-    So: hold a stream open, wait for a real `world_build_session.py` child
-    to appear, and only then bring the Tower down -- with the connection
-    still open, which is the state a wearer walking out of range leaves it
-    in.
+    "No child process outlives the Tower" passes trivially if no capture
+    worker ever existed, so: hold a stream open, wait for a real
+    `world_build_session.py` child to appear, and only then bring the Tower
+    down -- with the connection still open, which is the state a wearer
+    walking out of range leaves it in.
 
     On Windows the shutdown signal matters as much as the check.
     `Popen.terminate()` is `TerminateProcess`, which delivers nothing a
     process can handle: uvicorn's lifespan never runs, so
     `CaptureWorkerSupervisor.shutdown()` never runs, and every child is
-    orphaned. That is not a defect in the Tower -- the teardown is correct
-    and was measured killing a real child -- it is a defect in how the
-    smoke asked it to stop. CTRL_BREAK_EVENT is the signal uvicorn
+    orphaned. CTRL_BREAK_EVENT is the signal uvicorn
     installs a handler for, and it needs the process to have been started
     in its own process group.
     """
@@ -606,10 +591,9 @@ async def check_worker_lifecycle_and_shutdown(process, port: int, checks: Checks
     # Wait for the Tower to be answering again before opening a socket.
     # The previous section's `stream_stop` detaches the world-build worker
     # that section attached, and `detach` gives a follower a 10 s grace
-    # before terminating it -- which is exactly the "shutdown can cost ~24 s"
-    # behaviour the integration report records. A default 10 s handshake
-    # lands inside that window and times out on a Tower that is perfectly
-    # healthy, so this waits rather than accusing it.
+    # before terminating it, so shutdown can cost ~24 s. A default 10 s
+    # handshake lands inside that window and times out on a Tower that is
+    # perfectly healthy, so this waits rather than accusing it.
     base = f"http://127.0.0.1:{port}"
     deadline = time.monotonic() + 60.0
     while time.monotonic() < deadline:
@@ -627,13 +611,11 @@ async def check_worker_lifecycle_and_shutdown(process, port: int, checks: Checks
     ) as ws:
         # THE GATE FIRST, and its absence proved before it is opened.
         #
-        # Until 2026-09-06 a builder attached to EVERY capture, so this
-        # section opened a stream and waited. It now attaches only while the
-        # World Builder cartridge session is active -- the session the phone
-        # opens when that workspace appears -- which is what stopped a CV Lab
-        # camera session from starting background global solves nobody asked
-        # for. A stream on its own must therefore attach NOTHING, and that is
-        # worth asserting rather than assuming: it is the whole of the gate.
+        # A builder attaches only while the World Builder cartridge session
+        # is active -- the session the phone opens when that workspace
+        # appears -- so a CV Lab camera session starts no background global
+        # solves. A stream on its own must therefore attach NOTHING, and that
+        # is worth asserting rather than assuming: it is the whole of the gate.
         await ws.send(json.dumps({"type": "stream_start"}))
 
         if psutil is not None:
