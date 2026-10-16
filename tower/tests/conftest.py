@@ -1,6 +1,7 @@
 import functools
 import os
 import tempfile
+import threading
 
 import pytest
 
@@ -20,6 +21,38 @@ from tower.world_builder.store import WorldStore, compute_input_digest
 # fetch during collection, regardless of which tests are selected.
 os.environ.pop("TOWER_CV_EXPERIMENT", None)
 os.environ.pop("TOWER_CV_DEVICE", None)
+
+
+@pytest.fixture(autouse=True)
+def _stop_test_guidance_workers(monkeypatch):
+    """Direct status producers must not leave their two daemons in later tests.
+
+    Production owns the producer through ResultHub.shutdown; many unit tests
+    construct a producer or either worker directly. Track those constructions
+    so teardown also runs when an assertion fails.
+    """
+    from tower.world_builder.guidance_coverage import CoverageWorker
+    from tower.world_builder.photo_floorplan_worker import PhotoFloorplanWorker
+
+    workers = []
+    for worker_type in (CoverageWorker, PhotoFloorplanWorker):
+        original = worker_type.__init__
+
+        @functools.wraps(original)
+        def tracked(self, *args, _original=original, **kwargs):
+            _original(self, *args, **kwargs)
+            workers.append(self)
+
+        monkeypatch.setattr(worker_type, "__init__", tracked)
+
+    yield
+
+    for worker in reversed(workers):
+        worker.shutdown()
+    for worker in workers:
+        if worker._thread is not threading.current_thread():
+            worker._thread.join(timeout=10)
+        assert not worker._thread.is_alive(), f"{worker._thread.name} survived test teardown"
 
 
 @pytest.fixture(autouse=True)
