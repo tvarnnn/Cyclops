@@ -426,8 +426,9 @@ def _prewarm_native_libraries() -> None:
     (0% CPU, forever), and it could not exit at Stop.
 
     The mechanism, reproduced on demand: the stop watcher's parked
-    `os.read(0, 1)` holds descriptor 0 while OpenBLAS's libgfortran
-    touches descriptor 0 at load. The main thread is inside
+    `os.read(0, 1)` (as the watcher was then written; it now polls
+    `PeekNamedPipe` on Windows) held descriptor 0 while OpenBLAS's
+    libgfortran touched descriptor 0 at load. The main thread is inside
     `transformers` loading the OWLv2 verifier, which imports
     `scipy.linalg`, which loads `libscipy_openblas*.dll`. The fix that
     covers every library, not only this one, is `tower/stdin_stop.py`;
