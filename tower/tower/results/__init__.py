@@ -94,9 +94,10 @@ def make_snapshot_for(
     `tower/results/experimental_cv.py` for the CV Lab concurrency.
 
     `world_root` may be None, and `document_root` and the live sources
-    default to None; a missing one produces an explicit `unavailable`
-    snapshot rather than an exception -- the same
-    under-promise-on-omission rule `registry.declare` follows.
+    default to None; a missing required input produces an explicit
+    `unavailable` answer rather than an exception (a missing
+    `document_source` alone still reports the library status) -- the
+    same under-promise-on-omission rule `registry.declare` follows.
     """
     producers: dict = {}
     if world_root is not None:

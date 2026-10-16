@@ -774,8 +774,8 @@ SESSION_ABSENT_REASON = (
 # Every key a live session's status carries, present and null when there
 # is no session.
 #
-# A block that changed shape would force a decoder to make every session
-# field optional and to handle a `state` outside the published enum --
+# A block that changed shape once forced a decoder to make 31 fields
+# optional and to handle a `state` outside the published enum --
 # and `states` is itself one of the keys, so a client could never learn
 # the vocabulary from the payload that needed it. Scene Understanding's
 # payload likewise keeps every key present with `null`.

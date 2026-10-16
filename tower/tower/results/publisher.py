@@ -1110,7 +1110,8 @@ class ResultHub:
         offering anything; the background pass would then complete it and
         offer under the ordinary heartbeat rule, which sends nothing for
         an unchanged world. Net: a pass that had to deliver delivers
-        nothing. That race is the cost of the in-flight table, paid here
+        nothing (it once hung a waiting test, and the whole run, for 33
+        minutes). That race is the cost of the in-flight table, paid here
         with a lock. A pass waiting for the previous one to finish is
         cheap -- passes are ~40 ms on the real root -- and correct: the
         second pass then finds the target free, or done, and does its own
