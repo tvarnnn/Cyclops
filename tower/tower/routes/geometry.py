@@ -7,7 +7,7 @@ a 3,884-byte status snapshot, so pushing geometry down that socket would
 hold the lock and starve `frame_result` -- the exact thing
 `CARTRIDGE-RESULTS.md` forbids in Tower responsibility #3.
 
-Both handlers are declared `def` rather than `async def` on purpose.
+Every handler is declared `def` rather than `async def` on purpose.
 FastAPI runs a sync endpoint in its threadpool, which keeps the disk read
 and the hash off the event loop with no executor of our own.
 """
@@ -85,10 +85,10 @@ def world_listing(request: Request) -> dict:
 def geometry_manifest(world_id: str, session_id: str, request: Request) -> dict:
     manifest = build_manifest(_store(request), world_id, session_id)
     if manifest is None:
-        # 404 now means ABSENT only. Geometry that is real but behind the
+        # 404 means ABSENT only. Geometry that is real but behind the
         # newest keyframes is served with `current: false` instead of
-        # hidden -- during a walk the digest moves with every keyframe, so
-        # refusing it meant the gallery stayed empty for the whole capture.
+        # hidden: during a walk the digest moves with every keyframe, so
+        # refusing it would leave the gallery empty for the whole capture.
         raise HTTPException(status_code=404, detail="no geometry for this session")
     return manifest
 
@@ -223,14 +223,13 @@ def world_render(
     max_points: int | None = Query(default=None, ge=1, le=MAX_POINTS_CEILING),
     # DECLARED, not left to the page to read off its own URL.
     #
-    # The viewer can open in either the world view or the diagnostic one,
-    # and it used to pick between them from `location.search`. iOS -- the
-    # only client this page has -- loads it with
+    # The viewer can open in either the world view or the diagnostic one.
+    # iOS -- the only client this page has -- loads it with
     # `loadHTMLString(_:baseURL: nil)`: no origin, no URL, so
     # `location.search` is always empty, and its navigation policy cancels
-    # the page's own links so an in-page href could not reach the other
-    # view either. The affordance existed and did nothing on the device it
-    # was built for. Declaring it here is what makes it real.
+    # the page's own links so an in-page href cannot reach the other view
+    # either. The view is therefore a declared parameter, not something the
+    # page reads off its own URL.
     #
     # Not validated to an enum on purpose: an unrecognised value opens the
     # world view. This is a display mode on an unauthenticated route, and
@@ -260,11 +259,10 @@ def world_render(
     transport: str = Query(default="app", pattern="^(app|tower)$"),
     # What the client can draw (WORLD-BUILDER-WORLDS.md §4). `auto` offers the
     # appearance page only to a client declaring `appearance-1`: an iOS build
-    # older than that page has no scheme handler to fetch its imagery through,
-    # and was served a page that could fetch nothing. Comma-separated tokens;
-    # unknown ones are ignored, never a 422.
+    # older than that page has no scheme handler to fetch its imagery through.
+    # Comma-separated tokens; unknown ones are ignored, never a 422.
     viewer: str | None = Query(default=None),
-    # U1.1 native chrome (WORLD-BUILDER-WORLDS.md §4c): `native` asks the
+    # Native chrome (WORLD-BUILDER-WORLDS.md §4c): `native` asks the
     # appearance page to hand its chrome to the phone. Passed through as it came:
     # the adapter decides, and every other value -- and every other rung -- is the
     # page without it. No pattern, so it is never a 422. The revision routes do
@@ -311,10 +309,9 @@ def world_render(
 # -- areas (WORLD-BUILDER-COMPONENTS.md §5) ----------------------------------
 #
 # A part of a walk the Tower could not place relative to the room, drawn on its own.
-# New paths, which no existing app requests; every room route above is unchanged. The
-# same status codes, headers and CSP as the room's pages and appearance routes. The
-# four area 404 sentences are stable identifiers the phone compares for equality
-# (C1 E4): they come from the adapter, verbatim, and a test pins them.
+# The same status codes, headers and CSP as the room's pages and appearance routes. The
+# four area 404 sentences are stable identifiers the phone compares for equality:
+# they come from the adapter, verbatim, and a test pins them.
 
 
 @router.get("/worlds/{world_id}/areas/{session_id}/{area_id}/render/revision")

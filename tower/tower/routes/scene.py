@@ -60,16 +60,10 @@ def _session(request: Request):
         # `observed: false`: this Tower serves no live scene at all, which
         # is different from a scene that happens to be empty.
         #
-        # The specific reason when there is one, so this route and
-        # `/cartridges` cannot give an operator two different explanations
-        # of one configuration -- which is the drift
-        # `SCENE_DISABLED_REASON` was made a module constant to prevent.
-        # Falls back to the configured-off wording, unchanged.
-        # The SHARED constant for the fallback, not a second copy of the
-        # sentence. This route used to carry its own shorter wording, so
-        # the configured-off case already answered differently here than
-        # at `/cartridges` -- the drift the constant exists to prevent,
-        # sitting next to a comment claiming it could not happen.
+        # The specific reason when the runtime has one, else the shared
+        # `SCENE_DISABLED_REASON` (not a second copy of the sentence), so
+        # this route and `/cartridges` give an operator one explanation of
+        # one configuration.
         reason = getattr(request.app.state, "scene_unavailable_reason", None)
         raise HTTPException(
             status_code=404, detail=reason or SCENE_DISABLED_REASON

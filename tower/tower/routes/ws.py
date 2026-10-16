@@ -21,28 +21,26 @@ class _ConnectionSender:
     """Serialises every send on one socket.
 
     A WebSocket is one TCP stream and Starlette offers no send-side lock,
-    so two tasks awaiting `send_json` concurrently can interleave. Once
-    the result channel introduced a second sender -- the per-connection
-    push task -- serialising became a correctness requirement rather than
-    a precaution.
+    so two tasks awaiting `send_json` concurrently can interleave. The
+    result channel's per-connection push task is a second sender, so
+    serialising is a correctness requirement rather than a precaution.
 
-    The frame path takes this lock too. That is a change to the
-    latency-measured path and was measured before it shipped: an
-    uncontended asyncio.Lock costs well under a microsecond against a
-    frame budget of several milliseconds, and a connection with no
-    subscription never contends at all, because no second sender exists.
+    The frame path takes this lock too. Measured: an uncontended
+    asyncio.Lock costs well under a microsecond against a frame budget of
+    several milliseconds, and a connection with no subscription never
+    contends at all, because no second sender exists.
 
     Every send is passed through `json_safe`, and THIS is the boundary
     that has to do it rather than any producer. `NaN` and `Infinity` are
     not JSON; Python emits them bare because `allow_nan` defaults True,
     and Starlette's `send_json` takes that default -- so one non-finite
     float anywhere in a payload makes the ENTIRE message unparseable by a
-    strict decoder, and Swift's is strict. The result channel sanitised
-    at its envelope and the CV Lab at its document builder, and between
-    them they still left `frame_result` -- the highest-volume message on
-    this socket -- emitting a bare `NaN` for any experiment that produced
-    one. Sanitising at the socket is the only place that covers every
-    message by construction, including the next one somebody adds.
+    strict decoder, and Swift's is strict. Producers sanitise too (the
+    result channel at its envelope, the CV Lab at its document builder),
+    but that leaves `frame_result` -- the highest-volume message on this
+    socket -- emitting a bare `NaN` for any experiment that produces one.
+    Sanitising at the socket is the only place that covers every message
+    by construction, including the next one somebody adds.
 
     Measured at 0.045 ms for a 7.8 KB status document and proportionally
     less for a ~500-byte frame result, against a frame budget of
@@ -63,11 +61,12 @@ class _ConnectionSender:
                            send_timeout: float) -> None:
         """Send with the lock wait and the send itself bounded SEPARATELY.
 
-        Lumping them together let a slow frame send consume a result's
-        whole budget and trigger a spurious "the consumer is too slow"
-        drop -- when the result had not reached the socket at all, it was
-        queued behind the frame path. The two waits mean different things
-        and are reported differently, so they are measured apart.
+        The two waits mean different things and are reported differently:
+        a lock timeout means the result was queued behind the frame path
+        and never reached the socket, a send timeout means the socket
+        itself is slow. Lumped together, a slow frame send would consume a
+        result's whole budget and trigger a spurious "the consumer is too
+        slow" drop.
         """
         await asyncio.wait_for(self._lock.acquire(), timeout=lock_timeout)
         try:
@@ -98,7 +97,7 @@ async def _handle_frame_message(
         _note_cv_lab_rejection(websocket)
         # seq may legitimately be absent -- a frame message can fail
         # validation before seq is known. Report null rather than
-        # inventing one (Rule 3: unknown stays unknown).
+        # inventing one.
         await _send_frame_error(
             sender, _echo_safe(message.get("seq")), "invalid_frame", str(exc)
         )
@@ -139,8 +138,8 @@ async def _handle_frame_message(
             # A REFUSAL is not a processing error. A module that names a
             # reason declined the frame on purpose -- it is paused, or
             # idle, or arming -- and nothing failed. Counting those as
-            # `frame_processing_errors` made a Lab paused for five minutes
-            # report hundreds of errors in its session summary.
+            # `frame_processing_errors` would make a Lab paused for five
+            # minutes report hundreds of errors in its session summary.
             #
             # `frames_rejected` still counts them, and correctly: it
             # answers "how many arriving frames are missing from the
@@ -204,8 +203,7 @@ async def _handle_frame_message(
     # this field is unaffected, and an experiment whose headline says
     # everything does not pay for an empty object on every frame.
     # Deliberately name -> number only. This is a MEASUREMENT channel,
-    # not the structured result channel -- that one needs the module
-    # contract work that is blocked.
+    # not the structured result channel.
     if getattr(result, "metrics", None):
         payload["metrics"] = dict(result.metrics)
     # Who produced this number. Read HERE, between `process()` and the
@@ -304,28 +302,19 @@ def _fan_out_frame(websocket, frame) -> None:
     """Give a DECODED frame to the recorder and to every live cartridge.
 
     CALLED ON EVERY PATH THAT DECODED A FRAME, including the two where the
-    CV module refused it or was unavailable. That is the whole point of
-    this function existing, and it is worth saying why at length, because
-    the shape it replaces looked correct for a year.
-
-    The recorder and the live cartridges used to be reached only from the
-    success path, after a `frame_result` was sent. Before the 2026-08-27
-    unification that was defensible: the CV module had no refusal path, so
-    a `FrameSkippedError` meant something had genuinely gone wrong and
-    dropping the frame was of a piece with dropping the result.
-
-    The CV Lab lane changed that premise and nothing noticed. It added six
+    CV module refused it or was unavailable. The CV module has six
     CLIENT-REACHABLE refusal states -- idle, starting, paused, stopped,
-    failed, unavailable -- and a refusal is not a failure. So an ordinary
-    `cv_lab_pause`, sendable from ANY connection with no ownership check,
-    stopped frames reaching the DATASET RECORDER, Scene Understanding and
-    Document Memory, while every one of them went on reporting itself
-    healthy: `/health` said `capture: armed`, the recorder said
-    `is_recording` with an open capture id, Scene said `running`, and zero
-    bytes were written and zero frames observed. The walk was lost, and
-    nothing in the logs said so. Worse with a terminal `module_unavailable`
-    -- a typo in TOWER_CV_EXPERIMENT -- which made the Tower record nothing
-    and feed no cartridge for the life of the process.
+    failed, unavailable -- and a refusal is not a failure. If the recorder
+    and the live cartridges were reached only from the success path, an
+    ordinary `cv_lab_pause`, sendable from ANY connection with no
+    ownership check, would stop frames reaching the DATASET RECORDER,
+    Scene Understanding and Document Memory while every one of them went
+    on reporting itself healthy: `/health` saying `capture: armed`, the
+    recorder `is_recording` with an open capture id, Scene `running`, and
+    zero bytes written and zero frames observed. A terminal
+    `module_unavailable` -- a typo in TOWER_CV_EXPERIMENT -- would make
+    the Tower record nothing and feed no cartridge for the life of the
+    process.
 
     THE RULE: what the CV module thought of a frame is the CV module's
     business. A frame that arrived and decoded is a real frame, and the
@@ -359,11 +348,9 @@ def _offer_to_cartridges(websocket, frame) -> None:
     No timestamp is passed, and that is the honest choice rather than a
     gap. `tower/frames.py` carries no time field -- there is no capture
     timestamp anywhere on this wire -- so the only clock available is
-    this Tower's, and the session stamps it on receipt. That is exactly
-    what `CaptureRecorder` does (`capture.py:250` writes `received_at`
-    at WRITE time), and matching it means one definition of
-    "tower-receipt" rather than two that differ by a few milliseconds
-    and by which code path was slower.
+    this Tower's, and the session stamps it on receipt. That is what
+    `CaptureRecorder` does (it writes `received_at` at write time), so
+    there is one definition of "tower-receipt".
     """
     for consumer in _frame_consumers(websocket):
         try:
@@ -455,8 +442,8 @@ def _finalize_stream_measurement(metrics: SessionMetrics, end_reason: str) -> No
         # session.client_disconnected(). Letting it propagate would skip
         # that cleanup and leave the tracker asserting a client is still
         # connected forever -- a measurement failure must never corrupt
-        # connection state (Rule 3) or leak lifecycle (Rule 15). Logged
-        # with a traceback rather than swallowed.
+        # connection state or leak lifecycle. Logged with a traceback
+        # rather than swallowed.
         logger.exception(
             "[Tower][Session] could not finalize measurement "
             "(end_reason=%s); connection cleanup continues",
@@ -573,15 +560,14 @@ async def _close_cartridge_streams(websocket, owner) -> None:
     answers no frames, no pings and no `/health` on ANY connection for as
     long as it takes.
 
-    It is not hypothetical and needs no unusual configuration: measured
-    at 5.00 s for a scene session whose phone dropped during a cold model
-    load, and 2.39 s for a document session mid-dwell. A wearable
-    disconnecting abruptly is the NORMAL case.
+    It needs no unusual configuration: measured at 5.00 s for a scene
+    session whose phone dropped during a cold model load, and 2.39 s for
+    a document session mid-dwell. A wearable disconnecting abruptly is the
+    NORMAL case.
 
-    `main.py`'s lifespan already says this about the same call -- "a
-    bounded join on the event loop is still a join on the event loop" --
-    and `routes/scene.py` says it about its own handlers. This is the
-    third place the rule applies and the one that had it wrong.
+    `main.py`'s lifespan says this about the same call -- "a bounded join
+    on the event loop is still a join on the event loop" -- and
+    `routes/scene.py` says it about its own handlers.
 
     `stream_opened` stays inline: it starts a thread and returns.
 
@@ -610,20 +596,18 @@ async def _tear_down_after_disconnect(
     a supervisor lock held across a grace), which is why none of them
     may run on the loop.
 
-    **And why they may not each get their own `await`.** The stream
-    close above learned it the hard way for itself; the session stop
-    then went the same way. Under Starlette's test client the disconnect
-    is queued and the handler task is cancelled in the same breath, and
-    anyio re-cancels the task at EVERY await until it exits. The stop sat
-    behind three awaits -- `channels.close()`, the supervisor
-    notification, the stream close -- so whichever of them suspended
-    first took the cancellation and the `finally` never reached it:
+    **And why they may not each get their own `await`.** Under
+    Starlette's test client the disconnect is queued and the handler task
+    is cancelled in the same breath, and anyio re-cancels the task at
+    EVERY await until it exits. With the stop behind three awaits --
+    `channels.close()`, the supervisor notification, the stream close --
+    whichever of them suspended first took the cancellation and the
+    `finally` never reached the stop:
     `test_the_session_stops_when_the_last_connection_closes` failed six
-    times in eight, and had been failing in every full run since the
-    stop was moved off the loop, filed as load. Under uvicorn a real
-    disconnect is a `WebSocketDisconnect` and the chain runs to the end;
-    the cancellation path is shutdown and the test client. One thread
-    carries the whole chain either way; the await is best effort.
+    times in eight. Under uvicorn a real disconnect is a
+    `WebSocketDisconnect` and the chain runs to the end; the cancellation
+    path is shutdown and the test client. One thread carries the whole
+    chain either way; the await is best effort.
     """
     import threading
 
@@ -685,34 +669,30 @@ def _arm_world_builder_follow_up(websocket) -> None:
     """Schedule the deferred stop -- only when a deferral is happening,
     and once per deferred walk.
 
-    **The first version armed this on EVERY last-client disconnect and
-    the follow-up stopped EVERY cartridge session.** A reviewer drove it
-    on a real Tower: phone A connected and left without ever touching
-    World Builder; phone B arrived five seconds later, started Object
-    Memory and walked; at drop+106 s the Tower SIGBREAK'd B's producer
-    mid-walk and logged "the last client connection closed, so nobody is
-    asking for it any more" about a phone that was streaming. That is
-    the one failure this whole design exists to rule out -- a World
-    Builder mechanism reaching into another cartridge -- and it shipped
-    in the fix for a World Builder hole. Two gates now: nothing is armed
-    unless the stop below is actually leaving a World Builder walk
-    running, and what is armed stops that walk and nothing else.
+    **Two gates: nothing is armed unless the stop below is actually
+    leaving a World Builder walk running, and what is armed stops that
+    walk and nothing else.** A World Builder mechanism must never reach
+    into another cartridge. Armed on EVERY last-client disconnect and
+    stopping EVERY cartridge session, it was driven on a real Tower: phone
+    A connected and left without ever touching World Builder; phone B
+    arrived five seconds later, started Object Memory and walked; at
+    drop+106 s the Tower SIGBREAK'd B's producer mid-walk and logged "the
+    last client connection closed, so nobody is asking for it any more"
+    about a phone that was streaming.
 
-    **Once per walk AND ask, not once per disconnect.** The same reviewer
-    traced that a phone in bad WiFi -- reconnecting and dropping every
-    60 s -- restarted the 105 s clock on every drop, so the follow-up
-    never fired and the hole it closes stayed open indefinitely. So a
-    pending follow-up for the same deferred walk is left to its
-    original deadline. But NOT when the walk has been asked for again
-    since: the next rehearsal drove drop -> arm -> reconnect with a
-    Start -> drop again, and the second deferral was deduplicated
-    against a task that would then decline (the ask had moved) and
-    never return -- the session sat `active` forever with no phone
-    behind it, and the next phone to stream on that Tower grew a World
-    Builder world nobody asked for. Two out of two, no timing subtlety.
-    The key is `(session_id, requested_at)`: the same walk, the same
-    ask, keeps its clock; a new ask gets a new one, 105 s after ITS
-    drop.
+    **Once per walk AND ask, not once per disconnect.** A phone in bad
+    WiFi -- reconnecting and dropping every 60 s -- would restart the
+    105 s clock on every drop, so the follow-up would never fire and the
+    hole it closes would stay open indefinitely. So a pending follow-up
+    for the same deferred walk is left to its original deadline. But NOT
+    when the walk has been asked for again since: drop -> arm ->
+    reconnect with a Start -> drop again would be deduplicated against a
+    task that then declines (the ask had moved) and never returns -- the
+    session sits `active` forever with no phone behind it, and the next
+    phone to stream on that Tower grows a World Builder world nobody
+    asked for (two out of two, no timing subtlety). The key is
+    `(session_id, requested_at)`: the same walk, the same ask, keeps its
+    clock; a new ask gets a new one, 105 s after ITS drop.
     """
     deferral = _world_builder_deferral(websocket)
     if deferral is None:
@@ -736,28 +716,24 @@ async def _stop_world_builder_after_grace(
     """Stop the deferred World Builder walk once it can no longer resume.
 
     The deferral in `_stop_cartridge_sessions` is correct for the phone
-    that comes back and was a hole for the phone that does not: nothing
-    ever revisited it, so a walk whose wearer's battery died on the World
-    Builder screen left that session `active` forever -- and the NEXT
-    phone to open ANY screen and stream got a builder attached that
-    nobody asked for. A reviewer reproduced it end to end: a different
-    client, no `session/start` anywhere, and a second world built from
-    its frames. `ws.py`'s own justification for the last-client stop
-    describes exactly that failure. This task is what makes the deferral
-    a delay rather than an exemption.
+    that comes back and a hole for the phone that does not: without a
+    revisit, a walk whose wearer's battery died on the World Builder
+    screen leaves that session `active` forever -- and the NEXT phone to
+    open ANY screen and stream gets a builder attached that nobody asked
+    for (reproduced end to end: a different client, no `session/start`
+    anywhere, and a second world built from its frames). This task is
+    what makes the deferral a delay rather than an exemption.
     """
     await asyncio.sleep(RESUME_GRACE_SECONDS + _DEFERRED_STOP_MARGIN_SECONDS)
-    # NOT "is anybody connected", which is what the first version asked
-    # and which a reviewer defeated four seconds after the grace: CV Lab
-    # connected, the revisit saw a live connection and returned, and CV
-    # Lab's frames got a World Builder nobody asked for. The question is
-    # whether anybody has asked for WORLD BUILDER since the deferral --
-    # every `session/start` moves the session's `requested_at`, even one
-    # that changed nothing because the session was still active (which
-    # is exactly the deferred case; `changed_at` would NOT move for it,
-    # and the first version keyed on that). If it has not moved, the
-    # walk is over and nobody has come back for it, whoever else is on
-    # the socket.
+    # NOT "is anybody connected": with that test, a CV Lab connecting four
+    # seconds after the grace made the revisit see a live connection and
+    # return, and CV Lab's frames got a World Builder nobody asked for.
+    # The question is whether anybody has asked for WORLD BUILDER since
+    # the deferral -- every `session/start` moves the session's
+    # `requested_at`, even one that changed nothing because the session
+    # was still active (which is exactly the deferred case; `changed_at`
+    # would NOT move for it). If it has not moved, the walk is over and
+    # nobody has come back for it, whoever else is on the socket.
     #
     # And ONLY World Builder, and only THAT walk. The walk is named by
     # its `session_id`: if the session has been stopped since, or a
@@ -799,12 +775,11 @@ def _stop_cartridge_sessions(websocket) -> None:
     # WAITING FOR ITS PHONE, not a walk that is over. World Builder's
     # builder is already sitting in `_await_successor` for it and will
     # finalise on its own at the end of the grace if nobody returns.
-    # Stopping the session here closed that builder's stdin, which
-    # `should_stop` honours at once: world 1 finalised, and the phone that
-    # came back 60 s later started world 2. Measured by a dress-rehearsal
-    # reviewer through a real Tower; it is the second of the two ways one
-    # reconnect became two worlds, and the one that fires whenever the
-    # Tower notices the drop before the phone returns.
+    # Stopping the session here would close that builder's stdin, which
+    # `should_stop` honours at once: world 1 finalises, and the phone that
+    # comes back 60 s later starts world 2 (measured through a real
+    # Tower; it fires whenever the Tower notices the drop before the phone
+    # returns).
     #
     # Only World Builder is deferred: it is the one cartridge whose
     # session follows a capture lineage. Object Memory and the rest keep
@@ -856,11 +831,9 @@ async def _start_capture(websocket, owner) -> None:
     the session boundary already exists on the wire, and V1 deliberately
     makes no protocol change.
 
-    A capture id is minted HERE, in this process, at this moment. That is
-    the structural reason attaching a builder used to be a manual step:
-    the id does not exist until the phone connects, so nothing could be
-    launched in advance holding it. The process that mints it hands it
-    over.
+    A capture id is minted HERE, in this process, at this moment: the id
+    does not exist until the phone connects, so nothing could be launched
+    in advance holding it. The process that mints it hands it over.
     """
     supervisor = _capture_workers(websocket)
     for observer in _frame_observers(websocket):
@@ -880,14 +853,12 @@ async def _start_capture(websocket, owner) -> None:
                 # `resumable_capture()` below offers the previous capture as
                 # this one's predecessor only if it ended by disconnect
                 # (`capture.py`: `_interrupted` is set for that reason
-                # alone). Ending it as `stop` here meant `continues` was
-                # never set on a supersession -- so the old builder saw a
-                # politely closed capture and finalised world 1, and the new
-                # capture started world 2. A dress-rehearsal reviewer drove
-                # a mid-walk reconnect through a real Tower at four timings
-                # and got two worlds, each "Complete", each half the walk,
-                # every time; the campaign's own reconnect proof (§16) had
-                # driven the builder directly and never crossed this route.
+                # alone). Ending it as `stop` here would leave `continues`
+                # unset on a supersession -- so the old builder sees a
+                # politely closed capture and finalises world 1, and the
+                # new capture starts world 2. A mid-walk reconnect driven
+                # through a real Tower at four timings gave two worlds,
+                # each "Complete", each half the walk, every time.
                 #
                 # And `disconnect` is the truth: the socket that opened the
                 # old capture is gone. The phone re-opened the bracket on a
@@ -905,22 +876,22 @@ async def _start_capture(websocket, owner) -> None:
             logger.exception("[Tower][Capture] could not start recording")
             continue
         # OFF-THREAD, and only this call. `supervisor.capture_opened`
-        # takes the supervisor's lock, and since the supervisor became
-        # multi-spec that lock is contended by Pause and Stop -- whose
-        # `detach` holds it across a `terminate()` and a bounded
-        # `process.wait()`. A producer that ignores SIGTERM therefore
-        # blocked this line for up to the terminate timeout PER SPEC, and
-        # because this ran on the event loop the whole Tower answered no
-        # frames, no pings and no /health on every connection for that
-        # long. Measured at 1.95 s with one stubborn worker.
+        # takes the supervisor's lock, which is contended by Pause and
+        # Stop -- whose `detach` holds it across a `terminate()` and a
+        # bounded `process.wait()`. A producer that ignores SIGTERM
+        # therefore blocks this line for up to the terminate timeout PER
+        # SPEC, and because this runs on the event loop the whole Tower
+        # would answer no frames, no pings and no /health on every
+        # connection for that long. Measured at 1.95 s with one stubborn
+        # worker.
         #
-        # It is the same rule `_close_cartridge_streams` already follows:
-        # a bounded join on the event loop is still a join on the event
+        # It is the same rule `_close_cartridge_streams` follows: a
+        # bounded join on the event loop is still a join on the event
         # loop. Only this call moves; `observer.start()` above stays on
-        # the loop, so recorder starts remain serialised exactly as
-        # before. Two connections' `capture_opened` calls may now
-        # interleave in threads, which is precisely what the supervisor's
-        # RLock and its lineage bookkeeping exist to handle.
+        # the loop, so recorder starts remain serialised. Two connections'
+        # `capture_opened` calls may interleave in threads, which is
+        # precisely what the supervisor's RLock and its lineage
+        # bookkeeping exist to handle.
         await asyncio.to_thread(
             _offer_capture_opened,
             supervisor,
@@ -991,17 +962,16 @@ async def _stop_capture(
     grace.** Not through work of its own -- it logs and calls `reap()`,
     and stops nothing -- but `reap()` takes the supervisor's lock, and a
     concurrent `detach` holds that lock across its grace; World Builder's
-    is **30.0 s** (`main.py`). A reviewer corrected the first version of
-    this sentence, which said the call held the lock itself. Run on the event loop -- which is where both callers are
-    -- that stops every cartridge, every frame reply, every result and
-    `/health` for the duration. A reviewer measured **33.72 seconds** of
-    dead loop against the real supervisor, reached by the ordinary
-    sequence "press Stop, lose WiFi".
+    is **30.0 s** (`main.py`). Run on the event loop -- which is where
+    both callers are -- that stops every cartridge, every frame reply,
+    every result and `/health` for the duration: **33.72 seconds** of dead
+    loop was measured against the real supervisor, reached by the
+    ordinary sequence "press Stop, lose WiFi".
 
-    The sibling call was already moved for exactly this reason: see
+    The sibling call is moved for exactly this reason: see
     `_offer_capture_opened` below, whose comment explains why interleaving
     is safe -- the supervisor's RLock and its lineage bookkeeping exist to
-    handle it. `capture_closed` was left behind on the loop.
+    handle it.
 
     The recorder stop itself stays inline: it is a file close, it is fast,
     and serialising recorder teardown per connection is deliberate.
@@ -1105,9 +1075,8 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                 # invalid *state* (socket not connected / already
                 # disconnected) from a synchronous check with no await
                 # point, so swallowing it and continuing would spin this
-                # loop at full CPU with nothing able to cancel it
-                # (Rule 15: no tight retry loops). State errors must
-                # propagate and end the connection.
+                # loop at full CPU with nothing able to cancel it.
+                # State errors must propagate and end the connection.
                 logger.warning("received malformed WS message, ignoring: %s", exc)
                 continue
 
@@ -1120,12 +1089,12 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
 
             message_type = message.get("type")
             if not isinstance(message_type, str):
-                # `{"type": {"nested": 1}}` used to reach a
-                # `message_type in <frozenset>` test and raise
-                # `TypeError: unhashable type: 'dict'`, which nothing
-                # caught -- one malformed message killed a connection
-                # that was answering frames. The dispatch below assumes a
-                # string; this is where that assumption is checked.
+                # The dispatch below tests `message_type in <frozenset>`,
+                # which raises `TypeError: unhashable type: 'dict'` for
+                # `{"type": {"nested": 1}}`; nothing catches that, so one
+                # malformed message would kill a connection that is
+                # answering frames. The dispatch assumes a string; this is
+                # where that assumption is checked.
                 logger.warning(
                     "received a message whose type is not a string, "
                     "ignoring: %.80r",
@@ -1148,9 +1117,9 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                 logger.info(
                     "[Tower][Session] stream_start: measurement window opened"
                 )
-                # FIRST, and off the loop. Whatever this Tower was doing on
+                # FIRST, and off the loop. Whatever this Tower is doing on
                 # its own behalf -- finishing a world's photographic stages,
-                # today -- must give the GPU back before a recorder is armed
+                # for example -- must give the GPU back before a recorder is armed
                 # or a cartridge is told anything. It is a bounded join
                 # (the chore's grace plus a terminate), and a bounded join
                 # on the event loop is still a join on the event loop: the
@@ -1194,15 +1163,14 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                     channel_holder=channels,
                 )
             else:
-                # Answered, not merely logged.
-                # ios/docs/agent-handoffs/IOS-TO-TOWER.md §2.2: iOS "never lets
-                # a request silently no-op", and 04-MODULE-SYSTEM.md already
-                # requires an unsupported request to "produce a clear
-                # degraded/failed state rather than silently pretending" it
-                # applied. Until now this branch wrote a server-side log line
-                # that no client could see, so a phone asking for something
+                # Answered, not merely logged: a server-side log line is
+                # invisible to the client, so a phone asking for something
                 # this Tower does not implement could not tell that from a
                 # message lost in flight.
+                # ios/docs/agent-handoffs/IOS-TO-TOWER.md §2.2: iOS "never lets
+                # a request silently no-op", and 04-MODULE-SYSTEM.md requires
+                # an unsupported request to "produce a clear degraded/failed
+                # state rather than silently pretending" it applied.
                 logger.warning("received unknown message type: %s", message_type)
                 await sender.send(
                     {
@@ -1221,29 +1189,6 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
     except WebSocketDisconnect:
         logger.info("client disconnected")
     finally:
-        # Stop recording on ANY exit, not just a polite stream_stop.
-        #
-        # A wearable client disconnects abruptly as the normal case --
-        # crash, network drop, walking out of range. Without this, a
-        # recorder started by one connection stays armed, and because
-        # _record_capture gates only on is_recording, the NEXT
-        # connection's frames land in the previous connection's capture
-        # with no stream_start and no consent. That is incidental capture
-        # of someone else's imagery, which 06-PRIVACY-DATA forbids and
-        # which capture.py's own docstring promises cannot happen.
-        # Before the capture teardown, and unconditionally. A
-        # subscription that outlived its socket would keep the shared
-        # reader polling disk for a client that is gone.
-        #
-        # In a try/finally rather than bare, because `close()` CAN raise
-        # in one case: when this handler task is itself being cancelled
-        # -- app shutdown, or a test client's teardown -- the channel's
-        # own sender cancellation is re-raised on purpose so the outer
-        # cancellation is not swallowed. Everything below must still run
-        # in that case: a capture left armed by a cancelled connection is
-        # the incidental-capture defect described above, and a stream
-        # left open in a live cartridge's book means its "last stream
-        # out" can never come.
         # The bookkeeping that must not wait: `/health` must stop saying a
         # client is connected the moment this one is gone, not after its
         # cartridge teardown has drained through two thread hops. Both
@@ -1254,33 +1199,58 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
             _finalize_stream_measurement(
                 active_measurement, end_reason="disconnect"
             )
+        # Before the capture teardown, and unconditionally: a subscription
+        # that outlived its socket would keep the shared reader polling
+        # disk for a client that is gone.
+        #
+        # In a try/finally rather than bare, because `close()` CAN raise
+        # in one case: when this handler task is itself being cancelled
+        # -- app shutdown, or a test client's teardown -- the channel's
+        # own sender cancellation is re-raised on purpose so the outer
+        # cancellation is not swallowed. Everything below must still run
+        # in that case: a capture left armed by a cancelled connection is
+        # the incidental-capture defect described below, and a stream
+        # left open in a live cartridge's book means its "last stream
+        # out" can never come.
         try:
             await channels.close()
         finally:
-            # Inline: the recorder is closed before anything can cancel
+            # Stop recording on ANY exit, not just a polite stream_stop,
+            # and inline: the recorder is closed before anything can cancel
             # this task again. See `_tear_down_after_disconnect` for why
             # the blocking half is not awaited step by step.
+            #
+            # A wearable client disconnects abruptly as the normal case --
+            # crash, network drop, walking out of range. A recorder
+            # started by one connection would otherwise stay armed, and
+            # because _record_capture gates only on is_recording, the NEXT
+            # connection's frames would land in the previous connection's
+            # capture with no stream_start and no consent. That is
+            # incidental capture of someone else's imagery, which
+            # 06-PRIVACY-DATA forbids and which capture.py's own docstring
+            # promises cannot happen.
             closed_captures = _stop_recording(
                 websocket, END_REASON_DISCONNECT, owner=connection_token
             )
-            # On ANY exit, not only a polite stream_stop, and for the same
-            # reason the recorder is torn down here: a wearable client
-            # disconnects abruptly as the NORMAL case. A scene session
-            # left running by a dropped connection would hold a model,
-            # park a worker, and -- worse -- keep serving a scene of a
-            # room whose wearer walked out of range.
+            # The blocking teardown below runs on ANY exit, not only a
+            # polite stream_stop, and for the same reason the recorder is
+            # torn down here: a wearable client disconnects abruptly as the
+            # NORMAL case. A scene session left running by a dropped
+            # connection would hold a model, park a worker, and -- worse --
+            # keep serving a scene of a room whose wearer walked out of
+            # range.
+            #
             # And the cartridge SESSIONS, when nobody is left to have asked
             # for them.
             #
             # A `CartridgeSession` is intent -- "the World Builder workspace
             # is on the phone's screen", "I am remembering objects" -- and it
             # lives only in this process's memory, with no owner and no
-            # expiry. Nothing ended one when the phone that opened it went
-            # away, so a phone that crashed mid-session left the gate open
-            # for as long as the Tower ran, and the NEXT capture, from any
-            # cartridge, attached that worker again with nobody having asked.
-            # For Object Memory that is a recorder starting itself on
-            # somebody else's later walk.
+            # expiry. Without this, a phone that crashed mid-session leaves
+            # the gate open for as long as the Tower runs, and the NEXT
+            # capture, from any cartridge, attaches that worker again with
+            # nobody having asked. For Object Memory that is a recorder
+            # starting itself on somebody else's later walk.
             #
             # main.py already states the rule this restores: the sessions are
             # "deliberately NOT persisted anywhere. A Tower that restarts
