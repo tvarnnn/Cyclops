@@ -1,10 +1,6 @@
 #!/usr/bin/env python
 """Recover camera intrinsics from ChArUco board views.
 
-This is the switch that moves World Builder from "no poses, and it says
-so" to "poses". Nothing else in the system changes what the product is by
-as much.
-
 ChArUco rather than a plain checkerboard because the wearer cannot see the
 frame: ChArUco identifies each corner individually, so a partially visible
 or partly occluded board still contributes, where a plain checkerboard
@@ -20,9 +16,8 @@ needs the whole grid.
 With no --out, the result lands in the intrinsics store under the world
 root -- `data/world_builder/intrinsics/<width>x<height>.json` -- which is
 exactly where `world_build_session.py` looks it up by the OBSERVED frame
-size. That default is the whole point: before it existed, calibrating and
-then building required the operator to remember a flag at both ends, and
-forgetting either produced a silently pose-free world. See
+size. That default is the whole point: no flag is needed at either end,
+and a calibration written elsewhere is not found. See
 `docs/CALIBRATION.md` for the physical procedure.
 
 WHAT THIS HAS AND HAS NOT BEEN VALIDATED AGAINST
@@ -65,10 +60,8 @@ from tower.world_builder.schema import (  # noqa: E402
     INTRINSICS_SOURCE_SELF_CALIBRATED,
 )
 
-# The same default `world_build_session.py --root` uses. Kept identical on
-# purpose: a calibration written to one tree and looked up in another is
-# indistinguishable, from the operator's chair, from never having
-# calibrated at all.
+# Must equal `world_build_session.DEFAULT_ROOT` (the `--root` default there),
+# so the calibration is looked up where it was written.
 DEFAULT_WORLD_ROOT = Path("data/world_builder")
 
 # Board geometry. Square/marker lengths are in metres and must match the
@@ -86,12 +79,12 @@ MIN_VIEWS = 8
 # Corners per view below which the view carries too little constraint.
 MIN_CORNERS_PER_VIEW = 8
 
-# View COUNT alone is not sufficient, and the gap is not subtle. Ten
-# byte-identical board views recover fx with 287% error; ten
-# fronto-parallel views at a single distance recover it with 3787% error.
+# View COUNT alone is not sufficient. Ten byte-identical board views recover
+# fx with 287% error; ten fronto-parallel views at a single distance recover
+# it with 3787% error.
 # Both come back source="self_calibrated", is_known=True.
 #
-# Worse, both score a BETTER reprojection RMS (0.158 and 0.217 px) than a
+# They also score a BETTER reprojection RMS (0.158 and 0.217 px) than a
 # correct calibration (0.253 px) -- because RMS measures fit to the views
 # you supplied, and degenerate views are trivially easy to fit. So a low
 # RMS here is not reassurance; on this failure mode it is actively
@@ -101,6 +94,7 @@ MIN_CORNERS_PER_VIEW = 8
 # perspective foreshortening, so a board held parallel to the sensor
 # contributes almost nothing toward pinning it down no matter how many
 # times it is photographed.
+#
 # Measured tilt of the board-to-image homography's perspective row,
 # normalised by board extent, across board orientations:
 #
