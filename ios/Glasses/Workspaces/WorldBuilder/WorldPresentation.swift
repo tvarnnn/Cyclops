@@ -13,13 +13,14 @@ import Foundation
 /// revision (WorldBuilderResultDecoder.geometryCoordinates requires a complete
 /// address), a session gate withholding an address, a failed manifest fetch,
 /// one unreadable row making WorldGeometryDecoder.manifest refuse the whole
-/// manifest, or a pose convention this build cannot draw. The array is only
-/// assigned after WorldBuilderViewModel.geometryDidChange completes. The Tower
-/// once reported 463 keyframes,
-/// 467 camera poses and 17,674 points in the Tower's report while an empty
-/// array made it say "Nothing mapped yet." Only a Tower report of no geometry
-/// can support that sentence. Geometry fetch failures had only DEBUG output,
-/// so a Release screen must represent the distinction in state.
+/// manifest, or a pose convention this build cannot draw. The array is derived
+/// from `geometryStatus`; `geometryDidChange` assigns `.loaded` during the fetch.
+/// The Tower once reported 463 keyframes, 467 camera poses and 17,674 points
+/// while an empty array made it say "Nothing mapped yet." That headline now
+/// requires a Tower 404 or a loaded status with no drawable or unresolved
+/// fragments, without a positive Tower geometry claim. Geometry fetch failures
+/// had only DEBUG output, so a Release screen must represent the distinction
+/// in state.
 ///
 /// WorldGeometryStatus carries the phone's fetch result, WorldEvidence the
 /// Tower's independent claim, and WorldGeometryAccount derives their wording.
@@ -219,9 +220,9 @@ struct WorldEvidence: Equatable {
 /// What to say where the fragment gallery has nothing to draw.
 ///
 /// The gallery receives one account instead of composing its own empty-state
-/// prose. "Nothing mapped" requires an empty loaded manifest and no Tower
-/// geometry claim; tests cover a geometry-bearing snapshot under every fetch
-/// state.
+/// prose. "Nothing mapped" comes from a Tower 404 or a loaded manifest with
+/// no drawable or unresolved fragments, unless the Tower snapshot claims
+/// geometry; tests cover a geometry-bearing snapshot under every fetch state.
 struct WorldGeometryAccount: Equatable {
     /// One short line. The gallery's headline when there is nothing to draw.
     var headline: String
@@ -258,7 +259,9 @@ struct WorldGeometryAccount: Equatable {
     ///
     /// Check the Tower's independent geometry claim before describing a
     /// missing or failed phone fetch. A failed fetch cannot prove an empty
-    /// world; an empty loaded manifest and no Tower geometry claim can.
+    /// world; a Tower 404 or a loaded status without drawable or unresolved
+    /// fragments can support the nothing-mapped account when the snapshot
+    /// does not claim geometry.
     static func account(
         for status: WorldGeometryStatus, evidence: WorldEvidence?
     ) -> WorldGeometryAccount {
