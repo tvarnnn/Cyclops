@@ -32,7 +32,6 @@ reads. Nothing is written except the report the caller asks for.
 
 import argparse
 import json
-import os
 import statistics
 import sys
 import time
@@ -200,9 +199,10 @@ def run(args) -> dict:
     seen_ids: set = set()
     labelled_rows = []
     frames_read = 0
-    # Footage time is summed PER CAPTURE: captures are days apart, and
-    # the span from the first capture's first frame to the last capture's
-    # last frame is calendar time, not footage.
+    # Footage time is summed PER CAPTURE: captures are separate
+    # recordings, and the span from the first capture's first frame to
+    # the last capture's last frame would include the time between them,
+    # which is not footage.
     spans: dict[str, list[float]] = {}
     wall_started = time.perf_counter()
 
@@ -363,7 +363,7 @@ def main(argv=None) -> int:
         "--out",
         type=artifact_root_arg,
         default=None,
-        help="directory to write report.json into (guarded: never a drive root)",
+        help="directory to write scene_replay_report.json into (guarded: never a drive root)",
     )
     args = parser.parse_args(argv)
 
