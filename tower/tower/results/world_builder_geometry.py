@@ -1,7 +1,7 @@
 """Geometry transport adapter for World Builder.
 
-The third file permitted to import `world_builder`, and named after its
-cartridge for the same reason `tower/results/world_builder.py` is: an
+One of the few files permitted to import `world_builder`, and named after
+its cartridge for the same reason `tower/results/world_builder.py` is: an
 adapter named after one cartridge cannot leak that cartridge's
 assumptions into the next, because the next one gets its own file.
 
@@ -10,9 +10,9 @@ gives the result sender and the frame path a single `asyncio.Lock`, and
 one real session's `points.json` is 1.07 MB against a 3,884-byte status
 snapshot. Bulk data there would starve `frame_result`.
 
-Why the segment is the unit: `engine.py:767` freezes a segment when
-tracking is lost, so a closed segment is fetched once and cached for the
-life of the world. Only the open segment churns.
+Why the segment is the unit: the engine (`WorldBuilderEngine`) freezes a
+segment when tracking is lost, so a closed segment is fetched once and
+cached for the life of the world. Only the open segment churns.
 """
 
 import hashlib
@@ -122,10 +122,9 @@ def _is_current(store, world_id: str, session_id: str) -> bool:
         digest = compute_input_digest(store.read_keyframes(world_id, session_id))
     except (WorldStoreError, KeyError, ValueError, OSError):
         return False
-    # WITH the session id. Without it this asks the world's manifest, which
-    # names whichever session built last, so an older session of a world
-    # walked twice was reported not-current against another session's
-    # digest -- and `read_derived` refused to serve it at all.
+    # WITH the session id: without it the store asks the world's manifest,
+    # which names whichever session built last, and an older session of a
+    # world walked twice would be judged against another session's digest.
     #
     # `derived_currency` can also answer None, "nothing here can judge it".
     # The wire contract defines `current` as "reflects every keyframe
@@ -158,10 +157,11 @@ def contained_world_id(store, world_id: str) -> str | None:
     different identities and a client caching on `world_id` holds both.
     It also stops the caller choosing how long that identity is.
 
-    A whitelist over `list_world_ids()` did both of these by construction
-    and was replaced: it is a directory scan per request, MEASURED at
-    4.16 ms against 120 real worlds (69% of `_read`) and 167.7 ms at
-    2,000, growing with a directory that only grows. This is O(1).
+    This is O(1). A whitelist over `list_world_ids()` would give the same
+    two properties by construction but is a directory scan per request,
+    growing with a directory that only grows: measured at 4.16 ms against
+    120 real worlds (69% of `_read`), 17.4 ms at 500 and 167.7 ms at
+    2,000.
     """
     worlds_root = store.world_dir("probe").parent
     try:
@@ -178,14 +178,14 @@ def _read(store, world_id: str, session_id: str):
 
     The digest is deliberately NOT verified on the read, and currency is
     computed alongside instead. `read_derived`'s default treats a tree that
-    no longer matches the journal as absent, and on this channel that was
-    the wrong trade: during a live walk the digest moves with every
-    keyframe, so every manifest request answered 404 and the fragment
-    gallery stayed empty until the session ended -- while real geometry sat
-    on disk the whole time.
+    no longer matches the journal as absent, which is the wrong trade on
+    this channel: during a live walk the digest moves with every keyframe,
+    so every manifest request would answer 404 and the fragment gallery
+    would stay empty until the session ended, with real geometry on disk
+    the whole time.
 
-    `tower/results/world_builder.py:1058` already made this decision for
-    the status channel, for exactly the same reason and in the same words:
+    The status channel (`tower/results/world_builder.py`, which asks
+    `store.derived_currency`) makes the same decision for the same reason:
     a build over the first N keyframes is not wrong, it is a correct answer
     to an older question. Hiding it discards true information; serving it
     unflagged would let a viewer mistake it for the finished world. The
@@ -195,41 +195,28 @@ def _read(store, world_id: str, session_id: str):
     Absent stays distinguishable from behind: a tree with no poses.json is
     still `None`, and the routes still answer 404 for it.
     """
-    # BOTH identifiers are unauthenticated and BOTH escape. The first
-    # version of this guard covered only `session_id` and was incomplete:
-    # containment for the session is anchored on `derived_dir(world_id)`,
-    # so an escaped `world_id` moves the anchor and the check below still
-    # passes relative to the escaped base. Measured, all answering 200 and
-    # serving a complete world from outside the configured root:
-    #
-    #     ?world_id=..\..\elsewhere\worlds\victim
-    #     ?world_id=..%5C..%5Celsewhere%5Cworlds%5Cvictim
-    #     ?world_id=C:\elsewhere\worlds\victim
+    # BOTH identifiers are unauthenticated and BOTH escape, and neither
+    # check below can stand in for the other. The session check is anchored
+    # on `derived_dir(world_id)`, so an escaped `world_id` moves the anchor
+    # and the session check still passes relative to the escaped base,
+    # serving a complete world from outside the configured root.
     #
     # `world_id` is a PATH parameter, so Starlette's `[^/]+` excludes a
     # forward slash -- and on Windows, the only platform this Tower ships
     # on, a BACKSLASH is equally a separator and is not excluded. `%5C` is
     # decoded into the path before routing, so it matches too. (`%2F` does
-    # not match the route at all and is not a vector.)
+    # not match the route at all and is not a vector.) An absolute
+    # `world_id` (`C:\...`) escapes the same way.
     #
-    # The SAME direct-child rule as the session check below, against the
-    # worlds directory. A whitelist over `list_world_ids()` was written
-    # first and replaced: it is a directory scan on every request, and it
-    # MEASURED at 4.16 ms against 120 real worlds -- 69% of this
-    # function -- growing with a directory that only ever grows (17.4 ms
-    # at 500 worlds, 167.7 ms at 2,000), and paid again for every segment
-    # chunk. This rule is O(1) and exactly as tight.
+    # The world gets the SAME direct-child rule as the session check below,
+    # against the worlds directory. `world_dir()` is
+    # `<root>/worlds/<world_id>`, so `worlds/` is fixed and the caller does
+    # not control it; what moves with `world_id` is the base for the
+    # SESSION check, which is why that one cannot catch this and both are
+    # needed. The rule is O(1); `contained_world_id` gives the cost of the
+    # whitelist alternative.
     #
-    # It replaced the whitelist because the reasoning behind that choice
-    # was wrong, not merely expensive. The note said there was "no
-    # per-world base to anchor on"; there is. `world_dir()` is
-    # `<root>/worlds/<world_id>`, so `worlds/` is fixed and the attacker
-    # does not control it -- what moves with `world_id` is the base for
-    # the SESSION check twelve lines below, which is why that one cannot
-    # catch this and both are needed.
-    #
-    # `read_world` still requires a real `world.json` immediately after,
-    # so nothing that used to be served stops being served.
+    # `read_world` still requires a real `world.json` immediately after.
     #
     # The base is asked of the store with a separator-free probe rather
     # than by writing "worlds" here, so this stays ignorant of the layout
@@ -244,22 +231,21 @@ def _read(store, world_id: str, session_id: str):
     # geometry routes -- declared as a bare `str`, so unlike a path
     # parameter it is not restricted to `[^/]+` -- and it reaches
     # `read_derived` as `derived_dir(world_id) / session_id`, an unguarded
-    # join. Measured before this guard: `?session_id=../../../../elsewhere`
-    # and `?session_id=C:/elsewhere` both answered 200 and served poses and
-    # points read from OUTSIDE the world root, under this world's id.
+    # join. Unchecked, a relative traversal (`../../../../elsewhere`) or an
+    # absolute path (`C:/elsewhere`) answers 200 with poses and points read
+    # from OUTSIDE the world root, under this world's id.
     #
     # NOT a `..` scan: an absolute path does not traverse out of the base,
     # it REPLACES it (`Path("/a/b") / "C:/elsewhere"` is `C:/elsewhere`),
     # so a scan for `..` misses the more dangerous half entirely.
     #
     # A DIRECT-CHILD check rather than a whitelist against
-    # `list_session_ids`, and the difference was measured rather than
-    # reasoned. The whitelist was written first and reddened 11 tests in
-    # `test_world_builder_placements.py`: `_tiny_world` writes a world and
-    # a derived tree without a session record, so a legitimate derived
-    # tree can exist for a session `list_session_ids` does not return.
-    # Requiring the session record would have made a containment fix into
-    # a behaviour change, which is not what this is for.
+    # `list_session_ids`: `_tiny_world` (in
+    # `test_world_builder_placements.py`) writes a world and a derived tree
+    # without a session record, so a legitimate derived tree can exist for
+    # a session `list_session_ids` does not return (a whitelist failed 11
+    # tests there). Requiring the session record would make a containment
+    # fix into a behaviour change.
     #
     # `parent == base` is also the TIGHTER rule, not merely the cheaper
     # one. A session id names one directory, so anything with a separator
@@ -272,11 +258,11 @@ def _read(store, world_id: str, session_id: str):
     try:
         # `.parent.resolve()`, NOT `.resolve().parent`. Resolving the whole
         # path follows the LEAF, so a session directory that is a junction
-        # or symlink resolved to its target and compared unequal against
-        # the derived root -- refusing real geometry. Reproduced with
-        # `mklink /J`. Resolving the parent is exactly as tight, because a
-        # value that escapes moves the parent too: `..\..\x` has parent
-        # `<derived>\..\..`, and an absolute value has its own root.
+        # or symlink (`mklink /J`) resolves to its target, compares unequal
+        # against the derived root, and refuses real geometry. Resolving
+        # the parent is exactly as tight, because a value that escapes
+        # moves the parent too: `..\..\x` has parent `<derived>\..\..`, and
+        # an absolute value has its own root.
         if (derived_root / session_id).parent.resolve() != derived_root.resolve():
             return None
     except (OSError, ValueError):
@@ -316,12 +302,10 @@ def usable_placements(store, world_id: str, session_id: str) -> dict:
     if not stored:
         return {}
 
-    # THE SESSION'S OWN MANIFEST. This read the world's, which names
-    # whichever session built last, so every placement of an OLDER session
-    # was compared against another session's digest, failed, and was
-    # served as unplaced -- an earlier walk could not be composited at all.
-    # Found by a reviewer who checked what else still read the world-level
-    # copy after `derived_is_current` had been given a session id.
+    # THE SESSION'S OWN MANIFEST. The world's names whichever session built
+    # last, so every placement of an OLDER session would be compared
+    # against another session's digest, fail, and be served as unplaced --
+    # an earlier walk could not be composited at all.
     manifest = _session_manifest(store, world_id, session_id) or {}
     digest = manifest.get("input_digest")
     fresh = {}
@@ -387,11 +371,11 @@ def placement_hash(placement) -> str:
             "scale": placement.scale,
             "reference_segment": placement.reference_segment,
             "frame_revision": placement.frame_revision,
-            # Served, therefore hashed. It was omitted, and on the real
-            # corpus 26 of 29 segments are refused and shared ONE
-            # placement_hash -- so a re-registration that changed every
-            # refusal reason moved no hash a client is told to key on,
-            # and a conforming client showed stale reason text forever.
+            # Served, therefore hashed. Left out, a re-registration that
+            # changed only the refusal reasons would move no hash a client
+            # is told to key on, and a conforming client would show stale
+            # reason text forever; on the real corpus 26 of 29 segments are
+            # refused and would share ONE placement_hash.
             "refusal_reason": placement.refusal_reason,
         }
     canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
@@ -441,14 +425,14 @@ def _session_manifest(store, world_id: str, session_id: str) -> dict | None:
     The session's own first -- `write_derived` writes one beside the poses
     and points it describes -- then the world's, but only if it names this
     session. A world manifest naming another session is not evidence about
-    this one, and treating it as such is how an older walk was served
-    another session's coverage classes and had every placement refused.
+    this one, and treating it as such would serve an older walk another
+    session's coverage classes and refuse every one of its placements.
     """
     # `purpose="identity"`: this module's callers ask WHICH BUILD produced
-    # a tree -- `usable_placements` compares `input_digest`, `_is_current`
-    # compares `input_digest` -- and a manifest carrying a session id and a
-    # digest answers that completely. See `manifest_describing` for why
-    # neither the figures nor the SCHEMA belongs on this path.
+    # a tree -- `usable_placements` compares `input_digest` -- and a
+    # manifest carrying a session id and a digest answers that completely.
+    # See `manifest_describing` for why neither the figures nor the SCHEMA
+    # belongs on this path.
     return manifest_describing(store, world_id, session_id, purpose="identity")
 
 
@@ -472,29 +456,28 @@ def manifest_for(store, world_id: str, session_id: str | None = None) -> dict | 
 def _solve_segments(store, world_id: str, session_id: str) -> dict:
     """The global solve's per-segment verdicts, or `{}`.
 
-    **A `.get` CHAIN IS NOT A GUARD.** This was
-    `(manifest or {}).get("global_solve") or {}).get("segments") or {}`,
-    which raises `AttributeError` the moment `global_solve` is a string or
-    a list rather than a dict, and again if `segments` is -- straight out
-    of `build_manifest` and into an HTTP **500** on a route whose own
-    comment promises "404 now means ABSENT only", where the phone has no
-    branch for a 500.
+    **A `.get` CHAIN IS NOT A GUARD.** `(manifest or {}).get("global_solve")
+    or {}).get("segments") or {}` raises `AttributeError` the moment
+    `global_solve` is a string or a list rather than a dict, and again if
+    `segments` is -- straight out of `build_manifest` and into an HTTP
+    **500** on a route whose 404 means ABSENT only, and where the phone has
+    no branch for a 500. So the lookup is type-checked: a malformed
+    manifest degrades to `{}`. `validate_manifest` checks that required
+    keys are present, not what shape `global_solve` or `segments` has.
 
-    It was reachable at HEAD for a schema-1 manifest with a malformed
-    `global_solve`. Round 18 WIDENED it: `manifest_for` became identity-only
-    and stopped checking `schema_version`, so manifests from an unknown
-    schema -- whose fields `validate_manifest`'s own comment says "this
-    build does not know" -- now reach this chain too. A reviewer measured
-    four shapes going 200 -> 500 across that change, and pointed out it
-    becomes broad rather than narrow the moment `SCHEMA_VERSION` is
-    bumped.
+    Four malformed shapes of `global_solve`/`segments` measured 200 -> 500
+    on a manifest read without those checks. A manifest from an unknown
+    schema (whose fields `validate_manifest` says "this build does not
+    know") is refused by the figures read; the checks cover a manifest of
+    the current schema whose `global_solve` is malformed.
 
-    The purpose split stays as it is -- `usable_placements` genuinely
-    needs only the digest, and refusing 408 real placements over a record
-    schema bump was the defect that split was for. What was wrong is
-    reading a FIGURES-shaped field off the identity path without checking
-    its shape. Both halves are fixed here: the read is type-checked, and
-    the coverage verdicts come from a manifest validated for figures.
+    The manifest is read with `purpose="figures"`, which holds it to the
+    schema and the required keys, because coverage verdicts are figures.
+    The identity path (`usable_placements`) deliberately does not: it
+    needs only the digest, and refusing 408 real placements across 10
+    sessions over a record schema bump is the defect that split prevents
+    (see `manifest_describing`). A FIGURES-shaped field must not be read
+    off the identity path without checking its shape.
     """
     manifest = manifest_describing(store, world_id, session_id, purpose="figures")
     if not isinstance(manifest, dict):
@@ -512,9 +495,8 @@ def coverage_for_segment(index: int, poses: list, points: list, solve_segments: 
     null when nothing has judged a segment that does have points."""
     judged = solve_segments.get(str(index)) or solve_segments.get(index)
     # `isinstance`, not truthiness: a `segments` map whose VALUES are
-    # strings passed the `if judged` and raised `AttributeError` on the
-    # `.get` below. Same class as the chain above, one level deeper, and
-    # a reviewer produced it.
+    # strings would pass an `if judged` and raise `AttributeError` on the
+    # `.get` below. Same class as `_solve_segments`, one level deeper.
     if isinstance(judged, dict) and judged.get("coverage") in (
         "confident", "partial", "unresolved"
     ):
@@ -525,10 +507,37 @@ def coverage_for_segment(index: int, poses: list, points: list, solve_segments: 
 
 
 def build_manifest(store, world_id: str, session_id: str) -> dict | None:
+    """The geometry manifest for one session: what segments exist and how
+    to fetch and trust each (`GET /worlds/{id}/geometry/manifest`).
+
+    Inputs are a `WorldStore`, the requested `world_id` and a `session_id`;
+    both ids come from an unauthenticated request. The world id is first
+    contained and canonicalised (`contained_world_id`), then `_read` loads
+    the session's derived poses and points grouped by `segment_index`
+    together with the `current` flag; `usable_placements` and the global
+    solve's per-segment verdicts (`_solve_segments`) are read beside them.
+    Each segment, in index order, yields a row: `content_hash` (poses and
+    points only), `frame_id`, the placement fields and `placement_hash`,
+    `resolution_state`, `dominant_degeneracy`, keyframe, solved and point
+    counts, `bounds`, and `coverage`. The result adds `contract`, the
+    canonical `world_id`, `session_id`, `current`, `geometry_revision`,
+    `pose_convention`, `scale` and `segment_count`. Returns `None` when
+    the world or the session's derived tree is absent; the route answers
+    404 for that and for nothing else.
+
+    Why it is shaped this way: a segment's placement is hashed apart from
+    its content, so `geometry_revision` rolls up BOTH hash lists -- a
+    placement-only change moves no content hash and would otherwise give
+    a polling client no signal. `current` is False for geometry that is
+    real but behind the newest keyframes (the normal state during a walk),
+    where hiding it would starve the fragment gallery. The payload carries
+    the canonical world id, never the caller's spelling. Wire shapes and
+    hash definitions are pinned by `docs/contracts/WORLD-BUILDER-GEOMETRY.md`.
+    """
     # Rebound BEFORE anything reads it, because this function builds the
-    # payload from its own copy: canonicalising inside `_read` changed a
-    # local and left `world_id` in the reply exactly as the caller spelled
-    # it. Found by a reviewer, and the first fix for it did nothing.
+    # payload from its own copy: canonicalising inside `_read` would change
+    # only a local and leave `world_id` in the reply exactly as the caller
+    # spelled it.
     world_id = contained_world_id(store, world_id)
     if world_id is None:
         return None
@@ -559,11 +568,11 @@ def build_manifest(store, world_id: str, session_id: str) -> dict | None:
             "solved_count": sum(1 for p in poses if p.get("status") == "solved"),
             "point_count": len(points),
             "bounds": _bounds(points),
-            # Additive (2026-09-06). How much to trust this segment's
-            # geometry, from the global solve when it ran:
-            # confident | partial | unresolved, or null when no solve has
-            # judged it. Unresolved is "keyframes exist, no geometry";
-            # unseen space has no segment at all and is never drawn.
+            # How much to trust this segment's geometry, from the global
+            # solve when it ran: confident | partial | unresolved, or null
+            # when no solve has judged it. Unresolved is "keyframes exist,
+            # no geometry"; unseen space has no segment at all and is
+            # never drawn.
             "coverage": coverage_for_segment(index, poses, points, solve_segments),
         })
 
@@ -571,7 +580,7 @@ def build_manifest(store, world_id: str, session_id: str) -> dict | None:
         "contract": GEOMETRY_CONTRACT,
         "world_id": world_id,
         "session_id": session_id,
-        # Additive, and deliberately not a contract bump: CARTRIDGE-RESULTS
+        # Additive, deliberately not a contract bump: CARTRIDGE-RESULTS
         # section 12 says a field an older decoder ignores is not grounds
         # for one. False means "this geometry is real, and behind the
         # newest keyframes" -- the normal state during a walk.
@@ -597,12 +606,31 @@ def build_segment(
     store, world_id: str, session_id: str, segment_index: int,
     max_points: int | None = None,
 ) -> dict | None:
-    """One segment's geometry, in its own frame.
+    """One segment's geometry, in its own frame
+    (`GET /worlds/{id}/geometry/segment/{n}`).
+
+    Inputs are a `WorldStore`, the requested `world_id`, a `session_id`, a
+    `segment_index` and an optional `max_points`. The world id is
+    contained and canonicalised, `_read` loads the session's derived tree
+    grouped by segment together with the `current` flag, and
+    `usable_placements` supplies this segment's placement. The result
+    carries `contract`, `current`, `segment_index`, the segment's
+    `content_hash`, `frame_id`, the placement fields and `placement_hash`,
+    the poses (`keyframe_id`, `status`, `degeneracy`, `rotation`,
+    `translation`) and the points as bare `xyz` lists, plus
+    `points_sent`, `points_total` and `point_sampling` (`"none"` or
+    `"stride"`). Returns `None` when the world, the session's tree or the
+    segment is absent; `max_points < 1` raises `ValueError`.
 
     `max_points` exists so a budget lever is available without a contract
     change. It defaults to unlimited: the largest segment on the real walk
     is 3,033 points, and because a closed segment is fetched exactly once
-    that is a one-time cost rather than a per-revision one.
+    that is a one-time cost rather than a per-revision one. When it caps
+    the cloud, points are taken evenly across the whole cloud, never as a
+    prefix, and `content_hash` is taken over the whole segment before
+    sampling, so it names the segment and not this transfer. `current` is
+    repeated here from the manifest so a client holding only a cached
+    chunk can still tell the geometry is behind the newest keyframes.
     """
     world_id = contained_world_id(store, world_id)
     if world_id is None:
@@ -637,8 +665,8 @@ def build_segment(
             #
             # An INTEGER stride cannot do this. `total // max_points`
             # collapses to 1 whenever max_points > total/2 -- so capping
-            # 3,033 points at 2,000 would return points[0:2000], which is
-            # exactly the truncation this comment claims to avoid.
+            # 3,033 points at 2,000 would return points[0:2000], a prefix.
+            # Hence the float step.
             step = total / max_points
             sent = [points[int(i * step)] for i in range(max_points)]
             sampling = "stride"
