@@ -5,39 +5,18 @@
 
 import Foundation
 
-/// One `frame_result` message, as the Tower actually sends it today.
+/// One `frame_result` message, as the Tower sends it.
 ///
-/// Not a guess at a future protocol — every field here is one the Tower
-/// builds in `tower/tower/routes/ws.py:148-165`, and every one is optional (or
-/// empty-by-default) because the decoder must not fabricate a value the
-/// message omitted.
+/// Every field is one the Tower builds in `tower/tower/routes/ws.py` (the
+/// `frame_result` payload), and every one is optional (or empty by default)
+/// because the decoder must not fabricate a value the message omitted.
 ///
-/// ## The earlier version of this comment was wrong, and it cost a cartridge
-///
-/// It read: *"The Tower's whole per-frame vocabulary is `seq`,
-/// `mean_intensity` and `processing_ms` — it runs one fixed handler and has no
-/// module runtime."* Both halves were false. `ws.py` sends **five keys
-/// unconditionally** — `seq`, `processing_ms`, `result_value`, `result_label`
-/// and `stage_ms` — and adds `mean_intensity` and `metrics` when the
-/// experiment produced them. The Tower does have a module runtime:
-/// `tower/tower/main.py` builds a `ModuleContainer` around a live
-/// `ExperimentalCVModule`, and a running Tower reports `module_state: active`
-/// on `/health`.
-///
-/// So `result_value` and `result_label` — the experiment's own answer, the
-/// only thing the Tower says about what it *concluded* rather than how long it
-/// took — were arriving on every single frame and being dropped on the floor,
-/// while the Experimental CV Lab workspace told the wearer the Tower "cannot
-/// run experiments yet".
-///
-/// The Tower's registry used to say the same thing from its side:
-/// `experimental_cv` was `not_offered` on the result channel because *"results
-/// already reach the client on `frame_result`"*. **That has changed.** A Tower
-/// speaking `experimental_cv.status/2026-08-27` offers the cartridge, and every
-/// `frame_result` now carries a `cv_lab` block naming the run, the experiment
-/// and the provenance that produced the numbers beside it — see `cvLab` below.
-/// Everything that was on this message before is still there, unchanged, in the
-/// same place.
+/// The Tower sends five keys unconditionally — `seq`, `processing_ms`,
+/// `result_value`, `result_label` and `stage_ms` — and adds `mean_intensity`
+/// and `metrics` when the experiment produced them, and the `cv_lab` block
+/// when a CV Lab is running. `result_value` with `result_label` is the
+/// experiment's own answer: the only thing the Tower says about what it
+/// concluded rather than how long it took.
 struct TowerFrameResult: Equatable, Sendable {
     /// The frame this result answers, matching the `seq` the app sent.
     let sequence: Int?
@@ -103,14 +82,10 @@ extension TowerFrameResult {
 /// The `cv_lab` block on a `frame_result` —
 /// `experimental_cv.frame_result/2026-08-27`.
 ///
-/// ## What this closes
-///
-/// Before it, the Tower's per-frame reply named the *number* and not the
-/// experiment: `result_value` with `result_label` beside it, and no way to tell
-/// which of eight experiments produced them, on which run, measured or
-/// inferred. A result from a previous experiment could be read as a result from
-/// the current one, and the Experimental CV Lab workspace said so on screen
-/// because it was true.
+/// Without it a reply names the number and not the experiment: no way to tell
+/// which of eight experiments produced `result_value`, on which run, measured
+/// or inferred, so a result from a previous experiment could be read as one
+/// from the current one.
 ///
 /// ## The one rule a client must not get wrong
 ///
@@ -126,8 +101,8 @@ extension TowerFrameResult {
 /// for exactly that reason, which is why comparing `runID` alone is sufficient
 /// and no separate instance check is needed.
 ///
-/// The gate itself is in `handleInboundMessage`, not here: a value type cannot
-/// know which run is being watched.
+/// The gate itself is in `TowerClient.handleFrameResult`, not here: a value
+/// type cannot know which run is being watched.
 struct TowerFrameResultProvenance: Equatable, Sendable {
     /// Opaque, compared for equality only.
     let contract: String?
@@ -140,10 +115,10 @@ struct TowerFrameResultProvenance: Equatable, Sendable {
     /// **Dense within the run, from 1.**
     ///
     /// This is the field that orders results. The message's own `seq` is the
-    /// phone's capture index and **skips by design** — the sender forwards one
-    /// frame in thirty — so it cannot order anything. That the two are
-    /// different numbers with different meanings on the same message is the
-    /// single easiest thing to get wrong here.
+    /// phone's capture index and **skips by design** — the sender forwards only
+    /// the frames its rate gate selects — so it cannot order anything. That the
+    /// two are different numbers with different meanings on the same message is
+    /// the single easiest thing to get wrong here.
     let resultSeq: Int?
     let experimentID: String?
     /// The Tower's own name for the experiment, for display.
@@ -195,14 +170,9 @@ struct TowerFrameResultProvenance: Equatable, Sendable {
 
 /// One `frame_error`: the Tower answering a frame it did not process.
 ///
-/// ## Why this had to be added
-///
-/// `handleInboundMessage` had **no case for it**. Every `frame_error` the Tower
-/// has ever sent fell through to `default:`, was logged as an unknown message
-/// type, and was discarded — so "the Lab is paused", "that frame was
-/// undecodable" and "the socket is wedged" were indistinguishable from this
-/// side, and the answer to *"I pressed Start and nothing happened"* was on the
-/// wire and being thrown away.
+/// It is what tells "the Lab is paused", "that frame was undecodable" and "the
+/// socket is wedged" apart from this side, and it answers *"I pressed Start
+/// and nothing happened"*.
 ///
 /// ## Refusal, not failure
 ///
@@ -253,9 +223,8 @@ struct TowerFrameRefusal: Equatable, Sendable {
 /// state. A client that treated every arriving document as an answer would
 /// report "started" every two seconds for as long as the Lab was running.
 ///
-/// Verified against a live Tower: a plain `cv_lab_status` read comes back with
-/// no `accepted_command` at all, while `cv_lab_start`/`pause`/`resume`/`stop`
-/// each echo their own name.
+/// A plain `cv_lab_status` read comes back with no `accepted_command` at all,
+/// while `cv_lab_start`/`pause`/`resume`/`stop` each echo their own name.
 ///
 /// The `status` document itself is passed through **undecoded**, for the same
 /// reason `CartridgeResultEnvelope.payload` is: this file owns the transport

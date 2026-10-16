@@ -7,9 +7,9 @@ import Foundation
 
 /// The bounded set of frame sends currently outstanding on one WebSocket.
 ///
-/// Split out of `TowerClient` because the send window turned out to be the
-/// pipeline's *rate limiter*, not merely a memory guard, and a rate limiter
-/// deserves to be reasoned about — and tested — on its own.
+/// Its own type because the send window is the pipeline's *rate limiter*, not
+/// merely a memory guard, and a rate limiter deserves to be reasoned about —
+/// and tested — on its own.
 ///
 /// ## Why this is a rate limiter
 ///
@@ -23,8 +23,7 @@ import Foundation
 /// which is bounded *above* by the frame-rate gate and bounded *below* by
 /// nothing at all. A capacity of 2 against a 290 ms slot lifetime is 6.9 fps
 /// no matter how much bandwidth is spare, and against a 590 ms slot lifetime
-/// is 3.4 fps — the two figures the physical baseline actually reported. The
-/// window was doing its job; the job was mis-sized.
+/// is 3.4 fps — the two rates a physical run reported.
 ///
 /// ## Capacity is a latency budget, not a magic number
 ///
@@ -42,10 +41,10 @@ import Foundation
 /// indefinitely. `URLSessionWebSocketTask` offers no way to cancel or time out
 /// an individual outstanding `send`, so the only available remedy is at
 /// connection granularity — which is why this type reports `isStalled(at:)`
-/// and leaves the remedy to its owner. The physical baseline recorded a
-/// 52-second peer-side stall; with no detection that is 52 seconds during
-/// which every slot is held, every frame is dropped, and the frames eventually
-/// written are 52 seconds stale. Bounding that is the freshness invariant in
+/// and leaves the remedy to its owner. A 52-second peer-side stall has been
+/// recorded; with no detection that is 52 seconds during which every slot is
+/// held, every frame is dropped, and the frames eventually written are 52
+/// seconds stale. Bounding that is the freshness invariant in
 /// docs/03-ROADMAP.md V0.7, stated in time rather than in frames.
 ///
 /// A pure value type taking the current time as a parameter, so slot lifetime,

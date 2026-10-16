@@ -27,13 +27,11 @@ enum MonotonicClock {
 /// Decides which frames of an incoming stream to forward, targeting a fixed
 /// delivered frame rate.
 ///
-/// This replaces the fixed 1-in-30 frame stride that used to gate Tower
-/// transmission. That stride existed to throttle *console logging* to roughly
-/// 1 Hz at 24 fps; transmission was coupled to the same condition by
-/// accident, which is what capped delivery at 24/30 ≈ 0.8 fps. A stride is
-/// also the wrong unit — it silently multiplies any change in the source
-/// rate, whereas the pipeline's actual requirement is expressed in delivered
-/// frames per second and holds whether DAT produces 15, 24 or 30 fps.
+/// A rate rather than a stride ("every Nth frame"). A fixed 1-in-30 stride
+/// throttles to roughly 1 Hz at 24 fps, which capped delivery at
+/// 24/30 ≈ 0.8 fps; and a stride silently multiplies any change in the source
+/// rate, whereas the pipeline's requirement is expressed in delivered frames
+/// per second and holds whether DAT produces 15, 24 or 30 fps.
 ///
 /// Selection is deadline-based rather than "has `interval` elapsed since the
 /// last selection". The latter aliases badly: at a 24 fps source and a 12 fps
@@ -60,26 +58,29 @@ struct FrameRateGate {
 
     /// Rate at which captured DAT frames are forwarded to the Tower.
     ///
-    /// 12 is a deliberately conservative first step up from the 0.8 fps this
-    /// replaced, not a ceiling. docs/03-ROADMAP.md V0.7 targets ~15 fps, and
-    /// the mechanism reaches it exactly — the deadline accumulates, so a
-    /// target need not divide the source rate (see
-    /// `FrameRateGateTests.testTargetIsHeldAtTheRoadmapFifteenFPS`). What is
-    /// not yet measured is whether the main actor has room for it: per
-    /// selected frame it runs `makeUIImage`, a JPEG encode, base64, JSON
-    /// serialisation and a viewfinder render, all on the main thread, which is
-    /// an estimated 15–25 ms — roughly 20–30% of the main thread at 12 fps and
-    /// uncomfortable at 15. Bandwidth is the same story: ~2 Mbit/s sustained
-    /// at 12, ~2.5 at 15, over a remote Tailscale path.
+    /// `configuredTowerTargetFPS` resolves it once per process: the launch
+    /// environment's `IOS_TOWER_TARGET_FPS`, else the build setting of the same
+    /// name (through the Info.plist key), else `defaultTowerTargetFPS`.
     ///
-    /// So raise this to 15 once a physical run confirms the headroom, using
-    /// the `Encode ms` and `Backlog` rows on the developer surface. It is a
-    /// one-constant change; do not raise it on estimates alone.
+    /// The invariant: every reader sees this one value. The gate's selection
+    /// rate, the sender's send-window capacity
+    /// (`TowerClient.defaultMaxFramesInFlight`), the IMU log's header and the
+    /// Home text must agree, which is why nothing re-reads the setting.
     ///
-    /// The measuring run itself sets the build setting
-    /// `IOS_TOWER_TARGET_FPS` (or the launch environment's variable of the
-    /// same name), read once here; every reader -- the gate, the sender's
-    /// window, the IMU log's header, the Home text -- then agrees on it.
+    /// The default, 12, is a step up from the 0.8 fps a 1-in-30 stride
+    /// delivered, not a ceiling. docs/03-ROADMAP.md V0.7 targets ~15 fps, and
+    /// the gate reaches it exactly — the deadline accumulates, so a target need
+    /// not divide the source rate (see
+    /// `FrameRateGateTests.testTargetIsHeldAtTheRoadmapFifteenFPS`).
+    ///
+    /// The cost of a higher rate is on the main actor and the link. Per
+    /// selected frame the main thread runs `makeUIImage`, a JPEG encode,
+    /// base64, JSON serialisation and a viewfinder render: an *estimated*
+    /// 15–25 ms, roughly 20–30% of the main thread at 12 fps and uncomfortable
+    /// at 15. Bandwidth is an *estimated* ~2 Mbit/s sustained at 12, ~2.5 at 15,
+    /// over a remote Tailscale path. Neither figure is measured; the developer
+    /// surface's `Encode ms` and `Backlog` rows measure them, and 15 needs a
+    /// physical run showing the headroom first.
     static let towerTargetFPS: Double = configuredTowerTargetFPS(
         environment: ProcessInfo.processInfo.environment, info: Bundle.main.infoDictionary ?? [:])
 

@@ -112,8 +112,7 @@ nonisolated struct TowerCaptureState: Equatable, Sendable {
 /// `enabled: false` means nothing is configured to follow a capture;
 /// `enabled: true` with no workers is correct between walks and wrong during
 /// one. Carried here because it answers "why isn't World Builder changing?"
-/// from the phone, which was previously only answerable by noticing that no
-/// world directory had appeared on a machine nobody was looking at.
+/// from the phone, rather than from the Tower's own disk.
 nonisolated struct TowerCaptureWorkers: Equatable, Sendable {
     let enabled: Bool?
     /// How many workers are running. `nil` when the Tower sent no `workers`

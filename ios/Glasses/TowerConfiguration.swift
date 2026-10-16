@@ -18,8 +18,7 @@ import Foundation
 ///    `TowerAddressPolicy`.
 /// 3. **`defaultAuthority`**, the development Tower over Tailscale.
 ///
-/// With nothing saved and no override this is exactly the compiled-in address
-/// it always was.
+/// With nothing saved and no override this is the compiled-in address.
 ///
 /// ## Fixed for the life of the process, on purpose
 ///
