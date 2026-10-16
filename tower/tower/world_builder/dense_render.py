@@ -10,9 +10,8 @@ so in a BROWSER `fetch` and `XMLHttpRequest` are blocked outright by the
 absent `connect-src`, and a page that fetched its points beside itself would
 simply not work.
 
-THE PHONE DOES NOT SEE THAT HEADER, and an earlier version of this note
-claimed it did. iOS fetches the page with `URLSession`, keeps the body, drops
-the response headers, and hands the string to
+THE PHONE DOES NOT SEE THAT HEADER. iOS fetches the page with `URLSession`,
+keeps the body, drops the response headers, and hands the string to
 `WKWebView.loadHTMLString(_:baseURL:nil)` (`WorldRenderViewer.swift`). No CSP
 applies there at all. What blocks a network fetch on the phone is the
 navigation delegate refusing every navigation but the first, plus the null
@@ -33,10 +32,10 @@ The LOD ladder is a fraction of each scene's own median depth, so its point
 count follows the SIZE of the room, not the size of the payload. Measured over
 five real worlds the mobile level ranges from 39k points to 1.45 M -- 0.6 MB to
 23 MB, which is 31 MB of base64 for the largest. A phone must not be handed
-that, and the existing 2-D viewer has already been seen killing the WebKit
-content process. So the page enforces a byte budget, and when a level exceeds
-it the points are thinned by CONFIDENCE FIRST: the geometry several cameras
-agreed on survives, and the weakest goes first.
+that: the existing 2-D viewer can kill the WebKit content process. So the
+page enforces a byte budget, and when a level exceeds it the points are
+thinned by a COARSER VOXEL GRID over the whole extent (`thin_to_budget`);
+a confidence trim is only the fallback for a residue the grid leaves.
 """
 
 from __future__ import annotations
@@ -62,18 +61,10 @@ from tower.world_builder.dense_pipeline import (
 logger = logging.getLogger(__name__)
 
 # The page is one HTML string, so this is the whole transfer. 6 MB of binary is
-# about 8 MB of base64; the existing sparse page has been observed killing the
-# WKWebView content process well below that in point COUNT, and a GPU buffer is
-# far cheaper per point than the 2-D canvas it used.
+# about 8 MB of base64. A byte budget is the right unit: the sparse 2-D page can
+# kill the WKWebView content process well below that in point COUNT, and a GPU
+# buffer is far cheaper per point than the 2-D canvas.
 MOBILE_BYTE_BUDGET = 6 * 1024 * 1024
-# NOT REACHABLE FROM THE ROUTE, and three reviews have called it dead code.
-# It is the budget the offline inspection tooling passes to
-# `build_dense_page(budget_bytes=...)` to look at a world at full density in
-# a desktop browser -- which is how every visual check in this lane was made.
-# Kept for that, named so the next reader does not have to guess, and
-# deliberately not wired to `max_points`: the phone's budget is the one the
-# contract specifies and a client cannot ask to exceed it.
-DESKTOP_BYTE_BUDGET = 48 * 1024 * 1024
 
 VIEWER_FILENAME = "dense_viewer.html"
 
@@ -85,10 +76,8 @@ TOKEN_POINTS = "__WB_POINTS_B64__"
 
 # What the picture IS, in one sentence, always shown. `WORLD-BUILDER-WORLDS.md`
 # requires the render page to carry it, and rule 2 says the page never claims
-# more than it does. The dense page is now what that route serves, so the
-# obligation is this module's. The sparse page's sentence would be a lie here
-# and this one would be a lie there, so they are different sentences with the
-# same job: name the thing, and refuse the word "scan".
+# more than it does. The sparse page has its own sentence; each would be a lie
+# on the other page. Same job: name the thing, and refuse the word "scan".
 CAPTION = ("Dense reconstruction: per-pixel depth from a neural network, "
            "anchored to the structure-from-motion solve and kept only where "
            "several cameras agreed. Not a surface, not a mesh, not metric scale.")
@@ -108,11 +97,6 @@ class DenseViewerUnavailable(Exception):
 
 def viewer_template_path() -> Path:
     return Path(__file__).resolve().parent / VIEWER_FILENAME
-
-
-def has_dense(store, world_id: str, session_id: str) -> bool:
-    return read_dense_manifest(store, world_id, session_id) is not None
-
 
 
 def _voxel_count(X, voxel: float) -> int:
@@ -135,17 +119,13 @@ def _voxel_count(X, voxel: float) -> int:
 def thin_to_budget(X, C, F, budget_bytes: int, *, voxel_hint: float | None = None):
     """Make the buffer fit by making the picture COARSER, not smaller.
 
-    This used to sort by confidence and keep the best N, which sounds honest and
-    is not. Confidence is not distributed evenly through a room: it is high
-    where the wearer stood still and low at the far end of every space they
-    walked past once. A global confidence threshold therefore does not thin the
-    room, it DELETES the parts of it that were seen from fewer angles. Measured
-    on the three-room chain, whose mobile level is 2.6 M points against a
-    393 k budget: the old code shipped `confidence >= 9`, kept 15% of the cloud,
-    and what reached the phone was a scatter of isolated wall and ceiling slabs
-    with two of the three rooms simply gone. The caption said "some gaps are
-    thinning", which was true and no help -- the wearer opens their room and
-    does not recognise it.
+    Not by keeping the N most confident points. Confidence is not distributed
+    evenly through a room: it is high where the wearer stood still and low at
+    the far end of every space they walked past once, so a global confidence
+    threshold DELETES the parts seen from fewer angles. Measured on the
+    three-room chain (mobile level 2.6 M points, 393 k budget): a
+    `confidence >= 9` cut kept 15% of the cloud, leaving a scatter of isolated
+    wall and ceiling slabs with two of the three rooms gone.
 
     So the budget is met the same way the LOD ladder meets it: a coarser voxel
     grid over the WHOLE extent, which keeps every part of the room and lowers
@@ -156,33 +136,32 @@ def thin_to_budget(X, C, F, budget_bytes: int, *, voxel_hint: float | None = Non
     merged into this one" rather than "the cameras that agreed on this point".
     Measured, the difference is small -- mean confidence moves 6.20 to 6.35,
     6.18 to 6.24, and on one world 3.89 DOWN to 3.83 -- but it is not the same
-    quantity, and an earlier version of this docstring claimed it was.
+    quantity.
 
     The cell size is solved for and then CHECKED. These points lie on surfaces,
     so their count scales as roughly `voxel ** -2`, and one step of that law
     lands close -- but only if it is fed the count at the CURRENT cell, and the
     first step is fed the unreduced count, so the first answer is always short.
-    An earlier version stopped there, which is why it shipped 75% of the budget
-    with a size hint and 23% without one while four tests passed. The loop now
-    probes until the count is inside 85-100% of the budget or the step stops
-    moving, keeping the best result seen.
+    Stopping at that first answer spends 75% of the budget with a size hint and
+    23% without one, and four tests pass on it. The loop therefore probes
+    until the count is inside 85-100% of the budget or the step stops moving,
+    keeping the best result seen.
 
     `_voxel_count` predicts the count without building the reduction, so only
-    the winning cell is ever materialised -- but probing is not free, and the
-    honest figure is that this costs about **2.6 s on 2.6 M points with a size
-    hint and 3.9 s without one**, against 0.9 s for the version that stopped at
-    the first answer. That is the price of spending the budget instead of a
-    quarter of it, on a page that is 8 MB anyway, composed on request and cached
-    nowhere by contract.
+    the winning cell is ever materialised -- but probing is not free: about
+    **2.6 s on 2.6 M points with a size hint and 3.9 s without one**, against
+    0.9 s for stopping at the first answer. That is the price of spending the
+    budget instead of a quarter of it, on a page that is 8 MB anyway, composed
+    on request and cached nowhere by contract.
 
     Any residue -- overshoot from a scene that is not surface-like -- is
     trimmed by confidence, which at a few percent is the size of cut that trim
     is actually safe for.
 
     Returns (X, C, F, thinned_to_confidence), where the last value is the
-    confidence floor of a CONFIDENCE cut and None when none was applied, which
-    is now the normal case. Whether the picture is coarser than the artifact is
-    a separate fact and the config reports it separately.
+    confidence floor of a CONFIDENCE cut and None when none was applied (the
+    usual case). Whether the picture is coarser than the artifact is a
+    separate fact and the config reports it separately.
     """
     max_points = max(1, budget_bytes // POINT_STRIDE_BYTES)
     if len(X) <= max_points:
@@ -196,18 +175,18 @@ def thin_to_budget(X, C, F, budget_bytes: int, *, voxel_hint: float | None = Non
     # SURFACES -- the cube root treats them as a solid and starts an order of
     # magnitude too coarse.
     voxel = float(voxel_hint) if voxel_hint else span / max(len(X) ** 0.5, 1.0)
-    # Only a guard against a degenerate cell. An earlier version floored the
-    # search at the STARTING cell, which meant a coarse first guess could never
-    # be refined downwards and the no-hint path spent 23% of its budget.
+    # Only a guard against a degenerate cell, not a floor at the STARTING
+    # cell: a coarse first guess must be refinable downwards (floored at the
+    # start, the no-hint path spends 23% of its budget).
     floor_voxel = span / 1e6
 
     # Solve for the voxel, then CHECK, and keep going while the answer is
-    # outside the band. The first version stopped at the first count under the
-    # budget, which cannot correct an UNDERSHOOT -- and the first step is
-    # always an undershoot, because it feeds the unreduced count into a law
-    # about the count at `voxel`. Measured on the three-room chain that spent
-    # 75% of the budget with a hint and 2.7% without one, and four tests
-    # passed on 21 points out of 8,000 because they only asserted "not more".
+    # outside the band. Stopping at the first count under the budget cannot
+    # correct an UNDERSHOOT -- and the first step is always an undershoot,
+    # because it feeds the unreduced count into a law about the count at
+    # `voxel`. Measured on the three-room chain, stopping there spends 75% of
+    # the budget with a hint and 2.7% without one, and four tests that assert
+    # only "not more than the budget" pass on 21 points out of 8,000.
     target = max(1.0, max_points * 0.92)
     best = None
     probe = voxel
@@ -245,9 +224,9 @@ def thin_to_budget(X, C, F, budget_bytes: int, *, voxel_hint: float | None = Non
         Xr, Cr, Fr = Xr[order], Cr[order], Fr[order]
         trimmed_at = int(Fr.min()) if len(Fr) else 0
 
-    # What was actually done, not what the minimum confidence happens to be.
-    # `int(Fr.min())` was reported as "thinned to confidence >= 3" on a cloud
-    # whose floor is 3 and where no confidence cut was applied at all.
+    # Report whether a confidence cut was applied, not the minimum confidence:
+    # `int(Fr.min())` would read "thinned to confidence >= 3" on a cloud whose
+    # floor is 3 and where no confidence cut was applied at all.
     return Xr, Cr, Fr, trimmed_at
 
 
@@ -340,8 +319,8 @@ def build_dense_payload(store, world_id: str, session_id: str, *,
         "stride": POINT_STRIDE_BYTES,
         "level": idx,
         "level_voxel": levels[idx].get("voxel"),
-        # A confidence cut, and ONLY a confidence cut. None is the normal
-        # answer now: the budget is met by a coarser grid.
+        # A confidence cut, and ONLY a confidence cut. None unless the
+        # residue trim ran: the budget is met by a coarser grid.
         "thinned_to_confidence": min_conf,
         # Whether the served cloud is coarser than the level on disk.
         "coarsened": bool(len(X) < int(levels[idx].get("points") or 0)),
@@ -362,7 +341,6 @@ def build_dense_payload(store, world_id: str, session_id: str, *,
     return raw, config, manifest
 
 
-
 def js_object_literal(obj) -> str:
     """JSON, safe to paste into a <script> body.
 
@@ -379,6 +357,7 @@ def js_object_literal(obj) -> str:
         .replace(chr(0x2028), chr(92) + 'u2028')
         .replace(chr(0x2029), chr(92) + 'u2029')
     )
+
 
 def build_dense_page(store, world_id: str, session_id: str, *,
                      budget_bytes: int = MOBILE_BYTE_BUDGET,
