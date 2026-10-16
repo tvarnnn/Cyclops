@@ -205,8 +205,8 @@ FRAME_REFUSAL_REASONS = {
 STREAM_IDLE_AFTER_S = 5.0
 
 # The most metrics one run reports. Every registered experiment emits far
-# fewer (the largest, `optical_flow`, declares fourteen, plus the headline
-# row: 15 of 16 rows in the worst case), so this bounds a future
+# fewer (the largest, `optical_flow`, declares fourteen, its headline
+# among them: 14 of 16 rows in the worst case), so this bounds a future
 # experiment rather than truncating a present one -- and when it does
 # truncate it says how many it dropped rather than quietly showing a
 # shorter list.
