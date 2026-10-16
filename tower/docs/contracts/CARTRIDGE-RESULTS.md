@@ -344,9 +344,9 @@ keeps working through every one.
 | `malformed_request` | missing or wrong-typed `cartridge`/`result_type`/`world_id`/`session_id`/`subscription_id` | — |
 | `unknown_cartridge` | this Tower offers no contract for that cartridge | `offered` (array of names) |
 | `unknown_result_type` | the cartridge is offered but not that result type | `cartridge`, `result_type` |
-| `contract_mismatch` | you sent a `contract` that is not the one offered | `offered_contract`, `requested_contract` |
-| `cartridge_unavailable` | offered, but nothing to serve (e.g. no world root configured) | `contract` |
-| `too_many_subscriptions` | more than 8 open on one connection | — |
+| `contract_mismatch` | you sent a `contract` that is not the one offered | `cartridge`, `result_type`, `offered_contract`, `requested_contract` |
+| `cartridge_unavailable` | offered, but nothing to serve (e.g. no world root configured) | `cartridge`, `result_type`, `contract` |
+| `too_many_subscriptions` | more than 8 open on one connection | `cartridge`, `result_type` |
 | `unknown_subscription` | unsubscribing an id that is not open | `subscription_id` |
 | `snapshot_failed` | the first snapshot could not be built | `cartridge`, `result_type`, `contract` |
 | `consumer_too_slow` | a result was not accepted within the send timeout; **this subscription is now closed** — subscribe again to resume | `subscription_id`, `cartridge`, `result_type` |

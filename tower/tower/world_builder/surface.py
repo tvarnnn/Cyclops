@@ -28,11 +28,12 @@ keeps zero weight and emits no triangle; the surface stops at the edge of what
 was seen. The converse does not hold: a hole is not proof that nobody looked.
 Where frames measured different things, the surface there is outvoted, below
 the evidence threshold, or removed by `evidence_filter`, and measured on the
-canonical capture that -- not missing coverage -- is most of what a hole is. That is the line between this and Poisson or Delaunay
-reconstruction, which are watertight by construction and would turn "never
-observed" into "surface here". `WORLD-BUILDER-SURFACE.md` states it as a rule
-of the format: any future change that closes unobserved space must break the
-format identifier rather than quietly relax it.
+canonical capture that -- not missing coverage -- is most of what a hole is.
+That is the line between this and Poisson or Delaunay reconstruction, which are
+watertight by construction and would turn "never observed" into "surface
+here". `WORLD-BUILDER-SURFACE.md` states it as a rule of the format: any future
+change that closes unobserved space must break the format identifier rather
+than quietly relax it.
 
 Every length here is a FRACTION of the scene's own scale (the median depth
 of the solve's sparse observations, `surface_pipeline._scene_scale`), except
@@ -74,8 +75,8 @@ SURFACE_SCHEMA_VERSION = 1
 
 # What a phone is sent is a PAGE: the viewer template, its configuration, and
 # the mobile level's mesh base64-encoded inside it, which is 4/3 of the mesh's
-# bytes. The budget was once applied to the mesh bytes alone, and a 5.88 MB
-# level shipped as a 7.89 MB page (live replay D).
+# bytes. The budget bounds the page, not the mesh bytes alone: a 5.88 MB level
+# measured as a 7.89 MB page (live replay D).
 MOBILE_PAGE_BYTES = 6 * 1024 * 1024
 MESH_MAGIC = b"WBSURF01"
 SNAP_VERSION = 1
@@ -87,11 +88,11 @@ CONF_MAGIC = b"WBCONF01"
 """`vertex_confidence`, one byte a vertex, in its own file beside the level.
 
 It is NOT inside `wb-surface-mesh/1`. Every reader of that format -- the two
-viewer pages, `read_mesh_bytes`, `store._looks_like_mesh` -- refuses a buffer
+viewer pages, `read_mesh_bytes`, `store._surface_drawable` -- refuses a buffer
 whose length is not exactly what its header implies, so a channel appended to
-the mesh would break all of them at once, and two of those readers are pages
-this lane is not allowed to touch. A sidecar the manifest names costs the same
-bytes, is versioned on its own, and leaves every existing reader alone."""
+the mesh would break all of them at once, and the viewer pages are not changed
+by this artifact. A sidecar the manifest names costs the same bytes, is
+versioned on its own, and leaves every existing reader alone."""
 
 STAGE_DEPTH = "depth"
 STAGE_FUSE = "fuse"
@@ -102,14 +103,14 @@ BLOCK = 8                       # voxels along a block edge
 BLOCK_VOXELS = BLOCK ** 3
 
 SHELL_MARGIN_BLOCKS = 0
-"""Blocks allocated beyond the truncation band. It was 1. A band of half-width
+"""Blocks allocated beyond the truncation band: 0. A band of half-width
 `tr` around a point already lies within ceil(tr / block) blocks of the point's
-own block, so the margin held only voxels OUTSIDE the band -- which no sample
-writes a surface value into, and which, left at the +1 default beside the back
+own block, so a margin would hold only voxels OUTSIDE the band -- which no
+sample writes a surface value into, and which, at a margin of 1 beside the back
 of a band, were exactly what built phantom sheets (see `extract_mesh`). With
 extraction requiring evidence at every cube corner they add nothing, and with a
-depth-proportional band they cost 20% more blocks on the canonical world
-(392k against 472k), pushing it over the budget."""
+depth-proportional band a margin of 1 costs 20% more blocks on the canonical
+world (392k against 472k), pushing it over the budget."""
 
 _KEY_OFFSET = 1 << 20
 _KEY_SPAN = 1 << 21
@@ -131,9 +132,9 @@ KEY_RANGE_REASON = (
     "the scene's block coordinates fall outside the keyable range; "
     "the SfM gauge is arbitrary and this world's is too large for the "
     "chosen voxel fraction")
-"""Unchanged wording, deliberately: it is what `status.json` has said since
-the guard existed, and written records of past walks quote it verbatim.
-What is new is the overshoot that rides beside it."""
+"""The wording is part of the recorded output: `status.json` quotes it, and
+written records of past walks quote it verbatim. The overshoot rides beside
+it."""
 
 
 def key_range_refusal(overshoot: float) -> SurfaceUnavailable:
@@ -258,7 +259,7 @@ def robust_pose_outliers(centres, *, multiple: float = OUTLIER_RADIUS_MULTIPLE,
     from the ELEMENT-WISE MEDIAN centre (not the mean, which eleven centres
     up to 53,026 units out drag off the room).
 
-    THE DETACHMENT TEST, and why the scale test alone was wrong. A multiple
+    THE DETACHMENT TEST, because the scale test alone is wrong. A multiple
     of the median says nothing about whether a pose is attached to the rest
     of the walk, and a capture that DWELLS has a tiny median radius with a
     perfectly legitimate tail. Stand in one spot for most of a walk and then
@@ -267,9 +268,8 @@ def robust_pose_outliers(centres, *, multiple: float = OUTLIER_RADIUS_MULTIPLE,
     alone -- 15.6% of an "80% dwell then walk" gated, 20.6% of a one-way
     transit, 20.0% and 30.0% of a two-room capture (the WHOLE of room B both
     times), 45.0% of a 55/45 split. A uniformly PACED corridor is safe at any
-    length, which is why the first version of this rule looked correct; real
-    captures are not uniformly paced, and the physical test asks the wearer to
-    walk, stand back and revisit.
+    length; real captures are not uniformly paced, and the wearer walks,
+    stands back and revisits.
 
     So a pose must also lie beyond `detach` x the 95th-percentile radius --
     beyond the body, not merely beyond the middle. `max radius / p95 radius`
@@ -435,7 +435,7 @@ class SurfaceParams:
 
     depth_known_fov: bool = False
     """The depth stage's `DenseParams.known_fov`: MoGe told the solve camera's
-    FoV. Off is today's surface. On is what the evidence gate's depth-before-
+    FoV. Off is the default surface. On is what the evidence gate's depth-before-
     publish runs (`coherence_publish.py`), so a final surface built with it on
     REUSES that depth stage instead of predicting every frame again. Part of the
     params digest only when on."""
@@ -444,11 +444,11 @@ class SurfaceParams:
     voxel_frac: float = 0.0051
     """Voxel edge as a fraction of the scene scale (`surface_pipeline.
     _scene_scale`: the median depth of the solve's sparse observations).
-    0.0051 of the canonical world's 4.72 is 0.0241 -- the same voxel it was
-    built at when this was 0.006 of a 4.02 dense-depth median -- which matches
-    the spacing the dense stage's L1 ladder shipped at, and is about the point
-    where finer voxels store noise: the imagery is 0.23 MP, so a pixel covers
-    ~6 mm at 3 m and depth noise is 1-3 cm."""
+    0.0051 of the canonical world's 4.72 is 0.0241 (= 0.006 of a 4.02
+    dense-depth median), which matches the spacing the dense stage's L1 ladder
+    shipped at, and is about the point where finer voxels store noise: the
+    imagery is 0.23 MP, so a pixel covers ~6 mm at 3 m and depth noise is
+    1-3 cm."""
 
     trunc_voxels: float = 3.0
     """Truncation floor, in voxels."""
@@ -471,7 +471,8 @@ class SurfaceParams:
     canonical world from 290k to 392k blocks, past the 360k budget, and the
     budget then coarsened every voxel by 1.2x -- the whole room paid for the
     far wall. 12 voxels is about one held-out error (1 sigma) at the 12-unit
-    far mode rather than two; it is still 1.6x the old absolute band there."""
+    far mode rather than two; it is still 1.6x the 0.18 absolute band sized at
+    the scene median there."""
 
     trunc_error_multiple: float = 2.0
     """Truncation is raised to this multiple of the measured median held-out
@@ -517,12 +518,12 @@ class SurfaceParams:
     sparse anchor (`z_sparse_max` in the depth stage's fit) is not used.
 
     The far bound is per frame and tied to what the solve supports, because
-    the scene is not one depth. This used to be a single clip at 2.6 x the
-    scene median, 10.44 units on the canonical world, and it deleted 9.0% of
-    all valid depth -- the far wall, the doorway and the ceiling corner that
-    45+ frames measured -- while the product told the wearer those gaps were
-    places nothing looked. Per-frame medians there run from 1.7 to 11.3; a
-    global relative clip cannot be right for both ends of that.
+    the scene is not one depth. A single global clip at 2.6 x the scene median
+    (10.44 units on the canonical world) deleted 9.0% of all valid depth -- the
+    far wall, the doorway and the ceiling corner that 45+ frames measured --
+    and the product then told the wearer those gaps were places nothing
+    looked. Per-frame medians there run from 1.7 to 11.3; a global relative
+    clip cannot be right for both ends of that.
 
     Depth beyond a frame's farthest anchor is extrapolation of the affine fit,
     not measurement. Measured on the canonical world: 4.5% of valid depth lies
@@ -622,8 +623,8 @@ class SurfaceParams:
     not what stops a one-frame surface: `min_support_frames` is, per face, as a
     count of distinct frames.
 
-    Clamping this at 1 was measured and rejected (surface-r2): it removed 16%
-    of the surface area, all of it supported by at least two frames and not
+    Clamping this at 1 was measured and rejected: it removed 16% of the
+    surface area, all of it supported by at least two frames and not
     contradicted -- the bed sheet and pieces of floor -- and removed no face
     near the walked path that the frame count had not already removed."""
 
@@ -700,8 +701,9 @@ class SurfaceParams:
     of the pass at the far end of the room (ki 130-145, 14 units away) and
     "seen through" by 2 frames of the pass under the fan (ki 161-180), whose
     depth put the ceiling a little higher; the zero-see-through rule cut the
-    ceiling there into the fan-shaped black tears the visual review ranked
-    first, and the same pattern left black cracks along the hutch's top board.
+    ceiling there into fan-shaped black tears (the worst-ranked artifact of
+    that capture), and the same pattern left black cracks along the hutch's
+    top board.
 
     Measured with 10% of keyframes held out of fusion
     (`Glasses-scratch/wb-final-recon/fixit/geom2/GEOM2.md`): the faces this
@@ -722,13 +724,12 @@ class SurfaceParams:
     """Connected components smaller than this fraction of the largest are
     dropped as noise.
 
-    Measured on a WELDED mesh. It was 0.0008 when the tile seams were never
-    welded, and "the largest component" was then one tile of wall -- 151,693
-    faces -- rather than the room, 1,858,865; so 0.0008 in practice meant
-    islands under ~120 faces, and that is what the renders were judged at.
-    On the welded mesh 0.0008 would mean ~1,500 faces and delete 15% more
-    real surface; 0.0001 is ~190 faces, the strictness that was actually
-    approved, now measured against the right component."""
+    Measured on a WELDED mesh, where the largest component is the room,
+    1,858,865 faces. On an unwelded mesh (tile seams not welded) the largest
+    component is one tile of wall, 151,693 faces, so 0.0008 there meant islands
+    under ~120 faces. On the welded mesh 0.0008 would mean ~1,500 faces and
+    delete 15% more real surface; 0.0001 is ~190 faces, the same strictness
+    as 0.0008 of one tile, measured against the right component."""
 
     smooth_iterations: int = 6
     smooth_lambda: float = 0.5
@@ -746,10 +747,9 @@ class SurfaceParams:
     does the wrong thing to a rim twice over. A boundary vertex's neighbours
     all lie on ONE side of it, so the average pulls it across the surface,
     away from where the evidence ended; and none of those neighbours is on the
-    rim, so the staircase ALONG the rim is never touched. That staircase is
-    what the visual review called ragged black rims along the shelf boards,
-    torn silhouettes at grazing angles, and stair-stepped edges where surface
-    meets void.
+    rim, so the staircase ALONG the rim is never touched. That staircase shows
+    as ragged black rims along the shelf boards, torn silhouettes at grazing
+    angles, and stair-stepped edges where surface meets void.
 
     On: a boundary vertex with exactly two boundary neighbours takes the same
     lambda/mu passes over its own boundary POLYLINE instead; a junction (any
@@ -808,10 +808,10 @@ class SurfaceParams:
     lod_face_targets: tuple[int, ...] = (0, 600_000, 300_000)
     """Faces per level; 0 means "no decimation". Level 0 is the archive,
     level 2 is what a phone is sent, and its target is a ceiling: the pack
-    stage decimates it further until the page fits `mobile_page_bytes`. Each level is decimated from the one
-    before it, not from level 0: decimation grows as faces^1.37, and on a
-    20-30 minute walk decimating every level from the full mesh projected to
-    41-72 minutes of packing alone."""
+    stage decimates it further until the page fits `mobile_page_bytes`. Each
+    level is decimated from the one before it, not from level 0: decimation
+    grows as faces^1.37, and on a 20-30 minute walk decimating every level from
+    the full mesh projected to 41-72 minutes of packing alone."""
 
     lod_boundary_weight: float = 100.0
     """Quadric decimation's weight on boundary edges (`decimate`). A surface
@@ -820,7 +820,7 @@ class SurfaceParams:
     canonical capture it opened 0.2-0.4% of each view's pixels that level 0
     covered, as black cracks along shelf edges and silhouettes. At 100 that
     halves, at the same page bytes (the level carries ~7% fewer faces, since a
-    rim keeps more vertices). 1 is the old behaviour."""
+    rim keeps more vertices). 1 is `decimate`'s own default weight."""
 
     max_blocks: int = 360_000
     """The field's budget, in 8^3 blocks: ~3.4 GiB of field at 20 bytes a
@@ -837,23 +837,23 @@ class SurfaceParams:
     KEY RANGE before the build is refused instead. 0 removes the cap.
 
     THIS CAP IS THE POINT. `block_key`'s refusal is a correctness guard, and
-    it was also the backstop that caught a solve which had come apart.
-    Replacing it with an uncapped loop traded an honest refusal for a
-    confidently-wrong `ok`: a diverged scene coarsens until the room is a
-    handful of blocks, publishes a positive face count, and the appearance
-    stage builds colours on top of it. This project has already had a READY
-    rejected because the mesh looked bad; that is the wrong direction.
+    also the backstop that catches a solve which has come apart. The cap makes
+    a diverged solve a refusal instead of a collapsed room published as `ok`:
+    without it a diverged scene coarsens until the room is a handful of
+    blocks, publishes a positive face count, and the appearance stage builds
+    colours on top of it.
 
     4 is far above anything a real room needs, because the voxel is already
     a fraction of the scene's own median depth. At `voxel_frac` 0.0051 a block
     edge is 0.0408 scene depths, so the keyable half-extent is about 42,800
     scene depths -- a bedroom whose median depth is 4.5 units stays keyable
     out to ~190,000 units, and run A's diverged solve reached 2.2e6 only
-    through poses the gate now removes. A scene that still needs more than 4x
+    through poses the gate removes. A scene that still needs more than 4x
     after the gate and the fusion bound is not a room."""
 
     mobile_level: int = 2
     canonical_level: int = 0
+    """`mobile_level` and `canonical_level` index into `lod_face_targets`."""
 
     mobile_page_bytes: int = MOBILE_PAGE_BYTES
     """The PAGE a phone is sent must fit this, and the pack stage makes the
@@ -903,6 +903,7 @@ class SurfaceParams:
     snap_min_frames: int = 8
     """Distinct keyframes whose depth must measure a plane before it is
     snapped."""
+
     transient_detector: str = "union"
     """Which transient detector masks the wearer's hands, arms and held phone
     out of fusion (`transients.py`; `union`, `oneformer` or `off`). A masked
@@ -940,14 +941,12 @@ class SurfaceParams:
     """Publish a per-vertex geometry confidence beside every level
     (`vertex_confidence`, `CONFIDENCE_FORMAT`).
 
-    It answers a question the artifact could not answer before: WHICH PART of
-    this surface is worth painting a photograph onto. The appearance stage
-    carries the phone level's channel into its proxy, and a page that reads it
-    can fade appearance toward the void where the proxy is bad instead of
-    stretching a real photograph over broken geometry -- the ceiling and the
-    door column of `Glasses-scratch/wb-final-recon/fixit/visual-review2/
-    VISUAL-REVIEW-2.md` problems 2 and 3, which that review established are
-    REAL imagery on WRONG geometry, not missing data.
+    It answers WHICH PART of this surface is worth painting a photograph
+    onto. The appearance stage carries the phone level's channel into its
+    proxy, and a page that reads it can fade appearance toward the void where
+    the proxy is bad instead of stretching a real photograph over broken
+    geometry -- the ceiling and the door column of the canonical capture, which
+    are REAL imagery on WRONG geometry, not missing data.
 
     Off means no sidecar is written and the manifest names none; the levels
     themselves are byte-identical either way."""
@@ -968,7 +967,8 @@ class SurfaceParams:
         walking at this capture's keyframe rate -- and being late is worse
         than being coarse. Doubling the voxel divides the block count by
         eight, which is where most of the saving is; the rest comes from
-        one level of detail instead of three and a lighter smoothing pass.
+        two levels of detail instead of three (`lod_face_targets` of
+        (0, 120_000)) and a lighter smoothing pass.
 
         What it does NOT relax is the evidence rule. `min_weight` drops from
         2.0 to 1.5 because a live field has had fewer frames to accumulate
@@ -994,14 +994,17 @@ class SurfaceParams:
     def digest_fields(self) -> tuple:
         """The parameters a cached artifact must match to be reusable.
 
-        The fill fields are appended only when the fill is on, so artifacts
-        built before the option existed keep their digest and are not rebuilt
-        for a parameter they never used.
+        This tuple is the cache identity; its order and contents are part of
+        every stored digest. Most fields are always present: an artifact built
+        without such a field is not what these parameters build, so it
+        rebuilds. The fill fields, a non-redacted `imagery` source and
+        `depth-fov` are appended only when on (or not the product), so the
+        digest of an artifact that never used them is unchanged.
         """
         base = (
             # Appended only when it is NOT the product, exactly as the fill
-            # fields are: every digest ever written for a redacted surface is
-            # unchanged, and a raw one can never collide with it.
+            # fields are: the digest of a redacted surface is unchanged, and a
+            # raw one can never collide with it.
             *((("imagery", self.imagery_source),)
               if self.imagery_source != IMAGERY_REDACTED else ()),
             self.voxel_frac, self.trunc_voxels, self.trunc_error_multiple,
@@ -1015,36 +1018,36 @@ class SurfaceParams:
             self.smooth_iterations, self.smooth_lambda, self.smooth_mu,
             self.lod_face_targets, self.component, self.quality,
             self.max_blocks, "lod-cascade", ("mobile-page", self.mobile_page_bytes),
-            # Always present, deliberately: a surface fused before the field
-            # and the snap existed is NOT what these parameters build.
+            # Always present, deliberately: a surface fused without the field
+            # and the snap is NOT what these parameters build.
             ("depth-consistency", self._consistency_digest()),
             ("plane-snap", self.plane_snap, self.snap_min_area_frac,
              self.snap_tol_voxels, self.snap_min_frames, SNAP_VERSION),
-            # Always present too: a surface built before these existed emitted
-            # no low-weight face and decimated with boundary weight 1.
+            # Always present too: a surface built without these emitted no
+            # low-weight face and decimated with boundary weight 1.
             ("low-weight", self.low_weight_evidence, self.low_weight_min_parallax,
              LOW_WEIGHT_VERSION),
-            # A surface built before it existed kept low-weight sheets their own
+            # A surface built without it kept low-weight sheets their own
             # supporting cameras could not see.
             ("low-weight-hidden", self.low_weight_hidden_test),
             ("lod-boundary", self.lod_boundary_weight),
-            # A surface built before it existed has no confidence sidecar, and
-            # a surface built with a different definition of confidence has the
+            # A surface built without it has no confidence sidecar, and a
+            # surface built with a different definition of confidence has the
             # wrong one. Both must rebuild.
             ("confidence", self.confidence, CONFIDENCE_VERSION),
-            # A surface built before it existed refused a low-weight face that
-            # any frame at all saw through.
+            # A surface built without it refused a low-weight face that any
+            # frame at all saw through.
             ("low-weight-through", self.low_weight_through_frac,
              self.low_weight_through_min_support),
-            # A surface built before it existed smoothed its rims ACROSS the
-            # surface instead of along them, so every vertex near a rim is in
-            # a different place; see `smooth_boundary_curve`.
+            # A surface built without it smoothed its rims ACROSS the surface
+            # instead of along them, so every vertex near a rim is in a
+            # different place; see `smooth_boundary_curve`.
             ("smooth-boundary", self.smooth_boundary_curve),
-            # Always present too. A surface built before these existed fused
-            # every pose the solver produced, however far outside its own
-            # scene, inside no envelope at all -- which on one real solve was
-            # the difference between a bedroom and nothing. That is not what
-            # these parameters build, so it rebuilds.
+            # Always present too. A surface built without these fused every
+            # pose the solver produced, however far outside its own scene,
+            # inside no envelope at all -- which on one real solve was the
+            # difference between a bedroom and nothing. That is not what these
+            # parameters build, so it rebuilds.
             ("solver-outliers", self.outlier_radius_multiple,
              self.pose_detach_multiple, self.max_gated_pose_fraction,
              self.fusion_bound_multiple, self.max_key_coarsening,
@@ -1121,10 +1124,10 @@ class SurfaceResult:
 def block_key(bc, *, offset: int = _KEY_OFFSET, span: int = _KEY_SPAN):
     """Block coordinates -> one int64 key.
 
-    Raises rather than aliasing. `voxel_reduce` in the dense stage learned
-    this the hard way: outside the keyable range two different cells share a
-    key and the reduction silently MERGES them, averaging points from opposite
-    ends of a scene into one.
+    Raises rather than aliasing. Outside the keyable range two different cells
+    would share a key and a reduction would silently MERGE them, averaging
+    points from opposite ends of a scene into one (as `dense.voxel_reduce`
+    would).
 
     THE RAISE IS A CORRECTNESS GUARD AND STAYS. It is not, however, an answer
     to a scene that is merely wide: the caller's answers to that are upstream
@@ -1147,6 +1150,7 @@ def block_key(bc, *, offset: int = _KEY_OFFSET, span: int = _KEY_SPAN):
 
 
 def block_coords(key, *, offset: int = _KEY_OFFSET, span: int = _KEY_SPAN):
+    """Inverse of `block_key`: int64 key tensor -> (n, 3) block coordinates."""
     import torch
 
     z = key % span
@@ -1158,20 +1162,20 @@ def block_coords(key, *, offset: int = _KEY_OFFSET, span: int = _KEY_SPAN):
 def occupied_tiles(bc, lo, hi, tile_blocks: int) -> list[tuple[int, int, int]]:
     """The extraction tiles that hold at least one block, in grid order.
 
-    Extraction used to walk the full bounding grid of tiles -- the product of
-    three extents -- and pay a device round trip for every tile, including the
-    ones that hold nothing. A walk's surface grows with its length; its
-    bounding box grows with the product of its extents, and the SfM gauge's
-    axes are arbitrary, so even a straight corridor is in general a diagonal
-    one. Measured: a diagonal synthetic walk's tile grid grew as frames^2.98
-    while its occupied tiles grew as frames^1.0, and the real 795-keyframe field
-    walk (`52ed8e0a`), whose component 0 has a few far-flung frames, had a
-    1007 x 2288 x 1440-block box: 1,925,280 tiles of which 383 held a block.
-    Its mesh stage took 520 s against 5 s of fusion, all of it proving that
-    empty tiles are empty.
+    Walking the full bounding grid of tiles -- the product of three extents --
+    would pay a device round trip for every tile, including the ones that hold
+    nothing. A walk's surface grows with its length; its bounding box grows
+    with the product of its extents, and the SfM gauge's axes are arbitrary, so
+    even a straight corridor is in general a diagonal one. Measured: a diagonal
+    synthetic walk's tile grid grew as frames^2.98 while its occupied tiles
+    grew as frames^1.0, and the real 795-keyframe field walk (`52ed8e0a`),
+    whose component 0 has a few far-flung frames, had a 1007 x 2288 x
+    1440-block box: 1,925,280 tiles of which 383 held a block. Its mesh stage
+    took 520 s against 5 s of fusion, all of it proving that empty tiles are
+    empty.
 
-    This returns exactly the tiles the old loop would have found non-empty, in
-    the same order, so the mesh is unchanged. The subtle part is the HALO: a
+    This returns exactly the tiles the full-grid loop would find non-empty, in
+    the same order, so the mesh is the same. The subtle part is the HALO: a
     tile reads `tile_blocks + 1` blocks per axis, so a block whose coordinate
     sits exactly on a tile boundary is also read by the previous tile, and that
     tile must be kept too -- dropping it would silently change the triangles
@@ -1198,7 +1202,7 @@ def occupied_tiles(bc, lo, hi, tile_blocks: int) -> list[tuple[int, int, int]]:
     k = k[np.all((k >= 0) & (k <= kmax), axis=1)]
     if not len(k):
         return []
-    k = np.unique(k, axis=0)                  # lexicographic: the old x, y, z loop order
+    k = np.unique(k, axis=0)                  # lexicographic: the x, y, z loop order
     origins = lo + k * tile_blocks
     return [tuple(int(v) for v in o) for o in origins]
 
@@ -1211,13 +1215,9 @@ def occupied_tiles(bc, lo, hi, tile_blocks: int) -> list[tuple[int, int, int]]:
 class SurfaceVolume:
     """A sparse TSDF over int64-keyed 8^3 blocks, held on one device.
 
-    Two allocation modes, because the offline and live paths want different
-    things. `reserve` takes the whole block set at once and is what the
-    offline path uses: growing the table per frame means concatenating and
-    re-sorting it on every keyframe, which is quadratic in blocks and produced
-    real allocator pressure at 229k blocks. `grow` adds to an existing table
-    and is what the live path uses, where the block set is not known in
-    advance.
+    `reserve` takes the whole block set at once: growing the table per frame
+    would mean concatenating and re-sorting it on every keyframe, which is
+    quadratic in blocks and produced real allocator pressure at 229k blocks.
     """
 
     def __init__(self, voxel: float, trunc: float, device=None, *,
@@ -1246,9 +1246,6 @@ class SurfaceVolume:
     @property
     def n_blocks(self) -> int:
         return int(self.keys.numel())
-
-    def bytes_used(self) -> int:
-        return self.n_blocks * BLOCK_VOXELS * (4 + 4 + 12)
 
     def release_field(self) -> None:
         """Drop the field's storage, keeping geometry parameters (voxel,
@@ -1280,28 +1277,6 @@ class SurfaceVolume:
         self.tsdf = torch.ones((n, BLOCK_VOXELS), dtype=torch.float32, device=self.dev)
         self.w = torch.zeros((n, BLOCK_VOXELS), dtype=torch.float32, device=self.dev)
         self.rgb = torch.zeros((n, BLOCK_VOXELS, 3), dtype=torch.float32, device=self.dev)
-
-    def grow(self, keys) -> int:
-        """Add blocks, keeping what is already there. Returns how many were new."""
-        import torch
-
-        keys = torch.unique(keys.to(self.dev))
-        if self.keys.numel():
-            pos = torch.searchsorted(self.keys, keys).clamp(max=self.keys.numel() - 1)
-            keys = keys[self.keys[pos] != keys]
-        if keys.numel() == 0:
-            return 0
-        n_new = int(keys.numel())
-        allk = torch.cat([self.keys, keys])
-        order = torch.argsort(allk)
-        self.tsdf = torch.cat(
-            [self.tsdf, torch.ones((n_new, BLOCK_VOXELS), device=self.dev)])[order]
-        self.w = torch.cat(
-            [self.w, torch.zeros((n_new, BLOCK_VOXELS), device=self.dev)])[order]
-        self.rgb = torch.cat(
-            [self.rgb, torch.zeros((n_new, BLOCK_VOXELS, 3), device=self.dev)])[order]
-        self.keys = allk[order]
-        return n_new
 
     def lookup(self, keys):
         """Block index for each key, or -1."""
@@ -1356,11 +1331,12 @@ class SurfaceVolume:
         # and deduplication is a 1-D sort instead of `unique(dim=0)`'s
         # lexicographic row sort over (pixels x shell x 3) int64.
         #
-        # The row form was the dominant cost of the whole surface stage and it
-        # grew with the CUBE of truncation/voxel: at a shell radius of 4 it
-        # built a 43.7M-row table per keyframe, peaked at 3 GiB per call, took
-        # 530 s of an 873 s build, and once died inside the sort with
-        # `cudaErrorIllegalAddress`. Measured paired on real frames: 57x
+        # The row form (`unique(dim=0)` over pixels x shell x 3) dominated the
+        # cost of the whole surface stage and grew with the CUBE of
+        # truncation/voxel: at a shell radius of 4 it built a 43.7M-row table
+        # per keyframe, peaked at 3 GiB per call, took 530 s of an 873 s build,
+        # and once died inside the sort with `cudaErrorIllegalAddress`.
+        # Measured paired on real frames: 57x
         # faster at r=3, 119x at r=4, 1.6-3.0 GiB -> 27-53 MiB per call
         # (`Glasses-scratch/wb-final-recon/scaling/SCALING.md`). The block set
         # is identical, key for key and in the same order.
@@ -1389,11 +1365,32 @@ class SurfaceVolume:
                   weight_img=None, chunk_blocks: int = 4096):
         """Fold one posed depth image into the field.
 
-        `R`, `t` are world-to-camera (`x_cam = R @ X + t`), which is the
-        convention `solve/<sid>/solution.json` uses -- verified by reprojection
-        at 0.700 px median, against 528 px for the inverse. The derived tree's
-        `poses.json` is a different frame AND a different convention; do not
-        mix them.
+        WHAT: blend the image's surface samples, and the free space in front of
+        them, into the signed distance, weight and colour of the blocks that
+        `reserve` already allocated. Returns None and mutates `tsdf`, `w` and
+        `rgb`.
+
+        Inputs: `depth` (H, W) float depth; `valid` (H, W) bool, the pixels that
+        may be used; `rgb_img` (H, W, 3) colour; `R`, `t` the world-to-camera
+        pose; `K` the 3x3 intrinsics; `params`, of which it reads `carve`,
+        `carve_weight`, `max_carve_voxels`, `depth_falloff` and
+        `max_near_boost`; `weight_img`, an optional (H, W) per-pixel weight
+        (1 when None); `chunk_blocks`, the blocks blended per batch.
+
+        Steps: pick the allocated blocks whose bounding sphere is in view
+        (`_blocks_in_view`); take the frame's median valid depth once, for the
+        1/z^2 falloff; then, `chunk_blocks` blocks at a time, project every
+        voxel into the image and blend it. A voxel within the truncation band
+        of the measured depth updates the distance and colour; with `carve`, a
+        voxel nearer than the band, up to `max_carve_voxels` in front of the
+        surface, is blended as free space at `carve_weight`. With no block
+        allocated, or none in view, the call returns without a change.
+
+        WHY the pose convention: `R`, `t` are world-to-camera
+        (`x_cam = R @ X + t`), which is the convention `solve/<sid>/solution.json`
+        uses -- verified by reprojection at 0.700 px median, against 528 px for
+        the inverse. The derived tree's `poses.json` is a different frame AND a
+        different convention; do not mix them.
         """
         import torch
 
@@ -1410,9 +1407,9 @@ class SurfaceVolume:
             return
         # ONCE per frame, not once per chunk of blocks. The depth falloff term
         # needs a reference depth for this image; computing it inside
-        # `_integrate_blocks` meant a median over two million sampled values
+        # `_integrate_blocks` would be a median over two million sampled values
         # for every 4096-block chunk -- about fifty medians per frame, twenty
-        # thousand over a walk, each with a device sync -- and it was the whole
+        # thousand over a walk, each with a device sync -- which was the whole
         # cost of the fuse stage.
         med = 1.0
         if params.depth_falloff:
@@ -1431,6 +1428,8 @@ class SurfaceVolume:
         ctr = (bc * BLOCK + BLOCK / 2) * self.voxel
         zmax = torch.nan_to_num(depth, nan=0.0).max()
         tmax = self.trunc_at(float(zmax))
+        # 0.8660254 = sqrt(3) / 2: a block's half-diagonal in units of its
+        # edge, so the sphere test over-includes rather than misses.
         rad = (BLOCK * self.voxel) * 0.8660254 + tmax
         pc = ctr @ R.T + t
         z = pc[:, 2]
@@ -1505,7 +1504,7 @@ class SurfaceVolume:
     # -- extraction ---------------------------------------------------------
 
     def extract_mesh(self, min_weight: float, *, tile_blocks: int = 12,
-                     only_blocks=None, progress=None, tag=None, weak_floor=None,
+                     progress=None, tag=None, weak_floor=None,
                      return_face_weight: bool = False):
         """Marching cubes over the observed part of the field only.
 
@@ -1515,16 +1514,13 @@ class SurfaceVolume:
         zero, and the surface stops at the edge of what was seen instead of
         closing over it.
 
-        This used to test only the voxel NEAREST each vertex. An unobserved
+        Testing only the voxel NEAREST each vertex is not enough: an unobserved
         voxel holds the allocation default +1, which reads as measured free
         space, so a cube with one observed corner behind a surface and one
-        never-observed corner beyond the truncation band emitted a triangle
+        never-observed corner beyond the truncation band would emit a triangle
         between them. On clean synthetic input that built a complete phantom
         second wall 7 voxels behind a real one; on the canonical capture it
         was 8,513 vertices whose far edge endpoint had weight exactly 0.
-
-        `only_blocks` restricts extraction to a block set, which is how the
-        live path re-meshes just what changed.
 
         `tag`, a (n_blocks, 512) bool tensor such as the one `fill_enclosed`
         returns, is sampled at every emitted vertex; when it is given the
@@ -1559,10 +1555,7 @@ class SurfaceVolume:
             return empty
 
         bc_all = block_coords(self.keys).cpu().numpy()
-        if only_blocks is not None and len(only_blocks):
-            bc_sel = block_coords(only_blocks.to(self.dev)).cpu().numpy()
-        else:
-            bc_sel = bc_all
+        bc_sel = bc_all
         if not len(bc_sel):
             return empty
         lo, hi = bc_sel.min(0), bc_sel.max(0)
@@ -1692,10 +1685,11 @@ def depth_validity(depth, K, params: SurfaceParams, median_depth: float,
     """Per-pixel incidence cosine and validity mask, on whatever device the
     depth is on.
 
-    The same three rejections the point pipeline used -- discontinuity,
-    grazing incidence, absurd depth -- but the incidence cosine is returned
-    rather than discarded, so the caller can weight by it instead of treating
-    a 70-degree surface the same as a head-on one right up to the cut.
+    The same three rejections as the dense stage's point filter --
+    discontinuity, grazing incidence, absurd depth -- but the incidence cosine
+    is returned rather than discarded, so the caller can weight by it instead
+    of treating a 70-degree surface the same as a head-on one right up to the
+    cut.
 
     `max_depth` is the frame's own far bound (`depth_bound`); without it the
     scene-relative fallback applies.
@@ -2862,11 +2856,10 @@ def snap_planes(V, F, views, K, params: SurfaceParams, voxel: float, median_dept
 # WHAT THIS ANSWERS. The appearance product paints the wearer's own photographs
 # onto this surface. Where the surface is right, that is the room; where it is
 # wrong, a real photograph is stretched over broken geometry, and the page
-# cannot tell the two apart -- it paints both at full strength. The independent
-# review (`fixit/visual-review2/VISUAL-REVIEW-2.md`, problems 2 and 3) named the
-# two worst instances: "the ceiling one drag up from the opening looks like
-# water damage and peeling paint", and "a shredded cream-and-black column beside
-# the door". Its mode-2 check established both are OBSERVED imagery, not voids.
+# cannot tell the two apart -- it paints both at full strength. The two worst
+# instances on the canonical capture are "the ceiling one drag up from the
+# opening", which looks like water damage and peeling paint, and "a shredded
+# cream-and-black column beside the door"; both are OBSERVED imagery, not voids.
 #
 # Every constant below is a saturation point, not a threshold: a component
 # scores 1 where the evidence is as good as it usefully gets and falls to 0
@@ -2915,12 +2908,12 @@ the shape component reaches 0."""
 CONF_RIM_HOPS = 3
 """Edge hops from a boundary at which the rim component saturates. A vertex ON
 a boundary scores 0: it is the ragged edge of the evidence, and it is where the
-review's "chewed, scalloped or shark-tooth black rim" lives."""
+"chewed, scalloped or shark-tooth black rim" lives."""
 
 # MEASURED AND DELIBERATELY NOT USED (`fixit/confidence/CONFIDENCE.md`). Each
-# of these was asked for, computed, and put to the held-out test; each is still
-# computed by `face_evidence_components` so a later lane can re-measure it, and
-# none of them is in `CONF_EVIDENCE_WEIGHTS`:
+# of these was computed and put to the held-out test; each is still computed by
+# `face_evidence_components` so it can be re-measured, and none of them is in
+# `CONF_EVIDENCE_WEIGHTS`:
 #
 #   parallax of the supporting cameras -- AUC 0.56 on the fit half and 0.48,
 #     below chance, on the validation half; adding it to the combination takes
@@ -2958,9 +2951,12 @@ IT IS STILL RISING AT 4, AND 2 IS WHAT SHIPS. The weight was chosen on the fit
 half; the validation half is the only evidence here that nothing was fitted
 on, and spending it to tune the same knob would destroy the one honest
 measurement of this score. The 2 -> 4 move is worth about 0.013 of AUC and is
-there for a later lane with fresh held-out frames to take."""
+left for a re-fit on fresh held-out frames."""
 
 CONF_GEOMETRY_WEIGHTS = {"shape": 0.5, "rim": 1.0, "normal": 1.0}
+"""Weights of the three geometry components in `_weighted_geomean`; they are
+relative weights, not thresholds."""
+
 CONF_EVIDENCE_SHARE = 0.7
 """Evidence against geometry in the final geometric mean.
 
@@ -2974,7 +2970,7 @@ The held-out frames stand where the wearer stood, so they measure the level 0
 surface along the walked path and never look at it edge-on from a novel view;
 and the level a phone is sent is DECIMATED, which damages exactly the shape,
 rim and normal components and nothing the evidence half counts. The stretched
-triangles, the crumple the review calls "shredded" and its "ragged black lace
+triangles, the crumple that reads as "shredded" and the "ragged black lace
 edges" are geometry, and geometry is the only half that sees them."""
 
 
@@ -3032,7 +3028,8 @@ def face_evidence_components(*, sup, thru, wmin, parallax, resid_rms,
         "agreement": np.clip(1.0 - ratio, 0.0, 1.0),
         "spread": np.clip(1.0 - np.asarray(resid_rms, np.float64) / CONF_RESID_FULL, 0.0, 1.0),
         # Measured and not weighted; see the block above `CONF_FLOOR`. The
-        # saturation points are the ones they were measured at.
+        # saturation points (0.20 for parallax, 0.12 for correction) are the
+        # ones they were measured at.
         "parallax": np.clip(np.asarray(parallax, np.float64) / 0.20, 0.0, 1.0),
     }
     if correction is not None:
@@ -3045,11 +3042,10 @@ def mesh_geometry_components(V, F) -> dict:
     """The three things a level's own triangles say about themselves.
 
     `shape`: the worst aspect ratio among a vertex's own triangles -- the
-    stretched triangles the review complains about. `rim`: edge hops to the
-    boundary of the surface, where the evidence ran out and the page's inward
-    fade eats the picture. `normal`: how much the incident faces agree about
-    which way the surface faces, which is the crumple the reviewer sees as
-    "shredded".
+    stretched triangles. `rim`: edge hops to the boundary of the surface, where
+    the evidence ran out and the page's inward fade eats the picture.
+    `normal`: how much the incident faces agree about which way the surface
+    faces, which is the crumple that reads as "shredded".
 
     Computed on the level's OWN triangles, so decimation is measured rather
     than inherited: the phone level's slivers are its own.
@@ -3231,10 +3227,15 @@ FLAG_INDEX_U16 = 1 << 1
 def write_mesh_bytes(V, F, C, N=None) -> bytes:
     """`wb-surface-mesh/1`: one self-describing buffer.
 
+    Layout: the `_HEADER` (magic, vertex count, index count, flags, schema
+    version, bounding box lo and hi), then u16 positions, u8 colours, i8
+    normals when `FLAG_HAS_NORMALS` is set, then u16 or u32 indices
+    (`FLAG_INDEX_U16`).
+
     Positions are quantised to 16 bits across the mesh's own bounding box.
     That is not lossy in any way that matters: a 14-unit scene quantises to
-    0.0002 units, four orders below the 0.024 voxel the geometry was built at,
-    and it halves the bytes that reach a phone.
+    0.0002 units, about 120 times finer than the 0.024 voxel the geometry was
+    built at, and it halves the bytes that reach a phone.
 
     The header carries the counts because, unlike the dense point buffer,
     vertices and indices have different strides and a reader cannot recover

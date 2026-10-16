@@ -2,6 +2,7 @@
 
 All disk reads and geometry work belong to the guidance worker.  In particular,
 neither a status poll nor a builder call parses the pose or keyframe journals.
+FOW below means fog of war.
 """
 
 from __future__ import annotations
@@ -24,11 +25,13 @@ _MEMO_LIMIT = 256
 _LANDING_BUDGET_S = 0.250
 _RETRY_DELAYS_S = (5.0, 20.0)
 _READ_CHUNK_BYTES = 64 * 1024
-# Per-file read caps, about 5-10x the walk-6 files (solution 438 KB,
+# Per-file read caps, set against the walk-6 files (solution 438 KB,
 # manifest 25 KB, placements 68 KB, poses 332 KB, keyframes 778 KB for
-# 1,090 keyframes). The cap is also the bound on the one step the budget
-# cannot interrupt: a single json.loads of a capped 4 MiB file measured
-# 25-29 ms on the Tower host, holding the GIL for that long.
+# 1,090 keyframes; KB read as 1,000 bytes): the caps are 9.6x (solution), 42x
+# (manifest), 15x (placements), 12.6x (poses) and 5.4x (keyframes) those
+# files. The cap is also the bound on the one step the budget cannot
+# interrupt: a single json.loads of a capped 4 MiB file measured 25-29 ms on
+# the Tower host, holding the GIL for that long.
 _FILE_LIMITS = {"solution.json": 4 * 1024 * 1024,
                 "manifest.json": 1024 * 1024,
                 "placements.json": 1024 * 1024,
@@ -61,6 +64,10 @@ class _Budget:
 
 
 class _FrozenDict(dict):
+    """A dict whose mutating methods raise TypeError, for published coverage
+    blocks (status payloads hold them). In-place `|=` is not blocked.
+    `__deepcopy__` returns self, so copies share the frozen object."""
+
     def _immutable(self, *args, **kwargs):
         raise TypeError("published coverage is immutable")
 
@@ -111,6 +118,9 @@ def _rotate(q, v):
 
 
 def _placed(row, placement):
+    """(position, up, forward) of a segment-local pose in the OUTPUT frame:
+    the registered scale times the rotated centre plus the offset; `up` is the
+    camera -y axis and `forward` its +z axis, both rotated."""
     centre = _rotate(placement["rotation_wxyz"], _unit_or_zero(row["translation"]))
     scale = float(placement["scale"])
     offset = _unit_or_zero(placement["translation"])
@@ -124,6 +134,8 @@ def _placed(row, placement):
 
 
 def _unit_or_zero(a):
+    """A finite 3-vector as floats, or ValueError("invalid translation" /
+    "nonfinite translation"). Despite the name, it normalises nothing."""
     if not isinstance(a, (list, tuple)) or len(a) != 3:
         raise ValueError("invalid translation")
     values = [float(v) for v in a]
@@ -133,7 +145,9 @@ def _unit_or_zero(a):
 
 
 def _source_pose(entry):
-    """Solution's R_cw/t_cw, expressed as camera centre/up/forward in its component."""
+    """Solution's R_cw/t_cw, expressed as camera centre/up/forward in its component.
+
+    Returns (the raw 9-element rotation, centre, up, forward)."""
     matrix = entry["rotation"]
     if not isinstance(matrix, (list, tuple)) or len(matrix) != 9:
         raise ValueError("missing solution rotation")
@@ -152,6 +166,10 @@ def _source_pose(entry):
 
 
 def _solution_relative(entry, anchor):
+    """Pose (position, up, forward) of any solve keyframe `entry`, carried into
+    the output frame through one anchor keyframe's placement. It verifies every
+    replaced keyframe and places pending ones; `photo_floorplan_worker` mirrors
+    this algebra."""
     _, centre, up, forward = _source_pose(entry)
     (a_matrix, a_centre, _, _), anchor_row, anchor_placement = anchor
     def world_to_output(v):
@@ -184,8 +202,17 @@ def _sector_bin(x, y):
 
 
 def _component(reference, entries, check=lambda: None, bins_out=None):
-    """`bins_out` (FOW dial, imagery-landed only) receives keyframe_id -> ((y, x), sector or None),
-    the exact cell and sector each keyframe contributed to the masks."""
+    """Build one component's frame and its per-cell sector counts from `entries`.
+
+    `entries` are (keyframe id, position, up, ray) rows, sorted in place by id.
+    The frame is the normalised sum of the up axes, a horizontal forward (the
+    first ray with a usable horizontal part) and an origin; the square holding
+    the positions is divided into 8x8 cells, and each keyframe's ray is
+    counted into one of 12 sectors of its cell. Returns (the component dict,
+    with empty `stations`, and the station list the caller caps). `bins_out`,
+    when given (FOW dial), receives keyframe_id -> ((y, x), sector or None),
+    the exact cell and sector each keyframe contributed to the masks. Raises
+    ValueError for degenerate geometry."""
     entries.sort(key=lambda item: item[0])
     check()
     up = _unit([sum(e[2][i] for e in entries) for i in range(3)])
@@ -249,19 +276,22 @@ def _finite_component(component):
             math.isfinite(component["cell_size"]) and component["cell_size"] > 0)
 
 
-# motion_sector is scale-free (walk 9 had scale unknown): the displacement over
-# H's newest 24 eligible keyframes (~5 s), null below 0.25 cell_size (manager 374).
+# motion_sector is scale-free (it works with scale unknown): the displacement
+# over the hero component's newest 24 eligible keyframes (~5 s), null below
+# 0.25 cell_size.
 _DIAL_MOTION_KEYFRAMES = 24
 _DIAL_MOTION_MIN_CELLS = 0.25
 
 
 def _dial(components, eligible, bins, ids, check):
-    """FOW capture-dial (S3) inputs for B2 imagery, from this receipt's own binning.
+    """FOW capture-dial (S3) inputs for B2 imagery (the names of
+    WORLD-BUILDER-GUIDANCE-IMAGERY.md), from this receipt's own binning.
 
     Reads the finished receipt; never changes it. "Newest" is solve/journal
-    order (`ids`), not keyframe-id order. H is the drawn component of the newest
-    eligible keyframe with a usable forward (the one `latest` names); with no
-    usable forward anywhere it is the newest eligible keyframe's component.
+    order (`ids`), not keyframe-id order. The hero (H in the contract) is the
+    drawn component of the newest eligible keyframe with a usable forward (the
+    one `latest` names); with no usable forward anywhere it is the newest
+    eligible keyframe's component.
     """
     order = {kid: index for index, kid in enumerate(ids)}
     drawn = {component["reference_segment"]: component for component in components}
@@ -370,7 +400,30 @@ def _pending_entry(kid, row, source, summary, pending_refs, anchors):
 def compute_coverage(*, solution, manifest, placements, poses, keyframes,
                      geometry_revision, computed_at, check=lambda: None,
                      eligible_out=None, dial_out=None, include_pending=True):
-    """Pure computation from one coherent snapshot; invalid global identity refuses all.
+    """The status `guidance.coverage` block, computed from one coherent
+    snapshot; an invalid global identity refuses all.
+
+    WHAT: pure computation of the per-component station coverage block from
+    the parsed `solution`, `manifest`, `placements`, `poses` and accepted
+    `keyframes` rows, stamped with `geometry_revision` and `computed_at`.
+
+    HOW: verifies the solve identity chain (solve clocks, the accepted journal
+    against the manifest's and the solution's input digests, solver identity);
+    takes the registered placements and one anchor per reference segment;
+    chooses the eligible keyframes; then, per component, builds the 8x8
+    station grid with 12 sectors (`_component`) and keeps at most 16 stations
+    across components; the serialised block must fit 4096 bytes. `check` is
+    the budget hook, called before every bounded step; it raises on
+    cancellation or deadline. `eligible_out` and `dial_out`, when given,
+    receive the eligible (keyframe id, reference segment) pairs and the
+    capture-dial inputs; neither changes the block. A `_TransientCoverageError`
+    means a coherent snapshot may appear on a later attempt; a `ValueError`
+    means the snapshot is invalid.
+
+    WHY: a keyframe is eligible only when the named solve poses it with >= 30
+    observations, in a replaced (or pending) segment whose placement is
+    reliable and whose merged pose agrees with the solve's own, so a painted
+    bit is real evidence; one malformed pose contributes nothing.
 
     Posed keyframes of not-yet-replaced (pending) segments count too; see
     `_pending_entry`. `include_pending=False` (tests only) leaves them out:
@@ -564,9 +617,10 @@ def compute_coverage(*, solution, manifest, placements, poses, keyframes,
     if dial_out is not None:
         # FOW dial: B2 selection inputs. The coverage block below is built
         # exactly as without it.
-        # A dial failure must never cost B1 its receipt: drop the dial (B2 then
-        # publishes nothing and keeps its last block) but let a cancellation or
-        # deadline -- check() raises ValueError -- still stop the job.
+        # A dial failure must never cost the coverage block its receipt: drop
+        # the dial (B2 then publishes nothing and keeps its last block) but let
+        # a cancellation or deadline -- check() raises ValueError -- still stop
+        # the job.
         try:
             dial_out.update(_dial(components, eligible, bins, ids, check))
         except Exception:  # noqa: BLE001
@@ -588,7 +642,7 @@ def compute_coverage(*, solution, manifest, placements, poses, keyframes,
 
 
 def _signature(paths):
-    return tuple((p.stat().st_size, p.stat().st_mtime_ns) for p in paths)
+    return tuple((st.st_size, st.st_mtime_ns) for st in (p.stat() for p in paths))
 
 
 def _read_bounded(path, budget):
@@ -719,12 +773,8 @@ class CoverageWorker:
         self._condition = threading.Condition()
         self._pending = None
         self._queued = OrderedDict()
-        self._candidate = None
         self._completed = None
-        self._successful_candidate = None
         self._block = None
-        self._block_session = None
-        self._attempt_tag = None
         self._wanted = {}
         self._targets = OrderedDict()
         # A world list can contain more than eight historical sessions, so
@@ -832,6 +882,14 @@ class CoverageWorker:
 
     def offer(self, world_id, session_id, solved_at, horizon, solution_stat,
               geometry_revision, tree_tag):
+        """Offer one landing candidate and return the block to show now.
+
+        Returns the memoised receipt when this solve already published (any
+        tree tag reuses it as is), else the previous receipt of the same
+        (world, session) pair, or None. Records the wanted identity; a newer
+        tree of the same session drops queued older work, at most one job is
+        pending, and a cooling-down retry is superseded by a newer offer.
+        """
         candidate = (world_id, session_id, solved_at, horizon, solution_stat)
         identity = (candidate, tree_tag)
         with self._condition:
@@ -922,8 +980,6 @@ class CoverageWorker:
                 if candidate in self._receipts:
                     # Published while this job waited; never recompute a solve.
                     continue
-                self._candidate = candidate
-                self._attempt_tag = tree_tag
             budget = _Budget(self._stop)
             started = time.monotonic()
             reason = "ok"
@@ -934,11 +990,11 @@ class CoverageWorker:
                 # FOW dial (S3): B2's per-sector selection inputs.
                 dial = {}
                 photo_tree = {}
-                kwargs = {"eligible_out": imagery_eligible, "dial_out": dial,
-                          "tree_out": photo_tree}
                 block = compute_from_tree(self.root, world, session,
                                           (solved_at, horizon, stat), revision,
-                                          self.clock, tree_tag, budget, **kwargs)
+                                          self.clock, tree_tag, budget,
+                                          eligible_out=imagery_eligible,
+                                          dial_out=dial, tree_out=photo_tree)
                 budget.check()
             except Exception as exc:
                 failure = exc
@@ -955,8 +1011,6 @@ class CoverageWorker:
                     self._completed = candidate
                     if block is not None:
                         self._block = _freeze(block)
-                        self._block_session = (world, session)
-                        self._successful_candidate = candidate
                         self._receipts[candidate] = (block, self._block)
                         self._imagery_state.begin_landed(world, session)
                         self._published = {**self._published,

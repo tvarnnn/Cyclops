@@ -94,7 +94,7 @@ __all__ = [
 # rendered immediately. Object Memory does the opposite and keeps every
 # class, because a memory cannot pre-judge what will matter later.
 #
-# What the real domain contains, from the 2026-09-07 audit of all 97
+# What the real domain contains, from an audit of all 97
 # corpus captures: laptop, tv/monitor, cell phone, keyboard and mouse in
 # most desk captures; chair, bed, couch, dining table, cup and bottle
 # occasionally; book never; person never (no bystander in 45,594

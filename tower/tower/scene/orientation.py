@@ -22,13 +22,12 @@ not produced, because nothing measured here can produce them with usable
 precision (see below), and a positive claim with 0.02-0.34 precision is
 worse than no claim.
 
-WHY NOT KEYPOINTS. The first version of this module inferred facing from
-which COCO keypoints a `keypointrcnn_resnet50_fpn` reported as visible
-(both eyes and an ear -> toward, both ears and no eye -> away, one ear ->
-profile). Validated on 2026-09-07 against 966 human-labelled persons
-from COCO val2017 (`Glasses-scratch/scene-understanding-v1/orientation/`,
-GT derived from the annotators' own visibility flags) it called 220 of
-228 true-profile people `toward`: the keypoint model reports a confident
+WHY NOT KEYPOINTS. Inferring facing from which COCO keypoints a
+`keypointrcnn_resnet50_fpn` reported as visible (both eyes and an ear ->
+toward, both ears and no eye -> away, one ear -> profile) was measured
+and rejected. Validated against 966 human-labelled persons from COCO
+val2017 (GT derived from the annotators' own visibility flags) it called
+220 of 228 true-profile people `toward`: the keypoint model reports a confident
 score and a plausible coordinate for an OCCLUDED eye, so score-thresholded
 "visibility" does not track human visibility exactly where it matters.
 `toward` precision was 0.56-0.62 across every threshold swept, and the
@@ -45,15 +44,15 @@ front-lit, in focus, no motion blur, and 47% of eligible people face the
 camera because photographers point cameras at faces. The precision above
 is anchored to that base rate and is an UPPER BOUND for a glasses camera
 in a room where most people are not looking at the wearer. The corpus on
-this host contains no bystander at all (2026-09-07 audit, 45,594 frames),
+this host contains no bystander at all (audit of 45,594 frames),
 so nothing here is validated on this camera. The feature ships as
 EXPERIMENTAL, its confidence is capped at MEDIUM, and the wire says so.
 
 PRIVACY. The face detector's output -- a box, a score and five landmark
 coordinates -- is read, reduced to one boolean per person box, and
 discarded. No crop is kept, no embedding is computed, and the score
-itself never reaches a track or the wire. `test_scene_understanding_
-persists_nothing` walks this file.
+itself never reaches a track or the wire.
+`test_scene_understanding_persists_nothing` walks this file.
 
 TEMPORAL VOTING. One frame's face detection is one vote. The engine
 publishes `toward_wearer` for a track only when a majority of its last
@@ -64,7 +63,6 @@ carries its age and expires (`age_estimate`): a person who turned around
 six seconds ago is not described by a six-second-old reading.
 """
 
-import logging
 from dataclasses import replace
 from pathlib import Path
 from typing import Protocol, runtime_checkable
@@ -77,14 +75,12 @@ from tower.scene.records import (
     FacingEstimate,
 )
 
-logger = logging.getLogger(__name__)
-
-# The vendored YuNet weights. The same file World Builder's redaction
-# loads, resolved the same way, so a Tower has one face model or none.
+# The vendored YuNet weights (the same file World Builder's redaction
+# loads).
 DEFAULT_MODEL_PATH = Path("models") / "face_detection_yunet_2023mar.onnx"
 
 # A face scoring below this is not evidence the front of the head is
-# visible. 0.9, from the 2026-09-07 sweep: 0.6 gives 0.63 precision, 0.8
+# visible. 0.9, from a threshold sweep: 0.6 gives 0.63 precision, 0.8
 # gives 0.69, 0.9 gives 0.83 -- and recall falls from 0.94 to 0.64 over
 # the same range. The product says "facing your direction" out loud, so
 # it buys precision with recall, and says `unknown` for the rest.
@@ -96,9 +92,9 @@ NMS_THRESHOLD = 0.3
 TOP_K = 50
 
 # Only the top of a person box can hold that person's head. Cropping to
-# it halves the pixels the detector sees and, more importantly, keeps a
-# second person's face lower in a tall overlapping box from being
-# counted as this one's.
+# it cuts the pixels the detector sees to 0.6 of the box and, more
+# importantly, keeps a second person's face lower in a tall overlapping
+# box from being counted as this one's.
 HEAD_REGION_FRACTION = 0.6
 
 # YuNet is trained for faces larger than a distant head at 360x640. A
@@ -195,10 +191,10 @@ def age_estimate(estimate: FacingEstimate, seconds: float) -> FacingEstimate:
     read as "not facing".
 
     Clamped at zero, matching `Track.age_seconds`. Timestamps come from
-    the capture journal and are wall clock: a backward NTP step produced a
-    NEGATIVE age, which quietly pushed the expiry deadline further into
-    the future -- the one direction it must never move. That clamp is a
-    CLOCK guard, not a latency guard, and survives any change of model.
+    the capture journal and are wall clock: a backward step would give a
+    NEGATIVE age and push the expiry deadline further into the future --
+    the one direction it must never move. That clamp is a CLOCK guard,
+    not a latency guard, and survives any change of model.
     """
     seconds = max(seconds, 0.0)
     if seconds > MAX_ESTIMATE_AGE_S:

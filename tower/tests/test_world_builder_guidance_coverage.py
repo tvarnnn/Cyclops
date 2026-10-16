@@ -551,6 +551,10 @@ def test_tower_result_hub_shutdown_cancels_guidance_worker(monkeypatch, tmp_path
     assert len(seen) == 1 and seen[0]._stop.is_set()
     seen[0]._thread.join(1)
     assert not seen[0]._thread.is_alive()
+    photo = seen[0]._photo_worker
+    assert photo._stop.is_set()
+    photo._thread.join(1)
+    assert not photo._thread.is_alive()
 
 
 def test_on_worker_starts_before_poll_and_discovers_requested_landing(tmp_path):

@@ -15,12 +15,12 @@ does not repair it -- that opens a NEW session against the same world --
 and `world_solve.py` writes a solution but never merges it, because the
 engine's `build()` is the only writer of the derived tree.
 
-The 2026-09-09 walk landed exactly there: 795 keyframes, 643 positioned
+One recovered capture landed exactly there: 795 keyframes, 643 positioned
 poses and 26,634 points on disk, `finalization: interrupted`, detail
 `BadZipFile: File is not a zip file`, and nothing in the product able to
 turn that into the world it already almost was. Recovering it took three
-hand-written steps in a scratch directory. This is those three steps, as
-an operation the system supports.
+hand-written steps; this is those three steps, as an operation the system
+supports.
 
 WHAT IT DOES
 
@@ -29,7 +29,7 @@ WHAT IT DOES
     an error, not something to force.
 2.  Runs the final global solve -- every keyframe, loop detection on, all
     cores -- unless `--skip-solve`. This is usually the whole point: the
-    final solve is what merges the fragments. On the 2026-09-09 capture it
+    final solve is what merges the fragments. On that capture it
     took 16 components to 6 and put 652 of 795 keyframes into one at
     0.82 px, where the last live solve had 156 in its largest.
 3.  Rebuilds the derived tree, which merges that solution into the poses,
@@ -159,12 +159,12 @@ def main(argv=None) -> int:
             report["global_solve"] = summary
             if summary.get("solved"):
                 final_solve_state = FINAL_SOLVE_SOLVED
-                # What the published solve still owes, on the row (review V7, H2 and L-c):
+                # What the published solve still owes, on the row:
                 # masks lost to GPU memory (an owner re-finishes), a gate to re-run.
                 from scripts.world_build_session import finalization_notice  # noqa: PLC0415
                 from tower.world_builder.coherence_publish import publish_detail  # noqa: PLC0415
 
-                # `detail` keeps the diagnostics (review V9 M-4); the phone's `notice` is the closed set.
+                # `detail` keeps the diagnostics; the phone's `notice` is the closed set.
                 detail = publish_detail(summary) or detail
                 notice = finalization_notice(summary)
             elif summary.get("error"):
@@ -188,14 +188,12 @@ def main(argv=None) -> int:
             "scale_state": result.scale_state,
             "placements_source": (result.diagnostics or {}).get("placements_source"),
         }
-        # THE FALLBACK THE BUILDER HAS AND THIS DID NOT. When no global
-        # solve placed anything, the Sim3 registrar is the only producer of
-        # placements there is, and `world_build_session.py` runs it for
-        # exactly that case. Without this, a repair of a session whose solve
-        # found nothing rebuilt the derived tree and left the world with no
-        # placements at all -- every fragment its own island, which is the
-        # outcome this whole campaign is about. Found by an adversarial
-        # review of the repair tool.
+        # The builder's fallback. When no global solve placed anything, the
+        # Sim3 registrar is the only producer of placements there is, and
+        # `world_build_session.py` runs it for exactly that case. Without
+        # this, a repair of a session whose solve found nothing would
+        # rebuild the derived tree and leave the world with no placements at
+        # all -- every fragment its own island.
         #
         # `register_session` never raises and refuses to replace placements
         # that are registered and current, so calling it is safe whichever
@@ -215,39 +213,34 @@ def main(argv=None) -> int:
         state = FINALIZATION_COMPLETE
         report["finalized"] = True
     except Exception as exc:  # noqa: BLE001
-        # A REPAIR THAT FAILS MUST NOT LEAVE THE WORLD WORSE THAN IT FOUND
-        # IT. This wrote `interrupted` unconditionally, so pointing the tool
-        # at an already-complete world and hitting any error -- a purged
-        # world, a full disk, a raising solve -- DOWNGRADED a healthy record
-        # to interrupted, with no way back: every re-run hits the same
-        # error. An adversarial review demonstrated it on a purged world,
-        # `complete` -> `interrupted`, permanently.
+        # A repair that fails must not leave the world worse than it found
+        # it. Writing `interrupted` unconditionally would mean that pointing
+        # the tool at an already-complete world and hitting any error -- a
+        # purged world, a full disk, a raising solve -- downgrades a healthy
+        # record to interrupted, with no way back: every re-run hits the same
+        # error.
         #
         # The record only moves if this run actually had something to
         # improve on. The authoritative journals are untouched either way,
         # so a failure is still retryable once its cause is fixed.
         detail = f"{type(exc).__name__}: {exc}"
-        # PRESERVE THE RECORD ONLY IF WHAT IT DESCRIBES IS STILL THERE.
+        # Preserve the record only if what it describes is still there.
         #
-        # Not downgrading a healthy record was the right fix for pointing
-        # this tool at an already-complete world. But `solve()` and
-        # `build()` have already run by the time we get here -- they are
-        # WRITERS -- so a failure between them can leave the derived tree
-        # deleted while the preserved record still says `complete` with a
-        # solved final solve. An adversarial review demonstrated exactly
-        # that: the CLI exited 1 and said so on stdout, and the world went
-        # on reading `ready` to the phone with no geometry behind it.
+        # `solve()` and `build()` have already run by the time we get here --
+        # they are WRITERS -- so a failure between them can leave the derived
+        # tree deleted while the preserved record still says `complete` with
+        # a solved final solve: the CLI would exit 1 and say so on stdout,
+        # and the world would go on reading `ready` to the phone with no
+        # geometry behind it.
         #
         # The record may only stand if the manifest it implies still does.
         was_complete = (before.finalization or {}).get("state") == FINALIZATION_COMPLETE
         try:
             # THIS SESSION's geometry, not the world's manifest. The
             # world-level one names whichever session built last, so a
-            # wrecked build on the older session of a world walked
-            # twice preserved a `complete` record on the strength of
-            # another session's manifest. Found by a reviewer chasing
-            # every remaining world-level read after the reader side
-            # was given a session id.
+            # wrecked build on the older session of a world walked twice
+            # would preserve a `complete` record on the strength of another
+            # session's manifest.
             # `session_id`, the RESOLVED one -- `args.session` is None
             # whenever the caller let the CLI pick the latest, which is
             # every ordinary invocation.

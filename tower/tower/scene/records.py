@@ -22,7 +22,7 @@ from dataclasses import dataclass, field, replace
 
 from tower.confidence import Confidence
 
-# Coarse facing states. Since 2026-09-07 only two are ever PRODUCED --
+# Coarse facing states. Only two are ever PRODUCED --
 # `toward_wearer`, when the front of a head is visible inside a person's
 # box, and `unknown`, which means "not established" and covers facing
 # away, side-on, too small and never measured alike. `away_from_wearer`
@@ -213,10 +213,11 @@ class Track:
 
         `Track` is mutable and the tracker rewrites it in place on every
         frame -- `box`, `score`, `last_seen_at`, `hits`, `streak`,
-        `misses`, `is_confirmed` -- so a `SceneState` that referenced the
-        tracker's own objects was a live view wearing a timestamp. Held
-        for one publish tick it serialised old scalars beside new track
-        values: a state stamped `frames_observed: 3` reporting `hits: 8`.
+        `misses`, `is_confirmed` -- so a `SceneState` must not reference
+        the tracker's own objects, or it is a live view wearing a
+        timestamp: held for one publish tick it would serialise old
+        scalars beside new track values (a state stamped
+        `frames_observed: 3` reporting `hits: 8`).
 
         Shallow is deep enough, and that is a property worth stating
         rather than assuming: `BoundingBox` and `FacingEstimate` are both

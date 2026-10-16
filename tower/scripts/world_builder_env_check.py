@@ -33,8 +33,8 @@ import subprocess
 import sys
 from pathlib import Path
 
-# The sibling scripts all do this and this one did not, which is how it
-# imported a DIFFERENT checkout's `tower` -- see `collect_package_origin`.
+# Put this checkout's `tower` ahead of any editable install's mapping -- see
+# `collect_package_origin`.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 # OpenCV symbols a monocular pipeline actually calls, grouped by role so a
@@ -228,19 +228,17 @@ def collect_package_origin():
     """WHERE THE INSTALL POINTS, not where this script happens to import from.
 
     Asking `tower.__file__` in THIS process answers nothing: the line at the
-    top of this file puts the canonical checkout on `sys.path`, so the
-    answer is always "here". The hazard is the editable install underneath
-    it, which on this machine maps `tower` to
-    `Glasses-worktrees/all-cartridges-field-test-v1/tower/tower` -- a
-    different checkout, months of fixes behind.
+    top of this file puts this checkout on `sys.path`, so the answer is
+    always "here". The hazard is the editable install underneath it, which
+    can map `tower` to a different checkout.
 
     Every entry point that sets `sys.path` (this script, and the three
     world_* scripts) wins over that mapping. `tower/main.py` sets none, and
-    `import tower` from a neutral working directory therefore loads the
-    OTHER checkout -- verified by running it. `scripts/start_tower.ps1`
-    happens to `Set-Location` to the tower root first, so the supported
-    launcher is safe; a hand-run `python -m uvicorn tower.main:app` from
-    anywhere else is not.
+    `import tower` from a neutral working directory therefore loads whichever
+    checkout the editable install maps. `scripts/start_tower.ps1`
+    `Set-Location`s to the tower root first, so the supported launcher is
+    safe; a hand-run `python -m uvicorn tower.main:app` from anywhere else is
+    not.
 
     A physical test conducted against a stale worktree would produce
     results about code nobody edited, and nothing would say so.
@@ -259,10 +257,9 @@ def collect_package_origin():
         import re
 
         # Ask the interpreter where its site-packages is, rather than
-        # deriving it from the package path -- the first version of this
-        # guessed `parents[2]/.venv` and landed one directory above the
-        # venv, so it found no mapping and reported OK for the exact
-        # condition it exists to catch.
+        # deriving it from the package path: a guessed location can miss the
+        # mapping and report OK for the exact condition this exists to
+        # catch.
         finders = []
         for entry in sys.path:
             if entry.endswith("site-packages"):
@@ -286,15 +283,13 @@ def collect_package_origin():
 def collect_vocabulary_tree():
     """Whether COLMAP's vocabulary tree is already on this machine.
 
-    IT IS ON THE LIVE PATH NOW. Loop detection used to run only in the
-    finalisation solve, and `global_solve` justified that partly as avoiding
-    "a network dependency". Since 2026-09-09 every background solve asks for
-    it, because that is what makes a live world converge instead of
-    fragmenting -- measured on the field capture, 16 components down to 5,
-    and the largest component's share of posed keyframes rising 0.75 -> 0.95
-    as the walk went on.
+    It is on the live path: every background solve asks for it, because loop
+    detection is what makes a live world converge instead of fragmenting
+    (measured on one field capture: 16 components down to 5, and the largest
+    component's share of posed keyframes rising 0.75 -> 0.95 as the walk went
+    on).
 
-    So the network dependency moved onto the walk. pycolmap downloads a
+    So the network dependency is on the walk. pycolmap downloads a
     72 MB tree on first use and caches it in the USER's home, not the venv,
     so a fresh checkout on a warm machine is fine and a fresh machine is
     not. A cold cache during a walk means the first solve child spends the
@@ -321,9 +316,10 @@ def collect_vocabulary_tree():
 def collect_calibrations():
     r"""Whether a calibration exists for the resolution the glasses deliver.
 
-    THE PRE-FLIGHT WAS ALL-GREEN AND MISSED THIS. A reviewer pointed a
-    replay at a fresh `--root`, which had no `intrinsics/` beside it, and
-    watched a whole walk produce nothing:
+    A world root without an `intrinsics/<WxH>.json` for the resolution the
+    glasses send produces no poses and no points, announced only in a log. A
+    replay pointed at a fresh `--root` with no `intrinsics/` beside it
+    produced:
 
         world builder: no calibration for 360x640 (looked for
           ...\intrinsics\360x640.json); intrinsics stay unknown and no
@@ -332,14 +328,14 @@ def collect_calibrations():
           and no points
         rebuild 131: 499 keyframes -> 0 positioned poses, 0 points
 
-    131 rebuilds, zero geometry, and a WARNING in a log nobody is reading.
-    The seven verdicts this script already emits check that OpenCV *can*
-    calibrate; none of them check that anything *has*.
+    131 rebuilds, zero geometry, and only a WARNING in a log. The other
+    verdicts check that OpenCV *can* calibrate; none of them check that
+    anything *has*.
 
     The resolution cannot be known before the phone connects, so this asks
-    the last capture what it sent. That is the best available evidence and
-    it is real evidence: every frame of the five most recent captures on
-    this host is 360x640.
+    the last capture what it sent. That is the best available evidence:
+    every frame of the five most recent captures on the measured host is
+    360x640.
     """
     from tower.config import get_settings
 
@@ -359,18 +355,16 @@ def collect_calibrations():
     env = {}
     env_error = None
     if env_path.is_file():
-        # PYTHON-DOTENV, NOT A HAND-ROLLED PARSER.
-        #
-        # The first version split on the first `=` and stripped
-        # whitespace, and a reviewer diffed it against dotenv on twelve
-        # inputs: it disagreed on SIX. `export KEY=v` filed the key as
-        # "export KEY"; quotes were kept as part of the value; a UTF-8 BOM
-        # left the key unreachable (`str.strip()` does not remove ﻿,
-        # which is Cf, not whitespace); and an inline `# comment` became
-        # part of the path. Every disagreement pointed the same way -- a
-        # RED verdict saying "every pose and every point of the walk will
-        # be missing" against a Tower that is correctly configured, which
-        # is a lie told in exactly the situation this check exists for.
+        # Use python-dotenv, not a hand-rolled parser. One that split on the
+        # first `=` and stripped whitespace disagreed with dotenv on 6 of 12
+        # inputs: `export KEY=v` filed the key as "export KEY"; quotes were
+        # kept as part of the value; a UTF-8 BOM left the key unreachable
+        # (`str.strip()` does not remove U+FEFF, which is Cf, not
+        # whitespace); and an inline `# comment` became part of the path.
+        # Every disagreement pointed the same way -- a RED verdict saying
+        # "every pose and every point of the walk will be missing" against a
+        # Tower that is correctly configured, which is a lie told in exactly
+        # the situation this check exists for.
         #
         # `start_tower.ps1` hands uvicorn `--env-file`, and uvicorn's
         # reader is dotenv. Using the same library is the only way this
@@ -378,18 +372,16 @@ def collect_calibrations():
         try:
             from dotenv import dotenv_values
 
-            # `utf-8-sig`, NOT the default `utf-8`.
+            # `utf-8-sig`, not the default `utf-8`.
             #
             # python-dotenv 1.2.1 does not strip a byte-order mark: a
             # `.env` beginning EF BB BF parses to the key
             # `'﻿TOWER_WORLD_ROOT'`, and the lookup below then finds
             # nothing and reports a correctly configured Tower as unset --
             # a RED verdict of exactly the kind the paragraph above says
-            # this must never produce. On WINDOWS that is the default
+            # this must never produce. On Windows that is the default
             # outcome, not an exotic one: Notepad and PowerShell's
-            # `Out-File` both write UTF-8 with a BOM, and this repository's
-            # own CLAUDE.md warns about it. Measured here on 1.2.1; the
-            # suite's own premise check caught it.
+            # `Out-File` both write UTF-8 with a BOM. Measured on 1.2.1.
             #
             # `utf-8-sig` consumes a BOM if there is one and is identical
             # to `utf-8` if there is not.
@@ -399,17 +391,12 @@ def collect_calibrations():
                 if v is not None
             }
         except Exception as exc:  # noqa: BLE001 - a diagnostic never fails on its input
-            # NAME IT, AND THEN GET OUT OF THE WAY.
-            #
-            # The first version swallowed this into an empty dict and the
-            # verdict then read "there is no .env to read it from" -- about
-            # a file `is_file()` had confirmed two lines earlier. The
-            # second version returned early with the exception named, which
-            # was honest and ALSO WRONG: an operator who exports
-            # TOWER_WORLD_ROOT needs no `.env` at all, and the early return
-            # skipped the env-var lookup below, so a machine that was
-            # correctly configured went RED anyway. A reviewer measured
-            # both, and the old fallthrough was right about that case.
+            # Name the failure rather than swallow it. Swallowing it into an empty
+            # dict would make the verdict read "there is no .env to read it
+            # from" about a file `is_file()` just confirmed; returning early
+            # would skip the env-var lookup below, and an operator who
+            # exports TOWER_WORLD_ROOT needs no `.env` at all, so a
+            # correctly configured machine would go RED.
             #
             # So: remember the failure, keep going, and let it into the
             # verdict only if the environment could not answer either.
@@ -430,9 +417,8 @@ def collect_calibrations():
         # its own comment; the root in the file is one level above.
         capture_root = capture_root / "captures"
     if world_root is None:
-        # The `.env` sitting there unread is a DIFFERENT failure from no
-        # `.env` at all, and the first version of this sentence said the
-        # second about the first.
+        # A `.env` that is there but unread is a different failure from no
+        # `.env` at all, and the detail says which.
         if env_error is not None:
             detail = (
                 f"no world root: TOWER_WORLD_ROOT is unset and {env_path} "
@@ -482,8 +468,7 @@ def collect_calibrations():
 
     return {
         # Published so `build_verdicts` can ask about locks without
-        # resolving the root a second way -- two resolvers for one path is
-        # how this campaign's defects kept coming back.
+        # resolving the root a second way.
         "world_root": str(world_root),
         "intrinsics_dir": str(directory),
         "available": available,
@@ -594,7 +579,7 @@ def build_verdicts(report):
         )
     verdicts.append(("calibration_for_the_camera", bool(calib.get("covered")), calib_detail))
 
-    # THE INTERPRETER RUNNING THIS MUST BE ABLE TO SOLVE, and nothing
+    # The interpreter running this must be able to solve, and nothing
     # above establishes that.
     #
     # Every other verdict here can pass on a Python that cannot
@@ -605,13 +590,10 @@ def build_verdicts(report):
     # with no pycolmap at all, and a walk on it produces a world with
     # zero poses and zero points, announced nowhere.
     #
-    # This is not hypothetical and it is not the operator's mistake to
-    # imagine: the agent that wrote this check ran the entire Tower test
-    # suite on the wrong interpreter for a whole working session before
-    # noticing, on this machine, with `tower/.venv` sitting beside it.
-    # `sys.executable` is in the detail for exactly that reason -- the
-    # answer to "why is it failing" is usually "you are not running the
-    # Python you think you are".
+    # `sys.executable` is in the detail because the usual cause is running
+    # a different Python than intended (a system Python with `tower/.venv`
+    # sitting beside it) -- the answer to "why is it failing" is usually
+    # "you are not running the Python you think you are".
     try:
         import pycolmap  # noqa: PLC0415
 
@@ -637,18 +619,16 @@ def build_verdicts(report):
         )
     verdicts.append(("sfm_backend_importable", backend_ok, backend_detail))
 
-    # WHICH WORLDS CLAIM TO BE BEING BUILT RIGHT NOW.
+    # Which worlds claim to be being built right now.
     #
     # A lock file whose pid is alive makes the status producer prefer that
-    # world over every saved one, so the phone opens onto it. On this
-    # machine 29 of 163 worlds hold a lock and none carries `created_at`
-    # -- they predate the field -- so before `_holder_is_running` learned
-    # to compare the process start time against the lock file's own mtime,
-    # a recycled pid was indistinguishable from a live builder. Two
-    # reviewers hit the same alias within an hour and one reproduced the
-    # consequence end to end: a real walk built correctly and then, the
-    # moment finalization released its own lock, the live screen reverted
-    # to a fortnight-old empty world and said "Mapping" forever.
+    # world over every saved one, so the phone opens onto it. A recycled
+    # pid can look alive: `_holder_is_running` compares the process start
+    # time against the lock file's own mtime, because lock files without
+    # `created_at` (29 of 163 worlds on one measured machine hold a lock
+    # and none carries it) cannot be told apart otherwise. The consequence
+    # is that, once finalization releases its own lock, the live screen
+    # reverts to an old empty world and says "Mapping" forever.
     #
     # The judgement is fixed. This verdict exists so the operator can SEE
     # the condition rather than discover it mid-walk: any world reported

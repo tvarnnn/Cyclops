@@ -1,85 +1,82 @@
 """The final-solve scale and pose PUBLICATION guard, run at every final publication.
 
-V2 (Exp1 slice 4; design RUN review/codex/cx-SCALE-GUARD-V2-DESIGN-20261007.md) IS THE RULE THE SEAM RUNS
-(`guard_publication`, `assess_v2`); the description below is v1's and still holds for v1's `assess`
-except where v2 says otherwise:
-  * EVIDENCE IS READ, NEVER MADE (`read_evidence`): the applied gate's `metric_log` first, else the session's
-    live depth cache under a full identity match (`live_depth.compatible_live_records`), else none. No depth
-    stage runs at publish.
+THE PATH. `guard_publication` is the publish seam's entry. It reads the evidence (`read_evidence`), lists
+the candidate's room cameras (`room_cameras`), assesses them (`assess_v2`), applies the decision (`apply`)
+and returns a `GuardOutcome` that carries the summary and the audit. v2 is the rule the seam runs:
+  * DEPTH EVIDENCE IS READ, NEVER PREDICTED (`read_evidence`): the applied gate's `metric_log` first,
+    else compatible live depth predictions (`live_depth.compatible_live_records`) from which
+    `coherence_scale.metric_scale` computes ratios, else no ratios. No depth stage runs at publish.
   * ISOLATE only a plateau with >= 10 finite ratios, its median outside the inclusive [0.8, 1.25] AND its
     deterministic 95 % bootstrap interval (400 draws, seed 20261006) excluding 1. A plateau is bounded by
     its first and last MEASURED camera: no class is carried across an unmeasured tail. Re-segment after
     each removal.
-  * EVERYTHING ELSE STAYS ATTACHED and is recorded `uncertified`, in `final_scale_guard.json` and on the
-    placed component of `components.json` (`placed_scale_status`). No pose-only quarantine (pose screen
-    recorded only). No evidence: the room is `uncertified` (never PASS), nothing is isolated, nothing is
-    withheld. It still withholds on a failure (an exception, a relabel that leaves no room).
+  * QUALIFYING in-band plateaus with >= 10 ratios stay `certified`. The room is `SCALE_CERTIFIED` when
+    its certified core has >= 10 ratios and no attached uncertified span. Short plateaus, unmeasured
+    stretches, excursions and out-of-band plateaus whose interval includes 1 stay attached but are
+    recorded `uncertified`, in `final_scale_guard.json` and on the placed component of
+    `components.json` (`placed_scale_status`). No pose-only quarantine (pose screen recorded only).
+    No evidence: the room is `uncertified` (never PASS), nothing is isolated, nothing is withheld.
+    It still withholds on a failure (an exception, a relabel that leaves no room).
 
-WHY. The evidence gate decides which pieces of a final solve to attach to the room, but it does not check
-the result it publishes: the historical walk-3 bathroom was published inside the room at x2.56 relative to
-it despite the gate, and the live product (the "simple" solve: unmasked, ungated, one draw) publishes the
-solver's component 0 with no check at all. The guard checks THE ACTUAL OUTCOME THAT WOULD BE PUBLISHED --
-the chosen draw, its anchor block, every attached group -- immediately before it is written, and can only
-REMOVE room membership: it never attaches anything and never overrides a gate refusal.
-
-Design: RUN review/codex/cx-SCALE-GUARD-DESIGN-20261006.md (binding, manager 234). Method: a port of the
-read-only checker RUN experiments/SIMPLE-SOLVE/tools/scale_outlier_check.py (per-camera log(z_sfm/z_metric),
-the [0.8, 1.25] screen, >= 10 ratios per side, the P4 motion screens), with its LABEL-DEFINED segments
-replaced by label-free ones (below). Region labels are evaluation only; nothing here reads one.
+WHY. The evidence gate decides which pieces of a final solve to attach to the room, yet a bathroom was
+published inside the room at x2.56 relative to it despite the gate. A simple solve (unmasked, ungated,
+one draw) has no evidence-gate check, but its final publication still runs this scale guard. The guard
+checks THE ACTUAL OUTCOME THAT WOULD BE PUBLISHED -- the chosen draw, its anchor block,
+every attached group -- immediately before it is written, and can only REMOVE room membership: it never
+attaches anything and never overrides a gate refusal. The measurement is the per-camera
+log(z_sfm/z_metric) with the [0.8, 1.25] screen, >= 10 ratios per side and motion screens, and its
+segments are label-free (below). Region labels are evaluation only; nothing here reads one.
 
 THE SEAM (`coherence_publish.gate_and_publish` and `coherence_publish.regate_published`): after the gate,
-the consensus and the anchor verification, before `write`. So it covers every publication pass -- the
+the consensus and the anchor verification, before `write`. So it covers every final publication pass -- the
 consensus's early draw-0 publish, its final vote, the plain gate, the simple (ungated) solve, a re-finish
 (a final solve) and the re-gate in place.
 
-WHAT IT MEASURES, on the candidate's ROOM (component 0, supported cameras: >= 30 observations):
+WHAT v2 MEASURES, on the candidate's ROOM (component 0, supported cameras: >= 30 observations):
 
   1. SCALE. Per camera log(z_sfm/z_metric) (`coherence_scale.metric_scale`: the solve database's verified
-     inlier pairs, the candidate's poses, the depth stage's metric predictions). The gate's own measurement
-     is reused when it ran; on an ungated solve the guard runs the same depth stage (whose predictions are
-     cached and handed to the surface, which would otherwise make them after publish).
+     inlier pairs, the candidate's poses, the depth stage's metric predictions), read as evidence from the
+     gate's own measurement or the live depth cache. Without either there is no ratio at all.
   2. CANDIDATE PIECES, label-free: the gate's groups of the room (one group on an ungated solve), each cut
-     in capture order into PLATEAUS -- runs whose centred running median (11 measured cameras) sits on the
-     same side of the screen band around the reference. A camera without a ratio joins the plateau of the
-     nearest measured camera before it.
-  3. THE REFERENCE is the dominant room core: first the densest x1.25-wide window of camera ratios, then
-     the median of the cameras in certified in-band plateaus, re-segmented until the decisions stop
-     changing (a contaminated first median cannot hide a second mismatch).
+     in capture order into PLATEAUS (`measured_plateaus`) -- runs whose centred running median (11 measured
+     cameras) sits on the same side of the screen band around the reference. Each plateau runs from its
+     first to its last measured camera; unmeasured stretches before, between or after plateaus are rows of
+     their own.
+  3. THE REFERENCE is the dominant room core: first the densest window of camera ratios as wide as the
+     screen band [0.8, 1.25], then the median of the cameras in certified in-band plateaus, re-segmented
+     until the decisions stop changing (a contaminated first median cannot hide a second mismatch).
   4. DECISIONS, per plateau with >= 10 ratios: its median ratio to the reference inside [0.8, 1.25] is
-     kept; below 0.75 or above 1.333 (the CLEAR boundary) is isolated `final-scale-outlier`; in the
-     borderline bands between is isolated `final-scale-uncertified` -- borderline is never described as a
-     measured gross error, whatever its deterministic bootstrap interval says (recorded). A stretch of
-     plateaus with < 10 ratios each is kept only when it sits inside the band and a certified plateau of the
-     same group bounds it on BOTH sides (it inherits their certificate, recorded as `inherited`); otherwise
-     it is isolated `final-scale-uncertified`: an unmeasured independent piece never gets a room claim.
-     (Cameras with no ratio inside a certified plateau are kept with it, the same inheritance; the plateau
-     rows record `keyframes` and `measured`.)
-  5. POSES, after the reference is fixed (metres per unit = exp(-reference)), over the kept cameras in
-     capture order: a consecutive pair (<= 3 journal indices, <= 2 s) is a HARD step when it moves more than
-     max(allowance + 0.5 m, 2 x allowance), allowance = 2.0 m/s x dt + 0.3 m (P4), or more than the
-     allowance AND a corroborating screen fires (> 0.75 m vertical step in <= 1 s; an endpoint > 1.5 m off
-     the room's median height, > 120 deg from its median up, or > 15 m from its median centre). A smaller
-     exceedance is a recorded WARNING only. A camera with two or more of the per-camera defects, or a
-     non-finite pose, is quarantined outright. The room is cut at hard steps; a run rejoins an earlier one
-     when the step between them would not have been hard; the run cluster with the most cameras is the
-     room, and every other cluster is isolated `final-pose-outlier` -- each its own piece, so a step never
-     moves two otherwise coherent sides together.
-  6. If the remaining room has fewer than 10 ratios, nothing is certified: the candidate is WITHHELD.
+     kept and certified; outside it the plateau is a candidate, isolated `final-scale-outlier` only when its
+     bootstrap interval excludes 1, otherwise attached and `uncertified`. A plateau with < 10 ratios, an
+     unmeasured stretch, and a run of >= 3 consecutive measured cameras each beyond the clear boundary
+     (below 0.75 or above 1.333) on one side (an excursion, which the running median swallows) stay
+     attached and `uncertified`: the record does not certify an unmeasured piece's scale.
+  5. POSES, recorded for the audit only (`applied: false`): with metres per unit = exp(-reference), over the
+     room's cameras in capture order, a consecutive pair (<= 3 journal indices, <= 2 s) is a HARD step when
+     it moves more than max(allowance + 0.5 m, 2 x allowance), allowance = 2.0 m/s x dt + 0.3 m, or more
+     than the allowance AND a corroborating screen fires (> 0.75 m vertical step in <= 1 s; an endpoint
+     > 1.5 m off the room's median height, > 120 deg from its median up, or > 15 m from its median
+     centre). A smaller exceedance is a recorded WARNING only. A camera with two or more of the per-camera
+     defects, or a non-finite pose, is flagged outright. v2 isolates nothing on pose.
 
 WHAT IT DOES. Each isolated piece becomes its own unplaced component (its own label; coordinates
 untouched; its points go with the majority of their observers, `coherence_publish.relabel_solution`), with
-the new reason, in the components record (`components.json`, contract §2) -- written on an ungated solve
-too, where every other solver component is `solved-separately`. Captured imagery is never dropped. A
-withheld candidate is not written at all (`publish.written: false`): the last published solution stands,
-and the solve reports `solved: false` with the reason, which the builder records as the finalization's
-detail. IT IS FAIL-CLOSED: no depth, too few ratios, a failed gate, a relabel that leaves no room, or any
-exception withholds.
+the reason `final-scale-outlier`, in the components record (`components.json`, contract §2) -- written on
+an ungated solve too, where every other solver component is `solved-separately`. Captured imagery is never
+dropped. A withheld candidate is not written at all (`publish.written: false`): the last published
+solution stands, and the solve reports `solved: false` with the reason, which the builder records as the
+finalization's detail. IT IS FAIL-CLOSED: a relabel that leaves no room, or any exception, withholds. A
+absence of metric evidence does not: that room is published `uncertified`.
 
 THE AUDIT (`solve/<session>/final_scale_guard.json`, Tower-internal, keyed to the published or withheld
-solve's identity): the params and digest, the reference, every plateau and piece with its keyframe ids,
-journal indices, ratio count, median ratio, bootstrap interval, class and decision, the pose flags and
-warnings, and the timing -- so a scorer can see which segments were isolated and why. No ratio or metric
+solve's identity): when assessment completes, it records the params and digest, the reference, each
+plateau's endpoint keyframe ids and each isolated piece's keyframe ids, journal indices, ratio count,
+median ratio, bootstrap interval where computed, class and decision, and the pose flags and warnings. It
+also records timing and any error, so a scorer can see which segments were isolated and why. No ratio or metric
 figure ever reaches the components record or the phone (contract §2.4 rule 6).
+
+The v1 `assess`, `plateaus` and `_scale_round` functions remain for their direct tests. The publish seam
+calls `assess_v2`.
 """
 
 from __future__ import annotations
@@ -97,7 +94,7 @@ import numpy as np
 
 logger = logging.getLogger(__name__)
 
-# v2 (Exp1 slice 4) is the rule the publish seam runs; v1's `assess` is not run there.
+# v2 is the rule the publish seam runs; v1's `assess` is not run there.
 GUARD_ID = "final-scale-guard/2"
 GUARD_ID_V1 = "final-scale-guard/1"
 RECORD = "wb-final-scale-guard/2"
@@ -125,7 +122,7 @@ UNCERTIFIED_RETEST_LIMIT = "retest-limit"
 # The `mode` the summary and the audit record.
 MODE_ON = "on"
 
-# Contract COMPONENTS §2.2 (vNEXT): after every existing reason in precedence.
+# Contract COMPONENTS §2.2: after every existing reason in precedence.
 REASON_SCALE_OUTLIER = "final-scale-outlier"
 REASON_SCALE_UNCERTIFIED = "final-scale-uncertified"
 REASON_POSE_OUTLIER = "final-pose-outlier"
@@ -137,9 +134,9 @@ IN, LOW, HIGH = "in", "low", "high"
 DECISION_PUBLISHED = "published"
 DECISION_WITHHELD = "withheld"
 
-# F6 (review XR): the row's `finalization.notice` after a withhold. The solution published before -- the
-# walk's background solve, never checked by this guard -- still stands, so the phone is told, in a closed
-# sentence, that the room it shows is NOT CERTIFIED. One line, no slash, no figure (contract COMPONENTS 3.1).
+# The row's `finalization.notice` after a withhold. The solution published before -- the walk's background
+# solve, never checked by this guard -- still stands, so the phone is told, in a closed sentence, that the
+# room it shows is NOT CERTIFIED. One line, no slash, no figure (contract COMPONENTS 3.1).
 NOTICE_WITHHELD = ("the final check could not certify this walk's room, so the room shown is the walk's "
                    "unchecked preview and its photos are kept; an owner can re-finish this walk")
 
@@ -149,21 +146,21 @@ WHY_WITHHELD = ("the final scale guard withheld the final solve ({}); nothing wa
 
 @dataclass(frozen=True)
 class GuardParams:
-    """Every threshold, frozen before any replay (design §Decision thresholds). Recorded with its digest."""
+    """Every threshold of the guard. Recorded with its digest."""
 
     # global_solve.MIN_IMAGE_OBSERVATIONS: only published (supported) cameras are judged.
     min_obs: int = 30
-    # The checker's and the contract's screen boundary, inclusive.
+    # The contract's screen boundary, inclusive.
     screen_low: float = 0.8
     screen_high: float = 1.25
     # The clear-failure boundary: outside it a measured gross error; between it and the screen, borderline.
     clear_low: float = 0.75
     clear_high: float = 1.333
-    # Ratios needed on each side of a scale comparison (the checker's MIN_SEGMENT_RATIOS).
+    # Ratios needed on each side of a scale comparison.
     min_ratios: int = 10
     # Plateau detection: a centred running median over 2h+1 measured cameras.
     smooth_half_window: int = 5
-    # The EXCURSION screen (review XR F2): inside a kept plateau, this many consecutive measured cameras each
+    # The EXCURSION screen: inside a kept plateau, this many consecutive measured cameras each
     # beyond the CLEAR boundary on the same side are a short, grossly wrong stretch the running median
     # swallows. They are isolated `final-scale-uncertified` (too few ratios to certify either way). Three:
     # at the clear boundary a single camera's own ratio is out in a few per cent of cameras, three in a row
@@ -177,7 +174,7 @@ class GuardParams:
     bootstrap_draws: int = 400
     bootstrap_seed: int = 20261006
     ci_level: float = 0.95
-    # The P4 motion rule and the checker's corroborating screens.
+    # The motion rule and its corroborating screens.
     speed_mps: float = 2.0
     speed_margin_m: float = 0.3
     hard_extra_m: float = 0.5
@@ -222,7 +219,7 @@ def _finite_pose(c: RoomCamera) -> bool:
 
 def _center_up(c: RoomCamera) -> tuple[np.ndarray, np.ndarray]:
     center = -c.R.T @ c.tvec
-    # The image's +Y is downward; minus the camera's +Y in the world is its "up" (the checker's proxy).
+    # The image's +Y is downward; minus the camera's +Y in the world is its "up" (a proxy for the camera's up).
     up = -c.R.T @ np.array([0.0, 1.0, 0.0])
     n = float(np.linalg.norm(up))
     return center, (up / n if n > 0 else up)
@@ -452,8 +449,8 @@ def _pose_screen(cams: list[RoomCamera], mpu: float, params: GuardParams) -> dic
 
     def step(a: RoomCamera, b: RoomCamera) -> dict | None:
         """The step a -> b, or None when it is not testable: more than `step_max_index_gap` journal indices or
-        `step_max_dt_s` apart (or no time). The same bounds for a cut and for a rejoin (review XR F3): elapsed
-        time alone never certifies where an island sits relative to the room."""
+        `step_max_dt_s` apart (or no time). The same bounds for a cut and for a rejoin: elapsed time alone
+        never certifies where an island sits relative to the room."""
         if a.t is None or b.t is None:
             return None
         dt = float(b.t - a.t)
@@ -522,7 +519,7 @@ def _pose_screen(cams: list[RoomCamera], mpu: float, params: GuardParams) -> dic
 
 
 def assess(cameras: list[RoomCamera], metric_log: dict, params: GuardParams | None = None) -> dict:
-    """The guard's decision on one candidate room. Pure: no IO.
+    """The v1 decision on one candidate room (run only by tests; the publish seam runs `assess_v2`). Pure: no IO.
 
     `cameras`: the room's supported cameras in capture order; `metric_log`: {image name: log ratio}.
     Returns {"decision": "publish" | "withhold", "why", "reference", "rounds", "plateaus", "pieces",
@@ -617,14 +614,15 @@ def _counts(items: list[dict]) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# v2: the rule the publish seam runs (design RUN review/codex/cx-SCALE-GUARD-V2-DESIGN-20261007.md)
+# v2: the rule the publish seam runs
 # ---------------------------------------------------------------------------
 #
 # Isolate a plateau ONLY when all three hold: >= `min_ratios` finite ratios; the median ratio to the
 # reference outside the inclusive [screen_low, screen_high]; and the deterministic 95 % bootstrap interval
 # of its median against the certified core (`bootstrap_draws`, `bootstrap_seed`) excludes 1. A plateau is
 # bounded by its FIRST and LAST MEASURED camera: unmeasured cameras inside it go with it, an unmeasured
-# head, tail or gap never does (v1 carried a class across an arbitrarily long unmeasured tail). Everything
+# head, tail or gap never does (unlike v1's `plateaus`, which carried a class across an arbitrarily long
+# unmeasured tail). Everything
 # else -- short plateaus, out-of-band plateaus whose interval includes 1, excursions, unmeasured stretches --
 # STAYS ATTACHED and is recorded `uncertified`, in the audit and on the placed component. No evidence: the
 # whole room is `uncertified`, nothing is isolated, nothing is withheld. No pose-only quarantine: the pose
@@ -698,8 +696,8 @@ def _v2_rows(groups: dict, values: dict, ref: float, params: GuardParams) -> lis
 
 def _v2_segment(groups: dict, values: dict, params: GuardParams):
     """(reference log or None, rows, reference rounds, certified core values) for `groups`, the reference
-    refined from the certified core exactly as v1 refines it; every out-of-band >= 10-ratio plateau then
-    decided by its bootstrap interval against that core."""
+    refined from the certified core until the decisions stop changing (at most `max_reference_rounds`); every
+    out-of-band >= 10-ratio plateau then decided by its bootstrap interval against that core."""
     measured = np.asarray([values[c.name] for cams in groups.values() for c in cams if c.name in values],
                           np.float64)
     ref = dominant_level(measured, params)
@@ -801,7 +799,7 @@ def assess_v2(cameras: list[RoomCamera], metric_log: dict, params: GuardParams |
     status = SCALE_CERTIFIED if (not uncertified and len(core) >= params.min_ratios) else SCALE_UNCERTIFIED
     pose = None
     if ref is not None and room:
-        # Recorded for audit only: v2 isolates nothing on pose (design §3).
+        # Recorded for audit only: v2 isolates nothing on pose.
         screen = _pose_screen(room, math.exp(-ref), params)
         pose = {"applied": False, "metres_per_unit": math.exp(-ref), "flags": screen["flags"],
                 "warnings": screen["warnings"], "nonfinite": screen["nonfinite"],
@@ -837,8 +835,8 @@ def room_cameras(solution, keyframes, name_of: dict, *, groups_of: dict | None =
         if not p or int(p.get("component", 0)) != 0 or int(p.get("observations", 0)) < min_obs:
             continue
         # A supported room pose with a missing or malformed rotation or translation, or no image name, is
-        # NOT skipped (review XR F4): skipped, it stayed in the published room unassessed. It enters as a
-        # non-finite camera, which the pose screen quarantines (`final-pose-outlier`).
+        # NOT skipped: skipped, it would stay in the published room unassessed. It enters as a non-finite
+        # camera, so the pose screen records the defect in the audit. v2 does not isolate on pose.
         R = _array_or_nan(p.get("rotation"), (3, 3))
         tvec = _array_or_nan(p.get("translation"), (3,))
         name = name_of.get(kid)
@@ -885,7 +883,7 @@ def gate_groups(gated: dict | None) -> dict | None:
 # ---------------------------------------------------------------------------
 
 
-def _existing_labels(solution, min_obs: int) -> tuple[dict, list[dict]]:
+def _existing_labels(solution) -> tuple[dict, list[dict]]:
     """{kid: label} for every posed keyframe and the gate-style component list of the solution."""
     labels = {kid: int(p.get("component", 0)) for kid, p in (solution.poses or {}).items()}
     comps = []
@@ -908,7 +906,7 @@ def apply(solution, assessment: dict, *, session_id: str, keyframes, started_at:
     component. Raises ValueError when the record cannot hold the contract's shape (no room left)."""
     from tower.world_builder import coherence_publish as CP  # noqa: PLC0415
 
-    labels, comps = _existing_labels(solution, min_obs)
+    labels, comps = _existing_labels(solution)
     nxt = max(labels.values(), default=0) + 1
     for piece in assessment["pieces"]:
         for kid in piece["keyframe_ids"]:
@@ -1018,10 +1016,9 @@ class GuardOutcome:
     mode: str
     decision: str                  # published | withheld
     solution: object               # what to publish (None when withheld)
-    result: object                 # the GateResult to hand `after_publish` (None: today's ungated publish)
+    result: object                 # the GateResult to hand `after_publish` (None when withheld)
     summary: dict
     audit: dict
-    depth: dict | None = None      # the guard's own depth stage (an ungated solve), for the surface
 
 
 def read_evidence(store, world_id, session_id, solution, result, *, database_path, name_of,
@@ -1094,10 +1091,23 @@ def _live_metric_scale(solution, name_of: dict, database_path, live_work, ki_of_
 
 def guard_publication(store, world_id: str, session_id: str, solution, result, *, database_path,
                       keyframes, params: GuardParams | None = None, live_metric_fn=None) -> GuardOutcome:
-    """The guard (v2) at the publish seam. `solution`: what would be published; `result`: its GateResult,
-    or None on an ungated solve. Reads existing evidence only (`read_evidence`): it predicts no depth. Never
-    withholds on scale: without evidence the room is published `uncertified`. Never raises: a failure (an
-    exception, a relabel that leaves no room) withholds."""
+    """Assess the candidate room's cameras against metric-scale evidence at the publish seam and return
+    what to publish, or a withhold.
+
+    Inputs: `solution` is what would be published; `result` is its `GateResult`, or None on an ungated
+    solve; `database_path` is the solve database that holds the verified pairs; `keyframes` name the
+    images and give each camera's receipt time; `params` the thresholds; `live_metric_fn` a seam for the
+    live-cache scale read. Steps: `read_evidence` (the gate's metric log, else the live depth cache, else
+    none), `room_cameras`, `assess_v2`, `apply` (relabel the isolated pieces into unplaced components and
+    build the components record), then `summary` and `audit_document`. Output: a `GuardOutcome`. When
+    published, its `solution` carries `solve.final_scale_guard` and its `result` is a new `GateResult`
+    holding the components record; when withheld, `solution` and `result` are None. The audit is built here
+    but written by the caller.
+
+    It returns an outcome and never raises, so the caller can write the audit even on a withhold; it is
+    fail-closed: an exception or a relabel that leaves no room withholds. It reads existing evidence only
+    and predicts no depth. It never withholds on scale: without evidence the room is published
+    `uncertified`."""
     from tower.world_builder import coherence_publish as CP  # noqa: PLC0415
     from tower.world_builder.coherence_publish import GateResult  # noqa: PLC0415
 
@@ -1105,7 +1115,6 @@ def guard_publication(store, world_id: str, session_id: str, solution, result, *
     started = time.perf_counter()
     assessment = None
     inputs: dict = {}
-    depth = None
     try:
         name_of = CP._image_names(keyframes)
         metric_log, inputs = read_evidence(store, world_id, session_id, solution, result,
@@ -1133,10 +1142,10 @@ def guard_publication(store, world_id: str, session_id: str, solution, result, *
         if result is not None:
             new_result = dataclasses.replace(result, solution=published, components=doc)
         else:
-            new_result = GateResult(solution=published, record={}, components=doc, depth=depth)
+            new_result = GateResult(solution=published, record={}, components=doc)
         return GuardOutcome(MODE_ON, DECISION_PUBLISHED, published, new_result, summ,
                             audit_document(assessment, mode_=MODE_ON, decision=DECISION_PUBLISHED,
-                                           solution=published, inputs=inputs, seconds=secs), depth)
+                                           solution=published, inputs=inputs, seconds=secs))
     except Exception as exc:  # noqa: BLE001 -- fail-closed
         secs = time.perf_counter() - started
         why = str(exc) if isinstance(exc, _Withhold) else f"{type(exc).__name__}: {exc}"
@@ -1149,14 +1158,14 @@ def guard_publication(store, world_id: str, session_id: str, solution, result, *
         summ["why"] = why
         return GuardOutcome(MODE_ON, DECISION_WITHHELD, None, None, summ,
                             audit_document(assessment, mode_=MODE_ON, decision=DECISION_WITHHELD, solution=solution,
-                                           inputs=inputs, seconds=secs, error=why), depth)
+                                           inputs=inputs, seconds=secs, error=why))
 
 
 def withhold(outcome: "GuardOutcome", why: str) -> "GuardOutcome":
     """`outcome` turned into a withhold: nothing to publish, the summary and the audit say why."""
     summ = dict(outcome.summary, decision=DECISION_WITHHELD, why=why)
     audit = dict(outcome.audit, decision=DECISION_WITHHELD, error=why)
-    return GuardOutcome(outcome.mode, DECISION_WITHHELD, None, None, summ, audit, outcome.depth)
+    return GuardOutcome(outcome.mode, DECISION_WITHHELD, None, None, summ, audit)
 
 
 class _Withhold(RuntimeError):
