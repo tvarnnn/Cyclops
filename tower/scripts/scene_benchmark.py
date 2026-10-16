@@ -132,17 +132,18 @@ def bench_count_stability(
     The brief's requirement, measured rather than asserted. A count that
     flickers with the detector makes the wearer distrust every answer.
 
-    The tracker is built with **no policy argument on purpose**: this
-    bench used to construct `TrackerPolicy(min_hits=3, max_misses=5)`
-    by hand, so it went on reporting the old constants' behaviour after
-    they changed, and a benchmark that cannot see a regression cannot
-    guard against one. Frames are stepped at the real delivered
-    interval for the same reason -- it used to step 0.3 s, the ~3.3 fps
-    that was never the rate.
+    The tracker is built with **no policy argument on purpose**, so it
+    follows the production constants; a hand-built
+    `TrackerPolicy(min_hits=3, max_misses=5)` would keep reporting the
+    former constants' behaviour after they changed, and a benchmark that
+    cannot see a regression cannot guard against one. Frames are stepped
+    at the real delivered interval (`DELIVERED_FRAME_INTERVAL_S`) for the
+    same reason, not at 0.3 s (~3.3 fps), which was never the rate.
 
-    The 60% row is new and is where the difference lives: at 40% the
-    old constants already read 0.939, but at 60% they collapse to 0.252
-    while a miss budget of one real second holds 0.783.
+    The 60% dropout row is where the difference lives: at 40% the former
+    constants (min_hits=3, max_misses=5) already read 0.939, but at 60%
+    they collapse to 0.252 while a miss budget of one real second holds
+    0.783.
     """
     rows = []
     both = [
