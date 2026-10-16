@@ -41,17 +41,17 @@ final class WorldCurrentPieceUITests: XCTestCase {
     /// On the mock glasses: the piece is drawn only while this phone
     /// captures (Codex review HOLD on ed3112b).
     func testTheCurrentPieceFillsInRestartsAtABreakAndIsItsWalksOwn() throws {
-        launch(mockGlasses: true)
+        launch(mockGlasses: true, environment: ["IOS_FOW_MAP_TAB": "on"])
         open(cartridge: "World Builder")
         XCTAssertTrue(waitFor(timeout: 15) { self.socket.liveSubscription != nil }, "the live subscription")
         try startCapture()
 
-        // No segment data (the manifest 404s): nothing drawn, today's panel.
+        // No segment data (the manifest 404s): nothing drawn.
         push(modelState: "receiving", geometry: "g0", liveCapture: true)
-        XCTAssertTrue(element("capture-health").waitForExistence(timeout: 15), "Capture health")
+        XCTAssertTrue(element("wb-panel-health-toggle").waitForExistence(timeout: 15), "Capture health")
         Thread.sleep(forTimeInterval: 1.5)
         XCTAssertFalse(element("wb-current-piece").exists, "no segment data: no piece")
-        XCTAssertFalse(element("wb-panel-stage").exists, "no segment data: today's panel")
+        XCTAssertFalse(element("wb-panel-stage").exists, "no segment data: no stage")
 
         // Segment 0, three posed keyframes: the piece, beside the map.
         serve(revision: "gA", segments: [(0, "h0", Self.zeroPoses)])
@@ -60,6 +60,7 @@ final class WorldCurrentPieceUITests: XCTestCase {
         XCTAssertTrue(piece.waitForExistence(timeout: 15), "the current piece")
         XCTAssertEqual(text(element("wb-current-piece-label")), "Provisional · current stretch")
         XCTAssertEqual(text(element("wb-current-piece-views")), "3 views since tracking last restarted")
+        showMap()
         let map = element("wb-panel-map")
         XCTAssertTrue(map.waitForExistence(timeout: 10), "the room map")
         XCTAssertFalse(map.frame.intersects(piece.frame), "the piece is drawn into the room map")
@@ -78,7 +79,7 @@ final class WorldCurrentPieceUITests: XCTestCase {
         // Another walk's report: A's piece goes.
         push(modelState: "receiving", world: "w2", session: "s9", geometry: "gW2", liveCapture: true)
         XCTAssertTrue(waitFor(timeout: 10) { !self.element("wb-current-piece").exists }, "A's piece under B's walk")
-        XCTAssertTrue(element("capture-health").exists, "B's walking panel")
+        XCTAssertTrue(element("wb-panel-health-toggle").exists, "B's walking panel")
     }
 
     // MARK: Stop
@@ -113,7 +114,7 @@ final class WorldCurrentPieceUITests: XCTestCase {
         XCTAssertGreaterThanOrEqual(piece.frame.minY, stop.frame.maxY - 0.5, "the piece is above Stop")
         shoot("current-piece-capturing")
 
-        reveal(stop)
+        centre(stop)
         XCTAssertTrue(tap(stop, until: !self.app.buttons["Stop capture"].exists), "Stop")
         // Codex review MED: gone at the local Stop, with the Tower still
         // reporting `receiving` -- not only once a finalizing report lands.
@@ -144,7 +145,7 @@ final class WorldCurrentPieceUITests: XCTestCase {
         let piece = element("wb-current-piece")
         XCTAssertTrue(piece.waitForExistence(timeout: 15), "the current piece while capturing")
 
-        reveal(stop)
+        centre(stop)
         XCTAssertTrue(tap(stop, until: !self.app.buttons["Stop capture"].exists), "Stop")
         XCTAssertTrue(waitFor(timeout: 5) { !piece.exists }, "the piece after the local Stop")
 
@@ -180,11 +181,11 @@ final class WorldCurrentPieceUITests: XCTestCase {
 
         // Stop A, Start B, Stop B: the Tower never presented B meanwhile.
         let start = app.buttons["Start capture"], stop = app.buttons["Stop capture"]
-        reveal(stop)
+        centre(stop)
         XCTAssertTrue(tap(stop, until: !self.app.buttons["Stop capture"].exists), "Stop A")
         reveal(start)
         XCTAssertTrue(tap(start, until: self.app.buttons["Stop capture"].exists), "Start B")
-        reveal(stop)
+        centre(stop)
         XCTAssertTrue(tap(stop, until: !self.app.buttons["Stop capture"].exists), "Stop B")
         XCTAssertTrue(neverExists(piece, for: 1), "a piece after the local Stop")
 
@@ -280,7 +281,7 @@ final class WorldCurrentPieceUITests: XCTestCase {
 
     // MARK: Driving the app
 
-    private func launch(mockGlasses: Bool = false) {
+    private func launch(mockGlasses: Bool = false, environment: [String: String] = [:]) {
         let app = XCUIApplication()
         app.launchArguments = ["-UITestSkipOnboarding", "-UITestResetTowerAddress"]
         if mockGlasses {
@@ -292,6 +293,7 @@ final class WorldCurrentPieceUITests: XCTestCase {
             }
         }
         app.launchEnvironment["GLASSES_TOWER_AUTHORITY"] = mockAuthority
+        app.launchEnvironment.merge(environment) { _, new in new }
         addUIInterruptionMonitor(withDescription: "system alert") { alert in
             for title in ["Allow", "Don't Allow", "OK", "Not Now"] where alert.buttons[title].exists {
                 alert.buttons[title].tap()
@@ -331,6 +333,28 @@ final class WorldCurrentPieceUITests: XCTestCase {
     /// Best effort, for the screenshot only.
     private func reveal(_ element: XCUIElement) {
         for _ in 0..<8 where !(element.exists && element.isHittable) { app.swipeUp(velocity: .slow) }
+    }
+
+    /// Scrolls `element` to mid-screen: a button at the very bottom edge
+    /// counts as hittable, yet a tap there does not reach it.
+    private func centre(_ element: XCUIElement) {
+        for _ in 0..<6 {
+            guard element.exists else { return }
+            let window = app.windows.firstMatch
+            let delta = window.frame.midY - element.frame.midY
+            if abs(delta) < 60 { return }
+            let start = window.coordinate(withNormalizedOffset: CGVector(dx: 0.1, dy: 0.6))
+            start.press(forDuration: 0.1, thenDragTo: start.withOffset(CGVector(dx: 0, dy: max(-250, min(250, delta)))),
+                        withVelocity: .slow, thenHoldForDuration: 0.3)
+        }
+    }
+
+    /// The Map face behind the Dial|Map control (`IOS_FOW_MAP_TAB=on`).
+    private func showMap() {
+        let control = app.segmentedControls.matching(identifier: "wb-panel-tab").firstMatch
+        XCTAssertTrue(control.waitForExistence(timeout: 10), "the Dial|Map control")
+        reveal(control)
+        XCTAssertTrue(tap(control.buttons["Map"], until: self.element("wb-panel-map").exists), "the Map tab")
     }
 
     @discardableResult

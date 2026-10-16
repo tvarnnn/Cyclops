@@ -3,8 +3,7 @@
 //  Glasses
 //
 //  Fog of war v1.1, option B (FOW-V11B-WIRE-AND-IOS-SPEC-20261007, frozen):
-//  redacted keyframe thumbnails, in two stages, each behind its own
-//  default-OFF switch.
+//  redacted keyframe thumbnails in two stages.
 //
 //  - B1, the live strip: the current segment's thumbnails, "Current piece ·
 //    unplaced", newest first. Never placed on the room map or its grid. It
@@ -21,8 +20,7 @@
 //  tile is the Tower's JPEG (redacted, or honestly labelled unredacted), kept in memory only (no disk cache), by
 //  digest, at most 16 per stage.
 //
-//  OFF -- the phone's switch for a stage -- is no UI and no request. The
-//  manifest is fetched only on the existing pushes: B1 on a new
+//  The manifest is fetched only on the existing pushes: B1 on a new
 //  `geometry.revision` (the geometry push), B2 on a new landing in
 //  `guidance.coverage`. No timer, no poll.
 //
@@ -30,45 +28,6 @@
 import Combine
 import Foundation
 import UIKit
-
-// MARK: - The switches
-
-/// The phone's side of each stage's switch. The Tower's routes exist only
-/// when its own switches are on (spec §0); these say whether the phone asks.
-/// Read from the launch environment or, for a build launched from the home
-/// screen (which has no launch environment), from the Info.plist keys the
-/// build fills from the same-named build settings. `on` exactly; anything
-/// else, including an unset setting's empty string, is off.
-nonisolated struct WorldImagerySwitches: Equatable, Sendable {
-    static let liveVariable = "IOS_FOW_ROOM_IMAGERY_LIVE"
-    static let landedVariable = "IOS_FOW_ROOM_IMAGERY_LANDED"
-    static let liveInfoKey = "GlassesFOWImageryLive"
-    static let landedInfoKey = "GlassesFOWImageryLanded"
-    static let off = WorldImagerySwitches(live: false, landed: false)
-
-    var live: Bool
-    var landed: Bool
-
-    var anyOn: Bool { live || landed }
-
-    init(live: Bool, landed: Bool) {
-        self.live = live
-        self.landed = landed
-    }
-
-    /// B2 is also on when the capture dial is (`IOS_FOW_DIAL`): the dial's
-    /// photos are B2's landed tiles, and a colour-only dial is not shipped
-    /// (FOW-RING-SPEC §1).
-    init(environment: [String: String], info: [String: Any] = [:]) {
-        self.init(live: environment[Self.liveVariable] == "on" || info[Self.liveInfoKey] as? String == "on",
-                  landed: environment[Self.landedVariable] == "on" || info[Self.landedInfoKey] as? String == "on"
-                      || WorldCaptureDialSwitch(environment: environment, info: info).on)
-    }
-
-    static var current: WorldImagerySwitches {
-        WorldImagerySwitches(environment: ProcessInfo.processInfo.environment, info: Bundle.main.infoDictionary ?? [:])
-    }
-}
 
 // MARK: - The manifest, decoded (§1)
 
@@ -390,9 +349,6 @@ final class WorldImageryModel: ObservableObject {
 
     nonisolated enum Stage: Hashable, Sendable { case live, landed }
 
-    let switches: WorldImagerySwitches
-    /// The capture dial's switch: OFF, the panel's overlay does no dial work.
-    let dial: WorldCaptureDialSwitch
     private let client: WorldImageryClient
 
     /// Everything held, with the walk it is of. A new walk starts empty.
@@ -413,23 +369,20 @@ final class WorldImageryModel: ObservableObject {
     /// manifest names them again.
     private var failedTiles: [Stage: Set<String>] = [:]
 
-    init(switches: WorldImagerySwitches = .current, dial: WorldCaptureDialSwitch = .current,
-         client: WorldImageryClient = WorldImageryClient()) {
-        self.switches = switches
-        self.dial = dial
+    init(client: WorldImageryClient = WorldImageryClient()) {
         self.client = client
     }
 
     /// The existing geometry push, heartbeat included: B1's only trigger
     /// (a new revision), and B2's retry. Only for a walk being received.
     func geometryPushed(_ coordinates: WorldGeometryCoordinates, receiving: Bool) {
-        guard switches.anyOn, receiving else { return }
+        guard receiving else { return }
         let walk = WorldFinishWalk(worldID: coordinates.worldID, sessionID: coordinates.sessionID)
         adopt(walk)
-        if switches.live, coordinates.revision != liveRevision {
+        if coordinates.revision != liveRevision {
             fetchLive(walk: walk, revision: coordinates.revision)
         }
-        if switches.landed, let landing, !landingAnswered, landedTask == nil,
+        if let landing, !landingAnswered, landedTask == nil,
            landingAttempts <= Self.landingRetries {
             fetchLanded(walk: walk, landing: landing)
         }
@@ -438,7 +391,7 @@ final class WorldImageryModel: ObservableObject {
     /// The walk's `guidance.coverage`: B2's only trigger is a new landing in
     /// it (`solved_at`, `geometry_revision`, `frame_revision`).
     func coverageReported(_ coverage: WalkScoped<WorldCoverage?>, receiving: Bool) {
-        guard switches.landed, receiving, let walk = coverage.walk, let block = coverage.value else { return }
+        guard receiving, let walk = coverage.walk, let block = coverage.value else { return }
         adopt(walk)
         let next = WorldImageryLanding(block)
         guard next != landing else { return }
@@ -837,7 +790,7 @@ extension WorldBuilderViewModel {
     /// only through the current piece's gate (this phone capturing).
     var liveStrip: WalkScoped<WorldImageryStrip>? {
         let held = imageryModel.imagery
-        guard imageryModel.switches.live, let walk = held.walk, let live = held.value.live,
+        guard let walk = held.walk, let live = held.value.live,
               let owner = geometryOwner, WorldFinishWalk(picture: owner) == walk,
               let published = publishedGeometryRevision, published == namedGeometryRevision,
               fragmentsModel.segments.last?.segmentIndex == live.segmentIndex
@@ -853,7 +806,7 @@ extension WorldBuilderViewModel {
     /// own geometry.
     var landedOverlay: WalkScoped<WorldLandedOverlay>? {
         let held = imageryModel.imagery
-        guard imageryModel.switches.landed, let walk = held.walk, let landed = held.value.landed,
+        guard let walk = held.walk, let landed = held.value.landed,
               let receipt = walkReport.value(for: WorldRenderTarget(worldID: walk.worldID, sessionID: walk.sessionID))?
                 .coverage,
               landed.landing == WorldImageryLanding(receipt.coverage),
@@ -861,20 +814,16 @@ extension WorldBuilderViewModel {
         else { return nil }
         let thumbnails = WorldLandedPlacement.place(landed, on: receipt.coverage, chunks: geometryChunks.values,
                                                     tiles: held.value.landedTiles)
-        // The dial's tiles only with the dial's switch on: OFF, no join.
-        var dialEntries: [WorldDialThumbnail] = []
-        if imageryModel.dial.on {
-            let headings = WorldLandedPlacement.headings(landed, on: receipt.coverage, chunks: geometryChunks.values)
-            dialEntries = landed.entries.compactMap { entry -> WorldDialThumbnail? in
-                guard let image = held.value.landedTiles[entry.digest], let component = entry.componentReferenceSegment
-                else { return nil }
-                // The Tower's bin when it sent one (S3); otherwise the
-                // phone's join must have found a look direction (S2).
-                let heading = headings[entry.digest]
-                guard entry.sector != nil || heading != nil else { return nil }
-                return WorldDialThumbnail(digest: entry.digest, image: image, referenceSegment: component,
-                                          heading: heading, sector: entry.sector, unredacted: entry.unredacted)
-            }
+        let headings = WorldLandedPlacement.headings(landed, on: receipt.coverage, chunks: geometryChunks.values)
+        let dialEntries = landed.entries.compactMap { entry -> WorldDialThumbnail? in
+            guard let image = held.value.landedTiles[entry.digest], let component = entry.componentReferenceSegment
+            else { return nil }
+            // The Tower's bin when it sent one (S3); otherwise the
+            // phone's join must have found a look direction (S2).
+            let heading = headings[entry.digest]
+            guard entry.sector != nil || heading != nil else { return nil }
+            return WorldDialThumbnail(digest: entry.digest, image: image, referenceSegment: component,
+                                      heading: heading, sector: entry.sector, unredacted: entry.unredacted)
         }
         return WalkScoped(walk: walk, value: WorldLandedOverlay(receipt: receipt, thumbnails: thumbnails,
                                                                  dialEntries: dialEntries, latest: landed.latest,

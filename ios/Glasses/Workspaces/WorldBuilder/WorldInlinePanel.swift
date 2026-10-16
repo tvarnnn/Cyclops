@@ -314,9 +314,8 @@ struct WorldInlinePanel<Health: View>: View {
     var landed: WorldLandedOverlay? = nil
     /// FOW v1.2: the photo floor plan, the walk's own: in the map only.
     var photo: WorldPhotoDisplay? = nil
-    /// FOW-RING: the capture dial's inputs, or `nil` -- its switch off, and
-    /// the walking stage exactly as before (no toggle, no new element).
-    var dial: WorldPanelDial? = nil
+    /// The capture dial's inputs for the walking stage.
+    var dial: WorldPanelDial = WorldPanelDial()
     @ObservedObject var host: WorldInlineHost
     let dismissBanner: () -> Void
     /// The away banner drawn for this walk was announced: never again for
@@ -443,11 +442,7 @@ struct WorldInlinePanel<Health: View>: View {
                 WorldImageryStripView(strip: liveStrip)
             }
             if case .walking = phase, showsHealth {
-                if Self.collapsesHealth(dial) {
-                    WorldCaptureHealthDisclosure(content: health)
-                } else {
-                    health()
-                }
+                WorldCaptureHealthDisclosure(content: health)
             }
         }
         .animation(reduceMotion ? nil : .easeInOut(duration: 0.25), value: showsBanner)
@@ -563,14 +558,14 @@ struct WorldInlinePanel<Health: View>: View {
     /// FOW-RING: the title and the Dial|Map control above the walking stage.
     private var showsDialHeader: Bool {
         if postStop != nil { return true }
-        guard case .walking = phase, let dial else { return false }
+        guard case .walking = phase else { return false }
         return Self.drawsDial(dial, map: map)
     }
 
-    /// FOW-RING after Stop: the walk's last dial and its photos, with the
-    /// switch on, while finishing, beside a report of that walk only.
+    /// FOW-RING after Stop: the walk's last dial and its photos, while
+    /// finishing, beside a report of that walk only.
     private var postStop: WorldPanelDialShown? {
-        guard dial != nil, phase.isFinishing else { return nil }
+        guard phase.isFinishing else { return nil }
         return Self.postStopDial(finalDial, beside: report)
     }
 
@@ -617,20 +612,20 @@ struct WorldInlinePanel<Health: View>: View {
     /// FOW-RING: the Dial|Map control, only with `IOS_FOW_MAP_TAB=on` and a
     /// map to switch to (or, disabled, after Stop). Off, the dial is the
     /// walking stage's only face.
-    static func showsMapToggle(_ dial: WorldPanelDial?, map: WorldPanelMapSource?, stopped: Bool) -> Bool {
-        guard let dial, dial.mapTab else { return false }
+    static func showsMapToggle(_ dial: WorldPanelDial, map: WorldPanelMapSource?, stopped: Bool) -> Bool {
+        guard dial.mapTab else { return false }
         return map != nil || stopped
     }
 
     /// The face drawn: the remembered tab only while the control is offered;
     /// otherwise the dial (a tab remembered from a build with the control
     /// never strands the walker on the map).
-    private var shownTab: WorldPanelTab { dial?.mapTab == true ? tab : .dial }
+    private var shownTab: WorldPanelTab { dial.mapTab ? tab : .dial }
 
     /// Round 3: the CURRENT receipt's own landing, WITH the report's walk,
-    /// for the recent strip; `nil` with the switch off or no landing in hand.
+    /// for the recent strip; `nil` when no landing is in hand.
     private var recentLanding: WalkScoped<WorldLandedOverlay>? {
-        guard dial != nil, report.walk != nil, let overlay = currentOverlay else { return nil }
+        guard report.walk != nil, let overlay = currentOverlay else { return nil }
         return report.map { _ in overlay }
     }
 
@@ -647,14 +642,8 @@ struct WorldInlinePanel<Health: View>: View {
         recentPhotos?.value(beside: report)?.photos ?? []
     }
 
-    /// FOW-RING: with the dial on, Capture health is one collapsed row that
-    /// opens to the same block; with it off, the block as it always was.
-    static func collapsesHealth(_ dial: WorldPanelDial?) -> Bool { dial != nil }
-
-    /// The dial as drawn now, and its photos, WITH the report's walk; `nil`
-    /// with the switch off.
+    /// The dial as drawn now, and its photos, WITH the report's walk.
     private var shownDial: WalkScoped<WorldPanelDialShown>? {
-        guard dial != nil else { return nil }
         return Self.shownDial(map, overlay: currentOverlay, kept: keptDialPhotos, held: heldNewest, beside: report)
     }
 
@@ -667,7 +656,6 @@ struct WorldInlinePanel<Health: View>: View {
     }
 
     private var newestRecord: WalkScoped<WorldPanelHeldNewest>? {
-        guard dial != nil else { return nil }
         return Self.heldNewest(map, overlay: currentOverlay, beside: report)
     }
 
@@ -722,7 +710,7 @@ struct WorldInlinePanel<Health: View>: View {
         case .none:
             EmptyView()
         case .map:
-            if let dial, let shown = shownDial?.value, Self.drawsDial(dial, map: map) {
+            if let shown = shownDial?.value, Self.drawsDial(dial, map: map) {
                 WorldCaptureDialStage(dial: shown.dial, receipt: map?.receipt, photos: shown.photos, tab: shownTab) {
                     if let map { coverageMap(map) }
                 }
@@ -1003,7 +991,7 @@ struct WorldInlinePanel<Health: View>: View {
                 }
             }
         case .walking:
-            if let dial, let shown = shownDial?.value, Self.drawsDial(dial, map: map), map == nil || shownTab == .dial {
+            if let shown = shownDial?.value, Self.drawsDial(dial, map: map), map == nil || shownTab == .dial {
                 VStack(spacing: 0) {
                     WorldCaptureDialCaption(dial: shown.dial, source: map)
                     WorldDialRecentStrip(photos: shownRecent)
@@ -1118,9 +1106,9 @@ struct WorldInlinePanel<Health: View>: View {
 
 // MARK: - Capture health, collapsed (FOW-RING)
 
-/// With the dial on: one "Capture health" row, collapsed by default, that
-/// opens to the same block. Collapsed, the block stays mounted at no height
-/// and unread, so its announcements still run exactly as before.
+/// One "Capture health" row, collapsed by default, that opens to the same
+/// block. Collapsed, the block stays mounted at no height and unread, so its
+/// announcements still run.
 struct WorldCaptureHealthDisclosure<Content: View>: View {
     @ViewBuilder let content: () -> Content
 

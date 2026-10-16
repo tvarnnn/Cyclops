@@ -9,8 +9,6 @@
 //
 //  - The wire is read in ONE place (`WorldPhotoFloorplanWire`): the manifest
 //    and the tile, fail-closed. A contract tweak is a change there only.
-//  - The phone's switch, `IOS_FOW_PHOTO_FLOORPLAN`, is default OFF; OFF is
-//    no request and no UI change.
 //  - Fetched only on the existing pushes: a new landing in
 //    `guidance.coverage`, retried a bounded number of times on the geometry
 //    push while the Tower's side worker catches up, or on every push while
@@ -25,33 +23,6 @@ import Combine
 import CryptoKit
 import Foundation
 import UIKit
-
-// MARK: - The switch
-
-/// The phone's side of the photo floor plan. Read from the launch
-/// environment or, for a home-screen launch, from the Info.plist key the
-/// build fills from the same-named build setting: `on` exactly; anything
-/// else, including an unset setting's empty string, is off.
-nonisolated struct WorldPhotoFloorplanSwitch: Equatable, Sendable {
-    static let variable = "IOS_FOW_PHOTO_FLOORPLAN"
-    static let infoKey = "GlassesFOWPhotoFloorplan"
-    static let off = WorldPhotoFloorplanSwitch(on: false)
-
-    var on: Bool
-
-    init(on: Bool) {
-        self.on = on
-    }
-
-    init(environment: [String: String], info: [String: Any] = [:]) {
-        self.init(on: environment[Self.variable] == "on" || info[Self.infoKey] as? String == "on")
-    }
-
-    static var current: WorldPhotoFloorplanSwitch {
-        WorldPhotoFloorplanSwitch(environment: ProcessInfo.processInfo.environment,
-                                  info: Bundle.main.infoDictionary ?? [:])
-    }
-}
 
 // MARK: - The wire, decoded (the ONE place)
 
@@ -368,7 +339,6 @@ final class WorldPhotoFloorplanModel: ObservableObject {
     /// unreachable Tower is not a Tower still saying it.
     static let keptFailedAsks = 3
 
-    let floorplanSwitch: WorldPhotoFloorplanSwitch
     private let client: WorldPhotoFloorplanClient
     private let holdSeconds: TimeInterval
     private let now: () -> TimeInterval
@@ -397,11 +367,9 @@ final class WorldPhotoFloorplanModel: ObservableObject {
     /// Digests whose raster was refused or failed, until the next manifest.
     private var failed: Set<String> = []
 
-    init(floorplanSwitch: WorldPhotoFloorplanSwitch = .current,
-         client: WorldPhotoFloorplanClient = WorldPhotoFloorplanClient(),
+    init(client: WorldPhotoFloorplanClient = WorldPhotoFloorplanClient(),
          holdSeconds: TimeInterval? = nil,
          now: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }) {
-        self.floorplanSwitch = floorplanSwitch
         self.client = client
         self.holdSeconds = holdSeconds ?? UITestHooks.photoHoldSeconds ?? 45
         self.now = now
@@ -411,7 +379,7 @@ final class WorldPhotoFloorplanModel: ObservableObject {
     /// it stays on that receipt while the Tower's `kept` notice names the
     /// current receipt and that plan, else until the monotonic hold ends.
     func displayedPlan(for current: WalkScoped<WorldCoverageReceipt?>) -> WalkScoped<WorldPhotoDisplay>? {
-        guard floorplanSwitch.on, let walk = current.walk, let currentReceipt = current.value,
+        guard let walk = current.walk, let currentReceipt = current.value,
               receipt.walk == walk, receipt.value?.coverage == currentReceipt.coverage
         else { return nil }
         guard let lastValid, lastValid.walk == walk else { return nil }
@@ -438,7 +406,7 @@ final class WorldPhotoFloorplanModel: ObservableObject {
     /// The walk's `guidance.coverage`: the only trigger is a new landing in
     /// it (`solved_at`, `geometry_revision`, `frame_revision`).
     func coverageReported(_ coverage: WalkScoped<WorldCoverageReceipt?>, receiving: Bool) {
-        guard floorplanSwitch.on, receiving, let walk = coverage.walk, let receipt = coverage.value else { return }
+        guard receiving, let walk = coverage.walk, let receipt = coverage.value else { return }
         adopt(walk)
         self.receipt = coverage
         let block = receipt.coverage
@@ -463,7 +431,7 @@ final class WorldPhotoFloorplanModel: ObservableObject {
     /// a plan published later for it, or the notice's end, is seen. Only for
     /// a walk received.
     func geometryPushed(_ coordinates: WorldGeometryCoordinates, receiving: Bool) {
-        guard floorplanSwitch.on, receiving else { return }
+        guard receiving else { return }
         let walk = WorldFinishWalk(worldID: coordinates.worldID, sessionID: coordinates.sessionID)
         adopt(walk)
         guard let landing, !landingAnswered, manifestTask == nil else { return }
@@ -603,7 +571,7 @@ final class WorldPhotoFloorplanModel: ObservableObject {
     }
 
     private func rememberValidPlan() {
-        guard floorplanSwitch.on, let walk = receipt.walk, plan.walk == walk,
+        guard let walk = receipt.walk, plan.walk == walk,
               let current = receipt.value, let landed = plan.value.landed,
               let valid = WorldPhotoPlan(landed, rasters: plan.value.rasters, receipt: current),
               (lastValid?.value.plan.receipt.coverage != current.coverage ||
