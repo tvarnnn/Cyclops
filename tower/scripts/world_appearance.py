@@ -19,7 +19,8 @@ Needs the session's global solve, its surface artifact, and the depth stage's
 per-frame work under `dense/<session>/work/` (run `world_surface.py --force`
 first if it was pruned). Writes only under `<world>/appearance/<session>/`.
 
-Exit codes: 0 built or already built; 1 every target failed; 2 bad arguments.
+Exit codes: 0 built or already built (also when only some of several sessions
+failed); 1 every target failed or no solved session; 2 bad arguments.
 """
 
 from __future__ import annotations
