@@ -58,7 +58,17 @@ MSG_ERROR = "cv_lab_error"
 
 
 async def handle(message: dict, *, websocket, sender) -> None:
-    """Dispatch one control message. Never raises."""
+    """Dispatch one CV Lab control message from the main websocket.
+
+    Answers `cv_lab_unavailable` when this Tower runs no Lab. `cv_lab_status`
+    replies with the Lab's status; `cv_lab_start`, `cv_lab_pause`,
+    `cv_lab_resume` and `cv_lab_stop` call the matching Lab method (with
+    `experiment_id` or `run_id`). An accepted command replies with the new
+    status; a refused one replies with the Lab's typed error and current
+    status. Any other fault is logged and answered with a generic error, so
+    the frame-serving connection continues; only `WebSocketDisconnect` is
+    re-raised.
+    """
     message_type = message.get("type")
     try:
         lab = getattr(websocket.app.state, "cv_lab", None)
