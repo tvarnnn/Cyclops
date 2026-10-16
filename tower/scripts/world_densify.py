@@ -10,7 +10,9 @@ artifact. This script is how the dense stage runs on a world without that
 setting.
 
 The development loop also depends on being able to re-run it on worlds that
-already exist, with different parameters, without a new physical capture.
+already exist, with different parameters, without a new physical capture:
+the regression laboratory (seven solved worlds on disk when this was written),
+replayed as often as needed.
 
 It is also the migration path. Worlds solved before the dense stage existed get
 their dense artifact by running this; nothing about them is rewritten, and a
