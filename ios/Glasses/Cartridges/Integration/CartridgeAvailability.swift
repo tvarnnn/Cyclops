@@ -57,7 +57,8 @@ enum CartridgeAvailability: Equatable, Sendable {
     /// A statement about **this connection and this build**, never a position
     /// on a roadmap: either the Tower declared no contract for the cartridge,
     /// or this app has no name for it. Both are answerable facts about two
-    /// machines.
+    /// machines. (Object Memory, which is never declared, also answers this
+    /// when its routes say nothing is configured.)
     ///
     /// Kept distinct from `unsupportedContract` for the reason the Tower's
     /// contract §2 gives: a cartridge absent from every list means *"this Tower
@@ -171,9 +172,12 @@ enum CartridgeAvailability: Equatable, Sendable {
     ///
     /// - Parameters:
     ///   - declared: what the Tower says it offers for this cartridge, or `nil`
-    ///     if it has said nothing. It arrives in the Tower's live declaration
-    ///     and reaches here via `TowerCapabilities.declaredContract(for:in:)`;
-    ///     the local `TowerCapabilities.declared` table is empty.
+    ///     if it has said nothing. Each caller reads it from the Tower's live
+    ///     declaration: `TowerCapabilities.availability(for:declaredBy:isTowerReachable:)`
+    ///     passes `declaredContract(for:in:)`, falling back to the local
+    ///     `declared` table, which is empty; Scene Understanding passes its own
+    ///     socket offer; Document Memory passes its HTTP library offer, or `nil`
+    ///     when the Tower marks that offer unavailable.
     ///   - supported: the contract identifiers this build implements, normally
     ///     `TowerCapabilities.supported` (one each for World Builder, the CV Lab
     ///     and Scene Understanding, and two for Document Memory, whose

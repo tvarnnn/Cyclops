@@ -48,8 +48,8 @@ enum TowerCapabilities {
     /// offering `world_builder.status/2026-10-…` would land there rather than
     /// being decoded on a guess.
     ///
-    /// One entry per contract a client in this build decodes. A test pins the
-    /// set, so widening it is a reviewed change, never a silent one.
+    /// A test pins this set, so widening it is a reviewed change, never a
+    /// silent one.
     ///
     /// `document_memory` contributes **two** identifiers because the Tower
     /// declares two, deliberately: `status` is small and pushed on the socket,
@@ -190,8 +190,8 @@ enum TowerCapabilities {
 /// one is where the real work is described.
 ///
 /// `@MainActor` and `AnyObject` to match `TowerClient` and `GlassesConnection`:
-/// an implementation holds a subscription and publishes into SwiftUI on the
-/// main actor, as those do.
+/// a Tower-backed implementation holds connection state and publishes into
+/// SwiftUI on the main actor, as those do.
 @MainActor
 protocol CartridgeClient: AnyObject {
     /// The catalog id from `Cartridge.catalog`. Used to look the cartridge's
@@ -208,8 +208,9 @@ protocol CartridgeClient: AnyObject {
 extension CartridgeClient {
     /// The default, used by the unavailable stubs, and the reason
     /// `TowerCapabilities` is a lookup: a client does not get to decide it is
-    /// available. The Tower-backed clients resolve against the live
-    /// declaration instead.
+    /// available. The Tower-backed clients override it with what the Tower
+    /// told them: the live declaration, or, for Object Memory, what its HTTP
+    /// routes answered.
     func availability(isTowerReachable: Bool) -> CartridgeAvailability {
         TowerCapabilities.availability(for: cartridgeID, isTowerReachable: isTowerReachable)
     }

@@ -828,7 +828,7 @@ final class TowerExperimentalCVClient: ExperimentalCVClient {
             // is why `state` is deliberately untouched here.
             if error.closesSubscription {
                 // The Tower's message says to subscribe again to resume, and nothing
-                // else will while the socket stays up.
+                // else reacts to this error.
                 if let exhausted = subscription.closedByTower() {
                     state = .failed(exhausted)
                 } else {
