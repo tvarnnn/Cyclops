@@ -263,7 +263,7 @@ extension EnvironmentValues {
 // MARK: - The fog-of-war slot
 
 /// S1's map slot: the walk's fog-of-war receipt (FOW v1). The fixture --
-/// §9's mid-walk receipt, labelled *Fixture map* -- draws only behind
+/// the mid-walk receipt, labelled *Fixture map*, draws only behind
 /// `-WBPanelMapFixture` (a DEBUG launch argument), and never over a real one.
 enum WorldPanelMap {
     static let fixtureArgument = "-WBPanelMapFixture"
@@ -338,7 +338,7 @@ struct WorldInlinePanel<Health: View>: View {
     /// never from words recomputed for the settled world (which no longer
     /// has a stage line) -- nor from another walk's wait.
     @State private var finish = WorldPanelFinishMemory<FinishingBlock>()
-    /// FOW-RING §5: the walking stage's face; Dial first.
+    /// The walking stage's face; Dial first.
     @SceneStorage("wb-panel-tab") private var tab: WorldPanelTab = .dial
     /// FOW-RING, kept photos: the photos the dial last showed, WITH their
     /// walk -- read only beside a report of that walk, so another walk (or a
@@ -765,12 +765,12 @@ struct WorldInlinePanel<Health: View>: View {
                              photo: Self.photo(photo?.plan, over: shownMap))
     }
 
-    /// FOW-RING §6: the dial is drawn over a map, or before the first landing.
+    /// The dial is drawn over a map, or before the first landing.
     static func drawsDial(_ dial: WorldPanelDial, map: WorldPanelMapSource?) -> Bool {
         map != nil || dial.awaiting
     }
 
-    /// The dial of the CURRENT receipt (never a held one, §6), with B2's
+    /// The dial of the CURRENT receipt (never a held one), with B2's
     /// photos and S3's hero piece and walk cue only when `overlay` is that
     /// receipt's own landing (`landed(_:over:)`); before the first landing,
     /// twelve dashed segments. While the receipt's own landing is not in

@@ -791,7 +791,7 @@ final class WorldInlinePanelUITests: XCTestCase {
         XCTAssertTrue(tap(control.buttons["Dial"], until: dial.exists), "back to the dial")
         XCTAssertFalse(element("wb-panel-map").exists)
 
-        // §9's stop receipt, 120 s old: past the dial's 90 s, the footer
+        // The stop receipt, 120 s old: past the dial's 90 s, the footer
         // says "catching up"; one piece.
         push(modelState: "receiving", guidance: FOWGuidance.stop, accepted: 1090,
              towerSentAt: FOWGuidance.stopSolvedAt + 120)

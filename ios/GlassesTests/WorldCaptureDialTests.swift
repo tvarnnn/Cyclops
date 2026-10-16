@@ -2,7 +2,7 @@
 //  WorldCaptureDialTests.swift
 //  GlassesTests
 //
-//  S1-S3, iOS: the capture dial's model on the
+//  FOW-RING S1-S3, iOS: the capture dial's model on the
 //  15 real coverage blocks, its gap and words, its photos from today's wire
 //  (S2) and from the Tower's own bins (S3), the additive B2 fields read
 //  fail-closed, the walk cue, the single look-here segment, the photos
@@ -46,7 +46,7 @@ final class WorldCaptureDialTests: XCTestCase {
                          motionSector: motion, photos: photos)
     }
 
-    // MARK: S1: the union over one piece's drawn stations (§3.2, §7)
+    // MARK: S1: the union over one piece's drawn stations
 
     func testTheRealBlocksFillLikeTheSpecSays() throws {
         for (name, count) in [("walk7-h52", 2), ("walk7-h236", 5), ("walk71-h563", 8), ("walk6-h1090", 12)] {
@@ -204,7 +204,7 @@ final class WorldCaptureDialTests: XCTestCase {
         XCTAssertEqual(walking.lookHere?.positions, [6], "the amber outline never depends on the age")
     }
 
-    // MARK: Accessibility (§4)
+    // MARK: Accessibility
 
     func testTheDialIsOneElementWithTheSpecsValue() {
         let spec = dial(supported: [0, 1, 2, 3, 4, 8, 9, 10], weak: [11], latest: 0)
@@ -218,7 +218,7 @@ final class WorldCaptureDialTests: XCTestCase {
         XCTAssertEqual(Copy.photo(at: 3), "Photo at 3 o'clock")
     }
 
-    // MARK: S2: photos from today's wire (§3.4)
+    // MARK: S2: photos from today's wire
 
     func testS2PhotosGoToTheirHeadingsSectorNeverOnGreyNorInAnotherPiece() {
         let image = UIImage()
@@ -266,7 +266,7 @@ final class WorldCaptureDialTests: XCTestCase {
                        "another component")
     }
 
-    // MARK: S3: the Tower's bins, the hero piece, the walk cue (§3.3, §7)
+    // MARK: S3: the Tower's bins, the hero piece, the walk cue
 
     /// `latest` picks the piece in front; start stays on top (round 3).
     func testLatestPicksItsPieceAndNeverTheTop() throws {
@@ -317,7 +317,7 @@ final class WorldCaptureDialTests: XCTestCase {
 
     /// A stale `latest` -- the Tower kept the previous landing's block --
     /// never counts for the CURRENT receipt's dial: the panel draws B2 only
-    /// over the receipt it was made for, and then falls back (§3.3).
+    /// over the receipt it was made for, and then falls back.
     func testAStaleLatestNeverCountsForTheCurrentReceipt() throws {
         let stop = try XCTUnwrap(FOWFixtures.coverage(FOWFixtures.stop))
         let receipt = WorldCoverageReceipt(coverage: stop, keyframesAccepted: 984, clock: nil)
@@ -444,7 +444,7 @@ final class WorldCaptureDialTests: XCTestCase {
         XCTAssertNil(dial.motionSector)
     }
 
-    // MARK: The words never claim what the receipt does not (§8.5)
+    // MARK: The words never claim what the receipt does not
 
     func testTheDialsWordsNeverClaimWhatTheReceiptDoesNot() throws {
         // The owner's demo decisions: "Room coverage" (2026-10-12), and
@@ -766,7 +766,7 @@ final class WorldCaptureDialTests: XCTestCase {
     }
 }
 
-// MARK: - The model's record when a landing's photos never come (§3.4)
+// MARK: - The model's record when a landing's photos never come
 
 @MainActor
 final class WorldCaptureDialImageryTests: XCTestCase {
