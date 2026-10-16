@@ -7,7 +7,7 @@ The roadmap is intentionally incremental. Complete and verify each milestone bef
 ### V0.1 — Control Plane Skeleton (Complete)
 - SwiftUI dashboard.
 - `GlassesConnection` abstraction.
-- `StreamManager`.
+- A stream-state placeholder that never updated (removed since; the camera stream state lives in `GlassesConnection`).
 - `TowerClient`.
 - `ProjectManager`.
 - Real disconnected/offline/stopped states.
