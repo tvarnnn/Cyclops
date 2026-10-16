@@ -2,11 +2,10 @@
 
 What this is for
 ----------------
-The Lab was, until this module, a screen of numbers. `edge_density:
-0.071` is a true statement about a frame and it is almost useless to the
-person wearing the glasses, who wants to know whether the algorithm can
-see the doorway. This turns the array the experiment already computed
-into something a person can look at.
+A number such as `edge_density: 0.071` is a true statement about a frame
+and it is almost useless to the person wearing the glasses, who wants to
+know whether the algorithm can see the doorway. This turns the array the
+experiment already computed into something a person can look at.
 
 The one rule
 ------------
@@ -300,22 +299,20 @@ class _DepthNormaliser:
         # encoded-bytes cache that would normally make the second call
         # free is not populated until the first one finishes.
         #
-        # Measured with the window widened: two threads on one fresh
-        # capture both read the same bounds and one update was silently
-        # lost. The damage is cosmetic -- a slightly wrong brightness on
-        # one frame of a scale that re-converges within about five --
-        # and it never reaches `mean_relative_depth` or decides which
-        # bytes are served under which run. It is still a lost write,
-        # and the argument that made a lock unnecessary everywhere else
-        # simply does not apply here.
+        # Without the lock, two threads on one fresh capture can both read
+        # the same bounds and one update is silently lost. The damage is
+        # cosmetic -- a slightly wrong brightness on one frame of a scale
+        # that re-converges within about five -- and it never reaches
+        # `mean_relative_depth` or decides which bytes are served under
+        # which run. It is still a lost write, and the argument that makes
+        # a lock unnecessary everywhere else does not apply here.
         self._guard = threading.Lock()
 
     def to_uint8(self, depth):
         if getattr(depth, "size", 0) == 0:
             # `np.percentile` on an empty array raises `IndexError: index -1
             # is out of bounds`, which is contained but tells a reader
-            # nothing. The NaN path below was hardened for the same reason
-            # and this is the same failure with a worse message.
+            # nothing; refuse with a legible message.
             raise ValueError("depth frame is empty")
         low, high = np.percentile(depth, (self.LOW_PCT, self.HIGH_PCT))
         low = float(low)
@@ -522,9 +519,8 @@ _GOLDEN_ANGLE_DEG = 137.508
 def _class_colour(name: str) -> tuple:
     """A stable colour per class name. Same name, same colour, always.
 
-    Cached rather than recomputed: the same six or seven names arrive
-    every frame, and a colour that changed between frames would make a
-    tracked object look like a new one each time.
+    Deterministic per name; cached because the same six or seven names
+    arrive every frame.
     """
     index = sum(ord(character) for character in name)
     hue = int((index * _GOLDEN_ANGLE_DEG) % 180)
@@ -597,8 +593,8 @@ def _encode_keypoints(payload, *, policy: PreviewPolicy):
             x1 = int((column + 1) * width / grid)
             y1 = int((row + 1) * height / grid)
             cv2.rectangle(tint, (x0, y0), (x1, y1), (0, 90, 0), -1)
-        # 0.12, not more. Rendered at 0.18 the wash reached the structure's
-        # own white lines and turned the whole room green, which made the
+        # 0.12, not more. At 0.18 the wash reaches the structure's own
+        # white lines and tints the whole room green, which makes the
         # coverage signal louder than the scene it is a statement about.
         cv2.addWeighted(tint, 0.12, canvas, 0.88, 0.0, canvas)
 
@@ -618,7 +614,7 @@ def _encode_detections(payload, *, policy: PreviewPolicy):
     """Boxes, class names and scores -- including the unconvincing ones.
 
     Detections BELOW the metrics' threshold are drawn, thin and faded.
-    They are the whole reason this view exists: physical testing produced
+    They are the whole reason this view exists: a physical test produced
     160 `person` detections in a room with nobody in it, and the only way
     to find out what the model was looking at is to see where it drew the
     box. A viewer that hid the near-misses would have hidden the evidence.
@@ -675,9 +671,9 @@ def _encode_detections(payload, *, policy: PreviewPolicy):
         )
 
     below = len(scores) - accepted
-    # `payload.accepted_total`, not a `getattr` with a fallback:
-    # `DetectionPreview` requires the field, so a payload without one is a
-    # TypeError at construction rather than a caption that quietly lies.
+    # `DetectionPreview` requires `accepted_total`, so a payload without
+    # one is a TypeError at construction rather than a caption that
+    # quietly lies.
     total = payload.accepted_total
     shown = (
         f"{accepted} over {payload.threshold:.2f}"
@@ -744,8 +740,8 @@ def _encode_flow(payload, *, policy: PreviewPolicy):
             # good -- with random directions. Floored to a five-pixel
             # minimum those become a dense field of confident, colourful,
             # contradictory arrows, which reads as a scene full of
-            # independent motion. The caption said "median 0.1px" and
-            # nobody was reading the caption.
+            # independent motion, whatever the caption says (a median
+            # of 0.1 px).
             cv2.circle(canvas, (int(origin[0]), int(origin[1])), 1, colour, -1)
             continue
         drawn = float(min(max(magnitude, 5.0), 14.0))
@@ -831,10 +827,10 @@ def _encode_frame_quality(payload, *, policy: PreviewPolicy):
     NO VERDICT IS DRAWN, and that is the point rather than an omission.
     Variance-of-Laplacian has no portable threshold -- the standard
     reference for the technique says the value has to be tuned per dataset
-    -- and this Lab has exactly one physical run to calibrate against,
-    which is none. So the picture shows the distribution the numbers were
-    counted off, the run document says where this frame sits inside the
-    run's OWN observed range, and neither of them says "blurry".
+    -- and this camera has no calibrated threshold yet. So the picture
+    shows the distribution the numbers were counted off, the run
+    document says where this frame sits inside the run's OWN observed
+    range, and neither of them says "blurry".
 
     The histogram is the array `frame_quality` already built for its
     exposure metrics, redrawn. The two vertical markers are the exact
@@ -860,10 +856,8 @@ def _encode_frame_quality(payload, *, policy: PreviewPolicy):
         (payload.underexposed_level, _BOUNDARY_BGR),
         (payload.overexposed_level, _REJECTED_BGR),
     ):
-        # `round`, matching the bar loop above. Two independent
-        # truncations put a marker up to a pixel off its own bar, which is
-        # imperceptible and is also the kind of thing somebody eventually
-        # spends an hour on.
+        # `round`, matching the bar loop above, so a marker is not up to a
+        # pixel off its own bar.
         x = int(round(level * (width - 1) / 255))
         cv2.line(canvas, (x, top), (x, height), colour, 1)
     cv2.line(canvas, (0, top), (width, top), (60, 60, 60), 1)
@@ -1048,8 +1042,8 @@ class LivePreview:
         # not belong to each other.
         #
         # The FRAME PATH never touches it, and that is the part that
-        # matters: a lock on the measured path to make a diagnostic one
-        # frame fresher would be paying in the wrong currency.
+        # matters: a lock on the measured path would cost more than the
+        # one frame of freshness it buys a diagnostic.
         self._stats_guard = threading.Lock()
         self._encoded = 0
         self._encode_failures = 0
