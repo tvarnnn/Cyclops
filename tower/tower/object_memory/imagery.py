@@ -392,6 +392,9 @@ class FaceFilter:
 # Without the lineage the route answers 410 "the memory is kept, the
 # picture is gone" about pictures that are sitting right there.
 #
+# (The store a few hours earlier held 74 records, 70 and 4; the figures
+# above are the ones the shipped code was re-run against.)
+#
 # So resolution follows the lineage, not the single directory.
 #
 # HOW LONG A LINEAGE ACTUALLY IS.

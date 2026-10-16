@@ -78,7 +78,8 @@ this host is **1.31 MiB against 568 MiB of frames: 0.23%**.
 
 MEASURED OVER ALL 116 RECORDS, not a sample: the figures above come from
 re-running the shipped `KeyframeStore` over every record in the store
-whose frame still resolves -- 116 of 116.
+whose frame still resolves -- 116 of 116. (A 26-record subset had given
+a 13.9 KB mean.)
 
 The 384 px bound is the reason those figures are small, and it is a CAP
 rather than a target: a crop already smaller is written at its own size
