@@ -332,7 +332,7 @@ def test_with_the_settings_off_pycolmap_gets_exactly_todays_inputs(session, colm
     assert summary["solved"] is True
     assert colmap.log == _todays_trace(session)
     assert not (session.workspace.root / SM.MASKS_DIRNAME).exists()
-    assert not SM.masked_database_path(session.workspace).exists()
+    assert not (Path(session.workspace.root) / "database.masked.db").exists()
     meta = _solution_json(session)
     assert meta["schema_version"] == global_solve.SOLUTION_SCHEMA_VERSION == 1
     assert meta["transients"]["state"] == SM.RECORD_UNAVAILABLE
@@ -704,7 +704,7 @@ def test_with_the_settings_off_a_walk_database_is_used_exactly_as_today(walked, 
     summary = _solve(walked, final=True)
     assert colmap.log == _todays_trace(walked)
     assert walked.workspace.database_path.read_bytes() == before
-    assert not SM.masked_database_path(walked.workspace).exists()
+    assert not (Path(walked.workspace.root) / "database.masked.db").exists()
     assert list(walked.workspace.root.glob("database.masked*")) == []
     assert summary["solve"]["masking"] is None and summary["solve"]["walk_database"] is None
 

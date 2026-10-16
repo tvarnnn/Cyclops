@@ -4,14 +4,13 @@ WHY THIS EXISTS
 
 The wearer's hands, arms and the phone held in them are in most keyframes and
 move WITH the camera, so SIFT matches on them are geometrically consistent
-between views that share no scene at all. On the 2026-09-23 coherence run's
-target walk (world 6e6d3fc3) the only glue between two rigid islands -- a
-bathroom and bed block placed into the bedroom at a wrong tilt, scale and
-position -- was 7 verified pairs whose inliers sat on the held phone. Masking
-hands, arms and held phones before feature extraction removed 117 of the 136
-phone inliers and left 0 cross-island pairs; the same masks removed the
-split-off links on 52ed8e0a (93-97 % inside the masks) and on 991e5a15
-(run `baseline/FORENSICS.md` H-A; candidate architecture module M).
+between views that share no scene at all. On the target walk (world 6e6d3fc3)
+the only glue between two rigid islands -- a bathroom and bed block placed
+into the bedroom at a wrong tilt, scale and position -- was 7 verified pairs
+whose inliers sat on the held phone. Masking hands, arms and held phones
+before feature extraction removed 117 of the 136 phone inliers and left 0
+cross-island pairs; the same masks removed the split-off links on 52ed8e0a
+(93-97 % inside the masks) and on 991e5a15.
 
 WHAT IS MASKED
 
@@ -19,8 +18,7 @@ Every image the solve is handed: `<solve>/images/<name>.jpg`, the undistorted
 raw capture frame where raw capture exists, else the session's redacted copy.
 The recipe is `transients.py`'s own `union` mode (Grounding DINO + SAM 2.1 and
 OneFormer, the held-phone rule, the 12 px ellipse dilation), run by its own
-backends, with the two differences the experiment ran under (lane
-`coherence_exp/masks.py`):
+backends, with the two differences the experiment ran under:
 
   * the input is the solver image, so there are no redaction fill boxes and
     the unobserved mask is empty -- the fill-drop rule never fires;
@@ -37,22 +35,23 @@ LAYOUT, under the solve workspace `<world>/solve/<session>/`:
     masks/<image name>.png              COLMAP masks: 0 = transient, 255 = use
     database.masked.p<pid>.<8hex>.db    the masked feature database ONE solve maps:
                                         a name of its own per solve, so two solves
-                                        of one workspace never share a file (review
-                                        V5, M1-5); `solve.database` names it
+                                        of one workspace never share a file;
+                                        `solve.database` names it
     database.masked.p<pid>.<8hex>.json  how it was made (`path`), and for the
                                         re-extracted path, per image, the image
                                         and mask digests it was extracted under
     (database.masked.db/.json: the one fixed name of solves before that; read
     as a re-extraction source, never written)
-    reverify_pairs.txt                  the filtered path's re-verified pairs
+    database.masked.p<pid>.<8hex>.reverify.txt
+                                        the filtered path's pairs to re-verify
 
 TWO WAYS TO A MASKED DATABASE (`MASKING_*` below). `database.db` is the walk's
 own: its background solves extracted UNMASKED features into it and verified
 pairs at every horizon, loop detection included. The final solve extracts and
-matches into it exactly as today, then maps from a FILTERED COPY with every
-match touching a masked keypoint removed -- the run's arm A1h, which keeps the
-target's room whole. Only when there is no walk database do the masks go to
-extraction, into a fresh database matched once (arm A1), which on the target
+matches into it exactly as an unmasked solve does, then maps from a FILTERED
+COPY with every match touching a masked keypoint removed, which keeps the
+target walk's room whole. Only when there is no walk database do the masks go
+to extraction, into a fresh database matched once, which on the target walk
 splits the room: a single round of loop detection finds fewer revisits than
 the walk's accumulated rounds. The walk's `database.db` is never modified by
 either path, and never mapped by a masked solve.
@@ -80,43 +79,42 @@ The record is the solution's `transients` (contract WORLD-BUILDER-COMPONENTS
 was masked under the union rule, `partial` with counts when not (a fallback
 rule, or an unmasked image that could not be excluded), and `unavailable` with
 a `detail` otherwise -- including when the setting is off. Masks are a hard
-dependency of the evidence gate (manager 011), so this record must never read
+dependency of the evidence gate, so this record must never read
 `applied` for a solve that was not masked. A missing or stale cache entry is
 recomputed, never an error.
 
-AN IMAGE THAT CANNOT BE MASKED IS EXCLUDED, not a fail-safe for the walk
-(review V8, M2b). It gets an all-0 COLMAP mask, so re-extraction takes no
-feature of it, and the walk-database filter drops every match touching it; it
-is counted in `images_unmasked` and `images_excluded`. Before, one such image
-made the record `partial` -- the gate then attached nothing anywhere -- while
-the filtered database still carried its unmasked matches. The cost now is that
+AN IMAGE THAT CANNOT BE MASKED IS EXCLUDED, not a fail-safe for the walk.
+It gets an all-0 COLMAP mask, so re-extraction takes no feature of it, and
+the walk-database filter drops every match touching it; it is counted in
+`images_unmasked` and `images_excluded`. Recording it as `partial` instead
+would make the gate attach nothing anywhere, over one image. The cost is that
 image, which is left unposed. The causes are an unreadable or mis-sized solver
 image, or one another process held while it was hashed: the backends emit a
 mask for every image they are given.
 
-EXCLUSION HAS A BOUND AND A SIGNAL (review V9, M-8). Excluding is silent by
-construction -- the record stays `applied` -- so without a bound, 9 unreadable
-images of 10 read exactly like a clean solve. Now:
+EXCLUSION HAS A BOUND AND A SIGNAL. Excluding is silent by construction --
+the record stays `applied` -- so without a bound, 9 unreadable images of 10
+would read exactly like a clean solve. So:
 
   * a hash or a read that fails is tried ONCE more, after one pause for the
     whole batch (`RETRY_PAUSE_S`): a file another process holds (a scanner, a
     concurrent replace) is usually let go within it;
   * every excluded image says why (`excluded_reasons`, `REASON_*`);
   * `exclusion_notice_due` is true once `images_excluded` reaches
-    max(3, 2 % of the images) -- the finalization notice says so (CON's
-    sentence, `coherence_publish`);
+    max(3, 2 % of the images) -- the finalization notice says so
+    (`coherence_publish`);
   * when NOT ONE image could be masked, for reasons that are the images' own,
     the record is `unavailable` with `cause: images-unmaskable`, `none_masked:
     true` and a `detail` counting the reasons -- the images are named as the
     owner of the problem, not the detector (an operator cannot fix a file;
     an owner's re-finish can);
-  * all of this only when the masks reach the solve (review V10, L-11b): a
+  * all of this only when the masks reach the solve: a
     record that is `unavailable` belongs to a solve that ran UNMASKED with
     every image in it, so it counts none as excluded and owes no exclusion
     notice -- its `images_unmasked` and `detail` say what could not be masked.
 
-A write to the mask cache that fails is not a detector failure (review V10,
-L-12b): the mask is used for this solve and the failure is counted
+A write to the mask cache that fails is not a detector failure: the mask is
+used for this solve and the failure is counted
 (`cache_write_failed`, `SolverMasks.kept`).
 """
 
@@ -146,8 +144,6 @@ INPUT_RULE = "solver-image|no-fill"
 CACHE_DIRNAME = "transients"
 MASKS_DIRNAME = "masks"
 INDEX_FILENAME = "index.json"
-MASKED_DATABASE_NAME = "database.masked.db"
-MASKED_DATABASE_RECORD = "database.masked.json"
 
 # What happened inside this module (`SolverMasks.state`, recorded as `outcome`).
 STATE_OFF = T.STATE_OFF
@@ -157,7 +153,7 @@ STATE_FAILED = T.STATE_FAILED
 
 # What the published solve says (`transients.state`, contract
 # WORLD-BUILDER-COMPONENTS §2.5). Masks are a HARD dependency of the evidence
-# gate (manager 011): anything but `applied` switches the gate to its
+# gate: anything but `applied` switches the gate to its
 # fail-safe, so a solve that was not masked must never read `applied`.
 RECORD_APPLIED = "applied"          # every solver image was masked
 RECORD_PARTIAL = "partial"          # some images unmasked; the counts say how many
@@ -171,14 +167,12 @@ OFF_DETAIL = ("transient masks on the final solve are off (TOWER_WORLD_SOLVE_MAS
 # walk-database-filtered: the walk's own `database.db`, extracted and matched
 #     exactly as today, is COPIED; every match and every verified inlier that
 #     touches a keypoint on a masked pixel is removed from the copy; the pairs
-#     that lost any are re-verified; the solve maps from the copy. The
-#     experiment driver's `database_from` + masks path -- arm A1h, the arm the
-#     approved candidate numbers were measured on (the target's room whole at
-#     232 keyframes in 5 of 5 seeds).
+#     that lost any are re-verified; the solve maps from the copy. Measured
+#     on the target walk: its room whole at 232 keyframes in 5 of 5 seeds.
 # re-extracted: no walk database to filter (a re-finish whose database is
 #     gone). Masked keypoints are never extracted (`ImageReaderOptions.
-#     mask_path`) into a fresh database matched once -- arm A1, which on the
-#     target splits the room (154 + 81, 5 of 5 seeds).
+#     mask_path`) into a fresh database matched once, which on the target
+#     walk splits the room (154 + 81, 5 of 5 seeds).
 #
 # Either way, no match touching a masked pixel survives into the solve.
 # `SolverMasks.cause`: why the masks are not applied, for a program.
@@ -186,12 +180,12 @@ CAUSE_GPU_OOM = "gpu-oom"
 CAUSE_DETECTOR_FAILED = "detector-failed"
 # Not one solver image could be masked, and each for a reason of its OWN (`REASON_*` below
 # other than `no-mask`): the detector could run, the images could not be given to it. The
-# record says `none_masked: true` exactly then (review V9, M-8).
+# record says `none_masked: true` exactly then.
 CAUSE_IMAGES_UNMASKABLE = "images-unmaskable"
 # Causes a later run can be expected to clear by itself.
 RETRYABLE_CAUSES = (CAUSE_GPU_OOM,)
 
-# WHY an image was excluded (`excluded_reasons`, review V9 M-8). A fixed vocabulary, never
+# WHY an image was excluded (`excluded_reasons`). A fixed vocabulary, never
 # an exception's text: the record reaches the phone through the notice.
 REASON_HASH_FAILED = "hash-failed"     # could not be opened to hash it, twice (held, vanished)
 REASON_READ_FAILED = "read-failed"     # hashed, but could not be opened for the detector, twice
@@ -206,20 +200,19 @@ IMAGE_REASONS = (REASON_HASH_FAILED, REASON_READ_FAILED, REASON_UNDECODABLE, REA
 RETRY_PAUSE_S = REPLACE_BUDGET_S
 
 # `exclusion_notice_due`: images_excluded >= max(EXCLUSION_NOTICE_MIN, EXCLUSION_NOTICE_FRACTION
-# x images). The lead's bound (V9-REVIEW.md, M-8 disposition), not a measured one -- OPEN: no
-# corpus rate of held or unreadable solver images exists to calibrate it against.
+# x images). A chosen bound, not a measured one -- OPEN: no corpus rate of held or unreadable
+# solver images exists to calibrate it against.
 EXCLUSION_NOTICE_MIN = 3
 EXCLUSION_NOTICE_FRACTION = 0.02
 
 MASKING_FILTERED = "walk-database-filtered"
 MASKING_REEXTRACTED = "re-extracted"
-REVERIFY_PAIRS_FILENAME = "reverify_pairs.txt"
 _PAIR_ID_BASE = 2147483647   # COLMAP: pair_id = image_id1 * kMaxNumImages + image_id2, id1 < id2
 
 
 def solver_params() -> T.TransientParams:
     """The rule the solver's masks are made under: `transients`' union mode,
-    the recipe the run measured (HANDS.md; FORENSICS H-A)."""
+    the measured recipe."""
     return T.TransientParams()
 
 
@@ -229,11 +222,6 @@ def cache_dir(workspace) -> Path:
 
 def masks_dir(workspace) -> Path:
     return Path(workspace.root) / MASKS_DIRNAME
-
-
-def masked_database_path(workspace) -> Path:
-    """The fixed name solves used before names were per solve. Read, never written."""
-    return Path(workspace.root) / MASKED_DATABASE_NAME
 
 
 MASKED_DATABASE_GLOB = "database.masked.p*.db"
@@ -347,10 +335,6 @@ def _read_solver_image(path) -> tuple[np.ndarray | None, str | None]:
     return cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB), None
 
 
-def _read_rgb(path) -> np.ndarray | None:
-    return _read_solver_image(path)[0]
-
-
 def _pause() -> None:
     """The one retry's pause (`RETRY_PAUSE_S`), taken once per batch of failures."""
     time.sleep(RETRY_PAUSE_S)
@@ -390,7 +374,7 @@ class SolverMasks:
     masked: dict = field(default_factory=dict)
     unmasked: list = field(default_factory=list)
     # image name -> {"image_sha1", "mask_sha1"}: the unmasked images EXCLUDED from
-    # the solve (review V8, M2b) -- an all-0 COLMAP mask was written for each, so
+    # the solve -- an all-0 COLMAP mask was written for each, so
     # re-extraction takes no feature of it, and the walk-database filter drops
     # every match touching it (`filter_walk_database`). Its evidence never reaches
     # the solve, so it does not make the solve `partial`.
@@ -402,24 +386,23 @@ class SolverMasks:
     gpu_peak_mb: float | None = None
     # WHY the masks are not applied, as a code a program can act on (`CAUSE_*`),
     # beside the sentence in `detail`. `gpu-oom` is TRANSIENT and the record says
-    # so (`retryable`); NOTHING re-solves unattended (review V7, H2): the finisher
+    # so (`retryable`); NOTHING re-solves unattended: the finisher
     # leaves such a solve as it is, and the row and the finalization notice say
     # an owner can re-finish the walk, attended. `images-unmaskable` names the
     # images, not the machine; every other cause is the machine's and stays.
     cause: str | None = None
     retries: int = 0
-    # image name -> `REASON_*`, for every image left unmasked (review V9, M-8).
+    # image name -> `REASON_*`, for every image left unmasked.
     unmasked_reasons: dict = field(default_factory=dict)
     # How many hashes and reads failed once and were tried again.
     retried: dict = field(default_factory=lambda: {"hash": 0, "read": 0})
-    # THE CACHE IS AN OPTIMISATION, NEVER A REASON TO LOSE THE MASKS (review V10, L-12b). A
-    # write to the mask cache that fails -- a full disk, a cached file another process holds,
-    # MAX_PATH -- is counted here (recorded as `cache_write_failed`, only when it happened),
-    # and the mask the detector computed is kept in `kept` for THIS solve: (image name,
-    # component) -> `transients.pack_masks(hand, phone)`. It used to raise out of the
-    # detector's run and become `detector-failed`: not retryable, the solve unmasked, and an
-    # operator blamed for a detector that had worked. The next solve finds no cache entry
-    # and computes it again.
+    # THE CACHE IS AN OPTIMISATION, NEVER A REASON TO LOSE THE MASKS. A write to the mask
+    # cache that fails -- a full disk, a cached file another process holds, MAX_PATH -- is
+    # counted here (recorded as `cache_write_failed`, only when it happened), and the mask
+    # the detector computed is kept in `kept` for THIS solve: (image name, component) ->
+    # `transients.pack_masks(hand, phone)`. Raised out of the detector's run, it would read
+    # as `detector-failed`: not retryable, the solve unmasked, and an operator blamed for a
+    # detector that had worked. The next solve finds no cache entry and computes it again.
     cache_write_failed: int = 0
     kept: dict = field(default_factory=dict, repr=False)
 
@@ -430,7 +413,7 @@ class SolverMasks:
 
     @property
     def _excluded_from_the_solve(self) -> dict:
-        """`excluded`, when the masks reach the solve; else nothing (review V10, L-11b).
+        """`excluded`, when the masks reach the solve; else nothing.
 
         An image is kept out of the solve by its all-0 mask and the walk-database filter, and
         both act only when extraction is given these masks (`available`). Without them the
@@ -451,8 +434,8 @@ class SolverMasks:
 
     @property
     def exclusion_notice_due(self) -> bool:
-        """Enough images were excluded that the owner is told (review V9, M-8). Never when the
-        masks did not reach the solve: then none was left out (review V10, L-11b)."""
+        """Enough images were excluded that the owner is told. Never when the masks did not
+        reach the solve: then none was left out."""
         return len(self._excluded_from_the_solve) >= max(EXCLUSION_NOTICE_MIN,
                                                         EXCLUSION_NOTICE_FRACTION * self.images)
 
@@ -468,15 +451,15 @@ class SolverMasks:
         `partial` also when every image is masked but under a FALLBACK rule
         (`union` asked for, OneFormer alone could run): the evidence was
         measured with the union rule, and the gate treats anything but
-        `applied` as masks unavailable (lead, 2026-09-23).
+        `applied` as masks unavailable.
 
         An image that could not be masked but was EXCLUDED (`excluded`) does not
-        make it `partial` (review V8, M2b): none of its features or matches
-        reach the solve, so every piece of evidence the solve holds was masked
-        under the union rule -- which is what `applied` promises the gate. One
-        unreadable frame used to put the whole walk into the masks fail-safe.
-        Only an unmasked image that could NOT be excluded (no mask shape to
-        write its exclusion with) is `partial` now."""
+        make it `partial`: none of its features or matches reach the solve, so
+        every piece of evidence the solve holds was masked under the union rule
+        -- which is what `applied` promises the gate -- and one unreadable frame
+        does not put the whole walk into the masks fail-safe. Only an unmasked
+        image that could NOT be excluded (no mask shape to write its exclusion
+        with) is `partial`."""
         if not self.available:
             return RECORD_UNAVAILABLE
         if self.partial:
@@ -509,9 +492,8 @@ class SolverMasks:
             "images_masked": len(self.masked),
             "images_unmasked": len(self.unmasked),
             "unmasked_examples": list(self.unmasked[:10]),
-            # The unmasked images kept out of the solve (review V8, M2b), why each
-            # was, and whether that is enough to tell the owner (review V9, M-8). Only
-            # when the masks reached the solve (review V10, L-11b).
+            # The unmasked images kept out of the solve, why each was, and whether
+            # that is enough to tell the owner. Only when the masks reached the solve.
             "images_excluded": len(excluded),
             "excluded_examples": list(excluded)[:10],
             "excluded_reasons": self.excluded_reasons,
@@ -535,8 +517,8 @@ class SolverMasks:
             "retryable": self.cause in RETRYABLE_CAUSES,
             "retries": self.retries,
         }
-        # Only when it happened (review V10, L-12b): a solve whose cache took every write
-        # records exactly what it recorded before.
+        # Only when it happened: a solve whose cache took every write records what it would
+        # record without the field.
         if self.cache_write_failed:
             out["cache_write_failed"] = self.cache_write_failed
         return out
@@ -583,8 +565,8 @@ def ensure_solver_masks(workspace, names, *, keyframe_ids: dict | None = None, s
     shape = tuple(int(v) for v in shape) if shape is not None else None
 
     # -- the cheap pass: hash every image, find which components are cached --
-    # A hash that fails is tried once more, after ONE pause for all of them (review V9,
-    # M-8): an image another process held is usually let go by then.
+    # A hash that fails is tried once more, after ONE pause for all of them: an image
+    # another process held is usually let go by then.
     sha_of: dict = {}
     failed = []
     for name in names:
@@ -646,10 +628,10 @@ def ensure_solver_masks(workspace, names, *, keyframe_ids: dict | None = None, s
                 return out
             params = _fall_back(out, params, refused)
         peak = T._reset_peak()
-        # What EACH component produced, by image name (review V8, M2c). One set shared
-        # by both components made the OOM retry of the second one run over nothing:
-        # the first had already emitted every image, so "not yet emitted" was empty,
-        # and a transient out-of-memory error became a permanent `unavailable`.
+        # What EACH component produced, by image name. One set shared by both
+        # components would make the OOM retry of the second one run over nothing:
+        # the first has already emitted every image, so "not yet emitted" is empty,
+        # and a transient out-of-memory error becomes a permanent `unavailable`.
         computed: dict = {c: set() for c in params.components}
         for c in params.components:
             todo = missing.get(c) or []
@@ -680,7 +662,7 @@ def ensure_solver_masks(workspace, names, *, keyframe_ids: dict | None = None, s
                 if why:
                     out.unmasked_reasons[name] = why
             if retry:
-                # Once more, after ONE pause for all of them (review V9, M-8).
+                # Once more, after ONE pause for all of them.
                 out.retried["read"] += len(retry)
                 _pause()
                 for i, name, path, sha1 in retry:
@@ -702,8 +684,8 @@ def ensure_solver_masks(workspace, names, *, keyframe_ids: dict | None = None, s
                                       mask_key(c, params, name, sha1), hand, phone,
                                       image_sha1=sha1, seconds=seconds)
                 except OSError as exc:
-                    # Not the detector's failure (review V10, L-12b): the mask is kept for
-                    # this solve, and the write is counted.
+                    # Not the detector's failure: the mask is kept for this solve, and the
+                    # write is counted.
                     _cache_write_failed(out, exc)
                     out.kept[(name, c)] = T.pack_masks(hand, phone)
                 emitted.add(name)
@@ -717,7 +699,7 @@ def ensure_solver_masks(workspace, names, *, keyframe_ids: dict | None = None, s
                         raise
                     # ONE retry, on a cleared cache, of what THIS component has not yet
                     # emitted: an OOM is usually another process's allocation or
-                    # fragmentation, not this batch being too large (review V5, M1-2).
+                    # fragmentation, not this batch being too large.
                     out.retries += 1
                     logger.warning("[Tower][WorldBuilder][solve-masks] the %s detector ran out "
                                    "of GPU memory; clearing the cache and retrying once", c)
@@ -745,7 +727,7 @@ def ensure_solver_masks(workspace, names, *, keyframe_ids: dict | None = None, s
             for k, v in (timings or {}).items():
                 if k != "stopped":
                     out.seconds[f"{c}.{k}"] = v
-        # Images at least one component was computed for, as before.
+        # Images at least one component was computed for.
         out.computed = len(set().union(*computed.values())) if computed else 0
         out.gpu_peak_mb = T._peak_mb(peak)
 
@@ -757,8 +739,7 @@ def ensure_solver_masks(workspace, names, *, keyframe_ids: dict | None = None, s
     for name, path, sha1 in images:
         parts = []
         for c in params.components:
-            # A mask computed now whose cache write failed is this solve's all the same
-            # (review V10, L-12b).
+            # A mask computed now whose cache write failed is this solve's all the same.
             packed = out.kept.get((name, c))
             if packed is not None:
                 got = T.unpack_masks(packed)
@@ -771,10 +752,10 @@ def ensure_solver_masks(workspace, names, *, keyframe_ids: dict | None = None, s
         png_path = mdir / f"{name}.png"
         if len(parts) != len(params.components):
             # No mask for this image (unreadable, or its detector output never
-            # arrived). It is counted as unmasked and EXCLUDED (review V8, M2b):
-            # an all-0 mask ("extract nothing") rather than the all-255 ("extract
-            # everything") it used to get, so none of its features reaches a
-            # re-extracted solve; the walk-database filter drops its matches.
+            # arrived). It is counted as unmasked and EXCLUDED: an all-0 mask
+            # ("extract nothing"), not all-255 ("extract everything"), so none of
+            # its features reaches a re-extracted solve; the walk-database filter
+            # drops its matches.
             out.unmasked.append(name)
             out.unmasked_reasons.setdefault(name, REASON_NO_MASK)
             _exclude(out, png_path, name, sha1, shape)
@@ -797,7 +778,7 @@ def ensure_solver_masks(workspace, names, *, keyframe_ids: dict | None = None, s
             _merge_index(cdir, index, params)
         except OSError as exc:
             # The index only lets the surface stage find these masks (`solve_mask_donor`);
-            # without it that stage computes its own (review V10, L-12b).
+            # without it that stage computes its own.
             _cache_write_failed(out, exc)
     out.seconds["write"] = round(time.time() - t3, 3)
     out.seconds["total"] = round(time.time() - t0, 3)
@@ -806,7 +787,7 @@ def ensure_solver_masks(workspace, names, *, keyframe_ids: dict | None = None, s
         reasons = [out.unmasked_reasons.get(name, REASON_NO_MASK) for name in out.unmasked]
         if out.images and reasons and all(r in IMAGE_REASONS for r in reasons):
             # Every image failed for a reason of its own: say so, and name the images as
-            # the problem, not the detector (review V9, M-8).
+            # the problem, not the detector.
             out.cause = CAUSE_IMAGES_UNMASKABLE
             out.detail = _none_masked_detail(out.images, reasons)
         else:
@@ -857,7 +838,7 @@ def _fall_back(out: SolverMasks, params: T.TransientParams, missing: dict) -> T.
     why = "; ".join(f"{c}: {r}" for c, r in sorted(missing.items()))
     if any(_text_is_gpu_oom(str(r)) for r in missing.values()):
         # A fallback forced by the GPU running out of memory is transient: recorded so,
-        # like an OOM that left the solve unmasked (review V7, L-b).
+        # like an OOM that left the solve unmasked.
         out.cause = CAUSE_GPU_OOM
     effective = replace(params, mode=T.MODE_ONEFORMER)
     out.params = effective
@@ -925,7 +906,7 @@ def masked_database(workspace, masks: SolverMasks, *, all_names=()) -> tuple[Pat
     extracted; one whose bytes or mask changed makes it unusable, because
     COLMAP has no way to re-extract one image in place. The earlier database
     is read, never modified, so a solve running beside this one is not
-    disturbed (review V5, M1-5).
+    disturbed.
     """
     import sqlite3  # noqa: PLC0415
 
@@ -941,7 +922,7 @@ def masked_database(workspace, masks: SolverMasks, *, all_names=()) -> tuple[Pat
         current.setdefault(name, [None, None])
     rule = masks.params.rule_id()
     source, stale_reason, held = None, None, {}
-    records = [q for q in Path(workspace.root).glob("database.masked*.json")]
+    records = list(Path(workspace.root).glob("database.masked*.json"))
     records.sort(key=lambda q: q.stat().st_mtime, reverse=True)
     for record_path in records:
         candidate = record_path.with_suffix(".db")
@@ -966,7 +947,7 @@ def masked_database(workspace, masks: SolverMasks, *, all_names=()) -> tuple[Pat
         # An image that has LEFT the solve is still in that database, with whatever features
         # it was extracted with. Extracted whole (no mask: `[sha, None]`, `[None, None]`), its
         # unmasked evidence would ride along into this solve -- the filtered path excludes an
-        # image the mask step never saw, and so does this one (review V9, M-8 LOW).
+        # image the mask step never saw, and so does this one.
         left = next((name for name, entry in (previous.get("images") or {}).items()
                      if name not in current and not _extracted_under_a_mask(entry)), None)
         if left is not None:
@@ -1020,7 +1001,7 @@ def walk_database_usable(path) -> bool:
     if not path.is_file() or path.stat().st_size == 0:
         return False
     try:
-        # READ-ONLY (review V5, M1-4): this is the walk's database, which the solve
+        # READ-ONLY: this is the walk's database, which the solve
         # never writes; a read-write connection could checkpoint its WAL.
         con = _connect_read_only(path)
         try:
@@ -1040,10 +1021,9 @@ def _keypoints_in_mask(con, names: dict, masks: SolverMasks, mdir: Path, info: d
 
     An image WITHOUT a mask -- one the detector could not mask, or one in the walk
     database that this solve's mask step never saw -- is EXCLUDED: every keypoint
-    counts as masked, so every match and verified inlier touching it is removed
-    (review V8, M2b). It used to be skipped, so its unmasked matches reached the
-    solve whole while the record said `partial` and the gate attached nothing
-    anywhere; now its evidence is dropped and the rest of the walk is gated."""
+    counts as masked, so every match and verified inlier touching it is removed.
+    Skipping it instead would let its unmasked matches reach the solve whole; this
+    way its evidence is dropped and the rest of the walk is gated."""
     import cv2  # noqa: PLC0415
 
     in_mask = {}
@@ -1064,7 +1044,7 @@ def _keypoints_in_mask(con, names: dict, masks: SolverMasks, mdir: Path, info: d
         xy = np.frombuffer(data, np.float32).reshape(int(rows), int(cols))[:, :2]
         # COLMAP's keypoint (x, y) has the top-left pixel's centre at (0.5, 0.5),
         # so the pixel a keypoint sits on is floor(x), floor(y): the rule the
-        # run's driver used.
+        # experiment used.
         x = np.clip(np.floor(xy[:, 0]).astype(np.int64), 0, png.shape[1] - 1)
         y = np.clip(np.floor(xy[:, 1]).astype(np.int64), 0, png.shape[0] - 1)
         hit = png[y, x] == 0
@@ -1109,7 +1089,7 @@ def filter_walk_database(workspace, masks: SolverMasks) -> tuple[Path, Path | No
     db = new_masked_database_path(workspace)
     record_path = database_record_path(db)
     # `images_unfiltered` stays 0 and is kept for readers of older records: an image
-    # without a mask is now `images_excluded` (review V8, M2b).
+    # without a mask is `images_excluded`.
     info = {"source": walk.name, "images_filtered": 0, "images_unfiltered": 0,
             "images_excluded": 0, "keypoints_excluded": 0,
             "keypoints_total": 0, "keypoints_in_mask": 0, "matches_dropped": 0,
@@ -1185,8 +1165,7 @@ def filter_walk_database(workspace, masks: SolverMasks) -> tuple[Path, Path | No
 def solve_mask_donor(store, world_id: str, session_id: str):
     """A lookup `(keyframe_id, component, params, shape) -> (hand, phone,
     provenance) | None` over the solve's mask cache, or None when the solve has
-    masked nothing (every world solved without the setting, i.e. every world
-    today). Never raises.
+    masked nothing (every world solved without the setting). Never raises.
 
     Each solver image is re-hashed before its mask is lent, so a frame that
     was re-undistorted since is never matched to an old mask.
