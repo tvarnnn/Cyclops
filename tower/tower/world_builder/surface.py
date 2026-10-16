@@ -1135,6 +1135,8 @@ def block_key(bc, *, offset: int = _KEY_OFFSET, span: int = _KEY_SPAN):
     observed scene) and, failing those, a coarser voxel. The refusal carries
     the overshoot so the caller can take that last step in one attempt.
     """
+    import torch
+
     q = bc + offset
     qmin, qmax = int(q.min()), int(q.max())
     if qmin < 0 or qmax >= span:
@@ -1142,6 +1144,8 @@ def block_key(bc, *, offset: int = _KEY_OFFSET, span: int = _KEY_SPAN):
         # overshoot is how many times past that edge the worst one reached.
         reach = max(qmax - offset, offset - qmin, 1)
         raise key_range_refusal(reach / float(span - offset))
+    if isinstance(q, torch.Tensor):
+        return (q[:, 0] * span + q[:, 1]) * span + q[:, 2]
     return (q[:, 0] * span + q[:, 1]) * span + q[:, 2]
 
 
@@ -3230,7 +3234,7 @@ def write_mesh_bytes(V, F, C, N=None) -> bytes:
 
     Positions are quantised to 16 bits across the mesh's own bounding box.
     That is not lossy in any way that matters: a 14-unit scene quantises to
-    0.0002 units, about 110 times finer than the 0.024 voxel the geometry was
+    0.0002 units, about 120 times finer than the 0.024 voxel the geometry was
     built at, and it halves the bytes that reach a phone.
 
     The header carries the counts because, unlike the dense point buffer,

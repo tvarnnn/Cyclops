@@ -41,7 +41,7 @@ LATENCY_WINDOW = 64
 # Budget for the p95 of the per-`submit` cost on the frame path
 # (`p95_confirm_ms` in `align.json`).
 P95_BUDGET_MS = 15.0
-# A VRAM sample every 10th prediction.
+# A VRAM sample after every 10th prediction, and while idle during back-off.
 VRAM_SAMPLE_EVERY = 10
 # Back off when free VRAM is under 10% of the total.
 VRAM_MIN_FREE_FRACTION = 0.10
@@ -182,7 +182,8 @@ class LiveDepthWorker:
         path, not the prediction time. Newest wins, because a stale
         prediction is worth less than a fresh one, and draining on a back-off
         frees the GPU for the live solve and the viewer. The injected clock is
-        read exactly twice per call; tests depend on that.
+        read twice on the enqueue/back-off path and once on the closed or
+        disabled early returns.
         """
         start = self.clock()
         with self.lock:

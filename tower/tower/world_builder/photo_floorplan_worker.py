@@ -366,6 +366,9 @@ def homography_component(*, receipt_component, entries, tree, arrays, keyframe_i
                 drop_ids.append(e[0])
             plane = fallback_floor_plane(failed=plane, camera_positions=cams,
                                          band_drops_by_frame=drops, frame_ids=drop_ids)
+            stats["plane"] = plane.stats
+            stats["plane_ok"] = plane.ok
+            stats["plane_reason"] = plane.reason
         stats["plane_ms"] = ms["plane"] = round((time.perf_counter() - t_plane) * 1000.0, 1)
         t_stage = time.perf_counter()
         stats["plane"] = plane.stats
