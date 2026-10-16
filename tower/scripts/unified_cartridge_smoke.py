@@ -575,7 +575,9 @@ async def check_worker_lifecycle_and_shutdown(process, port: int, checks: Checks
     `Popen.terminate()` is `TerminateProcess`, which delivers nothing a
     process can handle: uvicorn's lifespan never runs, so
     `CaptureWorkerSupervisor.shutdown()` never runs, and every child is
-    orphaned. CTRL_BREAK_EVENT is the signal uvicorn
+    orphaned. That is not a defect in the Tower -- the teardown is correct
+    and was measured killing a real child -- it is a defect in how the
+    smoke asked it to stop. CTRL_BREAK_EVENT is the signal uvicorn
     installs a handler for, and it needs the process to have been started
     in its own process group.
     """
