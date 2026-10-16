@@ -29,12 +29,12 @@ def health(request: Request) -> dict:
 def _chore_state(app) -> dict | None:
     """What the photographic finisher is doing, from another machine.
 
-    ADDED AFTER A 95-MINUTE STALL THAT NOTHING COULD SEE. On 2026-09-22 the
-    phone read "Finishing" for over an hour while the finisher sat at 0% CPU,
-    and the only way to learn that was a remote shell and py-spy. `running`
-    with `seconds_since_progress` climbing is that shape; `owed` with
-    `next_run_not_before_seconds` says when it will be tried again; `last`
-    says how the previous run ended -- including `stalled`.
+    A stall is invisible from the phone: the observed one was a 95-minute run
+    during which the phone read "Finishing" for over an hour while the
+    finisher sat at 0% CPU. `running` with `seconds_since_progress` climbing
+    is that shape; `owed` with `next_run_not_before_seconds` says when it
+    will be tried again; `last` says how the previous run ended -- including
+    `stalled`.
 
     None when this Tower runs no chore. Never raises.
     """
@@ -81,9 +81,7 @@ def _worker_state(app) -> dict | None:
 
     Answers "why isn't World Builder changing?" from another machine.
     The Tower is normally operated over Tailscale, where a server-side
-    log line is invisible, and on 2026-08-24 the only way to establish
-    that nothing was following the capture was to notice that no world
-    directory had appeared.
+    log line is invisible.
 
     `enabled: false` -- nothing is configured to follow a capture.
     `workers: []` with `enabled: true` -- configured, nothing running
@@ -113,9 +111,9 @@ def _capture_state(app) -> dict | None:
     """Whether raw imagery is being written, and how much of it.
 
     06-PRIVACY-DATA.md requires an Explicit Dataset-Recording Session to
-    indicate that it is recording. Until this existed that indication was
-    a server-side log line, which nobody operating the Tower from another
-    machine -- the normal case, over Tailscale -- can see.
+    indicate that it is recording. That indication has to be visible from
+    another machine -- the normal case, over Tailscale -- where a
+    server-side log line cannot be seen.
 
     `null` means no recorder is registered at all, which is different from
     a registered recorder that is idle. Collapsing the two would make "we
