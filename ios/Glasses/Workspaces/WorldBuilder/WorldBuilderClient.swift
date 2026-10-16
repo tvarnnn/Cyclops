@@ -456,8 +456,8 @@ final class WorldBuilderViewModel: ObservableObject {
     ///
     /// Derived from `geometryStatus` rather than stored beside it: two stored
     /// properties describing one fetch is two things that can disagree, and the
-    /// disagreement would be invisible. For callers that only want the tiles —
-    /// the gallery, tests.
+    /// disagreement would be invisible. It serves callers that only want the
+    /// tiles: the gallery and tests.
     var fragmentsModel: WorldFragmentsModel { geometryStatus.fragments }
 
     /// The points and poses for those segments, keyed by
@@ -665,9 +665,9 @@ final class WorldBuilderViewModel: ObservableObject {
     }
 
     /// The geometry push, heartbeat included, forwarded while a walk is
-    /// receiving: a new revision is the live imagery's trigger, and every push
+    /// receiving: a new revision is the live imagery's trigger, and each push
     /// retries a coverage landing the manifest did not carry yet (imagery and
-    /// photo floor plan).
+    /// photo floor plan), up to their `landingRetries` (3) each.
     private func imageryGeometryPushed(_ coordinates: WorldGeometryCoordinates) {
         guard case .receiving = state else { return }
         imageryModel.geometryPushed(coordinates, receiving: true)
@@ -976,9 +976,9 @@ final class WorldBuilderViewModel: ObservableObject {
     /// picture -> claim the revision -> fetch the manifest -> refuse a foreign
     /// pose convention -> fetch the segments it names, cache first ->
     /// publish `geometryStatus`, `geometryChunks` and the published revision
-    /// -> rearm the retry if anything is missing. After every `await`, a step
-    /// asks `isStillOurs` before it writes, so a superseded fetch publishes
-    /// nothing.
+    /// -> rearm the retry if anything is missing. After every `await`, the next
+    /// step asks `isStillOurs` before it publishes anything or requests another
+    /// segment, so a superseded fetch publishes nothing.
     ///
     /// **Keyed on the revision, never on arrival.** The status channel
     /// heartbeats an unchanged snapshot about every two seconds, so a fetch
