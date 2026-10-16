@@ -72,7 +72,7 @@ from tower.artifact_paths import artifact_root_arg  # noqa: E402
 from tower.world_builder.store import WorldStore  # noqa: E402
 # The composition -- reading the derived tree, applying each placement,
 # grouping shared spaces -- and the dependency-free HTML viewer live in the
-# package since 2026-09-06, so the Tower can serve the viewer to the phone
+# package, so the Tower can serve the same page to the phone
 # (GET /worlds/{id}/render). Re-exported here so this script's callers and
 # tests keep their names; this file owns the PLY/PNG/plotly writers and
 # the CLI.
@@ -285,8 +285,8 @@ def render_frame_pngs(frame: Frame, out: Path, ordering: list, *, dpi=PNG_DPI,
     cameras = frame.cameras_world()
     bounds = robust_bounds(xyz)
     # The cameras stand in front of what they see, so a box over the points
-    # alone can leave half the trajectory outside the picture (measured on
-    # the 2026-09-01 loop: 232 of 424 cameras clipped). Widen to the
+    # alone can leave half the trajectory outside the picture (232 of 424
+    # cameras clipped on one measured walk). Widen to the
     # cameras' own robust box, so the walk is drawn with the room.
     if bounds is not None and cameras:
         centres = np.array([c[0] for c in cameras], dtype=np.float64)
