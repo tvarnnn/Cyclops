@@ -66,70 +66,52 @@ RESULT_TYPE_LIVE = "live"
 # they are text, and a list of them belongs on HTTP for the same reason
 # World Builder's geometry does -- see `tower/routes/documents.py`.
 
-# The one contract that exists.
+# World Builder's session status.
 #
-# Bumped from .../2026-08-23 because `trajectory.pose_count` changed
-# MEANING, not merely because a field was added. It used to be
-# `keyframes - poses_refused`, which counts a segment anchor -- an
-# identity rotation at the origin, by construction -- as a camera
-# position. On the 2026-08-24 physical walk that reported "36 camera
-# poses" from a build whose manifest read `poses_solved: 0, points: 0`.
+# Bump the date when the MEANING of an existing field changes (or a
+# `model_state` word is added), not merely when an optional field is added:
+# a consumer pinned to the old identifier is refused rather than quietly
+# served a number that means something different. Compare for equality
+# only; a mismatch means we are not talking about the same agreement.
 #
-# A consumer pinned to the old identifier is refused rather than quietly
-# served a number that means something different. That is what "compare
-# for equality only; a mismatch means we are not talking about the same
-# agreement" is for, and a correction is exactly the case where serving
-# the old id would be a lie about compatibility. Adding `poses_anchor`
-# alone would not have justified this; changing what an existing figure
-# counts does.
-# `/2026-09-06` supersedes `/2026-08-25` because `model_state` gained a
-# word, `interrupted`, and the payload gained `selection` and
-# `lifecycle.finalization`. A phone that implements the older agreement
-# refuses an unknown `model_state` outright (by design: an unknown word is
-# a contract disagreement, not an empty world), so it must be told to
-# update rather than shown a decode failure -- which is exactly what the
-# dated identifier is for.
-# `/2026-09-10` supersedes `/2026-09-06` because a `model_state` a phone
-# already implements now arrives in a state it did not before: a
-# `lifecycle.state: "stopped_unbuilt"` with no geometry projects to
-# `interrupted` rather than `finalizing`. No word was added and nothing
-# is refused by an older phone -- it decodes both -- but a client that
-# switched on `lifecycle.state` and assumed the old projection would draw
-# the wrong screen, silently, which is worse than a decode failure.
-#
-# The rule this file states three paragraphs up is "equality only; a
-# mismatch means we are not talking about the same agreement". Leaving
-# the id alone would have served the old agreement's name over new
-# behaviour. A reviewer caught it still saying `/2026-09-06` after the
-# meaning moved.
+# One line per bump:
+#   /2026-08-25  `trajectory.pose_count` changed meaning. It had been
+#                `keyframes - poses_refused`, which counts a segment
+#                anchor -- an identity rotation at the origin, by
+#                construction -- as a camera position. One physical walk
+#                reported "36 camera poses" from a build whose manifest
+#                read `poses_solved: 0, points: 0`.
+#   /2026-09-06  `model_state` gained the word `interrupted`, and the
+#                payload gained `selection` and `lifecycle.finalization`.
+#                A phone on the older agreement refuses an unknown
+#                `model_state` outright (an unknown word is a contract
+#                disagreement, not an empty world), so it must be told to
+#                update rather than shown a decode failure.
+#   /2026-09-10  A `lifecycle.state: "stopped_unbuilt"` with no geometry
+#                now projects to `interrupted` rather than `finalizing`.
+#                No word was added and an older phone decodes both, but a
+#                client that switched on `lifecycle.state` and assumed the
+#                old projection would draw the wrong screen, silently.
 WORLD_BUILDER_STATUS_CONTRACT = "world_builder.status/2026-09-10"
 
 # Scene Understanding's live scene.
 #
-# Dated 2026-08-27 rather than the 2026-08-26 of the original wire-path
-# design because the payload that shipped is not byte-for-byte the
-# payload that was designed: `where` carries per-label SIDE COUNTS rather
-# than one side per label (one side cannot describe a chair on the left and a chair on
-# the right), and a `lifecycle` block was added because this cartridge has
-# a Start and a Stop that World Builder's file-reading status did not.
-#
-# Nothing had ever served the 2026-08-26 identifier -- the design was
-# explicitly "designed, not implemented" -- so no consumer is being broken.
-# Minting the date the agreement actually reached a wire is the whole
-# discipline these identifiers exist for.
+# The date is when the agreement reached a wire: `where` carries per-label
+# SIDE COUNTS rather than one side per label (one side cannot describe a
+# chair on the left and a chair on the right), and a `lifecycle` block
+# exists because this cartridge has a Start and a Stop that World
+# Builder's file-reading status does not.
 SCENE_LIVE_CONTRACT = "scene_understanding.live/2026-08-27"
 
 # Document Memory's session status. The library itself is not here; see
-# `DOCUMENT_LIBRARY_CONTRACT` in `tower/results/document_memory.py`, which
-# governs the HTTP surface.
+# `DOCUMENT_MEMORY_LIBRARY_CONTRACT` below, which governs the HTTP surface.
 #
-# Bumped 2026-09-07 with the library identifier below, and for the same
-# reason: `identity` changed meaning. A record may now carry SIGHTINGS
-# (later observations merged onto it), the session reports them, and a
-# decoder written against "no identity across sightings" would render a
-# merged record as one observation. A shipped decoder exists, so the
-# identifier moves and that decoder says "needs update" -- which is what
-# the identifier is for.
+# Moves together with the library identifier, for the same reason:
+# `identity` changed meaning. A record may carry SIGHTINGS (later
+# observations merged onto it), the session reports them, and a decoder
+# written against "no identity across sightings" would render a merged
+# record as one observation. A shipped decoder exists, so the identifier
+# moves and that decoder says "needs update".
 DOCUMENT_MEMORY_STATUS_CONTRACT = "document_memory.status/2026-09-07"
 
 # Document Memory's library, which travels over HTTP rather than on this
