@@ -28,9 +28,9 @@ Collapsing the third into the second lets a gap in what the glasses
 happened to see read as a statement about the world. That distinction is
 not decoration here -- it is this cartridge's ACTUAL STATE. On 9,199
 frames of real first-person footage the page detector fired six times and
-was wrong all six, and after `MIN_ROW_TRANSITIONS` was re-derived against
-those same frames it fires zero times. A Tower asked "show me the parking
-notice" today answers `no_observation`, and that is the truthful answer:
+was wrong all six, and with `MIN_ROW_TRANSITIONS` re-derived against those
+same frames it fires zero times. A Tower asked "show me the parking
+notice" answers `no_observation`, and that is the truthful answer:
 nothing has ever been recorded, and that is a fact about this platform's
 camera, not about parking notices.
 
@@ -52,16 +52,14 @@ uses, applied to the most sensitive data this platform handles.
 looked and found no readable text" is a different fact from "we never
 looked", and the store records both.
 
-NAMES THAT ARE PART OF THE CONTRACT
-
 WHY THE CAVEATS ARE AT THE ENVELOPE AND NOT ON EVERY RECORD
 
-`record_notes` carries, once, the five sentences that used to be repeated
-on every document: the "in view, not read" qualification, the summary's
-provenance, the clock, the capture-side imagery lifetime, and the
-joinability of the frame reference. They are constants, and a
-200-document listing was 488 KB with two thirds of it the same sentences
-two hundred times.
+`record_notes` carries, once, the five sentences that would otherwise be
+repeated on every document: the "in view, not read" qualification, the
+summary's provenance, the clock, the capture-side imagery lifetime, and
+the joinability of the frame reference. They are constants, and repeated
+per record they made a 200-document listing 488 KB with two thirds of it
+the same sentences two hundred times.
 
 They are hoisted, never dropped. Each is a caveat a client must be able
 to render, and deleting a caveat to save bytes is the one saving this
@@ -76,7 +74,7 @@ named for viewing claims all three. iOS renders it as "In view 45s", never
 here, because the vocabulary test in `tests/test_result_channel_isolation.py`
 greps every string in this package for it -- docstrings included -- and a
 rule that exempted the file explaining the rule is how the word gets back
-in. That is also why this paragraph does not quote the test's own name.
+in.
 """
 
 from tower.document_memory.records import TIME_BASIS
@@ -84,9 +82,8 @@ from tower.results.contracts import DOCUMENT_MEMORY_LIBRARY_CONTRACT
 from tower.document_memory.retrieval import MIN_SCORE, DocumentMemory
 from tower.document_memory.store import DocumentStore
 
-# Opaque and dated, in the style of `object_memory.observations/2026-08-26`.
-# Compared for equality only: never parsed, never ordered, never used to
-# infer that one contract is newer than another.
+# Opaque. Compared for equality only: never parsed, never ordered, never
+# used to infer that one contract is newer than another.
 #
 # Defined in `tower/results/contracts.py` and re-exported here, so the
 # capability declaration can name it without importing this adapter --
@@ -104,39 +101,26 @@ TEXT_UNKNOWN = "unknown"
 TEXT_NOT_READABLE = "not_readable"
 TEXT_EXTRACTED = "extracted"
 
-# "OCRED", not "read", and the correction matters more than it looks.
-#
-# This file spends a paragraph explaining that the duration field must
-# never be named for viewing, because "appearing in the camera does not
-# establish that the wearer looked at it, noticed it, or read it" -- and
-# then the top-level claim, the value a decoder is invited to switch on,
-# said the document WAS READ. The intended reading was "read by OCR".
-# Nothing in the payload said so, and the field five keys below is
-# specifically about the wearer.
-#
-# Corrected before any consumer existed, which is why the contract
-# identifier did not move: an identifier is bumped to protect decoders
-# that exist, and none had ever decoded the earlier shape.
+# "OCRED", not "read": the top-level claim is the value a decoder is
+# invited to switch on, and "appearing in the camera does not establish
+# that the wearer looked at it, noticed it, or read it". It says a page
+# was in view and was read by OCR; nothing in the payload may say the
+# wearer read it.
 DOCUMENT_CLAIM = "a-page-was-in-view-and-was-ocred"
-# Since 2026-09-07 a record IS joined across sightings, by one rule: a
-# later dwell whose first readable page carries the same words AND looks
-# the same (`document_memory/identity.py`) becomes a sighting of the
-# record rather than a new one. Anything weaker stays a separate record.
-# The earlier value, "no-document-identity-across-sightings", was true
-# of a cartridge that made no such join; it is not true of this one,
-# and the contract identifiers moved with it.
+# A record IS joined across sightings, by one rule: a later dwell whose
+# first readable page carries the same words AND looks the same
+# (`document_memory/identity.py`) becomes a sighting of the record rather
+# than a new one. Anything weaker stays a separate record.
 IDENTITY_SCOPE = "same-page-by-text-and-look-within-library"
 ABSENCE_MEANING = "not-recorded-by-this-cartridge"
 
 # What happened to the pixels, in this platform's terms and in iOS's.
 #
-# The earlier single constant was `"raw-ephemeral-not-served"`, and it
-# was wrong twice. It is not one of the three states
-# `ios/docs/agent-handoffs/IOS-TO-TOWER.md` §5 defines, so a decoder falls
-# through to unknown -- the safe direction, but a mapping that never lands. And
-# it was a module constant, so a library that kept every page image and one
-# that kept none emitted the same string, while a kept image is raw and
-# PERSISTED, which is the opposite of ephemeral.
+# The treatment varies with the fact: a library that keeps every page
+# image is raw and PERSISTED, which is the opposite of ephemeral, and one
+# that keeps none emits `none-retained`. The value set maps onto the
+# states `ios/docs/agent-handoffs/IOS-TO-TOWER.md` §5 defines, so a
+# decoder does not fall through to unknown.
 IMAGERY_NONE_RETAINED = "none-retained"
 IMAGERY_RAW_PERSISTED = "raw-persisted"
 
@@ -169,12 +153,10 @@ RETRIEVAL_KINDS = ("recent", "text", "observed_within")
 
 # The sentences that are the same on every record, carried ONCE.
 #
-# Measured before this: a document summary was 2,351 bytes of which 1,603
-# were these constants, so a 200-document listing was 488 KB with ~313 KB
-# of it the same five sentences two hundred times, against 12 KB of
-# actual titles. That is the argument the scene payload already made
-# against itself when it cut `refused_relations` to a first sentence and
-# a pointer; the document listing had never had that pass.
+# Repeating them on every record dominated the size of a listing: a
+# document summary was 2,351 bytes of which 1,603 were these constants,
+# so a 200-document listing was 488 KB with ~313 KB of it the same five
+# sentences two hundred times, against 12 KB of actual titles.
 #
 # They are hoisted rather than deleted. Every one of them is a caveat a
 # client must be able to render -- "in view", not "read"; the summary is
@@ -201,12 +183,7 @@ RECORD_NOTES = {
         "when the glasses captured them. There is no capture timestamp "
         "anywhere on this wire"
     ),
-    "imagery_retention": (
-        "capture-side: the frames this record points at live in the "
-        "capture store, whose lifetime this cartridge neither sets nor "
-        "enforces. Purging every document here leaves that imagery "
-        "exactly where it is"
-    ),
+    "imagery_retention": IMAGERY_RETENTION_NOTE,
     "joinable": (
         "capture_id, page_source_seqs and observed_at together locate "
         "this reading in a recording. The link is durable across "
@@ -216,18 +193,17 @@ RECORD_NOTES = {
 
 # How much verbatim text a SEARCH result may carry per match.
 #
-# `retrieval._snippet` produces 160 characters around the matched term,
-# and a review measured what that adds up to: with a 90-character title
-# beside it, 252 verbatim characters per match, at a limit of 50 that is
-# ~12.6 KB of document text -- delivered in the same object as a string
-# promising the summary is withheld so "a listing cannot become a bulk
-# transfer of what a wearer read".
+# `retrieval._snippet` produces 160 characters around the matched term;
+# with a 90-character title beside it that is 252 verbatim characters per
+# match, and at a limit of 50 it is ~12.6 KB of document text -- delivered
+# in the same object as a string promising the summary is withheld so "a
+# listing cannot become a bulk transfer of what a wearer read".
 #
 # The snippet is not decoration and is not dropped: a match with no
 # evidence is a number a client has to trust, and
 # `ios/docs/agent-handoffs/IOS-TO-TOWER.md` models `DocumentQueryEvidence` for
-# exactly this. It is bounded instead, to a phrase rather than a paragraph, and
-# the payload now says what it serves rather than claiming it serves nothing.
+# exactly this. It is bounded instead, to a phrase rather than a paragraph,
+# and the payload says what it serves.
 SNIPPET_MAX_CHARS = 48
 
 # And how much of a title. A title is a label and iOS asks for it in the
@@ -318,9 +294,7 @@ def store_from_root(root, *, retention_days: float | None = None, clock=None):
     `object_memory.store_from_root` where they are.
 
     `retention_days` is accepted and NARROWS ONLY. It reaches the store
-    as `retention_seconds`, and since 2026-08-27 the store genuinely
-    filters reads to that window -- `DocumentStore.read_all` explains why
-    that sentence used to be false and what it cost.
+    as `retention_seconds`, and the store filters reads to that window.
 
     The asymmetry with Object Memory is real and a caller must not be
     misled about it. `ObservationStore` persists the window it was
@@ -420,9 +394,8 @@ def _provenance(document) -> dict:
         "world_id": document.world_id,
         "world_session_id": document.world_session_id,
         "imagery_retention": "capture-side",
-        # Said out loud rather than left for a reviewer to notice. This
-        # block IS joinable: a capture id, frame sequence numbers and a
-        # timestamp let a holder align this reading with a recording on
+        # This block IS joinable: a capture id, frame sequence numbers and
+        # a timestamp let a holder align this reading with a recording on
         # disk. That is what provenance is for and it is why
         # `ios/docs/agent-handoffs/IOS-TO-TOWER.md` §3.8 asks for it -- but it
         # is a durable link across sessions, which is exactly what Scene
@@ -463,11 +436,9 @@ def _summary_view(document) -> dict:
     document across a list is exactly the bulk transfer of contents that
     `ios/docs/agent-handoffs/IOS-TO-TOWER.md` §3.2 exists to prevent -- "a list
     of documents is not also a bulk transfer of every document's contents onto
-    the phone". Serving it here would have honoured the letter of "the list
-    carries a character count, not the text" while breaking it in fact,
-    and the failure would have been invisible: the field is small, and
-    nobody reviewing one response would notice that a hundred of them
-    add up to the library.
+    the phone". Serving it here would honour the letter of "the list
+    carries a character count, not the text" while breaking it in fact:
+    the field is small, but a hundred of them add up to the library.
 
     So the list says a summary EXISTS and where to get it, and
     `/documents/{document_id}` carries it beside the pages it came from.
@@ -502,8 +473,7 @@ def _summary_view(document) -> dict:
         "provenance": _provenance(document),
         "retains_raw_imagery": bool(document.retains_raw_imagery),
         "redaction": document.redaction,
-        # Varies with the fact, rather than being a constant that said
-        # the same thing whatever was on disk.
+        # Varies with the fact, not a constant.
         "imagery_treatment": (
             IMAGERY_RAW_PERSISTED
             if document.retains_raw_imagery
@@ -655,11 +625,10 @@ def documents_around(
     and "around lunch" are approximate, and answering them exactly answers
     a different question.
 
-    Bounded, like its two siblings and for the same reason. This shipped
-    for one commit with no limit at all, while the envelope it returned
-    claimed `limit` was the only bound: 1,000 documents in a 24-hour
-    window measured 2.4 MB, on a sync handler that parses the whole
-    journal. An unbounded limit is a remote party choosing how much
+    Bounded, like its two siblings and for the same reason: the envelope
+    claims `limit` is the only bound, and without it 1,000 documents in a
+    24-hour window measured 2.4 MB, on a sync handler that parses the
+    whole journal. An unbounded limit is a remote party choosing how much
     memory this process uses.
     """
     memory = DocumentMemory(store)
@@ -706,10 +675,10 @@ def search_documents(
     payload["sufficient_evidence"] = bool(result.sufficient_evidence)
     payload["reason"] = result.reason
     payload["match_kind"] = "lexical"
-    # Since 2026-09-07 a term of five or more characters also matches a
-    # token within one edit of it or one it begins -- OCR reads
-    # "Kubernetes" as "Kubemetes" often enough to matter. Each match says
-    # whether it needed that, and an exact match outranks a near one.
+    # A term of five or more characters also matches a token within one
+    # edit of it or one it begins -- OCR reads "Kubernetes" as "Kubemetes"
+    # often enough to matter. Each match says whether it needed that
+    # (`fuzzy`), and an exact match outranks a near one.
     payload["match_tolerance"] = (
         "exact for terms under five characters; one edit or a prefix "
         "for longer terms, weighted below an exact match"
@@ -790,10 +759,9 @@ STATUS_VOLATILE_PATHS = (
 # `unavailable` is NOT one of `LIFECYCLE_STATES`, and that is deliberate
 # rather than an omission: the lifecycle states describe a session, and
 # this is the case where there is none. It is published in `states` all
-# the same, so a decoder can pin the full vocabulary from any payload --
-# an adversarial review found the earlier version emitting a `state`
-# value the payload's own enum denied existed, in the one shape that did
-# not carry the enum.
+# the same, so a decoder can pin the full vocabulary from any payload,
+# and a `state` value is never emitted that the payload's own enum
+# denies exists.
 SESSION_UNAVAILABLE = "unavailable"
 
 SESSION_ABSENT_REASON = (
@@ -806,11 +774,11 @@ SESSION_ABSENT_REASON = (
 # Every key a live session's status carries, present and null when there
 # is no session.
 #
-# A block that changed shape forced a decoder to make 31 fields optional
-# and to handle a `state` outside the published enum -- and `states` was
-# itself one of the keys that disappeared, so a client could never learn
+# A block that changed shape would force a decoder to make every session
+# field optional and to handle a `state` outside the published enum --
+# and `states` is itself one of the keys, so a client could never learn
 # the vocabulary from the payload that needed it. Scene Understanding's
-# payload already keeps every key present with `null`; this now matches.
+# payload likewise keeps every key present with `null`.
 _SESSION_NULL_FIELDS = (
     "session_id",
     "failure_reason",
@@ -868,11 +836,11 @@ def _session_absent(reason: str | None = None) -> dict:
 def session_view(session) -> dict:
     """A session status, in the same envelope every other response has.
 
-    The five session routes used to return `session.status()` raw: no
-    contract, no claim, no recording limitations, no imagery statement --
-    while this module's own header says those travel on EVERY response.
-    They are responses. Scene Understanding's control routes already run
-    everything through one function for the same reason.
+    The session routes are responses like any other, so contract, claim,
+    recording limitations and imagery statement travel on them too, as
+    this module's header says they do on EVERY response. Scene
+    Understanding's control routes run everything through one function
+    for the same reason.
 
     A client that polls the session and never calls a listing would
     otherwise never learn that an empty library is the expected result on
@@ -964,8 +932,7 @@ class DocumentStatusProducer:
                 # UNFILTERED, and named so. `session.library_count` is the
                 # same quantity through the session's retention window and
                 # refreshed only by a prune, so the two diverge whenever
-                # records exist past the window. Two numbers side by side
-                # with one name would be the worst of both.
+                # records exist past the window; they must not share a name.
                 "document_count_unfiltered": len(documents),
                 "retention_applied": False,
                 "unavailable_reason": None,
