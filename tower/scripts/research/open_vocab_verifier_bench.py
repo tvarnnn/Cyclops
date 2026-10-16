@@ -62,11 +62,10 @@ from tower.object_memory.classes import prompt_for  # noqa: E402
 
 # THE VOCABULARY IS THE SHIPPED ONE, imported rather than restated.
 #
-# It was restated once, and the two drifted: the benchmark ran a 34-word
-# list while `verifier_vocabulary()` returns 31, so the accuracy figures
-# in the code described a configuration that does not ship. A reviewer
-# caught it. Importing removes the class of error rather than fixing this
-# instance of it.
+# A restated copy drifts from the shipped list (a restated one ran 34 words
+# where `verifier_vocabulary()` returned 31), and the accuracy figures
+# would then describe a configuration that does not ship. Importing removes
+# that class of error.
 #
 # Two prompts are ADDED for the benchmark and only for it: the labelled
 # set contains classes the shipped policy ignores entirely (`airplane`,
