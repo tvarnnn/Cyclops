@@ -94,7 +94,11 @@ def final_scale_guard_bypassed(monkeypatch):
     with no session or `world_dir` -- uses this: the publish step then skips the
     guard, as it does for a background solve. What the guard does with such a
     candidate (a withhold) is pinned in
-    `test_world_builder_final_scale_guard_seam.py`."""
+    `test_world_builder_final_scale_guard_seam.py`.
+
+    A test that uses this must not assert what a final publication writes (the
+    components record, the guard's audit, their order with the solution): that
+    output is the guard's, and only a test that runs the guard can pin it."""
     from tower.world_builder import coherence_publish
 
     monkeypatch.setattr(coherence_publish, "_final_scale_guard", lambda *a, **k: None)
