@@ -8,7 +8,7 @@ Core:   tower.world_builder.photo_floorplan (pure; this script is the only
 For the FINAL `guidance.coverage` landing recorded in a replay run's
 `status-pushes.jsonl` (it needs the solve's 3-D points, kept only for the final
 solve), and for each of that landing's displayed registered components, this
-script runs fallback (3), the lower-image floor homography:
+script builds the homography floor raster (lower-image floor homography):
 
   a. the landing's own receipt basis and (unpadded) bounds, verbatim, and its
      eligible, posed keyframes, recovered by re-running
@@ -45,14 +45,9 @@ from tower.world_builder.photo_floorplan import (  # noqa: E402
     encode_tile,
 )
 # The landing inputs live with the live side worker; the probe REUSES them (one copy).
-from tower.world_builder.photo_floorplan_worker import (  # noqa: E402,F401
-    MAX_SELECTED,
-    TARGET_PIXEL_BUDGET,
+from tower.world_builder.photo_floorplan_worker import (  # noqa: E402
     homography_component,
-    load_frame_image,
     placed_entries,
-    select_spatial,
-    solve_to_output,
 )
 
 logging.basicConfig(level=logging.INFO, format="%(message)s")
@@ -129,8 +124,8 @@ def load_tree_snapshot(run_dir: Path, geometry_revision: str):
 
 def eligible_placed_keyframes(tree):
     """Re-run coverage's own eligibility+placement math (reused, not
-    re-derived) and return {reference_segment: [(kid, position, up_world,
-    forward_world, scale), ...]}."""
+    re-derived) and return (coverage block, {reference_segment: [(kid,
+    position, up_world, forward_world, scale), ...]})."""
     captured = []
     block = gc.compute_coverage(
         solution=tree["solution"], manifest=tree["manifest"],
@@ -148,7 +143,7 @@ def _revision_of(tree):
 
 
 # ---------------------------------------------------------------------------
-# --method homography (fallback (3))
+# --method homography
 # ---------------------------------------------------------------------------
 
 def process_component_homography(*, component_receipt, placed_entries, tree, solve_dir,
