@@ -724,20 +724,24 @@ def _guard_published(workspace) -> dict:
     return meta
 
 
-@pytest.mark.usefixtures("final_scale_guard_bypassed")
 def test_the_final_solve_runs_the_gate_before_publishing_when_the_setting_is_on(session, colmap, monkeypatch):
+    """The gate setting on: the final solve runs the gate, then the real final scale guard publishes it.
+    The stub gate measures no scale, so the guard has no evidence and the room is `uncertified`."""
     from tower.world_builder import global_solve as GS
 
     monkeypatch.setenv("TOWER_WORLD_SOLVE_GATE", "1")
+    _map_a_room(monkeypatch)
     calls = []
     _stub_gate(monkeypatch, calls)
     summary = GS.solve(session.store, session.world_id, session.session_id, final=True)
     assert calls == [{"database": "database.db", "keyframes": 4}]
-    assert summary["gate"]["state"] == CP.GATE_STATE_APPLIED
-    meta = json.loads(session.workspace.solution_path.read_text(encoding="utf-8"))
+    assert summary["gate"]["state"] == CP.GATE_STATE_APPLIED and summary["solved"] is True
+    meta = _guard_published(session.workspace)
     assert meta["gate"]["state"] == CP.GATE_STATE_APPLIED and "gate_s" in meta["timing"]
-    assert parse_components(json.loads((session.workspace.root / CP.COMPONENTS_FILENAME).read_text())) \
-        is not None
+    assert meta["gate"]["final_scale_guard"]["decision"] == FSG.DECISION_PUBLISHED
+    audit = json.loads((session.workspace.root / FSG.AUDIT_FILENAME).read_text(encoding="utf-8"))
+    assert audit["inputs"]["source"] == FSG.EVIDENCE_NONE
+    assert audit["inputs"]["gate_state"] == CP.GATE_STATE_APPLIED
     # a background solve of the same session never runs it, and retires the record it would contradict
     calls.clear()
     summary = GS.solve(session.store, session.world_id, session.session_id, final=False)
