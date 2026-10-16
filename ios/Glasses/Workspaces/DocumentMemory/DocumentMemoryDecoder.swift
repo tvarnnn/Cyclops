@@ -23,14 +23,11 @@ nonisolated enum DocumentMemoryDecoder {
 
     // MARK: The library
 
-    /// A whole `/documents*` response, or `nil` when it cannot be read as this
-    /// contract.
+    /// Decodes a `/documents*` response after checking its self-description.
     ///
-    /// `nil` becomes `DocumentMemoryFetchError.undecodable`, which the
-    /// workspace renders as a failure. **It never becomes an empty library**:
-    /// an unreadable answer and a memory with nothing in it are different
-    /// facts, and turning the first into the second manufactures a statement
-    /// about the wearer's own memory out of a decode gap.
+    /// Read the constants, decode listing and detail records from their own
+    /// locations, then form the response. An unreadable answer returns `nil`
+    /// rather than an empty library because absence must not be invented.
     static func library(from json: [String: Any]) -> DocumentLibraryResponse? {
         guard
             let contract = json["contract"] as? String,
@@ -41,12 +38,8 @@ nonisolated enum DocumentMemoryDecoder {
             let answer = json["answer"] as? String
         else { return nil }
 
-        // The constants, checked rather than trusted. `claim` in particular:
-        // the contract document itself carried an older spelling that said a
-        // document "was read" until 2026-08-27, five keys above the note saying
-        // the camera cannot establish that. A Tower that started sending the
-        // old spelling again would be making the stronger claim, and this build
-        // refuses it rather than rendering it.
+        // Check the claim rather than trusting it: a camera establishes that a
+        // page was in view, not that its wearer read it.
         guard
             claim == DocumentMemoryContract.claim,
             identity == DocumentMemoryContract.identityScope,
@@ -58,40 +51,16 @@ nonisolated enum DocumentMemoryDecoder {
         let notes = recordNotes(from: json["record_notes"])
         let receivedAt = Date()
 
-        // `documents` on a listing, `document` on the single-document route.
-        // Both are decoded through the same function, so a field rendered on a
-        // row cannot be read differently from the same field on a detail
-        // screen.
-        var documents: [RememberedDocument] = []
-        for raw in json["documents"] as? [[String: Any]] ?? [] {
-            if let one = document(from: raw, receivedAt: receivedAt, notes: notes) {
-                documents.append(one)
-            }
-        }
+        // The same decoder handles listing rows and detail records.
+        let documents = decodedDocuments(from: json, receivedAt: receivedAt, notes: notes)
 
         var single: RememberedDocument?
         if let raw = json["document"] as? [String: Any] {
             single = document(from: raw, receivedAt: receivedAt, notes: notes)
         }
 
-        // Pages live INSIDE the document, not beside it. The Tower builds the
-        // single-document payload as
-        // `payload["document"] = dict(_summary_view(...), pages=[...])`
-        // (`tower/tower/results/document_memory.py`), and its own wire test
-        // asserts `payload["document"]["pages"][0]["text"]`.
-        //
-        // This read was at the top level, where the Tower has never put it, so
-        // `pages` came back empty against a real Tower and the page text --
-        // the only thing the single-document route exists to carry -- never
-        // arrived. Two things hid it: nothing renders pages yet, and the
-        // fixture was written to match this decoder rather than the Tower, so
-        // the test agreed with the bug rather than catching it.
-        var pages: [DocumentPage] = []
-        let documentBlock = json["document"] as? [String: Any]
-        let rawPages = documentBlock?["pages"] as? [[String: Any]] ?? []
-        for raw in rawPages {
-            if let page = self.page(from: raw) { pages.append(page) }
-        }
+        // Pages live inside the detail document, not at the response root.
+        let pages = decodedPages(from: json)
 
         return DocumentLibraryResponse(
             contract: contract,
@@ -134,10 +103,8 @@ nonisolated enum DocumentMemoryDecoder {
             sufficientEvidence: json["sufficient_evidence"] as? Bool,
             matchKind: json["match_kind"] as? String,
             reason: json["reason"] as? String,
-            // **Read, never assumed.** 48 on this Tower, and configuration
-            // dependent — the contract prose said 160 for months while the code
-            // said 48, and the instruction that resolved it was to read the
-            // field.
+            // Read this configuration-dependent cap: this Tower reports 48,
+            // and a fixed client value could describe a different cap.
             snippetMaxChars: json["snippet_max_chars"] as? Int,
             document: single,
             pages: pages,
@@ -145,14 +112,35 @@ nonisolated enum DocumentMemoryDecoder {
         )
     }
 
+    private static func decodedDocuments(
+        from json: [String: Any], receivedAt: Date, notes: [String: String]
+    ) -> [RememberedDocument] {
+        var documents: [RememberedDocument] = []
+        for raw in json["documents"] as? [[String: Any]] ?? [] {
+            if let one = document(from: raw, receivedAt: receivedAt, notes: notes) {
+                documents.append(one)
+            }
+        }
+        return documents
+    }
+
+    private static func decodedPages(from json: [String: Any]) -> [DocumentPage] {
+        let documentBlock = json["document"] as? [String: Any]
+        let rawPages = documentBlock?["pages"] as? [[String: Any]] ?? []
+        var pages: [DocumentPage] = []
+        for raw in rawPages {
+            if let page = self.page(from: raw) { pages.append(page) }
+        }
+        return pages
+    }
+
     /// `record_notes`, hoisted to the envelope and keyed by the field each
     /// caveat qualifies.
     ///
     /// Five entries: `observed_seconds`, `summary_withheld`, `timing`,
-    /// `imagery_retention`, `joinable`. **None of them may be dropped.** They
-    /// used to be repeated on every record — 2,351 bytes per document — and
-    /// hoisting them cut a 200-document listing from 488 KB to 249 KB with
-    /// nothing lost. The saving was the repetition, not the caveats.
+    /// `imagery_retention`, `joinable`. **None may be dropped.** Repeating them
+    /// costs 2,351 bytes per document; measured 200-document listings were
+    /// 488 KB with repetition and 249 KB with envelope notes. The caveats stay.
     static func recordNotes(from raw: Any?) -> [String: String] {
         guard let json = raw as? [String: Any] else { return [:] }
         var notes: [String: String] = [:]
@@ -483,7 +471,7 @@ nonisolated enum DocumentMemoryDecoder {
             keepsPageImages: json["keeps_page_images"] as? Bool ?? false,
             // `false` when absent, which is this cartridge's own default and
             // the opposite of Scene Understanding's: a session that persists
-            // what a wearer read gets an explicit start.
+            // observed pages gets an explicit start.
             followsStream: json["follows_stream"] as? Bool ?? false,
             retentionDays: json["retention_days"] as? Double,
             documentsPruned: json["documents_pruned"] as? Int,
@@ -493,8 +481,7 @@ nonisolated enum DocumentMemoryDecoder {
             libraryOverSoftLimit: json["library_over_soft_limit"] as? Bool ?? false,
             librarySoftLimitNote: json["library_soft_limit_note"] as? String,
             reason: json["reason"] as? String,
-            // Present and null on a 2026-08-27 payload's shape; absent
-            // entirely from an older Tower. Both decode to the defaults.
+            // Null or absent live-update fields decode to the same defaults.
             ocrDevice: json["ocr_device"] as? String,
             documentsResighted: json["documents_resighted"] as? Int,
             dwellsUnreadable: json["dwells_unreadable"] as? Int,

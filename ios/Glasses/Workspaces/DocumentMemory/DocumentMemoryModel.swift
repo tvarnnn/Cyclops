@@ -29,8 +29,8 @@ import Foundation
 ///
 /// **No image, from either side.** `imagery_served` is `false` on every
 /// response and it is a **boolean, not a path** — the path told a reader where
-/// in the store to find an unredacted photograph of what the wearer was
-/// reading, which is disclosure with no consumer, since no route resolves it
+/// in the store to find an unredacted photograph of what was in view, which is
+/// disclosure with no consumer, since no route resolves it
 /// and none may. `image_kept` is false unless page images were explicitly
 /// enabled, which is off by default and must stay off.
 
@@ -136,8 +136,8 @@ nonisolated struct DocumentSourceContext: Equatable, Sendable {
 /// a timestamp and nothing else must not force the UI to invent a title, and a
 /// row for such a document is a short row rather than a row full of dashes.
 struct RememberedDocument: Equatable, Identifiable, Sendable {
-    /// The Tower's identifier, opaque. Since 2026-09-07 it IS durable across
-    /// sightings of the same page: a later look whose words and look both
+    /// The Tower's opaque identifier is durable across sightings of the same
+    /// page: a later look whose words and look both
     /// agree with a page of this record becomes a sighting of it
     /// (`sightingCount`, `lastObservedAt`) rather than a new record, which is
     /// what `identity: "same-page-by-text-and-look-within-library"` means.
@@ -469,10 +469,9 @@ struct DocumentQueryResult: Equatable, Sendable {
     /// ## Why this throws rather than coercing
     ///
     /// A result that claims `matched` while carrying no documents is not a
-    /// coherent answer — a truncated payload, a partial decode, a contract this
-    /// build half-understands. An earlier version quietly rewrote that to
-    /// `.notFound`, whose user-facing sentence is *"Nothing in the Tower's
-    /// document memory matched."*
+    /// coherent answer — a truncated payload, a partial decode, or a contract
+    /// this build half-understands. Coercing it to `.notFound` would say
+    /// *"Nothing in the Tower's document memory matched."*
     ///
     /// That is a **definite negative statement about the user's own memory,
     /// manufactured from a decode failure**, with the Tower's own confidence

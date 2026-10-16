@@ -106,7 +106,7 @@ extension DocumentMemoryClient {
 /// ## Stop keeps documents
 ///
 /// Nothing in this client clears a result when a session ends, and that is the
-/// point. A record of what was read is exactly as true after the session stops
+/// point. A record of an observed page remains a record after the session stops
 /// — and a dwell in progress is **flushed, not dropped**, so a stop can add a
 /// document rather than lose one. This is the deliberate opposite of
 /// `TowerSceneUnderstandingClient`, which discards on stop, on disconnect and
@@ -132,11 +132,8 @@ final class TowerDocumentMemoryClient: DocumentMemoryClient {
 
     private(set) var lastSessionOutcome: DocumentSessionOutcome?
 
-    /// The `library` half of the status push. Kept since 2026-09-07: until
-    /// then every push was decoded in full and everything but `session` was
-    /// dropped, so a page recorded mid-session reached the screen only when
-    /// a person tapped Recent. `revision` on it is what the view model
-    /// re-fetches on.
+    /// The `library` half of the status push. Its revision lets the view model
+    /// re-fetch when a page is recorded mid-session.
     private(set) var library: DocumentLibrarySummary? {
         didSet {
             guard library != oldValue else { return }
@@ -219,19 +216,10 @@ final class TowerDocumentMemoryClient: DocumentMemoryClient {
             let offer = tower.cartridgeDeclaration?
                 .httpContract(forTowerCartridge: DocumentMemoryContract.towerCartridge)
         else { return nil }
-        // `available` is honoured, and it was not before.
-        //
-        // `TowerHTTPContractOffer` carries six fields and only `contract` was
-        // ever read here, so with `TOWER_DOCUMENT_ROOT` unset this resolved
-        // `.available`, enabled the search field, and let the query fail with a
-        // 404 -- while the Tower's own sentence naming the variable that would
-        // fix it was decoded and never shown. Every other cartridge checks this
-        // flag at subscribe time; the library is fetched rather than subscribed,
-        // so it had no equivalent gate.
-        //
-        // The reason travels to the screen through `clientReason` rather than
-        // being lost here, so a person is told what the Tower said and not
-        // merely that nothing is available.
+        // The library is fetched rather than subscribed, so its HTTP offer
+        // needs this availability gate. Without it, an unset document root
+        // enables search that can only fail with 404; `clientReason` presents
+        // the Tower's configuration explanation instead.
         guard offer.available else { return nil }
         return CartridgeContract(cartridgeID: cartridgeID, identifier: offer.contract)
     }
@@ -408,6 +396,9 @@ final class TowerDocumentMemoryClient: DocumentMemoryClient {
         subscribeIfPossible()
     }
 
+    /// Opens the status feed when this Tower offers the exact contract.
+    /// The live declaration and connection state gate one subscription request;
+    /// the library remains on HTTP because it can contain bulk document text.
     private func subscribeIfPossible() {
         guard tower.status == .online, subscription.id == nil, !subscription.isSubscribing else { return }
         guard
@@ -430,6 +421,9 @@ final class TowerDocumentMemoryClient: DocumentMemoryClient {
         )
     }
 
+    /// Applies Document Memory's result-channel events to its live status.
+    /// An ack records the subscription, snapshots update session and library,
+    /// and owned errors retire or retry the feed without changing disk data.
     private func handle(_ event: CartridgeResultEvent) {
         switch event {
         case .declaration:
@@ -452,9 +446,13 @@ final class TowerDocumentMemoryClient: DocumentMemoryClient {
             library = status.library
 
         case .failed(let error):
-            guard error.cartridge == DocumentMemoryContract.towerCartridge
-                || (error.subscriptionID != nil && error.subscriptionID == subscription.id)
-            else { return }
+            // A named cartridge decides ownership. An id is only a fallback
+            // when the error has no name; otherwise a conflicting frame could
+            // clear this session or spend its resubscribe budget incorrectly.
+            guard error.belongs(
+                toTowerCartridge: DocumentMemoryContract.towerCartridge,
+                openSubscriptionID: subscription.id
+            ) else { return }
             if error.closesSubscription {
                 // The Tower's message says to subscribe again to resume, and nothing
                 // else reacts to this error.
@@ -486,21 +484,8 @@ final class TowerDocumentMemoryClient: DocumentMemoryClient {
 /// this app could ship. Test fixtures live in the test target, where they can
 /// never reach a device.
 ///
-/// ## The sentence that used to be here, and why it was deleted
-///
-/// > "The Tower keeps no document memory, so there is nothing to search. This
-/// > app sends camera frames to the Tower while a session is running; it reads
-/// > no text from them and receives none back."
-///
-/// The first clause is a claim about what the Tower **stores**, and it is now
-/// false: the Tower has a document store, a journal, six routes and a typed
-/// contract. The last clause is false too — a search receives titles, snippets
-/// and, on one route, page text. Leaving it up would have told a person their
-/// Tower keeps no record of what they read while it was keeping one.
-///
-/// What replaced it says only what is observable from here: **this** Tower has
-/// declared nothing. It makes no claim about what any Tower stores, because
-/// this app has no channel through which it could know that.
+/// It says only that this Tower declared no library. A missing declaration
+/// cannot establish what the Tower stores; other Towers can serve documents.
 @MainActor
 final class UnavailableDocumentMemoryClient: DocumentMemoryClient {
     static let reason = """
@@ -650,6 +635,10 @@ final class DocumentMemoryViewModel: ObservableObject {
         updateCameraNote()
     }
 
+    /// Refreshes the standing query when the Tower's library revision changes.
+    /// Keep the first revision as a baseline, then repeat the standing query
+    /// only for a new revision while no query is in flight. Status heartbeats
+    /// must not repeatedly reload document text.
     private func libraryChanged(_ library: DocumentLibrarySummary?) {
         guard let revision = library?.revision else { return }
         guard revision != lastLibraryRevision else { return }
