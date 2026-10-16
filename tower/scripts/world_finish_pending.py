@@ -19,8 +19,9 @@ machine sleep, a crash, or the supervisor's thirty-second stop grace) nothing
 else retries it. `scripts/world_finalize.py` rebuilds only the SPARSE derived
 tree and never runs a surface. The serving path is strictly read-only --
 `tower/results/world_builder*.py` performs no write, spawns no process and
-never generates on demand. The Tower at startup does no reconciliation of any
-kind. Without this tool the work is discarded permanently and the world stays
+never generates on demand. Apart from launching this tool, the Tower at startup
+does no reconciliation of its own. Without this tool the work is discarded
+permanently and the world stays
 sparse beside a session record saying `finalization: complete`. Observed: a
 Tower shut down eight minutes into a build recovered nothing at the next start.
 
@@ -185,7 +186,8 @@ DEFAULT_MAX_ATTEMPTS = 3
 # a stop, and every stop handed the attempt back: `attempts` stayed at 0 on
 # disk after all of them, so the world would have reported "Improving" across
 # unlimited restarts with nothing on disk saying why. The root cause is fixed
-# (see `tower/native_prewarm.py` and the prewarm call in `main`); this is the
+# (see `tower/native_prewarm.py` and the prewarm calls in `finish`,
+# `finish_regate` and `finish_areas`); this is the
 # containment, so that the NEXT thing that hangs or gets killed instantly
 # cannot imply progress for ever either.
 #
@@ -914,8 +916,9 @@ def _assess_areas(store: WorldStore, world_id: str, session_id: str, session, *,
 # -- a re-gate owed to a gate that could not finish --------------------------------------
 #
 # The evidence gate's scale fail-safe publishes the room as its unsplit anchor block, which
-# on the masked ground-truth arms leaves [129, 89, 120, 44] cameras misplaced where the gate
-# leaves [24, 0, 0, 38] -- tolerable for an interim publish, not as a world's final answer.
+# on the masked ground-truth arms leaves [129, 89, 120, 44] keyframes (misplaced / split
+# correct / scale-misplaced / split unobservable) where the gate leaves [24, 0, 0, 38] --
+# tolerable for an interim publish, not as a world's final answer.
 # When it was
 # caused by the depth stage (`gate.retryable`, `gate.cause` depth-unavailable) or the gate
 # raised (gate-failed), the session is owed ONE thing: the depth stage and the gate run
