@@ -3,29 +3,32 @@
 THE PATH. `guard_publication` is the publish seam's entry. It reads the evidence (`read_evidence`), lists
 the candidate's room cameras (`room_cameras`), assesses them (`assess_v2`), applies the decision (`apply`)
 and returns a `GuardOutcome` that carries the summary and the audit. v2 is the rule the seam runs:
-  * EVIDENCE IS READ, NEVER MADE (`read_evidence`): the applied gate's `metric_log` first, else the session's
-    live depth cache under a full identity match (`live_depth.compatible_live_records`), else none. No depth
-    stage runs at publish.
+  * DEPTH EVIDENCE IS READ, NEVER PREDICTED (`read_evidence`): the applied gate's `metric_log` first,
+    else compatible live depth predictions (`live_depth.compatible_live_records`) from which
+    `coherence_scale.metric_scale` computes ratios, else no ratios. No depth stage runs at publish.
   * ISOLATE only a plateau with >= 10 finite ratios, its median outside the inclusive [0.8, 1.25] AND its
     deterministic 95 % bootstrap interval (400 draws, seed 20261006) excluding 1. A plateau is bounded by
     its first and last MEASURED camera: no class is carried across an unmeasured tail. Re-segment after
     each removal.
-  * EVERYTHING ELSE STAYS ATTACHED and is recorded `uncertified`, in `final_scale_guard.json` and on the
-    placed component of `components.json` (`placed_scale_status`). No pose-only quarantine (pose screen
-    recorded only). No evidence: the room is `uncertified` (never PASS), nothing is isolated, nothing is
-    withheld. It still withholds on a failure (an exception, a relabel that leaves no room).
+  * QUALIFYING in-band plateaus with >= 10 ratios stay `certified`. The room is `SCALE_CERTIFIED` when
+    its certified core has >= 10 ratios and no attached uncertified span. Short plateaus, unmeasured
+    stretches, excursions and out-of-band plateaus whose interval includes 1 stay attached but are
+    recorded `uncertified`, in `final_scale_guard.json` and on the placed component of
+    `components.json` (`placed_scale_status`). No pose-only quarantine (pose screen recorded only).
+    No evidence: the room is `uncertified` (never PASS), nothing is isolated, nothing is withheld.
+    It still withholds on a failure (an exception, a relabel that leaves no room).
 
-WHY. The evidence gate decides which pieces of a final solve to attach to the room, but it does not check
-the result it publishes: a bathroom was published inside the room at x2.56 relative to it despite
-the gate, and a simple solve (unmasked, ungated, one draw) publishes the solver's component 0 with no check
-at all. The guard checks THE ACTUAL OUTCOME THAT WOULD BE PUBLISHED -- the chosen draw, its anchor block,
+WHY. The evidence gate decides which pieces of a final solve to attach to the room, yet a bathroom was
+published inside the room at x2.56 relative to it despite the gate. A simple solve (unmasked, ungated,
+one draw) has no evidence-gate check, but its final publication still runs this scale guard. The guard
+checks THE ACTUAL OUTCOME THAT WOULD BE PUBLISHED -- the chosen draw, its anchor block,
 every attached group -- immediately before it is written, and can only REMOVE room membership: it never
 attaches anything and never overrides a gate refusal. The measurement is the per-camera
 log(z_sfm/z_metric) with the [0.8, 1.25] screen, >= 10 ratios per side and motion screens, and its
 segments are label-free (below). Region labels are evaluation only; nothing here reads one.
 
 THE SEAM (`coherence_publish.gate_and_publish` and `coherence_publish.regate_published`): after the gate,
-the consensus and the anchor verification, before `write`. So it covers every publication pass -- the
+the consensus and the anchor verification, before `write`. So it covers every final publication pass -- the
 consensus's early draw-0 publish, its final vote, the plain gate, the simple (ungated) solve, a re-finish
 (a final solve) and the re-gate in place.
 
@@ -63,12 +66,13 @@ an ungated solve too, where every other solver component is `solved-separately`.
 dropped. A withheld candidate is not written at all (`publish.written: false`): the last published
 solution stands, and the solve reports `solved: false` with the reason, which the builder records as the
 finalization's detail. IT IS FAIL-CLOSED: a relabel that leaves no room, or any exception, withholds. A
-missing metric ratio does not: that room is published `uncertified`.
+absence of metric evidence does not: that room is published `uncertified`.
 
 THE AUDIT (`solve/<session>/final_scale_guard.json`, Tower-internal, keyed to the published or withheld
-solve's identity): the params and digest, the reference, every plateau and piece with its keyframe ids,
-journal indices, ratio count, median ratio, bootstrap interval, class and decision, the pose flags and
-warnings, and the timing -- so a scorer can see which segments were isolated and why. No ratio or metric
+solve's identity): when assessment completes, it records the params and digest, the reference, each
+plateau's endpoint keyframe ids and each isolated piece's keyframe ids, journal indices, ratio count,
+median ratio, bootstrap interval where computed, class and decision, and the pose flags and warnings. It
+also records timing and any error, so a scorer can see which segments were isolated and why. No ratio or metric
 figure ever reaches the components record or the phone (contract §2.4 rule 6).
 
 The v1 `assess`, `plateaus` and `_scale_round` functions remain for their direct tests. The publish seam

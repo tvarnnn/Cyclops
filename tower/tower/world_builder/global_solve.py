@@ -2487,14 +2487,14 @@ def matching_key(*, camera_params: str, overlap: int, loop_detection: bool, seed
     beyond the images. Thread counts are not in it: they change how, not what is asked for.
     The pycolmap version pins every option this module leaves at its default.
 
-    THE VERIFICATION SEED IS IN IT, deliberately. It is the two-view RANSAC
+    THE VERIFICATION SEED IS IN IT, deliberately (review V9, LOW). It is the two-view RANSAC
     seed (`TwoViewGeometryOptions.ransac.random_seed`), and a different seed verifies the same
     raw matches into different inlier sets -- so a database matched under seed s is not the
     database a solve seeded s' would have made, and mapping it under s' would claim a
     reproducibility it does not have. The cost is that a re-finish with a new seed matches
     again (into the walk database, where loop detection may add pairs) and freezes the result.
 
-    THE REVISIT LINKS ARE NOT IN IT: they are matched only into the copy a
+    THE REVISIT LINKS ARE NOT IN IT (review V9 M-10): they are matched only into the copy a
     solve maps, never into the walk database this key describes."""
     return {
         "pycolmap": pycolmap_version,
@@ -2584,18 +2584,18 @@ def _match_revisit_pairs(pycolmap, store, world_id, session_id, workspace, datab
                          present, matching, verification, *, pairs=None) -> dict:
     """Match the live relocalizer's revisit links (`relocalizer.revisit_pairs`)
     explicitly, into `database_path` -- which `solve` makes the database it MAPS,
-    never the walk's own (`_import_revisit_pairs` masks and floors
+    never the walk's own (review V9 M-10; `_import_revisit_pairs` masks and floors
     what this adds) -- with its matching and verification options.
 
     Sequential matching reaches 20 keyframes either side and loop detection
     queries every tenth keyframe; a look-back revisit is exactly the pair
     neither is sure to propose. No links (no relocalizer, an old session, a
-    walk that never lost tracking) makes no call.
+    walk that never lost tracking) is today's solve, with no call made.
     Never raises: a failure costs the links, and the record says so.
 
     `pairs`: the links already read (`_read_revisit_links`); None reads them here.
-    Which solves import them, and the floor they are held to, is `solve`'s decision;
-    the verified count here is at COLMAP's 15.
+    Which solves import them, and the floor they are held to, is `solve`'s decision
+    (review V8 M4); the verified count here is at COLMAP's 15.
     """
     record = {"listed": 0, "verified": 0, "detail": None}
     if pairs is None:
