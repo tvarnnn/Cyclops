@@ -76,10 +76,12 @@ class ExperimentalCVModule(Module):
         )
 
     async def _do_load(self) -> None:
-        # Propagates, deliberately. An unknown name or a failed load of
-        # the STARTUP DEFAULT reaches ModuleContainer, which marks the
-        # module FAILED -- a typo in TOWER_CV_EXPERIMENT must stay loud.
-        # The recoverable path is the interactive one; see `CVLab.start`.
+        # An unknown name or a failed load of the STARTUP DEFAULT is
+        # caught in `CVLab.load_initial`: it is logged at ERROR naming
+        # TOWER_CV_EXPERIMENT, the Lab reports `failed`, and the module
+        # still reaches ACTIVE so a client can start another experiment
+        # (`CVLab.start`). Only `CancelledError` -- the container's load
+        # timeout -- propagates, and marks the module FAILED.
         #
         # The off-thread load, and the reason it must be off-thread, live
         # in `CVLab.load_initial`. What matters here is only that this
