@@ -806,7 +806,7 @@ final class WorldInlinePanelUITests: XCTestCase {
         XCTAssertTrue(reveal(dial, whole: true))
         shoot("dial-stale")
 
-        // Capture health, switch ON: one collapsed row, opening to the block.
+        // Capture health is one collapsed row that opens to the block.
         let health = element("wb-panel-health-toggle")
         XCTAssertTrue(health.waitForExistence(timeout: 10), "the Capture health row")
         XCTAssertEqual(health.value as? String, "Collapsed")

@@ -492,12 +492,12 @@ final class WorldBuilderViewModel: ObservableObject {
     private let geometry: WorldGeometryClient
     private let geometryStore = WorldGeometryStore()
     /// FOW v1.1 B's imagery (`WorldImagery.swift`): fed the geometry push
-    /// and the walk's coverage, and nothing else. Its switches OFF, it asks
-    /// for nothing.
+    /// and the walk's coverage. It requests live imagery on geometry changes
+    /// and landed imagery when a new landing is reported during capture.
     let imageryModel: WorldImageryModel
     /// FOW v1.2's photo floor plan (`WorldPhotoFloorplan.swift`): fed the
-    /// walk's coverage and the geometry push, and nothing else. Its switch
-    /// OFF, it asks for nothing.
+    /// walk's coverage and the geometry push. It requests a plan for each
+    /// new landing reported during capture.
     let photoFloorplanModel: WorldPhotoFloorplanModel
     /// The saved-worlds list, over HTTP. A struct holding a `URL` and the
     /// shared session, like `geometry`, and defaulted for the same reason.

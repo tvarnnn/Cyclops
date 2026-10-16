@@ -99,7 +99,7 @@ final class TowerClient: NSObject, ObservableObject {
     /// only end-to-end proof that the Tower received a frame and replied.
     /// `@Published` so the dashboard can show it live; nothing reads it to
     /// make a decision. It invalidates the view tree at the Tower's reply
-    /// rate (target ~12 Hz), the same order as `GlassesConnection.frameCount`
+    /// rate (target 15 Hz by default), the same order as `GlassesConnection.frameCount`
     /// does at 24 Hz.
     @Published private(set) var frameResultCount = 0
 

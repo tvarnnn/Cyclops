@@ -201,7 +201,7 @@ nonisolated struct WorldDialCellShape: Shape {
 
 // MARK: - The stage: the dial or the map; the header that switches them
 
-/// The card's header with the dial on (§5): one fixed title, and the
+/// The capture card's header (§5): one fixed title, and the
 /// Dial|Map control on its trailing side once there is a map to switch to --
 /// above the stage, so it never sits on the ring.
 struct WorldCaptureDialHeader: View {
@@ -240,8 +240,8 @@ struct WorldCaptureDialHeader: View {
     }
 }
 
-/// The walking stage with the dial on (§4 Layout, §5): the dial, or on the
-/// Map tab today's floor plan, unchanged.
+/// The walking stage (§4 Layout, §5): the dial, or on the Map tab the
+/// current coverage map, with a photo plan when available.
 struct WorldCaptureDialStage<MapContent: View>: View {
     let dial: WorldCaptureDial
     /// The CURRENT receipt (never a held one), or `nil` before the first landing.

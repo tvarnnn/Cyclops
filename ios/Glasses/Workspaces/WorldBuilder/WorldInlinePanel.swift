@@ -338,7 +338,7 @@ struct WorldInlinePanel<Health: View>: View {
     /// never from words recomputed for the settled world (which no longer
     /// has a stage line) -- nor from another walk's wait.
     @State private var finish = WorldPanelFinishMemory<FinishingBlock>()
-    /// FOW-RING §5: the walking stage's face with the dial on; Dial first.
+    /// FOW-RING §5: the walking stage's face; Dial first.
     @SceneStorage("wb-panel-tab") private var tab: WorldPanelTab = .dial
     /// FOW-RING, kept photos: the photos the dial last showed, WITH their
     /// walk -- read only beside a report of that walk, so another walk (or a
