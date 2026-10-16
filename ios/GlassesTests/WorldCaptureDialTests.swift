@@ -2,7 +2,7 @@
 //  WorldCaptureDialTests.swift
 //  GlassesTests
 //
-//  FOW-RING-SPEC (2026-10-12) S1-S3, iOS: the capture dial's model on the
+//  The capture dial's stages S1-S3 on iOS: the dial's model on the
 //  15 real coverage blocks, its gap and words, its photos from today's wire
 //  (S2) and from the Tower's own bins (S3), the additive B2 fields read
 //  fail-closed, the walk cue, the single look-here segment, the photos
@@ -46,7 +46,7 @@ final class WorldCaptureDialTests: XCTestCase {
                          motionSector: motion, photos: photos)
     }
 
-    // MARK: S1: the union over one piece's drawn stations (§3.2, §7)
+    // MARK: S1: the union over one piece's drawn stations
 
     func testTheRealBlocksFillLikeTheSpecSays() throws {
         for (name, count) in [("walk7-h52", 2), ("walk7-h236", 5), ("walk71-h563", 8), ("walk6-h1090", 12)] {
@@ -191,7 +191,7 @@ final class WorldCaptureDialTests: XCTestCase {
     /// landing. A stale map keeps its amber outline.
     func testTheFooterIsOneQuietLine() {
         XCTAssertEqual(Copy.staleAfter, 90)
-        XCTAssertEqual(WorldCoverageReceipt.staleAfter, 30, "the map's label, switch OFF, as it was")
+        XCTAssertEqual(WorldCoverageReceipt.staleAfter, 30, "the map's stale label threshold")
         let walking = dial(supported: [0, 1, 2, 3, 4, 8, 9, 10, 11], latest: 0)
         XCTAssertEqual(Copy.footer(walking, age: 45), "9 of 12 directions · updated 45 s ago")
         XCTAssertEqual(Copy.footer(walking, age: 90), "9 of 12 directions · updated 90 s ago", "at exactly 90 s")
@@ -204,7 +204,7 @@ final class WorldCaptureDialTests: XCTestCase {
         XCTAssertEqual(walking.lookHere?.positions, [6], "the amber outline never depends on the age")
     }
 
-    // MARK: Accessibility (§4)
+    // MARK: Accessibility
 
     func testTheDialIsOneElementWithTheSpecsValue() {
         let spec = dial(supported: [0, 1, 2, 3, 4, 8, 9, 10], weak: [11], latest: 0)
@@ -218,23 +218,7 @@ final class WorldCaptureDialTests: XCTestCase {
         XCTAssertEqual(Copy.photo(at: 3), "Photo at 3 o'clock")
     }
 
-    // MARK: The switch
-
-    func testTheSwitchIsOnOnlyForOnAndAsksForB2sPhotos() {
-        XCTAssertEqual(WorldCaptureDialSwitch(environment: [:], info: [:]), .off)
-        XCTAssertEqual(WorldCaptureDialSwitch(environment: ["IOS_FOW_DIAL": "ON"]), .off)
-        XCTAssertEqual(WorldCaptureDialSwitch(environment: ["IOS_FOW_DIAL": "1"]), .off)
-        XCTAssertEqual(WorldCaptureDialSwitch(environment: [:], info: ["GlassesFOWDial": ""]), .off)
-        XCTAssertTrue(WorldCaptureDialSwitch(environment: ["IOS_FOW_DIAL": "on"]).on)
-        XCTAssertTrue(WorldCaptureDialSwitch(environment: [:], info: ["GlassesFOWDial": "on"]).on)
-        XCTAssertNotNil(Bundle.main.infoDictionary?["GlassesFOWMapTab"], "the map tab's home-screen key")
-        XCTAssertNotNil(Bundle.main.infoDictionary?["GlassesFOWDial"], "the home-screen key")
-        XCTAssertEqual(WorldImagerySwitches(environment: ["IOS_FOW_DIAL": "on"]),
-                       WorldImagerySwitches(live: false, landed: true), "the dial's photos are B2's tiles")
-        XCTAssertEqual(WorldImagerySwitches(environment: [:]), .off)
-    }
-
-    // MARK: S2: photos from today's wire (§3.4)
+    // MARK: S2: photos from today's wire
 
     func testS2PhotosGoToTheirHeadingsSectorNeverOnGreyNorInAnotherPiece() {
         let image = UIImage()
@@ -282,7 +266,7 @@ final class WorldCaptureDialTests: XCTestCase {
                        "another component")
     }
 
-    // MARK: S3: the Tower's bins, the hero piece, the walk cue (§3.3, §7)
+    // MARK: S3: the Tower's bins, the hero piece, the walk cue
 
     /// `latest` picks the piece in front; start stays on top (round 3).
     func testLatestPicksItsPieceAndNeverTheTop() throws {
@@ -333,7 +317,7 @@ final class WorldCaptureDialTests: XCTestCase {
 
     /// A stale `latest` -- the Tower kept the previous landing's block --
     /// never counts for the CURRENT receipt's dial: the panel draws B2 only
-    /// over the receipt it was made for, and then falls back (§3.3).
+    /// over the receipt it was made for, and then falls back.
     func testAStaleLatestNeverCountsForTheCurrentReceipt() throws {
         let stop = try XCTUnwrap(FOWFixtures.coverage(FOWFixtures.stop))
         let receipt = WorldCoverageReceipt(coverage: stop, keyframesAccepted: 984, clock: nil)
@@ -460,7 +444,7 @@ final class WorldCaptureDialTests: XCTestCase {
         XCTAssertNil(dial.motionSector)
     }
 
-    // MARK: The words never claim what the receipt does not (§8.5)
+    // MARK: The words never claim what the receipt does not
 
     func testTheDialsWordsNeverClaimWhatTheReceiptDoesNot() throws {
         // The owner's demo decisions: "Room coverage" (2026-10-12), and
@@ -692,12 +676,8 @@ final class WorldCaptureDialTests: XCTestCase {
         XCTAssertEqual(dial(supported: [0, 1]).miniPieces, [], "one piece: none")
     }
 
-    /// The switch on collapses Capture health into one row; off, it is the
-    /// block as it always was.
-    func testCaptureHealthCollapsesOnlyWithTheDialOn() {
-        XCTAssertTrue(Panel.collapsesHealth(WorldPanelDial()))
-        XCTAssertTrue(Panel.collapsesHealth(WorldPanelDial(awaiting: true)))
-        XCTAssertFalse(Panel.collapsesHealth(nil), "switch OFF: identical")
+    /// Capture health is one collapsed row that opens to the same block.
+    func testCaptureHealthIsOneCollapsedRow() {
         XCTAssertEqual(Copy.healthRow, "Capture health")
     }
 
@@ -727,6 +707,7 @@ final class WorldCaptureDialTests: XCTestCase {
         XCTAssertFalse(WorldDialMapTabSwitch(environment: [:], info: ["GlassesFOWMapTab": ""]).on)
         XCTAssertTrue(WorldDialMapTabSwitch(environment: ["IOS_FOW_MAP_TAB": "on"]).on)
         XCTAssertTrue(WorldDialMapTabSwitch(environment: [:], info: ["GlassesFOWMapTab": "on"]).on)
+        XCTAssertNotNil(Bundle.main.infoDictionary?["GlassesFOWMapTab"], "the map tab's home-screen key")
         XCTAssertEqual(WorldPanelDial().mapTab, false, "the default is hidden")
         let stop = try XCTUnwrap(FOWFixtures.coverage(FOWFixtures.stop))
         let map = WorldPanelMapSource.coverage(WorldCoverageReceipt(coverage: stop, keyframesAccepted: nil, clock: nil))
@@ -735,7 +716,6 @@ final class WorldCaptureDialTests: XCTestCase {
         XCTAssertTrue(Panel.showsMapToggle(WorldPanelDial(mapTab: true), map: map, stopped: false))
         XCTAssertTrue(Panel.showsMapToggle(WorldPanelDial(mapTab: true), map: nil, stopped: true))
         XCTAssertFalse(Panel.showsMapToggle(WorldPanelDial(mapTab: true), map: nil, stopped: false), "no map yet")
-        XCTAssertFalse(Panel.showsMapToggle(nil, map: map, stopped: false), "dial off: today's panel")
     }
 
     /// The strip: at most four, newest first; a landing's new photos lead,
@@ -786,7 +766,7 @@ final class WorldCaptureDialTests: XCTestCase {
     }
 }
 
-// MARK: - The model's record when a landing's photos never come (§3.4)
+// MARK: - The model's record when a landing's photos never come
 
 @MainActor
 final class WorldCaptureDialImageryTests: XCTestCase {
@@ -807,8 +787,7 @@ final class WorldCaptureDialImageryTests: XCTestCase {
     }
 
     private func model() -> WorldImageryModel {
-        WorldImageryModel(switches: WorldImagerySwitches(live: false, landed: true),
-                          client: WorldImageryClient(baseURL: URL(string: "http://tower.test")!,
+        WorldImageryModel(client: WorldImageryClient(baseURL: URL(string: "http://tower.test")!,
                                                      session: Stub.makeSession(), timeout: 5))
     }
 
@@ -855,10 +834,12 @@ final class WorldCaptureDialImageryTests: XCTestCase {
         await expect { Stub.count(Self.manifest) == 1 }
         await settle()
         XCTAssertNil(model.imagery.value.landedUnavailable, "one slow answer is not giving up")
-        for revision in 1...WorldImageryModel.landingRetries {
-            model.geometryPushed(WorldGeometryCoordinates(worldID: "w1", sessionID: "s9", revision: "g\(revision)"),
+        // Heartbeats of one revision: each retries B2, and the first also
+        // asks B1 once (the stages share the manifest route).
+        for attempt in 1...WorldImageryModel.landingRetries {
+            model.geometryPushed(WorldGeometryCoordinates(worldID: "w1", sessionID: "s9", revision: "g1"),
                                  receiving: true)
-            await expect { Stub.count(Self.manifest) == revision + 1 }
+            await expect { Stub.count(Self.manifest) == attempt + 2 }
             await settle()
         }
         await expect("given up") { model.imagery.value.landedUnavailable == WorldImageryLanding(newer) }

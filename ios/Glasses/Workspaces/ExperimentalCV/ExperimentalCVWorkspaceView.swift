@@ -56,14 +56,14 @@ import SwiftUI
 struct ExperimentalCVWorkspaceView: View {
     /// A value, not the connection. Reachability changes almost never, and
     /// `TowerReachabilityReader` — which supplies this — exists so a workspace
-    /// does not observe a 12 Hz object to learn it.
+    /// does not observe a 15 Hz object to learn it.
     let isTowerReachable: Bool
 
     /// Held as a plain reference and **not** `@ObservedObject`, which is the
     /// whole trick that lets this workspace show a live figure without paying
     /// for it everywhere.
     ///
-    /// `TowerClient` republishes frame results at the ~12 Hz target rate while
+    /// `TowerClient` republishes frame results at the ~15 Hz default target rate while
     /// a session streams. Observing it here would re-evaluate this entire body
     /// at that rate — the experiment panel, the unavailable panel, all of it —
     /// on the main actor the frame sender needs. Instead the reference is passed
@@ -197,7 +197,7 @@ struct ExperimentalCVWorkspaceView: View {
                 .font(.title2.weight(.semibold))
             Text(Self.headerSubtitle)
                 .font(.subheadline)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(.readableSecondary)
                 .fixedSize(horizontal: false, vertical: true)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -234,7 +234,7 @@ struct ExperimentalCVWorkspaceView: View {
                 case .unsupported(let reason):
                     Text(reason)
                         .font(.subheadline)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(.readableSecondary)
                         .fixedSize(horizontal: false, vertical: true)
 
                 case .idle:
@@ -249,12 +249,12 @@ struct ExperimentalCVWorkspaceView: View {
                             ProgressView()
                             Text("Asking the Tower what it can run…")
                                 .font(.subheadline)
-                                .foregroundStyle(.secondary)
+                                .foregroundStyle(.readableSecondary)
                         }
                     } else {
                         Text("Nothing is armed. Choose an experiment below to start one.")
                             .font(.subheadline)
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(.readableSecondary)
                     }
 
                 case .starting(let experiment):
@@ -289,7 +289,7 @@ struct ExperimentalCVWorkspaceView: View {
                     // climbs with every frame that arrives.
                     Text("Paused. The experiment is still loaded, so resuming costs nothing.")
                         .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(.readableSecondary)
                     CVRunSummaryView(run: run, isFinal: false)
                     controls(for: run, isPaused: true)
 
@@ -301,7 +301,7 @@ struct ExperimentalCVWorkspaceView: View {
                     // person ends it.
                     Text("Stopped. These figures are final and stay until the next start.")
                         .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(.readableSecondary)
                     CVRunSummaryView(run: run, isFinal: true)
 
                 case .failed(let failure):
@@ -309,7 +309,7 @@ struct ExperimentalCVWorkspaceView: View {
                         .font(.headline)
                     Text(failure.message)
                         .font(.subheadline)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(.readableSecondary)
                         .fixedSize(horizontal: false, vertical: true)
                     // No "Stop, then Start" recovery, and not for tidiness:
                     // **the Lab refuses `cv_lab_stop` from `failed`**, so that
@@ -382,7 +382,7 @@ struct ExperimentalCVWorkspaceView: View {
             if !isPaused && !isLive {
                 Text(notLiveExplanation(isReceivingFrames: receiving))
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.readableSecondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
             // Reported so that "the Lab is running" never reads as "somebody
@@ -460,7 +460,7 @@ struct ExperimentalCVWorkspaceView: View {
                         .padding(.leading, 4)
                     Text("Asking the Tower…")
                         .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(.readableSecondary)
                 }
             }
             .buttonStyle(.bordered)
@@ -493,7 +493,7 @@ struct ExperimentalCVWorkspaceView: View {
             if let clients = source.clientsConnected, clients > 1 {
                 Text("\(clients) clients are connected to this Tower. The Lab has one slot, and the last start wins.")
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.readableSecondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
             if let diagnosis = lab.state.diagnosis(source: source) {
@@ -566,7 +566,7 @@ struct ExperimentalCVWorkspaceView: View {
                             : "The Tower is connected and declares no experiments."
                     )
                     .font(.subheadline)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.readableSecondary)
                 } else {
                     ForEach(experiments) { experiment in
                         experimentRow(experiment)
@@ -608,7 +608,7 @@ struct ExperimentalCVWorkspaceView: View {
                     ProgressView()
                     Text("Asking the Tower…")
                         .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(.readableSecondary)
                 }
             }
         } else if lab.canSendCommands && experiment.isStartable {
@@ -630,7 +630,7 @@ struct ExperimentalCVWorkspaceView: View {
             HStack(spacing: 8) {
                 Text(experiment.name)
                     .font(.body.weight(.medium))
-                    .foregroundStyle(experiment.isStartable ? .primary : .secondary)
+                    .foregroundStyle(experiment.isStartable ? AnyShapeStyle(.primary) : AnyShapeStyle(.readableSecondary))
                 // Declared before it runs, which is the useful moment: this
                 // says whether the numbers it is about to produce will be
                 // measurements or model output.
@@ -647,7 +647,7 @@ struct ExperimentalCVWorkspaceView: View {
             if let summary = experiment.summary {
                 Text(summary)
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.readableSecondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
             if let reason = experiment.unavailableReason, !experiment.isStartable {
@@ -693,7 +693,7 @@ private struct CVRefusalBanner: View {
             if let advice {
                 Text(advice)
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.readableSecondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
@@ -767,7 +767,7 @@ private struct CVFrameReadingPanel: View {
                     // that has already arrived and was empty.
                     Text("The Tower answered the most recent frame and reported no result for it.")
                         .font(.subheadline)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(.readableSecondary)
                         .fixedSize(horizontal: false, vertical: true)
                 } else if let refusal = tower.latestFrameRefusal {
                     // A refusal is an answer to a frame and has a reason and
@@ -779,7 +779,7 @@ private struct CVFrameReadingPanel: View {
                     // thing this screen could draw.
                     Text(nothingYet)
                         .font(.subheadline)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(.readableSecondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }
@@ -847,10 +847,10 @@ private struct CVFrameReadingPanel: View {
             if let captureIndex = reading.captureIndex {
                 // NOT "one frame in thirty". That stride was deleted --
                 // `FrameRateGate` says so in its own words -- and replaced by a
-                // rate gate at `towerTargetFPS` (12). At a 24 fps source that
-                // is roughly one frame in two, so the old sentence told a
-                // reader 28 captures were skipped between consecutive numbers
-                // when the real figure is about one.
+                // rate gate at `towerTargetFPS` (15 by default). At a 24 fps
+                // source that is roughly five frames in eight, so the old
+                // sentence told a reader 28 captures were skipped between
+                // consecutive numbers when the real figure is under one.
                 //
                 // Worth naming the failure mode, because it is not the usual
                 // one: this is a claim about THIS APP, not about the Tower, and
@@ -890,7 +890,7 @@ private struct CVFrameReadingPanel: View {
             // field was malformed or which module is missing.
             Text(refusal.kind.summary ?? refusal.message)
                 .font(.subheadline)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(.readableSecondary)
                 .fixedSize(horizontal: false, vertical: true)
             if refusal.kind.summary != nil {
                 Text(refusal.message)
@@ -958,7 +958,7 @@ struct CVFigureRow: View {
         HStack {
             Text(caption)
                 .font(.subheadline)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(.readableSecondary)
             Spacer(minLength: 12)
             Text(value)
                 .font(.subheadline.weight(.medium))
@@ -1015,7 +1015,7 @@ struct CVRunSummaryView: View {
             if !isFinal {
                 Text("Running. These figures may still change.")
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.readableSecondary)
             }
 
             // Keep stage timings, device choice and frame counters available
@@ -1044,7 +1044,7 @@ struct CVRunSummaryView: View {
             VStack(alignment: .leading, spacing: 4) {
                 Text(metric.label)
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.readableSecondary)
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
                     Text(metric.displayValue ?? "—")
                         .font(.title2.weight(.semibold))
@@ -1210,7 +1210,7 @@ struct CVRunSummaryView: View {
                 // which is a different fact from never having mentioned it.
                 Text(metric.label)
                     .font(.subheadline)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.readableSecondary)
             }
             HStack(spacing: 8) {
                 if metric.isHeadline {

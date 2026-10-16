@@ -689,7 +689,7 @@ final class TowerWorldBuilderClient: WorldBuilderClient {
         }
     }
 
-    /// `guidance.coverage: null` in the last report (FOW §5 `.notYet`):
+    /// `guidance.coverage: null` in the last report (`.notYet`):
     /// published inside `walkReport` beside `coverage`, for a named walk only.
     private(set) var coverageNotYet = false {
         didSet {

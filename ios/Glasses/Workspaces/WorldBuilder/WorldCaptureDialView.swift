@@ -2,7 +2,7 @@
 //  WorldCaptureDialView.swift
 //  Glasses
 //
-//  The FOW capture dial, drawn (FOW-RING-SPEC §4): twelve rounded annular
+//  The FOW capture dial, drawn: twelve rounded annular
 //  segments with constant 3 pt gaps on an always-dark stage, start fixed at
 //  12 o'clock (never turned), the piece's photos in its filled segments, the
 //  count in the centre, the amber "scan here" outline on the largest gap,
@@ -34,7 +34,7 @@ enum WorldDialStyle {
     static let weakRim = lit.opacity(0.6)
 }
 
-/// The dial's measurements inside a stage of `size` (§4 Geometry).
+/// The dial's measurements inside a stage of `size`.
 nonisolated struct WorldDialGeometry: Equatable {
     static let innerRatio: CGFloat = 0.42
     static let gap: CGFloat = 3
@@ -63,7 +63,7 @@ nonisolated struct WorldDialGeometry: Equatable {
         return CGPoint(x: radius + mid * cos(angle), y: radius + mid * sin(angle))
     }
 
-    /// The upright photo's square: §4's `1.15(R−r)`, grown just enough that
+    /// The upright photo's square: `1.15(R−r)`, grown just enough that
     /// an upright square covers its segment at any turn of the ring.
     var photoSide: CGFloat {
         let half = Double.pi / 12
@@ -201,7 +201,7 @@ nonisolated struct WorldDialCellShape: Shape {
 
 // MARK: - The stage: the dial or the map; the header that switches them
 
-/// The card's header with the dial on (§5): one fixed title, and the
+/// The capture card's header: one fixed title, and the
 /// Dial|Map control on its trailing side once there is a map to switch to --
 /// above the stage, so it never sits on the ring.
 struct WorldCaptureDialHeader: View {
@@ -240,8 +240,8 @@ struct WorldCaptureDialHeader: View {
     }
 }
 
-/// The walking stage with the dial on (§4 Layout, §5): the dial, or on the
-/// Map tab today's floor plan, unchanged.
+/// The walking stage: the dial, or on the Map tab the
+/// current coverage map, with a photo plan when available.
 struct WorldCaptureDialStage<MapContent: View>: View {
     let dial: WorldCaptureDial
     /// The CURRENT receipt (never a held one), or `nil` before the first landing.
@@ -347,7 +347,7 @@ struct WorldCaptureDialView: View {
                 .accessibilityHidden(true)
         }
         .background {
-            // The dial's one element (§4): a leaf under the drawing, so a
+            // The dial's one accessibility element: a leaf under the drawing, so a
             // photo's own tap is never taken by it.
             Circle()
                 .fill(Color.white.opacity(0.001))
@@ -443,7 +443,7 @@ struct WorldCaptureDialView: View {
             .accessibilityAction { open(sector: sector) }
             .accessibilityIdentifier("wb-panel-dial-photo")
             // VoiceOver reaches the photos through the dial's own actions:
-            // one element (§4). Other tools (Voice Control, tests) see them,
+            // one element. Other tools (Voice Control, tests) see them,
             // live only: after Stop the dimmed dial is never read or touched.
             .accessibilityHidden(voiceOver || !guides)
     }
@@ -538,7 +538,7 @@ struct WorldCaptureDialView: View {
 // MARK: - The marks
 
 /// 12 o'clock: a 2 pt white rim over the top segment with a notch pointing
-/// in (§4), and the tiny "start" caption just past the rim's end: the top is
+/// in, and the tiny "start" caption just past the rim's end: the top is
 /// the way the wearer faced when the piece began. It never turns.
 struct WorldDialTopMarker: View {
     let radius: CGFloat
@@ -568,7 +568,7 @@ struct WorldDialTopMarker: View {
     }
 }
 
-/// The look-here emphasis (§4, polished): ONE next-best segment, or two
+/// The look-here emphasis: ONE next-best segment, or two
 /// for a long gap -- a 2.5 pt amber outline with an 8 pt glow, pulsing
 /// 0.35 ↔ 1.0 every 1.2 s; with Reduce Motion a static 3 pt outline.
 struct WorldDialLookHere: View {
@@ -596,7 +596,7 @@ struct WorldDialLookHere: View {
     }
 }
 
-/// Another piece, colour only and not interactive (§3.7), in the row under
+/// Another piece, colour only and not interactive, in the row under
 /// the ring: a 28 pt ring and "Piece 2 · 3/12" beside it.
 struct WorldDialMini: View {
     let piece: WorldCaptureDial.Piece

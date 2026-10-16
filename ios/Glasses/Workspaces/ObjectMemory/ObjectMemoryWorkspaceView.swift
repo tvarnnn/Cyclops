@@ -212,7 +212,7 @@ struct ObjectMemoryWorkspaceView: View {
                 .font(.title2.weight(.semibold))
             Text(ObjectMemoryCopy.summary)
                 .font(.subheadline)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(.readableSecondary)
                 .fixedSize(horizontal: false, vertical: true)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -265,7 +265,7 @@ struct ObjectMemoryWorkspaceView: View {
             if !isTowerReachable {
                 Text(ObjectMemoryCopy.towerUnreachable)
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.readableSecondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
@@ -285,7 +285,7 @@ struct ObjectMemoryWorkspaceView: View {
                 case .idle:
                     Text(ObjectMemoryCopy.nothingAskedYet)
                         .font(.subheadline)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(.readableSecondary)
                         .fixedSize(horizontal: false, vertical: true)
 
                 case .asking(let question):
@@ -293,7 +293,7 @@ struct ObjectMemoryWorkspaceView: View {
                         ProgressView()
                         Text(ObjectMemoryCopy.questionLine(question))
                             .font(.subheadline)
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(.readableSecondary)
                     }
 
                 case .answered(let question, let answer):
@@ -307,13 +307,13 @@ struct ObjectMemoryWorkspaceView: View {
                     // the panel must not fall through to a blank box.
                     Text(ObjectMemoryCopy.noObjectMemoryConfigured)
                         .font(.subheadline)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(.readableSecondary)
                         .fixedSize(horizontal: false, vertical: true)
 
                 case .failed(let failure):
                     Text(failure.message)
                         .font(.subheadline)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(.readableSecondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }
@@ -335,53 +335,8 @@ struct ObjectMemoryAnswerView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            VStack(alignment: .leading, spacing: 4) {
-                Text(ObjectMemoryCopy.questionLine(question))
-                    .font(.subheadline.weight(.medium))
-                Text(ObjectMemoryCopy.retentionLine(answer.envelope.retention))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                if let clamp = ObjectMemoryCopy.clampLine(answer.envelope.retention) {
-                    Text(clamp)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-            }
-
-            switch answer {
-            case .listing(let listing):
-                if listing.isEmpty {
-                    // `ObjectMemoryCopy.recordability` rather than an inline
-                    // `.map(envelope.isRecordable)`: a method reference handed
-                    // to `map` is called from a nonisolated context under this
-                    // target's default `MainActor` isolation, which is the same
-                    // trap `WorldBuilderResultDecoder` documents.
-                    ObjectMemoryEmptyView(
-                        objectClass: listing.envelope.objectClass,
-                        recordable: ObjectMemoryCopy.recordability(
-                            of: listing.envelope.objectClass, in: listing.envelope
-                        )
-                    )
-                } else {
-                    Text(ObjectMemoryCopy.recordCountLine(listing.observations.count))
-                        .font(.caption)
-                        .foregroundStyle(.tertiary)
-                    ForEach(listing.observations) { observation in
-                        ObjectObservationRow(observation: observation, memory: memory)
-                    }
-                }
-
-            case .lastSeen(let lastSeen):
-                if let observation = lastSeen.observation {
-                    ObjectObservationRow(observation: observation, memory: memory)
-                } else {
-                    ObjectMemoryEmptyView(
-                        objectClass: lastSeen.objectClass, recordable: lastSeen.recordable
-                    )
-                }
-            }
+            questionSummary
+            answerRows
 
             Text(ObjectMemoryCopy.recordableClasses(answer.envelope.recordedClasses))
                 .font(.caption2)
@@ -395,6 +350,59 @@ struct ObjectMemoryAnswerView: View {
                 .font(.caption2)
                 .foregroundStyle(.tertiary)
                 .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private var questionSummary: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(ObjectMemoryCopy.questionLine(question))
+                .font(.subheadline.weight(.medium))
+            Text(ObjectMemoryCopy.retentionLine(answer.envelope.retention))
+                .font(.caption)
+                .foregroundStyle(.readableSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+            if let clamp = ObjectMemoryCopy.clampLine(answer.envelope.retention) {
+                Text(clamp)
+                    .font(.caption)
+                    .foregroundStyle(.readableSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var answerRows: some View {
+        switch answer {
+        case .listing(let listing):
+            if listing.isEmpty {
+                // `ObjectMemoryCopy.recordability` rather than an inline
+                // `.map(envelope.isRecordable)`: a method reference handed
+                // to `map` is called from a nonisolated context under this
+                // target's default `MainActor` isolation, which is the same
+                // trap `WorldBuilderResultDecoder` documents.
+                ObjectMemoryEmptyView(
+                    objectClass: listing.envelope.objectClass,
+                    recordable: ObjectMemoryCopy.recordability(
+                        of: listing.envelope.objectClass, in: listing.envelope
+                    )
+                )
+            } else {
+                Text(ObjectMemoryCopy.recordCountLine(listing.observations.count))
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+                ForEach(listing.observations) { observation in
+                    ObjectObservationRow(observation: observation, memory: memory)
+                }
+            }
+
+        case .lastSeen(let lastSeen):
+            if let observation = lastSeen.observation {
+                ObjectObservationRow(observation: observation, memory: memory)
+            } else {
+                ObjectMemoryEmptyView(
+                    objectClass: lastSeen.objectClass, recordable: lastSeen.recordable
+                )
+            }
         }
     }
 }
@@ -426,7 +434,7 @@ struct ObjectMemoryEmptyView: View {
                 )
             )
             .font(.subheadline)
-            .foregroundStyle(.secondary)
+            .foregroundStyle(.readableSecondary)
             .fixedSize(horizontal: false, vertical: true)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -456,7 +464,7 @@ struct ObjectObservationRow: View {
 
             Text(ObjectMemoryCopy.timeLine(observation))
                 .font(.caption)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(.readableSecondary)
                 .fixedSize(horizontal: false, vertical: true)
 
             Text(ObjectMemoryCopy.claimLine(observation))
@@ -476,74 +484,79 @@ struct ObjectObservationRow: View {
             }
 
             DisclosureGroup(isExpanded: $isExpanded) {
-                VStack(alignment: .leading, spacing: 6) {
-                    Text(ObjectMemoryCopy.frameLine(observation.frame))
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-
-                    // Never conditional. A frame reference without its caveat
-                    // is the failure mode this whole screen is built against.
-                    Text(ObjectMemoryCopy.frameCaveat)
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
-                        .fixedSize(horizontal: false, vertical: true)
-
-                    if let box = ObjectMemoryCopy.boxLine(observation.frame) {
-                        Text(box)
-                            .font(.caption2)
-                            .foregroundStyle(.tertiary)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-
-                    if let imagery = ObjectMemoryCopy.imageryLine(observation.frame) {
-                        Text(imagery)
-                            .font(.caption2)
-                            .foregroundStyle(.tertiary)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-
-                    Text(ObjectMemoryCopy.confidenceLine(observation))
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
-                        .fixedSize(horizontal: false, vertical: true)
-
-                    // How long the sighting lasted, which policy tier admitted
-                    // the record, and what — if anything — agreed with it. All
-                    // three are `nil` on a record that does not carry them, and
-                    // none of them is invented for one that does not.
-                    ForEach(
-                        [
-                            ObjectMemoryCopy.durationLine(observation),
-                            ObjectMemoryCopy.tierLine(observation),
-                            ObjectMemoryCopy.verificationLine(observation),
-                        ].compactMap { $0 },
-                        id: \.self
-                    ) { line in
-                        Text(line)
-                            .font(.caption2)
-                            .foregroundStyle(.tertiary)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-
-                    if let privacy = ObjectMemoryCopy.privacyLine(observation) {
-                        Text(privacy)
-                            .font(.caption2)
-                            .foregroundStyle(.tertiary)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.top, 4)
+                provenanceDetails
             } label: {
                 Text(ObjectMemoryCopy.provenanceDisclosure)
                     .font(.caption2.weight(.medium))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.readableSecondary)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.vertical, 4)
         .accessibilityElement(children: .contain)
+    }
+
+    /// The record evidence stays inside the disclosure, with its frame caveat always shown.
+    private var provenanceDetails: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(ObjectMemoryCopy.frameLine(observation.frame))
+                .font(.caption2)
+                .foregroundStyle(.readableSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            // Never conditional. A frame reference without its caveat
+            // is the failure mode this whole screen is built against.
+            Text(ObjectMemoryCopy.frameCaveat)
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            if let box = ObjectMemoryCopy.boxLine(observation.frame) {
+                Text(box)
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            if let imagery = ObjectMemoryCopy.imageryLine(observation.frame) {
+                Text(imagery)
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Text(ObjectMemoryCopy.confidenceLine(observation))
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            // How long the sighting lasted, which policy tier admitted
+            // the record, and what — if anything — agreed with it. All
+            // three are `nil` on a record that does not carry them, and
+            // none of them is invented for one that does not.
+            ForEach(
+                [
+                    ObjectMemoryCopy.durationLine(observation),
+                    ObjectMemoryCopy.tierLine(observation),
+                    ObjectMemoryCopy.verificationLine(observation),
+                ].compactMap { $0 },
+                id: \.self
+            ) { line in
+                Text(line)
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            if let privacy = ObjectMemoryCopy.privacyLine(observation) {
+                Text(privacy)
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.top, 4)
     }
 }
 
@@ -652,7 +665,7 @@ struct ObjectMemorySessionPanel: View {
                     ? "record.circle.fill" : "record.circle"
             )
             .font(.subheadline)
-            .foregroundStyle(snapshot.isFollowingACapture ? .primary : .secondary)
+            .foregroundStyle(snapshot.isFollowingACapture ? AnyShapeStyle(.primary) : AnyShapeStyle(.readableSecondary))
             .fixedSize(horizontal: false, vertical: true)
 
             // Intent, second and labelled as intent by its own sentence.
@@ -766,7 +779,7 @@ struct ObjectMemorySessionPanel: View {
     private func caption(_ text: String) -> some View {
         Text(text)
             .font(.caption)
-            .foregroundStyle(.secondary)
+            .foregroundStyle(.readableSecondary)
             .fixedSize(horizontal: false, vertical: true)
     }
 }
@@ -853,7 +866,7 @@ struct ObjectMemoryRecordingPanel: View {
                 ? "record.circle.fill" : "record.circle"
         )
         .font(.subheadline)
-        .foregroundStyle(reading.phase.isFollowingACapture ? .primary : .secondary)
+        .foregroundStyle(reading.phase.isFollowingACapture ? AnyShapeStyle(.primary) : AnyShapeStyle(.readableSecondary))
         .fixedSize(horizontal: false, vertical: true)
     }
 
@@ -884,7 +897,7 @@ struct ObjectMemoryRecordingPanel: View {
     private func caption(_ text: String) -> some View {
         Text(text)
             .font(.caption)
-            .foregroundStyle(.secondary)
+            .foregroundStyle(.readableSecondary)
             .fixedSize(horizontal: false, vertical: true)
     }
 }
@@ -1068,7 +1081,7 @@ struct ObjectMemoryPictureView: View {
 
             Text(ObjectMemoryCopy.noPictureExplanation(description))
                 .font(.caption)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(.readableSecondary)
                 .fixedSize(horizontal: false, vertical: true)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -1078,7 +1091,7 @@ struct ObjectMemoryPictureView: View {
     private func caption(_ text: String) -> some View {
         Text(text)
             .font(.caption2)
-            .foregroundStyle(.secondary)
+            .foregroundStyle(.readableSecondary)
             .fixedSize(horizontal: false, vertical: true)
     }
 }

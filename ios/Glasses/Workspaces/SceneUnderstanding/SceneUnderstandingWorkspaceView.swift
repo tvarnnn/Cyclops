@@ -119,7 +119,7 @@ struct SceneUnderstandingWorkspaceView: View {
             // it is a floor before the number appears below it.
             Text("An anonymous count of what the camera can see in front of you, and roughly where. Nobody is identified, nothing is kept, and every count is a floor rather than a total.")
                 .font(.subheadline)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(.readableSecondary)
                 .fixedSize(horizontal: false, vertical: true)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -145,7 +145,7 @@ struct SceneUnderstandingWorkspaceView: View {
                 case .unsupported(let reason):
                     Text(reason)
                         .font(.subheadline)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(.readableSecondary)
                         .fixedSize(horizontal: false, vertical: true)
 
                 case .idle(let reading):
@@ -167,7 +167,7 @@ struct SceneUnderstandingWorkspaceView: View {
                         // drawn as one.
                         Text(SceneLifecycle.loadOverdueNote)
                             .font(.caption)
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(.readableSecondary)
                             .fixedSize(horizontal: false, vertical: true)
                     }
                     SceneFlowFootnote(reading: reading)
@@ -183,7 +183,7 @@ struct SceneUnderstandingWorkspaceView: View {
                         .font(.headline)
                     Text(failure.message)
                         .font(.subheadline)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(.readableSecondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }
@@ -214,7 +214,7 @@ struct SceneSilenceView: View {
                 .font(.headline)
             Text(towerWording ?? silence.explanation)
                 .font(.subheadline)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(.readableSecondary)
                 .fixedSize(horizontal: false, vertical: true)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -284,7 +284,7 @@ struct SceneReadingView: View {
                 what is in front of you now.
                 """)
                 .font(.caption)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(.readableSecondary)
                 .fixedSize(horizontal: false, vertical: true)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -370,7 +370,7 @@ struct SceneReadingView: View {
                     .font(.subheadline.weight(.medium))
                 Text(note)
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.readableSecondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
             .padding(.vertical, 4)
@@ -392,7 +392,7 @@ struct SceneReadingView: View {
                     .font(.subheadline.weight(.medium))
                 Text(SceneReading.countCaveat)
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.readableSecondary)
                     .fixedSize(horizontal: false, vertical: true)
 
                 // The Tower's own measured limits, in its own words. Every one
@@ -459,7 +459,7 @@ struct SceneReadingView: View {
                 // people and is usually a count of one's own chest.
                 Text("This can include your own body in frame, and often does.")
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.readableSecondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
             if !people.validated {
@@ -477,7 +477,7 @@ struct SceneReadingView: View {
                      ? "1 partial figure at the bottom edge, not counted — from a camera at head height that is usually your own body."
                      : "\(people.partialBottomEdge) partial figures at the bottom edge, not counted — from a camera at head height that is usually your own body.")
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.readableSecondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
 
@@ -486,7 +486,7 @@ struct SceneReadingView: View {
                 // says why, and it is shown rather than paraphrased.
                 Text(sizes)
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.readableSecondary)
                 if let note = people.apparentSizeNote {
                     Text(note)
                         .font(.caption2)
@@ -547,7 +547,7 @@ struct SceneReadingView: View {
                 // no number was withheld — there was no number.
                 Text("Which way anyone is facing was not measured.")
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.readableSecondary)
                 if let reason = people.facingUnavailableReason {
                     Text(reason)
                         .font(.caption2)
@@ -575,7 +575,7 @@ struct SceneReadingView: View {
                         Spacer(minLength: 8)
                         Text(Self.sidesText(entry.sides))
                             .font(.caption)
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(.readableSecondary)
                     }
                     .accessibilityElement(children: .combine)
                 }

@@ -57,7 +57,7 @@ struct WorldImageryStripView: View {
             if strip.thumbnails.isEmpty {
                 Text(WorldImageryCopy.liveEmpty)
                     .font(.footnote)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.readableSecondary)
                     .accessibilityIdentifier("wb-imagery-live-empty")
             } else {
                 ScrollView(.horizontal, showsIndicators: false) {
@@ -76,7 +76,7 @@ struct WorldImageryStripView: View {
             }
             Text(WorldImageryCopy.liveHonesty)
                 .font(.footnote)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(.readableSecondary)
                 .fixedSize(horizontal: false, vertical: true)
         }
         .padding(12)
@@ -222,7 +222,7 @@ struct WorldLandedThumbnailSheet: View {
                 }
                 Text(WorldImageryCopy.landedHonesty)
                     .font(.footnote)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.readableSecondary)
                     .fixedSize(horizontal: false, vertical: true)
                 Spacer(minLength: 0)
             }

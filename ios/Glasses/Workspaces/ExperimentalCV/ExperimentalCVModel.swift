@@ -869,7 +869,7 @@ struct CVFrameReading: Equatable, Sendable {
         /// " edges": 2}` collapses to one caption. When identity was the
         /// trimmed caption, `ForEach` saw two rows with one id and the sort key
         /// was equal for both — and `sorted(by:)` is not stable, so the pair
-        /// could swap places on every reply, which is the twelve-times-a-second
+        /// could swap places on every reply, which is the fifteen-times-a-second
         /// reshuffle the sort was added to prevent.
         let id: String
         /// The Tower's words, shown verbatim and never matched on.
@@ -943,7 +943,7 @@ struct CVFrameReading: Equatable, Sendable {
     let towerReceivedAt: Date?
     /// The Tower's additive measurements, each under the name the Tower gave
     /// it. Sorted by that name, because a dictionary has no stable order and a
-    /// list of figures that reshuffles itself twelve times a second is
+    /// list of figures that reshuffles itself fifteen times a second is
     /// unreadable — and the sort is *total*, breaking a tie between two
     /// captions on the untrimmed wire key, so that two keys differing only in
     /// whitespace cannot leave the order undetermined.

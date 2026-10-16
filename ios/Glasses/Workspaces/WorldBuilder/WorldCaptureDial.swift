@@ -2,14 +2,14 @@
 //  WorldCaptureDial.swift
 //  Glasses
 //
-//  The FOW capture dial (FOW-RING-SPEC 2026-10-12): a ring of twelve
+//  The FOW capture dial: a ring of twelve
 //  directions that fills as the Tower's landed solves give each direction
 //  two or more views, one dial per piece, with the piece's own photos in
 //  its filled segments. This file is the pure model and its words; the
 //  drawing is `WorldCaptureDialView.swift`.
 //
 //  What the dial is, and is not. Its segment states are the OR of the
-//  frozen coverage receipt's masks over one piece's DRAWN stations (§3.2):
+//  frozen coverage receipt's masks over one piece's DRAWN stations:
 //  `supported` (two or more views), `weak` (one view), or not yet captured.
 //  It is never complete, and never says where the wearer is. Its top is
 //  fixed (round 3, the owner's call): the way the wearer faced when the
@@ -25,34 +25,10 @@
 
 import Foundation
 
-// MARK: - The switch
-
-/// The phone's switch for the dial, `IOS_FOW_DIAL` (environment) or the
-/// `GlassesFOWDial` Info.plist key a home-screen build fills from the same
-/// build setting. `on` exactly; anything else, an empty setting included,
-/// is off, and off is today's panel exactly: no toggle, no new element.
-nonisolated struct WorldCaptureDialSwitch: Equatable, Sendable {
-    static let variable = "IOS_FOW_DIAL"
-    static let infoKey = "GlassesFOWDial"
-    static let off = Self(on: false)
-
-    let on: Bool
-
-    init(on: Bool) { self.on = on }
-
-    init(environment: [String: String], info: [String: Any] = [:]) {
-        on = environment[Self.variable] == "on" || info[Self.infoKey] as? String == "on"
-    }
-
-    static var current: Self {
-        Self(environment: ProcessInfo.processInfo.environment, info: Bundle.main.infoDictionary ?? [:])
-    }
-}
-
 /// The Dial|Map control's switch, `IOS_FOW_MAP_TAB` (environment) or the
 /// `GlassesFOWMapTab` Info.plist key filled from the same build setting.
 /// `on` exactly shows the control; anything else, unset included, hides it
-/// and the dial is the walking stage's only face. Read only with the dial on.
+/// and the dial is the walking stage's only face.
 nonisolated struct WorldDialMapTabSwitch: Equatable, Sendable {
     static let variable = "IOS_FOW_MAP_TAB"
     static let infoKey = "GlassesFOWMapTab"
@@ -70,17 +46,15 @@ nonisolated struct WorldDialMapTabSwitch: Equatable, Sendable {
     }
 }
 
-/// The two faces of the walking stage when the dial is on (§5).
+/// The two faces of the walking stage.
 nonisolated enum WorldPanelTab: String, CaseIterable, Sendable {
     case dial, map
 }
 
-/// What the panel needs for the dial beyond the map: `nil` is the switch
-/// off. The flag is already the walk's own (the view model's gate).
+/// What the panel needs for the dial beyond the map.
 nonisolated struct WorldPanelDial: Equatable, Sendable {
     /// `guidance.coverage: null` for the walk being received: the Tower's
-    /// switch is on and no landing has merged yet (§6 "Before the first
-    /// landing").
+    /// switch is on and no landing has merged yet.
     var awaiting = false
     /// `IOS_FOW_MAP_TAB=on`: the Dial|Map control is shown. Off (the
     /// default), the dial is the only face.
@@ -113,7 +87,7 @@ nonisolated struct WorldCaptureDial: Equatable, Sendable {
         let index: Int
         let referenceSegment: Int
         let posedKeyframes: Int
-        /// By sector, the OR over the piece's drawn stations (§3.2).
+        /// By sector, the OR over the piece's drawn stations.
         let sectors: [WorldCoverageEvidence]
 
         var supportedCount: Int { sectors.filter { $0 == .supported }.count }
@@ -185,7 +159,7 @@ nonisolated struct WorldCaptureDial: Equatable, Sendable {
         self.pieces = pieces
         self.stationsOmitted = stationsOmitted
         self.frameRevision = frameRevision
-        // §3.1: the piece the newest view names, else the one with the most
+        // The piece the newest view names, else the one with the most
         // posed keyframes (ties: the first in reference order). A newest view
         // in a piece not drawn here names nothing. Either way start is on top.
         if let newest, (0..<Self.sectors).contains(newest.sector),
@@ -239,7 +213,7 @@ nonisolated struct WorldCaptureDial: Equatable, Sendable {
 
     func evidence(at position: Int) -> WorldCoverageEvidence { evidence(sector: sector(at: position)) }
 
-    /// §3.5: the longest clockwise run of not-yet-captured segments, else of
+    /// The longest clockwise run of not-yet-captured segments, else of
     /// one-view segments; a tie goes to the run met first sweeping clockwise
     /// from 12 o'clock (a run through 12 o'clock is met at once). `nil` with
     /// all twelve captured, or before the first landing.
@@ -281,7 +255,7 @@ nonisolated struct WorldCaptureDial: Equatable, Sendable {
 
 // MARK: - The photos, kept across landings
 
-/// What the dial's segments show as photos (§3.4, kept): this landing's
+/// What the dial's segments show as photos, including kept ones: this landing's
 /// in-hand tiles, and on each captured hero sector it left without one, the
 /// photo last shown there by an earlier landing of the same hero piece in
 /// the same frame. The panel holds the last value WITH its walk
@@ -385,12 +359,12 @@ nonisolated enum WorldCaptureDialCopy {
     static let catchingUp = "catching up"
     static let recentTitle = "Recently captured"
     static let closePhoto = "Close"
-    /// With the dial on, Capture health's one collapsed row.
+    /// Capture health's one collapsed row.
     static let healthRow = "Capture health"
 
     /// Above this many seconds the footer says "catching up" instead of the
-    /// age. The dial's own threshold: the map's `WorldCoverageReceipt
-    /// .staleAfter` is unchanged, so the switch OFF is today's panel exactly.
+    /// age. The dial's own threshold, separate from the map's
+    /// `WorldCoverageReceipt.staleAfter`.
     static let staleAfter: Double = 90
 
     static func tabName(_ tab: WorldPanelTab) -> String {

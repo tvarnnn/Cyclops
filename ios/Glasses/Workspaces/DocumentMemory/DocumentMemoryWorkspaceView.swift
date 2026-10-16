@@ -114,7 +114,7 @@ struct DocumentMemoryWorkspaceView: View {
             // `claim` says the same: `a-page-was-in-view-and-was-ocred`.
             Text("Pages that were in front of the camera long enough for the Tower to run text recognition over them. Being in view is not the same as your having read it, and the glasses cannot tell the difference.")
                 .font(.subheadline)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(.readableSecondary)
                 .fixedSize(horizontal: false, vertical: true)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -158,18 +158,18 @@ struct DocumentMemoryWorkspaceView: View {
             if availability == .towerUnreachable {
                 Text("Searching needs the Tower. Nothing typed here is sent anywhere.")
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.readableSecondary)
                     .fixedSize(horizontal: false, vertical: true)
             } else if !availability.isAvailable {
                 Text("Searching needs a Tower that keeps a document library. Nothing typed here is sent anywhere.")
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.readableSecondary)
                     .fixedSize(horizontal: false, vertical: true)
             } else {
                 // Said before a person types, not after they get nothing back.
                 Text("Matched word for word, on the Tower. A phrase copied from the page will hit where a description of it usually misses.")
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.readableSecondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
@@ -188,13 +188,13 @@ struct DocumentMemoryWorkspaceView: View {
                 case .unsupported(let reason):
                     Text(reason)
                         .font(.subheadline)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(.readableSecondary)
                         .fixedSize(horizontal: false, vertical: true)
 
                 case .idle:
                     Text("Nothing has been asked yet. Search above, or list what was recorded most recently.")
                         .font(.subheadline)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(.readableSecondary)
                         .fixedSize(horizontal: false, vertical: true)
 
                 case .searching(let query):
@@ -202,7 +202,7 @@ struct DocumentMemoryWorkspaceView: View {
                         ProgressView()
                         Text("Searching for \(query.displayText)…")
                             .font(.subheadline)
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(.readableSecondary)
                     }
 
                 case .results(let result):
@@ -213,7 +213,7 @@ struct DocumentMemoryWorkspaceView: View {
                         .font(.headline)
                     Text(failure.message)
                         .font(.subheadline)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(.readableSecondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }
@@ -263,7 +263,7 @@ struct DocumentResultsView: View {
             if let caveat = result.query.matchingCaveat {
                 Text(caveat)
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.readableSecondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
             if result.response?.isPossiblyTruncated == true,
@@ -293,7 +293,7 @@ struct DocumentResultsView: View {
             // statement than the generic one.
             Text(result.response?.noObservationNote ?? result.evidence.explanation)
                 .font(.subheadline)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(.readableSecondary)
                 .fixedSize(horizontal: false, vertical: true)
 
             if result.evidence == .noObservation {
@@ -301,7 +301,7 @@ struct DocumentResultsView: View {
                 // sentence the closed vocabulary exists for.
                 Text("Never observed is not the same as the document not existing. The glasses may simply never have seen it.")
                     .font(.subheadline)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.readableSecondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
 
@@ -314,7 +314,7 @@ struct DocumentResultsView: View {
                 // distinguishes them so a client can.
                 Text("The memory was searched and none of those words appeared in it.")
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.readableSecondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
@@ -344,7 +344,7 @@ struct DocumentLimitationsView: View {
                 ForEach(limitations) { limitation in
                     Text(limitation.detail)
                         .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(.readableSecondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
 
@@ -518,7 +518,7 @@ struct DocumentRow: View {
         if let summary = document.summary {
             Text(summary)
                 .font(.caption)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(.readableSecondary)
                 .fixedSize(horizontal: false, vertical: true)
             if let caption = document.summaryCaption {
                 Text(caption)
@@ -712,7 +712,7 @@ struct DocumentSessionPanel: View {
                     // configuration, not a degraded one.
                     Text(session.reason ?? "This Tower runs no document capture session. Documents recorded elsewhere are still served.")
                         .font(.subheadline)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(.readableSecondary)
                         .fixedSize(horizontal: false, vertical: true)
                 } else {
                     status
@@ -725,7 +725,7 @@ struct DocumentSessionPanel: View {
                     // the button did not do what its label implies.
                     Text(explanation)
                         .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(.readableSecondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 if case .failed(let failure) = outcome {
@@ -748,7 +748,7 @@ struct DocumentSessionPanel: View {
                 if let pages = session.pagesDetected {
                     Text("\(pages) pages detected")
                         .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(.readableSecondary)
                         .monospacedDigit()
                 }
             }
@@ -783,13 +783,13 @@ struct DocumentSessionPanel: View {
         if let cameraNote {
             Text(cameraNote)
                 .font(.caption)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(.readableSecondary)
                 .fixedSize(horizontal: false, vertical: true)
         }
         if session.idleStopPending {
             Text("No camera is streaming to the Tower. The recorder will stop itself unless one starts.")
                 .font(.caption)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(.readableSecondary)
                 .fixedSize(horizontal: false, vertical: true)
         }
 
@@ -798,19 +798,19 @@ struct DocumentSessionPanel: View {
             // construct and a first-run download is slower still.
             Text("The text recogniser is still loading. That is slow, not broken.")
                 .font(.caption)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(.readableSecondary)
                 .fixedSize(horizontal: false, vertical: true)
         }
         if let failure = session.failureReason {
             Text(failure)
                 .font(.caption)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(.readableSecondary)
                 .fixedSize(horizontal: false, vertical: true)
         }
         if session.inDwell {
             Text("A page is in view now. Stopping will keep it — the page in progress is written out, not discarded.")
                 .font(.caption)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(.readableSecondary)
                 .fixedSize(horizontal: false, vertical: true)
         }
         if let flushed = session.flushedDocumentID {
@@ -824,7 +824,7 @@ struct DocumentSessionPanel: View {
             // looks exactly like one that was kept.
             Text("Some records past the retention window could not be deleted, so they are still on the Tower.")
                 .font(.caption)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(.readableSecondary)
                 .fixedSize(horizontal: false, vertical: true)
         }
         if !session.followsStream {

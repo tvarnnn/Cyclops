@@ -154,11 +154,11 @@ struct WorldCoverageMapView: View {
     let coverage: WorldCoverage
     let isFrozen: Bool
     /// FOW v1.1 B2: landed thumbnails over this receipt's pieces, or `nil`
-    /// (the switch off, or none to draw): the map exactly as v1 draws it.
+    /// when there are none to draw: the map draws the pieces without photos.
     var landed: WorldLandedOverlay? = nil
-    /// FOW v1.2: the photo floor plan of this receipt, or `nil` (the switch
-    /// off, or no raster proved this receipt's): the map exactly as v1 draws
-    /// it. A piece with a photo replaces its fog field; the others keep it.
+    /// FOW v1.2: the photo floor plan of this receipt, or `nil` when no raster
+    /// proved this receipt's plan. A piece with a photo replaces its fog
+    /// field; the others keep it.
     var photo: WorldPhotoPlan? = nil
 
     @State private var selected: WorldLandedThumbnail?

@@ -67,7 +67,7 @@ struct FrameRateGate {
     /// (`TowerClient.defaultMaxFramesInFlight`), the IMU log's header and the
     /// Home text must agree, which is why nothing re-reads the setting.
     ///
-    /// The default, 12, is a step up from the 0.8 fps a 1-in-30 stride
+    /// The default, 15, is a step up from the 0.8 fps a 1-in-30 stride
     /// delivered, not a ceiling. docs/03-ROADMAP.md V0.7 targets ~15 fps, and
     /// the gate reaches it exactly — the deadline accumulates, so a target need
     /// not divide the source rate (see
@@ -76,21 +76,21 @@ struct FrameRateGate {
     /// The cost of a higher rate is on the main actor and the link. Per
     /// selected frame the main thread runs `makeUIImage`, a JPEG encode,
     /// base64, JSON serialisation and a viewfinder render: an *estimated*
-    /// 15–25 ms, roughly 20–30% of the main thread at 12 fps and uncomfortable
-    /// at 15. Bandwidth is an *estimated* ~2 Mbit/s sustained at 12, ~2.5 at 15,
+    /// 15–25 ms, roughly 20–30% of the main thread at 12 fps and more at the
+    /// 15 fps default. Bandwidth is an *estimated* ~2 Mbit/s sustained at 12, ~2.5 at 15,
     /// over a remote Tailscale path. Neither estimate has been measured. The
     /// developer surface measures parts of them: `Encode ms` times the JPEG
     /// encode, base64 and JSON serialisation only (not `makeUIImage` or the
     /// viewfinder render), so it is one part of the 15–25 ms; `Backlog` counts
     /// selected frames not yet accounted for, and climbs when the pipeline
     /// falls behind; `Uplink` is the JSON bytes handed to the socket per
-    /// second, without WebSocket or TCP framing. 15 needs a physical run
-    /// showing the headroom first.
+    /// second, without WebSocket or TCP framing. At a 15 fps target, a
+    /// physical walk captured 2,920 frames in 196.3 s, or 14.9 fps.
     static let towerTargetFPS: Double = configuredTowerTargetFPS(
         environment: ProcessInfo.processInfo.environment, info: Bundle.main.infoDictionary ?? [:])
 
     /// The rate unless a build or launch says otherwise.
-    nonisolated static let defaultTowerTargetFPS: Double = 12
+    nonisolated static let defaultTowerTargetFPS: Double = 15
     /// What `IOS_TOWER_TARGET_FPS` may set: a whole number of frames per
     /// second in this range. Anything else -- empty, unset, out of range or
     /// not a number -- keeps the default, so a default build is unchanged.
@@ -99,7 +99,7 @@ struct FrameRateGate {
     nonisolated static let towerTargetFPSInfoKey = "GlassesTowerTargetFPS"
 
     /// The launch environment's value when it is valid, else the Info.plist
-    /// key's (`$(IOS_TOWER_TARGET_FPS)` at build time), else 12.
+    /// key's (`$(IOS_TOWER_TARGET_FPS)` at build time), else 15.
     nonisolated static func configuredTowerTargetFPS(environment: [String: String] = [:],
                                                      info: [String: Any] = [:]) -> Double {
         for raw in [environment[towerTargetFPSVariable], info[towerTargetFPSInfoKey] as? String] {

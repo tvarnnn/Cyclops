@@ -272,7 +272,7 @@ struct ContentView: View {
             // A workspace that needs only "is the Tower reachable" gets that
             // fact from `TowerReachabilityReader`, not the `TowerClient`:
             // observing the client would invalidate the subtree at the Tower's
-            // ~12 Hz reply rate, on the main actor, for a value that changes
+            // ~15 Hz reply rate, on the main actor, for a value that changes
             // almost never. See its doc comment.
             switch workspace {
             case .worldBuilder:

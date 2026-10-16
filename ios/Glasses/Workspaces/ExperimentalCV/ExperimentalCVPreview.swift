@@ -701,7 +701,7 @@ struct CVLivePreviewPanel: View {
                     ProgressView()
                     Text("Waiting for the first frame.")
                         .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(.readableSecondary)
                 }
             case .idle:
                 placeholder("The live view runs while the experiment does.")
@@ -721,7 +721,7 @@ struct CVLivePreviewPanel: View {
     private func placeholder(_ message: String) -> some View {
         Text(message)
             .font(.caption)
-            .foregroundStyle(.secondary)
+            .foregroundStyle(.readableSecondary)
             .multilineTextAlignment(.center)
             .fixedSize(horizontal: false, vertical: true)
             .padding(20)
@@ -741,7 +741,7 @@ struct CVLivePreviewPanel: View {
         if !preview.description.isEmpty {
             Text(preview.description)
                 .font(.caption)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(.readableSecondary)
                 .fixedSize(horizontal: false, vertical: true)
         }
         HStack(spacing: 10) {

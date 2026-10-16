@@ -170,13 +170,6 @@ struct WorldBuilderWorkspaceView: View {
                 WorldLookBackBannerView(banner: banner)
             }
 
-            #if DEBUG
-            // With the dial on, the preview sits right above the dial instead.
-            if !Self.dialSwitch.on {
-                glassesPanel(compact: false)
-            }
-            #endif
-
             WorldCanvasView(
                 state: world.state,
                 availability: world.availability(isTowerReachable: isTowerReachable),
@@ -199,12 +192,10 @@ struct WorldBuilderWorkspaceView: View {
 
             #if DEBUG
             captureControl
-            // FOW-RING round 3: what the glasses see now, directly above the
-            // dial, smaller, to compare with what was captured. The same card
-            // and frame, moved; below Stop, so it never moves it.
-            if Self.dialSwitch.on {
-                glassesPanel(compact: true)
-            }
+            // What the glasses see now, directly above the dial and smaller,
+            // to compare with what was captured; below Stop, so it never
+            // moves it.
+            glassesPanel
             #else
             HelperText("Capture is not available in this build.")
             #endif
@@ -479,7 +470,7 @@ struct WorldBuilderWorkspaceView: View {
             // Only a picture of the walk this report describes (review HIGH 1).
             target: world.panelTarget,
             needsRetrySentence: presentation.recoverability?.sentence,
-            hasMap: panelMap != nil || panelDial?.awaiting == true)
+            hasMap: panelMap != nil || panelDial.awaiting)
     }
 
     /// The panel's map: the walk's own coverage receipt, else the DEBUG fixture.
@@ -487,15 +478,12 @@ struct WorldBuilderWorkspaceView: View {
         WorldPanelMap.source(live: world.coverage)
     }
 
-    /// FOW-RING: read once; off is today's panel exactly.
-    private static let dialSwitch = WorldCaptureDialSwitch.current
     /// The Dial|Map control: hidden unless `IOS_FOW_MAP_TAB=on`.
     private static let mapTabSwitch = WorldDialMapTabSwitch.current
 
-    /// The capture dial's inputs, or `nil` with its switch off.
-    private var panelDial: WorldPanelDial? {
-        guard Self.dialSwitch.on else { return nil }
-        return WorldPanelDial(awaiting: world.coverageAwaited, mapTab: Self.mapTabSwitch.on)
+    /// The capture dial's inputs for this walk.
+    private var panelDial: WorldPanelDial {
+        WorldPanelDial(awaiting: world.coverageAwaited, mapTab: Self.mapTabSwitch.on)
     }
 
     private var hostInputs: WorldInlineHost.Inputs {
@@ -633,10 +621,10 @@ private extension WorldBuilderWorkspaceView {
         (session.status == .active || isRunning) && !UITestHooks.hidesCaptureHealth
     }
 
-    /// What the wearer currently sees. `compact`: at most 180 pt tall, above
-    /// the capture dial.
+    /// What the wearer currently sees, at most 180 pt tall, above the capture
+    /// dial.
     @ViewBuilder
-    func glassesPanel(compact: Bool) -> some View {
+    var glassesPanel: some View {
         VStack(alignment: .leading, spacing: 8) {
             SectionLabel("What the glasses see")
             ViewfinderCard(
@@ -644,7 +632,7 @@ private extension WorldBuilderWorkspaceView {
                 isStreaming: isStreaming,
                 placeholderReason: placeholder,
                 isPausedByGlasses: glasses.captureClaim == .devicePaused,
-                frameHeight: compact ? 180 : nil
+                frameHeight: 180
             )
         }
     }

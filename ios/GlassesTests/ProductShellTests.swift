@@ -2205,7 +2205,7 @@ final class ExperimentalCVModelTests: XCTestCase {
     }
 
     /// The Tower's additive measurements arrive as a dictionary, which has no
-    /// stable order. A list of numbers that reshuffles itself twelve times a
+    /// stable order. A list of numbers that reshuffles itself fifteen times a
     /// second is unreadable, and an unnamed one is a bare number again.
     func testMeasurementsKeepTheirTowerGivenNamesInAStableOrder() {
         let reading = CVFrameReading(
@@ -2224,7 +2224,7 @@ final class ExperimentalCVModelTests: XCTestCase {
     /// caption. When the row identity was that trimmed caption, `ForEach` saw
     /// duplicate ids and the sort key was equal for both; `sorted(by:)` is not
     /// stable, so the two rows could swap places on every reply. That is the
-    /// exact twelve-times-a-second reshuffle the sort was added to prevent.
+    /// exact fifteen-times-a-second reshuffle the sort was added to prevent.
     func testKeysDifferingOnlyInWhitespaceStayDistinctAndTotallyOrdered() {
         let reading = CVFrameReading(frameResult(metrics: ["edges": 1, " edges": 2]))
 
@@ -4726,7 +4726,7 @@ final class IMURecorderMockDeviceTests: XCTestCase {
         let sent = Set(frames.filter { $0["sent"] as? Bool == true }.compactMap { $0["seq"] as? Int })
         XCTAssertEqual(sent, Set(forwarded).intersection(Set(seqs)), "sent flags disagree with what was forwarded")
         XCTAssertGreaterThan(sent.count, 0)
-        XCTAssertLessThan(sent.count, seqs.count, "the 12 fps gate forwarded every frame of a 24 fps stream")
+        XCTAssertLessThan(sent.count, seqs.count, "the 15 fps gate forwarded every frame of a 24 fps stream")
 
         // And the wire: every frame the Tower received carries a `seq` the log
         // marks as sent, and no `source_seq`, so the Tower's `frames.py` stores

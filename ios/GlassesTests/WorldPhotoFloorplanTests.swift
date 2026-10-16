@@ -5,8 +5,8 @@
 //  FOW v1.2 photo floor plan (FOW-V12-PHOTO-FLOORPLAN-DESIGN, "Wire,
 //  identity and iOS"): the manifest and tile read fail-closed, the raster
 //  verified against its SHA-256, drawn as a gray plate plus the raster
-//  (alpha 0 reads gray), OFF asks nothing, and no walk's or landing's raster
-//  reaches another.
+//  (alpha 0 reads gray), and no walk's or landing's raster reaches
+//  another.
 //
 
 import CryptoKit
@@ -235,22 +235,6 @@ final class WorldPhotoFloorplanTests: XCTestCase {
         }
     }
 
-    // MARK: The switch
-
-    func testTheSwitchIsOnOnlyWhenSaidOnExactly() {
-        XCTAssertEqual(WorldPhotoFloorplanSwitch(environment: [:]), .off)
-        XCTAssertEqual(WorldPhotoFloorplanSwitch(environment: ["IOS_FOW_PHOTO_FLOORPLAN": "ON"]), .off)
-        XCTAssertEqual(WorldPhotoFloorplanSwitch(environment: ["IOS_FOW_PHOTO_FLOORPLAN": "1"]), .off)
-        XCTAssertEqual(WorldPhotoFloorplanSwitch(environment: ["IOS_FOW_PHOTO_FLOORPLAN": "on"]),
-                       WorldPhotoFloorplanSwitch(on: true))
-        XCTAssertEqual(WorldPhotoFloorplanSwitch(environment: [:], info: ["GlassesFOWPhotoFloorplan": ""]), .off)
-        XCTAssertEqual(WorldPhotoFloorplanSwitch(environment: [:], info: ["GlassesFOWPhotoFloorplan": "on"]),
-                       WorldPhotoFloorplanSwitch(on: true))
-        // The build carries the key for a home-screen launch; unset, it is off.
-        XCTAssertNotNil(Bundle.main.infoDictionary?["GlassesFOWPhotoFloorplan"])
-        XCTAssertEqual(WorldPhotoFloorplanSwitch.current, .off, "the test build turned it on")
-    }
-
     // MARK: Identity: only the receipt's own landing
 
     private func plan(_ manifest: String, receipt coverage: WorldCoverage, rasters: Bool = true) -> WorldPhotoPlan? {
@@ -350,7 +334,7 @@ final class WorldPhotoFloorplanTests: XCTestCase {
     }
 }
 
-// MARK: - Fetching: OFF asks nothing; no walk or landing reaches another
+// MARK: - Fetching: no walk or landing reaches another
 
 @MainActor
 final class WorldPhotoFloorplanModelTests: XCTestCase {
@@ -373,10 +357,9 @@ final class WorldPhotoFloorplanModelTests: XCTestCase {
         Stub.set(Self.tileA, status: 200, data: F.raster, type: "image/png")
     }
 
-    private func model(on: Bool = true, holdSeconds: TimeInterval = 45,
+    private func model(holdSeconds: TimeInterval = 45,
                        now: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }) -> WorldPhotoFloorplanModel {
-        WorldPhotoFloorplanModel(floorplanSwitch: WorldPhotoFloorplanSwitch(on: on),
-                                 client: WorldPhotoFloorplanClient(baseURL: URL(string: "http://tower.test")!,
+        WorldPhotoFloorplanModel(client: WorldPhotoFloorplanClient(baseURL: URL(string: "http://tower.test")!,
                                                                    session: Stub.makeSession(), timeout: 5),
                                  holdSeconds: holdSeconds, now: now)
     }
@@ -611,8 +594,8 @@ final class WorldPhotoFloorplanModelTests: XCTestCase {
         XCTAssertNil(model.displayedPlan(for: scopedReceipt(newest)), "45 s since the kept receipt was left")
     }
 
-    /// A walk change, a reset and OFF: nothing kept survives.
-    func testAKeptPlanClearsOnWalkChangeAndResetAndIsAbsentWhenOff() async {
+    /// A walk change or a reset: nothing kept survives.
+    func testAKeptPlanClearsOnWalkChangeAndReset() async {
         var time: TimeInterval = 0
         let model = await keptModel(F.manifest(kept: F.kept()), time: { time }) { time = 60 }
         await expect("the notice") { self.held(model, self.newer) == .notImproved }
@@ -627,12 +610,6 @@ final class WorldPhotoFloorplanModelTests: XCTestCase {
         await expect("the notice again") { self.held(model, self.newer) == .notImproved }
         model.reset()
         XCTAssertNil(model.displayedPlan(for: scopedReceipt(newer)), "reset forgot the kept plan")
-
-        let off = self.model(on: false, now: { time })
-        report(off, stop)
-        report(off, newer)
-        push(off, revision: "g1")
-        XCTAssertNil(off.displayedPlan(for: scopedReceipt(newer)), "OFF drew a kept plan")
     }
 
     func testTheHoldStartsWhenThePlanIsSupersededAfterALongLandingGap() async throws {
@@ -729,8 +706,8 @@ final class WorldPhotoFloorplanModelTests: XCTestCase {
         XCTAssertNil(model.displayedPlan(for: scopedReceipt(newest)))
     }
 
-    func testTheHoldClearsOnWalkChangeAndResetAndIsAbsentWhenOff() async {
-        var time: TimeInterval = 10
+    func testTheHoldClearsOnWalkChangeAndReset() async {
+        let time: TimeInterval = 10
         let model = model(holdSeconds: 4, now: { time })
         report(model, stop)
         await expect { model.displayedPlan(for: self.scopedReceipt(self.stop)) != nil }
@@ -746,22 +723,6 @@ final class WorldPhotoFloorplanModelTests: XCTestCase {
         await expect { model.displayedPlan(for: self.scopedReceipt(self.stop)) != nil }
         model.reset()
         XCTAssertNil(model.displayedPlan(for: scopedReceipt(newer)), "reset forgot the plan")
-        let off = self.model(on: false, now: { time })
-        report(off, stop)
-        XCTAssertNil(off.displayedPlan(for: scopedReceipt(stop)), "OFF preserves the old behavior")
-        time += 1
-    }
-
-    /// OFF: no request, whatever is pushed, and nothing held.
-    func testOffAsksNothing() async {
-        let off = model(on: false)
-        report(off, stop)
-        report(off, mid)
-        for revision in ["g1", "g2", "g3"] { push(off, revision: revision) }
-        await settle()
-        XCTAssertEqual(Stub.requests, [], "OFF made a request")
-        XCTAssertNil(off.plan.walk)
-        XCTAssertEqual(off.plan.value, WorldPhotoFloorplan())
     }
 
     /// One manifest per landing, the verified raster once; heartbeats and a

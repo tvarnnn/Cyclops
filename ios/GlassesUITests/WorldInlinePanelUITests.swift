@@ -58,11 +58,11 @@ final class WorldInlinePanelUITests: XCTestCase {
             let without = held.stop.frame.minY - held.top.frame.minY
             app.terminate()
             for map in [false, true] {
-                let run = try startCapture(size: size, extra: map ? ["-WBPanelMapFixture"] : [])
-                // Without a map the walking panel is Capture health alone.
-                let panel = element(map ? "wb-panel" : "capture-health")
+                let run = try startCapture(size: size, extra: map ? ["-WBPanelMapFixture"] : [],
+                                           environment: map ? ["IOS_FOW_MAP_TAB": "on"] : [:])
+                let panel = element("wb-panel")
                 XCTAssertTrue(panel.waitForExistence(timeout: 10), "\(name) map=\(map): the walking panel")
-                if map { XCTAssertTrue(element("wb-panel-map").waitForExistence(timeout: 10), "the map slot") }
+                if map { showMap() }
                 Thread.sleep(forTimeInterval: 1)
                 let with = run.stop.frame.minY - run.top.frame.minY
                 print("UINLINE-STOP|\(name)|map=\(map)|without=\(Int(without))|with=\(Int(with))"
@@ -84,17 +84,20 @@ final class WorldInlinePanelUITests: XCTestCase {
     func testTheCoverageCaptionNeverMovesStop() throws {
         for size in [nil, Self.ax5] {
             let name = size == nil ? "default" : "ax5"
-            let run = try startCapture(size: size, extra: [])
+            let run = try startCapture(size: size, extra: [], environment: ["IOS_FOW_MAP_TAB": "on"])
             XCTAssertTrue(waitFor(timeout: 15) { self.socket.liveSubscription != nil }, "\(name): the live subscription")
             // A live-capture session, so the reports are this capture's walk
             // and not a foreign one.
             push(modelState: "receiving", liveCapture: true, accepted: 127)
-            XCTAssertTrue(element("capture-health").waitForExistence(timeout: 10), "\(name): the walking panel")
+            XCTAssertTrue(element("wb-panel-health-toggle").waitForExistence(timeout: 10), "\(name): the walking panel")
             Thread.sleep(forTimeInterval: 1)
             XCTAssertFalse(element("wb-panel-map").exists, "\(name): no block, no map")
-            let without = run.stop.frame
+            // From the top of the content, so the scroll to the Map tab
+            // changes no figure.
+            let without = run.stop.frame.offsetBy(dx: 0, dy: -run.top.frame.minY)
             push(modelState: "receiving", liveCapture: true, guidance: FOWGuidance.maximal, accepted: 127,
                  towerSentAt: FOWGuidance.midSolvedAt + 45)
+            showMap()
             let notDrawn = element("wb-panel-map-not-drawn")
             if !notDrawn.waitForExistence(timeout: 15) { print("FOW-AX|\(app.debugDescription)") }
             XCTAssertTrue(notDrawn.exists, "\(name): the not-drawn note")
@@ -105,9 +108,11 @@ final class WorldInlinePanelUITests: XCTestCase {
             XCTAssertTrue(text(element("wb-panel-map-label")).hasSuffix(" · stale"), "\(name): stale")
             XCTAssertEqual(app.descendants(matching: .any).matching(identifier: "wb-panel-map-piece").count, 2)
             Thread.sleep(forTimeInterval: 1)
-            let with = run.stop.frame
+            let with = run.stop.frame.offsetBy(dx: 0, dy: -run.top.frame.minY)
             print("FOW-STOP|\(name)|without=\(without)|with=\(with)|panel=\(element("wb-panel").frame)")
-            XCTAssertEqual(with, without, "\(name): the coverage caption moved Stop")
+            XCTAssertEqual(with.minY, without.minY, accuracy: 0.5, "\(name): the coverage caption moved Stop")
+            XCTAssertEqual(with.height, without.height, accuracy: 0.5, "\(name): the coverage caption resized Stop")
+            XCTAssertEqual(with.width, without.width, accuracy: 0.5)
             shoot("fow-stop-\(name)")
             app.terminate()
         }
@@ -588,8 +593,9 @@ final class WorldInlinePanelUITests: XCTestCase {
                       body: Page.html(steps: [.init(state: Page.state(status: "1 of 24 images"))],
                                       labels: Page.realLabels(kind: "room")))
         mock.setRoute("GET /worlds/w1/render/revision", status: 200, body: Page.revision())
-        openLive(size: size, extra: ["-WBPanelMapFixture"])
+        openLive(size: size, extra: ["-WBPanelMapFixture"], environment: ["IOS_FOW_MAP_TAB": "on"])
         push(modelState: "receiving")
+        showMap()
         let map = element("wb-panel-map")
         XCTAssertTrue(map.waitForExistence(timeout: 15), "walking: the map slot")
         XCTAssertTrue(reveal(map, whole: true), "\(name): the walking map slot")
@@ -651,31 +657,29 @@ final class WorldInlinePanelUITests: XCTestCase {
 
     // MARK: FOW v1: the coverage map
 
-    /// The mock Tower serves FOW §9's fixtures. No `guidance` (the live
-    /// Tower today) and `coverage:null` are today's panel; the mid-walk
-    /// block draws two separate pieces with grey, muted and colored headings
-    /// under its dated label, beside Capture health; another walk's report
+    /// The mock Tower serves the FOW fixtures (the Map tab on). No
+    /// `guidance` draws neither map nor dial; `coverage:null` draws the dial
+    /// awaiting views and no map; the mid-walk block draws two separate
+    /// pieces with grey, muted and colored headings under its dated label,
+    /// beside Capture health; another walk's report
     /// takes the map away and that walk's own block brings its own; a
     /// receipt older than 30 s says `stale`.
     func testTheCoverageMapIsDatedSeparateAndItsWalksOwn() throws {
-        openLive()
+        openLive(environment: ["IOS_FOW_MAP_TAB": "on"])
         push(modelState: "receiving")
-        XCTAssertTrue(element("capture-health").waitForExistence(timeout: 15), "Capture health")
-        XCTAssertTrue(element("capture-health-link").exists, "switch OFF: the block itself, not collapsed")
-        XCTAssertFalse(element("wb-panel-health-toggle").exists, "switch OFF: no Capture health row")
+        XCTAssertTrue(element("wb-panel-health-toggle").waitForExistence(timeout: 15), "Capture health is collapsed")
         XCTAssertFalse(element("wb-panel-map").exists, "no guidance: no map")
-        XCTAssertFalse(element("wb-panel-stage").exists, "no guidance: today's panel, Capture health alone")
+        XCTAssertFalse(element("wb-panel-dial").exists, "no guidance: no dial")
         push(modelState: "receiving", guidance: FOWGuidance.none, accepted: 40)
         XCTAssertFalse(element("wb-panel-map").waitForExistence(timeout: 2), "coverage:null: no map yet")
-        XCTAssertFalse(element("wb-panel-stage").exists, "coverage:null: today's panel")
+        XCTAssertTrue(element("wb-panel-dial").waitForExistence(timeout: 5), "coverage:null: the dial awaits views")
 
         push(modelState: "receiving", guidance: FOWGuidance.mid, accepted: 127,
              towerSentAt: FOWGuidance.midSolvedAt + 12)
+        showMap()
         let map = element("wb-panel-map")
         if !map.waitForExistence(timeout: 15) { print("FOW-AX|\(app.debugDescription)") }
         XCTAssertTrue(map.exists, "the map")
-        XCTAssertFalse(element("wb-panel-dial").exists, "the dial with its switch off")
-        XCTAssertFalse(element("wb-panel-tab").exists, "the Dial|Map control with the dial's switch off")
         XCTAssertTrue(reveal(map, whole: true), "the map on screen")
         let label = element("wb-panel-map-label")
         XCTAssertTrue(label.waitForExistence(timeout: 5), "the label")
@@ -694,7 +698,7 @@ final class WorldInlinePanelUITests: XCTestCase {
                        + "Not yet seen by a finished solve: 10.")
         XCTAssertFalse(first.frame.intersects(second.frame), "two pieces, never merged")
         XCTAssertTrue(map.frame.contains(first.frame) && map.frame.contains(second.frame), "in the map slot")
-        XCTAssertTrue(element("capture-health").exists, "Capture health stays")
+        XCTAssertTrue(element("wb-panel-health-toggle").exists, "Capture health stays")
         shoot("fow-mid")
         // The pixels: the fog field draws both fog and lit (seen) area -- on an
         // iPad too. Sampled in piece 1's own screenshot, so no frame-to-raster
@@ -709,7 +713,7 @@ final class WorldInlinePanelUITests: XCTestCase {
         // Another walk's report, with no block: A's map goes.
         push(modelState: "receiving", world: "w2", session: "s9", name: "Other Room")
         XCTAssertTrue(waitFor(timeout: 10) { !self.element("wb-panel-map").exists }, "A's map under B's walk")
-        XCTAssertTrue(element("capture-health").exists, "B's walking panel is today's")
+        XCTAssertTrue(element("wb-panel-health-toggle").exists, "B's walking panel stays")
 
         // B's own block, 45 s old: B's map, stale.
         push(modelState: "receiving", world: "w2", session: "s9", name: "Other Room", guidance: FOWGuidance.stop,
@@ -727,7 +731,7 @@ final class WorldInlinePanelUITests: XCTestCase {
 
     // MARK: FOW-RING: the capture dial
 
-    /// IOS_FOW_DIAL=on and IOS_FOW_MAP_TAB=on with FOW §9's receipts.
+    /// The dial and IOS_FOW_MAP_TAB=on with the FOW fixture receipts.
     /// Before the first landing the dial is drawn empty, its one footer line
     /// "Waiting for first views", under its fixed title, with no control (no
     /// map yet); the mid-walk receipt fills it from the hero piece's union,
@@ -738,7 +742,7 @@ final class WorldInlinePanelUITests: XCTestCase {
     /// (the largest gap from start); nothing announced. Capture health is
     /// one collapsed row that opens to the same block.
     func testTheCaptureDialFillsFromTheReceiptAndTheToggleReachesTheMap() throws {
-        openLive(environment: ["IOS_FOW_DIAL": "on", "IOS_FOW_MAP_TAB": "on"])
+        openLive(environment: ["IOS_FOW_MAP_TAB": "on"])
         push(modelState: "receiving", guidance: FOWGuidance.none, accepted: 40)
         let dial = element("wb-panel-dial")
         if !dial.waitForExistence(timeout: 15) { print("FOW-DIAL-AX|\(app.debugDescription)") }
@@ -787,7 +791,7 @@ final class WorldInlinePanelUITests: XCTestCase {
         XCTAssertTrue(tap(control.buttons["Dial"], until: dial.exists), "back to the dial")
         XCTAssertFalse(element("wb-panel-map").exists)
 
-        // §9's stop receipt, 120 s old: past the dial's 90 s, the footer
+        // The stop receipt, 120 s old: past the dial's 90 s, the footer
         // says "catching up"; one piece.
         push(modelState: "receiving", guidance: FOWGuidance.stop, accepted: 1090,
              towerSentAt: FOWGuidance.stopSolvedAt + 120)
@@ -802,7 +806,7 @@ final class WorldInlinePanelUITests: XCTestCase {
         XCTAssertTrue(reveal(dial, whole: true))
         shoot("dial-stale")
 
-        // Capture health, switch ON: one collapsed row, opening to the block.
+        // Capture health is one collapsed row that opens to the block.
         let health = element("wb-panel-health-toggle")
         XCTAssertTrue(health.waitForExistence(timeout: 10), "the Capture health row")
         XCTAssertEqual(health.value as? String, "Collapsed")
@@ -916,6 +920,13 @@ final class WorldInlinePanelUITests: XCTestCase {
         XCTAssertTrue(waitFor(timeout: 15) { self.socket.liveSubscription != nil }, "the live subscription")
     }
 
+    private func showMap() {
+        let control = app.segmentedControls.matching(identifier: "wb-panel-tab").firstMatch
+        XCTAssertTrue(control.waitForExistence(timeout: 10), "the Dial|Map control")
+        XCTAssertTrue(reveal(control), "the control on screen")
+        XCTAssertTrue(tap(control.buttons["Map"], until: self.element("wb-panel-map").exists), "the Map tab")
+    }
+
     /// A finished live world, its page loaded in the panel.
     private func openReadyLiveWorld(size: String? = nil, configure: Bool = true) {
         if configure {
@@ -977,9 +988,10 @@ final class WorldInlinePanelUITests: XCTestCase {
 
     /// A capture on the mock glasses, the panel walking; settled once Stop is
     /// up. Skipped when Mock Device Kit gives no device.
-    private func startCapture(size: String?, extra: [String]) throws -> (stop: XCUIElement, top: XCUIElement) {
+    private func startCapture(size: String?, extra: [String], environment: [String: String] = [:]) throws
+        -> (stop: XCUIElement, top: XCUIElement) {
         mock.setRoute(CaptureHealthUITests.sessionStart, status: 404, body: #"{"detail":"Not Found"}"#)
-        launch(size: size, extra: extra, mockGlasses: true)
+        launch(size: size, extra: extra, mockGlasses: true, environment: environment)
         open(cartridge: "World Builder")
         let start = app.buttons["Start capture"]
         guard waitFor(timeout: 15, { start.exists && start.isEnabled }) else {

@@ -46,7 +46,7 @@ enum CVTowerConnectionLabel {
 /// ## Why a leaf
 ///
 /// Observes `TowerClient` and nothing else. `TowerClient` republishes once per
-/// reply, at the ~12 Hz target rate while a session streams; this row is
+/// reply, at the ~15 Hz default target rate while a session streams; this row is
 /// invalidated at that rate and the workspace that mounts it is not, because
 /// the workspace holds `tower` as a plain reference. Same trick as
 /// `CVFrameReadingPanel`, same reason.
@@ -75,13 +75,13 @@ struct TowerConnectionRow: View {
             VStack(alignment: .leading, spacing: 6) {
                 Text(endpoint)
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.readableSecondary)
                     .lineLimit(1)
                     .truncationMode(.middle)
                 if let detail = StateDisplay.towerFailureDetail(tower.status) {
                     Text(detail)
                         .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(.readableSecondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 Button(CVTowerConnectionLabel.actionTitle(for: tower.status)) {

@@ -225,7 +225,7 @@ struct WorldCurrentPieceView: View {
                     .accessibilityIdentifier("wb-current-piece-views")
                 Text(WorldCurrentPieceCopy.honesty)
                     .font(.footnote)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.readableSecondary)
             }
             .fixedSize(horizontal: false, vertical: true)
         }

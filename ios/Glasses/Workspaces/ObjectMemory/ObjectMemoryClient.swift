@@ -593,7 +593,10 @@ final class TowerObjectMemoryClient: ObjectMemoryClient {
         }
     }
 
-    /// Sends one verb, then reads the session back.
+    /// Applies a session verb and publishes the Tower's refreshed reading.
+    ///
+    /// An action goes through the control client, is shown immediately, then a
+    /// GET replaces its liveness data while retaining any refusal explanation.
     ///
     /// **The read-back is the point, not politeness.** A `POST` answers with
     /// the state the Tower moved to, and that is intent. Whether the producer

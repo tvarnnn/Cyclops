@@ -549,6 +549,12 @@ final class ObjectMemoryRecordingCoordinator: ObservableObject {
 
     // MARK: The sequences
 
+    /// Starts the Tower producer, then the camera, and reads back whether a capture is followed.
+    ///
+    /// A no-op Start stays a normal reading: `docs/contracts/TOWER-UNIFIED-CARTRIDGES.md:224-227`
+    /// calls 200 with `changed: false` honoured, not an error. The screen already
+    /// presents that state, so no separate success sentence is needed.
+    /// The Tower gate opens first so a new capture cannot lose its opening frames.
     private func startSequence() async {
         phase = .starting
 
@@ -565,73 +571,9 @@ final class ObjectMemoryRecordingCoordinator: ObservableObject {
         }
 
         // 2. The camera, only if nothing already holds it.
-        if let camera {
-            // Asked of the camera directly rather than read off the published
-            // mirror below. The mirror is a *display* value delivered through a
-            // main-queue hop, and deciding whether to start a second capture
-            // from a value that is one turn stale is exactly the kind of race
-            // this sequencing exists to remove.
-            switch camera.captureClaim {
-            case .unclaimed:
-                camera.startCameraSession()
-                if let refusal = camera.lastCaptureStartRefusal {
-                    // The Tower is left `active` deliberately. It is a gate,
-                    // not a recording, and the next capture to open — from
-                    // here, from Home, or from World Builder — finds it open.
-                    // Stopping it here would throw away a correct half of the
-                    // work because the other half was refused.
-                    phase = .cameraRefused(refusal)
-                    return
-                }
-                startedTheCamera = true
-                // Kept in step immediately rather than waiting for the
-                // publisher's hop, so the sentence drawn on the very next
-                // render already describes the capture that was just started.
-                cameraClaim = camera.captureClaim
-            case .devicePaused:
-                // A hardware pause. `startCameraSession()` would refuse this
-                // too, and there is nothing this app may call to override it —
-                // the glasses resume delivery on their own.
-                phase = .cameraRefused(.deviceHasPausedCapture)
-                return
-            case .running:
-                // Somebody else's capture — Home's or World Builder's — and
-                // ownership is *not* claimed here, so Stop below leaves their
-                // stream alone.
-                //
-                // Ownership is not *surrendered* here either. `.running` says
-                // a capture exists; it does not say who opened it, and this
-                // may well be the capture this screen started, because every
-                // phase that maps to `primaryAction == .start` offers the
-                // button back and a Tower that blips off Wi-Fi for one poll
-                // is enough to produce one. Clearing the flag on that second
-                // Start made the Stop that followed skip
-                // `stopCameraSession()`: the Tower session ended, the wearer
-                // was told remembering had stopped, and the glasses kept
-                // recording. A capture that ends drops ownership through
-                // `cameraClaimChanged`, which is where that belongs.
-                break
-            case .ending:
-                // **Nobody owns a capture that is dying.** This used to share
-                // the branch above and record "somebody else started it",
-                // which was false in both halves: the previous owner has
-                // already let go, and this screen got no camera and said
-                // nothing about it. `startCameraSession()` refuses in this
-                // window too — its `guard deviceSession == nil` sees a session
-                // that is still being torn down — so calling it would produce
-                // `.alreadyRunning`, a refusal whose sentence sends a wearer
-                // to look for a stream that is on its way out.
-                //
-                // Reported instead as what it is. Not retried: a retry would
-                // need a second deadline inside a sequence that already has
-                // one, and the teardown it is waiting on is DAT's, with no
-                // bound this app can state. The Tower's half stands, exactly as
-                // it does for every other camera refusal, so the next Start —
-                // a second or two later, when the claim has reached
-                // `.unclaimed` through `captureClaimUpdates` — is a real one.
-                phase = .cameraRefused(.captureIsShuttingDown)
-                return
-            }
+        if let refusal = startCameraIfNeeded() {
+            phase = .cameraRefused(refusal)
+            return
         }
 
         // 3. Converge on `following`, bounded.
@@ -650,6 +592,66 @@ final class ObjectMemoryRecordingCoordinator: ObservableObject {
         await converge(watchingACameraStartedHere: startedTheCamera)
     }
 
+    /// Starts an unclaimed camera; returns nil when absent, running, or started.
+    /// Returns a refusal when start fails, the device is paused, or capture is ending.
+    ///
+    /// Reads the owner directly because the published mirror can be one main-queue
+    /// turn stale, which could start a second capture. A running capture does not
+    /// change ownership: it may belong to this screen or another one.
+    private func startCameraIfNeeded() -> CaptureStartRefusal? {
+        guard let camera else { return nil }
+        switch camera.captureClaim {
+        case .unclaimed:
+            camera.startCameraSession()
+            if let refusal = camera.lastCaptureStartRefusal {
+                // The Tower stays `active` deliberately: it is a gate, not a
+                // recording. No camera started, so the active gate does not
+                // itself record anything. The next capture here,
+                // from Home, or from World Builder finds it open. Closing it
+                // would discard the successful Tower half because the camera
+                // half was refused.
+                return refusal
+            }
+            startedTheCamera = true
+            // Keep the claim in step now rather than waiting for the publisher's
+            // main-queue hop, so the next render describes the new capture.
+            cameraClaim = camera.captureClaim
+            return nil
+        case .devicePaused:
+            // The glasses resume delivery themselves; this app cannot override
+            // a hardware pause, and `startCameraSession()` would refuse it too.
+            return .deviceHasPausedCapture
+        case .running:
+            // Do not claim a running capture: Home or World Builder may own it,
+            // and Stop must leave their stream alone. Do not surrender ownership
+            // either: `.running` does not say who opened it. Every phase with
+            // `primaryAction == .start` offers Start again, and a Tower Wi-Fi
+            // blip during one poll can put this screen's own capture here.
+            // Clearing ownership makes Stop skip `stopCameraSession()`: the
+            // Tower session ends, the wearer is told remembering stopped, and
+            // the glasses keep recording.
+            // `cameraClaimChanged` drops ownership when the capture ends.
+            return nil
+        case .ending:
+            // Nobody owns a capture that is ending. Treating it as `.running`
+            // would be false both ways: the previous owner has let go, and this
+            // screen would get no camera and give no explanation. A new
+            // `startCameraSession()` also refuses: its `guard deviceSession == nil`
+            // still sees the session being torn down and produces `.alreadyRunning`,
+            // whose sentence points the wearer at a stream on its way out.
+            // Do not retry: a retry needs a second deadline inside a sequence
+            // that already has one, and DAT teardown has no bound this app can
+            // state. The Tower gate stands as for every other camera refusal;
+            // the next Start is real once `captureClaimUpdates` reports `.unclaimed`.
+            return .captureIsShuttingDown
+        }
+    }
+
+    /// Stops this producer and any camera this screen owns, then refreshes
+    /// records when a refresher is set.
+    ///
+    /// The Tower action precedes camera shutdown so the producer can finish its record;
+    /// a camera opened by another screen remains under that screen's control.
     private func stopSequence() async {
         phase = .stopping
 

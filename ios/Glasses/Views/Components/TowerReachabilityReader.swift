@@ -14,7 +14,7 @@ import SwiftUI
 /// and that is a dead dependency with a real cost.
 ///
 /// `TowerClient` publishes `frameResultCount` and `latestFrameResult` **once per
-/// reply**, at the ~12 Hz target rate while a session is streaming. Any view
+/// reply**, at the ~15 Hz default target rate while a session is streaming. Any view
 /// observing it is invalidated at that rate. And leaving a workspace
 /// deliberately does not stop capture, so "start capture in World Builder,
 /// then look at Scene Understanding" is an ordinary path, not a corner case. A

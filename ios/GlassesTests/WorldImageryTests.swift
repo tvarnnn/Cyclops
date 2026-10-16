@@ -4,8 +4,8 @@
 //
 //  FOW v1.1 B (FOW-V11B-WIRE-AND-IOS-SPEC-20261007): the manifest read
 //  fail-closed (acceptance 1), the §4 fixtures paired with a §9 status
-//  (acceptance 5), placement on the v1 grid, OFF asks nothing, and no walk's
-//  or landing's imagery reaches another.
+//  (acceptance 5), placement on the v1 grid, and no walk's or landing's
+//  imagery reaches another.
 //
 
 import SwiftUI
@@ -302,30 +302,6 @@ final class WorldImageryTests: XCTestCase {
         XCTAssertNotNil(tiles[digests[17]])
     }
 
-    func testTheSwitchesAreOnOnlyWhenSaidOnExactly() {
-        XCTAssertEqual(WorldImagerySwitches(environment: [:]), .off)
-        XCTAssertEqual(WorldImagerySwitches(environment: ["IOS_FOW_ROOM_IMAGERY_LIVE": "1",
-                                                          "IOS_FOW_ROOM_IMAGERY_LANDED": "ON"]), .off)
-        XCTAssertEqual(WorldImagerySwitches(environment: ["IOS_FOW_ROOM_IMAGERY_LIVE": "on"]),
-                       WorldImagerySwitches(live: true, landed: false))
-        XCTAssertEqual(WorldImagerySwitches(environment: ["IOS_FOW_ROOM_IMAGERY_LANDED": "on"]),
-                       WorldImagerySwitches(live: false, landed: true))
-    }
-
-    /// A home-screen launch has no launch environment: the build's Info.plist
-    /// keys carry the switches, "on" exactly; an unset build setting is "".
-    func testTheBuildCarriesTheSwitchesForAHomeScreenLaunch() {
-        XCTAssertEqual(WorldImagerySwitches(environment: [:], info: ["GlassesFOWImageryLive": "",
-                                                                    "GlassesFOWImageryLanded": ""]), .off)
-        XCTAssertEqual(WorldImagerySwitches(environment: [:], info: ["GlassesFOWImageryLive": "ON",
-                                                                    "GlassesFOWImageryLanded": "1"]), .off)
-        XCTAssertEqual(WorldImagerySwitches(environment: [:], info: ["GlassesFOWImageryLive": "on",
-                                                                    "GlassesFOWImageryLanded": "on"]),
-                       WorldImagerySwitches(live: true, landed: true))
-        XCTAssertEqual(WorldImagerySwitches(environment: [:], info: ["GlassesFOWImageryLanded": "on"]),
-                       WorldImagerySwitches(live: false, landed: true))
-    }
-
     /// The panel puts B2's thumbnails only over the live receipt they were
     /// placed on: not over the fixture map, not over another landing's.
     func testThePanelDrawsLandedThumbnailsOnlyOverTheirOwnReceipt() {
@@ -354,7 +330,7 @@ final class WorldImageryTests: XCTestCase {
     }
 }
 
-// MARK: - Fetching: OFF asks nothing; no walk or landing reaches another
+// MARK: - Fetching: no walk or landing reaches another
 
 @MainActor
 final class WorldImageryModelTests: XCTestCase {
@@ -377,9 +353,8 @@ final class WorldImageryModelTests: XCTestCase {
         Stub.set("/worlds/w1/guidance/s9/imagery/tile/\(F.landedDigest)", jpeg: F.jpeg(.systemOrange))
     }
 
-    private func model(live: Bool, landed: Bool) -> WorldImageryModel {
-        WorldImageryModel(switches: WorldImagerySwitches(live: live, landed: landed),
-                          client: WorldImageryClient(baseURL: URL(string: "http://tower.test")!,
+    private func model() -> WorldImageryModel {
+        WorldImageryModel(client: WorldImageryClient(baseURL: URL(string: "http://tower.test")!,
                                                      session: Stub.makeSession(), timeout: 5))
     }
 
@@ -398,37 +373,10 @@ final class WorldImageryModelTests: XCTestCase {
 
     private func settle() async { try? await Task.sleep(for: .milliseconds(300)) }
 
-    /// OFF: no request, whatever is pushed, and nothing held.
-    func testOffAsksNothing() async {
-        let off = model(live: false, landed: false)
-        for revision in ["g1", "g2", "g3"] { push(off, revision: revision) }
-        off.coverageReported(WalkScoped(walk: Self.walkA, value: stop), receiving: true)
-        off.coverageReported(WalkScoped(walk: Self.walkA, value: mid), receiving: true)
-        await settle()
-        XCTAssertEqual(Stub.requests, [], "OFF made a request")
-        XCTAssertNil(off.imagery.walk)
-        XCTAssertEqual(off.imagery.value, WorldImagery())
-    }
-
-    /// B1 on, B2 off: coverage never asks; B2 on, B1 off: geometry never asks.
-    func testEachStageAsksOnlyOnItsOwnTrigger() async {
-        let liveOnly = model(live: true, landed: false)
-        liveOnly.coverageReported(WalkScoped(walk: Self.walkA, value: stop), receiving: true)
-        await settle()
-        XCTAssertEqual(Stub.requests, [], "B1 alone asked on a coverage change")
-
-        Stub.set(Self.manifestA, json: F.landed)
-        let landedOnly = model(live: false, landed: true)
-        push(landedOnly, revision: "g1")
-        push(landedOnly, revision: "g2")
-        await settle()
-        XCTAssertEqual(Stub.requests, [], "B2 alone asked on a geometry push before any landing")
-    }
-
     /// B1: one manifest per new geometry revision (heartbeats ask nothing),
     /// and each tile once.
     func testTheLiveManifestFollowsTheGeometryRevisionOnly() async {
-        let model = model(live: true, landed: false)
+        let model = model()
         push(model, revision: "g1")
         await expect("the live tile") { model.imagery.value.liveTiles[F.liveDigest] != nil }
         XCTAssertEqual(model.imagery.walk, Self.walkA)
@@ -451,7 +399,7 @@ final class WorldImageryModelTests: XCTestCase {
     /// A failed fetch keeps what is shown and is asked again on the next
     /// push; a 404 (the Tower's route is off) is an answer, not a retry.
     func testAFailureRetriesOnTheNextPushAndA404DoesNot() async {
-        let model = model(live: true, landed: false)
+        let model = model()
         push(model, revision: "g1")
         await expect { model.imagery.value.live?.segmentIndex == 812 }
         Stub.set(Self.manifestA, status: 500, json: "{}")
@@ -472,17 +420,22 @@ final class WorldImageryModelTests: XCTestCase {
     }
 
     /// B2: asked once per landing in coverage; heartbeats and repeats of the
-    /// same landing ask nothing more.
+    /// same landing ask nothing more. The stages share the manifest route, so
+    /// each new geometry revision adds B1's one ask.
     func testTheLandedManifestFollowsTheLandingOnly() async {
         Stub.set(Self.manifestA, json: F.landed)
-        let model = model(live: false, landed: true)
+        let model = model()
         model.coverageReported(WalkScoped(walk: Self.walkA, value: stop), receiving: true)
         await expect("the landed tile") { model.imagery.value.landedTiles[F.landedDigest] != nil }
         XCTAssertEqual(model.imagery.value.landed?.landing, WorldImageryLanding(stop))
         model.coverageReported(WalkScoped(walk: Self.walkA, value: stop), receiving: true)
-        for revision in ["g1", "g2"] { push(model, revision: revision) }
         await settle()
         XCTAssertEqual(Stub.count(Self.manifestA), 1)
+        for revision in ["g1", "g1", "g2"] {
+            push(model, revision: revision)
+            await settle()
+        }
+        XCTAssertEqual(Stub.count(Self.manifestA), 3, "the answered landing was asked again on a push")
     }
 
     // MARK: Walk mixing
@@ -491,7 +444,7 @@ final class WorldImageryModelTests: XCTestCase {
     func testAStaleWalksManifestNeverLandsInTheNextWalk() async {
         Stub.set(delay: 0.6, for: Self.manifestA)
         Stub.set(Self.manifestB, json: #"{"version":1,"live":{"segment_index":5,"entries":[]}}"#)
-        let model = model(live: true, landed: false)
+        let model = model()
         push(model, Self.walkA, revision: "g1")
         await expect { Stub.count(Self.manifestA) == 1 }
         push(model, Self.walkB, revision: "g1")
@@ -511,7 +464,7 @@ final class WorldImageryModelTests: XCTestCase {
             .replacingOccurrences(of: "g-stop-984", with: "g-mid-113")
         Stub.set(Self.manifestA, json: older)
         Stub.set(delay: 0.6, for: Self.manifestA)
-        let model = model(live: false, landed: true)
+        let model = model()
         model.coverageReported(WalkScoped(walk: Self.walkA, value: mid), receiving: true)
         await expect { Stub.count(Self.manifestA) == 1 }
         // Coverage moves to the stop landing while mid's request is out, and
@@ -530,20 +483,21 @@ final class WorldImageryModelTests: XCTestCase {
 
     func testASlowLandingIsAskedAgainOnlyABoundedNumberOfTimes() async {
         Stub.set(Self.manifestA, json: #"{"version":1,"landed":null}"#)
-        let model = model(live: false, landed: true)
+        let model = model()
         model.coverageReported(WalkScoped(walk: Self.walkA, value: stop), receiving: true)
-        for index in 0..<10 {
+        for _ in 0..<10 {
             await settle()
-            push(model, revision: "g\(index)")
+            push(model, revision: "g0")
         }
         await settle()
-        XCTAssertEqual(Stub.count(Self.manifestA), 1 + WorldImageryModel.landingRetries)
+        XCTAssertEqual(Stub.count(Self.manifestA), 2 + WorldImageryModel.landingRetries,
+                       "one live revision plus the bounded landed attempts")
     }
 
     /// A late push after Stop: the Tower still reports the walk, and the
     /// phone asks nothing -- nothing is received any more.
     func testALatePushAfterStopAsksNothing() async {
-        let model = model(live: true, landed: true)
+        let model = model()
         push(model, revision: "g1", receiving: false)
         model.coverageReported(WalkScoped(walk: Self.walkA, value: stop), receiving: false)
         await settle()
@@ -575,7 +529,7 @@ final class WorldImageryModelTests: XCTestCase {
     }
 
     func testResetForgetsTheWalk() async {
-        let model = model(live: true, landed: false)
+        let model = model()
         push(model, revision: "g1")
         await expect { model.imagery.value.live != nil }
         model.reset()
