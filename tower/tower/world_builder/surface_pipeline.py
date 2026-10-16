@@ -126,12 +126,6 @@ def _holder_alive(pid, written_at) -> bool:
     return _holder_is_running(pid, None, lock_written_at=written_at)
 
 
-def _pid_is_running(pid: int) -> bool:
-    from tower.world_builder.dense_pipeline import _pid_is_running as probe
-
-    return probe(pid)
-
-
 def _status(root: Path, **fields) -> None:
     """Write the stage's state where a cold reader can find it.
 

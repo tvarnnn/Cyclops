@@ -1606,10 +1606,6 @@ def _lock_record(pid: int) -> dict:
     return record
 
 
-def _pid_is_running(pid: int) -> bool:
-    return _holder_is_running(pid, None)
-
-
 # How much later than the lock file a process may have started and still
 # be believed to be its writer. A builder writes its lock within
 # milliseconds of starting; this only has to absorb clock skew and

@@ -1,6 +1,6 @@
 """The dense stage, orchestrated over a solved world.
 
-Four stages, each checkpointed under `<world>/dense/<session>/`:
+Three stages, each checkpointed under `<world>/dense/<session>/`:
 
     depth   undistort every posed keyframe, predict inverse depth, fit it to
             the sparse points, and write the per-frame alignment record
@@ -64,27 +64,8 @@ logger = logging.getLogger(__name__)
 DENSE_SCHEMA_VERSION = 1
 
 
-def _pid_is_running(pid: int) -> bool:
-    """The store's own liveness probe, not os.kill.
-
-    The signal-based probe is a console-signal call on Windows and reported a
-    freshly dead process as still alive in testing, which would strand a lock
-    forever. On any failure this answers "running", because refusing to start
-    is recoverable and stealing a live lock is not.
-    """
-    from tower.world_builder.store import _pid_is_running as _probe  # noqa: PLC0415
-
-    try:
-        return bool(_probe(pid))
-    except Exception:  # noqa: BLE001
-        return True
-
-
-
 # Parameters that do not change a single point of the output. Comparing them
-# when deciding whether an artifact is already what was asked for made
-# `--keep-intermediates` -- the flag the operations doc calls the one for the
-# development loop -- miss the short-circuit every time.
+# would defeat the short-circuit for `--keep-intermediates`.
 _NON_OUTPUT_PARAMS = frozenset({"keep_intermediates"})
 
 
@@ -97,11 +78,11 @@ def _params_match(stored: dict, wanted: dict) -> bool:
 
     OVER THE KEYS BOTH SIDES KNOW, and that is the whole point. Comparing whole
     dicts means every parameter ever added silently invalidates every artifact
-    already on disk: `pack_percentile` was added and seven of the eight worlds
-    in this corpus stopped being recognised as complete, so re-running densify
-    on a finished, current world reported `unavailable` and overwrote its
-    status with no result -- exactly the destruction the completed-artifact
-    guard was written to prevent, arriving by a different door.
+    already on disk: adding `pack_percentile` left seven of the eight worlds
+    in this corpus unrecognised as complete, so re-running densify on a
+    finished, current world reported `unavailable` and overwrote its status
+    with no result, which is what the completed-artifact guard exists to
+    prevent.
 
     A key the stored artifact does not carry is a key that did not exist when
     it was packed. It cannot have changed the output, because the code that
@@ -120,9 +101,9 @@ def _depth_cache_key(digest, params: DenseParams, image_set: str | None = None,
                      trust: str | None = None) -> str:
     """Everything the DEPTH stage reads.
 
-    `component` belongs here: re-running with a different one used to reuse the
-    other component's predictions and then write a manifest claiming the new
-    one. A `digest` of None must not match every solve either.
+    `component` belongs here: a different one must not reuse the other
+    component's predictions and then write a manifest claiming the new one. A
+    `digest` of None must not match every solve either.
 
     `image_set` is `store.keyframe_image_set(...).cache_token`: None for the
     capture's own `images/` -- so every key written before re-redaction existed
@@ -144,8 +125,8 @@ def _depth_cache_key(digest, params: DenseParams, image_set: str | None = None,
     # depth stage runs under `none` (re-redacted bytes, their SHA-1 in every
     # record); the final one after Stop runs under the real label (the stored
     # bytes). The solve digest cannot see that change, and reusing the walk's
-    # records made the trusted final appearance refuse every frame whose bytes
-    # the re-redaction had changed (review 1, M3).
+    # records would make the trusted final appearance refuse every frame whose
+    # bytes the re-redaction had changed.
     if trust:
         fields.append(f"trust:{trust}")
     # `DenseParams.known_fov`: a prediction conditioned on the solve camera's
@@ -251,12 +232,11 @@ def _status(root: Path, **fields) -> None:
     pid, a run killed mid-stage leaves `state: "running"` on disk forever and
     nothing can tell that from a run that is genuinely still going.
     """
-    # CARRY THE DIGEST FORWARD. `status.json` is one file and every later run
-    # overwrites it, so a failed or interrupted re-run used to erase the
-    # `input_digest` the completing run wrote -- and that value is what arms
-    # the BEHIND caption for any artifact whose manifest predates the key.
-    # Losing it silently disables a correctness signal, so a write that does
-    # not know the digest inherits the one already on disk.
+    # CARRY THE DIGEST FORWARD. `status.json` is one file that every later run
+    # overwrites, and `input_digest` is what arms the BEHIND caption for any
+    # artifact whose manifest predates the key. Losing it silently disables a
+    # correctness signal, so a write that does not know the digest inherits the
+    # one already on disk.
     payload = {
         "schema_version": DENSE_SCHEMA_VERSION,
         "pid": os.getpid(),
@@ -277,11 +257,10 @@ def status_is_stale(status: dict) -> bool:
     """True when a status says `running` but its process is gone -- or its pid
     now belongs to a process that started after the status was written.
 
-    A bare pid probe here left `live: true` on `/render/revision` for as long
-    as a recycled pid lived after a densify was killed (review 2, I2). The
-    locks and the surface status already asked the store's question; the dense
-    status now does too, from `updated_at`, which `_status` writes on every
-    state.
+    A bare pid probe would leave `live: true` on `/render/revision` for as long
+    as a recycled pid lived after a densify was killed. So this asks the
+    store's question (pid plus start time), as the locks and the surface status
+    do, from `updated_at`, which `_status` writes on every state.
     """
     if not status or status.get("state") != STATE_RUNNING:
         return False
@@ -315,15 +294,15 @@ class _DenseLock:
     their writes would leave a points file of the wrong length, which does not
     fail loudly.
 
-    `dense/<session>/` IS touched by something else, and this lock alone never
-    covered it (review V9, Q8): the surface's depth stage and the evidence gate's
-    (`coherence_publish.run_gate_depth`) write the same `work/`, `align.json` and
-    `predictions/` under the SURFACE lock (`surface_pipeline._SurfaceLock`), which
-    a densify did not take -- so a hand-run densify beside a finisher's re-gate or
-    an owner's re-finish of the session could overwrite the gate's `<ki>_pred.npy`
-    with predictions made under other parameters before its metric scale read them,
-    or prune `work/` from under it. `densify` now holds that lock too, for its whole
-    run: the one lock every writer of `dense/<session>/` holds.
+    This lock alone does not cover `dense/<session>/`: the surface's depth stage
+    and the evidence gate's (`coherence_publish.run_gate_depth`) write the same
+    `work/`, `align.json` and `predictions/` under the SURFACE lock
+    (`surface_pipeline._SurfaceLock`). A hand-run densify beside a finisher's
+    re-gate or an owner's re-finish of the session could otherwise overwrite the
+    gate's `<ki>_pred.npy` with predictions made under other parameters before
+    its metric scale read them, or prune `work/` from under it. `densify`
+    therefore holds that lock too, for its whole run: the one lock every writer
+    of `dense/<session>/` holds.
     """
 
     def __init__(self, root: Path) -> None:
@@ -337,12 +316,12 @@ class _DenseLock:
             return True
         # Deliberately NOT treating our own pid as stale: that would let a
         # second lock object in the same process steal the first one's, which
-        # defeats the point. The probe is the store's own, because
-        # the signal-based probe is a console-signal call on Windows and reports a
-        # freshly dead process as still alive -- which would strand the lock
-        # for good.
-        # Same recycled-pid guard as the surface lock: a process that started
-        # after this lock was written did not write it.
+        # defeats the point. The probe is the store's own (pid plus start
+        # time; a process that started after this lock was written did not
+        # write it, the same recycled-pid guard as the surface lock), because
+        # the signal-based probe is a console-signal call on Windows and
+        # reports a freshly dead process as still alive, which would strand the
+        # lock for good.
         from tower.world_builder.store import _holder_is_running  # noqa: PLC0415
 
         try:
@@ -427,9 +406,9 @@ def _undistorted_image(ki: int, work: Path):
 #
 #   (absent)  the difference against whatever image was re-redacted. A live
 #             build during a walk re-redacts the STORED keyframe, which already
-#             carries the engine's fill, so the difference was empty wherever
-#             the engine had filled a face -- and the final build after Stop
-#             reused that empty mask by image hash (review 2, I6).
+#             carries the engine's fill, so that difference is empty wherever
+#             the engine had filled a face; the final build after Stop would
+#             reuse that empty mask by image hash.
 #   2         the fill is measured against what the CAMERA saw: the raw capture
 #             frame when it is readable, otherwise the exact difference of this
 #             re-redaction united with the shape-gated guess on the image
@@ -445,7 +424,7 @@ def _fill_mask_for(redacted: bytes, raw: bytes | None, stored: bytes | None = No
     from by a re-redaction -- the difference against it (this re-redaction's
     own fill, exactly) united with the shape-gated guess on `redacted` (the
     fill that was already in `stored`, which no difference against `stored`
-    can see). Else None, and the caller guesses on the image, as it always has.
+    can see). Else None, and the caller guesses on the image.
     Undilated either way; the caller dilates.
     """
     import cv2
@@ -493,8 +472,7 @@ def keyframe_image_bytes(store, world_id: str, session_id: str, keyframe_id: str
     the redactor is unavailable or throws, labelled `none`, and
     `engine._persist_keyframe` persists whatever comes back -- so `images/` can
     legitimately hold raw frames, and `session.redaction` is the only record
-    that says which. An earlier version of this function asserted the boundary
-    in this docstring and then read that directory unconditionally.
+    that says which.
 
     `keyframes_are_redacted` is that record, resolved by the caller from
     `store.read_session(...).redaction`. When it is false the stored keyframe is
@@ -523,9 +501,9 @@ def keyframe_image_bytes(store, world_id: str, session_id: str, keyframe_id: str
     THE LABEL IS CHECKED HERE TOO, through the appearance stage's allowlist
     (`appearance.label_is_trusted`): stored bytes are returned as
     `world-keyframe` only when the caller says the set is redacted AND the
-    set's own label is on the allowlist. `label != "none"` trusted any string,
-    the weak `+plausibility2` gate included, and served one session under two
-    trust decisions (review 1, M2; privacy lane L2).
+    set's own label is on the allowlist. A bare `label != "none"` test would
+    trust any string, the weak `+plausibility2` gate included, and serve one
+    session under two trust decisions.
 
     `imagery_source` is the ONE way past all of the above, and it is
     `redacted` unless a caller asked otherwise (WORLD-BUILDER-APPEARANCE.md
@@ -572,10 +550,8 @@ def keyframe_image_bytes(store, world_id: str, session_id: str, keyframe_id: str
             if result.label == REDACTION_NONE:
                 # `redact` NEVER RAISES: it returns the ORIGINAL bytes, labelled
                 # `none`, when the detector throws on this particular image.
-                # `available` is a load-time property and cannot see that. An
-                # earlier version of this check tested the redactor and then
-                # used whatever came back, which is the same mistake one level
-                # down from the one it was written to fix.
+                # `available` is a load-time property and cannot see that, so
+                # the result's label is checked, not only the redactor.
                 return None, "refused-redaction-failed", None
             filled = result.image_bytes
             # Against the RAW frame, not against `data`: during a walk the
@@ -592,8 +568,8 @@ def keyframe_image_bytes(store, world_id: str, session_id: str, keyframe_id: str
         return None, "refused-no-redactor", None
     result = redactor.redact(raw_bytes)
     if result.label == REDACTION_NONE:
-        # Same trap on the fallback path, and this is the path the migrated
-        # worlds actually take -- 506 of the corpus's frames went through it.
+        # Same trap on the fallback path, which is the path the migrated
+        # worlds take (506 of the corpus's frames went through it).
         return None, "refused-redaction-failed", None
     data = result.image_bytes
     return data, "raw-source-rereducted", _fill_mask_for(data, raw_bytes)
@@ -608,9 +584,9 @@ def redaction_fill_mask(image, raw=None, fill_value: int = 0,
     happily invent a surface across it, and multi-view consensus will not
     always catch it, because the SAME detector fires on the SAME object from
     several nearby frames -- so several cameras agree on geometry that is
-    really a black box. This is not hypothetical: on this corpus the face
-    detector fires on the wearer's hands and on carpet, filling over 10% of
-    the frame in 22 of 77 frames and up to 58% in the worst one.
+    really a black box. On this corpus the face detector fires on the wearer's
+    hands and on carpet, filling over 10% of the frame in 22 of 77 frames and
+    up to 58% in the worst one.
 
     Excluding those pixels is both the honest choice and the one that recovers
     quality: the region is unobserved, so it should be a hole.
@@ -653,14 +629,14 @@ def redaction_fill_mask(image, raw=None, fill_value: int = 0,
 
 
 # ---------------------------------------------------------------------------
-# THE PREDICTION CACHE (review V8 H2, part R3: a re-finish must reproduce its depth).
+# THE PREDICTION CACHE: a re-finish must reproduce its depth.
 #
 # The evidence gate's metric scale reads this stage's raw per-keyframe predictions
-# (`<ki>_pred.npy`), and they did not survive a finish: the room's final surface prunes
+# (`<ki>_pred.npy`). They would not survive a finish: the room's final surface prunes
 # `work/` (`prune_intermediates`) once its appearance is built, and the gate's hand-off
 # cuts `align.json` to the room, so a re-finish -- and every draw of a consensus --
-# predicted every frame again on the GPU. A borderline scale decision (6839fb8f's g6 at
-# x1.2526 against the x1.25 bound) could then flip on the recomputation.
+# would predict every frame again on the GPU. A borderline scale decision (6839fb8f's g6
+# at x1.2526 against the x1.25 bound) could then flip on the recomputation.
 #
 # With `prediction_cache=True` (the gate's depth stage only: `coherence_publish.run_gate_depth`)
 # the network's output is kept in `<dense>/predictions/<token>/<sha1>.npy`, OUTSIDE
@@ -673,21 +649,21 @@ def redaction_fill_mask(image, raw=None, fill_value: int = 0,
 # prediction and one fitted from the cache are fitted identically. Off (every other
 # caller): the stage is byte for byte what it was.
 #
-# THE CACHE IS AN OPTIMISATION, NEVER A REASON TO LOSE THE DEPTH (review V9, M-11 and LOW).
+# THE CACHE IS AN OPTIMISATION, NEVER A REASON TO LOSE THE DEPTH.
 # A write that fails (MAX_PATH, a full disk, a sharing violation) is counted
 # (`prediction_cache.write_failed`) and the stage goes on with the float16-rounded prediction
-# it already has; it used to raise, and the gate published a scale-unavailable fail-safe --
-# how P3-H2 run A lost its depth. A cache file that exists but is not a whole float16 array
+# it already has; raising instead would make the gate publish a scale-unavailable fail-safe,
+# having lost its depth. A cache file that exists but is not a whole float16 array
 # of the frame's shape (empty, truncated, foreign, wrong shape) is a MISS, logged, and the
-# network's fresh prediction replaces it; an empty file used to raise `EOFError` for ever.
+# network's fresh prediction replaces it (an empty file raises `EOFError` on every read).
 #
-# GROWTH, MEASURED, AND ITS BOUND (review V9, M-12). The cache of 6839fb8f in
-# `RUN/experiments/P3-H2/real/r0` holds 678 frames in 311,154,540 bytes (about 459 kB a
-# frame: float16 at 359x639), about 20x the keyframe images. Nothing reclaimed it:
-# `prune_intermediates` keeps it on purpose, only `purge_world` removed it, and every change
-# of the pixels (a re-redaction switch, the raw-imagery bypass) or of the network's call
-# (its token) added a whole new set. Now, after every depth stage that COMPLETES with the
-# cache on, `prune_prediction_cache` keeps exactly one set: the current token's directory,
+# GROWTH, MEASURED, AND ITS BOUND. The cache of 6839fb8f holds 678 frames in 311,154,540
+# bytes (about 459 kB a frame: float16 at 359x639), about 20x the keyframe images. Left
+# alone nothing would reclaim it: `prune_intermediates` keeps it on purpose, only
+# `purge_world` removes it, and every change of the pixels (a re-redaction switch, the
+# raw-imagery bypass) or of the network's call (its token) adds a whole new set. So, after
+# every depth stage that COMPLETES with the cache on, `prune_prediction_cache` keeps
+# exactly one set: the current token's directory,
 # and in it one prediction per keyframe id -- the latest pixels each keyframe was predicted
 # from, recorded in the token's own index (`PREDICTION_INDEX`). Removed, and recorded in
 # `prediction_cache.pruned`: every other token's set, a prediction no keyframe's latest
@@ -699,13 +675,13 @@ def redaction_fill_mask(image, raw=None, fill_value: int = 0,
 # `predictions/` out (`world_refinish.py`).
 PREDICTIONS_DIRNAME = "predictions"
 # Schema 2: the token also names the weights revision, the moge and torch versions, the
-# device and fp16 (review V9, LOW). Every schema-1 set is another token's set and is pruned.
+# device and fp16. Every schema-1 set is another token's set and is pruned.
 PREDICTION_CACHE_SCHEMA = 2
 PREDICTION_INDEX = "index.json"
 # SHORT NAMES, BECAUSE OF MAX_PATH. A world root under a Tower's data directory is already
 # ~135 characters deep at `dense/<session>/`, and the atomic write adds `.p<pid>.<nonce>.tmp`:
 # a 40-hex name under a 16-hex token measured 263 characters on a scratch copy and failed
-# (`FileNotFoundError`), which the gate took as "no depth". 12 + 20 hex keeps the whole
+# (`FileNotFoundError`), which the gate would take as "no depth". 12 + 20 hex keeps the whole
 # relative name, staging suffix included, near 70 characters -- the transient-mask cache's
 # convention (`solve_masks.component_path`, SHA-1[:12]). 80 bits of the pixel digest is far
 # beyond any collision a walk's few thousand frames could meet.
@@ -720,8 +696,7 @@ def prediction_token(backend, fov_x) -> tuple[str, dict]:
     Beyond the network's name and call: the weights revision the hub resolves it to (when
     it can be read), the moge and torch versions, the device and whether the call runs in
     fp16 (`token_runtime`). MoGe's `infer` autocasts to float16 by default, per device
-    type, so a prediction made on the CPU, or by another release, is another prediction
-    (review V9, LOW)."""
+    type, so a prediction made on the CPU, or by another release, is another prediction."""
     doc = {"schema": PREDICTION_CACHE_SCHEMA, "backend": getattr(backend, "name", None),
            "model_id": getattr(backend, "model_id", None), "kind": getattr(backend, "kind", None),
            "resolution_level": getattr(backend, "resolution_level", None),
@@ -813,11 +788,6 @@ def _moge_infer_fp16() -> bool | None:
     return _RUNTIME_CACHE["moge_fp16"]
 
 
-def prediction_cache_dir(root: Path, backend, fov_x) -> Path:
-    token, _doc = prediction_token(backend, fov_x)
-    return Path(root) / PREDICTIONS_DIRNAME / token
-
-
 def network_input_sha1(rgb: np.ndarray) -> str:
     """The SHA-1 of the pixels a depth network is shown (shape and dtype included),
     `PREDICTION_INPUT_HEX` hex."""
@@ -832,7 +802,7 @@ def _cached_prediction(path: Path, shape=None) -> np.ndarray | None:
     """The kept prediction at `path` as float32, or None: a miss. Anything but a whole
     float16 array of `shape` (the network input's height and width) is a miss -- an empty
     file (`EOFError`), a truncated or foreign one, an archive, a wrong shape -- and is
-    logged; the network runs and its prediction replaces the file (review V9, LOW)."""
+    logged; the network runs and its prediction replaces the file."""
     try:
         if not path.is_file():
             return None
@@ -854,8 +824,8 @@ def _cached_prediction(path: Path, shape=None) -> np.ndarray | None:
                                   f"{None if shape is None else tuple(shape)}")
         return None
     if not _has_depth(arr):
-        # All NaN, all infinite (review V10, L-15): it was a hit, and the frame was then fitted
-        # `ok` with a = b = NaN. SOME NaN is the network's own "no depth here" (MoGe's mask,
+        # All NaN, all infinite: kept as a hit, the frame would be fitted `ok` with
+        # a = b = NaN. SOME NaN is the network's own "no depth here" (MoGe's mask,
         # `MoGeBackend.predict`), and stays a hit.
         _log_bad_prediction(path, "it holds no finite value")
         return None
@@ -879,16 +849,12 @@ def _cache_prediction(path: Path, disp16: np.ndarray) -> None:
     write_bytes_atomic(path, lambda handle: np.save(handle, disp16))
 
 
-def _read_prediction_index(token_dir: Path) -> dict | None:
-    """{keyframe id: input digest} of a token's set, {} when it has none, None when it
-    exists and cannot be read (nothing is pruned on the strength of an unreadable index)."""
-    return _prediction_index(token_dir)[0]
-
-
 def _prediction_index(token_dir: Path) -> tuple[dict | None, bool]:
-    """(`_read_prediction_index`, torn). `torn`: the index was read, and is not one -- not
+    """(index, torn). `index` is {keyframe id: input digest} of a token's set, {} when it
+    has none, None when it exists and cannot be read (nothing is pruned on the strength of
+    an unreadable index). `torn`: the index was read, and is not one -- not
     JSON, not UTF-8, not {"keyframes": {...}} -- so no later read will do better and
-    `prune_prediction_cache` rewrites it (review V10, L-14). A file that cannot be OPENED
+    `prune_prediction_cache` rewrites it. A file that cannot be OPENED
     (held by another process, gone) is not torn: it is read again next time."""
     path = Path(token_dir) / PREDICTION_INDEX
     try:
@@ -918,7 +884,7 @@ def prune_prediction_cache(root: Path, token: str, current: dict) -> dict:
     staging file. The index is updated first and written atomically; when it cannot be
     written, or an existing one cannot be read, nothing in `token`'s set is removed -- and
     one that was read but is torn is rewritten from `current` (`index_rewritten`), so the
-    next stage prunes again (review V10, L-14)."""
+    next stage prunes again."""
     from tower.storage import sweep_abandoned_staging, write_json_atomic  # noqa: PLC0415
 
     base = Path(root) / PREDICTIONS_DIRNAME
@@ -962,8 +928,8 @@ def prune_prediction_cache(root: Path, token: str, current: dict) -> dict:
     if index is None:
         out["kept_because"] = "the set's index is unreadable"
         if torn:
-            # A TORN INDEX IS REWRITTEN (review V10, L-14). It used to stay torn, and this
-            # branch then kept every prediction for good: the in-token prune never ran again.
+            # A TORN INDEX IS REWRITTEN: left torn, this branch would keep every prediction
+            # for good, because the in-token prune would never run again.
             # Rewritten from this stage's own frames; nothing is removed on the strength of
             # it this time. From the next completed stage on the prune runs again, and a
             # prediction only the lost index named is removed then -- a keyframe that needs
@@ -1024,9 +990,8 @@ def run_depth_stage(
     )
     W, H = int(cam["width"]), int(cam["height"])
     sources = _source_paths(store.world_dir(world_id) / "solve" / session_id)
-    # The solve workspace also holds undistorted `images/`, but those are the
-    # RAW frames COLMAP was fed by some workspaces, not the world's redacted
-    # keyframes, so the dense stage deliberately does not read them.
+    # Never read the solve workspace's `images/`: in some workspaces they are
+    # the RAW frames COLMAP was fed, not the world's redacted keyframes.
     from tower.world_builder.redaction import FaceRedactor
 
     from tower.world_builder.redaction import REDACTION_NONE
@@ -1044,7 +1009,7 @@ def run_depth_stage(
     # The one allowlist (`appearance.label_is_trusted`), not `!= "none"`: the
     # depth stage's pixels become `undist/`, the surface's vertex colours, the
     # dense points and the appearance proxy, and must be trusted exactly when
-    # the appearance stage trusts the same set (review 1, M2).
+    # the appearance stage trusts the same set.
     from tower.world_builder.appearance import label_is_trusted, pixel_trust_token
 
     keyframes_are_redacted = label_is_trusted(session_redaction)
@@ -1108,10 +1073,8 @@ def run_depth_stage(
 
     maps = None
     map_shape = None
-    # Per-FRAME resume. A stop halfway through a 429-frame world should cost
-    # only the frames not yet reached. The earlier version discarded a stopped
-    # stage wholesale and re-predicted every frame, with its own prediction
-    # files sitting unread on disk beside it.
+    # Per-FRAME resume: a stop halfway through a 429-frame world costs only the
+    # frames not yet reached, not a wholesale re-prediction of every frame.
     done = {}
     if prior:
         for rec in prior.get('records') or []:
@@ -1263,13 +1226,13 @@ def run_depth_stage(
                 disp = disp16.astype(np.float32)
                 cache_record["predicted"] += 1
                 try:
-                    # One with no finite value would only be a miss when read (review V10,
-                    # L-15): it is not kept.
+                    # One with no finite value would only be a miss when read: it is
+                    # not kept.
                     if _has_depth(disp16):
                         _cache_prediction(cached_path, disp16)
                 except OSError as exc:
-                    # Never a reason to lose the depth (review V9, M-11): the stage goes
-                    # on with the float16 prediction it has, and says it kept none.
+                    # Never a reason to lose the depth: the stage goes on with the
+                    # float16 prediction it has, and says it kept none.
                     cache_record["write_failed"] += 1
                     if cache_record["write_failed"] == 1:
                         logger.warning("[Tower][WorldBuilder][dense] could not keep a depth "
@@ -1307,7 +1270,7 @@ def run_depth_stage(
                    if redactor is not None and redactor.available else None),
                **fov_record}
     if cache_record is not None:
-        # The stage COMPLETED: keep one set, the latest prediction of each keyframe (M-12).
+        # The stage COMPLETED: keep one set, the latest prediction of each keyframe.
         try:
             cache_record["pruned"] = prune_prediction_cache(root, cache_record["token"], cache_inputs)
         except Exception as exc:  # noqa: BLE001 -- pruning a cache never fails its stage
@@ -1324,8 +1287,7 @@ def _fit_record(ki, kid, pose, disp, fill_u, fill_fraction, origin, solution,
     """Fit one frame's depth prediction to THIS solve's sparse points.
 
     Separated from prediction so that a prediction made during an earlier
-    solve can be fitted again against a later one. The body is the depth
-    stage's original fit, moved and unchanged in what it computes.
+    solve can be fitted again against a later one.
     """
     m = obs_kf == ki
     if int(m.sum()) < params.min_sparse_points:
@@ -1351,11 +1313,11 @@ def _fit_record(ki, kid, pose, disp, fill_u, fill_fraction, origin, solution,
     # per-frame scale and offset applied to every surviving pixel. A fit
     # derived from invention was being applied to the real scene.
     #
-    # It was not rare. On the widest traverse, 25.3% of fit anchors landed
-    # in inpainted pixels on average, 30 gate-passing frames had over half
-    # their anchors there, and nine had essentially all of them -- one at
-    # 1.000, whose stored keyframe is entirely black, and which scored a
-    # 1.88% held-out residual against the world's 2.9% median.
+    # Measured on the widest traverse: 25.3% of fit anchors landed in
+    # inpainted pixels on average, 30 gate-passing frames had over half their
+    # anchors there, and nine had essentially all of them -- one at 1.000,
+    # whose stored keyframe is entirely black, and which scored a 1.88%
+    # held-out residual against the world's 2.9% median.
     #
     # THE GATE COULD NOT SEE IT, AND PREFERRED IT. Both halves of the
     # held-out split come from the same anchors in the same invented
@@ -1376,11 +1338,11 @@ def _fit_record(ki, kid, pose, disp, fill_u, fill_fraction, origin, solution,
     zc_fit = zc[g][clean]
     a, b, ho = align_frame(disp[vi, ui].astype(np.float64), zc_fit, backend.kind)
     if not (np.isfinite(a) and np.isfinite(b)):
-        # NEVER `ok` WITH A NON-FINITE FIT (review V10, L-15). A prediction with no finite
-        # value at the anchors -- all NaN, all infinite -- fits a = b = NaN, and the frame was
-        # recorded `ok`: a "fitted" frame whose every depth is NaN. No real frame is affected:
-        # the 1,892 `align.json` files of the coherence run (41,363 `ok` records, 1,882 files
-        # from MoGe) hold no NaN or infinity at all (P3-DEP2, 2026-09-24).
+        # NEVER `ok` WITH A NON-FINITE FIT. A prediction with no finite
+        # value at the anchors -- all NaN, all infinite -- fits a = b = NaN, and recording
+        # that frame `ok` would give a "fitted" frame whose every depth is NaN. In the
+        # coherence run, the 1,892 `align.json` files (41,363 `ok` records, 1,882 files
+        # from MoGe) hold no NaN or infinity at all.
         return {"ki": int(ki), "kid": kid, "ok": False,
                 "why": "the depth prediction gives no finite fit at the sparse anchors",
                 "anchors_used": int(len(zc_fit)),
@@ -1391,16 +1353,16 @@ def _fit_record(ki, kid, pose, disp, fill_u, fill_fraction, origin, solution,
     # stage writes.
     np.save(work / "depth" / f"{ki:05d}.npy", disp.astype(np.float16))
     return {"ki": int(ki), "kid": kid, "ok": True, "a": a, "b": b,
-                    "n_points": int(g.sum()), "held_out_rel": ho,
-                    # From the CLEAN anchors, for the same reason the fit
-                    # is: a bound computed from invented pixels bounds
-                    # nothing.
-                    "z_sparse_min": float(np.min(zc_fit)),
-                    "z_sparse_max": float(np.max(zc_fit)),
-                    "anchors_used": int(len(zc_fit)),
-                    "anchors_in_fill": int(g.sum()) - int(len(zc_fit)),
-                    "redaction_fill_fraction": fill_fraction,
-                    "image_origin": origin}
+            "n_points": int(g.sum()), "held_out_rel": ho,
+            # From the CLEAN anchors, for the same reason the fit
+            # is: a bound computed from invented pixels bounds
+            # nothing.
+            "z_sparse_min": float(np.min(zc_fit)),
+            "z_sparse_max": float(np.max(zc_fit)),
+            "anchors_used": int(len(zc_fit)),
+            "anchors_in_fill": int(g.sum()) - int(len(zc_fit)),
+            "redaction_fill_fraction": fill_fraction,
+            "image_origin": origin}
 
 
 def reusable_predictions(align_path: Path, backend: str,
@@ -1439,8 +1401,8 @@ def reusable_predictions(align_path: Path, backend: str,
     # (kid, image hash): a record written before hashes were recorded offers
     # nothing, and costs one fresh prediction rather than a wrong reuse. Nor
     # does one whose fill mask was made under an earlier FILL_RULE: its
-    # `_fill.npy` may be the empty mask of review 2's I6, and the reuse would
-    # carry it into every later build of the session.
+    # `_fill.npy` may be the empty mask an earlier FILL_RULE left, and the reuse
+    # would carry it into every later build of the session.
     return {int(r["ki"]): (r["kid"], r["image_sha1"])
             for r in cached.get("records") or []
             if isinstance(r, dict) and r.get("kid") and r.get("ki") is not None
@@ -1627,11 +1589,8 @@ def run_pack_stage(params: DenseParams, root: Path, scale: dict,
         dropped_outside_box = int(len(X) - int(inb.sum()))
         X, C, F = X[inb], C[inb], F[inb]
     else:
-        # Disabling the filter must not crash the stage. `lo` and `hi` were
-        # bound only inside the branch and then read unconditionally below, so
-        # `pack_percentile = 0` -- the natural way to turn off a filter this
-        # code documents as removing REAL observations -- raised
-        # UnboundLocalError. The parameter was declared so it could be changed.
+        # With the filter off (`pack_percentile = 0`) the box is the data's own
+        # extent; `lo` and `hi` are read below whichever branch ran.
         lo, hi = X.min(0), X.max(0)
 
     levels = []
@@ -1678,8 +1637,8 @@ def run_pack_stage(params: DenseParams, root: Path, scale: dict,
 # `solution.json` carries every keyframe id and every pose, so it is hundreds
 # of kilobytes and json.loads on it costs milliseconds. `GET /worlds` asks for
 # one field of it once per dense session, and a gallery walks every session of
-# every world -- measured at 1.6-1.9 ms per session against 0.14 ms before the
-# currency check existed, which is about a third of a second on a 200-session
+# every world -- measured at 1.6-1.9 ms per session against 0.14 ms without the
+# currency check, which is about a third of a second on a 200-session
 # library and grows with adoption.
 #
 # The file only changes when a world is re-solved, so the answer is cached on
@@ -1718,7 +1677,7 @@ def dense_currency(store, world_id: str, session_id: str,
 
     Contract `WORLD-BUILDER-WORLDS.md` rule 2 -- "the page never claims more
     than the caption says" -- and its BEHIND obligation apply to whatever the
-    render route serves, and the dense page is now what it serves. Two
+    render route serves, and the dense page is what it serves. Two
     different things can be behind, and they are reported separately:
 
     `solve_current`   the dense cloud was fused against THIS solve. False after
@@ -1867,14 +1826,13 @@ def densify(
         detail = "another densify of this session is already running"
         # DO NOT WRITE status.json HERE. It is shared with the run that holds
         # the lock, so the loser of the race would stamp "unavailable" over a
-        # perfectly healthy densify's record -- and, before the digest was
-        # carried forward, erase the value that arms the BEHIND caption. The
-        # loser has nothing to report about the session; it has something to
-        # report about ITSELF, and that is the return value.
+        # perfectly healthy densify's record. The loser has nothing to report
+        # about the session; it has something to report about ITSELF, and that
+        # is the return value.
         logger.info("[Tower][WorldBuilder][dense] %s/%s: %s",
                     world_id, session_id, detail)
         return DenseResult(state=STATE_UNAVAILABLE, detail=detail)
-    # THE SESSION'S SURFACE LOCK TOO (review V9, Q8; `_DenseLock`): the surface's and the
+    # THE SESSION'S SURFACE LOCK TOO (see `_DenseLock`): the surface's and the
     # evidence gate's depth stages write this directory under it. Refused like the densify
     # lock above -- nothing written, because the holder owns `dense/<session>/` right now.
     from tower.world_builder.surface_pipeline import _SurfaceLock, surface_dir  # noqa: PLC0415
@@ -1888,9 +1846,8 @@ def densify(
         return DenseResult(state=STATE_UNAVAILABLE, detail=detail)
 
     # From here to the `finally` at the end, every exit path is inside the
-    # lock. The three "unavailable" returns below used to sit OUTSIDE it, so
-    # densifying a session with no solve -- the most ordinary failure there is
-    # -- left the lock file behind and bricked that session permanently.
+    # lock: an "unavailable" return outside it would leave the lock file behind
+    # and brick the session permanently.
     try:
         solution = load_solution(store, world_id, session_id)
         if solution is None:
@@ -1922,15 +1879,12 @@ def densify(
         # first status write as well as before any stage runs -- an early
         # return that had already stamped `state: running` over the
         # completing run's record would destroy the frame counts it is
-        # about to report. `prune_intermediates` deletes the
-        # per-frame depth maps and `fused.npz` after a successful pack -- that
-        # is the whole point of it -- so on a re-run the depth stage found its
-        # cache key intact and reused it, the fuse stage found no `fused.npz`
-        # and re-ran, and then died on the first `depth/00081.npy` that pruning
-        # had removed. Every successfully densified world was in that state,
-        # because pruning is the default, so `world_densify.py --world X` twice
-        # raised FileNotFoundError the second time and the documented "a re-run
-        # resumes" was false in exactly the ordinary case.
+        # about to report. `prune_intermediates` deletes the per-frame depth
+        # maps and `fused.npz` after a successful pack, so a re-run would find
+        # the depth stage's cache key intact and reuse it, find no `fused.npz`
+        # and re-run the fuse stage, and then die on the first per-frame depth
+        # map that pruning had removed. Pruning is the default, so this is the
+        # ordinary case.
         manifest_path = root / "manifest.json"
         if manifest_path.exists() and not force:
             try:
@@ -1955,7 +1909,7 @@ def densify(
             # without an input_digest and a manifest without one would
             # otherwise compare equal and short-circuit a rebuild that
             # nothing has established is unnecessary -- the same
-            # "None matches everything" bug the depth cache key had.
+            # "None matches everything" hazard as the depth cache key.
             if (existing and digest is not None
                     and existing_digest == digest and same_params
                     and existing.get("keyframe_image_set") == set_token):
