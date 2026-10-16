@@ -244,6 +244,22 @@ class TestTheOperatorPath:
         session.watcher_left("phone:sub-1")
         assert session.state == STATE_RUNNING
 
+    def test_stream_closure_releases_hold_for_a_later_watched_session(self):
+        session = _session()
+        session.start()
+        assert _await_state(session, STATE_RUNNING)
+        session.stream_opened(owner="operator-phone")
+        session.stream_closed(owner="operator-phone")
+        assert _await_state(session, STATE_STOPPED)
+
+        session.stream_opened(owner="watcher-phone")
+        session.watcher_joined("watcher-phone:sub-1", owner="watcher-phone")
+        assert _await_state(session, STATE_RUNNING)
+        session.watcher_left("watcher-phone:sub-1")
+
+        assert _await_state(session, STATE_STOPPED, timeout=0.5)
+        assert session.status()["demand"]["operator_hold"] is False
+
     def test_a_stream_alone_does_not_start_it_after_an_http_stop(self):
         session = _session()
         session.start()

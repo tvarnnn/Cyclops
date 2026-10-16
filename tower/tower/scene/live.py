@@ -248,7 +248,7 @@ class SceneLive(LiveSession):
 
     def _stop_then_reconcile(self) -> None:
         """Stop OUTSIDE the demand lock, then re-ask the facts under it."""
-        super().stop()
+        self.stop()
         with self._demand:
             self._reconcile()
 
