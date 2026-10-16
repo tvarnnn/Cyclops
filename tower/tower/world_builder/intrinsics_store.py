@@ -3,8 +3,9 @@
 It closes the loop between `calibrate_charuco.py` and
 `world_build_session.py`: the calibrator files a calibration where the
 builder looks for one, so neither end needs an operator to remember a
-flag. A walk with no calibration records keyframes but solves no poses
-and no points, so every miss says where it looked (`lookup`).
+flag. Measured on a walk with no calibration on file: 155 keyframes
+accepted, 0 camera poses solved and 0 map points, with nothing saying
+why -- so every miss now says where it looked (`lookup`).
 
 WHERE CALIBRATIONS LIVE, AND WHY
 

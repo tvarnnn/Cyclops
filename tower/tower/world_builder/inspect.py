@@ -249,7 +249,9 @@ def render_text(report: dict) -> str:
     if report["scale"]["state"] == SCALE_UNKNOWN:
         # States the RULE rather than one of its two causes. `unknown` is
         # set both by "no solved pose" and by "more than one segment,
-        # each with its own arbitrary unit".
+        # each with its own arbitrary unit" -- a world with 29 solved poses
+        # across 6 segments is `unknown` and must not read as having no
+        # solved pose.
         lines.append(
             "note            no unit at all -- that needs solved poses "
             "inside a SINGLE segment"

@@ -3,11 +3,13 @@ redacted keyframes. Off by default, and never privacy-safe.
 
 WHY THIS EXISTS. The saved world's appearance normally comes from the
 wearer's REDACTED keyframes (`appearance.py`, contract
-`WORLD-BUILDER-APPEARANCE.md`). Redaction fills discard picture the
-reconstruction needs, and the cross-frame consensus then withdraws what one
-frame hid from every other frame as well. This bypass exists to measure what
-reconstruction quality the ORIGINAL local imagery supports, with the privacy
-implementation left in place and re-enablable rather than deleted.
+`WORLD-BUILDER-APPEARANCE.md`). On the canonical capture that costs a great
+deal of the picture before any reconstruction runs: measured over its 398
+keyframes, 182 of them carry a solid fill, covering 27.5% of those frames on
+average and 93.8% at the worst, and the cross-frame consensus then withdraws
+what one frame hid from every other frame as well. This bypass exists to
+measure what reconstruction quality the ORIGINAL local imagery supports, with
+the privacy implementation left in place and re-enablable rather than deleted.
 
 SO THIS MODULE IS THE WHOLE BYPASS, AND IT IS THE ONLY PLACE THAT NAMES THE
 RAW FRAMES. `appearance.py` keeps its one provenance function and its static

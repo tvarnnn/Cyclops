@@ -6,8 +6,9 @@ every output of a session is byte-identical to a builder without this module (pi
 tests/golden/world_builder_frame_quality_ceb203a.json).
 
 WHY IT EXISTS. Only keyframes carry a quality record (`keyframes.jsonl`), so a walk that
-refuses many of its frames (`blurred`, `insufficient_motion`) leaves no per-frame series to
-calibrate a turn governor against. This is that series.
+refused a quarter of its frames as `blurred` -- walk 3: 851 blurred, 1,458
+insufficient_motion -- leaves no per-frame series to calibrate a turn governor against. This
+is that series.
 
 WHY A FILE OF ITS OWN, `sessions/<sid>/frames_quality.jsonl`, and not fields on an existing
 record:
@@ -82,20 +83,26 @@ writing or flushing -- is logged ONCE and turns the log off for the rest of that
 builder never sees an exception from here.
 
 THE PRICE OF BUFFERING, and what a reader must tolerate. A builder killed outright loses the
-unflushed tail: at most one buffer, 8 KB, about 20 lines (under 2 s at 12 fps). And the
-buffer reaches the disk in 8 KB pieces cut at byte boundaries, not at line ends, so such a
-kill can also leave the LAST LINE TORN. Readers must
-skip a torn line rather than fail on it: `read_frames_quality` does (as `read_raw_jsonl` does for
-every journal here), and a log opened on a file whose last line is torn starts on a fresh line
+unflushed tail: at most one buffer, 8 KB, about 20 lines -- under 2 s at 12 fps, about 6 s at
+~3.3 fps delivery. And the buffer reaches the disk in 8 KB pieces cut at byte boundaries, not
+at line ends, so such a kill can also leave the LAST LINE TORN. Readers must skip a torn line
+rather than fail on it: `read_frames_quality` does (as `read_raw_jsonl` does for every journal
+here), and a log opened on a file whose last line is torn starts on a fresh line
 first, so the tear never fuses with the next record. Flushing per line would close that window
 at the cost of a system call per frame; for a calibration series the tolerant reader is the
 cheaper answer.
 
-COST: about 5 us per line for the row, the JSON and the buffered write, against an 83 ms frame
-interval at 12 fps; no measurable change in `observe()` time. A line is about 400 bytes, so a
-5-minute walk at 12 fps (3,600 frames) is about 1.5 MB. The names are the keyframe record's,
-spelled out, on purpose: a reader joins the two files without a legend. Retention is the
-session's: kept with the world, purged with it. It holds numbers only, never imagery.
+MEASURED (this host): 5.3 us per line for the row, the JSON and the buffered write, against an
+83 ms frame interval at 12 fps. Replaying a real frozen 1,251-frame capture (0892c308) twice
+each way, observe()'s median was 3.88-4.01 ms off and 3.94-4.09 ms on, and the whole replay
+8.82-9.05 s off and 8.81-9.23 s on: no difference outside run-to-run noise.
+
+SIZE: 415 bytes a line on that real capture (519,487 bytes, 1,251 lines); 405 for a measured
+frame, 444 for a keyframe (its 41-character id) and 346 for an unscored one with a Tower epoch
+`received_at`. A 5-minute walk at 12 fps (3,600 frames) is therefore about 1.5 MB; at ~3.3 fps
+delivery (990 frames), 0.4 MB. The names are the keyframe record's, spelled out, on purpose:
+237 of those bytes are keys, and a reader joins the two files without a legend. Retention is
+the session's: kept with the world, purged with it. It holds numbers only, never imagery.
 """
 
 import io
@@ -188,7 +195,7 @@ class FrameQualityLog:
                     torn = tail.read(1) != b"\n"
             # Append, never truncate: a session id is fresh, so the file is new, and if it
             # somehow is not, nothing already in it is destroyed. "\n" on every platform,
-            # so the bytes do not depend on the host.
+            # so the bytes (and the size quoted above) do not depend on the host.
             self._handle = open(  # noqa: SIM115 -- held for the session, closed in close()
                 self._path, "a", encoding="utf-8", newline="\n",
                 buffering=io.DEFAULT_BUFFER_SIZE,

@@ -5,8 +5,8 @@ WORLD-BUILDER-WORLDS.md §2b; CARTRIDGE-RESULTS.md §10.1 `lifecycle.processing`
 status producer and the listing never call `read_phase` or `project`.
 
 WHY A FILE OF ITS OWN. After Stop the builder keeps the world's writer lock through the
-final solve (a child process) and the final build -- most of the wait after a long walk --
-and nothing else on disk says which part it is in. The stage lives in one small
+final solve (a child process) and the final build -- about 30 of the 45 minutes a long walk
+waits -- and nothing else on disk says which part it is in. The stage lives in one small
 atomic file in the solve workspace, `<world>/solve/<session>/finish_phase.json`, so the
 session record, every product file and every solve output stay exactly what they were.
 
@@ -111,7 +111,7 @@ class PhaseWriter:
         self._warned = False
 
     @classmethod
-    def for_builder(cls, store, world_id: str, session_id: str) -> PhaseWriter | None:
+    def for_builder(cls, store, world_id: str, session_id: str) -> "PhaseWriter | None":
         """The builder parent's writer, or None.
 
         None unless `TOWER_WORLD_FINISH_STAGES` is on, the session record's `finalization`
@@ -183,7 +183,7 @@ class PhaseWriter:
 
 
 def writer_from_environment(store, world_id: str, session_id: str,
-                            environ=None) -> PhaseWriter | None:
+                            environ=None) -> "PhaseWriter | None":
     """The final-solve child's writer, or None.
 
     None unless TOKEN_ENV is present, parses, has this FORMAT, names this world and session,

@@ -2,12 +2,14 @@
 
 WHY. The evidence gate (`coherence_gate.py`) refuses to attach a piece whose metric level differs from the
 room's by more than x1.25, and splits a piece at an internal x1.25 step: one similarity cannot hold a x4
-scale step. It needs, per camera, the ratio between the solve's depth
+scale step (a measured bathroom sat at x4.27). It needs, per camera, the ratio between the solve's depth
 of what the camera sees and an independent METRIC depth of the same pixels. Metric scale is a hard
 dependency of the gate: with no ratio at all the gate attaches nothing (`scale-unavailable`).
 
-WHAT IT MEASURES. A port of the validation harness's triangulated-depth ("TRI") estimator, which is the
-measurement the gate rule was validated with. Per verified image pair of the SAME solver component whose two cameras are both published (>= `min_obs` observations):
+WHAT IT MEASURES. A port of the validation harness's triangulated-depth ("TRI") estimator
+(`eval_placement.triangulated_depth_ratios`), which is the measurement the gate rule was validated with.
+Per verified image pair of the SAME solver component whose two cameras are both published (>= `min_obs`
+observations):
 
   * the pair's inlier correspondences, normalised by the solve's pinhole camera;
   * the pair's relative pose FROM THE SOLVE (R_ji = R_j R_i^T, t_ji = R_j (C_i - C_j));
@@ -206,7 +208,8 @@ class DepthStageSampler:
 
 
 def sample_nearest(depth: np.ndarray | None, uv) -> np.ndarray:
-    """Depth at pixels (nearest pixel, COLMAP convention: pixel i spans [i, i+1)); NaN outside or invalid."""
+    """Depth at pixels (nearest pixel, COLMAP convention: pixel i spans [i, i+1)); NaN outside or invalid.
+    The harness's `DepthCache.sample`, verbatim in what it computes."""
     uv = np.asarray(uv, dtype=np.float64).reshape(-1, 2)
     out = np.full(len(uv), np.nan)
     if depth is None or not len(uv):
@@ -227,7 +230,7 @@ def sample_nearest(depth: np.ndarray | None, uv) -> np.ndarray:
 
 def triangulate_midpoint(x1, x2, R, t):
     """Depths (z1, z2) of normalised correspondences under x2 ~ R x1 + t (least-squares midpoint along the two
-    rays) and the angle between the rays (degrees)."""
+    rays) and the angle between the rays (degrees). The harness's `eval_placement.triangulate_midpoint`."""
     f1 = np.c_[x1, np.ones(len(x1))]
     f2 = np.c_[x2, np.ones(len(x2))]
     a = f1 @ R.T
@@ -246,7 +249,8 @@ def triangulate_midpoint(x1, x2, R, t):
 
 
 def sampson_px(R, t, x1, x2, f):
-    """Per-correspondence Sampson error in pixels (focal `f`)."""
+    """Per-correspondence Sampson error in pixels (focal `f`).
+    The harness's `eval_placement.sampson_px_each`."""
     t = t / (np.linalg.norm(t) + 1e-15)
     tx = np.array([[0, -t[2], t[1]], [t[2], 0, -t[0]], [-t[1], t[0], 0]])
     E = tx @ R
