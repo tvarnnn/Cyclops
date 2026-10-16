@@ -36,9 +36,8 @@ watching**. Two facts, tracked apart, neither sufficient alone:
   * the STREAM is the feed. `stream_opened` / `stream_closed` arrive from
     the connection that sends frames. With no stream there is nothing to
     observe, so the last stream closing stops the session whoever started
-    it -- which closes integration finding 15, where a Stop -> Start over
-    HTTP left a session owned by nobody that its own stream could no
-    longer end.
+    it (otherwise a Stop -> Start over HTTP leaves a session owned by
+    nobody that its own stream can no longer end).
   * a WATCHER is the demand. `watcher_joined` / `watcher_left` arrive from
     the result channel when a client subscribes to the live scene. A phone
     streaming for World Builder or the CV Lab is not a request to detect
@@ -122,11 +121,10 @@ class SceneLive(LiveSession):
     ) -> None:
         # `follow_stream` defaults ON here and OFF on the base, and the
         # difference is the cartridge. Enabling Scene Understanding is
-        # already the opt-in, it writes nothing, and requiring a second
-        # out-of-band step was not a safety property -- it was a dead
-        # product path, because iOS sends nothing when a cartridge is
-        # opened. TOWER_SCENE_AUTOSTART=false restores manual control,
-        # and the five routes work either way.
+        # already the opt-in and it writes nothing; iOS sends nothing when
+        # a cartridge is opened, so a second manual step would leave the
+        # product path dead. TOWER_SCENE_AUTOSTART=false restores manual
+        # control, and the five routes work either way.
         #
         # Document Memory deliberately defaults it OFF: it writes to
         # disk, and a session that persists gets an explicit start.
@@ -147,7 +145,7 @@ class SceneLive(LiveSession):
         self._demand = threading.RLock()
         # Connections currently streaming frames. NOT cleared by a stop:
         # a stream that is open stays open whether or not anyone is
-        # watching it, which is exactly the fact the old owner set lost.
+        # watching it.
         self._open_streams: set = set()
         # Result-channel subscriptions to the live scene, token -> owner
         # connection, so a connection closing can drop every watcher it
@@ -178,7 +176,7 @@ class SceneLive(LiveSession):
     # `STOP_JOIN_TIMEOUT_S`, and `stream_opened` / `watcher_joined` are
     # called inline on the event loop -- so a lock held across the join
     # would freeze every connection's frames, pings and `/health` while
-    # one phone's session wound down (a reviewer's SEV-1, 2026-09-07).
+    # one phone's session wound down.
     # The price is a small race: a watcher joining while a stop it did
     # not ask for is in flight can see its start undone. So every stop
     # is followed by `_reconcile()` under the lock, which starts a fresh
