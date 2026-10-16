@@ -60,7 +60,8 @@ MSG_ERROR = "cv_lab_error"
 async def handle(message: dict, *, websocket, sender) -> None:
     """Dispatch one CV Lab control message from the main websocket.
 
-    Answers `cv_lab_unavailable` when this Tower runs no Lab. `cv_lab_status`
+    Answers a `cv_lab_error` with reason `lab_unavailable` when this Tower
+    runs no Lab. `cv_lab_status`
     replies with the Lab's status; `cv_lab_start`, `cv_lab_pause`,
     `cv_lab_resume` and `cv_lab_stop` call the matching Lab method (with
     `experiment_id` or `run_id`). An accepted command replies with the new

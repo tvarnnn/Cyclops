@@ -316,7 +316,8 @@ def follow_capture(directory: Path, *, poll_seconds: float, max_idle_polls,
     `yield` would run none of its body until first advanced, and `main()`
     creates the world before it advances the frame source: a session pointed
     at a missing directory would mint an empty world and only then exit
-    nonzero. Checking here makes the refusal (`SystemExit`) happen before
+    nonzero (86 of the 123 worlds in the corpus on this host held a
+    `world.json` and no sessions, left by failed follows). Checking here makes the refusal (`SystemExit`) happen before
     `main()` reaches the store. Creating the world before the first frame
     stays deliberate, so a Tower whose phone has connected but not yet sent a
     frame reports a world that exists and is empty.

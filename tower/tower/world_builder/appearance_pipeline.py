@@ -228,8 +228,9 @@ def build_appearance(store, world_id: str, session_id: str, *,
     the whole parameter digest matches an artifact already built (unless
     `force`); then prepare each posed keyframe (provenance), find occluders,
     solve per-frame exposure gains, mask transients, select keyframes by how
-    well they cover the proxy, encode them into chunks (ASTC when available,
-    otherwise WebP) and publish the manifest. `should_stop` is polled between
+    well they cover the proxy, encode them into chunks (WebP always, plus
+    ASTC for the phone tier when an ASTC encoder is available) and publish
+    the manifest. `should_stop` is polled between
     stages and returns a stopped result; `progress` reports per-stage counts.
     A missing prerequisite (no solution, no surface, purged imagery) is
     recorded as `unavailable` and any other error as `failed`; neither

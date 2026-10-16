@@ -385,9 +385,10 @@ class KeyframeSelector:
         frame of a segment is accepted as the session seed; a feature survival
         ratio below the loss threshold for `loss_grace_frames` frames in a row
         returns `tracking_lost`, a shorter dip is rejected as held; a weak
-        survival is rejected as degraded; no motion evidence, a too-recent last
-        keyframe, or too little displacement is skipped; and overlap falling below
-        the floor, or displacement reaching the target, is accepted. Returns a
+        survival is rejected as degraded; no motion evidence or a too-recent last
+        keyframe is skipped; overlap falling below the floor is accepted; too
+        little displacement is then skipped; and displacement reaching the
+        target is accepted (anything in between is skipped). Returns a
         `KeyframeDecision` (decision, reason) and keeps the blur-run and
         loss-run counters for the next call.
 

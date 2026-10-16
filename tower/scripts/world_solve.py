@@ -52,8 +52,10 @@ def main(argv=None) -> int:
     (`threads=-1`) and installs the finish-phase writer when the builder passed
     its token; a background solve uses all cores but two. The summary dict
     goes to stdout as JSON or a text table, which is what
-    `BackgroundSolver` reads back. Always returns 0; a solve that fails or is
-    withheld says so in the summary.
+    `BackgroundSolver` reads back. Returns 0 when a summary was written; a
+    solve that is refused or withheld says so in the summary, while an
+    extraction or matching exception propagates and the process exits
+    nonzero with no summary.
     """
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--root", type=artifact_root_arg, required=True)
