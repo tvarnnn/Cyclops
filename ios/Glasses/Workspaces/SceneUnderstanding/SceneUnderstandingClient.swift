@@ -135,10 +135,13 @@ final class TowerSceneUnderstandingClient: SceneUnderstandingClient {
     private var heldSessionID: Int?
     /// Whether the Scene Understanding screen is on screen right now.
     ///
-    /// **This is what starts and stops the detector on the Tower.** A Tower
-    /// runs a scene session only while somebody is STREAMING and somebody is
-    /// WATCHING, and a `result_subscribe` for the live scene is what
-    /// "watching" means. Subscribing at connection time would keep a people
+    /// **This is the phone's demand for the detector on the Tower.** Without
+    /// an operator hold, a Tower runs a scene session only while somebody is
+    /// STREAMING and somebody is WATCHING, and a `result_subscribe` for the
+    /// live scene is what "watching" means. (An operator's `POST /scene/start`
+    /// is a separate hold: it runs the session with or without a stream or a
+    /// watcher, and keeps it when this screen leaves, until the operator stops
+    /// it.) Subscribing at connection time would keep a people
     /// detector running behind World Builder's and the CV Lab's camera for as
     /// long as the app was connected. So the subscription is opened when this
     /// screen appears and closed when it disappears; the socket, the
@@ -282,8 +285,9 @@ final class TowerSceneUnderstandingClient: SceneUnderstandingClient {
     // MARK: Visibility
 
     /// Opens the live subscription when the Scene screen appears and closes it
-    /// when the screen goes, which is what starts and stops the Tower's people
-    /// detector.
+    /// when the screen goes. That subscription is the phone's demand for the
+    /// Tower's people detector; without an operator hold, the detector runs
+    /// only while some watcher is subscribed and a stream is open.
     ///
     /// How: a change of visibility only (a repeat is ignored). Appearing
     /// subscribes, through every gate in `subscribeIfPossible`. Leaving sends
