@@ -76,10 +76,10 @@ walking**, against roughly 2.1 GB an hour for the recording it is taken
 from -- a factor of about 500. The whole owned store for every record on
 this host is **1.31 MiB against 568 MiB of frames: 0.23%**.
 
-MEASURED OVER ALL 116 RECORDS, not a sample: the figures above come from
-re-running the shipped `KeyframeStore` over every record in the store
-whose frame still resolves -- 116 of 116. (A 26-record subset had given
-a 13.9 KB mean.)
+MEASURED OVER ALL 116 RECORDS, not a sample. An earlier version of this
+note quoted a 26-record subset and a 13.9 KB mean; a reviewer caught it,
+and the figures above come from re-running the shipped `KeyframeStore`
+over every record in the store whose frame still resolves -- 116 of 116.
 
 The 384 px bound is the reason those figures are small, and it is a CAP
 rather than a target: a crop already smaller is written at its own size
