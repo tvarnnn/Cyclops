@@ -63,7 +63,7 @@ from tower.object_memory.classes import prompt_for  # noqa: E402
 # THE VOCABULARY IS THE SHIPPED ONE, imported rather than restated.
 #
 # A restated copy drifts from the shipped list (a restated one ran 34 words
-# where `verifier_vocabulary()` returned 31), and the accuracy figures
+# where `verifier_vocabulary()` returns 31), and the accuracy figures
 # would then describe a configuration that does not ship. Importing removes
 # that class of error.
 #

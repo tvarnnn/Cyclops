@@ -269,7 +269,7 @@ def measure_memory(frames: int) -> dict:
     RSS alone cannot answer it. RSS is what the process has asked the OS
     for, and in a process running OpenCV and numpy that includes their own
     pools -- which grow, shrink and hold memory on their own schedule.
-    Over identical work, RSS has been observed at -524 KB in one run and
+    Over identical work, RSS growth has been observed at -524 KB in one run and
     +2.8 MB in another. A quantity that changes sign between runs is not
     measuring the thing.
 

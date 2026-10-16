@@ -8,7 +8,7 @@ Core:   tower.world_builder.photo_floorplan (pure; this script is the only
 For the FINAL `guidance.coverage` landing recorded in a replay run's
 `status-pushes.jsonl` (it needs the solve's 3-D points, kept only for the final
 solve), and for each of that landing's displayed registered components, this
-script builds the homography floor raster (lower-image floor homography):
+script runs fallback (3), the lower-image floor homography:
 
   a. the landing's own receipt basis and (unpadded) bounds, verbatim, and its
      eligible, posed keyframes, recovered by re-running
