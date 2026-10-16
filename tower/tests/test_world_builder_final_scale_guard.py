@@ -89,35 +89,49 @@ def _walk_centers(n, step=0.05):
 
 
 def test_a_normal_walk_has_no_pose_flag():
-    out = FSG.assess_v2(_cams(100, centers=_walk_centers(100)), _levels(100, []))
+    cams = _cams(100, centers=_walk_centers(100))
+    out = FSG.assess_v2(cams, _levels(100, []))
     assert out["pose"]["flags"] == [] and out["pose"]["warnings"] == [] and out["pieces"] == []
     assert out["pose"]["would_isolate_keyframes"] == 0
+    screen = FSG._pose_screen(cams, out["pose"]["metres_per_unit"], P)
+    assert screen["isolated"] == [] and {c.kid for c in screen["room"]} == _ids(0, 100)
 
 
 def test_a_one_camera_spike_would_be_its_own_pose_piece_and_the_walk_rejoins():
     centers = _walk_centers(100)
     centers[50] = [80.0, 0.0, 0.0]          # 81 m away for one frame, then back (walk-6 534->535)
-    out = FSG.assess_v2(_cams(100, centers=centers), _levels(100, []))
+    cams = _cams(100, centers=centers)
+    out = FSG.assess_v2(cams, _levels(100, []))
     assert out["pose"]["would_isolate_keyframes"] == 1
     assert len(out["room_keyframes"]) == 100
     assert out["pose"]["flag_counts"]["hard-step"] == 2
+    screen = FSG._pose_screen(cams, out["pose"]["metres_per_unit"], P)
+    assert [{c.kid for c in piece} for piece in screen["isolated"]] == [{"s:00000050"}]
+    assert {c.kid for c in screen["room"]} == _ids(0, 100) - {"s:00000050"}
 
 
 def test_a_small_speed_exceedance_is_a_warning_only():
     centers = _walk_centers(100)
     for i in range(50, 100):
         centers[i] = [centers[i][0] + 1.5, 0.0, 0.0]    # 1.55 m in 0.5 s: allowance 1.3, hard limit 2.6
-    out = FSG.assess_v2(_cams(100, centers=centers), _levels(100, []))
+    cams = _cams(100, centers=centers)
+    out = FSG.assess_v2(cams, _levels(100, []))
     assert out["pieces"] == [] and out["pose"]["would_isolate_keyframes"] == 0
     assert out["pose"]["warning_counts"] == {"speed": 1}
+    screen = FSG._pose_screen(cams, out["pose"]["metres_per_unit"], P)
+    assert screen["isolated"] == [] and {c.kid for c in screen["room"]} == _ids(0, 100)
 
 
 def test_a_hard_one_sided_jump_would_isolate_the_smaller_side():
     centers = _walk_centers(100)
     for i in range(70, 100):
         centers[i] = [centers[i][0] + 6.0, 0.0, 0.0]    # 6 m in 0.5 s, and the walk continues there
-    out = FSG.assess_v2(_cams(100, centers=centers), _levels(100, []))
+    cams = _cams(100, centers=centers)
+    out = FSG.assess_v2(cams, _levels(100, []))
     assert out["pose"]["would_isolate_keyframes"] == 30
+    screen = FSG._pose_screen(cams, out["pose"]["metres_per_unit"], P)
+    assert [{c.kid for c in piece} for piece in screen["isolated"]] == [_ids(70, 100)]
+    assert {c.kid for c in screen["room"]} == _ids(0, 70)
 
 
 def test_a_speed_exceedance_corroborated_by_a_vertical_step_is_hard():
@@ -125,8 +139,12 @@ def test_a_speed_exceedance_corroborated_by_a_vertical_step_is_hard():
     for i in range(80, 100):
         centers[i] = [centers[i][0] + 0.5, 1.2, 0.0]    # 1.3 m in 0.5 s, 1.2 m of it vertical
     # camera "up" is -Y of the camera; the room's median up is the world -Y, so Y is vertical.
-    out = FSG.assess_v2(_cams(100, centers=centers), _levels(100, []))
+    cams = _cams(100, centers=centers)
+    out = FSG.assess_v2(cams, _levels(100, []))
     assert out["pose"]["would_isolate_keyframes"] == 20
+    screen = FSG._pose_screen(cams, out["pose"]["metres_per_unit"], P)
+    assert [{c.kid for c in piece} for piece in screen["isolated"]] == [_ids(80, 100)]
+    assert {c.kid for c in screen["room"]} == _ids(0, 80)
 
 
 def test_a_multi_defect_camera_is_quarantined_and_a_single_defect_is_not():
@@ -138,9 +156,13 @@ def test_a_multi_defect_camera_is_quarantined_and_a_single_defect_is_not():
     times = [0.5 * i for i in range(100)]
     times[60] = times[59] + 3.0                         # not a testable step either side
     times[61:] = [t + 6.0 for t in times[61:]]
-    out = FSG.assess_v2(_cams(100, centers=centers, rotations=rots, times=times), _levels(100, []))
+    cams = _cams(100, centers=centers, rotations=rots, times=times)
+    out = FSG.assess_v2(cams, _levels(100, []))
     assert out["pose"]["would_isolate_keyframes"] == 1
     assert out["pose"]["defects"]["s:00000030"] == ["flip"]
+    screen = FSG._pose_screen(cams, out["pose"]["metres_per_unit"], P)
+    assert [{c.kid for c in piece} for piece in screen["isolated"]] == [{"s:00000060"}]
+    assert {c.kid for c in screen["room"]} == _ids(0, 100) - {"s:00000060"}
 
 
 def test_a_non_finite_pose_is_quarantined():
@@ -149,6 +171,9 @@ def test_a_non_finite_pose_is_quarantined():
     cams[20].tvec = np.array([np.nan, 0.0, 0.0])
     out = FSG.assess_v2(cams, _levels(50, []))
     assert out["pose"]["would_isolate_keyframes"] == 1 and out["pose"]["nonfinite"] == 1
+    screen = FSG._pose_screen(cams, out["pose"]["metres_per_unit"], P)
+    assert [{c.kid for c in piece} for piece in screen["isolated"]] == [{"s:00000020"}]
+    assert {c.kid for c in screen["room"]} == _ids(0, 50) - {"s:00000020"}
 
 
 def test_the_pose_screen_reads_metres_at_the_reference_scale():
@@ -157,10 +182,16 @@ def test_the_pose_screen_reads_metres_at_the_reference_scale():
     centers = _walk_centers(100, step=0.01)
     for i in range(50, 100):
         centers[i] = [centers[i][0] + 1.0, 0.0, 0.0]
-    out = FSG.assess_v2(_cams(100, centers=centers), _levels(100, [(0, 100, 0.25)]))
+    cams = _cams(100, centers=centers)
+    out = FSG.assess_v2(cams, _levels(100, [(0, 100, 0.25)]))
     assert out["pose"]["would_isolate_keyframes"] == 50
-    out = FSG.assess_v2(_cams(100, centers=centers), _levels(100, [(0, 100, 1.0)]))
-    assert out["pose"]["would_isolate_keyframes"] == 0
+    screen = FSG._pose_screen(cams, out["pose"]["metres_per_unit"], P)
+    assert [{c.kid for c in piece} for piece in screen["isolated"]] == [_ids(50, 100)]
+    assert {c.kid for c in screen["room"]} == _ids(0, 50)
+    out = FSG.assess_v2(cams, _levels(100, [(0, 100, 1.0)]))
+    assert out["pieces"] == [] and out["pose"]["would_isolate_keyframes"] == 0
+    screen = FSG._pose_screen(cams, out["pose"]["metres_per_unit"], P)
+    assert screen["isolated"] == [] and {c.kid for c in screen["room"]} == _ids(0, 100)
 
 
 # ---------------------------------------------------------------------------

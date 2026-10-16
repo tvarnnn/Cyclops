@@ -44,43 +44,53 @@ from tower.world_builder import final_scale_guard as FSG
 # F2 ------------------------------------------------------------------------
 
 
-def _attached_ids(out):
-    return {k for u in out["uncertified"] for k in u["keyframe_ids"]}
-
-
 def test_f2_a_short_gross_excursion_inside_a_normal_run_stays_attached_and_uncertified():
     # The reviewer's probe: 30 normal, 5 at x2.56, 30 normal. The running median never moves.
     out = FSG.assess_v2(_cams(65), _levels(65, [(30, 35, 2.56)]))
     assert out["pieces"] == []
-    assert _attached_ids(out) == _ids(30, 35)
+    (span,) = out["uncertified"]
+    assert span["keyframe_ids"] == sorted(_ids(30, 35))
+    assert span["kind"] == "excursion" and span["uncertified"] == FSG.UNCERTIFIED_EXCURSION
+    assert span["measured"] == 5 and span["decision"] == "attached"
+    assert set(out["room_keyframes"]) == _ids(0, 65)
     assert out["scale_status"] == FSG.SCALE_UNCERTIFIED
 
 
 @pytest.mark.parametrize("ratio", [0.3, 1.5, 2.56, 4.27])
 def test_f2_excursions_on_either_side(ratio):
     out = FSG.assess_v2(_cams(80), _levels(80, [(40, 44, ratio)]))
-    assert out["pieces"] == [] and _attached_ids(out) == _ids(40, 44)
+    assert out["pieces"] == []
+    (span,) = out["uncertified"]
+    assert span["keyframe_ids"] == sorted(_ids(40, 44))
+    assert span["kind"] == "excursion" and span["uncertified"] == FSG.UNCERTIFIED_EXCURSION
+    assert span["measured"] == 4 and span["decision"] == "attached"
 
 
 def test_f2_three_cameras_make_an_excursion_two_do_not_and_unmeasured_ones_do_not_break_it():
     out = FSG.assess_v2(_cams(80), _levels(80, [(40, 43, 2.56)]))
-    assert _attached_ids(out) == _ids(40, 43)
+    (span,) = out["uncertified"]
+    assert span["keyframe_ids"] == sorted(_ids(40, 43))
+    assert span["kind"] == "excursion" and span["uncertified"] == FSG.UNCERTIFIED_EXCURSION
+    assert span["measured"] == 3
     out = FSG.assess_v2(_cams(80), _levels(80, [(40, 42, 2.56)]))
-    assert _attached_ids(out) == set()
+    assert out["uncertified"] == []
     # 40, 41, (42 unmeasured), 43: one excursion of three measured cameras, the gap inside it
     out = FSG.assess_v2(_cams(80), _levels(80, [(40, 44, 2.56)], missing={42}))
-    assert _attached_ids(out) == _ids(40, 44)
+    (span,) = out["uncertified"]
+    assert span["keyframe_ids"] == sorted(_ids(40, 44))
+    assert span["kind"] == "excursion" and span["uncertified"] == FSG.UNCERTIFIED_EXCURSION
+    assert span["measured"] == 3
 
 
 def test_f2_a_borderline_wobble_is_not_an_excursion():
     # 5 cameras at x1.3: beyond the screen, inside the clear boundary -- noise-sized, not gross.
     out = FSG.assess_v2(_cams(80), _levels(80, [(40, 45, 1.3)]))
-    assert out["pieces"] == [] and _attached_ids(out) == set()
+    assert out["pieces"] == [] and out["uncertified"] == []
 
 
 def test_f2_noise_alone_makes_no_excursion():
     out = FSG.assess_v2(_cams(2000), _levels(2000, [], noise=0.08, seed=11))
-    assert out["pieces"] == [] and _attached_ids(out) == set()
+    assert out["pieces"] == [] and out["uncertified"] == []
 
 
 # F3 ------------------------------------------------------------------------
@@ -92,15 +102,23 @@ def test_f3_a_distant_island_never_rejoins_across_an_untestable_gap():
     centers = [[0.01 * i, 0.0, 0.0] for i in range(10)] + [[81.0 + 0.01 * i, 0.0, 0.0] for i in range(10)] \
         + [[162.0 + 0.01 * i, 0.0, 0.0] for i in range(10)]
     times = [0.5 * i for i in range(10)] + [5.0 + 10.0 * i for i in range(10)] + [95.5 + 0.5 * i for i in range(10)]
-    out = FSG.assess_v2(_cams(30, centers=centers, times=times), _levels(30, []))
+    cams = _cams(30, centers=centers, times=times)
+    out = FSG.assess_v2(cams, _levels(30, []))
     assert out["pose"]["would_isolate_keyframes"] == 20
+    screen = FSG._pose_screen(cams, out["pose"]["metres_per_unit"], FSG.GuardParams())
+    assert {c.kid for c in screen["room"]} == _ids(0, 10)
+    assert [{c.kid for c in piece} for piece in screen["isolated"]] == [_ids(10, 20), _ids(20, 30)]
 
 
 def test_f3_a_spike_still_rejoins_within_the_bounds():
     centers = _walk_centers(100)
     centers[50] = [80.0, 0.0, 0.0]
-    out = FSG.assess_v2(_cams(100, centers=centers), _levels(100, []))
+    cams = _cams(100, centers=centers)
+    out = FSG.assess_v2(cams, _levels(100, []))
     assert out["pose"]["would_isolate_keyframes"] == 1
+    screen = FSG._pose_screen(cams, out["pose"]["metres_per_unit"], FSG.GuardParams())
+    assert [{c.kid for c in piece} for piece in screen["isolated"]] == [{"s:00000050"}]
+    assert {c.kid for c in screen["room"]} == _ids(0, 100) - {"s:00000050"}
 
 
 # F4 ------------------------------------------------------------------------
@@ -123,6 +141,9 @@ def test_f4_a_supported_room_pose_with_missing_data_is_recorded_non_finite(field
     assert "s:00000020" in {c.kid for c in cams}
     out = FSG.assess_v2(cams, _levels(n, []))
     assert out["pose"]["nonfinite"] == 1 and out["pose"]["would_isolate_keyframes"] == 1
+    screen = FSG._pose_screen(cams, out["pose"]["metres_per_unit"], FSG.GuardParams())
+    assert [{c.kid for c in piece} for piece in screen["isolated"]] == [{"s:00000020"}]
+    assert {c.kid for c in screen["room"]} == _ids(0, n) - {"s:00000020"}
 
 
 def test_f4_a_supported_room_pose_the_keyframe_list_does_not_name_is_recorded_non_finite():
@@ -140,6 +161,9 @@ def test_f4_a_supported_room_pose_the_keyframe_list_does_not_name_is_recorded_no
     assert "s:stray" in {c.kid for c in cams}
     out = FSG.assess_v2(cams, _levels(n, []))
     assert out["pose"]["nonfinite"] == 1 and out["pose"]["would_isolate_keyframes"] == 1
+    screen = FSG._pose_screen(cams, out["pose"]["metres_per_unit"], FSG.GuardParams())
+    assert [{c.kid for c in piece} for piece in screen["isolated"]] == [{"s:stray"}]
+    assert {c.kid for c in screen["room"]} == _ids(0, n)
 
 
 # F6 ------------------------------------------------------------------------
