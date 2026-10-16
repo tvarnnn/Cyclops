@@ -175,15 +175,19 @@ final class WorldImageryUITests: XCTestCase {
         reveal(thumb)
         shoot("imagery-landed")
 
-        XCTExpectFailure("Pre-existing: the Map-face sheet does not open with the dial on; reachable only with the default-off Map tab.", strict: false) {
-            let sheetOpened = tap(thumb, until: self.element("wb-imagery-landed-direction").exists)
-            XCTAssertTrue(sheetOpened, "the sheet")
-            if sheetOpened {
-                XCTAssertEqual(text(element("wb-imagery-landed-direction")), "Look direction 90°")
-                let age = text(element("wb-imagery-landed-age"))
-                XCTAssertTrue(age.hasSuffix("seconds old") || age.hasSuffix("seconds old, stale"), age)
-                shoot("imagery-landed-sheet")
+        let opened = tap(thumb, until: self.element("wb-imagery-landed-direction").exists)
+        if opened {
+            XCTAssertEqual(text(element("wb-imagery-landed-direction")), "Look direction 90°")
+            let age = text(element("wb-imagery-landed-age"))
+            XCTAssertTrue(age.hasSuffix("seconds old") || age.hasSuffix("seconds old, stale"), age)
+            shoot("imagery-landed-sheet")
+        } else {
+            // Known bug, recorded below; only the sheet-content assertions are skipped.
+            continueAfterFailure = true
+            XCTExpectFailure("Pre-existing: tapping a landed thumbnail on the Map face does not open its detail sheet; reachable only with the default-off Map tab.", strict: false) {
+                XCTFail("the detail sheet did not open")
             }
+            continueAfterFailure = false
         }
 
         // A newer landing on the map -- the same grid, re-dated -- while the

@@ -76,8 +76,8 @@ struct FrameRateGate {
     /// The cost of a higher rate is on the main actor and the link. Per
     /// selected frame the main thread runs `makeUIImage`, a JPEG encode,
     /// base64, JSON serialisation and a viewfinder render: an *estimated*
-    /// 15–25 ms, roughly 20–30% of the main thread at 12 fps and uncomfortable
-    /// at 15. Bandwidth is an *estimated* ~2 Mbit/s sustained at 12, ~2.5 at 15,
+    /// 15–25 ms, roughly 20–30% of the main thread at 12 fps and more at the
+    /// 15 fps default. Bandwidth is an *estimated* ~2 Mbit/s sustained at 12, ~2.5 at 15,
     /// over a remote Tailscale path. Neither estimate has been measured. The
     /// developer surface measures parts of them: `Encode ms` times the JPEG
     /// encode, base64 and JSON serialisation only (not `makeUIImage` or the

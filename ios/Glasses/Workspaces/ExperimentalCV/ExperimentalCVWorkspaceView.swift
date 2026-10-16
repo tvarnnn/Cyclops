@@ -56,14 +56,14 @@ import SwiftUI
 struct ExperimentalCVWorkspaceView: View {
     /// A value, not the connection. Reachability changes almost never, and
     /// `TowerReachabilityReader` — which supplies this — exists so a workspace
-    /// does not observe a 12 Hz object to learn it.
+    /// does not observe a 15 Hz object to learn it.
     let isTowerReachable: Bool
 
     /// Held as a plain reference and **not** `@ObservedObject`, which is the
     /// whole trick that lets this workspace show a live figure without paying
     /// for it everywhere.
     ///
-    /// `TowerClient` republishes frame results at the ~12 Hz target rate while
+    /// `TowerClient` republishes frame results at the ~15 Hz default target rate while
     /// a session streams. Observing it here would re-evaluate this entire body
     /// at that rate — the experiment panel, the unavailable panel, all of it —
     /// on the main actor the frame sender needs. Instead the reference is passed
