@@ -3,36 +3,18 @@
 Design: FOW-V12-PHOTO-FLOORPLAN-DESIGN-20261012.md, "Raster and evidence".
 Wire:   303-v12-wire-contract.md.
 Core:   tower.world_builder.photo_floorplan (pure; this script is the only
-        place that touches disk, the depth-fit, and the coverage internals).
+        place that touches disk and the coverage internals).
 
-For each distinct `guidance.coverage` landing recorded in a replay run's
-`status-pushes.jsonl`, and for each of that landing's displayed registered
-components, this script:
+For the FINAL `guidance.coverage` landing recorded in a replay run's
+`status-pushes.jsonl` (it needs the solve's 3-D points, kept only for the final
+solve), and for each of that landing's displayed registered components, this
+script runs fallback (3), the lower-image floor homography:
 
-  1. takes the landing's own receipt basis and (unpadded) bounds verbatim;
-  2. reconstructs that landing's eligible, posed keyframes by re-running
+  a. the landing's own receipt basis and (unpadded) bounds, verbatim, and its
+     eligible, posed keyframes, recovered by re-running
      `guidance_coverage.compute_coverage` against the replay's
-     `tree-snapshots/<geometry_revision>/` copy of the five files it reads,
-     and recovers each keyframe's placed world position/up/forward by
-     calling `guidance_coverage._placed` on the SAME (row, placement) pairs
-     coverage used -- i.e. REUSING coverage's own geometry, not re-deriving
-     it;
-  3. intersects that set with the session's live-depth cache (`align.json`)
-     by keyframe id;
-  4. selects <= 64 spatially distributed cache-hit keyframes;
-  5. fits each selected keyframe's cached MoGe prediction to THIS solve's
-     own SfM observations (`dense.align_frame`), accepting only a positive,
-     finite fit with enough clean (non-fill) anchors and an acceptable
-     held-out residual;
-  6. hands the fitted, placed, cache-image samples to
-     `photo_floorplan.build_raster` and writes the RGBA PNG plus a gray-plate
-     composite preview.
-
-`--method homography` (fallback (3), no depth cache, no GPU) instead, for the
-FINAL landing only (it needs the solve's 3-D points, kept only for the final
-solve):
-
-  a. the same eligible, placed keyframes (step 2 above);
+     `tree-snapshots/<geometry_revision>/` copy of the five files it reads and
+     placing each with coverage's own `_placed` (REUSED, not re-derived);
   b. this component's solve points, mapped into the output frame by the same
      Sim3 algebra as `guidance_coverage._solution_relative`, quality-filtered
      (track length >= 3, reprojection error <= 2 px);
@@ -42,13 +24,6 @@ solve):
      with `camera.json` intrinsics, area-resampled to <= 256x144;
   e. `photo_floorplan.build_homography_raster`, then `encode_tile`
      (PNG, else WebP with lossless alpha, else 384 px; <= 180 KiB or omitted).
-
-KNOWN DATA-AVAILABILITY GAP (see PROBE-REPORT.md "open problems" for the
-full discussion): step 5 needs this solve's own sparse 3-D observations
-(`solution.npz`), which the replay harness only preserved for the FINAL
-solve -- the five intermediate `solution-snapshots/*.json` are metadata
-only. Earlier landings therefore get real cache-hit/selection numbers but
-no fit/raster; this is reported, not hidden or faked.
 """
 
 from __future__ import annotations
@@ -65,28 +40,18 @@ os.environ.setdefault("CUDA_VISIBLE_DEVICES", "-1")
 import numpy as np  # noqa: E402
 
 from tower.world_builder import guidance_coverage as gc  # noqa: E402
-from tower.world_builder.dense import depth_from_prediction  # noqa: E402
 from tower.world_builder.photo_floorplan import (  # noqa: E402
-    KeyframeSample,
     build_homography_raster,
-    build_raster,
     encode_tile,
 )
 # The landing inputs live with the live side worker; the probe REUSES them (one copy).
 from tower.world_builder.photo_floorplan_worker import (  # noqa: E402,F401
-    MAX_HELD_OUT_REL,
     MAX_SELECTED,
-    MIN_FIT_POINTS,
     TARGET_PIXEL_BUDGET,
-    DepthCache,
-    SolveArrays,
-    fit_keyframe,
     homography_component,
     load_frame_image,
     placed_entries,
-    resize_sample,
     select_spatial,
-    solve_arrays_from,
     solve_to_output,
 )
 
@@ -180,111 +145,6 @@ def eligible_placed_keyframes(tree):
 def _revision_of(tree):
     from tower.results.world_builder import geometry_revision_from_manifest
     return geometry_revision_from_manifest(tree["manifest"])
-
-
-# ---------------------------------------------------------------------------
-# SfM arrays (the live-depth cache, spatial selection and the SfM depth fit are
-# imported from tower.world_builder.photo_floorplan_worker above)
-# ---------------------------------------------------------------------------
-
-
-def load_solve_arrays(solve_session_dir: Path) -> "SolveArrays | None":
-    meta_path = solve_session_dir / "solution.json"
-    npz_path = solve_session_dir / "solution.npz"
-    if not meta_path.is_file() or not npz_path.is_file():
-        return None
-    meta = load_json(meta_path)
-    with np.load(npz_path) as arrays:
-        return solve_arrays_from(meta, {k: np.asarray(arrays[k]) for k in
-                                        ("xyz", "observations", "observation_xy")})
-
-
-# ---------------------------------------------------------------------------
-# main per-landing/per-component pipeline
-# ---------------------------------------------------------------------------
-
-
-def process_component(*, component_receipt, cache: DepthCache, placed_entries,
-                      solve_arrays, order_base, png_path, preview_path,
-                      landing_label, is_final):
-    t0 = time.perf_counter()
-    ref = component_receipt["reference_segment"]
-    forward = np.asarray(component_receipt["forward_xyz"], np.float64)
-    up = np.asarray(component_receipt["up_xyz"], np.float64)
-    right = np.cross(forward, up)
-    right = right / np.linalg.norm(right)
-    bounds_xy = component_receipt["bounds_xy"]
-    origin = component_receipt["origin_xyz"]
-
-    eligible = placed_entries
-    cache_hit_entries = [e for e in eligible if cache.has(e[0])]
-    cache_hit_fraction = (len(cache_hit_entries) / len(eligible)) if eligible else 0.0
-    selected = select_spatial(cache_hit_entries, forward, right)
-
-    stats = dict(reference_segment=ref, eligible=len(eligible),
-                cache_hits=len(cache_hit_entries), cache_hit_fraction=cache_hit_fraction,
-                selected=len(selected), landing=landing_label)
-
-    if solve_arrays is None:
-        stats.update(fit_attempted=0, fit_success=0, fit_success_fraction=None,
-                    opaque_fraction=None, cpu_ms=None, png_bytes=None,
-                    reason="no SfM arrays for this landing (see open problems)")
-        return stats, None
-
-    samples = []
-    fit_reasons = {}
-    for i, (kid, position, up_world, forward_world, scale) in enumerate(selected):
-        record = cache.by_kid[kid]
-        pred, fill, rgb_full = cache.load(kid)
-        ok, a, b, n_clean, ho, reason = fit_keyframe(kid, solve_arrays, pred, fill)
-        fit_reasons[kid] = reason
-        if not ok:
-            continue
-        full_depth = depth_from_prediction(pred, a, b, kind="depth")
-        full_valid = np.isfinite(full_depth) & (full_depth > 1e-6) & ~fill
-        cam = solve_arrays.camera
-        depth_r, valid_r, color_r, fx, fy, cx, cy = resize_sample(
-            full_depth, full_valid, rgb_full, cam["fx"], cam["fy"], cam["cx"], cam["cy"])
-        samples.append(KeyframeSample(
-            kid=kid, position_xyz=tuple(position), forward_xyz=tuple(forward_world),
-            up_xyz=tuple(up_world), scale=scale, fx=fx, fy=fy, cx=cx, cy=cy,
-            depth=depth_r, valid=valid_r, color=color_r, order=order_base + i))
-
-    fit_attempted = len(selected)
-    fit_success = len(samples)
-    result = build_raster(origin_xyz=origin, up_xyz=up, forward_xyz=forward,
-                          bounds_xy=bounds_xy, keyframes=samples)
-    cpu_ms = (time.perf_counter() - t0) * 1000.0
-
-    from PIL import Image
-    img = Image.fromarray(result.rgba, mode="RGBA")
-    img.save(png_path, format="PNG")
-    png_bytes = png_path.stat().st_size
-
-    _write_composite_preview(result, preview_path, component_ref=ref, label=landing_label)
-
-    stats.update(fit_attempted=fit_attempted, fit_success=fit_success,
-                fit_success_fraction=(fit_success / fit_attempted) if fit_attempted else None,
-                opaque_fraction=result.opaque_fraction, cpu_ms=round(cpu_ms, 1),
-                png_bytes=png_bytes, multi_view_cells=result.multi_view_cells,
-                single_view_cells=result.single_view_cells,
-                raster_bounds_xy=result.raster_bounds_xy,
-                fit_failure_reasons={r: sum(1 for v in fit_reasons.values() if v == r)
-                                     for r in set(fit_reasons.values()) if r != "ok"})
-    return stats, result
-
-
-def _write_composite_preview(result, path, *, component_ref, label):
-    from PIL import Image, ImageDraw
-
-    plate = Image.new("RGB", (result.width, result.height), GRAY_PLATE)
-    photo = Image.fromarray(result.rgba, mode="RGBA")
-    plate.paste(photo, (0, 0), photo)
-    canvas = Image.new("RGB", (result.width, result.height + 24), GRAY_PLATE)
-    canvas.paste(plate, (0, 0))
-    draw = ImageDraw.Draw(canvas)
-    draw.text((4, result.height + 4), f"component {component_ref} - {label}", fill=(255, 255, 255))
-    canvas.save(path, format="PNG")
 
 
 # ---------------------------------------------------------------------------
@@ -440,7 +300,8 @@ def run_homography(*, run_dir, world_dir, session_id, out_dir, run_label, furnit
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--method", choices=("depth", "homography"), default="depth")
+    # Only `homography` remains; the flag stays so existing command lines still parse.
+    parser.add_argument("--method", choices=("homography",), default="homography")
     parser.add_argument("--furniture-mask", choices=("on", "off"), default="off",
                         help="homography: the opt-in (default off) bottom-band furniture mask")
     parser.add_argument("--run-label", default=None,
@@ -460,88 +321,9 @@ def main():
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     world_dir = data_root / "worlds" / args.world_id
-    if args.method == "homography":
-        run_homography(run_dir=run_dir, world_dir=world_dir, session_id=args.session_id,
-                       out_dir=out_dir, run_label=args.run_label or run_dir.name,
-                       furniture_mask=args.furniture_mask == "on")
-        return
-    dense_root = world_dir / "dense" / args.session_id
-    solve_session_dir = world_dir / "solve" / args.session_id
-
-    cache = DepthCache(dense_root)
-    landings = extract_landings(run_dir)
-    log.info("found %d distinct coverage landings", len(landings))
-
-    final_key = landings[-1]["key"] if landings else None
-    solve_arrays_final = load_solve_arrays(solve_session_dir)
-
-    report_rows = []
-    order_base = 0
-    for idx, landing in enumerate(landings):
-        solved_at, geometry_revision, frame_revision = landing["key"]
-        is_final = landing["key"] == final_key
-        label = f"landing{idx}" + ("-final" if is_final else "")
-        tree = load_tree_snapshot(run_dir, geometry_revision)
-        if tree is None:
-            report_rows.append(dict(landing=label, reference_segment=None,
-                                    reason="tree snapshot missing/incomplete for this geometry_revision"))
-            log.warning("%s: tree snapshot missing for revision %s", label, geometry_revision)
-            continue
-        try:
-            block, by_ref = eligible_placed_keyframes(tree)
-        except Exception as exc:  # noqa: BLE001 -- a probe, never crash the whole run
-            report_rows.append(dict(landing=label, reference_segment=None,
-                                    reason=f"recompute_coverage failed: {exc}"))
-            log.exception("%s: recompute_coverage failed", label)
-            continue
-        receipt = landing["receipt"]
-        solve_arrays = solve_arrays_final if is_final else None
-        for component_receipt in receipt["components"]:
-            ref = component_receipt["reference_segment"]
-            entries = by_ref.get(ref, [])
-            png_path = out_dir / f"{label}_component{ref}.png"
-            preview_path = out_dir / f"{label}_component{ref}_preview.png"
-            stats, _ = process_component(
-                component_receipt=component_receipt, cache=cache, placed_entries=entries,
-                solve_arrays=solve_arrays, order_base=order_base,
-                png_path=png_path, preview_path=preview_path,
-                landing_label=label, is_final=is_final)
-            order_base += 1
-            stats["solved_at"] = solved_at
-            stats["geometry_revision"] = geometry_revision
-            stats["received_at"] = landing["received_at"]
-            report_rows.append(stats)
-            log.info("%s component %s: %s", label, ref, stats)
-
-    write_report(out_dir, report_rows)
-
-
-def write_report(out_dir: Path, rows):
-    lines = ["# PROBE-REPORT: FOW v1.2 slice 1, walk 8 / G2 replay\n",
-            "One row per (landing, displayed component). `fit_success_fraction` and "
-            "`opaque_fraction` are None where no SfM arrays were available for that "
-            "landing (see PROBE's module docstring / the open problems note below).\n",
-            "| landing | solved_at | ref | eligible | cache_hit_frac | selected | "
-            "fit_success_frac | opaque_frac | cpu_ms | png_bytes | multi/single cells |",
-            "|---|---|---|---|---|---|---|---|---|---|---|"]
-    for r in rows:
-        if r.get("reference_segment") is None and "reason" in r and "eligible" not in r:
-            lines.append(f"| {r['landing']} | - | - | - | - | - | - | - | - | - | {r['reason']} |")
-            continue
-        chf = r.get("cache_hit_fraction")
-        fsf = r.get("fit_success_fraction")
-        of = r.get("opaque_fraction")
-        mv, sv = r.get("multi_view_cells"), r.get("single_view_cells")
-        lines.append(
-            f"| {r['landing']} | {r.get('solved_at')} | {r['reference_segment']} | "
-            f"{r.get('eligible')} | {chf:.2f} | {r.get('selected')} | "
-            f"{'%.2f' % fsf if fsf is not None else 'n/a'} | "
-            f"{'%.3f' % of if of is not None else 'n/a'} | "
-            f"{r.get('cpu_ms') if r.get('cpu_ms') is not None else 'n/a'} | "
-            f"{r.get('png_bytes') if r.get('png_bytes') is not None else 'n/a'} | "
-            f"{mv if mv is not None else '-'}/{sv if sv is not None else '-'} |")
-    (out_dir / "PROBE-REPORT.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
-    log.info("wrote %s", out_dir / "PROBE-REPORT.md")
+    run_homography(run_dir=run_dir, world_dir=world_dir, session_id=args.session_id,
+                   out_dir=out_dir, run_label=args.run_label or run_dir.name,
+                   furniture_mask=args.furniture_mask == "on")
 
 
 if __name__ == "__main__":

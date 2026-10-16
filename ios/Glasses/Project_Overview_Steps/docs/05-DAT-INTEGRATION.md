@@ -126,6 +126,7 @@ When DAT implementation work reveals a stable constraint:
 ## Known Setup Blockers
 
 - **Bundle ID.** The current Xcode bundle identifier (`tv.lloyd-icloud.com.Glasses`) contains a dash. Current DAT documentation (verified via `search_dat_docs`) states the iOS Bundle ID does not support the `-` character. This must be corrected before DAT app registration (V0.2). Not yet changed as of this documentation pass — see `03-ROADMAP.md` V0.2.
+- **Personal Hotspot blocks DAT provisioning.** With Personal Hotspot on, provisioning fails repeatedly with the generic `WarpDeviceConnTransport: [DCTEvent] Failed to open local channel. Scheduling retry.`, which looks like a transient network fault. The real cause shows only in the iPhone's own log (`personal hotspot is active, denying join request from bundleId='com.facebook.stellaapp'`). Fix: turn Personal Hotspot off and leave Wi-Fi available.
 
 ## Do Not
 

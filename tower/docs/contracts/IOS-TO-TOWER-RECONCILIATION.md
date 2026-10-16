@@ -1,4 +1,4 @@
-# Reconciliation of `IOS-to-Tower.md` — 2026-08-23
+# Reconciliation of `ios/docs/agent-handoffs/IOS-TO-TOWER.md` — 2026-08-23
 
 Every requirement in the iOS product shell's document, classified against
 what Tower actually does as of branch
@@ -26,7 +26,7 @@ split into rows rather than rounded up.
 | 0.1 | A capability declaration | **IMPLEMENTED NOW** | `GET /cartridges` and WS `{"type":"cartridges"}`, byte-identical (tested). Contract ids are opaque strings compared for equality, exactly as asked. All three of your states are distinguishable — `available` is a separate field from `contract` precisely so "offered but unreachable" cannot collapse into "not built yet" |
 | 0.2 | Provenance on every derived value | **IMPLEMENTED NOW** (provenance) | `provenance: "inferred"` on geometry, trajectory and path length; `keyframes_accepted_provenance: "measured"` |
 | 0.2 | …and the confidence where Tower has one | **NOT APPLICABLE** | `confidence: null`, deliberately. Tower keeps per-keyframe and per-edge confidence labels but has **never defined an aggregate for a whole reconstruction**. A number here would be one nobody specified. Render your "the Tower did not say" caveat |
-| 0.3 | Observation time distinct from arrival time | **BLOCKED** | There is no capture timestamp anywhere in this system — the frame protocol carries no time field. Every timestamp is labelled `time_basis: "tower-receipt"`. This is `TOWER-TO-IOS.md` §6.6 and it needs **iOS work**: until `CMSampleBuffer`'s presentation timestamp is empirically established as capture time, Tower cannot invent one. Render capture time as unknown |
+| 0.3 | Observation time distinct from arrival time | **BLOCKED** | There is no capture timestamp anywhere in this system — the frame protocol carries no time field. Every timestamp is labelled `time_basis: "tower-receipt"`. It needs **iOS work**: until `CMSampleBuffer`'s presentation timestamp is empirically established as capture time, Tower cannot invent one. Render capture time as unknown |
 | 0.4 | Redaction state on every image | **IMPLEMENTED NOW** (the state) | Every artifact block carries `redaction: "none"` and `fetchable: false` |
 | 0.4 | …redaction itself | **BLOCKED** | No redaction is implemented anywhere in Tower. World Builder keyframes are raw first-person frames. Consequence, and it is the right one: **no imagery is offered at all**, and none will be under this contract. Your "unstated treatment is withheld" rule has nothing to catch because nothing is offered |
 | 0.5 | A unit string beside every figure | **IMPLEMENTED NOW** | `scale.unit` is `"world units"` or **null** when there is no unit at all. `path_length` carries `unit`, `scale_semantics` and a pre-rendered `display` |
@@ -143,7 +143,7 @@ is still not an adopted *module*, and no contract is offered.
 |---|---|---|---|
 | 3.1 | Recent documents, ids, titles, summaries, confidence | **DEFERRED** | All exist in Tower's records. No summary is generated — an abstractive summary of partial capture was rejected as fabrication |
 | 3.2 | `unknown` / `notReadable` / `extracted(characterCount:)` | **DEFERRED**, and the design already matches | Tower stores derived text, not frames, and a character count is trivially derivable. `notReadable` as a first-class answer is already how the cartridge behaves |
-| 3.2 | …usable text at all | **BLOCKED** | Measured: word recall is 0.957–1.000 at 1280×720 and **0.429–0.810 at the 640×360 iOS delivers**. Page *detection* is unaffected; only recognition is starved. This is `TOWER-TO-IOS.md` §6.8 and it is **iOS/DAT work** — a way to request an occasional higher-resolution still, or failing that a way to learn which rung of the adaptive ladder is active so a reading can be recorded as untrustworthy rather than stored silently |
+| 3.2 | …usable text at all | **BLOCKED** | Measured: word recall is 0.957–1.000 at 1280×720 and **0.429–0.810 at the 640×360 iOS delivers**. Page *detection* is unaffected; only recognition is starved. It is **iOS/DAT work** — a way to request an occasional higher-resolution still, or failing that a way to learn which rung of the adaptive ladder is active so a reading can be recorded as untrustworthy rather than stored silently |
 | 3.3 | Observation time | **BLOCKED** | Same as §0.3: tower-receipt only |
 | 3.3 | Time in view, **not** `viewing_duration` | **Honoured** | Tower independently reached the same conclusion: the record is `DocumentObservation`, the CLI prints **OBSERVED, NOT READ**, and a test bans `looking_at`, `gaze_direction`, `is_looking`, `face_id`, `person_id` across every cartridge — now including this channel |
 | 3.4 | `recent` / `text` / `observedWithin` / `semantic` | **DEFERRED**, three of four exist | Recent, literal text (BM25) and time-range are implemented. **`semantic` is BLOCKED**: embedding retrieval was rejected — no corpus justifies it, and BM25's explainability matters more while an answer must be traceable |
@@ -164,8 +164,8 @@ This channel reads persisted state. There is therefore **nothing on disk
 for it to read**, and giving the cartridge a store to make it publishable
 would pre-empt Environmental Memory's entire reason to exist.
 
-It needs the **live in-process module path**, which is the half of
-`TOWER-TO-IOS.md` §6.1 that remains blocked at V1.0/V1.1.
+It needs the **live in-process module path**, which remains blocked at
+V1.0/V1.1 (its four blockers are in `CARTRIDGE-RESULTS.md` §1).
 
 | § | Requirement | Status | Detail |
 |---|---|---|---|
@@ -244,7 +244,8 @@ Stated as requirements, not designs, mirroring your own format.
    every time in the system is tower-receipt and must be labelled so.
 2. **A way to request an occasional higher-resolution still**, or failing
    that **a way to learn which rung of the adaptive ladder is active**
-   (§3.2). The measurement is in `TOWER-TO-IOS.md` §6.8. Without it,
+   (§3.2). The measurement is the §3.2 row; one or two ~1280×720 stills
+   per document would move recall from ~0.5 to ~0.96. Without it,
    Document Memory cannot be trusted to read a page.
 3. **Confirmation of the bearing sign convention** when Scene
    Understanding eventually publishes (§4.3). You declared yours; Tower

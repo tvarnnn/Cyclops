@@ -1,5 +1,4 @@
 import logging
-import math
 import os
 from dataclasses import dataclass
 from pathlib import Path
@@ -200,8 +199,8 @@ class Settings:
     # the shipped detector produced over the real corpus found a ceiling
     # fan detected as `airplane` at 0.99 and a laptop keyboard as
     # `remote` at 0.87, so a Tower with nothing to check those labels
-    # recorded neither -- and `docs/agent-handoffs/OBJECT-MEMORY-HANDOFF`
-    # section 7.4 recorded turning it on as an OPEN DECISION FOR A HUMAN,
+    # recorded neither -- and turning it on was recorded as an OPEN
+    # DECISION FOR A HUMAN,
     # explicitly not one an agent should close: "the default stays `none`
     # because 94 crops from one home justify building it and not
     # switching it on for everybody."
@@ -381,9 +380,8 @@ class Settings:
     #   capped at 2                               1.03 cores, 9.88 fps
     #
     # Four times the CPU for no throughput at all, which is exactly what
-    # `docs/superpowers/research/2026-08-26-scene-understanding-
-    # measurements.md` predicts: ssdlite320 at an internal 320 px is
-    # bound by kernel-launch overhead, not arithmetic, so more threads
+    # profiling the detector predicted: ssdlite320 at an internal 320 px
+    # is bound by kernel-launch overhead, not arithmetic, so more threads
     # buy nothing and cost a core each.
     #
     # WHAT THE ROW ABOVE DOES NOT SAY IS WHAT IT COSTS THE LAB, and the
@@ -419,10 +417,10 @@ class Settings:
     # ends it.
     #
     # ON by default, and the default is what makes this cartridge
-    # reachable from a phone at all. `IOS-to-Tower.md` 6.2: opening a
-    # cartridge on the phone sends NOTHING, and a test asserts the wire
-    # stays silent -- so a session that only an HTTP POST could start is
-    # a contract a phone can subscribe to and will watch report "not
+    # reachable from a phone at all. `ios/docs/agent-handoffs/IOS-TO-TOWER.md`
+    # §6.2: opening a cartridge on the phone sends NOTHING, and a test asserts
+    # the wire stays silent -- so a session that only an HTTP POST could start
+    # is a contract a phone can subscribe to and will watch report "not
     # observing" forever. That is not a safety property; it is a dead
     # product path, and an adversarial review found it as one.
     #
@@ -1062,12 +1060,9 @@ def world_anchor_verify_setting() -> frozenset:
 # same exact-'on' rule as TOWER_WORLD_GUIDANCE_COVERAGE / _IMAGERY_LANDED: any other value,
 # including `1`/`true`, is off, so OFF is byte-for-byte today's Tower (no route, no
 # worker, no import). It also needs TOWER_WORLD_GUIDANCE_COVERAGE=on, because a photo
-# plan exists only for a published coverage landing. The METHOD picks the raster:
-# `homography` (the default, CPU-only fallback (3)) or `depth` (option (2), which needs
-# the Exp1 live-depth cache); anything else is the default, and logged.
+# plan exists only for a published coverage landing. The raster is the CPU-only
+# lower-image floor homography.
 WORLD_PHOTO_FLOORPLAN_ENV = "TOWER_WORLD_PHOTO_FLOORPLAN"
-WORLD_PHOTO_FLOORPLAN_METHOD_ENV = "TOWER_WORLD_PHOTO_FLOORPLAN_METHOD"
-WORLD_PHOTO_FLOORPLAN_METHODS = ("homography", "depth")
 
 
 def world_photo_floorplan_setting() -> bool:
@@ -1075,37 +1070,6 @@ def world_photo_floorplan_setting() -> bool:
     are exactly `on`."""
     return (os.environ.get(WORLD_PHOTO_FLOORPLAN_ENV) == "on"
             and os.environ.get("TOWER_WORLD_GUIDANCE_COVERAGE") == "on")
-
-
-def world_photo_floorplan_method_setting() -> str:
-    """`homography` (default) or `depth`; anything else is `homography`, logged."""
-    value = os.environ.get(WORLD_PHOTO_FLOORPLAN_METHOD_ENV)
-    if value is None or not value.strip():
-        return WORLD_PHOTO_FLOORPLAN_METHODS[0]
-    word = value.strip().lower()
-    if word in WORLD_PHOTO_FLOORPLAN_METHODS:
-        return word
-    logger.warning("[Tower][Config] %s=%r is not homography or depth; using homography",
-                   WORLD_PHOTO_FLOORPLAN_METHOD_ENV, value)
-    return WORLD_PHOTO_FLOORPLAN_METHODS[0]
-
-
-# PHOTO FLOOR PLAN NEW-SCENE DIAGNOSTICS FILES (`world_builder/photo_floorplan_diagnostics.py`;
-# manager 349 lane A). Diagnostics only: no published byte, wire field or decision depends on
-# it. The per-landing diagnostics LOG line is written whenever the photo floor plan runs;
-# exactly `on` here ALSO writes `photo_floorplan_diagnostics.jsonl` (one bounded record per
-# landing) and `photo_floorplan_diagnostics.json` (the per-walk summary and its new-scene
-# flags, rewritten after every landing, so after the final solve's landing it is the walk's)
-# into an EXISTING `worlds/<world>/sessions/<session>/` directory, and only when a READ-ONLY
-# check of the world's writer lock says no other writer holds the world
-# (`photo_floorplan_diagnostics.session_write_gate`). Any other value: no file, and no
-# landing records kept in memory (the log line is all).
-WORLD_PHOTO_FLOORPLAN_DIAGNOSTICS_ENV = "TOWER_WORLD_PHOTO_FLOORPLAN_DIAGNOSTICS"
-
-
-def world_photo_floorplan_diagnostics_setting() -> bool:
-    """True only when TOWER_WORLD_PHOTO_FLOORPLAN_DIAGNOSTICS is exactly `on`."""
-    return os.environ.get(WORLD_PHOTO_FLOORPLAN_DIAGNOSTICS_ENV) == "on"
 
 
 # FOW GUIDANCE IMAGERY, UNREDACTED SESSIONS (`world_builder/guidance_imagery.py` and
@@ -1124,25 +1088,6 @@ WORLD_GUIDANCE_IMAGERY_UNREDACTED_ENV = "TOWER_WORLD_GUIDANCE_IMAGERY_UNREDACTED
 def world_guidance_imagery_unredacted_setting() -> bool:
     """True only when TOWER_WORLD_GUIDANCE_IMAGERY_UNREDACTED is exactly `on`."""
     return os.environ.get(WORLD_GUIDANCE_IMAGERY_UNREDACTED_ENV) == "on"
-
-
-# FOW GUIDANCE COVERAGE, PENDING SEGMENTS (`world_builder/guidance_coverage.py`, read once
-# by its `CoverageWorker`; demo deploy 2026-10-12). The coverage receipt counts a keyframe
-# only once a global solve has REPLACED its whole tracker segment, and the merge replaces a
-# segment only when every member is inside the solve's horizon -- so with the keyframe turn
-# bridge's long segments almost nothing counts mid-walk (e2e10: 69 of 327 posed). Exactly
-# `on` also counts each keyframe of a `pending` segment that the named solve posed (>= 30
-# observations) in a component mapped to a registered, anchored reference, at the solve's
-# own pose carried through that reference's anchor (the pose coverage already computes to
-# check every replaced keyframe). Nothing else is counted or inferred. Same exact-'on' rule
-# as TOWER_WORLD_GUIDANCE_COVERAGE: any other value, including `1`/`true`, is off, and OFF
-# is today's receipt byte for byte. Needs TOWER_WORLD_GUIDANCE_COVERAGE=on to matter.
-WORLD_GUIDANCE_COVERAGE_PENDING_ENV = "TOWER_WORLD_GUIDANCE_COVERAGE_PENDING"
-
-
-def world_guidance_coverage_pending_setting() -> bool:
-    """True only when TOWER_WORLD_GUIDANCE_COVERAGE_PENDING is exactly `on`."""
-    return os.environ.get(WORLD_GUIDANCE_COVERAGE_PENDING_ENV) == "on"
 
 
 WORLD_FINAL_SCALE_GUARD_ENV = "TOWER_WORLD_FINAL_SCALE_GUARD"
@@ -1171,87 +1116,6 @@ def world_final_scale_guard_setting() -> str:
             WORLD_FINAL_SCALE_GUARD_ENV, value,
         )
     return WORLD_FINAL_SCALE_GUARD_OFF
-
-
-# ADAPTIVE SELECT (`world_builder/solve_select.py`; brief CX-SOLVE-SELECT, evidence SEL-REPORT
-# 2026-10-12): best-of-N final solve, chosen by the final scale guard. Read by the final solve
-# itself, and only for an UNGATED, single-draw final solve with the guard `on`. Two values:
-#   off         -- unset, blank, `0`, `false`, `no`, `off`, and anything unrecognised (logged).
-#                  Today's final solve, byte for byte: nothing new is read, written or recorded.
-#   adaptive:N  -- N in 1..6, exactly. Draw 1 is today's final solve and guard. When the guard
-#                  isolates fewer keyframes than the trigger (below) nothing else happens (byte
-#                  for byte as off). At or above it, N further mapper draws run on
-#                  copies of the already-matched database, at most `WORLD_SOLVE_SELECT_PARALLEL` at
-#                  a time, each guarded; the best by the pre-fixed score is published, ties to
-#                  draw 1, through the existing publish step.
-# The extra draws have a hard wall budget, `TOWER_WORLD_SOLVE_SELECT_BUDGET_S` (default 240 s; a
-# positive number of seconds up to 3600, anything else is the default, logged): past it, the draws
-# still running are killed and the best finished draw so far is published.
-WORLD_SOLVE_SELECT_ENV = "TOWER_WORLD_SOLVE_SELECT"
-WORLD_SOLVE_SELECT_BUDGET_ENV = "TOWER_WORLD_SOLVE_SELECT_BUDGET_S"
-WORLD_SOLVE_SELECT_OFF = "off"
-WORLD_SOLVE_SELECT_ADAPTIVE = "adaptive"
-WORLD_SOLVE_SELECT_MAX_DRAWS = 6
-WORLD_SOLVE_SELECT_BUDGET_DEFAULT_S = 240.0
-WORLD_SOLVE_SELECT_BUDGET_MAX_S = 3600.0
-# The trigger is a FRACTION of the room the guard judged (`solve_select.trigger_threshold`):
-# draw 1 triggers when it isolates >= max(TRIGGER_MIN_KF, ceil(TRIGGER_FRAC x the room's supported
-# keyframes)). As a fraction GOOD draws isolated 4.6-10.6% (walk 7 83/972, walk 8 43-99/937) and
-# WELDED draws 28-44% (walk 8 >= 265/937, walk 7 429/972); an absolute count does not survive a
-# denser keyframe policy (the turn bridge: ~1.4-1.5x keyframes, a good draw's bathroom ~120-145).
-# The floor keeps a tiny walk from triggering on noise.
-WORLD_SOLVE_SELECT_TRIGGER_FRAC = 0.18
-WORLD_SOLVE_SELECT_TRIGGER_MIN_KF = 60
-# The absolute rule (SEL-REPORT: GOOD draws isolated 43-99 keyframes, WELDED draws >= 265), used only
-# when the guard's assessment records no room size to take the fraction of.
-WORLD_SOLVE_SELECT_TRIGGER_KF = 150
-# Extra draws mapped at once, each on every core (SEL-REPORT: 3 in parallel cost ~1.4-1.5x one).
-WORLD_SOLVE_SELECT_PARALLEL = 3
-
-
-def world_solve_select_setting() -> tuple[str, int]:
-    """`TOWER_WORLD_SOLVE_SELECT`: `("off", 0)` (the default) or `("adaptive", N)`, N extra draws.
-
-    Exactly `adaptive:<N>` with N one of 1..6 (case and surrounding blanks aside). Unset, blank
-    or a spelling of false is off, silently; anything else -- `adaptive:0`, `adaptive:7`,
-    `adaptive:01`, `on`, garbage -- is off and logged: a typo never multiplies a finish."""
-    value = os.environ.get(WORLD_SOLVE_SELECT_ENV)
-    if value is None or not value.strip():
-        return WORLD_SOLVE_SELECT_OFF, 0
-    word = value.strip().lower()
-    if word in ("0", "false", "no", "off"):
-        return WORLD_SOLVE_SELECT_OFF, 0
-    prefix = WORLD_SOLVE_SELECT_ADAPTIVE + ":"
-    allowed = tuple(str(n) for n in range(1, WORLD_SOLVE_SELECT_MAX_DRAWS + 1))
-    if word.startswith(prefix) and word[len(prefix):] in allowed:
-        return WORLD_SOLVE_SELECT_ADAPTIVE, int(word[len(prefix):])
-    logger.warning(
-        "[Tower][Config] %s=%r is not off or adaptive:N (N 1..%d); treating it as off",
-        WORLD_SOLVE_SELECT_ENV, value, WORLD_SOLVE_SELECT_MAX_DRAWS,
-    )
-    return WORLD_SOLVE_SELECT_OFF, 0
-
-
-def world_solve_select_budget_setting() -> float:
-    """`TOWER_WORLD_SOLVE_SELECT_BUDGET_S`: the extra draws' wall budget in seconds. 240.
-
-    A finite number in (0, 3600]. Unset or blank is the default, silently; anything else is the
-    default and logged."""
-    value = os.environ.get(WORLD_SOLVE_SELECT_BUDGET_ENV)
-    if value is None or not value.strip():
-        return WORLD_SOLVE_SELECT_BUDGET_DEFAULT_S
-    try:
-        seconds = float(value.strip())
-    except ValueError:
-        seconds = math.nan
-    if math.isfinite(seconds) and 0 < seconds <= WORLD_SOLVE_SELECT_BUDGET_MAX_S:
-        return seconds
-    logger.warning(
-        "[Tower][Config] %s=%r is not a number of seconds in (0, %g]; treating it as %g",
-        WORLD_SOLVE_SELECT_BUDGET_ENV, value, WORLD_SOLVE_SELECT_BUDGET_MAX_S,
-        WORLD_SOLVE_SELECT_BUDGET_DEFAULT_S,
-    )
-    return WORLD_SOLVE_SELECT_BUDGET_DEFAULT_S
 
 
 # The AREA builds (`world_builder/area_build.py`, WORLD-BUILDER-COMPONENTS.md
@@ -1290,20 +1154,6 @@ WORLD_PICTURE_BASIS_ENV = "TOWER_WORLD_PICTURE_BASIS"
 def world_picture_basis_setting() -> bool:
     """`TOWER_WORLD_PICTURE_BASIS`: say whether the served picture was built from the final pass. Off."""
     return _flag(WORLD_PICTURE_BASIS_ENV, default=False)
-
-
-# The transient-mask detectors' forward passes (`world_builder/transients.py`: OneFormer,
-# Grounding DINO, SAM). Read by each backend's `run()`. Off, and off is today's fp32 forward
-# calls byte for byte: no autocast context is entered at all. On a CPU device there is no
-# autocast regardless of this switch.
-WORLD_TRANSIENTS_FP16_ENV = "TOWER_WORLD_TRANSIENTS_FP16"
-
-
-def world_transients_fp16_setting() -> bool:
-    """`TOWER_WORLD_TRANSIENTS_FP16`: run the transient detectors' model forward calls under
-    `torch.autocast("cuda", dtype=torch.float16)`. Off. Post-processing is unaffected either
-    way: its inputs are cast back to float32 before it runs."""
-    return _flag(WORLD_TRANSIENTS_FP16_ENV, default=False)
 
 
 WORLD_RELOCALIZER_ENV = "TOWER_WORLD_RELOCALIZER"
@@ -1434,94 +1284,6 @@ def world_stage_timing_setting() -> bool:
     return False
 
 
-# KF-TURNS (2026-10-12, W9-DIAG.md cause 1): the keyframe policy's blur floor and its turn bridge
-# (`world_builder/keyframes.py`, `KeyframePolicy.min_sharpness` / `turn_bridge`). Read by the BUILDER
-# process at each session start, like the relocalizer. All unset is today exactly: the policy is
-# `KeyframePolicy()` and every keyframe decision is unchanged.
-#   TOWER_WORLD_KEYFRAME_MIN_SHARPNESS       the absolute blur floor (variance of Laplacian). A finite
-#                                            non-negative number; anything else is unset (25.0), logged.
-#   TOWER_WORLD_KEYFRAME_TURN_BRIDGE         exactly `on` enables the turn bridge; anything else is off.
-#   TOWER_WORLD_KEYFRAME_TURN_BRIDGE_OVERLAP the bridge's overlap bound, in (0, 1]; unset is the policy's.
-#   TOWER_WORLD_KEYFRAME_TURN_BRIDGE_FRAMES  the bridge's time bound in frames, an integer >= 1; unset is
-#                                            the policy's.
-#   TOWER_WORLD_KEYFRAME_TURN_BRIDGE_MIN_SHARPNESS  the sharpest-blur floor a bridged frame must clear, a
-#                                            finite number > 0; unset is the policy's (3.0). Manager 392: the
-#                                            e2e9 fly-aways sat on bridged frames of sharpness 4-10.
-#   TOWER_WORLD_KEYFRAME_TURN_BRIDGE_MIN_FRAMES  frames since the last keyframe before a bridge, an
-#                                            integer >= 1; unset is the policy's (2).
-#                                            All four tuning knobs are read only with the bridge on.
-WORLD_KEYFRAME_MIN_SHARPNESS_ENV = "TOWER_WORLD_KEYFRAME_MIN_SHARPNESS"
-WORLD_KEYFRAME_TURN_BRIDGE_ENV = "TOWER_WORLD_KEYFRAME_TURN_BRIDGE"
-WORLD_KEYFRAME_TURN_BRIDGE_OVERLAP_ENV = "TOWER_WORLD_KEYFRAME_TURN_BRIDGE_OVERLAP"
-WORLD_KEYFRAME_TURN_BRIDGE_FRAMES_ENV = "TOWER_WORLD_KEYFRAME_TURN_BRIDGE_FRAMES"
-WORLD_KEYFRAME_TURN_BRIDGE_MIN_SHARPNESS_ENV = "TOWER_WORLD_KEYFRAME_TURN_BRIDGE_MIN_SHARPNESS"
-WORLD_KEYFRAME_TURN_BRIDGE_MIN_FRAMES_ENV = "TOWER_WORLD_KEYFRAME_TURN_BRIDGE_MIN_FRAMES"
-
-
-def _keyframe_float(name: str, *, low: float, high: float, low_open: bool) -> float | None:
-    value = os.environ.get(name)
-    if value is None or not value.strip():
-        return None
-    try:
-        parsed = float(value.strip())
-    except ValueError:
-        parsed = float("nan")
-    ok = parsed == parsed and parsed <= high and (parsed > low if low_open else parsed >= low)
-    if not ok:
-        logger.warning("[Tower][Config] %s=%r is not a valid value; ignoring it", name, value)
-        return None
-    return parsed
-
-
-def world_keyframe_policy_overrides() -> dict:
-    """The KeyframePolicy fields the environment overrides; `{}` (today's policy) when unset."""
-    overrides: dict = {}
-    floor = _keyframe_float(
-        WORLD_KEYFRAME_MIN_SHARPNESS_ENV, low=0.0, high=1e9, low_open=False
-    )
-    if floor is not None:
-        overrides["min_sharpness"] = floor
-    if os.environ.get(WORLD_KEYFRAME_TURN_BRIDGE_ENV) == "on":
-        overrides["turn_bridge"] = True
-        overlap = _keyframe_float(
-            WORLD_KEYFRAME_TURN_BRIDGE_OVERLAP_ENV, low=0.0, high=1.0, low_open=True
-        )
-        if overlap is not None:
-            overrides["bridge_overlap_ratio"] = overlap
-        frames = os.environ.get(WORLD_KEYFRAME_TURN_BRIDGE_FRAMES_ENV)
-        if frames is not None and frames.strip():
-            try:
-                parsed = int(frames.strip())
-            except ValueError:
-                parsed = 0
-            if parsed >= 1:
-                overrides["bridge_max_frames"] = parsed
-            else:
-                logger.warning(
-                    "[Tower][Config] %s=%r is not an integer >= 1; ignoring it",
-                    WORLD_KEYFRAME_TURN_BRIDGE_FRAMES_ENV, frames,
-                )
-        min_sharpness = _keyframe_float(
-            WORLD_KEYFRAME_TURN_BRIDGE_MIN_SHARPNESS_ENV, low=0.0, high=1e9, low_open=True
-        )
-        if min_sharpness is not None:
-            overrides["bridge_min_sharpness"] = min_sharpness
-        min_frames = os.environ.get(WORLD_KEYFRAME_TURN_BRIDGE_MIN_FRAMES_ENV)
-        if min_frames is not None and min_frames.strip():
-            try:
-                parsed_min = int(min_frames.strip())
-            except ValueError:
-                parsed_min = 0
-            if parsed_min >= 1:
-                overrides["bridge_min_frames"] = parsed_min
-            else:
-                logger.warning(
-                    "[Tower][Config] %s=%r is not an integer >= 1; ignoring it",
-                    WORLD_KEYFRAME_TURN_BRIDGE_MIN_FRAMES_ENV, min_frames,
-                )
-    return overrides
-
-
 # P5-PQ (manager 095 §2, as corrected by 096 §2; granular per manager 098): impossible poses are never
 # published in a room. One switch, three PARTS (RUN experiments/P5-PQ/RULE.md):
 #   `path`   (a) the viewer's camera list (`surface_render._camera_path`) keeps only published, supported
@@ -1576,45 +1338,6 @@ def world_pose_quarantine_setting() -> frozenset:
         WORLD_POSE_QUARANTINE_ENV, value, ", ".join(WORLD_POSE_QUARANTINE_PARTS),
     )
     return frozenset()
-
-
-# U1.1 native chrome (WORLD-BUILDER-WORLDS.md §4c; manager 167/181): on a page request
-# carrying `wb-chrome=native`, the APPEARANCE page is served with five insertions that
-# let the phone draw its chrome (`world_builder/native_chrome.py`). Read by the render
-# adapter per request, so flipping it needs no restart and replaces no page already open.
-# Unset, blank, `0` and every other spelling `_flag` reads as false are OFF, and off is
-# today exactly: every response, whatever the query, is byte for byte the one before
-# (tests/golden/world_builder_native_chrome_dc35d51.json).
-WORLD_NATIVE_CHROME_ENV = "TOWER_WORLD_NATIVE_CHROME"
-
-
-def world_native_chrome_setting() -> bool:
-    """`TOWER_WORLD_NATIVE_CHROME`: honour `wb-chrome=native` on the appearance page. Off."""
-    return _flag(WORLD_NATIVE_CHROME_ENV, default=False)
-
-
-# WORLD UP ESTIMATE (tilt-up lane; manager 378, RUN review/W9-DIAG.md cause 6): the vertical the
-# surface and appearance pages level their horizon to (`surface_render._world_up`). Exactly
-# `camera_right_all` seeds it with the head-level ("roll-free") vertical of EVERY posed camera in
-# the room's solver frame -- before the evidence gate or the final scale guard trimmed the room --
-# and lets the surface refine that only within `surface_render.CAMERA_RIGHT_MAX_REFINE_DEG`
-# (`surface_render.camera_right_up`). Read per page request, so flipping it needs no restart and
-# rebuilds nothing; it changes the `up` of every page served after the flip, including the pages of
-# worlds built before it. Any other value -- unset, blank, `off`, `on`, `1` -- is today's estimate,
-# byte for byte; a value that is not unset/blank/`off` is also logged.
-WORLD_UP_ESTIMATE_ENV = "TOWER_WORLD_UP_ESTIMATE"
-WORLD_UP_ESTIMATE_CAMERA_RIGHT_ALL = "camera_right_all"
-
-
-def world_up_estimate_setting() -> str | None:
-    """`TOWER_WORLD_UP_ESTIMATE`: `camera_right_all`, or None (today's estimate)."""
-    value = os.environ.get(WORLD_UP_ESTIMATE_ENV)
-    if value == WORLD_UP_ESTIMATE_CAMERA_RIGHT_ALL:
-        return WORLD_UP_ESTIMATE_CAMERA_RIGHT_ALL
-    if value is not None and value.strip() and value.strip().lower() != "off":
-        logger.warning("[Tower][Config] %s=%r is not exactly %s; using today's up estimate",
-                       WORLD_UP_ESTIMATE_ENV, value, WORLD_UP_ESTIMATE_CAMERA_RIGHT_ALL)
-    return None
 
 
 def _torch_threads(value: str | None) -> int | str:

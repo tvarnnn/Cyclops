@@ -60,14 +60,12 @@ def fake(monkeypatch, tmp_path):
     return state
 
 
-def _client(monkeypatch, *, live=False, landed=False):
-    monkeypatch.setenv("TOWER_WORLD_GUIDANCE_IMAGERY_LIVE", "on" if live else "off")
+def _client(monkeypatch, *, landed=False):
     monkeypatch.setenv("TOWER_WORLD_GUIDANCE_IMAGERY_LANDED", "on" if landed else "off")
     monkeypatch.setenv("TOWER_WORLD_GUIDANCE_COVERAGE", "on")
     app = FastAPI()
     app.state.world_root = "synthetic-root"
-    if live or landed:
-        app.include_router(route.router)
+    app.include_router(route.router)
     return TestClient(app)
 
 
@@ -88,7 +86,7 @@ def test_b1_live_fixture_redacted_digest_caps_and_break(fake, monkeypatch):
 
     monkeypatch.setattr(imagery, "keyframe_image_bytes", boundary)
     monkeypatch.setenv("TOWER_WORLD_RAW_IMAGERY_WORLDS", "home")
-    client = _client(monkeypatch, live=True)
+    client = _client(monkeypatch)
     class GuardedEnvironment(dict):
         def get(self, key, default=None):
             assert key != "TOWER_WORLD_RAW_IMAGERY_WORLDS"
@@ -127,27 +125,20 @@ def test_b1_live_fixture_redacted_digest_caps_and_break(fake, monkeypatch):
     assert client.get(path + "/tile/" + entry["digest"]).status_code == 404
 
 
-def test_off_route_absence_and_404s(fake, monkeypatch):
-    client = _client(monkeypatch)
-    path = "/worlds/home/guidance/s9/imagery"
-    assert path + "/manifest" not in client.get("/openapi.json").json()["paths"]
-    assert client.get(path + "/manifest").status_code == 404
-    assert client.get(path + "/tile/" + "a" * 64).status_code == 404
+def test_landed_is_null_before_a_landing_and_bad_digests_404(fake, monkeypatch):
+    monkeypatch.setattr(imagery, "_tile", lambda *args: _jpeg())
     client = _client(monkeypatch, landed=True)
-    assert client.get(path + "/manifest").json() == {"version": 1, "landed": None}
+    path = "/worlds/home/guidance/s9/imagery"
+    assert client.get(path + "/manifest").json()["landed"] is None
     assert client.get(path + "/tile/" + "a" * 64).status_code == 404
     assert client.get("/worlds/no/guidance/s9/imagery/tile/" + "x" * 64).status_code == 404
-    client = _client(monkeypatch, live=True)
-    monkeypatch.setenv("TOWER_WORLD_GUIDANCE_IMAGERY_LIVE", "off")
-    assert client.get(path + "/manifest").status_code == 404
-    assert client.get(path + "/tile/" + "a" * 64).status_code == 404
 
 
 def test_missing_store_is_404_not_5xx(fake, monkeypatch):
     from tower.world_builder.store import WorldStoreError
     monkeypatch.setattr(_Store, "read_session",
                         lambda self, world, session: (_ for _ in ()).throw(WorldStoreError("absent")))
-    client = _client(monkeypatch, live=True)
+    client = _client(monkeypatch)
     path = "/worlds/home/guidance/s9/imagery"
     assert client.get(path + "/manifest").status_code == 404
     assert client.get(path + "/tile/" + "a" * 64).status_code == 404
@@ -161,20 +152,8 @@ def test_session_path_is_contained(tmp_path):
     assert imagery.contained_session_id(store, "world", "C:\\outside") is None
 
 
-def test_real_app_does_not_register_imagery_when_off(monkeypatch):
-    monkeypatch.delenv("TOWER_WORLD_GUIDANCE_IMAGERY_LIVE", raising=False)
+def test_real_app_always_registers_imagery(monkeypatch):
     monkeypatch.delenv("TOWER_WORLD_GUIDANCE_IMAGERY_LANDED", raising=False)
-    from tower.main import create_app
-    app = create_app()
-    paths = app.openapi()["paths"]
-    assert not any("/guidance/{session_id}/imagery/" in path for path in paths)
-
-
-@pytest.mark.parametrize("switch", ["LIVE", "LANDED"])
-def test_real_app_registers_imagery_when_one_stage_is_on(monkeypatch, switch):
-    monkeypatch.delenv("TOWER_WORLD_GUIDANCE_IMAGERY_LIVE", raising=False)
-    monkeypatch.delenv("TOWER_WORLD_GUIDANCE_IMAGERY_LANDED", raising=False)
-    monkeypatch.setenv("TOWER_WORLD_GUIDANCE_IMAGERY_" + switch, "on")
     from tower.main import create_app
     paths = create_app().openapi()["paths"]
     prefix = "/worlds/{world_id}/guidance/{session_id}/imagery/"
@@ -184,7 +163,7 @@ def test_real_app_registers_imagery_when_one_stage_is_on(monkeypatch, switch):
 
 def test_b1_no_untrusted_or_failed_redaction(fake, monkeypatch):
     monkeypatch.setattr(imagery, "keyframe_image_bytes", lambda *a, **kw: (None, "failed", None))
-    client = _client(monkeypatch, live=True)
+    client = _client(monkeypatch)
     path = "/worlds/home/guidance/s9/imagery/manifest"
     assert client.get(path).json()["live"]["entries"] == []
     _Store.redaction = "none"
@@ -289,7 +268,6 @@ def test_b2_wire_tile_and_404(fake, monkeypatch):
     path = "/worlds/home/guidance/s9/imagery"
     response = client.get(path + "/manifest")
     assert response.status_code == 200
-    assert "live" not in response.json()
     entry = response.json()["landed"]["entries"][0]
     tile = client.get(path + "/tile/" + entry["digest"])
     assert tile.status_code == 200

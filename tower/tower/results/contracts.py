@@ -1,7 +1,7 @@
 """Contract identifiers, and why they are opaque strings.
 
-`IOS-to-Tower.md` section 6 item 6 is explicit that iOS compares contract
-identifiers **for equality only**:
+`ios/docs/agent-handoffs/IOS-TO-TOWER.md` section 6 item 6 is explicit that iOS
+compares contract identifiers **for equality only**:
 
     "Contract versioning semantics -- identifiers are compared for
      equality only, so ordering and compatibility remain the Tower's to
@@ -28,9 +28,9 @@ that two identifiers differ without inviting anyone to compute which is
 
 Changing a value here is a WIRE BREAK. iOS will report "update the app"
 and stop decoding, which is the intended behaviour -- see
-`IOS-to-Tower.md` section 0.1. Change one only when the payload's meaning
-changes in a way an existing decoder would get WRONG. Adding an optional
-field that an older decoder ignores is not that; removing a field,
+`ios/docs/agent-handoffs/IOS-TO-TOWER.md` section 0.1. Change one only when the
+payload's meaning changes in a way an existing decoder would get WRONG. Adding
+an optional field that an older decoder ignores is not that; removing a field,
 renaming one, or changing what a field means is.
 """
 
@@ -42,8 +42,7 @@ CARTRIDGE_DOCUMENT_MEMORY = "document_memory"
 # not an oversight. The name is what a session URL and a `/health` row
 # are keyed on, and both exist now; the socket DECLARATION is a separate
 # decision that breaks a pinned iOS test the moment it lands, so it waits
-# for the iOS lane to take both halves at once. See
-# `docs/agent-handoffs/OBJECT-MEMORY-MAC-HANDOFF.md` section 3.
+# for the iOS lane to take both halves at once.
 CARTRIDGE_OBJECT_MEMORY = "object_memory"
 CARTRIDGE_SCENE_UNDERSTANDING = "scene_understanding"
 
@@ -107,11 +106,10 @@ WORLD_BUILDER_STATUS_CONTRACT = "world_builder.status/2026-09-10"
 
 # Scene Understanding's live scene.
 #
-# Dated 2026-08-27 rather than the 2026-08-26 of
-# `docs/superpowers/specs/2026-08-26-scene-understanding-wire-path-design.md`
-# because the payload that shipped is not byte-for-byte the payload that
-# was designed: `where` carries per-label SIDE COUNTS rather than one side
-# per label (one side cannot describe a chair on the left and a chair on
+# Dated 2026-08-27 rather than the 2026-08-26 of the original wire-path
+# design because the payload that shipped is not byte-for-byte the
+# payload that was designed: `where` carries per-label SIDE COUNTS rather
+# than one side per label (one side cannot describe a chair on the left and a chair on
 # the right), and a `lifecycle` block was added because this cartridge has
 # a Start and a Stop that World Builder's file-reading status did not.
 #
@@ -157,7 +155,7 @@ ENVELOPE_CONTRACT = "cartridge_results.envelope/2026-08-23"
 # Every timestamp this channel emits. There is no capture timestamp
 # anywhere on the wire (tower/frames.py carries no time field), so a
 # Tower timestamp is when the TOWER saw something, never when the glasses
-# did. `IOS-to-Tower.md` 0.3 holds observedAt and receivedAt separately
-# and will never substitute one for the other; naming the basis on every
-# envelope is how that survives the hop.
+# did. `ios/docs/agent-handoffs/IOS-TO-TOWER.md` §0.3 holds observedAt and
+# receivedAt separately and will never substitute one for the other; naming the
+# basis on every envelope is how that survives the hop.
 TIME_BASIS = "tower-receipt"

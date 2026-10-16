@@ -341,11 +341,10 @@ def _pending_references(summary, anchors, placement_by_segment):
 def _pending_entry(kid, row, source, summary, pending_refs, anchors):
     """(ref, position, up, ray) for one keyframe of a pending segment, or None.
 
-    TOWER_WORLD_GUIDANCE_COVERAGE_PENDING only. The segment is one the named
-    solve has not replaced because some of its members are past the horizon
-    (merge's `pending`); the keyframe itself is posed by that solve with >= 30
-    observations, in a component that maps to a registered, anchored
-    reference. The pose is the solve's own, carried into the output frame
+    The segment is one the named solve has not replaced because some of its
+    members are past the horizon (merge's `pending`); the keyframe itself is
+    posed by that solve with >= 30 observations, in a component that maps to a
+    registered, anchored reference. The pose is the solve's own, carried into the output frame
     through that reference's anchor: the same `_solution_relative` that
     checks every replaced keyframe. Nothing is inferred for anything else."""
     segment = summary["segments"].get(str(row["segment_index"]))
@@ -370,12 +369,12 @@ def _pending_entry(kid, row, source, summary, pending_refs, anchors):
 
 def compute_coverage(*, solution, manifest, placements, poses, keyframes,
                      geometry_revision, computed_at, check=lambda: None,
-                     eligible_out=None, dial_out=None, include_pending=False):
+                     eligible_out=None, dial_out=None, include_pending=True):
     """Pure computation from one coherent snapshot; invalid global identity refuses all.
 
-    `include_pending` (TOWER_WORLD_GUIDANCE_COVERAGE_PENDING, exactly `on`)
-    also counts posed keyframes of not-yet-replaced segments; see
-    `_pending_entry`. False is today's computation, byte for byte."""
+    Posed keyframes of not-yet-replaced (pending) segments count too; see
+    `_pending_entry`. `include_pending=False` (tests only) leaves them out:
+    the replaced-segments-only baseline."""
     summary = manifest["global_solve"]
     solved_at = float(summary["solved_at"])
     if (not math.isfinite(solved_at) or solved_at < 0 or
@@ -493,8 +492,7 @@ def compute_coverage(*, solution, manifest, placements, poses, keyframes,
             continue
         row = poses_by_id[kid]
         if pending_refs is not None and row["segment_index"] not in placement_by_segment:
-            # Without the switch every such keyframe is skipped below (no
-            # placement); with it, only a pending segment's posed keyframe counts.
+            # No placement: only a pending segment's posed keyframe can count.
             entry = _pending_entry(kid, row, source_poses[kid], summary, pending_refs, anchors)
             if entry is not None:
                 eligible[entry[0]].append((kid, *entry[1:]))
@@ -624,7 +622,7 @@ def _json(path, budget=None):
 def compute_from_tree(root, world_id, session_id, expected, geometry_revision,
                       clock=time.time, tree_tag=None, budget=None,
                       eligible_out=None, tree_out=None, dial_out=None,
-                      include_pending=False):
+                      include_pending=True):
     """Read without a builder lock; reject torn trees and never read image bytes.
 
     `tree_out` (FOW v1.2 photo floor plan only) receives the exact parsed files
@@ -740,10 +738,6 @@ class CoverageWorker:
         self._retries = {}
         self._published = {}
         self._imagery_landed = os.environ.get("TOWER_WORLD_GUIDANCE_IMAGERY_LANDED") == "on"
-        # TOWER_WORLD_GUIDANCE_COVERAGE_PENDING (exactly `on`): count posed keyframes of
-        # pending segments. OFF passes nothing new, so every call is today's.
-        from tower.config import world_guidance_coverage_pending_setting
-        self._include_pending = world_guidance_coverage_pending_setting()
         self._imagery_state = None
         # One pending B2 retry (imagery-landed only): a landing whose tile job
         # missed its budget is re-run once, at the next worker tick, for that
@@ -948,8 +942,6 @@ class CoverageWorker:
                 wants_eligible = self._imagery_landed or self._photo_worker is not None
                 imagery_eligible = [] if wants_eligible else None
                 kwargs = ({"eligible_out": imagery_eligible} if wants_eligible else {})
-                if self._include_pending:
-                    kwargs["include_pending"] = True
                 dial = None
                 if self._imagery_landed:
                     # FOW dial (S3): B2's per-sector selection inputs.

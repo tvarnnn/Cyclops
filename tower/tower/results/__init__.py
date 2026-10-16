@@ -9,9 +9,9 @@ read.
 
 That restraint is the architecture, not an accident of scope. The obvious
 alternative was to register World Builder as a live production module and
-publish its results as they were computed; `TOWER-TO-IOS.md` 6.1 lists the
-four blockers that stop, and every one of them is real. But 6.1 also
-conflates two things that turn out to be separable:
+publish its results as they were computed; four blockers stop that, and
+every one of them is real. But treating them as blocking any World
+Builder result at all conflates two things that turn out to be separable:
 
     a World Builder TRANSPORT        <- achievable now, this package
     World Builder as a LIVE MODULE   <- blocked at V1.0/V1.1

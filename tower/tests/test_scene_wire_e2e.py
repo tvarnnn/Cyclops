@@ -645,10 +645,10 @@ class TestTheSessionIsNotRunningUnlessSomebodySaidSo:
 class TestAPhoneThatStreamsAndWatchesSeesAScene:
     """Nothing but the wire starts the session, and only the right wire.
 
-    `IOS-to-Tower.md` 6.2 is explicit that opening a cartridge on the
-    phone sends no VERB, and a test on the iOS side asserts that. What
-    the phone does send is a `result_subscribe` for the live scene, and
-    together with `stream_start` -- the moment a feed exists -- that is
+    `ios/docs/agent-handoffs/IOS-TO-TOWER.md` §6.2 is explicit that opening a
+    cartridge on the phone sends no VERB, and a test on the iOS side asserts
+    that. What the phone does send is a `result_subscribe` for the live scene,
+    and together with `stream_start` -- the moment a feed exists -- that is
     the whole start signal. A stream alone is a phone using some other
     cartridge's camera and must not run a people detector behind it; a
     subscription alone has nothing to observe.

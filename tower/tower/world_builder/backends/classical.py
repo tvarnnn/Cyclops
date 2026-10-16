@@ -836,12 +836,10 @@ class ClassicalTwoViewBackend(GeometryBackend):
     # solved by _extend() against the last EXTEND_REFERENCE_DEPTH keyframes
     # that HAVE poses plus the accumulated landmarks, and never looks
     # forward. There is no LOOP CLOSURE. There IS now a bundle
-    # adjustment -- see BUNDLE_WINDOW -- and the record that one was
-    # "measured at 0.00% drift improvement at 16, 32 and 104 keyframes"
-    # was true of the engine it was measured on, whose observation graph
-    # was a chain with a median covisibility span of 1
-    # (docs/agent-handoffs/WORLD-BUILDER.md section 10). At HEAD that
-    # graph is mean 4.67 views a landmark with 67.2% at three or more,
+    # adjustment -- see BUNDLE_WINDOW. An earlier engine measured one at
+    # "0.00% drift improvement at 16, 32 and 104 keyframes", but its
+    # observation graph was a chain with a median covisibility span of 1.
+    # This engine's graph is mean 4.67 views a landmark with 67.2% at three or more,
     # and the adjustment takes a forty-keyframe chain's rotation error
     # from 9.21 deg to 0.15 deg.
     #
@@ -1406,9 +1404,9 @@ class ClassicalTwoViewBackend(GeometryBackend):
             # findEssentialMat(USAC_MAGSAC)/solvePnPRansac(SQPNP) are
             # not seeded -- a committed test's own docstring claims
             # 1.32% where the same test now measures 1.62% on a
-            # different OpenCV build. Point at the report, which can
-            # carry the conditions; a bare number in a comment cannot.
-            # See reports/2026-08-22-world-builder-closeout.md 5.2.
+            # different OpenCV build. A bare number in a comment cannot
+            # carry its conditions; tests/test_world_builder_drift.py
+            # pins the shape of the error instead.
             reobserved[(current_index, index_current)] = landmark
 
         if len(object_points) < MIN_PNP_CORRESPONDENCES:

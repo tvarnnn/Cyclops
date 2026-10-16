@@ -266,9 +266,9 @@ def world_render(
     viewer: str | None = Query(default=None),
     # U1.1 native chrome (WORLD-BUILDER-WORLDS.md §4c): `native` asks the
     # appearance page to hand its chrome to the phone. Passed through as it came:
-    # the adapter decides, behind TOWER_WORLD_NATIVE_CHROME (off), and every other
-    # value -- and every other rung -- is the page without it. No pattern, so it is
-    # never a 422. The revision routes do not declare it (§4a).
+    # the adapter decides, and every other value -- and every other rung -- is the
+    # page without it. No pattern, so it is never a 422. The revision routes do
+    # not declare it (§4a).
     wb_chrome: str | None = Query(default=None, alias="wb-chrome"),
 ) -> HTMLResponse:
     """The interactive viewer of one saved world, as a self-contained page.

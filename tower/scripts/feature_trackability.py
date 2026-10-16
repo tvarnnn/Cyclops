@@ -12,13 +12,13 @@ plus per-pair cost.
 Deliberately intrinsics-free. Geometric verification uses the fundamental
 matrix (and a homography cross-check), neither of which needs a calibrated
 camera. Essential-matrix `recoverPose` -- which WOULD need intrinsics -- is
-Experiment 3 and is explicitly out of scope and blocked (see
-docs/superpowers/research/2026-08-20-world-builder-foundations.md 6).
+Experiment 3 and is explicitly out of scope and blocked.
 
 IMPORTANT -- results from a public dataset clip are *feasibility evidence*,
-NOT physical-glasses/DAT validation. See docs/superpowers/research/
-2026-08-20-world-builder-dataset-selection.md for the dataset ruling, its
-limitations, and the acceptance gate requiring a re-run on real DAT footage.
+NOT physical-glasses/DAT validation. A public clip differs from the
+platform in optics/FOV, encoding (DAT uses an adaptive bitrate ladder),
+resolution and frame rate (resampling mitigates, not eliminates), and
+scene regime. Acceptance requires a re-run on real DAT footage.
 
 Usage:
     .venv\\Scripts\\python.exe scripts/feature_trackability.py \\

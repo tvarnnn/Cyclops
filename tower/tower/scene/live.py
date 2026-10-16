@@ -18,9 +18,10 @@ number is large enough to make it safe, because a client that renders
 counts above staleness shows the room first.
 
 `pause()` is the deliberately different case -- the scene survives and the
-payload says it is no longer being refreshed. `IOS-to-Tower.md` 4.7 asks
-the Tower to keep `observing` and `lastKnown` apart rather than flatten
-them, and this is that distinction.
+payload says it is no longer being refreshed.
+`ios/docs/agent-handoffs/IOS-TO-TOWER.md` §4.7 asks the Tower to keep
+`observing` and `lastKnown` apart rather than flatten them, and this is that
+distinction.
 
 Document Memory's Stop does the opposite and keeps what it recorded. That
 asymmetry is the difference between the two cartridges, not an

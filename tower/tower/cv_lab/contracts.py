@@ -5,12 +5,12 @@ these are the strings a phone switches on, and a string a phone switches
 on is not a detail of the module that happens to emit it.
 
 Every identifier here is **opaque and compared for equality only**, the
-rule `IOS-to-Tower.md` 0.1 sets for the whole platform. Dated rather than
-numbered so that two of them are visibly different without inviting
-anyone to compute which is greater. Changing one is a WIRE BREAK: iOS
-will report "update the app" and stop decoding, which is the intended
-behaviour. Change one only when a payload's MEANING changes in a way an
-existing decoder would get wrong -- adding an optional field an older
+rule `ios/docs/agent-handoffs/IOS-TO-TOWER.md` §0.1 sets for the whole
+platform. Dated rather than numbered so that two of them are visibly different
+without inviting anyone to compute which is greater. Changing one is a WIRE
+BREAK: iOS will report "update the app" and stop decoding, which is the
+intended behaviour. Change one only when a payload's MEANING changes in a way
+an existing decoder would get wrong -- adding an optional field an older
 decoder ignores is not that.
 """
 
@@ -244,10 +244,10 @@ MAX_UNCLASSIFIED_REPORTED = 8
 # -- the live preview --------------------------------------------------
 #
 # What follows is the contract `_annotation`'s `artifact` field was
-# reserved for. `IOS-to-Tower.md` 5 said artifact fetching was UNKNOWN
-# because iOS "holds no URL, no id format, and no bytes, because
-# inventing a fetch scheme would be exactly the fabricated contract this
-# work refuses to produce" -- and the Tower agreed, because a scheme
+# reserved for. `ios/docs/agent-handoffs/IOS-TO-TOWER.md` §5 said artifact
+# fetching was UNKNOWN because iOS "holds no URL, no id format, and no bytes,
+# because inventing a fetch scheme would be exactly the fabricated contract
+# this work refuses to produce" -- and the Tower agreed, because a scheme
 # invented on one side is the same fabrication seen from the other. This
 # lands on BOTH sides at once, in one change, with a document under
 # `docs/contracts/`, which is the only way that objection is answered
@@ -291,12 +291,13 @@ ARTIFACT_KIND_LIVE_PREVIEW = "live_preview"
 #                   re-served. TRUE HERE, in every clause.
 #   unknown         the producer did not say. Withheld by iOS, correctly.
 #
-# A fourth, gentler value was considered and rejected. `IOS-to-Tower.md`
-# 5 says "There is deliberately no `.probablySafe` and no lenient
-# default", and "this image is only a Canny edge map" is precisely the
-# argument a `.probablySafe` would encode. It is also wrong: an edge map
-# of a face keeps the jawline, the glasses and the hairline, and a depth
-# map keeps the silhouette. Derived is not the same as unrecognisable.
+# A fourth, gentler value was considered and rejected.
+# `ios/docs/agent-handoffs/IOS-TO-TOWER.md` §5 says "There is deliberately no
+# `.probablySafe` and no lenient default", and "this image is only a Canny edge
+# map" is precisely the argument a `.probablySafe` would encode. It is also
+# wrong: an edge map of a face keeps the jawline, the glasses and the hairline,
+# and a depth map keeps the silhouette. Derived is not the same as
+# unrecognisable.
 TREATMENT_RAW_EPHEMERAL = "raw_ephemeral"
 
 # The process claim beside the treatment, in the naming discipline

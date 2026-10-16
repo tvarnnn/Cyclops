@@ -1,9 +1,9 @@
 """What the Lab costs, and the fact that it does not grow.
 
-`handoff.md` 9.3 says a `stream_stop` MAY NEVER ARRIVE, so "for the length
-of a run" means "for as long as the Tower is up". Anything that grew per
-frame would grow without bound, and this file is the reason to believe
-nothing does.
+A `stream_stop` MAY NEVER ARRIVE -- a dropped socket produces none -- so
+"for the length of a run" means "for as long as the Tower is up".
+Anything that grew per frame would grow without bound, and this file is
+the reason to believe nothing does.
 
 It also pins the arithmetic of the aggregate. A per-frame fraction summed
 over 9,199 frames is 768 -- a number that gets printed and believed --
@@ -346,9 +346,10 @@ def test_no_result_channel_payload_ever_carries_an_image(monkeypatch):
     **no image bytes ride the result channel.** The descriptor names a
     path, a media type and a treatment; the bytes are a separate fetch a
     client makes only if it wants one. That is the split
-    `IOS-to-Tower.md` 5's own `notFetched`/`fetching`/`available` state
-    machine was written around, and it is what keeps a 40 KB image off
-    the socket the frame path shares a lock with.
+    `ios/docs/agent-handoffs/IOS-TO-TOWER.md` §5's own
+    `notFetched`/`fetching`/`available` state machine was written around, and
+    it is what keeps a 40 KB image off the socket the frame path shares a lock
+    with.
     """
     client = make_client(monkeypatch, "feature_detection")
     lab = client.app.state.cv_lab

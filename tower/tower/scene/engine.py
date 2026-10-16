@@ -10,8 +10,8 @@ web process, one frame at a time, newest frame wins.
 
 The detector is chosen by device (`tower/scene/detect.py`) and the
 orientation stage is a face detector on each tracked person's box
-(`tower/scene/orientation.py`); both decisions and their measurements are
-in `docs/superpowers/research/2026-09-07-scene-understanding-architecture.md`.
+(`tower/scene/orientation.py`); each module's docstring carries its
+decision and the measurements behind it.
 """
 
 import logging

@@ -75,8 +75,7 @@ async def run_benchmark(uri: str, width: int, height: int, frame_count: int) -> 
         await ws.send(json.dumps({"type": "stream_stop"}))
 
     # First frame excluded from the average: CUDA context first-init is a
-    # documented one-time warmup cost, not representative steady-state
-    # latency (see 2026-08-20-v0.9.1-depth-cv-baseline-design.md).
+    # known one-time warmup cost, not representative steady-state latency.
     if not round_trip_ms:
         raise RuntimeError(
             f"no frame_result received; {len(frame_errors)} frame_error replies, "

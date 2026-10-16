@@ -27,7 +27,10 @@ dependencies = [
 # which is fine at 360x640 (a 438-keyframe walk solves in ~90 s). Optional:
 # without it the World Builder behaves exactly as before and says so.
 # NOTE for product licensing review: the wheel bundles Ceres with
-# SuiteSparse (CHOLMOD has GPL modules).
+# SuiteSparse (CHOLMOD has GPL modules). `pyceres` was evaluated as a
+# pose-graph solver and rejected for the same reason: its wheels ship the
+# GPL-2.0-or-later SuiteSparse modules (SPQR in full, CHOLMOD Supernodal
+# and MatrixOps) as hard-linked dependencies.
 sfm = [
     "pycolmap==4.2.0",
 ]
@@ -112,7 +115,7 @@ ml = [
     # -- and CPU torch does not announce itself. It imports, it runs, and
     # every GPU figure in the docs silently becomes a CPU figure. That is
     # not hypothetical: it is how this venv arrived at torch 2.13.0+cpu
-    # and stayed there (weekend run report, item 5).
+    # and stayed there.
     #
     # cu132 rather than cu128: the RTX 5070 is Blackwell, sm_120. Verified
     # on this host 2026-08-26 -- get_device_capability() == (12, 0),
@@ -169,7 +172,6 @@ ocr = [
     # 5.0.0 with `opencv-python-headless` the ONLY cv2 distribution
     # present, `numpy` still 2.5.2, `torch` still 2.13.0+cu132 with CUDA
     # available. The 2026-08-26 reality check
-    # (docs/superpowers/research/2026-08-26-document-memory-reality-check.md)
     # reproduced the published 640x480 and 1280x720 word-recall rows
     # exactly against THIS version; an unpinned upgrade would silently
     # move the baseline those rows are compared to.
@@ -191,8 +193,7 @@ semantic = [
     # correct detector labels and rejects 94.3% of wrong ones over 94
     # human-labelled crops from the real corpus, at 128 ms and 842 MB of
     # peak VRAM per call -- called once per sighting, which measured 53
-    # times across 18,821 frames. Evidence:
-    # docs/superpowers/research/2026-08-27-object-memory-corpus-precision.md
+    # times across 18,821 frames.
     #
     # A FLOOR, NOT AN EXACT PIN, unlike torch and easyocr above. Those
     # two are pinned because a measurement is calibrated against the

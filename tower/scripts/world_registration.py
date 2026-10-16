@@ -16,9 +16,8 @@ decision that these numbers exist to inform.
 
 -- The property that governs the design -----------------------------------
 
-Reprojection error does not catch fabrication. Measured on the real walk
-(docs/superpowers/research/2026-08-26-cross-segment-registration.md section
-6): segment pair (30,50) fits at 1.62 px median with 88% of correspondences
+Reprojection error does not catch fabrication. Measured on the real walk:
+segment pair (30,50) fits at 1.62 px median with 88% of correspondences
 under 3 px, and its scale is wrong by a factor of 3.2. Segment 6 registered
 into its OWN frame -- where the true scale is exactly 1.0 by construction --
 fits at 0.75 px and returns 0.674.
@@ -1172,9 +1171,7 @@ def admit(evidence: MutualEvidence, thresholds: Thresholds) -> Verdict:
             f"{type(evidence).__name__}. A single direction's fit quality "
             "cannot admit a pair: on the real walk, segments (30,50) fit at "
             "1.62 px with 88% of correspondences under 3 px and were wrong "
-            "by a factor of 3.2 in scale (measured in "
-            "docs/superpowers/research/"
-            "2026-08-26-cross-segment-registration.md section 6). Solve the "
+            "by a factor of 3.2 in scale. Solve the "
             "other direction for real -- PnP the other segment's landmarks "
             "into this one's images -- and compare the scales."
         )

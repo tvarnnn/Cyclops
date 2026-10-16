@@ -35,8 +35,8 @@ WHAT IT DOES NOT MEASURE
 Accuracy. Nothing here compares a count or a transcript against ground
 truth; `scripts/scene_benchmark.py` and
 `scripts/document_memory_benchmark.py` own that, and the detector's
-recall against an oracle is measured in
-`docs/superpowers/research/2026-08-26-detector-oracle-and-the-size-floor.md`.
+recall against an oracle is recorded in `tower/results/scene_understanding.py`
+and `docs/contracts/CARTRIDGE-RESULTS.md` section 14.4.
 
 NOTHING IS WRITTEN unless `--document-root` is given, and Scene
 Understanding cannot write at all.

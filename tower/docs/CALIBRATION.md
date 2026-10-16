@@ -27,8 +27,6 @@ available, and reopening them wastes a day:
   different sensor readouts and the relationship between them is not
   published anywhere. A focal length derived from one and applied to the
   other is a fabricated number wearing the costume of a measurement.
-  (`docs/superpowers/research/2026-08-21-world-builder-readiness.md`
-  §5.3.)
 - **`fx = k × width` heuristics.** Same objection, with less evidence
   behind it.
 - **A default `K` in the classical backend.** `ClassicalTwoViewBackend.
@@ -125,7 +123,7 @@ If, and only if, you also want the board usable for future metric-scale
 work, set `SQUARE_LENGTH_M` in `scripts/calibrate_charuco.py` to the size
 you actually measured. It changes nothing about the intrinsics this
 procedure produces. V1 cannot reach a metric scale by any route
-(`docs/agent-handoffs/WORLD-BUILDER.md` §4), so this is optional today.
+(§8 item 5), so this is optional today.
 
 One thing you must **not** change is the ratio between
 `SQUARE_LENGTH_M` and `MARKER_LENGTH_M` (0.040 / 0.030). Printing the
@@ -381,9 +379,8 @@ That is what §3's measurement is for.
 **5. The world it builds.** The final check is a real walk producing
 poses that go where you walked. Nothing above substitutes for it.
 
-Record whatever you conclude in
-`docs/agent-handoffs/WORLD-BUILDER.md` §9 — the first real calibration is
-the answer to an open question, and it should stop being open.
+Record whatever you conclude against §8 below — the first real calibration
+is the answer to an open question, and it should stop being open.
 
 ---
 

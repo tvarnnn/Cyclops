@@ -891,8 +891,8 @@ async def _start_capture(websocket, owner) -> None:
                 #
                 # And `disconnect` is the truth: the socket that opened the
                 # old capture is gone. The phone re-opened the bracket on a
-                # new one, which `handoff.md` 9.3 calls the EXPECTED case on
-                # this link.
+                # new one, which is the EXPECTED case on this link
+                # (`docs/contracts/CARTRIDGE-RESULTS.md` §19.2).
                 observer.stop(END_REASON_DISCONNECT)
             # Read before `start`, which clears it. The supervisor needs
             # the same lineage the manifest records, or it cannot tell a
@@ -1194,15 +1194,15 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                     channel_holder=channels,
                 )
             else:
-                # Answered, not merely logged. IOS-to-Tower.md 2.2: iOS
-                # "never lets a request silently no-op", and
-                # 04-MODULE-SYSTEM.md already requires an unsupported
-                # request to "produce a clear degraded/failed state rather
-                # than silently pretending" it applied. Until now this
-                # branch wrote a server-side log line that no client could
-                # see, so a phone asking for something this Tower does not
-                # implement could not tell that from a message lost in
-                # flight.
+                # Answered, not merely logged.
+                # ios/docs/agent-handoffs/IOS-TO-TOWER.md §2.2: iOS "never lets
+                # a request silently no-op", and 04-MODULE-SYSTEM.md already
+                # requires an unsupported request to "produce a clear
+                # degraded/failed state rather than silently pretending" it
+                # applied. Until now this branch wrote a server-side log line
+                # that no client could see, so a phone asking for something
+                # this Tower does not implement could not tell that from a
+                # message lost in flight.
                 logger.warning("received unknown message type: %s", message_type)
                 await sender.send(
                     {

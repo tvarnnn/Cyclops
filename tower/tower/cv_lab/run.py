@@ -10,9 +10,9 @@ through, because a new experiment is a new run object.
 **Constant memory, by construction.** Every accumulator here is O(1) in
 frames: a mean is a running total and a count, a maximum is a maximum. A
 run has no frame list, no metric history and no sample buffer. This is not
-frugality -- `handoff.md` 9.3 says a `stream_stop` MAY NEVER ARRIVE, so
-"for the length of a run" means "for as long as the Tower is up", and
-anything that grew per frame would grow without bound.
+frugality -- a `stream_stop` MAY NEVER ARRIVE (a dropped socket produces
+none), so "for the length of a run" means "for as long as the Tower is
+up", and anything that grew per frame would grow without bound.
 
 **Aggregation is the experiment's decision, not this module's.** A
 per-frame `tracked_fraction` summed over 9,199 frames is 768, which is the
@@ -426,7 +426,7 @@ class LabRun:
             # meaningful aggregate", not "zero". See MetricKind.
             "value": value,
             # `null` means the quantity genuinely has no unit and is
-            # rendered bare. IOS-to-Tower.md 0.5.
+            # rendered bare. ios/docs/agent-handoffs/IOS-TO-TOWER.md §0.5.
             "unit": unit,
             # How this number was combined across frames, so a reader
             # knows whether they are looking at a mean, a total, or a

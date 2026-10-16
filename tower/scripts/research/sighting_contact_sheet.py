@@ -22,9 +22,9 @@ means a correct one.
 
 THE OUTPUT IS SENSITIVE IMAGERY. Crops come from raw first-person frames
 recorded with `redaction: "none"`, and a crop is not safer than the frame
-it came from -- `docs/modules/OBJECT-MEMORY.md` says exactly this. The
-output directory is under `analysis/`, which `.gitignore` excludes, and
-these sheets must not be committed, published, or attached anywhere.
+it came from -- `ios/Glasses/Project_Overview_Steps/docs/modules/OBJECT-MEMORY.md`
+says exactly this. The output directory is under `analysis/`, which
+`.gitignore` excludes, and these sheets must not be committed, published, or attached anywhere.
 """
 
 from __future__ import annotations

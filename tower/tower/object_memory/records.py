@@ -98,7 +98,7 @@ class ObjectObservation:
 
     spatial_ref and external_refs are reserved-but-unused: they are carried
     so a later cross-module need does not require rewriting already-persisted
-    records (see 2026-08-20-canonical-memory-architecture.md).
+    records.
 
     THREE FIELDS ABOUT STRENGTH, AND WHICH TO TRUST FOR WHAT.
 

@@ -565,11 +565,11 @@ class LiveSession:
 
         The reason this hook exists is a defect an adversarial review
         found: nothing on the wire could start a session.
-        `IOS-to-Tower.md` 6.2 is explicit that opening a cartridge on the
-        phone sends NOTHING -- "a test asserts the wire stays silent" --
-        so a session only an HTTP POST could start was a contract offered
-        as `available: true` that a phone could subscribe to and would
-        watch report "not observing" forever.
+        `ios/docs/agent-handoffs/IOS-TO-TOWER.md` §6.2 is explicit that opening
+        a cartridge on the phone sends NOTHING -- "a test asserts the wire
+        stays silent" -- so a session only an HTTP POST could start was a
+        contract offered as `available: true` that a phone could subscribe to
+        and would watch report "not observing" forever.
 
         `stream_start` is the right signal and not merely an available
         one. It is the moment a feed exists, and a cartridge whose whole

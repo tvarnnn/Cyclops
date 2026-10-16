@@ -62,14 +62,12 @@ GPU. Models are loaded one at a time, run over every keyframe that needs them,
 and freed (`del`, `torch.cuda.empty_cache()`) before the next is loaded: at
 most one checkpoint is on the card (measured <= 2.6 GB allocated each).
 
-FP16. `TOWER_WORLD_TRANSIENTS_FP16=on` runs each model's forward call --
-OneFormer, Grounding DINO, SAM -- under `torch.autocast("cuda",
-dtype=torch.float16)`. Off by default, and off is the fp32 forward call byte
-for byte, with no autocast context entered at all. Everything outside the
-forward call -- the processor, every post-process call, the composition --
-stays fp32: the forward call's output tensors are cast back to float before
-post-processing reads them. A CPU device never autocasts, regardless of the
-switch.
+FP16. On a CUDA device each model's forward call -- OneFormer, Grounding
+DINO, SAM -- runs under `torch.autocast("cuda", dtype=torch.float16)`.
+Everything outside the forward call -- the processor, every post-process
+call, the composition -- stays fp32: the forward call's output tensors are
+cast back to float before post-processing reads them. A CPU device never
+autocasts: its forward call is plain fp32, with no autocast context entered.
 
 UNAVAILABLE. Missing packages, weights that are neither cached nor
 downloadable, or `TOWER_WORLD_TRANSIENTS=off` produce `state: unavailable` with
@@ -488,19 +486,13 @@ def _sync():
 
 
 def _fp16_enabled(dev: str) -> bool:
-    """`TOWER_WORLD_TRANSIENTS_FP16`, and only on a CUDA device: a CPU device
-    never autocasts regardless of the switch. Off is the only value checked
-    here, so OFF never even imports `tower.config` from this call site."""
-    if dev != "cuda":
-        return False
-    from tower.config import world_transients_fp16_setting  # noqa: PLC0415
-
-    return world_transients_fp16_setting()
+    """fp16 forward calls on a CUDA device only: CPU autocast is not used."""
+    return dev == "cuda"
 
 
 def _autocast(enabled: bool):
     """`torch.autocast("cuda", dtype=torch.float16)` around a model forward
-    call when `enabled`; a no-op context otherwise, so the OFF path never
+    call when `enabled`; a no-op context otherwise, so a CPU run never
     enters autocast at all."""
     if not enabled:
         return contextlib.nullcontext()

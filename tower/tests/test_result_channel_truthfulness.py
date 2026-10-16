@@ -239,7 +239,8 @@ def test_pose_count_is_not_poses_solved_and_not_the_keyframe_count(
 
 
 def test_no_pose_array_is_sent(monkeypatch, built):
-    """IOS-to-Tower.md 1.4 marks a pose array NOT REQUESTED.
+    """ios/docs/agent-handoffs/IOS-TO-TOWER.md §1.4 marks a pose array NOT
+    REQUESTED.
 
     A pose schema needs position, rotation convention, handedness, frame
     and units -- five Tower decisions, each of which renders plausibly and
@@ -267,7 +268,8 @@ def test_no_pose_array_is_sent(monkeypatch, built):
 
 
 def test_a_path_length_carries_its_unit_and_scale_semantics(monkeypatch, built):
-    """IOS-to-Tower.md 0.5 and 1.5: never a bare number, never metres."""
+    """ios/docs/agent-handoffs/IOS-TO-TOWER.md §0.5 and 1.5: never a bare
+    number, never metres."""
     root, _, _ = built
     payload = _payload(monkeypatch, root)
     path = payload["trajectory"]["path_length"]
@@ -470,7 +472,8 @@ def test_tracking_never_reports_limited(monkeypatch, built):
 def test_keyframe_imagery_is_reported_present_but_never_fetchable(
     monkeypatch, built
 ):
-    """IOS-to-Tower.md 5: an unstated treatment is not a treatment.
+    """ios/docs/agent-handoffs/IOS-TO-TOWER.md §5: an unstated treatment is not
+    a treatment.
 
     World Builder keyframes are written with redaction "none" -- raw
     first-person frames. So they are declared, and declared unfetchable,
@@ -702,9 +705,9 @@ def test_the_producer_never_reads_an_unchanged_file_twice(built):
 
 # -- the iOS projection -------------------------------------------------
 #
-# `handoff.md` documents the Swift that exists today. These pin the one
-# contract shape it says costs the phone nothing: fields mapping 1:1 onto
-# `WorldSnapshot`, plus an explicit `WorldModelState`.
+# These pin the one contract shape that costs the phone nothing: fields
+# mapping 1:1 onto iOS's `WorldSnapshot`, plus an explicit
+# `WorldModelState`.
 
 
 IOS_MODEL_STATES = {
@@ -743,7 +746,7 @@ def test_the_projection_uses_only_vocabulary_ios_implements(monkeypatch, built):
 
 
 def test_the_projection_has_exactly_the_worldsnapshot_fields(monkeypatch, built):
-    """1:1 with handoff.md 8.3, so iOS decodes one flat shape."""
+    """1:1 with iOS's `WorldSnapshot`, so iOS decodes one flat shape."""
     root, _, _ = built
     snapshot = _payload(monkeypatch, root)["world_snapshot"]
 
@@ -926,7 +929,7 @@ def test_the_projection_never_offers_a_metric_scale(monkeypatch, built):
 def test_a_spatial_figure_never_arrives_without_its_unit_and_scale(
     monkeypatch, built
 ):
-    """handoff.md 9.6: send scale and unit TOGETHER with any spatial figure."""
+    """Send scale and unit TOGETHER with any spatial figure."""
     root, _, _ = built
     trajectory = _payload(monkeypatch, root)["world_snapshot"]["trajectory"]
 
@@ -944,10 +947,8 @@ def test_a_spatial_figure_never_arrives_without_its_unit_and_scale(
 def test_a_saved_world_can_be_reopened_by_id(monkeypatch, tmp_path):
     """The Tower half of iOS's `WorldInspectionMode.inspecting(worldID:)`.
 
-    `handoff.md` 9.7 says that mode exists on iOS but nothing can change
-    it -- there is no UI and no client method. The Tower side is here and
-    works: name a world (and optionally a session) on subscribe and the
-    channel reports that one, not whatever is live.
+    Name a world (and optionally a session) on subscribe and the channel
+    reports that one, not whatever is live.
     """
     root = tmp_path / "worlds"
     first_world, first_session = build_world(root, frames=10, name="First")
@@ -1013,9 +1014,10 @@ def test_a_reopened_world_carries_the_replay_data_it_has(monkeypatch, built):
     the glasses saw there -- which is a recorded camera path with a real
     first-person view at every point on it.
 
-    None of it crosses this wire, deliberately. `handoff.md` 9.5 and 14:
-    iOS holds summary figures, has no pose schema, and links no 3D
-    framework, so a pose array "cannot be displayed and would be dropped".
+    None of it crosses this wire, deliberately. The snapshot iOS decodes
+    from this channel holds summary figures, not arrays, and the app links
+    no 3D framework, so a pose array here would not be displayed and would
+    be dropped.
     The channel reports the SUMMARY, and the replay data stays on the
     Tower where something can actually read it.
     """

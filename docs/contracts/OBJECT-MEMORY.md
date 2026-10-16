@@ -17,8 +17,7 @@
 
 **Status:** Tower half implemented and exercised against the real 55-observation
 corpus in `tower/data/object_memory`. The iOS half is **written and
-uncompiled** — there is no Swift toolchain on the machine it was authored on;
-see `docs/agent-handoffs/OBJECT-MEMORY-MAC-HANDOFF.md`.
+uncompiled** — there is no Swift toolchain on the machine it was authored on.
 
 **One correction the client found by reading the route rather than this
 document.** §4.4 below lists `confidence` as `low | medium | high`.
@@ -67,9 +66,11 @@ So the rule is **not** that identity may never be claimed. It is that this
 implementation does not support it, and the evidence says it should not try yet:
 the best frozen embeddings get 26.4% Recall@1 on small mass-produced objects,
 tracking IDF1 collapses from ~100% to ~40% from identical same-class distractors
-alone, and zero-shot egocentric object re-ID tops out at 45.3% mAP. See
-`docs/superpowers/research/2026-08-27-object-memory-vision-model-landscape.md`
-§7. `category-not-instance` is a measured position, not an inherited
+alone, and zero-shot egocentric object re-ID tops out at 45.3% mAP. Sources: a
+visual product search benchmark (arXiv 2603.17186, Table 3: 26.4% Recall@1),
+REMIND (arXiv 2607.09267; the IDF1 values are read off its Figure 4, so they are
+approximate), and zero-shot object re-ID in egocentric kitchen videos (arXiv
+2605.26383: 45.3% mAP). `category-not-instance` is a measured position, not an inherited
 prohibition — which matters, because a measured position can be revisited when
 the measurement changes, and it will need a **new contract identifier** when it
 is.
@@ -741,8 +742,8 @@ histogram. A score histogram describes the detector's opinion of itself.
 Reading the crops found a ceiling fan detected as `airplane` at 0.99 and
 as `scissors` at 0.93, a white door as `refrigerator` at 0.95, and the
 three highest-scoring `remote` sightings in 18,821 frames all laptop
-keyboards. Full evidence:
-`docs/superpowers/research/2026-08-27-object-memory-corpus-precision.md`.
+keyboards. The per-class evidence is recorded with each class in
+`tower/tower/object_memory/classes.py`.
 
 So the class list became a policy with tiers:
 
@@ -835,8 +836,8 @@ offers it.
 
 **The verifier default was reversed on 2026-08-29, and this closes a
 decision that was explicitly reserved.**
-`docs/agent-handoffs/OBJECT-MEMORY-HANDOFF.md` section 7.4 recorded
-turning the verifier on by default as an open question **for a human, not
+The Object Memory lane recorded turning the verifier on by default as an
+open question **for a human, not
 for an agent**: *"the default stays `none` because 94 crops from one home
 justify building it and not switching it on for everybody."* A human
 closed it. The 2026-08-29 product pass was instructed that OWLv2 is this

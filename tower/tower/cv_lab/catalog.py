@@ -1,7 +1,7 @@
 """What the Lab can offer, as JSON, before anything has run.
 
-`IOS-to-Tower.md` 2.1 is the whole requirement and it is deliberately
-small:
+`ios/docs/agent-handoffs/IOS-TO-TOWER.md` §2.1 is the whole requirement and it
+is deliberately small:
 
     "Per experiment, iOS needs: an opaque `id`, a `name`, and optionally
      a `summary`. Nothing else, and nothing is parsed."

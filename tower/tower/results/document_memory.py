@@ -17,8 +17,8 @@ either, and `test_the_result_channel_never_writes` fails on a call named
 
 THE THREE ANSWERS, AND WHY TWO WOULD BE A LIE
 
-`IOS-to-Tower.md` 3.5 is the sharpest requirement on this cartridge and
-the easiest to get wrong:
+`ios/docs/agent-handoffs/IOS-TO-TOWER.md` §3.5 is the sharpest requirement on
+this cartridge and the easiest to get wrong:
 
     matched        documents were found
     notFound       the memory was searched and nothing matched
@@ -40,9 +40,10 @@ to wait for something that is not coming.
 
 THE LIST CARRIES A CHARACTER COUNT, NOT THE TEXT
 
-`IOS-to-Tower.md` 3.2: "The list carries a character count, not the text,
-so a list of documents is not also a bulk transfer of every document's
-contents onto the phone. Full text is fetched when a person opens one."
+`ios/docs/agent-handoffs/IOS-TO-TOWER.md` §3.2: "The list carries a character
+count, not the text, so a list of documents is not also a bulk transfer of
+every document's contents onto the phone. Full text is fetched when a person
+opens one."
 
 That is the manifest/segment split `world_builder_geometry.py` already
 uses, applied to the most sensitive data this platform handles.
@@ -67,12 +68,12 @@ to render, and deleting a caveat to save bytes is the one saving this
 contract may not make.
 
 The duration field is `observed_seconds`, and it must never be renamed to
-anything built on the word "viewing". `IOS-to-Tower.md` 3.3 asks for that
-by name and gives the reason: "appearing in the camera does not establish
-that the wearer looked at it, noticed it, or read it"; a field named for
-viewing claims all three. iOS renders it as "In view 45s", never "viewed
-for" or "read for". The literal banned spelling is not written out here,
-because the vocabulary test in `tests/test_result_channel_isolation.py`
+anything built on the word "viewing". `ios/docs/agent-handoffs/IOS-TO-TOWER.md`
+§3.3 asks for that by name and gives the reason: "appearing in the camera does
+not establish that the wearer looked at it, noticed it, or read it"; a field
+named for viewing claims all three. iOS renders it as "In view 45s", never
+"viewed for" or "read for". The literal banned spelling is not written out
+here, because the vocabulary test in `tests/test_result_channel_isolation.py`
 greps every string in this package for it -- docstrings included -- and a
 rule that exempted the file explaining the rule is how the word gets back
 in. That is also why this paragraph does not quote the test's own name.
@@ -130,12 +131,12 @@ ABSENCE_MEANING = "not-recorded-by-this-cartridge"
 # What happened to the pixels, in this platform's terms and in iOS's.
 #
 # The earlier single constant was `"raw-ephemeral-not-served"`, and it
-# was wrong twice. It is not one of the three states `IOS-to-Tower.md` 5
-# defines, so a decoder falls through to unknown -- the safe direction,
-# but a mapping that never lands. And it was a module constant, so a
-# library that kept every page image and one that kept none emitted the
-# same string, while a kept image is raw and PERSISTED, which is the
-# opposite of ephemeral.
+# was wrong twice. It is not one of the three states
+# `ios/docs/agent-handoffs/IOS-TO-TOWER.md` §5 defines, so a decoder falls
+# through to unknown -- the safe direction, but a mapping that never lands. And
+# it was a module constant, so a library that kept every page image and one
+# that kept none emitted the same string, while a kept image is raw and
+# PERSISTED, which is the opposite of ephemeral.
 IMAGERY_NONE_RETAINED = "none-retained"
 IMAGERY_RAW_PERSISTED = "raw-persisted"
 
@@ -223,10 +224,10 @@ RECORD_NOTES = {
 # transfer of what a wearer read".
 #
 # The snippet is not decoration and is not dropped: a match with no
-# evidence is a number a client has to trust, and `IOS-to-Tower.md`
-# models `DocumentQueryEvidence` for exactly this. It is bounded instead,
-# to a phrase rather than a paragraph, and the payload now says what it
-# serves rather than claiming it serves nothing.
+# evidence is a number a client has to trust, and
+# `ios/docs/agent-handoffs/IOS-TO-TOWER.md` models `DocumentQueryEvidence` for
+# exactly this. It is bounded instead, to a phrase rather than a paragraph, and
+# the payload now says what it serves rather than claiming it serves nothing.
 SNIPPET_MAX_CHARS = 48
 
 # And how much of a title. A title is a label and iOS asks for it in the
@@ -423,10 +424,11 @@ def _provenance(document) -> dict:
         # block IS joinable: a capture id, frame sequence numbers and a
         # timestamp let a holder align this reading with a recording on
         # disk. That is what provenance is for and it is why
-        # `IOS-to-Tower.md` 3.8 asks for it -- but it is a durable link
-        # across sessions, which is exactly what Scene Understanding's
-        # payload refuses to hand anyone, and the two cartridges differ
-        # here on purpose. A document is a record; a scene is not.
+        # `ios/docs/agent-handoffs/IOS-TO-TOWER.md` §3.8 asks for it -- but it
+        # is a durable link across sessions, which is exactly what Scene
+        # Understanding's payload refuses to hand anyone, and the two
+        # cartridges differ here on purpose. A document is a record; a scene is
+        # not.
         "joinable": True,
     }
 
@@ -459,9 +461,9 @@ def _summary_view(document) -> dict:
     `DocumentMemoryEngine._summarise` is the document's first forty words
     verbatim. That is an excerpt, not a summary, and forty words per
     document across a list is exactly the bulk transfer of contents that
-    `IOS-to-Tower.md` 3.2 exists to prevent -- "a list of documents is
-    not also a bulk transfer of every document's contents onto the
-    phone". Serving it here would have honoured the letter of "the list
+    `ios/docs/agent-handoffs/IOS-TO-TOWER.md` §3.2 exists to prevent -- "a list
+    of documents is not also a bulk transfer of every document's contents onto
+    the phone". Serving it here would have honoured the letter of "the list
     carries a character count, not the text" while breaking it in fact,
     and the failure would have been invisible: the field is small, and
     nobody reviewing one response would notice that a hundred of them

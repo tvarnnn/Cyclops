@@ -63,10 +63,8 @@ from tower.world_builder.photo_floorplan import (
     LOWER_IMAGE_FRACTION,
     MIN_FRAME_PITCH_DEG,
     fallback_floor_plane,
-    KeyframeSample,
     PhotoFrame,
     build_homography_raster,
-    build_raster,
     encode_tile,
     estimate_floor_plane,
     frame_gate,
@@ -86,13 +84,8 @@ MIN_TRACK_LENGTH = 3
 MAX_POINT_ERROR_PX = 2.0
 ARRAYS_MAX_BYTES = 64 * 1024 * 1024
 IMAGERY_SOURCE = "unredacted"
-METHOD_HOMOGRAPHY = "homography"
 DIAG_INPUTS = "_diag_inputs"
 DIAG_MAX_WALKS = 8   # walks whose diagnostics records the worker keeps in memory (LRU)
-METHOD_DEPTH = "depth"
-# Option (2)'s per-keyframe SfM depth fit (unchanged from the slice-1 probe).
-MIN_FIT_POINTS = 12
-MAX_HELD_OUT_REL = 0.15
 
 
 PLANE_REUSE_MIN_SHARED = 10
@@ -131,7 +124,7 @@ class LandingOverrun(LandingSkipped):
 
 
 # ---------------------------------------------------------------------------
-# landing inputs (shared with scripts/fow_v12_probe.py -- one copy, not a fork)
+# landing inputs
 # ---------------------------------------------------------------------------
 
 
@@ -442,146 +435,6 @@ def homography_component(*, receipt_component, entries, tree, arrays, keyframe_i
     return result, plane, frames, stats
 
 
-# -- option (2): the Exp1 live-depth cache, fit to this solve -----------------
-
-
-class DepthCache:
-    def __init__(self, dense_root: Path):
-        self.root = Path(dense_root) / "live_depth"
-        doc = json.loads((self.root / "align.json").read_text(encoding="utf-8"))
-        self.by_kid = {r["kid"]: r for r in doc.get("records", [])
-                       if isinstance(r, dict) and r.get("kid")}
-        self.imagery_source = doc.get("imagery_source")
-        self.backend = doc.get("backend")
-
-    def has(self, kid) -> bool:
-        return kid in self.by_kid
-
-    def load(self, kid):
-        import cv2
-
-        record = self.by_kid[kid]
-        ki = int(record["ki"])
-        pred = np.load(self.root / "work" / "depth" / f"{ki:05d}_pred.npy").astype(np.float64)
-        fill_path = self.root / "work" / "depth" / f"{ki:05d}_fill.npy"
-        fill = np.load(fill_path).astype(bool) if fill_path.is_file() else np.zeros_like(pred, bool)
-        bgr = cv2.imread(str(self.root / "work" / "undist" / f"{ki:05d}.jpg"))
-        rgb = bgr[:, :, ::-1] if bgr is not None else np.zeros((*pred.shape, 3), np.uint8)
-        return pred, fill, rgb
-
-
-@dataclasses.dataclass
-class SolveArrays:
-    camera: dict
-    keyframe_index: dict
-    poses: dict
-    xyz: np.ndarray
-    observations: np.ndarray
-    observation_xy: np.ndarray
-
-
-def solve_arrays_from(meta: dict, arrays: dict) -> SolveArrays:
-    return SolveArrays(camera=meta["camera"],
-                       keyframe_index={kid: i for i, kid in enumerate(meta["keyframe_ids"])},
-                       poses=meta["poses"], xyz=np.asarray(arrays["xyz"], np.float64),
-                       observations=np.asarray(arrays["observations"], np.int64).reshape(-1, 3),
-                       observation_xy=np.asarray(arrays["observation_xy"], np.float64).reshape(-1, 2))
-
-
-def fit_keyframe(kid: str, solve: SolveArrays, pred: np.ndarray, fill: np.ndarray):
-    """(ok, a, b, n_clean, held_out_rel, reason): the cached prediction fit to THIS
-    solve's own sparse observations of that keyframe."""
-    from tower.world_builder.dense import align_frame, project
-
-    ki = solve.keyframe_index.get(kid)
-    if ki is None:
-        return False, None, None, 0, None, "keyframe not in this solve's horizon"
-    mask = solve.observations[:, 0] == ki
-    if int(mask.sum()) < MIN_FIT_POINTS:
-        return False, None, None, int(mask.sum()), None, "too few sparse observations"
-    pt_idx = solve.observations[mask, 2]
-    X = solve.xyz[pt_idx]
-    pose = solve.poses.get(kid)
-    if pose is None:
-        return False, None, None, 0, None, "no local pose for this keyframe"
-    R = np.asarray(pose["rotation"], np.float64).reshape(3, 3)
-    t = np.asarray(pose["translation"], np.float64)
-    cam = solve.camera
-    K = np.array([[cam["fx"], 0.0, cam["cx"]], [0.0, cam["fy"], cam["cy"]], [0.0, 0.0, 1.0]])
-    uv, zc = project(R, t, K, X)
-    H, W = pred.shape
-    g = (np.isfinite(zc) & (zc > 1e-3) & np.isfinite(uv[:, 0]) & np.isfinite(uv[:, 1])
-         & (uv[:, 0] >= 0) & (uv[:, 0] < W - 1) & (uv[:, 1] >= 0) & (uv[:, 1] < H - 1))
-    if int(g.sum()) < MIN_FIT_POINTS:
-        return False, None, None, int(g.sum()), None, "too few sparse points inside the frame"
-    ui = np.clip(np.rint(uv[g, 0]).astype(int), 0, W - 1)
-    vi = np.clip(np.rint(uv[g, 1]).astype(int), 0, H - 1)
-    clean = ~fill[vi, ui]
-    n_clean = int(clean.sum())
-    if n_clean < MIN_FIT_POINTS:
-        return False, None, None, n_clean, None, "too few clean (non-fill) anchors"
-    disp_at_points = pred[vi[clean], ui[clean]].astype(np.float64)
-    z_sfm = zc[g][clean]
-    a, b, ho = align_frame(disp_at_points, z_sfm, kind="depth")
-    if not (np.isfinite(a) and np.isfinite(b)):
-        return False, a, b, n_clean, ho, "non-finite fit"
-    if a <= 0:
-        return False, a, b, n_clean, ho, "negative/zero scale"
-    if ho is not None and ho > MAX_HELD_OUT_REL:
-        return False, a, b, n_clean, ho, f"held-out residual {ho:.3f} > {MAX_HELD_OUT_REL}"
-    return True, a, b, n_clean, ho, "ok"
-
-
-def resize_sample(depth, valid, color, fx, fy, cx, cy):
-    """Resample a fitted depth/valid/colour triple to the <= 256x144 budget."""
-    import cv2
-
-    h, w = depth.shape
-    scale = min(1.0, (TARGET_PIXEL_BUDGET / float(h * w)) ** 0.5)
-    new_w, new_h = max(1, round(w * scale)), max(1, round(h * scale))
-    if (new_w, new_h) == (w, h):
-        return depth, valid, color, fx, fy, cx, cy
-    depth_r = cv2.resize(depth.astype(np.float32), (new_w, new_h), interpolation=cv2.INTER_NEAREST)
-    valid_r = cv2.resize(valid.astype(np.uint8), (new_w, new_h), interpolation=cv2.INTER_NEAREST) > 0
-    color_r = cv2.resize(color, (new_w, new_h), interpolation=cv2.INTER_AREA)
-    sx, sy = new_w / w, new_h / h
-    return depth_r.astype(np.float64), valid_r, color_r, fx * sx, fy * sy, cx * sx, cy * sy
-
-
-def depth_component(*, receipt_component, entries, cache: DepthCache, solve: SolveArrays,
-                    check=None):
-    """Option (2) for one displayed component (non-default method)."""
-    from tower.world_builder.dense import depth_from_prediction
-
-    forward = np.asarray(receipt_component["forward_xyz"], np.float64)
-    up = np.asarray(receipt_component["up_xyz"], np.float64)
-    right = np.cross(forward, up)
-    right = right / np.linalg.norm(right)
-    selected = select_spatial([e for e in entries if cache.has(e[0])], forward, right)
-    samples = []
-    for kid, position, up_world, forward_world, scale in selected:
-        if check is not None:
-            check()
-        pred, fill, rgb = cache.load(kid)
-        ok, a, b, _, _, _ = fit_keyframe(kid, solve, pred, fill)
-        if not ok:
-            continue
-        depth = depth_from_prediction(pred, a, b, kind="depth")
-        valid = np.isfinite(depth) & (depth > 1e-6) & ~fill
-        cam = solve.camera
-        d_r, v_r, c_r, fx, fy, cx, cy = resize_sample(depth, valid, rgb, cam["fx"], cam["fy"],
-                                                      cam["cx"], cam["cy"])
-        samples.append(KeyframeSample(kid=kid, position_xyz=tuple(position),
-                                      forward_xyz=tuple(forward_world), up_xyz=tuple(up_world),
-                                      scale=scale, fx=fx, fy=fy, cx=cx, cy=cy, depth=d_r,
-                                      valid=v_r, color=c_r,
-                                      order=solve.keyframe_index.get(kid, 0)))
-    result = build_raster(origin_xyz=receipt_component["origin_xyz"], up_xyz=up,
-                          forward_xyz=forward, bounds_xy=receipt_component["bounds_xy"],
-                          keyframes=samples, check=check)
-    return result, {"eligible": len(entries), "selected": len(selected), "fitted": len(samples)}
-
-
 # ---------------------------------------------------------------------------
 # one landing
 # ---------------------------------------------------------------------------
@@ -637,7 +490,7 @@ def read_landing_arrays(solve_dir: Path, solution_stat, solution_meta, check=Non
 
 
 def build_landing(root, world_id, session_id, receipt, eligible, tree, solution_stat,
-                  method=METHOD_HOMOGRAPHY, check=None, plane_memory=None):
+                  check=None, plane_memory=None):
     """(manifest block, {digest: (bytes, mime)}, per-component stats) for one landing."""
     solve_dir = Path(root) / "worlds" / world_id / "solve" / session_id
     solution = tree["solution"]
@@ -650,13 +503,6 @@ def build_landing(root, world_id, session_id, receipt, eligible, tree, solution_
     arrays_ms = round((time.perf_counter() - t_arrays) * 1000.0, 1)
     keyframe_index = {kid: i for i, kid in enumerate(solution["keyframe_ids"])}
     by_ref = placed_entries(tree, eligible)
-    cache = solve = None
-    if method == METHOD_DEPTH:
-        try:
-            cache = DepthCache(Path(root) / "worlds" / world_id / "dense" / session_id)
-        except (OSError, ValueError) as exc:
-            raise LandingSkipped(f"no live-depth cache for the depth method: {exc}") from None
-        solve = solve_arrays_from(solution, arrays)
     components, tiles, stats = [], {}, []
     receipt_components = sorted(receipt["components"], key=lambda c: c["reference_segment"])
     for rc in receipt_components[:MAX_COMPONENTS]:
@@ -664,26 +510,22 @@ def build_landing(root, world_id, session_id, receipt, eligible, tree, solution_
             check()
         ref = rc["reference_segment"]
         entries = by_ref.get(ref, [])
-        if method == METHOD_DEPTH:
-            result, cstats = depth_component(receipt_component=rc, entries=entries,
-                                             cache=cache, solve=solve, check=check)
-        else:
-            diag_out = {}
-            result, plane, frames, cstats = homography_component(
-                receipt_component=rc, entries=entries, tree=tree, arrays=arrays,
-                keyframe_index=keyframe_index, camera=camera,
-                images_dir=solve_dir / "images", check=check,
-                plane_memory=(plane_memory.setdefault(ref, {})
-                              if plane_memory is not None else None),
-                diag_out=diag_out)
-            # New-scene diagnostics (photo_floorplan_diagnostics): REFERENCES the worker reads
-            # only after this landing's disposition is final; nothing here reads them back.
-            cstats[DIAG_INPUTS] = {
-                "plane": plane, "entries": entries, "receipt_component": rc,
-                "band_points": diag_out.get("band_points"),
-                "frames": [(f.kid, f.check_points_xyz) for f in frames],
-                "warped_kids": result.stats.get("warped_kids"),
-                "raster_bounds_xy": result.raster_bounds_xy, "raster_width": result.width}
+        diag_out = {}
+        result, plane, frames, cstats = homography_component(
+            receipt_component=rc, entries=entries, tree=tree, arrays=arrays,
+            keyframe_index=keyframe_index, camera=camera,
+            images_dir=solve_dir / "images", check=check,
+            plane_memory=(plane_memory.setdefault(ref, {})
+                          if plane_memory is not None else None),
+            diag_out=diag_out)
+        # New-scene diagnostics (photo_floorplan_diagnostics): REFERENCES the worker reads
+        # only after this landing's disposition is final; nothing here reads them back.
+        cstats[DIAG_INPUTS] = {
+            "plane": plane, "entries": entries, "receipt_component": rc,
+            "band_points": diag_out.get("band_points"),
+            "frames": [(f.kid, f.check_points_xyz) for f in frames],
+            "warped_kids": result.stats.get("warped_kids"),
+            "raster_bounds_xy": result.raster_bounds_xy, "raster_width": result.width}
         if check is not None:
             check()
         t_encode = time.perf_counter()
@@ -863,7 +705,7 @@ def component_summary(stats):
 
 @dataclasses.dataclass
 class _DiagWalk:
-    """One walk's diagnostics records (files on only) and how many are in its JSONL."""
+    """One walk's diagnostics records and how many are in its JSONL."""
 
     records: list = dataclasses.field(default_factory=list)
     written: int = 0
@@ -872,13 +714,9 @@ class _DiagWalk:
 class PhotoFloorplanWorker:
     """One daemon builds each newly published coverage landing's photo plan."""
 
-    def __init__(self, root, *, latest=None, state=None, method=None,
-                 wall_cap_s=LANDING_WALL_CAP_S, build=None, diagnostics_files=None):
-        if method is None:
-            from tower.config import world_photo_floorplan_method_setting
-            method = world_photo_floorplan_method_setting()
+    def __init__(self, root, *, latest=None, state=None,
+                 wall_cap_s=LANDING_WALL_CAP_S, build=None):
         self.root = root
-        self.method = method
         self.wall_cap_s = float(wall_cap_s)
         self._latest = latest
         self._state = state if state is not None else state_for(root)
@@ -895,14 +733,9 @@ class PhotoFloorplanWorker:
         self._published_opaque_area = {}  # (world, session) -> {reference_segment: area}
         self._regress_streak = {}     # (world, session) -> consecutive regressed skips
         # New-scene diagnostics (photo_floorplan_diagnostics): bounded per-walk landing records
-        # (pair -> _DiagWalk), kept -- and written to the session -- only with
-        # TOWER_WORLD_PHOTO_FLOORPLAN_DIAGNOSTICS exactly `on`; off, the log line is all.
+        # (pair -> _DiagWalk), written to the session when `session_write_gate` allows.
         self._diag_records = OrderedDict()
         self._diag_pending = None
-        if diagnostics_files is None:
-            from tower.config import world_photo_floorplan_diagnostics_setting
-            diagnostics_files = world_photo_floorplan_diagnostics_setting()
-        self._diag_files = bool(diagnostics_files)
         self._thread = threading.Thread(target=self._run, name="world-photo-floorplan",
                                         daemon=True)
         self._thread.start()
@@ -996,8 +829,7 @@ class PhotoFloorplanWorker:
                 kwargs = {}
             block, tiles, stats = self._build(self.root, job["world_id"], job["session_id"],
                                               receipt, job["eligible"], job["tree"],
-                                              job["solution_stat"], method=self.method,
-                                              check=check, **kwargs)
+                                              job["solution_stat"], check=check, **kwargs)
             check()
         except LandingSkipped as exc:
             disposition = f"skipped: {exc}"
@@ -1037,9 +869,10 @@ class PhotoFloorplanWorker:
                                                  "elapsed_ms": round(elapsed_ms, 1),
                                                  "components": stats}}
         log = logger.info if disposition == "ok" else logger.warning
-        log("world photo floorplan: world=%s session=%s landing=%r method=%s elapsed_ms=%.1f "
-            "disposition=%s components=%s", pair[0], pair[1], identity, self.method, elapsed_ms,
-            disposition, component_summary(stats))
+        # `method=homography` stays in the line: scripts/photo_floorplan_diagnostics.py parses it.
+        log("world photo floorplan: world=%s session=%s landing=%r method=homography "
+            "elapsed_ms=%.1f disposition=%s components=%s", pair[0], pair[1], identity,
+            elapsed_ms, disposition, component_summary(stats))
         # New-scene diagnostics run in `_run` AFTER this job is finished and its state released:
         # the disposition above is final, the wall cap and the manifest wait never see them.
         self._diag_pending = (pair, identity, receipt, disposition, bool(regressed), elapsed_ms,
@@ -1070,14 +903,12 @@ class PhotoFloorplanWorker:
         return record
 
     def _report_diagnostics(self, pair, identity, record):
-        """One bounded log line per landing; with TOWER_WORLD_PHOTO_FLOORPLAN_DIAGNOSTICS=on also
-        the session's JSONL and per-walk summary. Never raises."""
+        """One bounded log line per landing, plus the session's JSONL and per-walk summary.
+        Never raises."""
         try:
             from tower.world_builder import photo_floorplan_diagnostics as diag
             logger.info("world photo floorplan diagnostics: world=%s session=%s landing=%r "
                         "record=%s", pair[0], pair[1], identity, diag._dumps(record))
-            if not self._diag_files:
-                return          # the log line is the record; nothing is retained
             walk = self._diag_records.get(pair)
             if walk is None:
                 walk = self._diag_records[pair] = _DiagWalk()

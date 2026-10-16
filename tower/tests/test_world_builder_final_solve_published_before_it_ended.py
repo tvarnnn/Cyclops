@@ -516,3 +516,30 @@ def test_a_row_the_builder_wrote_solved_is_not_touched(tmp_path):
     before = store.session_path("w1", "s1").read_bytes()
     assert wfp._heal_final_solve(store, WorldBuilderEngine(store), "w1", "s1") is None
     assert store.session_path("w1", "s1").read_bytes() == before
+
+
+# ---------------------------------------------------------------------------
+# a final-solve child whose stdout is not a summary (`_keep_unreadable_summary`)
+# ---------------------------------------------------------------------------
+
+UNREADABLE_STDOUT = b'not json\n{"solved": true}\n'
+UNREADABLE_CHILD = "import os\nos.write(1, {raw!r})\n"
+
+
+def test_an_unreadable_summary_fails_the_final_solve_and_keeps_the_raw_stdout(tmp_path):
+    """The child exits 0 but its stdout does not parse: the solve is not solved, the error says
+    so, and the raw bytes are kept beside the solve for the next reader."""
+    script = tmp_path / "unreadable_world_solve.py"
+    script.write_text(UNREADABLE_CHILD.format(raw=UNREADABLE_STDOUT), encoding="utf-8")
+    store = WorldStore(tmp_path / "wb")
+    solver = wbs.BackgroundSolver(root=store.root, world_id="w1", session_id="s1", every=10_000,
+                                  capture_dirs=[], script=script)
+    try:
+        summary = solver.run_final(store, {})
+    finally:
+        solver.close()
+    assert summary["attempted"] is True and summary["solved"] is False
+    assert summary["error"].startswith("unreadable summary: "), summary
+    assert "published_before_it_ended" not in summary
+    kept = workspace_for(store, "w1", "s1").root / wbs.FINAL_SOLVE_STDOUT_FILENAME
+    assert kept.read_bytes() == UNREADABLE_STDOUT

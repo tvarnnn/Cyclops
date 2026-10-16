@@ -1,9 +1,9 @@
 """The generic envelope every cartridge result travels in.
 
-Small on purpose. `IOS-to-Tower.md` section 6 lists seventeen things iOS
-deliberately did not assume, and most of them are payload-shaped
-(geometry representation, pose schema, relation predicates, metric
-names). A big universal schema would have to decide those centrally, on
+Small on purpose. `ios/docs/agent-handoffs/IOS-TO-TOWER.md` section 6 lists
+seventeen things iOS deliberately did not assume, and most of them are
+payload-shaped (geometry representation, pose schema, relation predicates,
+metric names). A big universal schema would have to decide those centrally, on
 behalf of cartridges that have not been written yet. So the envelope
 carries only what is true of EVERY result -- who produced it, under which
 agreement, in what order, when -- and the payload stays each cartridge's
@@ -116,7 +116,8 @@ class Snapshot:
     `revision` is computed from the payload with the volatile fields
     excluded, so that a figure which advances on every poll -- elapsed
     mapping seconds, most obviously -- does not make every update look
-    like a change. `IOS-to-Tower.md` 1.2 asks for exactly this:
+    like a change. `ios/docs/agent-handoffs/IOS-TO-TOWER.md` §1.2 asks for
+    exactly this:
 
         "A monotonic revision or counter, so the UI can tell **new data
          from repeated data** without diffing geometry. Without it, every

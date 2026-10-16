@@ -1,7 +1,7 @@
 """The capability declaration: which cartridges the Tower can serve.
 
-`IOS-to-Tower.md` section 7 makes this the single most valuable thing the
-Tower can build first:
+`ios/docs/agent-handoffs/IOS-TO-TOWER.md` section 7 makes this the single most
+valuable thing the Tower can build first:
 
     "Without it, every cartridge is stuck at 'the Tower says nothing',
      and no other work on this list can be shown at all. It is also the
@@ -133,9 +133,9 @@ class CartridgeOffer:
     available: bool
     unavailable_reason: str | None = None
     # Whether results arrive as complete snapshots or as deltas that must
-    # be merged. Stated rather than implied: IOS-to-Tower.md 1.3 warns
-    # that "a UI that assumes incremental updates will draw a partial
-    # world as a complete one".
+    # be merged. Stated rather than implied:
+    # ios/docs/agent-handoffs/IOS-TO-TOWER.md §1.3 warns that "a UI that
+    # assumes incremental updates will draw a partial world as a complete one".
     snapshot_only: bool = True
 
     def to_json_dict(self) -> dict:
@@ -292,10 +292,10 @@ def _cv_lab_availability(cv_lab) -> tuple[bool, str | None]:
 
     A Tower with no Lab still OFFERS the contract -- this build knows how
     to speak it -- and reports it unavailable, which is the third state in
-    IOS-to-Tower.md 0.1 ("offered, implemented, unreachable -> connect")
-    rather than the first ("the Tower says nothing -> not built yet").
-    Those call for opposite instructions to a person, which is why they
-    cannot be one state.
+    ios/docs/agent-handoffs/IOS-TO-TOWER.md §0.1 ("offered, implemented,
+    unreachable -> connect") rather than the first ("the Tower says nothing ->
+    not built yet"). Those call for opposite instructions to a person, which is
+    why they cannot be one state.
 
     Never raises. A declaration is how a client learns what is possible;
     it must not fail because a subsystem is unwell.

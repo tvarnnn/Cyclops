@@ -141,10 +141,10 @@ class SessionMetrics:
         # ever reported, and both are O(1) to maintain -- while a list
         # grows one float per frame per measurement for as long as the
         # window is open. A measurement window ends at stream_stop or at a
-        # disconnect, and `handoff.md` 9.3 says a stream_stop MAY NEVER
-        # ARRIVE, so "as long as the window is open" means "as long as the
-        # connection lives". Small per frame, unbounded in principle, and
-        # free to fix.
+        # disconnect, and a stream_stop MAY NEVER ARRIVE (a dropped socket
+        # produces none), so "as long as the window is open" means "as
+        # long as the connection lives". Small per frame, unbounded in
+        # principle, and free to fix.
         self._receive_to_result_ms = _Running()
         self._cv_processing_ms = _Running()
         self._stage_ms: dict[str, _Running] = {}

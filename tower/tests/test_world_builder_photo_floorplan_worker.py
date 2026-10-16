@@ -43,13 +43,9 @@ def _wait(predicate, timeout=5.0):
     return predicate()
 
 
-def _on(monkeypatch, method=None):
+def _on(monkeypatch):
     monkeypatch.setenv("TOWER_WORLD_GUIDANCE_COVERAGE", "on")
     monkeypatch.setenv("TOWER_WORLD_PHOTO_FLOORPLAN", "on")
-    if method is None:
-        monkeypatch.delenv("TOWER_WORLD_PHOTO_FLOORPLAN_METHOD", raising=False)
-    else:
-        monkeypatch.setenv("TOWER_WORLD_PHOTO_FLOORPLAN_METHOD", method)
 
 
 # ---------------------------------------------------------------------------
@@ -75,15 +71,39 @@ def test_the_photo_floorplan_needs_coverage_on(monkeypatch):
     assert config.world_photo_floorplan_setting() is True
 
 
-@pytest.mark.parametrize("value,expected", [(None, "homography"), ("homography", "homography"),
-                                            ("depth", "depth"), ("DEPTH", "depth"),
-                                            ("moge", "homography")])
-def test_method_defaults_to_homography(monkeypatch, value, expected):
+@pytest.mark.parametrize("value", [None, "homography", "depth", "moge"])
+def test_the_worker_always_builds_the_homography_raster(monkeypatch, tmp_path, caplog, value):
+    """TOWER_WORLD_PHOTO_FLOORPLAN_METHOD is not read: any value gets the homography plan."""
     if value is None:
         monkeypatch.delenv("TOWER_WORLD_PHOTO_FLOORPLAN_METHOD", raising=False)
     else:
         monkeypatch.setenv("TOWER_WORLD_PHOTO_FLOORPLAN_METHOD", value)
-    assert config.world_photo_floorplan_method_setting() == expected
+    _, tree, receipt, eligible, stat = _synthetic_solve(tmp_path)
+    expected, _, _ = pfw.build_landing(tmp_path, WORLD, SESSION, receipt, eligible,
+                                       json.loads(json.dumps(tree)), stat)
+    calls = []
+    real = pfw.homography_component
+
+    def spy(**kwargs):
+        calls.append(kwargs["receipt_component"]["reference_segment"])
+        return real(**kwargs)
+
+    monkeypatch.setattr(pfw, "homography_component", spy)
+    state = pfw.PhotoFloorplanState()
+    worker = pfw.PhotoFloorplanWorker(tmp_path, latest=lambda w, s: receipt, state=state)
+    try:
+        with caplog.at_level("INFO", logger="tower.world_builder.photo_floorplan_worker"):
+            worker.offer(WORLD, SESSION, receipt, eligible, tree, stat)
+            assert _wait(lambda: any("components=" in r.getMessage() for r in caplog.records),
+                         timeout=30)
+    finally:
+        worker.shutdown()
+    assert worker.outcomes[(WORLD, SESSION)]["disposition"] == "ok"
+    assert calls == [0]
+    landed = state.landed(WORLD, SESSION)
+    assert landed == expected and landed["components"][0]["projected_keyframes"] > 0
+    line = next(r.getMessage() for r in caplog.records if "components=" in r.getMessage())
+    assert " method=homography " in line
 
 
 def test_off_starts_no_photo_worker_and_reads_no_extra_tree(monkeypatch, tmp_path):
@@ -168,8 +188,8 @@ def test_on_coverage_hands_its_published_receipt_and_tree_to_the_photo_worker(mo
     world, session, _ = _landed_tree(root, _inputs())
     offers = []
 
-    def fake_build(root_, world_, session_, receipt, eligible, tree, stat, method, check):
-        offers.append((receipt, list(eligible), sorted(tree), stat, method))
+    def fake_build(root_, world_, session_, receipt, eligible, tree, stat, check):
+        offers.append((receipt, list(eligible), sorted(tree), stat))
         tile = encode_tile(np.zeros((8, 8, 4), np.uint8))
         digest = hashlib.sha256(tile["data"]).hexdigest()
         block = {"solved_at": receipt["solved_at"], "geometry_revision": receipt["geometry_revision"],
@@ -188,11 +208,10 @@ def test_on_coverage_hands_its_published_receipt_and_tree_to_the_photo_worker(mo
         landed = pfw.state_for(root).landed(world, session)
         for key in ("solved_at", "geometry_revision", "frame_revision", "horizon_keyframes"):
             assert landed[key] == receipt[key]
-        (offered, eligible, tree_keys, stat, method), = offers
+        (offered, eligible, tree_keys, stat), = offers
         assert pfw.identity_of(offered) == pfw.identity_of(receipt)
         assert eligible and {ref for _, ref in eligible} == {0}
         assert {"solution", "manifest", "placements", "poses"} <= set(tree_keys)
-        assert method == "homography"
         assert isinstance(stat, tuple) and len(stat) == 2
     finally:
         producer.shutdown_guidance()
@@ -219,7 +238,7 @@ def _tile_for(tag):
 
 
 def _fake_build_factory(calls=None, delay=0.0):
-    def build(root, world, session, receipt, eligible, tree, stat, method, check):
+    def build(root, world, session, receipt, eligible, tree, stat, check):
         if calls is not None:
             calls.append(pfw.identity_of(receipt))
         end = time.monotonic() + delay
@@ -244,7 +263,7 @@ def _worker(latest, **kwargs):
     state = pfw.PhotoFloorplanState()
     kwargs.setdefault("build", _fake_build_factory())
     worker = pfw.PhotoFloorplanWorker("synthetic", latest=lambda w, s: latest.get((w, s)),
-                                      state=state, method="homography", **kwargs)
+                                      state=state, **kwargs)
     return worker, state
 
 
@@ -555,7 +574,7 @@ def served(monkeypatch, tmp_path):
 
 def _publish(state, solved_at, revision="g1"):
     block, tiles, _ = _fake_build_factory()("r", WORLD, SESSION, _receipt(solved_at, revision),
-                                            [], {}, None, method="homography", check=lambda: None)
+                                            [], {}, None, check=lambda: None)
     assert state.publish(WORLD, SESSION, block, tiles)
     return block
 
@@ -800,9 +819,9 @@ def test_reuse_carries_the_plane_through_a_gauge_change():
 def test_the_disposition_log_line_carries_per_component_stats(caplog):
     latest = {}
 
-    def build(root, world, session, receipt, eligible, tree, stat, method, check):
+    def build(root, world, session, receipt, eligible, tree, stat, check):
         block, tiles, _ = _fake_build_factory()(root, world, session, receipt, eligible, tree,
-                                                stat, method=method, check=check)
+                                                stat, check=check)
         stats = [{"reference_segment": 0, "eligible": 29, "points_quality": 2344,
                   "plane_ok": False, "plane_reason": "inadequate support: 14 inlier points (< 40)",
                   "plane": {"reference_normal": "roll_free", "candidate_points": 263},
@@ -864,9 +883,9 @@ def test_e2e2_sparse_fallback_still_passes_the_camera_checks():
 
 
 def _opaque_build(opaque_by_solve):
-    def build(root, world, session, receipt, eligible, tree, stat, method, check):
+    def build(root, world, session, receipt, eligible, tree, stat, check):
         block, tiles, _ = _fake_build_factory()(root, world, session, receipt, eligible, tree,
-                                                stat, method=method, check=check)
+                                                stat, check=check)
         stats = []
         for ref, value in opaque_by_solve[receipt["solved_at"]].items():
             fraction, area = value if isinstance(value, tuple) else (value, None)

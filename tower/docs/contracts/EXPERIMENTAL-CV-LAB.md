@@ -166,7 +166,7 @@ snapshot**; there are no deltas to merge.
 | `idle` | nothing armed; a start would be accepted | `.idle(available:)` |
 | `starting` | a start was accepted, the experiment is loading | `.starting(experiment)` |
 | `running` | processing frames | `.running(run)` |
-| `paused` | armed and deliberately not processing | **`.paused(run)` — a new case; see `CV-LAB-IOS-HANDOFF.md` §4** |
+| `paused` | armed and deliberately not processing | **`.paused(run)` — a new case** |
 | `stopped` | the last run ended; its figures are final | `.completed(run)` |
 | `failed` | the last start failed, **or the running experiment raised on a frame**; the experiment is released and another start may be sent | `.failed(CartridgeFailure)` |
 
@@ -208,7 +208,7 @@ an abandoned thread rather than a failed one.
 ### 3.2 `available` — the catalog
 
 One entry per registered experiment, sorted by `id`. **iOS holds no list
-of its own**: `docs/modules/EXPERIMENTAL-CV.md` calls its candidate list
+of its own**: `ios/Glasses/Project_Overview_Steps/docs/modules/EXPERIMENTAL-CV.md` calls its candidate list
 "intentionally broad", so any subset hard-coded on the phone would be the
 app asserting that those experiments exist.
 
@@ -235,7 +235,7 @@ additive; a client that ignores all of it still has a working picker.
 - `provenance` — `measured` or `inferred`. Not a hint. See §4.
 - `headline_label` / `headline_unit` — what this will measure, and in
   what. A `null` unit means the quantity genuinely has none and is
-  rendered **bare** (`IOS-to-Tower.md` 0.5: metric is not metres). Depth
+  rendered **bare** (`ios/docs/agent-handoffs/IOS-TO-TOWER.md` §0.5: metric is not metres). Depth
   is the case: MiDaS-small emits relative inverse depth on an arbitrary
   scale.
 - `stateful` — carries state across frames, so its first frame is not
@@ -501,7 +501,7 @@ The previous version of this section said `artifact` is *"always `null` in
 this contract"*, and gave three conditions that would have to be met
 first:
 
-1. a redaction-state vocabulary shared with §5 of `IOS-to-Tower.md`;
+1. a redaction-state vocabulary shared with §5 of `ios/docs/agent-handoffs/IOS-TO-TOWER.md`;
 2. an artifact fetch contract;
 3. per-experiment declaration of whether the visual output contains source
    pixels — *"an edge map or a depth map is derived, a detection overlay is
@@ -546,7 +546,7 @@ double what it costs.
 
 ### 5.3 Privacy — `raw_ephemeral`, and why that is the strict answer
 
-`IOS-to-Tower.md` §5 defines three treatments and this Tower emits exactly
+`ios/docs/agent-handoffs/IOS-TO-TOWER.md` §5 defines three treatments and this Tower emits exactly
 one of them:
 
 - **`redacted`** — a redaction step ran. **Not true here.** No face
@@ -560,7 +560,7 @@ one of them:
   rather than a lenient one.
 - **`unknown`** — the producer did not say. Withheld by iOS, correctly.
 
-A fourth, gentler value was considered and rejected. `IOS-to-Tower.md` §5
+A fourth, gentler value was considered and rejected. `ios/docs/agent-handoffs/IOS-TO-TOWER.md` §5
 says *"There is deliberately no `.probablySafe` and no lenient default"*,
 and "it is only a Canny map" is precisely the argument a `.probablySafe`
 would encode. It is also wrong: **an edge map of a face keeps the jawline,
@@ -942,8 +942,8 @@ for that reason, so comparing `run_id` alone is sufficient.
 
 **Everything a run accumulates is O(1) in frames.** A mean is a running
 total and a count; a maximum is a maximum. There is no frame list, no
-metric history and no sample buffer — `handoff.md` 9.3 says a
-`stream_stop` may never arrive, so "for the length of a run" means "for as
+metric history and no sample buffer — a `stream_stop` may never arrive
+(`CARTRIDGE-RESULTS.md` §19.2), so "for the length of a run" means "for as
 long as the Tower is up".
 
 **Cost on the wire.** The document is re-sent when its **revision**
@@ -1018,8 +1018,8 @@ visible.
 | The capability declaration | `tower/results/registry.py` |
 | `frame_result` provenance on the wire | `tower/routes/ws.py` |
 
-Adding an experiment: `guidelines/docs/modules/EXPERIMENTAL-CV.md`, "Adding
-a new experiment".
+Adding an experiment: `ios/Glasses/Project_Overview_Steps/docs/modules/EXPERIMENTAL-CV.md`,
+"Adding a new experiment".
 
 ---
 
@@ -1044,5 +1044,5 @@ a new experiment".
 First offer. Before this, `experimental_cv` was listed in the declaration's
 `not_offered` with the reason *"results already reach the client on
 `frame_result`; a typed contract awaits the experiment-registry and
-provenance work described in IOS-to-Tower.md 2.1–2.3"*. That is the work
+provenance work described in [`ios/docs/agent-handoffs/IOS-TO-TOWER.md`] 2.1–2.3"*. That is the work
 this contract is.

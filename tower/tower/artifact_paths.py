@@ -15,11 +15,9 @@ directory on this host:
     found at the drive root (``C:\\wbr3``, ``C:\\wbr4``, ``C:\\wbrev`` ...).
 
 2.  **MAX_PATH pressure.** Windows' 260-character path limit makes deep
-    project paths genuinely fail; ``tower/docs/superpowers/research/
-    2026-08-26-slam-lane-learned-3d.md`` records a clone dying with
-    ``Filename too long`` and being "worked around by cloning to
-    ``C:\\m3s``". The workaround is real. The drive root is not the right
-    place to put it.
+    project paths genuinely fail: a clone has died with ``Filename too
+    long`` and been worked around by cloning to ``C:\\m3s``. The
+    workaround is real. The drive root is not the right place to put it.
 
 The fix is not to guess a directory for the caller. It is to refuse the two
 placements that are never correct and say why, at the CLI boundary, where

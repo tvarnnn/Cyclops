@@ -188,8 +188,7 @@ class KeyframePolicy:
     # survival/overlap gates ahead of blur gives 40 -- all WORSE than the
     # 36-segment baseline. 77% of blur rejections occur when survival is
     # ALREADY below 0.15: blur was masking losses that had already
-    # happened, not causing them. The standing hypothesis in
-    # docs/agent-handoffs/WORLD-BUILDER.md section 9.4, "spurious
+    # happened, not causing them. The standing hypothesis, "spurious
     # `blurred` rejections cascading into `tracking_lost`", is refuted.
     # Do not retry it.
     #
@@ -239,8 +238,9 @@ class KeyframePolicy:
     # does NOT promote a frame.
     max_frame_gap: int = 90
 
-    # THE TURN BRIDGE (KF-TURNS, 2026-10-12). Off by default, and off is the
-    # policy above exactly: no decision changes.
+    # THE TURN BRIDGE (KF-TURNS, 2026-10-12). The World Builder engine's default
+    # policy turns it on (engine.py); the field stays off by default so a bare
+    # `KeyframePolicy()` is the policy above exactly.
     #
     # Measured on walk 9 (W9-DIAG.md): the blur gate runs before the
     # overlap-floor rescue, so in a head turn every frame between two sharp

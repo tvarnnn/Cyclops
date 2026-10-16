@@ -9,8 +9,7 @@ because a wrong Sim3 fits well and reads as a slightly odd floor plan.
 says so: "A spanning tree is used rather than a pose graph because on the
 real walk the admitted subgraph has no cycle at all... When cycles do
 appear, the right next step is cycle-consistency CHECKING, which is free
-and independent." `WORLD-BUILDER-STATUS.md` P10 says the same: "This is
-the first thing to add when a cycle appears."
+and independent." It is the first thing to add when a cycle appears.
 
 A cycle has appeared. After the solve-chain segmentation change, capture
 `2e6cffa2` admits (12,16), (12,19) and (16,19) -- a triangle. Measured on

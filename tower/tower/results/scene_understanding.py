@@ -53,8 +53,7 @@ near anything".
 EVERY COUNT IS AN UNDERCOUNT AND MUST SAY SO
 
 Measured against a `fasterrcnn_resnet50_fpn_v2` oracle over 14,128 real
-frames (`docs/superpowers/research/2026-08-26-detector-oracle-and-the-
-size-floor.md`), the shipped detector's recall is 0.306 for `person`,
+frames, the shipped detector's recall is 0.306 for `person`,
 0.497 for `cell phone`, 0.209 for `tv`, and it is effectively blind below
 ~2% of frame area (recall 0.000 under 1%). Because the oracle shares COCO
 training data with the shipped model, 0.306 is an UPPER BOUND.
@@ -227,8 +226,9 @@ LIFECYCLE_STATES = (
 # `frames_observed` is in here and that deserves a sentence: a frame
 # having been processed is not the same event as the scene having changed,
 # and including it would make every single poll look like news and defeat
-# coalescing entirely -- which is the one thing `IOS-to-Tower.md` 4.8 asks
-# this cartridge for by name.
+# coalescing entirely -- which is the one thing
+# `ios/docs/agent-handoffs/IOS-TO-TOWER.md` §4.8 asks this cartridge for by
+# name.
 VOLATILE_PATHS = (
     "observed_at",
     "staleness_seconds",
@@ -267,11 +267,11 @@ SINGLE_PERSON_NOTE = (
 
 # Why there is no entity list, as a value rather than an absence.
 #
-# `IOS-to-Tower.md` 4.1 asks for a session-scoped anonymous track handle
-# -- explicitly NOT a durable identifier, which it separately forbids --
-# so a client can tell the person on the left from the person on the
-# right within one session and label rows positionally. Its types exist
-# for it.
+# `ios/docs/agent-handoffs/IOS-TO-TOWER.md` §4.1 asks for a session-scoped
+# anonymous track handle -- explicitly NOT a durable identifier, which it
+# separately forbids -- so a client can tell the person on the left from the
+# person on the right within one session and label rows positionally. Its types
+# exist for it.
 #
 # This cartridge refuses, and the refusal was delivered as SILENCE until
 # an adversarial review pointed out that this file's own rule forbids
@@ -305,10 +305,10 @@ REFUSED_ENTITY_FIELDS = (
     },
 )
 
-# The one convention `IOS-to-Tower.md` declares rather than leaves open,
-# answered. 4.3: "a bearing has to be signed somehow to be usable and a
-# silent presumption is the dangerous version -- a Tower signing the
-# other way would put every person on the wrong side of the wearer,
+# The one convention `ios/docs/agent-handoffs/IOS-TO-TOWER.md` declares rather
+# than leaves open, answered. 4.3: "a bearing has to be signed somehow to be
+# usable and a silent presumption is the dangerous version -- a Tower signing
+# the other way would put every person on the wrong side of the wearer,
 # rendering confidently and wrongly. Please state yours."
 #
 # This payload publishes no bearing. It publishes `where`, which is a
@@ -395,8 +395,9 @@ def _side_counts(state) -> dict:
 
     The buckets themselves are defined on the wire, in `SIDE_CONVENTION`.
     A left and a right with no stated convention is exactly the silent
-    presumption `IOS-to-Tower.md` 4.3 spends three sentences warning
-    about, arriving through the field it did not think to ask about.
+    presumption `ios/docs/agent-handoffs/IOS-TO-TOWER.md` §4.3 spends three
+    sentences warning about, arriving through the field it did not think to ask
+    about.
     """
     where = {
         label: {"left": 0, "centre": 0, "right": 0, "unknown": 0}
@@ -492,9 +493,9 @@ def _people_block(state) -> dict:
         "facing_unavailable_reason": reason,
         "facing_unknown": unknown,
         # Two states are produced and the other two of the enum
-        # `IOS-to-Tower.md` 4.2 asks for are not, and the reason is now
-        # measurement rather than privacy: nothing evaluated on this
-        # platform can say "away" or "side-on" with usable precision
+        # `ios/docs/agent-handoffs/IOS-TO-TOWER.md` §4.2 asks for are not, and
+        # the reason is now measurement rather than privacy: nothing evaluated
+        # on this platform can say "away" or "side-on" with usable precision
         # (0.02-0.34 on 966 labelled persons), so `unknown` means "not
         # established" and covers both.
         "facing_states_reported": ["facing_wearer", "unknown"],
@@ -519,9 +520,10 @@ def _people_block(state) -> dict:
             "the 'facing' claims could be wrong there. Never measured on a "
             "person seen through these glasses"
         ),
-        # The wording is part of the contract. `IOS-to-Tower.md` 4.2: this
-        # is body/head orientation relative to the camera, it is NOT gaze,
-        # and there is no eye tracking on the target glasses.
+        # The wording is part of the contract.
+        # `ios/docs/agent-handoffs/IOS-TO-TOWER.md` §4.2: this is body/head
+        # orientation relative to the camera, it is NOT gaze, and there is no
+        # eye tracking on the target glasses.
         "facing_note": (
             "whether the front of a person's head is visible to the "
             "camera. Render as 'appears to be facing your direction'; "
@@ -641,10 +643,10 @@ def live_payload(status: dict, state) -> dict:
         "lifecycle": lifecycle,
         "observed_at": status["observed_at"],
         # Named for what it is, because the name alone would mislead.
-        # `IOS-to-Tower.md` 0.3 holds observedAt and receivedAt separately
-        # and "will never substitute one for the other" -- and this is
-        # receipt time. A decoder mapping by field name would make exactly
-        # that substitution.
+        # `ios/docs/agent-handoffs/IOS-TO-TOWER.md` §0.3 holds observedAt and
+        # receivedAt separately and "will never substitute one for the other"
+        # -- and this is receipt time. A decoder mapping by field name would
+        # make exactly that substitution.
         "observed_at_note": (
             "tower-receipt time: when this Tower received the frame this "
             "scene came from, never when the glasses captured it, and not "
@@ -664,11 +666,11 @@ def live_payload(status: dict, state) -> dict:
         "count_limitations": [dict(entry) for entry in COUNT_LIMITATIONS],
         "count_measurement": dict(COUNT_MEASUREMENT),
         # There is no confidence anywhere on this payload, and saying so
-        # is not the same as omitting it. `IOS-to-Tower.md` 4.1 asks for
-        # a confidence on every track; there are no tracks here, and a
-        # confidence attached to a COUNT would be an average with no
-        # defined meaning. `score_threshold` is the detector's floor and
-        # is published instead.
+        # is not the same as omitting it.
+        # `ios/docs/agent-handoffs/IOS-TO-TOWER.md` §4.1 asks for a confidence
+        # on every track; there are no tracks here, and a confidence attached
+        # to a COUNT would be an average with no defined meaning.
+        # `score_threshold` is the detector's floor and is published instead.
         "confidence": None,
         "confidence_absent_reason": (
             "the detector emits a per-detection score, but the tracker "

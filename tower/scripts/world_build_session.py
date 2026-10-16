@@ -1284,23 +1284,6 @@ class BackgroundSolver:
         published = published_consensus_solve(store, self.world_id, self.session_id,
                                               since=launched_at)
         if published is None:
-            # ADAPTIVE SELECT (`TOWER_WORLD_SOLVE_SELECT`; W8LOOP SA1, 2026-10-12): a selected final
-            # solve publishes once, as its LAST act, so a solution carrying `solve.select` that was
-            # solved after this launch IS this child's finished final solve -- whatever its stdout
-            # said. Never true with the switch off (no solution carries the record).
-            selected = published_selected_solve(store, self.world_id, self.session_id,
-                                                since=launched_at)
-            if selected is not None:
-                logger.warning(
-                    "[Tower][WorldBuilder] the final solve's summary was not usable (%s), but it had "
-                    "published its selected solve (draw %s of %s); that publication is this "
-                    "finalization's final solve",
-                    "a hard stop" if report.get("interrupted") else report.get("error"),
-                    selected["solve"]["select"].get("winner"),
-                    (selected["solve"]["select"].get("n") or 0) + 1,
-                )
-                report = {k: v for k, v in report.items() if k not in ("error", "interrupted")}
-                return dict(report, **selected, solved=True, summary_from_publication=True)
             if report.get("interrupted"):
                 logger.warning("[Tower][WorldBuilder] the final solve published nothing "
                                "before the stop; the last background solution stands")
@@ -2036,48 +2019,6 @@ def published_consensus_solve(store, world_id: str, session_id: str, *,
         return None
 
 
-def published_selected_solve(store, world_id: str, session_id: str, *,
-                             since: float | None = None) -> dict | None:
-    """The session's PUBLISHED solve, as a final-solve summary (the shape
-    `published_consensus_solve` gives), when it is an ADAPTIVE SELECT final solve
-    (`solve.select`, `TOWER_WORLD_SOLVE_SELECT`) solved at or after `since` -- else None.
-
-    A selected final solve publishes exactly once, as its last act, so such a publication is a
-    finished final solve: what the child would have printed, read back from what it wrote. The
-    builder uses it when the child's stdout summary is unusable (W8LOOP SA1, 2026-10-12: the
-    selection published draw 3 and the builder recorded `final_solve: failed`, "unreadable
-    summary"). Reads only; never raises."""
-    try:
-        from tower.world_builder import global_solve  # noqa: PLC0415
-
-        solution = global_solve.load_solution(store, world_id, session_id)
-        if solution is None or not isinstance(solution.solve, dict):
-            return None
-        record = solution.solve.get("select")
-        if not isinstance(record, dict) or record.get("triggered") is not True:
-            return None
-        if since is not None and not float(solution.solved_at) >= float(since):
-            return None
-        workspace = global_solve.workspace_for(store, world_id, session_id)
-        return {
-            "solver": solution.solver,
-            "solved_at": solution.solved_at,
-            "keyframes": len(solution.keyframe_ids),
-            "keyframes_posed": sum(
-                1 for p in solution.poses.values()
-                if int(p.get("observations") or 0) >= global_solve.MIN_IMAGE_OBSERVATIONS),
-            "components": solution.components,
-            "points": int(len(solution.xyz)),
-            "timing": solution.timing,
-            "workspace": str(workspace.root),
-            "transients": solution.transients,
-            "solve": solution.solve,
-            "gate": solution.gate,
-        }
-    except Exception:  # noqa: BLE001 -- see the docstring
-        return None
-
-
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(
         description="Run a World Builder mapping session over frames on disk."
@@ -2503,6 +2444,7 @@ def main(argv=None) -> int:
     # keyframe_id -> raw frame path, for the global solver (see ObservedFrame).
     sources: dict = {}
     capture_dirs = [d for d in (args.follow_capture, args.frames) if d is not None]
+    # `on`: start the final solve at capture Stop, stopping the background solve, instead of after it. Default off.
     final_immediate = os.environ.get("TOWER_WORLD_FINAL_IMMEDIATE") == "on"
     def capture_stopped() -> bool:
         follower = capture_handle.get("follower")

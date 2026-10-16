@@ -1,8 +1,7 @@
 """This cartridge's detectors: one for the GPU, one for the CPU, chosen by device.
 
 Two detectors, because the device decides what is affordable and the
-measurement decides what is worth it (`docs/superpowers/research/
-2026-09-07-scene-understanding-architecture.md`, on 700 human-labelled
+measurement decides what is worth it (measured on 700 human-labelled
 COCO val2017 images resized to this camera's 640 px long side, and 300
 real corpus frames on a quiet RTX 5070):
 
