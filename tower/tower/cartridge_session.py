@@ -369,6 +369,15 @@ class CartridgeSession:
     def stop(self) -> dict:
         """End the session. Never refused, from any state.
 
+        Under the session lock it detaches the cartridge's worker from the
+        capture supervisor, then sets the state to `stopped` and clears the
+        session id and start time. With `stop_policy="request"` (World Builder)
+        the detach asks the worker to finish on its own via `request_stop`
+        (closing its stdin) and it stays visible until it exits; otherwise the
+        worker is detached with the grace period. A supervisor failure is logged
+        and does not stop the state change. Returns the result with `changed`
+        False when it was already `stopped`.
+
         Whatever a confused client believes, "stop" is a request to end
         up stopped, and it can always be honoured. Refusing it would
         leave the only way out of a bad state being a Tower restart.
@@ -376,11 +385,8 @@ class CartridgeSession:
         Observations already written are untouched. Stopping ends the
         producing, not the memory.
 
-        IT ALWAYS DETACHES, EVEN FROM `stopped`. This used to return
-        early when the state was already `stopped`, on the reasonable
-        view that there was nothing to do -- and that made the one
-        recoverable state unrecoverable. Stop means "end up with nothing
-        recording", and the only way to keep that promise is to check.
+        IT ALWAYS DETACHES, EVEN FROM `stopped`. Stop means "end up with
+        nothing recording", and the only way to keep that promise is to check.
         Detaching when nothing is attached costs a dictionary lookup.
         """
         with self._lock:
