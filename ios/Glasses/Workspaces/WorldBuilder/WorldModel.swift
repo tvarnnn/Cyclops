@@ -153,7 +153,9 @@ nonisolated struct WorldGeometryReport: Equatable, Sendable {
 /// distance carries `WorldScaleSemantics` because it is a spatial figure and
 /// `docs/modules/WORLD-BUILD.md` admits no unlabelled ones — on monocular RGB
 /// it will normally be `.relative`, in which case it is a shape statistic and
-/// not a number of metres, and `distanceDisplayable` refuses to show it as one.
+/// not a number of metres. The production display uses the Tower's unit and
+/// scale explanation; `distanceDisplayable` separately tests physical-distance
+/// eligibility.
 ///
 /// ## A camera position and a segment origin are not the same figure
 ///
@@ -256,7 +258,8 @@ nonisolated struct WorldTrajectoryReport: Equatable, Sendable {
         self.scale = scale
     }
 
-    /// Whether the path length may be shown as a physical distance.
+    /// Test seam for whether a path length could be shown as a physical
+    /// distance. Production renders through `labelledFigureDisplayable` instead.
     ///
     /// Only when the scale claims to be metric at all. A `.relative` path
     /// length is a number in arbitrary units, and printing "14.2 m" beside it
@@ -269,9 +272,9 @@ nonisolated struct WorldTrajectoryReport: Equatable, Sendable {
         }
     }
 
-    /// Whether the path length may be shown **as the labelled figure it is**,
-    /// which is a weaker question than `distanceDisplayable` and has a
-    /// different answer.
+    /// Whether production may render the Tower's path length with its own unit
+    /// and the scale explanation. This gate allows a relative shape statistic
+    /// without claiming it is a physical distance.
     ///
     /// The Tower reconstructs monocular RGB, so `.relative` is the best scale
     /// it can reach and `distanceDisplayable` is correctly false for every

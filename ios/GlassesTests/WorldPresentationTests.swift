@@ -527,6 +527,93 @@ final class WorldReconstructionLadderTests: XCTestCase {
 
     private let target = WorldRenderTarget(worldID: "w1", sessionID: "s1")
 
+    /// Every branch input is varied: address, Tower geometry claim, all stages,
+    /// photographic standing, and the currently ignored final-solve word.
+    /// These are the existing ladder's exact outputs before its rule refactor.
+    func testLadderBranchMatrixKeepsEveryOutcome() {
+        let absentTargetReason = "The Tower has built no 3D world for this session."
+        let buildingReason = "Nothing has been built to look at yet. A 3D world appears once the "
+            + "Tower's first build produces one."
+        let reportedGeometryReason = "The Tower reports 2 points for this world "
+            + "but has not named where to fetch a picture of it."
+        let reportedPosesReason = "The Tower reports 1 camera poses for this world "
+            + "but has not named where to fetch a picture of it."
+        let noStageNote = "The Tower has not yet said what state this world is in."
+        let mappingNote = "Preview — this world is still being built, so it will change."
+        let improvingNote = "Preview — your final world is still building. It will look very different, "
+            + "and it is worth waiting for Saved."
+        let finalizingNote = "Preview — the final pass has not landed for this world, and the "
+            + "finished version is very different from this one."
+        let partialNote = "This world did not finish, so it is what the walk "
+            + "produced without a final pass."
+        let interruptedNote = "This world was interrupted. What was built before it stopped is here."
+        let retryNote = "Little or nothing was reconstructed for this session."
+        let owedNote = "Preview — this world's photographic version is not finished, and nothing is "
+            + "building it right now. The Tower finishes it the next time it is idle, if its "
+            + "photographic stages are switched on. The finished world is very different from this one."
+        let unobservableNote = "Preview — the Tower could not tell whether this world's photographic "
+            + "version is still being built, so it is not reporting the world as finished. "
+            + "The finished world is very different from this one."
+        let runningNote = "Preview — the Tower is building this world's photographic version. "
+            + "The finished world is very different from this one."
+
+        let stages: [(String, WorldStage?, String?)] = [
+            ("no stage", nil, noStageNote),
+            ("mapping", .mapping, mappingNote),
+            ("building", .building, mappingNote),
+            ("improving", .improving, improvingNote),
+            ("finalizing", .finalizing, finalizingNote),
+            ("saved", .saved, nil),
+            ("partial", .partial, partialNote),
+            ("interrupted", .interrupted, interruptedNote),
+            ("needs retry", .needsRetry, retryNote),
+        ]
+        let photographs: [(String, WorldPhotographicReport?, String?, String?)] = [
+            ("none", nil, nil, nil),
+            ("owed", WorldPhotographicReport(state: .owed), owedNote, owedNote),
+            ("unobservable", WorldPhotographicReport(state: .unobservable), unobservableNote, unobservableNote),
+            ("running", WorldPhotographicReport(state: .running), nil, runningNote),
+            ("failed", WorldPhotographicReport(state: .failed), nil, nil),
+            ("settled", WorldPhotographicReport(state: .complete), nil, nil),
+            ("area", WorldPhotographicReport(state: .running, scope: .area), nil, nil),
+        ]
+        let evidence: [(String, WorldEvidence?, String?)] = [
+            ("none", nil, nil),
+            ("zero", WorldEvidence(elements: 0, poses: 0), nil),
+            ("geometry", WorldEvidence(elements: 2, representation: "points"), reportedGeometryReason),
+            ("poses", WorldEvidence(poses: 1), reportedPosesReason),
+        ]
+        let solves: [WorldFinalSolve] = [
+            .notReported, .pending, .solved, .skipped, .failed, .unavailable, .other("future")
+        ]
+
+        for (stageName, stage, baseNote) in stages {
+            for (photoName, photo, improvingOverride, finalizingOverride) in photographs {
+                let note = stage == .improving ? (improvingOverride ?? baseNote)
+                    : stage == .finalizing ? (finalizingOverride ?? baseNote) : baseNote
+                for (evidenceName, claim, geometryReason) in evidence {
+                    for solve in solves {
+                        let context = "\(stageName), \(photoName), \(evidenceName), \(solve)"
+                        let withTarget = WorldReconstruction.ladder(
+                            target: target, stage: stage, finalSolve: solve,
+                            evidence: claim, photographic: photo)
+                        let expectedWithTarget: WorldReconstruction = note.map {
+                            WorldReconstruction.partial(target, note: $0)
+                        } ?? .final(target)
+                        XCTAssertEqual(withTarget, expectedWithTarget, context)
+
+                        let withoutTarget = WorldReconstruction.ladder(
+                            target: nil, stage: stage, finalSolve: solve,
+                            evidence: claim, photographic: photo)
+                        let reason = geometryReason ?? (stage?.isStillChanging == true
+                            ? buildingReason : absentTargetReason)
+                        XCTAssertEqual(withoutTarget, .unavailable(reason: reason), context)
+                    }
+                }
+            }
+        }
+    }
+
     func testAFinishedWorldIsTheFinalReconstruction() {
         let ladder = WorldReconstruction.ladder(
             target: target, stage: .saved, finalSolve: .solved, evidence: FieldWalk.evidence
