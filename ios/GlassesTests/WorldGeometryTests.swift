@@ -2392,6 +2392,119 @@ final class WorldGeometryRetryTests: XCTestCase {
         XCTAssertEqual(viewModel.fragmentsModel.segments.count, 1)
         XCTAssertEqual(viewModel.geometryChunks.count, 1)
     }
+
+    /// A manifest under a pose convention this build does not implement is
+    /// refused, says so, and is NOT retried under the same revision: a
+    /// refused convention does not become acceptable on a retry. A new
+    /// revision is asked again.
+    func testAForeignPoseConventionIsRefusedAndNotRetriedUnderTheSameRevision() async {
+        let foreign = Self.manifestBody.replacingOccurrences(of: "\"wxyz\"", with: "\"xyzw\"")
+        StubbedGeometryProtocol.reset(routes: [
+            Self.manifestPath: (200, foreign),
+            Self.segmentPath: (200, Self.segmentBody),
+        ])
+        let viewModel = makeViewModel()
+
+        await viewModel.geometryDidChange(worldID: "w1", sessionID: "s1", revision: "g1")
+
+        guard case .failed(let failure) = viewModel.geometryStatus else {
+            return XCTFail("expected failed, got \(viewModel.geometryStatus)")
+        }
+        XCTAssertEqual(failure.kind, .poseConvention)
+        XCTAssertTrue(viewModel.geometryChunks.isEmpty)
+        XCTAssertEqual(
+            StubbedGeometryProtocol.requestCount(for: Self.segmentPath), 0,
+            "a refused manifest's segments were fetched"
+        )
+
+        await viewModel.geometryDidChange(worldID: "w1", sessionID: "s1", revision: "g1")
+        XCTAssertEqual(
+            StubbedGeometryProtocol.requestCount(for: Self.manifestPath), 1,
+            "a refused convention was refetched under an unchanged revision"
+        )
+
+        await viewModel.geometryDidChange(worldID: "w1", sessionID: "s1", revision: "g2")
+        XCTAssertEqual(StubbedGeometryProtocol.requestCount(for: Self.manifestPath), 2)
+    }
+
+    /// A segment that failed is counted as unfetched in the published status,
+    /// and the count drops to zero once the retry lands.
+    func testAFailedSegmentIsCountedAsUnfetchedUntilItsRetryLands() async {
+        StubbedGeometryProtocol.reset(routes: [
+            Self.manifestPath: (200, Self.manifestBody),
+            Self.segmentPath: (404, ""),
+        ])
+        let viewModel = makeViewModel()
+
+        await viewModel.geometryDidChange(worldID: "w1", sessionID: "s1", revision: "g1")
+        guard case .loaded(let model, let unfetched) = viewModel.geometryStatus else {
+            return XCTFail("expected loaded, got \(viewModel.geometryStatus)")
+        }
+        XCTAssertEqual(model.segments.count, 1)
+        XCTAssertEqual(unfetched, 1)
+
+        StubbedGeometryProtocol.set(route: Self.segmentPath, to: (200, Self.segmentBody))
+        await viewModel.geometryDidChange(worldID: "w1", sessionID: "s1", revision: "g1")
+        guard case .loaded(_, let after) = viewModel.geometryStatus else {
+            return XCTFail("expected loaded, got \(viewModel.geometryStatus)")
+        }
+        XCTAssertEqual(after, 0)
+    }
+
+    /// A manifest failure that lands after another world took over is
+    /// neither published nor allowed to clear the newer fetch's retry
+    /// marker: the newer world keeps its loaded status, and its heartbeat
+    /// does not refetch.
+    func testAManifestFailureForASupersededWorldIsNotPublished() async {
+        let otherManifestPath = "/worlds/w2/geometry/manifest"
+        let otherBody = Self.manifestBody
+            .replacingOccurrences(of: "\"w1\"", with: "\"w2\"")
+            .replacingOccurrences(of: "\"s1\"", with: "\"s2\"")
+            .replacingOccurrences(of: "\"g1\"", with: "\"g2\"")
+        StubbedGeometryProtocol.reset(routes: [
+            Self.manifestPath: (404, ""),
+            otherManifestPath: (200, otherBody),
+            "/worlds/w2/geometry/segment/0": (200, Self.segmentBody),
+        ])
+        StubbedGeometryProtocol.set(delay: 0.5, for: Self.manifestPath)
+        let viewModel = makeViewModel()
+
+        let superseded = Task {
+            await viewModel.geometryDidChange(worldID: "w1", sessionID: "s1", revision: "g1")
+        }
+        let out = await waitUntil {
+            StubbedGeometryProtocol.requestCount(for: Self.manifestPath) == 1
+        }
+        XCTAssertTrue(out, "the w1 manifest request never went out")
+
+        await viewModel.geometryDidChange(worldID: "w2", sessionID: "s2", revision: "g2")
+        guard case .loaded = viewModel.geometryStatus else {
+            return XCTFail("expected w2 loaded, got \(viewModel.geometryStatus)")
+        }
+
+        await superseded.value
+        guard case .loaded = viewModel.geometryStatus else {
+            return XCTFail("the superseded world's 404 was published: \(viewModel.geometryStatus)")
+        }
+        XCTAssertEqual(viewModel.renderTarget, WorldRenderTarget(worldID: "w2", sessionID: "s2"))
+
+        await viewModel.geometryDidChange(worldID: "w2", sessionID: "s2", revision: "g2")
+        XCTAssertEqual(
+            StubbedGeometryProtocol.requestCount(for: otherManifestPath), 1,
+            "the superseded failure cleared the newer fetch's retry marker"
+        )
+    }
+
+    private func waitUntil(
+        timeout: TimeInterval = 3, _ condition: @MainActor () -> Bool
+    ) async -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if condition() { return true }
+            try? await Task.sleep(nanoseconds: 20_000_000)
+        }
+        return condition()
+    }
 }
 
 // MARK: - The cache trap: a placement that moves under unmoved points
