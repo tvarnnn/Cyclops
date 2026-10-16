@@ -16,7 +16,7 @@ import Foundation
 /// ## The one thing to read before anything else here
 ///
 /// **An empty library is the expected result today.** On 9,199 frames of real
-/// first-person footage the page detector fired six times and every one was a
+/// first-person footage the page detector fired 6 times and every one was a
 /// false positive — a venetian blind and a backlit laptop keyboard. After the
 /// gate was re-derived it fires zero times, and no capture on this platform has
 /// ever contained a sheet of paper, so the detector has never been shown a
@@ -208,8 +208,7 @@ struct DocumentPage: Equatable, Identifiable, Sendable {
     let confidence: String?
     let sharpness: Double?
     let squareness: Double?
-    /// The frame this page was read from. `nil` on a record written before
-    /// provenance existed.
+    /// The frame that showed this page; `nil` when the record has no provenance.
     let sourceSeq: Int?
     /// Tower-receipt time of that frame.
     let observedAt: Double?
@@ -221,8 +220,7 @@ struct DocumentPage: Equatable, Identifiable, Sendable {
     ///
     /// **`false` unless page images were explicitly enabled**, which is off by
     /// default and must stay off: this platform performs no redaction, so a
-    /// stored page image is an unredacted photograph of what the wearer was
-    /// reading.
+    /// stored page image is an unredacted photograph of what was in view.
     let imageKept: Bool
     /// Always `false`. A **boolean**, not a path — the path told a reader where
     /// in the store to find that photograph, which is disclosure with no
@@ -277,11 +275,11 @@ struct DocumentQueryEcho: Equatable, Sendable {
 ///
 /// ## `record_notes` is hoisted, and none of it may be dropped
 ///
-/// Five caveats used to be repeated on every document — the "in view, not read"
+/// Five caveats are carried on the envelope — the "in view, not read"
 /// qualification, the summary's provenance, the clock, the capture-side imagery
 /// lifetime, and the joinability of the frame reference. A 200-document listing
-/// was 488 KB with two thirds of it the same sentences two hundred times;
-/// hoisting them to the envelope cut it to 249 KB **with nothing dropped**.
+/// measured 488 KB with two thirds of it the same sentences two hundred times;
+/// the envelope form measured 249 KB **with nothing dropped**.
 ///
 /// They are keyed by the field they qualify, and a client must render a
 /// document with them beside it. Deleting a caveat to save bytes is the one
@@ -351,9 +349,8 @@ struct DocumentLibraryResponse: Equatable, Sendable {
     let sufficientEvidence: Bool?
     let matchKind: String?
     let reason: String?
-    /// **48 on this Tower, and read rather than hard-coded** (§12.10). The
-    /// contract prose said 160 until 2026-08-27 while the code said 48; the
-    /// instruction that resolved it was "read the field, not the prose".
+    /// **48 on this Tower, and read rather than hard-coded** (§12.10): the
+    /// configuration-dependent bound comes from this response.
     let snippetMaxChars: Int?
 
     // Single-document only.

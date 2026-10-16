@@ -39,8 +39,8 @@ nonisolated enum DocumentMemoryContract {
     /// `status`, on the socket. Note that this cartridge's result type *is*
     /// `status` — Scene Understanding is the only one where it is not.
     static let resultType = "status"
-    /// Moved from 2026-08-27 on 2026-09-07, together with the library
-    /// identifier, because `identity` changed meaning (see `identityScope`).
+    /// Kept separate from the library identifier because this contract governs
+    /// the smaller status payload on the socket.
     static let statusIdentifier = "document_memory.status/2026-09-07"
 
     // MARK: The library
@@ -60,16 +60,12 @@ nonisolated enum DocumentMemoryContract {
 
     /// **Not "was read".** The camera cannot establish that a wearer read
     /// anything; it can establish that a page was in view and that OCR ran over
-    /// it. The contract document itself carried an older spelling that said
-    /// "was read" until 2026-08-27, five keys above the note saying the
-    /// opposite, and a Tower test now pins the wire value against the prose.
+    /// it. The exact wire claim prevents the app from implying attention.
     static let claim = "a-page-was-in-view-and-was-ocred"
-    /// Since 2026-09-07 a later look at a page already on record becomes a
-    /// **sighting** of that record (`sighting_count`, `last_observed_at`,
+    /// A later look at a page already on record becomes a **sighting** of that
+    /// record (`sighting_count`, `last_observed_at`,
     /// `total_observed_seconds`) when its words AND its look agree with a
-    /// page of the record; anything weaker stays a separate record. The
-    /// earlier value, "no-document-identity-across-sightings", described a
-    /// Tower that made no such join, and both identifiers moved with it.
+    /// page of the record; anything weaker stays a separate record.
     static let identityScope = "same-page-by-text-and-look-within-library"
     static let absenceMeans = "not-recorded-by-this-cartridge"
     /// Every timestamp. There is no capture clock anywhere on this wire.
