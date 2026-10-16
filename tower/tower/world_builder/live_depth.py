@@ -11,7 +11,6 @@ import hashlib
 import json
 import logging
 import math
-import os
 import queue
 import shutil
 import threading
@@ -33,11 +32,6 @@ P95_BUDGET_MS = 15.0
 VRAM_SAMPLE_EVERY = 10
 VRAM_MIN_FREE_FRACTION = 0.10
 RESUME_IN_BUDGET_SAMPLES = 3
-
-
-def mode() -> str:
-    value = os.environ.get("TOWER_WORLD_LIVE_DEPTH", "off")
-    return value if value in ("shadow", "on") else "off"
 
 
 def _vram_sample():

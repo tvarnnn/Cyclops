@@ -154,6 +154,8 @@ class World:
             "redaction": label, "redaction_trust": trust,
             "input_digest": "digest-1", "cache_key": "digest-1|moge2-vitl|fill2",
             "camera": {"fx": FX, "fy": FX, "cx": SW / 2, "cy": SH / 2, "width": W, "height": H},
+            # The depth stage is always told the solve camera's FoV, and records it.
+            "known_fov": round(float(np.degrees(2.0 * np.arctan(W / (2.0 * FX)))), 6),
             "records": self.records}))
 
     def write_surface(self, subdivisions=10, confidence=None):
@@ -594,8 +596,9 @@ class _StubDepth:
     windowed = False
     window_size = 0
     kind = "depth"
+    accepts_fov = True
 
-    def predict(self, rgb):
+    def predict(self, rgb, fov_x=None):
         return np.full(rgb.shape[:2], 2.0, np.float32)
 
 
@@ -681,7 +684,7 @@ def test_a_walk_time_depth_stage_is_not_reused_after_stop(tmp_path, depth_stub):
 
     w = World(tmp_path, label="none")
     (w.dense / "align.json").unlink()
-    dparams = DenseParams(backend=depth_stub)
+    dparams = DenseParams(backend=depth_stub, known_fov=True)
     walk, work = SP.ensure_depth_stage(w.store, WORLD, SESSION, w.solution, w.intrinsics,
                                        gate_rel=dparams.gate_rel, backend=depth_stub)
     assert walk["redaction_trust"] == f"rerun:none&{TRUSTED}"
@@ -702,7 +705,7 @@ def test_a_walk_time_depth_stage_is_not_reused_after_stop(tmp_path, depth_stub):
     final, _work = SP.ensure_depth_stage(w.store, WORLD, SESSION, w.solution, w.intrinsics,
                                          gate_rel=dparams.gate_rel, backend=depth_stub)
     assert final["redaction_trust"] == final_trust
-    assert final["cache_key"].endswith(f"|trust:{final_trust}")
+    assert final["cache_key"].endswith(f"|trust:{final_trust}|fov:known")
     stored = {i: hashlib.sha1((w.images / f"{kid.rsplit(':', 1)[-1]}.jpg").read_bytes()).hexdigest()
               for i, kid in enumerate(w.kids)}
     assert {r["ki"]: r["image_sha1"] for r in final["records"]} == stored

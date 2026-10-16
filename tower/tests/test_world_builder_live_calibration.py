@@ -45,6 +45,7 @@ from tower.world_builder.intrinsics_store import IntrinsicsStore
 from tower.world_builder.records import CameraIntrinsics
 from tower.world_builder.store import WorldStore
 from tests import synthetic_scene as ss
+from tests.conftest import no_depth_model_env
 
 pytestmark = pytest.mark.slow
 
@@ -146,6 +147,7 @@ class _Worker:
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
+            env=no_depth_model_env(),
         )
         self._world_root = world_root
 

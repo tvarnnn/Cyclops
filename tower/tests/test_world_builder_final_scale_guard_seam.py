@@ -366,8 +366,8 @@ def test_on_without_evidence_runs_no_depth_and_publishes_uncertified(tmp_path, c
     meta, comp, audit = _published(s)
     assert out["solved"] is True and len(_room_ids(meta)) == 60
     assert eng.depth_calls == 0 and eng.metric_calls == 0
-    # TOWER_WORLD_LIVE_DEPTH is unset here, so a live cache is not even looked for (lead gate: only `on` is evidence).
-    assert audit["inputs"]["source"] == FSG.EVIDENCE_NONE and audit["inputs"]["live"]["state"] == "live-depth-not-on"
+    # The walk's live depth worker predicted nothing (no test loads a depth model), so its cache is no evidence.
+    assert audit["inputs"]["source"] == FSG.EVIDENCE_NONE and audit["inputs"]["live"]["state"] == "incompatible"
     assert audit["assessment"]["scale_status"] == FSG.SCALE_UNCERTIFIED
     status = _placed(comp)["final_scale_guard"]
     assert status["scale_status"] == FSG.SCALE_UNCERTIFIED and status["evidence"] == FSG.EVIDENCE_NONE

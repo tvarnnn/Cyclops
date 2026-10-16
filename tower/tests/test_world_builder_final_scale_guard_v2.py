@@ -163,7 +163,6 @@ def _read_live(walk_, **kw):
 
 
 def test_the_live_cache_is_read_in_place_under_its_full_identity(walk, monkeypatch):  # noqa: F811
-    monkeypatch.setenv("TOWER_WORLD_LIVE_DEPTH", "on")
     store = walk[0]
     worker = _predict_one(walk)
     seen = {}
@@ -185,7 +184,6 @@ def test_the_live_cache_is_read_in_place_under_its_full_identity(walk, monkeypat
 
 
 def test_a_live_cache_of_another_fov_is_no_evidence(walk, monkeypatch):  # noqa: F811
-    monkeypatch.setenv("TOWER_WORLD_LIVE_DEPTH", "on")
     worker = _predict_one(walk)
     doc = json.loads((worker.root / "align.json").read_text(encoding="utf-8"))
     doc["known_fov"] += 0.01
@@ -196,21 +194,7 @@ def test_a_live_cache_of_another_fov_is_no_evidence(walk, monkeypatch):  # noqa:
 
 
 def test_no_live_cache_is_absent(walk, monkeypatch):  # noqa: F811
-    monkeypatch.setenv("TOWER_WORLD_LIVE_DEPTH", "on")
     assert _read_live(walk) == ({}, {"state": "absent"})
-
-
-@pytest.mark.parametrize("mode", [None, "off", "shadow", "On"])
-def test_a_live_cache_is_no_evidence_unless_live_depth_is_on(walk, monkeypatch, mode):  # noqa: F811
-    """Arm L (shadow) measures the worker only: its cache must never reach the guard (lead gate)."""
-    _predict_one(walk)
-    if mode is None:
-        monkeypatch.delenv("TOWER_WORLD_LIVE_DEPTH", raising=False)
-    else:
-        monkeypatch.setenv("TOWER_WORLD_LIVE_DEPTH", mode)
-    called = []
-    log, record = _read_live(walk, live_metric_fn=lambda *a: called.append(a))
-    assert log == {} and record["state"] == "live-depth-not-on" and called == []
 
 
 # ---------------------------------------------------------------------------

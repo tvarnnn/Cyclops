@@ -23,6 +23,7 @@ import numpy as np
 import pytest
 
 from tests import synthetic_scene as ss
+from tests.conftest import without_live_depth
 from tower.world_builder import frame_quality as FQ
 from tower.world_builder.engine import WorldBuilderEngine
 from tower.world_builder.keyframes import KeyframePolicy, KeyframeSelector
@@ -113,7 +114,8 @@ def snapshot(root, world_id):
         else:
             entry = {"sha256": hashlib.sha256(data).hexdigest(), "bytes": len(data)}
         files[rel] = entry
-    return files
+    # The live depth worker's sidecar postdates the golden.
+    return without_live_depth(files)
 
 
 # -- helpers -----------------------------------------------------------------------------------
@@ -130,8 +132,9 @@ def golden():
 
 
 @pytest.fixture(autouse=True)
-def _quiet_builder_env(monkeypatch):
-    """The recorded walk ran with every TOWER_WORLD_* builder switch unset."""
+def _quiet_builder_env(monkeypatch, live_depth_on_its_own_clock):
+    """The recorded walk ran with every TOWER_WORLD_* builder switch unset, and
+    nothing but the builder read its counting clock."""
     for name in (ENV, "TOWER_WORLD_RELOCALIZER", "TOWER_WORLD_RELOCALIZER_WINDOW",
                  "TOWER_WORLD_RELOCALIZER_HISTORY", "TOWER_WORLD_RELOCALIZER_SUMMARY"):
         monkeypatch.delenv(name, raising=False)

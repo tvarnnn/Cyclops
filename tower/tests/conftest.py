@@ -1,4 +1,6 @@
+import functools
 import os
+import tempfile
 
 import pytest
 
@@ -28,6 +30,80 @@ def _no_transient_detector_models(monkeypatch):
     that. Off by environment, so a CLI subprocess inherits it too; tests of the
     detector's behaviour pass a stub backend explicitly."""
     monkeypatch.setenv("TOWER_WORLD_TRANSIENTS", "off")
+
+
+@pytest.fixture(autouse=True, scope="session")
+def _live_depth_never_loads_a_model():
+    """Every builder session starts a `LiveDepthWorker`, and its first trusted,
+    calibrated keyframe would load MoGe on the GPU. No test may do that. Unless
+    a test passes its own, the worker gets a backend factory that reports the
+    model unavailable (the worker then disables itself, as on a machine without
+    the weights) and a CPU host's VRAM probe. `close()` also waits for the
+    thread, so the worker's last `align.json` write lands before a test reads
+    the world rather than racing it. A builder SUBPROCESS is out of reach of
+    this fixture: such a test passes `no_depth_model_env` to it. Session scope,
+    so a module-scoped fixture that builds a world is covered too."""
+    import threading
+
+    from tower.world_builder import live_depth
+    from tower.world_builder.dense import DepthModelUnavailable
+
+    def unavailable():
+        raise DepthModelUnavailable("tests never load a depth model")
+
+    class Worker(live_depth.LiveDepthWorker):
+        def __init__(self, *args, backend_factory=None, vram_probe=None, **kwargs):
+            super().__init__(*args, backend_factory=backend_factory or unavailable,
+                             vram_probe=vram_probe or (lambda: None), **kwargs)
+
+        def close(self):
+            super().close()
+            if self.thread.is_alive() and self.thread is not threading.current_thread():
+                self.thread.join(timeout=10)
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(live_depth, "LiveDepthWorker", Worker)
+        yield
+
+
+@pytest.fixture
+def live_depth_on_its_own_clock(monkeypatch):
+    """The engine hands the live depth worker its monotonic clock, and the
+    worker reads it twice per keyframe. With the real clocks that costs nothing;
+    with a test's injected counting clock every read moves each stamp that
+    follows. A test pinning those stamps, or counting the reads, uses this:
+    the worker still runs, timed on `time.monotonic` as in the product."""
+    import time
+
+    from tower.world_builder import live_depth
+
+    worker = live_depth.LiveDepthWorker
+
+    def on_its_own_clock(*args, monotonic=None, **kwargs):
+        return worker(*args, monotonic=time.monotonic, **kwargs)
+
+    monkeypatch.setattr(live_depth, "LiveDepthWorker", on_its_own_clock)
+
+
+def without_live_depth(files: dict) -> dict:
+    """`files` (keyed by world-relative posix path) without the live depth
+    worker's sidecar, for a golden recorded before the worker existed."""
+    return {k: v for k, v in files.items() if "/live_depth/" not in k}
+
+
+def no_depth_model_env(env=None) -> dict:
+    """`env` (default: this process's) for a builder subprocess that must not
+    load a depth model: the Hugging Face hub offline over an empty cache, so
+    the live depth worker's MoGe reports itself unavailable, and no CUDA
+    device, so neither it nor the worker's VRAM probe can touch the GPU."""
+    out = dict(os.environ if env is None else env)
+    out.update(HF_HUB_OFFLINE="1", HF_HUB_CACHE=_empty_hub_cache(), CUDA_VISIBLE_DEVICES="-1")
+    return out
+
+
+@functools.cache
+def _empty_hub_cache() -> str:
+    return tempfile.mkdtemp(prefix="tower-tests-empty-hub-")
 
 
 @pytest.fixture(autouse=True)

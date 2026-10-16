@@ -24,6 +24,7 @@ from pathlib import Path
 import pytest
 
 from tests import synthetic_scene as ss
+from tests.conftest import no_depth_model_env
 from tower.capture import CaptureRecorder
 from tower.world_builder.records import (
     FINAL_SOLVE_FAILED,
@@ -103,7 +104,7 @@ def _spawn(capture_dir, root, *extra, stop_on_stdin_close=False):
         ],
         stdin=subprocess.PIPE if stop_on_stdin_close else subprocess.DEVNULL,
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-        creationflags=_new_group_flags(),
+        creationflags=_new_group_flags(), env=no_depth_model_env(),
     )
 
 
