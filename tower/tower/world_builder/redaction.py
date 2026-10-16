@@ -47,9 +47,10 @@ WHY THIS DETECTOR
 YuNet is already compiled into the OpenCV this project ships
 (`cv2.FaceDetectorYN`); only its weights were missing. Measured at 640x360
 with the settings below: **17.4 ms per frame**, 100/100 on distinct real
-faces from scikit-image's LFW subset, 0 false positives on 40 face-free
-frames, and it holds through 45 degrees of head tilt, mirrors, faces on
-screens, and motion blur.
+faces from scikit-image's LFW subset, 0 false positives on 40 synthetic
+face-free frames (real captures do not hold to that: see the false-positive
+block below the constants), and it holds through 45 degrees of head tilt,
+mirrors, faces on screens, and motion blur.
 
 Rejected alternatives, all measured:
 
@@ -78,7 +79,7 @@ class and were not testable here.
 
 So the label records **what ran**, not what was achieved -- the detector's
 identity and its threshold, so a reader can look up its limits. A session
-says `faces-detected-and-filled/yunet-2023mar@0.30`, never "redacted",
+says `faces-detected-and-filled/yunet-2023mar@0.30+plausibility3`, never "redacted",
 "anonymised" or "privacy-safe". `retains_raw_imagery` stays true and the
 privacy tags stay exactly as they were: bodies, clothing, room contents
 and any undetected face are all still in the image.
@@ -129,8 +130,7 @@ JPEG_QUALITY = 90
 # ------------------------------------------------------------------------
 # The claim above -- "0 false positives on 40 face-free frames" -- was measured
 # on SYNTHETIC room renders. On a real capture it does not hold, and the gap is
-# not marginal. Re-measured on the canonical world's 398 raw source frames
-# (`Glasses-scratch/wb-final-recon/redaction/`):
+# not marginal. Measured on the canonical world's 398 raw source frames:
 #
 #     240 detections at 0.30, of which 20 are a face. Precision 8.3%.
 #     81 are the wearer's own HAND holding a phone or on a keyboard.
@@ -139,8 +139,8 @@ JPEG_QUALITY = 90
 #     12.6% of every pixel in the capture was filled; 92 frames lost more
 #     than 20% of themselves, 38 more than 50%, the worst 93.8%.
 #
-# The 20 true positives are a printed portrait of a man hanging on the bedroom
-# wall. There is no live face anywhere in the 398 keyframes, and none in the
+# The 20 true positives are one printed portrait on a wall. There is no live
+# face anywhere in the 398 keyframes, and none in the
 # 53 841 frames of the whole capture corpus either.
 #
 # THE OBVIOUS FIX IS THE WRONG ONE. "A face has texture, a blank wall does not,
@@ -194,7 +194,7 @@ LANDMARK_TEST_ABOVE_AREA = 0.02
 # HEAD_DILATION it took 93.8% of a frame whose content is a wall, a PC tower
 # and carpet.
 #
-# Two rules have been tried here and both were wrong, so both are recorded.
+# Two simpler rules were measured, and both are wrong.
 #
 # A hard cap (above 25%, never filled) left a real face closer than about
 # 20 cm -- someone leaning into the wearer -- on disk: 0 of 65 composited close
@@ -211,7 +211,7 @@ LANDMARK_TEST_ABOVE_AREA = 0.02
 # being seen at LOW resolution. A face filling a third of the frame is still a
 # 90-px face at a quarter of the resolution, while a coincidence of texture
 # spread over that area usually dissolves. Measured over the same 40 false
-# boxes and 65 close composited faces (REDACTION.md, section 13):
+# boxes and 65 close composited faces:
 #
 #     re-detected at    false boxes kept   close faces filled   filled pixels
 #     native                  4 / 40             64 / 65             2.57%
@@ -233,8 +233,8 @@ LARGE_BOX_CORROBORATION_SCALES = (1.0, 0.5, 0.25)
 # The composites behind the table above were faces placed wholly inside the
 # frame. A person leaning into the wearer is usually cut by the frame edge, and
 # a cut face is exactly what YuNet sees worst at reduced resolution: the part
-# that would make it a face at 1/4 is outside the image. Review 3 pasted close
-# faces 5% off each edge: plausibility2 left 4 of 594 composites unfilled that
+# that would make it a face at 1/4 is outside the image. With close faces
+# pasted 5% off each edge, plausibility2 left 4 of 594 composites unfilled that
 # plausibility1 had filled, and on a larger held-out set (every LFW face and the
 # astronaut, 300-500 px wide, cut by each edge, 3,232 composites) it left 32.
 # On 3 of the first 4 no scale found ANY box, native included.
@@ -243,7 +243,7 @@ LARGE_BOX_CORROBORATION_SCALES = (1.0, 0.5, 0.25)
 # 18 px on 360x640 -- goes back to plausibility1's rule: facelike landmarks OR
 # found again. Padding the frame before the smaller passes and low-confidence
 # re-detection were measured too, and each still lost faces the edge rule
-# fills. Measured (REDACTION.md section 14, fix-r4/r1_margin.py):
+# fills. Measured:
 #
 #                   raw fill  >50% frames  worst   close  off-frame lost  held-out lost
 #   plausibility1     7.51%        31      93.2%   65/65      0 / 594        0 / 3232
@@ -284,7 +284,7 @@ CORROBORATION_IOU = 0.30
 # imagery went through the gate and which predates it.
 #
 # plausibility1: landmark bands, native corroboration from 5%, and above 25%
-#                facelike OR native-corroborated (53be0c3).
+#                facelike OR native-corroborated.
 # plausibility2: the same, except above 25% the landmarks are ignored and the
 #                box must be found again at native, 1/2 or 1/4 resolution.
 # plausibility3: the same, except that a box over 25% within EDGE_MARGIN of the
@@ -295,15 +295,15 @@ MODEL_FILENAME = "face_detection_yunet_2023mar.onnx"
 
 # WHERE THE WEIGHTS ARE, INDEPENDENTLY OF WHERE THE PROCESS WAS STARTED.
 #
-# This used to be `Path("models") / MODEL_FILENAME`, resolved against the
-# current working directory. A Tower or a script started from anywhere but
-# `tower/` therefore found no model, `FaceRedactor.available` was False, and
-# the consequence is not an error: `engine.py` logs a warning and persists the
-# keyframe UNREDACTED, and `redact()` returns the original bytes labelled
-# `none`. So a privacy transformation was silently conditional on a caller's
-# cwd. It was found when a batch script run from a scratch directory refused
-# 429 of 429 frames -- refusing is the safe direction, and only the dense
-# stage's own check made it visible at all.
+# Resolved against the current working directory (`Path("models") /
+# MODEL_FILENAME`), a Tower or a script started from anywhere but `tower/`
+# finds no model, `FaceRedactor.available` is False, and the consequence is
+# not an error: `engine.py` logs a warning and persists the keyframe
+# UNREDACTED, and `redact()` returns the original bytes labelled `none`. A
+# privacy transformation must not be silently conditional on a caller's cwd.
+# A batch script run from a scratch directory that way refused 429 of 429
+# frames -- refusing is the safe direction, and only the dense stage's own
+# check made it visible at all.
 #
 # The package's own location is the honest anchor: `tower/tower/world_builder/`
 # -> `tower/models/`. The cwd-relative path is still tried, so an existing
@@ -312,7 +312,7 @@ MODEL_FILENAME = "face_detection_yunet_2023mar.onnx"
 _PACKAGE_MODEL_PATH = Path(__file__).resolve().parents[2] / "models" / MODEL_FILENAME
 _CWD_MODEL_PATH = Path("models") / MODEL_FILENAME
 
-# Kept as the name other modules and tests import.
+# The path named in the "no model" message and in `scripts/setup_tower.ps1`.
 DEFAULT_MODEL_PATH = _PACKAGE_MODEL_PATH
 
 
@@ -394,8 +394,8 @@ def landmark_verdict(box, landmarks):
     The distinction is the whole point. `landmarks_are_facelike` folds "cannot
     judge" into False, which is right for a yes/no question and wrong for a
     gate: YuNet collapses both eyes onto one point on a near-profile face, and
-    a NaN compares False against every band. Both used to DROP the fill. A gate
-    that cannot judge must fill, so the caller needs the third answer.
+    a NaN compares False against every band. A gate that cannot judge must
+    fill, so the caller needs the third answer.
     """
     import math
 
@@ -480,8 +480,8 @@ class FaceRedactor:
 
     def __init__(self, path=None) -> None:
         # An explicitly supplied path is checked too, not just the
-        # default. Trusting it produced a redactor that reported itself
-        # AVAILABLE and then failed on every frame -- so a session would
+        # default. Trusting it would give a redactor that reports itself
+        # AVAILABLE and then fails on every frame -- so a session would
         # record `none` by way of a caught exception rather than because
         # anyone knew the model was missing.
         candidate = Path(path) if path is not None else model_path()
