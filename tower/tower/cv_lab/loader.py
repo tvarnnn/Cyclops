@@ -8,7 +8,7 @@ taps a row, and that changes the arithmetic:
 
 A thread that runs a torch model load creates torch's intra-op OpenMP
 team on itself, and the team does not leave when the thread does.
-Measured on this host on 2026-09-06, six consecutive arms of
+Measured on this host, six consecutive arms of
 `object_detection` on fresh threads took the process from 48 to 143 OS
 threads (+19 per arm, ~8 MB RSS each), and six arms of `depth` from 163 to
 258, with no ceiling in sight; the same twelve arms on ONE persistent
@@ -28,9 +28,9 @@ What it adds: when a load is abandoned, its worker is **retired** -- the
 next `run()` gets a fresh worker at once rather than queueing behind a
 thread that may be minutes from finishing a download -- and the retired
 worker exits by itself once it is free, so the loader-thread count is
-one again. A worker is retired only if it is actually holding the
-abandoned job; a cancellation that lands after the load returned costs
-nothing.
+one again. A worker is retired only if the job had not returned when the
+cancellation landed; a cancellation that lands after the load returned
+costs nothing.
 """
 
 import asyncio
