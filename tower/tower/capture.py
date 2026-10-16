@@ -18,8 +18,8 @@ for both need unselected frames:
   standing acceptance gate on every dataset-based conclusion the project
   has drawn.
 
-Neither is possible today: a filesystem search found no stored Ray-Ban
-footage anywhere, which is why this exists at all.
+Neither is possible without stored Ray-Ban footage, which is why this
+exists at all.
 
 It is OFF BY DEFAULT and bounded in both duration and bytes. Under
 06-PRIVACY-DATA this is an Explicit Dataset-Recording Session: manually
@@ -107,14 +107,12 @@ DEFAULT_MAX_IDLE_POLLS = int(
 # 2 s with 5 ms -> 50 ms doubling backoff: the WRITER's numbers for this very
 # file, on purpose. The recorder closes a capture with `write_json_atomic`,
 # whose `replace_with_retry` already waits up to `REPLACE_BUDGET_S` for a
-# reader to let go of the destination (`storage.py`, sized from the
-# 2026-09-06 field failure: a reader descheduled under solver load held a
-# file well past 60 ms). A reader that gave up sooner than the writer would
-# wait on the same file is the asymmetric one. The adversarial review of
-# 8ede341 (MED-1) measured what the old 3 x 10 ms (~20 ms) cost: a real
-# 150 ms Windows sharing violation on the closed manifest -- the shape of an
-# AV scanner or indexer opening a freshly replaced file -- turned a normal
-# close into an `error` world with 2,392 recorded frames never built.
+# reader to let go of the destination (`storage.py`). A reader that gave up
+# sooner than the writer would wait on the same file is the asymmetric one:
+# a 3 x 10 ms (~20 ms) budget lost to a real 150 ms Windows sharing
+# violation on the closed manifest -- the shape of an AV scanner or indexer
+# opening a freshly replaced file -- which turned a normal close into an
+# `error` world with 2,392 recorded frames never built.
 #
 # Only the soft-stop decision waits: a hard stop never reads the manifest,
 # and a readable manifest returns on the first try. There is no field
@@ -159,17 +157,15 @@ FRAMES_DIRNAME = "frames"
 class CaptureLimits:
     """Hard bounds. Rule 15 -- no unbounded operation on the live path."""
 
-    # Sized for the session length the product actually asks for.
-    #
-    # 900 s -- fifteen minutes -- was the bound until an adversarial review
-    # pointed out what it does to the stated target of "potentially 20-30
-    # minute sessions". At the bound the recorder stops ITSELF, cleanly,
-    # and the warning it logs says a follower "will see the capture close
-    # exactly as if it were" a disconnect. So a thirty-minute walk recorded
-    # fifteen minutes, the builder finalised a world at the halfway point,
-    # and -- since a closed capture now reads as an ordinary wearer stop --
-    # it did so under the label `stop`. Silent truncation that looks like
-    # success is the worst shape this bug could have taken.
+    # Sized for the session length the product actually asks for:
+    # "potentially 20-30 minute sessions". At the bound the recorder stops
+    # ITSELF, cleanly, and the warning it logs says a follower "will see the
+    # capture close exactly as if it were" a disconnect. A 900 s (fifteen
+    # minute) bound would therefore truncate a thirty-minute walk silently:
+    # the builder would finalise a world at the halfway point, under the
+    # label `stop`, since a closed capture reads as an ordinary wearer stop.
+    # Silent truncation that looks like success is the worst shape this bug
+    # could take.
     #
     # 2400 s is forty minutes: the target plus a third, so a wearer who
     # goes long is not truncated by a round number. It is still a BOUND,
@@ -177,7 +173,7 @@ class CaptureLimits:
     # path is how a disk fills during a walk.
     max_seconds: float = 2400.0
     # The byte bound has to move with it or it becomes the binding one.
-    # Measured on the 2026-09-09 captures: 2,865 frames over 7 captures,
+    # Measured on 7 captures: 2,865 frames,
     # mean 24.6 KB per recorded JPEG at 360x640. Forty minutes at the
     # measured 12 fps is ~28,800 frames, ~708 MB. 2 GiB leaves room for a
     # larger frame without the bound arriving unannounced mid-walk.
@@ -309,11 +305,26 @@ class CaptureRecorder:
         width: int | None = None,
         height: int | None = None,
     ) -> bool:
-        """Persist one frame. Returns False once a bound is reached.
+        """Durably append one raw frame and its journal line to the open capture.
 
-        Never raises for a bound: hitting a limit is an expected, recorded
-        outcome, not an error, and turning it into an exception on the
-        frame path would put session teardown at the mercy of a disk quota.
+        What: persists a frame's JPEG bytes and a `frames.jsonl` record for it;
+        returns True when written and False when nothing was written (not
+        recording, or a bound was reached).
+
+        How: refuses unless recording. Stops the capture itself, with
+        `END_REASON_BOUNDED_LIMIT`, once `max_seconds` has elapsed or this
+        frame would push the bytes past `max_bytes`, and returns False.
+        Otherwise it writes `frames/<source_seq:08d>.jpg` through a `.tmp`
+        file with flush and fsync before the replace, appends the journal
+        record (sequence numbers, `received_at`, the monotonic receive time,
+        relative path, byte count, width and height), and updates the status
+        counters.
+
+        Why: the image goes first and the journal line second, so a line never
+        points at a missing image (an orphan image is harmless and purge sweeps
+        it). It never raises for a bound: hitting a limit is an expected,
+        recorded outcome, not an error, and turning it into an exception on
+        the frame path would put session teardown at the mercy of a disk quota.
         """
         if not self.is_recording:
             return False
@@ -381,7 +392,7 @@ class CaptureRecorder:
 
         `owner=None` is an unconditional stop, which is what an operator
         or a test wants. A CONNECTION must always pass its own token,
-        because of a race that was measured rather than imagined:
+        because of a race:
 
         uvicorn does not learn a WebSocket is dead for 20-40 seconds
         (ws_ping_interval and ws_ping_timeout are both 20 s), while iOS
@@ -389,7 +400,7 @@ class CaptureRecorder:
         on a WiFi hiccup is: the NEW connection arms a recording, and then
         the OLD connection's `finally` block runs and stops it.
 
-        Measured before this guard existed: the phone streamed on, the
+        Without this guard: the phone streamed on, the
         Tower answered every frame_result, `/health` said
         `recording: false`, and ZERO frames reached disk for the rest of
         the walk. Silently. That is worse than losing the capture -- it
@@ -487,7 +498,7 @@ class _JournalTail:
     """Reads only what has been appended since the last read.
 
     The obvious implementation re-reads and re-parses the whole journal on
-    every poll, and that is what shipped first. It is O(n) per poll and
+    every poll. It is O(n) per poll and
     therefore O(n squared) over a capture: measured at 23.8 ms for a single
     poll against a full 10,800-line journal, which is roughly 43 seconds of
     CPU across one 15-minute walk at 4 Hz -- spent in the same process that
@@ -597,16 +608,16 @@ class _JournalTail:
         except FileNotFoundError:
             # A journal this tail has ALREADY read from has gone missing
             # since, and what lay past the read position can no longer be
-            # counted: "not shown", never zero (re-review of 40a4883, LOW-2).
+            # counted: "not shown", never zero.
             if self._offset or self._remainder:
                 return None
             # Nothing read and no journal. The recorder writes none before
             # its first frame, so a capture that never recorded one -- a
             # phone that connected and dropped -- has none and nothing in it
             # is unread. But a journal that was moved or deleted looks the
-            # same from here, and answering 0 for it published a walk of
-            # recorded frames, none observed, as `stop` / `complete` (Codex
-            # H2; the re-review's h2c: 0 of 10). The capture's own manifest
+            # same from here, and answering 0 for it would publish a walk of
+            # recorded frames, none observed, as `stop` / `complete`
+            # (reproduced: 0 of 10 read). The capture's own manifest
             # tells them apart: zero only if it says it wrote no frame.
             return self._recorded_nothing()
         except OSError:
@@ -763,10 +774,10 @@ class CaptureFollower:
         # Records read off a journal whose IMAGE could not be read, in any
         # capture of the walk: recorded, taken off the journal, never handed
         # on. Counted by `unobserved_records` exactly like records in hand
-        # (Codex H2: `_load` skipped them and the read position moved on, so
-        # nothing counted them, and a walk with a frame never built was
-        # stored `stop` / `complete` -- the re-review reproduced it with a
-        # real Windows lock on one JPEG, 3,196 of 3,197).
+        # (`_load` skips them and the read position moves on, so without this
+        # nothing counts them, and a walk with a frame never built would be
+        # stored `stop` / `complete`: reproduced with a real Windows lock on
+        # one JPEG, 3,196 of 3,197 read).
         self._unloaded: list = []
         # Set once an image read has outlasted its whole budget. The walk is
         # then partial whatever follows, so later failing reads are counted
@@ -825,15 +836,13 @@ class CaptureFollower:
         A MISSING manifest is not retried and does not raise. The recorder
         writes one before its first frame and only ever replaces it
         atomically, so the name never goes absent mid-write: a directory
-        without one is not a Tower recording, and reads as "still open",
-        exactly as it did before 8ede341.
+        without one is not a Tower recording, and reads as "still open".
 
         `cancel`, asked between strict retries, ends the wait early: when it
         answers True the read gives up and answers None, as the default read
         does. A builder passes its HARD stop, so a Tower shutdown that lands
         while a soft-stop decision waits out a lock is honoured at once
-        rather than held for the whole budget and turned into an `error`
-        (re-review of 40a4883, LOW-3).
+        rather than held for the whole budget and turned into an `error`.
         """
         path = self._directory / CAPTURE_FILENAME
         deadline = None
@@ -877,8 +886,8 @@ class CaptureFollower:
         that cut a closed capture short -- a hard stop mid-drain, a soft
         stop decided a moment before the close, a soft stop in a
         disconnected backlog, a stop before the first frame -- reads `stop`
-        or `disconnect` afterwards, and each of them used to be published as
-        a finished walk.
+        or `disconnect` afterwards, and each of them would be published as
+        a finished walk without this check.
 
         THE AUTHORITY IS EACH CAPTURE'S OWN JOURNAL, `frames.jsonl`: the
         recorder appends one line per recorded frame, before the close
@@ -894,27 +903,25 @@ class CaptureFollower:
         closed predecessor, and that read answers nothing on a sharing
         violation (`_JournalTail.read_new` returns [] on any `OSError`): the
         follower then rebinds with the predecessor's tail unread. Counting
-        only the bound capture let a walk read 1,305 of 3,697 frames and be
-        stored `stop` / `complete` (re-review of 40a4883, HIGH-1, reproduced
-        with a real Windows lock). An earlier capture is never left holding
+        only the bound capture would let a walk read 1,305 of 3,697 frames
+        and be stored `stop` / `complete` (reproduced with a real Windows
+        lock). An earlier capture is never left holding
         records in hand -- the rebind happens only after its last read
         record was taken -- so for those only the journal is measured.
 
         A RECORD READ BUT NEVER HANDED ON COUNTS TOO: one whose image could
         not be read within its budget (`_unloaded`, see `_load`), and a
         complete journal line that could not be parsed (`unparseable`). The
-        read position moved past both, so without this nothing counted them
-        (Codex H2).
+        read position moved past both, so without this nothing counted them.
 
         `received_by_monotonic` counts only records received at or before it
         (see `received_by_cutoff`). A builder passes the `time.monotonic()`
         of its first SOFT stop: frames the camera recorded after the
-        wearer's Stop are not part of the walk (lead decision on the
-        re-review's MED-1). None counts every record.
+        wearer's Stop are not part of the walk. None counts every record.
 
         An unmeasurable journal is measured again, with backoff, for up to
         `MANIFEST_READ_BUDGET_S` -- the same lock class, the same budget --
-        unless `cancel` answers True between tries (re-review LOW-1).
+        unless `cancel` answers True between tries.
 
         Zero, after one stat per capture, for a follower that is caught up.
         None if a journal still cannot be measured: "not shown", never zero.
@@ -1029,15 +1036,13 @@ class CaptureFollower:
                     # `_await_successor` samples `should_stop` and then
                     # returns; the rebind below happens next, and the loop's
                     # own check is after that. A stop set between those two
-                    # samples used to bind to a capture this follower then
-                    # read ZERO frames of -- moving `end_reason()` onto a
+                    # samples would bind to a capture this follower then
+                    # reads ZERO frames of -- moving `end_reason()` onto a
                     # capture that is still open, and reporting
-                    # `stopped_awaiting_successor()` as False. That is the
-                    # defect the wait was fixed for, surviving in a window
-                    # that shrank from ninety seconds to a few statements.
-                    # A reviewer drove it. Asking once more, before the
-                    # rebind, closes it: the flag is the same fact either
-                    # way, and the follower stays where it read from.
+                    # `stopped_awaiting_successor()` as False. Asking once
+                    # more, before the rebind, closes it: the flag is the same
+                    # fact either way, and the follower stays where it read
+                    # from.
                     self._stopped_awaiting_successor = True
                     return
                 # Same walk, new directory. Rebind and keep going, so the
@@ -1082,24 +1087,20 @@ class CaptureFollower:
         older cannot be one, and the one we want is almost always the
         newest directory there is.
 
-        This used to open and parse every `capture.json` under the root, in
-        whatever order `iterdir` gave, with no early exit. A reviewer
-        measured it at **11 ms per scan against 104 captures** -- and this
-        runs once per poll for up to 360 polls, so the "ninety second"
-        grace window actually ran 94 s, an overrun that grows with a
-        directory that only ever grows (about 109 s at 500 captures). The
-        wait is supposed to be bounded by the same window the recorder
-        uses, and it was not.
+        A scan that opened and parsed every `capture.json` under the root, in
+        `iterdir` order with no early exit, measured **11 ms per scan against
+        104 captures** -- and this runs once per poll for up to 360 polls, so
+        the "ninety second" grace window ran 94 s, an overrun that grows with
+        a directory that only ever grows (about 109 s at 500 captures). The
+        wait is supposed to be bounded by the same window the recorder uses.
 
-        THE PRUNE CARRIES THE GRACE WINDOW AS SLACK, and the first version
-        did not. It cut at this capture's own mtime, and a reviewer showed
-        that mtime moves FORWARD at stop -- `write_json_atomic` on
-        `capture.json` bumps the parent directory (measured, +0.30 s). So
-        a successor created before the predecessor's `finally` ran was
-        pruned by 0.4 s and never found: 0 of 360 polls, not "a missed
-        successor on that poll" as the comment then claimed. Both mtimes
-        are frozen for the whole window, so a prune that misses once
-        misses every time.
+        THE PRUNE CARRIES THE GRACE WINDOW AS SLACK. A cut at this capture's
+        own mtime does not work: that mtime moves FORWARD at stop --
+        `write_json_atomic` on `capture.json` bumps the parent directory
+        (measured, +0.30 s). So a successor created before the predecessor's
+        `finally` ran was pruned by 0.4 s and never found: 0 of 360 polls.
+        Both mtimes are frozen for the whole window, so a prune that misses
+        once misses every time.
         `RESUME_GRACE_SECONDS` of slack is the same bound the recorder
         uses to decide whether to link a successor at all, so nothing the
         recorder would link can fall outside it -- and it absorbs a
@@ -1172,26 +1173,25 @@ class CaptureFollower:
         decide whether to link a successor at all, so the two cannot
         disagree about how long a reconnect may take.
 
-        AND IT ASKS `should_stop`, WHICH IT DID NOT. Ninety seconds is a
-        long time to be deaf. `routes/ws.py` stops every cartridge session
-        when the last connection goes, and it is exactly a slow reconnect
-        that gets it there: a reviewer measured this Tower's own 52
-        reconnect chains and found three at 31-35 s, against a socket the
-        server notices as dead in 20-40 s. So the stop lands while this
-        loop is running.
+        It asks `should_stop`, because ninety seconds is a long time to be
+        deaf. `routes/ws.py` stops every cartridge session when the last
+        connection goes, and it is exactly a slow reconnect that gets it
+        there: this Tower's own 52 reconnect chains measured three at 31-35 s,
+        against a socket the server notices as dead in 20-40 s. So the stop
+        can land while this loop is running.
 
-        What happened then was worse than the delay. The loop ran to the
-        end of the grace window, found the successor, rebound onto it, and
-        `continue`d -- straight into the `should_stop` check at the top of
-        `follow`, which returned having read ZERO frames of the capture it
-        had just bound to. The walk was truncated at the reconnect, and
-        the rebind quietly moved `end_reason()` onto a capture that was
-        still open, so nothing downstream could say what had happened.
+        Without the check the loop would run to the end of the grace window,
+        find the successor, rebind onto it, and `continue` -- straight into
+        the `should_stop` check at the top of `follow`, which returns having
+        read ZERO frames of the capture it had just bound to. The walk would
+        be truncated at the reconnect, and the rebind would move
+        `end_reason()` onto a capture that is still open, so nothing
+        downstream could say what had happened.
 
-        Now the wait ends when the stop does, the follower stays bound to
-        the capture it actually read, and `stopped_awaiting_successor()`
-        records that a reconnect was in flight -- which is the one fact
-        that distinguishes an abandoned walk from a finished one.
+        So the wait ends when the stop does, the follower stays bound to the
+        capture it actually read, and `stopped_awaiting_successor()` records
+        that a reconnect was in flight -- the one fact that distinguishes an
+        abandoned walk from a finished one.
         """
         if not self._follow_reconnects or not self._ended_by_disconnect():
             return None
@@ -1205,24 +1205,21 @@ class CaptureFollower:
                 # A RECONNECT WAS IN FLIGHT AND WE ARE LEAVING ANYWAY.
                 #
                 # This is the only shape that can be DETECTED as a walk cut
-                # short -- not the only one that is. The first version set
-                # the flag on any stop that landed inside the window, which
-                # is also the ordinary shape of a phone that disconnects for
-                # good: the socket dies, `routes/ws.py` stops the session
-                # 20-40 s later, comfortably inside the 90 s grace. That
-                # quietly reversed the policy two files away that says a
-                # `disconnect` capture counts as finished, and a reviewer
-                # measured a permanent disconnect reporting `interrupted` --
-                # this campaign's headline symptom, back through the door it
-                # was pushed out of.
+                # short -- not the only one that is. Setting the flag on any
+                # stop inside the window would also catch the ordinary shape
+                # of a phone that disconnects for good: the socket dies,
+                # `routes/ws.py` stops the session 20-40 s later, comfortably
+                # inside the 90 s grace. That would reverse the policy two
+                # files away that says a `disconnect` capture counts as
+                # finished: a permanent disconnect would report
+                # `interrupted`.
                 #
                 # THE RESIDUE, STATED PLAINLY. When the stop lands BEFORE
                 # the successor's directory appears, a walk that was cut
                 # short is indistinguishable on disk from a walk that
                 # ended: the same `disconnect` capture, the same absent
-                # successor. A second reviewer measured the overlap and it
-                # is not small -- reconnect chains at 31-35 s against a
-                # socket noticed dead at 20-40 s. Neither answer is
+                # successor. The overlap is not small -- reconnect chains at 31-35 s
+                # against a socket noticed dead at 20-40 s. Neither answer is
                 # derivable, so this resolves it the way the rest of the
                 # system resolves an ambiguous end: toward FINISHED, which
                 # shows a real world as Saved rather than showing a real
@@ -1243,13 +1240,13 @@ class CaptureFollower:
 
         None is never silent: `follow` keeps the record in `_unloaded`, and
         `unobserved_records` counts it, so a walk with a frame that was
-        recorded and never built is not a finished walk (Codex H2).
+        recorded and never built is not a finished walk.
 
         AN IMAGE THAT CANNOT BE OPENED RIGHT NOW IS WAITED FOR, the way the
         manifest and the journal are: retried with backoff for
         `MANIFEST_READ_BUDGET_S`. The lock class is the same -- an AV scanner
         or the indexer opening a freshly written file without read sharing,
-        which the re-review held on one JPEG for real -- so the budget is
+        which a real Windows lock held on one JPEG -- so the budget is
         the same. A frame read within it is built, not merely labelled.
 
         What is not waited for: an image that does not exist (deleted, not
