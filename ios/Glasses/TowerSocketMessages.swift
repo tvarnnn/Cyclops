@@ -72,6 +72,34 @@ struct TowerFrameResult: Equatable, Sendable {
     let cvLab: TowerFrameResultProvenance?
 }
 
+extension TowerFrameResult {
+    /// Decodes a `frame_result` message. Never fails: every field is optional
+    /// or empty by default.
+    init(json: [String: Any]) {
+        // Additive, and omitted entirely by a Tower that runs no Lab. An
+        // `if let` rather than `flatMap(TowerFrameResultProvenance.init)`
+        // for the isolation reason `TowerCartridgeDeclaration.init` gives.
+        var cvLab: TowerFrameResultProvenance?
+        if let rawCVLab = json["cv_lab"] as? [String: Any] {
+            cvLab = TowerFrameResultProvenance(json: rawCVLab)
+        }
+        self.init(
+            sequence: json["seq"] as? Int,
+            meanIntensity: json["mean_intensity"] as? Double,
+            processingMs: json["processing_ms"] as? Double,
+            resultValue: json["result_value"] as? Double,
+            resultLabel: json["result_label"] as? String,
+            // `?? [:]` rather than an optional: the Tower sends `stage_ms`
+            // unconditionally but may send it empty, and `metrics` is omitted
+            // when empty. Both mean "no stages/measurements to report", so
+            // collapsing absent and empty here loses nothing.
+            stageMs: json["stage_ms"] as? [String: Double] ?? [:],
+            metrics: json["metrics"] as? [String: Double] ?? [:],
+            cvLab: cvLab
+        )
+    }
+}
+
 /// The `cv_lab` block on a `frame_result` —
 /// `experimental_cv.frame_result/2026-08-27`.
 ///
@@ -140,7 +168,7 @@ struct TowerFrameResultProvenance: Equatable, Sendable {
     let towerReceivedAt: Double?
     let timeBasis: String?
 
-    init?(json: [String: Any]) {
+    init(json: [String: Any]) {
         // Nothing is required. A block that arrived with only a `run_id` still
         // gates correctly, and a block with everything but one field still
         // displays the rest — the alternative, refusing the whole block on a
@@ -266,6 +294,12 @@ struct CVLabControlReply {
     /// it, and the frame path is this file's. It is a single traversal of two
     /// keys; it does not make this client cartridge-aware in any other respect.
     var runID: String? {
+        Self.runID(in: status)
+    }
+
+    /// `lifecycle.run_id` of any status document, including the unchanged one
+    /// a `cv_lab_error` carries.
+    static func runID(in status: [String: Any]) -> String? {
         (status["lifecycle"] as? [String: Any])?["run_id"] as? String
     }
 
