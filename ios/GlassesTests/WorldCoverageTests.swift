@@ -396,4 +396,22 @@ final class WorldCoverageTests: XCTestCase {
         XCTAssertEqual(WorldCoverageCaption.legendWord(.unconfirmed), "Not yet seen by a finished solve",
                        "grey is unconfirmed at this solve, never a proved hole")
     }
+
+    /// The imagery and photo-floorplan tile digest: exactly 64 lowercase hex.
+    func testATileDigestIsSixtyFourLowercaseHexAndNothingElse() {
+        let digest = String(repeating: "0123456789abcdef", count: 4)
+        XCTAssertTrue(WorldCoverageReader.isSHA256Hex(digest))
+        XCTAssertTrue(WorldCoverageReader.isSHA256Hex(String(repeating: "f", count: 64)))
+
+        XCTAssertFalse(WorldCoverageReader.isSHA256Hex(digest.uppercased()), "upper case is refused, not folded")
+        XCTAssertFalse(WorldCoverageReader.isSHA256Hex(String(digest.dropLast()) + "A"), "one upper-case letter")
+        XCTAssertFalse(WorldCoverageReader.isSHA256Hex(String(digest.dropLast()) + "g"))
+        XCTAssertFalse(WorldCoverageReader.isSHA256Hex(String(digest.dropLast()) + " "))
+        XCTAssertFalse(WorldCoverageReader.isSHA256Hex(String(digest.dropLast())), "63 characters")
+        XCTAssertFalse(WorldCoverageReader.isSHA256Hex(digest + "0"), "65 characters")
+        XCTAssertFalse(WorldCoverageReader.isSHA256Hex(String(digest.prefix(32))), "an appearance digest's 32")
+        XCTAssertFalse(WorldCoverageReader.isSHA256Hex(""))
+        // Counted in UTF-8 bytes: 62 hex plus a two-byte "\u{E9}" (é) is 64 bytes, and refused.
+        XCTAssertFalse(WorldCoverageReader.isSHA256Hex(String(digest.dropLast(2)) + "\u{E9}"))
+    }
 }

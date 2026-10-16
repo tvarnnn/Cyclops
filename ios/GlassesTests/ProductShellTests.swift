@@ -1202,6 +1202,44 @@ final class CartridgeIntegrationTests: XCTestCase {
             "a real message must survive untouched"
         )
     }
+
+    // MARK: The uncached session
+
+    /// What every client fetching `no-store` bytes defaults to. Each field it
+    /// sets is a separate promise, so each is pinned, and everything else is
+    /// `.ephemeral`'s. `WorldAssetClient` adds "no cookie jar" on top.
+    func testTheUncachedSessionKeepsNoCopyAndIsOtherwiseEphemeral() {
+        let configuration = UncachedURLSession.configuration()
+        let ephemeral = URLSessionConfiguration.ephemeral
+        XCTAssertNil(configuration.urlCache, "no URL cache, in memory or on disk")
+        XCTAssertEqual(configuration.requestCachePolicy, .reloadIgnoringLocalAndRemoteCacheData)
+        XCTAssertNotNil(configuration.httpCookieStorage, "cookies stay .ephemeral's in-memory jar")
+        XCTAssertEqual(configuration.httpShouldSetCookies, ephemeral.httpShouldSetCookies)
+        XCTAssertEqual(configuration.httpCookieAcceptPolicy, ephemeral.httpCookieAcceptPolicy)
+        XCTAssertEqual(configuration.timeoutIntervalForRequest, ephemeral.timeoutIntervalForRequest)
+        XCTAssertEqual(configuration.timeoutIntervalForResource, ephemeral.timeoutIntervalForResource)
+        XCTAssertEqual(configuration.waitsForConnectivity, ephemeral.waitsForConnectivity)
+        XCTAssertNil(configuration.httpAdditionalHeaders)
+        XCTAssertNil(UncachedURLSession.make().configuration.urlCache)
+
+        let defaults: [(String, URLSession)] = [
+            ("Object Memory imagery", ObjectMemoryImageryHTTPClient().session),
+            ("CV Lab preview", CVLivePreviewHTTPClient().session),
+            ("World Builder imagery", WorldImageryClient().session),
+            ("World Builder photo floorplan", WorldPhotoFloorplanClient().session)
+        ]
+        for (name, session) in defaults {
+            XCTAssertNil(session.configuration.urlCache, name)
+            XCTAssertEqual(session.configuration.requestCachePolicy, .reloadIgnoringLocalAndRemoteCacheData, name)
+            XCTAssertNotNil(session.configuration.httpCookieStorage, name)
+        }
+
+        let assets = WorldAssetClient.uncachedConfiguration()
+        XCTAssertNil(assets.urlCache)
+        XCTAssertEqual(assets.requestCachePolicy, .reloadIgnoringLocalAndRemoteCacheData)
+        XCTAssertNil(assets.httpCookieStorage)
+        XCTAssertFalse(assets.httpShouldSetCookies)
+    }
 }
 
 // MARK: - The four unavailable cartridge clients

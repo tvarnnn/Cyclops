@@ -195,8 +195,9 @@ nonisolated enum WorldCoverageEvidence: Equatable, Sendable, CaseIterable {
     case unconfirmed, weak, supported
 }
 
-/// §5's field readers. JSON numbers only: a boolean (which
-/// `JSONSerialization` bridges to `NSNumber`) is never a number here.
+/// §5's field readers, shared with the imagery and photo-floorplan decoders.
+/// JSON numbers only: a boolean (which `JSONSerialization` bridges to
+/// `NSNumber`) is never a number here.
 nonisolated enum WorldCoverageReader {
     static func number(_ value: Any?) -> Double? {
         guard let number = value as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID() else { return nil }
@@ -215,6 +216,12 @@ nonisolated enum WorldCoverageReader {
         guard let array = value as? [Any], array.count == count else { return nil }
         let numbers = array.compactMap(number)
         return numbers.count == count ? numbers : nil
+    }
+
+    /// A SHA-256 as the Tower writes a tile digest: exactly 64 lowercase hex
+    /// characters. Upper case is refused, never folded.
+    static func isSHA256Hex(_ text: String) -> Bool {
+        text.utf8.count == 64 && text.utf8.allSatisfy { (48...57).contains($0) || (97...102).contains($0) }
     }
 
     /// A component row; its stations may be empty (the caller drops it).

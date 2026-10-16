@@ -182,7 +182,7 @@ nonisolated struct WorldRenderRevision: Equatable, Sendable {
 /// defaulted so a test can substitute a stubbed one.
 nonisolated struct WorldRenderClient {
     var baseURL: URL = TowerConfiguration.httpBaseURL
-    /// Ephemeral and cache-less (`WorldAssetClient.uncachedSession()`), not
+    /// Ephemeral and cache-less (`WorldAssetClient.sharedUncachedSession`), not
     /// `.shared`: the appearance page's configuration names the imagery it
     /// fetches, and `URLSession.shared` writes responses to a disk cache unless
     /// told otherwise. Privacy review §3.6.

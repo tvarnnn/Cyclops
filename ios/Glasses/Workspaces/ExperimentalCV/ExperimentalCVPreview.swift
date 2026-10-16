@@ -268,21 +268,15 @@ nonisolated struct CVLivePreviewHTTPClient {
     /// only delays the next one. Bounded either way (Rule 15).
     var timeout: TimeInterval = 2.0
 
-    /// Ephemeral, with no URL cache at all. See the file comment.
-    static func uncachedSession() -> URLSession {
-        let configuration = URLSessionConfiguration.ephemeral
-        configuration.urlCache = nil
-        configuration.requestCachePolicy = .reloadIgnoringLocalAndRemoteCacheData
-        return URLSession(configuration: configuration)
-    }
-
+    /// `session` defaults to a new `UncachedURLSession`: ephemeral, with no URL
+    /// cache at all. See the file comment.
     init(
         baseURL: URL = TowerConfiguration.httpBaseURL,
         session: URLSession? = nil,
         timeout: TimeInterval = 2.0
     ) {
         self.baseURL = baseURL
-        self.session = session ?? Self.uncachedSession()
+        self.session = session ?? UncachedURLSession.make()
         self.timeout = timeout
     }
 
