@@ -5,15 +5,13 @@ and how appearance uses it), `WORLD-BUILDER-SURFACE.md` §2 (fusion gives it zer
 weight), `WORLD-BUILDER-DENSE.md` §3a (the cache files beside the depth work).
 
 WHY A DETECTOR. The appearance stage's own occluder tests are a depth test and a
-photometric vote. Neither recognises a hand, and on the canonical capture they
-left the wearer's hands on the desk in ki 308, 330 and 351. The fix-it hands
-lane (`Glasses-scratch/wb-final-recon/fixit/hands/HANDS.md`) labelled 62 frames
-and measured every open-weight candidate it could run; the recommendation this
-module implements scored 97.7% hand/arm pixel recall, 99.7% held-phone recall
-and 3.1% of static pixels flagged, against 44-49% / 1-6% / 13-15% for the
-geometry rules.
+photometric vote. Neither recognises a hand: on the canonical capture they left
+the wearer's hands on the desk in ki 308, 330 and 351. Measured on 62 labelled
+frames against every open-weight candidate that could run, this recipe scored
+97.7% hand/arm pixel recall, 99.7% held-phone recall and 3.1% of static pixels
+flagged, against 44-49% / 1-6% / 13-15% for the geometry rules.
 
-THE RECIPE (HANDS.md §6, as measured, `final_eval.py`):
+THE RECIPE (as measured):
 
     per keyframe, on the gamma-2-lifted, undistorted, REDACTED keyframe:
       gdsam      Grounding DINO-base boxes for "hand. arm. sleeve. mobile phone."
@@ -31,7 +29,8 @@ THE RECIPE (HANDS.md §6, as measured, `final_eval.py`):
     (scaled with width).
 
 MODES. `union` is the recipe above. `oneformer` is the cheaper mode (one model,
-~0.35 s a keyframe; 97.5% / 96.4% / 3.05% on the same labels) and is what the
+~0.35 s a keyframe, about half the union's cost a keyframe; 97.5% / 96.4% /
+3.05% on the same labels) and is what the
 live preset uses. `off` computes nothing. Every mask records the mode and the
 rule that made it.
 
@@ -117,8 +116,8 @@ STATE_FAILED = "failed"
 
 ENV_SWITCH = "TOWER_WORLD_TRANSIENTS"
 
-# Checkpoints, pinned to the revisions the hands lane measured. A revision is a
-# cache key: a new one recomputes every mask, which is the point of pinning.
+# Checkpoints, pinned to the revisions the recipe was measured with. A revision is
+# a cache key: a new one recomputes every mask, which is the point of pinning.
 GDINO_MODEL = ("IDEA-Research/grounding-dino-base", "12bdfa3120f3e7ec7b434d90674b3396eccf88eb")
 SAM_MODEL = ("facebook/sam2.1-hiera-base-plus", "b7320756a13354e7530a63935656d35b2f91a290")
 ONEFORMER_MODEL = ("shi-labs/oneformer_coco_swin_large", "3a263017ca5c75adbea145f25f81b118243d4394")
@@ -179,13 +178,6 @@ class TransientParams:
         if self.mode not in MODES:
             raise ValueError(f"unknown transient detector mode {self.mode!r}; one of {MODES}")
 
-    @classmethod
-    def live(cls, **overrides) -> "TransientParams":
-        """OneFormer only: the union costs about twice as much a keyframe."""
-        base = dict(mode=MODE_ONEFORMER)
-        base.update(overrides)
-        return cls(**base)
-
     @property
     def components(self) -> tuple:
         return MODE_COMPONENTS[self.mode]
@@ -222,9 +214,6 @@ class TransientParams:
         if COMPONENT_ONEFORMER in self.components:
             out[ONEFORMER_CLASS_INFO[0]] = ONEFORMER_CLASS_INFO[1]
         return out
-
-    def as_dict(self) -> dict:
-        return dict(self.__dict__)
 
 
 # ---------------------------------------------------------------------------
@@ -335,8 +324,8 @@ def write_component(path: Path, key: dict, hand: np.ndarray, phone: np.ndarray, 
 
     Raises `OSError` when the file cannot be written (a full disk, a cached file another
     process holds, MAX_PATH), after taking back its own staging file: the CALLER decides
-    what a lost cache entry costs (review V10, L-12b), and every caller here keeps the
-    mask it computed for the build in hand."""
+    what a lost cache entry costs, and every caller here keeps the mask it computed for
+    the build in hand."""
     buf = io.BytesIO()
     record = dict(key, image_sha1=image_sha1, computed_at=time.time(),
                   seconds=None if seconds is None else round(float(seconds), 4))
@@ -358,9 +347,9 @@ def write_component(path: Path, key: dict, hand: np.ndarray, phone: np.ndarray, 
 
 
 def pack_masks(hand: np.ndarray, phone: np.ndarray) -> tuple:
-    """A component's (hand, phone) held in memory when its cache write failed (review V10,
-    L-12b), as bits: a full disk fails EVERY write, and a long walk's masks at one byte a
-    pixel would be gigabytes. `unpack_masks` gives them back."""
+    """A component's (hand, phone) held in memory when its cache write failed, as bits: a
+    full disk fails EVERY write, and a long walk's masks at one byte a pixel would be
+    gigabytes. `unpack_masks` gives them back."""
     hand, phone = np.asarray(hand, bool), np.asarray(phone, bool)
     return np.packbits(hand, axis=-1), np.packbits(phone, axis=-1), int(hand.shape[-1])
 
@@ -378,9 +367,9 @@ def read_component(path: Path, key: dict | None = None, shape=None):
     A file that exists but cannot be read whole -- empty, truncated, not an
     archive, missing an array, arrays of the wrong shape -- is a MISS like a
     missing one, and says so in the log: the caller computes the mask again and
-    `write_component` replaces the file (review V9, LOW). An empty file raised
-    `EOFError` and a torn archive `BadZipFile`, neither of which was caught, so
-    one bad file failed every later mask step of its session for good."""
+    `write_component` replaces the file. Hence the broad catch: an empty file
+    raises `EOFError` and a torn archive `BadZipFile`, and either, uncaught,
+    would fail every later mask step of its session."""
     try:
         if not Path(path).is_file():
             return None
@@ -734,8 +723,8 @@ class TransientReport:
     refused: dict = field(default_factory=dict)
     seconds: dict = field(default_factory=dict)
     gpu_peak_mb: float | None = None
-    # A `union` build that could run only OneFormer (review 1, m1): the mode
-    # that was asked for, and why the masks are OneFormer's alone. `params` is
+    # A `union` build that could run only OneFormer: the mode that was asked
+    # for, and why the masks are OneFormer's alone. `params` is
     # then the OneFormer rule the masks were actually made under, so every
     # consumer digest differs from a whole union build's and a later build with
     # the network rebuilds.
@@ -745,9 +734,9 @@ class TransientReport:
     # (`solve_masks.solve_mask_donor`) instead of being computed here.
     reused_from_solve: int = 0
     # Masks computed by THIS build whose cache write failed (a full disk, a held file,
-    # MAX_PATH; review V10, L-12b): (ki, component) -> `pack_masks(hand, phone)`, used by
-    # `mask` for this build, and counted. The failed write used to fail the whole stage. The
-    # next build finds no cache entry and computes them again.
+    # MAX_PATH): (ki, component) -> `pack_masks(hand, phone)`, used by `mask` for this
+    # build, and counted; a failed write does not fail the stage. The next build finds no
+    # cache entry and computes them again.
     cache_write_failed: int = 0
     kept: dict = field(default_factory=dict, repr=False)
 
@@ -802,7 +791,7 @@ class TransientReport:
         }
         # Only when it happened: a build that took nothing from the solve --
         # every build of a world solved without `TOWER_WORLD_SOLVE_MASKS` --
-        # writes exactly the record it wrote before.
+        # writes the record it would write without the field.
         if self.reused_from_solve:
             out["reused_from_solve"] = self.reused_from_solve
         if self.cache_write_failed:
@@ -826,8 +815,8 @@ def _take_from_donor(donor, kid, component, params, shape, path, key) -> bool:
         write_component(path, dict(key, **provenance), hand, phone,
                         image_sha1=provenance.get("solve_image_sha1"))
     except OSError as exc:
-        # Not taken (review V10, L-12b): the detector computes this mask instead, and a
-        # write that fails again there is kept in memory for the build.
+        # Not taken: the detector computes this mask instead, and a write that fails
+        # again there is kept in memory for the build.
         logger.warning("[Tower][WorldBuilder][transients] could not copy the solve's mask of %s "
                        "(%s: %s); it is computed here instead", kid, type(exc).__name__, exc)
         return False
@@ -969,7 +958,7 @@ def ensure_transient_masks(store, world_id: str, session_id: str, frames, *,
                     write_component(cache_path(depth_dir, ki, c), keymap[ki], hand, phone,
                                     image_sha1=pixels[ki][2], seconds=seconds)
                 except OSError as exc:
-                    # Not the detector's failure (review V10, L-12b): kept for this build.
+                    # Not the detector's failure: kept for this build.
                     report.cache_write_failed += 1
                     report.kept[(ki, c)] = pack_masks(hand, phone)
                     if report.cache_write_failed == 1:
@@ -1012,7 +1001,7 @@ def ensure_transient_masks(store, world_id: str, session_id: str, frames, *,
         report.gpu_peak_mb = _peak_mb(peak)
 
     # Only keyframes whose every component is on disk under its key -- or was computed by this
-    # build and could not be written (`kept`, review V10 L-12b).
+    # build and could not be written (`kept`).
     report.keys = {ki: keys for ki, keys in wanted.items()
                    if all((ki, c) in report.kept
                           or read_component(cache_path(depth_dir, ki, c), key, (H, W)) is not None
@@ -1028,18 +1017,17 @@ def ensure_transient_masks(store, world_id: str, session_id: str, frames, *,
 
 def _can_fall_back(params: TransientParams, missing: dict) -> bool:
     """A `union` whose Grounding DINO + SAM component cannot run still has
-    OneFormer -- which the live child ran all walk, so its weights are on disk.
+    OneFormer, whose weights are on disk because the live child already ran it.
     Nothing else falls back: `oneformer` without OneFormer has no masks."""
     return (params.mode == MODE_UNION and COMPONENT_ONEFORMER not in missing
             and set(missing) <= {COMPONENT_GDSAM})
 
 
 def _fall_back(report: TransientReport, params: TransientParams, backends, missing: dict):
-    """Continue in `oneformer` mode and say so (review 1, m1): the final build
-    after Stop on a machine that cannot fetch Grounding DINO or SAM used to
-    record `unavailable` with no masks at all, discarding the OneFormer masks
-    the walk had cached -- so the finished world showed hands the live one had
-    masked."""
+    """Continue in `oneformer` mode and say so: when Grounding DINO or SAM cannot
+    be fetched (the final build after Stop on an offline machine), the OneFormer
+    masks the walk cached are kept, rather than recording `unavailable` with no
+    masks and showing hands in the finished world that the live one masked."""
     why = "; ".join(f"{c}: {r}" for c, r in sorted(missing.items()))
     effective = replace(params, mode=MODE_ONEFORMER)
     report.requested = report.requested or params

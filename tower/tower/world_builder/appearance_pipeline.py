@@ -52,7 +52,6 @@ STATE_UNAVAILABLE = "unavailable"
 
 STAGE_PROVENANCE = "provenance"
 STAGE_DETECTOR = "detector"
-STAGE_PROXY = "proxy"
 STAGE_OCCLUDERS = "occluders"
 STAGE_CONSENSUS = "consensus"
 STAGE_EXPOSURE = "exposure"
@@ -110,12 +109,6 @@ def _status(root: Path, **fields) -> None:
         "updated_at": time.time(), **fields})
 
 
-def status_is_stale(status: dict) -> bool:
-    from tower.world_builder.surface_pipeline import status_is_stale as surface_stale  # noqa: PLC0415
-
-    return surface_stale(status)
-
-
 def _lock(root: Path):
     from tower.world_builder.surface_pipeline import _SurfaceLock  # noqa: PLC0415
 
@@ -129,9 +122,10 @@ def _stopped(should_stop) -> bool:
 
 
 # 32 hex characters: the first 128 bits of SHA-256. Not 64, because a Windows
-# path is capped at 260 characters and a content name, its atomic-write staging
-# suffix, and a world root in a project tree came to 263 on the first canonical
-# build -- `write_bytes_atomic` failed with "No such file or directory".
+# path is capped at 260 characters, and a 64-character content name, its
+# atomic-write staging suffix, and a world root in a project tree came to 263 on
+# the canonical build -- `write_bytes_atomic` then fails with "No such file or
+# directory".
 DIGEST_HEX = 32
 
 
@@ -151,10 +145,10 @@ PROXY_CONFIDENCE_VERSION = 1
 PROXY_CONFIDENCE_CHANNEL = "r"
 """Which of the proxy's three colour bytes carries the geometry confidence.
 
-The proxy's colour block exists in `wb-surface-mesh/1` and has been ZEROED
-since review 1: the page draws only positions and indices, and those bytes were
-a copy of the depth stage's imagery served under the wrong label check. Three
-bytes a vertex were therefore already on the wire, already reaching the page,
+The proxy's colour block exists in `wb-surface-mesh/1` and is otherwise ZEROED:
+the page draws only positions and indices, and unzeroed those bytes would be a
+copy of the depth stage's imagery served under the wrong label check. Three
+bytes a vertex are therefore already on the wire, already reaching the page,
 and carrying nothing.
 
 The confidence goes in the first of them. It costs NO additional bytes, it
@@ -170,7 +164,7 @@ def proxy_with_confidence(mesh: bytes, confidence=None) -> bytes:
 
     `confidence` is one byte a vertex (`surface.vertex_confidence`), in the
     level's own vertex order, or None -- in which case every colour byte is
-    zeroed, which is what this function did before the channel existed.
+    zeroed ("no confidence known").
 
     Refuses a channel that is not exactly one byte per vertex of THIS mesh: a
     confidence from another build would be read against the wrong vertices and
@@ -427,8 +421,9 @@ def _build(store, world_id, session_id, root, params, should_stop, progress, for
             det = None
         frames.append(A.PreparedFrame(source=src, R=R, t=t, zp=None, occluder=None,
                                       occluder_record=None, detector=det))
-    # From its own start: the detector stage now runs before it (the first
-    # canonical build reported 18.3 s here, 15.4 of them the detector).
+    # From its own start, not the detector's: the detector stage runs before it
+    # (timed from the detector's start, the canonical build reported 18.3 s
+    # here, 15.4 of them the detector).
     seconds[STAGE_PROVENANCE] = round(time.time() - tp, 2)
 
     # -- proxy depth and occluders ------------------------------------------
@@ -932,8 +927,8 @@ def _scale_note(world) -> dict:
 
 def _file_is(path: Path, size: int, digest: str) -> bool:
     """Whether the file holds exactly the content its name promises: its size
-    AND its content digest. A same-size corrupt file is not it (review 1, m10):
-    the routes check the digest and would 404 it for good."""
+    AND its content digest. A same-size corrupt file is not it: the routes
+    check the digest and would 404 it for good."""
     try:
         if path.stat().st_size != size:
             return False
@@ -1109,7 +1104,7 @@ def servable_size(root: Path, name: str, manifest: dict, now: float | None = Non
     PRUNE_GRACE_S ago whose redaction label and keyframe set are this
     manifest's -- which the caller has just checked against the session record,
     so the label check applies to the superseded files unchanged. A build under
-    another label never lends its files to this one (review 1, M4)."""
+    another label never lends its files to this one."""
     size = named_files(manifest).get(name)
     if size is not None:
         return size
@@ -1138,8 +1133,7 @@ def file_size_under(store, world_id: str, session_id: str, kind: str, digest: st
     None: named by it, or lent from a recently superseded build
     (`servable_size`) -- and never lent to a manifest served by the carry-over.
     No bytes are read. `read_appearance_file` uses it, and the file routes run
-    it again after the read against the manifest the gate serves THEN (fix
-    round 2, Codex LOW-3)."""
+    it again after the read against the manifest the gate serves THEN."""
     if kind not in ("chunk", "proxy") or not is_digest(digest):
         return None
     name = _file_name(kind, digest)
@@ -1150,8 +1144,8 @@ def file_size_under(store, world_id: str, session_id: str, kind: str, digest: st
             store, world_id, session_id, manifest, imagery_source_of(manifest)):
         # A manifest served by the carry-over (`may_serve`) lends nothing: a
         # superseded entry does not record which redactor made its files, so
-        # the lend could hand out an unlisted redactor's chunks after Stop
-        # (review rv-pas LOW-3). Its own files are served; a page missing one
+        # the lend could hand out an unlisted redactor's chunks after Stop.
+        # Its own files are served; a page missing one
         # refetches the manifest, as for any 404.
         return None
     return size
@@ -1196,8 +1190,8 @@ def label_matches(store, world_id: str, session_id: str, manifest: dict,
                   imagery_source: str | None = None) -> bool:
     """Whether the routes may serve this manifest.
 
-    The keyframe set and its label, as before -- and, since §6.6, the imagery
-    the reader is serving. `imagery_source` defaults to this process's setting
+    The keyframe set and its label, and the imagery the reader is serving
+    (§6.6). `imagery_source` defaults to this process's setting
     (`TOWER_WORLD_RAW_IMAGERY`, which is the product unless it is set), so a
     Tower that was not asked for raw research imagery will not hand any out,
     and one that was will not quietly mix it with redacted chunks. The one
@@ -1218,12 +1212,12 @@ def may_serve(store, world_id: str, session_id: str, manifest: dict,
               imagery_source: str | None = None) -> bool:
     """Whether the routes may serve this manifest now: THE serving gate.
 
-    `label_matches`, unchanged -- or the ordinary Stop (owner, manager 185 A:
-    "Stop should end capture, not make already-captured walk imagery
-    unavailable"). A walk's builds re-redact every keyframe under `none`; at
-    Stop the label becomes the real one and `label_matches` refuses them,
-    although an open page is told `rebuilding` and keeps drawing the very same
-    textures. A viewer opened after Stop was given the surface instead.
+    `label_matches`, unchanged -- or the ordinary Stop, which should end
+    capture, not make already-captured walk imagery unavailable. A walk's
+    builds re-redact every keyframe under `none`; at Stop the label becomes the
+    real one and `label_matches` refuses them, although an open page is told
+    `rebuilding` and keeps drawing the very same textures, so without this a
+    viewer opened after Stop would be given the surface instead.
 
     So a manifest whose label no longer matches is served exactly when an open
     page may already keep it -- `withdrawal_state` is `rebuilding`, i.e.
@@ -1236,11 +1230,10 @@ def may_serve(store, world_id: str, session_id: str, manifest: dict,
     record cannot be read) never rides the carry-over either: every caller
     already refuses a purged world, but `build_appearance_config` does not, and
     the carry-over must not be the thing that lets it. And it FAILS CLOSED
-    (`_carry_over_metadata_whole`, review rv-pas MED-1 / LOW-2): the session
-    record and any re-redaction pointer must read, the session's label now must
-    be on the allowlist, and the provenance must state every field compared.
-    Under the carry-over nothing is lent from a superseded build
-    (`read_appearance_file`, LOW-3).
+    (`_carry_over_metadata_whole`): the session record and any re-redaction
+    pointer must read, the session's label now must be on the allowlist, and
+    the provenance must state every field compared. Under the carry-over
+    nothing is lent from a superseded build (`read_appearance_file`).
     """
     if imagery_source is None:
         imagery_source = RAWIMG.reader_imagery_source(world_id, imagery_source_of(manifest))
@@ -1263,22 +1256,22 @@ def may_serve(store, world_id: str, session_id: str, manifest: dict,
 # What a walk build's provenance must STATE, not merely imply by absence, before
 # it may ride the carry-over: `textures_carry_over` reads a missing key as None
 # (the capture's own keyframe set) or `redacted`, which is right for an open
-# page's question and wrong for a new reader's (review rv-pas MED-1).
+# page's question and wrong for a new reader's.
 CARRY_OVER_PROVENANCE_KEYS = ("session_redaction", "keyframe_image_set", "imagery_source",
                               "redactor_applied_here", "label_trusted")
 
 
 def _carry_over_metadata_whole(store, world_id: str, session_id: str, manifest: dict) -> bool:
-    """FAIL CLOSED for the carry-over (review rv-pas MED-1, LOW-2). Every record
+    """FAIL CLOSED for the carry-over. Every record
     the decision rests on must read, and say what it says outright:
 
     - `session.json` reads and passes its schema check. `keyframe_set_identity`
       and `keyframe_image_set` read an unreadable record as "no label, no
       switch", which is the token a walk build on the capture's own keyframes
-      also records -- so without this an unreadable record looked like "the
-      same set" and the walk build was served;
+      also records -- so without this an unreadable record would look like
+      "the same set" and the walk build would be served;
     - NO re-redaction pointer is on disk at all: a switch, its revert, and a
-      pointer the store does not honour all refuse (fix round 2);
+      pointer the store does not honour all refuse;
     - the session's label NOW is on the allowlist: the ordinary Stop writes
       the real, trusted label. A Stop to a label off the allowlist (or to
       none at all) is not newly served -- it is refused exactly as before;
@@ -1286,14 +1279,15 @@ def _carry_over_metadata_whole(store, world_id: str, session_id: str, manifest: 
       with `label_trusted` exactly False and `imagery_source` exactly
       `redacted`.
 
-    Each refusal here leaves the route answering as `dc35d51` did (404, and the
-    revision's `state` from the unchanged `withdrawal_state`)."""
+    Each refusal here leaves the route answering as it does without the
+    carry-over (404, and the revision's `state` from the unchanged
+    `withdrawal_state`)."""
     try:
         store.read_session(world_id, session_id)
     except Exception:  # noqa: BLE001 -- unreadable never widens the gate
         return False
     try:
-        # ANY re-redaction pointer on disk (fix round 2, Codex MED-1/MED-2):
+        # ANY re-redaction pointer on disk:
         # the store reads a non-whole one -- `{}`, a missing directory or
         # label, a path outside the session, a stale stored label -- and an
         # explicit revert all as "no switch", which is the walk build's own

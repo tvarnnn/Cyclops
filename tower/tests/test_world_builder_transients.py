@@ -160,7 +160,7 @@ def test_instance_masks_mostly_redaction_fill_or_most_of_the_image_are_dropped()
 
 
 def test_the_rule_id_names_the_mode_and_moves_with_every_parameter():
-    union, one = T.TransientParams(), T.TransientParams.live()
+    union, one = T.TransientParams(), T.TransientParams(mode=T.MODE_ONEFORMER)
     assert union.mode == T.MODE_UNION and one.mode == T.MODE_ONEFORMER
     assert "gdino" in union.rule_id() and "oneformer" in union.rule_id()
     assert "gdino" not in one.rule_id() and "oneformer" in one.rule_id()
@@ -228,18 +228,18 @@ class TestTheCache:
         assert s.calls == [] and wide.mask(HAND_KI).sum() > 0
         # the cheaper mode reuses the union's OneFormer masks
         s = Stub()
-        _ensure(world, s, params=T.TransientParams.live(oneformer_threshold=0.6))
+        _ensure(world, s, params=T.TransientParams(mode=T.MODE_ONEFORMER, oneformer_threshold=0.6))
         assert s.calls == []
         # a new model revision recomputes
         monkeypatch.setitem(T.COMPONENT_MODELS, T.COMPONENT_ONEFORMER,
                             ((T.ONEFORMER_MODEL[0], "0" * 40),))
         s = Stub()
-        _ensure(world, s, params=T.TransientParams.live())
+        _ensure(world, s, params=T.TransientParams(mode=T.MODE_ONEFORMER))
         assert len(s.calls) == N_FRAMES
         # a different effective redaction label recomputes
         world.set_label("none")
         s = Stub()
-        _ensure(world, s, params=T.TransientParams.live(), redactor_factory=_FakeRedactor)
+        _ensure(world, s, params=T.TransientParams(mode=T.MODE_ONEFORMER), redactor_factory=_FakeRedactor)
         assert len(s.calls) == N_FRAMES
 
     def test_a_cache_file_for_another_keyframe_or_shape_is_not_trusted(self, world):
@@ -352,7 +352,7 @@ class TestWithoutADetector:
         assert mask is not None and mask[HAND[0]:HAND[1], HAND[2]:HAND[3]].all()
         record = report.record()
         assert record["mode"] == T.MODE_ONEFORMER and record["partial"] == report.partial
-        assert record["rule"] == T.TransientParams.live().rule_id()
+        assert record["rule"] == T.TransientParams(mode=T.MODE_ONEFORMER).rule_id()
         assert record["requested_rule"] == T.TransientParams().rule_id()
 
         # through the appearance: masked, recorded as partial, and a later build

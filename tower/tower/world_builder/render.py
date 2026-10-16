@@ -1,7 +1,7 @@
 """Compose a built world into drawable frames, and draw it as HTML.
 
-Lifted out of `scripts/world_render.py` on 2026-09-06 so the Tower's web
-process can serve the interactive viewer to the phone (`GET
+Shared with `scripts/world_render.py` so the Tower's web process can serve
+the interactive viewer to the phone (`GET
 /worlds/{id}/render`, `docs/contracts/WORLD-BUILDER-WORLDS.md` §4). The
 script still owns the PLY and PNG writers, the plotly backend and the CLI;
 this module owns what both need: reading the derived tree, applying each
@@ -41,36 +41,29 @@ poses. Not a surface, not a mesh, not metric. The viewer says so in its own
 caption, because a point cloud drawn without that sentence reads as a
 "scan" of the room, and it is not one.
 
-TWO VIEWS, AND WHICH ONE OPENS (2026-09-09)
+TWO VIEWS, AND WHICH ONE OPENS
 
-Until today this file drew exactly one picture, and it was a debugger's:
-every point and every camera coloured by SEGMENT INDEX out of tab20, a
-frustum on every keyframe, and each unregistered fragment offered in the
-same dropdown as the world. That is the right picture for the question
-"did registration work"; it is the wrong picture for "what does my room
-look like", which is the question a person opening a saved world is
-asking. Worse, it discarded evidence: the global solver writes a
-photometric `rgb` on every point it triangulates
-(`global_solve.py:1047`), and this renderer read only `xyz`. Measured on
-the field world 52ed8e0a, 18,954 of its 26,634 points carry colour, and
-on its loop-closed re-solve 19,613 of 19,866 do. That colour was on disk
-and on the floor for three weeks.
+A picture coloured by segment index, with a frustum on every keyframe and
+every unregistered fragment in the same dropdown, answers "did
+registration work", not "what does my room look like", which is the
+question a person opening a saved world is asking. A point row may carry
+a photometric `rgb` (`global_solve` writes the field; measured on the field
+world 52ed8e0a, 18,954 of its 26,634 points carried a solver colour, and on
+its loop-closed re-solve 19,613 of 19,866).
 
-So there are now two modes over ONE payload, switched in the browser with
-no reload and no second request:
+So there are two modes over ONE payload, switched in the browser with no
+reload and no second request:
 
   * `world` (the default) -- points in the colour the camera measured,
-    a neutral grey where no colour was triangulated, the largest shared
+    a neutral grey where no drawable colour exists, the largest shared
     frame open first, cameras off. This is the product.
-  * `diagnostics` -- the picture this file drew before: tab20 by segment,
-    frustums, and every unregistered fragment reachable in the dropdown
-    with its refusal reason. Nothing that existed became unreachable.
+  * `diagnostics` -- tab20 by segment, frustums, and every unregistered
+    fragment reachable in the dropdown with its refusal reason.
 
-`?view=diagnostics` on the page URL selects the opening mode. It is read
-in the browser from `location.search`, NOT declared on the route: FastAPI
-ignores query parameters it has not declared, so iOS can deep-link the
-diagnostic view without the geometry contract or `routes/geometry.py`
-changing at all.
+The opening mode is chosen server-side: the route declares `?view=` and
+the page is composed already open in that mode (`canvas_html`'s `view`),
+because iOS loads the page with `loadHTMLString(_:baseURL: nil)` and the
+page has no URL to read a query string from.
 
 Neither mode invents anything. The world frame still contains only
 segments the store registered into it, an unregistered fragment is still
@@ -99,7 +92,6 @@ FRUSTUM_DEPTH_FRACTION = 0.025
 # in four places is four chances to misspell it once.
 VIEW_PRODUCT = "product"
 VIEW_DIAGNOSTICS = "diagnostics"
-VIEWS = (VIEW_PRODUCT, VIEW_DIAGNOSTICS)
 
 # 20 distinguishable colours (matplotlib's tab20, spelled out so the PLY and
 # the HTML agree with the PNGs without depending on matplotlib being here).
@@ -110,7 +102,6 @@ PALETTE = [
     (152, 223, 138), (255, 152, 150), (197, 176, 213), (196, 156, 148),
     (247, 182, 210), (199, 199, 199), (219, 219, 141), (158, 218, 229),
 ]
-CAMERA_COLOUR = (20, 20, 20)
 
 # The colour of a point whose `rgb` the solver never wrote. Deliberately a
 # desaturated grey and deliberately NOT drawn from PALETTE: the moment an
@@ -120,14 +111,14 @@ CAMERA_COLOUR = (20, 20, 20)
 # The page states the count instead.
 NEUTRAL_POINT_COLOUR = (138, 138, 138)
 
-# WHICH POINT COLOURS MAY BE DRAWN AT ALL (privacy lane L1, 2026-09-17).
+# WHICH POINT COLOURS MAY BE DRAWN AT ALL.
 #
 # The global solver's `rgb` is pycolmap's mean over the observing pixels of the
 # images COLMAP was given, and those are the RAW capture frames, undistorted
 # (`global_solve.prepare_images` prefers the raw frame; measured: 177 of 181
 # filled frames are non-black inside the redaction fill). On the canonical
 # capture 536 of 14,415 points take their colour ONLY from pixels the face
-# redactor removed. Drawing that colour put unredacted imagery on the page.
+# redactor removed. Drawing that colour puts unredacted imagery on the page.
 #
 # So a colour is drawn only when its row names a source on this list, and no
 # producer writes one today: every point is drawn neutral until something
@@ -154,7 +145,7 @@ COLOUR_QUANTISATION_BITS = 5
 # Backgrounds, chosen from the measured luminance of real points rather
 # than from taste. On world 52ed8e0a's re-solve the Rec.709 luminance of
 # the triangulated colours runs p5=3, p25=35, p50=87, p75=138, p95=207.
-# Against the near-black #111 this file used before, the darkest 24% of
+# Against a near-black #111 ground, the darkest 24% of
 # the room (luminance < 32) is invisible; against a near-white ground only
 # the brightest 5% washes out. So the product view draws on paper and the
 # diagnostic view keeps the dark ground the tab20 palette was tuned for.
@@ -221,13 +212,12 @@ class Segment:
     scale: float | None
     refusal_reason: str | None
     sim3: Sim3 | None
-    # Photometric colour per point, parallel to `points`. `rgb_known` is
-    # the honest half: `rgb` holds NEUTRAL_POINT_COLOUR wherever the
-    # solver wrote no colour, and only `rgb_known` distinguishes that from
-    # a point the camera really did see as grey. Both are sliced by
-    # `subsample` alongside `points`, so a thinned cloud never pairs a
-    # point with another point's colour. Defaulted so the one construction
-    # site below stays the only one that has to know about them.
+    # Photometric colour per point, parallel to `points`. `rgb` holds
+    # NEUTRAL_POINT_COLOUR wherever no drawable colour was written, and only
+    # `rgb_known` (False there) distinguishes that from a point the camera
+    # really did see as grey. Both are sliced by `subsample` together with
+    # `points`, so a thinned cloud never pairs a point with another point's
+    # colour.
     rgb: np.ndarray = field(default_factory=lambda: np.zeros((0, 3), dtype=np.uint8))
     rgb_known: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=bool))
 
@@ -317,12 +307,11 @@ def load_segments(store: WorldStore, world_id: str, session_id: str) -> dict:
     build_digest = manifest.get("input_digest")
 
     # `rgb` is OPTIONAL on a point row and read as such. The global solver
-    # writes it (`global_solve.py:1047`); the incremental backend that
-    # built most of the worlds already on disk does not, and 28 of the 34
-    # field worlds measured on 2026-09-09 carry none at all. A missing
-    # colour is a missing measurement, not a malformed row: it becomes a
-    # False in `rgb_known` and a neutral dot on the page, never an error
-    # and never a substituted colour.
+    # writes it; the incremental backend that built most of the worlds
+    # already on disk does not, and 28 of 34 field worlds measured carry
+    # none at all. A missing colour is a missing measurement, not a
+    # malformed row: it becomes a False in `rgb_known` and a neutral dot on
+    # the page, never an error and never a substituted colour.
     points_by_segment: dict = {}
     colours_by_segment: dict = {}
     for row in derived["points"]:
@@ -419,11 +408,10 @@ def derived_current(store: WorldStore, world_id: str, session_id: str):
         digest = compute_input_digest(store.read_keyframes(world_id, session_id))
     except Exception:  # noqa: BLE001 - an unreadable journal is "unknown", not "stale"
         return None
-    # WITH the session id -- see `WorldStore.derived_currency`. The render
-    # page for an earlier walk showed "stale" against a digest belonging to
-    # a different session entirely. `None` ("nothing can judge it") reports
-    # as not-current here, which is what this function's own docstring
-    # already promises for the unknowable case.
+    # WITH the session id -- see `WorldStore.derived_currency`: currency is
+    # judged per session, and without it a page can read "stale" against a
+    # digest belonging to a different session. `None` ("nothing can judge
+    # it") reports as not-current here.
     return bool(store.derived_currency(world_id, digest, session_id) is True)
 
 
@@ -524,7 +512,7 @@ def frustum_lines(centre, rotation, depth, aspect=0.75):
 # -- the HTML viewer -------------------------------------------------------
 
 
-def html_frames(frames: list, unregistered: list, ordering: list) -> list:
+def html_frames(frames: list, unregistered: list) -> list:
     """Frame descriptors shared by both HTML backends: every drawable
     space, world frames first, each unregistered segment as its own."""
     out = []
@@ -580,9 +568,8 @@ CAPTION = ("Sparse structure-from-motion output: triangulated feature points "
 # PRODUCT_CAPTION says the same true things in the order that answers "what
 # am I looking at". Every disclaimer in CAPTION survives -- sparse, not a
 # surface, not a mesh, not metric -- because dropping one of them to sound
-# friendlier is how a point cloud becomes a "3D scan of your room". The
-# added clause is the one this viewer never said and should have: the gaps
-# are unmeasured, not measured-as-empty.
+# friendlier is how a point cloud becomes a "3D scan of your room". It adds
+# one clause: the gaps are unmeasured, not measured-as-empty.
 PRODUCT_CAPTION = ("The points this walk actually measured, in the colours the "
                    "camera recorded. Sparse structure from motion: only "
                    "textured surfaces produce points, so the empty space is "
@@ -594,7 +581,7 @@ CAPTION_BEHIND = ("This picture is BEHIND the newest keyframes: the Tower has "
 # The viewer. Self-contained: no external script, no stylesheet, no fetch,
 # so it works with nothing but a browser, and inside a WKWebView with
 # outbound navigation refused. Mouse: drag orbits, shift-drag pans, wheel
-# zooms. Touch (added 2026-09-06 for the phone): one finger orbits, two
+# zooms. Touch (for the phone): one finger orbits, two
 # fingers pinch to zoom and drag to pan. `touch-action: none` keeps the
 # page from scrolling or zooming underneath the canvas.
 #
@@ -961,7 +948,7 @@ def canvas_html(frames: list, unregistered: list, ordering: list, title: str, *,
     the phone cannot say it any other way: it loads this string with no URL
     at all. The toggle still works once the page is up.
     """
-    descriptors = html_frames(frames, unregistered, ordering)
+    descriptors = html_frames(frames, unregistered)
     # `palette` maps quantised colour code -> (index in the page's table,
     # channels). Index 0 is reserved for the neutral grey and is emitted
     # whether or not any point needs it, so `PAL[0]` in the page is a
@@ -1091,8 +1078,8 @@ def canvas_html(frames: list, unregistered: list, ordering: list, title: str, *,
     }
     # One pass over the template, so a placeholder appearing INSIDE a
     # substituted value is never substituted again. A refusal reason is
-    # store data and this file does not get to assume what is in it; the
-    # chained `.replace()` this used to be would have expanded one.
+    # store data and this file does not get to assume what is in it; a
+    # chained `.replace()` would expand one.
     return re.sub(r"__[A-Z_]+__", lambda m: tokens.get(m.group(0), m.group(0)),
                   _CANVAS_VIEWER)
 
@@ -1114,7 +1101,7 @@ def render_html(store: WorldStore, world_id: str, session_id: str, *,
     if title is None:
         title = f"world {world_id[:8]} session {session_id[:8]}"
     # The sampling report is carried into the page rather than dropped: a
-    # phone gets MOBILE_MAX_POINTS of an 80,000-point world and the page
-    # said "80,000 points" without saying which 80,000, or of how many.
+    # phone gets MOBILE_MAX_POINTS of an 80,000-point world, and the page
+    # says it drew a thinned cloud, and from how many points.
     return canvas_html(frames, unregistered, ordering, title,
                        current=current, sampling=sampling, view=view)
