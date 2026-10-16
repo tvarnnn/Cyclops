@@ -16,7 +16,7 @@ and returns a `GuardOutcome` that carries the summary and the audit. v2 is the r
     withheld. It still withholds on a failure (an exception, a relabel that leaves no room).
 
 WHY. The evidence gate decides which pieces of a final solve to attach to the room, but it does not check
-the result it publishes: on walk 3 a bathroom was published inside the room at x2.56 relative to it despite
+the result it publishes: a bathroom was published inside the room at x2.56 relative to it despite
 the gate, and a simple solve (unmasked, ungated, one draw) publishes the solver's component 0 with no check
 at all. The guard checks THE ACTUAL OUTCOME THAT WOULD BE PUBLISHED -- the chosen draw, its anchor block,
 every attached group -- immediately before it is written, and can only REMOVE room membership: it never
@@ -47,7 +47,7 @@ WHAT v2 MEASURES, on the candidate's ROOM (component 0, supported cameras: >= 30
      bootstrap interval excludes 1, otherwise attached and `uncertified`. A plateau with < 10 ratios, an
      unmeasured stretch, and a run of >= 3 consecutive measured cameras each beyond the clear boundary
      (below 0.75 or above 1.333) on one side (an excursion, which the running median swallows) stay
-     attached and `uncertified`: an unmeasured independent piece never gets a room claim.
+     attached and `uncertified`: the record does not certify an unmeasured piece's scale.
   5. POSES, recorded for the audit only (`applied: false`): with metres per unit = exp(-reference), over the
      room's cameras in capture order, a consecutive pair (<= 3 journal indices, <= 2 s) is a HARD step when
      it moves more than max(allowance + 0.5 m, 2 x allowance), allowance = 2.0 m/s x dt + 0.3 m, or more
@@ -71,28 +71,8 @@ journal indices, ratio count, median ratio, bootstrap interval, class and decisi
 warnings, and the timing -- so a scorer can see which segments were isolated and why. No ratio or metric
 figure ever reaches the components record or the phone (contract §2.4 rule 6).
 
-HISTORY, v1 (`assess`, `plateaus`, `_scale_round`; run only by tests, never at the seam). v1 differed from
-v2 as follows, and the numbers in this list describe v1 only:
-  * on an ungated solve the guard ran the same depth stage as the gate (whose predictions are cached and
-    handed to the surface, which would otherwise make them after publish);
-  * a plateau was kept when its median ratio to the reference was inside [0.8, 1.25]; below 0.75 or above
-    1.333 (the CLEAR boundary) it was isolated `final-scale-outlier`; in the borderline bands between it
-    was isolated `final-scale-uncertified` -- borderline is never described as a measured gross error,
-    whatever its deterministic bootstrap interval says (recorded);
-  * a stretch of plateaus with < 10 ratios each was kept only when it sat inside the band and a certified
-    plateau of the same group bounded it on BOTH sides (it inherited their certificate, recorded as
-    `inherited`); otherwise it was isolated `final-scale-uncertified`. Cameras with no ratio inside a
-    certified plateau were kept with it, the same inheritance. A camera without a ratio joined the plateau
-    of the nearest measured camera before it, so a class was carried across an arbitrarily long
-    unmeasured tail;
-  * an excursion (the same >= 3 cameras beyond the clear boundary) inside a kept plateau was isolated of
-    its own, `final-scale-uncertified` when it had < 10 ratios;
-  * the pose screen was applied: a camera with two or more defects or a non-finite pose was quarantined, the
-    room was cut at hard steps, a run rejoined an earlier one when the step between them would not have
-    been hard, the run cluster with the most cameras was the room, and every other cluster was isolated
-    `final-pose-outlier`, each its own piece;
-  * if the remaining room had fewer than 10 ratios nothing was certified and the candidate was WITHHELD:
-    no depth, too few ratios or a failed gate withheld.
+The v1 `assess`, `plateaus` and `_scale_round` functions remain for their direct tests. The publish seam
+calls `assess_v2`.
 """
 
 from __future__ import annotations
@@ -852,7 +832,7 @@ def room_cameras(solution, keyframes, name_of: dict, *, groups_of: dict | None =
             continue
         # A supported room pose with a missing or malformed rotation or translation, or no image name, is
         # NOT skipped: skipped, it would stay in the published room unassessed. It enters as a non-finite
-        # camera, which the pose screen quarantines (`final-pose-outlier`).
+        # camera, so the pose screen records the defect in the audit. v2 does not isolate on pose.
         R = _array_or_nan(p.get("rotation"), (3, 3))
         tvec = _array_or_nan(p.get("translation"), (3,))
         name = name_of.get(kid)

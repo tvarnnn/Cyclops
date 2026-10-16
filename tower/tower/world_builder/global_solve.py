@@ -1241,8 +1241,10 @@ def solve(
     features, matched pairs), so a re-solve pays only for new keyframes.
 
     Keyword options. `capture_dirs`: directories searched for the raw capture frame of a
-    keyframe by name (`_source_frame`). `final`: this is the final solve of the session, the
-    only one the masks, seed, revisit import, frozen matching, gate and guard apply to.
+    keyframe by name (`_source_frame`). `final`: this is the final solve of the session;
+    settings enable masks, seed and gate only for it, while explicit options can enable
+    masks, seed or gate on another solve. Revisit import, frozen matching and the guard
+    require a final solve.
     `num_threads`: threads for extraction and matching (None = -1, every core); the mapper
     uses 1 when the solve is seeded. `min_image_observations`: the support floor.
     `overlap`: the sequential matching window. `loop_detection`: None is off, and True still

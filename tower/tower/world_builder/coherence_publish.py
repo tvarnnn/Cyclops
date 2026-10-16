@@ -31,7 +31,8 @@ anchor-verification call (`anchor_verified`), the re-gate in place (`regate_publ
 After `write_solution`:
 
   5. `solve/<session>/components.json` (contract `WORLD-BUILDER-COMPONENTS.md` §2, the record shape
-     `components.read_components_record` reads), written ONCE per published solve.
+     `components.read_components_record` reads). The final guard writes it before the solution; the
+     after-publish step writes the same record again after the solution is published.
   6. THE SURFACE REUSES THE DEPTH. `dense/<session>/align.json` is stamped with the published solve's
      `input_digest` and cache key and cut to the room's keyframes, so the final surface
      (`surfacify` with `SurfaceParams(depth_known_fov=True)`) finds it current and predicts nothing. The
@@ -1364,8 +1365,10 @@ def gate_by_consensus(store, world_id: str, session_id: str, solution, *, plan: 
 def after_publish(store, world_id: str, session_id: str, workspace_root, solution,
                   result: GateResult | None) -> dict:
     """Steps 5-6, after `write_solution` published `solution`. Never raises. Without a result (no gate and
-    no guard: a background solve) a previous components record is moved aside; with one, the record is
-    written once and the depth is handed to the surface. A previous `consensus.json` is moved aside
+    no guard: a background solve) or without a components document, a previous components record is moved
+    aside; with a components document, it is written after publication. A result's depth is handed to the
+    surface. The final guard already wrote its components record before publication. A previous
+    `consensus.json` is moved aside
     whenever this solve has no per-draw detail to write in its place."""
     out: dict = {}
     try:
