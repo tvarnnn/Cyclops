@@ -1,17 +1,18 @@
 """FOW v1.2 photo floor plan transport (wire: mail 303, tower/docs/contracts/
 WORLD-BUILDER-GUIDANCE-IMAGERY.md "Photo floor plan v1.2").
 
-Registered by `main.py` only when TOWER_WORLD_PHOTO_FLOORPLAN is exactly `on` (with
-TOWER_WORLD_GUIDANCE_COVERAGE=on); every handler re-checks the switch and answers 404
-when it is off. Both URL identifiers are untrusted and must name one contained world
-and one of its sessions. The manifest is <= 8 KiB; a tile is served only while its
+Always registered by `main.py`; a photo plan exists only for a coverage landing, so
+every handler answers 404 unless TOWER_WORLD_GUIDANCE_COVERAGE is exactly `on`. Both
+URL identifiers are untrusted and must name one contained world and one of its
+sessions. The manifest is <= 8 KiB; a tile is served only while its
 digest belongs to the CURRENT landing (a superseded or unknown digest is 404).
 """
+
+import os
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import Response
 
-from tower.config import world_photo_floorplan_setting
 from tower.results.world_builder_appearance import NO_STORE_HEADERS
 from tower.results.world_builder_geometry import contained_world_id, store_from_root
 from tower.world_builder.guidance_imagery import contained_session_id
@@ -34,7 +35,7 @@ _MANIFEST_WAIT_S = 1.6
 
 def _root(request):
     root = getattr(request.app.state, "world_root", None)
-    if root is None or not world_photo_floorplan_setting():
+    if root is None or os.environ.get("TOWER_WORLD_GUIDANCE_COVERAGE") != "on":
         raise HTTPException(404, "photo floor plan is off or unavailable",
                             headers=NO_STORE_HEADERS)
     return root

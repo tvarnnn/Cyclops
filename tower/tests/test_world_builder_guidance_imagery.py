@@ -60,9 +60,8 @@ def fake(monkeypatch, tmp_path):
     return state
 
 
-def _client(monkeypatch, *, landed=False):
-    monkeypatch.setenv("TOWER_WORLD_GUIDANCE_IMAGERY_LANDED", "on" if landed else "off")
-    monkeypatch.setenv("TOWER_WORLD_GUIDANCE_COVERAGE", "on")
+def _client(monkeypatch, *, coverage=True):
+    monkeypatch.setenv("TOWER_WORLD_GUIDANCE_COVERAGE", "on" if coverage else "off")
     app = FastAPI()
     app.state.world_root = "synthetic-root"
     app.include_router(route.router)
@@ -86,7 +85,7 @@ def test_b1_live_fixture_redacted_digest_caps_and_break(fake, monkeypatch):
 
     monkeypatch.setattr(imagery, "keyframe_image_bytes", boundary)
     monkeypatch.setenv("TOWER_WORLD_RAW_IMAGERY_WORLDS", "home")
-    client = _client(monkeypatch)
+    client = _client(monkeypatch, coverage=False)
     class GuardedEnvironment(dict):
         def get(self, key, default=None):
             assert key != "TOWER_WORLD_RAW_IMAGERY_WORLDS"
@@ -110,7 +109,7 @@ def test_b1_live_fixture_redacted_digest_caps_and_break(fake, monkeypatch):
     assert entry["component_reference_segment"] is None
     assert entry["segment_index"] == 812
     assert entry["redaction"] == "redacted"
-    assert "landed" not in first.json()
+    assert "landed" not in first.json()  # B2 needs coverage
     assert calls == ["redacted"]  # raw allowlist was present but not consulted
     tile = client.get(path + "/tile/" + entry["digest"])
     assert tile.status_code == 200
@@ -127,7 +126,7 @@ def test_b1_live_fixture_redacted_digest_caps_and_break(fake, monkeypatch):
 
 def test_landed_is_null_before_a_landing_and_bad_digests_404(fake, monkeypatch):
     monkeypatch.setattr(imagery, "_tile", lambda *args: _jpeg())
-    client = _client(monkeypatch, landed=True)
+    client = _client(monkeypatch)
     path = "/worlds/home/guidance/s9/imagery"
     assert client.get(path + "/manifest").json()["landed"] is None
     assert client.get(path + "/tile/" + "a" * 64).status_code == 404
@@ -153,7 +152,6 @@ def test_session_path_is_contained(tmp_path):
 
 
 def test_real_app_always_registers_imagery(monkeypatch):
-    monkeypatch.delenv("TOWER_WORLD_GUIDANCE_IMAGERY_LANDED", raising=False)
     from tower.main import create_app
     paths = create_app().openapi()["paths"]
     prefix = "/worlds/{world_id}/guidance/{session_id}/imagery/"
@@ -264,7 +262,7 @@ def test_b2_wire_tile_and_404(fake, monkeypatch):
     fake.publish_landed("root", "home", "s9",
                         {"solved_at": 1791240313.0, "geometry_revision": "g-stop-984",
                          "frame_revision": 1}, [("s9:120", 0)])
-    client = _client(monkeypatch, landed=True)
+    client = _client(monkeypatch)
     path = "/worlds/home/guidance/s9/imagery"
     response = client.get(path + "/manifest")
     assert response.status_code == 200
@@ -319,7 +317,7 @@ def test_b2_manifest_waits_for_pending_landing_by_next_push(fake, monkeypatch):
         fake.publish_landed("root", "home", "s9", block, [("s9:120", 0)])
         fake.finish_landed("home", "s9")
 
-    client = _client(monkeypatch, landed=True)
+    client = _client(monkeypatch)
     thread = threading.Thread(target=finish)
     thread.start()
     response = client.get("/worlds/home/guidance/s9/imagery/manifest")
@@ -349,12 +347,11 @@ def test_b2_candidates_share_coverages_accepted_solve_placement():
 
 
 def test_b2_worker_does_not_redate_on_rebuild(monkeypatch, tmp_path):
-    monkeypatch.setenv("TOWER_WORLD_GUIDANCE_IMAGERY_LANDED", "on")
     calls = []
     published = []
 
     def compute(root, world, session, expected, revision, clock, tag, budget, *, eligible_out=None,
-                dial_out=None):
+                dial_out=None, tree_out=None):
         calls.append(expected[0])
         if eligible_out is not None:
             eligible_out.append(("s9:120", 0))

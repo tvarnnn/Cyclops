@@ -1,4 +1,4 @@
-"""FOW v1.2 photo floor plan, Phase B: switch, side worker, identity/dating, routes, caps.
+"""FOW v1.2 photo floor plan, Phase B: coverage gate, side worker, identity/dating, routes, caps.
 
 Wire: mail 303 / tower/docs/contracts/WORLD-BUILDER-GUIDANCE-IMAGERY.md
 "Photo floor plan v1.2".
@@ -22,10 +22,8 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from PIL import Image
 
-from tower import config
 from tower.results import world_builder_photo_floorplan as route
 from tower.results.world_builder import WorldBuilderStatusProducer
-from tower.world_builder import guidance_coverage as coverage_module
 from tower.world_builder import photo_floorplan_worker as pfw
 from tower.world_builder.photo_floorplan import encode_tile, padded_square_bounds
 from tests.test_world_builder_guidance_coverage import _inputs, _landed_tree
@@ -45,30 +43,31 @@ def _wait(predicate, timeout=5.0):
 
 def _on(monkeypatch):
     monkeypatch.setenv("TOWER_WORLD_GUIDANCE_COVERAGE", "on")
-    monkeypatch.setenv("TOWER_WORLD_PHOTO_FLOORPLAN", "on")
 
 
 # ---------------------------------------------------------------------------
-# switch
+# coverage gate
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("value", [None, "", "off", "1", "true", "yes", "ON", " on"])
-def test_only_exactly_on_enables_the_photo_floorplan(monkeypatch, value):
-    monkeypatch.setenv("TOWER_WORLD_GUIDANCE_COVERAGE", "on")
-    if value is None:
-        monkeypatch.delenv("TOWER_WORLD_PHOTO_FLOORPLAN", raising=False)
+@pytest.mark.parametrize("coverage", [None, "off", "1"])
+def test_the_photo_floorplan_needs_coverage_on(monkeypatch, tmp_path, coverage):
+    """A photo plan exists only for a coverage landing: with coverage off there is no
+    coverage worker (so no photo worker) and both routes answer 404."""
+    if coverage is None:
+        monkeypatch.delenv("TOWER_WORLD_GUIDANCE_COVERAGE", raising=False)
     else:
-        monkeypatch.setenv("TOWER_WORLD_PHOTO_FLOORPLAN", value)
-    assert config.world_photo_floorplan_setting() is False
-
-
-def test_the_photo_floorplan_needs_coverage_on(monkeypatch):
-    monkeypatch.setenv("TOWER_WORLD_PHOTO_FLOORPLAN", "on")
-    monkeypatch.setenv("TOWER_WORLD_GUIDANCE_COVERAGE", "off")
-    assert config.world_photo_floorplan_setting() is False
+        monkeypatch.setenv("TOWER_WORLD_GUIDANCE_COVERAGE", coverage)
+    root = tmp_path / "worlds"
+    _landed_tree(root, _inputs())
+    producer = WorldBuilderStatusProducer(root, lambda: 1000.12)
+    assert producer._coverage_worker is None
+    client = _client(root)
+    base = f"/worlds/{WORLD}/guidance/{SESSION}/photo-floorplan"
+    assert client.get(base + "/manifest").status_code == 404
+    assert client.get(base + "/tile/" + "a" * 64).status_code == 404
     monkeypatch.setenv("TOWER_WORLD_GUIDANCE_COVERAGE", "on")
-    assert config.world_photo_floorplan_setting() is True
+    assert client.get(base + "/manifest").status_code == 200
 
 
 @pytest.mark.parametrize("value", [None, "homography", "depth", "moge"])
@@ -104,61 +103,6 @@ def test_the_worker_always_builds_the_homography_raster(monkeypatch, tmp_path, c
     assert landed == expected and landed["components"][0]["projected_keyframes"] > 0
     line = next(r.getMessage() for r in caplog.records if "components=" in r.getMessage())
     assert " method=homography " in line
-
-
-def test_off_starts_no_photo_worker_and_reads_no_extra_tree(monkeypatch, tmp_path):
-    """Identical behaviour OFF: coverage computes exactly as before (no `tree_out`),
-    no photo worker or thread exists, and no photo state is touched."""
-    monkeypatch.setenv("TOWER_WORLD_GUIDANCE_COVERAGE", "on")
-    monkeypatch.setenv("TOWER_WORLD_PHOTO_FLOORPLAN", "off")
-    monkeypatch.delenv("TOWER_WORLD_GUIDANCE_IMAGERY_LANDED", raising=False)
-    root = tmp_path / "worlds"
-    world, session, _ = _landed_tree(root, _inputs())
-    seen = []
-    original = coverage_module.compute_from_tree
-
-    def spy(*args, **kwargs):
-        seen.append(sorted(kwargs))
-        return original(*args, **kwargs)
-
-    monkeypatch.setattr(coverage_module, "compute_from_tree", spy)
-    photo_threads = lambda: sum(1 for t in threading.enumerate()  # noqa: E731
-                                if t.name == "world-photo-floorplan")
-    before = photo_threads()
-    producer = WorldBuilderStatusProducer(root, lambda: 1000.12)
-    try:
-        producer.snapshot(world, session)
-        worker = producer._coverage_worker
-        assert worker._photo_worker is None
-        assert _wait(lambda: producer.snapshot(world, session).payload["guidance"]["coverage"])
-        assert seen and all("tree_out" not in kw and "eligible_out" not in kw for kw in seen)
-        assert photo_threads() <= before
-        assert pfw.state_for(root).landed(world, session) is None
-    finally:
-        producer.shutdown_guidance()
-
-
-def test_off_routes_answer_404(monkeypatch, tmp_path):
-    monkeypatch.setenv("TOWER_WORLD_GUIDANCE_COVERAGE", "on")
-    monkeypatch.setenv("TOWER_WORLD_PHOTO_FLOORPLAN", "off")
-    root = tmp_path / "worlds"
-    _landed_tree(root, _inputs())
-    client = _client(root)
-    base = f"/worlds/{WORLD}/guidance/{SESSION}/photo-floorplan"
-    assert client.get(base + "/manifest").status_code == 404
-    assert client.get(base + "/tile/" + "a" * 64).status_code == 404
-
-
-@pytest.mark.parametrize("photo,coverage", [(None, "on"), ("off", "on"), ("1", "on"), ("on", "off")])
-def test_real_app_does_not_register_the_routes_when_off(monkeypatch, photo, coverage):
-    monkeypatch.setenv("TOWER_WORLD_GUIDANCE_COVERAGE", coverage)
-    if photo is None:
-        monkeypatch.delenv("TOWER_WORLD_PHOTO_FLOORPLAN", raising=False)
-    else:
-        monkeypatch.setenv("TOWER_WORLD_PHOTO_FLOORPLAN", photo)
-    from tower.main import create_app
-    paths = create_app().openapi()["paths"]
-    assert not any("/photo-floorplan/" in path for path in paths)
 
 
 def test_real_app_registers_the_routes_when_on(monkeypatch):

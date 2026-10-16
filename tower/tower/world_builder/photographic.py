@@ -2,33 +2,30 @@
 
 WHY A SECOND QUESTION EXISTS BESIDE "IS A BUILD RUNNING".
 
-The serving path used to ask exactly one present-tense question -- *is a
-photographic stage running right now?* -- and answer the wearer's question
-from it: running means "Improving", not running means "Saved". That is the
-wrong question, and the Mac/iOS validation of 2026-09-22 caught it being
-wrong in three different ways at once (§7, T2/T3/T4):
+Answering the wearer's question from one present-tense question -- *is a
+photographic stage running right now?*, running meaning "Improving" and not
+running meaning "Saved" -- is wrong in three different ways:
 
-  * **T2, the flicker.** "Running" is false in the gaps BETWEEN stages. The
+  * **The flicker.** "Running" is false in the gaps BETWEEN stages. The
     builder releases the world lock, assembles a report, imports the
     reconstruction stack, and only then writes the surface's first
     `running` status; and between the surface's `ok` and the appearance's
-    first `running` status. Both gaps are SHORT -- measured, the second is sub-millisecond,
-    not the "tens of seconds" an earlier draft of this claimed -- and
-    that changes nothing: a 2 Hz poll lands in them, and a builder that
-    dies in either window leaves a world that reads finished for ever. For those polls the
-    Tower said ready and the phone said **Saved**, then went back to
-    Improving. A wearer told to wait for "Saved" can be told it twice.
+    first `running` status. Both gaps are SHORT -- measured, the second is
+    sub-millisecond -- and that changes nothing: a 2 Hz poll lands in them,
+    and a builder that dies in either window leaves a world that reads
+    finished for ever. For those polls the Tower says ready and the phone
+    says **Saved**, then goes back to Improving. A wearer told to wait for
+    "Saved" can be told it twice.
 
-  * **T3, the false success.** A stage that FAILED, or was stopped, or was
-    never attempted, is also not running. All of them read "Saved" too, so
-    "the photographic build failed" was indistinguishable from "the
+  * **The false success.** A stage that FAILED, or was stopped, or was
+    never attempted, is also not running. All of them would read "Saved",
+    so "the photographic build failed" would be indistinguishable from "the
     photographic room is ready".
 
-  * **T4, failing open.** When the probe itself broke, the code carefully
-    computed a reason, put it in `build_in_progress_unavailable_reason`,
-    and left `state` at ready -- and the contract says iOS does not read
-    that field (`WORLD-BUILDER-IOS.md` §2.4, "Not consumed"). A broken
-    probe rendered as **Saved**.
+  * **Failing open.** When the probe itself breaks, a reason put in
+    `build_in_progress_unavailable_reason` with `state` left at ready still
+    renders as **Saved**: the contract says iOS does not read that field
+    (`WORLD-BUILDER-IOS.md` §2.4, "Not consumed").
 
 All three are the same mistake. "A process is working this millisecond" is
 a fact about a PROCESS; "this world is finished" is a fact about the WORLD.
@@ -46,24 +43,21 @@ is deliberate: the tool that BUILDS the missing work and the channel that
 REPORTS it must not be able to disagree about which worlds are missing it.
 
 THE HISTORICAL WORLDS ARE THE HARD PART, and the reason this is not simply
-"anything without an appearance is unfinished". There are 166 worlds on the
-machine this was written for, and 69 of their 70 sessions were built by a
-Tower that had no photographic stages at all. They are not broken, they are
-not owed anything, and relabelling them would turn one honest bug report
-into sixty-nine false ones.
+"anything without an appearance is unfinished". Measured on a machine with
+166 worlds: 69 of their 70 sessions were built by a Tower that had no
+photographic stages at all. They are not broken, they are not owed
+anything, and relabelling them would turn one honest bug report into
+sixty-nine false ones.
 
-MEASURED, because an earlier version of this paragraph guessed and was
-wrong: of those 70 sessions, **67 reach `UNATTEMPTED`** (they predate the
+Of those 70 sessions, **67 reach `UNATTEMPTED`** (they predate the
 finalization record, so they have no completed global solve to build from)
 and **2 reach `NEVER_RECORDED`**; the 1 remaining is the recovered world,
-`COMPLETE`. Both of the first two words are settled and map to ready exactly
-as before -- which is why no old world changes a word -- but they are not
-the same word, and the next person to edit either mapping should be
-reasoning from the real numbers rather than from this comment's first
-draft.
+`COMPLETE`. Both of the first two words are settled and map to ready --
+which is why no old world changes a word -- but they are not the same word,
+and anyone editing either mapping should reason from these numbers.
 
 The distinction is sound in both directions because of an ordering the
-builder now guarantees: `world_build_session.py` records the surface stage
+builder guarantees: `world_build_session.py` records the surface stage
 BEFORE it releases the world lock, so a world built by current code has a
 `stages` block from the first instant there is anything to be wrong about.
 Absent means old, not "new and early".
@@ -112,8 +106,8 @@ PHOTOGRAPHIC_FAILED = "failed"
 PHOTOGRAPHIC_UNATTEMPTED = "unattempted"
 # A world from before the photographic stages existed. Saved, and honest.
 PHOTOGRAPHIC_NEVER_RECORDED = "never_recorded"
-# The probe broke. NOT the same as "nothing is owed", and the entire point
-# of T4 is that it must never be collapsed into one.
+# The probe broke. NOT the same as "nothing is owed", and it must never be
+# collapsed into "nothing is owed".
 PHOTOGRAPHIC_UNOBSERVABLE = "unobservable"
 
 PHOTOGRAPHIC_STATES = (
@@ -128,8 +122,8 @@ PHOTOGRAPHIC_STATES = (
 
 # The words that mean "this session is not finished with the photographic
 # stages, and something should still happen". A world in one of these is
-# never `ready`, whatever any present-tense probe says -- that is the T2
-# fix, and it is a property of the SET rather than of any one call site.
+# never `ready`, whatever any present-tense probe says: a property of the
+# SET rather than of any one call site.
 UNSETTLED_STATES = (
     PHOTOGRAPHIC_RUNNING,
     PHOTOGRAPHIC_OWED,
@@ -148,10 +142,10 @@ class _Unobservable(Exception):
 
 # WHY A PROBE FAILED, IN THE LOG, ONCE PER DISTINCT REASON. `unobservable`
 # holds a world on "Finishing" for as long as the probe keeps failing, and
-# the block a client sees carries only the exception's type -- so without
-# this the only evidence of WHY was in no log at all (review, 2026-09-23).
-# Bounded like `results.world_builder._warn_probe_failure`, which this
-# module cannot import: a 2 Hz poll must not become a log flood or a leak.
+# the block a client sees carries only the exception's type, so the reason
+# is logged here. Bounded at 64 like `results.world_builder._warn_probe_failure`,
+# which this module cannot import: a 2 Hz poll must not become a log flood or
+# a leak.
 _UNOBSERVABLE_SEEN: set = set()
 
 
@@ -183,11 +177,10 @@ def _appearance_is_expected(session) -> bool:
 
     * `never-stopped` -- a walk still in progress, or a builder that died
       mid-walk. The photographic stages are not what it is missing, and
-      `world_finalize.py` is the tool for the second shape. Added after a
-      reviewer found a session with a `session_stopped` journal event and
-      `ended_at: null` -- a crash between the two writes -- reading `owed`
-      on one surface and `interrupted` on the other, with the finisher
-      silent.
+      `world_finalize.py` is the tool for the second shape. That includes a
+      session with a `session_stopped` journal event and `ended_at: null`
+      (a crash between the two writes), which must not read `owed` on one
+      surface and `interrupted` on the other with the finisher silent.
     * `not-finalized` / `no-final-solve` -- `final_surface_stages` refuses
       without a solve and records `unavailable`. Queuing it would be asking
       for work that is defined not to happen.
@@ -210,8 +203,8 @@ def _live_stage(store, world_id, session_id):
     to one question is how they come to disagree, so there is one.
 
     Raises `_Unobservable` rather than returning False when it cannot tell.
-    Returning False would be the T4 bug: a broken probe asserting that
-    nothing is running.
+    Returning False would fail open: a broken probe asserting that nothing
+    is running.
     """
     try:
         # Imported at call time, like every other consumer in the serving
@@ -255,9 +248,9 @@ def _interrupted_stage_on_disk(store, world_id, session_id):
     The second signal, for sessions with no stage record. It cannot widen
     the net onto historical worlds: `<world>/<stage>/<session>/status.json`
     is written by the pipelines and by nothing else, so a Tower that never
-    ran a photographic stage cannot have left one behind. Measured when
-    this was written: 166 worlds on the machine, ONE with a `surface/`
-    directory, and it was the interrupted one.
+    ran a photographic stage cannot have left one behind. Measured on a
+    machine with 166 worlds: ONE had a `surface/` directory, and it was the
+    interrupted one.
     """
     from tower.storage import read_json_closed  # noqa: PLC0415
 
@@ -275,11 +268,11 @@ def _interrupted_stage_on_disk(store, world_id, session_id):
             return stage
         if state == STAGE_STATE_RUNNING:
             # Imported ONLY when there is a `running` status to judge. At the
-            # top of this function, a `surface_pipeline` that failed to import
-            # -- it has happened, when another lane broke `surface.py` at
-            # import -- turned EVERY historical world `unobservable`, which is
-            # "Finishing" on the phone, with no log line (review, 2026-09-23).
-            # The historical world has no status file and never reaches here.
+            # top of this function, a `surface_pipeline` that fails to import
+            # (a broken `surface.py`) would turn EVERY historical world
+            # `unobservable`, which is "Finishing" on the phone, with no log
+            # line. The historical world has no status file and never
+            # reaches here.
             from tower.world_builder.surface_pipeline import (  # noqa: PLC0415
                 status_is_stale,
             )
@@ -293,14 +286,12 @@ def _liveness(store, world_id, session_id, stage_hint):
     """`RUNNING`, `OWED` or `UNOBSERVABLE` for a stage that has not settled.
 
     Consulted ONLY where it can change the answer -- which is the whole
-    reason this is a separate function. An earlier draft asked liveness
-    first, for every session, and a reviewer pointed out what that does
-    when the probe itself is broken: all 165 historical worlds on this
-    machine would have gone `UNOBSERVABLE` at once, and a conservative
-    mapping would then have parked every one of them on "Improving"
-    forever. The brief forbids that as explicitly as it forbids the false
-    "Saved", and both failures come from asking a question whose answer
-    does not matter here.
+    reason this is a separate function. Asked first, for every session,
+    a broken probe would turn every historical world `UNOBSERVABLE` at
+    once (165 on the 166-world machine), and a conservative mapping would
+    then park every one of them on "Improving" forever. That is as wrong
+    as the false "Saved", and both failures come from asking a question
+    whose answer does not matter here.
 
     So the probe is asked exactly when the RECORD is ambiguous: a stage
     that is `running` or `stopped` is either being worked on right now or
@@ -310,9 +301,8 @@ def _liveness(store, world_id, session_id, stage_hint):
         live = _live_stage(store, world_id, session_id)
     except _Unobservable as exc:
         # THE PROBE BROKE, on a session that demonstrably has an unfinished
-        # photographic stage. "Nothing is running" would be the T4 claim,
-        # asserted on no evidence, and it is the one answer that renders as
-        # "Saved".
+        # photographic stage. "Nothing is running" would fail open, asserted
+        # on no evidence, and it is the one answer that renders as "Saved".
         _warn_unobservable(f"{world_id}/{session_id}: {exc}", exc.__cause__ or exc)
         return {
             "state": PHOTOGRAPHIC_UNOBSERVABLE,
@@ -339,7 +329,7 @@ def photographic_state(store, world_id: str, session_id: str, session) -> dict:
     """Does this world still owe photographic work -- the ROOM AND ITS AREAS.
 
     The block the listing row and the status channel's `lifecycle.photographic`
-    both carry (WORLD-BUILDER-COMPONENTS.md §3.4, C1 E3). For a session with no
+    both carry (WORLD-BUILDER-COMPONENTS.md §3.4). For a session with no
     components record -- every session built before the evidence gate, and every
     session of a Tower with it switched off -- this IS `room_photographic_state`,
     byte for byte: no `scope`, no area probe beyond one `stat` of the record.
@@ -398,9 +388,8 @@ def room_photographic_state(store, world_id: str, session_id: str, session) -> d
 
         # FAILED BEATS OWED. A stage that ran and raised is not going to be
         # fixed by waiting, and telling a wearer to wait is what "Improving"
-        # does. This is the half of T3 that matters most: before it, a
-        # failed photographic build was indistinguishable from a finished
-        # one.
+        # does. Without this a failed photographic build is
+        # indistinguishable from a finished one.
         for stage in PHOTOGRAPHIC_STAGES:
             entry = _stage_entry(session, stage)
             if entry.get("state") == STAGE_STATE_FAILED:
@@ -416,22 +405,20 @@ def room_photographic_state(store, world_id: str, session_id: str, session) -> d
         for stage in PHOTOGRAPHIC_STAGES:
             entry = _stage_entry(session, stage)
             if entry.get("state") in _INTERRUPTED_RECORD_STATES:
-                # OWED IS A PROMISE, AND ONLY ONE THING KEEPS IT. Saying
-                # `owed` puts the phone on "Improving", and the only process
-                # that ever makes that stop being true is
-                # `scripts/world_finish_pending.py` -- which decides what to
-                # pick up with its own `assess()`, and refuses a session
-                # whose finalization is incomplete (`not-finalized`) or
-                # whose global solve did not succeed (`no-final-solve`): a
-                # surface needs a solve and there is none.
-                #
-                # So an interrupted stage record on such a session must not
-                # be read as owed. It would be a world that says "Improving"
-                # FOREVER, which is the same failure as the false "Saved"
-                # arrived at from the other side, and the brief forbids both.
-                # The two judgements are kept in agreement here, by
-                # construction, rather than by both being edited the same
-                # way on some later day.
+                # OWED IS A PROMISE, AND ONLY ONE THING KEEPS IT. `owed` puts
+                # the phone on "Improving", and only
+                # `scripts/world_finish_pending.py` ends that; its `assess()`
+                # refuses a session whose finalization is incomplete
+                # (`not-finalized`) or whose global solve did not succeed
+                # (`no-final-solve`): a surface needs a solve and there is
+                # none. So an interrupted record on such a session is
+                # `unattempted`, not owed -- it would otherwise say
+                # "Improving" FOREVER, the false "Saved" from the other side.
+                # `_appearance_is_expected` MIRRORS `assess()`'s refusals; it
+                # is separate code, so the two must be edited together. One
+                # difference: `assess()` lets a `no-final-solve` row through
+                # when `stale_final_solve` finds a published consensus solve
+                # under it, and `_appearance_is_expected` does not.
                 if not _appearance_is_expected(session):
                     return {
                         "state": PHOTOGRAPHIC_UNATTEMPTED,
@@ -448,13 +435,12 @@ def room_photographic_state(store, world_id: str, session_id: str, session) -> d
                 return _liveness(store, world_id, session_id, stage)
 
         # `unavailable` IS TWO DIFFERENT FACTS AND `attempted` TELLS THEM
-        # APART. An adversarial review caught the first version of this
-        # module filing both under "nothing is wrong and nothing is coming",
-        # which is T3 re-entering through a word the vocabulary did not
-        # enumerate. The pipelines write `unavailable` for a stage that was
-        # never asked for -- the appearance switched off, no solve to build
-        # from, the surface not `ok` -- with `attempted: False`; and for a
-        # stage that RAN and could not produce -- an ASTC encode that
+        # APART. Filing both under "nothing is wrong and nothing is coming"
+        # would let the false success back in through a word the vocabulary
+        # does not enumerate. The pipelines write `unavailable` for a stage
+        # that was never asked for -- the appearance switched off, no solve
+        # to build from, the surface not `ok` -- with `attempted: False`; and
+        # for a stage that RAN and could not produce -- an ASTC encode that
         # returned the wrong byte count, a WebP encode that failed, open3d
         # missing, a surface artifact shorter than its header -- with
         # `attempted: True`. The second is a photographic build that broke,
@@ -492,10 +478,10 @@ def room_photographic_state(store, world_id: str, session_id: str, session) -> d
             ),
         }
 
-    # NO RECORD. Either a world from before the stages existed, or the
-    # 2026-09-22 shape: a session interrupted by a Tower that wrote a
-    # `status.json` and was shut down before it could write a record. The
-    # second signal exists for that one world, and cannot widen the net --
+    # NO RECORD. Either a world from before the stages existed, or a
+    # session interrupted by a Tower that wrote a `status.json` and was shut
+    # down before it could write a record. The second signal exists for that
+    # shape, and cannot widen the net --
     # `<world>/<stage>/<session>/status.json` is written by the pipelines
     # and by nothing else.
     try:
@@ -538,8 +524,8 @@ def room_photographic_state(store, world_id: str, session_id: str, session) -> d
         }
 
     # THE HISTORICAL WORLD, and the one that must not move. 165 of the 166
-    # worlds on the machine this was written for land here, and they reach
-    # it without the probe being asked at all.
+    # worlds on the measured machine land here, and they reach it without
+    # the probe being asked at all.
     return {
         "state": PHOTOGRAPHIC_NEVER_RECORDED,
         "stage": None,
@@ -553,7 +539,7 @@ def room_photographic_state(store, world_id: str, session_id: str, session) -> d
 def is_unsettled(state: str) -> bool:
     """Whether this word means the world is not finished being made.
 
-    The single place the T2 rule lives: a world in an unsettled state is
+    The single place the rule lives: a world in an unsettled state is
     never reported ready, whether or not a process happens to be running in
     the instant the poll arrives.
     """

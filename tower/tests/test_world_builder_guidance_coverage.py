@@ -123,7 +123,6 @@ def _status_matrix(root, producer_class=WorldBuilderStatusProducer):
 
 def test_off_exact_bytes_twice_and_one_byte_mutant(tmp_path, monkeypatch):
     monkeypatch.delenv("TOWER_WORLD_GUIDANCE_COVERAGE", raising=False)
-    monkeypatch.delenv("TOWER_WORLD_GUIDANCE_IMAGERY_LANDED", raising=False)
     source = os.environ.get("FOW_BASELINE_SOURCE")
     if source:
         import types
@@ -936,7 +935,7 @@ def test_slow_failed_worker_keeps_previous_receipt_without_blocking_offer(monkey
     from tower.world_builder.guidance_coverage import CoverageWorker
     first = _block()
     calls = []
-    def job(*args):
+    def job(*args, **_imagery):
         calls.append(args)
         if len(calls) == 1:
             return first
@@ -972,7 +971,7 @@ def test_slow_failed_worker_keeps_previous_receipt_without_blocking_offer(monkey
 def test_two_pinned_sessions_do_not_resubmit_completed_landings(monkeypatch, tmp_path):
     from tower.world_builder.guidance_coverage import CoverageWorker
     calls = []
-    def job(root, world, session, *args):
+    def job(root, world, session, *args, **_imagery):
         calls.append(session)
         return _block()
     monkeypatch.setattr(coverage_module, "compute_from_tree", job)

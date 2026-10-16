@@ -5,12 +5,11 @@ to_json_dict / *_from_json_dict, reserved-but-unused fields carried from
 day one so a later need does not require rewriting already-persisted
 records, and confidence stored as a LABEL rather than a score.
 
-Confidence itself is imported from object_memory rather than redefined.
+Confidence itself is imported from tower.confidence rather than redefined.
 Two independently-evolving confidence vocabularies with the same four
 labels is exactly the silent-divergence failure Rule 16 exists to prevent.
 Rule 6 ("modules own their data") governs data, not a shared vocabulary --
-importing a frozen enum is not promoting data to a shared service. Revisit
-a tower/confidence.py only when a third consumer appears.
+importing a frozen enum is not promoting data to a shared service.
 """
 
 import math
@@ -286,12 +285,12 @@ def _check_vector(values, length: int, name: str) -> None:
 # so this is a bound on silent scale error: 1e-3 is 0.1%, below anything
 # the reconstruction can resolve.
 #
-# NOT tighter than that. A first attempt used 1e-6 and rejected real
-# placements read back from disk: a quaternion serialised at five decimal
-# places lands 1.9e-6 off unit, so the bar was tighter than the precision
-# of the data it was judging. A validator that refuses its own valid
-# output is worse than no validator, because it fails silently -- the
-# rows are dropped and the world reads as unregistered.
+# NOT tighter than that. 1e-6 rejects real placements read back from
+# disk: a quaternion serialised at five decimal places lands 1.9e-6 off
+# unit, so that bar is tighter than the precision of the data it judges.
+# A validator that refuses its own valid output is worse than no
+# validator, because it fails silently -- the rows are dropped and the
+# world reads as unregistered.
 QUATERNION_NORM_TOLERANCE = 1e-3
 
 PLACEMENT_REGISTERED = "registered"
@@ -485,12 +484,11 @@ class World:
     updated_at: float
     display_name: str | None = None
     schema_version: int = SCHEMA_VERSION
-    # Monotonic gauge counter. V1 never advances it past 1 -- nothing
-    # performs loop closure, bundle adjustment, or scale estimation. It is
-    # persisted anyway because it is the un-retrofittable half of the
-    # gauge design: a coordinate written without a revision stamp can
-    # never be repaired, since you cannot determine after the fact which
-    # gauge it meant.
+    # Monotonic gauge counter. Nothing advances it past 1 yet (the global
+    # solve writes 1). It is persisted anyway because it is the
+    # un-retrofittable half of the gauge design: a coordinate written
+    # without a revision stamp can never be repaired, since you cannot
+    # determine after the fact which gauge it meant.
     frame_revision: int = 1
     pose_convention: dict = field(default_factory=lambda: dict(POSE_CONVENTION))
     scale: ScaleState = field(default_factory=ScaleState)
@@ -531,11 +529,11 @@ def world_from_json_dict(data: dict) -> World:
 
 
 # How a session's finalization went. Recorded by the builder on the session
-# record after `stop_session`, because until 2026-09-06 nothing on disk could
-# tell "the builder finished", "the builder is still finishing" and "the
-# builder was killed while finishing" apart -- the 09-06 physical walk ended
-# with a lock naming a dead pid, a record with `ended_at: null`, and 463
-# keyframes of usable geometry that the Tower could only call `failed`.
+# record after `stop_session`, so that "the builder finished", "the builder
+# is still finishing" and "the builder was killed while finishing" can be
+# told apart on disk. Without it a physical walk ended with a lock naming a
+# dead pid, a record with `ended_at: null`, and 463 keyframes of usable
+# geometry that the Tower could only call `failed`.
 FINALIZATION_PENDING = "pending"
 FINALIZATION_COMPLETE = "complete"
 FINALIZATION_INTERRUPTED = "interrupted"
@@ -547,16 +545,16 @@ FINALIZATION_STATES = (
 
 # The stages that run AFTER finalization, and how each one went.
 #
-# `finalization` answers "did the builder finish?". It was answering yes
-# several minutes before the world the wearer walked for existed: the builder
+# `finalization` answers "did the builder finish?", and it answers yes
+# several minutes before the world the wearer walked for exists: the builder
 # marks finalization `complete` and releases the world lock in its `finally`,
 # and only THEN runs the surface, the appearance and the dense stages, which
 # take six to eleven minutes on a real walk. The release is deliberate -- the
-# phone reads the world while they build -- but until 2026-09-22 their outcome
-# lived only in a report dict on the child's stdout that nobody persists. A
-# `surfacify()` that raised left a world that was sparse forever, beside a
-# record proudly saying `complete`, with no way for an operator or a client to
-# tell "never attempted" from "failed" from "not applicable".
+# phone reads the world while they build. Without a record of their own, their
+# outcome lives only in a report dict on the child's stdout that nobody
+# persists: a `surfacify()` that raised leaves a world sparse forever, beside
+# a record saying `complete`, with no way for an operator or a client to tell
+# "never attempted" from "failed" from "not applicable".
 #
 # So the stages get their own record. It does NOT move a single call: the
 # sequencing is right, the record was not.
@@ -565,14 +563,10 @@ STAGE_APPEARANCE = "appearance"
 STAGE_DENSE = "dense"
 POST_FINALIZATION_STAGES = (STAGE_SURFACE, STAGE_APPEARANCE, STAGE_DENSE)
 
-# The five words a stage outcome can be. NOT A NEW VOCABULARY: these are the
-# ones `surface_pipeline.py` already writes into every `status.json`, which
-# `dense_pipeline` and `appearance_pipeline` already share, moved here so
-# there is one definition rather than two sets of five strings that agree on
-# the day they were written and drift afterwards -- the same reasoning this
-# module's docstring gives for importing `Confidence` instead of redefining
-# it. `surface_pipeline` re-exports them under its own names, so every
-# existing importer is untouched.
+# The five words a stage outcome can be: the ones `surface_pipeline.py`
+# writes into every `status.json`, which `dense_pipeline` and
+# `appearance_pipeline` share, defined once so that two sets of five strings
+# cannot drift apart. `surface_pipeline` re-exports them under its own names.
 #
 # The definition lives HERE rather than there because this module is the
 # light one: `records` is imported by the store, the engine and the result
@@ -625,19 +619,20 @@ class Session:
     frames_observed: int = 0
     keyframes_accepted: int = 0
     rejected_by_reason: dict = field(default_factory=dict)
-    # This module retains raw imagery, unlike every module shipped so far.
-    # Declared on the record itself, not only on the module descriptor, so
-    # the posture travels with the data.
+    # This module retains raw imagery. Declared on the record itself, not
+    # only on the module descriptor, so the posture travels with the data.
     retains_raw_imagery: bool = True
     privacy_tags: tuple[str, ...] = ("raw-imagery", "first-person")
     # What, if anything, was removed from the imagery before it was
-    # written. "none" is the honest V1 value: no redaction is implemented.
+    # written: the redactor's label (`redaction.FaceRedactor.label`), or
+    # "none" when nothing was -- and "none" from the first keyframe
+    # persisted unredacted onwards, for the rest of the session
+    # (`engine.py`, `_unredacted_keyframes`), so a label is only ever
+    # recorded for a session whose every keyframe went through it.
     #
-    # This field exists now because it is the one genuinely
-    # un-retrofittable part of any future redaction work. Without it, the
-    # day redaction ships there is no way to tell whether an older
-    # session's images were filtered, so every historical session must be
-    # assumed unredacted forever. One string now avoids that permanently.
+    # It is the one un-retrofittable part of redaction: without it there is
+    # no way to tell whether a session's images were filtered, so every
+    # session without it must be assumed unredacted forever.
     redaction: str = "none"
     # The finalization record (see FINALIZATION_*), or None on a record that
     # predates it or whose session never stopped. Additive and optional:
@@ -728,17 +723,17 @@ def session_from_json_dict(data: dict) -> Session:
         retains_raw_imagery=data["retains_raw_imagery"],
         privacy_tags=tuple(data["privacy_tags"]),
         redaction=data["redaction"],
-        # `.get`, deliberately: every record written before 2026-09-06 lacks
-        # the key, and those records are still valid sessions.
+        # `.get`, deliberately: records written before finalization was
+        # recorded lack the key, and those records are still valid sessions.
         finalization=(
             dict(data["finalization"])
             if isinstance(data.get("finalization"), dict)
             else None
         ),
-        # `.get` and an isinstance check, for the same reason: every record
-        # written before 2026-09-22 lacks the key, and those are still valid
-        # sessions. Absent -- or any shape that is not an object -- reads
-        # None, never a state.
+        # `.get` and an isinstance check, for the same reason: records
+        # written before stages were recorded lack the key, and those are
+        # still valid sessions. Absent -- or any shape that is not an object
+        # -- reads None, never a state.
         stages=(
             {
                 stage: dict(entry)
@@ -794,9 +789,8 @@ class Keyframe:
     #
     # Deliberately NOT named r_h. KeyframeEdge.r_h is ORB-SLAM's
     # dimensionless H/(H+F) inlier ratio -- a different quantity, in
-    # different units. Both once shared the name, which would have let a
-    # successor compare them and get a meaningless answer with no error.
-    # Renaming is free now and impossible once data exists.
+    # different units. A shared name would let a successor compare them
+    # and get a meaningless answer with no error.
     homography_residual_px: float | None = None
     quality: Confidence = Confidence.UNKNOWN
     frame_revision: int = 1
@@ -893,10 +887,11 @@ class KeyframeEdge:
     inlier_ratio: float | None = None
     median_parallax_px: float | None = None
     median_parallax_deg: float | None = None
-    # The actual degeneracy discriminator (see Keyframe.r_h for why it is
-    # not r_h): the fraction of correspondences passing recoverPose's
-    # cheirality check. Measured to be near-binary -- ~0.01 when
-    # degenerate, ~1.0 when healthy -- at roughly 0.5 deg median parallax.
+    # The actual degeneracy discriminator (see
+    # Keyframe.homography_residual_px for why it is not r_h): the fraction
+    # of correspondences passing recoverPose's cheirality check. Measured
+    # to be near-binary -- ~0.01 when degenerate, ~1.0 when healthy -- at
+    # roughly 0.5 deg median parallax.
     cheirality_fraction: float | None = None
     r_h: float | None = None
     rotation_dominant: bool | None = None

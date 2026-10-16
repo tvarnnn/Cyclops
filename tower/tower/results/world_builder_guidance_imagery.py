@@ -1,4 +1,4 @@
-"""FOW v1.1 B imagery transport: B1 `live` always, B2 `landed` under its switch."""
+"""FOW v1.1 B imagery transport: B1 `live` always, B2 `landed` when coverage is on."""
 
 import os
 
@@ -17,8 +17,7 @@ router = APIRouter()
 
 def _configuration(request):
     root = getattr(request.app.state, "world_root", None)
-    landed = (os.environ.get("TOWER_WORLD_GUIDANCE_IMAGERY_LANDED") == "on" and
-              os.environ.get("TOWER_WORLD_GUIDANCE_COVERAGE") == "on")
+    landed = os.environ.get("TOWER_WORLD_GUIDANCE_COVERAGE") == "on"
     if root is None:
         raise HTTPException(404, "guidance imagery is off or unavailable",
                             headers=NO_STORE_HEADERS)

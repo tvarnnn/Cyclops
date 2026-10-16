@@ -646,7 +646,6 @@ def _rendered_window(count, step=0.12, width=480, height=360):
         KeyframeInput(
             keyframe_id=f"kf{i}",
             image_gray=cv2.cvtColor(img, cv2.COLOR_BGR2GRAY),
-            image_bgr=img,
         )
         for i, img in enumerate(images)
     ]

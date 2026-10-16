@@ -1,8 +1,8 @@
 """The coherence gate: attach a piece of the final solve to the room only on independent, consistent evidence.
 
-WHY. The target walk (6e6d3fc3) published a bathroom and a bed block glued into the room by feature matches
-on the phone in the wearer's hand, at a wrong tilt, scale and position. With the hand/arm/held-phone masks
-the glue is gone, and what remains is a set of pieces the solver may still have joined on weak evidence.
+WHY. Feature matches on the phone in the wearer's hand can glue pieces into the room (on 6e6d3fc3, a bathroom
+and a bed block) at a wrong tilt, scale and position. With the hand/arm/held-phone masks the glue is gone,
+and what remains is a set of pieces the solver may still have joined on weak evidence.
 This gate decides, per piece, whether the images fix its placement relative to the room; a piece they do
 not fix is published as its own component -- an "area", never drawn inside the room
 (`docs/contracts/WORLD-BUILDER-COMPONENTS.md`).
@@ -13,8 +13,8 @@ THE RULE (generic: no room, landmark or keyframe index enters it). Per solver co
       supported cameras (>= MIN_IMAGE_OBSERVATIONS observations). A link is a verified two-view geometry with
       >= `min_link_inliers` inliers (COLMAP's floor) THAT THE SOLVE HONOURS: its own two-view rotation is
       within `max_link_disagreement_deg` of the solve's relative rotation. A link the solve contradicts is not
-      evidence that the solve placed the pair right (6839fb8f kf 92-98, misplaced 88-113 deg, was held by four
-      UNCALIBRATED 15-18-inlier links the solve contradicted by 34-96 deg).
+      evidence that the solve placed the pair right (on 6839fb8f, kf 92-98, misplaced 88-113 deg, were held by
+      four UNCALIBRATED 15-18-inlier links the solve contradicted by 34-96 deg).
   (b) METRIC SCALE: each group is split in capture order where its per-camera metric level
       (log(z_sfm / z_metric)) steps by more than `scale_step_factor` with >= `scale_min_cameras` cameras on
       each side; segments at one level re-join. One similarity cannot hold a x4 scale step.
@@ -23,15 +23,15 @@ THE RULE (generic: no room, landmark or keyframe index enters it). Per solver co
       metric level agrees with the kept set's.
   (d) MASKS AND METRIC SCALE ARE HARD DEPENDENCIES. If the solve ran without its transient masks
       (`masks_applied=False`), no group is attached at all: every piece outside each component's anchor block is left unplaced with
-      the reason `masks-unavailable` (manager 011). On the run's unmasked arms this fail-safe left 16
-      misplaced and 0 scale-misplaced keyframes attached, against 103 and 10 for the rule with its old
-      seed-stability test. Metric scale likewise: with no camera's ratio available the gate attaches
+      the reason `masks-unavailable`. On the coherence run's unmasked arms this fail-safe left 16
+      misplaced and 0 scale-misplaced keyframes attached, against 103 and 10 for the rule with a
+      seed-stability test instead. Metric scale likewise: with no camera's ratio available the gate attaches
       nothing (reason `scale-unavailable`) -- without its scale tests the rule left 947 misplaced keyframes
       attached over the run's 24 world-arms, against 133 with them.
 
 There is no seed-stability test: the product runs ONE seeded single-thread solve.
 
-THRESHOLDS (evidence: run wb-coherence-run-2026-09-23, experiments P2-GT and P2-LM/gatefix):
+THRESHOLDS (measured on the coherence run):
 `min_link_inliers` 15 is COLMAP's verification floor. `scale_step_factor` 1.25 and `scale_min_cameras` 10
 are the harness's physical plausibility bounds and each the leave-one-world-out choice in 6/7 folds.
 `max_link_disagreement_deg` 16.8 is the KNOWN-GOOD CONTROL's p90 of link-vs-solve rotation disagreement over
@@ -49,7 +49,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass
 
 import numpy as np
 
@@ -63,12 +63,11 @@ REASON_SINGLE_UNCONFIRMED_LINK = "single-unconfirmed-link"
 REASON_SCALE_MISMATCH = "scale-mismatch"
 REASON_LINK_CONTRADICTED = "link-contradicted"
 REASON_SCALE_UNAVAILABLE = "scale-unavailable"
-# The consensus's reason (review V8 H2; manager 019; contract v7, the lead re-admits it): the published draw
-# attached the piece, but fewer than a strict majority of the consensus draws did (mapper seeds on one frozen
-# database), so the evidence placing it is marginal. For such a piece it is the only reason. It is LAST, so the
-# precedence of every reason before it is today's.
+# The consensus's reason: the published draw attached the piece, but fewer than a strict majority of the
+# consensus draws did (mapper seeds on one frozen database), so the evidence placing it is marginal. For such a
+# piece it is the only reason. It is LAST, so it changes the precedence of no reason before it.
 REASON_SEED_UNSTABLE = "seed-unstable"
-# Precedence (review V7, M2; contract v5 §2.2): the link reasons together, then the level.
+# Precedence (contract §2.2): the link reasons together, then the level.
 REASONS = (REASON_MASKS_UNAVAILABLE, REASON_SCALE_UNAVAILABLE, REASON_SOLVED_SEPARATELY, REASON_NO_VERIFIED_LINK,
            REASON_SINGLE_UNCONFIRMED_LINK, REASON_LINK_CONTRADICTED, REASON_SCALE_MISMATCH, REASON_SEED_UNSTABLE)
 
@@ -90,7 +89,7 @@ class GateParams:
     # Cameras with a metric ratio needed on EACH side of a scale comparison.
     scale_min_cameras: int = 10
     # METRIC SCALE COUNTS AS AVAILABLE only when at least this fraction of the supported
-    # cameras has a finite ratio (review V7, H1a). Below it the gate takes its fail-safe
+    # cameras has a finite ratio. Below it the gate takes its fail-safe
     # (`scale-unavailable`) rather than splitting and attaching on the few levels it has.
     # OPEN: 0.5 is a majority rule, not a measured threshold.
     min_metric_fraction: float = 0.5
@@ -115,7 +114,6 @@ class SolveModel:
     obs_image: np.ndarray            # (M,) int
     obs_point: np.ndarray            # (M,) int
     n_points: int
-    meta: dict = field(default_factory=dict)
 
     @property
     def n(self) -> int:
@@ -201,7 +199,7 @@ def read_link_rotations(database_path, camera: dict, min_inliers: int = 15,
 
 
 # ---------------------------------------------------------------------------
-# graph and scale helpers (ported unchanged from the experiment gate, coherence_exp/gate.py)
+# graph and scale helpers
 
 
 def _shared_counts(model: SolveModel):
@@ -286,9 +284,9 @@ def redundant_links(cross: list[tuple[int, int]], adj: list[set], units: list | 
     """`cross` = links (group camera, kept camera). Redundant when two share no image, or share an image and
     their other ends are themselves linked (a closed triangle).
 
-    `units` (the anchor verification's part (i), RUN P4-IV RULE.md section 7; None = today): each link's EVIDENCE
-    UNIT, parallel to `cross`. Two links count together only when they come from DIFFERENT units -- the pairs one
-    relocalizer import created are one unit, so one import is one link however many pairs it wrote."""
+    `units` (the anchor verification's; None = every link is its own unit): each link's EVIDENCE UNIT, parallel
+    to `cross`. Two links count together only when they come from DIFFERENT units -- the pairs one relocalizer
+    import created are one unit, so one import is one link however many pairs it wrote."""
     for i in range(len(cross)):
         for j in range(i + 1, len(cross)):
             if units is not None and units[i] == units[j]:
@@ -415,19 +413,19 @@ def apply_gate(model: SolveModel, links: dict, metric_log: dict, *, link_rotatio
 
     THE CONSENSUS'S HOOKS (`coherence_publish.gate_by_consensus`), no rule of their own. Groups are named by their
     first camera (`groups[*].first_camera` of an earlier call on the same solve, whose groups these are: the
-    groups do not depend on either hook). None or empty, both: today's gate, exactly.
+    groups do not depend on either hook). None or empty, both: the default gate, exactly.
 
-      withhold: groups that are SEALED (review V9, H-1). A withheld group joins no round's kept set, in ANY round
+      withhold: groups that are SEALED. A withheld group joins no round's kept set, in ANY round
         (the room need not be its component's first round), and when its turn as a reference comes nothing joins
         it: it is a piece of its own, and its label's only reason is `seed-unstable`. Sealed both ways, so that
         neither the withheld group nor another piece takes the other's reasons.
-      room: the ALLOW-LIST (review V9, H-1): the groups of the room the withhold is applied to, its anchor
+      room: the ALLOW-LIST: the groups of the room the withhold is applied to, its anchor
         included. In a round whose reference is one of them, only they may join -- so a re-gate with a group
         withheld can never attach a group the room did not hold, whatever the withheld group did to the kept
         set's metric level or to the routes through it. The caller still checks the outcome per keyframe.
 
-    THE ANCHOR VERIFICATION'S HOOKS (`anchor_verify.py`, RUN P4-IV RULE.md sections 1 and 7; only with
-    `TOWER_WORLD_ANCHOR_VERIFY` on). None or empty, both: today's gate, exactly.
+    THE ANCHOR VERIFICATION'S HOOKS (`anchor_verify.py`; only with `TOWER_WORLD_ANCHOR_VERIFY` on). None or
+    empty, both: the default gate, exactly.
 
       seal: {camera name: reason}. SEALED CAMERAS leave the candidate graph before its blocks are formed. Each
         connected set of sealed cameras that share a reason and are joined by honoured links is ONE piece, sealed
@@ -439,20 +437,21 @@ def apply_gate(model: SolveModel, links: dict, metric_log: dict, *, link_rotatio
       link_units: {(name_a, name_b) sorted: unit}. The redundancy test counts two links together only when their
         units differ (`redundant_links`); a link it does not name is a unit of its own.
 
-    THE POSE QUARANTINE'S HOOK (RUN P5-PQ RULE.md (b); only with `TOWER_WORLD_POSE_QUARANTINE`'s part `riders`
-    on). None, the default: today's rest rule, exactly.
+    THE POSE QUARANTINE'S HOOK (only with `TOWER_WORLD_POSE_QUARANTINE`'s part `riders` on). None, the
+    default: the rest rule without the hook, exactly.
 
       rider_min_shared: m. A camera under `min_obs` (a RIDER) takes a label only through its own supported
         attachment: at least m 3-D points shared with one labelled (supported) camera of its solver component,
-        and then that camera's label (today's argmax). It never defaults to the component's first label -- the
-        room, for the room's component (walk 4: five riders 500-600 m out took the room label that way). The
+        and then that camera's label (the default rule's argmax). It never defaults to the component's first
+        label -- the room, for the room's component (on walk 4, five riders 500-600 m out took the room label
+        that way). The
         unattached riders of a component form one unplaced label of their own (`quarantined`: reason
         `no-verified-link`). A rider is never a published keyframe, so no vote, withhold or seal reads it. The label
-        ORDER -- and so the room -- is today's: an unattached rider is counted, for the tie-break in supported cameras
-        only, where today's rule puts it (review V17, LOW-2).
+        ORDER -- and so the room -- is the default rule's: an unattached rider is counted, for the tie-break in
+        supported cameras only, where the default rule puts it.
         A COMPONENT WITH NO SUPPORTED CAMERA is untouched by the hook: its cameras keep one label of their own, as
-        today. So AN ALL-RIDER SOLVE keeps one label, 0, whose component reads `placed` (review V18, LOW-4; RVPQ
-        LOW): there is no supported camera to attach to or to compare with. Nothing is published from it -- its
+        by default. So AN ALL-RIDER SOLVE keeps one label, 0, whose component reads `placed`: there is no
+        supported camera to attach to or to compare with. Nothing is published from it -- its
         components record is null (no keyframe reaches `min_obs`) and, with the part `path` on, its camera path is
         empty.
 
@@ -469,8 +468,8 @@ def apply_gate(model: SolveModel, links: dict, metric_log: dict, *, link_rotatio
     room_cams = None
     if seal_of and room_names is not None:
         # With a seal the room is named by its CAMERAS, and it is enforced CAMERA BY CAMERA: the groups re-form
-        # without the sealed cameras (a block or scale segment can then mix room and non-room cameras -- RUN P4-IV
-        # phase 2), so every group is split into its room part and its non-room part, and a group joins only a
+        # without the sealed cameras (a block or scale segment can then mix room and non-room cameras), so every
+        # group is split into its room part and its non-room part, and a group joins only a
         # reference on its own side of the room.
         room_cams, room_names = room_names, None
     names = model.names
@@ -519,7 +518,7 @@ def apply_gate(model: SolveModel, links: dict, metric_log: dict, *, link_rotatio
     rounds = []
     group_decisions: dict = {}  # group min camera -> decision, for the reasons
     group_members: list = []    # every decided group: its cameras and round label (the consensus's identity)
-    todays_label: dict = {}     # the rider hook only: unattached rider -> the label today's rest rule gives it
+    todays_label: dict = {}     # the rider hook only: unattached rider -> the label the default rest rule gives it
     next_label = 0
     comps = [int(v) for v, _ in sorted(zip(*np.unique(model.component, return_counts=True)),
                                        key=lambda vc: (-vc[1], vc[0]))]
@@ -676,7 +675,7 @@ def apply_gate(model: SolveModel, links: dict, metric_log: dict, *, link_rotatio
                 labels[i] = labels[labelled[int(np.argmax(row))]]
             else:
                 unattached.append(int(i))
-                # Where today's rest rule puts it: the label order (and so the room) is decided with it there.
+                # Where the default rest rule puts it: the label order (and so the room) is decided with it there.
                 todays_label[int(i)] = labels[labelled[int(np.argmax(row))]] if row.max() > 0 else first
         if unattached:
             labels[np.asarray(unattached, dtype=np.int64)] = next_label
@@ -686,9 +685,9 @@ def apply_gate(model: SolveModel, links: dict, metric_log: dict, *, link_rotatio
             next_label += 1
     order_labels = None
     if todays_label:
-        # REVIEW V17, LOW-2: the room choice breaks a tie in supported cameras by the TOTAL count, riders included,
-        # so unplacing riders could flip which label is the room. The order is decided with every unattached rider
-        # counted where today's rule puts it: every label keeps today's rank (the room included), and the riders'
+        # The room choice breaks a tie in supported cameras by the TOTAL count, riders included, so unplacing
+        # riders could flip which label is the room. The order is decided with every unattached rider counted
+        # where the default rule puts it: every label keeps its default rank (the room included), and the riders'
         # own unplaced labels rank last.
         order_labels = labels.copy()
         for i, lab in todays_label.items():
@@ -724,7 +723,7 @@ def _reasons(round_: dict, room_component: int, group_decisions: dict, masks_app
     if not d.get("redundant", False):
         if d.get("cross_links_all", d.get("cross_links", 0)) == 0:
             # No verified link at all, honoured or not -- whatever points the two share
-            # (review V7, M2: shared points alone are not a link).
+            # (shared points alone are not a link).
             out.append(REASON_NO_VERIFIED_LINK)
         elif d.get("redundant_without_honouring", False):
             out.append(REASON_LINK_CONTRADICTED)
@@ -737,8 +736,8 @@ def _reasons(round_: dict, room_component: int, group_decisions: dict, masks_app
 
 def _finish(model, labels, supported, rounds, group_decisions, masks_applied, metric_available, params,
             evidence, group_members=(), order_labels=None) -> dict:
-    """`order_labels` (the rider hook only; None = `labels`, today): the labels the tie-break in supported cameras
-    counts TOTAL cameras by."""
+    """`order_labels` (the rider hook only; None = `labels`, the default): the labels the tie-break in supported
+    cameras counts TOTAL cameras by."""
     counts = {int(lab): int(((labels == lab) & supported).sum()) for lab in np.unique(labels)}
     tally = labels if order_labels is None else order_labels
     order = sorted(counts, key=lambda lab: (-counts[lab], -int((tally == lab).sum()), lab))
@@ -747,7 +746,7 @@ def _finish(model, labels, supported, rounds, group_decisions, masks_applied, me
     for rd in rounds:
         rd["final_label"] = remap.get(rd["label"])
     groups = [dict(g, label=remap.get(g["label"])) for g in group_members]
-    # NO ROOM ROUND (the lead's 01:42 live case: a false-start walk, 3 keyframes, 0 posed): a solve with no
+    # NO ROOM ROUND (as on a false-start walk: 3 keyframes, 0 posed): a solve with no
     # camera has no label at all, so no round is the room's. That is a clean, empty result -- no component, so
     # no room and nothing unplaced (`components_document` then publishes `components: null`, as for a solve
     # whose cameras are all unsupported) -- never a StopIteration. Every solve with a camera has a room round.

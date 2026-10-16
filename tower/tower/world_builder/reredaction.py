@@ -87,18 +87,18 @@ _YUNET = "faces-detected-and-filled/yunet-2023mar@0.30"
 # deliberately, with its measurement.
 TARGET_LABEL = f"{_YUNET}+plausibility3"
 
-# Older rules of the same detector, threshold, upscale and dilation (none of
-# which has changed in git), keyed to whether the rule's fill is a SUPERSET of
-# the target's on the same raw frame -- which decides whether a frame kept for
-# a reason other than "nothing to recover" still meets the target label.
+# Older rules of the same detector, threshold, upscale and dilation, keyed to
+# whether the rule's fill is a SUPERSET of the target's on the same raw frame --
+# which decides whether a frame kept for a reason other than "nothing to
+# recover" still meets the target label.
 REREDACTABLE_LABELS = {
     _YUNET: True,                       # ungated: every gate only removes boxes
     f"{_YUNET}+plausibility1": False,   # above 25%: facelike OR native; p3 also takes 1/2, 1/4
     f"{_YUNET}+plausibility2": False,   # p3 adds the edge exception, so p2 fills less
 }
 
-# -- raw verification (REREDACT.md section 1: 398/398 true pairs, 0/397
-#    adjacent keyframes, 0/398 shuffled) -------------------------------------
+# -- raw verification (measured: 398/398 true pairs, 0/397 adjacent
+#    keyframes, 0/398 shuffled) -----------------------------------------------
 VERIFY_DIFF = 40            # a difference this large must be explained by fill
 VERIFY_BLACK = 12           # stored near-black
 VERIFY_NEAR_PX = 2          # ... within this many pixels
@@ -114,7 +114,7 @@ FILL_DIFF = 25
 # The invariant allows JPEG ringing at a box edge, and nothing else.
 INVARIANT_TOLERANCE_PX = 3
 # "Raw with only boxes added": no difference over this, further than
-# OUTPUT_BOX_PX from a near-black pixel of the output (REREDACT.md section 4c).
+# OUTPUT_BOX_PX from a near-black pixel of the output.
 OUTPUT_DIFF = 40
 OUTPUT_BOX_PX = 4
 # Fewer recovered pixels than this is JPEG noise along an unchanged box edge,
@@ -135,7 +135,7 @@ _KEPT_AT_TARGET = {KEPT_NOTHING_RECOVERED}
 # or produced an output that is not the raw frame plus boxes, so nothing can be
 # said about its fill. Keeping the stored bytes of such a frame under the
 # target's label would publish a frame the label is false for, whatever the
-# stored rule (review 1, M1): the ungated superset argument is exactly what the
+# stored rule: the ungated superset argument is exactly what the
 # measurement failed on. An apply with any such frame is refused whole.
 _KEPT_CONTRADICTS_TARGET = {KEPT_FILL_OUTSIDE_STORED, KEPT_OUTPUT_NOT_RAW}
 

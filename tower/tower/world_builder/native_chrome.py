@@ -1,11 +1,11 @@
-"""U1.1 native chrome: the appearance page, plus five insertions, for a phone
+"""Native chrome: the appearance page, plus five insertions, for a phone
 that draws the page's chrome itself.
 
 Contract: `docs/contracts/WORLD-BUILDER-WORLDS.md` §4c (and COMPONENTS §5.4 for
-an area page). Spec: RUN/lead/specs/U11-NATIVE-CHROME-SPEC-20261004.md §2.3.
+an area page).
 
-THE TEMPLATE IS NOT EDITED. The native variant is the composed web page --
-today's bytes -- with five insertions applied after composition, each at an
+THE TEMPLATE IS NOT EDITED. The native variant is the composed web page,
+unchanged, with five insertions applied after composition, each at an
 anchor that must occur EXACTLY ONCE in that page:
 
     E  the echo, `<meta name="wb-chrome" content="native">`, right after the
@@ -32,7 +32,6 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-PROTOCOL = 1
 BRIDGE_NAME = "appearance_chrome_bridge.js"
 
 # What the page stops drawing while `body.wbnative` is set: every element child

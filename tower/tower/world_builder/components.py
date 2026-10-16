@@ -4,13 +4,13 @@ Contract: `docs/contracts/WORLD-BUILDER-COMPONENTS.md` (`world_builder.component
 §2 `components[]`, §3.4 the row's `photographic` and its `scope`, §5 the area routes'
 storage, §7 saved-world compatibility.
 
-WHAT IS READ, AND WHO WRITES IT. The evidence gate (P3.2 module 2, `coherence_gate`
-wired into the final solve) writes `solve/<session>/components.json` with the published
-solve. This module never computes a component: it READS that record, validates it
-against the contract's shape, and adds the three fields that describe what exists NOW
-rather than what the gate decided (`keyframes_phone`, `has_geometry`, `photographic`).
-A session without the record -- every session built before this change, and every
-session of a Tower with the gate switched off -- is `components: null`, which the
+WHAT IS READ, AND WHO WRITES IT. The evidence gate (`coherence_gate`, wired into the
+final solve) writes `solve/<session>/components.json` with the published solve. This
+module never computes a component: it READS that record, validates it against the
+contract's shape, and adds the three fields that describe what exists NOW rather than
+what the gate decided (`keyframes_phone`, `has_geometry`, `photographic`).
+A session without the record -- every session built before the gate wrote one, and
+every session of a Tower with the gate switched off -- is `components: null`, which the
 contract defines as "not computed", never "no areas" (§2.4 rule 1, §7 rule 1).
 
 THE RECORD'S SHAPE (Tower-internal; the gate's writer and this reader agree on it):
@@ -24,19 +24,19 @@ THE RECORD'S SHAPE (Tower-internal; the gate's writer and this reader agree on i
 `keyframe_ids` never leaves the Tower; it is what an area build is built from. A bare
 list is accepted as the `components` array. A record that does not hold the contract's
 shape is read as ABSENT (and logged): serving a malformed list would fail the phone's
-decoder, and absent is the one reading the phone already handles (today's screens).
+decoder, and absent is the one reading the phone already handles.
 
-WHERE AN AREA LIVES (contract T9, chosen here): `<world>/areas/<area_id>/`, laid out as
+WHERE AN AREA LIVES (contract T9): `<world>/areas/<area_id>/`, laid out as
 a world directory of its one session -- `solve/<session>/` (the area's own levelled
 solution), `surface/<session>/`, `appearance/<session>/`, `dense/<session>/` -- so the
 existing surface and appearance pipelines build and serve it unchanged through
 `AreaStore`, and `record.json`, the area's stage record (which names its session).
 
-NOT `<world>/areas/<session>/<area_id>/` as T9 first proposed, and the reason is
-measured: that layout repeats the 32-hex session id (`areas/<session>/<area>/<stage>/
-<session>/`), and the first real area build on this machine failed with
-`FileNotFoundError` on a staging file at 261 characters. The area id already hashes the
-session id (§2.4 rule 3), so it is unique within the world without the extra segment.
+NOT `<world>/areas/<session>/<area_id>/`, and the reason is measured: that layout
+repeats the 32-hex session id (`areas/<session>/<area>/<stage>/<session>/`), and a real
+area build on Windows failed with `FileNotFoundError` on a staging file at 261
+characters. The area id already hashes the session id (§2.4 rule 3), so it is unique
+within the world without the extra segment.
 
 The record lives beside the area rather than in `session.json`: `session.json` is
 rewritten by the builder and the finisher, and an area whose id is retired by a
@@ -68,7 +68,6 @@ from tower.world_builder.store import WorldStore
 
 logger = logging.getLogger(__name__)
 
-COMPONENTS_CONTRACT = "world_builder.components/2026-09-23"
 COMPONENTS_FILENAME = "components.json"
 AREAS_DIRNAME = "areas"
 AREA_RECORD_FILENAME = "record.json"
@@ -90,11 +89,12 @@ MAX_SPANS = 8
 SCOPE_ROOM = "room"
 SCOPE_AREA = "area"
 
-# THE FOUR AREA SENTENCES (§5.1, C1 E4). Stable identifiers: the phone compares them for
+# THE FOUR AREA SENTENCES (§5.1). Stable identifiers: the phone compares them for
 # equality, exactly as it compares FastAPI's `Not Found`, to tell a terminal answer from
 # a transient one. Their text never changes without a contract change, and
 # `tests/test_world_builder_components_areas.py` and `test_world_builder_phone_pins.py`
-# pin it.
+# pin it. The fifth constant, `AREA_NO_SPARSE_OR_DENSE`, is not one of the four: it is
+# the 404 detail for a `sparse` or `dense` representation (§5.1's table).
 NO_SUCH_AREA = "no such area in this session"           # terminal
 NO_AREAS = "this session has no areas"                   # terminal
 AREA_NOT_BUILT_YET = "this area has not been built yet"  # transient
@@ -108,7 +108,7 @@ AREA_STAGES = (STAGE_SURFACE, STAGE_APPEARANCE)
 
 def is_area_id(value) -> bool:
     # `fullmatch`, not `match`: `$` also matches before a final newline, and an id is
-    # joined into a path (review V6, L1).
+    # joined into a path.
     return isinstance(value, str) and bool(_AREA_ID.fullmatch(value))
 
 
@@ -167,7 +167,7 @@ def _valid_spans(spans) -> list | None:
         return None
     out = []
     for span in spans:
-        # `0 <= start <= end` (mac-002 item 1): seconds since the session started;
+        # `0 <= start <= end`: seconds since the session started;
         # the phone treats a list holding anything else as null, so it is never sent.
         if (not isinstance(span, (list, tuple)) or len(span) != 2
                 or not all(_finite(v) for v in span) or not 0 <= span[0] <= span[1]):
@@ -280,7 +280,7 @@ def read_components_record(store: WorldStore, world_id: str,
                    "not the contract's shape (WORLD-BUILDER-COMPONENTS.md §2); the "
                    "session reports components: null")
         return None
-    # A RECORD OF ANOTHER SOLVE IS NOT THIS SOLVE'S (review V6, L2). The gate writes
+    # A RECORD OF ANOTHER SOLVE IS NOT THIS SOLVE'S. The gate writes
     # the published solve's `input_digest` into the record; a record whose solve is no
     # longer the one in `solve/<session>` describes components nobody can build or
     # draw, and is read as absent. A record without the key (a hand-written one) is
@@ -293,7 +293,7 @@ def read_components_record(store: WorldStore, world_id: str,
                        f"names solve {named[:12]} but the published solve is "
                        f"{str(published)[:12]}; the session reports components: null")
             return None
-    # AND THE SAME SOLVE, NOT ONLY THE SAME KEYFRAMES (review V7, L-d). `input_digest`
+    # AND THE SAME SOLVE, NOT ONLY THE SAME KEYFRAMES. `input_digest`
     # names the keyframe ids; a new solve of them -- or a re-gate that moved a piece --
     # with a crash between publishing it and writing its record would pair the old
     # record with the new solve. A record naming a `solve_identity` is read only beside
@@ -401,7 +401,6 @@ class AreaStore(WorldStore):
         super().__init__(base.root)
         self._base = base
         self._area_world = world_id
-        self._area_session = session_id
         self._area_id = area_id
         self._area_dir = area_root(base, world_id, session_id, area_id)
 
@@ -545,7 +544,7 @@ def area_photographic_state(store: WorldStore, world_id: str, session_id: str, s
         if entry(stage).get("state") in (STAGE_STATE_RUNNING, STAGE_STATE_STOPPED):
             # The room's rule (`photographic._liveness`), asked of the AREA's own
             # status files: the view puts `<area>/surface/<session>/status.json` where
-            # the probe looks. This is what makes a running area `running` (C1 E13).
+            # the probe looks. This is what makes a running area `running`.
             try:
                 view = AreaStore(store, world_id, session_id, area_id)
             except Exception as exc:  # noqa: BLE001
@@ -581,14 +580,14 @@ def area_words(store: WorldStore, world_id: str, session_id: str, session,
 
 
 # Which area word the row carries when several are unsettled. `running` first, so a
-# running area always makes `build_in_progress` true (C1 E13); then `unobservable`,
+# running area always makes `build_in_progress` true; then `unobservable`,
 # which nobody could answer; then `owed`.
 _AREA_PRECEDENCE = ("running", "unobservable", "owed")
 
 
 def combine_photographic(room: dict | None, record: ComponentsRecord | None,
                          words: dict | None) -> dict | None:
-    """The row's `photographic` block: the room AND its areas (§3.4, C1 E3).
+    """The row's `photographic` block: the room AND its areas (§3.4).
 
     - the room's word, when the room is `running`, `owed` or `unobservable`;
     - otherwise the first unsettled area word (running, unobservable, owed), with the
@@ -631,7 +630,7 @@ def with_areas(store: WorldStore, world_id: str, session_id: str, session,
 
 
 # ---------------------------------------------------------------------------
-# "owed" is a promise (review V6, M2)
+# "owed" is a promise
 # ---------------------------------------------------------------------------
 #
 # An area with no record reads `owed` -- "Improving" on the phone -- because the

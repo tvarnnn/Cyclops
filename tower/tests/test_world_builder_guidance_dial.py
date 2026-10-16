@@ -1,7 +1,7 @@
 """FOW capture dial (S3): B2 per-sector selection, `latest` and `motion_sector`.
 
-Everything here sits under TOWER_WORLD_GUIDANCE_IMAGERY_LANDED; the coverage
-receipt itself must not change by a byte.
+The coverage worker always computes the dial for B2; the coverage receipt
+itself must not change by a byte.
 """
 
 from __future__ import annotations
@@ -415,7 +415,6 @@ def test_b2_dial_wire_through_the_route(state, monkeypatch):
     monkeypatch.setattr(route, "label_is_trusted", lambda label: label == "faces-blurred")
     monkeypatch.setattr(route, "state_for", lambda root: state)
     _empty_live(monkeypatch)
-    monkeypatch.setenv("TOWER_WORLD_GUIDANCE_IMAGERY_LANDED", "on")
     monkeypatch.setenv("TOWER_WORLD_GUIDANCE_COVERAGE", "on")
     state.publish_landed("root", "home", "s9", RECEIPT, [],
                          dial=_dial_block([(3, ("k3",))], motion=None))
@@ -456,8 +455,6 @@ def _wait(predicate):
 
 
 def test_worker_hands_the_receipts_own_dial_to_b2(monkeypatch, tmp_path):
-    monkeypatch.setenv("TOWER_WORLD_GUIDANCE_IMAGERY_LANDED", "on")
-    monkeypatch.delenv("TOWER_WORLD_PHOTO_FLOORPLAN", raising=False)
     sink = _Sink()
     monkeypatch.setattr(imagery, "state_for", lambda root: sink)
     data = _world(ROOM + [(0, "a", (2, 2), 95), (0, "b", (2, 2), 95)])
@@ -476,25 +473,6 @@ def test_worker_hands_the_receipts_own_dial_to_b2(monkeypatch, tmp_path):
         assert dict(dial["sectors"])[3] == ("b", "a")
         assert dial["latest"]["keyframe_id"] == "b"
         assert "dial" not in json.dumps(dict(worker.latest(world, session)))
-    finally:
-        worker.shutdown()
-        worker._thread.join(1)
-
-
-def test_worker_off_never_asks_for_a_dial(monkeypatch, tmp_path):
-    monkeypatch.delenv("TOWER_WORLD_GUIDANCE_IMAGERY_LANDED", raising=False)
-    monkeypatch.delenv("TOWER_WORLD_PHOTO_FLOORPLAN", raising=False)
-    seen = []
-
-    def spy(*args, **kwargs):
-        seen.append(kwargs)
-        return {"solved_at": 1.0, "geometry_revision": "g", "frame_revision": 1}
-    monkeypatch.setattr(coverage, "compute_from_tree", spy)
-    worker = coverage.CoverageWorker(tmp_path)
-    try:
-        worker.offer("home", "s9", 1.0, 1, (1, 1), "g1", (1, "digest"))
-        assert _wait(lambda: seen)
-        assert all(kwargs == {} for kwargs in seen)
     finally:
         worker.shutdown()
         worker._thread.join(1)
@@ -561,9 +539,7 @@ def _real_imagery_state(monkeypatch):
 
 
 def test_phone_contract_end_to_end_worker_state_and_route(monkeypatch, tmp_path):
-    monkeypatch.setenv("TOWER_WORLD_GUIDANCE_IMAGERY_LANDED", "on")
     monkeypatch.setenv("TOWER_WORLD_GUIDANCE_COVERAGE", "on")
-    monkeypatch.delenv("TOWER_WORLD_PHOTO_FLOORPLAN", raising=False)
     state = _real_imagery_state(monkeypatch)
     frames = ROOM + [(0, f"k{i:02d}", (1 + i % 3, 1 + i // 3 % 3), 37*i) for i in range(30)]
     data = _world(frames)
@@ -670,8 +646,6 @@ def test_latest_requires_a_non_empty_string_id():
 
 
 def test_failed_dial_never_publishes_sectorless_entries(monkeypatch, tmp_path):
-    monkeypatch.setenv("TOWER_WORLD_GUIDANCE_IMAGERY_LANDED", "on")
-    monkeypatch.delenv("TOWER_WORLD_PHOTO_FLOORPLAN", raising=False)
     state = _real_imagery_state(monkeypatch)
 
     def boom(*args):

@@ -136,8 +136,6 @@ class _Sink:
 
 
 def _worker(monkeypatch, tmp_path, sink):
-    monkeypatch.setenv("TOWER_WORLD_GUIDANCE_IMAGERY_LANDED", "on")
-    monkeypatch.delenv("TOWER_WORLD_PHOTO_FLOORPLAN", raising=False)
     monkeypatch.setattr(imagery, "state_for", lambda root: sink)
 
     def compute(root, world, session, expected, revision, clock, tag, budget, **kwargs):
@@ -246,19 +244,6 @@ def test_status_is_never_blocked_by_a_retry(monkeypatch, tmp_path):
     finally:
         worker.shutdown()
         worker._thread.join(2)
-
-
-def test_off_has_no_retry_machinery(monkeypatch, tmp_path):
-    monkeypatch.delenv("TOWER_WORLD_GUIDANCE_IMAGERY_LANDED", raising=False)
-    monkeypatch.delenv("TOWER_WORLD_PHOTO_FLOORPLAN", raising=False)
-    worker = coverage.CoverageWorker(tmp_path)
-    try:
-        assert worker._imagery_state is None
-        assert worker._landed_over_budget is None
-        assert worker._landed_retry is None
-    finally:
-        worker.shutdown()
-        worker._thread.join(1)
 
 
 def test_a_failing_retry_never_ends_the_worker(monkeypatch, tmp_path):

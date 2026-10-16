@@ -76,7 +76,6 @@ def _window(scene, camera_matrix, poses):
         KeyframeInput(
             keyframe_id=f"s:{index:08d}",
             image_gray=cv2.cvtColor(image, cv2.COLOR_BGR2GRAY),
-            image_bgr=image,
         )
         for index, image in enumerate(images)
     ]

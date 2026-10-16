@@ -59,7 +59,9 @@ def _dispositions(caplog):
 def _stop(worker):
     worker.shutdown()
     worker._thread.join(1)
+    worker._photo_worker._thread.join(1)
     assert not worker._thread.is_alive()
+    assert not worker._photo_worker._thread.is_alive()
 
 
 def test_deadline_miss_retries_same_candidate_and_advances_block(monkeypatch, tmp_path):
@@ -67,7 +69,7 @@ def test_deadline_miss_retries_same_candidate_and_advances_block(monkeypatch, tm
     clock = _Clock()
     calls = []
 
-    def compute(root, world, session, expected, revision, wall, tag, budget):
+    def compute(root, world, session, expected, revision, wall, tag, budget, **_imagery):
         calls.append(expected[1])
         if len(calls) == 2:
             _miss_deadline(budget)
@@ -97,7 +99,7 @@ def test_timeout_gives_up_after_exactly_two_retries(monkeypatch, tmp_path, caplo
     clock = _Clock()
     calls = []
 
-    def compute(root, world, session, expected, revision, wall, tag, budget):
+    def compute(root, world, session, expected, revision, wall, tag, budget, **_imagery):
         calls.append(1)
         _miss_deadline(budget)
 
@@ -131,7 +133,7 @@ def test_new_tree_during_cooldown_is_attempted_without_resetting_the_cap(monkeyp
     clock = _Clock()
     calls = []
 
-    def compute(root, world, session, expected, revision, wall, tag, budget):
+    def compute(root, world, session, expected, revision, wall, tag, budget, **_imagery):
         calls.append(tag)
         raise coverage._TransientCoverageError("derived tree changed during guidance read")
 
@@ -156,7 +158,7 @@ def test_rebuilt_tree_offered_during_a_failing_attempt_runs_without_cooldown(mon
     clock = _Clock()
     calls, running, release = [], threading.Event(), threading.Event()
 
-    def compute(root, world, session, expected, revision, wall, tag, budget):
+    def compute(root, world, session, expected, revision, wall, tag, budget, **_imagery):
         calls.append(tag)
         if tag == (1, "d"):
             running.set()
@@ -198,7 +200,7 @@ def test_discovery_keeps_running_during_a_retry_cooldown(monkeypatch, tmp_path):
     clock = _Clock()
     calls = []
 
-    def compute(root, world, session, expected, *args):
+    def compute(root, world, session, expected, *args, **_imagery):
         calls.append(expected[1])
         if expected[1] == 221:
             _miss_deadline(args[-1])
@@ -223,7 +225,7 @@ def test_newer_candidate_supersedes_pending_retry(monkeypatch, tmp_path):
     clock = _Clock()
     calls = []
 
-    def compute(root, world, session, expected, *args):
+    def compute(root, world, session, expected, *args, **_imagery):
         calls.append(expected[1])
         if expected[1] == 221:
             raise coverage._TransientCoverageError("derived tree changed during guidance read")
@@ -252,7 +254,7 @@ def test_permanent_validation_failure_is_not_retried(monkeypatch, tmp_path, mess
     clock = _Clock()
     calls = []
 
-    def compute(*args):
+    def compute(*args, **_imagery):
         calls.append(1)
         raise ValueError(message)
 
@@ -275,7 +277,7 @@ def test_shutdown_cancels_pending_retry_without_timer_or_thread(monkeypatch, tmp
     clock = _Clock()
     calls = []
 
-    def compute(*args):
+    def compute(*args, **_imagery):
         calls.append(1)
         raise coverage._TransientCoverageError("solve clock not yet settled")
 
@@ -360,7 +362,8 @@ def test_new_transient_clocks_and_placements_retry_is_bounded_like_others(monkey
         clock = _Clock()
         calls = []
 
-        def compute(root, world, session, expected, revision, wall, tag, budget, _reason=reason):
+        def compute(root, world, session, expected, revision, wall, tag, budget, _reason=reason,
+                    **_imagery):
             calls.append(1)
             raise coverage._TransientCoverageError(_reason)
 

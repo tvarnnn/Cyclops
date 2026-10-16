@@ -75,7 +75,6 @@ def test_engine_treats_a_solver_assertion_as_a_refused_pose(
         KeyframeInput(
             keyframe_id=f"kf{i}",
             image_gray=cv2.cvtColor(img, cv2.COLOR_BGR2GRAY),
-            image_bgr=img,
         )
         for i, img in enumerate(images)
     ]

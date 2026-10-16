@@ -375,8 +375,6 @@ def _worker_kwargs(monkeypatch, tmp_path, value):
         monkeypatch.delenv(ENV, raising=False)
     else:
         monkeypatch.setenv(ENV, value)
-    monkeypatch.delenv("TOWER_WORLD_GUIDANCE_IMAGERY_LANDED", raising=False)
-    monkeypatch.delenv("TOWER_WORLD_PHOTO_FLOORPLAN", raising=False)
     seen = []
 
     def job(*args, **kwargs):
