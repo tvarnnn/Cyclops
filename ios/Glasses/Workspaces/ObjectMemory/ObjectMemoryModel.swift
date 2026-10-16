@@ -661,6 +661,10 @@ nonisolated enum ObjectMemoryDecoder {
         )
     }
 
+    /// Decodes one sighting only when its claim, identity and frame reference agree.
+    ///
+    /// Required wire fields and claim tokens are checked before constructing the
+    /// record; optional evidence stays absent rather than becoming a false zero.
     static func observation(from json: [String: Any]) -> ObjectObservation? {
         guard
             let objectClass = json["object_class"] as? String,
