@@ -43,6 +43,18 @@ def background_threads() -> int:
 
 
 def main(argv=None) -> int:
+    """Run one global solve for a stored session and print its summary.
+
+    Reads the session's keyframes from the store and calls
+    `global_solve.solve` with the capture directories (`--capture-dir`), the
+    loop-detection and minimum-observation flags, and the keyframe input
+    digest. `--final` marks the finalization solve: it uses all cores
+    (`threads=-1`) and installs the finish-phase writer when the builder passed
+    its token; a background solve uses all cores but two. The summary dict
+    goes to stdout as JSON or a text table, which is what
+    `BackgroundSolver` reads back. Always returns 0; a solve that fails or is
+    withheld says so in the summary.
+    """
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--root", type=artifact_root_arg, required=True)
     parser.add_argument("--world", required=True)
