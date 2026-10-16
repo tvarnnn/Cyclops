@@ -1,11 +1,19 @@
 """The surface stage, orchestrated over a solved world.
 
-Three stages, checkpointed under `<world>/surface/<session>/`:
+`surfacify` reports six stages in `<world>/surface/<session>/status.json`, in
+this order:
 
-    fuse    integrate every gated, posed depth map into a sparse TSDF
-    mesh    marching cubes over the observed part of the field, then
-            component pruning and feature-preserving smoothing
-    pack    write the level-of-detail ladder and the manifest
+    depth        the dense stage's depth maps (shared with `dense/`, below)
+    transients   masks for the wearer's hands, arms and held phone
+    consistency  the jointly solved cross-frame depth correction (optional)
+    fuse         integrate every gated, posed depth map into a sparse TSDF
+    mesh         marching cubes over the observed part of the field, then
+                 component pruning, feature-preserving smoothing and, timed
+                 as `snap` inside this stage, the plane snap
+    pack         write the level-of-detail ladder and the manifest
+
+Nothing is resumable per stage: reuse is the dense depth cache plus
+`_already_built`, and a build is published as a unit (see `_build`).
 
 The depth maps themselves come from the dense stage's `depth` stage, in
 `<world>/dense/<session>/`, and are shared rather than recomputed: a keyframe's
@@ -19,9 +27,9 @@ exactly the way `solve/` and `dense/` are: a reader that does not know about it
 must be able to ignore it.
 
 Artifacts are published atomically and are self-checking. A torn mesh buffer is
-refused by `read_mesh_bytes` on its length and magic rather than misread -- the
-`BadZipFile` incident that cost a 795-keyframe session is the reason that guard
-is in the format and not in the reader's caller.
+refused by `read_mesh_bytes` on its length and magic rather than misread: the
+guard lives in the format, not in the reader's caller (a torn buffer on a
+795-keyframe session is what motivated it).
 """
 
 from __future__ import annotations
@@ -85,16 +93,12 @@ from tower.world_builder.surface import (
 
 logger = logging.getLogger(__name__)
 
-# The status.json vocabulary, re-exported under the names this module and its
-# importers (`dense_pipeline`, `appearance_pipeline`, the CLIs) have always
-# used. The strings themselves now have ONE definition, in
-# `world_builder/records.py`, because the session record stores them too: a
-# stage outcome on `session.json` is a `SurfaceResult.state` recorded
-# verbatim, and two sets of five strings maintained apart is exactly the
-# silent divergence `records.py` already refuses for `Confidence`. The
-# definition lives there rather than here because that module is the light
-# one -- the store, the engine and the result channel import it, and this
-# module pulls in the reconstruction stack.
+# The status.json vocabulary: aliases of `records.STAGE_STATE_*`, the strings
+# `SurfaceResult.state` and `session.json` record verbatim, kept under these
+# names for `world_surface.py` and the tests. The definition lives in
+# `records.py` because that module is the light one -- the store, the engine
+# and the result channel import it, and this module pulls in the
+# reconstruction stack.
 from tower.world_builder.records import (  # noqa: E402
     STAGE_STATE_FAILED as STATE_FAILED,
     STAGE_STATE_OK as STATE_OK,
@@ -113,11 +117,10 @@ def _holder_alive(pid, written_at) -> bool:
     """Whether the process that WROTE a lock or status is still that process.
 
     A bare pid probe is not enough on Windows, where pids are recycled
-    quickly: a live surface child killed at Stop leaves its lock behind, and
-    if its pid is reused before the final build asks, the final build is
-    refused as "already running" and the world keeps its coarse live mesh.
-    The store's own guard answers the real question -- a process that started
-    clearly after the file was written cannot have written it.
+    quickly: a reused pid would make a dead build look alive, and the final
+    build would be refused as "already running". The store's own guard answers
+    the real question -- a process that started clearly after the file was
+    written cannot have written it.
     """
     from tower.world_builder.store import _holder_is_running  # noqa: PLC0415
 
@@ -148,7 +151,8 @@ def _status(root: Path, **fields) -> None:
 
 
 def status_is_stale(status: dict) -> bool:
-    """True when a status says `running` but its process is gone."""
+    """True when a status says `running` but its process is gone, or its pid
+    was recycled (`_holder_alive`)."""
     if not status or status.get("state") != STATE_RUNNING:
         return False
     pid = status.get("pid")
@@ -228,6 +232,8 @@ def _stopped(should_stop) -> bool:
 
 
 def _params_digest(params: SurfaceParams, input_digest: str | None) -> str:
+    """`|`-joined input digest plus `params.digest_fields()`: the cache identity
+    of a build."""
     return "|".join(str(x) for x in (input_digest, *params.digest_fields()))
 
 
@@ -244,11 +250,24 @@ def ensure_depth_stage(store, world_id: str, session_id: str, solution,
     """Return the dense stage's `align.json` and its work directory, running
     the depth stage first if it is absent or was produced from another solve.
 
+    A stored `align.json` that `_depth_cache_usable` accepts is returned as it
+    is, with `<dense>/work`. Otherwise the predictions already on disk are
+    reused -- those of the old align file (`reusable_predictions`) and those
+    of the live depth worker (`offer_live_predictions`) -- the fits are redone,
+    and `run_depth_stage` runs with `prior=None` and `gate_rel`, `backend` and
+    `imagery_source` carried in its `DenseParams`; `should_stop` and
+    `progress` go to the stage. When the stage completes, the record is
+    stamped with `input_digest`, `digest`, `cache_key` and, for a gated solve,
+    `solve_identity`; a stopped stage (`stopped_after` set) is written
+    unstamped. Returns `(align, <dense>/work)`.
+
     Deliberately shares `dense/<session>/` rather than keeping a private copy.
     The depth maps are a property of the keyframes and the solve, not of what
     is built from them, and they are the expensive part -- 68 s of GPU on this
     corpus. A surface build and a point build of the same session should pay
-    for them once.
+    for them once. The stamp is what `_depth_cache_usable` and
+    `dense_pipeline.depth_cache_matches` compare, so a stopped or unstamped
+    record is never taken for a complete stage of this solve.
 
     The stage is always told the solve camera's FoV, as the live depth worker
     is, so `known_fov` has no effect.
@@ -263,7 +282,6 @@ def ensure_depth_stage(store, world_id: str, session_id: str, solution,
                           **({"backend": backend} if backend else {}))
 
     align_path = root / "align.json"
-    prior = None
     set_token = store.keyframe_image_set(world_id, session_id).cache_token
     from tower.world_builder.dense_pipeline import (
         _depth_cache_key,
@@ -310,8 +328,8 @@ def ensure_depth_stage(store, world_id: str, session_id: str, solution,
         align["cache_key"] = _depth_cache_key(solution.input_digest, dparams,
                                               align.get("keyframe_image_set"),
                                               align.get("redaction_trust"))
-        # A GATED solve is named by identity too (review V7, M3); an ungated one is
-        # stamped exactly as before.
+        # A GATED solve is named by identity too; an ungated one carries no
+        # `solve_identity`.
         if getattr(solution, "gate", None) is not None:
             from tower.world_builder.global_solve import solve_identity  # noqa: PLC0415
 
@@ -325,7 +343,16 @@ def _depth_cache_usable(cached: dict, root: Path, solution, dparams, *,
     """A cached depth stage is reusable only if it came from this solve, this
     network, and still has its per-frame maps on disk.
 
-    That last clause is the one that bites: `prune_intermediates` deletes
+    All of these must hold: the cache names this solve (`input_digest` or
+    `digest`) and, for a gated solve, its `solve_identity`; the stage was not
+    stopped; `backend`, `fill_rule` (`FILL_RULE`), the keyframe image set, the
+    imagery source and whether the network was told the camera's FoV
+    (`known_fov`) match; when `trust` is given, the recorded trust decision
+    matches; at least one record is `ok`; `work/depth` and `work/undist`
+    exist; and a spot check of the first three and last three maps finds
+    their files.
+
+    The last clauses are the ones that bite: `prune_intermediates` deletes
     `work/` after a successful pack -- which is its whole purpose -- so a world
     that has already been densified has a valid `align.json` and no depth maps
     behind it. Trusting the cache key alone would send the fuse stage looking
@@ -333,64 +360,62 @@ def _depth_cache_usable(cached: dict, root: Path, solution, dparams, *,
     """
     # THE CACHE MUST NAME THIS SOLVE, AND "UNNAMED" IS NOT A MATCH.
     #
-    # This read `cached.get("input_digest") not in (None, digest)`, and the
-    # depth stage never wrote the key, so every cache was "unnamed" and every
-    # cache matched. Measured on a real-time replay of the canonical walk:
-    # the one live surface cached a depth stage fitted against the first 51
-    # keyframes, and the FINAL surface after Stop reused it -- a 51-keyframe
-    # mesh at the live voxel, shipped as the finished world under the final
-    # solve's digest.
+    # An unnamed cache that matched anything would let a depth stage fitted
+    # against a prefix of the walk be reused. Measured on a real-time replay of
+    # the canonical walk: the one live surface cached a depth stage fitted
+    # against the first 51 keyframes, and a final surface reusing it would be a
+    # 51-keyframe mesh at the live voxel, shipped as the finished world under
+    # the final solve's digest.
     if solution.input_digest is None:
         return False
     named = cached.get("input_digest") or cached.get("digest")
     if named != solution.input_digest:
         return False
-    # THE SAME KEYFRAMES ARE NOT THE SAME SOLVE (review V7, M3). A gated solve's depth
-    # stamp names the solve itself; a stamp for another solve of these keyframes -- the
-    # one before a re-solve whose own depth stage then failed -- is not this one's.
+    # THE SAME KEYFRAMES ARE NOT THE SAME SOLVE. A gated solve's depth stamp
+    # names the solve itself; a stamp for another solve of these keyframes --
+    # the one before a re-solve whose own depth stage then failed -- is not
+    # this one's.
     if getattr(solution, "gate", None) is not None or cached.get("solve_identity") is not None:
         from tower.world_builder.global_solve import solve_identity  # noqa: PLC0415
 
         if cached.get("solve_identity") != solve_identity(solution):
             return False
     # AN INTERRUPTED STAGE IS NOT A COMPLETE ONE. A stop mid-depth leaves an
-    # `align.json` holding only the frames reached; trusting it built a
-    # surface from 3 of 8 frames under the full solve's digest, and every
-    # later run kept it.
+    # `align.json` holding only the frames reached; trusting it would build a
+    # surface from 3 of 8 frames (as measured) under the full solve's digest.
     if cached.get("stopped_after") is not None:
         return False
     if cached.get("backend") != dparams.backend:
         return False
-    # Fill masks made under an earlier rule may be the empty masks a live build
-    # used to save over engine-filled faces (review 2, I6). Refit; the
-    # predictions of that stage are not reused either (`reusable_predictions`).
+    # Fill masks made under another `FILL_RULE` may be empty masks saved over
+    # engine-filled faces. Refit; the predictions of that stage are not reused
+    # either (`reusable_predictions`).
     from tower.world_builder.dense_pipeline import FILL_RULE  # noqa: PLC0415
 
     if cached.get("fill_rule") != FILL_RULE:
         return False
     # THE KEYFRAME SET IT READ. A re-redaction switch (or a switch back) changes
     # the pixels without changing the solve; `image_set` is the store's
-    # `keyframe_image_set(...).cache_token` now, None for the capture's
-    # `images/`, which is also what every align.json written before the switch
-    # existed reads as.
+    # `keyframe_image_set(...).cache_token`, None for the capture's `images/`,
+    # which is also what an align.json with no such field reads as.
     if cached.get("keyframe_image_set") != image_set:
         return False
     # WHICH IMAGERY IT READ (§6.6). A depth stage run from the original local
     # capture has no fill masks and its `undist/` frames were never inpainted;
     # a redacted surface must not be built on them, nor the reverse. Absent
-    # is `redacted`, which every stage before the bypass was.
+    # is `redacted`.
     if cached.get("imagery_source", IMAGERY_REDACTED) != dparams.imagery_source:
         return False
     # WHETHER THE NETWORK WAS TOLD THE CAMERA'S FoV (`DenseParams.known_fov`).
-    # Absent is off, which every stage before the parameter was.
+    # Absent is off.
     if (cached.get("known_fov") is not None) != bool(getattr(dparams, "known_fov", False)):
         return False
     # THE TRUST DECISION IT READ THE PIXELS UNDER (`dense_pipeline.recorded_trust`).
     # A walk's stage re-redacted under `none` and recorded those bytes' SHA-1;
     # after Stop the label is trusted, the solve digest is often unchanged, and
-    # reusing the walk's records made the final appearance refuse every frame
-    # the re-redaction had touched (review 1, M3). `trust` is what a stage run
-    # now would record; every production caller passes it.
+    # reusing the walk's records would make the final appearance refuse every
+    # frame the re-redaction had touched. `trust` is what a stage run now would
+    # record; every production caller passes it.
     if trust is not None:
         from tower.world_builder.dense_pipeline import recorded_trust  # noqa: PLC0415
 
@@ -486,15 +511,15 @@ class _Frames:
         for r in align.get("records", []):
             if not r.get("ok"):
                 continue
-            # DEPTH MUST NOT INVERT. This gate used to read a None held-out
-            # score as "unscored, admit at the weight floor" -- and None is
-            # exactly what an inverted fit produces: `dense._relative_residual`
-            # refuses a held-out half whose slope is <= 0, or under whose fit
-            # fewer than 5 held-out anchors get a positive depth. The depth
-            # stage's min_sparse_points (20) guarantees both halves exist, so
-            # in this pipeline None ALWAYS means "the held-out half's own fit
-            # is not physical"; there is no benign None. Measured
-            # (wb-coherence-run-2026-09-23, P2-G0): on the target walk all 24
+            # DEPTH MUST NOT INVERT. A None held-out score is never read as
+            # "unscored, admit at the weight floor": None is exactly what an
+            # inverted fit produces. `dense._relative_residual` refuses a
+            # held-out half whose slope is <= 0, or under whose fit fewer than
+            # 5 held-out anchors get a positive depth, and the depth stage's
+            # min_sparse_points (20) guarantees both halves exist, so in this
+            # pipeline None ALWAYS means "the held-out half's own fit is not
+            # physical"; there is no benign None. Measured
+            # (wb-coherence-run-2026-09-23): on the target walk all 24
             # None records had a <= 0 on the full fit too, and fused as
             # near-for-far depth -- the sliver sheets and a 2x voxel coarsening
             # of the WHOLE world; on 2f447162, 11 of 16 did, and the other 5
@@ -533,8 +558,7 @@ class _Frames:
         self.median_held_out = float(np.median(held)) if held else None
         self.offered = len(align.get("records", []))
         # The fusion bound, attached by `surfacify` once the scene scale is
-        # known. None means "no bound", which is what every build did before
-        # `robust_fusion_bound` existed.
+        # known. None means "no bound".
         self.bound = None
         self.clipped_by_bound = 0
         self.emptied_by_bound = 0
@@ -555,9 +579,9 @@ class _Frames:
     def _drop_wild_poses(self, params: SurfaceParams) -> dict:
         """Drop the radius outliers among this solve's own camera centres.
 
-        Run A of the bedroom replay: 4 of 271 gated frames (1.48%), two of
-        them 53,026 and 1.6e6 units out. Run B of the SAME walk: none. The
-        rule is `surface.robust_pose_outliers`; the numbers behind it are on
+        On the bedroom replay, one run gated 4 of 271 frames (1.48%), two of
+        them 53,026 and 1.6e6 units out; the second run of the SAME walk gated
+        none. The rule is `surface.robust_pose_outliers`; the numbers behind it are on
         `SurfaceParams.outlier_radius_multiple` and `pose_detach_multiple`.
 
         A DROPPED POSE COSTS THE WEARER A PHOTOGRAPH. Dropping here, before
@@ -690,9 +714,36 @@ def surfacify(store, world_id: str, session_id: str, *,
               depth_known_fov: bool | None = None) -> SurfaceResult:
     """Build the surface of one solved session. Idempotent, stop-aware.
 
-    `params.depth_known_fov` is always set: `ensure_depth_stage` always tells
-    the depth stage the solve camera's FoV, and the surface digest must say so.
-    `depth_known_fov` therefore has no effect."""
+    WHAT: fuse the session's gated depth maps into a TSDF, extract and clean
+    the mesh, pack the level-of-detail ladder and write the manifest, all
+    under `<world>/surface/<session>/`.
+
+    HOW: takes the session's build lock (if another build holds it, returns
+    `unavailable` without touching `status.json`); loads the global solution
+    (none, or no intrinsics, is `unavailable`); computes the params digest
+    from the solve, `params`, the depth backend, any re-redacted image set, the
+    transient rule, the fit gate and the imagery source; unless `force`,
+    returns the previous result when `_already_built` finds the same digests;
+    otherwise runs the depth stage (`ensure_depth_stage`), the transient
+    masks, the scene scale and fusion bound, the optional consistency field
+    and `_build` (fuse, mesh, pack), then marks the superseded levels, writes
+    the manifest, prunes the superseded levels and records `ok`. Returns a
+    `SurfaceResult` whose state is ok, stopped (after the stage in
+    `stopped_after`), unavailable or failed.
+
+    Arguments: `params` (default `SurfaceParams()`); `should_stop`, polled
+    between and inside stages; `progress(stage, done, total)`; `force`, to
+    rebuild what is already built; `backend`, the depth network (None is the
+    dense default); `transient_backend_factory`, the transient detector's
+    backend.
+
+    WHY: `unavailable` carries `permanent=True` only for a machine that cannot
+    run the depth network, so the live worker stops relaunching a child; every
+    outcome except losing the lock writes `status.json`, so a cold reader
+    never finds a stale `running`. `params.depth_known_fov` is always set:
+    `ensure_depth_stage` always tells the depth stage the solve camera's FoV,
+    and the surface digest must say so, so the `depth_known_fov` argument has
+    no effect."""
     import dataclasses  # noqa: PLC0415
 
     from tower.world_builder.global_solve import load_solution
@@ -718,7 +769,7 @@ def surfacify(store, world_id: str, session_id: str, *,
         # Sweep what earlier builds of this session left unnamed -- a pack
         # that was killed, levels superseded long enough ago -- whether or not
         # this build then publishes. Otherwise a killed final pack, which no
-        # later build of the session follows, kept its orphans forever.
+        # later build of the session follows, would keep its orphans forever.
         _sweep_unnamed_levels(root)
         solution = load_solution(store, world_id, session_id)
         if solution is None:
@@ -746,10 +797,8 @@ def surfacify(store, world_id: str, session_id: str, *,
         pdigest += "|transients:" + tparams.rule_id()
         # Which depth fits may be fused (`fit_is_physical`). This only stops a
         # NON-forced build from answering "already built" with a surface fused
-        # under the old gate; the product's builds pass force and rebuild
-        # anyway. Existing worlds are NOT refreshed by deploying this: their
-        # surface stays as fused until `world_surface.py --world X` (then
-        # `world_appearance.py`) is run for them.
+        # under another gate; the product's builds pass `force` and rebuild
+        # anyway.
         pdigest += "|" + FIT_GATE_ID
         if is_raw(params.imagery_source):
             # §6.6. `_params_digest` already carries it through
@@ -950,10 +999,9 @@ def _outlier_record(frames: "_Frames", voxel: float = 0.0, coarsened: float = 1.
                     key_coarsened: float = 1.0) -> dict:
     """What this build did about the solve's outliers, for the manifest.
 
-    WRITTEN ON EVERY RETURN PATH, not only on the one that succeeds. It used
-    to run on the `ok` return alone, so a build the guards themselves refused
-    wrote `"outliers": null` and left nothing on disk saying the bound had
-    done it -- and the wearer's one message was then indistinguishable from a
+    WRITTEN ON EVERY RETURN PATH, not only on the one that succeeds: a build
+    the guards themselves refused must leave something on disk saying the
+    bound did it, or the wearer's one message is indistinguishable from a
     broken depth backend. A guard that cannot be seen acting is not a guard.
 
     Always written when nothing was dropped, too: "no pose was dropped" is a
@@ -1030,9 +1078,9 @@ def _fusion_bound(frames: "_Frames", solution, params: SurfaceParams,
 def _scene_scale(frames: "_Frames", solution) -> tuple[float, str]:
     """The one length every other length in the surface stage is a fraction of.
 
-    WHY THE SPARSE OBSERVATIONS AND NOT THE DEPTH MAPS. The scale used to be
-    the median of dense depth sampled from every 14th frame. That definition
-    moved with two things that have nothing to do with the room:
+    WHY THE SPARSE OBSERVATIONS AND NOT THE DEPTH MAPS. The median of dense
+    depth sampled from every 14th frame moves with two things that have
+    nothing to do with the room:
 
       * which frames were sampled -- changing only the sampling offset moved
         the canonical world's scale between 0.88x and 1.07x of itself;
@@ -1041,9 +1089,8 @@ def _scene_scale(frames: "_Frames", solution) -> tuple[float, str]:
         got 1.27x / 1.39x / 1.43x the final scale, because the walk looked at
         the room first and the desk close up later.
 
-    Every live build therefore used a coarser voxel and, while the far clip
-    was tied to this number, a farther clip than the final one, so the room
-    visibly SHRANK when the final surface replaced the live one.
+    A live build therefore used a coarser voxel than the final one, so the
+    room visibly SHRANK when the final surface replaced the live one.
 
     The median camera-frame depth of every sparse observation of the gated
     frames is pooled over all of them (no sampling offset exists) and is
@@ -1064,7 +1111,10 @@ def _scene_scale(frames: "_Frames", solution) -> tuple[float, str]:
 
 
 def _sparse_observation_depths(frames: "_Frames", solution):
-    """Camera-frame depth of every sparse observation made by a gated frame."""
+    """Camera-frame depth of every sparse observation made by a gated frame.
+
+    `solution.observations` rows are `[keyframe index, feature index, point
+    index]` (`global_solve`), so columns 0 and 2 are read here."""
     obs = getattr(solution, "observations", None)
     xyz = getattr(solution, "xyz", None)
     kids = getattr(solution, "keyframe_ids", None)
@@ -1097,13 +1147,13 @@ def _median_scene_depth(frames: "_Frames") -> float:
     `global_solve` never normalises and the same room has solved to a ten-unit
     extent and a three-hundred-unit one.
 
-    The definition matters, and two wrong ones were tried first. Measured from
-    the MEAN camera centre to the sparse points it is 5.10; measured
-    observation-wise to the sparse points it is 4.71; measured over the dense
-    depth maps -- which is what the dense stage uses, and what the frames'
-    relative alignment error is relative to -- it is 4.07. Using either of the
-    first two silently grew every voxel and every truncation by a quarter and
-    made the two stages disagree about what "0.006 of the scene" means.
+    The definition matters. Measured from the MEAN camera centre to the sparse
+    points it is 5.10; measured observation-wise to the sparse points it is
+    4.71; measured over the dense depth maps -- which is what the dense stage
+    uses, and what the frames' relative alignment error is relative to -- it
+    is 4.07. Using either of the first two silently grows every voxel and
+    every truncation by a quarter and makes the two stages disagree about what
+    "0.006 of the scene" means.
     """
     if not len(frames):
         return 0.0
@@ -1176,9 +1226,9 @@ def _build(root, frames, params, median_depth, voxel, trunc, seconds,
     if not cached:
         # A REFUSAL OF ITS OWN WHEN THE BOUND DID IT. "No frame produced
         # usable depth" is what a missing depth network says, and answering a
-        # guard's own doing with another stage's message is how a person ends
-        # up debugging the wrong thing. Named here, and the counters that
-        # prove it are in the record beside it.
+        # guard's own doing with another stage's message sends a person off
+        # debugging the wrong thing. Named here, and the counters that prove it
+        # are in the record beside it.
         if frames.emptied_by_bound and frames.emptied_by_bound >= len(frames):
             return _unavailable(
                 root, f"every one of the {len(frames)} gated frames lost all of "
@@ -1196,22 +1246,20 @@ def _build(root, frames, params, median_depth, voxel, trunc, seconds,
     # is cheap, and it happens before a byte of field exists.
     #
     # THE SAME LOOP ANSWERS THE KEY RANGE. `block_key` refuses a grid whose
-    # block coordinates it cannot key without aliasing two cells together,
-    # and that refusal used to end the build -- the wearer of the bedroom
-    # walk whose solve put eleven of its 379 camera centres up to 53,026
-    # units out got nothing at all, and no appearance either, because the
-    # surface was not `ok`. The refusal is
-    # correct and stays; what was missing is that a scene too wide for the
-    # keys at THIS voxel may be perfectly keyable at a coarser one, exactly
-    # as a scene too big for the block budget is. Refusing is the last
-    # resort now, not the first response, and the coarsening is recorded.
+    # block coordinates it cannot key without aliasing two cells together. The
+    # refusal is correct and stays, but a scene too wide for the keys at THIS
+    # voxel may be perfectly keyable at a coarser one, exactly as a scene too
+    # big for the block budget is: a bedroom walk whose solve put eleven of its
+    # 379 camera centres up to 53,026 units out would otherwise get no surface
+    # and no appearance, because the surface would not be `ok`. Refusing is the
+    # last resort, not the first response, and the coarsening is recorded.
     #
     # BUT ONLY SO FAR (`SurfaceParams.max_key_coarsening`). Uncapped, this
-    # loop will shrink a diverged scene until the room is a handful of blocks
+    # loop would shrink a diverged scene until the room is a handful of blocks
     # and publish it as `ok`, with a positive face count and an appearance
-    # built on top -- which is worse than the refusal it replaced. Past the
-    # cap the honest refusal is the answer, and it is the answer the
-    # stand-down paths of the pose gate rely on.
+    # built on top -- which is worse than a refusal. Past the cap the honest
+    # refusal is the answer, and it is the answer the stand-down paths of the
+    # pose gate rely on.
     attempts = 12
     cap = params.max_key_coarsening
     for attempt in range(attempts):
@@ -1247,7 +1295,6 @@ def _build(root, frames, params, median_depth, voxel, trunc, seconds,
             coarsened *= factor
             key_coarsened *= factor
             voxel *= factor
-            trunc = truncation_for(params, voxel, median_depth, frames.median_held_out)
             logger.warning("[Tower][WorldBuilder][surface] the block grid is "
                            "x%.2f too wide to key; voxel coarsened x%.2f to %.5f",
                            float(over), coarsened, voxel)
@@ -1275,12 +1322,11 @@ def _build(root, frames, params, median_depth, voxel, trunc, seconds,
         factor = max(1.1, math.sqrt(allk.numel() / params.max_blocks) * 1.05)
         coarsened *= factor
         voxel *= factor
-        trunc = truncation_for(params, voxel, median_depth, frames.median_held_out)
         logger.info("[Tower][WorldBuilder][surface] %d blocks exceeds the budget of "
                     "%d; voxel coarsened x%.2f to %.5f", allk.numel(),
                     params.max_blocks, coarsened, voxel)
         vol = SurfaceVolume(voxel, band_floor(voxel), device=device, trunc_rel=trel,
-                        trunc_max=params.trunc_max_voxels * voxel)
+                            trunc_max=params.trunc_max_voxels * voxel)
     vol.reserve(allk)
     del allk
     # The band a sample at the scene scale actually got, cap included --
@@ -1449,12 +1495,12 @@ def _build(root, frames, params, median_depth, voxel, trunc, seconds,
     _status(root, state=STATE_RUNNING, stage=STAGE_PACK)
     # A BUILD IS PUBLISHED AS A UNIT. Each build writes its levels under names
     # of its own, and the manifest -- written last, atomically, by the caller --
-    # names them. Before this every build wrote `mesh_l<n>.bin`, so a stop or a
-    # kill between levels, or between the last level and the manifest, left new
-    # levels under an old manifest: the page served one surface while the
-    # revision and the listing described another, and a later run reported
-    # "already built" over it. Now a reader following any manifest reads only
-    # the files that manifest was published with.
+    # names them, so a reader following any manifest reads only the files that
+    # manifest was published with. Under a shared `mesh_l<n>.bin` name, a stop
+    # or a kill between levels, or between the last level and the manifest,
+    # would leave new levels under an old manifest: the page would serve one
+    # surface while the revision and the listing described another, and a
+    # later run would report "already built" over it.
     build_id = f"{time.time_ns():x}{os.getpid():x}"
     levels = []
     # Smoothing and the snap move vertices but change no triangle, so the
@@ -1639,14 +1685,19 @@ def _fit_mobile_page(parent, mesh, buf, target, page_bytes, attempts: int = 4,
 
 def _write_manifest(root, result, params, digest, pdigest, median_depth, scale,
                     scale_source=None, transients=None, keyframe_image_set=None):
+    """Write `manifest.json`, the file that names a published build's levels.
+
+    Called last, after the levels are on disk. `detail` is the build's parsed
+    detail JSON (`result.detail`), or null if it does not parse.
+    """
     filled = params.fill_radius_voxels() > 0
     try:
         detail = json.loads(result.detail) if result.detail else None
     except ValueError:
         detail = None
     write_json_atomic(root / "manifest.json", {
-        # The contract's table described `detail.*` keys that only ever
-        # reached `status.json`, which the next status write replaces.
+        # The build's parsed detail JSON, kept here because `status.json` is
+        # replaced by the next status write.
         "detail": detail,
         "schema_version": SURFACE_SCHEMA_VERSION,
         # WORLD-BUILDER-SURFACE.md section 3: filling unobserved space breaks
@@ -1693,9 +1744,8 @@ def _write_manifest(root, result, params, digest, pdigest, median_depth, scale,
         # WHAT THIS BUILD DID ABOUT THE SOLVE'S OWN OUTLIERS. A surface built
         # from fewer frames than the solve offered says here which it would
         # not fuse and by what rule, what envelope it fused inside, and
-        # whether the voxel had to be coarsened to key the grid. Absent on
-        # every surface built before the rules existed, which fused whatever
-        # the solver produced.
+        # whether the voxel had to be coarsened to key the grid. Absent on a
+        # surface built before this record existed.
         "outliers": result.outliers or None,
         "closure": (
             ("enclosed-fill: unobserved voxels bracketed by observed field in "
@@ -1790,13 +1840,12 @@ def published_names(levels) -> set:
     level entries rather than from a glob, so an entry that names no sidecar
     contributes none.
 
-    Counted from real damage, not tidiness. The first build of the canonical
-    capture kept only `{entry["file"]}` here, and the prune then deleted
-    `conf_l0.<build>.bin` -- written five minutes before the manifest, so
-    already past the grace -- out of the very build that was publishing it.
-    The manifest named a file that no longer existed. A small level 0 in a
-    test never reproduces it; the grace is two minutes and a test build takes
-    one second.
+    The sidecar must be listed, or the prune removes it from the very build
+    that is publishing it: on the first build of the canonical capture
+    `conf_l0.<build>.bin` was written five minutes before the manifest, so it
+    was already past the 120 s grace, and the manifest would name a file that
+    no longer exists. A test level never shows this, because a test build
+    takes one second.
     """
     keep = set()
     for entry in levels or []:
@@ -1813,12 +1862,12 @@ def published_names(levels) -> set:
 def _mark_superseded(root: Path, keep: set) -> None:
     """Stamp the files the manifest about to be replaced names with NOW.
 
-    The prune grace below is measured on a file's mtime, and a level's mtime
-    was its WRITE time: a previous build older than the grace lost its files
-    the instant the next manifest landed, and a reader between reading that
-    manifest and reading its level got `SurfaceUnavailable` (review 2, I1).
-    Stamped BEFORE the new manifest is written, so a crash in between can
-    only lengthen the grace, never skip it.
+    The prune grace below is measured on a file's mtime, which is its WRITE
+    time unless stamped here: a previous build older than the grace would lose
+    its files the instant the next manifest landed, and a reader between
+    reading that manifest and reading its level would get
+    `SurfaceUnavailable`. Stamped BEFORE the new manifest is written, so a
+    crash in between can only lengthen the grace, never skip it.
     """
     try:
         previous = json.loads((root / "manifest.json").read_text())
@@ -1916,6 +1965,9 @@ ALREADY_BUILT = "already built from this solve with these parameters (--force re
 
 
 def _already_built(root: Path, digest, pdigest, force: bool):
+    """The previous result if the manifest's input and params digests match,
+    every level file is whole and the consistency solve did not fail; else
+    None. `force` always answers None."""
     if force:
         return None
     path = root / "manifest.json"
@@ -1956,7 +2008,12 @@ def _already_built(root: Path, digest, pdigest, force: bool):
 
 def read_surface_manifest(store, world_id: str, session_id: str) -> dict | None:
     """The manifest, or None. Never raises on a malformed one: a surface that
-    cannot be read is a surface the ladder falls past, not a 500."""
+    cannot be read is a surface the ladder falls past, not a 500.
+
+    Also None for any `format` other than `SURFACE_FORMAT` -- so a surface
+    written with `SURFACE_FORMAT_ENCLOSED_FILL` is deliberately unreadable here
+    (`_already_built` reads the same file directly) -- and for a different
+    `schema_version`."""
     path = surface_dir(store, world_id, session_id) / "manifest.json"
     try:
         man = json.loads(path.read_text())
@@ -2007,8 +2064,8 @@ def read_surface_confidence(store, world_id: str, session_id: str, level: int,
     refused here rather than silently mis-indexed.
 
     Raises `SurfaceUnavailable` when the level has no confidence channel --
-    a surface built before the channel existed, or with
-    `SurfaceParams.confidence` off, has none and is otherwise unchanged.
+    a surface built without it, or with `SurfaceParams.confidence` off, has
+    none and is otherwise unchanged.
     """
     from tower.world_builder.surface import read_confidence_bytes  # noqa: PLC0415
 
@@ -2037,9 +2094,8 @@ def surface_currency(store, world_id: str, session_id: str,
                      manifest: dict | None) -> dict:
     """Whether the surface on disk was built from the solve now on disk.
 
-    Reported rather than enforced. A surface behind the newest keyframes is
-    still the best picture of the world there is, and hiding it during a walk
-    is what left the gallery empty for a whole capture last time.
+    Reported rather than enforced: a surface behind the newest keyframes is
+    still the best picture of the world there is.
     """
     from tower.world_builder.global_solve import load_solution
 

@@ -4,21 +4,22 @@ Two entry points with deliberately different cost profiles:
 
 ``observe()`` runs per delivered frame and is cheap (~5 ms measured at
 360x640 against a ~300 ms interval). It decodes, scores, tracks, decides,
-and on acceptance persists one keyframe. It never calls a geometry
-backend.
+and on acceptance persists one keyframe and extends the live solve by it
+(see _LiveSolve), which calls the geometry backend's incremental ``extend``.
 
-``build()`` runs at stop time, reads the persisted keyframe journal back,
-and writes the reconstruction. It is never reachable from the frame
-path, which is what keeps a multi-second write off the event loop.
+``build()`` reads the persisted keyframe journal back and rewrites the
+derived tree. It is never reachable from ``observe()``, which is what keeps
+a multi-second write off the frame path; the builder driver calls it
+mid-walk (every ``--rebuild-every`` keyframes, and when a background solve
+lands) and at stop.
 
-It used to be a full re-solve as well -- re-reading every keyframe,
-re-decoding every JPEG and re-detecting features on all N -- which made
-a walk rebuilt every k keyframes cost O(N^2/k), so asking for MORE live
-updates cost more than the walk. It now extends one live solve as each
-keyframe is accepted (see _LiveSolve) and a rebuild is a flush. The
-from-scratch path is still here and still correct: it is what a cold
-rebuild, a re-derive, and any keyframe set this engine did not itself
-observe fall back to.
+Each accepted keyframe extends one live solve, so a rebuild is a flush.
+Re-solving from scratch on every rebuild -- re-reading every keyframe,
+re-decoding every JPEG and re-detecting features on all N -- would cost
+O(N^2/k) for a walk rebuilt every k keyframes, so asking for MORE live
+updates would cost more than the walk. The from-scratch path is still here
+and still correct: it is what a cold rebuild, a re-derive, and any keyframe
+set this engine did not itself observe fall back to.
 
 That split is also why live-versus-offline is a *driver* choice rather
 than an architecture choice: the offline script calls exactly the same
@@ -32,7 +33,7 @@ from dataclasses import dataclass, field, replace
 from tower.confidence import Confidence
 from tower.world_builder.backend import KeyframeInput
 from tower.world_builder.backends import BACKEND_AUTO, select_backend
-from tower.world_builder.events import EventLog, WorldEvent
+from tower.world_builder.events import EventLog
 from tower.world_builder import frame_quality
 from tower.world_builder.frontend import FrameTracker, analyse_frame, decode_gray
 from tower.world_builder.keyframes import (
@@ -119,7 +120,17 @@ class BuildResult:
 # How many consecutive segments may produce NOTHING before a solve break
 # stops being allowed to start another one.
 #
-# Two earlier rules were measured and refused, both for the same reason.
+# Delay is the wrong axis: once a chain is broken every further keyframe in
+# that segment is refused without geometry, so waiting buys nothing -- the
+# only real question is whether restarting is worth it. It is worth it unless
+# the region has already proven unmappable, and a segment that ends having
+# solved NOTHING is that evidence. At 1, a restart is allowed unless the
+# segment immediately before it produced nothing -- so a region that is
+# building geometry restarts freely, and genuinely untrackable footage stops
+# after one wasted attempt instead of shattering into dozens of two-keyframe
+# shards.
+#
+# Two other rules were measured and refused, both for the same reason:
 #
 # `MIN_SOLVED_BEFORE_RESTART = 2` (restart only if the broken chain had
 # solved two poses) leaves the cascade fully intact for the case that
@@ -133,17 +144,6 @@ class BuildResult:
 # instant and no second opportunity ever arrives, however many keyframes
 # accumulate. Swept at 3, 4, 6 and 8 it reproduced the solved-pose
 # numbers exactly and never recovered 4fea31e2.
-#
-# Delay is the wrong axis anyway. Once a chain is broken every further
-# keyframe in that segment is refused without geometry, so waiting buys
-# nothing -- the only real question is whether restarting is worth it.
-#
-# It is worth it unless the region has already proven unmappable. A
-# segment that ends having solved NOTHING is that evidence. At 1, a
-# restart is allowed unless the segment immediately before it produced
-# nothing -- so a region that is building geometry restarts freely, and
-# genuinely untrackable footage stops after one wasted attempt instead of
-# shattering into dozens of two-keyframe shards.
 #
 # THE VALUE IS CHOSEN ON MARGINAL EFFICIENCY, measured over the pinned
 # eight. Every larger cap buys more geometry and costs more fragments,
@@ -167,9 +167,9 @@ class BuildResult:
 # coherence, so paying more fragment cards for them is a bad trade while
 # the viewer cannot rank or collapse them.
 #
-# The larger caps remain available and are worth revisiting the moment
-# fragments can be ranked: the uncapped variant is +517 solved poses over
-# baseline and grows the largest single coherent piece 28656 -> 32756.
+# The larger caps are worth revisiting the moment fragments can be ranked:
+# the uncapped variant is +517 solved poses over baseline and grows the
+# largest single coherent piece 28656 -> 32756.
 MAX_BARREN_SEGMENTS = 1
 
 # `mark_finalization(notice=...)`'s default: leave the record's `finalization.notice`
@@ -179,6 +179,18 @@ NOTICE_KEEP = object()
 
 
 class WorldBuilderEngine:
+    """The frame-path engine, with the two cost profiles of the module docstring.
+
+    One session is active at a time: `start_session` takes the world's writer
+    lock and `stop_session` releases it unless asked to hold it, and accepted
+    keyframes and the session's events are written through the store (a
+    per-frame quality log only when one is configured). Of
+    the constructor arguments, production code passes only `backend_name`;
+    `policy`, `clock`, `redactor_factory`, `relocalizer`, `monotonic`,
+    `relocalizer_options` and `frame_quality_log` are seams for tests and
+    replays.
+    """
+
     def __init__(
         self,
         store: WorldStore,
@@ -192,24 +204,24 @@ class WorldBuilderEngine:
         frame_quality_log: bool | None = None,
     ) -> None:
         self._store = store
-        # The per-frame quality log (frame_quality.py, P5-SHARP). None reads
+        # The per-frame quality log (frame_quality.py). None reads
         # `TOWER_WORLD_FRAME_QUALITY_LOG` at each session start, like the
         # relocalizer's mode; unset is off, and off writes nothing at all.
         self._frame_quality_log = frame_quality_log
         self._frame_log: frame_quality.FrameQualityLog | None = None
-        # The RELOC2 options (config.world_relocalizer_options): None reads
-        # the environment at each session start like the mode; `{}` or an
-        # unset environment builds the relocalizer exactly as before.
+        # The relocalizer options (config.world_relocalizer_options): None
+        # reads the environment at each session start like the mode; `{}` or
+        # an unset environment builds the relocalizer with no options passed.
         self._relocalizer_options = relocalizer_options
         # The look-back relocalizer's mode (`off` / `prompt` / `silent`,
         # relocalizer.py). None reads `TOWER_WORLD_RELOCALIZER` at each
         # session start -- the builder process inherits the Tower's
-        # environment -- and unset is `off`: nothing runs, nothing is
-        # journaled, and every journal is byte-identical to before.
+        # environment -- and unset is `off`: nothing runs and nothing is
+        # journaled.
         self._relocalizer_mode = relocalizer
         self._reloc = None
-        # The relocalizer's DURATION clock (review V5 M4-4): its prompt,
-        # cooldown and timeout never see a wall-clock step. `time.monotonic`
+        # The relocalizer's DURATION clock: its prompt, cooldown and timeout
+        # never see a wall-clock step. `time.monotonic`
         # with the real Tower clock; an injected clock (tests, replays) is
         # used for both unless a monotonic one is injected too.
         if monotonic is None:
@@ -275,6 +287,14 @@ class WorldBuilderEngine:
         declared_size: tuple[int, int] | None = None,
         capture_id: str | None = None,
     ) -> str:
+        """Open a session on `world_id` and return its id.
+
+        Takes the world's writer lock and writes the session record, then
+        creates the redactor, keyframe selector, frame tracker, event log,
+        the optional frame-quality log, the relocalizer, the live solve and
+        the live-depth worker, in that order. `relocalizer_started` is
+        journaled right after `session_started`, so the order matters.
+        """
         world = self._store.read_world(world_id)
         self._store.acquire_writer_lock(world_id)
 
@@ -315,14 +335,10 @@ class WorldBuilderEngine:
         self._segment_index = 0
         self._seq_offset = 0
         self._last_effective_seq = None
-        # The size every frame of this session must be. Set by the
-        # first frame rather than from the declared size, because
-        # the declared size is what the phone SAYS and this is what
-        # it actually sent. See `observe`.
+        # The size every frame of this session must be: see `__init__`.
         self._frame_shape = None
-        # Reset with its sibling. start_session resets every other piece
-        # of per-session state; leaving this one behind let a new
-        # session inherit a restart budget the previous one earned.
+        # Reset with its sibling, so a new session starts with a fresh
+        # restart budget instead of the one the previous session earned.
         self._segment_solved = 0
         self._barren_segments = 0
         self._segments_used: set[int] = set()
@@ -351,6 +367,35 @@ class WorldBuilderEngine:
         wire_seq: int | None = None,
         tx_seq: int | None = None,
     ) -> ObserveResult:
+        """Decide one delivered frame and return an `ObserveResult`.
+
+        WHAT: decode, score and track the frame, then reject it, open a new
+        segment because tracking was lost, or accept it, in which case a
+        keyframe is redacted and persisted. Raises `SessionNotActiveError`
+        without an open session.
+
+        HOW: `source_seq` is required and is renumbered onto a monotonic
+        sequence if it goes backwards; `received_at` defaults to the clock;
+        `wire_seq` and `tx_seq` are carried onto the keyframe record
+        unchanged. In order: renumber; decode (a malformed frame is
+        rejected); size guard (a frame of another size than the session's
+        first is rejected); score, track and `evaluate`. On a loss: reset the
+        tracker and selector, open a new segment, close the live solve's
+        segment, journal `tracking_lost` and hand the frame to the
+        relocalizer. On an accept: redact and persist the keyframe, submit it
+        to live depth, extend the live solve on the REDACTED bytes, split the
+        segment if the solve's chain broke, set the tracker reference, journal
+        `solve_chain_broken` (when split) and then `keyframe_accepted`, and
+        feed the relocalizer. A malformed or resized frame journals
+        `frame_rejected`.
+
+        WHY: a restarted sequence would overwrite earlier keyframes; a
+        resized frame would end the walk inside optical flow; and the live
+        solve must see the bytes `build()` will decode, which are the
+        redacted ones. The live solve, the relocalizer and the frame-quality
+        log are guarded so that a failure in them never costs the walk a
+        frame.
+        """
         if self._session is None:
             raise SessionNotActiveError("observe() requires an active session")
 
@@ -364,16 +409,15 @@ class WorldBuilderEngine:
         # SEQUENCE NUMBERS RESTART WHEN THE GLASSES DO, AND THE SESSION
         # DOES NOT. `make_keyframe_id` says it: `source_seq` "resets when
         # the glasses session restarts". A builder follows a capture
-        # LINEAGE -- the reconnect work of this campaign -- so one session
-        # can now see the sequence start again mid-walk (a re-pair, an app
-        # relaunch inside the resume grace). The keyframe id and the image
-        # file name are both `source_seq`, so a repeated number OVERWROTE
-        # the earlier keyframe's image on disk and gave the journal two
-        # keyframes with one id; the final solve keys COLMAP on the file
-        # name and died with a SQLite constraint abort -- "Partial" over a
-        # full walk, in four of a dress rehearsal's runs. The sequence is
-        # renumbered onto a monotonic one the moment it goes backwards;
-        # `wire_seq` and `tx_seq` keep the raw numbers.
+        # LINEAGE, so one session can see the sequence start again mid-walk
+        # (a re-pair, an app relaunch inside the resume grace). The keyframe
+        # id and the image file name are both `source_seq`, so a repeated
+        # number would OVERWRITE the earlier keyframe's image on disk and
+        # give the journal two keyframes with one id; the final solve keys
+        # COLMAP on the file name and dies with a SQLite constraint abort --
+        # "Partial" over a full walk, seen in four runs of one rehearsal. The
+        # sequence is renumbered onto a monotonic one the moment it goes
+        # backwards; `wire_seq` and `tx_seq` keep the raw numbers.
         effective_seq = source_seq + self._seq_offset
         if (
             self._last_effective_seq is not None
@@ -414,9 +458,9 @@ class WorldBuilderEngine:
         # loop, so it reaches the outermost `except BaseException`: the
         # session is closed `end_reason: error`, finalization
         # `interrupted`, and every remaining frame of the walk is
-        # discarded. A reviewer drove exactly that through a real Tower --
-        # 220 frames with a rung change at frame 120 -- and the wearer,
-        # who walked the whole room, gets "Interrupted".
+        # discarded. Driven through a real Tower with 220 frames and a rung
+        # change at frame 120, the wearer, who walked the whole room, gets
+        # "Interrupted".
         #
         # Rejecting is not merely safer than crashing, it is the correct
         # answer: the calibration is per-resolution and exact, so a frame
@@ -476,8 +520,8 @@ class WorldBuilderEngine:
             # The look-back relocalizer: a loss with no episode open opens
             # one (the lost frame is its first scan); one inside an open
             # episode joins it. Never waits on the matcher.
-            # Durations run on the MONOTONIC clock (review V5 M4-4); the
-            # journal line above carries the Tower-clock `at` the wire uses.
+            # Durations run on the MONOTONIC clock; the journal line above
+            # carries the Tower-clock `at` the wire uses.
             now = self._mono()
             self._recovery(
                 lambda r: r.note_lost(now)
@@ -499,7 +543,6 @@ class WorldBuilderEngine:
             return self._result(decision.outcome, decision.reason)
 
         keyframe, image_bytes = self._persist_keyframe(
-            gray_shape=gray.shape,
             raw_bytes=raw_bytes,
             received_at=received_at,
             source_seq=source_seq,
@@ -544,22 +587,16 @@ class WorldBuilderEngine:
                 # detection, matching, or any geometry attempted.
                 # Measured on capture 22e9d428: 354 refusals from 26
                 # decisions, 328 cascade, 0 of 26 segments ever
-                # recovering. classical.py has claimed for a long time
-                # that "the engine turns this into a new segment"; it did
-                # not, and this makes the claim true.
+                # recovering.
                 #
                 # The tracker keeps its reference. Tracking is healthy;
                 # only the solve failed, and discarding the reference
                 # would manufacture a tracking loss out of a geometry
                 # failure -- measured at 424 -> 389 solved poses when the
-                # reference is genuinely lost here.
+                # reference is genuinely lost here. `set_reference()` below
+                # re-establishes it anyway; the invariant is that a solve
+                # failure must not reset the tracker.
                 #
-                # Honest note: inserting a reset at THIS line is an
-                # equivalent mutation, because set_reference() below runs
-                # unconditionally and re-establishes it. The invariant is
-                # real and worth stating; this position does not enforce
-                # it. The test asserts the outcome (the tracker still has
-                # a reference), not this line.
                 # A segment that ends having solved nothing is evidence
                 # the region is unmappable; a run of them stops further
                 # restarts. One that produced geometry clears the count.
@@ -583,8 +620,8 @@ class WorldBuilderEngine:
             # precedes the keyframes of the segment it announces, because
             # that branch returns before persisting. This one cannot: the
             # breaker was already stamped with the OLD index. Emitting it
-            # first inverted the convention, so a consumer rebuilding
-            # segmentation from the journal misattributed exactly one
+            # first would invert the convention, and a consumer rebuilding
+            # segmentation from the journal would misattribute exactly one
             # keyframe per break.
             self._events.append(
                 "solve_chain_broken", {"segment_index": self._segment_index}
@@ -636,9 +673,17 @@ class WorldBuilderEngine:
         a lock naming a dead pid AND a pending finalization, which is a
         different, truthful story from a builder that was never asked to
         finalize. `release_world()` drops the lock when the caller is done;
-        `mark_finalization()` moves the record on.
+        `mark_finalization()` moves the record on. Without `hold_lock` the lock
+        is released here.
 
-        Default `False` keeps every offline caller exactly as it was.
+        `reason` is why the session ended and `capture_end_reason`, when
+        given, is how the capture itself ended; both go on the
+        `session_stopped` event. This also closes the frame-quality log, the
+        live-depth worker and any open relocalizer episode
+        (`relocalizer_stopped` is journaled before `session_stopped`). It
+        deliberately keeps the live solve, so `build()` can flush it. Returns a
+        `SessionSummary` whose `segments` counts the distinct segment indices
+        that received a keyframe.
         """
         if self._session is None:
             raise SessionNotActiveError("stop_session() requires an active session")
@@ -671,22 +716,19 @@ class WorldBuilderEngine:
         # `capture_end_reason` IS NOT `reason`, AND THAT IS THE POINT.
         #
         # `reason` is what happened to the WORLD; the capture's own end is
-        # what happened to the LINK. They differ in a case the field walk
-        # actually produced: a capture that ended `disconnect` counts as
-        # finished, so a walk whose phone never came back is recorded --
-        # deliberately, see `world_build_session.py` -- as an ordinary
-        # `stop`. That choice errs toward calling a real, openable world
-        # Saved rather than putting the campaign's headline symptom back,
-        # and it is defensible only while the artifact still says which it
-        # was. `data/captures/<id>/capture.json` says, but the session
-        # names only the FIRST capture it followed, and a reconnect starts
-        # a new one; after that the link is a timestamp search.
+        # what happened to the LINK. They differ: a capture that ended
+        # `disconnect` counts as finished, so a walk whose phone never came
+        # back is recorded -- deliberately, see `world_build_session.py` --
+        # as an ordinary `stop`. That choice errs toward calling a real,
+        # openable world Saved, and it is defensible only while the artifact
+        # still says which it was. `data/captures/<id>/capture.json` says,
+        # but the session names only the FIRST capture it followed, and a
+        # reconnect starts a new one; after that the link is a timestamp
+        # search.
         #
-        # One key on an event that is already written exactly once. Not a
-        # new periodic write on the live path -- that is the family §14.6
-        # of the handoff declines to open in the last hour of a campaign,
-        # and this is not it. Absent when the caller does not know, so
-        # every offline caller's journal is byte-identical to before.
+        # One key on an event that is already written exactly once, not a new
+        # periodic write on the live path. Absent when the caller does not
+        # know, so a journal without it is unchanged.
         stopped_payload = {"end_reason": reason}
         if capture_end_reason is not None:
             stopped_payload["capture_end_reason"] = capture_end_reason
@@ -706,8 +748,10 @@ class WorldBuilderEngine:
             keyframes_accepted=session.keyframes_accepted,
             rejected_by_reason=dict(self._rejected),
             # Distinct indices that received a keyframe, NOT the
-            # high-water mark -- see _segments_used. This is the same
-            # quantity build() reports, so the two cannot disagree.
+            # high-water mark -- see _segments_used. `BuildResult.segments`
+            # is the same quantity (the manifest's `segments` is
+            # `frame_segments`, and can be larger after a gated solve splits
+            # a segment).
             segments=len(self._segments_used),
             end_reason=reason,
         )
@@ -748,8 +792,7 @@ class WorldBuilderEngine:
         sentence per cause the phone may show -- what the evidence gate could
         not do for this walk, and who can fix it. A non-empty string writes
         it; `None` (or "") REMOVES it, and removed means the key is absent,
-        never null, so a record with nothing owed is byte for byte what it
-        was before v6.
+        never null, so a record with nothing owed carries no `notice` key.
 
         THE DEFAULT KEEPS WHATEVER THE RECORD ALREADY SAYS (`NOTICE_KEEP`).
         The notice describes the PUBLISHED solve, so only the writers that
@@ -757,12 +800,12 @@ class WorldBuilderEngine:
         the finisher's re-gate -- or that resolve its owed work (the
         finisher giving a re-gate up) know what it should be, and they pass
         it. Any other re-mark -- a `--skip-solve` repair, a record kept as
-        it was, a call written tomorrow that has never heard of notices --
-        leaves a still-valid notice standing instead of silently dropping
-        it. Recomputing it here from the published solve was the other
-        option and is the wrong one: the finisher's given-up sentence is not
-        a function of the solve at all (it is the attempt ledger's), and the
-        engine would have to know the evidence gate to do it.
+        it was, a call that has never heard of notices -- leaves a
+        still-valid notice standing instead of silently dropping it.
+        Recomputing it here from the published solve would be wrong: the
+        finisher's given-up sentence is not a function of the solve at all (it
+        is the attempt ledger's), and the engine would have to know the
+        evidence gate to do it.
         """
         if state not in FINALIZATION_STATES:
             raise ValueError(f"unknown finalization state {state!r}")
@@ -800,14 +843,14 @@ class WorldBuilderEngine:
         `mark_finalization(complete)` and AFTER `release_world()`, and they
         take six to eleven minutes on a real walk. That order is deliberate:
         the lock is dropped so the phone can read the world while they build
-        (`results/world_builder_render.py`). What was missing is the record.
-        A world could sit at `finalization: {state: complete}` with no
-        photographic representation, no surface, and nothing on disk saying
-        whether one was attempted, skipped, or raised -- the report dict the
+        (`results/world_builder_render.py`). Their outcome is recorded here,
+        beside `finalization` (in `session.stages`) rather than into it, so a
+        world at `finalization: {state: complete}` also says whether each
+        stage was attempted, skipped, or raised -- the report dict the
         builder prints is not persisted anywhere.
 
-        So this writes beside `finalization` rather than into it. Callers are
-        expected to mark a stage `running` BEFORE starting it: this process
+        Callers are expected to mark a stage `running` BEFORE starting it: this
+        process
         can be killed by the Job Object on a thirty-second grace, and a stage
         left saying `running` by a pid that is gone is the honest record of
         exactly that.
@@ -846,7 +889,31 @@ class WorldBuilderEngine:
     # -- build ---------------------------------------------------------
 
     def build(self, world_id: str, session_id: str) -> BuildResult:
-        """Reconstruct from the persisted journal. Expensive; offline only."""
+        """Rewrite a session's derived tree from its persisted journal.
+
+        WHAT: rebuilds poses, points, support, manifest and (when a global
+        solution exists) placements for one session, and returns a
+        `BuildResult`.
+
+        HOW: refuses a purged world (`ImagesPurgedError`) and a resolution
+        mismatch (`IntrinsicsResolutionMismatchError`); selects the backend
+        (`announce=False`) and records it, and any downgrade, on the session;
+        clears the derived edges; then, per tracker segment, flushes the live
+        estimate when its keyframe ids match the journal's exactly, and
+        otherwise re-decodes the keyframes and calls `estimate_window`;
+        counts solved, anchor and refused poses (refusals split into root
+        decisions and cascaded ones); if a global solution is persisted,
+        replaces the rows, counts and placements by `global_solve.merge`; sets
+        `scale_state` (`relative` only for a single segment with a solved
+        pose, `unknown` otherwise, and a measured scale is never clobbered);
+        and writes the world, the derived tree and the manifest.
+
+        WHY: it is never reachable from `observe()`, so its multi-second write
+        stays off the frame path. `diagnostics["placements_source"]` reports
+        who owns `placements.json` (`global_solve` only when the merge placed
+        at least one segment), and anchors count as positions only in a
+        segment that solved something.
+        """
         world = self._store.read_world(world_id)
         if world.images_purged:
             raise ImagesPurgedError(
@@ -857,40 +924,26 @@ class WorldBuilderEngine:
         session = self._store.read_session(world_id, session_id)
         keyframes = self._store.read_keyframes(world_id, session_id)
         _require_matching_resolution(session, keyframes)
-        # Silent here, deliberately. `_open_live_solve` already announced
-        # this at session start, where an operator can still act on it,
-        # and build() now runs once per rebuild -- so announcing here
-        # turns one actionable warning into one per rebuild. The
-        # selection itself is unchanged and still recorded on the
-        # session below.
+        # Silent here, deliberately: `_open_live_solve` already announced the
+        # selection at session start, where an operator can still act on it,
+        # so announcing it here too would turn one actionable warning into one
+        # per rebuild. The selection itself is recorded on the session below.
         selection = select_backend(
             self._backend_name, session.intrinsics, announce=False
         )
         backend = selection.backend
         backend.prepare(session.intrinsics)
 
+        session_changes = {
+            "backend_id": backend.capabilities.backend_id,
+            "backend_requires_intrinsics": (
+                backend.capabilities.requires_intrinsics
+            ),
+        }
         if selection.was_downgraded:
-            self._store.write_session(
-                replace(
-                    session,
-                    backend_id=backend.capabilities.backend_id,
-                    backend_requires_intrinsics=(
-                        backend.capabilities.requires_intrinsics
-                    ),
-                    backend_downgraded_from=selection.downgraded_from,
-                    backend_downgrade_reason=selection.downgrade_reason,
-                )
-            )
-        else:
-            self._store.write_session(
-                replace(
-                    session,
-                    backend_id=backend.capabilities.backend_id,
-                    backend_requires_intrinsics=(
-                        backend.capabilities.requires_intrinsics
-                    ),
-                )
-            )
+            session_changes["backend_downgraded_from"] = selection.downgraded_from
+            session_changes["backend_downgrade_reason"] = selection.downgrade_reason
+        self._store.write_session(replace(session, **session_changes))
 
         # Edges are recomputed from the keyframes on every build, so they
         # are derived output despite living in a journal. Without this,
@@ -917,9 +970,9 @@ class WorldBuilderEngine:
         # Counted, not derived by subtraction. `keyframes - poses_refused`
         # silently promotes every anchor to a camera position, and an
         # anchor is definitional rather than measured: identity rotation,
-        # zero translation, by construction. On the 2026-08-24 physical
-        # walk that arithmetic turned 36 origin markers into "36 camera
-        # poses" on the phone while poses_solved was zero.
+        # zero translation, by construction. On a physical walk with
+        # poses_solved zero that arithmetic turned 36 origin markers into
+        # "36 camera poses" on the phone.
         #
         # An anchor IS a real position when the chain it anchors resolved
         # -- it is that segment's origin, and dropping it would
@@ -944,8 +997,6 @@ class WorldBuilderEngine:
 
         for segment in segments:
             members = [k for k in keyframes if k.segment_index == segment]
-            if not members:
-                continue
             member_ids = tuple(keyframe.keyframe_id for keyframe in members)
             carried = solved_live.get(segment)
             if carried is not None and carried[0] == member_ids:
@@ -1136,10 +1187,10 @@ class WorldBuilderEngine:
         # one session. Calling that "relative" would assert a coherence
         # the reconstruction does not have.
         #
-        # COUNTED OVER THE ROWS AS WELL AS THE TRACKER (review V7, M1). A gated solve
-        # can split a tracker segment into two derived segments whose poses share no
-        # frame either (`global_solve.merge`, `split_from`); the tracker would still say
-        # one. Never fewer than the tracker's count, so an ungated build is unchanged.
+        # COUNTED OVER THE ROWS AS WELL AS THE TRACKER. A gated solve can
+        # split a tracker segment into two derived segments whose poses share
+        # no frame either (`global_solve.merge`, `split_from`); the tracker
+        # would still say one. Never fewer than the tracker's count.
         frame_segments = max(len(segments), len({int(r["segment_index"]) for r in pose_rows}))
         if not poses_solved:
             scale_state = SCALE_UNKNOWN
@@ -1211,7 +1262,7 @@ class WorldBuilderEngine:
                 "points_triangulated": total_triangulated,
                 # The segments the derived tree's poses fall in (`frame_segments`): the
                 # tracker's, plus any a gated solve split off. The status channel's
-                # path length reads it (review V7, M1).
+                # path length reads it.
                 "segments": frame_segments,
                 "scale_state": scale_state,
                 "global_solve": solve_summary,
@@ -1241,26 +1292,24 @@ class WorldBuilderEngine:
                 # run: it answers the same question pairwise and weaker, and
                 # it OVERWRITES the same file.
                 #
-                # This is reported rather than inferred because the builder
-                # used to infer it from the wrong thing -- whether the FINAL
-                # solve had succeeded. On the 2026-09-09 walk the final solve
-                # never ran (the session died in the observe loop), so the
-                # builder concluded no solution existed and ran the
-                # registrar 16 seconds after the last build. It replaced 72
-                # segments registered into 14 components with 120 refusals
-                # and 2 registrations, and that is the world the phone then
-                # drew. Nine good background solves were discarded by a
-                # question about a tenth that never happened.
+                # This is reported rather than inferred from whether the
+                # FINAL solve succeeded. On a walk whose final solve never
+                # ran (the session died in the observe loop), that inference
+                # concludes no solution exists and runs the registrar 16
+                # seconds after the last build: it replaced 72 segments
+                # registered into 14 components with 120 refusals and 2
+                # registrations, and that was the world the phone then drew.
+                # Nine good background solves had been discarded by a question
+                # about a tenth that never happened.
                 #
-                # "PLACED SOMETHING", not "ran". An adversarial review found
-                # the first version of this asking `placements is not None`,
-                # which is true whenever `merge()` ran at all -- including
-                # when it returns [] because every segment is still pending,
-                # and when it returns nothing but refusals because the solve
-                # posed none of their keyframes. Both of those place zero
-                # segments, and both would have stood the registrar down and
-                # left the world with no placements at all. The registrar is
-                # the correct fallback there, and this must not suppress it.
+                # "PLACED SOMETHING", not "ran". `placements is not None` is
+                # true whenever `merge()` ran at all -- including when it
+                # returns [] because every segment is still pending, and when
+                # it returns nothing but refusals because the solve posed none
+                # of their keyframes. Both of those place zero segments, and
+                # both would stand the registrar down and leave the world with
+                # no placements at all. The registrar is the correct fallback
+                # there, and this must not suppress it.
                 "placements_source": (
                     "global_solve"
                     if placements and any(p.state == "registered" for p in placements)
@@ -1279,7 +1328,7 @@ class WorldBuilderEngine:
         reads the limiter and acceptance from here, never from the web
         process's configuration). No relocalizer -- `off`, no calibration,
         or a failure to build one -- journals nothing, and the session's
-        `tracking.recovery` is null exactly as for every older session.
+        `tracking.recovery` is null.
         """
         if self._reloc is not None:
             try:
@@ -1302,10 +1351,9 @@ class WorldBuilderEngine:
                 from tower.config import world_relocalizer_options
 
                 options = world_relocalizer_options()
-            # `wall_clock` is the clock the journal stamps `at` with: the
-            # limiter checks the prompt cap on the wire's own numbers too
-            # (review V8 LOW-3; see `_recovery`). `options` only when set,
-            # so the default call is exactly the one before RELOC2.
+            # `wall_clock` is the clock the journal stamps `at` with, so the
+            # limiter checks the prompt cap on the wire's own numbers (see
+            # `_recovery`). `options` is passed only when set.
             extra = {"options": options} if options else {}
             reloc = relocalizer.from_session(
                 session.intrinsics, mode=mode, wall_clock=self._clock, **extra
@@ -1340,7 +1388,7 @@ class WorldBuilderEngine:
                 "for the rest of this session"
             )
             self._reloc = None
-            # Review V5 M4-1: the drop is JOURNALED. An open episode is closed
+            # The drop is JOURNALED. An open episode is closed
             # `timed_out` and `relocalizer_stopped {why: error}` is the last
             # relocalizer line, so the recovery block can never read
             # "searching" for the rest of the walk. If even the handle's
@@ -1361,7 +1409,7 @@ class WorldBuilderEngine:
             if kind == "recovery_prompted":
                 # The line's own `at` IS the wire's `prompt.issued_at`; the
                 # limiter keeps these, not a reading of its own, so the cap
-                # holds exactly on the wire (review V8 LOW-3).
+                # holds exactly on the wire.
                 reloc.prompt_journaled(event.at)
 
     def _open_frame_quality_log(self, session) -> None:
@@ -1392,8 +1440,8 @@ class WorldBuilderEngine:
             log.close()
 
     def _frame_measured(self, quality, motion) -> dict | None:
-        """What `evaluate` saw, for the log. Guarded like the log's own writes
-        (review V16 MED-1): a failure here turns the log off, never the walk."""
+        """What `evaluate` saw, for the log. Guarded like the log's own writes:
+        a failure here turns the log off, never the walk."""
         log = self._frame_log
         if log is None or not log.active:
             return None
@@ -1418,7 +1466,7 @@ class WorldBuilderEngine:
         frames-since-keyframe and the segment), or None for a frame the
         frontend never scored. Copies only: no measurement is repeated. The
         row is BUILT inside the log's guard (`FrameQualityLog.record`), so no
-        exception from here reaches `observe()` (review V16 MED-1).
+        exception from here reaches `observe()`.
         """
         log = self._frame_log
         if log is None or not log.active:
@@ -1434,10 +1482,9 @@ class WorldBuilderEngine:
 
     def _recovery_tick(self) -> None:
         """A frame rejected before tracking still moves the recovery
-        episode's clock (review V8 LOW-1): an episode must not stay
-        `searching` for ever behind undecodable or resized frames. Time
-        only -- the relocalizer matches nothing here, and off it is not
-        called at all."""
+        episode's clock: an episode must not stay `searching` for ever behind
+        undecodable or resized frames. Time only -- the relocalizer matches
+        nothing here, and off it is not called at all."""
         self._recovery(lambda r: r.tick(self._mono()))
 
     def _open_live_solve(self, session) -> None:
@@ -1506,13 +1553,11 @@ class WorldBuilderEngine:
         chosen precisely so no consumer ever has to invert anything.
 
         Writing the raw `t` under that contract mirrors every camera
-        through the origin. It is not a loud failure -- the trajectory
-        stays smooth, monotonic and entirely plausible -- which is exactly
-        why the convention is frozen and why this conversion lives here
-        rather than being left to whoever renders it. An earlier version
-        of this function shipped the raw value; a strafe along +X
-        persisted as -X, and nothing caught it until the values were
-        compared against ground-truth camera positions.
+        through the origin (a strafe along +X would persist as -X). It is
+        not a loud failure -- the trajectory stays smooth, monotonic and
+        entirely plausible -- which is exactly why the convention is frozen
+        and why this conversion lives here rather than being left to
+        whoever renders it.
 
             R_world_camera = R.T
             C              = -R.T @ t
@@ -1550,7 +1595,7 @@ class WorldBuilderEngine:
         return decode_gray(path.read_bytes())
 
     def _persist_keyframe(
-        self, *, gray_shape, raw_bytes, received_at, source_seq, wire_seq,
+        self, *, raw_bytes, received_at, source_seq, wire_seq,
         tx_seq, quality, motion, reason,
     ) -> tuple[Keyframe, bytes]:
         session = self._session
@@ -1562,11 +1607,10 @@ class WorldBuilderEngine:
         # on disk, which is a display filter rather than the
         # transformation 06-PRIVACY-DATA asks for.
         #
-        # The bytes the reconstruction later reads are the redacted ones,
-        # and that was measured before it was chosen: at the ~5% of frame a
-        # real face occupies, keyframe acceptance and pose solving are
-        # completely unaffected and the point cloud loses about 9%. See
-        # redaction.py.
+        # The bytes the reconstruction later reads are the redacted ones.
+        # Measured: at the ~5% of frame a real face occupies, keyframe
+        # acceptance and pose solving are completely unaffected and the point
+        # cloud loses about 9%. See redaction.py.
         redaction = self._redactor.redact(raw_bytes)
         image_bytes = redaction.image_bytes
 
@@ -1608,13 +1652,12 @@ class WorldBuilderEngine:
         # The session records what was APPLIED, not what was configured, and
         # it records the WEAKEST thing applied to any of its keyframes.
         #
-        # This used to be "whatever the last keyframe got". `redact` never
-        # raises: when detection throws on one frame it hands back the
-        # ORIGINAL bytes labelled `none`, and those are what was just written.
-        # The next frame that redacted cleanly then rewrote the session label,
-        # and the dense and surface stages -- which trust `images/` as-is for
-        # any session not labelled `none` -- read that raw frame as a redacted
-        # keyframe and fused it. One later success laundered one failure.
+        # `redact` never raises: when detection throws on one frame it hands
+        # back the ORIGINAL bytes labelled `none`, and those are what was just
+        # written. The dense and surface stages trust `images/` as-is for any
+        # session not labelled `none`, so a later clean frame must not rewrite
+        # the label: one later success would launder one failure, and that raw
+        # frame would be read as a redacted keyframe and fused.
         #
         # So `none` is sticky. It is a session-wide demotion rather than a
         # per-keyframe record, and that is deliberate: the dense stage already
@@ -1657,16 +1700,13 @@ class WorldBuilderEngine:
 class _LiveSolve:
     """One geometry solve carried across observe() calls.
 
-    The whole reason this class exists is a cost measurement. build()
-    re-solved from scratch every time, at roughly O(N^1.2) in the backend
-    alone -- 303 ms for 32 keyframes and 641 ms for 64, extrapolating to
-    about 2 s at the 155 keyframes of the 2026-08-24 physical walk, plus
-    a JPEG decode per keyframe on top. A walk rebuilt every k keyframes
-    therefore paid O(N^2/k): 5.9 s of backend work over 64 keyframes at
-    --rebuild-every 4, against 0.8 s for the same walk extended. Turning
-    the live updates UP made the whole session slower, which is why the
-    cadence defaulted to zero and why nothing appeared until a walk had
-    ended.
+    The whole reason this class exists is a cost measurement. Re-solving
+    from scratch in build() costs roughly O(N^1.2) in the backend alone --
+    303 ms for 32 keyframes and 641 ms for 64, extrapolating to about 2 s at
+    the 155 keyframes of a physical walk, plus a JPEG decode per keyframe on
+    top. A walk rebuilt every k keyframes therefore pays O(N^2/k): 5.9 s of
+    backend work over 64 keyframes at --rebuild-every 4, against 0.8 s for
+    the same walk extended.
 
     A segment gets exactly one solve, and it never crosses a
     tracking_lost: segments do not share a coordinate frame or a unit,
@@ -1692,10 +1732,9 @@ class _LiveSolve:
     def extend(self, keyframe_id: str, gray):
         """Extend the open solve and return the backend's Extension.
 
-        The return value was previously discarded. It carries
-        `chain_broken`, the signal that lets the engine split a segment
-        when the solve fails instead of refusing every later keyframe in
-        it without looking.
+        The return value carries `chain_broken`, the signal that lets the
+        engine split a segment when the solve fails instead of refusing every
+        later keyframe in it without looking.
         """
         if not self.usable:
             return None
@@ -1710,6 +1749,8 @@ class _LiveSolve:
         return step
 
     def close_segment(self, segment_index: int) -> None:
+        """Freeze the open segment's estimate (if it holds a keyframe), reset
+        the backend, and start the solve for `segment_index`."""
         if not self.usable:
             return
         try:
@@ -1747,6 +1788,8 @@ class _LiveSolve:
         return carried
 
     def release(self) -> None:
+        """Mark the solve unusable and release the backend; a failure to
+        release is logged."""
         self.usable = False
         try:
             self.backend.release()
