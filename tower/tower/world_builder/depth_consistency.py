@@ -753,9 +753,10 @@ def solve_field(frames, solution, surface_params, median_depth, *,
                 warm: ConsistencyField | None = None, warm_outer: int | None = None,
                 device=None, should_stop=None, log=None):
     """Solve and judge a field. Returns (field or None, record). A solve that
-    is skipped, stopped, diverges, runs out of GPU memory or is refused is a
-    record, not an exception, and its state says what happened; anything else
-    raises, and `ensure_consistency` catches it."""
+    is skipped, stopped, diverges, runs out of GPU memory inside the guarded
+    solve block, or is refused is a record, not an exception, and its state
+    says what happened; anything else (including an allocation that fails
+    before that block) raises, and `ensure_consistency` catches it."""
     import torch
 
     cparams = cparams or ConsistencyParams()
