@@ -15,9 +15,8 @@ and
 
     does that geometry reproject.
 
-The first without the second is the failure mode this whole line of work
-has to avoid: coherence bought by accepting poses that are not true.
-So this tool refuses to report either alone. Every run prints the
+The first without the second is coherence bought by accepting poses that are
+not true. So this tool refuses to report either alone. Every run prints the
 dominant-component share AND the reprojection distribution of the
 published support rows, per segment and in aggregate.
 
@@ -170,24 +169,20 @@ def coherence(
     # record and its `evidence` describes the segment, not the edges --
     # so they come from the build report, which is where `register()`
     # already publishes them. Without one, the fallback treats the
-    # registered set as the single component it is by construction, and
-    # `admitted_pairs_source` says which reading produced the numbers so
-    # that two runs are never silently compared across the two.
+    # registered set as the single component it is by construction.
     if admitted is None:
-        # Since the global solve (2026-09-06) a session can carry MORE than
-        # one registered cluster, each under its own reference segment,
-        # and they are different frames. Group by reference rather than
-        # treating every registered segment as one component.
+        # A session can carry MORE than one registered cluster, each under
+        # its own reference segment, and they are different frames. Group
+        # by reference rather than treating every registered segment as one
+        # component.
         by_reference: dict = {}
         for placement in placements:
             if placement.state == "registered":
                 by_reference.setdefault(placement.reference_segment, []).append(placement.segment_index)
         components = [sorted(members) for members in by_reference.values() if len(members) > 1]
-        pairs_source = "placement-state"
     else:
         pairs = [tuple(sorted((int(a), int(b)))) for a, b in admitted]
         components = admitted_components(pairs) if pairs else []
-        pairs_source = "admitted-pairs"
 
     with_geometry = {s for s, n in points_by_segment.items() if n}
     joined = {segment for component in components for segment in component}

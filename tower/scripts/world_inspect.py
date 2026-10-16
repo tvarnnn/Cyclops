@@ -1,9 +1,8 @@
 #!/usr/bin/env python
 """Inspect a saved World Builder world, offline.
 
-Reads a world back cold, with no live session and no shared state -- the
-definition-of-done requirement that a saved world can be inspected without
-the session that produced it.
+Reads a world back cold, with no live session and no shared state, so a saved
+world can be inspected without the session that produced it.
 
 Reports an unavailable figure as `unknown`, never as `0`. "No poses were
 solved" and "poses were never attempted" are different facts, and once

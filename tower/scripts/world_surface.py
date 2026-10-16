@@ -5,11 +5,9 @@ WHY THIS EXISTS
 
 The development loop for reconstruction has to be re-runnable on worlds that
 already exist, with different parameters, without a new physical capture.
-Wearing the glasses again is not a debugging step. Every world on disk that has
-a global solve can be reconstructed here as often as needed, and the SAME
-`surfacify()` runs in the served product -- this is a front end to it, not a
-parallel implementation. A demo script that reconstructs differently from
-production is worse than no script, because it makes the product look finished.
+Every world on disk that has a global solve can be reconstructed here as often
+as needed, and the SAME `surfacify()` runs in the served product -- this is a
+front end to it, not a parallel implementation.
 
 It is also the migration path. Worlds solved before the surface stage existed
 get their surface by running this; nothing about them is rewritten, and a world
