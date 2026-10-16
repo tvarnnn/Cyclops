@@ -18,7 +18,7 @@ past the three required fields is additive and ignorable -- `provenance`,
 choosing an experiment from a list wants to know which one needs a GPU and
 which one is a guess, and because a client that ignores them is unharmed.
 
-Derived from `tower.experiments._REGISTRY` rather than hand-maintained
+Derived from `tower.experiments.EXPERIMENTS` rather than hand-maintained
 beside it. A second list would be a second place to forget.
 """
 
