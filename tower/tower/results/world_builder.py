@@ -34,7 +34,6 @@ malformed_frame). Tower genuinely does not know it yet, and says so.
 import json
 import logging
 import math
-import os
 import time
 from pathlib import Path
 
@@ -410,11 +409,9 @@ class _FileCache:
 class WorldBuilderStatusProducer:
     """Builds one status snapshot per call. Holds only a small cache."""
 
-    def __init__(self, world_root, clock, *, coverage_enabled=None) -> None:
+    def __init__(self, world_root, clock) -> None:
         self._root = Path(world_root)
         self._clock = clock
-        self._coverage_enabled = (os.environ.get("TOWER_WORLD_GUIDANCE_COVERAGE") == "on"
-                                  if coverage_enabled is None else coverage_enabled)
         self._files = _FileCache()
         # Path length needs the full poses file, which the manifest does
         # not summarise. Reading it on every poll would be the one
@@ -422,14 +419,11 @@ class WorldBuilderStatusProducer:
         # per geometry revision and remembered. One entry per target,
         # replaced rather than accumulated -- see _path_length.
         self._path_length_cache: dict[str, tuple[str, dict | None]] = {}
-        self._coverage_worker = None
-        if self._coverage_enabled:
-            from tower.world_builder.guidance_coverage import CoverageWorker
-            self._coverage_worker = CoverageWorker(self._root, self._clock)
+        from tower.world_builder.guidance_coverage import CoverageWorker
+        self._coverage_worker = CoverageWorker(self._root, self._clock)
 
     def shutdown_guidance(self) -> None:
-        if self._coverage_worker is not None:
-            self._coverage_worker.shutdown()
+        self._coverage_worker.shutdown()
 
     # -- target selection ---------------------------------------------
 
@@ -947,17 +941,15 @@ class WorldBuilderStatusProducer:
             ),
             "time_basis": TIME_BASIS,
         }
-        if self._coverage_enabled:
-            payload["guidance"] = {"coverage": self._coverage(
-                store, world.world_id, session_id, manifest,
-                payload["geometry"].get("revision"),
-            )}
+        payload["guidance"] = {"coverage": self._coverage(
+            store, world.world_id, session_id, manifest,
+            payload["geometry"].get("revision"),
+        )}
         return payload
 
     def _coverage(self, store, world_id, session_id, manifest, geometry_revision):
         """Request this status target; the worker discovers its landing."""
-        return (self._coverage_worker.request(world_id, session_id)
-                if self._coverage_worker is not None else None)
+        return self._coverage_worker.request(world_id, session_id)
 
     def _processing(self, store, world_id, session_id, session, holder):
         """`lifecycle.processing`, or None (`finish_phase.project`). The parse is cached on the

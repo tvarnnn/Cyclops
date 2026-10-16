@@ -1605,8 +1605,8 @@ identifier unless it says so.
 
 ## v8 — dated station coverage
 
-With `TOWER_WORLD_GUIDANCE_COVERAGE=on`, a selected session's status may carry
-`guidance.coverage`. It is a dated receipt from one fully merged global solve.
+A selected session's status always carries `guidance.coverage` (null until a
+receipt exists). It is a dated receipt from one fully merged global solve.
 The status block describes occupied camera-centre cells in a separate 8×8
 square for each registered component. Each cell has twelve clockwise heading
 sectors; one accepted, solve-placed keyframe makes a weak sector and at least

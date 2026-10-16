@@ -630,8 +630,8 @@ class ResultHub:
         failed application shutdown.
         """
         self._channels.clear()
-        # Cancel the FOW guidance worker (TOWER_WORLD_GUIDANCE_COVERAGE). It
-        # returns without waiting on the worker thread.
+        # Cancel the FOW guidance (coverage) worker. It returns without
+        # waiting on the worker thread.
         shutdown_guidance = getattr(self._snapshot_for, "shutdown_guidance", None)
         if shutdown_guidance is not None:
             try:

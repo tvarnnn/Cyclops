@@ -5,14 +5,12 @@ Authority: frozen `FOW-V11B-WIRE-AND-IOS-SPEC-20261007.md` with binding
 the iOS presentation is owned by the Mac lane.
 
 Both imagery routes are always registered and B1 (`live`) is always on.
-B2 (`landed`) is on whenever `TOWER_WORLD_GUIDANCE_COVERAGE=on`, and needs
-its fully merged landed solve.
+B2 (`landed`) is always on too, and needs its fully merged landed solve.
 
 ## Routes
 
 `GET /worlds/{world_id}/guidance/{session_id}/imagery/manifest` returns
-`{"version":1}` plus `live`, and `landed` if coverage is on.
-With coverage off, `landed` is omitted. `live` has `segment_index` and `entries` (possibly
+`{"version":1}` plus `live` and `landed`. `live` has `segment_index` and `entries` (possibly
 empty); `landed` is null before a qualifying landing. A missing or untrusted
 world/session answers 404. Both routes use no-store headers.
 
@@ -83,7 +81,6 @@ No manifest or tile is written to disk.
 Authority: `FOW-RING-SPEC-20261012.md` §7 S3 and manager mail 366. This is
 additive to B2: there is no switch of its own, `version` stays 1, B1 is
 unchanged, and the coverage receipt is byte-identical with or without it.
-With coverage off, nothing below is computed.
 
 The B2 `landed` block keeps `solved_at`, `geometry_revision`,
 `frame_revision` and `entries`. It adds:
@@ -198,11 +195,9 @@ redaction).** Authority: FOW-V12-PHOTO-FLOORPLAN-DESIGN-20261012 and the
 frozen wire in mail 303 (the iOS client, `codex/fow-v12-ios` a1a82bc, is built
 against it). Deviations go through the lead first.
 
-Switches: the photo floor plan is on whenever
-`TOWER_WORLD_GUIDANCE_COVERAGE=on`. Both routes are always registered; with
-coverage off they answer 404 and no photo worker starts. The raster is always
-the lower-image floor homography (CPU only); `TOWER_WORLD_PHOTO_FLOORPLAN_METHOD` is no longer read,
-so any value of it, set or unset, gives the same plan.
+Switches: none; the photo floor plan is always on and both routes are always
+registered. The raster is always the lower-image floor homography (CPU only);
+`TOWER_WORLD_PHOTO_FLOORPLAN_METHOD` is no longer read, so any value of it, set or unset, gives the same plan.
 
 ### Routes
 
@@ -242,8 +237,8 @@ so any value of it, set or unset, gives the same plan.
   meaning gray / "No usable photo here yet"). A component whose tile cannot
   fit in 180 KiB is omitted.
 - `landed` is null until the first plan publishes.
-- A world or session that is unknown or not contained answers 404, and so
-  does a switch that is off. 404 is an answer, not something to retry.
+- A world or session that is unknown or not contained answers 404. 404 is an
+  answer, not something to retry.
 - A manifest request that arrives while that session's landing job is in
   flight waits for the job, at most 1.6 s. Status replies never wait.
 
@@ -251,7 +246,7 @@ so any value of it, set or unset, gives the same plan.
 returns `image/png` or `image/webp` with an alpha channel. Alpha 0 means gray
 (not seen). WebP colour may be lossy, but its alpha is lossless. A digest
 that is unknown, superseded (not in the current landing) or malformed answers
-404, as does a disabled switch. Both routes send `Cache-Control: no-store`.
+404. Both routes send `Cache-Control: no-store`.
 Nothing is written to disk; tiles live in Tower memory only.
 
 ### Production and dating

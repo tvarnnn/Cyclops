@@ -91,8 +91,7 @@ def state(monkeypatch, tmp_path):
     return fresh
 
 
-def _client(monkeypatch):
-    monkeypatch.setenv("TOWER_WORLD_GUIDANCE_COVERAGE", "on")
+def _client():
     app = FastAPI()
     app.state.world_root = "synthetic-root"
     app.include_router(route.router)
@@ -132,7 +131,7 @@ def test_setting_is_exactly_on(monkeypatch, value, expected):
 
 @pytest.mark.parametrize("value", [None, "off", "1", "true", "ON"])
 def test_off_none_session_is_404_and_produces_nothing(state, monkeypatch, value):
-    client = _client(monkeypatch)
+    client = _client()
     if value is not None:
         monkeypatch.setenv(ENV, value)
     assert client.get(PATH + "/manifest").status_code == 404
@@ -146,7 +145,7 @@ def test_off_none_session_is_404_and_produces_nothing(state, monkeypatch, value)
 def test_trusted_manifest_is_identical_with_switch_on_or_off(state, monkeypatch):
     monkeypatch.setattr(_Store, "redaction", TRUSTED)
     monkeypatch.setattr(imagery.time, "monotonic", lambda: 100.0)  # no second tile
-    client = _client(monkeypatch)
+    client = _client()
     off_live = client.get(PATH + "/manifest")
     _land(state)
     off = client.get(PATH + "/manifest")
@@ -169,7 +168,7 @@ def test_on_none_session_live_manifest_and_tile(state, monkeypatch):
     monkeypatch.setenv(ENV, "on")
     monkeypatch.setattr(imagery, "keyframe_image_bytes",
                         lambda *a, **kw: pytest.fail("the redaction boundary re-redacts `none`"))
-    client = _client(monkeypatch)
+    client = _client()
     reply = client.get(PATH + "/manifest")
     assert reply.status_code == 200
     live = reply.json()["live"]
@@ -206,7 +205,7 @@ def test_on_none_tile_is_the_stored_keyframe_thumbnail(state, monkeypatch, tmp_p
 @pytest.mark.parametrize("dial", [True, False])
 def test_on_none_session_landed_manifest_and_tiles(state, monkeypatch, dial):
     monkeypatch.setenv(ENV, "on")
-    client = _client(monkeypatch)
+    client = _client()
     _land(state, dial=dial)
     reply = client.get(PATH + "/manifest")
     assert reply.status_code == 200
@@ -246,7 +245,7 @@ def test_live_bytes_are_never_relabelled_across_a_label_change(state, monkeypatc
 def test_on_other_untrusted_labels_still_refused(state, monkeypatch, label):
     monkeypatch.setenv(ENV, "on")
     monkeypatch.setattr(_Store, "redaction", label)
-    client = _client(monkeypatch)
+    client = _client()
     assert client.get(PATH + "/manifest").status_code == 404
     _land(state)
     assert state.landed("home", "s9") is None
@@ -257,7 +256,7 @@ def test_on_other_untrusted_labels_still_refused(state, monkeypatch, label):
 
 def test_on_tile_route_refuses_untrusted_label_even_for_a_cached_digest(state, monkeypatch):
     monkeypatch.setenv(ENV, "on")
-    client = _client(monkeypatch)
+    client = _client()
     _land(state)
     digest = client.get(PATH + "/manifest").json()["landed"]["entries"][0]["digest"]
     assert client.get(PATH + "/tile/" + digest).status_code == 200
