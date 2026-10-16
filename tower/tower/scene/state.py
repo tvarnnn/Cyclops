@@ -42,14 +42,12 @@ MIN_VERTICAL_SEPARATION_FRACTION = 0.08
 # Where "left" ends and "right" begins, as fractions of frame width.
 #
 # The camera's horizontal field of view is 44.7 degrees (self-calibrated
-# intrinsics, fx 438 px at 360 px wide; `Glasses-scratch/scene-
-# understanding-v1/corpus-audit/fov_analysis.json`). The 0.45/0.55 band
-# this shipped with was therefore 4.7 degrees wide -- narrower than a
-# person's shoulders at two metres (a 0.45 m torso subtends ~0.27 of the
-# frame there) -- so "centre" was a word almost nothing could earn and a
-# person straight ahead read as left or right depending on which
-# shoulder was nearer the middle. At 0.35/0.65 the centre band is 14
-# degrees, and each side band 15.
+# intrinsics, fx 438 px at 360 px wide). A 0.45/0.55 centre band would be
+# 4.7 degrees wide -- narrower than a person's shoulders at two metres (a
+# 0.45 m torso subtends ~0.27 of the frame there) -- so "centre" would be
+# a word almost nothing could earn and a person straight ahead would read
+# as left or right depending on which shoulder was nearer the middle. At
+# 0.35/0.65 the centre band is 14 degrees, and each side band 15.
 SIDE_LEFT_BELOW = 0.35
 SIDE_RIGHT_ABOVE = 0.65
 
@@ -77,9 +75,9 @@ SIZE_UNKNOWN = "unknown"
 
 # A person box with NO HEAD REGION in view -- its top starts below this
 # fraction of the frame -- is, from a camera worn at head height, most
-# often the wearer's own body: hands, forearms, lap, legs. The 2026-09-07
-# corpus audit found the wearer's body in frame in most captures and no
-# bystander in any, and on the 49 labelled wearer-only frames the
+# often the wearer's own body: hands, forearms, lap, legs. A corpus audit
+# found the wearer's body in frame in most captures and no bystander in
+# any, and on the 49 labelled wearer-only frames the
 # detector's 53 person boxes had tops at 0.31-0.91 of the frame: 50 of
 # them at or below 0.45. A standing or seated person in front of the
 # wearer has their head in the upper half of this camera's 72-degree
@@ -93,7 +91,7 @@ SIZE_UNKNOWN = "unknown"
 # The second shape is a box that spans nearly the whole width and
 # reaches the bottom edge with its top in the upper half: the wearer's
 # own arms and torso seen while looking down (2 of the 3 boxes the first
-# rule missed). A bystander filling 80% of the frame's width would be
+# shape missed). A bystander filling 80% of the frame's width would be
 # within arm's reach, and one that close has a face the estimator sees.
 NO_HEAD_REGION_ABOVE = 0.45
 BOTTOM_EDGE_FRACTION = 0.97
@@ -104,14 +102,12 @@ NOT_A_HEAD_ABOVE = 0.25
 # Kept as data rather than prose so a query layer can answer "why not"
 # with the same words the design used.
 REFUSED_RELATIONSHIPS = {
-    # MEASURED, on 9,199 real corpus frames, 2026-08-26. This entry used
-    # to cite a 6-8% MiDaS flicker figure taken from EPIC-KITCHENS at
-    # 128x256 and reason from it that the ordering would invert. The
-    # figure was about right -- this camera's own frames give 4.8%
-    # per-object frame-to-frame change -- and the inference from it was
-    # wrong, because flicker only breaks an ordering when it exceeds the
-    # SEPARATION, and both objects' depths move together. Measuring the
-    # ordering directly is what settles it, so it was measured.
+    # MEASURED, on 9,199 real corpus frames. Per-object frame-to-frame
+    # depth change on this camera is 4.8% (an earlier 6-8% MiDaS flicker
+    # figure from EPIC-KITCHENS at 128x256 was about right), but flicker
+    # only breaks an ordering when it exceeds the SEPARATION, and both
+    # objects' depths move together. Measuring the ordering directly is
+    # what settles it.
     # See docs/superpowers/research/2026-08-26-depth-ordering-on-real-frames.md.
     "in_front_of": (
         "needs depth that survives motion, and MiDaS does not. Measured on "
