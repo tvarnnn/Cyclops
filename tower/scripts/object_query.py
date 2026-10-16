@@ -67,25 +67,15 @@ from tower.object_memory.store import (  # noqa: E402
 )
 
 # THE SAME CONSTANT the producer and the read routes use, resolved from
-# `tower/config.py` rather than spelled again here.
-#
-# This used to be `Path("data/object_memory")` -- relative, resolved
-# against whatever directory the operator happened to be standing in, and
-# never consulting TOWER_OBSERVATION_ROOT at all. `config.py` exists to
-# stop exactly that, and says why at length: on 2026-08-26 the producer
-# defaulted to one directory and the web process to another, and a real
-# 2,203-frame walk was remembered into a store every HTTP request
-# answered 404 about. "Two defaults for one directory is not a
-# configuration choice; it is a bug with a settings file in front of it."
-#
-# `object_memory_session.py` was fixed then. This file was not, and it is
-# the worse place to miss, because THIS is where deletion lives. A wearer
-# asks for their object memory to be erased; an operator runs
-# `--purge-all` from the tower root; `ObservationStore.purge()` on a
-# directory nothing ever wrote to removes nothing and reports success,
-# because `unlink(missing_ok=True)` cannot tell "already gone" from "never
-# here". Exit code 0, `observations_removed: 0`, and the records still on
-# disk and still being served.
+# `tower/config.py` rather than spelled again here. A relative or divergent
+# default would be the worse mistake in THIS file, because this is where
+# deletion lives: with a producer and a reader on different directories (a
+# real 2,203-frame walk was once remembered into a store every HTTP request
+# answered 404 about), `--purge-all` would delete from a directory nothing
+# ever wrote to. `ObservationStore.purge()` uses `unlink(missing_ok=True)`,
+# which cannot tell "already gone" from "never here", so it would report
+# exit code 0 and `observations_removed: 0` while the records stay on disk
+# and stay served.
 #
 # An explicit `--root` still wins, and `TOWER_OBSERVATION_ROOT` still wins
 # over the default, so an operator who chose a directory is obeyed.
@@ -132,19 +122,16 @@ def main(argv=None) -> int:
     if args.purge_all:
         removed = store.purge()
         # THE PICTURES ARE PART OF THE ANSWER, and so is any the
-        # filesystem refused to delete.
-        #
-        # Since `keyframes.py` a record may own a small crop under
+        # filesystem refused to delete. A record may own a small crop under
         # `<root>/keyframes/`, and `purge()` deletes those with the
         # records. Printing only the observation count would let a run
-        # that left a directory of crops behind -- a Windows sharing
-        # violation is enough to cause one -- look identical to a run
-        # that removed everything.
+        # that left a directory of crops behind (a Windows sharing
+        # violation is enough to cause one) look identical to a run that
+        # removed everything.
         keyframes_removed, retained = store.last_keyframe_purge
-        # The store's own artifacts as well as the crops. Both halves
-        # report, because "everything was deleted except the file with
-        # every observation in it" is the answer a person asking for
-        # erasure most needs and least expects.
+        # The store's own artifacts are reported as well as the crops:
+        # "everything was deleted except the file with every observation
+        # in it" is the answer a person asking for erasure most needs.
         store_retained = store.last_purge_retained
         report = {
             "observations_removed": removed,
@@ -231,8 +218,8 @@ def main(argv=None) -> int:
     # accountable to. confidence follows the BEST look, because the claim
     # is "this was in view" and that is the best evidence for it; the
     # first-sighting score stays visible so the record is auditable.
-    # Records written before best_score existed say "not tracked" rather
-    # than borrowing the other number.
+    # Records without best_score say "not tracked" rather than borrowing
+    # the other number.
     print(f"  confidence    {observation.confidence.value} (from the best look)")
     print(f"  score         {observation.detector_score} (when it came into view)")
     print(f"  best score    {best} (strongest look while in view)")
