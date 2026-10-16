@@ -177,8 +177,9 @@ def _where(observation) -> dict:
 def _observation_view(observation) -> dict:
     return {
         # The handle the imagery routes take. Derived from the three
-        # values that already identify a sighting, so older records have
-        # one too with no migration and no rewrite of a wearer's memory.
+        # values that already identify a sighting, so the 64 records
+        # written before this field existed have one too, permanently,
+        # with no migration and no rewrite of a wearer's memory.
         "observation_id": observation.observation_id,
         "object_class": observation.object_class,
         "claim": CATEGORY_CLAIM,
