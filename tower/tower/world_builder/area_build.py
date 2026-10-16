@@ -3,8 +3,8 @@
 Contract: `docs/contracts/WORLD-BUILDER-COMPONENTS.md` §5.4 ("built in the area's own
 frame and levelled") and §2.3 (`shown_as: "area"`: at least 30 keyframes or 5 s).
 
-THE APPROACH IS P2-PX's (run `experiments/P2-PX/tools/px_build.py`, C2 built the
-target's areas offline in 45-90 s each), moved into the product:
+THE APPROACH was proven offline first (the target's areas built in 45-90 s each), and
+is moved into the product:
 
 1. **Its own solution.** The published solve, cut to the area's keyframes
    (`components.json`'s Tower-internal `keyframe_ids`), every one of them component 0,
@@ -13,9 +13,9 @@ target's areas offline in 45-90 s each), moved into the product:
    keyframe's `ki` (its depth files' name) is the room's.
 2. **Levelled.** Rotated so the vertical estimated from the AREA'S OWN images is up
    (-Y, OpenCV y-down) and centred on its cameras' median, NOT scaled: an area has no
-   scale relative to the room (§5.4, "Scale"). The vertical is P2-R5's `group_up`
-   (level head + level floors/tables/ceilings from MoGe normals), ported below with
-   its pre-registered constants; P2-PX levelled the target's two areas with it. The
+   scale relative to the room (§5.4, "Scale"). The vertical is `group_up` below
+   (level head + level floors/tables/ceilings from MoGe normals), with its
+   pre-registered constants; it levelled the target's two areas offline. The
    normals come from the area's own depth stage, run once on the unlevelled solution;
    the surface stage then re-fits those predictions to the levelled solution rather
    than predicting again (`dense_pipeline.reusable_predictions`).
@@ -29,9 +29,9 @@ When the vertical cannot be estimated (fewer normals than `group_up`'s own floor
 too few cameras for the level head) the area is built in the solve's own orientation and
 `levelled` is false (§5.4). When its normals do not support the vertical -- fewer than
 the ROOM's floor, 10 % of them within 30 deg of it (`LEVEL_*`, `surface_render.surface_up`'s
-own test; review V8, LOW-a) -- it is still rotated by its best estimate but `levelled` is
-false and the caption says so. The target's Area 2 (normal support 0.064, 0.139 within
-30 deg) passes, as it rendered level (OPEN T3: a floor for normals of their own).
+own test) -- it is still rotated by its best estimate but `levelled` is false and the
+caption says so. The target's Area 2 (normal support 0.064, 0.139 within 30 deg) passes,
+and it rendered level. A floor for normals of their own is open (OPEN T3).
 
 This module computes no component and decides nothing about placement.
 """
@@ -62,8 +62,8 @@ from tower.world_builder.records import (
 
 logger = logging.getLogger(__name__)
 
-# --- P2-R5's pre-registered vertical constants (RUN experiments/P2-R5/scripts/r5_lib.py,
-# validated there; used by P2-PX for the target's areas). Not tuned here. ---
+# --- Pre-registered vertical constants, validated in one offline experiment and
+# then used in a second to level the target's areas. Not tuned here. ---
 UP_GATE_DEG = 5.0      # level-head gate: RMS roll within +5 deg of the best candidate
 UP_NORMAL_TOL = 8.0    # a normal supports u if within 8 deg of +-u
 UP_PITCH_CONE = 60.0   # u within 60 deg of the mean camera up (head pitch)
@@ -71,45 +71,42 @@ UP_MIN_NORMALS = 1000  # below this `group_up` could not use normals: not levell
 PIX_STEP = 8           # depth-map subsampling
 DEPTH_VALID_M = (0.1, 12.0)
 NORMALS_MAX = 40000
-# The harness's roll-free up (`coherence_eval/eval_placement.roll_free_up`,
-# `PLACEMENT_PARAMS` tilt_*), P2-R5's fallback when there are too few normals: at
-# least 5 cameras, the 10 % least level-headed trimmed, well conditioned at an
-# eigenvalue ratio >= 5. Not tuned here.
+# The roll-free up's constants (the evaluation harness's `PLACEMENT_PARAMS` tilt_*),
+# the fallback when there are too few normals: at least 5 cameras, the 10 % least
+# level-headed trimmed, well conditioned at an eigenvalue ratio >= 5. Not tuned here.
 RF_MIN_CAMERAS = 5
 RF_TRIM_FRACTION = 0.1
 RF_MIN_CONDITIONING = 5.0
-# THE LEVELLING FLOOR (contract §5.4, OPEN T3; review V8, LOW-a): the ROOM's own. The
+# THE LEVELLING FLOOR (contract §5.4, OPEN T3): the ROOM's own. The
 # room page levels its horizon with `surface_render.surface_up`, which takes the
 # surface's vertical only when at least `min_horizontal_fraction` (10 %) of the surface
 # lies within `cone_deg` (30 deg) of horizontal. An area is `levelled` on its normals
 # under the same test, with the same constants (a test pins them to `surface_up`'s),
-# applied to its depth normals around the up it chose. Measured on P2-PX's builds (RUN
-# `experiments/P3-PUB/lowa/support.json`): the target's Area 2 -- §5.4's example, normal
-# support 0.064, rendered level -- has 0.139 within 30 deg and passes; the other islands
-# and rooms 0.21-0.41. What it does NOT reject: an isotropic normal field puts 13.4 %
-# (1 - cos 30 deg) in that cone, so the floor refuses a group seen almost only as walls,
-# not noise (OPEN).
+# applied to its depth normals around the up it chose. Measured on the offline area
+# builds: the target's Area 2 -- §5.4's example, normal support 0.064, rendered level --
+# has 0.139 within 30 deg and passes; the other islands and rooms 0.21-0.41. What it
+# does NOT reject: an isotropic normal field puts 13.4 % (1 - cos 30 deg) in that cone,
+# so the floor refuses a group seen almost only as walls, not noise (OPEN).
 LEVEL_CONE_DEG = 30.0
 LEVEL_MIN_HORIZONTAL_FRACTION = 0.10
 # The unit `levelled` direction, OpenCV y-down: up is -Y.
 LEVEL_UP = np.array([0.0, -1.0, 0.0])
 
-AREA_BUILDS_OFF_DETAIL = (
-    "area builds are switched off on this Tower (TOWER_WORLD_AREA_BUILDS); "
-    "scripts/world_refinish.py builds them on request")
+# The sentence recorded for areas declined while area builds are off, defined once
+# in `components`; `scripts/world_finish_pending.py` reads it from here.
+AREA_BUILDS_OFF_DETAIL = C.AREA_BUILDS_OFF_DETAIL
 
 
 # WHERE AN AREA IS BUILT, as opposed to where it lives. The area lives at
-# `<world>/areas/<area>/` (contract v3 §5.3), and its stages append
+# `<world>/areas/<area>/` (contract §5.3), and its stages append
 # `<stage>/<session>/` and their own file names, so the deepest file an area build
 # WRITES -- an appearance chunk's staging name, `c.<32 hex>.bin.p<pid>.<8 hex>.tmp`
 # -- sat at root + 166 characters: 222 on this Tower's live root and 265 in a
-# scratch copy, past Windows' MAX_PATH (260), where every area appearance failed
-# (run wb-coherence-run-2026-09-23, P3-PG re-finish). So the stages run in a SHORT
-# directory at the root of the store, `<root>/.ab/<area>` (root + 21 instead of
-# root + 64), and the finished stage directories are moved into the area's own
-# directory when the build ends, on the same volume. What is written peaks at
-# root + 124; what is left in place, and only ever read, at root + 146.
+# scratch copy, past Windows' MAX_PATH (260), where an area appearance fails. So
+# the stages run in a SHORT directory at the root of the store, `<root>/.ab/<area>`
+# (root + 21 instead of root + 64), and the finished stage directories are moved into
+# the area's own directory when the build ends, on the same volume. What is written
+# peaks at root + 124; what is left in place, and only ever read, at root + 146.
 AREA_BUILD_DIRNAME = ".ab"
 
 
@@ -126,7 +123,6 @@ class _BuildView(C.AreaStore):
 
     def __init__(self, base, world_id: str, session_id: str, area_id: str, build_dir: Path) -> None:
         super().__init__(base, world_id, session_id, area_id)
-        self.final_dir = self._area_dir
         self._area_dir = Path(build_dir)
 
 
@@ -304,7 +300,7 @@ class AreaNotBuildable(Exception):
 
 
 # ---------------------------------------------------------------------------
-# geometry helpers (P2-R5)
+# geometry helpers
 # ---------------------------------------------------------------------------
 
 
@@ -331,7 +327,7 @@ def rot_between(a, b) -> np.ndarray:
 def camera_normals(z: np.ndarray, K: np.ndarray, step: int = PIX_STEP,
                    exclude: np.ndarray | None = None) -> np.ndarray:
     """Unit normals (camera frame, oriented toward the camera) of a depth map, on a
-    `step`-subsampled grid, where the depth is valid. `r5_lib.cam_points`."""
+    `step`-subsampled grid, where the depth is valid."""
     h, w = z.shape
     vs = np.arange(step // 2, h, step)
     us = np.arange(step // 2, w, step)
@@ -358,8 +354,7 @@ def camera_normals(z: np.ndarray, K: np.ndarray, step: int = PIX_STEP,
 
 
 def roll_free_up(Rwc: np.ndarray) -> dict | None:
-    """The up of a set of cameras from the level head alone (the harness's
-    `eval_placement.roll_free_up`, which P2-R5 falls back to): the direction the
+    """The up of a set of cameras from the level head alone: the direction the
     camera x axes are most nearly perpendicular to, signed by the mean camera up,
     re-estimated once without the least level-headed 10 %. None below
     `RF_MIN_CAMERAS`."""
@@ -386,7 +381,7 @@ def roll_free_up(Rwc: np.ndarray) -> dict | None:
 
 
 def group_up(Rwc: np.ndarray, normals_world: np.ndarray) -> dict:
-    """The up of a rigid group of cameras (`r5_lib.group_up`), or `levelled: False`.
+    """The up of a rigid group of cameras, or `levelled: False`.
 
     Candidates lie on the circle spanned by the two smallest eigenvectors of the
     camera x axes (a level head keeps them horizontal), gated to an RMS roll within
@@ -396,8 +391,8 @@ def group_up(Rwc: np.ndarray, normals_world: np.ndarray) -> dict:
     """
     N = normals_world
     if len(N) < UP_MIN_NORMALS or len(Rwc) < 2:
-        # P2-R5's FALLBACK (review V6, L5): the level head alone. Without it such an
-        # area was drawn in GLOMAP's arbitrary frame, possibly upside down. The up's
+        # THE FALLBACK: the level head alone. Without it such an area is drawn in
+        # GLOMAP's arbitrary frame, possibly upside down. The up's
         # SIGN is the mean camera up's, so it is never upside down; `levelled` says
         # whether the head-level estimate is well conditioned (the caption warns
         # otherwise). Only with too few cameras for even that is it not estimated.
@@ -437,9 +432,9 @@ def group_up(Rwc: np.ndarray, normals_world: np.ndarray) -> dict:
         u = _unit((N[w] * np.sign(c[w])[:, None]).sum(0))
     if u @ cu < 0:
         u = -u
-    # THE FLOOR (review V8, LOW-a): the room's levelling test on the area's own normals.
-    # Below it the up is still used -- rotating by the best estimate is what keeps an area
-    # from coming out upside down (review V6, L5) -- but it is not claimed as measured.
+    # THE FLOOR: the room's levelling test on the area's own normals. Below it the up is
+    # still used -- rotating by the best estimate is what keeps an area from coming out
+    # upside down -- but it is not claimed as measured.
     horizontal = float((np.abs(N @ u) > math.cos(math.radians(LEVEL_CONE_DEG))).mean())
     levelled = horizontal >= LEVEL_MIN_HORIZONTAL_FRACTION
     return {"levelled": bool(levelled), "up": [float(v) for v in u],
@@ -527,7 +522,7 @@ def area_solution(solution, keyframe_ids, *, rotation=None, centre=None, tag: st
         transients=getattr(solution, "transients", None),
         solve=getattr(solution, "solve", None),
         # The room's gate record travels with the area's solution: its stages key their
-        # depth (the camera's FoV told or not) on it, as the room's do (review V7, L-a).
+        # depth (the camera's FoV told or not) on it, as the room's do.
         gate=getattr(solution, "gate", None))
     return sub, members
 
@@ -555,7 +550,7 @@ def estimate_up(solution, members, align: dict, work: Path) -> dict:
         except (OSError, ValueError):
             continue
         if kind == "depth":
-            # MoGe's z: metric depth, the harness's own normals source (P2-R5).
+            # MoGe's z: metric depth, the normals source the constants were validated on.
             z = pred
         else:
             from tower.world_builder.dense import depth_from_prediction  # noqa: PLC0415
@@ -611,15 +606,6 @@ def decline_area(store, world_id: str, session_id: str, area_id: str,
     record = area_recorder(store, world_id, session_id, area_id, components_sha1)
     for stage in (STAGE_SURFACE, STAGE_APPEARANCE):
         record(stage, state=STAGE_STATE_UNAVAILABLE, attempted=False, detail=detail)
-
-
-def owed_area_ids(store, world_id: str, session_id: str, session, record) -> dict:
-    """`{area_id: word}` for this session's areas whose build is unsettled (owed,
-    running or unobservable), in the record's order. Reads only."""
-    from tower.world_builder.photographic import is_unsettled  # noqa: PLC0415
-
-    words = C.area_words(store, world_id, session_id, session, record)
-    return {aid: w for aid, w in words.items() if is_unsettled(w.get("state"))}
 
 
 def _stamp_manifest(path: Path, area_id: str, levelled: bool) -> None:
@@ -707,7 +693,7 @@ def prepare_area(store, world_id: str, session_id: str, area_id: str, record, *,
         )
 
         # A LIVE PROCESS IS WORKING ON THIS AREA FROM HERE, and the status file is what
-        # the liveness probe reads (C1 E13): without it the ~10 s depth pass before
+        # the liveness probe reads: without it the ~10 s depth pass before
         # `surfacify` writes its own status read `owed`, not `running`. `surfacify`
         # overwrites it; a process killed here leaves `running` under a dead pid,
         # which reads as owed again.
@@ -724,8 +710,8 @@ def prepare_area(store, world_id: str, session_id: str, area_id: str, record, *,
             raise AreaNotBuildable("stopped before the area's vertical was estimated")
         levelling.update(estimate_up(first, members, align, work))
         # Rotated whenever an up was estimated -- a poorly conditioned head-level up
-        # still has the right SIGN, and not rotating is how an area came out upside
-        # down (review V6, L5); `levelled` stays what the estimate supports.
+        # still has the right SIGN, and not rotating can leave an area upside down;
+        # `levelled` stays what the estimate supports.
         if levelling.get("up") is not None:
             rotation = rot_between(np.asarray(levelling["up"]), LEVEL_UP)
     levelled = bool(levelling.get("levelled"))

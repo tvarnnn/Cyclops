@@ -7,12 +7,11 @@ Each keyframe's monocular depth is fitted to the solve's sparse points by one
 affine per frame (`dense.align_frame`). Every frame on its own is smooth to a
 fraction of a voxel, but frames disagree with EACH OTHER about where a wall is
 by 6-12 voxels (median std of a 0.3-unit patch across frames on the canonical
-capture, `fixit/diagnose/DIAGNOSIS.md` section 5.2) -- about the width of the
-truncation band. The TSDF averages sheets that are each smooth but sit at
-different offsets and tilts, and the zero crossing steps wherever the set of
-contributing frames changes: the crumpled, faceted, holey walls. Controlled
-fusion showed the fusion code is faithful: give it consistent depth and it is
-clean.
+capture) -- about the width of the truncation band. The TSDF averages sheets
+that are each smooth but sit at different offsets and tilts, and the zero
+crossing steps wherever the set of contributing frames changes: the crumpled,
+faceted, holey walls. Controlled fusion showed the fusion code is faithful:
+give it consistent depth and it is clean.
 
 THE MODEL
 
@@ -717,7 +716,9 @@ def _optimise(D, field, anc_fit, pairs, samples, cparams, outer, gate0, should_s
                 total += float(L.detach())
             if n_corr:
                 for s0 in range(0, n_corr, cparams.chunk):
-                    rc = _cross_residual(field, D, corr, slice(s0, s0 + cparams.chunk))
+                    # F821 is a false positive: ruff sees the loop's `del corr` unbind this
+                    # free variable, but the closure only runs inside `opt.step`, before it.
+                    rc = _cross_residual(field, D, corr, slice(s0, s0 + cparams.chunk))  # noqa: F821
                     L = cparams.lam_cross * _cauchy(rc / cparams.sig_cross).sum() / n_corr
                     L.backward()
                     total += float(L.detach())
@@ -751,8 +752,11 @@ def solve_field(frames, solution, surface_params, median_depth, *,
                 cparams: ConsistencyParams | None = None, outer: int | None = None,
                 warm: ConsistencyField | None = None, warm_outer: int | None = None,
                 device=None, should_stop=None, log=None):
-    """Solve and judge a field. Returns (field or None, record). Never raises
-    for a solve that fails; the record's state says what happened."""
+    """Solve and judge a field. Returns (field or None, record). A solve that
+    is skipped, stopped, diverges, runs out of GPU memory inside the guarded
+    solve block, or is refused is a record, not an exception, and its state
+    says what happened; anything else (including an allocation that fails
+    before that block) raises, and `ensure_consistency` catches it."""
     import torch
 
     cparams = cparams or ConsistencyParams()
@@ -899,7 +903,7 @@ def ensure_consistency(dense_root: Path, frames, solution, surface_params, media
                        should_stop=None, solve=None) -> ConsistencyResult:
     """The field for exactly these frames, from cache when it is theirs.
 
-    A cached `applied` or `refused` decision with this key is reused; a
+    A cached `applied`, `refused` or `skipped` decision with this key is reused; a
     `failed` one is not (it may be the GPU, not the data), so the next build
     tries again. When the key differs -- a new global solve during a walk --
     the previous applied field warm-starts the new solve for the frames both
@@ -926,7 +930,7 @@ def ensure_consistency(dense_root: Path, frames, solution, surface_params, media
             return ConsistencyResult(cached["state"], cached, None, reused=True)
         if cached.get("state") == STATE_APPLIED and prev_field is not None and prev_key == key:
             return ConsistencyResult(STATE_APPLIED, cached, prev_field, reused=True)
-    warm = prev_field if prev_field is not None else None
+    warm = prev_field
     try:
         field, record = solve(frames, solution, surface_params, median_depth, cparams=cparams,
                               outer=outer, warm=warm, warm_outer=warm_outer, device=device,
