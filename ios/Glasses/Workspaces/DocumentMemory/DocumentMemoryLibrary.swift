@@ -349,8 +349,10 @@ struct DocumentLibraryResponse: Equatable, Sendable {
     let sufficientEvidence: Bool?
     let matchKind: String?
     let reason: String?
-    /// **48 on this Tower, and read rather than hard-coded** (§12.10): the
-    /// bound is the Tower's `SNIPPET_MAX_CHARS` module constant, published here.
+    /// **48 on this Tower, and read rather than hard-coded**
+    /// (docs/contracts/TOWER-UNIFIED-CARTRIDGES.md §12, item 10;
+    /// tower/docs/contracts/CARTRIDGE-RESULTS.md §15.3): the bound is the
+    /// Tower's `SNIPPET_MAX_CHARS` module constant, published here.
     let snippetMaxChars: Int?
 
     // Single-document only.
