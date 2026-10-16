@@ -178,8 +178,8 @@ def run(video_path: str, frame_count: int, target_fps: float) -> dict:
 
     keypoint_counts = [len(k) for k in keypoints_all]
 
-    # Constructed once, outside the timed region: rebuilding it per pair
-    # inflated the reported match cost.
+    # Constructed once, outside the timed region, so its construction cost
+    # is not part of the timed pair match.
     matcher = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=False)
 
     by_gap = {}
