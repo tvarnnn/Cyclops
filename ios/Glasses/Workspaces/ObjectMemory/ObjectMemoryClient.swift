@@ -968,7 +968,7 @@ final class ObjectMemoryViewModel: ObservableObject {
 /// capture-side's. So:
 ///
 /// - the transport uses an ephemeral `URLSession` with `urlCache = nil`
-///   (`ObjectMemoryImageryHTTPClient.uncachedSession`);
+///   (`UncachedURLSession`, `ObjectMemoryImageryHTTPClient`'s default);
 /// - the decoded bytes are held on this object, which is a row's
 ///   `@StateObject` and dies with the row;
 /// - `forget()` drops them on disappear rather than waiting for deallocation;

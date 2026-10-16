@@ -368,17 +368,12 @@ nonisolated struct WorldAssetClient {
     /// One process-wide session of that configuration, so a viewer opened a
     /// hundred times does not leave a hundred sessions behind. Ephemeral: its
     /// connection pool and nothing else outlives a request.
-    static let sharedUncachedSession = uncachedSession()
+    static let sharedUncachedSession = URLSession(configuration: uncachedConfiguration())
 
-    /// Ephemeral, `urlCache = nil`, local and remote caches ignored.
-    static func uncachedSession() -> URLSession {
-        URLSession(configuration: uncachedConfiguration())
-    }
-
+    /// `UncachedURLSession`'s configuration (ephemeral, `urlCache = nil`, local
+    /// and remote caches ignored) with no cookie jar either.
     static func uncachedConfiguration() -> URLSessionConfiguration {
-        let configuration = URLSessionConfiguration.ephemeral
-        configuration.urlCache = nil
-        configuration.requestCachePolicy = .reloadIgnoringLocalAndRemoteCacheData
+        let configuration = UncachedURLSession.configuration()
         configuration.httpCookieStorage = nil
         configuration.httpShouldSetCookies = false
         return configuration

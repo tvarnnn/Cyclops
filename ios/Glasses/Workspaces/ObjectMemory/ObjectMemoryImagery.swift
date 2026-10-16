@@ -678,8 +678,8 @@ nonisolated enum ObjectMemoryImageryDecoder {
 /// which is fine for JSON. These are **first-person photographs**, both binary
 /// routes send `Cache-Control: no-store`, and `URLSession.shared` has a disk
 /// cache. Honouring a no-store header must not depend on which session a caller
-/// happened to pass, so this type builds an **ephemeral** configuration with
-/// `urlCache = nil` when it is not given one, and every byte request also asks
+/// happened to pass, so this type builds an `UncachedURLSession` (ephemeral,
+/// `urlCache = nil`) when it is not given one, and every byte request also asks
 /// for `.reloadIgnoringLocalAndRemoteCacheData`. Belt and braces, because one
 /// of the two is a default someone can change from outside this file.
 nonisolated struct ObjectMemoryImageryHTTPClient {
@@ -690,27 +690,17 @@ nonisolated struct ObjectMemoryImageryHTTPClient {
     /// because the work is real, and still bounded (Rule 15).
     var timeout: TimeInterval = 20
 
-    /// The session a caller gets when it does not bring one: ephemeral, with
-    /// no URL cache at all.
-    ///
-    /// `URLSessionConfiguration.ephemeral` already keeps nothing on disk;
-    /// `urlCache = nil` removes the in-memory one as well, so there is no
-    /// copy of a wearer's first-person frame anywhere in this process that
-    /// outlives the view holding it.
-    static func uncachedSession() -> URLSession {
-        let configuration = URLSessionConfiguration.ephemeral
-        configuration.urlCache = nil
-        configuration.requestCachePolicy = .reloadIgnoringLocalAndRemoteCacheData
-        return URLSession(configuration: configuration)
-    }
-
+    /// A caller that brings no session gets a new `UncachedURLSession`.
+    /// `.ephemeral` already keeps nothing on disk; `urlCache = nil` removes the
+    /// in-memory cache as well, so there is no copy of a wearer's first-person
+    /// frame anywhere in this process that outlives the view holding it.
     init(
         baseURL: URL = TowerConfiguration.httpBaseURL,
         session: URLSession? = nil,
         timeout: TimeInterval = 20
     ) {
         self.baseURL = baseURL
-        self.session = session ?? Self.uncachedSession()
+        self.session = session ?? UncachedURLSession.make()
         self.timeout = timeout
     }
 
