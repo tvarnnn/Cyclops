@@ -23,25 +23,23 @@ and correctly refuses two pieces whose internal geometry disagrees.
 Making segments longer without controlling drift trades a visible
 failure for an invisible one.
 
-WHY A PRIOR ATTEMPT MEASURED 0.00%, AND WHY THAT IS NOT THE LAST WORD
+WHY A BUNDLE ADJUSTER CAN HELP HERE
 
-The record says a bundle adjuster improved drift by 0.00% at 16, 32 and
-104 keyframes, and attributes it to an observation graph whose median
-covisibility span is 1 -- 66% of landmarks seen by exactly two views, and
-a two-view landmark is exactly determined, so it constrains nothing.
-
-That was true of the engine it was measured on. It is not true of this
-one. Measured on the same 40-keyframe strafe at HEAD:
+A bundle adjuster measured 0.00% drift improvement at 16, 32 and 104
+keyframes on an observation graph whose median covisibility span is 1 --
+66% of landmarks seen by exactly two views, and a two-view landmark is
+exactly determined, so it constrains nothing. This engine's graph is
+different, because of the guided re-observation of
+`classical.EXTEND_REFERENCE_DEPTH`. Measured on the same 40-keyframe
+strafe:
 
     landmarks 5,876   mean views 4.67   >= 3 views 67.2%
     observation span: median 3, p90 9, p99 24; 28% span >= 5 frames
 
-The guided re-observation added by EXTEND_REFERENCE_DEPTH built the
-graph the earlier attempt was missing. And the drift is demonstrably
-REACHABLE by optimisation rather than baked in: reprojecting the very
-same observations through GROUND-TRUTH poses gives RMS 0.49 px against
-0.95 px for the solved poses. The solved reconstruction is not at the
-minimum. There is something to find.
+And the drift is REACHABLE by optimisation rather than baked in:
+reprojecting the very same observations through GROUND-TRUTH poses gives
+RMS 0.49 px against 0.95 px for the solved poses. The solved
+reconstruction is not at the minimum. There is something to find.
 
 WHAT THIS IS
 
@@ -56,7 +54,7 @@ all in forming it, which is vectorised.
 NumPy and OpenCV only. scipy is not a Tower dependency and this must run
 where the rest of the world builder runs.
 
-THE INVARIANT THAT BIT TWICE, stated once so it does not bite again:
+THE INVARIANT:
 
     EVERY OBSERVATION OF A CAMERA THAT IS ALLOWED TO MOVE MUST
     PARTICIPATE IN THE OPTIMISATION.
@@ -65,11 +63,11 @@ Drop an observation for any reason -- too few views on its landmark, a
 per-landmark view cap, a sampling shortcut -- and its landmark stays put
 while its camera moves out from under it. The trajectory gets better and
 the SUPPORT TABLE, which is what cross-segment registration and the
-viewer actually consume, gets worse. Both `MIN_VIEWS_FOR_ADJUSTMENT` and
-`MAX_VIEWS_PER_LANDMARK` shipped values that violated this and each
-carries the measurement that caught it. A landmark that must not MOVE is
-expressed with `fixed_points`, which keeps its observations in the
-problem; it is never expressed by removing its rows.
+viewer actually consume, gets worse. `MIN_VIEWS_FOR_ADJUSTMENT` and
+`MAX_VIEWS_PER_LANDMARK` each carry the measurement of a value that
+violates this. A landmark that must not MOVE is expressed with
+`fixed_points`, which keeps its observations in the problem; it is never
+expressed by removing its rows.
 
 GAUGE. A monocular reconstruction is free up to a similarity: 3 rotation,
 3 translation, 1 scale. The Jacobian is therefore rank-deficient by 7 and
@@ -78,10 +76,10 @@ system positive definite, which is the standard resolution and the one
 used here -- no parameters are held fixed, so with `fixed_cameras`
 empty the optimiser is free to move the whole window and the caller must
 NOT assume camera 0 stays where it was. Measured with no fixed camera,
-camera 0 moves 0.095 deg and 1.15e-2. Nothing re-anchors afterwards, and
-an earlier draft of this docstring claimed it did; a caller that needs an
-anchor must say so, which is why `_local_adjust` always passes
-`fixed_cameras=(0, 1)`.
+camera 0 moves 0.095 deg and 1.15e-2. Nothing re-anchors afterwards; a
+caller that needs an anchor must say so, which is why
+`classical._local_adjust` passes the first `BUNDLE_ANCHOR_CAMERAS` (2)
+cameras of its window as `fixed_cameras`.
 
 CONVENTION. Poses are T_camera_world: `x_camera = R @ x_world + t`, the
 same convention `backends/classical.py` publishes and `_triangulate_new`
@@ -101,8 +99,7 @@ HUBER_DELTA_PX = 3.0
 # A landmark seen from fewer views than this is dropped: neither adjusted
 # nor allowed to constrain a camera.
 #
-# 2, NOT 3, and the difference is not academic -- it was the single worst
-# bug on this branch.
+# 2, NOT 3, and the difference is not academic.
 #
 # The tempting argument for 3 is about INFORMATION, and it is correct as
 # far as it goes: two views determine a point exactly, so a two-view
@@ -123,12 +120,11 @@ HUBER_DELTA_PX = 3.0
 #         2            0.522 /  2.761 px                  0.57%
 #
 # The baseline with no adjustment at all is 0.543 / 3.974 px and 1.79%.
-# So at 3 the adjustment made the published map markedly WORSE than not
-# adjusting at all; at 2 it makes it better on every statistic. That is
-# the exact shape this branch exists to avoid -- a trajectory that
-# genuinely improved while the artifact everybody consumes got worse --
-# and it is visible only if you measure the support table rather than the
-# trajectory.
+# So at 3 the adjustment makes the published map markedly WORSE than not
+# adjusting at all; at 2 it makes it better on every statistic. A
+# trajectory that genuinely improves while the artifact everybody consumes
+# gets worse is visible only if you measure the support table rather than
+# the trajectory.
 MIN_VIEWS_FOR_ADJUSTMENT = 2
 
 # Cameras whose observations are too few to pose. Below this the camera
@@ -139,25 +135,23 @@ MIN_OBSERVATIONS_PER_CAMERA = 12
 # Schur complement is quadratic in views per landmark, so this bounds a
 # worst case; 0 disables it.
 #
-# 16, and it was 8, and 8 was wrong for THE SAME REASON `min_views = 3`
-# was wrong. Both dropped observations from the optimisation while
-# leaving the cameras that made them free to move. The landmark then
-# stays where it was, the camera does not, and every support row between
-# them stops reprojecting -- so the published map degrades while the
-# trajectory improves.
+# 16, not 8: 8 is wrong for THE SAME REASON `min_views = 3` is wrong.
+# Both drop observations from the optimisation while leaving the cameras
+# that made them free to move. The landmark then stays where it was, the
+# camera does not, and every support row between them stops reprojecting
+# -- so the published map degrades while the trajectory improves.
 #
-# MEASURED on the 2026-09-01 long-loop walk, adjustment ON, nothing else
-# changed:
+# MEASURED on the long-loop walk, adjustment ON, nothing else changed:
 #
 #   cap    published reproj median / p99   over 3 px   dominant component
 #     8          0.726 / 15.800 px            9.51%      7,521 pts (24.1%)
 #    16          0.546 /  2.781 px            0.69%     16,340 pts (53.5%)
 #
 # The baseline with no adjustment at all is 0.587 / 4.732 px, 2.54%, and
-# 8,285 points (27.3%). So the cap was not a cost knob at all: at 8 it
-# was quietly destroying the artifact the whole pipeline exists to
-# produce, and at 16 the same adjustment doubles the dominant component
-# AND halves the reprojection tail.
+# 8,285 points (27.3%). So the cap is not a cost knob at all: at 8 it
+# quietly destroys the artifact the whole pipeline exists to produce, and
+# at 16 the same adjustment doubles the dominant component AND halves the
+# reprojection tail.
 #
 # 16 rather than uncapped because uncapped changes the SOLVE: measured
 # 194 solved poses against 323, as a stronger adjustment moves poses
@@ -180,13 +174,13 @@ MAX_VIEWS_PER_LANDMARK = 16
 # How far an adjustment must COLLAPSE a landmark's parallax before the
 # landmark is retired, as a fraction of what it had.
 #
-# The bound alone was not enough. Demoting every landmark whose angle
-# crossed `min_parallax_deg` retires one whose parallax went 0.200 to
+# The bound alone is not enough. Demoting every landmark whose angle
+# crosses `min_parallax_deg` retires one whose parallax went 0.200 to
 # 0.198 degrees exactly as readily as one that was slid along its ray,
 # and a map this full of marginal two-view landmarks has a great many of
-# the first kind: measured, 29% of the 2026-08-29 normal walk's published
-# points, against a handful of landmarks actually responsible for the
-# bbox blowup.
+# the first kind: measured, 29% of the normal walk's published points,
+# against a handful of landmarks actually responsible for the bbox
+# blowup.
 #
 # A point that genuinely slid does not lose a few percent of its
 # parallax, it loses most of it. Requiring the angle to at least HALVE
@@ -309,7 +303,7 @@ def optimise(
     """Refine poses and landmarks against their observations.
 
     Arguments
-      rotations     (n_cam, 3, 3) R_camera_world, modified in place? NO --
+      rotations     (n_cam, 3, 3) R_camera_world. Not modified in place:
                     a new array is returned and the inputs are untouched.
       translations  (n_cam, 3)
       points        (n_pt, 3)
@@ -328,10 +322,10 @@ def optimise(
                     passed here. Its older observers are outside the
                     window and cannot move to follow it, so adjusting it
                     to fit only its recent observers silently breaks
-                    every support row those older cameras published --
-                    measured on the drawer walk as published reprojection
-                    p99 3.97 -> 12.40 px, with the pose error genuinely
-                    improving at the same time. Its observations STILL
+                    every support row those older cameras published
+                    (measured on the drawer walk: published reprojection
+                    p99 3.97 -> 12.40 px, while the pose error improves).
+                    Its observations STILL
                     constrain the cameras: a landmark held where the
                     older map put it is an anchor tying this window to
                     geometry already on disk, which is most of what makes
@@ -348,18 +342,13 @@ def optimise(
     refused.
 
     Nothing is re-anchored on the way out. Whatever is not named in
-    `fixed_cameras` may move, including camera 0.
-
-    The returned poses are re-anchored so that the first camera in
-    `rotations` is exactly where it was. The optimiser is gauge-free (see
-    the module docstring) so without this the whole window would drift in
-    a way no consumer expects.
+    `fixed_cameras` may move, including camera 0: the optimiser is
+    gauge-free (see the module docstring), so a caller that needs the
+    window held in place must name its anchor cameras in `fixed_cameras`.
     """
     # Resolved in the body, not as a default argument: a default is
     # bound at definition time, so a sweep that monkeypatches the module
-    # constant would silently measure the same thing every time. That
-    # happened, and cost a round of measurements that all came back
-    # identical.
+    # constant would silently measure the same thing every time.
     if huber_delta is None:
         huber_delta = HUBER_DELTA_PX
     if min_views is None:
@@ -412,10 +401,10 @@ def optimise(
     # above the mean so it binds only on the handful that would otherwise
     # dominate.
     #
-    # WHICH views are kept is not a detail. Keeping the FIRST k was tried
-    # and is wrong: it systematically starves the NEWEST camera, which on
-    # an online window is the one camera the adjustment exists to fix.
-    # Measured on an eight-camera rig at cap 4, every camera settled
+    # WHICH views are kept is not a detail. Keeping the FIRST k
+    # systematically starves the NEWEST camera, which on an online window
+    # is the one camera the adjustment exists to fix. Measured on an
+    # eight-camera rig at cap 4, every camera settled
     # within 0.04 deg of the gauge except the last, which sat 0.86 deg
     # off -- a quiet, one-sided error that only appears at the end of the
     # window, which is exactly where it does the most damage.
@@ -475,7 +464,7 @@ def optimise(
     # -- the sparsity structure, built ONCE ---------------------------
     #
     # WHICH observation pairs share a landmark does not change as the
-    # estimate moves, and rebuilding that inside the damping loop was the
+    # estimate moves, and rebuilding that inside the damping loop is the
     # single largest cost in this function: a Python-level tile() per
     # landmark per attempt, profiled at 140,000 calls over a 30-keyframe
     # walk. Everything below is index arithmetic on the FIXED structure,
@@ -686,8 +675,8 @@ def optimise(
     # were already unpublishable, so the caller -- which is the only
     # thing that knows what was publishable a moment ago -- could not
     # tell an actual demotion from a restatement. Counting the wrong one
-    # broke the manifest's `published + refused == triangulated` identity
-    # by 3,069 points on the 2026-08-29 normal walk.
+    # breaks the manifest's `published + refused == triangulated` identity
+    # (by 3,069 points on the normal walk).
     failed_reprojection = ~point_ok
     failed_parallax = np.zeros(n_pt, dtype=bool)
 
@@ -739,8 +728,8 @@ def optimise(
 
         # BEFORE AND AFTER, and only the DIFFERENCE is actionable.
         #
-        # Demoting on the absolute angle was measured and refused: it
-        # removes 29% of the corpus's points, because plenty of landmarks
+        # Not on the absolute angle, which measured removes 29% of the
+        # corpus's points, because plenty of landmarks
         # sit below this bound honestly and `landmark_gate` already ruled
         # on them at creation with the same number. An adjustment has no
         # standing to re-litigate that.
