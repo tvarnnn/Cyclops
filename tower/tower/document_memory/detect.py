@@ -12,26 +12,26 @@ alone would call every one of them a document.
 The second gate asks whether the interior has rows of ink. That is
 necessary and, on its own, badly insufficient: **venetian blinds, brick
 courses, floor tiles and a striped shirt all produce rows of dark pixels
-just as reliably as text does**, and an adversarial review drove a brick
-wall all the way through detection, dwell, OCR and persistence.
+just as reliably as text does**, so a row-ink gate alone is insufficient.
 
 The third gate counts dark/light transitions along each inky row, on the
 theory that a line of text is many short runs while a slat or a mortar
 course is one run spanning the width.
 
-**That theory is half true, and the honest version is below.** Against
-9,199 real frames the gate separates page-shaped crops by SIZE, not by
-glyphiness: a real backlit keyboard scores 19-26 where this docstring
-used to claim 0, while all thirteen crops of real on-screen text that
-could be found in that corpus -- laptop and phone displays, the only
-real text there is -- score 0-8, BELOW the keyboard. At 360x640 the
-glyphs are about two pixels tall and the keycaps are fifteen, so the
-keyboard is the more glyph-like of the two.
+**That theory is only half true.** Against 9,199 real frames the gate
+separates page-shaped crops by SIZE, not by glyphiness: a real backlit
+keyboard scores 19-26, while all thirteen crops of real on-screen text
+found in that corpus -- laptop and phone displays, the only real text
+there -- score 0-8, BELOW the keyboard. At 360x640 the glyphs are about
+two pixels tall and the keycaps are fifteen, so the keyboard is the more
+glyph-like of the two.
 
-The gate still earns its place, because it is the only thing standing
-between a brick wall and OCR, but it earns it on a 10-wide window
+The gate still stands between a brick wall and OCR, on a 10-wide window
 derived in `MIN_ROW_TRANSITIONS` below, not on an enormous margin.
 Guarded by `tests/test_document_detect_corpus.py`.
+
+Retained, not on the live path: `gate.PageFinder` is the live per-frame
+stage. This module is kept for `warp_page` and the corpus tests.
 """
 
 from dataclasses import dataclass
@@ -66,18 +66,14 @@ MIN_TEXT_ROW_FRACTION = 0.08
 MIN_INK_FRACTION = 0.004
 MAX_INK_FRACTION = 0.60
 
-# The glyph gate. RE-DERIVED 2026-08-26 against 9,199 real frames, after
-# the original derivation turned out to describe the renderer.
-#
-# What it used to say, from synthetic negatives: rendered text 43-86,
-# blinds/bricks/tiles/stripes/keyboard all 0, threshold 8, "an order of
-# magnitude below the text floor". Run over `data/captures/`, a real
-# venetian blind measures 8.0 -- exactly the threshold -- and a real
-# backlit keyboard 19-26. The margin never existed outside the renderer:
-# a rendered slat is one clean run, while a real slat has a rail, a
-# bracket, a gap and a highlight, and a real backlit keyboard is a grid of
-# small light patches separated by dark gaps, which is a tolerable
-# description of a line of glyphs.
+# The glyph gate, derived against 9,199 real frames. Synthetic negatives
+# are not a basis for it: rendered text had scored 43-86 with
+# blinds/bricks/tiles/stripes/keyboard all 0 and a threshold of 8, but
+# over `data/captures/` a real venetian blind measures 8.0 and a real
+# backlit keyboard 19-26. A rendered slat is one clean run, while a real
+# slat has a rail, a bracket, a gap and a highlight, and a real backlit
+# keyboard is a grid of small light patches separated by dark gaps, which
+# is a tolerable description of a line of glyphs.
 #
 # READ THIS BEFORE CHANGING THE NUMBER. `row_transitions` does not
 # separate text from structure. It separates LARGE crops from SMALL ones:
@@ -103,8 +99,8 @@ READABLE_PAGE_FLOOR = 36.0
 # Halfway, because neither edge is soft. Sitting at the ceiling would ship
 # with no margin against the next keyboard; sitting at the floor would
 # reject the last page that still reads. This buys 5 transitions of
-# headroom on each side, and that is the whole budget -- it is a 10-wide
-# window, not the order of magnitude the old comment claimed.
+# headroom on each side, and that is the whole budget -- a 10-wide
+# window, not an order of magnitude.
 #
 # THIS IS PINNED TO 360x640. Both edges are functions of how many pixels
 # the crop has: raise the stream or move to higher-resolution stills (the
@@ -209,10 +205,11 @@ def measure_text_likeness(page_gray: np.ndarray) -> tuple[float, float, float]:
     not.
 
     It does NOT separate text from blinds, bricks, tiles or stripes, all
-    of which have exactly that row structure. `row_transitions` -- the
-    median number of dark/light crossings ALONG an inky row -- does: text
-    is made of glyphs and crosses dozens of times, while a slat or a
-    mortar course is one unbroken run and crosses zero.
+    of which have exactly that row structure. `row_transitions` is the
+    median number of dark/light crossings ALONG an inky row; on real
+    frames it does not separate text from structure either (real
+    on-screen text scores 0-8, a real slat about 8, a keyboard 19-26);
+    see `MIN_ROW_TRANSITIONS`.
     """
     if page_gray.size == 0:
         return 0.0, 0.0, 0.0
@@ -224,8 +221,6 @@ def measure_text_likeness(page_gray: np.ndarray) -> tuple[float, float, float]:
     )
     ink_fraction = float(np.count_nonzero(binary)) / binary.size
     row_ink = binary.sum(axis=1) / (255.0 * binary.shape[1])
-    if not row_ink.size:
-        return 0.0, ink_fraction, 0.0
 
     # A row carries text if it is meaningfully inkier than the median row.
     threshold = max(float(np.median(row_ink)) * 1.5, 0.02)
