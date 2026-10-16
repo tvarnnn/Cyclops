@@ -2,11 +2,11 @@
 
 Contract: `docs/contracts/WORLD-BUILDER-APPEARANCE.md` §9.
 
-The fifth adapter named after this cartridge, for the reason the others are:
-it reads World Builder's record shapes, so it is a file outside the package
-that may. It answers "give the phone the keyframes it blends", which is
-imagery -- so every answer is re-checked against the session's redaction record
-at the moment it is served, not only when it was built.
+An adapter named after the cartridge: it reads World Builder's record shapes,
+so it is a file outside the package that may. It answers "give the phone the
+keyframes it blends", which is imagery -- so every answer is re-checked against
+the session's redaction record at the moment it is served, not only when it was
+built.
 
 Nothing here is cached and nothing is written.
 """
@@ -34,7 +34,7 @@ NO_STORE_HEADERS = {
 
 # Content-Encoding for the appearance bodies (WORLD-BUILDER-APPEARANCE.md §9).
 #
-# The canonical world's phone load, measured over these routes: 18,229,238 B
+# Measured over these routes on one canonical world's phone load: 18,229,238 B
 # in 10 requests uncompressed, 14,103,933 B gzipped (0.774): ASTC chunks 0.87,
 # the WBSURF01 proxy 0.57, the manifest JSON 0.20. On the largest canonical files
 # level 6 is 0.794 at ~35 ms per MB, level 1 0.803 at ~22 ms per MB; 6 is chosen
@@ -130,7 +130,7 @@ def _servable_manifest(store: WorldStore, world_id: str, session_id: str):
     manifest = AP.read_appearance_manifest(store, contained, session_id)
     if manifest is None:
         raise AppearanceNotServed("no appearance for this session")
-    # §6.6, BEFORE the label check, so the reason names the real mismatch: an
+    # Contract §6.6, BEFORE the label check, so the reason names the real mismatch: an
     # artifact built from the original local capture is refused outright by a
     # Tower serving the product, and a product artifact is refused by a Tower
     # asked for the research imagery. Neither is "stale". A world on the
@@ -140,7 +140,7 @@ def _servable_manifest(store: WorldStore, world_id: str, session_id: str):
     if not AP.imagery_matches(manifest, wanted):
         raise AppearanceNotServed(AP.imagery_mismatch_detail(manifest, wanted))
     if not AP.may_serve(store, contained, session_id, manifest,
-                            imagery_source=wanted):
+                        imagery_source=wanted):
         raise AppearanceNotServed(AP.STALE_LABEL_DETAIL)
     return contained, manifest
 
@@ -151,7 +151,7 @@ def appearance_basis(store: WorldStore, world_id: str, session_id: str) -> str |
 
     `"walk"`: the manifest says `quality: "live"`, or its proxy was a live surface
     (`proxy.source.surface_quality: "live"`) -- including the walk's photos a viewer is served
-    across Stop (APPEARANCE v3, manager 185 A). `"final"`: `quality: "final"` over a final
+    across Stop (contract WORLD-BUILDER-APPEARANCE.md §9). `"final"`: `quality: "final"` over a final
     surface (or a manifest that does not say which surface). None: no `quality` (an older
     manifest), or not servable."""
     try:
@@ -185,14 +185,13 @@ def _imagery(manifest: dict) -> str:
 # The imagery vocabulary, for the transport.
 #
 # `tower/routes/geometry.py` has to put `X-World-Imagery` and, for a research
-# build, `X-World-Imagery-Warning` on an appearance 200. Reading those two
-# strings out of `tower.world_builder.raw_imagery` made the HTTP layer know a
-# cartridge's vocabulary, which is what
-# `test_shared_code_does_not_import_a_cartridge` forbids and why it failed:
-# the next cartridge's route would inherit World Builder's idea of what
-# "imagery" means. This adapter is named after the cartridge and is allowed to
-# know it, so the two strings are published from here and the route copies
-# what it is handed.
+# build, `X-World-Imagery-Warning` on an appearance 200. The HTTP layer must not
+# read those two strings out of `tower.world_builder.raw_imagery`: that would make
+# it know a cartridge's vocabulary, which
+# `test_shared_code_does_not_import_a_cartridge` forbids, and the next
+# cartridge's route would inherit World Builder's idea of what "imagery" means.
+# This adapter is named after the cartridge and is allowed to know it, so the
+# two strings are published from here and the route copies what it is handed.
 
 #: What `imagery` is when nothing says otherwise: the redacted product path.
 DEFAULT_IMAGERY = RAWIMG.IMAGERY_REDACTED
@@ -209,7 +208,7 @@ def imagery_warning(imagery: str) -> str | None:
 
 
 def appearance_manifest(store: WorldStore, world_id: str, session_id: str):
-    """(payload, effective label). The manifest as built, plus `currency`."""
+    """(payload, effective label, imagery). The manifest as built, plus `currency`."""
     contained, manifest = _servable_manifest(store, world_id, session_id)
     payload = dict(manifest)
     payload["currency"] = AP.appearance_currency(store, contained, session_id, manifest)
@@ -218,16 +217,16 @@ def appearance_manifest(store: WorldStore, world_id: str, session_id: str):
 
 def appearance_file(store: WorldStore, world_id: str, session_id: str, kind: str,
                     digest: str):
-    """(bytes, effective label) of a chunk or the proxy the manifest names."""
+    """(bytes, effective label, imagery) of a chunk or the proxy the manifest names."""
     if kind not in ("chunk", "proxy") or not AP.is_digest(digest):
         raise AppearanceNotServed("no such appearance file")
     contained, manifest = _servable_manifest(store, world_id, session_id)
     data = AP.read_appearance_file(store, contained, session_id, kind, digest, manifest)
     if data is None:
         raise AppearanceNotServed("no such appearance file")
-    # The gate again, AFTER the read (fix round 2, Codex LOW-3): a re-redaction
-    # switch, a relabel or a purge that landed between the gate and the read
-    # must not let the bytes leave under the record as it is now.
+    # The gate again, AFTER the read: a re-redaction switch, a relabel or a purge
+    # that landed between the first gate and the read must not let the bytes
+    # leave under the record as it is now.
     # The file must still be servable under the manifest served NOW (the same
     # one, or a build that published meanwhile and may lend it).
     _again, now = _servable_manifest(store, world_id, session_id)
@@ -260,9 +259,9 @@ def appearance_revision(store: WorldStore, world_id: str, session_id: str) -> di
       (`appearance_pipeline.textures_carry_over`) and yet the routes do not
       serve it. Keep drawing, keep asking; the next build is expected. The
       ordinary Stop (`none` -> the real label, over a walk-time build that
-      re-redacted every frame) used to land here; since manager 185 A it is
-      SERVED (`appearance_pipeline.may_serve`), so a viewer opened after Stop
-      gets the walk's photos too. Kept for the wire, and for an older Tower.
+      re-redacted every frame) is SERVED (`appearance_pipeline.may_serve`), so
+      a viewer opened after Stop gets the walk's photos too; `rebuilding` is
+      still emitted for an older client.
     - `withdrawn`: the label changed any other way, or the imagery was purged.
       Drop the textures now; keep asking.
     - `absent`: there is no appearance (never built, or the world is gone).
