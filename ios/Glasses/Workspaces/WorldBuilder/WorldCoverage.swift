@@ -2,10 +2,10 @@
 //  WorldCoverage.swift
 //  Glasses
 //
-//  Fog of war v1 (FOW-COVERAGE-V1-SPEC-20261006, frozen): the Tower's
+//  Fog of war v1 (tower/docs/contracts/CARTRIDGE-RESULTS.md, WORLDS v8;
+//  docs/contracts/WORLD-BUILDER-IOS.md, 2026-10-06): the Tower's
 //  `guidance.coverage` status receipt -- dated, solve-placed station x
-//  12-sector evidence -- read fail-closed (§5), and what the phone may say
-//  about it (§7, §8).
+//  12-sector evidence -- read fail-closed by the phone.
 //
 //  What the receipt is, and is not. A supported sector means at least two
 //  accepted keyframes, placed in this component by a landed global solve,
@@ -27,9 +27,11 @@ nonisolated enum WorldCoverageStatus: Equatable, Sendable {
     /// No `guidance` object or `coverage` key: no selected session, an older
     /// saved world, or an incomplete payload. Draw no coverage claim.
     case absent
-    /// `coverage: null`: no qualifying landed solve has been merged yet.
+    /// `coverage: null`: no coverage receipt available, none yet or none
+    /// that fits (CARTRIDGE-RESULTS, WORLDS v8).
     case notYet
-    /// A block was sent and a known field broke §5. Nothing of it is drawn.
+    /// A block was sent and a known field broke the coverage contract.
+    /// Nothing of it is drawn.
     case refused
     case receipt(WorldCoverage)
 
@@ -40,7 +42,8 @@ nonisolated enum WorldCoverageStatus: Equatable, Sendable {
 
     /// Decodes `payload.guidance.coverage` from one status payload.
     /// Missing fields stay absent for older saved worlds; `null` means no
-    /// landing yet, and a present malformed block is refused rather than drawn.
+    /// coverage receipt available (none yet, or none that fits), and a
+    /// present malformed block is refused rather than drawn.
     init(payload: [String: Any]) {
         guard let guidance = payload["guidance"] as? [String: Any], guidance.keys.contains("coverage") else {
             self = .absent

@@ -78,9 +78,9 @@ nonisolated enum WorldPanelTab: String, CaseIterable, Sendable {
 /// What the panel needs for the dial beyond the map: `nil` is the switch
 /// off. The flag is already the walk's own (the view model's gate).
 nonisolated struct WorldPanelDial: Equatable, Sendable {
-    /// `guidance.coverage: null` for the walk being received: the Tower's
-    /// switch is on and no landing has merged yet (§6 "Before the first
-    /// landing").
+    /// `guidance.coverage: null` for the walk being received: no coverage
+    /// receipt is available, none yet or none that fits (WORLD-BUILDER-IOS,
+    /// 2026-10-06).
     var awaiting = false
     /// `IOS_FOW_MAP_TAB=on`: the Dial|Map control is shown. Off (the
     /// default), the dial is the only face.

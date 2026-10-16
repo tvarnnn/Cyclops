@@ -103,10 +103,10 @@ final class WorldChromeModel: ObservableObject {
         return nil
     }
 
-    /// The research marker on the page-chrome layout after a fallback.
-    /// The served header still speaks when a page falls back before its first
-    /// state; its warning must remain visible (IOS §10). The page's own
-    /// marker may show beside it.
+    /// The research marker on the page-chrome layout. The served header can
+    /// raise it with or without a fallback, and its warning remains visible
+    /// if the page falls back before its first state. The page's own marker
+    /// can also show after a fallback (WORLD-BUILDER-WORLDS §4c).
     var legacyResearchMarker: String? {
         guard everNative || rawByHeader else { return nil }
         return researchMarker

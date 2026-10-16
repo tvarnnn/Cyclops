@@ -92,8 +92,9 @@ nonisolated struct WorldWalkReport: Equatable, Sendable {
     /// `guidance.coverage` (fog of war v1): the map belongs to its walk, so
     /// it travels in the walk's report and only for a walk that is named.
     var coverage: WorldCoverageReceipt?
-    /// `guidance.coverage: null`: no qualifying landing has merged yet
-    /// (FOW §5 `.notYet`). Only the capture dial reads it.
+    /// `guidance.coverage: null`: no coverage receipt available, none yet
+    /// or none that fits (WORLD-BUILDER-IOS, 2026-10-06). Only the capture
+    /// dial reads it.
     var coverageNotYet: Bool
 
     init(state: WorldModelState, finalization: WorldFinalizationReport? = nil,

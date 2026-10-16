@@ -689,7 +689,8 @@ final class TowerWorldBuilderClient: WorldBuilderClient {
         }
     }
 
-    /// `guidance.coverage: null` in the last report (FOW §5 `.notYet`):
+    /// `guidance.coverage: null` in the last report (WORLD-BUILDER-IOS,
+    /// 2026-10-06): no coverage receipt available, none yet or none that fits;
     /// published inside `walkReport` beside `coverage`, for a named walk only.
     private(set) var coverageNotYet = false {
         didSet {
@@ -872,9 +873,11 @@ final class TowerWorldBuilderClient: WorldBuilderClient {
         /// `tracking.recovery`, or `nil`.
         var recovery: WorldRecoveryReport? = nil
         /// `guidance.coverage`, or `nil`: absent in an older saved world,
-        /// `null` before a landing, or refused by the decoder.
+        /// `null` when no coverage receipt is available (none yet, or none
+        /// that fits), or refused by the decoder.
         var coverage: WorldCoverage? = nil
-        /// `guidance.coverage` was `null`: no qualifying landing yet.
+        /// `guidance.coverage` was `null`: no coverage receipt available,
+        /// none yet or none that fits (CARTRIDGE-RESULTS, WORLDS v8).
         var coverageNotYet = false
         /// `progress.keyframes_accepted`, or `nil`.
         var keyframesAccepted: Int? = nil

@@ -396,8 +396,9 @@ final class WorldBuilderViewModel: ObservableObject {
     /// names its walk, so one walk's map is never shown for another.
     var coverage: WorldCoverageReceipt? { walkReport.walk == nil ? nil : walkReport.value.coverage }
 
-    /// The capture dial's "before the first landing": the walk's own report
-    /// says `coverage: null` because no qualifying landing has merged yet.
+    /// The capture dial's awaiting flag: the walk's own report says
+    /// `coverage: null`, meaning no coverage receipt is available (none yet,
+    /// or none that fits; WORLD-BUILDER-IOS, 2026-10-06).
     var coverageAwaited: Bool { walkReport.walk != nil && coverage == nil && walkReport.value.coverageNotYet }
 
     /// The live relocalizer's line, republished from the client.
