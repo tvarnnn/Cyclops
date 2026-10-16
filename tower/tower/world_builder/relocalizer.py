@@ -15,23 +15,23 @@ open episode JOINS it: no new episode, no second prompt, the reference set
 unchanged.
 
 WHY IT EXISTS. Walks almost never look back unprompted: over 7 replayed
-worlds only 14 of 107 unbridged tracking losses relocalized within 10 s
-(RUN/experiments/P2-LOOKBACK). Views that ARE seen again relocalize at once.
+worlds only 14 of 107 unbridged tracking losses relocalized within 10 s.
+Views that ARE seen again relocalize at once.
 
 WHAT "RECOVERED" MEANS (contract 6.3), and nothing weaker:
 
   triangle     -- in ONE scanned frame, >= 2 verified links of >= 50 RANSAC
                   inliers to two reference keyframes that are themselves
                   verified-linked, the triangle closing within 8 degrees
-                  (P2-LOOKBACK `tri2_50`: wrong 4 of 63, SIFT, masked arm);
+                  (`tri2_50`: wrong 4 of 63, SIFT, masked arm);
   strong-link  -- one verified link of >= 100 inliers (`single_100`: wrong 0
                   of 38 de-duplicated).
 
 A single link of any smaller size was wrong 20 of 99 times and is REFUSED.
-The thresholds are SIFT's; P2-LM re-tested them with ALIKED+LightGlue and
-kept the rule, but the learned matcher is not a product dependency, so the
-product matches with SIFT (RootSIFT 4000, mutual + ratio 0.8, essential
-RANSAC 1 px -- the lane harness's base tier, `eval_pairs.PAIR_PARAMS`).
+The thresholds are SIFT's; a re-test with ALIKED+LightGlue kept the rule,
+but the learned matcher is not a product dependency, so the product matches
+with SIFT (RootSIFT 4000, mutual + ratio 0.8, essential RANSAC 1 px -- the
+base tier of the harness the thresholds were measured with).
 
 WHAT IT WRITES. Every decision is a journal event (events.py), written by
 the ENGINE on the frame thread -- the worker never touches the journal:
@@ -51,7 +51,7 @@ them in the final solve's database. Which solves import them, and at what
 COLMAP floor, is that module's decision; what this module guarantees is
 that every pair it returns met `REVISIT_MIN_INLIERS` on every live leg --
 the reference link AND the link tying the scanned frame to its anchor
-keyframe (review V8 M4).
+keyframe.
 
 THE FRAME PATH NEVER WAITS. The matcher runs on one daemon thread that is
 idle (blocked on a condition, 0 % CPU) unless an episode is open. The frame
@@ -59,10 +59,10 @@ thread hands it at most one frame per 1/scan_hz seconds through a one-slot
 mailbox and never waits for it: a frame that arrives while the worker is
 busy replaces the pending one. Results are collected on the next frame --
 or on the next frame the engine REJECTED, which ticks the clock without
-handing the worker anything (`tick`, review V8 LOW-1). A worker that fails
+handing the worker anything (`tick`). A worker that fails
 `MAX_WORKER_FAILURES` times in a row exits, and the frame thread's next
 call raises `RelocalizerWorkerFailed`, which the engine journals as
-`relocalizer_stopped {why: error}` (review V8 LOW-2).
+`relocalizer_stopped {why: error}`.
 """
 
 from __future__ import annotations
@@ -94,7 +94,7 @@ PROMPT_KIND_LOOK_BACK = "look-back"
 
 WITHHELD_LIMITER = "limiter"
 WITHHELD_DISABLED = "disabled"
-# Review V5: withholds the limiter never sees and `counts` has no key for.
+# Withholds the limiter never sees and `counts` has no key for.
 WITHHELD_LATE = "late"
 WITHHELD_NO_REFERENCES = "no-references"
 
@@ -104,7 +104,6 @@ MECHANISM_COOLDOWN = "cooldown"
 MODE_OFF = "off"
 MODE_PROMPT = "prompt"
 MODE_SILENT = "silent"
-MODES = (MODE_OFF, MODE_PROMPT, MODE_SILENT)
 
 EVENT_STARTED = "relocalizer_started"
 EVENT_PROMPTED = "recovery_prompted"
@@ -114,12 +113,12 @@ EVENT_TIMED_OUT = "recovery_timed_out"
 # Not a state change: the keyframe an accepted-but-unanchored link was tied
 # to afterwards. Only `revisit_pairs` reads it.
 EVENT_ANCHORED = "recovery_anchored"
-# Terminal (review V5 M4-1): the relocalizer is gone for the rest of the
+# Terminal: the relocalizer is gone for the rest of the
 # session -- `why: session_stopped` at a normal stop, `error` when it raised.
 # An episode still open is closed `timed_out` before it; the reader closes
 # one itself if the line never came (a builder that died).
 EVENT_STOPPED = "relocalizer_stopped"
-# Not a state change (RELOC2, observability, OFF by default): one line per
+# Not a state change (observability, OFF by default): one line per
 # episode, written right after the line that resolved it, recording what the
 # relocalizer tried -- its references, scans, best legs and closest
 # triangle, and the losses it joined. The payload block ignores it; it exists
@@ -129,7 +128,7 @@ RECOVERY_EVENT_KINDS = (
     EVENT_STARTED, EVENT_PROMPTED, EVENT_WITHHELD, EVENT_ACCEPTED, EVENT_TIMED_OUT,
 )
 
-# Where `timeout_s` is measured from (RELOC2 candidate 1). `loss` (the
+# Where `timeout_s` is measured from. `loss` (the
 # default, contract 6.1): from the loss that opened the episode, so a prompt
 # issued at `prompt_after_s` leaves the wearer `timeout_s - prompt_after_s`.
 # `prompt`: a PROMPTED episode's timeout runs from the prompt instead, so the
@@ -139,7 +138,7 @@ WINDOW_FROM_LOSS = "loss"
 WINDOW_FROM_PROMPT = "prompt"
 WINDOW_FROMS = (WINDOW_FROM_LOSS, WINDOW_FROM_PROMPT)
 
-# HISTORY's measured range (RELOC2 candidate 2; review F3/F7). 20 is the
+# HISTORY's measured range. 20 is the
 # largest budget the replay measured (hist20: 30 references, CPU/scan
 # median ~0.19 s, p95 ~1.1 s on the 9-walk corpus); more was never
 # measured and would overrun the 0.5 s scan budget. Below 4 (two groups of
@@ -153,18 +152,17 @@ HISTORY_MAX_KEYFRAMES = 20
 class AcceptanceParams:
     """What `recovered` requires. Read-only on the wire (contract 6.3).
 
-    Every number is P2-LOOKBACK's (RUN/experiments/P2-LOOKBACK/out/
-    TABLE_sift.md), re-tested by P2-LM (RUN/experiments/P2-LM/lookback):
+    Every number is from the SIFT look-back replay, re-tested with a
+    learned matcher:
 
     * `reference_keyframes` 10 and `scan_hz` 2 -- the K10 / 2 Hz arm the
-      prompt replay was run on (`prompts_tri2_50_masked_K10_2hz.json`). It
-      is the cheaper of the measured settings: ~42 ms of SIFT per scanned
-      frame plus ~6-15 ms per reference pair on one core
-      (`out/bench_cpu.json`), i.e. roughly 0.25 of a core while an episode
-      is open. K20 / 4 Hz relocalizes more but costs ~4x; see the P3-PR
-      replay for the prompt-rate difference.
-    * 8 deg -- the lane's control-derived consensus bound (control cycle
-      p90 5.9-6.2 deg; lb_common.TAU_ROT_DEG).
+      prompt replay was run on (`tri2_50`, masked, K10, 2 Hz). It is the
+      cheaper of the measured settings: ~42 ms of SIFT per scanned frame
+      plus ~6-15 ms per reference pair on one core, i.e. roughly 0.25 of a
+      core while an episode is open. K20 / 4 Hz relocalizes more but costs
+      ~4x.
+    * 8 deg -- the control-derived consensus bound (control cycle p90
+      5.9-6.2 deg).
     * 50 / 100 inliers -- `tri2_50` and `single_100`.
     """
 
@@ -175,8 +173,7 @@ class AcceptanceParams:
     triangle_min_link_inliers: int = 50
     triangle_max_closure_deg: float = 8.0
     strong_link_min_inliers: int = 100
-    # HISTORICAL REFERENCES (RELOC2 candidate 2, MISSION Objective 4's
-    # "historical-keyframe matching"; 0 = off, today's behaviour). Up to this
+    # HISTORICAL REFERENCES (0 = off). Up to this
     # many keyframes OLDER than the last `reference_keyframes`, kept spread
     # over the session by keyframe order (see `_History`), in runs of
     # `history_group` consecutive keyframes so a revisited old view can
@@ -206,11 +203,11 @@ class AcceptanceParams:
         return wire
 
 
-# THE REVISIT FLOOR (review V8 M4): the fewest RANSAC inliers any live leg
+# THE REVISIT FLOOR: the fewest RANSAC inliers any live leg
 # of a revisit pair may have -- the reference->frame link, and the
 # frame->anchor link unless the scanned frame IS the anchor keyframe. It is
 # the live path's own floor, not a new number: the per-leg 50 of `tri2_50`
-# (contract 6.3, P2-LOOKBACK), the smallest link that can make an
+# (contract 6.3), the smallest link that can make an
 # acceptance at all (a strong link needs 100). `verify()` on its own
 # accepts 30 (VerifyParams.min_inliers), and a single link under 100 was
 # wrong 20 of 99 times (contract 6.3) -- which is why the anchor leg, one
@@ -224,8 +221,8 @@ class RelocalizerWorkerFailed(RuntimeError):
 
     Raised on the FRAME thread, by the relocalizer's next call, so the
     engine drops it and journals `relocalizer_stopped {why: error, error:
-    "RelocalizerWorkerFailed"}` exactly as for any other failure (review V5
-    M4-1). The worker's own exceptions are in the log, one per attempt.
+    "RelocalizerWorkerFailed"}` exactly as for any other failure. The
+    worker's own exceptions are in the log, one per attempt.
     """
 
 
@@ -246,16 +243,16 @@ class LimiterParams:
        Hysteresis (re-arm after N s of good tracking) and motion
        suppression both need a threshold on the tracker that nothing has
        measured, and both let a storm of short losses through between
-       their re-arm points. The replay that picked the values is
-       RUN/experiments/P3-PR (prompts per minute per walk, and how many
-       unbridged losses still get a prompt).
+       their re-arm points. The values were picked on a prompt replay
+       (prompts per minute per walk, and how many unbridged losses still
+       get a prompt).
 
     `prompt_after_s` and `timeout_s` come from the same replay, inside the
-    range P2-LOOKBACK tried (1-5 s, 10-20 s). `speak_window_s` is the
-    phone's staleness bound (contract 6.5 rule 4) at the Mac review's
-    ceiling (mac-001 E7 / M4: <= 5 s bounds both a stale "look back" and the
-    one repeat after a relaunch). No walk measured how late a spoken prompt
-    stops being useful, so it sits AT the ceiling rather than below it.
+    range the look-back replay tried (1-5 s, 10-20 s). `speak_window_s` is
+    the phone's staleness bound (contract 6.5 rule 4) at its ceiling
+    (<= 5 s bounds both a stale "look back" and the one repeat after a
+    relaunch). No walk measured how late a spoken prompt stops being
+    useful, so it sits AT the ceiling rather than below it.
     """
 
     max_prompts: int = 2
@@ -265,7 +262,7 @@ class LimiterParams:
     prompt_after_s: float = 5.0
     timeout_s: float = 20.0
     speak_window_s: float = 5.0
-    # RELOC2 candidate 1: `loss` (default) or `prompt`; see WINDOW_FROM_*.
+    # `loss` (default) or `prompt`; see WINDOW_FROM_*.
     window_from: str = WINDOW_FROM_LOSS
 
     def to_wire(self) -> dict:
@@ -325,13 +322,13 @@ class _IssueHistory:
 class PromptLimiter:
     """The cap, then the mechanism. Pure; the clocks are the caller's.
 
-    EACH CHECK ON ONE CLOCK (review V8 LOW-3). The bound is decided on the
-    builder's DURATION clock (review V5 M4-4: what the wearer hears, immune
-    to a wall-clock step) but SHOWN on the Tower clock: the wire's
-    `prompt.issued_at` is the journal line's `at`. The two are separate
-    clocks, each quantised to 15.6 ms on this Windows machine
-    (GetTickCount64 and GetSystemTimeAsFileTime), so a duration-clock gap of
-    30 s plus one tick can be exactly 30 s on the wire -- the bound held
+    EACH CHECK ON ONE CLOCK. The bound is decided on the builder's
+    DURATION clock (what the wearer hears, immune to a wall-clock step) but
+    SHOWN on the Tower clock: the wire's `prompt.issued_at` is the journal
+    line's `at`. The two are separate clocks, each quantised to 15.6 ms on a
+    measured Windows host (GetTickCount64 and GetSystemTimeAsFileTime), so a
+    duration-clock gap of 30 s plus one tick can be exactly 30 s on the
+    wire -- the bound held
     there with a margin of one tick, not by construction. So the limiter
     keeps two histories and asks each check of each clock with that clock's
     OWN readings, never a difference across the two:
@@ -342,12 +339,12 @@ class PromptLimiter:
         new line's `at` is no earlier than the reading, and every bound
         holds on the wire's own numbers exactly.
     The Tower clock can only WITHHOLD, never issue: a prompt goes out only
-    when both clocks allow it, so a wall-clock step can never cause one
-    (M4-4 kept). A Tower clock read BEHIND the last journaled prompt has
-    stepped back; its history is then void (the wire's order is already
-    broken by the step) and the duration clock alone decides.
+    when both clocks allow it, so a wall-clock step can never cause one. A
+    Tower clock read BEHIND the last journaled prompt has stepped back; its
+    history is then void (the wire's order is already broken by the step)
+    and the duration clock alone decides.
     Without a Tower clock (a replay, a caller with no journal) the limiter is
-    the duration clock's alone, exactly as before.
+    the duration clock's alone.
     """
 
     def __init__(self, params: LimiterParams) -> None:
@@ -408,18 +405,17 @@ class RecoveryStateMachine:
     Every method returns the journal events the transition implies as
     `(kind, payload)` tuples, in order. The ENGINE writes them. Keeping the
     machine pure is what lets the same code be replayed on the frozen walks
-    (RUN/experiments/P3-PR/scripts/replay_prompts.py) and unit-tested with
-    a fake clock.
+    and unit-tested with a fake clock.
 
-    THE CLOCK IS MONOTONIC (review V5 M4-4). Every `at`/`now` handed to this
+    THE CLOCK IS MONOTONIC. Every `at`/`now` handed to this
     machine is a duration clock (`time.monotonic` in the builder); the
     Tower-clock times on the wire come from the journal lines themselves,
     never from here, so a wall-clock step cannot open, prompt or time out an
-    episode. The one use of the Tower clock (`wall_clock`, review V8 LOW-3)
+    episode. The one use of the Tower clock (`wall_clock`)
     is the limiter's second history, which can only WITHHOLD a prompt that
     would break the cap as the wire shows it; see `PromptLimiter`.
 
-    ORDER OF A TICK (review V5 M4-2). The timeout is evaluated FIRST, and a
+    ORDER OF A TICK. The timeout is evaluated FIRST, and a
     prompt is issued only while `now - lost_at <= prompt_after_s +
     late_grace_s`, `late_grace_s` being one scan period. A frame that
     arrives later than that -- a stalled stream, a reconnect -- withholds
@@ -428,7 +424,7 @@ class RecoveryStateMachine:
     timely one. An episode whose first frame after a stall is already past
     `timeout_s` simply times out, unprompted.
 
-    AN EPISODE THAT CANNOT BE ACCEPTED (review V5 M4-3) -- no reference
+    AN EPISODE THAT CANNOT BE ACCEPTED -- no reference
     keyframes before the loss -- withholds its prompt as `no-references`:
     asking the wearer to look back at nothing is a prompt with no possible
     success.
@@ -457,7 +453,6 @@ class RecoveryStateMachine:
         self.resolved_at: float | None = None
         self.recovered_by: str | None = None
         self.prompt_id = 0
-        self.prompt_episode: int | None = None
         self.counts = _zero_counts()
         # Withholds the contract's `counts` has no key for; journaled with
         # their `why`, counted here for tests and diagnostics only.
@@ -511,13 +506,13 @@ class RecoveryStateMachine:
         return [(EVENT_ACCEPTED, {"episode": self.episode, "by": by, **(detail or {})})]
 
     def tick(self, now: float) -> list:
-        """Time-driven transitions, evaluated as frames arrive (OPEN T8)."""
+        """Time-driven transitions, evaluated as frames arrive."""
         if not self.is_open:
             return []
         p = self.limiter_params
         elapsed = now - self.lost_at
         # The window's start: the loss, or -- `window_from: prompt` and the
-        # episode was prompted -- the prompt (RELOC2 candidate 1).
+        # episode was prompted -- the prompt.
         window_start = self.lost_at
         if p.window_from == WINDOW_FROM_PROMPT and self.prompted_at is not None:
             window_start = self.prompted_at
@@ -544,7 +539,7 @@ class RecoveryStateMachine:
                 "episode": self.episode, "why": WITHHELD_LATE, "layer": None,
             })]
         # Read BEFORE the prompt line is journaled, so that line's `at` can
-        # only be the same or later (review V8 LOW-3).
+        # only be the same or later.
         tower_now = self._wall_clock() if self._wall_clock is not None else None
         layer = self._limiter.refusal(now, tower_now)
         if layer is not None:
@@ -555,7 +550,6 @@ class RecoveryStateMachine:
             })]
         self._limiter.record(now)
         self.prompt_id += 1
-        self.prompt_episode = self.episode
         self.counts["prompts"] += 1
         self.state = STATE_PROMPTING
         self.prompted_at = now
@@ -564,7 +558,7 @@ class RecoveryStateMachine:
     def prompt_journaled(self, at: float) -> None:
         """The journal wrote the last `recovery_prompted` with Tower-clock
         `at` -- the wire's `issued_at`. The limiter's Tower-clock history is
-        these numbers, not a reading of its own (review V8 LOW-3)."""
+        these numbers, not a reading of its own."""
         self._limiter.record_journaled(float(at))
 
     def close(self, now: float, *, why: str = "session_stopped") -> list:
@@ -623,7 +617,7 @@ class RecoveryJournalReader:
             return
         at = _number(event.get("at"))
         if kind in (EVENT_STOPPED, "session_stopped"):
-            # Review V5 M4-1: nothing can resolve an open episode after the
+            # Nothing can resolve an open episode after the
             # relocalizer or the session is gone. The builder journals the
             # close itself; this covers a builder that died before it could,
             # so the block never reads "searching" forever.
@@ -763,7 +757,7 @@ def revisit_pairs(session_dir) -> list[tuple[str, str]]:
     `Path(image_relpath).name`, i.e. `global_solve.keyframe_image_name`,
     in journal order, each pair once, reference first.
 
-    THE FLOOR (review V8 M4). A pair is returned only when every live leg
+    THE FLOOR. A pair is returned only when every live leg
     met `REVISIT_MIN_INLIERS` (inclusive) as journaled: the reference
     link's `inliers` in `recovery_accepted.links[]`, and the anchor's
     `inliers` (`recovery_accepted.anchor` or `recovery_anchored.anchor`)
@@ -855,7 +849,8 @@ def _read_jsonl(path: Path):
 
 @dataclass(frozen=True)
 class VerifyParams:
-    """The lane harness's base tier (`eval_pairs.PAIR_PARAMS`), unchanged."""
+    """The base tier of the harness the acceptance thresholds were measured
+    with, unchanged."""
 
     sift_features: int = 4000
     ratio: float = 0.8
@@ -885,7 +880,7 @@ class Link:
 
 
 class SiftVerifier:
-    """RootSIFT + mutual ratio matching + essential RANSAC (`eval_pairs`).
+    """RootSIFT + mutual ratio matching + essential RANSAC.
 
     Keypoints are undistorted with the session's own calibration, so the
     1 px RANSAC threshold means what it meant on the harness's undistorted
@@ -1052,7 +1047,7 @@ class _Episode:
 
 class _History:
     """Keyframes older than the last `reference_keyframes`, spread over the
-    session (RELOC2 candidate 2). Pixels in memory only, like `_refs`.
+    session. Pixels in memory only, like `_refs`.
 
     Keyframes arrive in acceptance order as they fall out of the recent
     window, so consecutive arrivals are consecutive keyframes. They are
@@ -1071,7 +1066,7 @@ class _History:
     def __init__(self, capacity: int, group: int) -> None:
         self.capacity = int(capacity)
         self.group = max(1, int(group))
-        # Review F7: below two groups the stride rule cannot spread anything
+        # Below two groups the stride rule cannot spread anything
         # -- only the newest group survives, i.e. keyframes just older than
         # the recent window, which is no history at all. Refused, not
         # silently degenerate.
@@ -1133,20 +1128,20 @@ class _PendingAnchor:
 # accepted since the loss verified against, is tied to the NEXT keyframes as
 # they arrive, up to this many. Without an anchor the link names a frame
 # that is not on disk, and the final solve has nothing to match. The number
-# is OPEN (no walk measured it): three keyframes is about a second of
+# is not measured: three keyframes is about a second of
 # walking at the selector's usual cadence, the span over which the view is
 # still the one the scanned frame saw. A keyframe whose link to the scanned
-# frame is below REVISIT_MIN_INLIERS is a failed try (review V8 M4).
+# frame is below REVISIT_MIN_INLIERS is a failed try.
 MAX_ANCHOR_TRIES = 3
 
 # A worker whose jobs (scans or anchor checks) raise this many times IN A
 # ROW exits, and the relocalizer is stopped (`relocalizer_stopped {why:
-# error}`, review V8 LOW-2); one job that completes resets the count.
-# OPEN: no walk has ever produced a failing worker, so nothing measured
-# this. It is the module's existing retry bound (MAX_ANCHOR_TRIES). At
-# `scan_hz` 2 a matcher that fails on every scan is stopped about 1.5 s
-# after the loss, normally before `prompt_after_s` (5 s), so it does not
-# prompt a look-back it could never recognise.
+# error}`); one job that completes resets the count.
+# Not measured: no walk has produced a failing worker. It is the module's
+# existing retry bound (MAX_ANCHOR_TRIES). At `scan_hz` 2 a matcher that
+# fails on every scan is stopped about 1.5 s after the loss, normally before
+# `prompt_after_s` (5 s), so it does not prompt a look-back it could never
+# recognise.
 MAX_WORKER_FAILURES = MAX_ANCHOR_TRIES
 
 
@@ -1165,10 +1160,9 @@ class LookBackRelocalizer:
       line it wrote;
     * `close(now, why=...)` at stop, or when the engine drops it.
 
-    Every time handed in is the builder's MONOTONIC clock (review V5
-    M4-4); the Tower-clock times on the wire are the journal lines' own.
-    `wall_clock` is the engine's Tower clock, read only by the limiter
-    (review V8 LOW-3).
+    Every time handed in is the builder's MONOTONIC clock; the Tower-clock
+    times on the wire are the journal lines' own. `wall_clock` is the
+    engine's Tower clock, read only by the limiter.
 
     Each returns the journal events to write, in order. Only while an
     episode is open (or an accepted link still waits for its anchor) does
@@ -1192,7 +1186,7 @@ class LookBackRelocalizer:
     ) -> None:
         self.acceptance = acceptance or AcceptanceParams()
         self.limiter = limiter or LimiterParams()
-        # RELOC2 candidate 3: `recovery_summary` per resolved episode. Off:
+        # `recovery_summary` per resolved episode. Off:
         # not one line is added to the journal.
         self.summary_events = bool(summary_events)
         self._summarised = 0  # the last episode a summary was written for
@@ -1200,7 +1194,7 @@ class LookBackRelocalizer:
         # keyframe id -> Features, across episodes; history only; the WORKER
         # thread alone reads and writes it (see `_run`).
         self._feature_cache: dict = {}
-        # RELOC2 candidate 2: None when off (today's reference set exactly).
+        # None when off (the recent reference set exactly).
         self._history = (
             _History(self.acceptance.history_keyframes, self.acceptance.history_group)
             if self.acceptance.history_keyframes > 0 else None
@@ -1227,15 +1221,16 @@ class LookBackRelocalizer:
         self._closed = False
         self._thread: threading.Thread | None = None
         # A frame at a size the calibration does not describe was seen: no
-        # scan can run, so no episode can be accepted (review V5 M4-3).
+        # scan can run, so no episode can be accepted.
         self._size_mismatch = False
         self._said_no_references = False
-        # Measured, per scan attempt, on the worker thread.
+        # Measured, per scan attempt, on the worker thread. Nothing in the
+        # repository reads the two lists; the offline replay harness does.
         self.attempts = 0
         self.attempt_wall_s: list[float] = []
         self.attempt_cpu_s: list[float] = []
         self.dropped_frames = 0
-        # Worker jobs that raised: in total, and in a row (review V8 LOW-2).
+        # Worker jobs that raised: in total, and in a row.
         self.failed_attempts = 0
         self._consecutive_failures = 0
         self._worker_error: BaseException | None = None
@@ -1301,8 +1296,7 @@ class LookBackRelocalizer:
         events = self._drain(now)
         if self.machine.is_open:
             if not self._fits(gray):
-                if not self._size_mismatch:
-                    self._size_mismatch = True
+                self._size_mismatch = True
                 self.machine.cannot_accept()
                 self._say_no_references()
             elif self._episode is not None and self._episode.refs:
@@ -1319,7 +1313,7 @@ class LookBackRelocalizer:
         return events
 
     def tick(self, now: float) -> list:
-        """A frame the engine REJECTED before tracking (review V8 LOW-1).
+        """A frame the engine REJECTED before tracking.
 
         Time only: results already in are collected and the episode's clock
         moves (prompt, `late`, timeout), so an episode can never stay
@@ -1345,9 +1339,9 @@ class LookBackRelocalizer:
         """Stop for good: close an open episode, then `relocalizer_stopped`.
 
         `why` is `session_stopped` at a normal stop and `error` when the
-        engine drops a relocalizer that raised (review V5 M4-1). A worker
-        that had already given up (review V8 LOW-2) makes it `error` either
-        way. Idempotent: a second call journals nothing.
+        engine drops a relocalizer that raised. A worker that had already
+        given up makes it `error` either way. Idempotent: a second call
+        journals nothing.
         """
         if self._closed:
             return []
@@ -1389,22 +1383,10 @@ class LookBackRelocalizer:
             if self._size_mismatch else "no keyframe accepted before it",
         )
 
-    def cpu_summary(self) -> dict:
-        def med(xs):
-            s = sorted(xs)
-            return None if not s else s[len(s) // 2]
-
-        return {
-            "attempts": self.attempts,
-            "wall_ms_median": None if not self.attempt_wall_s else 1000 * med(self.attempt_wall_s),
-            "cpu_ms_median": None if not self.attempt_cpu_s else 1000 * med(self.attempt_cpu_s),
-            "dropped_frames": self.dropped_frames,
-        }
-
     # -- internals -------------------------------------------------------------
 
     def _safe_summaries(self) -> list:
-        """`_summaries`, never raising (review F5): a summary that fails is
+        """`_summaries`, never raising: a summary that fails is
         logged and given up for that episode -- once, not on every frame --
         and the lines around it (the acceptance or timeout that resolved the
         episode, `relocalizer_stopped`) are journaled regardless."""
@@ -1453,7 +1435,7 @@ class LookBackRelocalizer:
                 "best_pair": None if ep is None or ep.best_pair is None else dict(ep.best_pair),
                 "best_triangle": None if ep is None or ep.best_triangle is None else dict(ep.best_triangle),
             }
-        # Only once the payload exists (review F5): "summarised" means written.
+        # Only once the payload exists: "summarised" means written.
         self._summarised = m.episode
         return [(EVENT_SUMMARY, payload)]
 
@@ -1559,7 +1541,7 @@ class LookBackRelocalizer:
                     self.failed_attempts += 1
                     self._consecutive_failures += 1
                     if self._consecutive_failures >= MAX_WORKER_FAILURES:
-                        # Give up (review V8 LOW-2). The worker never touches
+                        # Give up. The worker never touches
                         # the journal: the frame thread's next call raises,
                         # and the engine journals the stop.
                         self._worker_error = exc
@@ -1601,14 +1583,14 @@ class LookBackRelocalizer:
         if cache is not None and not ep.cache_pruned:
             # WORKER-ONLY state: kept to this episode's references, so the
             # cache never holds more than `reference_keyframes` +
-            # `history_keyframes` feature sets (RELOC2: a historical
-            # reference is extracted once, not once per episode).
+            # `history_keyframes` feature sets (a historical reference is
+            # extracted once, not once per episode).
             wanted = {kid for kid, _ in ep.refs}
             for kid in [k for k in cache if k not in wanted]:
                 del cache[kid]
             ep.cache_pruned = True
         # The recent references, then -- only if they decide nothing -- the
-        # historical ones (RELOC2 review F1: history is PURELY ADDITIVE).
+        # historical ones (history is PURELY ADDITIVE).
         n_recent = len(ep.refs) - ep.n_history
         recent, historical = ep.refs[:n_recent], ep.refs[n_recent:]
 
@@ -1648,21 +1630,21 @@ class LookBackRelocalizer:
         links = {}
         if not verify_all(recent, frame, links):
             return
-        # Exactly today's decision over exactly today's references.
+        # Exactly the history-off decision over exactly the recent references.
         decision = evaluate_acceptance(links, refref, self.acceptance)
         if decision is None and historical:
             # Only a scan the recent references leave undecided consults
             # history. Its decision, if any, necessarily uses a historical
             # reference: every recent-only strong link or triangle was
-            # already refused above. So every decision today's code makes
-            # for a scan is made unchanged, and never replaced.
+            # already refused above. So every decision the history-off code
+            # makes for a scan is made unchanged, and never replaced.
             #
             # And history is SPARE-CYCLE work: it stops the moment a newer
             # frame is waiting, so it never delays the next scan of the
             # recent references by more than one extraction or verify --
-            # the frames today's code would scan are the frames scanned
-            # (RELOC2 review F1: at twice the CPU cost, a history pass that
-            # ran to completion made the worker skip the frame today's code
+            # the frames the history-off code would scan are the frames
+            # scanned (at twice the CPU cost, a history pass that ran to
+            # completion made the worker skip a frame the history-off code
             # accepted, and a later frame accepted two wrong links). Where a
             # pass stops, the next scan resumes, so every historical
             # reference is reached in turn.
@@ -1685,7 +1667,7 @@ class LookBackRelocalizer:
         if self.summary_events:
             # Before the result is published, so the summary written when it
             # is collected already counts this scan. Observability must never
-            # cost an accept (review F5).
+            # cost an accept.
             try:
                 self._note_scan(ep, job, links, refref)
             except Exception:
@@ -1713,7 +1695,7 @@ class LookBackRelocalizer:
 
     def _anchor(self, ep: _Episode, job: _Job, frame: Features):
         """The post-loss keyframe the scanned frame is tied to, verified AT
-        THE REVISIT FLOOR (review V8 M4): the nearest post-loss keyframe
+        THE REVISIT FLOOR: the nearest post-loss keyframe
         whose link to the scanned frame has >= REVISIT_MIN_INLIERS inliers.
         A nearer one below the floor is passed over; none at it leaves the
         acceptance to wait for a later keyframe (`_run_anchor`)."""
@@ -1729,7 +1711,7 @@ class LookBackRelocalizer:
 
     def _run_anchor(self, item) -> None:
         """Tie a pending accepted frame to a keyframe that arrived after it,
-        at the revisit floor: a link below it is a failed try (V8 M4)."""
+        at the revisit floor: a link below it is a failed try."""
         import numpy as np
 
         with self._lock:
@@ -1829,12 +1811,12 @@ def _mat(R) -> list:
 
 
 def options_kwargs(options: dict | None) -> dict:
-    """`LookBackRelocalizer` keyword arguments for the RELOC2 options.
+    """`LookBackRelocalizer` keyword arguments for the optional settings.
 
-    `options` holds only the settings that differ from today's
+    `options` holds only the settings that differ from the defaults
     (`config.world_relocalizer_options`): `window_from` (`prompt`),
     `history_keyframes` (> 0) and `summary_events` (True). Empty or None:
-    no keyword at all, so the relocalizer is built exactly as before.
+    no keyword at all, so the relocalizer is built with its defaults.
     """
     options = dict(options or {})
     kwargs: dict = {}
@@ -1864,7 +1846,8 @@ def from_session(intrinsics, *, mode: str, options: dict | None = None, **kwargs
     `null` ("not recorded"). Frames or keyframes at any size other than the
     calibrated one are ignored by the relocalizer (the engine rejects a
     size change anyway, and the build refuses a calibration mismatch).
-    `options` are the RELOC2 settings (`options_kwargs`); None is today's.
+    `options` are the optional settings (`options_kwargs`); None is the
+    defaults.
     """
     if mode not in (MODE_PROMPT, MODE_SILENT):
         return None
