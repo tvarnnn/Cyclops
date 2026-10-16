@@ -41,16 +41,22 @@ import Foundation
 /// with cases covering every cartridge's lifecycle, which is how a small shared
 /// vocabulary becomes a plugin framework.
 enum CartridgePhase: String, Equatable, Sendable, CaseIterable {
-    /// The Tower cannot do this at all: it declared no contract for this
-    /// cartridge.
+    /// The Tower cannot do this. Two causes reach it:
     ///
-    /// The honest answer for the three cartridges with no Tower code anywhere
-    /// (Visual Q&A, Accessibility, Environmental Memory), and for any Tower
-    /// that genuinely has not heard of a cartridge.
+    /// - **no contract**: the Tower declared none for this cartridge. The
+    ///   honest answer for the three cartridges with no Tower code anywhere
+    ///   (Visual Q&A, Accessibility, Environmental Memory), and for any Tower
+    ///   that genuinely has not heard of a cartridge;
+    /// - **declared but not served**: the Tower knows the cartridge and says it
+    ///   cannot serve it — an offer marked `available: false`, a status
+    ///   document whose lifecycle is `unavailable`, a refusal or error saying
+    ///   the cartridge is unavailable, or a route that answers that nothing is
+    ///   configured. The Tower's own reason, where it gave one, is what the
+    ///   screen shows.
     ///
-    /// **Object Memory does not pass through here**, and its absence is not an
-    /// oversight — it is undeclared on the socket by the Tower's own design and
-    /// reaches its states over HTTP.
+    /// **Object Memory never reaches it through a declaration**: it is
+    /// undeclared on the socket by the Tower's own design, and lands here only
+    /// when its HTTP routes answer that no object memory is configured.
     case unsupported
     /// The capability exists but the Tower cannot be reached right now.
     ///

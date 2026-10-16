@@ -41,11 +41,12 @@ struct CartridgeResultSubscription {
     /// `channel_failed` and `consumer_too_slow` are the two errors the Tower
     /// sends unsolicited, after which the subscription is gone and a new
     /// `result_subscribe` is the only way to resume; the Tower's message says
-    /// so. Nothing else would send one: a client subscribes from its
-    /// declaration sink and on going `.online`, and neither fires on a
-    /// mid-connection error. `consumer_too_slow` is routine: it fires when the
-    /// phone does not accept a result inside the send timeout, which a
-    /// backgrounded or thermally throttled phone on a walk does.
+    /// so. Nothing else answers the error: a client otherwise subscribes only
+    /// from its declaration sink, on going `.online` and, for Scene
+    /// Understanding, when its screen appears, and the error causes none of
+    /// those. `consumer_too_slow` is routine: it fires when the phone does not
+    /// accept a result inside the send timeout, which a backgrounded or
+    /// thermally throttled phone on a walk does.
     ///
     /// Bounded, and equal to `TowerWorldBuilderClient`'s budget: a Tower that
     /// closes a subscription three times on one connection will not be fixed

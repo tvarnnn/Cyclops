@@ -8,11 +8,11 @@ import Foundation
 /// What a person can do with a cartridge in this build.
 ///
 /// A badge in the drawer answers *"is there anything here for me right now?"*,
-/// not *"where does this module sit on the Tower roadmap?"*. The two questions
-/// have different answers: a roadmap word can sound readier than a cartridge
-/// with no Tower code at all. Roadmap position lives in `docs/03-ROADMAP.md`
-/// and each cartridge's spec, and is never rendered to a wearer as though it
-/// were a capability.
+/// not *"where does this module sit on the Tower roadmap?"*. Answering the
+/// second in the first's place misleads: a roadmap word such as "Planned"
+/// sounds ready even on a cartridge with no Tower code at all. Roadmap position
+/// lives in `docs/03-ROADMAP.md` and each cartridge's spec, and is never
+/// rendered to a wearer as though it were a capability.
 ///
 /// ## What these values are NOT
 ///
@@ -68,8 +68,10 @@ struct Cartridge: Identifiable, Equatable {
     let name: String
     let summary: String
     let status: CartridgeStatus
-    /// The module's spec. Not shown in the drawer; the catalog tests pin every
-    /// path to a known spec file.
+    /// The module's spec. Not shown in the drawer.
+    /// `testEveryCartridgeCitesASpecThatExists` checks every path against a
+    /// hardcoded list of spec paths; a test bundle cannot see the repository,
+    /// so nothing checks that the file exists.
     let specPath: String
     /// The workspace this app can open for the cartridge, or `nil` if the app
     /// has no screen for it, in which case its drawer row is informational.

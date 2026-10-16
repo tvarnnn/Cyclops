@@ -11,11 +11,11 @@ import Foundation
 ///
 /// A workspace's `@StateObject` view model is destroyed when the cartridge
 /// changes. That is fine for a view model — it holds nothing real. It is
-/// **not** fine for a client: a Tower-backed one holds a subscription to the
-/// connection and whatever it has accumulated — a partly-built world, a live
-/// set of scene tracks, a query result. Destroying that on a cartridge switch
-/// loses work and, worse, tears down a subscription the user did not ask to
-/// end. So anything that must *outlive* the workspace belongs on
+/// **not** fine for a client: a Tower-backed one holds its subscription to the
+/// connection (Object Memory, its last answer) and whatever it has accumulated
+/// — a partly-built world, a live set of scene tracks, a query result.
+/// Destroying that on a cartridge switch loses work and, worse, tears down a
+/// subscription the user did not ask to end. So anything that must *outlive* the workspace belongs on
 /// `ProjectManager`, not in a view's `@StateObject`.
 ///
 /// Injected rather than defaulted at the point of use: a default argument on
@@ -25,9 +25,10 @@ import Foundation
 /// ## What this is not
 ///
 /// It is not a registry, not a plugin host, and not a lookup by cartridge id.
-/// One `let` per cartridge, resolved at compile time. Adding a
-/// `client(for: CartridgeWorkspace)` accessor would be the first step toward
-/// the dynamic module discovery `docs/04-MODULE-SYSTEM.md` forbids before V1.0.
+/// One `let` per cartridge that has a workspace, resolved at compile time.
+/// Adding a `client(for: CartridgeWorkspace)` accessor would be the first step
+/// toward the dynamic module discovery `docs/04-MODULE-SYSTEM.md` forbids
+/// before V1.0.
 ///
 /// ## Runtime ownership
 ///
