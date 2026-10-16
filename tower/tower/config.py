@@ -132,7 +132,11 @@ class Settings:
     # Which device the attached observation producer runs its detector on.
     #
     # "cpu" was the long-time default, and the reason was CONTENTION rather
-    # than speed. Measured with no other work of ours running, replaying a
+    # than speed. A CUDA pass over the whole corpus once printed a 75.0
+    # ms/frame running average at frame 10,000 and ended with an 87.8
+    # ms/frame mean, but it was competing with a test suite, so neither
+    # figure describes a quiet host. Measured with no other work of ours
+    # running, replaying a
     # 2,203-frame capture: CPU 39.8 to 46.9 ms/frame across five
     # consecutive runs, against CUDA at 48.7. A second audit on the same
     # host measured the ordering the other way (CUDA 43.9 against CPU

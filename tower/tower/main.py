@@ -197,8 +197,8 @@ def _world_build_spec(settings: Settings, gate=None) -> WorkerSpec | None:
     `gate`, a callable the supervisor asks when a capture opens.
 
     Why an argv and not an import: this function and its neighbour are the
-    ONLY places in the web process that know a world builder and an object
-    memory exist, and `test_shared_code_does_not_import_a_cartridge` forbids
+    only places in the web process that build a world builder's or an
+    object memory's child command line, and `test_shared_code_does_not_import_a_cartridge` forbids
     transport, config and the module system from importing a cartridge, on
     the grounds that "the next cartridge inherits its assumptions". A
     command line inherits nothing, and `CaptureWorkerSupervisor` stays a
@@ -1439,9 +1439,9 @@ def create_app() -> FastAPI:
     and the read-only roots the routes consult (world, object memory,
     capture, document). It then builds the world-finish chore (constructed
     here, started in `lifespan`), the capture-worker supervisor with its two
-    cartridge gates, the two `CartridgeSession` objects, the live cartridges
-    and the result hub, logs the effective configuration, loads the module
-    container, and registers every router.
+    cartridge gates, the two `CartridgeSession` objects and the live
+    cartridges, logs the effective configuration, builds the result hub,
+    loads the module container, and registers every router.
 
     Why: the web process reads and supervises but never builds a world. The
     chore is started from `lifespan` and the module container is loaded here

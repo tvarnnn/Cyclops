@@ -455,8 +455,10 @@ class CaptureWorkerSupervisor:
     def capture_opened(self, capture_id: str, capture_dir, *, continues=None) -> None:
         """A recording has started: attach every spec whose gate is open to it.
 
-        What: when the Tower opens a capture, spawns one child process per
-        worker spec whose gate is open, each pointed at the capture directory.
+        What: when the Tower opens a capture, attaches each worker spec whose
+        gate is open to it: an existing worker that follows the capture's
+        lineage continues, otherwise a child process is spawned, pointed at
+        the capture directory.
 
         How: returns at once when no specs are registered. Otherwise, holding
         the supervisor lock, it reaps exited workers, then for each spec
