@@ -206,7 +206,8 @@ STREAM_IDLE_AFTER_S = 5.0
 
 # The most metrics one run reports. Every registered experiment emits far
 # fewer (the largest, `optical_flow`, declares fourteen, its headline
-# among them: 14 of 16 rows in the worst case), so this bounds a future
+# among them: 14 of 16 rows in the worst case; the next, `redaction_impact`,
+# emits twelve), so this bounds a future
 # experiment rather than truncating a present one -- and when it does
 # truncate it says how many it dropped rather than quietly showing a
 # shorter list.
@@ -217,7 +218,8 @@ MAX_REPORTED_METRICS = 16
 # as care while providing none. A name enters the accumulator only if
 # `classify_metric` recognises it, and that means only if the experiment
 # DECLARED it in its own `METRIC_KINDS` -- a compile-time set, fourteen
-# entries at its largest (`optical_flow`). A name the experiment never declared is
+# entries at its largest (`optical_flow`; `redaction_impact` declares
+# twelve). A name the experiment never declared is
 # excluded and counted below instead. The bound is the declaration, and
 # `test_the_accumulator_is_bounded_by_the_declared_metric_set` is what
 # says so.

@@ -296,7 +296,7 @@ class LabRun:
         `classify_metric` recognises it, which means only if the
         experiment declared it in its own `METRIC_KINDS`. That is a
         compile-time set -- fourteen entries at its largest
-        (`optical_flow`). An arbitrary cap on top of it would never fire.
+        (`optical_flow`; `redaction_impact` declares twelve). An arbitrary cap on top of it would never fire.
         """
         accumulator = self._metrics.get(name)
         if accumulator is None:
