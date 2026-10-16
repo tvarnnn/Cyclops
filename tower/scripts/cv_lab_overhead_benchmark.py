@@ -73,9 +73,8 @@ def _frame() -> bytes:
 def _timed(call, repeat: int) -> dict:
     """Mean, median and p95 over `repeat` calls, after one warm-up.
 
-    p95 rather than max: a single sample on a machine running three other
-    lanes says more about the machine than the code, and the Tower this
-    was measured on had two world-builder benchmarks running beside it.
+    p95 rather than max: a single sample on a loaded machine says more about
+    the machine than the code.
     """
     call()
     samples = []
@@ -95,12 +94,12 @@ def _timed(call, repeat: int) -> dict:
 def measure_frame_overhead(repeat: int) -> dict:
     """What the Lab's per-frame bookkeeping costs, measured DIRECTLY.
 
-    Not by subtracting two end-to-end timings. That was the first version
-    of this function and it was worthless: the effect is tens of
-    microseconds and the two measurements it differenced were 2 ms and
-    12 ms with several percent of run-to-run spread, so it reported a
-    NEGATIVE overhead for `baseline` on a loaded machine. A difference
-    smaller than the noise in either term is not a measurement.
+    Not by subtracting two end-to-end timings: the effect is tens of
+    microseconds and the two measurements such a difference would use were
+    2 ms and 12 ms with several percent of run-to-run spread (differencing
+    them once reported a NEGATIVE overhead for `baseline` on a loaded
+    machine). A difference smaller than the noise in either term is not a
+    measurement.
 
     So the bookkeeping is timed on its own, against a pre-computed
     result: `record_result` folds one frame into the run's accumulators,
@@ -270,9 +269,9 @@ def measure_memory(frames: int) -> dict:
     RSS alone cannot answer it. RSS is what the process has asked the OS
     for, and in a process running OpenCV and numpy that includes their own
     pools -- which grow, shrink and hold memory on their own schedule.
-    Two runs of an earlier version of this benchmark, over identical
-    work, reported -524 KB and +2.8 MB. A quantity that changes sign
-    between runs is not measuring the thing.
+    Over identical work, RSS has been observed at -524 KB in one run and
+    +2.8 MB in another. A quantity that changes sign between runs is not
+    measuring the thing.
 
     So `tracemalloc` runs alongside it and attributes PYTHON allocations
     to the lines that made them. That one answers "did the Lab keep
