@@ -92,8 +92,9 @@ struct CVExperiment: Equatable, Identifiable, Sendable {
     /// that draws none. Declared in the catalog so the picker can say "this
     /// one has a live view" **before** anybody commits to a two-minute model
     /// load to find out. A promise about what a preview would be, not that one
-    /// exists: that is `run.annotation.artifact`, `nil` with a reason until a
-    /// frame has been through.
+    /// exists: that is `run.annotation.artifact`, which stays `.absent` until
+    /// the Tower serves a preview descriptor; meanwhile the Tower's reason is
+    /// `run.annotation.artifactUnavailableReason`.
     ///
     /// `nil` is a real answer and not a gap: `baseline` will never have a
     /// picture, deliberately, because it is the control every other

@@ -52,14 +52,17 @@ nonisolated enum WorldTrackingQuality: Equatable, Sendable {
 
 // MARK: - Calibration
 
-/// Whether the Tower has established the reference it needs before any spatial
-/// figure means anything.
+/// Whether the Tower has calibrated the camera. Calibration unlocks *poses*,
+/// not size: without it no pose is solved, and with it the scale is still not
+/// metric on this hardware (`TOWER-UNIFIED-CARTRIDGES.md` §5.3). The panel
+/// shows it as a row when reported and gates no figure on it. Whether a
+/// figure may be shown is decided by the Tower's unit, with the scale's
+/// explanation beneath it (`WorldTrajectoryReport.labelledFigureDisplayable`,
+/// `WORLD-BUILDER-IOS.md` §4).
 ///
 /// Coarse for the same reason tracking is: the calibration *procedure* is the
 /// Tower's to design — it may be an initialisation motion, a known-object
 /// reference, a plane fit, or nothing at all — and iOS must not presume which.
-/// What the UI needs is only whether a figure is yet trustworthy enough to
-/// show, and that has four honest answers.
 ///
 /// Note the deliberate absence of a progress percentage. "Calibrating, 62%"
 /// implies a measurable denominator, and no such quantity has been defined.

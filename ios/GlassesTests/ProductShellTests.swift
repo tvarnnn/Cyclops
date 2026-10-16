@@ -1945,7 +1945,7 @@ final class WorldModelIntegrationTests: XCTestCase {
         }
     }
 
-    // MARK: Calibration and metric display
+    // MARK: Calibration
 
     /// Silence and a report are different claims and must read differently.
     func testUnknownCalibrationIsNotDressedUpAsUncalibrated() {
