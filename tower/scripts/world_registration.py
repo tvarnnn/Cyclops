@@ -1606,9 +1606,9 @@ def pair_is_hopeless(source, target, thresholds) -> str | None:
 # lost all of them. It is deliberately NOT lowered for speed -- the whole
 # value of this function is the verdicts.
 #
-# IT IS ALSO A PER-SIDE CAP, WHICH FAILS ON LONG SEGMENTS.
+# IT WAS ALSO A PER-SIDE CAP, AND THAT IS THE PART THAT BROKE ON LONG SEGMENTS.
 #
-# A cap of 8 covers 80% of a median (10-keyframe) segment, but segments of
+# A cap of 8 covered 80% of a median (10-keyframe) segment, but segments of
 # 51, 54 and 170 keyframes occur too -- and 8 evenly spread frames cover
 # 4.7% of a 170-keyframe segment. The verdict "no visual link" then stops
 # being a statement about two segments and becomes a statement about the
