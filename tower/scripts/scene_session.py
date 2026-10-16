@@ -95,9 +95,9 @@ def main(argv=None) -> int:
         help="Seconds between orientation estimates.",
     )
     parser.add_argument("--score-threshold", type=float, default=SCORE_THRESHOLD)
-    # Defaulted from the policy rather than repeated. This driver used
-    # to say `default=5`, which is how a constant that was corrected in
-    # one place goes on shipping from another.
+    # Defaulted from the policy rather than repeated, so a corrected
+    # constant cannot keep shipping from here (a hard-coded `default=5`
+    # here was a superseded value).
     parser.add_argument(
         "--min-hits", type=int, default=TrackerPolicy.min_hits
     )
