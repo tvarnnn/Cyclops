@@ -182,8 +182,9 @@ class WorldBuilderEngine:
     """The frame-path engine, with the two cost profiles of the module docstring.
 
     One session is active at a time: `start_session` takes the world's writer
-    lock and `stop_session` releases it unless asked to hold it, and every
-    observed frame and accepted keyframe is journaled through the store. Of
+    lock and `stop_session` releases it unless asked to hold it, and accepted
+    keyframes and the session's events are written through the store (a
+    per-frame quality log only when one is configured). Of
     the constructor arguments, production code passes only `backend_name`;
     `policy`, `clock`, `redactor_factory`, `relocalizer`, `monotonic`,
     `relocalizer_options` and `frame_quality_log` are seams for tests and

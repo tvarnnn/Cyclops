@@ -223,9 +223,9 @@ class LiveDepthWorker:
 
     def close(self):
         """Mark the worker closed and discard queued jobs. Does NOT join the
-        thread: an in-flight prediction and the last `align.json` flush finish
-        after the engine's `stop_session` returns, so stopping never waits for
-        the GPU."""
+        thread: an in-flight prediction and the last `align.json` flush may
+        still be running when the engine's `stop_session` returns (and that
+        flush can fail), so stopping never waits for the GPU."""
         with self.lock:
             self.closed = True
             self._drain()
