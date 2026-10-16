@@ -392,7 +392,9 @@ CLASS_EVIDENCE: dict[str, ClassEvidence] = {
 # Keys, a wallet, glasses, a charger and medication have no COCO class
 # (the literature's six are keys, wallet, phone, glasses, remote,
 # medication; `phone` and `remote` do have COCO classes, `charger` is
-# from the module brief). This detector cannot name them at any
+# from the module brief; counting only the literature's six, three of
+# them -- keys, wallet, glasses -- were the ones first recorded as having
+# no COCO class). This detector cannot name them at any
 # threshold, which is a ceiling on what a COCO-only cartridge can ever
 # be for. Recorded here so the gap is visible from the code that has it.
 WORTH_FINDING_WITHOUT_A_COCO_CLASS = ("keys", "wallet", "glasses", "charger", "medication")

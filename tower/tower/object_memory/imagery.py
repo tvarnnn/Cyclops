@@ -399,7 +399,9 @@ class FaceFilter:
 #
 # HOW LONG A LINEAGE ACTUALLY IS.
 #
-# Of 32 lineage roots on this host, one walk is **eighteen captures
+# The first guess was a fixed `MAX_LINEAGE_STEPS = 8`, on the belief that
+# reconnect chains of five were what this corpus held; that guess is
+# retracted. Of 32 lineage roots on this host, one walk is **eighteen captures
 # long** -- 05320786 -> 664f2867 -> ... -> 2fd9da90, covering source
 # frames 1 to 8,690 with seventeen reconnects in a single sitting. A
 # fixed step bound of eight would silently truncate it, and four records

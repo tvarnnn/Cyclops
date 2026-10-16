@@ -5,7 +5,8 @@ WHY SIGHTINGS.
 Grouping the corpus into temporally contiguous runs --
 18,821 frames, every detection at score >= 0.5, a run broken by a gap of
 more than 3 seconds -- gives **763 sightings, 499 of them at least three
-frames long, 404 of those excluding `person`**, over 28 classes.
+frames long, 404 of those excluding `person`**, over 28 classes rather
+than the two a whitelist of `laptop` and `cell phone` covers.
 
 Of those 499, the classes this cartridge may actually write account for
 **211**. The corpus is 1,942 seconds of recording, so that is **one
