@@ -25,6 +25,7 @@ import pytest
 
 from tower.world_builder import coherence_gate as CG
 from tower.world_builder import coherence_publish as CP
+from tower.world_builder import final_scale_guard as FSG
 from tower.world_builder.components import parse_components
 
 SID = "s1"
@@ -462,6 +463,7 @@ def test_surfacify_takes_the_known_fov_into_its_params_digest(tmp_path):
                                       DenseParams(known_fov=True))
 
 
+@pytest.mark.usefixtures("final_scale_guard_bypassed")
 def test_the_publish_step_with_the_gate_off_is_todays_write(tmp_path, monkeypatch):
     monkeypatch.delenv("TOWER_WORLD_SOLVE_GATE", raising=False)
     solution = _solution()
@@ -473,6 +475,7 @@ def test_the_publish_step_with_the_gate_off_is_todays_write(tmp_path, monkeypatc
     assert list(tmp_path.iterdir()) == []
 
 
+@pytest.mark.usefixtures("final_scale_guard_bypassed")
 def test_the_publish_step_with_the_gate_on_writes_the_gated_solve_then_the_record(tmp_path, monkeypatch):
     monkeypatch.setenv("TOWER_WORLD_SOLVE_GATE", "1")
     solution = _solution()
@@ -641,6 +644,7 @@ def _stub_gate(monkeypatch, calls):
     monkeypatch.setattr(CP, "gate_final_solution", fake)
 
 
+@pytest.mark.usefixtures("final_scale_guard_bypassed")
 def test_the_final_solve_runs_the_gate_before_publishing_when_the_setting_is_on(session, colmap, monkeypatch):
     from tower.world_builder import global_solve as GS
 
@@ -661,6 +665,7 @@ def test_the_final_solve_runs_the_gate_before_publishing_when_the_setting_is_on(
     assert not (session.workspace.root / CP.COMPONENTS_FILENAME).exists()
 
 
+@pytest.mark.usefixtures("final_scale_guard_bypassed")
 def test_with_the_setting_off_the_final_solve_publishes_as_today(session, colmap, monkeypatch):
     from tower.world_builder import global_solve as GS
 
@@ -684,6 +689,7 @@ def test_an_explicit_argument_wins_over_the_setting(session, colmap, monkeypatch
     assert len(calls) == 1
 
 
+@pytest.mark.usefixtures("final_scale_guard_bypassed")
 def test_a_real_gate_that_cannot_read_its_database_publishes_todays_solve(session, colmap, monkeypatch):
     """The real gate on the fake solver's empty database: the gate fails, and the solve is still published,
     as the solver returned it, with `gate.state: failed` and no components record (`components: null`)."""
@@ -892,6 +898,8 @@ def test_the_re_gate_runs_in_place_from_the_solvers_partition(tmp_path, monkeypa
                              components=doc)
 
     monkeypatch.setattr(store, "read_keyframes", lambda w, s: _keyframes(50), raising=False)
+    # The final scale guard reads the session's start (its capture spans), as the gate runner does.
+    monkeypatch.setattr(store, "read_session", lambda w, s: SimpleNamespace(started_at=1000.0), raising=False)
     out = CP.regate_published(store, "w1", SID, gate_runner=gate_runner)
     assert seen == {"components": {0}, "database": "database.db"}, "the solver's partition, the solve's DB"
     again = GS.load_solution(store, "w1", SID)
@@ -901,7 +909,8 @@ def test_the_re_gate_runs_in_place_from_the_solvers_partition(tmp_path, monkeypa
     doc = json.loads((ws.root / CP.COMPONENTS_FILENAME).read_text())
     meta = json.loads(ws.solution_path.read_text())
     assert doc["solve_identity"] == meta["solve_identity"] == GS.solve_identity(again)
-    assert sorted(p.name for p in ws.root.iterdir()) == sorted(set(before) | {CP.COMPONENTS_FILENAME})
+    assert sorted(p.name for p in ws.root.iterdir()) == \
+        sorted(set(before) | {CP.COMPONENTS_FILENAME, FSG.AUDIT_FILENAME})
 
 
 def test_a_re_gate_that_cannot_start_is_waiting_and_spends_no_attempt(tmp_path):
