@@ -151,6 +151,18 @@ async def _cartridges(websocket, sender) -> None:
 
 
 async def _subscribe(message, websocket, sender, channel_holder) -> None:
+    """Handle one `result_subscribe` message.
+
+    Validates the field types, then asks the cartridge registry for the offer
+    matching `cartridge` and `result_type`. Each failure is answered with a
+    typed error and nothing is registered: malformed fields, unknown cartridge,
+    unknown result type, a different `contract` than requested, the offer being
+    unavailable, or the connection already holding its maximum subscriptions.
+    Otherwise it builds the first snapshot through the result hub (a timeout
+    or failure is reported as a snapshot error), classifies `since_revision`
+    against it, replies `subscribed` with the cursor status, adds the
+    subscription to the connection's channel and offers it that first snapshot.
+    """
     cartridge = message.get("cartridge")
     result_type = message.get("result_type")
     if not isinstance(cartridge, str) or not isinstance(result_type, str):
