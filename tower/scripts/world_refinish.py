@@ -34,8 +34,8 @@ the lock):
       byte what the walk left, for rollback. The copy is what makes the masked
       solve filter THE WALK'S OWN DATABASE (`solve.masking:
       "walk-database-filtered"`). Without it the solve finds no walk database and
-       re-extracts under the masks (`"re-extracted"`), and on the target walk that
-       split the room.
+      re-extracts under the masks (`"re-extracted"`), and on the target walk that
+      split the room.
       A solver image goes back ONLY when it is proven to be exactly what step 2
       plans for its keyframe (`carry_back_decisions`); every other
       one is withheld -- the solve writes it afresh from its planned frame -- and
