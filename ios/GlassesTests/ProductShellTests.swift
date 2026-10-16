@@ -545,9 +545,8 @@ final class WorldModelTests: XCTestCase {
             .failed(CartridgeFailure(kind: .transport, message: "boom")),
         ]
         for state in empty {
-            XCTAssertFalse(state.hasWorld, "\(state) claims a world")
             XCTAssertFalse(state.isReceivingUpdates, "\(state) claims live updates")
-            XCTAssertNil(state.snapshot, "\(state) produced a snapshot from nothing")
+            XCTAssertNil(state.snapshot, "\(state) claims a world: it produced a snapshot from nothing")
         }
     }
 
@@ -562,7 +561,6 @@ final class WorldModelTests: XCTestCase {
 
     func testAWorldSurvivesFinalisationSoItStaysInspectable() {
         let snapshot = WorldSnapshot(name: "Bedroom", keyframeCount: 37)
-        XCTAssertTrue(WorldModelState.finalized(snapshot).hasWorld)
         XCTAssertEqual(WorldModelState.finalized(snapshot).snapshot, snapshot)
     }
 
@@ -601,7 +599,7 @@ final class WorldModelTests: XCTestCase {
             return XCTFail("expected .unsupported, got \(client.state)")
         }
         XCTAssertFalse(reason.isEmpty, "an unsupported state must explain itself")
-        XCTAssertFalse(client.state.hasWorld)
+        XCTAssertNil(client.state.snapshot)
         XCTAssertFalse(client.state.isReceivingUpdates)
     }
 }
@@ -1287,7 +1285,7 @@ final class CartridgeClientTests: XCTestCase {
                 cartridgeID: world.cartridgeID,
                 phase: world.state.phase,
                 reason: UnavailableWorldBuilderClient.reason,
-                hasData: world.state.snapshot != nil || world.state.hasWorld
+                hasData: world.state.snapshot != nil
             ),
             ClientCase(
                 cartridgeID: cv.cartridgeID,
@@ -1836,14 +1834,12 @@ final class ObservationTimeTests: XCTestCase {
     func testArrivalTimeIsNeverShownAsObservationTime() {
         let arrivalOnly = ObservationTime(observedAt: nil, receivedAt: Date())
         XCTAssertNil(arrivalOnly.displayableObservationTime)
-        XCTAssertTrue(arrivalOnly.isObservationTimeUnknown)
     }
 
     func testAReportedObservationTimeIsUsed() {
         let observed = Date(timeIntervalSince1970: 1_000)
         let time = ObservationTime(observedAt: observed, receivedAt: Date())
         XCTAssertEqual(time.displayableObservationTime, observed)
-        XCTAssertFalse(time.isObservationTimeUnknown)
     }
 
     /// A default carries neither, which is the honest starting point.
@@ -1851,7 +1847,6 @@ final class ObservationTimeTests: XCTestCase {
         let time = ObservationTime()
         XCTAssertNil(time.displayableObservationTime)
         XCTAssertNil(time.receivedAt)
-        XCTAssertTrue(time.isObservationTimeUnknown)
     }
 }
 
@@ -1910,7 +1905,6 @@ final class WorldModelIntegrationTests: XCTestCase {
     func testFinalizingIsWorkButNotLiveObservation() {
         let state = WorldModelState.finalizing(WorldSnapshot(keyframeCount: 9))
         XCTAssertFalse(state.isReceivingUpdates, "finalizing claimed live observation")
-        XCTAssertTrue(state.hasWorld)
         XCTAssertNotNil(state.snapshot)
         XCTAssertEqual(state.phase, .live, "finalizing is the Tower working")
     }
@@ -1948,39 +1942,10 @@ final class WorldModelIntegrationTests: XCTestCase {
         for state in empty {
             XCTAssertFalse(state.phase.mayCarryData)
             XCTAssertNil(state.snapshot)
-            XCTAssertFalse(state.hasWorld)
         }
     }
 
     // MARK: Calibration and metric display
-
-    /// Both gates, together. An uncalibrated figure is not a rough figure, it is
-    /// an unanchored one; and a relative figure is not a distance at all.
-    func testAMetricFigureNeedsBothCalibrationAndMetricScale() {
-        XCTAssertTrue(
-            WorldSnapshot(scale: .inferredMetric, calibration: .calibrated).permitsMetricDisplay
-        )
-        XCTAssertFalse(
-            WorldSnapshot(scale: .inferredMetric, calibration: .calibrating).permitsMetricDisplay,
-            "an uncalibrated pipeline produced a displayable distance"
-        )
-        XCTAssertFalse(
-            WorldSnapshot(scale: .relative, calibration: .calibrated).permitsMetricDisplay,
-            "a relative figure was treated as a distance"
-        )
-        XCTAssertFalse(
-            WorldSnapshot(scale: .unknown, calibration: .calibrated).permitsMetricDisplay
-        )
-    }
-
-    /// Only a calibrated pipeline permits spatial figures, and "not reported" is
-    /// not a permission.
-    func testOnlyCalibratedPermitsSpatialFigures() {
-        XCTAssertTrue(WorldCalibrationState.calibrated.permitsSpatialFigures)
-        for state in [WorldCalibrationState.unknown, .uncalibrated, .calibrating] {
-            XCTAssertFalse(state.permitsSpatialFigures, "\(state) permitted a spatial figure")
-        }
-    }
 
     /// Silence and a report are different claims and must read differently.
     func testUnknownCalibrationIsNotDressedUpAsUncalibrated() {
@@ -2469,9 +2434,6 @@ final class DocumentMemoryModelTests: XCTestCase {
             DocumentTextAvailability.unknown.displayName,
             DocumentTextAvailability.notReadable.displayName
         )
-        XCTAssertFalse(DocumentTextAvailability.unknown.hasText)
-        XCTAssertFalse(DocumentTextAvailability.notReadable.hasText)
-        XCTAssertTrue(DocumentTextAvailability.extracted(characterCount: nil).hasText)
     }
 
     /// The list carries a count, never the text. A list of documents must not
@@ -2490,9 +2452,9 @@ final class DocumentMemoryModelTests: XCTestCase {
     /// A document's thumbnail obeys the same rule as every other stored image.
     func testAnUnredactedThumbnailIsWithheld() {
         let raw = RememberedDocument(id: "1", thumbnail: .available(.rawEphemeral))
-        XCTAssertFalse(raw.isThumbnailDisplayable)
+        XCTAssertFalse(raw.thumbnail.isDisplayable)
         let redacted = RememberedDocument(id: "1", thumbnail: .available(.redacted))
-        XCTAssertTrue(redacted.isThumbnailDisplayable)
+        XCTAssertTrue(redacted.thumbnail.isDisplayable)
     }
 
     /// Observation time never falls back to arrival time, at the document level.
@@ -2502,7 +2464,6 @@ final class DocumentMemoryModelTests: XCTestCase {
             time: ObservationTime(observedAt: nil, receivedAt: Date())
         )
         XCTAssertNil(document.time.displayableObservationTime)
-        XCTAssertTrue(document.time.isObservationTimeUnknown)
     }
 
     /// Time queries are ranges. "This morning" is not an instant, and answering

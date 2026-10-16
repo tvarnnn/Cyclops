@@ -711,9 +711,6 @@ final class DocumentFieldTests: XCTestCase {
             document.text.explanation?.contains("not an error"), true,
             "an answer was rendered as a failure"
         )
-        XCTAssertFalse(DocumentTextAvailability.unknown.hasText)
-        XCTAssertFalse(DocumentTextAvailability.notReadable.hasText)
-        XCTAssertTrue(DocumentTextAvailability.extracted(characterCount: nil).hasText)
 
         // A state this build has not heard of is not a verdict about the page.
         XCTAssertEqual(
@@ -788,7 +785,7 @@ final class DocumentFieldTests: XCTestCase {
         let one = try XCTUnwrap(DocumentMemoryDecoder.library(from: DocumentFixtures.oneDocument))
         XCTAssertFalse(one.pages[0].imageKept)
         XCTAssertFalse(one.pages[0].imageServed)
-        XCTAssertFalse(try XCTUnwrap(one.document).isThumbnailDisplayable)
+        XCTAssertFalse(try XCTUnwrap(one.document).thumbnail.isDisplayable)
     }
 
     /// A page with empty text and zero regions is the readable-nothing case.

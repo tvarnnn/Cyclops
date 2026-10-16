@@ -308,15 +308,6 @@ nonisolated struct WorldGeometryScale: Equatable, Sendable {
 
     /// The weakest claim available, and what an absent block decodes to.
     static let unknown = WorldGeometryScale(state: .unknown, metersPerUnit: nil)
-
-    /// Whether a figure in these units may be converted to metres at all.
-    ///
-    /// Mirrors the Tower's own `ScaleState.allows_metres`, which admits
-    /// `measured` and nothing else — so this is `false` on every payload this
-    /// hardware can produce, and the conversion it guards is not written.
-    var convertibleToMetres: Bool {
-        state == .measuredMetric && metersPerUnit != nil
-    }
 }
 
 // In an extension so the memberwise initialiser survives, as above.

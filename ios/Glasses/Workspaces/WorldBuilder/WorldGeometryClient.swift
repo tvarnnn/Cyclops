@@ -51,10 +51,6 @@ actor WorldGeometryStore {
         chunks[key]
     }
 
-    func keysMissing(from wanted: [String]) -> [String] {
-        wanted.filter { chunks[$0] == nil }
-    }
-
     /// Drop everything not named by the current manifest. Called after a
     /// manifest arrives so a long walk does not accumulate superseded
     /// segments forever.

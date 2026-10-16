@@ -1031,6 +1031,8 @@ nonisolated final class IMURecorder: @unchecked Sendable {
 
     // MARK: Test and diagnostics reads (block the caller until the queue drains)
 
+    /// Test seam: returns once every call already queued has run. `queue` is
+    /// private, and every write goes through it asynchronously.
     func waitUntilIdle() { queue.sync {} }
 
     func summary() -> IMURecorderSummary { queue.sync { summaryOnQueue() } }

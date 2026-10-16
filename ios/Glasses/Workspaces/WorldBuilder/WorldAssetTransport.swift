@@ -567,9 +567,7 @@ final class WorldAssetSchemeHandler: NSObject, WKURLSchemeHandler {
     /// The session the page on screen draws. Only its routes are proxied.
     var sessionID: String?
 
-    static let cacheLimit = WorldAssetMemory.limit
     private(set) var memory = WorldAssetMemory()
-    var cacheBytes: Int { memory.bytes }
     /// Injectable so a test can move past the authorisation window.
     var clock: () -> Date = { Date() }
 

@@ -384,7 +384,8 @@ final class GlassesConnection: ObservableObject {
     private var motionSamplesTask: Task<Void, Never>?
     private let motionTokenBag = ListenerTokenBag()
 
-    /// Whether a Motion capability is attached to the current session.
+    /// Test seam: whether a Motion capability is attached to the current
+    /// session. `motion` is private.
     var isMotionAttached: Bool { motion != nil }
 
     /// The rate Motion was attached at, while it is attached.
@@ -465,8 +466,8 @@ final class GlassesConnection: ObservableObject {
     /// no longer this connection's; see `observeSession`.
     private(set) var staleSessionCallbacksDropped = 0
 
-    /// The session this connection holds, for a test that must deliver a
-    /// callback from it after it has been replaced.
+    /// Test seam: the session this connection holds, for a test that must
+    /// deliver a callback from it after it has been replaced.
     var deviceSessionForTesting: DeviceSession? { deviceSession }
 
     /// Fires once when the camera stream is confirmed live (`StreamState
@@ -1696,7 +1697,8 @@ final class GlassesConnection: ObservableObject {
         return rates[index + 1]
     }
 
-    /// Samples of any source received since Motion was last attached.
+    /// Test seam: samples of any source received since Motion was last
+    /// attached. `motionSampleCount` is private.
     var motionSamplesSinceAttach: Int { motionSampleCount.withLock { $0 } }
 
     /// The recorder's 60 Hz refused at run time rather than by `addMotion`:

@@ -259,10 +259,6 @@ nonisolated struct ObservationTime: Equatable, Sendable {
     /// which `receivedAt` can be silently promoted: a caller that wants to show
     /// arrival time has to name it.
     var displayableObservationTime: Date? { observedAt }
-
-    /// True when the report carries no observation time at all — the case a
-    /// view must render as "time unknown" rather than falling back to arrival.
-    var isObservationTimeUnknown: Bool { observedAt == nil }
 }
 
 // MARK: - Duration in view

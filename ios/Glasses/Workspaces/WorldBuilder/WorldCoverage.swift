@@ -322,11 +322,6 @@ nonisolated struct WorldCoverageReceipt: Equatable, Sendable {
         clock.map { max(0, $0.towerNow(at: instant) - coverage.solvedAt) }
     }
 
-    /// `nil` when the age is unavailable.
-    func isStale(at instant: ContinuousClock.Instant) -> Bool? {
-        age(at: instant).map { $0 > Self.staleAfter }
-    }
-
     /// After Stop, "at Stop" only when the solve included every accepted
     /// keyframe; an unknown live count is not "every".
     var includesEveryAcceptedKeyframe: Bool {

@@ -85,11 +85,6 @@ nonisolated enum WorldCalibrationState: Equatable, Sendable, CaseIterable {
         case .calibrated: return "Calibrated"
         }
     }
-
-    /// Whether spatial figures derived under this calibration may be shown at
-    /// all. False for everything but `.calibrated`: an uncalibrated figure is
-    /// not a rough figure, it is an unanchored one.
-    var permitsSpatialFigures: Bool { self == .calibrated }
 }
 
 // MARK: - Geometry
@@ -292,14 +287,6 @@ nonisolated struct WorldTrajectoryReport: Equatable, Sendable {
         return scale != .unknown
     }
 
-    /// Whether the Tower positioned a camera anywhere at all.
-    ///
-    /// `false` for `poseCount == 0`, which is the uncalibrated case, and also
-    /// `false` when the count is absent — "no trajectory to draw" is the same
-    /// answer either way, and the two are still distinguished everywhere the
-    /// difference is a claim rather than a drawing decision.
-    var hasPositionedPoses: Bool { (poseCount ?? 0) > 0 }
-
     /// The uncalibrated outcome, named: the build produced segment origins and
     /// positioned no camera.
     ///
@@ -453,18 +440,6 @@ nonisolated struct WorldSnapshot: Equatable, Sendable {
             && !trajectory.hasReport
             && persistence == .unknown
     }
-
-    /// Whether any spatial figure in this snapshot may be presented as a
-    /// distance.
-    ///
-    /// Both gates, in one place so no view can satisfy one and forget the
-    /// other: the pipeline has to have a reference (`calibration`) *and* the
-    /// figure has to claim metric provenance (`scale`). On the current
-    /// monocular hardware the honest outcome is usually `false`, and a `false`
-    /// here means the layout omits the row rather than dashing it.
-    var permitsMetricDisplay: Bool {
-        calibration.permitsSpatialFigures && (scale == .inferredMetric || scale == .measuredMetric)
-    }
 }
 
 // MARK: - State
@@ -532,7 +507,8 @@ nonisolated enum WorldModelState: Equatable, Sendable {
     /// and the three call for different responses.
     case failed(CartridgeFailure)
 
-    /// The snapshot to draw metrics from, when there is one.
+    /// The snapshot to draw metrics from, when there is one. Non-`nil` exactly
+    /// when a world exists to look at, mapped or finished.
     var snapshot: WorldSnapshot? {
         switch self {
         case .receiving(let snapshot),
@@ -545,9 +521,10 @@ nonisolated enum WorldModelState: Equatable, Sendable {
         }
     }
 
-    /// Whether the Tower is currently contributing to a world. Drives the
-    /// "live" affordance, and must be false in every state where the app would
-    /// otherwise be implying activity it cannot verify.
+    /// Whether the Tower is currently contributing to a world: `.receiving`
+    /// and nothing else. It must be false in every state where the app would
+    /// otherwise be implying activity it cannot verify. Production views match
+    /// `.receiving` themselves; tests read the rule here.
     ///
     /// False in `.finalizing`: the Tower is working, but it is not observing,
     /// and a badge that says "live" while the camera is off is a lie about the
@@ -556,14 +533,6 @@ nonisolated enum WorldModelState: Equatable, Sendable {
     var isReceivingUpdates: Bool {
         if case .receiving = self { return true }
         return false
-    }
-
-    /// Whether a world exists to look at, mapped or finished.
-    var hasWorld: Bool {
-        switch self {
-        case .receiving, .finalizing, .finalized, .interrupted: return true
-        case .unsupported, .idle, .awaitingFirstUpdate, .failed: return false
-        }
     }
 
     /// The shared coarse phase, for the shell's generic panel and for the

@@ -71,11 +71,6 @@ nonisolated enum DocumentTextAvailability: Equatable, Sendable {
         }
     }
 
-    var hasText: Bool {
-        if case .extracted = self { return true }
-        return false
-    }
-
     var displayName: String {
         switch self {
         case .unknown: return "Not reported"
@@ -308,10 +303,6 @@ struct RememberedDocument: Equatable, Identifiable, Sendable {
     /// What to put on a row. Never an invented name — "Untitled document"
     /// describes the record, which is all this app knows.
     var displayTitle: String { title ?? "Untitled document" }
-
-    /// Whether the thumbnail may be drawn. Delegates entirely to the artifact,
-    /// so the rule lives in one place for every cartridge that shows an image.
-    var isThumbnailDisplayable: Bool { thumbnail.isDisplayable }
 
     /// The caption a summary is owed.
     ///

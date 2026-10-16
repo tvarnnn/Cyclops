@@ -881,8 +881,10 @@ final class ObjectMemoryClientStateTests: XCTestCase {
         await client.ask(.listing(objectClass: "laptop"))
 
         XCTAssertEqual(client.state.phase, .settled)
-        let answer = try XCTUnwrap(client.state.answer)
-        XCTAssertFalse(answer.hasRecord, "an empty answer is still an answer")
+        guard case .listing(let listing) = try XCTUnwrap(client.state.answer) else {
+            return XCTFail("a listing was asked for: \(String(describing: client.state.answer))")
+        }
+        XCTAssertTrue(listing.isEmpty, "an empty answer is still an answer")
     }
 
     /// A Tower with no object memory configured gets its own state, and it is
@@ -1554,6 +1556,15 @@ final class ObjectMemoryRealTowerTests: XCTestCase {
 
 // MARK: - Session decoding
 
+private extension CartridgeSessionRefusalReason {
+    /// The two words the wire and the contract document disagree between for
+    /// the same refusal. Grouped so a test asserts both rather than asserting
+    /// each separately and letting the second rot.
+    static let interchangeableStateRefusals: [CartridgeSessionRefusalReason] = [
+        .notActive, .notPaused,
+    ]
+}
+
 /// The generic Start/Pause/Resume/Stop surface, decoded from the shapes the
 /// running Tower emits.
 ///
@@ -1586,7 +1597,6 @@ final class CartridgeSessionDecodingTests: XCTestCase {
         // `false` here would report every refresh as a double tap.
         XCTAssertNil(snapshot.accepted)
         XCTAssertNil(snapshot.changed)
-        XCTAssertNil(snapshot.wasAnIdempotentNoOp)
     }
 
     /// The contract identifier is opaque and compared for equality. A different
@@ -1651,7 +1661,6 @@ final class CartridgeSessionDecodingTests: XCTestCase {
         )
         XCTAssertEqual(snapshot.accepted, true)
         XCTAssertEqual(snapshot.changed, false)
-        XCTAssertEqual(snapshot.wasAnIdempotentNoOp, true)
     }
 
     /// Starting before the camera is running is legal, and the payload says so
@@ -1889,7 +1898,7 @@ final class CartridgeSessionTransportTests: XCTestCase {
         guard case .honoured(let snapshot) = outcome else {
             return XCTFail("an idempotent start decoded as a refusal: \(outcome)")
         }
-        XCTAssertEqual(snapshot.wasAnIdempotentNoOp, true)
+        XCTAssertEqual(snapshot.changed, false)
         XCTAssertEqual(snapshot.state, .active)
     }
 
@@ -1906,7 +1915,7 @@ final class CartridgeSessionTransportTests: XCTestCase {
         guard case .honoured(let snapshot) = outcome else {
             return XCTFail("stop was refused, which this surface never does: \(outcome)")
         }
-        XCTAssertEqual(snapshot.wasAnIdempotentNoOp, true)
+        XCTAssertEqual(snapshot.changed, false)
     }
 
     /// **A 409 is an outcome, not a throw.** "Resume continues a paused
@@ -3356,7 +3365,6 @@ final class CartridgeSessionRealTowerTests: XCTestCase {
         let first = try snapshot(Self.startFromTower)
         let second = try snapshot(Self.secondStartFromTower)
         XCTAssertEqual(second.changed, false)
-        XCTAssertEqual(second.wasAnIdempotentNoOp, true)
         XCTAssertEqual(second.state, .active)
         XCTAssertEqual(second.sessionID, first.sessionID)
     }

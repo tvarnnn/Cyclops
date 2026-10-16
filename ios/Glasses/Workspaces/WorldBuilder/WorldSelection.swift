@@ -83,11 +83,6 @@ nonisolated struct WorldSelection: Equatable, Sendable {
     /// said how it chose has not said the world is stored, either.
     static let unknown = WorldSelection(mode: .unknown)
 
-    /// Whether the Tower said, in a word this build understands, that this
-    /// world is being served because it is **current** — being built now, or
-    /// being finished now.
-    var isCurrentWorld: Bool { mode == .live || mode == .finalizing }
-
     /// Whether the Tower said nothing is live and this is history offered in
     /// its place.
     var isHistoryOfferedAsLive: Bool { mode == .latest }

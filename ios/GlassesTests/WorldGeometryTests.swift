@@ -196,7 +196,6 @@ final class WorldGeometryDecoderTests: XCTestCase {
         let manifest = WorldGeometryDecoder.manifest(from: manifestJSON())
         XCTAssertEqual(manifest?.scale.state, .unknown)
         XCTAssertNil(manifest?.scale.metersPerUnit)
-        XCTAssertFalse(manifest!.scale.convertibleToMetres)
     }
 
     /// An absent scale block reads as `unknown` rather than refusing the
@@ -546,7 +545,6 @@ final class WorldGeometryScaleTests: XCTestCase {
         )
         XCTAssertEqual(scale.state, .relative)
         XCTAssertNil(scale.metersPerUnit)
-        XCTAssertFalse(scale.convertibleToMetres)
     }
 
     /// The two the Tower cannot reach on this hardware are mapped rather than
@@ -558,18 +556,6 @@ final class WorldGeometryScaleTests: XCTestCase {
         )
         XCTAssertEqual(
             WorldGeometryScale(json: ["state": "measured"]).state, .measuredMetric
-        )
-        // And only `measured` with a real factor ever admits metres, which is
-        // the Tower's own rule.
-        XCTAssertTrue(
-            WorldGeometryScale(
-                json: ["state": "measured", "meters_per_unit": 0.5]
-            ).convertibleToMetres
-        )
-        XCTAssertFalse(
-            WorldGeometryScale(
-                json: ["state": "estimated", "meters_per_unit": 0.5]
-            ).convertibleToMetres
         )
     }
 
@@ -605,16 +591,18 @@ final class WorldGeometryStoreTests: XCTestCase {
         let cached = chunk(index: 0, hash: "h0")
         await store.insert(cached)
 
-        let needed = await store.keysMissing(from: [cached.cacheKey, "h1:-"])
-        XCTAssertEqual(needed, ["h1:-"])
+        let hit = await store.chunk(forKey: cached.cacheKey)
+        XCTAssertEqual(hit, cached)
+        let miss = await store.chunk(forKey: "h1:-")
+        XCTAssertNil(miss)
     }
 
     func testAChangedContentHashIsRefetched() async {
         let store = WorldGeometryStore()
         await store.insert(chunk(index: 0, hash: "h0"))
 
-        let needed = await store.keysMissing(from: ["h0-moved:-"])
-        XCTAssertEqual(needed, ["h0-moved:-"])
+        let miss = await store.chunk(forKey: "h0-moved:-")
+        XCTAssertNil(miss)
     }
 
     /// **The pin that used to say `content_hash` alone was the key, and was
@@ -646,8 +634,8 @@ final class WorldGeometryStoreTests: XCTestCase {
         )
 
         await store.insert(unplaced)
-        let stillMissing = await store.keysMissing(from: [registered.cacheKey])
-        XCTAssertEqual(stillMissing, [registered.cacheKey])
+        let stillMissing = await store.chunk(forKey: registered.cacheKey)
+        XCTAssertNil(stillMissing, "the unplaced chunk was served for the placed one")
 
         await store.insert(registered)
         let placedBack = await store.chunk(forKey: registered.cacheKey)
@@ -2677,7 +2665,6 @@ final class WorldGeometryRealTowerTests: XCTestCase {
         // frame — and calibration will not change it.
         XCTAssertEqual(manifest.scale.state, .unknown)
         XCTAssertNil(manifest.scale.metersPerUnit)
-        XCTAssertFalse(manifest.scale.convertibleToMetres)
     }
 
     /// **This capture predates `placement_hash`**, and it is what the

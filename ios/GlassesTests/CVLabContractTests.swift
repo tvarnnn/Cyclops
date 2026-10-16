@@ -502,7 +502,7 @@ final class CVLabContractTests: XCTestCase {
         // And the observation time is never filled in from the phone's clock:
         // an iOS `Date()` at decode time is arrival time wearing observation
         // time's label.
-        XCTAssertTrue(decoded.timings.time.isObservationTimeUnknown)
+        XCTAssertNil(decoded.timings.time.displayableObservationTime)
     }
 
     /// `0` annotations is "found nothing" and must not merge with "did not
@@ -625,13 +625,11 @@ final class CVLabContractTests: XCTestCase {
             ])
         )
         XCTAssertEqual(decoded.previewKind, "edge_map")
-        XCTAssertTrue(decoded.hasLiveView)
 
         let blind = try XCTUnwrap(
             CVExperiment(json: ["id": "baseline", "name": "Baseline", "available": true])
         )
         XCTAssertNil(blind.previewKind)
-        XCTAssertFalse(blind.hasLiveView)
     }
 
     /// Where a number sits in this run's range, and never a verdict.
