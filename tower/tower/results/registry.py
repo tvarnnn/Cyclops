@@ -155,8 +155,8 @@ def declare(
     Takes its inputs rather than reading configuration itself so the
     declaration is a pure function of them -- which is what lets one test
     assert that the HTTP route and the WebSocket message produce
-    byte-identical output. That is why the cartridges' state arrives as
-    separate arguments and not as one `app`.
+    byte-identical output. That is why three cartridges' worth of state
+    arrives as three arguments and not as one `app`.
 
     Every argument past `world_root` is keyword-only WITH A DEFAULT, and
     that is a decision about what an omission should mean rather than a
@@ -364,8 +364,8 @@ def declaration_inputs(app_state) -> dict:
     sites each reaching for their own subset of `app.state` is precisely
     how `/cartridges` over HTTP and `{"type": "cartridges"}` on the socket
     would come to disagree, and the disagreement would be invisible until
-    a phone hit the one that was wrong. This is the only supported way to
-    build the arguments.
+    a phone hit the one that was wrong. Three cartridges now depend on
+    that, so this is the only supported way to build the arguments.
 
     `getattr` with a default throughout, because most tests in this
     repository construct an app state by hand and set only what they care
