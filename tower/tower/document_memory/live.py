@@ -327,7 +327,8 @@ class DocumentLive(LiveSession):
         if self._idle_abandon:
             # The idle timer's thread. No OCR here: a torch thread pool
             # built on a `threading.Timer` thread is never reclaimed, and
-            # the dwell it would read ended at least `idle_stop_s` ago.
+            # the dwell it would read ended at least `idle_stop_s` ago (ten
+            # minutes by default).
             if engine.abandon():
                 logger.warning(
                     "[Tower][Document] an idle stop dropped a dwell that "
