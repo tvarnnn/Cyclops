@@ -8,12 +8,14 @@ The brief's four example questions, and one rule that governs all of them:
     Where is a chair?                          -> same
     How many appear to be facing my direction? -> orientation, or a refusal
 
-The third question hides a trap the others do not. If orientation is
-disabled -- and it is by default, because the default device is CPU where
-a call costs 956 ms against an 83.5 ms frame interval -- then "how many
-people are facing me" has **no answer**, and returning 0 would be a lie
-of exactly the kind Core Principle 3 forbids: an observation gap reported
-as an observation of absence.
+The third question hides a trap the others do not. If orientation is not
+running -- no face model vendored, `TOWER_SCENE_ORIENTATION` off, or an
+estimator that has never once succeeded -- then "how many people are
+facing me" has **no answer**, and returning 0 would be a lie of exactly
+the kind Core Principle 3 forbids: an observation gap reported as an
+observation of absence. (The keypoint model this stage replaced cost
+956 ms on CPU against an 83.5 ms frame interval; the face-visibility
+stage costs ~9 ms per face.)
 
 Nothing here reads or writes a store. There is no store.
 """
@@ -166,9 +168,8 @@ class SceneQuery:
             detail={
                 "people_in_view": len(people),
                 "orientation_unknown": len(unknown),
-                # None when nothing has an estimate. `or 0.0` folded
-                # "no estimate exists" into "zero seconds old", which read
-                # as corroborating freshness that was never measured.
+                # None when nothing has an estimate; `or 0.0` would read
+                # that as "zero seconds old", freshness never measured.
                 "oldest_estimate_seconds": max(
                     (
                         track.facing.age_seconds
