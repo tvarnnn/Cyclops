@@ -25,7 +25,7 @@ protocol FrameRefusalScheduling {
     func schedule(
         after delay: TimeInterval,
         _ action: @escaping @MainActor @Sendable () -> Void
-    ) -> @MainActor () -> Void
+    ) -> @MainActor @Sendable () -> Void
 }
 
 @MainActor
@@ -33,7 +33,7 @@ private struct MainQueueFrameRefusalScheduler: FrameRefusalScheduling {
     func schedule(
         after delay: TimeInterval,
         _ action: @escaping @MainActor @Sendable () -> Void
-    ) -> @MainActor () -> Void {
+    ) -> @MainActor @Sendable () -> Void {
         let item = DispatchWorkItem { Task { @MainActor in action() } }
         DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: item)
         return { item.cancel() }
@@ -141,7 +141,7 @@ final class TowerClient: NSObject, ObservableObject {
     private static let frameRefusalPublishInterval: TimeInterval = 1.0
     private var lastFrameRefusalPublishedAt: TimeInterval?
     private var pendingFrameRefusal: TowerFrameRefusal?
-    private var cancelFrameRefusalFlush: (@MainActor () -> Void)?
+    private var cancelFrameRefusalFlush: (@MainActor @Sendable () -> Void)?
     private var frameRefusalFlushToken = 0
     private let frameRefusalNow: () -> TimeInterval
     private let frameRefusalScheduler: any FrameRefusalScheduling

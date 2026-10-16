@@ -3844,6 +3844,7 @@ private final class FrameRefusalTestClock {
 
 @MainActor
 private final class ManualFrameRefusalScheduler: FrameRefusalScheduling {
+    @MainActor
     private final class Scheduled {
         let action: @MainActor @Sendable () -> Void
         var cancelled = false
@@ -3860,7 +3861,7 @@ private final class ManualFrameRefusalScheduler: FrameRefusalScheduling {
     func schedule(
         after delay: TimeInterval,
         _ action: @escaping @MainActor @Sendable () -> Void
-    ) -> @MainActor () -> Void {
+    ) -> @MainActor @Sendable () -> Void {
         let scheduled = Scheduled(action: action)
         queue.append(scheduled)
         totalScheduled += 1
