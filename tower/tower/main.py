@@ -1158,7 +1158,7 @@ def _log_effective_configuration(
     """Say what this Tower will and will not do, at startup, once.
 
     Every setting that decides whether a cartridge works at all is
-    optional and each one fails SILENTLY when unset: no capture root means
+    optional, and without these lines each one fails SILENTLY when unset: no capture root means
     no recorder, no world root means the result channel reports the
     cartridge unavailable, and no observation root meant a producer wrote
     64 records into a directory every HTTP request answered 404 about. The

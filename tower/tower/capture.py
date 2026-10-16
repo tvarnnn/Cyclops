@@ -305,7 +305,7 @@ class CaptureRecorder:
         width: int | None = None,
         height: int | None = None,
     ) -> bool:
-        """Durably append one raw frame and its journal line to the open capture.
+        """Append one raw frame (fsynced) and its journal line to the open capture.
 
         What: persists a frame's JPEG bytes and a `frames.jsonl` record for it;
         returns True when written and False when nothing was written (not
