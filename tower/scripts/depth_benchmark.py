@@ -62,10 +62,10 @@ async def run_benchmark(uri: str, width: int, height: int, frame_count: int) -> 
             await ws.send(payload)
             response = json.loads(await ws.recv())
             elapsed_ms = (time.perf_counter() - frame_start) * 1000
-            # frame_error is a legitimate reply (added V0.9.2): a skipped
-            # frame or an unavailable module answers with it instead of
-            # frame_result. Count it rather than crashing, and keep it out
-            # of the latency stats -- it did not complete the CV path.
+            # frame_error is a legitimate reply: a skipped frame or an
+            # unavailable module answers with it instead of frame_result.
+            # Count it rather than crashing, and keep it out of the latency
+            # stats -- it did not complete the CV path.
             if response.get("type") == "frame_error":
                 frame_errors.append(response)
                 continue
