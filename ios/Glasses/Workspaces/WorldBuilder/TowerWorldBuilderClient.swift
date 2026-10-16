@@ -1571,24 +1571,12 @@ final class TowerWorldBuilderClient: WorldBuilderClient {
             }
 
         case .failed(let error):
-            guard isOurs(error) else { return }
+            guard error.belongs(
+                toTowerCartridge: WorldBuilderResultContract.towerCartridge,
+                openSubscriptionID: subscriptionID
+            ) else { return }
             apply(error)
         }
-    }
-
-    /// Whether an error belongs to this cartridge.
-    ///
-    /// Matched on either name or subscription id because the Tower's extras are
-    /// reason-dependent: `unknown_subscription` names only the subscription,
-    /// and the two unsolicited errors name both. An error carrying neither is
-    /// not claimed — attributing another cartridge's failure to this one would
-    /// be a fabricated report about the Tower.
-    private func isOurs(_ error: CartridgeResultError) -> Bool {
-        if let cartridge = error.cartridge {
-            return cartridge == WorldBuilderResultContract.towerCartridge
-        }
-        if let id = error.subscriptionID { return id == subscriptionID }
-        return false
     }
 
     /// The report, applied as one walk-report edit. Returns the geometry

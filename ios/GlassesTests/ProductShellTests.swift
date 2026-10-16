@@ -5368,3 +5368,83 @@ final class CartridgeResultSubscriptionSocketTests: XCTestCase {
         return String(decoding: data, as: UTF8.self)
     }
 }
+
+// MARK: - Result-subscription bookkeeping, without a socket
+
+/// `CartridgeResultSubscription` and `CartridgeResultError.belongs`, the two
+/// pieces of result-channel bookkeeping the cartridge clients share.
+@MainActor
+final class CartridgeResultSubscriptionTests: XCTestCase {
+
+    func testTheTowerMayCloseASubscriptionThreeTimesPerConnection() {
+        var subscription = CartridgeResultSubscription()
+        XCTAssertEqual(CartridgeResultSubscription.resubscribeBudget, 3)
+        for close in 1...3 {
+            subscription.id = "sub-\(close)"
+            subscription.isSubscribing = true
+            XCTAssertNil(subscription.closedByTower(), "close \(close) of 3: the caller subscribes again")
+            XCTAssertNil(subscription.id, "the closed subscription is gone")
+            XCTAssertFalse(subscription.isSubscribing, "and nothing is in flight")
+        }
+
+        subscription.id = "sub-4"
+        let failure = subscription.closedByTower()
+        XCTAssertEqual(failure?.kind, .transport)
+        XCTAssertEqual(
+            failure?.message,
+            "The Tower closed this cartridge's result subscription 3 times on one connection. "
+                + "Reconnecting is what resolves it."
+        )
+        XCTAssertNil(subscription.id, "a spent budget still clears the closed subscription")
+        XCTAssertNotNil(subscription.closedByTower(), "and stays spent for the rest of the connection")
+    }
+
+    func testANewConnectionGetsAFreshBudget() {
+        var subscription = CartridgeResultSubscription()
+        for _ in 1...3 { XCTAssertNil(subscription.closedByTower()) }
+        subscription.id = "sub-9"
+        subscription.isSubscribing = true
+
+        subscription.connectionLost()
+
+        XCTAssertNil(subscription.id)
+        XCTAssertFalse(subscription.isSubscribing)
+        XCTAssertNil(subscription.closedByTower(), "the next connection may reopen a closed subscription again")
+    }
+
+    func testAnErrorBelongsByItsCartridgeNameFirstAndOnlyThenByItsSubscription() throws {
+        func error(cartridge: String?, subscriptionID: String?) throws -> CartridgeResultError {
+            var json: [String: Any] = ["reason": "channel_failed"]
+            if let cartridge { json["cartridge"] = cartridge }
+            if let subscriptionID { json["subscription_id"] = subscriptionID }
+            return try XCTUnwrap(CartridgeResultError(json: json))
+        }
+        let ours = SceneUnderstandingContract.towerCartridge
+
+        // A name decides alone.
+        XCTAssertTrue(try error(cartridge: ours, subscriptionID: nil)
+            .belongs(toTowerCartridge: ours, openSubscriptionID: nil))
+        XCTAssertTrue(try error(cartridge: ours, subscriptionID: "sub-9")
+            .belongs(toTowerCartridge: ours, openSubscriptionID: "sub-1"))
+        XCTAssertFalse(
+            try error(cartridge: WorldBuilderResultContract.towerCartridge, subscriptionID: "sub-1")
+                .belongs(toTowerCartridge: ours, openSubscriptionID: "sub-1"),
+            "another cartridge's error is not ours, whatever subscription id it carries"
+        )
+
+        // Without a name, the subscription id decides.
+        XCTAssertTrue(try error(cartridge: nil, subscriptionID: "sub-1")
+            .belongs(toTowerCartridge: ours, openSubscriptionID: "sub-1"))
+        XCTAssertFalse(try error(cartridge: nil, subscriptionID: "sub-2")
+            .belongs(toTowerCartridge: ours, openSubscriptionID: "sub-1"))
+        XCTAssertFalse(
+            try error(cartridge: nil, subscriptionID: "sub-1")
+                .belongs(toTowerCartridge: ours, openSubscriptionID: nil),
+            "with nothing open, no subscription id is ours"
+        )
+
+        // With neither, nothing is claimed.
+        XCTAssertFalse(try error(cartridge: nil, subscriptionID: nil)
+            .belongs(toTowerCartridge: ours, openSubscriptionID: "sub-1"))
+    }
+}
