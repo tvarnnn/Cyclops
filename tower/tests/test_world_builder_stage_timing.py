@@ -367,6 +367,7 @@ def test_runless_stage_never_joins_a_finish_begun_before_this_process(tmp_path, 
     assert set(doc["finishes"][1]["stages"]) == {"surface", "appearance"}
 
 
+@pytest.mark.usefixtures("final_scale_guard_bypassed")
 def test_cold_and_warm_mask_counts_are_initial_lookups_only(session, colmap, monkeypatch):
     from tower.world_builder.transients import TransientParams
 
@@ -389,6 +390,7 @@ def test_cold_and_warm_mask_counts_are_initial_lookups_only(session, colmap, mon
     assert warm_doc["finishes"][0]["finish_id"] != warm_doc["finishes"][1]["finish_id"]
 
 
+@pytest.mark.usefixtures("final_scale_guard_bypassed")
 def test_final_solve_product_bytes_are_identical_on_and_off(
         tmp_path, monkeypatch, session, colmap):
     from tower.world_builder import global_solve as GS

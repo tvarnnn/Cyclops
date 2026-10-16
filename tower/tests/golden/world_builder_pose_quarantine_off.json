@@ -4321,6 +4321,13 @@
 49.5
 ]
 ],
+"final_scale_guard": {
+"evidence": "gate-metric-log",
+"id": "final-scale-guard/2",
+"scale_status": "certified",
+"uncertified_keyframes": 0,
+"uncertified_spans": []
+},
 "id": "f39c88d34bd86498",
 "keyframe_ids": [
 "s1:00000000",
@@ -4504,6 +4511,13 @@
 }
 ],
 "contract": "world_builder.components/2026-09-23",
+"final_scale_guard": {
+"audit": "final_scale_guard.json",
+"id": "final-scale-guard/2",
+"params_digest": "867c513e7af232aa",
+"pieces_isolated": 0,
+"scale_status": "certified"
+},
 "gate": {
 "id": "coherence-gate:evidence+honoured-links/1",
 "masks_applied": true,
@@ -5559,6 +5573,19 @@
 "masks": "applied",
 "metric_fraction": 1.0,
 "metric_scale": "100 of 100 supported cameras with a ratio (100%; available at >= 50%)"
+},
+"final_scale_guard": {
+"audit": "final_scale_guard.json",
+"decision": "published",
+"evidence": "gate-metric-log",
+"id": "final-scale-guard/2",
+"keyframes_isolated": 0,
+"mode": "on",
+"params_digest": "867c513e7af232aa",
+"pieces_isolated": 0,
+"reasons": {},
+"scale_status": "certified",
+"uncertified_keyframes": 0
 },
 "gate": "coherence-gate:evidence+honoured-links/1",
 "import_units": {
@@ -6627,6 +6654,19 @@
 "masks": "applied",
 "metric_fraction": 1.0,
 "metric_scale": "100 of 100 supported cameras with a ratio (100%; available at >= 50%)"
+},
+"final_scale_guard": {
+"audit": "final_scale_guard.json",
+"decision": "published",
+"evidence": "gate-metric-log",
+"id": "final-scale-guard/2",
+"keyframes_isolated": 0,
+"mode": "on",
+"params_digest": "867c513e7af232aa",
+"pieces_isolated": 0,
+"reasons": {},
+"scale_status": "certified",
+"uncertified_keyframes": 0
 },
 "gate": "coherence-gate:evidence+honoured-links/1",
 "import_units": {
@@ -8879,6 +8919,19 @@
 },
 "schema_version": 1,
 "solve": {
+"final_scale_guard": {
+"audit": "final_scale_guard.json",
+"decision": "published",
+"evidence": "gate-metric-log",
+"id": "final-scale-guard/2",
+"keyframes_isolated": 0,
+"mode": "on",
+"params_digest": "867c513e7af232aa",
+"pieces_isolated": 0,
+"reasons": {},
+"scale_status": "certified",
+"uncertified_keyframes": 0
+},
 "seed": 7
 },
 "solver": "glomap",
@@ -8901,6 +8954,13 @@
 49.5
 ]
 ],
+"final_scale_guard": {
+"evidence": "gate-metric-log",
+"id": "final-scale-guard/2",
+"scale_status": "certified",
+"uncertified_keyframes": 0,
+"uncertified_spans": []
+},
 "id": "f39c88d34bd86498",
 "keyframe_ids": [
 "s1:00000000",
@@ -9084,6 +9144,13 @@
 }
 ],
 "contract": "world_builder.components/2026-09-23",
+"final_scale_guard": {
+"audit": "final_scale_guard.json",
+"id": "final-scale-guard/2",
+"params_digest": "867c513e7af232aa",
+"pieces_isolated": 0,
+"scale_status": "certified"
+},
 "gate": {
 "id": "coherence-gate:evidence+honoured-links/1",
 "masks_applied": true,
@@ -10139,6 +10206,19 @@
 "masks": "applied",
 "metric_fraction": 1.0,
 "metric_scale": "100 of 100 supported cameras with a ratio (100%; available at >= 50%)"
+},
+"final_scale_guard": {
+"audit": "final_scale_guard.json",
+"decision": "published",
+"evidence": "gate-metric-log",
+"id": "final-scale-guard/2",
+"keyframes_isolated": 0,
+"mode": "on",
+"params_digest": "867c513e7af232aa",
+"pieces_isolated": 0,
+"reasons": {},
+"scale_status": "certified",
+"uncertified_keyframes": 0
 },
 "gate": "coherence-gate:evidence+honoured-links/1",
 "import_units": {
@@ -11207,6 +11287,19 @@
 "masks": "applied",
 "metric_fraction": 1.0,
 "metric_scale": "100 of 100 supported cameras with a ratio (100%; available at >= 50%)"
+},
+"final_scale_guard": {
+"audit": "final_scale_guard.json",
+"decision": "published",
+"evidence": "gate-metric-log",
+"id": "final-scale-guard/2",
+"keyframes_isolated": 0,
+"mode": "on",
+"params_digest": "867c513e7af232aa",
+"pieces_isolated": 0,
+"reasons": {},
+"scale_status": "certified",
+"uncertified_keyframes": 0
 },
 "gate": "coherence-gate:evidence+honoured-links/1",
 "import_units": {
@@ -13459,6 +13552,19 @@
 },
 "schema_version": 1,
 "solve": {
+"final_scale_guard": {
+"audit": "final_scale_guard.json",
+"decision": "published",
+"evidence": "gate-metric-log",
+"id": "final-scale-guard/2",
+"keyframes_isolated": 0,
+"mode": "on",
+"params_digest": "867c513e7af232aa",
+"pieces_isolated": 0,
+"reasons": {},
+"scale_status": "certified",
+"uncertified_keyframes": 0
+},
 "seed": 7
 },
 "solver": "glomap",
@@ -13477,6 +13583,13 @@
 19.5
 ]
 ],
+"final_scale_guard": {
+"evidence": "gate-metric-log",
+"id": "final-scale-guard/2",
+"scale_status": "certified",
+"uncertified_keyframes": 0,
+"uncertified_spans": []
+},
 "id": "74c4b875b5672f36",
 "keyframe_ids": [
 "s1:00000000",
@@ -13528,6 +13641,13 @@
 }
 ],
 "contract": "world_builder.components/2026-09-23",
+"final_scale_guard": {
+"audit": "final_scale_guard.json",
+"id": "final-scale-guard/2",
+"params_digest": "867c513e7af232aa",
+"pieces_isolated": 0,
+"scale_status": "certified"
+},
 "gate": {
 "id": "coherence-gate:evidence+honoured-links/1",
 "masks_applied": true,
@@ -13615,6 +13735,19 @@
 "masks": "applied",
 "metric_fraction": 1.0,
 "metric_scale": "40 of 40 supported cameras with a ratio (100%; available at >= 50%)"
+},
+"final_scale_guard": {
+"audit": "final_scale_guard.json",
+"decision": "published",
+"evidence": "gate-metric-log",
+"id": "final-scale-guard/2",
+"keyframes_isolated": 0,
+"mode": "on",
+"params_digest": "867c513e7af232aa",
+"pieces_isolated": 0,
+"reasons": {},
+"scale_status": "certified",
+"uncertified_keyframes": 0
 },
 "gate": "coherence-gate:evidence+honoured-links/1",
 "labels": 1,
@@ -13709,6 +13842,19 @@
 "masks": "applied",
 "metric_fraction": 1.0,
 "metric_scale": "40 of 40 supported cameras with a ratio (100%; available at >= 50%)"
+},
+"final_scale_guard": {
+"audit": "final_scale_guard.json",
+"decision": "published",
+"evidence": "gate-metric-log",
+"id": "final-scale-guard/2",
+"keyframes_isolated": 0,
+"mode": "on",
+"params_digest": "867c513e7af232aa",
+"pieces_isolated": 0,
+"reasons": {},
+"scale_status": "certified",
+"uncertified_keyframes": 0
 },
 "gate": "coherence-gate:evidence+honoured-links/1",
 "labels": 1,
@@ -14723,6 +14869,19 @@
 },
 "schema_version": 1,
 "solve": {
+"final_scale_guard": {
+"audit": "final_scale_guard.json",
+"decision": "published",
+"evidence": "gate-metric-log",
+"id": "final-scale-guard/2",
+"keyframes_isolated": 0,
+"mode": "on",
+"params_digest": "867c513e7af232aa",
+"pieces_isolated": 0,
+"reasons": {},
+"scale_status": "certified",
+"uncertified_keyframes": 0
+},
 "seed": 7
 },
 "solver": "glomap",

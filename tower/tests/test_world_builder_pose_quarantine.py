@@ -7,7 +7,8 @@ Pinned here:
       read from it follows it (review V18, LOW-3) -- each part alone changes only its own output otherwise.
   THE GOLDEN: with the switch unset, blank, `off`, or a value it reads as off, the gate's, the publish step's, the
       anchor verification's and the camera path's outputs are what the product wrote BEFORE P5-PQ (6db75f3,
-      `golden/world_builder_pose_quarantine_off.json`, recorded by RUN/experiments/P5-PQ/golden_record.py).
+      `golden/world_builder_pose_quarantine_off.json`, recorded by RUN/experiments/P5-PQ/golden_record.py), plus
+      the `final_scale_guard` fields the final scale guard adds to every final publication (nothing isolated here).
   (a') the viewer's camera list (RULE.md (a') v4, manager 102): component 0 only (no fallback: empty if none),
       published and supported poses only, none beyond 10 x their median radius -- the surface gate without its 5 %
       stand-down and its p95 detachment term, its 8-pose floor kept. Walk 4's six listed impossible poses (2031, 2047,

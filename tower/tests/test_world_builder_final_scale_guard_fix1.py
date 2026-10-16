@@ -2,7 +2,6 @@
 
 Each test here fails on 45b6404 (the reviewed head) and passes with its fix:
 
-  F1  off imports nothing new: the guard's module is not even imported on the off path (fresh process);
   F2  a short, grossly wrong excursion the running median swallows (5 cameras at x2.56 inside a normal
       run) is isolated, never published as certified room;
   F3  the pose rejoin keeps the step bounds: a distant island across an untestable gap never rejoins;
@@ -16,10 +15,6 @@ Each test here fails on 45b6404 (the reviewed head) and passes with its fix:
 from __future__ import annotations
 
 import json
-import subprocess
-import sys
-import textwrap
-from pathlib import Path
 
 import pytest
 
@@ -27,7 +22,6 @@ from tests.test_world_builder_final_scale_guard import _cams, _ids, _isolated, _
 from tests.test_world_builder_final_scale_guard_seam import (  # noqa: F401 -- fixtures and helpers
     G_A,
     G_B,
-    SWITCH,
     W3_N,
     _Engines,
     _gated,
@@ -43,55 +37,6 @@ from tests.test_world_builder_final_scale_guard_seam import (  # noqa: F401 -- f
 )
 from tower.world_builder import coherence_publish as CP
 from tower.world_builder import final_scale_guard as FSG
-
-TOWER = Path(__file__).resolve().parents[1]
-
-
-# F1 ------------------------------------------------------------------------
-
-_PROBE = textwrap.dedent('''
-    import os, sys, types
-    from pathlib import Path
-    root = Path(sys.argv[1])
-    from tower.world_builder import coherence_publish as CP
-    from tower.world_builder import global_solve  # noqa: F401
-    written = []
-    ws = types.SimpleNamespace(root=root)
-    try:
-        out = CP.gate_and_publish(None, "w", "s", ws, types.SimpleNamespace(), final=True, gate=False,
-                                  database_path=root / "database.db", keyframes=[],
-                                  write=lambda w, s: written.append(1))
-        print("OFF_PUBLISH_OK=%s" % (written == [1] and out[1] is None))
-    except Exception as exc:  # on/shadow on this empty solution: what matters is the import
-        print("RAISED=%s" % type(exc).__name__)
-    print("GUARD_IMPORTED=%s" % ("tower.world_builder.final_scale_guard" in sys.modules))
-''')
-
-
-@pytest.mark.parametrize("value, imported", [(None, False), ("", False), ("off", False), ("garbage", False),
-                                             ("shadow", True), ("on", True)])
-def test_f1_off_never_imports_the_guard(tmp_path, value, imported):
-    import os
-
-    env = {k: v for k, v in os.environ.items() if k != SWITCH}
-    env.update(PYTHONPATH=str(TOWER), CUDA_VISIBLE_DEVICES="-1")
-    if value is not None:
-        env[SWITCH] = value
-    script = tmp_path / "probe.py"
-    script.write_text(_PROBE, encoding="utf-8")
-    # Off, the publish is today's write and the guard's module is never imported; on or shadow it is.
-    proc = subprocess.run([sys.executable, str(script), str(tmp_path)], cwd=str(TOWER), env=env,
-                          capture_output=True, text=True, timeout=300)
-    assert proc.returncode == 0, proc.stderr[-2000:]
-    assert f"GUARD_IMPORTED={imported}" in proc.stdout
-    if not imported:
-        assert "OFF_PUBLISH_OK=True" in proc.stdout
-
-
-def test_f1_off_source_has_no_module_level_guard_import():
-    src = (TOWER / "tower" / "world_builder" / "coherence_publish.py").read_text(encoding="utf-8")
-    top = [line for line in src.splitlines() if line.startswith(("import ", "from "))]
-    assert not any("final_scale_guard" in line for line in top)
 
 
 # F2 ------------------------------------------------------------------------
@@ -242,7 +187,6 @@ def test_f6_a_withheld_regate_says_not_certified(tmp_path, colmap, monkeypatch):
         raise ValueError("the relabelled candidate has no published room")
 
     monkeypatch.setattr(FSG, "apply", no_room)
-    monkeypatch.setenv(SWITCH, "on")
     out = CP.regate_published(s.store, s.world_id, s.session_id)
     assert out["withheld"] is True and out["notice"] == FSG.NOTICE_WITHHELD
 
@@ -259,7 +203,6 @@ def test_f7_a_components_write_failure_publishes_nothing(tmp_path, colmap, monke
         raise OSError("disk full")
 
     monkeypatch.setattr(CP, "write_components", broken)
-    monkeypatch.setenv(SWITCH, "on")
     out = _simple(s)
     assert out["solved"] is False and out["withheld"] is True
     assert "could not be written" in out["reason"]
@@ -283,7 +226,6 @@ def test_f7_records_land_before_the_solution(tmp_path, colmap, monkeypatch):
         return real(workspace, solution)
 
     monkeypatch.setattr(GS, "write_solution", spy)
-    monkeypatch.setenv(SWITCH, "on")
     assert _simple(s)["solved"] is True
     assert seen == {"components": True, "audit": True}
 
@@ -296,6 +238,5 @@ def test_f7_a_withhold_says_whether_its_audit_landed(tmp_path, colmap, monkeypat
         raise OSError("disk full")
 
     monkeypatch.setattr(FSG, "write_audit", broken)
-    monkeypatch.setenv(SWITCH, "on")
     out = _simple(s)
     assert out["solved"] is False and out["final_scale_guard"].get("audit_written") is False

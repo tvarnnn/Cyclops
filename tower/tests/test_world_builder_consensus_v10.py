@@ -171,6 +171,7 @@ def test_keep_on_stop_writes_nothing_when_the_stop_reached_draw_0(world, tmp_pat
     assert not list(tmp_path.iterdir()), "no record, no depth hand-off"
 
 
+@pytest.mark.usefixtures("final_scale_guard_bypassed")
 def test_without_keep_on_stop_the_stopped_draw_0_is_published_as_today(world, tmp_path, monkeypatch):
     """The default: nothing was published before, so a stop never loses the finish."""
     monkeypatch.setenv("TOWER_WORLD_SOLVE_GATE", "1")

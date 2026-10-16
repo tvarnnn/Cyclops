@@ -85,6 +85,21 @@ def live_depth_on_its_own_clock(monkeypatch):
     monkeypatch.setattr(live_depth, "LiveDepthWorker", on_its_own_clock)
 
 
+@pytest.fixture
+def final_scale_guard_bypassed(monkeypatch):
+    """Every final publication runs the final scale guard, which withholds a
+    candidate with no supported room (`final_scale_guard.apply`) and reads the
+    session record and the world's live depth cache. A test of ANOTHER stage
+    whose fakes cannot carry that -- a fake mapper that maps nothing, a store
+    with no session or `world_dir` -- uses this: the publish step then skips the
+    guard, as it does for a background solve. What the guard does with such a
+    candidate (a withhold) is pinned in
+    `test_world_builder_final_scale_guard_seam.py`."""
+    from tower.world_builder import coherence_publish
+
+    monkeypatch.setattr(coherence_publish, "_final_scale_guard", lambda *a, **k: None)
+
+
 def without_live_depth(files: dict) -> dict:
     """`files` (keyed by world-relative posix path) without the live depth
     worker's sidecar, for a golden recorded before the worker existed."""

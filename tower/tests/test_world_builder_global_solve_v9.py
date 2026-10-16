@@ -206,6 +206,7 @@ def test_a_matching_entry_keeps_the_image_whatever_the_path_spelling(prepared, m
     assert _prepare(prepared)[1] == 0
 
 
+@pytest.mark.usefixtures("final_scale_guard_bypassed")
 def test_a_rewritten_image_misses_the_mask_cache_and_the_frozen_matching_and_loses_its_features(
         walked, colmap, tmp_path):
     """A stale image must not survive through the caches keyed by its SHA-1, nor through

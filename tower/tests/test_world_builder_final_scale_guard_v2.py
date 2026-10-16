@@ -1,5 +1,5 @@
 """The final scale guard v2 (Exp1 slice 4; design RUN review/codex/cx-SCALE-GUARD-V2-DESIGN-20261007.md),
-the rule `TOWER_WORLD_FINAL_SCALE_GUARD` (on / shadow) now runs at the publish seam.
+the rule the publish seam runs.
 
 Pinned here:
   * the rule: a plateau is isolated only with >= 10 finite ratios AND a median outside the inclusive
@@ -12,9 +12,6 @@ Pinned here:
     (`live_depth.compatible_live_records`), nothing is written, and an identity mismatch is no evidence;
   * at the seam: the uncertified flag reaches BOTH `final_scale_guard.json` and the placed component in
     `components.json`, and no depth stage runs at publish.
-
-The OFF identity, extended to a world holding a live depth cache, is in
-`test_world_builder_final_scale_guard_off_identity.py`.
 """
 
 from __future__ import annotations
@@ -27,7 +24,6 @@ import pytest
 
 from tests.test_world_builder_final_scale_guard import _cams, _ids, _levels
 from tests.test_world_builder_final_scale_guard_seam import (  # noqa: F401 -- fixtures and helpers
-    SWITCH,
     _Engines,
     _live_evidence,
     _placed,
@@ -206,7 +202,6 @@ def test_walk7_shapes_at_the_seam_flag_the_placed_component_and_predict_no_depth
     eng = _Engines(monkeypatch, n=W7_N, levels={})
     s = _walk(tmp_path / "w", W7_N, colmap, monkeypatch)
     _live_evidence(monkeypatch, _w7_levels())
-    monkeypatch.setenv(SWITCH, "on")
     out = _simple(s)
     assert out["solved"] is True
     meta, comp, audit = _published(s)

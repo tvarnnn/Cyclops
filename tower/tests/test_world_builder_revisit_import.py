@@ -89,6 +89,7 @@ def test_the_floor_is_the_relocalizers_own_constant():
 
 
 @pytest.mark.parametrize("masked,gated", [(False, False), (False, True), (True, False), (True, True)])
+@pytest.mark.usefixtures("final_scale_guard_bypassed")
 def test_no_links_is_todays_record_whatever_the_settings(walked, colmap, monkeypatch, masked, gated):
     _links(monkeypatch, [])
     if masked:
@@ -100,6 +101,7 @@ def test_no_links_is_todays_record_whatever_the_settings(walked, colmap, monkeyp
 
 
 @pytest.mark.parametrize("masked,gated", [(False, False), (False, True), (True, False)])
+@pytest.mark.usefixtures("final_scale_guard_bypassed")
 def test_a_solve_that_is_not_masked_and_gated_imports_none_and_says_why(walked, colmap,
                                                                         monkeypatch, masked, gated):
     _links(monkeypatch, [LINK])
@@ -127,6 +129,7 @@ def test_a_background_solve_never_reads_them(walked, colmap, monkeypatch):
     assert summary["solve"]["revisit_pairs"] == {"listed": 0, "verified": 0, "detail": None}
 
 
+@pytest.mark.usefixtures("final_scale_guard_bypassed")
 def test_masks_that_are_not_applied_are_not_masked(walked, colmap, monkeypatch):
     """A detector that cannot run leaves an UNMASKED solve (transients `unavailable`):
     the links are not imported even with the gate on."""
@@ -176,6 +179,7 @@ def _colmap_writes_listed_pairs(colmap, inliers, rows=None):
 
 
 @pytest.mark.parametrize("inliers,kept", [(49, False), (50, True), (400, True)])
+@pytest.mark.usefixtures("final_scale_guard_bypassed")
 def test_a_pair_the_import_creates_below_the_floor_is_removed_from_the_mapped_database(
         walked, colmap, monkeypatch, inliers, kept):
     """The walk database does NOT hold the revisit pair (1, 4); the import creates it at
@@ -202,6 +206,7 @@ def test_a_pair_the_import_creates_below_the_floor_is_removed_from_the_mapped_da
     assert colmap.calls("global_mapping")[0][2] == mapped.name
 
 
+@pytest.mark.usefixtures("final_scale_guard_bypassed")
 def test_the_floor_is_judged_after_the_masks(walked, colmap, monkeypatch):
     """The import creates (1, 4) with 60 inliers, one of them on a masked keypoint (0): in
     the filter's copy it was matched on EVERY keypoint, so that match is removed, the pair
@@ -221,6 +226,7 @@ def test_the_floor_is_judged_after_the_masks(walked, colmap, monkeypatch):
 
 
 @pytest.mark.parametrize("relocalizer_lists_it", [False, True])
+@pytest.mark.usefixtures("final_scale_guard_bypassed")
 def test_a_listed_pair_the_database_already_holds_is_not_the_imports(walked, colmap, monkeypatch,
                                                                      relocalizer_lists_it):
     """Review V9 M-9 (RV9-B P1). (1, 4) is in the walk database at 30 verified inliers before
@@ -245,6 +251,7 @@ def test_a_listed_pair_the_database_already_holds_is_not_the_imports(walked, col
 
 
 @pytest.mark.parametrize("second", ["unmasked", "ungated"])
+@pytest.mark.usefixtures("final_scale_guard_bypassed")
 def test_an_imported_pair_never_enters_the_walk_database(walked, colmap, monkeypatch, second):
     """Review V9 M-10 (RV9-B P2). A masked, gated final solve imports (1, 4) at 20 inliers
     (under the floor, so it is removed from its copy). The walk database never holds it, so
@@ -295,6 +302,7 @@ def _extraction_makes_a_database(colmap):
     colmap.extract_features = extract_features
 
 
+@pytest.mark.usefixtures("final_scale_guard_bypassed")
 def test_a_re_extracted_database_seeded_from_an_importing_solve_maps_no_import(session, colmap,
                                                                                monkeypatch):
     """With no walk database the masks go to extraction, into a database of the solve's own,

@@ -324,6 +324,7 @@ def _todays_trace(s) -> list:
     (True, {"TOWER_WORLD_SOLVE_MASKS": "off", "TOWER_WORLD_SOLVE_SEED": "off"}),
     (False, {"TOWER_WORLD_SOLVE_MASKS": "1", "TOWER_WORLD_SOLVE_SEED": "7"}),  # background
 ])
+@pytest.mark.usefixtures("final_scale_guard_bypassed")
 def test_with_the_settings_off_pycolmap_gets_exactly_todays_inputs(session, colmap, monkeypatch,
                                                                     final, env):
     for key, value in env.items():
@@ -359,6 +360,7 @@ def test_solve_digest_uses_the_keyframes_it_actually_reads(session, colmap):
 
 
 @pytest.mark.parametrize("how", ["argument", "setting"])
+@pytest.mark.usefixtures("final_scale_guard_bypassed")
 def test_a_seeded_solve_sets_every_seed_and_maps_on_one_thread(session, colmap, monkeypatch, how):
     if how == "setting":
         monkeypatch.setenv("TOWER_WORLD_SOLVE_SEED", "7")
@@ -396,6 +398,7 @@ def test_a_seeded_solve_sets_every_seed_and_maps_on_one_thread(session, colmap, 
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.usefixtures("final_scale_guard_bypassed")
 def test_a_masked_solve_masks_every_solver_image_before_extraction(session, colmap):
     stub = StubDetector()
     summary = _masked(session, stub)
@@ -465,6 +468,7 @@ def _stub_the_gate(monkeypatch):
 @pytest.mark.parametrize("masked,gated,seed", [(False, False, None), (True, False, 5),
                                                (False, True, None), (True, True, None),
                                                (True, True, 5)])
+@pytest.mark.usefixtures("final_scale_guard_bypassed")
 def test_the_final_solve_matches_the_relocalizers_revisit_links(session, colmap, monkeypatch,
                                                                  masked, gated, seed):
     from tower.world_builder import relocalizer
@@ -519,6 +523,7 @@ def test_revisit_links_are_for_the_final_solve_only(session, colmap, monkeypatch
     assert colmap.calls("match_image_pairs") == []
 
 
+@pytest.mark.usefixtures("final_scale_guard_bypassed")
 def test_no_revisit_links_is_todays_solve_exactly(session, colmap, monkeypatch):
     from tower.world_builder import relocalizer
 
@@ -528,6 +533,7 @@ def test_no_revisit_links_is_todays_solve_exactly(session, colmap, monkeypatch):
     assert summary["solve"]["revisit_pairs"] == {"listed": 0, "verified": 0, "detail": None}
 
 
+@pytest.mark.usefixtures("final_scale_guard_bypassed")
 def test_unreadable_revisit_links_are_recorded_not_fatal(session, colmap, monkeypatch):
     from tower.world_builder import relocalizer
 
@@ -617,6 +623,7 @@ def walked(session, colmap):
 
 
 @pytest.mark.parametrize("seed", [None, 5])
+@pytest.mark.usefixtures("final_scale_guard_bypassed")
 def test_with_a_walk_database_the_solve_maps_a_filtered_copy_of_it(walked, colmap, seed):
     ws = walked.workspace
     before = ws.database_path.read_bytes()
@@ -664,6 +671,7 @@ def test_with_a_walk_database_the_solve_maps_a_filtered_copy_of_it(walked, colma
     assert _solution_json(walked)["solve"]["masking"] == SM.MASKING_FILTERED
 
 
+@pytest.mark.usefixtures("final_scale_guard_bypassed")
 def test_without_a_walk_database_the_masks_go_to_extraction(session, colmap):
     summary = _masked(session, StubDetector())
     assert summary["solve"]["masking"] == SM.MASKING_REEXTRACTED
@@ -672,6 +680,7 @@ def test_without_a_walk_database_the_masks_go_to_extraction(session, colmap):
     assert colmap.calls("verify_matches") == []
 
 
+@pytest.mark.usefixtures("final_scale_guard_bypassed")
 def test_an_unreadable_walk_database_is_not_filtered(walked, colmap):
     walked.workspace.database_path.write_bytes(b"not a database at all, not even close")
     summary = _masked(walked, StubDetector())
@@ -681,6 +690,7 @@ def test_an_unreadable_walk_database_is_not_filtered(walked, colmap):
     assert _is_masked_db(extracted)
 
 
+@pytest.mark.usefixtures("final_scale_guard_bypassed")
 def test_a_filter_that_fails_falls_back_to_re_extraction_and_says_so(walked, colmap, monkeypatch):
     def broken(*a, **k):
         raise RuntimeError("disk full")
@@ -699,6 +709,7 @@ def test_a_filter_that_fails_falls_back_to_re_extraction_and_says_so(walked, col
     assert record["state"] == SM.RECORD_APPLIED
 
 
+@pytest.mark.usefixtures("final_scale_guard_bypassed")
 def test_with_the_settings_off_a_walk_database_is_used_exactly_as_today(walked, colmap):
     before = walked.workspace.database_path.read_bytes()
     summary = _solve(walked, final=True)
@@ -709,6 +720,7 @@ def test_with_the_settings_off_a_walk_database_is_used_exactly_as_today(walked, 
     assert summary["solve"]["masking"] is None and summary["solve"]["walk_database"] is None
 
 
+@pytest.mark.usefixtures("final_scale_guard_bypassed")
 def test_a_filtered_database_is_never_reused_as_a_re_extracted_one(walked, colmap):
     _masked(walked, StubDetector())                      # filtered: record says so
     walked.workspace.database_path.unlink()              # the walk database is gone
@@ -723,6 +735,7 @@ def test_the_two_spellings_of_the_masking_paths_agree():
     assert global_solve._MASKING_REEXTRACTED == SM.MASKING_REEXTRACTED
 
 
+@pytest.mark.usefixtures("final_scale_guard_bypassed")
 def test_a_second_solve_reuses_the_cache_and_the_masked_database(session, colmap):
     stub = StubDetector()
     _masked(session, stub)
@@ -736,6 +749,7 @@ def test_a_second_solve_reuses_the_cache_and_the_masked_database(session, colmap
     assert colmap.database_existed == [False, True]
 
 
+@pytest.mark.usefixtures("final_scale_guard_bypassed")
 def test_a_missing_or_corrupt_mask_cache_is_recomputed_not_fatal(session, colmap):
     stub = StubDetector()
     _masked(session, stub)
@@ -754,6 +768,7 @@ def test_a_missing_or_corrupt_mask_cache_is_recomputed_not_fatal(session, colmap
     assert sorted(c for c, _ in stub.calls) == [T.COMPONENT_GDSAM, T.COMPONENT_ONEFORMER]
 
 
+@pytest.mark.usefixtures("final_scale_guard_bypassed")
 def test_an_image_whose_mask_changed_rebuilds_the_masked_database(session, colmap):
     _masked(session, StubDetector())
     # The same image, new bytes: its old keypoints were extracted under the
@@ -770,6 +785,7 @@ def test_an_image_whose_mask_changed_rebuilds_the_masked_database(session, colma
     assert record["computed"] == 1 and record["cache_hits"] == N - 1
 
 
+@pytest.mark.usefixtures("final_scale_guard_bypassed")
 def test_an_image_the_detector_cannot_read_is_excluded_from_the_solve(session, colmap):
     """Review V8, M2b: excluded (an explicit "extract nothing" mask), so the solve holds
     no unmasked evidence and stays `applied`; it used to be `partial`, the gate's
@@ -805,6 +821,7 @@ FAILURES = {
 
 
 @pytest.mark.parametrize("failure", sorted(FAILURES))
+@pytest.mark.usefixtures("final_scale_guard_bypassed")
 def test_a_detector_that_fails_leaves_an_unmasked_solve_that_says_so(session, colmap, failure):
     spec = dict(FAILURES[failure])
     stub = spec.pop("stub", StubDetector())
@@ -822,6 +839,7 @@ def test_a_detector_that_fails_leaves_an_unmasked_solve_that_says_so(session, co
     assert summary["transients"] == record
 
 
+@pytest.mark.usefixtures("final_scale_guard_bypassed")
 def test_the_failure_detail_names_the_cause(session, colmap):
     summary = _masked(session, StubDetector(run_error=RuntimeError("CUDA out of memory")))
     assert "out of memory" in summary["transients"]["detail"]
@@ -831,6 +849,7 @@ def test_the_failure_detail_names_the_cause(session, colmap):
     assert "CPU fallback" in summary["transients"]["detail"]
 
 
+@pytest.mark.usefixtures("final_scale_guard_bypassed")
 def test_a_union_without_grounding_dino_is_masked_by_oneformer_and_is_not_applied(session, colmap):
     """The surface stage's own fallback: the masks are real, under the
     OneFormer rule, and the record names both rules. But the evidence was
@@ -853,6 +872,7 @@ def test_a_union_without_grounding_dino_is_masked_by_oneformer_and_is_not_applie
     assert "Grounding DINO weights missing" in record["rule_fallback"]
 
 
+@pytest.mark.usefixtures("final_scale_guard_bypassed")
 def test_the_mask_step_raising_is_an_unmasked_solve(session, colmap, monkeypatch):
     def boom(*a, **k):
         raise ValueError("unexpected")
@@ -1045,6 +1065,7 @@ class _OOMOnce(StubDetector):
         return backend
 
 
+@pytest.mark.usefixtures("final_scale_guard_bypassed")
 def test_a_gpu_oom_is_retried_once_on_a_cleared_cache(session, colmap, monkeypatch):
     cleared = []
     monkeypatch.setattr(SM, "_empty_cuda_cache", lambda: cleared.append(1))
@@ -1054,6 +1075,7 @@ def test_a_gpu_oom_is_retried_once_on_a_cleared_cache(session, colmap, monkeypat
     assert record["cause"] is None and record["retryable"] is False
 
 
+@pytest.mark.usefixtures("final_scale_guard_bypassed")
 def test_a_gpu_oom_that_persists_is_recorded_as_retryable(session, colmap, monkeypatch):
     monkeypatch.setattr(SM, "_empty_cuda_cache", lambda: None)
     summary = _masked(session, _OOMOnce(always=True))
@@ -1088,6 +1110,7 @@ def test_the_walk_database_is_opened_read_only(walked, monkeypatch):
     assert to_walk and all(uri and t.endswith("?mode=ro") for t, uri in to_walk), opened
 
 
+@pytest.mark.usefixtures("final_scale_guard_bypassed")
 def test_two_solves_never_share_a_masked_database(walked, colmap):
     a = _masked(walked, StubDetector())["transients"]["database"]
     b = _masked(walked, StubDetector())["transients"]["database"]
@@ -1097,6 +1120,7 @@ def test_two_solves_never_share_a_masked_database(walked, colmap):
     assert (walked.workspace.root / b).exists()
 
 
+@pytest.mark.usefixtures("final_scale_guard_bypassed")
 def test_a_dead_solves_masked_database_is_swept_the_published_one_kept(walked, colmap):
     import subprocess
 
@@ -1116,6 +1140,7 @@ def test_a_dead_solves_masked_database_is_swept_the_published_one_kept(walked, c
     assert not stale.exists() and published.exists() and walked.workspace.database_path.exists()
 
 
+@pytest.mark.usefixtures("final_scale_guard_bypassed")
 def test_a_fallback_forced_by_gpu_memory_is_recorded_retryable(session, colmap):
     """V7 L-b: Grounding DINO / SAM out of memory, OneFormer carries on: `partial`, with the cause."""
     class OOMGdsam(StubDetector):

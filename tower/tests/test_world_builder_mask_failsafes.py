@@ -156,6 +156,7 @@ def _break(session_, name="00000001.jpg"):
     return name
 
 
+@pytest.mark.usefixtures("final_scale_guard_bypassed")
 def test_an_image_that_cannot_be_masked_is_excluded_and_the_solve_stays_applied(session, colmap):
     """Re-extraction: its COLMAP mask is all 0, so none of its features reach the solve.
     Before: `partial` and an all-255 ("use everything") mask."""
@@ -173,6 +174,7 @@ def test_an_image_that_cannot_be_masked_is_excluded_and_the_solve_stays_applied(
             assert (m == 255).any(), name
 
 
+@pytest.mark.usefixtures("final_scale_guard_bypassed")
 def test_an_unmasked_image_loses_every_match_in_the_filtered_walk_database(walked, colmap):
     """Arm A1h: before, `_keypoints_in_mask` skipped an image without a mask, so a pair
     of it with another image kept every match -- (3,4) below survived whole."""
@@ -194,6 +196,7 @@ def test_an_unmasked_image_loses_every_match_in_the_filtered_walk_database(walke
     assert record["excluded_examples"] == [bad]
 
 
+@pytest.mark.usefixtures("final_scale_guard_bypassed")
 def test_a_walk_database_image_the_mask_step_never_saw_is_excluded_too(walked, colmap):
     """An image in the walk database that is not among this solve's images has no mask:
     its matches cannot be checked, so they are not kept."""
@@ -241,6 +244,7 @@ def test_an_image_that_cannot_be_hashed_is_excluded_with_a_mask_of_its_own(tmp_p
     assert png is not None and png.shape == (H, W) and (png == 0).all()
 
 
+@pytest.mark.usefixtures("final_scale_guard_bypassed")
 def test_a_fallback_rule_is_still_partial_and_excluding_images_does_not_hide_it(session, colmap):
     class Half(StubDetector):
         def __call__(self, component):
@@ -255,6 +259,7 @@ def test_a_fallback_rule_is_still_partial_and_excluding_images_does_not_hide_it(
     assert record["images_excluded"] == 1
 
 
+@pytest.mark.usefixtures("final_scale_guard_bypassed")
 def test_a_re_extracted_database_of_an_image_once_used_whole_is_not_reused(session, colmap):
     """A re-extracted database made when an unmasked image was extracted WHOLE (all-255,
     before this change: `[None, None]` in its record) must not be reused once that image
@@ -277,6 +282,7 @@ def test_a_re_extracted_database_of_an_image_once_used_whole_is_not_reused(sessi
     assert third["database_reused"] is True
 
 
+@pytest.mark.usefixtures("final_scale_guard_bypassed")
 def test_the_walk_database_filter_without_exclusions_is_unchanged(walked, colmap):
     """Every image masked: the counts are today's, with `images_excluded` 0."""
     record = _masked(walked, StubDetector())["transients"]
@@ -286,6 +292,7 @@ def test_the_walk_database_filter_without_exclusions_is_unchanged(walked, colmap
 
 
 @pytest.mark.parametrize("rows", [0, 4])
+@pytest.mark.usefixtures("final_scale_guard_bypassed")
 def test_an_excluded_image_with_or_without_keypoints_is_counted_once(walked, colmap, rows):
     ws = walked.workspace
     con = sqlite3.connect(str(ws.database_path))
