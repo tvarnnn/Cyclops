@@ -371,6 +371,17 @@ class PageFinder:
         self._last_detect_at = None
 
     def find(self, gray: np.ndarray, *, at: float) -> RegionCandidate | None:
+        """Propose a page region for one gray frame, or None.
+
+        First the steadiness and sharpness gate looks at the frame; an unsteady
+        or blurred frame returns None without spending the detector (the dwell
+        tracker tolerates a bounded run of these). On a steady frame the text
+        detector runs only on a cadence (the larger of `detect_interval_s` and
+        `min_detect_interval_s`); between runs the last region is carried forward
+        for up to `carry_forward_s`. The text boxes become one `RegionCandidate`,
+        tagged with its crop's sharpness and marked `/changed` when the gate saw
+        the content change. A detector failure is logged and treated as no text.
+        """
         verdict = self._gate.observe(gray)
         self._last_verdict = verdict
         if not verdict.stable:
