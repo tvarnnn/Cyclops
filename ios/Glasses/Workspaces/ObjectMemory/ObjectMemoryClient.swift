@@ -597,6 +597,7 @@ final class TowerObjectMemoryClient: ObjectMemoryClient {
     ///
     /// An action goes through the control client, is shown immediately, then a
     /// GET replaces its liveness data while retaining any refusal explanation.
+    ///
     /// **The read-back is the point, not politeness.** A `POST` answers with
     /// the state the Tower moved to, and that is intent. Whether the producer
     /// actually let go of the capture is `following`, sampled after the fact —

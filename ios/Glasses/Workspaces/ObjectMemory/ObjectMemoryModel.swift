@@ -661,7 +661,8 @@ nonisolated enum ObjectMemoryDecoder {
         )
     }
 
-    /// Decodes one sighting only when its claim, identity and frame reference agree.
+    /// Decodes one sighting only when its claim and identity match the contract
+    /// (`categoryClaim`, `identityScope`) and its frame reference decodes.
     ///
     /// Required wire fields and claim tokens are checked before constructing the
     /// record; optional evidence stays absent rather than becoming a false zero.
