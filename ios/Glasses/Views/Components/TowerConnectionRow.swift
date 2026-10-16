@@ -75,13 +75,13 @@ struct TowerConnectionRow: View {
             VStack(alignment: .leading, spacing: 6) {
                 Text(endpoint)
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.readableSecondary)
                     .lineLimit(1)
                     .truncationMode(.middle)
                 if let detail = StateDisplay.towerFailureDetail(tower.status) {
                     Text(detail)
                         .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(.readableSecondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 Button(CVTowerConnectionLabel.actionTitle(for: tower.status)) {

@@ -212,7 +212,7 @@ struct ObjectMemoryWorkspaceView: View {
                 .font(.title2.weight(.semibold))
             Text(ObjectMemoryCopy.summary)
                 .font(.subheadline)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(.readableSecondary)
                 .fixedSize(horizontal: false, vertical: true)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -265,7 +265,7 @@ struct ObjectMemoryWorkspaceView: View {
             if !isTowerReachable {
                 Text(ObjectMemoryCopy.towerUnreachable)
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.readableSecondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
@@ -285,7 +285,7 @@ struct ObjectMemoryWorkspaceView: View {
                 case .idle:
                     Text(ObjectMemoryCopy.nothingAskedYet)
                         .font(.subheadline)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(.readableSecondary)
                         .fixedSize(horizontal: false, vertical: true)
 
                 case .asking(let question):
@@ -293,7 +293,7 @@ struct ObjectMemoryWorkspaceView: View {
                         ProgressView()
                         Text(ObjectMemoryCopy.questionLine(question))
                             .font(.subheadline)
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(.readableSecondary)
                     }
 
                 case .answered(let question, let answer):
@@ -307,13 +307,13 @@ struct ObjectMemoryWorkspaceView: View {
                     // the panel must not fall through to a blank box.
                     Text(ObjectMemoryCopy.noObjectMemoryConfigured)
                         .font(.subheadline)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(.readableSecondary)
                         .fixedSize(horizontal: false, vertical: true)
 
                 case .failed(let failure):
                     Text(failure.message)
                         .font(.subheadline)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(.readableSecondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }
@@ -359,12 +359,12 @@ struct ObjectMemoryAnswerView: View {
                 .font(.subheadline.weight(.medium))
             Text(ObjectMemoryCopy.retentionLine(answer.envelope.retention))
                 .font(.caption)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(.readableSecondary)
                 .fixedSize(horizontal: false, vertical: true)
             if let clamp = ObjectMemoryCopy.clampLine(answer.envelope.retention) {
                 Text(clamp)
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.readableSecondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
@@ -434,7 +434,7 @@ struct ObjectMemoryEmptyView: View {
                 )
             )
             .font(.subheadline)
-            .foregroundStyle(.secondary)
+            .foregroundStyle(.readableSecondary)
             .fixedSize(horizontal: false, vertical: true)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -464,7 +464,7 @@ struct ObjectObservationRow: View {
 
             Text(ObjectMemoryCopy.timeLine(observation))
                 .font(.caption)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(.readableSecondary)
                 .fixedSize(horizontal: false, vertical: true)
 
             Text(ObjectMemoryCopy.claimLine(observation))
@@ -488,7 +488,7 @@ struct ObjectObservationRow: View {
             } label: {
                 Text(ObjectMemoryCopy.provenanceDisclosure)
                     .font(.caption2.weight(.medium))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.readableSecondary)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -501,7 +501,7 @@ struct ObjectObservationRow: View {
         VStack(alignment: .leading, spacing: 6) {
             Text(ObjectMemoryCopy.frameLine(observation.frame))
                 .font(.caption2)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(.readableSecondary)
                 .fixedSize(horizontal: false, vertical: true)
 
             // Never conditional. A frame reference without its caveat
@@ -779,7 +779,7 @@ struct ObjectMemorySessionPanel: View {
     private func caption(_ text: String) -> some View {
         Text(text)
             .font(.caption)
-            .foregroundStyle(.secondary)
+            .foregroundStyle(.readableSecondary)
             .fixedSize(horizontal: false, vertical: true)
     }
 }
@@ -897,7 +897,7 @@ struct ObjectMemoryRecordingPanel: View {
     private func caption(_ text: String) -> some View {
         Text(text)
             .font(.caption)
-            .foregroundStyle(.secondary)
+            .foregroundStyle(.readableSecondary)
             .fixedSize(horizontal: false, vertical: true)
     }
 }
@@ -1081,7 +1081,7 @@ struct ObjectMemoryPictureView: View {
 
             Text(ObjectMemoryCopy.noPictureExplanation(description))
                 .font(.caption)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(.readableSecondary)
                 .fixedSize(horizontal: false, vertical: true)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -1091,7 +1091,7 @@ struct ObjectMemoryPictureView: View {
     private func caption(_ text: String) -> some View {
         Text(text)
             .font(.caption2)
-            .foregroundStyle(.secondary)
+            .foregroundStyle(.readableSecondary)
             .fixedSize(horizontal: false, vertical: true)
     }
 }

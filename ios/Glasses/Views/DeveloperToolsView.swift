@@ -367,7 +367,7 @@ struct DeveloperToolsView: View {
             LabeledContent("Endpoint") {
                 Text(TowerConfiguration.webSocketURL.absoluteString)
                     .font(.footnote.monospaced())
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.readableSecondary)
                     .multilineTextAlignment(.trailing)
             }
             LabeledContent("Endpoint Source", value: "\(TowerConfiguration.resolution.source)")
@@ -433,7 +433,7 @@ struct DeveloperToolsView: View {
             LabeledContent("Why") {
                 Text(Self.explain(error))
                     .font(.footnote)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.readableSecondary)
                     .multilineTextAlignment(.trailing)
             }
             LabeledContent("Asked At", value: Self.clockTime(at))
