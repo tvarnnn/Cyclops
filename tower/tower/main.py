@@ -104,7 +104,7 @@ CHORE_TICK_SECONDS = 15.0
 CHORE_QUIET_SECONDS = 120.0
 # A STALL, NOT A TIMEOUT. The run is killed only when its whole process tree
 # has used less than CHORE_STALL_CPU_SECONDS of CPU in CHORE_STALL_SECONDS.
-# The deadlocked finisher of 2026-09-22 used 1.64 CPU-seconds in 95 minutes,
+# A deadlocked finisher used 1.64 CPU-seconds in 95 minutes,
 # all of it before the hang; a working build uses that in well under a
 # second, on the GPU stages as much as the CPU ones, because a Python loop
 # feeding a GPU is still a Python loop. A long walk's long build keeps
@@ -133,20 +133,16 @@ CHORE_MAX_FORGIVEN = 25
 def _build_cv_module(settings: Settings, connection_count=None) -> Module:
     """The one module slot.
 
-    There used to be a branch here selecting a different Module subclass
-    for the depth experiment, because that experiment holds a model.
-    Experiment state now lives behind the Experiment protocol, so the
-    module is the same one whichever experiment is selected -- which is
-    what the module doc always said: one Lab slot, many experiments.
+    The module is the same one whichever experiment is selected (experiment
+    state lives behind the Experiment protocol): one Lab slot, many
+    experiments.
 
-    `settings.cv_experiment` is now the STARTUP DEFAULT and nothing more.
+    `settings.cv_experiment` is the STARTUP DEFAULT and nothing more.
     It is what this Tower arms at boot so that a client which knows
     nothing about the CV Lab still receives a `frame_result` for every
-    frame, exactly as before; a client that does know sends
-    `cv_lab_start` and the environment variable stops mattering until the
-    next restart. That is the whole of "remove the product dependence on
-    TOWER_CV_EXPERIMENT": it survives as a developer default, not as the
-    only way to choose.
+    frame; a client that does know sends `cv_lab_start` and the
+    environment variable stops mattering until the next restart. It is a
+    developer default, not the only way to choose.
 
     `connection_count` lets the Lab report how many clients are attached,
     which is what turns "I pressed Start and nothing happened" from a
@@ -176,8 +172,8 @@ def _build_frame_observers(settings: Settings) -> list:
     Arming is not recording. A configured root creates no directory and
     writes no byte until a `stream_start` arrives, so this stays an
     Explicit Dataset-Recording Session under 06-PRIVACY-DATA.md rather
-    than becoming incidental capture. Unset by default, which is why
-    every Tower that has ever run recorded nothing.
+    than becoming incidental capture. Unset by default, so a Tower records
+    nothing until a root is configured.
     """
     if settings.capture_root is None:
         return []
@@ -185,32 +181,38 @@ def _build_frame_observers(settings: Settings) -> list:
 
 
 def _world_build_spec(settings: Settings, gate=None) -> WorkerSpec | None:
-    """The builder that follows a capture WHILE World Builder is active, or nothing.
+    """Describe the World Builder child as a command line, or return None.
 
-    This function and its neighbour are the ONLY places in the web
-    process that know a world builder and an object memory exist, and
-    they know them as an argv -- a script path and some flags -- not as
-    an import. That is deliberate and it is load-bearing:
-    `test_shared_code_does_not_import_a_cartridge` forbids transport,
-    config and the module system from importing a cartridge, on the
-    grounds that "the next cartridge inherits its assumptions". A command
-    line inherits nothing, and `CaptureWorkerSupervisor` stays a thing
-    that runs processes rather than a thing that builds worlds.
+    What: the `WorkerSpec` for the builder that follows a capture while World
+    Builder is active; None when there is no world root or `world_autobuild`
+    is off.
 
-    The web process therefore still does not build. It supervises a child
-    that does, which is what keeps an expensive rebuild off the frame
-    path.
+    How: from `Settings` it builds the argv for
+    `scripts/world_build_session.py --follow-capture {capture_dir} --root
+    <world_root> --rebuild-every N`, adding `--register`, `--solve`,
+    `--densify`, `--surface` and `--appearance` as the settings enable them
+    (densify and surface need the solve, and the appearance needs the
+    surface), then `--max-idle-polls` and `--stop-on-stdin-close`. The spec
+    stops the child through stdin with a 30 s grace and carries the optional
+    `gate`, a callable the supervisor asks when a capture opens.
 
-    GATED since 2026-09-06, like the object-memory producer, and for a
-    resource reason rather than a privacy one. Ungated, a builder -- with
-    its background global solves at all-cores-but-two -- attached to every
-    capture on the Tower, including a CV Lab camera session that never
-    asked for a world, and the only way to run CV Lab without it was
-    `TOWER_WORLD_AUTOBUILD=false` and a restart. The gate is the
-    `world_builder` cartridge session: the phone opens it when the World
-    Builder workspace is on screen and closes it when it leaves.
+    Why an argv and not an import: this function and its neighbour are the
+    ONLY places in the web process that know a world builder and an object
+    memory exist, and `test_shared_code_does_not_import_a_cartridge` forbids
+    transport, config and the module system from importing a cartridge, on
+    the grounds that "the next cartridge inherits its assumptions". A
+    command line inherits nothing, and `CaptureWorkerSupervisor` stays a
+    thing that runs processes rather than a thing that builds worlds. The
+    web process therefore does not build: it supervises a child that does,
+    which keeps an expensive rebuild off the frame path.
+
+    Why a gate: ungated, a builder -- with its background global solves at
+    all-cores-but-two -- would attach to every capture on the Tower,
+    including a CV Lab camera session that never asked for a world. The
+    gate is the `world_builder` cartridge session: the phone opens it when
+    the World Builder workspace is on screen and closes it when it leaves.
     `TOWER_WORLD_AUTOBUILD` keeps its meaning -- whether a builder may run
-    at all -- and stops being the way to switch cartridges.
+    at all -- and is not the way to switch cartridges.
     """
     if settings.world_root is None or not settings.world_autobuild:
         return None
@@ -260,9 +262,8 @@ def _world_build_spec(settings: Settings, gate=None) -> WorkerSpec | None:
             *appearance,
             # So a producer whose Tower died without closing the manifest
             # stops following instead of polling that directory forever.
-            # See DEFAULT_MAX_IDLE_POLLS: the bound has always existed and
-            # neither spec passed it, so the invariant `follow()`'s
-            # docstring promises was never actually armed in production.
+            # See DEFAULT_MAX_IDLE_POLLS: it arms the bound the invariant
+            # in `follow()`'s docstring promises.
             "--max-idle-polls",
             str(DEFAULT_MAX_IDLE_POLLS),
             # The half of the stop agreement that lives in the child: stdin
@@ -277,8 +278,8 @@ def _world_build_spec(settings: Settings, gate=None) -> WorkerSpec | None:
         gate=gate,
         stop_via_stdin=True,
         # Once asked, the builder ends within one final build; on a long
-        # walk that is tens of seconds, not the shared 10 s default that
-        # shot it mid-finalization. The grace is the bound, not the wait.
+        # walk that is tens of seconds, not the shared 10 s default, which
+        # would cut it mid-finalization. The grace is the bound, not the wait.
         stop_grace_seconds=30.0,
     )
 
@@ -291,12 +292,11 @@ def _world_finish_spec(settings: Settings) -> WorkerSpec | None:
     builder child, in the six to sixteen minutes after Stop and after the
     world lock is released. Anything that ends that child first -- a Tower
     shutdown, a machine sleep, a crash, the supervisor's thirty-second stop
-    grace -- discarded the work permanently. `scripts/world_finalize.py`
+    grace -- discards the work. `scripts/world_finalize.py`
     rebuilds only the sparse derived tree; the serving path in
     `tower/results/world_builder*.py` performs no write and spawns no
-    process, so it never generates on demand; and nothing reconciled
-    anything at startup. On 2026-09-22 a Tower was shut down eight minutes
-    into a build and the next start recovered nothing.
+    process, so it never generates on demand; this chore is what reconciles
+    owed work at startup.
 
     AN ARGV, NOT AN IMPORT, for exactly the reason `_world_build_spec`
     above gives at length: `test_shared_code_does_not_import_a_cartridge`
@@ -344,7 +344,7 @@ def _world_finish_spec(settings: Settings) -> WorkerSpec | None:
             # and is stopped politely. This Tower kills a stall outright
             # (`_BackgroundChore`), which counts -- and it re-runs the finisher
             # at every idle moment, so an ordinary day of walks is many polite
-            # stops. At 5, a reviewer retired a recoverable world to `failed`
+            # stops. At 5, a recoverable world was retired to `failed`
             # after eight walks. The bound stays, for a hang that is always
             # interrupted before the stall window closes.
             "--max-forgiven",
@@ -419,19 +419,15 @@ class _BackgroundChore:
     IT RUNS WHEN THE TOWER IS IDLE, AND ONLY THEN. It is started at Tower
     start, when nothing is streaming and every cartridge session is stopped
     (see `app.state.cartridge_sessions`, which is deliberately not
-    persisted), and the first sign of activity stops it. That much is
-    unchanged. What changed on 2026-09-23 is what happens AFTERWARDS: it
-    used to be retired for the life of the process, so photographic work
+    persisted), and the first sign of activity stops it. Photographic work
     that was interrupted -- by the wearer pressing Start, by a second owed
-    world past `--max-worlds`, by a stall -- waited for the NEXT TOWER
-    START. The world said "Improving" the whole time, which is a promise of
-    progress nothing was keeping. Now the work stays owed and this runs
+    world past `--max-worlds`, by a stall -- stays owed and this runs
     again at the next idle moment: nothing streaming, no capture worker
-    alive, and a quiet period since the last yield. The idle rule is what
-    keeps the old safety argument true -- a walk still never finds this
-    running, because a walk is exactly what makes the Tower not idle.
+    alive, and a quiet period since the last yield. The idle rule keeps a
+    walk from ever finding this running, because a walk is exactly what
+    makes the Tower not idle.
 
-    A RUN IS WATCHED, NOT TIMED. On 2026-09-22 the finisher held a world for
+    A RUN IS WATCHED, NOT TIMED. A finisher held a world for
     95 minutes at 0% CPU: alive, holding the world's writer lock, doing
     nothing, and reading as "running" because its pid was live. Nothing
     here times a build -- a long walk is a long build -- but a process tree
@@ -584,9 +580,9 @@ class _BackgroundChore:
         """Terminate the tree; if it will not die, keep it where it blocks runs.
 
         A finisher that outlives its kill -- a CUDA context taking longer to
-        tear down than the wait allows -- used to be forgotten here: the
-        chore could then start a second one beside it, and a builder could
-        start while it still held the GPU and the world's lock.
+        tear down than the wait allows -- must stay tracked: otherwise the
+        chore could start a second one beside it, and a builder could start
+        while it still held the GPU and the world's lock.
         """
         gone = terminate_tree(
             process, job=job, timeout=TERMINATE_TIMEOUT_SECONDS, hard=hard
@@ -1162,15 +1158,13 @@ def _log_effective_configuration(
     """Say what this Tower will and will not do, at startup, once.
 
     Every setting that decides whether a cartridge works at all is
-    optional and every one of them used to fail SILENTLY when unset: no
-    capture root meant no recorder, no world root meant the result
-    channel reported the cartridge unavailable, no observation root meant
-    a producer wrote 64 records into a directory every HTTP request
-    answered 404 about. On 2026-08-24 the first pair produced a Tower
-    that answered every frame, recorded nothing anyone could find, and
-    told the phone there was no world -- with nothing in the log saying
-    why. On 2026-08-26 the third produced the same shape of surprise for
-    a different cartridge. These lines fix that permanently.
+    optional and each one fails SILENTLY when unset: no capture root means
+    no recorder, no world root means the result channel reports the
+    cartridge unavailable, and no observation root meant a producer wrote
+    64 records into a directory every HTTP request answered 404 about. The
+    Tower would answer every frame, record nothing anyone could find, and
+    tell the phone there was no world, with nothing in the log saying why.
+    These lines fix that.
     """
     if settings.capture_root is None:
         logger.warning(
@@ -1195,8 +1189,7 @@ def _log_effective_configuration(
         # relative `data/world_builder`; a Tower launched from any directory
         # but `tower/` resolves it somewhere else, answers `GET /worlds`
         # with an empty list, and the phone reads "no saved worlds yet".
-        # The line that would have said so used to print the relative
-        # string.
+        # The line prints the resolved path, not the relative string.
         resolved = Path(settings.world_root).resolve()
         worlds_dir = resolved / "worlds"
         if worlds_dir.is_dir():
@@ -1436,6 +1429,27 @@ async def lifespan(app: FastAPI):
 
 
 def create_app() -> FastAPI:
+    """Build the Tower's FastAPI app and wire everything it serves.
+
+    What: reads `Settings` and returns the app with its state, routers and
+    background machinery attached.
+
+    How: configures logging, then builds the CV Lab module and its container,
+    the frame observers (the dataset recorder, when a capture root is set)
+    and the read-only roots the routes consult (world, object memory,
+    capture, document). It then builds the world-finish chore (constructed
+    here, started in `lifespan`), the capture-worker supervisor with its two
+    cartridge gates, the two `CartridgeSession` objects, the live cartridges
+    and the result hub, logs the effective configuration, loads the module
+    container, and registers every router.
+
+    Why: the web process reads and supervises but never builds a world. The
+    chore is started from `lifespan` and the module container is loaded here
+    because most tests use `TestClient(create_app())` without running ASGI
+    lifespan, and a process spawned at construction would run in every one of
+    them. Cartridge sessions are deliberately not persisted, so a restarted
+    Tower comes back with every cartridge stopped.
+    """
     configure_logging(get_settings())
 
     app = FastAPI(title="Glasses Tower", lifespan=lifespan)
@@ -1459,9 +1473,6 @@ def create_app() -> FastAPI:
     # never builds a world; world_build_session.py does, in its own
     # process, and this is only where to look for what it wrote.
     app.state.world_root = settings.world_root
-    # Reads no world and writes no world. It starts the process that
-    # does, at the moment a capture id comes into existence -- which is
-    # the moment nobody outside this process can know it.
     # Read-only, and read by one HTTP route. The web process never
     # observes and never deletes: the producer is its own script, and
     # deletion is a CLI a human types. Unset means that route answers 404.
@@ -1524,6 +1535,9 @@ def create_app() -> FastAPI:
         )
     )
     app.state.world_finish_chore = world_finish_chore
+    # The supervisor reads no world and writes no world. It starts the process
+    # that does, when a capture id comes into existence -- the moment nobody
+    # outside this process can know it.
     app.state.capture_workers = _build_capture_worker_supervisor(
         settings,
         {
