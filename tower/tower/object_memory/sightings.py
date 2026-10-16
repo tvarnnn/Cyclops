@@ -1,27 +1,21 @@
 """A sighting: one category, in view, from when it appeared to when it left.
 
-WHAT THIS REPLACES, AND WHY.
+WHY SIGHTINGS.
 
-The first slice suppressed repeats with a 30-second resample window: the
-first detection of a class was recorded, and every detection of that
-class for the next 30 seconds was discarded. It was explicitly labelled a
-starting point "to be revisited against measured retrieval behavior", and
-the measurement now exists.
-
-Grouping the same corpus into temporally contiguous runs instead --
+Grouping the corpus into temporally contiguous runs --
 18,821 frames, every detection at score >= 0.5, a run broken by a gap of
 more than 3 seconds -- gives **763 sightings, 499 of them at least three
-frames long, 404 of those excluding `person`**, over 28 classes rather
-than two.
+frames long, 404 of those excluding `person`**, over 28 classes.
 
 Of those 499, the classes this cartridge may actually write account for
 **211**. The corpus is 1,942 seconds of recording, so that is **one
 memory every 9.2 seconds of walking** -- about 380 an hour, which is a
 shape a wearer could scroll and a store that stays small for months.
 
-The 30-second window cannot express any of that. It is an interval with
-no relationship to what the camera did: an object glanced at twice in one
-second produces one record, and an object watched continuously for four
+A fixed 30-second resample window (record the first detection of a
+class, discard that class for the next 30 seconds) has no relationship
+to what the camera did: an object glanced at twice in one second
+produces one record, and an object watched continuously for four
 minutes produces eight, and neither number means anything. A sighting is
 an EVENT -- "this came into view at 14:03:12 and stayed for 4.4 seconds
 across 29 frames" -- and every field on it is something that happened.
@@ -116,19 +110,8 @@ class Sighting:
     # keep working when no verifier exists, and typing an absence is how
     # a null becomes a required field.
     verdict: dict | None = field(default=None)
-    # Whether this sighting was ever seen while a class it is a PART of
-    # was also in view.
-    #
-    # Recorded on the sighting rather than recomputed, because by the
-    # time a sighting is settled it has been removed from the tracker and
-    # so has everything that was open alongside it -- so the check would
-    # run against an empty set and the suppression would evaporate at the
-    # end of every sighting, writing the duplicate it exists to prevent.
-    # A reviewer reproduced exactly that.
-    #
-    # A latch, not a live check: "this was only in view because its whole
-    # was" is a fact about what happened, and it does not stop being true
-    # when the whole leaves the frame.
+    # Unused: nothing reads or writes it. The part-of rule is decided live
+    # in `RelevanceFilter.decide_sighting` from `open_classes`.
     suppressed_as_part: bool = False
     # Whether a second opinion has already been ASKED FOR. Distinct from
     # `verdict`, which is whether one has arrived: between the two the
@@ -144,22 +127,18 @@ class Sighting:
     # something else entirely.
     #
     # It is the only imagery this cartridge holds IN MEMORY, and it is
-    # dropped when the sighting closes. It used to be true that it never
-    # reached disk, and since `keyframes.py` it is not: when a keyframe
-    # store is configured, `ObjectMemoryEngine._settle` hands this crop
-    # to it -- once, at the end of the sighting, through a face filter
-    # that must have run -- and the resulting JPEG becomes the one piece
-    # of imagery Object Memory's own retention governs. The crop itself
-    # still dies with the sighting; what outlives it is a filtered,
-    # downscaled copy under the observation root.
+    # dropped when the sighting closes. When a keyframe store is
+    # configured, `ObjectMemoryEngine._settle` hands this crop to it --
+    # once, at the end of the sighting, through a face filter that must
+    # have run -- and the resulting JPEG becomes the one piece of imagery
+    # Object Memory's own retention governs. The crop itself still dies
+    # with the sighting; what outlives it is a filtered, downscaled copy
+    # under the observation root.
     #
-    # It is also made for MORE sightings than it used to be. It was built
-    # only for `verify`-tier classes with a verifier attached, which
-    # meant `laptop` and `cell phone` -- the two classes this Tower
-    # actually records without one -- never held a crop at all, and so
-    # could never have had a keyframe. It is now made for every sighting
-    # of a persistable class. The bound is unchanged: one crop per open
-    # sighting, replaced only by a stronger look.
+    # It is made for every sighting of a persistable class (so `laptop`
+    # and `cell phone`, which a Tower with no verifier records, have a
+    # keyframe too). The bound: one crop per open sighting, replaced only
+    # by a stronger look.
     best_crop: object = field(default=None, repr=False)
 
     @property
@@ -206,6 +185,7 @@ class SightingTracker:
         self, *, gap_seconds: float = GAP_SECONDS, min_frames: int = MIN_FRAMES
     ) -> None:
         self._gap_seconds = gap_seconds
+        # Stored but not read: the maturity gate is `RelevancePolicy.min_frames`.
         self._min_frames = min_frames
         self._open: dict[str, Sighting] = {}
 
