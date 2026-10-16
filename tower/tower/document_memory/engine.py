@@ -271,7 +271,17 @@ class DocumentMemoryEngine:
         received_at: float | None = None,
         source_seq: int | None = None,
     ) -> ObserveResult:
-        """The cheap per-frame path. Raw pixels never leave this method."""
+        """The cheap per-frame path. Raw pixels never leave this method.
+
+        Decodes the frame to gray (an undecodable frame is fed to the dwell
+        tracker as a missing frame, so it does not discard a reading in progress),
+        asks the `PageFinder` for a page candidate, and feeds the candidate to the
+        dwell tracker. While a dwell is open the result is `dwelling`, with no
+        dwell `no_page`. When a dwell finishes, `_resolve` runs the expensive
+        path (`_record`: crop, OCR the best frames, dedup against documents on
+        record, persist) and the result is `document` for a new document or
+        `resighted` for one already on record. Returns an `ObserveResult`.
+        """
         at = self._timestamp(received_at)
         self._frames_observed += 1
 
