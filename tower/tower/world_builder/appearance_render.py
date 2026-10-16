@@ -6,7 +6,7 @@ transport) and `docs/contracts/WORLD-BUILDER-APPEARANCE.md` (what it draws).
 Unlike every other rung this page does NOT carry its data. It is a small shell
 -- the renderer, the camera path, the vertical and the addresses of the
 appearance routes -- and it fetches the manifest, the proxy and the keyframe
-bundles itself. Two reasons, both measured by the fix-it mobile lane:
+bundles itself. Two reasons, both measured:
 
 - the imagery is ~13 MB of ASTC blocks, and inlining it as base64 into a page
   string makes a 20 MB string the phone keeps alive beside the textures;
@@ -76,18 +76,16 @@ RGBA8_LAYER_CAP = 48
 # Display mapping: the keyframes' own brightness, with a hue-preserving
 # highlight roll-off above the knee that approaches 0.97 and never reaches white
 # (not a clamp). It is the same for every pixel; it adds no lighting and moves
-# no colour between surfaces. Revised 2026-09-17 (fix-it blotch lane, after the
-# visual review): the first mapping lifted the frames by 1.8 with gamma 1.15,
-# and at the keyframes' own pose and field of view the render was 1.19-2.04x as
-# bright as the keyframe (median 1.66, NCC 0.85), whites blown to cream. At
-# 1.0 / 1.0 / knee 0.8 on the same 10 poses: median 1.01x, NCC 0.94, 3.6% of
-# pixels >= 235 against the keyframes' 4.0%.
+# no colour between surfaces. Measured at the keyframes' own pose and field of
+# view on 10 poses: a lift of 1.8 with gamma 1.15 renders 1.19-2.04x as bright
+# as the keyframe (median 1.66, NCC 0.85), whites blown to cream; 1.0 / 1.0 /
+# knee 0.8 gives median 1.01x, NCC 0.94, 3.6% of pixels >= 235 against the
+# keyframes' 4.0%.
 DISPLAY_EXPOSURE = 1.0
 DISPLAY_GAMMA = 1.0
 TONE_KNEE = 0.8
 
-# The blend (WORLD-BUILDER-WORLDS.md §4), measured on the canonical world by the
-# fix-it viewer-polish lane (Glasses-scratch/wb-final-recon/fixit/viewer-polish):
+# The blend (WORLD-BUILDER-WORLDS.md §4), measured on the canonical world:
 # - a source's WEIGHT rises over 80 source pixels in from its image border (its
 #   evidence keeps 20): a keyframe's rectangle showed as a brightness step on
 #   walls. Seam excess (gradient on source switches minus nearby, 8-bit, 34
@@ -105,7 +103,7 @@ BORDER_FEATHER_PX = 80
 EDGE_FADE_PX = 8
 CONSENSUS = 1.0
 SOURCE_FADE_MS = 280
-# The fix-it blotch lane (Glasses-scratch/wb-final-recon/fixit/blotch):
+# The view:
 # - the display field of view is the keyframes' own, the viewport fitted inside
 #   their frustum with this margin on the tangent;
 # - thin cracks in the phone proxy (a third of its edges are open) are closed
@@ -113,27 +111,24 @@ SOURCE_FADE_MS = 280
 #   and shaded from the sources like the proxy;
 # - a void is an unlit fog of the coarse grey luminance around it, and dims
 #   the room near it by up to VOID_WIDE_FADE.
-# The fix-it framing lane (Glasses-scratch/wb-final-recon/fixit/framing):
-# - cutting the viewport to the keyframe exactly took the damage out and left a
-#   viewfinder so tight that 61% of the reachable views were a clean, well-lit,
-#   empty wall. The frame is the capture's plus a MARGIN on each tangent:
-#   VIEW_MARGIN on the horizontal and VIEW_MARGIN_V on the vertical (which only
-#   binds on a portrait canvas, where the keyframe's own vertical decides).
-#   Swept 1.0/1.15/1.25/1.4/1.6 over the 40 walk poses and 20 look-arounds:
-#   1.4 keeps drawn at 95.9% on the walk poses (96.9% at 1.25) for 12% more
-#   detail, and breaks two of the 61 shots by more than 5 points of drawn;
-#   1.6 breaks thirteen.
-# - STANDOFF is how close the camera may come to the proxy: at 0.55 it could be
+# - cutting the viewport to the keyframe exactly takes the damage out and
+#   leaves a viewfinder so tight that 61% of the reachable views are a clean,
+#   well-lit, empty wall. The frame is the capture's plus a MARGIN on each
+#   tangent: VIEW_MARGIN on the horizontal and VIEW_MARGIN_V on the vertical
+#   (which only binds on a portrait canvas, where the keyframe's own vertical
+#   decides). Swept 1.0/1.15/1.25/1.4/1.6 over the 40 walk poses and 20
+#   look-arounds: 1.4 keeps drawn at 95.9% on the walk poses (96.9% at 1.25)
+#   for 12% more detail, and breaks two of the 61 shots by more than 5 points
+#   of drawn; 1.6 breaks thirteen.
+# - STANDOFF is how close the camera may come to the proxy: at 0.55 it can be
 #   pressed against a wall and fill the frame with one blurred patch that the
-#   envelope scored as fully supported.
-# The fix-it interaction lane (Glasses-scratch/wb-final-recon/fixit/interaction):
-# - a look is no longer bounded by the capture at all, so the only thing left
-#   between a deliberate forward push and the room is this standoff, and at 1.0
-#   on a world whose median scene depth is 4.7 it was a fifth of the room. An
-#   independent review measured a 4.48-unit push travelling a median 0.94 units.
-#   0.6 is the value that keeps the 360x640 keyframes off the lens without
-#   turning the envelope into a cage; the blurred close-up it guards against is
-#   a MINOR complaint in that review and the cage is a blocking one.
+#   envelope scores as fully supported.
+# - a look is not bounded by the capture, so the only thing between a
+#   deliberate forward push and the room is this standoff; at 1.0 on a world
+#   whose median scene depth is 4.7 it is a fifth of the room (a 4.48-unit push
+#   travelled a median 0.94 units). 0.6 keeps the 360x640 keyframes off the
+#   lens without turning the envelope into a cage; the blurred close-up it
+#   guards against is a minor defect and the cage a blocking one.
 VIEW_MARGIN = 1.4
 VIEW_MARGIN_V = 1.15
 STANDOFF = 0.6
@@ -141,8 +136,7 @@ CRACK_FILL_PX = 4
 VOID_FOG = 0.35
 VOID_WIDE_FADE = 0.2
 
-# THE GEOMETRY-CONFIDENCE FADE (the fix-it confidence lane, CONFIDENCE.md §7,
-# and the orient lane that implemented it).
+# THE GEOMETRY-CONFIDENCE FADE.
 #
 # The appearance proxy carries one byte a vertex saying how well that vertex was
 # measured. Below CONFIDENCE_LO the photograph gives way entirely to the void
@@ -152,43 +146,41 @@ VOID_WIDE_FADE = 0.2
 #
 # THE BAND IS THE PHONE LEVEL'S AND IS NOT TRANSFERABLE. The channel's geometry
 # half is recomputed on each level's own triangles, so the decimated level the
-# page reads sits far below the archive level the confidence lane validated on
+# page reads sits far below the archive level the band was validated on
 # (median 0.34 against 0.71). Reusing the validated level-0 band (0.30-0.50)
 # here fades 19% of the opening view, including every shelf edge and candle
 # silhouette.
 #
-# The confidence lane recommended 40/255 to 62/255, its area-matched
-# carry-across of the validated level-0 0.20-0.30 point. Rendered, that band is
-# 22 bytes wide and the low-confidence geometry is a SCATTER of bad triangles
-# among good ones, so the fade came out as hard-edged confetti: it read as a
-# cut-out mask rather than as a fade (fig/crop_band_fan4x.png, panel 40_62).
-# Widened to 24-78, measured over the reviewer's nine viewpoints in one session
-# with everything else held fixed (ORIENT.md §3): the mean drawn-area cost is
-# unchanged (2.34% -> 2.39%), the FULLY faded set is smaller and better
-# validated than the recommendation's (below level-0 ~0.15 rather than ~0.20),
-# and the transition grades over 54 bytes instead of 22. 16-96 was also
-# measured: it looks no better and costs 35% more (3.22%).
+# 40/255 to 62/255 is the area-matched carry-across of the validated level-0
+# 0.20-0.30 point. Rendered, that band is 22 bytes wide and the low-confidence
+# geometry is a SCATTER of bad triangles among good ones, so the fade comes out
+# as hard-edged confetti: it reads as a cut-out mask rather than as a fade.
+# 24-78, measured over nine viewpoints in one session with everything else
+# held fixed: the mean drawn-area cost is unchanged (2.34% -> 2.39%), the FULLY
+# faded set is smaller and better validated than 40-62's (below level-0 ~0.15
+# rather than ~0.20), and the transition grades over 54 bytes instead of 22.
+# 16-96 looks no better and costs 35% more (3.22%).
 CONFIDENCE_LO = 24 / 255
 CONFIDENCE_HI = 78 / 255
 
-# THE HAZE: how strongly a place NO KEPT FRAME SAW is marked (the fix-it ux
-# lane, UX.md). The caption has always promised "a grey haze is a place no
-# kept frame saw"; until 2026-09-21 proxy with no evidence wrote alpha 0 and
-# came out as the background, which the last independent review measured at
-# luminance 10-18 against a background of 11-28 -- in the opening view the
-# "haze" was DARKER than the emptiness it was supposed to be distinguishable
-# from, and at +90 degrees 13.4% of the frame was real geometry nobody
-# photographed, indistinguishable from nothing at all.
+# THE HAZE: how strongly a place NO KEPT FRAME SAW is marked. The caption
+# promises "a grey haze is a place no kept frame saw". Drawn as alpha 0, proxy
+# with no evidence comes out as the background, measured at luminance 10-18
+# against a background of 11-28 -- in the opening view the "haze" is DARKER
+# than the emptiness it must be distinguishable from, and at +90 degrees 13.4%
+# of the frame is real geometry nobody photographed, indistinguishable from
+# nothing at all.
 #
-# It is now drawn as one flat colour with no texture, no hue and no detail at
+# So it is drawn as one flat colour with no texture, no hue and no detail at
 # any scale: plainly above the void, plainly below the room, and plainly not a
 # photograph, so it can never be mistaken for imagery of a place nobody saw.
 # The confidence fade mixes toward the same colour rather than toward the
-# background, which is what makes that fade visible at all -- the review's A/B
-# at `clo=0&chi=0` measured a median difference of 0.22 of an 8-bit level over
-# the whole frame, "a feature that does nothing".
+# background, which is what makes that fade visible at all -- mixed toward the
+# background, an A/B at `clo=0&chi=0` measures a median difference of 0.22 of
+# an 8-bit level over the whole frame.
 #
-# 0 restores the previous behaviour exactly. No measurement reads it: the
+# 0 turns the haze off: proxy with no evidence is alpha 0 and the fade mixes
+# toward the background. No measurement reads it: the
 # observed/unobserved mask (mode 2), the drawn fraction the opening and the
 # Best view are scored on (mode 3) and the fade's own cost (mode 11) all
 # return before the haze is drawn.
@@ -267,11 +259,8 @@ def build_appearance_config(store, world_id: str, session_id: str, *,
         "appearance_revision": appearance_revision,
         "build_id": manifest.get("build_id"),
         "quality": manifest.get("quality"),
-        # §6.6. The page's caption used to claim "with faces redacted"
-        # unconditionally, whatever the manifest said, because the config
-        # carried nothing about provenance at all. These three fields are
-        # what makes that sentence true of the artifact actually loaded, and
-        # what puts a visible marker on a research build.
+        # §6.6. Provenance of the loaded artifact: the caption's "with faces
+        # redacted" and the research-build marker read these three fields.
         "imagery_source": AP.imagery_source_of(manifest),
         "privacy_safe": AP.imagery_source_of(manifest) == IMAGERY_REDACTED,
         "redaction_effective": ((manifest.get("appearance_provenance") or {})
@@ -379,8 +368,8 @@ def build_appearance_page(store, world_id: str, session_id: str, *,
     `routes`, `extra_config` and `captions` exist for the AREA page and the room
     page of a session with areas (WORLD-BUILDER-COMPONENTS.md §4, §5.4): the four
     addresses an area page fetches, its additive `area` configuration, and the
-    captions. All three None -- every page of a session without components -- is
-    the page exactly as before."""
+    captions. All three None -- every page of a session without components --
+    leaves the page unchanged."""
     template_path = viewer_template_path()
     if not template_path.exists():
         raise AppearanceViewerUnavailable("the appearance viewer template is not installed")
