@@ -2,11 +2,9 @@
 r"""Remember which objects were in view, and when.
 
 Runs in a SEPARATE PROCESS from the Tower, like every other cartridge
-producer here. That is what makes this slice possible at all: Object
-Memory has been considered blocked on whether a module lifecycle can
-bound a synchronous model load, and a follower that tails a capture
-journal needs no module lifecycle, no load timeout and no module slot.
-The Tower's frame path pays nothing for this.
+producer here. A follower that tails a capture journal needs no module
+lifecycle, no load timeout and no module slot, and the Tower's frame path
+pays nothing for it.
 
 Frame sources:
 
@@ -112,14 +110,9 @@ from tower.object_memory.store import (  # noqa: E402
 )
 from tower.storage import read_raw_jsonl  # noqa: E402
 
-# THE SAME DEFAULT THE WEB PROCESS USES, IMPORTED RATHER THAN RESTATED.
-#
-# This line used to read `Path("data/object_memory")` while
-# `tower/config.py` defaulted its observation root to None, and the two
-# were never compared. The 2026-08-26 physical run is what that cost: a
-# real walk was remembered into this directory, and every HTTP request
-# answered 404 about it until an operator set an environment variable by
-# hand. One constant, in the settings module, imported here.
+# THE SAME DEFAULT THE WEB PROCESS USES, IMPORTED RATHER THAN RESTATED:
+# one constant, in `tower/config.py`, so the producer and the web process
+# cannot drift to different directories.
 DEFAULT_ROOT = Path(DEFAULT_OBSERVATION_ROOT)
 
 
@@ -150,18 +143,10 @@ def journal_frames(directory: Path):
 def loose_frames(directory: Path):
     """Frames from a directory of jpegs. Validates EAGERLY -- see below.
 
-    The split is the same one `world_build_session.py: follow_capture`
-    needed, and for the same reason. A `def` containing `yield` is a
-    generator function: calling it runs none of the body, so a check
-    written as the first statement does not fire until something advances
-    the generator -- which, in `main()`, is after the store and the model
-    have been built. There the equivalent ordering minted a permanent
-    empty world on every failed session.
-
-    Latent rather than live here: `ObservationStore.__init__` and
-    `engine.load()` create nothing on disk, so today this only wastes a
-    model load. Fixed anyway, because "it is harmless because of what two
-    other functions happen not to do" is not a property anyone maintains.
+    Not itself a generator: the empty-directory check must run when this
+    is called, before `main()` builds the store and loads the model. A
+    `yield` in this body would defer the check to the first iteration.
+    Same split as `world_build_session.py: follow_capture`.
     """
     paths = sorted(directory.glob("*.jpg"))
     if not paths:
@@ -172,7 +157,7 @@ def loose_frames(directory: Path):
 def _loose_frames(paths):
     for index, path in enumerate(paths):
         # received_at None, not a fabricated interval: this source has no
-        # clock, and the records must not pretend otherwise (Rule 3).
+        # clock, and the records must not pretend otherwise.
         yield path.read_bytes(), index, None, path.name
 
 
@@ -182,20 +167,12 @@ VERIFIERS = ("none", "owlv2")
 def _resolve_device(requested: str) -> str:
     """A requested device, as one this host actually has.
 
-    Same word and same rule as `TOWER_CV_DEVICE` and
-    `cartridge_runtime._resolve_device`: **auto downgrades, cuda does
-    not** -- an unnoticed downgrade turns a GPU deployment into a CPU one
-    with a GPU label on it, which is worse than a failure.
-
-    With one deliberate difference, and it is about what this process is.
-    The Lab's version RAISES when `cuda` is unavailable, and raising
-    there costs an experiment. Raising here costs a walk: this is a
-    producer a person started from their phone, mid-session, and a Tower
-    whose GPU disappeared under a driver update would answer their Start
-    by remembering nothing at all. So an explicit `cuda` that cannot be
-    honoured downgrades too -- and says so at WARNING, which is what
-    `OwlV2Verifier` already did for the same reason. `auto` is silent
-    about it because `auto` asked for whatever was there.
+    Same words as `TOWER_CV_DEVICE` and `cartridge_runtime._resolve_device`,
+    with one deliberate difference: that version RAISES when an explicit
+    `cuda` is unavailable, while this one downgrades to cpu and prints a
+    warning on stderr, because a producer that dies at start remembers
+    nothing for the whole walk. `auto` is silent about the downgrade
+    because `auto` asked for whatever was there.
     """
     if requested == "cpu":
         return "cpu"
@@ -244,14 +221,11 @@ def _build_verifier(name: str, device: str):
                 prompt_for=prompt_for,
             )
         except Exception as exc:  # noqa: BLE001
-            # SOFT, and only in the narrowing direction.
-            #
-            # `owlv2` became the default on 2026-08-29, which means a
-            # host that has never fetched the weights, or has no
-            # `transformers`, is now a host where the DEFAULT
-            # configuration can fail. A producer that died here would
-            # answer a wearer's Start with a walk that remembered
-            # nothing and a warning in a log they are not reading.
+            # SOFT, and only in the narrowing direction. The Tower's
+            # default verifier is `owlv2` (`config.DEFAULT_OBSERVATION_
+            # VERIFIER`), so a host without the weights or without
+            # `transformers` would otherwise answer every Start with a
+            # dead producer and a walk that remembered nothing.
             #
             # Running without it records two classes instead of
             # fourteen. `recordable_classes` in the report says which,
@@ -288,10 +262,9 @@ def _build_keyframe_store(root, keep_imagery: bool):
     model on this host" would send an operator to the wrong setting.
     """
     if not keep_imagery:
-        # Not a degraded configuration. It reproduces exactly the
-        # behaviour that shipped, where this cartridge persisted no
-        # pixels at all, and the report says `keep_imagery: false` so a
-        # run cannot be mistaken for one that tried and failed.
+        # Not a degraded configuration: the report says
+        # `keep_imagery: false` so a run cannot be mistaken for one that
+        # tried and failed.
         return None, None
 
     face_filter = FaceFilter()
@@ -312,7 +285,7 @@ def _build_keyframe_store(root, keep_imagery: bool):
 class _StopRequest:
     """A stop asked for from outside this process, and whether it arrived.
 
-    THE PROBLEM THIS SOLVES, AND IT WAS COSTING REAL MEMORIES.
+    WHY IT EXISTS.
 
     Pressing Stop (or Pause) in the app reaches
     `CartridgeSession._detach` -> `CaptureWorkerSupervisor.detach` ->
@@ -320,21 +293,15 @@ class _StopRequest:
     unwinding, no `finally`, no `atexit`. So `engine.release()` -- which
     is the ONLY thing that calls `finish()` on the open sightings, writes
     the ones that matured, and refreshes the duration, `frame_count` and
-    `best_*` of the ones already on disk -- never ran.
+    `best_*` of the ones already on disk -- would never run, and every
+    sighting still open at that instant would be lost. That favours
+    losing the MOST-seen objects: a laptop in view for the whole walk is
+    exactly the sighting that is still open at Stop.
 
-    What a wearer lost by pressing the button they were told to press:
-    every sighting still open at that instant. A laptop that had been in
-    view for the whole walk and was still in view when they stopped is
-    exactly the sighting that is open, so this was biased towards losing
-    the MOST-seen objects rather than the least.
-
-    The old detach grace was zero, and its comment said why: "nothing
-    SIGNALS the producer: it is a follower tailing a journal that is
-    still being written, so it has no reason to stop and never does. The
-    wait measured 5.01 seconds every single time." That was true, and it
-    was true because of this file, not because of the supervisor. Now
-    something does signal it, the wait ends when the work is done, and
-    the grace is worth having again.
+    Without a stop request, nothing signals the producer: it is a follower
+    tailing a journal that is still being written, so it has no reason to
+    stop and never does, and the supervisor's detach wait measured 5.01
+    seconds every time. With one, the wait ends when the work is done.
 
     WHY A FLAG AND NOT WORK IN THE HANDLER.
 
@@ -373,8 +340,8 @@ class _StopRequest:
             except (ValueError, OSError):
                 # Not the main thread, or a signal this platform will not
                 # let a process take. A producer that cannot be asked
-                # nicely still gets terminated; it just loses the flush,
-                # which is where this started.
+                # nicely is still terminated; it just loses the final
+                # flush.
                 continue
 
     def asked_for(self) -> bool:
@@ -409,12 +376,11 @@ class _StopRequest:
         wait for something that is never coming, and a parent that did
         write something has still said the only thing this pipe can mean.
 
-        NOT A PARKED READ, on Windows. This used to be a daemon thread
-        blocked in `os.read(0, 1)`, and that read is half of a deterministic
-        deadlock with any library whose load-time code touches descriptor 0
-        -- the OpenBLAS that `scipy.linalg` loads for the OWLv2 verifier was
-        the 2026-09-06 zero-frame walk. `tower/stdin_stop.py` has the
-        mechanism and asks the pipe instead of reading it.
+        NOT A PARKED READ, on Windows. A daemon thread blocked in
+        `os.read(0, 1)` is half of a deterministic deadlock with any
+        library whose load-time code touches descriptor 0 -- the OpenBLAS
+        that `scipy.linalg` loads for the OWLv2 verifier. `tower/stdin_stop.py`
+        has the mechanism and asks the pipe instead of reading it.
         """
 
         def closed() -> None:
@@ -453,50 +419,32 @@ class _StopRequest:
 def _prewarm_native_libraries() -> None:
     """Load the OpenBLAS-backed native stack BEFORE any watcher thread runs.
 
-    CORRECTED ON 2026-09-23. The account below blames the Windows loader
-    lock and a DLL that spawns threads; the mechanism, reproduced on demand,
-    is the stop watcher's parked `os.read(0, 1)` holding descriptor 0 while
-    OpenBLAS's libgfortran touches descriptor 0 at load. The fix that covers
-    every library, not only this one, is `tower/stdin_stop.py`. This warm is
-    kept as belt and braces; see `tower/native_prewarm.py`.
+    THE ZERO-FRAME DEADLOCK THIS PREVENTS. A physical run recorded a
+    healthy capture (244 frames, ~21 s) and this producer, attached
+    `from-start`, observed NONE of them: `frames_observed: 0`. It was
+    deadlocked inside its own model load and never reached the frame loop
+    (0% CPU, forever), and it could not exit at Stop.
 
-    THE ZERO-FRAME DEADLOCK, AND WHY THIS ONE LINE PREVENTED IT.
+    The mechanism, reproduced on demand: the stop watcher's parked
+    `os.read(0, 1)` holds descriptor 0 while OpenBLAS's libgfortran
+    touches descriptor 0 at load. The main thread is inside
+    `transformers` loading the OWLv2 verifier, which imports
+    `scipy.linalg`, which loads `libscipy_openblas*.dll`. The fix that
+    covers every library, not only this one, is `tower/stdin_stop.py`;
+    this warm is kept as belt and braces (see `tower/native_prewarm.py`,
+    which holds the body, shared with the World Builder finisher).
 
-    The physical run on 2026-09-06 recorded a healthy capture -- 244
-    frames, ~21 s -- and this producer, attached `from-start`, observed
-    NONE of them. It was not slow and it was not misattached: it was
-    deadlocked inside its own model load and never reached the frame
-    loop. `frames_observed: 0`, then killed at Stop because it could not
-    exit.
+    The subprocess tests could not see it: they pin `--verifier none` to
+    avoid downloading weights, so nothing loaded transformers/scipy in a
+    spawned worker while the stdin watcher was armed. Production defaults
+    to `owlv2`.
 
-    Reproduced deterministically on this host and dissected with py-spy
-    (`--native`). Two threads, one lock:
-
-      * the main thread is inside `transformers` loading the OWLv2
-        verifier, which imports `scipy.linalg`, which loads
-        `libscipy_openblas*.dll`. OpenBLAS spins up its thread pool in
-        `DllMain`, so the load sits under the Windows loader lock
-        (`LdrpDrainWorkQueue` / `ZwWaitForAlertByThreadId`);
-      * the `object-memory-stop-watch` daemon thread is blocked in a
-        synchronous `ReadFile` on the stdin pipe the supervisor holds
-        (`_StopRequest._watch_stdin`).
-
-    A thread parked in a blocking pipe read while the loader is bringing
-    up a DLL that creates threads is a documented Windows loader-lock
-    hazard, and here it is a hard hang: 0% CPU, forever. It is invisible
-    to the whole test suite because every subprocess test pins
-    `--verifier none` to avoid downloading weights -- so nothing ever
-    loaded transformers/scipy in a spawned worker while the stdin watcher
-    was armed. Production defaults to `owlv2`, so production hit it and
-    the tests could not.
-
-    The fix is ordering, not luck. Loading `scipy.linalg` HERE, on the
-    main thread, before `_StopRequest` arms the watcher, brings OpenBLAS
-    up single-threaded with no pipe-reader parked behind the loader. When
-    `transformers` imports `scipy.linalg` later it is already in
-    `sys.modules` and no DLL work happens -- so the watcher can stay armed
-    for the whole run, including the load, and a Stop pressed during the
-    ~8 s load is still honoured.
+    Loading `scipy.linalg` HERE, on the main thread, before `_StopRequest`
+    arms the watcher, brings OpenBLAS up with no pipe-reader parked behind
+    the load. When `transformers` imports `scipy.linalg` later it is
+    already in `sys.modules` and no DLL work happens -- so the watcher can
+    stay armed for the whole run, including the load, and a Stop pressed
+    during the ~8 s load is still honoured.
 
     Contained: a host without `scipy` cannot load `owlv2` either
     (`transformers` needs it), so it will run with no verifier regardless,
@@ -504,11 +452,9 @@ def _prewarm_native_libraries() -> None:
     fails here is a warning, never a refusal to start -- warming a library
     must not be the thing that stops a wearer's session from beginning.
     """
-    # The body moved to `tower/native_prewarm.py` on 2026-09-22, when the
-    # SAME deadlock was found in World Builder's recovery finisher. The fix
-    # had been written here, where the first bug was, so the second
-    # subsystem inherited the bug instead of the fix. This function stays as
-    # the name the tests and the call site below already use.
+    # The body lives in `tower/native_prewarm.py`, shared with World
+    # Builder's recovery finisher. This function stays as the name the
+    # tests and the call site below already use.
     prewarm_object_memory()
 
 
@@ -649,10 +595,9 @@ def main(argv=None) -> int:
     if len(chosen) != 1:
         parser.error("exactly one of --frames or --follow-capture is required")
 
-    # BEFORE the stdin watcher is armed. It was the fix for the deadlock that
-    # made a real walk observe zero frames; since 2026-09-23 the watcher
-    # itself no longer parks a read (`tower/stdin_stop.py`), which is the
-    # fix, and this is kept as belt and braces. See
+    # BEFORE the stdin watcher is armed. The watcher itself does not park a
+    # read (`tower/stdin_stop.py`), which is the real fix for the zero-frame
+    # deadlock; this is kept as belt and braces. See
     # `_prewarm_native_libraries`.
     _prewarm_native_libraries()
 
@@ -744,12 +689,12 @@ def main(argv=None) -> int:
     # ONE LINE, AT START, RATHER THAN A REFUSAL PER SIGHTING.
     #
     # A Tower with no face-detection weights writes no keyframes at all,
-    # by design -- `KeyframeStore.write` fails closed. The failure mode
-    # that matters is not the refusal, it is the SILENCE: a whole walk of
-    # them, counted in `keyframes_refused` at the end and visible to
-    # nobody in between, on a run whose operator believes their memories
-    # are keeping their pictures. So the condition is stated once, before
-    # the first frame, in the same place the device and verifier are.
+    # by design -- `KeyframeStore.write` fails closed. What matters is the
+    # SILENCE: a whole walk of refusals, counted in `keyframes_refused` at
+    # the end and visible to nobody in between, on a run whose operator
+    # believes their memories are keeping their pictures. So the condition
+    # is stated once, before the first frame, in the same place the device
+    # and verifier are.
     keyframes, face_filter = _build_keyframe_store(args.root, args.keep_imagery)
     engine = ObjectMemoryEngine(
         store,
@@ -850,11 +795,10 @@ def main(argv=None) -> int:
     # using `subprocess.run(capture_output=True)` -- and the watcher sees
     # EOF before the first frame, the run ends immediately, and the
     # report is a wall of zeroes with `stopped_because: stdin-closed`
-    # buried in it. That happened while writing this, cost twenty
-    # minutes, and the fix is not to guess at the cause in code -- a
-    # supervisor closing the pipe promptly is a legitimate stop that
-    # looks identical -- but to NAME the likely reason once, here, where
-    # somebody is already reading.
+    # buried in it. The cause is not guessed at in code -- a supervisor
+    # closing the pipe promptly is a legitimate stop that looks identical
+    # -- but the likely reason is NAMED once, here, where somebody is
+    # already reading.
     if report["stopped_because"] == "stdin-closed" and engine.frames_observed == 0:
         print(
             "[Tower][ObjectMemory] this run ended before it read a single "
@@ -923,15 +867,12 @@ def _run_and_exit() -> None:
     teardown, not anything this cartridge computes.
 
     `os._exit` skips that finalization, and it must be reached on EVERY exit,
-    not only success. The watcher is armed (line ~669) BEFORE `engine.load()`
+    not only success. The watcher is armed in `main` BEFORE `engine.load()`
     builds the CUDA context, so an exception from `engine.load()` (a CUDA
     OOM, a weights download that fails -- ordinary errors), from the frame
     loop, or from building the report escapes into the SAME finalization with
     the SAME blocked watcher, and the crash then masks the real error behind
-    exit 3221225477. An earlier version of this function only guarded the
-    success path and claimed errors "happen before a model or a watcher
-    exists"; a reviewer showed that was false. So every ending goes through
-    `os._exit` here.
+    exit 3221225477. So every ending goes through `os._exit` here.
 
     The error is not lost. A real exception's traceback is printed to stderr
     -- which the Tower console inherits -- before the hard exit, and the code
