@@ -84,6 +84,20 @@ async def _handle_frame_message(
     metrics: SessionMetrics | None,
     sender: "_ConnectionSender",
 ) -> None:
+    """Decode one `frame` message, run it through the CV module, reply.
+
+    Parses and decodes the JPEG (a bad frame gets `frame_error`
+    `invalid_frame`). The raw bytes then go to `module_container.process`.
+    A frame-level refusal or failure, or an unavailable module, is answered
+    with `frame_error` and counted in the session metrics; otherwise the
+    result is sent as `frame_result`, with the optional `mean_intensity`,
+    `metrics` and `cv_lab` provenance fields.
+
+    Every path that decoded a frame ends in `_fan_out_frame`, after the reply,
+    so the CV module's verdict never decides whether the recorder and the live
+    cartridges see the frame. A client that disconnects before the reply
+    raises `WebSocketDisconnect` to the caller.
+    """
     receive_start = time.perf_counter()
     try:
         frame = parse_and_decode_frame(message)
@@ -831,6 +845,12 @@ async def _start_capture(websocket, owner) -> None:
     the session boundary already exists on the wire, and V1 deliberately
     makes no protocol change.
 
+    For each frame observer (the recorder): stops a recording left open,
+    starts a new one (continuing a resumable capture when there is one), then
+    tells the capture-worker supervisor, off the event loop, that a capture
+    with that id and directory is open, and tells the cartridges. A recorder
+    that fails to start is logged and skipped; the others still start.
+
     A capture id is minted HERE, in this process, at this moment: the id
     does not exist until the phone connects, so nothing could be launched
     in advance holding it. The process that mints it hands it over.
@@ -1041,6 +1061,20 @@ def _notify_captures_closed(websocket, closed_ids) -> None:
 
 @router.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket) -> None:
+    """The single `/ws` receive loop: one task per phone connection.
+
+    Accepts the socket, then reads JSON messages until the socket closes.
+    `ping` is answered with `pong`; `frame` goes to `_handle_frame_message`;
+    `stream_start` opens a metrics window, yields background work, starts the
+    recordings and tells the cartridges; `stream_stop` finalizes the window and
+    closes the recordings and cartridge streams; CV Lab and result-channel
+    message types go to `cv_lab_ws.handle` and `results_ws.handle`. Malformed
+    messages are logged and skipped; an unknown type gets a `protocol_error`.
+
+    On ANY exit (the `finally`) it closes the result channel and stops the
+    recordings this connection owns. If this was the last connected client it
+    also arms the World Builder follow-up and stops the cartridge sessions.
+    """
     session = websocket.app.state.session
     active_measurement: SessionMetrics | None = None
     sender = _ConnectionSender(websocket)
