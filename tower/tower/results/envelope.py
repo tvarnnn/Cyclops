@@ -26,10 +26,10 @@ def json_safe(value):
     bare `NaN` / `Infinity` because `allow_nan` defaults to True, and
     Starlette's `send_json` takes that default -- so ONE non-finite float
     anywhere in a payload makes the ENTIRE message unparseable by a strict
-    decoder. Swift's JSONDecoder is strict. An adversarial review put a
-    `NaN` reprojection RMS from a calibration run on a real socket and
-    watched a conforming parser reject the whole frame: not one field
-    degraded, every `cartridge_result` for that session lost.
+    decoder. Swift's JSONDecoder is strict. A `NaN` reprojection RMS from
+    a calibration run, sent on a real socket, made a conforming parser
+    reject the whole frame: not one field degraded, every
+    `cartridge_result` for that session lost.
 
     Applied at the envelope boundary rather than at each producer, because
     the failure is catastrophic and total, and the next cartridge must not
