@@ -871,9 +871,10 @@ final class TowerWorldBuilderClient: WorldBuilderClient {
         var recentWorld: WorldRecentReference?
         /// `tracking.recovery`, or `nil`.
         var recovery: WorldRecoveryReport? = nil
-        /// `guidance.coverage`, or `nil`: absent, `null` or refused.
+        /// `guidance.coverage`, or `nil`: absent in an older saved world,
+        /// `null` before a landing, or refused by the decoder.
         var coverage: WorldCoverage? = nil
-        /// `guidance.coverage` was `null`: on, and no landing yet.
+        /// `guidance.coverage` was `null`: no qualifying landing yet.
         var coverageNotYet = false
         /// `progress.keyframes_accepted`, or `nil`.
         var keyframesAccepted: Int? = nil

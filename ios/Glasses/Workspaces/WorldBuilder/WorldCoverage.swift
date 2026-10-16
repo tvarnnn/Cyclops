@@ -24,9 +24,8 @@ import Foundation
 
 /// What `guidance.coverage` said, read fail-closed.
 nonisolated enum WorldCoverageStatus: Equatable, Sendable {
-    /// No `guidance` object, or one without a `coverage` key: the Tower's
-    /// switch is off (the live Tower today) or no session is selected. The
-    /// panel is exactly today's.
+    /// No `guidance` object or `coverage` key: no selected session, an older
+    /// saved world, or an incomplete payload. Draw no coverage claim.
     case absent
     /// `coverage: null`: no qualifying landed solve has been merged yet.
     case notYet
@@ -39,7 +38,9 @@ nonisolated enum WorldCoverageStatus: Equatable, Sendable {
         return nil
     }
 
-    /// `payload.guidance.coverage` of a `world_builder.status/2026-09-10` payload.
+    /// Decodes `payload.guidance.coverage` from one status payload.
+    /// Missing fields stay absent for older saved worlds; `null` means no
+    /// landing yet, and a present malformed block is refused rather than drawn.
     init(payload: [String: Any]) {
         guard let guidance = payload["guidance"] as? [String: Any], guidance.keys.contains("coverage") else {
             self = .absent

@@ -397,7 +397,7 @@ final class WorldBuilderViewModel: ObservableObject {
     var coverage: WorldCoverageReceipt? { walkReport.walk == nil ? nil : walkReport.value.coverage }
 
     /// The capture dial's "before the first landing": the walk's own report
-    /// says `coverage: null` (the Tower's switch on, no landing yet).
+    /// says `coverage: null` because no qualifying landing has merged yet.
     var coverageAwaited: Bool { walkReport.walk != nil && coverage == nil && walkReport.value.coverageNotYet }
 
     /// The live relocalizer's line, republished from the client.
