@@ -3,7 +3,7 @@ import logging
 import os
 import threading
 import time
-from pathlib import Path  # noqa: F401  (used by _replace_locked's annotation)
+from pathlib import Path
 
 from tower.confidence import Confidence
 from tower.object_memory.keyframes import KeyframeStore
@@ -20,9 +20,8 @@ MANIFEST_FILENAME = "manifest.json"
 TEMP_SUFFIX = ".jsonl.tmp"
 MANIFEST_SCHEMA_VERSION = 1
 
-# The window every producer run to date was actually invoked with, and
-# both CLIs' default. It is also what a store with no manifest is read
-# under -- see _persisted_retention_seconds_locked.
+# The default retention window of both CLIs. It is also what a store with
+# no manifest is read under -- see _persisted_retention_seconds_locked.
 DEFAULT_RETENTION_DAYS = 30.0
 DEFAULT_RETENTION_SECONDS = DEFAULT_RETENTION_DAYS * 86400.0
 
@@ -47,25 +46,23 @@ class ObservationStore:
     small, and the canonical-memory research explicitly sequences SQLite +
     sqlite-vec behind a measured need. Rewriting this file wholesale during
     prune/purge/upgrade is acceptable precisely because the file is expected
-    to stay small; that assumption is the trigger to revisit, and Task 8
-    measures it.
+    to stay small; that assumption is the trigger to revisit.
 
     RETENTION IS THE PRODUCER'S PROMISE, NOT THE READER'S CHOICE.
 
-    `retention_seconds` here used to be the only word on the subject, so
-    whoever opened the store last decided how far back it could see: a
-    reader passing `--retention-days 3650` at a store written under the
-    30-day default was served a 40-day-old record in full, and retention
-    under 06-PRIVACY-DATA.md stopped being a promise at all. The window
-    the store was WRITTEN under is now recorded in a small manifest
+    The window the store was WRITTEN under is recorded in a small manifest
     beside the data, and every read and prune clamps to
     min(persisted, requested). A caller may narrow the window; nothing a
-    caller passes can widen it.
+    caller passes can widen it. Otherwise whoever opened the store last
+    would decide how far back it could see: a reader passing
+    `--retention-days 3650` at a store written under the 30-day default
+    would be served a 40-day-old record in full, and retention under
+    06-PRIVACY-DATA.md would stop being a promise at all.
 
-    RETENTION NOW GOVERNS PICTURES AS WELL AS RECORDS.
+    RETENTION GOVERNS PICTURES AS WELL AS RECORDS.
 
-    Since `keyframes.py`, a record may have a small filtered crop of its
-    own at `<root>/keyframes/<observation_id>.jpg`. That file is only
+    A record may have a small filtered crop of its own at
+    `<root>/keyframes/<observation_id>.jpg`. That file is only
     honestly "governed by Object Memory's retention" if the two things
     that enforce retention -- `prune_expired` and `purge` -- reach it, so
     both do.
@@ -77,10 +74,8 @@ class ObservationStore:
     second path to configure, no caller who can forget to pass it, and no
     configuration in which records are pruned while their pictures are
     not. A store constructed against a root with no `keyframes/`
-    directory -- every store written before this existed, and every test
-    that never writes one -- finds nothing to prune and does nothing,
-    which is why the constructor parameter exists only for a test that
-    wants to observe the calls.
+    directory finds nothing to prune and does nothing. The constructor
+    parameter exists only for a test that wants to observe the calls.
 
     Rewrites (prune, purge's cleanup) operate on raw JSON dicts, not on
     parsed ObjectObservation instances. That is deliberate: round-tripping
@@ -111,16 +106,15 @@ class ObservationStore:
         # and this is the copy that matters: the filter guards the
         # engine's path, while this guards the disk. An `append()` from
         # anywhere else -- a script, a future consumer, a careless
-        # refactor -- used to write `person` straight through a filter it
-        # never passed. Defaults CLOSED to PERSISTED_CLASSES; a caller
+        # refactor -- would otherwise write `person` straight through a
+        # filter it never passed. Defaults CLOSED to PERSISTED_CLASSES; a caller
         # running an in-process RelevancePolicy(allowed_classes=...) has
         # to hand the store the same list, which keeps that widening in
         # one visible place instead of implicit in what nobody checked.
         self._allowed_classes = frozenset(allowed_classes)
         # Injected so a READ can apply the retention cutoff without every
         # caller having to pass the time in. prune_expired keeps its
-        # explicit `now`, so the deterministic tests it was written for
-        # read exactly as before; this only supplies a default.
+        # explicit `now`; this only supplies a default.
         self._clock = clock
         # Derived from this store's own root rather than injected. See
         # the class docstring: the one way to leave orphaned pictures
@@ -148,8 +142,7 @@ class ObservationStore:
         self._temp_path = self._path.with_suffix(TEMP_SUFFIX)
         self._manifest_path = self._directory / MANIFEST_FILENAME
         # Guards append (called from the live frame path) against purge
-        # and prune_expired (called from FastAPI's threadpool per a later
-        # task): both of the latter unlink/replace the backing file out
+        # and prune_expired (called from FastAPI's threadpool): both of the latter unlink/replace the backing file out
         # from under a concurrent append, which raises PermissionError on
         # Windows and can silently lose the appended line on POSIX.
         # Non-reentrant by design: locked public methods never call each
@@ -203,9 +196,9 @@ class ObservationStore:
         knows. Both raw scores stay exactly as written, so the record
         remains auditable back to the sighting that created it.
 
-        This is not the tautology the resample review warned about: that
-        was raising `min_score` to MEDIUM_CONFIDENCE_MAX, which would
-        make every record HIGH by construction. Here the label follows
+        This is not a tautology: raising `min_score` to
+        MEDIUM_CONFIDENCE_MAX would make every record HIGH by
+        construction. Here the label follows
         evidence actually observed, so a sighting the detector never saw
         clearly keeps its honest label.
 
@@ -299,11 +292,11 @@ class ObservationStore:
     def update_best_score(
         self, object_class: str, observed_at: float, best_score: float
     ) -> bool:
-        """The narrow form of `update_sighting`, kept because it is used.
+        """The narrow form of `update_sighting`: a stronger look at the same sighting.
 
-        Not a deprecation shim: "a stronger look at the same sighting"
-        is a real thing to say on its own, and every caller that only has
-        that to say should not have to pass six Nones to say it.
+        The engine calls `update_sighting`; this wrapper is the shape the
+        store tests pin. A caller that only has "a stronger look" to say
+        should not have to pass six Nones to say it.
         """
         return self.update_sighting(
             object_class, observed_at, best_score=best_score
@@ -415,13 +408,12 @@ class ObservationStore:
             "created_at": (existing or {}).get("created_at", self._clock()),
         }
         # ATOMIC, and the reason is the one direction retention must never
-        # move. This was a bare `open("w")`, so a producer killed between
-        # the truncate and the write left a zero-byte or partial manifest
-        # -- which `_persisted_retention_seconds_locked` reads as
-        # unreadable and falls back to the 30-day default. A store written
-        # under a 3-day promise would silently become a 30-day one, and
-        # the next append would persist that. Pause and Stop terminate the
-        # producer promptly, so this is not a remote possibility.
+        # move. A truncated manifest reads as unreadable in
+        # `_persisted_retention_seconds_locked` and falls back to the
+        # 30-day default: a store written under a 3-day promise would
+        # silently become a 30-day one, and the next append would persist
+        # that. Pause and Stop terminate the producer promptly, so a kill
+        # between the truncate and the write is a real case.
         temp = self._manifest_path.with_suffix(".json.tmp")
         try:
             with temp.open("w", encoding="utf-8") as handle:
@@ -446,10 +438,10 @@ class ObservationStore:
         raw_records = []
         corrupt = 0
         # `errors="replace"`, not strict. A single invalid byte anywhere
-        # in the file used to raise `UnicodeDecodeError` out of every read
+        # in the file would raise `UnicodeDecodeError` out of every read
         # path -- including `purge()`, so the one operation that could
-        # have cleaned it up was the one that could not run, and the HTTP
-        # routes answered 500. Nothing this cartridge writes can produce
+        # clean it up would be the one that could not run, and the HTTP
+        # routes would answer 500. Nothing this cartridge writes can produce
         # such a byte; a truncated write, a filesystem fault or a restored
         # backup can. Replacing it turns a bricked store into one corrupt
         # line, which the loop below already knows how to skip and
@@ -478,20 +470,19 @@ class ObservationStore:
         its message names the threat model exactly: "an `append()` from
         anywhere else -- a script, a future consumer, a careless
         refactor". That guard protects the file. It does not protect the
-        WIRE, and until 2026-08-27 nothing did.
+        WIRE.
 
         A record that reached the file by any route other than `append`
         -- a build from before the guard existed, an out-of-tree script, a
-        restored backup -- was parsed and served in full: `object_class:
-        "person"`, a normalised bounding box, and a `session_id` plus
+        restored backup -- is not served: its `object_class` (say
+        "person"), a normalised bounding box, and a `session_id` plus
         `frame_seq` that resolve to the original first-person JPEG through
-        `/frame`. The payload said `recordable: false` while handing all of
-        it over.
+        `/frame` must not leave the store.
 
         `person` is not a tier and not a threshold. It is a separate
         constant, checked first, that no model can reach past -- and a
-        refusal that only covers the writer is not that. Symmetric now:
-        what this store may not persist, it also may not serve.
+        refusal that only covers the writer is not that. What this store
+        may not persist, it also may not serve.
 
         Dropped silently rather than raised, for the same reason a schema
         mismatch is: one bad record must not make the whole store
@@ -633,20 +624,14 @@ class ObservationStore:
             # longer exist, and a store that is asked to keep forever
             # after a purge must not still be bound by a window the
             # deleted records were written under.
-            # THE RECORDS' HALF REPORTS ITS FAILURES TOO, and it did not.
             #
-            # The keyframe half returned `(removed, retained)` while this
-            # one was a bare `unlink(missing_ok=True)`. On Windows a
-            # reader holding `observations.jsonl` open makes that raise
-            # `PermissionError` straight out of `purge()` -- so the one
-            # command a wearer's erasure request actually runs answered a
-            # traceback rather than the structured "here is what I could
-            # not delete" this docstring promises. A reviewer found it.
-            #
-            # Each artifact is attempted independently: one locked file
-            # must not stop the others being removed, because a partial
-            # deletion that continues is strictly better than a partial
-            # deletion that stops.
+            # Each artifact is attempted independently: on Windows a
+            # reader holding `observations.jsonl` open makes `unlink`
+            # raise `PermissionError`, which must not stop the others
+            # being removed (a partial deletion that continues is strictly
+            # better than one that stops) nor escape `purge()` as a
+            # traceback; what survives is reported in
+            # `last_purge_retained` instead of raised.
             for artifact in (
                 self._path,
                 self._temp_path,
@@ -667,21 +652,19 @@ class ObservationStore:
     def prune_expired(self, now: float | None = None) -> int:
         """Delete expired records from disk. Reads already refuse to serve them.
 
-        Still required, and not merely tidiness: read-time filtering stops
-        expired data being SERVED, while 06-PRIVACY-DATA.md wants it gone.
-        `now` stays explicit so the deterministic tests keep working, and
-        defaults to the store's clock for a caller with nothing to say.
+        Read-time filtering stops expired data being SERVED, while
+        06-PRIVACY-DATA.md wants it gone. `now` is explicit for
+        deterministic callers, and defaults to the store's clock.
 
         Prunes on the CLAMPED window, exactly as reads filter on it, so
         the two can never disagree about what retention means.
 
-        AND IT PRUNES THE PICTURES. A record's owned keyframe is deleted
+        IT PRUNES THE PICTURES TOO. A record's owned keyframe is deleted
         with the record, which is what makes `imagery_retention:
         "object-memory"` a promise rather than a label. `retention is
-        None` still short-circuits, keyframes included: an unbounded
-        store expires nothing, so there is nothing for either half to do,
-        and the byte-for-byte "leaves everything untouched" behaviour
-        this method has always had is unchanged.
+        None` short-circuits, keyframes included: an unbounded store
+        expires nothing, so there is nothing for either half to do and
+        everything is left untouched.
         """
         if now is None:
             now = self._clock()
