@@ -181,8 +181,9 @@ class GeometryBackend(ABC):
     #
     # estimate_window() is a from-scratch solve. Measured on this host
     # (classical backend only, images already in RAM, 480x360 synthetic
-    # strafe), one solve costs 6.89 ms/kf at 4 keyframes rising to
-    # 10.02 ms/kf at 64 (27.6 -> 641.2 ms): roughly O(N^1.2). So a walk
+    # strafe), one solve costs (total, per keyframe): 4 kf 27.6 ms /
+    # 6.89 ms, 8 kf 54.9 / 6.87, 16 kf 133.2 / 8.33, 32 kf 302.7 / 9.46,
+    # 64 kf 641.2 / 10.02: roughly O(N^1.2). So a walk
     # rebuilt every k keyframes by re-solving pays O(N^2/k), and asking for
     # more live updates costs more. Total backend work over a walk at
     # --rebuild-every 4, measured the same way, re-solving vs extending:
