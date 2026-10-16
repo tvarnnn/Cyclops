@@ -508,9 +508,10 @@ class CVLab:
     def process(self, raw_bytes: bytes):
         """Run the armed experiment over one frame, or refuse it legibly.
 
-        When the Lab is not `running` (or has no experiment) the frame is counted
-        as refused and a `FrameProcessingError` carries the state's refusal reason
-        and message. Otherwise it tells the experiment whether to build a preview,
+        Every frame is counted as offered. When the Lab is not `running` (or has
+        no experiment) the frame is recorded as refused against the current
+        run, if there is one, and a `FrameProcessingError` carries the state's
+        refusal reason and message. Otherwise it tells the experiment whether to build a preview,
         runs it on the raw bytes, records the result against the run, builds the
         frame's provenance, and returns the experiment's result. An experiment
         that refuses the frame with `FrameProcessingError` leaves the run going;

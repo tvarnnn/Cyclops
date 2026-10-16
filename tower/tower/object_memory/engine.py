@@ -286,7 +286,9 @@ class ObjectMemoryEngine:
         the sighting once it is mature or verified, asks for a verification, or
         refreshes one already written. `received_at` is the capture journal's
         receipt time; without it the processing clock is used. Returns the
-        `ObjectObservation` records written on this call.
+        `ObjectObservation` records written for this frame's detections;
+        records written while settling stale sightings or arrived
+        verification verdicts are not in the returned list.
         """
         frame = self._decode(raw_bytes)
         if frame is None:
