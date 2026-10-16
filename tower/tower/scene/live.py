@@ -155,6 +155,10 @@ class SceneLive(LiveSession):
         self._watchers: dict = {}
         # Whether an operator started this by hand. Cleared by `stop()`.
         self._operator_hold = False
+        # Bumped by every operator `start()`. A demand stop records it
+        # when it decides, so a start that lands after the decision is
+        # seen as newer and is neither cleared nor left stopped.
+        self._hold_epoch = 0
 
     def latest(self):
         """The most recent `SceneState`, or None, with when it was taken.
@@ -189,6 +193,7 @@ class SceneLive(LiveSession):
         """The operator's Start. Runs at once, stream or no stream."""
         with self._demand:
             self._operator_hold = True
+            self._hold_epoch += 1
         return super().start(resume_paused=resume_paused)
 
     def stop(self) -> dict:
@@ -216,8 +221,9 @@ class SceneLive(LiveSession):
             was_streaming = owner in self._open_streams
             self._open_streams.discard(owner)
             last_one_out = was_streaming and not self._open_streams
+            epoch = self._hold_epoch
         if last_one_out:
-            self._stop_then_reconcile()
+            self._stop_then_reconcile(epoch)
 
     def watcher_joined(self, token, *, owner=None) -> None:
         """A client subscribed to the live scene. Run if a stream is open."""
@@ -234,8 +240,9 @@ class SceneLive(LiveSession):
         with self._demand:
             self._watchers.pop(token, None)
             unwatched = not self._operator_hold and not self._watchers
+            epoch = self._hold_epoch
         if unwatched:
-            self._stop_then_reconcile()
+            self._stop_then_reconcile(epoch)
 
     def watchers_left(self, *, owner) -> None:
         """A connection closed; every watcher it held leaves with it."""
@@ -243,13 +250,26 @@ class SceneLive(LiveSession):
             for token in [t for t, o in self._watchers.items() if o == owner]:
                 del self._watchers[token]
             unwatched = not self._operator_hold and not self._watchers
+            epoch = self._hold_epoch
         if unwatched:
-            self._stop_then_reconcile()
+            self._stop_then_reconcile(epoch)
 
-    def _stop_then_reconcile(self) -> None:
-        """Stop OUTSIDE the demand lock, then re-ask the facts under it."""
-        self.stop()
+    def _stop_then_reconcile(self, epoch: int) -> None:
+        """Stop OUTSIDE the demand lock, then re-ask the facts under it.
+
+        `epoch` is `_hold_epoch` as it was when the stop was decided. A
+        hold that existed then is released with the session; an operator
+        `start()` since then is newer than the decision and wins: before
+        the stop it cancels it, and during the stop it is restarted.
+        """
         with self._demand:
+            if self._hold_epoch != epoch:
+                return
+            self._operator_hold = False
+        super().stop()
+        with self._demand:
+            if self._operator_hold and self._hold_epoch != epoch:
+                super().start(resume_paused=False)
             self._reconcile()
 
     def _reconcile(self) -> None:
