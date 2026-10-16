@@ -43,6 +43,10 @@ import numpy as np  # noqa: E402
 # A sighting survives this long a dropout before it is treated as a new
 # one. Three seconds is roughly 36 delivered frames at the measured
 # ~12 fps, and it is long enough to cover a head turn away and back.
+# Equal to object_memory.sightings.GAP_SECONDS today, but deliberately not
+# imported: this value defines which runs the labelled GOLDEN ranks in
+# open_vocab_verifier_bench refer to, so it must not move when the shipped
+# policy is tuned.
 GAP_SECONDS = 3.0
 
 
