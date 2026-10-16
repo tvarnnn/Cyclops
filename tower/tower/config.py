@@ -533,8 +533,9 @@ class Settings:
     # Anything that ends that child first -- a Tower shutdown, a machine sleep,
     # a crash, the supervisor's thirty-second stop grace -- discards the work,
     # because `scripts/world_finalize.py` rebuilds only the sparse derived
-    # tree and the serving path never writes and never spawns. This setting
-    # has the Tower finish it at startup.
+    # tree and the serving path never writes and never spawns (a Tower shut
+    # down eight minutes into a build recovered nothing on the next start).
+    # This setting has the Tower finish it at startup.
     #
     # ON is safe here in a way it would not be for a general rebuild, and the
     # reason is what `scripts/world_finish_pending.py` counts as owed. It takes
@@ -680,7 +681,8 @@ def _observation_root(enabled: bool) -> str | None:
 # must not happen is accepting any string and treating "not none" as "a
 # verifier exists": `TOWER_OBSERVATION_VERIFIER=owvl2` (a transposition)
 # would tell the read routes that fourteen classes were recordable AND
-# hand the producer a name it refuses, killing it at spawn.
+# hand the producer a name it refuses, killing it at spawn: a Tower
+# advertising twelve classes it had just made unrecordable.
 #
 # `scripts/object_memory_session.py` still validates its own argument;
 # these two lists agreeing is checked by

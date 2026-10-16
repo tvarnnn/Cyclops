@@ -297,7 +297,8 @@ def _world_finish_spec(settings: Settings) -> WorkerSpec | None:
     rebuilds only the sparse derived tree; the serving path in
     `tower/results/world_builder*.py` performs no write and spawns no
     process, so it never generates on demand; this chore is what reconciles
-    owed work at startup.
+    owed work at startup (a Tower shut down eight minutes into a build
+    otherwise recovered nothing on the next start).
 
     AN ARGV, NOT AN IMPORT, for exactly the reason `_world_build_spec`
     above gives at length: `test_shared_code_does_not_import_a_cartridge`

@@ -8,8 +8,9 @@ first two. Object Memory had the same shape: a real Ray-Ban walk of 2,203
 frames and 64 remembered observations existed only because a human found the
 capture directory and started a producer against it in another terminal.
 
-A supervisor is given a LIST of specs, each entry named and optionally GATED
-by a predicate the wiring point supplies. The list is still argv and strings.
+A supervisor is given a LIST of specs (it used to run exactly ONE, and that
+slot was taken), each entry named and optionally GATED by a predicate the
+wiring point supplies. The list is still argv and strings.
 
 **This module is deliberately cartridge-blind.** It knows how to run an
 argv when a capture opens, how to stop one on request, and how to reap.

@@ -107,8 +107,10 @@ DEFAULT_MAX_IDLE_POLLS = int(
 # 2 s with 5 ms -> 50 ms doubling backoff: the WRITER's numbers for this very
 # file, on purpose. The recorder closes a capture with `write_json_atomic`,
 # whose `replace_with_retry` already waits up to `REPLACE_BUDGET_S` for a
-# reader to let go of the destination (`storage.py`). A reader that gave up
-# sooner than the writer would wait on the same file is the asymmetric one:
+# reader to let go of the destination (`storage.py`, sized from a field
+# failure in which a reader descheduled under solver load held a file well
+# past 60 ms). A reader that gave up sooner than the writer would wait on
+# the same file is the asymmetric one:
 # a 3 x 10 ms (~20 ms) budget lost to a real 150 ms Windows sharing
 # violation on the closed manifest -- the shape of an AV scanner or indexer
 # opening a freshly replaced file -- which turned a normal close into an
@@ -1039,8 +1041,10 @@ class CaptureFollower:
                     # samples would bind to a capture this follower then
                     # reads ZERO frames of -- moving `end_reason()` onto a
                     # capture that is still open, and reporting
-                    # `stopped_awaiting_successor()` as False. Asking once
-                    # more, before the rebind, closes it: the flag is the same
+                    # `stopped_awaiting_successor()` as False. That is the
+                    # defect the wait was fixed for, surviving in a window
+                    # that shrank from ninety seconds to a few statements.
+                    # Asking once more, before the rebind, closes it: the flag is the same
                     # fact either way, and the follower stays where it read
                     # from.
                     self._stopped_awaiting_successor = True
