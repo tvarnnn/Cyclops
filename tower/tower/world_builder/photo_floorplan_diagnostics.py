@@ -1,4 +1,4 @@
-"""Photo floor plan NEW-SCENE DIAGNOSTICS (manager 349 lane A; generalization audit item 5).
+"""Photo floor plan NEW-SCENE DIAGNOSTICS.
 
 BEHAVIOUR-NEUTRAL. Nothing here feeds a raster, a tile, the manifest, the regression guard or
 any disposition. The worker computes a landing's diagnostics only AFTER that landing's
@@ -59,13 +59,13 @@ THE NEW-SCENE FLAGS (`component_flags`; rules and why)
   low_floor_support -- the floor estimate is gray, fallback-only, or within a factor 2 of its
     rejection floor: the plane was rejected, or it is the camera-trajectory fallback, or its
     inliers < 2 x FLOOR_MIN_INLIERS (80) or its inlier spread < 2 x FLOOR_MIN_SUPPORT_CELLS
-    (6). The factor 2 marks "one more sparse landing away from gray" (the audit: 40 was a
-    guess; low-texture floors sit at that edge).
+    (6). The factor 2 marks "one more sparse landing away from gray" (40 is not measured;
+    low-texture floors sit at that edge).
   furniture_dominated_bands -- the median warped frame's bottom band is mostly NOT floor:
     with >= 3 frames carrying >= 5 band points each, the median on-plane share is < 0.5 and
     the off-plane mass lies above the plane (median above > median below), i.e. furniture
     and walls, not pose error. 0.5 = "most of a typical frame's band evidence is not floor";
-    the probe measured 0.03 (R0, smeared), 0.40 (G2 c0, patchwork) and 0.58 (G2 c45, the one
+    measured: 0.03 (R0, smeared), 0.40 (G2 c0, patchwork) and 0.58 (G2 c45, the one
     readable plan). SfM under-samples carpet, so the share is a LOWER bound on floor.
   large_extent -- the fixed 512-cell raster and 64-view budget are spread too thin:
     the raster cell exceeds 0.02 H (side > 10.24 H; at H = 1.35 m that is a 2.7 cm cell,
@@ -779,7 +779,6 @@ def write_files(root, world_id, session_id, records, summary):
         except OSError:
             pass
     return True, why
-
 
 
 def read_records(path):

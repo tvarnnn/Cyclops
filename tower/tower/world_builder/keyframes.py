@@ -6,23 +6,20 @@ almost none will. The system, not the wearer, decides which ordinary
 frames earn the expensive path -- that is what reconciles "the wearer
 behaves normally" with "we cannot afford to process everything".
 
-Every threshold below started as a documented starting point pending
-measurement on real footage, in the same spirit as
-tower/object_memory/relevance.py's confidence buckets. Three of them --
-`min_survival_ratio`, `loss_survival_ratio` and `min_overlap_ratio` --
-have since been measured against the 2026-08-24 physical walk and are
-documented with those numbers at their definitions; they are still not
-"tuned", because one walk is one walk. The rest remain unmeasured, and
-the V0.9.3 acceptance gate still forbids citing synthetic numbers as
+Three thresholds -- `min_survival_ratio`, `loss_survival_ratio` and
+`min_overlap_ratio` -- are measured on one physical walk and documented
+with those numbers at their definitions; they are still not "tuned",
+because one walk is one walk. The rest are unmeasured starting points, in
+the same spirit as tower/object_memory/relevance.py's confidence buckets,
+and the V0.9.3 acceptance gate forbids citing synthetic numbers as
 validation for the platform's own camera.
 
 ## Why this policy does NOT decide degeneracy
 
-An earlier version gated on the homography residual from
-frontend.summarise_motion, on the reasoning that a homography exactly
-explains pure rotation, so a near-zero residual means "no baseline, do not
-bother". It was removed after measurement, and the measurement is worth
-recording because the idea is an attractive one that does not work.
+It does not gate on the homography residual from
+frontend.summarise_motion. The idea is attractive -- a homography exactly
+explains pure rotation, so a near-zero residual would mean "no baseline,
+do not bother" -- but it does not work.
 
 Measured residual / median-displacement across motion types:
 
@@ -39,8 +36,8 @@ threshold separates them. The reason is the same one that makes ORB-SLAM's
 r_H saturate in a room: when a head both turns and moves, the rotation
 dominates the pixel motion and a homography absorbs it, leaving a residual
 that reflects only the comparatively small translation-induced parallax.
-Realistic wearable motion is rotation-dominant -- which is exactly what
-V0.9.3 measured when it found 53.69% of consecutive pairs degenerate.
+Realistic wearable motion is rotation-dominant: V0.9.3 measured 53.69%
+of consecutive pairs degenerate.
 
 So the responsibilities split:
 
@@ -68,10 +65,8 @@ REJECT = "reject"
 TRACKING_LOST = "tracking_lost"
 
 # Reasons. Every decision carries one, and they are counted into the
-# session record -- a rejection histogram is the only tuning instrument
-# available before real footage exists.
+# session record as a rejection histogram, the tuning instrument.
 REASON_SESSION_SEED = "session_seed"
-REASON_SEGMENT_SEED = "segment_seed"
 REASON_PARALLAX = "parallax"
 REASON_OVERLAP_FLOOR = "overlap_floor"
 REASON_BLURRED = "blurred"
@@ -79,15 +74,14 @@ REASON_TRACKING_DEGRADED = "tracking_degraded"
 REASON_TRACKING_LOST = "tracking_lost"
 # Below the loss floor, but inside the grace window -- the track may yet
 # recover. Counted under its own name rather than folded into
-# `tracking_degraded`, because how often grace fires is exactly the
-# number needed to tell whether it is set right.
+# `tracking_degraded`, so how often grace fires is visible.
 REASON_TRACKING_HELD = "tracking_held"
 REASON_INSUFFICIENT_MOTION = "insufficient_motion"
 REASON_RATE_LIMITED = "rate_limited"
 REASON_NO_MOTION_EVIDENCE = "no_motion_evidence"
 # A frame that failed the blur gate, accepted anyway because the view has
 # turned far enough since the last keyframe that skipping it would leave a
-# gap no matcher can cross (KF-TURNS, 2026-10-12). Only ever produced with
+# gap no matcher can cross. Only ever produced with
 # `KeyframePolicy.turn_bridge` on.
 REASON_TURN_BRIDGE = "turn_bridge"
 
@@ -109,19 +103,19 @@ class KeyframePolicy:
     # Consecutive frames below `loss_survival_ratio` required before a
     # segment is actually broken.
     #
-    # This was effectively 1 -- a single frame ended the segment. Replaying
-    # the 2026-08-25 walk showed that verdict is usually wrong: of the 50
-    # declared losses, 47 still had survival above the floor measured
-    # against the PREVIOUS frame, and 40 were above 0.20. Only 3 were
-    # genuine. The rest were a stale reference asked to cross a gap in one
-    # hop, where the next frame would have tracked fine.
+    # At 1 a single frame ends the segment, and on a replayed walk (a
+    # different capture from the 1395-frame walk below) that verdict is
+    # usually wrong: of the 50 declared losses, 47 still had survival above
+    # the floor measured against the PREVIOUS frame, and 40 were above
+    # 0.20. Only 3 were genuine. The rest were a stale reference asked to
+    # cross a gap in one hop, where the next frame would have tracked fine.
     #
     # DEFAULT 1 -- the mechanism is here and tested, but 3 was measured
-    # and REJECTED, and the reason is worth keeping.
+    # and REJECTED.
     #
     # Segment count said 3 was a clear win: 130 -> 99 across the eight
-    # largest captures. Running the full solve says otherwise. Against
-    # reach-only, on five real captures:
+    # largest captures. The full solve says otherwise. Against reach-only,
+    # on five real captures:
     #
     #             segments   poses_solved   points
     #   reach       114          265         42100
@@ -134,13 +128,10 @@ class KeyframePolicy:
     # already struggling. The segment survives; the geometry inside it does
     # not.
     #
-    # This is the trap the fragmentation research named -- setting the loss
-    # floor to 0.0 gives ONE segment and 37 keyframes, and one segment
-    # containing nothing is worse than 51 containing something. Segment
-    # count alone cannot tell you which you have. Anything tuning this must
-    # report poses_solved and points beside it.
-    #
-    # 2 is untested and is the obvious next thing to try if this is revisited.
+    # Segment count alone cannot tell which you have: a loss floor of 0.0
+    # gives ONE segment and 37 keyframes, and one segment containing
+    # nothing is worse than 51 containing something. Anything tuning this
+    # must report poses_solved and points beside it. 2 is untested.
     loss_grace_frames: int = 1
     # Reject a frame markedly blurrier than its recent neighbours, which
     # catches motion blur during a head turn even in a scene whose
@@ -153,13 +144,12 @@ class KeyframePolicy:
     # the reference frame is simply gone; below `overlap` correspondence
     # is about to be lost and a weak keyframe beats a broken chain.
     #
-    # These three are documented together because the 2026-08-24
-    # physical walk (Ray-Ban Meta -> iPhone -> Tower, 1395 frames,
-    # replayed bit-identically through the real FrameTracker and the real
+    # They are NOT three independent knobs. Measured on one physical walk
+    # (Ray-Ban Meta -> iPhone -> Tower, 1395 frames, replayed
+    # bit-identically through the real FrameTracker and the real
     # KeyframeSelector: same 155 keyframes, same 35 losses, same four-way
     # rejection histogram, zero delta against every persisted sharpness,
-    # survival_ratio and overlap_ratio) showed they are NOT three
-    # independent knobs.
+    # survival_ratio and overlap_ratio):
     #
     #   overlap 0.45 / minsurv 0.35 / loss 0.15   36 segs, 155 kf, 10 single-kf
     #   overlap 0.75 / minsurv 0.20 / loss 0.05   20 segs, 260 kf,  4 single-kf
@@ -170,8 +160,8 @@ class KeyframePolicy:
     # overlap floor of 0.45 sitting above a survival reject at 0.35 can
     # therefore only fire in the band survival in [0.35, 0.45) -- 36
     # frames out of 1395, of which 28 were already being accepted for
-    # parallax anyway. The gate written to guarantee "a usable weak link
-    # beats a broken chain" was very nearly dead, and the chain broke 36
+    # parallax anyway. At those values the "a usable weak link beats a
+    # broken chain" gate was very nearly dead, and the chain broke 36
     # times in one 122-second walk.
     #
     # So the rescue window is widened from the TOP, not the bottom.
@@ -190,10 +180,8 @@ class KeyframePolicy:
     # ALREADY below 0.15: blur was masking losses that had already
     # happened, not causing them. The standing hypothesis, "spurious
     # `blurred` rejections cascading into `tracking_lost`", is refuted.
-    # Do not retry it.
     #
-    # Recorded honestly, because this is a hypothesis with evidence
-    # behind it and not a tuned constant:
+    # A hypothesis with evidence behind it, not a tuned constant:
     #
     #   * ONE walk, one room, one wearer, one lighting condition. A
     #     second walk in a different space should reproduce the ordering
@@ -226,11 +214,9 @@ class KeyframePolicy:
     target_displacement_frac: float = 0.035
     min_displacement_frac: float = 0.010
 
-    # NOTE: there is deliberately no rotation/degeneracy gate here.
-    # A homography-residual gate was implemented and then REMOVED on
-    # measurement -- see the module docstring. The authoritative
-    # degeneracy decision belongs to the geometry backend, which has
-    # intrinsics and can measure triangulation angle.
+    # Deliberately no rotation/degeneracy gate here (see the module
+    # docstring): the geometry backend decides, with intrinsics and
+    # triangulation angle.
 
     # Rate limiter only -- never an accept trigger. See below.
     min_frame_gap: int = 1
@@ -238,11 +224,11 @@ class KeyframePolicy:
     # does NOT promote a frame.
     max_frame_gap: int = 90
 
-    # THE TURN BRIDGE (KF-TURNS, 2026-10-12). The World Builder engine's default
-    # policy turns it on (engine.py); the field stays off by default so a bare
+    # THE TURN BRIDGE. The World Builder engine's default policy turns it
+    # on (engine.py); the field stays off by default so a bare
     # `KeyframePolicy()` is the policy above exactly.
     #
-    # Measured on walk 9 (W9-DIAG.md): the blur gate runs before the
+    # Measured on walk 9: the blur gate runs before the
     # overlap-floor rescue, so in a head turn every frame between two sharp
     # ones is rejected and consecutive keyframes end up 52-391 deg apart.
     # The camera's horizontal FOV is only ~45 deg; under 15 deg of rotation
@@ -437,9 +423,9 @@ class KeyframeSelector:
 
         # Correspondence is about to be lost. Take the keyframe now even
         # at low parallax -- a usable weak link beats a broken chain.
-        # Since the 2026-08-24 measurement raised the floor to 0.75 this
-        # is the DOMINANT promotion path on real footage (198 of 260
-        # accepts on that walk), not the rare rescue it was written as.
+        # With the floor at 0.75 this is the DOMINANT promotion path on
+        # real footage (198 of 260 accepts on the 1395-frame walk measured
+        # in KeyframePolicy), not a rare rescue.
         if motion.overlap_ratio < policy.min_overlap_ratio:
             return KeyframeDecision(ACCEPT, REASON_OVERLAP_FLOOR)
 

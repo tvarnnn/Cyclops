@@ -242,9 +242,9 @@ def test_derived_is_not_current_when_inputs_changed(tmp_path):
         "w1", {"schema_version": 1, "input_digest": compute_input_digest(keyframes)}
     )
 
-    assert store.derived_is_current("w1", compute_input_digest(keyframes))
+    assert store.derived_currency("w1", compute_input_digest(keyframes)) is True
     grown = keyframes + [_keyframe(source_seq=2)]
-    assert not store.derived_is_current("w1", compute_input_digest(grown))
+    assert store.derived_currency("w1", compute_input_digest(grown)) is not True
 
 
 def test_clearing_derived_leaves_the_world_readable(tmp_path):
