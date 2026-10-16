@@ -1,14 +1,11 @@
 """FOW v1.2 photo floor plan transport (wire: mail 303, tower/docs/contracts/
 WORLD-BUILDER-GUIDANCE-IMAGERY.md "Photo floor plan v1.2").
 
-Always registered by `main.py`; a photo plan exists only for a coverage landing, so
-every handler answers 404 unless TOWER_WORLD_GUIDANCE_COVERAGE is exactly `on`. Both
+Always registered by `main.py`; a photo plan exists only for a coverage landing. Both
 URL identifiers are untrusted and must name one contained world and one of its
 sessions. The manifest is <= 8 KiB; a tile is served only while its
 digest belongs to the CURRENT landing (a superseded or unknown digest is 404).
 """
-
-import os
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import Response
@@ -35,7 +32,7 @@ _MANIFEST_WAIT_S = 1.6
 
 def _root(request):
     root = getattr(request.app.state, "world_root", None)
-    if root is None or os.environ.get("TOWER_WORLD_GUIDANCE_COVERAGE") != "on":
+    if root is None:
         raise HTTPException(404, "photo floor plan is off or unavailable",
                             headers=NO_STORE_HEADERS)
     return root

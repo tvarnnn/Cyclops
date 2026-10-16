@@ -1,4 +1,4 @@
-"""FOW v1.2 photo floor plan, Phase B: coverage gate, side worker, identity/dating, routes, caps.
+"""FOW v1.2 photo floor plan, Phase B: side worker, identity/dating, routes, caps.
 
 Wire: mail 303 / tower/docs/contracts/WORLD-BUILDER-GUIDANCE-IMAGERY.md
 "Photo floor plan v1.2".
@@ -41,35 +41,6 @@ def _wait(predicate, timeout=5.0):
     return predicate()
 
 
-def _on(monkeypatch):
-    monkeypatch.setenv("TOWER_WORLD_GUIDANCE_COVERAGE", "on")
-
-
-# ---------------------------------------------------------------------------
-# coverage gate
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize("coverage", [None, "off", "1"])
-def test_the_photo_floorplan_needs_coverage_on(monkeypatch, tmp_path, coverage):
-    """A photo plan exists only for a coverage landing: with coverage off there is no
-    coverage worker (so no photo worker) and both routes answer 404."""
-    if coverage is None:
-        monkeypatch.delenv("TOWER_WORLD_GUIDANCE_COVERAGE", raising=False)
-    else:
-        monkeypatch.setenv("TOWER_WORLD_GUIDANCE_COVERAGE", coverage)
-    root = tmp_path / "worlds"
-    _landed_tree(root, _inputs())
-    producer = WorldBuilderStatusProducer(root, lambda: 1000.12)
-    assert producer._coverage_worker is None
-    client = _client(root)
-    base = f"/worlds/{WORLD}/guidance/{SESSION}/photo-floorplan"
-    assert client.get(base + "/manifest").status_code == 404
-    assert client.get(base + "/tile/" + "a" * 64).status_code == 404
-    monkeypatch.setenv("TOWER_WORLD_GUIDANCE_COVERAGE", "on")
-    assert client.get(base + "/manifest").status_code == 200
-
-
 @pytest.mark.parametrize("value", [None, "homography", "depth", "moge"])
 def test_the_worker_always_builds_the_homography_raster(monkeypatch, tmp_path, caplog, value):
     """TOWER_WORLD_PHOTO_FLOORPLAN_METHOD is not read: any value gets the homography plan."""
@@ -105,8 +76,7 @@ def test_the_worker_always_builds_the_homography_raster(monkeypatch, tmp_path, c
     assert " method=homography " in line
 
 
-def test_real_app_registers_the_routes_when_on(monkeypatch):
-    _on(monkeypatch)
+def test_real_app_registers_the_routes():
     from tower.main import create_app
     paths = create_app().openapi()["paths"]
     prefix = "/worlds/{world_id}/guidance/{session_id}/photo-floorplan/"
@@ -127,7 +97,6 @@ def _client(root):
 
 
 def test_on_coverage_hands_its_published_receipt_and_tree_to_the_photo_worker(monkeypatch, tmp_path):
-    _on(monkeypatch)
     root = tmp_path / "worlds"
     world, session, _ = _landed_tree(root, _inputs())
     offers = []
@@ -509,8 +478,7 @@ def test_the_overrun_check_stops_a_real_build_between_frames(tmp_path):
 
 
 @pytest.fixture
-def served(monkeypatch, tmp_path):
-    _on(monkeypatch)
+def served(tmp_path):
     root = tmp_path / "worlds"
     _landed_tree(root, _inputs())
     return root, _client(root), pfw.state_for(root)

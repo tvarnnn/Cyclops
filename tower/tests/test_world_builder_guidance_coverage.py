@@ -1,4 +1,4 @@
-"""Frozen FOW v1 Tower contract, including a baseline-source byte golden."""
+"""Frozen FOW v1 Tower contract."""
 
 from __future__ import annotations
 
@@ -25,7 +25,6 @@ from tower.world_builder import guidance_coverage as coverage_module
 from tower.world_builder.records import Keyframe, Session, World
 from tower.world_builder.store import WorldStore
 
-GOLDEN = Path(__file__).parent / "golden" / "world_builder_guidance_off_324f4a6.json"
 Q_NORTH = [math.sqrt(0.5), -math.sqrt(0.5), 0.0, 0.0]
 
 
@@ -95,10 +94,10 @@ def _raw(snapshot):
                       separators=(",", ":"), ensure_ascii=False).encode("utf-8")
 
 
-def _status_matrix(root, producer_class=WorldBuilderStatusProducer):
+def _status_matrix(root):
     store = WorldStore(root)
     world_id, session_id = "fow-world", "fow-session"
-    producer = producer_class(root, lambda: 1000.0)
+    producer = WorldBuilderStatusProducer(root, lambda: 1000.0)
     result = [_raw(producer.snapshot(None, None))]
     store.write_world(World(world_id=world_id, created_at=900.0, updated_at=900.0,
                             session_ids=()))
@@ -121,29 +120,7 @@ def _status_matrix(root, producer_class=WorldBuilderStatusProducer):
     return result
 
 
-def test_off_exact_bytes_twice_and_one_byte_mutant(tmp_path, monkeypatch):
-    monkeypatch.delenv("TOWER_WORLD_GUIDANCE_COVERAGE", raising=False)
-    source = os.environ.get("FOW_BASELINE_SOURCE")
-    if source:
-        import types
-        baseline = types.ModuleType("tower.results.world_builder_baseline")
-        exec(Path(source).read_text(encoding="utf-8-sig"), baseline.__dict__)
-        producer_class = baseline.WorldBuilderStatusProducer
-    else:
-        producer_class = WorldBuilderStatusProducer
-    first = _status_matrix(tmp_path / "first", producer_class)
-    second = _status_matrix(tmp_path / "second", producer_class)
-    assert first == second, [(i, next(((j, a[j-30:j+80], b[j-30:j+80]) for j in range(min(len(a), len(b))) if a[j] != b[j]), None)) for i, (a, b) in enumerate(zip(first, second)) if a != b]
-    if os.environ.get("FOW_RECORD_GOLDEN"):
-        GOLDEN.write_text(json.dumps([r.decode() for r in first], indent=2)+"\n", encoding="utf-8")
-    golden = [r.encode() for r in json.loads(GOLDEN.read_text(encoding="utf-8"))]
-    assert first == golden
-    mutant = bytearray(first[2]); mutant[0] ^= 1
-    assert bytes(mutant) != golden[2]
-
-
-def test_three_synthetic_guidance_values_round_trip(tmp_path, monkeypatch):
-    monkeypatch.setenv("TOWER_WORLD_GUIDANCE_COVERAGE", "on")
+def test_three_synthetic_guidance_values_round_trip(tmp_path):
     early = {"guidance": json.loads(_status_matrix(tmp_path / "early")[2])["payload"]["guidance"]}
     mid = {"guidance": {"coverage": _block(_inputs(
         ((0, 82), (17, 19)), unposed_in_horizon=12, pending=14))}}
@@ -353,8 +330,7 @@ def test_four_kib_cap():
         coverage_module._MAX_BYTES = old_cap
 
 
-def test_on_selected_without_landing_is_null_and_off_omits(tmp_path, monkeypatch):
-    monkeypatch.setenv("TOWER_WORLD_GUIDANCE_COVERAGE", "on")
+def test_selected_without_landing_is_null_and_no_session_omits(tmp_path):
     root = tmp_path / "worlds"
     store = WorldStore(root)
     store.write_world(World(world_id="w", created_at=1, updated_at=1, session_ids=("s",)))
@@ -363,27 +339,6 @@ def test_on_selected_without_landing_is_null_and_off_omits(tmp_path, monkeypatch
     assert producer.snapshot("w", "s").payload["guidance"] == {"coverage": None}
     store.write_world(World(world_id="empty", created_at=1, updated_at=1))
     assert "guidance" not in producer.snapshot("empty", None).payload
-    monkeypatch.setenv("TOWER_WORLD_GUIDANCE_COVERAGE", "garbage")
-    assert producer.snapshot("w", "s").payload["guidance"] == {"coverage": None}
-    off_producer = WorldBuilderStatusProducer(root, lambda: 1000,
-                                             coverage_enabled=False)
-    assert "guidance" not in off_producer.snapshot("w", "s").payload
-
-
-def test_switch_latched_at_setup_never_starts_worker_on_later_poll(tmp_path, monkeypatch):
-    monkeypatch.delenv("TOWER_WORLD_GUIDANCE_COVERAGE", raising=False)
-    root = tmp_path / "worlds"
-    store = WorldStore(root)
-    store.write_world(World(world_id="w", created_at=1, updated_at=1,
-                            session_ids=("s",)))
-    store.write_session(Session(session_id="s", world_id="w", started_at=1))
-    snapshot_for = make_snapshot_for(root, lambda: 1000)
-    monkeypatch.setenv("TOWER_WORLD_GUIDANCE_COVERAGE", "on")
-    with monkeypatch.context() as patch:
-        patch.setattr(threading.Thread, "start", lambda *_: pytest.fail(
-            "status poll started a guidance worker"))
-        snapshot = snapshot_for(CARTRIDGE_WORLD_BUILDER, RESULT_TYPE_STATUS, "w", "s")
-    assert "guidance" not in snapshot.payload
 
 
 def _landed_tree(root, data):
@@ -414,7 +369,6 @@ def _landed_tree(root, data):
 
 
 def test_worker_publishes_only_completed_receipt_and_keeps_revision(monkeypatch, tmp_path):
-    monkeypatch.setenv("TOWER_WORLD_GUIDANCE_COVERAGE", "on")
     data = _inputs()
     root = tmp_path / "worlds"
     world, session, _ = _landed_tree(root, data)
@@ -447,7 +401,6 @@ def test_worker_publishes_only_completed_receipt_and_keeps_revision(monkeypatch,
 
 
 def test_guidance_poll_never_stats_or_starts_a_thread(monkeypatch, tmp_path):
-    monkeypatch.setenv("TOWER_WORLD_GUIDANCE_COVERAGE", "on")
     producer = WorldBuilderStatusProducer(tmp_path, lambda: 1000.12)
     receipt = {"geometry_revision": "g", "solved_at": 1000.0}
     class Published:
@@ -464,7 +417,6 @@ def test_guidance_poll_never_stats_or_starts_a_thread(monkeypatch, tmp_path):
 
 
 def test_slow_file_read_does_not_block_status_or_shutdown_and_cannot_publish(monkeypatch, tmp_path):
-    monkeypatch.setenv("TOWER_WORLD_GUIDANCE_COVERAGE", "on")
     root = tmp_path / "worlds"
     world, session, _ = _landed_tree(root, _inputs())
     entered, release = threading.Event(), threading.Event()
@@ -498,7 +450,6 @@ def test_slow_os_read_releases_the_file_so_the_final_solve_write_lands(monkeypat
     writer's `replace_with_retry` gives up after 2 s. A guidance read slowed
     at the OS level must therefore close its handle at the next budget check,
     let the write land, keep the status poll fast, and publish nothing."""
-    monkeypatch.setenv("TOWER_WORLD_GUIDANCE_COVERAGE", "on")
     root = tmp_path / "worlds"
     data = _inputs()
     world, session, store = _landed_tree(root, data)
@@ -587,7 +538,6 @@ def test_result_hub_shutdown_never_raises_from_the_guidance_hook():
 
 
 def test_tower_result_hub_shutdown_cancels_guidance_worker(monkeypatch, tmp_path):
-    monkeypatch.setenv("TOWER_WORLD_GUIDANCE_COVERAGE", "on")
     hub = build_hub(tmp_path, lambda: 1000.12)
     # The producer was created by make_snapshot_for before any subscription.
     from tower.world_builder import guidance_coverage
@@ -603,8 +553,7 @@ def test_tower_result_hub_shutdown_cancels_guidance_worker(monkeypatch, tmp_path
     assert not seen[0]._thread.is_alive()
 
 
-def test_on_worker_starts_before_poll_and_discovers_requested_landing(monkeypatch, tmp_path):
-    monkeypatch.setenv("TOWER_WORLD_GUIDANCE_COVERAGE", "on")
+def test_on_worker_starts_before_poll_and_discovers_requested_landing(tmp_path):
     root = tmp_path / "worlds"
     world, session, _ = _landed_tree(root, _inputs())
     producer = WorldBuilderStatusProducer(root, lambda: 1000.12)
@@ -622,7 +571,6 @@ def test_on_worker_starts_before_poll_and_discovers_requested_landing(monkeypatc
 
 
 def test_worker_recovers_from_discovery_exception(monkeypatch, tmp_path):
-    monkeypatch.setenv("TOWER_WORLD_GUIDANCE_COVERAGE", "on")
     root = tmp_path / "worlds"
     world, session, _ = _landed_tree(root, _inputs())
     original = coverage_module.CoverageWorker._discover
@@ -646,8 +594,7 @@ def test_worker_recovers_from_discovery_exception(monkeypatch, tmp_path):
     assert worker.latest(world, session) is not None
 
 
-def test_tower_result_setup_starts_on_worker_before_first_status(monkeypatch, tmp_path):
-    monkeypatch.setenv("TOWER_WORLD_GUIDANCE_COVERAGE", "on")
+def test_tower_result_setup_starts_on_worker_before_first_status(tmp_path):
     root = tmp_path / "worlds"
     world, session, _ = _landed_tree(root, _inputs())
     before = {id(thread) for thread in threading.enumerate()}
@@ -662,8 +609,7 @@ def test_tower_result_setup_starts_on_worker_before_first_status(monkeypatch, tm
     assert snapshot.payload["guidance"]["coverage"] is not None
 
 
-def test_whole_status_envelope_with_near_cap_coverage_fits_budget(monkeypatch, tmp_path):
-    monkeypatch.setenv("TOWER_WORLD_GUIDANCE_COVERAGE", "on")
+def test_whole_status_envelope_with_near_cap_coverage_fits_budget(tmp_path):
     root = tmp_path / "worlds"
     world, session, _ = _landed_tree(root, _inputs())
     producer = WorldBuilderStatusProducer(root, lambda: 1000.12)
@@ -682,8 +628,7 @@ def test_whole_status_envelope_with_near_cap_coverage_fits_budget(monkeypatch, t
     assert size <= 16 * 1024
 
 
-def test_largest_realistic_fow_status_uses_full_allowance(monkeypatch, tmp_path):
-    monkeypatch.setenv("TOWER_WORLD_GUIDANCE_COVERAGE", "on")
+def test_largest_realistic_fow_status_uses_full_allowance(tmp_path):
     root = tmp_path / "worlds"
     world, session, store = _landed_tree(root, _inputs())
     producer = WorldBuilderStatusProducer(root, lambda: 1000.12)
@@ -746,8 +691,7 @@ def test_largest_realistic_status_with_cap_size_coverage_fits_the_15_kib_allowan
     assert status_module._MAX_STATUS_WITH_COVERAGE_BYTES == 15 * 1024
 
 
-def test_coverage_falls_back_to_null_if_complete_status_exceeds_budget(monkeypatch, tmp_path):
-    monkeypatch.setenv("TOWER_WORLD_GUIDANCE_COVERAGE", "on")
+def test_coverage_falls_back_to_null_if_complete_status_exceeds_budget(tmp_path):
     root = tmp_path / "worlds"
     world, session, store = _landed_tree(root, _inputs())
     producer = WorldBuilderStatusProducer(root, lambda: 1000.12)
@@ -913,8 +857,7 @@ def test_tree_snapshot_rejects_same_tag_with_different_geometry_revision(tmp_pat
                           (manifest["built_at"], manifest["input_digest"]))
 
 
-def test_stale_receipt_publishes_no_directional_prompt(monkeypatch, tmp_path):
-    monkeypatch.setenv("TOWER_WORLD_GUIDANCE_COVERAGE", "on")
+def test_stale_receipt_publishes_no_directional_prompt(tmp_path):
     root = tmp_path / "worlds"
     world, session, _ = _landed_tree(root, _inputs(((0, 22),)))
     producer = WorldBuilderStatusProducer(root, lambda: 1040.0)

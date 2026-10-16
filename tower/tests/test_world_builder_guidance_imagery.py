@@ -60,8 +60,7 @@ def fake(monkeypatch, tmp_path):
     return state
 
 
-def _client(monkeypatch, *, coverage=True):
-    monkeypatch.setenv("TOWER_WORLD_GUIDANCE_COVERAGE", "on" if coverage else "off")
+def _client():
     app = FastAPI()
     app.state.world_root = "synthetic-root"
     app.include_router(route.router)
@@ -85,7 +84,7 @@ def test_b1_live_fixture_redacted_digest_caps_and_break(fake, monkeypatch):
 
     monkeypatch.setattr(imagery, "keyframe_image_bytes", boundary)
     monkeypatch.setenv("TOWER_WORLD_RAW_IMAGERY_WORLDS", "home")
-    client = _client(monkeypatch, coverage=False)
+    client = _client()
     class GuardedEnvironment(dict):
         def get(self, key, default=None):
             assert key != "TOWER_WORLD_RAW_IMAGERY_WORLDS"
@@ -109,7 +108,7 @@ def test_b1_live_fixture_redacted_digest_caps_and_break(fake, monkeypatch):
     assert entry["component_reference_segment"] is None
     assert entry["segment_index"] == 812
     assert entry["redaction"] == "redacted"
-    assert "landed" not in first.json()  # B2 needs coverage
+    assert first.json()["landed"] is None  # no landing yet
     assert calls == ["redacted"]  # raw allowlist was present but not consulted
     tile = client.get(path + "/tile/" + entry["digest"])
     assert tile.status_code == 200
@@ -126,7 +125,7 @@ def test_b1_live_fixture_redacted_digest_caps_and_break(fake, monkeypatch):
 
 def test_landed_is_null_before_a_landing_and_bad_digests_404(fake, monkeypatch):
     monkeypatch.setattr(imagery, "_tile", lambda *args: _jpeg())
-    client = _client(monkeypatch)
+    client = _client()
     path = "/worlds/home/guidance/s9/imagery"
     assert client.get(path + "/manifest").json()["landed"] is None
     assert client.get(path + "/tile/" + "a" * 64).status_code == 404
@@ -137,7 +136,7 @@ def test_missing_store_is_404_not_5xx(fake, monkeypatch):
     from tower.world_builder.store import WorldStoreError
     monkeypatch.setattr(_Store, "read_session",
                         lambda self, world, session: (_ for _ in ()).throw(WorldStoreError("absent")))
-    client = _client(monkeypatch)
+    client = _client()
     path = "/worlds/home/guidance/s9/imagery"
     assert client.get(path + "/manifest").status_code == 404
     assert client.get(path + "/tile/" + "a" * 64).status_code == 404
@@ -161,7 +160,7 @@ def test_real_app_always_registers_imagery(monkeypatch):
 
 def test_b1_no_untrusted_or_failed_redaction(fake, monkeypatch):
     monkeypatch.setattr(imagery, "keyframe_image_bytes", lambda *a, **kw: (None, "failed", None))
-    client = _client(monkeypatch)
+    client = _client()
     path = "/worlds/home/guidance/s9/imagery/manifest"
     assert client.get(path).json()["live"]["entries"] == []
     _Store.redaction = "none"
@@ -262,7 +261,7 @@ def test_b2_wire_tile_and_404(fake, monkeypatch):
     fake.publish_landed("root", "home", "s9",
                         {"solved_at": 1791240313.0, "geometry_revision": "g-stop-984",
                          "frame_revision": 1}, [("s9:120", 0)])
-    client = _client(monkeypatch)
+    client = _client()
     path = "/worlds/home/guidance/s9/imagery"
     response = client.get(path + "/manifest")
     assert response.status_code == 200
@@ -317,7 +316,7 @@ def test_b2_manifest_waits_for_pending_landing_by_next_push(fake, monkeypatch):
         fake.publish_landed("root", "home", "s9", block, [("s9:120", 0)])
         fake.finish_landed("home", "s9")
 
-    client = _client(monkeypatch)
+    client = _client()
     thread = threading.Thread(target=finish)
     thread.start()
     response = client.get("/worlds/home/guidance/s9/imagery/manifest")

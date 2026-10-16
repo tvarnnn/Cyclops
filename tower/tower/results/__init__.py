@@ -37,7 +37,6 @@ and so mechanically prevents that handle from becoming a second frame
 path.
 """
 
-import os
 import time
 
 from tower.results.contracts import (
@@ -67,9 +66,10 @@ def make_snapshot_for(
     """A callable turning (cartridge, result_type, world, session) into a Snapshot.
 
     Built once and handed to the hub, so the hub itself imports no
-    cartridge and can be tested against a stub. Producers are constructed
-    lazily and reused, because the World Builder producer holds a small
-    per-target cache that would be thrown away on every poll otherwise.
+    cartridge and can be tested against a stub. Producers are built once
+    (World Builder up front, the rest on first poll) and reused, because
+    the World Builder producer holds a small per-target cache that would
+    be thrown away on every poll otherwise.
 
     `scene_source` and `document_source` are LIVE SESSION OBJECTS rather
     than roots, and the asymmetry with `world_root` is the whole point of
@@ -90,11 +90,12 @@ def make_snapshot_for(
     under-promise-on-omission rule `registry.declare` follows.
     """
     producers: dict = {}
-    coverage_enabled = os.environ.get("TOWER_WORLD_GUIDANCE_COVERAGE") == "on"
-    if world_root is not None and coverage_enabled:
+    if world_root is not None:
+        # Built here, not on first poll: its constructor starts the coverage
+        # worker thread, and a status poll must never start a thread.
         from tower.results.world_builder import WorldBuilderStatusProducer
         producers[CARTRIDGE_WORLD_BUILDER] = WorldBuilderStatusProducer(
-            world_root, clock, coverage_enabled=True)
+            world_root, clock)
 
     def snapshot_for(cartridge, result_type, world_id, session_id) -> Snapshot:
         if (
@@ -103,7 +104,7 @@ def make_snapshot_for(
         ):
             if cv_lab is None:
                 # Function-local import, the same pattern the World
-                # Builder producer uses below: `tower/results/__init__.py`
+                # Builder producer uses above: `tower/results/__init__.py`
                 # is in the cartridge-blind core list, and a module-level
                 # import would put a cartridge in the shared surface.
                 from tower.results.experimental_cv import unavailable_payload
@@ -126,14 +127,7 @@ def make_snapshot_for(
                 return _unavailable_snapshot(
                     "no world root is configured on this Tower"
                 )
-            producer = producers.get(cartridge)
-            if producer is None:
-                from tower.results.world_builder import WorldBuilderStatusProducer
-
-                producer = WorldBuilderStatusProducer(
-                    world_root, clock, coverage_enabled=coverage_enabled)
-                producers[cartridge] = producer
-            return producer.snapshot(world_id, session_id)
+            return producers[cartridge].snapshot(world_id, session_id)
 
         if (
             cartridge == CARTRIDGE_SCENE_UNDERSTANDING
