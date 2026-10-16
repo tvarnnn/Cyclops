@@ -3,21 +3,17 @@
 
 WHY THIS EXISTS
 
-Every World Builder finding before this script was argued from a world
-already on disk. That is enough to say what the pipeline DID and useless
-for saying what a change would DO, because the only way to re-measure was
-to put the glasses back on. A registration change that can only be
-validated by another walk is a change nobody dares make.
-
-This replays a walk instead. It reproduces the two physical sessions of
-2026-08-29 exactly -- same frames observed, same keyframes accepted, same
+A world already on disk says what the pipeline DID, but not what a change
+would DO: re-measuring would mean putting the glasses back on. This replays
+a walk instead, so a change to registration or tracking can be scored
+offline against real physical input. It reproduces the two recorded physical
+sessions exactly -- same frames observed, same keyframes accepted, same
 rejection histogram, same segment count, same solved poses, same points:
 
     worldA  1008 frames -> 229 keyframes / 23 segments / 100 solved / 9145 points
     worldB  1074 frames -> 218 keyframes / 36 segments / 108 solved / 13050 points
 
-matching the persisted sessions 815c88ba (world 991e5a15) and 7864d3b3
-(world af47007c) figure for figure. That equality is the whole warrant
+matching the persisted sessions in `CASES` figure for figure. That equality is the whole warrant
 for the tool: an offline number may then be compared with a physical one.
 
 WHAT A "WALK" IS ON DISK
@@ -64,7 +60,7 @@ DEFAULT_WORLD_ROOT = TOWER_ROOT / "data" / "world_builder"
 # because a replay that silently drops or gains a capture measures a
 # different walk and says nothing about the physical one.
 CASES = {
-    # 2026-08-29 physical test 1: normal room movement.
+    # Recorded physical test 1: normal room movement.
     "worldA": {
         "captures": (
             "69a4e59d825948da95e675874d6c3f0b",
@@ -81,10 +77,9 @@ CASES = {
             "points": 9145,
         },
     },
-    # 2026-08-29 physical test 2: deliberate lateral motion around a
-    # textured drawer, with a return to the starting viewpoint. This is
-    # the capture the queued PT-1 asked for, and the one that moved
-    # span/depth off the 0.02-0.06 floor every earlier walk sat on.
+    # Recorded physical test 2: deliberate lateral motion around a textured
+    # drawer, with a return to the starting viewpoint. Span/depth rises above
+    # the 0.02-0.06 range every earlier walk sat in.
     "worldB": {
         "captures": (
             "023b5d84b72e41d9b3f0910b6ceb6e29",
