@@ -1,4 +1,5 @@
-"""FOW v1.1 B imagery transport: B1 `live` and B2 `landed`."""
+"""Guidance imagery routes: the imagery manifest (`live` and `landed` blocks) and the
+tile bytes it names."""
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse, Response
