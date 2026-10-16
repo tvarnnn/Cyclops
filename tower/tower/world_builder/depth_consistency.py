@@ -505,11 +505,12 @@ class _Field:
 
 
 def _bilinear(img, fidx, u, v, W, H):
-    import torch
     import torch.nn.functional as TF
 
     gx = u / (W - 1) * 2 - 1
     gy = v / (H - 1) * 2 - 1
+    import torch
+
     grid = torch.stack([gx, gy], -1).unsqueeze(2)
     return TF.grid_sample(img[fidx].unsqueeze(1).float(), grid, mode="bilinear",
                           align_corners=True)[:, 0, :, 0]

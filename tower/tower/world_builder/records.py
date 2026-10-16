@@ -145,6 +145,8 @@ class CameraIntrinsics:
         need only be finite -- it can legitimately fall outside the image
         on a cropped or off-centre sensor.
         """
+        import math
+
         if self.source == INTRINSICS_SOURCE_UNKNOWN:
             return False
         if None in (self.fx, self.fy, self.cx, self.cy):
@@ -623,7 +625,10 @@ class Session:
     privacy_tags: tuple[str, ...] = ("raw-imagery", "first-person")
     # What, if anything, was removed from the imagery before it was
     # written: the redactor's label (`redaction.FaceRedactor.label`), or
-    # "none" when nothing was.
+    # "none" when nothing was -- and "none" from the first keyframe
+    # persisted unredacted onwards, for the rest of the session
+    # (`engine.py`, `_unredacted_keyframes`), so a label is only ever
+    # recorded for a session whose every keyframe went through it.
     #
     # It is the one un-retrofittable part of redaction: without it there is
     # no way to tell whether a session's images were filtered, so every

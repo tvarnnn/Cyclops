@@ -9,7 +9,8 @@ Worlds captured before `plausibility3` were redacted by an older rule of the
 same YuNet@0.30 family. The ungated rule filled 12.61% of every pixel of the
 canonical capture, almost all of it the wearer's hands, a PC case and bare
 wall; `plausibility3`, run on the same raw frames, fills 5.99%, and the page's
-opening pose (ki 148) goes from 52% black to 0%.
+opening pose (ki 148) goes from 52% black to 0%. Measured by the fix-it
+re-redaction lane (`Glasses-scratch/wb-final-recon/fixit/reredact/REREDACT.md`).
 
 WHAT IT DOES, AND WHAT IT NEVER DOES
 ------------------------------------

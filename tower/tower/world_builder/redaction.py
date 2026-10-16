@@ -295,14 +295,14 @@ MODEL_FILENAME = "face_detection_yunet_2023mar.onnx"
 
 # WHERE THE WEIGHTS ARE, INDEPENDENTLY OF WHERE THE PROCESS WAS STARTED.
 #
-# Resolved against the current working directory (`Path("models") /
-# MODEL_FILENAME`), a Tower or a script started from anywhere but `tower/`
-# finds no model, `FaceRedactor.available` is False, and the consequence is
-# not an error: `engine.py` logs a warning and persists the keyframe
-# UNREDACTED, and `redact()` returns the original bytes labelled `none`. A
-# privacy transformation must not be silently conditional on a caller's cwd.
-# A batch script run from a scratch directory that way refused 429 of 429
-# frames -- refusing is the safe direction, and only the dense stage's own
+# The lookup was once `Path("models") / MODEL_FILENAME`, resolved against the
+# current working directory. A Tower or a script started from anywhere but
+# `tower/` then found no model, `FaceRedactor.available` was False, and the
+# consequence was not an error: `engine.py` logs a warning and persists the
+# keyframe UNREDACTED, and `redact()` returns the original bytes labelled
+# `none`. So a privacy transformation was silently conditional on a caller's
+# cwd. A batch script run from a scratch directory refused 429 of 429 frames
+# that way -- refusing is the safe direction, and only the dense stage's own
 # check made it visible at all.
 #
 # The package's own location is the honest anchor: `tower/tower/world_builder/`
@@ -394,8 +394,8 @@ def landmark_verdict(box, landmarks):
     The distinction is the whole point. `landmarks_are_facelike` folds "cannot
     judge" into False, which is right for a yes/no question and wrong for a
     gate: YuNet collapses both eyes onto one point on a near-profile face, and
-    a NaN compares False against every band. A gate that cannot judge must
-    fill, so the caller needs the third answer.
+    a NaN compares False against every band. Both used to DROP the fill. A gate
+    that cannot judge must fill, so the caller needs the third answer.
     """
     import math
 

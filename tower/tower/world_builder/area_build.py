@@ -62,8 +62,8 @@ from tower.world_builder.records import (
 
 logger = logging.getLogger(__name__)
 
-# --- Pre-registered vertical constants, validated in the offline experiment that
-# levelled the target's areas. Not tuned here. ---
+# --- Pre-registered vertical constants, validated in one offline experiment and
+# then used in a second to level the target's areas. Not tuned here. ---
 UP_GATE_DEG = 5.0      # level-head gate: RMS roll within +5 deg of the best candidate
 UP_NORMAL_TOL = 8.0    # a normal supports u if within 8 deg of +-u
 UP_PITCH_CONE = 60.0   # u within 60 deg of the mean camera up (head pitch)
