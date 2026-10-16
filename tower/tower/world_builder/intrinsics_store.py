@@ -1,12 +1,11 @@
 """A resolution-keyed store of camera calibrations on disk.
 
-This module exists because the loop between `calibrate_charuco.py` and
-`world_build_session.py` was open. The calibrator's `--out` had no default
-location and the builder's `--intrinsics` had no discovery, so the single
-working path required an operator to remember a flag on both ends. On
-2026-08-24 nobody did -- and could not have, because no calibration
-exists -- and the walk produced 155 keyframes, 0 poses and 0 points with
-nothing anywhere saying why.
+It closes the loop between `calibrate_charuco.py` and
+`world_build_session.py`: the calibrator files a calibration where the
+builder looks for one, so neither end needs an operator to remember a
+flag. Measured on a walk with no calibration on file: 155 keyframes
+accepted, 0 camera poses solved and 0 map points, with nothing saying
+why -- so every miss now says where it looked (`lookup`).
 
 WHERE CALIBRATIONS LIVE, AND WHY
 
@@ -35,9 +34,8 @@ It never rescales. `records.CameraIntrinsics.scaled_to` already refuses
 unless `scales_linearly_across_resolutions` is explicitly True, and
 whether DAT resizes or crops between its three modes has never been
 established. A 480x360 calibration therefore does NOT satisfy a 360x640
-lookup. That exact mismatch is already sitting in the 2026-08-24 session
-record, which declares 480x360 while every one of its keyframes is
-360x640.
+lookup, even though a session can declare one while its keyframes measure
+the other.
 
 A MISS IS NOT AN ERROR
 
@@ -80,10 +78,6 @@ class IntrinsicsStore:
         self._root = Path(root)
 
     @property
-    def root(self) -> Path:
-        return self._root
-
-    @property
     def directory(self) -> Path:
         return self._root / INTRINSICS_DIRNAME
 
@@ -99,9 +93,8 @@ class IntrinsicsStore:
     def lookup(self, width: int, height: int) -> CameraIntrinsics:
         """The calibration for exactly this resolution, or `unknown()`.
 
-        Never raises and never rescales. Every non-hit is logged, because
-        silence at this point is precisely what made the 2026-08-24 walk
-        unexplainable.
+        Never raises and never rescales. Every non-hit is logged, so a
+        session with no geometry can say which calibration it looked for.
         """
         path = self.path_for(width, height)
         if not path.exists():
@@ -128,10 +121,9 @@ class IntrinsicsStore:
         try:
             intrinsics = camera_intrinsics_from_json_dict(data)
         except (KeyError, TypeError, ValueError) as exc:
-            # A partial record -- hand-edited, truncated mid-write by an
-            # older non-atomic writer, or written by a different schema.
-            # `camera_intrinsics_from_json_dict` indexes required keys and
-            # raises on a self_calibrated record with no fx.
+            # A partial record -- hand-edited, truncated, or written by a
+            # different schema. `camera_intrinsics_from_json_dict` indexes
+            # required keys and raises on a self_calibrated record with no fx.
             logger.warning(
                 "world builder: calibration at %s is not a usable "
                 "CameraIntrinsics record (%s); treating as absent",
@@ -245,7 +237,7 @@ class IntrinsicsStore:
         found: list[tuple[int, int]] = []
         if not self.directory.exists():
             return ()
-        for path in sorted(self.directory.glob("*.json")):
+        for path in self.directory.glob("*.json"):
             width, _, height = path.stem.partition("x")
             try:
                 found.append((int(width), int(height)))

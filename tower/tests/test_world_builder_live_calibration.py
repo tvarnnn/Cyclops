@@ -312,10 +312,11 @@ class TestWorldInspectSaysCalibrationIsActive:
     def test_the_report_names_the_calibration_and_no_intrinsics_degeneracy(
         self, tmp_path
     ):
-        from tower.world_builder.inspect import open_world
+        from tower.world_builder.inspect import WorldView
+        from tower.world_builder.store import WorldStore
 
         session, output, world_root = _run_walk(tmp_path, calibrated=True)
-        report = open_world(world_root, session.world_id).to_report()
+        report = WorldView(WorldStore(world_root), session.world_id).to_report()
         row = report["sessions"][0]
 
         assert row["intrinsics_source"] == "self_calibrated", output
@@ -339,10 +340,11 @@ class TestWorldInspectSaysCalibrationIsActive:
         the failed walk printed for `intrinsics_source`, and it made a
         clean classical session look like a second downgrade.
         """
-        from tower.world_builder.inspect import open_world, render_text
+        from tower.world_builder.inspect import WorldView, render_text
+        from tower.world_builder.store import WorldStore
 
         session, output, world_root = _run_walk(tmp_path, calibrated=True)
-        report = open_world(world_root, session.world_id).to_report()
+        report = WorldView(WorldStore(world_root), session.world_id).to_report()
 
         assert report["sessions"][0]["backend_downgraded_from"] == "none", output
         assert "downgraded_from      none" in render_text(report)

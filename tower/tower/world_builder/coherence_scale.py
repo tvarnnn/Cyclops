@@ -2,14 +2,14 @@
 
 WHY. The evidence gate (`coherence_gate.py`) refuses to attach a piece whose metric level differs from the
 room's by more than x1.25, and splits a piece at an internal x1.25 step: one similarity cannot hold a x4
-scale step (the target's bathroom sat at x4.27). It needs, per camera, the ratio between the solve's depth
+scale step (a measured bathroom sat at x4.27). It needs, per camera, the ratio between the solve's depth
 of what the camera sees and an independent METRIC depth of the same pixels. Metric scale is a hard
 dependency of the gate: with no ratio at all the gate attaches nothing (`scale-unavailable`).
 
-WHAT IT MEASURES. A port of the run's harness "TRI" estimator
-(`coherence_eval/eval_placement.triangulated_depth_ratios`, harness `wb-coherence-metrics/2`), which is the
-measurement the gate rule was validated with (run wb-coherence-run-2026-09-23, P2-GT, P2-LM). Per verified
-image pair of the SAME solver component whose two cameras are both published (>= `min_obs` observations):
+WHAT IT MEASURES. A port of the validation harness's triangulated-depth ("TRI") estimator
+(`eval_placement.triangulated_depth_ratios`), which is the measurement the gate rule was validated with.
+Per verified image pair of the SAME solver component whose two cameras are both published (>= `min_obs`
+observations):
 
   * the pair's inlier correspondences, normalised by the solve's pinhole camera;
   * the pair's relative pose FROM THE SOLVE (R_ji = R_j R_i^T, t_ji = R_j (C_i - C_j));
@@ -29,10 +29,8 @@ WHAT DIFFERS FROM THE HARNESS, deliberately, because the product has neither har
     ViT-L (`moge2-vitl`, the harness's checkpoint) raw prediction for the keyframe (`<ki>_pred.npy`, metric
     z), with the redaction fill (`<ki>_fill.npy`) masked out: a depth predicted inside an inpainted face box
     is invention, and the depth stage refuses to anchor on it for the same reason (`_fit_record`).
-The validation of both substitutions against the harness is in RUN experiments/P3-PG.
 
-THRESHOLDS. Every one is the harness's own (`eval_placement.PLACEMENT_PARAMS` tri_*, `metrics.PARAMS`
-depth_min_samples / depth_valid_m, and its 5-inlier pair floor); none was tuned here.
+THRESHOLDS. Every one is the harness's own (named beside each `ScaleParams` default); none was tuned here.
 
 numpy only; `read_inlier_pairs` reads SQLite read-only and immutable. No GPU, no pycolmap.
 """
@@ -42,16 +40,17 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import sqlite3
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Callable
 
 import numpy as np
 
-SCALE_ID = "coherence-scale:tri(solve-db-pairs,moge2-vitl)/1"
+# The COLMAP pair-id base and the unverified TwoViewGeometry configs (UNDEFINED, DEGENERATE) are the gate's.
+from tower.world_builder.coherence_gate import _COLMAP_PAIR_BASE, NOT_VERIFIED_CONFIGS
 
-NOT_VERIFIED_CONFIGS = (0, 1)  # COLMAP TwoViewGeometry UNDEFINED, DEGENERATE
-_COLMAP_PAIR_BASE = 2147483647
+SCALE_ID = "coherence-scale:tri(solve-db-pairs,moge2-vitl)/1"
 
 
 @dataclass(frozen=True)
@@ -104,8 +103,6 @@ def read_inlier_pairs(database_path, *, min_inliers: int = 5,
     """[(name_a, name_b, uv_a (k,2), uv_b (k,2))] for every verified two-view geometry of a COLMAP database:
     the pair's stored inlier matches over the two images' keypoints, in the database's pixel coordinates.
     Opened read-only and immutable, so a published database is never touched."""
-    import sqlite3
-
     uri = Path(database_path).resolve().as_uri() + "?mode=ro&immutable=1"
     con = sqlite3.connect(uri, uri=True)
     try:
@@ -233,7 +230,7 @@ def sample_nearest(depth: np.ndarray | None, uv) -> np.ndarray:
 
 def triangulate_midpoint(x1, x2, R, t):
     """Depths (z1, z2) of normalised correspondences under x2 ~ R x1 + t (least-squares midpoint along the two
-    rays) and the angle between the rays (degrees). `eval_placement.triangulate_midpoint`."""
+    rays) and the angle between the rays (degrees). The harness's `eval_placement.triangulate_midpoint`."""
     f1 = np.c_[x1, np.ones(len(x1))]
     f2 = np.c_[x2, np.ones(len(x2))]
     a = f1 @ R.T
@@ -252,7 +249,8 @@ def triangulate_midpoint(x1, x2, R, t):
 
 
 def sampson_px(R, t, x1, x2, f):
-    """Per-correspondence Sampson error in pixels (focal `f`). `eval_placement.sampson_px_each`."""
+    """Per-correspondence Sampson error in pixels (focal `f`).
+    The harness's `eval_placement.sampson_px_each`."""
     t = t / (np.linalg.norm(t) + 1e-15)
     tx = np.array([[0, -t[2], t[1]], [t[2], 0, -t[0]], [-t[1], t[0], 0]])
     E = tx @ R
@@ -325,14 +323,15 @@ def metric_scale(cameras: ScaleCameras, pairs, camera: dict,
         uv = np.c_[xy[:, 0] * fx + cx, xy[:, 1] * fy + cy]
         zm = np.asarray(depth_sample(cameras.names[i], uv), dtype=np.float64)
         ok = np.isfinite(zm) & (zm > params.valid_min_m) & (zm < params.valid_max_m)
-        if int(ok.sum()) < params.min_samples:
+        n_ok = int(ok.sum())
+        if n_ok < params.min_samples:
             continue
         lr = np.log(z[ok] / zm[ok])
         med = float(np.median(lr))
         if not math.isfinite(med):
             continue
         metric_log[cameras.names[i]] = med
-        samples[cameras.names[i]] = int(ok.sum())
+        samples[cameras.names[i]] = n_ok
         spread[cameras.names[i]] = float(1.4826 * np.median(np.abs(lr - med)))
     return {"metric_log": metric_log, "samples": samples, "spread": spread,
             "pairs_used": used, "inliers_total": total, "inliers_gated": gated,

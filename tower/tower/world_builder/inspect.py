@@ -13,7 +13,6 @@ identical once both render as 0.
 
 from dataclasses import dataclass
 
-from tower.world_builder.records import format_distance
 from tower.world_builder.schema import (
     POSE_STATUS_ANCHOR,
     POSE_STATUS_SOLVED,
@@ -58,20 +57,8 @@ class WorldView:
         self._world = store.read_world(world_id)
 
     @property
-    def world(self):
-        return self._world
-
-    @property
     def world_id(self) -> str:
         return self._world.world_id
-
-    @property
-    def scale(self):
-        return self._world.scale
-
-    def format_distance(self, value: float) -> str:
-        """Never prints metres unless the scale genuinely licenses it."""
-        return format_distance(value, self._world.scale)
 
     def session_ids(self) -> list[str]:
         return self._store.list_session_ids(self.world_id)
@@ -95,11 +82,7 @@ class WorldView:
                     degeneracy_counts[reason] = degeneracy_counts.get(reason, 0) + 1
             points = len(derived["points"])
 
-        segments = (
-            len({keyframe.segment_index for keyframe in keyframes})
-            if keyframes
-            else 0
-        )
+        segments = len({keyframe.segment_index for keyframe in keyframes})
 
         return SessionView(
             session_id=session_id,
@@ -128,9 +111,8 @@ class WorldView:
         Returns every keyframe in order with its pose when one was
         solved, its image path, and its segment. A consumer walking this
         list has everything needed to show the reconstructed path and to
-        step into the wearer's original view at any point along it --
-        which is why no Tower-side "replay" feature is needed beyond
-        persisting what is already persisted.
+        step into the wearer's original view at any point along it, so
+        replay needs no Tower-side feature of its own.
 
         Entries whose pose was refused carry ``pose: None`` and keep their
         degeneracy reason, so a viewer can show the gap honestly rather
@@ -155,8 +137,8 @@ class WorldView:
                     "keyframe_id": keyframe.keyframe_id,
                     "source_seq": keyframe.source_seq,
                     # THE SEGMENT THE POSE IS IN -- the derived row's, which a gated solve
-                    # may have split off the tracker's (review V7, M1); the pose is only
-                    # meaningful in that segment's frame. The tracker's when there is no row.
+                    # may have split off the tracker's; the pose is only meaningful in
+                    # that segment's frame. The tracker's when there is no row.
                     "segment_index": (int(row["segment_index"]) if row and row.get("segment_index")
                                       is not None else keyframe.segment_index),
                     "tracker_segment_index": keyframe.segment_index,
@@ -187,10 +169,6 @@ class WorldView:
         """
         return self._store.read_events(self.world_id, session_id, after_event_id)
 
-    def points(self, session_id: str) -> list[list[float]]:
-        derived = self._store.read_derived(self.world_id, session_id)
-        return [] if derived is None else derived["points"]
-
     def to_report(self) -> dict:
         sessions = [
             _session_report(self.session(session_id))
@@ -220,15 +198,11 @@ class WorldView:
 def _downgrade_report(view: SessionView) -> str:
     """"Not downgraded" and "never built" are different answers.
 
-    `backend_downgraded_from` is None in both cases, and rendering both
-    as "unknown" is how a session that ran the calibrated backend cleanly
-    came out reading `downgraded_from unknown` -- which an operator
-    checking a fresh calibration reads as a downgrade from a backend
-    nobody can name. That is the exact question this report exists to
-    answer, so it answers it.
-
-    A session that has never been built has no `backend_id` either, and
-    for that one "unknown" is the truth.
+    `backend_downgraded_from` is None in both cases. A session that has a
+    `backend_id` and no downgrade reads `none`; rendering it as `unknown`
+    would look like a downgrade from a backend nobody can name. A session
+    that has never been built has no `backend_id` either, and for that one
+    `unknown` is the truth.
     """
     if view.downgraded_from:
         return view.downgraded_from
@@ -258,10 +232,6 @@ def _session_report(view: SessionView) -> dict:
     }
 
 
-def open_world(root, world_id: str) -> WorldView:
-    return WorldView(WorldStore(root), world_id)
-
-
 def render_text(report: dict) -> str:
     lines = [
         "=== World ===",
@@ -279,8 +249,9 @@ def render_text(report: dict) -> str:
     if report["scale"]["state"] == SCALE_UNKNOWN:
         # States the RULE rather than one of its two causes. `unknown` is
         # set both by "no solved pose" and by "more than one segment,
-        # each with its own arbitrary unit" -- so a world with 29 solved
-        # poses across 6 segments used to be told it had no solved pose.
+        # each with its own arbitrary unit" -- a world with 29 solved poses
+        # across 6 segments is `unknown` and must not read as having no
+        # solved pose.
         lines.append(
             "note            no unit at all -- that needs solved poses "
             "inside a SINGLE segment"
