@@ -89,7 +89,8 @@ def test_f2_noise_alone_makes_no_excursion():
 def test_f3_a_distant_island_never_rejoins_across_an_untestable_gap():
     # 0..9 at 0 m; a hard 81 m step; 10..19 at 81 m for a long stay (10 s apart: not testable inside); a
     # hard 81 m step; 20..29 at 162 m. 9 -> 20 is 91 s and 11 journal indices apart: not a verified link.
-    centers = [[0.01 * i, 0.0, 0.0] for i in range(10)] + [[81.0 + 0.01 * i, 0.0, 0.0] for i in range(10)]         + [[162.0 + 0.01 * i, 0.0, 0.0] for i in range(10)]
+    centers = [[0.01 * i, 0.0, 0.0] for i in range(10)] + [[81.0 + 0.01 * i, 0.0, 0.0] for i in range(10)] \
+        + [[162.0 + 0.01 * i, 0.0, 0.0] for i in range(10)]
     times = [0.5 * i for i in range(10)] + [5.0 + 10.0 * i for i in range(10)] + [95.5 + 0.5 * i for i in range(10)]
     out = FSG.assess_v2(_cams(30, centers=centers, times=times), _levels(30, []))
     assert out["pose"]["would_isolate_keyframes"] == 20

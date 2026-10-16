@@ -68,10 +68,6 @@ def _levels(n, spec, *, noise=0.0, seed=0, missing=()):
     return {f"{i:08d}.jpg": float(v[i]) for i in range(n) if i not in set(missing)}
 
 
-def _isolated(out):
-    return {kid: p["reason"] for p in out["pieces"] for kid in p["keyframe_ids"]}
-
-
 def _ids(a, b):
     return {f"s:{i:08d}" for i in range(a, b)}
 
