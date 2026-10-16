@@ -196,8 +196,9 @@ def _world_build_spec(settings: Settings, gate=None) -> WorkerSpec | None:
     stops the child through stdin with a 30 s grace and carries the optional
     `gate`, a callable the supervisor asks when a capture opens.
 
-    Why an argv and not an import: this function and its neighbour are the
-    only places in the web process that build a world builder's or an
+    Why an argv and not an import: the `_*_spec` builders here
+    (`_world_build_spec`, `_world_finish_spec`, `_observation_spec`) are
+    the only places in the web process that build a world builder's or an
     object memory's child command line, and `test_shared_code_does_not_import_a_cartridge` forbids
     transport, config and the module system from importing a cartridge, on
     the grounds that "the next cartridge inherits its assumptions". A
