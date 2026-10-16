@@ -64,23 +64,6 @@ logger = logging.getLogger(__name__)
 DENSE_SCHEMA_VERSION = 1
 
 
-def _pid_is_running(pid: int) -> bool:
-    """The store's own liveness probe, not os.kill.
-
-    The signal-based probe is a console-signal call on Windows and reported a
-    freshly dead process as still alive in testing, which would strand a lock
-    forever. On any failure this answers "running", because refusing to start
-    is recoverable and stealing a live lock is not.
-    """
-    from tower.world_builder.store import _pid_is_running as _probe  # noqa: PLC0415
-
-    try:
-        return bool(_probe(pid))
-    except Exception:  # noqa: BLE001
-        return True
-
-
-
 # Parameters that do not change a single point of the output. Comparing them
 # when deciding whether an artifact is already what was asked for made
 # `--keep-intermediates` -- the flag the operations doc calls the one for the
