@@ -1,26 +1,24 @@
 """The final-solve scale and pose publication guard (`world_builder/final_scale_guard.py`): the PURE
-assessment.
-
-Design: RUN review/codex/cx-SCALE-GUARD-DESIGN-20261006.md. The publish seam, end to end, is in
-`test_world_builder_final_scale_guard_seam.py`.
+pieces. The rule the seam runs (`assess_v2`) is in `test_world_builder_final_scale_guard_v2.py`; the publish
+seam, end to end, is in `test_world_builder_final_scale_guard_seam.py`.
 
 Pinned here:
-  * thresholds [0.8, 1.25] (inclusive) and the clear boundary 0.75 / 1.333, the 10-ratio rule on both
-    sides, borderline is `final-scale-uncertified` never `final-scale-outlier`, a short stretch inherits
-    only inside the band and between certified plateaus, plateaus never cross gate groups, the reference is
-    the dominant core (a contaminated median does not pick the room), the pose screen (hard steps,
-    warnings, rejoin, severe and non-finite poses, metres at the reference scale), and the withhold;
-  * THE WALK-3 x2.56 BATHROOM on a synthetic fixture shaped like it (820 keyframes; the published bathroom
-    729-819 at x3.19 / x2.40 with an unmeasured doorway, the desk stretch 74-83 at x3.13);
+  * the params and their digest, and `ratio_reason` decided in log at the boundaries 0.8 / 1.25 and
+    0.75 / 1.333;
+  * the pose screen, as `assess_v2` records it (hard steps, warnings, rejoin, severe and non-finite poses,
+    metres at the reference scale), which isolates nothing;
+  * the shared fixture the seam tests import (`W3_N`, `W3_BATHROOM`, `_w3_levels`): 820 keyframes shaped
+    like the walk-3 published solve -- the bathroom 729-819 at x3.19 / x2.40 with an unmeasured doorway,
+    the desk stretch 74-83 at x3.13;
   * the contract's reasons and the summary (no figure).
 """
 
 from __future__ import annotations
 
+import json
 import math
 
 import numpy as np
-import pytest
 
 from tower.world_builder import coherence_gate as CG
 from tower.world_builder import final_scale_guard as FSG
@@ -78,31 +76,6 @@ def _ids(a, b):
     return {f"s:{i:08d}" for i in range(a, b)}
 
 
-def test_a_coherent_room_is_published_whole():
-    out = FSG.assess(_cams(200), _levels(200, [], noise=0.05))
-    assert out["decision"] == "publish"
-    assert out["pieces"] == []
-    assert len(out["room_keyframes"]) == 200
-
-
-@pytest.mark.parametrize("ratio, reason", [
-    (1.25, None), (0.8, None), (1.2, None), (0.85, None),          # inside the inclusive screen band
-    (1.26, FSG.REASON_SCALE_UNCERTIFIED), (0.79, FSG.REASON_SCALE_UNCERTIFIED),   # borderline
-    (1.333, FSG.REASON_SCALE_UNCERTIFIED), (0.75, FSG.REASON_SCALE_UNCERTIFIED),  # the clear boundary itself
-    (1.34, FSG.REASON_SCALE_OUTLIER), (0.74, FSG.REASON_SCALE_OUTLIER),          # clear failures
-    (2.56, FSG.REASON_SCALE_OUTLIER), (0.0833, FSG.REASON_SCALE_OUTLIER),
-])
-def test_the_screen_and_clear_boundaries(ratio, reason):
-    out = FSG.assess(_cams(150), _levels(150, [(60, 90, ratio)]))
-    got = _isolated(out)
-    if reason is None:
-        assert got == {}
-    else:
-        assert got == {k: reason for k in _ids(60, 90)}
-        (piece,) = out["pieces"]
-        assert piece["basis"] == "scale" and piece["measured"] == 30
-
-
 def test_ratio_reason_is_decided_in_log():
     # The plateau's own log ratio decides, so a boundary value is decided once.
     assert FSG.ratio_reason(L(1.25), P) is None and FSG.ratio_reason(L(0.8), P) is None
@@ -110,86 +83,6 @@ def test_ratio_reason_is_decided_in_log():
     assert FSG.ratio_reason(L(1.333), P) == FSG.REASON_SCALE_UNCERTIFIED
     assert FSG.ratio_reason(L(1.3331), P) == FSG.REASON_SCALE_OUTLIER
     assert FSG.ratio_reason(L(0.7499), P) == FSG.REASON_SCALE_OUTLIER
-
-
-def test_borderline_is_never_called_an_outlier_whatever_its_interval():
-    # x1.2525: the walk-6 simple bathroom (84 measured), 0.0025 beyond the screen.
-    out = FSG.assess(_cams(400), _levels(400, [(300, 384, 1.2525)]))
-    (piece,) = out["pieces"]
-    assert piece["reason"] == FSG.REASON_SCALE_UNCERTIFIED
-    assert piece["ci"][0] > 1.0 and piece["ci_excludes_one"] is True      # recorded, not decisive
-
-
-@pytest.mark.parametrize("n_bad, reason", [(10, FSG.REASON_SCALE_OUTLIER), (9, FSG.REASON_SCALE_UNCERTIFIED)])
-def test_ten_ratios_certify_a_plateau_and_nine_do_not(n_bad, reason):
-    out = FSG.assess(_cams(120), _levels(120, [(60, 60 + n_bad, 3.0)]))
-    assert _isolated(out) == {k: reason for k in _ids(60, 60 + n_bad)}
-
-
-def test_a_short_stretch_inside_the_band_inherits_only_between_certified_plateaus():
-    # Unmeasured cameras inside a certified plateau are kept with it.
-    out = FSG.assess(_cams(100), _levels(100, [], missing=range(40, 47)))
-    assert out["pieces"] == []
-    # An unmeasured stretch at the end of the room has one certified neighbour: it is not inherited...
-    # ...but it joins the plateau before it (the nearest measured camera), so it is kept.
-    out = FSG.assess(_cams(100), _levels(100, [], missing=range(93, 100)))
-    assert out["pieces"] == []
-
-
-def test_a_short_off_level_stretch_is_not_inherited():
-    # 7 cameras at x3 between two certified plateaus: a measured deviation with too few ratios.
-    out = FSG.assess(_cams(100), _levels(100, [(50, 57, 3.0)]))
-    assert _isolated(out) == {k: FSG.REASON_SCALE_UNCERTIFIED for k in _ids(50, 57)}
-    row = [r for r in out["plateaus"] if r["first_index"] == 50][0]
-    assert row["class"] == FSG.HIGH and row["measured"] == 7 and row["decision"] == "isolated"
-
-
-def test_a_whole_gate_group_without_ten_ratios_is_an_uncertified_attachment():
-    group = lambda i: "anchor:a" if i < 60 else "group:b"  # noqa: E731
-    out = FSG.assess(_cams(68, group=group), _levels(68, []), )
-    assert _isolated(out) == {k: FSG.REASON_SCALE_UNCERTIFIED for k in _ids(60, 68)}
-    # With ten, at the room's level, it stays.
-    out = FSG.assess(_cams(70, group=group), _levels(70, []))
-    assert out["pieces"] == []
-
-
-def test_plateaus_do_not_cross_gate_groups():
-    group = lambda i: "anchor:a" if i < 50 else "group:b"  # noqa: E731
-    out = FSG.assess(_cams(80, group=group), _levels(80, [(50, 80, 2.0)]))
-    assert _isolated(out) == {k: FSG.REASON_SCALE_OUTLIER for k in _ids(50, 80)}
-    assert {r["group"] for r in out["plateaus"]} == {"anchor:a", "group:b"}
-
-
-def test_the_reference_is_the_dominant_core_not_a_contaminated_median():
-    # 100 cameras at the room's level, 60 at x1.5 and 60 at x2.2: the median of all 220 sits on the x1.5
-    # block (which would make it the room); the guard's reference is the dominant level.
-    levels = _levels(220, [(100, 160, 1.5), (160, 220, 2.2)])
-    assert np.median(list(levels.values())) == pytest.approx(L(1.5))
-    out = FSG.assess(_cams(220), levels)
-    assert out["reference"]["log"] == pytest.approx(0.0)
-    assert set(_isolated(out)) == _ids(100, 220)
-    assert set(out["room_keyframes"]) == _ids(0, 100)
-
-
-def test_the_reference_is_refined_from_the_certified_core():
-    # The densest window spans the room and a x1.2 block; the refined reference is the room's own median.
-    out = FSG.assess(_cams(300), _levels(300, [(200, 230, 1.2), (250, 300, 3.0)], noise=0.02))
-    assert out["reference"]["rounds"] >= 1
-    assert set(_isolated(out)) == _ids(250, 300)
-    assert abs(out["reference"]["log"] - float(np.median([0.0] * 200 + [L(1.2)] * 30))) < 0.05
-
-
-def test_fewer_than_ten_room_ratios_withhold():
-    out = FSG.assess(_cams(40), _levels(40, [], missing=range(9, 40)))
-    assert out["decision"] == "withhold" and "9 cameras" in out["why"]
-    out = FSG.assess(_cams(40), _levels(40, [], missing=range(10, 40)))
-    assert out["decision"] == "publish"
-
-
-def test_a_room_whose_every_plateau_is_off_withholds():
-    # Two blocks too far apart and too small to make a core: nothing certified (each < 10 ratios).
-    out = FSG.assess(_cams(16), _levels(16, [(8, 16, 3.0)]))
-    assert out["decision"] == "withhold"
 
 
 # poses ---------------------------------------------------------------------
@@ -200,16 +93,17 @@ def _walk_centers(n, step=0.05):
 
 
 def test_a_normal_walk_has_no_pose_flag():
-    out = FSG.assess(_cams(100, centers=_walk_centers(100)), _levels(100, []))
+    out = FSG.assess_v2(_cams(100, centers=_walk_centers(100)), _levels(100, []))
     assert out["pose"]["flags"] == [] and out["pose"]["warnings"] == [] and out["pieces"] == []
+    assert out["pose"]["would_isolate_keyframes"] == 0
 
 
-def test_a_one_camera_spike_is_its_own_pose_piece_and_the_walk_rejoins():
+def test_a_one_camera_spike_would_be_its_own_pose_piece_and_the_walk_rejoins():
     centers = _walk_centers(100)
     centers[50] = [80.0, 0.0, 0.0]          # 81 m away for one frame, then back (walk-6 534->535)
-    out = FSG.assess(_cams(100, centers=centers), _levels(100, []))
-    assert _isolated(out) == {"s:00000050": FSG.REASON_POSE_OUTLIER}
-    assert len(out["room_keyframes"]) == 99
+    out = FSG.assess_v2(_cams(100, centers=centers), _levels(100, []))
+    assert out["pose"]["would_isolate_keyframes"] == 1
+    assert len(out["room_keyframes"]) == 100
     assert out["pose"]["flag_counts"]["hard-step"] == 2
 
 
@@ -217,18 +111,17 @@ def test_a_small_speed_exceedance_is_a_warning_only():
     centers = _walk_centers(100)
     for i in range(50, 100):
         centers[i] = [centers[i][0] + 1.5, 0.0, 0.0]    # 1.55 m in 0.5 s: allowance 1.3, hard limit 2.6
-    out = FSG.assess(_cams(100, centers=centers), _levels(100, []))
-    assert out["pieces"] == []
+    out = FSG.assess_v2(_cams(100, centers=centers), _levels(100, []))
+    assert out["pieces"] == [] and out["pose"]["would_isolate_keyframes"] == 0
     assert out["pose"]["warning_counts"] == {"speed": 1}
 
 
-def test_a_hard_one_sided_jump_isolates_the_smaller_side_as_its_own_piece():
+def test_a_hard_one_sided_jump_would_isolate_the_smaller_side():
     centers = _walk_centers(100)
     for i in range(70, 100):
         centers[i] = [centers[i][0] + 6.0, 0.0, 0.0]    # 6 m in 0.5 s, and the walk continues there
-    out = FSG.assess(_cams(100, centers=centers), _levels(100, []))
-    assert _isolated(out) == {k: FSG.REASON_POSE_OUTLIER for k in _ids(70, 100)}
-    assert len([p for p in out["pieces"] if p["basis"] == "pose"]) == 1
+    out = FSG.assess_v2(_cams(100, centers=centers), _levels(100, []))
+    assert out["pose"]["would_isolate_keyframes"] == 30
 
 
 def test_a_speed_exceedance_corroborated_by_a_vertical_step_is_hard():
@@ -236,8 +129,8 @@ def test_a_speed_exceedance_corroborated_by_a_vertical_step_is_hard():
     for i in range(80, 100):
         centers[i] = [centers[i][0] + 0.5, 1.2, 0.0]    # 1.3 m in 0.5 s, 1.2 m of it vertical
     # camera "up" is -Y of the camera; the room's median up is the world -Y, so Y is vertical.
-    out = FSG.assess(_cams(100, centers=centers), _levels(100, []))
-    assert set(_isolated(out)) == _ids(80, 100)
+    out = FSG.assess_v2(_cams(100, centers=centers), _levels(100, []))
+    assert out["pose"]["would_isolate_keyframes"] == 20
 
 
 def test_a_multi_defect_camera_is_quarantined_and_a_single_defect_is_not():
@@ -249,8 +142,8 @@ def test_a_multi_defect_camera_is_quarantined_and_a_single_defect_is_not():
     times = [0.5 * i for i in range(100)]
     times[60] = times[59] + 3.0                         # not a testable step either side
     times[61:] = [t + 6.0 for t in times[61:]]
-    out = FSG.assess(_cams(100, centers=centers, rotations=rots, times=times), _levels(100, []))
-    assert _isolated(out) == {"s:00000060": FSG.REASON_POSE_OUTLIER}
+    out = FSG.assess_v2(_cams(100, centers=centers, rotations=rots, times=times), _levels(100, []))
+    assert out["pose"]["would_isolate_keyframes"] == 1
     assert out["pose"]["defects"]["s:00000030"] == ["flip"]
 
 
@@ -258,8 +151,8 @@ def test_a_non_finite_pose_is_quarantined():
     centers = _walk_centers(50)
     cams = _cams(50, centers=centers)
     cams[20].tvec = np.array([np.nan, 0.0, 0.0])
-    out = FSG.assess(cams, _levels(50, []))
-    assert _isolated(out) == {"s:00000020": FSG.REASON_POSE_OUTLIER}
+    out = FSG.assess_v2(cams, _levels(50, []))
+    assert out["pose"]["would_isolate_keyframes"] == 1 and out["pose"]["nonfinite"] == 1
 
 
 def test_the_pose_screen_reads_metres_at_the_reference_scale():
@@ -268,17 +161,17 @@ def test_the_pose_screen_reads_metres_at_the_reference_scale():
     centers = _walk_centers(100, step=0.01)
     for i in range(50, 100):
         centers[i] = [centers[i][0] + 1.0, 0.0, 0.0]
-    out = FSG.assess(_cams(100, centers=centers), _levels(100, [(0, 100, 0.25)]))
-    assert set(_isolated(out)) == _ids(50, 100)
-    out = FSG.assess(_cams(100, centers=centers), _levels(100, [(0, 100, 1.0)]))
-    assert out["pieces"] == []
+    out = FSG.assess_v2(_cams(100, centers=centers), _levels(100, [(0, 100, 0.25)]))
+    assert out["pose"]["would_isolate_keyframes"] == 50
+    out = FSG.assess_v2(_cams(100, centers=centers), _levels(100, [(0, 100, 1.0)]))
+    assert out["pose"]["would_isolate_keyframes"] == 0
 
 
 # ---------------------------------------------------------------------------
-# scale-ratio case: two sustained high-ratio stretches (x3.19 / x2.40, an unmeasured gap between them) at
-# the end of the walk and one short x3.13 stretch early on. The numbers are copied from the historical
-# walk-3 published solve (its x2.56 bathroom and a desk stretch), but the case tests the MECHANISM --
-# label-free plateau isolation on ratios -- not anything about bathrooms or that room.
+# scale-ratio fixture (imported by the seam tests): two sustained high-ratio stretches (x3.19 / x2.40, an
+# unmeasured gap between them) at the end of the walk and one short x3.13 stretch early on. The numbers are
+# copied from the walk-3 published solve (its x2.56 bathroom and a desk stretch); the case exercises the
+# MECHANISM -- label-free plateau isolation on ratios -- not anything about bathrooms or that room.
 # ---------------------------------------------------------------------------
 
 W3_N = 820
@@ -294,20 +187,6 @@ def _w3_levels(seed=3):
     rng = np.random.default_rng(seed)
     missing = set(range(792, 796)) | set(int(i) for i in rng.choice(np.arange(0, 729), 60, replace=False))
     return _levels(W3_N, W3_BAD, noise=0.08, seed=seed, missing=missing)
-
-
-def test_sustained_high_ratio_stretches_and_a_short_one_are_isolated_and_the_room_stays_pure():
-    out = FSG.assess(_cams(W3_N, centers=_walk_centers(W3_N, step=0.01)), _w3_levels())
-    assert out["decision"] == "publish"
-    room = set(out["room_keyframes"])
-    iso = _isolated(out)
-    bathroom = {f"s:{i:08d}" for i in W3_BATHROOM}
-    assert not (room & bathroom), "a bathroom keyframe stayed in the room"
-    assert bathroom <= set(iso)
-    assert {iso[k] for k in bathroom} == {FSG.REASON_SCALE_OUTLIER}
-    assert _ids(74, 84) <= set(iso)
-    # ...and nothing else left the room.
-    assert set(iso) == bathroom | _ids(74, 84)
 
 
 # contract ------------------------------------------------------------------
@@ -332,3 +211,50 @@ def test_the_summary_carries_no_figure_and_no_wall_clock_stamp():
     assert out == {"id": FSG.GUARD_ID, "mode": "on", "decision": "published", "params_digest": P.digest(),
                    "pieces_isolated": 1, "keyframes_isolated": 2, "reasons": {FSG.REASON_SCALE_OUTLIER: 1},
                    "audit": FSG.AUDIT_FILENAME, "seconds": 1.235}
+
+
+# saved worlds ----------------------------------------------------------------
+
+
+def test_a_saved_world_that_carries_the_v1_guard_id_is_read_and_served_unchanged(tmp_path):
+    """The v1 assessor (`final-scale-guard/1`) is gone, but a world it stamped is still on disk: its
+    `solution.json` and its `final_scale_guard.json` carry that id. The readers pass the id through and
+    never branch on it: the solution loads with its `solve` block as written, and a withheld summary built
+    from the old audit names the old id, decision and reason verbatim."""
+    from pathlib import Path
+
+    from tests.test_world_builder_final_scale_guard_seam import _candidate
+    from tower.world_builder import global_solve as GS
+    from tower.world_builder.records import CameraIntrinsics, Keyframe
+
+    v1 = "final-scale-guard/1"
+    n = 30
+    kfs = [Keyframe(keyframe_id=f"s:{i:08d}", session_id="s", source_seq=i, received_at=1000.0 + 0.5 * i,
+                    image_relpath=f"images/{i:08d}.jpg", width=64, height=48, byte_count=1) for i in range(n)]
+    cam = CameraIntrinsics(source="self_calibrated", model="pinhole", fx=50.0, fy=50.0, cx=32.0, cy=24.0,
+                           calibrated_width=64, calibrated_height=48)
+    sol = _candidate(kfs, cam, centers=_walk_centers(n), islands=[(0, n)])
+    stamp = {"id": v1, "mode": "on", "decision": "published", "params_digest": P.digest(),
+             "pieces_isolated": 0, "keyframes_isolated": 0, "reasons": {}, "audit": FSG.AUDIT_FILENAME,
+             "seconds": 1.235}
+    sol.solve = {"final_scale_guard": stamp}
+
+    class _Store:
+        def world_dir(self, world_id):
+            return Path(tmp_path) / world_id
+
+    store = _Store()
+    ws = GS.workspace_for(store, "w", "s")
+    GS.write_solution(ws, sol)
+    loaded = GS.load_solution(store, "w", "s")
+    assert loaded is not None and loaded.solve == {"final_scale_guard": stamp}
+    assert json.loads(ws.solution_path.read_text(encoding="utf-8"))["solve"]["final_scale_guard"]["id"] == v1
+
+    (ws.root / FSG.AUDIT_FILENAME).write_text(json.dumps(
+        {"guard": v1, "decision": FSG.DECISION_WITHHELD,
+         "assessment": {"why": "the room has 9 cameras with a metric ratio; 10 are needed"}}), encoding="utf-8")
+    served = GS._withheld_summary(None, ws)
+    assert served["final_scale_guard"] == {"id": v1, "decision": FSG.DECISION_WITHHELD,
+                                           "why": "the room has 9 cameras with a metric ratio; 10 are needed"}
+    assert served["solved"] is False and served["withheld"] is True
+    assert served["reason"] == FSG.withheld_reason(served["final_scale_guard"])

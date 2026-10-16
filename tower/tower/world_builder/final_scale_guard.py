@@ -74,9 +74,6 @@ plateau's endpoint keyframe ids and each isolated piece's keyframe ids, journal 
 median ratio, bootstrap interval where computed, class and decision, and the pose flags and warnings. It
 also records timing and any error, so a scorer can see which segments were isolated and why. No ratio or metric
 figure ever reaches the components record or the phone (contract §2.4 rule 6).
-
-The v1 `assess`, `plateaus` and `_scale_round` functions remain for their direct tests. The publish seam
-calls `assess_v2`.
 """
 
 from __future__ import annotations
@@ -94,9 +91,8 @@ import numpy as np
 
 logger = logging.getLogger(__name__)
 
-# v2 is the rule the publish seam runs; v1's `assess` is not run there.
+# v2 is the rule the publish seam runs.
 GUARD_ID = "final-scale-guard/2"
-GUARD_ID_V1 = "final-scale-guard/1"
 RECORD = "wb-final-scale-guard/2"
 AUDIT_FILENAME = "final_scale_guard.json"
 
@@ -258,35 +254,6 @@ def ratio_reason(d: float, params: GuardParams) -> str | None:
     return REASON_SCALE_UNCERTIFIED
 
 
-def plateaus(values: np.ndarray, ref: float, params: GuardParams) -> list[tuple[int, int, str]]:
-    """[(start, end_exclusive, class)] over one group's cameras in capture order: maximal runs of one class
-    of the centred running median of the measured values. An unmeasured camera takes the class of the
-    nearest measured camera before it (after it, at the start); a group with none is one `None` run."""
-    n = len(values)
-    measured = np.flatnonzero(np.isfinite(values))
-    if not len(measured):
-        return [(0, n, None)] if n else []
-    y = values[measured]
-    h = params.smooth_half_window
-    cls_m = [classify(float(np.median(y[max(0, k - h):k + h + 1])) - ref, params) for k in range(len(y))]
-    cls = [None] * n
-    for k, i in enumerate(measured):
-        cls[int(i)] = cls_m[k]
-    first = cls_m[0]
-    last = None
-    for i in range(n):
-        if cls[i] is None:
-            cls[i] = last if last is not None else first
-        last = cls[i]
-    runs = []
-    start = 0
-    for i in range(1, n + 1):
-        if i == n or cls[i] != cls[start]:
-            runs.append((start, i, cls[start]))
-            start = i
-    return runs
-
-
 def bootstrap_interval(piece: np.ndarray, core: np.ndarray, params: GuardParams, salt: int) -> list[float]:
     """The deterministic percentile interval of median(piece) - median(core) in log, as RATIOS."""
     rng = np.random.default_rng([params.bootstrap_seed, int(salt), len(piece), len(core)])
@@ -297,51 +264,6 @@ def bootstrap_interval(piece: np.ndarray, core: np.ndarray, params: GuardParams,
     a = (1.0 - params.ci_level) / 2.0
     lo, hi = np.quantile(d, [a, 1.0 - a])
     return [round(math.exp(float(lo)), 4), round(math.exp(float(hi)), 4)]
-
-
-def _scale_round(groups: dict, values: dict, ref: float, params: GuardParams) -> list[dict]:
-    """One segmentation of every group against `ref`: the plateaus with their decisions."""
-    out = []
-    for gname, cams in groups.items():
-        vals = np.asarray([values.get(c.name, np.nan) for c in cams], np.float64)
-        runs = plateaus(vals, ref, params)
-        decided = []
-        for start, end, cls in runs:
-            seg = vals[start:end]
-            m = seg[np.isfinite(seg)]
-            d = float(np.median(m)) - ref if len(m) else None
-            entry = {"group": gname, "start": start, "end": end, "class": cls, "measured": int(len(m)),
-                     "ratio": None if d is None else math.exp(d), "cameras": cams[start:end], "values": m}
-            if len(m) >= params.min_ratios:
-                reason = ratio_reason(d, params)
-                entry["decision"] = "kept" if reason is None else "isolated"
-                entry["reason"] = reason
-                entry["certified"] = reason is None
-            else:
-                entry["decision"] = "short"
-                entry["reason"] = None
-                entry["certified"] = False
-            decided.append(entry)
-        # A stretch of short plateaus inherits only between two certified plateaus of this group, and only
-        # when none of it sits off the band: a short run with a measured deviation is not certified either
-        # way, and an unmeasured independent piece never gets a room claim.
-        i = 0
-        while i < len(decided):
-            if decided[i]["decision"] != "short":
-                i += 1
-                continue
-            j = i
-            while j < len(decided) and decided[j]["decision"] == "short":
-                j += 1
-            bounded = (i > 0 and decided[i - 1]["certified"] and j < len(decided) and decided[j]["certified"]
-                       and all(decided[k]["class"] in (IN, None) for k in range(i, j)))
-            for k in range(i, j):
-                decided[k]["decision"] = "inherited" if bounded else "isolated"
-                decided[k]["reason"] = None if bounded else REASON_SCALE_UNCERTIFIED
-            i = j
-        for row in decided:
-            out.extend(_split_excursions(row, values, ref, params))
-    return out
 
 
 def _excursions(cams: list, values: dict, ref: float, params: GuardParams) -> list[tuple[int, int]]:
@@ -518,94 +440,6 @@ def _pose_screen(cams: list[RoomCamera], mpu: float, params: GuardParams) -> dic
             "nonfinite": len(nonfinite), "defects": {k: v for k, v in sorted(defects.items())}}
 
 
-def assess(cameras: list[RoomCamera], metric_log: dict, params: GuardParams | None = None) -> dict:
-    """The v1 decision on one candidate room (run only by tests; the publish seam runs `assess_v2`). Pure: no IO.
-
-    `cameras`: the room's supported cameras in capture order; `metric_log`: {image name: log ratio}.
-    Returns {"decision": "publish" | "withhold", "why", "reference", "rounds", "plateaus", "pieces",
-    "pose", "room_keyframes", ...}; `pieces` are the isolated pieces, each {"keyframe_ids", "reason",
-    "basis", ...}, in capture order of their first camera."""
-    params = params or GuardParams()
-    values = {c.name: float(v) for c in cameras for v in [metric_log.get(c.name)]
-              if v is not None and math.isfinite(v)}
-    measured = np.asarray([values[c.name] for c in cameras if c.name in values], np.float64)
-    base = {"guard": GUARD_ID_V1, "params": params.to_json(), "params_digest": params.digest(),
-            "room_candidate": len(cameras), "room_measured": int(len(measured))}
-    if len(measured) < params.min_ratios:
-        return dict(base, decision="withhold", pieces=[], plateaus=[], rounds=[], reference=None, pose=None,
-                    room_keyframes=[],
-                    why=f"the room has {len(measured)} cameras with a metric ratio; {params.min_ratios} "
-                        "are needed to certify it")
-    groups: dict[str, list[RoomCamera]] = {}
-    for c in cameras:
-        groups.setdefault(c.group, []).append(c)
-    ref = dominant_level(measured, params)
-    rounds = [{"reference_log": ref, "basis": "densest-window"}]
-    rows = _scale_round(groups, values, ref, params)
-    seen = {_signature(rows)}
-    for _ in range(params.max_reference_rounds):
-        core_vals = np.concatenate([r["values"] for r in rows if r["certified"]] or [np.zeros(0)])
-        if len(core_vals) < params.min_ratios:
-            break
-        new_ref = float(np.median(core_vals))
-        if abs(new_ref - ref) < 1e-12:
-            break
-        new_rows = _scale_round(groups, values, new_ref, params)
-        sig = _signature(new_rows)
-        rounds.append({"reference_log": new_ref, "basis": "certified-core-median"})
-        ref, rows = new_ref, new_rows
-        if sig in seen:
-            break
-        seen.add(sig)
-    core_vals = np.concatenate([r["values"] for r in rows if r["certified"]] or [np.zeros(0)])
-    reference = {"log": ref, "core_measured": int(len(core_vals)), "rounds": len(rounds)}
-    plateau_rows = []
-    pieces = []
-    for r in rows:
-        ids = [c.kid for c in r["cameras"]]
-        row = {"group": r["group"], "first_index": r["cameras"][0].index, "last_index": r["cameras"][-1].index,
-               "keyframes": len(ids), "measured": r["measured"], "class": r["class"], "kind": r.get("kind"),
-               "ratio": None if r["ratio"] is None else round(r["ratio"], 4),
-               "decision": r["decision"], "reason": r["reason"]}
-        if r["measured"] >= params.min_ratios and len(core_vals) and r["decision"] == "isolated":
-            row["ci"] = bootstrap_interval(r["values"], core_vals, params, salt=row["first_index"])
-            row["ci_excludes_one"] = bool(row["ci"][0] > 1.0 or row["ci"][1] < 1.0)
-        plateau_rows.append(row)
-        if r["decision"] == "isolated":
-            pieces.append(dict(row, basis="excursion" if r.get("kind") == "excursion" else "scale",
-                               keyframe_ids=ids))
-    if len(core_vals) < params.min_ratios:
-        return dict(base, decision="withhold", pieces=pieces, plateaus=plateau_rows, rounds=rounds,
-                    reference=reference, pose=None, room_keyframes=[],
-                    why=f"the certified room core has {len(core_vals)} cameras with a metric ratio; "
-                        f"{params.min_ratios} are needed")
-    kept = [c for r in rows if r["decision"] in ("kept", "inherited") for c in r["cameras"]]
-    kept.sort(key=lambda c: c.index)
-    mpu = math.exp(-ref)
-    pose = _pose_screen(kept, mpu, params)
-    for cams in pose["isolated"]:
-        m = [values[c.name] for c in cams if c.name in values]
-        pieces.append({"group": cams[0].group, "first_index": cams[0].index, "last_index": cams[-1].index,
-                       "keyframes": len(cams), "measured": len(m),
-                       "ratio": round(math.exp(float(np.median(m)) - ref), 4) if m else None,
-                       "decision": "isolated", "reason": REASON_POSE_OUTLIER, "basis": "pose",
-                       "keyframe_ids": [c.kid for c in cams]})
-    pieces.sort(key=lambda p: (p["first_index"], p["basis"]))
-    room = pose["room"]
-    room_measured = sum(1 for c in room if c.name in values)
-    pose_record = {"metres_per_unit": mpu, "room_poses": len(room), "flags": pose["flags"],
-                   "warnings": pose["warnings"], "nonfinite": pose["nonfinite"],
-                   "defects": pose.get("defects", {}),
-                   "flag_counts": _counts(pose["flags"]), "warning_counts": _counts(pose["warnings"])}
-    out = dict(base, reference=reference, rounds=rounds, plateaus=plateau_rows, pieces=pieces, pose=pose_record,
-               room_keyframes=[c.kid for c in room], room_certified_measured=room_measured)
-    if room_measured < params.min_ratios:
-        return dict(out, decision="withhold",
-                    why=f"after the pose screen the room has {room_measured} cameras with a metric ratio; "
-                        f"{params.min_ratios} are needed")
-    return dict(out, decision="publish", why=None)
-
-
 def _counts(items: list[dict]) -> dict:
     out: dict = {}
     for f in items:
@@ -621,8 +455,7 @@ def _counts(items: list[dict]) -> dict:
 # reference outside the inclusive [screen_low, screen_high]; and the deterministic 95 % bootstrap interval
 # of its median against the certified core (`bootstrap_draws`, `bootstrap_seed`) excludes 1. A plateau is
 # bounded by its FIRST and LAST MEASURED camera: unmeasured cameras inside it go with it, an unmeasured
-# head, tail or gap never does (unlike v1's `plateaus`, which carried a class across an arbitrarily long
-# unmeasured tail). Everything
+# head, tail or gap never does. Everything
 # else -- short plateaus, out-of-band plateaus whose interval includes 1, excursions, unmeasured stretches --
 # STAYS ATTACHED and is recorded `uncertified`, in the audit and on the placed component. No evidence: the
 # whole room is `uncertified`, nothing is isolated, nothing is withheld. No pose-only quarantine: the pose
