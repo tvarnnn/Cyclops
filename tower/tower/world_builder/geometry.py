@@ -210,8 +210,8 @@ def motion_direction(rotation: np.ndarray, translation: np.ndarray) -> np.ndarra
     -R.T @ t.
 
     Isolated in one function because getting it wrong is silent: a
-    179 deg translation error can be entirely this conversion while the
-    underlying geometry is correct to 0.075 deg.
+    translation error was measured at 179 deg, entirely this conversion,
+    with the underlying geometry correct to 0.075 deg.
     """
     direction = -rotation.T @ np.asarray(translation, dtype=np.float64).reshape(3)
     norm = np.linalg.norm(direction)

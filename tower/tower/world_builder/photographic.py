@@ -414,8 +414,11 @@ def room_photographic_state(store, world_id: str, session_id: str, session) -> d
                 # none. So an interrupted record on such a session is
                 # `unattempted`, not owed -- it would otherwise say
                 # "Improving" FOREVER, the false "Saved" from the other side.
-                # Kept in agreement with `assess()` by construction: both use
-                # the same refusals (`_appearance_is_expected`).
+                # `_appearance_is_expected` MIRRORS `assess()`'s refusals; it
+                # is separate code, so the two must be edited together. One
+                # difference: `assess()` lets a `no-final-solve` row through
+                # when `stale_final_solve` finds a published consensus solve
+                # under it, and `_appearance_is_expected` does not.
                 if not _appearance_is_expected(session):
                     return {
                         "state": PHOTOGRAPHIC_UNATTEMPTED,

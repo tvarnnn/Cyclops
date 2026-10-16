@@ -1,5 +1,4 @@
-"""The coherence gate: attach a piece of the final solve to the room only on independent, consistent
-evidence.
+"""The coherence gate: attach a piece of the final solve to the room only on independent, consistent evidence.
 
 WHY. Feature matches on the phone in the wearer's hand can glue pieces into the room (on 6e6d3fc3, a bathroom
 and a bed block) at a wrong tilt, scale and position. With the hand/arm/held-phone masks the glue is gone,

@@ -464,8 +464,8 @@ def optimise(
     # -- the sparsity structure, built ONCE ---------------------------
     #
     # WHICH observation pairs share a landmark does not change as the
-    # estimate moves, and rebuilding that inside the damping loop is the
-    # single largest cost in this function: a Python-level tile() per
+    # estimate moves, and rebuilding that inside the damping loop would be
+    # the single largest cost in this function: a Python-level tile() per
     # landmark per attempt, profiled at 140,000 calls over a 30-keyframe
     # walk. Everything below is index arithmetic on the FIXED structure,
     # and only the numbers flowing through it are recomputed.
@@ -728,9 +728,9 @@ def optimise(
 
         # BEFORE AND AFTER, and only the DIFFERENCE is actionable.
         #
-        # Not on the absolute angle, which measured removes 29% of the
-        # corpus's points, because plenty of landmarks
-        # sit below this bound honestly and `landmark_gate` already ruled
+        # Demoting on the absolute angle removes 29% of the corpus's points
+        # (measured), because plenty of landmarks sit below this bound
+        # honestly and `landmark_gate` already ruled
         # on them at creation with the same number. An adjustment has no
         # standing to re-litigate that.
         #

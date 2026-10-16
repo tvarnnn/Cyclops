@@ -32,10 +32,11 @@ The LOD ladder is a fraction of each scene's own median depth, so its point
 count follows the SIZE of the room, not the size of the payload. Measured over
 five real worlds the mobile level ranges from 39k points to 1.45 M -- 0.6 MB to
 23 MB, which is 31 MB of base64 for the largest. A phone must not be handed
-that: the existing 2-D viewer can kill the WebKit content process. So the
-page enforces a byte budget, and when a level exceeds it the points are
-thinned by a COARSER VOXEL GRID over the whole extent (`thin_to_budget`);
-a confidence trim is only the fallback for a residue the grid leaves.
+that: the existing 2-D viewer has been observed killing the WebKit content
+process. So the page enforces a byte budget, and when a level exceeds it the
+points are thinned by a COARSER VOXEL GRID over the whole extent
+(`thin_to_budget`); a confidence trim is only the fallback for a residue the
+grid leaves.
 """
 
 from __future__ import annotations
@@ -61,9 +62,9 @@ from tower.world_builder.dense_pipeline import (
 logger = logging.getLogger(__name__)
 
 # The page is one HTML string, so this is the whole transfer. 6 MB of binary is
-# about 8 MB of base64. A byte budget is the right unit: the sparse 2-D page can
-# kill the WKWebView content process well below that in point COUNT, and a GPU
-# buffer is far cheaper per point than the 2-D canvas.
+# about 8 MB of base64. A byte budget is the right unit: the sparse 2-D page has
+# been observed killing the WKWebView content process well below that in point
+# COUNT, and a GPU buffer is far cheaper per point than the 2-D canvas.
 MOBILE_BYTE_BUDGET = 6 * 1024 * 1024
 
 VIEWER_FILENAME = "dense_viewer.html"
