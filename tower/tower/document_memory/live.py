@@ -318,11 +318,9 @@ class DocumentLive(LiveSession):
     def _on_pause(self, engine) -> None:
         """Close an open dwell rather than losing it.
 
-        Records the dwell as `flushed_document_id` when one qualified. It
-        is not counted into `documents_recorded` here and that is
-        deliberate: the count a status reports is of documents this
-        SESSION recorded while observing, and a flush at teardown is
-        reported separately as `flushed_document_id` so an operator can
+        When a dwell qualified, it is counted like any other
+        (`documents_recorded`, or `documents_resighted` for a re-sighting)
+        and is also reported as `flushed_document_id`, so an operator can
         see that the last document arrived because the session ended
         rather than because the wearer looked away.
         """
