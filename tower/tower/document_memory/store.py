@@ -210,7 +210,8 @@ class DocumentStore:
 
         FILTERING IS THE DEFAULT. A store built with an 86-second window
         once served a 400-day-old document in full, while the response it
-        fed asserted that the window had been applied. A privacy control
+        fed asserted, in three separate strings, that the window had been
+        applied. A privacy control
         that reports success is what `06-PRIVACY-DATA.md` calls a false
         assurance, and it is why iOS ships no privacy toggle backed by a
         Tower it cannot verify.
