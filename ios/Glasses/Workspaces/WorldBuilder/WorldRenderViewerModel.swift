@@ -395,8 +395,10 @@ nonisolated struct WorldRenderClient {
     }
 }
 
-/// Owns one fetch of one page. Created by the sheet and destroyed with it;
-/// it holds a string, not a connection, so losing it loses nothing.
+/// Owns one fetch of one page. Its owner creates it and it goes with that
+/// owner: the viewer sheet's scene, or `WorldInlineHost`, which keeps one model
+/// across its inline and expanded views. It holds a string, not a connection,
+/// so losing it loses nothing.
 @MainActor
 final class WorldRenderViewerModel: ObservableObject {
     @Published private(set) var state: WorldRenderViewerState = .fetching {
@@ -634,7 +636,8 @@ final class WorldRenderViewerModel: ObservableObject {
             model: chrome, kind: target.isArea ? .area : .room,
             pageURL: WorldAssetScheme.pageURL(worldID: target.worldID, scope: assets.scope))
         self.web = WorldWebViewOwner(target: target, assets: assets, bridge: bridge)
-        // The second source of the research marker: the served header (§3.7).
+        // The second source of the research marker: the served `X-World-Imagery`
+        // headers (docs/contracts/WORLD-BUILDER-APPEARANCE.md §9; WORLD-BUILDER-IOS §10).
         assets.onImagery = { [weak chrome] imagery, warning in chrome?.noteImagery(imagery, warning: warning) }
         // The scene lays itself out by the chrome's mode, so it re-renders
         // when the chrome changes. The per-frame heading is a separate
