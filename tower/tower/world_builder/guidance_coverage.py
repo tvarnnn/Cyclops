@@ -562,8 +562,8 @@ def compute_coverage(*, solution, manifest, placements, poses, keyframes,
         eligible_out.extend((kid, ref) for ref in sorted(visible_refs)
                             for kid, _, _, _ in eligible[ref])
     if dial_out is not None:
-        # FOW dial (TOWER_WORLD_GUIDANCE_IMAGERY_LANDED only): B2 selection
-        # inputs. The coverage block below is built exactly as without it.
+        # FOW dial: B2 selection inputs. The coverage block below is built
+        # exactly as without it.
         # A dial failure must never cost B1 its receipt: drop the dial (B2 then
         # publishes nothing and keeps its last block) but let a cancellation or
         # deadline -- check() raises ValueError -- still stop the job.
@@ -737,17 +737,13 @@ class CoverageWorker:
         # Timed retries used per attempted candidate (evicted with it).
         self._retries = {}
         self._published = {}
-        self._imagery_landed = os.environ.get("TOWER_WORLD_GUIDANCE_IMAGERY_LANDED") == "on"
-        self._imagery_state = None
-        # One pending B2 retry (imagery-landed only): a landing whose tile job
-        # missed its budget is re-run once, at the next worker tick, for that
-        # same receipt; it is dropped if a newer receipt has published.
+        from tower.world_builder.guidance_imagery import LANDED_OVER_BUDGET, state_for
+        self._imagery_state = state_for(root)
+        # One pending B2 retry: a landing whose tile job missed its budget is
+        # re-run once, at the next worker tick, for that same receipt; it is
+        # dropped if a newer receipt has published.
         self._landed_retry = None
-        self._landed_over_budget = None
-        if self._imagery_landed:
-            from tower.world_builder.guidance_imagery import LANDED_OVER_BUDGET, state_for
-            self._imagery_state = state_for(root)
-            self._landed_over_budget = LANDED_OVER_BUDGET
+        self._landed_over_budget = LANDED_OVER_BUDGET
         # FOW v1.2 photo floor plan (TOWER_WORLD_PHOTO_FLOORPLAN, exactly `on`): its own
         # side worker, handed each NEWLY published receipt after publication. OFF imports
         # nothing and changes nothing here.
@@ -939,14 +935,10 @@ class CoverageWorker:
             failure = None
             try:
                 world, session, solved_at, horizon, stat = candidate
-                wants_eligible = self._imagery_landed or self._photo_worker is not None
-                imagery_eligible = [] if wants_eligible else None
-                kwargs = ({"eligible_out": imagery_eligible} if wants_eligible else {})
-                dial = None
-                if self._imagery_landed:
-                    # FOW dial (S3): B2's per-sector selection inputs.
-                    dial = {}
-                    kwargs["dial_out"] = dial
+                imagery_eligible = []
+                # FOW dial (S3): B2's per-sector selection inputs.
+                dial = {}
+                kwargs = {"eligible_out": imagery_eligible, "dial_out": dial}
                 photo_tree = None
                 if self._photo_worker is not None:
                     photo_tree = {}
@@ -973,8 +965,7 @@ class CoverageWorker:
                         self._block_session = (world, session)
                         self._successful_candidate = candidate
                         self._receipts[candidate] = (block, self._block)
-                        if self._imagery_state is not None:
-                            self._imagery_state.begin_landed(world, session)
+                        self._imagery_state.begin_landed(world, session)
                         self._published = {**self._published,
                                            (world, session): self._block}
                         if len(self._receipts) > _MEMO_LIMIT:
@@ -1003,7 +994,7 @@ class CoverageWorker:
                 candidate, elapsed_ms, reason, disposition)
             # Coverage is already published. Imagery can fail or miss its own
             # budget without delaying that receipt, Stop, or a status reply.
-            if block is not None and disposition == "ok" and self._imagery_landed:
+            if block is not None and disposition == "ok":
                 outcome = None
                 # A newer receipt supersedes any retry still owed for this session.
                 if self._landed_retry is not None and self._landed_retry[:2] == (world, session):
