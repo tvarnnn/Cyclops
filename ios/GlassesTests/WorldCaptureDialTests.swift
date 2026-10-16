@@ -2,7 +2,7 @@
 //  WorldCaptureDialTests.swift
 //  GlassesTests
 //
-//  FOW-RING-SPEC (2026-10-12) S1-S3, iOS: the capture dial's model on the
+//  S1-S3, iOS: the capture dial's model on the
 //  15 real coverage blocks, its gap and words, its photos from today's wire
 //  (S2) and from the Tower's own bins (S3), the additive B2 fields read
 //  fail-closed, the walk cue, the single look-here segment, the photos

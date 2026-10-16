@@ -54,7 +54,7 @@ nonisolated struct WorldImageryEntry: Equatable, Sendable {
     let componentReferenceSegment: Int?
     /// Live only: the segment it was taken in.
     let segmentIndex: Int?
-    /// Landed only, additive (FOW-RING-SPEC §7 S3): the Tower's own 0-11
+    /// Landed only, additive (S3): the Tower's own 0-11
     /// bin of the keyframe's look direction, agreeing with the coverage
     /// masks. `nil` from a Tower that does not send it; a row that sends a
     /// malformed one is dropped, never repaired.
@@ -577,7 +577,7 @@ final class WorldImageryModel: ObservableObject {
     }
 
     /// Every tile the current landing's manifest named failed: its photos
-    /// are unavailable (FOW-RING-SPEC §3.4; the dial keeps its last ones).
+    /// are unavailable (the dial keeps its last ones).
     private func giveUpIfNoLandedTile() {
         guard let landed = imagery.value.landed, let landing, landed.landing == landing,
               nextMissing(.landed) == nil,
@@ -633,7 +633,7 @@ nonisolated struct WorldLandedThumbnail: Equatable, Identifiable {
 nonisolated struct WorldLandedOverlay: Equatable {
     let receipt: WorldCoverageReceipt
     let thumbnails: [WorldLandedThumbnail]
-    /// The capture dial's tiles (FOW-RING-SPEC §3.4), and S3's `latest` and
+    /// The capture dial's tiles, and S3's `latest` and
     /// `motion_sector`, all of the same landing as `receipt`.
     var dialEntries: [WorldDialThumbnail] = []
     var latest: WorldImageryLanded.Latest? = nil
@@ -691,7 +691,7 @@ nonisolated enum WorldLandedPlacement {
         }
     }
 
-    /// The capture dial's S2 join (FOW-RING-SPEC §3.4): each entry's look
+    /// The capture dial's S2 join: each entry's look
     /// direction on its own piece, by digest, joined exactly as `place`
     /// joins it -- a pose of a chunk placed in the entry's component and the
     /// landing's frame -- but without the map's station-cell test: the dial

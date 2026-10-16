@@ -2,7 +2,7 @@
 //  WorldCaptureDialView.swift
 //  Glasses
 //
-//  The FOW capture dial, drawn (FOW-RING-SPEC §4): twelve rounded annular
+//  The FOW capture dial, drawn: twelve rounded annular
 //  segments with constant 3 pt gaps on an always-dark stage, start fixed at
 //  12 o'clock (never turned), the piece's photos in its filled segments, the
 //  count in the centre, the amber "scan here" outline on the largest gap,

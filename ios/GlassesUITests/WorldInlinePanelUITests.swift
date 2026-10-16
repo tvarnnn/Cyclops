@@ -657,7 +657,7 @@ final class WorldInlinePanelUITests: XCTestCase {
 
     // MARK: FOW v1: the coverage map
 
-    /// The mock Tower serves FOW §9's fixtures (the Map tab on). No
+    /// The mock Tower serves the FOW fixtures (the Map tab on). No
     /// `guidance` draws neither map nor dial; `coverage:null` draws the dial
     /// awaiting views and no map; the mid-walk block draws two separate
     /// pieces with grey, muted and colored headings under its dated label,
@@ -731,7 +731,7 @@ final class WorldInlinePanelUITests: XCTestCase {
 
     // MARK: FOW-RING: the capture dial
 
-    /// The dial and IOS_FOW_MAP_TAB=on with FOW §9's receipts.
+    /// The dial and IOS_FOW_MAP_TAB=on with the FOW fixture receipts.
     /// Before the first landing the dial is drawn empty, its one footer line
     /// "Waiting for first views", under its fixed title, with no control (no
     /// map yet); the mid-walk receipt fills it from the hero piece's union,

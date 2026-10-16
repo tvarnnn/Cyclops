@@ -2,7 +2,7 @@
 //  WorldCaptureDial.swift
 //  Glasses
 //
-//  The FOW capture dial (FOW-RING-SPEC 2026-10-12): a ring of twelve
+//  The FOW capture dial: a ring of twelve
 //  directions that fills as the Tower's landed solves give each direction
 //  two or more views, one dial per piece, with the piece's own photos in
 //  its filled segments. This file is the pure model and its words; the

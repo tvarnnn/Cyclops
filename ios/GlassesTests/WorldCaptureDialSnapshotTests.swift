@@ -2,7 +2,7 @@
 //  WorldCaptureDialSnapshotTests.swift
 //  GlassesTests
 //
-//  FOW-RING-SPEC §7: the capture dial's snapshots, for the owner's review.
+//  The capture dial's snapshots, for the owner's review.
 //  Each renders the REAL walking panel (`WorldInlinePanel`, stage and
 //  footer) in a window at an iPhone's width, from a real coverage block,
 //  with 160 x 90 tiles drawn here as stand-ins for the Tower's redacted
