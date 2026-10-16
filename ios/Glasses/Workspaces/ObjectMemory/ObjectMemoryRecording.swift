@@ -221,14 +221,6 @@ nonisolated enum ObjectMemoryRecordingPhase: Equatable, Sendable {
             return false
         }
     }
-
-    /// Whether an action asked for from this screen has not resolved yet.
-    var isInFlight: Bool {
-        switch self {
-        case .starting, .pausing, .resuming, .stopping: return true
-        default: return false
-        }
-    }
 }
 
 /// Everything one sentence about remembering has to be written from.

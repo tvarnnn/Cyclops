@@ -235,7 +235,7 @@ nonisolated struct WorldImageryManifest: Equatable, Sendable {
         let index = 0...Int(Int32.max)
         guard let object = row as? [String: Any],
               let keyframeID = object["keyframe_id"] as? String, !keyframeID.isEmpty,
-              let digest = object["digest"] as? String, isDigest(digest),
+              let digest = object["digest"] as? String, R.isSHA256Hex(digest),
               let redaction = object["redaction"] as? String, redaction == "redacted" || redaction == "unredacted"
         else { return nil }
         let unredacted = redaction == "unredacted"
@@ -260,11 +260,6 @@ nonisolated struct WorldImageryManifest: Equatable, Sendable {
                                      segmentIndex: nil, sector: sector, unredacted: unredacted)
         }
     }
-
-    /// The Tower's tile digest (FOW-V11B-AMEND-1): a SHA-256, 64 lowercase hex.
-    static func isDigest(_ text: String) -> Bool {
-        text.utf8.count == 64 && text.utf8.allSatisfy { (48...57).contains($0) || (97...102).contains($0) }
-    }
 }
 
 // MARK: - The routes
@@ -285,12 +280,8 @@ nonisolated struct WorldImageryClient {
     static let maxTileBytes = 16 * 1024
     static let maxTileSize = (width: 160, height: 90)
 
-    static let memoryOnlySession: URLSession = {
-        let configuration = URLSessionConfiguration.ephemeral
-        configuration.urlCache = nil
-        configuration.requestCachePolicy = .reloadIgnoringLocalAndRemoteCacheData
-        return URLSession(configuration: configuration)
-    }()
+    /// One process-wide session for this client and `WorldPhotoFloorplanClient`.
+    static let memoryOnlySession = UncachedURLSession.make()
 
     var baseURL: URL = TowerConfiguration.httpBaseURL
     var session: URLSession = Self.memoryOnlySession
@@ -305,7 +296,7 @@ nonisolated struct WorldImageryClient {
 
     /// The tile, decoded, only as the spec allows it.
     func tile(worldID: String, sessionID: String, digest: String) async throws -> UIImage {
-        guard WorldImageryManifest.isDigest(digest) else { throw WorldImageryFetchError.refused }
+        guard WorldCoverageReader.isSHA256Hex(digest) else { throw WorldImageryFetchError.refused }
         let data = try await get("worlds/\(worldID)/guidance/\(sessionID)/imagery/tile/\(digest)", accept: "image/jpeg")
         // JPEG by its bytes too (SOI marker), not only by its Content-Type.
         guard data.count <= Self.maxTileBytes, data.starts(with: [0xFF, 0xD8, 0xFF]),

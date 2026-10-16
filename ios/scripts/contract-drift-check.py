@@ -170,8 +170,8 @@ def main() -> int:
     # state, no precedent at this layer, the largest possible blast radius (one
     # string comparison failing every cartridge at once), and the field is
     # absent from three Tower->client messages today, so an "absent means
-    # mismatch" rule would fire against a conforming Tower. See
-    # MAC-INTEGRATION-STATUS.md section 5. It is surfaced below as information.
+    # mismatch" rule would fire against a conforming Tower. It is surfaced below as
+    # information.
     envelope = {i: w for i, w in live.items() if i.startswith("cartridge_results.envelope/")}
     unreadable = {
         i: w for i, w in live.items()

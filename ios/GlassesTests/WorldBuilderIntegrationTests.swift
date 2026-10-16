@@ -6519,7 +6519,7 @@ final class WorldAssetTransportTests: XCTestCase {
     /// `URLSession` only decodes what it negotiated itself; a hand-set
     /// `Accept-Encoding` would be sent verbatim with no decoding promise.
     func testTheProxyLeavesContentNegotiationToURLSession() throws {
-        let client = WorldAssetClient(baseURL: Self.host, session: WorldAssetClient.uncachedSession())
+        let client = WorldAssetClient(baseURL: Self.host)
         let request = try XCTUnwrap(client.request(for: .appearanceChunk(digest: Self.digest),
                                                    worldID: "w1", sessionID: "s1"))
         XCTAssertNil(request.value(forHTTPHeaderField: "Accept-Encoding"))
@@ -6531,6 +6531,7 @@ final class WorldAssetTransportTests: XCTestCase {
         XCTAssertNil(configuration.urlCache, "no URL cache, in memory or on disk")
         XCTAssertEqual(configuration.requestCachePolicy, .reloadIgnoringLocalAndRemoteCacheData)
         XCTAssertNil(configuration.httpCookieStorage)
+        XCTAssertFalse(configuration.httpShouldSetCookies)
         XCTAssertNil(WorldAssetClient.sharedUncachedSession.configuration.urlCache)
 
         let client = WorldAssetClient(baseURL: Self.host)

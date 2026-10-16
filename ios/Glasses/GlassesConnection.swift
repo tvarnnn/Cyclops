@@ -47,7 +47,7 @@ struct CapturedFrame {
 /// `StreamConfiguration` handed to `session.addCamera(config:)`. It is not an
 /// adaptive ladder: nothing in DAT renegotiates it mid-stream, and the P3
 /// clean walk recorded **108 frames, every one 360x640, with zero variation**
-/// (`docs/evidence/2026-08-26-p3-clean-walk-console.txt`). The app had this
+/// (recorded in the console log of that walk). The app had this
 /// value hardcoded to `.low`, so changing it required an edit and a rebuild.
 ///
 /// That hardcoding blocks a measurement the Tower lane needs. Document
@@ -59,7 +59,7 @@ struct CapturedFrame {
 ///
 /// Those two facts do not reconcile at a single rung, and choosing between
 /// them is a cross-cartridge product decision that is not iOS's to make alone
-/// (see `docs/agent-handoffs/TOWER-LANE-HANDOFF-FROM-MAC.md` 2.3). So this is
+/// (both figures are stated above). So this is
 /// deliberately **a developer control, not a product setting**: it makes the
 /// experiment runnable without pre-empting the decision.
 ///
@@ -776,10 +776,6 @@ final class GlassesConnection: ObservableObject {
         }
     }
 
-    func nameForDevice(_ id: DeviceIdentifier) -> String {
-        wearables.deviceForIdentifier(id)?.nameOrId() ?? "Unknown device"
-    }
-
     #if DEBUG
     func toggleMockDeviceKit() {
         print("[Glasses][MockDeviceKit] toggle tapped (currently enabled=\(mockDeviceKitEnabled))")
@@ -1379,9 +1375,9 @@ final class GlassesConnection: ObservableObject {
     ///
     /// This was observed on a physical iPhone: one refused start, then
     /// twelve consecutive taps that each logged "session already exists" and
-    /// changed nothing on screen. It is the defect recorded as latent in
-    /// `docs/agent-handoffs/product-shell-v2-handoff.md` §19; a stale camera
-    /// permission is simply the first thing that reached it.
+    /// changed nothing on screen. It is a latent defect in how a failed
+    /// start leaves the session invariant; a stale camera permission is simply
+    /// the first thing that reached it.
     ///
     /// Teardown is synchronous rather than waiting for the session's
     /// `.stopped` callback, because that callback is exactly what may not

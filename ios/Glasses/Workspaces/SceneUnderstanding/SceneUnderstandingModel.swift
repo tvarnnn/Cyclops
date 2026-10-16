@@ -32,7 +32,7 @@ import Foundation
 /// `tracks`, `relations` and `confidence` are `null` on every payload, each
 /// with an `*_absent_reason` and a refusal list naming `track_id`, `box`,
 /// `facing`, `visible_eyes` and `confidence`. iOS asked for a session-scoped
-/// anonymous track handle (`IOS-to-Tower.md` §4.1) and a signed bearing (§4.3);
+/// anonymous track handle (`docs/agent-handoffs/IOS-TO-TOWER.md` §4.1) and a signed bearing (§4.3);
 /// V1 serves neither, and the handoff is explicit that if that is the wrong
 /// trade it becomes a contract change with a new identifier, **not a field
 /// quietly populated later**.
@@ -665,9 +665,6 @@ struct SceneReading: Equatable, Sendable {
         for anything smaller than 2% of the frame. Most of a room is behind the \
         wearer.
         """
-
-    /// The one-line version, for a place a paragraph will not fit.
-    static let countCaveatShort = "A floor, not a total. Counts miss most of what is there."
 }
 
 // MARK: - State

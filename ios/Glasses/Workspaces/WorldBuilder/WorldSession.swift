@@ -112,16 +112,6 @@ enum WorldSessionBinding: Equatable, Sendable {
         case .bound(let id): return id
         }
     }
-
-    /// Whether the phone has a capture open at all.
-    var isBracketOpen: Bool { self != .none }
-
-    /// Whether the snapshot on the wire has been established as belonging to
-    /// some capture other than this phone's.
-    var isForeign: Bool {
-        if case .foreign = self { return true }
-        return false
-    }
 }
 
 // MARK: - The gate
@@ -138,7 +128,7 @@ enum WorldSessionBinding: Equatable, Sendable {
 /// sends `stream_start`, and it does not tell the phone what that id is:
 /// `stream_start` gets no reply, and the `stream_started` message that would
 /// carry one is deliberately unimplemented on the Tower
-/// (`tower/docs/agent-handoffs/IOS-WORLD-BUILDER-INTEGRATION.md` §5). So the
+/// (the Tower's iOS World Builder integration notes). So the
 /// phone cannot compare capture ids, and nothing here pretends it can.
 ///
 /// What it can establish, from the payload alone, is **liveness**. The Tower

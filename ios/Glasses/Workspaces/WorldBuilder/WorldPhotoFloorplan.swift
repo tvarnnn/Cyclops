@@ -98,7 +98,7 @@ nonisolated struct WorldPhotoFloorplanLanded: Equatable, Sendable {
 }
 
 /// `kept`: the newest landing the Tower processed published no plan, and it
-/// keeps serving `landed` on purpose (TOWER_WORLD_PHOTO_FLOORPLAN_KEPT).
+/// keeps serving `landed` on purpose.
 nonisolated struct WorldPhotoFloorplanKept: Equatable, Sendable {
     enum Reason: Equatable, Sendable {
         case regressed, stalled, wallCap, superseded, failed, notNewer
@@ -162,11 +162,6 @@ nonisolated enum WorldPhotoFloorplanWire {
 
     static func tilePath(worldID: String, sessionID: String, digest: String) -> String {
         "worlds/\(worldID)/guidance/\(sessionID)/photo-floorplan/tile/\(digest)"
-    }
-
-    /// SHA-256's shape: 64 lowercase hex.
-    static func isDigest(_ text: String) -> Bool {
-        text.utf8.count == 64 && text.utf8.allSatisfy { (48...57).contains($0) || (97...102).contains($0) }
     }
 
     static func sha256(_ data: Data) -> String {
@@ -241,7 +236,7 @@ nonisolated enum WorldPhotoFloorplanWire {
               let b = R.vector(object["raster_bounds_xy"], count: 4), b[2] > b[0], b[3] > b[1],
               let width = R.integer(object["width"], 1...maxRasterSide),
               let height = R.integer(object["height"], 1...maxRasterSide),
-              let digest = object["digest"] as? String, isDigest(digest),
+              let digest = object["digest"] as? String, R.isSHA256Hex(digest),
               let bytes = R.integer(object["bytes"], 1...maxTileBytes),
               let projected = R.integer(object["projected_keyframes"], 0...65535),
               let source = object["imagery_source"] as? String, imagerySources.contains(source)
@@ -307,7 +302,7 @@ nonisolated struct WorldPhotoFloorplanClient {
     }
 
     func raster(worldID: String, sessionID: String, component: WorldPhotoFloorplanComponent) async throws -> UIImage {
-        guard WorldPhotoFloorplanWire.isDigest(component.digest) else { throw WorldPhotoFloorplanError.refused }
+        guard WorldCoverageReader.isSHA256Hex(component.digest) else { throw WorldPhotoFloorplanError.refused }
         let path = WorldPhotoFloorplanWire.tilePath(worldID: worldID, sessionID: sessionID, digest: component.digest)
         let data = try await get(path, accept: WorldPhotoFloorplanWire.tileTypes)
         return try await WorldPhotoFloorplanWire.rasterOffMain(data, for: component)

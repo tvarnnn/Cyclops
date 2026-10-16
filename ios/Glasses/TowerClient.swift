@@ -385,7 +385,7 @@ enum TowerStatus: Equatable {
 ///   individual field unsaid.
 ///
 /// Folding the first two into one `nil` would answer a privacy question with a
-/// shrug dressed up as a fact. `TOWER-TO-IOS` reconciliation §1.8 is a worked
+/// shrug dressed up as a fact. `tower/docs/contracts/IOS-TO-TOWER-RECONCILIATION.md` §1.8 is a worked
 /// example of the same failure in the other direction: reading the obvious
 /// field there would have reported a confident, wrong **0**.
 nonisolated enum TowerReported<Value: Equatable & Sendable>: Equatable, Sendable {

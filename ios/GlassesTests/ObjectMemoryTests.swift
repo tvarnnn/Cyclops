@@ -2531,7 +2531,7 @@ final class ObjectMemoryImageryTransportTests: XCTestCase {
     /// has no URL cache at all — so honouring `no-store` does not depend on
     /// which session a caller happened to pass in.
     func testTheDefaultImagerySessionKeepsNoCache() {
-        let session = ObjectMemoryImageryHTTPClient.uncachedSession()
+        let session = ObjectMemoryImageryHTTPClient().session
         XCTAssertNil(session.configuration.urlCache)
         XCTAssertEqual(
             session.configuration.requestCachePolicy, .reloadIgnoringLocalAndRemoteCacheData
