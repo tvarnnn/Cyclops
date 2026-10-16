@@ -140,8 +140,8 @@ final class TowerSceneUnderstandingClient: SceneUnderstandingClient {
     /// STREAMING and somebody is WATCHING, and a `result_subscribe` for the
     /// live scene is what "watching" means. (An operator's `POST /scene/start`
     /// is a separate hold: it runs the session with or without a stream or a
-    /// watcher, and keeps it when this screen leaves, until the operator stops
-    /// it.) Subscribing at connection time would keep a people
+    /// watcher, and keeps it when this screen leaves. That session ends when
+    /// the operator stops it or the last open stream closes.) Subscribing at connection time would keep a people
     /// detector running behind World Builder's and the CV Lab's camera for as
     /// long as the app was connected. So the subscription is opened when this
     /// screen appears and closed when it disappears; the socket, the
