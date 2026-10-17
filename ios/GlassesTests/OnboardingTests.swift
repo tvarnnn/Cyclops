@@ -2,7 +2,7 @@
 //  OnboardingTests.swift
 //  GlassesTests
 //
-//  U0.3: "How Glasses works", the first-run cards. The flag (seen once,
+//  "How Glasses works", the first-run cards. The flag (seen once,
 //  marked seen on finish or skip), the gate (never over a capture that is
 //  running or starting), every way in and out of the cards, and the words
 //  (plain, the four walking habits, symbols that exist).

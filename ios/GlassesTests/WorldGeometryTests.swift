@@ -3227,7 +3227,7 @@ final class WorldListLoadLifecycleTests: XCTestCase {
         XCTAssertEqual(StubbedGeometryProtocol.requestCount(for: Self.worldsPath), 2)
     }
 
-    // MARK: U0.8 F09 -- a failed refresh keeps the list, and says which failure
+    // MARK: - A failed refresh keeps the list, and says which failure
 
     func testAFailedRefreshKeepsTheLastListAndSaysItIsOld() async {
         StubbedGeometryProtocol.reset(routes: [Self.worldsPath: (200, Self.listing)])
@@ -3248,7 +3248,7 @@ final class WorldListLoadLifecycleTests: XCTestCase {
         XCTAssertTrue(WorldListText.offersConnections(.unreachable("x")))
     }
 
-    /// U0.8 M-1: a Tower that answered with an error was reached. It is not
+    /// A Tower that answered with an error was reached. It is not
     /// "Could not reach the Tower", and Connections cannot help with it.
     func testATowerErrorSaysTheTowerAnsweredAndOffersNoConnections() async {
         StubbedGeometryProtocol.reset(routes: [Self.worldsPath: (500, #"{"detail":"x"}"#)])
@@ -3263,7 +3263,7 @@ final class WorldListLoadLifecycleTests: XCTestCase {
         XCTAssertFalse(WorldListText.offersConnections(.towerError(500)))
     }
 
-    /// U0.8 M-1: only a request that reached nothing is "Could not reach".
+    /// Only a request that reached nothing is "Could not reach".
     func testAnUnreachableTowerSaysSoAndOffersConnections() async {
         StubbedGeometryProtocol.reset(routes: [:])
         let viewModel = makeViewModel()

@@ -10,9 +10,9 @@ import Foundation
 /// The Tower declares its capabilities over the socket that is already open:
 /// `{"type":"cartridges"}` after the pong, answered with the offers in
 /// `TowerCartridgeDeclaration`. That is a *reply to a question about
-/// capability*, not the dynamic module list `docs/04-MODULE-SYSTEM.md` forbids
+/// capability*, not the dynamic module list `ios/Glasses/Project_Overview_Steps/docs/04-MODULE-SYSTEM.md` forbids
 /// before V1.0 and not the module-selection message
-/// `docs/08-IOS-CARTRIDGE-SHELL.md` forbids — nothing here selects, starts, or
+/// `ios/Glasses/Project_Overview_Steps/docs/08-IOS-CARTRIDGE-SHELL.md` forbids — nothing here selects, starts, or
 /// configures anything on the Tower, and the drawer is still the static
 /// `Cartridge.catalog`.
 ///
@@ -183,7 +183,7 @@ enum TowerCapabilities {
 /// Experimental CV Lab runs a bounded job; Scene Understanding publishes a
 /// changing set of tracks. Forcing one `fetch<T>()` over all four would be a
 /// plugin framework wearing a protocol's clothes, and
-/// docs/02-DEVELOPMENT-RULES.md Rule 10 exists to stop exactly that.
+/// ios/Glasses/Project_Overview_Steps/docs/02-DEVELOPMENT-RULES.md Rule 10 exists to stop exactly that.
 ///
 /// So: no `associatedtype`, no generic request/response, no transport. A
 /// cartridge client conforms to this *and* to its own protocol, and the second

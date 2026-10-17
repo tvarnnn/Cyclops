@@ -2,18 +2,18 @@
 //  WorldInlinePanelUITests.swift
 //  GlassesUITests
 //
-//  U-INLINE (managers 209, 210) and U0.6 on the Simulator: the World Builder
+//  World Builder on the Simulator: the
 //  panel's phases, its one web view, expand and collapse, the gesture gate,
 //  the raw marker, the honest endings, Saved worlds, the layout and the
-//  VoiceOver order (UI1-UI10), U0.6's stage line, preview label and banner
-//  (U1-U4), and R1 on a Mac scratch Tower.
+//  VoiceOver order, stage line, preview label and banner, plus a real
+//  page on a Mac scratch Tower.
 //
 //  The mock tests never reach a real Tower: `MockTowerHTTPServer` serves the
-//  render routes (the U1.1 bridge test page, counting its own loads) and
+//  render routes (the bridge test page, counting its own loads) and
 //  speaks the World Builder socket (`PanelSocket`). R1 is a REQUIRED gate:
 //  it fails, never skips, without GLASSES_UITEST_TOWER_AUTHORITY naming a
 //  real local Tower with TOWER_WORLD_NATIVE_CHROME=1 and the fixture world.
-//  UI8 is run on each phone U-INLINE §1.2 names (iPhone 17 Pro, 17e, SE 3)
+//  The layout test runs on the iPhone 17 Pro, 17e and SE 3
 //  and fails on any other iPhone; on an iPad it skips.
 //
 //  Screenshots go to UINLINE_SHOTS_DIR when it is set, suffixed with
@@ -76,7 +76,7 @@ final class WorldInlinePanelUITests: XCTestCase {
         }
     }
 
-    /// FOW review MED-1: the walking caption runs to about eight lines, so
+    /// The walking caption runs to about eight lines, so
     /// the panel's height follows the receipt -- below Stop, never moving
     /// it. Stop's frame is identical with no coverage block and with the
     /// longest one: two pieces, the not-drawn note, newer keyframes, stale,
@@ -390,7 +390,7 @@ final class WorldInlinePanelUITests: XCTestCase {
 
     // MARK: UI8: the layout on each phone
 
-    /// U-INLINE §1.2's phones (window points → the card width W).
+    /// The phones used by the layout test (window points → card width W).
     private static let specPhones: [String: (name: String, width: CGFloat)] = [
         "402x874": ("iPhone 17 Pro", 370),
         "390x844": ("iPhone 17e", 358),
@@ -427,10 +427,9 @@ final class WorldInlinePanelUITests: XCTestCase {
             XCTAssertGreaterThanOrEqual(expand.frame.width, 44, name)
             XCTAssertGreaterThanOrEqual(expand.frame.height, 44, name)
             XCTAssertLessThanOrEqual(panel.frame.height, window.height, "\(name): the panel fits the window")
-            // §1.1: W is the card's width; ready, the stage is
-            // H = min(round(W × 0.75), round(0.5 × B)) -- the formula is
-            // P3's; here, its bounds: never over 3:4 of W, nor over half of
-            // what is under the navigation bar (B is at most that).
+            // W is the card width; H = min(round(W × 0.75), round(0.5 × B)).
+            // The stage stays within 3:4 of W and half the height under
+            // the navigation bar (B is at most that height).
             XCTAssertEqual(stage.frame.width, phone.width, accuracy: 1, "\(phone.name) \(name): W")
             XCTAssertLessThanOrEqual(stage.frame.height, (phone.width * 0.75).rounded() + 1,
                                      "\(phone.name) \(name): H ≤ 3:4 of W")
@@ -617,7 +616,7 @@ final class WorldInlinePanelUITests: XCTestCase {
         push(modelState: "finalized", finalizationState: "complete", finalSolve: "solved",
              photographic: #"{"state":"complete","stage":"appearance"}"#)
         // The card above was brought into view, so the panel may be off the
-        // screen: there it holds no web view (U-INLINE §4). Back to it first.
+        // screen: there it holds no web view. Back to it first.
         XCTAssertTrue(element("wb-panel-stage").waitForExistence(timeout: 15))
         // The footer first, then the stage: a stage at the screen's bottom
         // edge leaves the panel under its visibility threshold, and then it
@@ -655,7 +654,7 @@ final class WorldInlinePanelUITests: XCTestCase {
         shoot("state-offline-\(name)")
     }
 
-    // MARK: FOW v1: the coverage map
+    // MARK: The coverage map
 
     /// The mock Tower serves the FOW fixtures (the Map tab on). No
     /// `guidance` draws neither map nor dial; `coverage:null` draws the dial
@@ -729,7 +728,7 @@ final class WorldInlinePanelUITests: XCTestCase {
         shoot("fow-stale")
     }
 
-    // MARK: FOW-RING: the capture dial
+    // MARK: The capture dial
 
     /// The dial and IOS_FOW_MAP_TAB=on with the FOW fixture receipts.
     /// Before the first landing the dial is drawn empty, its one footer line
@@ -938,7 +937,7 @@ final class WorldInlinePanelUITests: XCTestCase {
         push(modelState: "finalized", finalizationState: "complete", finalSolve: "solved",
              photographic: #"{"state":"complete","stage":"appearance"}"#)
         // The panel is below the fold at first; off screen for 5 s it holds
-        // no web view (U-INLINE §4), so it is brought into view.
+        // no web view, so it is brought into view.
         XCTAssertTrue(element("wb-panel-stage").waitForExistence(timeout: 15), "the ready panel")
         XCTAssertTrue(reveal(element("wb-panel-stage")), "the panel on screen")
         XCTAssertTrue(app.webViews.firstMatch.waitForExistence(timeout: 30), "the world in the panel")
@@ -1100,7 +1099,7 @@ final class WorldInlinePanelUITests: XCTestCase {
             guard let ratio = ratios.max() else { return nil }
             return ratio >= 4.5 ? "measures \(String(format: "%.2f", ratio)):1 on the pixels" : nil
         }
-        // Capped on purpose (U-INLINE §5, 168 #3): the footer button and the
+        // Capped on purpose: the footer button and the
         // inline dark line at AX1 with the large content viewer, the status
         // and hint at AX2, the research band at AX1.
         let capped = ["wb-panel-expand", "wb-panel-retry", "world-chrome-dark", "world-chrome-status",

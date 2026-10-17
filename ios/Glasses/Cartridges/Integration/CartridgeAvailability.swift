@@ -247,7 +247,7 @@ enum CartridgeAvailability: Equatable, Sendable {
 /// wording and a test can assert what it is without matching prose.
 ///
 /// Shared because every cartridge fails the same ways, and because Rule 3
-/// (Truthful State Only, docs/02-DEVELOPMENT-RULES.md) makes "the backend
+/// (Truthful State Only, ios/Glasses/Project_Overview_Steps/docs/02-DEVELOPMENT-RULES.md) makes "the backend
 /// failed" a state the UI must be able to reach — a cartridge that can only
 /// render success and emptiness will render a failure as emptiness.
 nonisolated struct CartridgeFailure: Equatable, Sendable, Error {
@@ -262,7 +262,7 @@ nonisolated struct CartridgeFailure: Equatable, Sendable, Error {
         /// would read back as fact.
         case notSupported
         /// The Tower reported that the module itself failed
-        /// (docs/04-MODULE-SYSTEM.md — Failure).
+        /// (ios/Glasses/Project_Overview_Steps/docs/04-MODULE-SYSTEM.md — Failure).
         case towerReportedFailure
         /// The connection dropped or the request never completed.
         case transport

@@ -2,10 +2,8 @@
 //  WorldCoverage.swift
 //  Glasses
 //
-//  Fog of war v1 (FOW-COVERAGE-V1-SPEC-20261006, frozen): the Tower's
-//  `guidance.coverage` status receipt -- dated, solve-placed station x
-//  12-sector evidence -- read fail-closed (§5), and what the phone may say
-//  about it (§7, §8).
+//  The Tower's `guidance.coverage` receipt: dated, solve-placed station x
+//  12-sector evidence, read fail-closed, with only supported claims shown.
 //
 //  What the receipt is, and is not. A supported sector means at least two
 //  accepted keyframes, placed in this component by a landed global solve,
@@ -20,17 +18,17 @@
 import CoreGraphics
 import Foundation
 
-// MARK: - The receipt, decoded (§5)
+// MARK: - The receipt, decoded
 
 /// What `guidance.coverage` said, read fail-closed.
 nonisolated enum WorldCoverageStatus: Equatable, Sendable {
-    /// No `guidance` object, or one without a `coverage` key: the Tower's
-    /// switch is off (the live Tower today) or no session is selected. The
-    /// panel is exactly today's.
+    /// No `guidance` object, or one without a `coverage` key: no receipt is
+    /// available, as with an older saved report or no selected session.
+    /// The panel draws no map.
     case absent
     /// `coverage: null`: no qualifying landed solve has been merged yet.
     case notYet
-    /// A block was sent and a known field broke §5. Nothing of it is drawn.
+    /// A block was sent and a known field broke the wire contract. Nothing of it is drawn.
     case refused
     case receipt(WorldCoverage)
 
@@ -54,12 +52,12 @@ nonisolated enum WorldCoverageStatus: Equatable, Sendable {
     }
 }
 
-/// One `guidance.coverage` block: a replacement, never a delta (§4).
+/// One `guidance.coverage` block: a replacement, never a delta.
 nonisolated struct WorldCoverage: Equatable, Sendable {
     static let source = "landed_global_solve"
     static let stationGrid = "component_square_8x8_v1"
     static let sectorFrame = "first_qualified_forward_cw_from_up_v1"
-    /// §5's display caps; over either, the block is refused as oversized.
+    /// Display caps: over either, the block is refused as oversized.
     static let maxComponents = 16
     static let maxStations = 16
     static let sectors = 12
@@ -95,8 +93,8 @@ nonisolated struct WorldCoverage: Equatable, Sendable {
         let cellSize: Double
         /// Sorted `(y, x)`; never empty.
         let stations: [Station]
-        /// The grid's solve-frame basis (§5, §6): where a solve-placed
-        /// camera centre falls on this piece. Only FOW v1.1 B's landed
+        /// The grid's solve-frame basis: where a solve-placed
+        /// camera centre falls on this piece. Only the landed
         /// thumbnails read it; the v1 fans never do.
         var basis: Basis? = nil
     }
@@ -110,7 +108,7 @@ nonisolated struct WorldCoverage: Equatable, Sendable {
         let forward: [Double]
 
         /// `forward x up`: rows run along it, and sectors turn clockwise
-        /// from `forward` towards it, as seen from above (§6.4).
+        /// from `forward` towards it, as seen from above.
         var right: [Double] {
             [forward[1] * up[2] - forward[2] * up[1],
              forward[2] * up[0] - forward[0] * up[2],
@@ -137,11 +135,11 @@ nonisolated struct WorldCoverage: Equatable, Sendable {
         }
     }
 
-    /// `nil` for anything that breaks §5: a missing or mistyped known field,
+    /// `nil` for anything that breaks the wire contract: a missing or mistyped known field,
     /// a value out of its bound, overlapping or over-wide masks, unsorted or
-    /// repeated rows, inconsistent counts, or more than §5's 16 components
-    /// or 16 stations (oversized). A row with `stations: []` is dropped, as
-    /// §5 directs, and the rest kept. Unknown fields are ignored.
+    /// repeated rows, inconsistent counts, or more than 16 components
+    /// or 16 stations (oversized). A row with `stations: []` is dropped;
+    /// the rest are kept. Unknown fields are ignored.
     init?(json: Any?) {
         typealias R = WorldCoverageReader
         guard let object = json as? [String: Any],
@@ -171,7 +169,7 @@ nonisolated struct WorldCoverage: Equatable, Sendable {
             lastSegment = parsed.referenceSegment
             stations += parsed.stations.count
             guard stations <= Self.maxStations else { return nil }
-            // §5: "A decoder drops any row that arrives with stations:[]."
+            // An empty `stations` row is dropped, never drawn as a room.
             if !parsed.stations.isEmpty { components.append(parsed) }
         }
         self.solvedAt = solvedAt
@@ -195,7 +193,7 @@ nonisolated enum WorldCoverageEvidence: Equatable, Sendable, CaseIterable {
     case unconfirmed, weak, supported
 }
 
-/// §5's field readers, shared with the imagery and photo-floorplan decoders.
+/// Field readers, shared with the imagery and photo-floorplan decoders.
 /// JSON numbers only: a boolean (which `JSONSerialization` bridges to
 /// `NSNumber`) is never a number here.
 nonisolated enum WorldCoverageReader {
@@ -260,10 +258,10 @@ nonisolated enum WorldCoverageReader {
     }
 }
 
-// MARK: - The receipt as the phone holds it (§7)
+// MARK: - The receipt as the phone holds it
 
 /// The Tower's clock, read at a status receipt: `tower_sent_at` and the
-/// phone's instant then. The measured offset §7 asks for; without
+/// phone's instant then. The measured offset needs both clocks; without
 /// `tower_sent_at` there is none, and the age is unavailable.
 nonisolated struct WorldTowerClock: Equatable, Sendable {
     let towerSentAt: Double
@@ -289,7 +287,7 @@ nonisolated struct WorldCoverageReceipt: Equatable, Sendable {
     let clock: WorldTowerClock?
 
     /// Above this age the map is `stale`; at exactly this age it is dated
-    /// but not stale (§8.2).
+    /// but not stale.
     static let staleAfter: Double = 30
 
     /// The receipt after a report: none without a block; an unchanged block
@@ -312,7 +310,7 @@ nonisolated struct WorldCoverageReceipt: Equatable, Sendable {
     /// Seconds since `solved_at` on the Tower's clock, at least zero, or
     /// `nil` when no clock was measured.
     ///
-    /// Known LOW (FOW review): this age reads SHORT by the report's network
+    /// This age reads short by the report's network
     /// transit -- `tower_sent_at` is taken as the Tower's clock at the
     /// phone's receipt, so the one-way delay (typically well under a second
     /// on the LAN, more over a slow link) is never counted. The map can
@@ -329,11 +327,11 @@ nonisolated struct WorldCoverageReceipt: Equatable, Sendable {
     }
 }
 
-// MARK: - The words (§7, §8.2, §8.5)
+// MARK: - The words
 
 /// Everything the map says. Never: grey = proved hole; color = surface or
 /// texture; pending = placed; two pieces = one room; a minutes-old solve =
-/// the current position; Stop = hole-free (§8.5).
+/// the current position; Stop = hole-free.
 nonisolated enum WorldCoverageCopy {
     static let fixture = "Fixture map"
     static let mapName = "Map"
@@ -434,13 +432,13 @@ nonisolated enum WorldCoverageCopy {
     }
 }
 
-// MARK: - The drawing's geometry (§6)
+// MARK: - The drawing's geometry
 
 /// Where a piece draws its fans. Column x (the component's forward axis)
 /// runs to the right and row y (its right axis) runs down, so sector zero
 /// points right and sectors run clockwise on screen -- clockwise as seen
-/// from above, as §6.4 defines them. Only station fans are drawn: no
-/// position, path or wearer, and no north arrow or ruler (§6, §8.5).
+/// from above. Only station fans are drawn: no position, path or wearer,
+/// and no north arrow or ruler.
 nonisolated enum WorldCoverageGeometry {
     struct Fan: Equatable {
         let centre: CGPoint
@@ -497,7 +495,7 @@ nonisolated enum WorldCoverageGeometry {
 // MARK: - The DEBUG fixture
 
 extension WorldCoverageReceipt {
-    /// §9's mid-walk fixture -- two separate pieces, 14 keyframes newer --
+    /// The mid-walk fixture -- two separate pieces, 14 keyframes newer --
     /// with no measured clock: what `-WBPanelMapFixture` draws.
     static let fixture: WorldCoverageReceipt? = {
         let json = #"""

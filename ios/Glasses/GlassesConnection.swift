@@ -131,8 +131,8 @@ enum CaptureResolutionPreference: String, CaseIterable, Identifiable, Sendable {
 /// `.devicePaused` is not a state **this app** can leave. That rests on two
 /// separate facts, kept separate on purpose:
 ///
-/// 1. **What is documented.** `docs/05-DAT-INTEGRATION.md` §104-107 and
-///    `07-PLATFORM-CONSTRAINTS.md` §146 record the pause as *device-initiated*
+/// 1. **What is documented.** `ios/Glasses/Project_Overview_Steps/docs/05-DAT-INTEGRATION.md` §104-107 and
+///    `ios/Glasses/Project_Overview_Steps/docs/07-PLATFORM-CONSTRAINTS.md` §4 record the pause as *device-initiated*
 ///    — a temple or cap-touch press, or a thermal pause — and as **keeping the
 ///    connection alive, stopping delivery, and resuming to `.started` on its
 ///    own**. That is the device's behaviour, from the vendor's own docs.
@@ -246,7 +246,7 @@ nonisolated struct DATNonblockingWarning: Equatable, Sendable {
 /// availability, camera permission and, in DEBUG builds, the capture session
 /// (camera stream, Motion, the IMU recorder). This is the only type in the app
 /// that talks to DAT directly — the boundary described in
-/// docs/05-DAT-INTEGRATION.md.
+/// ios/Glasses/Project_Overview_Steps/docs/05-DAT-INTEGRATION.md.
 ///
 /// Its `[Glasses][…]` console lines are DEBUG-only `print`s on purpose: the
 /// cold-launch and walk procedures read them from stdout
@@ -311,10 +311,10 @@ final class GlassesConnection: ObservableObject {
     @Published private(set) var frameCount: Int = 0
     /// The most recent frame decoded for Tower transmission, sampled down to
     /// `FrameRateGate.towerTargetFPS` by `frameRateGate` — not every frame,
-    /// per the backpressure policy in docs/03-ROADMAP.md V0.7.
+    /// per the backpressure policy in ios/Glasses/Project_Overview_Steps/docs/03-ROADMAP.md V0.7.
     /// `ProjectManager` observes this and forwards it to `TowerClient`;
     /// `GlassesConnection` never talks to `TowerClient` directly, preserving
-    /// the boundary in docs/02-DEVELOPMENT-RULES.md Rule 1.
+    /// the boundary in ios/Glasses/Project_Overview_Steps/docs/02-DEVELOPMENT-RULES.md Rule 1.
     @Published private(set) var latestCapturedFrame: CapturedFrame?
     /// True once `AutoDeviceSelector.activeDeviceStream()` has yielded a
     /// non-nil device. `startCameraSession()` must not call `createSession`
@@ -334,7 +334,7 @@ final class GlassesConnection: ObservableObject {
     /// `peakPowerShutdown` and `batteryCritical`, and 1.0.0's `StreamError`
     /// carries `thermalHot`, `peakPowerLimit` and `batteryLow`, but those
     /// arrive at the moment the stream is already dying. See
-    /// docs/05-DAT-INTEGRATION.md.
+    /// ios/Glasses/Project_Overview_Steps/docs/05-DAT-INTEGRATION.md.
     ///
     /// `nil` until the listener delivers, which is also what it stays if no
     /// device is active. Nothing here estimates or interpolates a temperature
@@ -464,7 +464,7 @@ final class GlassesConnection: ObservableObject {
     /// successfully started and is about to begin forwarding frames".
     /// `ProjectManager` observes this and calls `TowerClient.sendStreamStart()`;
     /// `GlassesConnection` never talks to `TowerClient` directly, preserving
-    /// the boundary in docs/02-DEVELOPMENT-RULES.md Rule 1.
+    /// the boundary in ios/Glasses/Project_Overview_Steps/docs/02-DEVELOPMENT-RULES.md Rule 1.
     let cameraStreamDidStart = PassthroughSubject<Void, Never>()
     /// Fires once when `stopCameraSession()` is invoked for an active camera
     /// stream — the point the current streaming session is ending.
@@ -884,7 +884,7 @@ final class GlassesConnection: ObservableObject {
     /// control gated on `isCaptureEngaged` would unlock while the session and
     /// camera are both still alive:
     ///
-    /// - **`.paused`** is not hypothetical. `07-PLATFORM-CONSTRAINTS.md` §146
+    /// - **`.paused`** is not hypothetical. `ios/Glasses/Project_Overview_Steps/docs/07-PLATFORM-CONSTRAINTS.md` §4
     ///   records it as device-initiated — a cap-touch or a thermal pause keeps
     ///   the connection alive, stops delivery, and resumes to `.started` on its
     ///   own. On that resume `beginCameraStream` returns immediately at its

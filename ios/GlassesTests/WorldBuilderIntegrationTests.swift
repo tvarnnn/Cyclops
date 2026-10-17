@@ -1055,7 +1055,7 @@ final class TowerWorldBuilderClientTests: XCTestCase {
         tower.disconnect()
     }
 
-    /// U0.8 F11: after the bounded wait fails, "Ask the Tower again" is a
+    /// After the bounded wait fails, "Ask the Tower again" is a
     /// fresh subscription on the same socket, not a reconnect -- and its ack
     /// is adopted, not ranked as a superseded one.
     func testAskingAgainAfterATimeoutResubscribes() async throws {
@@ -4669,7 +4669,7 @@ final class ScriptedWorldBuilderClient: WorldBuilderClient {
         inspectionSubject.send(inspection)
     }
 
-    /// How many times "Ask the Tower again" reached the client (U0.8 F11).
+    /// How many times "Ask the Tower again" reached the client.
     private(set) var askAgainCount = 0
     func askAgain() { askAgainCount += 1 }
 }
@@ -5209,7 +5209,7 @@ final class WorldBuilderSessionControllerTests: XCTestCase {
         ])
     }
 
-    /// U0.8 F01: once the socket drops, "active" is no longer a claim the
+    /// Once the socket drops, "active" is no longer a claim the
     /// phone can make; the reconnect asks again.
     func testADisconnectAfterActiveNeverClaimsActive() async {
         let controller = makeController()
@@ -5228,7 +5228,7 @@ final class WorldBuilderSessionControllerTests: XCTestCase {
         XCTAssertTrue(activeAgain, "status is \(controller.status)")
     }
 
-    /// U0.8 F02: a failed start is asked again in place, with no reconnect
+    /// A failed start is asked again in place, with no reconnect
     /// and no leaving the workspace.
     func testAFailedStartCanBeAskedAgainInPlace() async {
         WorldBuilderSessionStubProtocol.reset(routes: [
@@ -5255,7 +5255,7 @@ final class WorldBuilderSessionControllerTests: XCTestCase {
         ])
     }
 
-    /// U0.8 F02: a Tower with no producer cannot be talked round, so no
+    /// A Tower with no producer cannot be talked round, so no
     /// retry is offered for it.
     func testANoProducerRefusalOffersNoRetry() async {
         var refusal = session(state: "stopped", accepted: false, changed: false)
@@ -5832,7 +5832,7 @@ final class WorldRenderRevisionTests: XCTestCase {
                        "the page recovered itself; the app must not download it again")
     }
 
-    /// Review 2, m-2 and m-1. The branch M-1 and M-2 exist for -- a Tower that
+    /// A Tower that predates epochs, where the page revision AND the page bytes are
     /// predates epochs, where the page revision AND the page bytes are
     /// unchanged -- had no test at all: the one that named it replaced the page
     /// body first, which takes the ordinary `html != current` path. This enters
@@ -5864,7 +5864,7 @@ final class WorldRenderRevisionTests: XCTestCase {
         XCTAssertEqual(model.state, .ready(html: shown))
     }
 
-    /// Review 2, m-16. An appearance page with no `wb-revision` stamp, opened
+    /// An appearance page with no `wb-revision` stamp, opened
     /// without a pinned session, has no session for the scheme handler to
     /// proxy: every manifest, chunk and proxy request is refused locally and
     /// the Tower log shows nothing at all. The page boots into "No image of
@@ -6367,7 +6367,7 @@ final class WorldRenderRevisionTests: XCTestCase {
                        "no request after the follower ended")
     }
 
-    /// U0.8 R1: the viewer's controls show one offer at a time. The fixture
+    /// The viewer's controls show one offer at a time. The fixture
     /// cannot reach the both-offers state, so this is what pins it.
     func testTheViewerShowsOneOfferAtATime() {
         XCTAssertEqual(WorldRenderOffer.current(newerPictureAvailable: false, newerPictureRefused: false), WorldRenderOffer.none)
@@ -6449,7 +6449,7 @@ final class WorldAssetTransportTests: XCTestCase {
     }
 
     /// The other half of the name above, which the whitelist test only argues
-    /// (review 2, m-13): a refused request must make **no network request at
+    /// A refused request must make **no network request at
     /// all**, not merely fail to parse. Driven through the handler against the
     /// stubbed Tower, counting what arrived.
     func testARefusedRequestReachesTheTowerZeroTimes() async {
@@ -6540,7 +6540,7 @@ final class WorldAssetTransportTests: XCTestCase {
         XCTAssertEqual(page.cachePolicy, .reloadIgnoringLocalAndRemoteCacheData)
     }
 
-    /// Review 2, m-13: the name claims more than a non-persistent data store.
+    /// The name claims more than a non-persistent data store.
     /// "Keeps nothing" is four separate promises, and three of them were not
     /// checked -- including the one PRIVACY.md 3.6 leans on hardest, that the
     /// imagery does not outlive the viewer.
@@ -6778,7 +6778,7 @@ final class WorldAssetTransportTests: XCTestCase {
                           + "imagery is cheap, refusing every later request is not")
     }
 
-    /// Review 2, m-3: a restored context re-asks for every layer at once, and
+    /// A restored context re-asks for every layer at once, and
     /// each request whose authorisation had expired used to fetch the manifest
     /// for itself.
     func testConcurrentRevalidationsShareOneManifestFetch() async {
@@ -6808,7 +6808,7 @@ final class WorldAssetTransportTests: XCTestCase {
     }
 }
 
-// MARK: - U0.6 I7: the stop clock and the stage, end to end
+// MARK: - The stop clock and the stage, end to end
 
 extension TowerWorldBuilderClientTests {
 

@@ -68,7 +68,7 @@ struct FrameRateGate {
     /// Home text must agree, which is why nothing re-reads the setting.
     ///
     /// The default, 15, is a step up from the 0.8 fps a 1-in-30 stride
-    /// delivered, not a ceiling. docs/03-ROADMAP.md V0.7 targets ~15 fps, and
+    /// delivered, not a ceiling. ios/Glasses/Project_Overview_Steps/docs/03-ROADMAP.md V0.7 targets ~15 fps, and
     /// the gate reaches it exactly — the deadline accumulates, so a target need
     /// not divide the source rate (see
     /// `FrameRateGateTests.testTargetIsHeldAtTheRoadmapFifteenFPS`).

@@ -2,10 +2,10 @@
 //  WorldChromeUITests.swift
 //  GlassesUITests
 //
-//  U1.1 native chrome (WORLD-BUILDER-WORLDS.md §4c; IOS §10), in a real
+//  native chrome (WORLD-BUILDER-WORLDS.md §4c; IOS §10), in a real
 //  `WKWebView` in the Simulator: U1–U10 against `MockTowerHTTPServer` and
 //  the text-only bridge test page (`WorldChromeTestPage`), and R1–R5 against
-//  a Mac scratch Tower on the U1.1 branch with TOWER_WORLD_NATIVE_CHROME on.
+//  a Mac scratch Tower on the branch with TOWER_WORLD_NATIVE_CHROME on.
 //
 //  The mock tests never reach a real Tower: every launch points the app at
 //  the mock's loopback port. They prove the phone's half in a real web view
@@ -31,7 +31,7 @@ final class WorldChromeUITests: XCTestCase {
     private var mockAuthority = ""
     /// The mock's World Builder socket: a Saved worlds pin is answered with
     /// the saved fixture world's report, so the World Builder panel shows it
-    /// (U-INLINE §2.4) and Full screen opens the viewer these tests read.
+    /// and Full screen opens the viewer these tests read.
     private var socket: PanelSocket!
     private let closedAuthority = "127.0.0.1:9"
     private static let ax5 = "UICTContentSizeCategoryAccessibilityXXXL"
@@ -96,7 +96,7 @@ final class WorldChromeUITests: XCTestCase {
         }
         let steps: [Page.Step] = [
             // Long enough to reach the full screen while it lasts: the page
-            // starts in the World Builder panel and is expanded (U-INLINE).
+            // starts in the World Builder panel and is expanded.
             .init(state: research(Page.state(drawn: false, status: "Loading T",
                                              hint: ["text": "One moment T", "opacity": 0.9])), after: 12000),
             .init(state: research(Page.state(dark: true, edge: "left"))),
@@ -534,7 +534,7 @@ final class WorldChromeUITests: XCTestCase {
     /// One snapshot of the tree per pass, so a short pre-draw window is not
     /// missed between separate queries.
     ///
-    /// U-INLINE: a world opened from Saved worlds now opens in the World
+    /// A world opened from Saved worlds now opens in the World
     /// Builder panel, and its cold open happens there, under the panel's
     /// wait overlay (`wb-panel-opening`), with the page's status in the
     /// panel's footer. "Before the picture" is: while that overlay is up.
@@ -724,7 +724,7 @@ final class WorldChromeUITests: XCTestCase {
         let world = app.staticTexts[name].firstMatch
         XCTAssertTrue(world.waitForExistence(timeout: 20), "the listing")
         XCTAssertTrue(reveal(world), "the world's row")
-        // U-INLINE §2.4 / §6.3: the row pins the world and the sheet goes;
+        // the row pins the world and the sheet goes;
         // the World Builder panel shows it, and Full screen opens the viewer.
         XCTAssertTrue(tap(world, until: !app.navigationBars["Saved worlds"].exists, attempts: 3), "the row pinned it")
         guard shouldExpand else { return }

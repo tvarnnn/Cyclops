@@ -15,7 +15,7 @@ import Foundation
 /// - `CartridgeStatus` describes a **module's position on the Tower roadmap**
 ///   — `next`, `planned`, `future`. It is deliberately missing an `available`
 ///   case, because no module runtime exists on the Tower at all: the module
-///   container is V0.8 and the first module V0.9 (docs/03-ROADMAP.md), and
+/// container is V0.8 and the first module V0.9 (ios/Glasses/Project_Overview_Steps/docs/03-ROADMAP.md), and
 ///   `ProductShellTests` fails loudly if that ever silently changes.
 ///
 /// - `CartridgeWorkspace` describes whether **this app has a screen** for the
@@ -25,7 +25,7 @@ import Foundation
 /// Keeping them apart is what lets the drawer open a World Builder workspace
 /// without any of it implying the Tower is running World Builder. Opening a
 /// workspace is local navigation. It sends nothing, selects nothing on the
-/// Tower, and changes no Tower state — docs/08-IOS-CARTRIDGE-SHELL.md forbids
+/// Tower, and changes no Tower state — ios/Glasses/Project_Overview_Steps/docs/08-IOS-CARTRIDGE-SHELL.md forbids
 /// inventing a module-selection message, and none is invented.
 ///
 /// A cartridge with no workspace stays exactly as it was: an informational row.
@@ -39,7 +39,7 @@ import Foundation
 ///
 /// - the set is still **closed and compiled in**. A workspace is a SwiftUI view
 ///   in this binary; there is no dynamic module list to render
-///   (`docs/04-MODULE-SYSTEM.md` forbids building one before V1.0), so nothing
+/// (`ios/Glasses/Project_Overview_Steps/docs/04-MODULE-SYSTEM.md` forbids building one before V1.0), so nothing
 ///   can appear here that was not compiled;
 /// - exhaustiveness is the feature. Adding a case makes the compiler demand the
 ///   arm in `ContentView`, where a registry would silently fall back to Home;
@@ -101,7 +101,7 @@ enum CartridgeWorkspace: String, Equatable, Sendable, CaseIterable {
 ///
 /// This is not a registry. Nothing is keyed by id and nothing is looked up
 /// dynamically; the rows are a `map` over the compiled-in catalog in catalog
-/// order, which is exactly what `docs/04-MODULE-SYSTEM.md` permits before V1.0.
+/// order, which is exactly what `ios/Glasses/Project_Overview_Steps/docs/04-MODULE-SYSTEM.md` permits before V1.0.
 enum CartridgeDrawerRow: Identifiable, Equatable {
     /// The app ships a screen for this cartridge, and this is the screen.
     case openable(Cartridge, CartridgeWorkspace)

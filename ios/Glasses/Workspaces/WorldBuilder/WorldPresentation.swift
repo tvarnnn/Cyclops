@@ -562,7 +562,7 @@ enum WorldStage: Equatable {
         case .failed(let failure):
             // Only the Tower's own report of a failed build says anything
             // about the walk. A channel or decoding failure is about this
-            // screen's subscription, and is not a stage (U0.8 F11).
+            // screen's subscription, and is not a stage.
             return failure.kind == .towerReportedFailure ? .needsRetry : nil
         }
     }
@@ -746,7 +746,7 @@ struct WorldPresentation: Equatable {
     var recovery: WorldRecoveryReport?
     /// The look-back banner, under the same rule as `recovery`.
     var lookBackBanner: WorldLookBackBanner?
-    /// `lifecycle.processing` (U0.6, T-UX1), or `nil`.
+    /// `lifecycle.processing`, or `nil`.
     var processing: WorldProcessingReport?
     /// The stage line under a finalizing world (IOS §3c), built by the view
     /// model from `state`; `nil` otherwise.
@@ -1019,7 +1019,7 @@ enum WorldReconstruction: Equatable {
             if let unfinished = Self.unfinishedPhotographicNote(photographic) {
                 return .partial(target, note: WorldPreviewCopy.labelled(unfinished))
             }
-            // U0.6: a PREVIEW, and no duration: the elapsed line under the
+            // A PREVIEW, and no duration: the elapsed line under the
             // stage word replaces "twenty minutes or more", and nothing on
             // the phone promises how long the rest takes.
             return .partial(target, note: WorldPreviewCopy.building)

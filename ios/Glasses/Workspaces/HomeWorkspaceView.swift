@@ -15,7 +15,7 @@ import SwiftUI
 import MWDATCamera
 #endif
 
-/// Home's readiness words that are new in U0.8.
+/// Home's readiness words.
 enum HomeReadinessText {
     static let noActiveGlasses = "The glasses are registered, but none are active on this phone. "
         + "Make sure they are on, nearby and connected in the Meta AI app."
@@ -151,7 +151,7 @@ struct HomeWorkspaceView: View {
 
         #if DEBUG
         // Registered is not active: with no glasses active on this phone the
-        // session control is off, so "Ready" would be false (U0.8 F07).
+        // session control is off, so "Ready" would be false.
         if !glasses.hasActiveDevice {
             return Blocker(
                 reason: HomeReadinessText.noActiveGlasses,
@@ -203,7 +203,7 @@ private extension HomeWorkspaceView {
     /// read "Start", and a tap in it did nothing observable.
     var isRunning: Bool { glasses.isCaptureEngaged }
 
-    /// Stop, Stop while the glasses hold it paused, or Start (U0.8 F06).
+    /// Stop, Stop while the glasses hold it paused, or Start.
     var controlMode: CaptureControlMode {
         CaptureControlMode.mode(isEngaged: glasses.isCaptureEngaged, claim: glasses.captureClaim)
     }
@@ -213,7 +213,7 @@ private extension HomeWorkspaceView {
         VStack(spacing: 10) {
             if controlMode != .start {
                 // A session the glasses paused is still a session: a Start
-                // then would be refused and do nothing observable (U0.8 F06).
+                // then would be refused and do nothing observable.
                 Button {
                     glasses.stopCameraSession()
                 } label: {
@@ -393,7 +393,7 @@ private extension HomeWorkspaceView {
         return String(format: "%.1f", value)
     }
 
-    /// Never "Start…" while the camera is on or coming up (U0.8 F05).
+    /// Never "Start…" while the camera is on or coming up.
     var viewfinderPlaceholder: String {
         ViewfinderText.placeholder(
             isStreaming: glasses.cameraStreamState == .streaming,

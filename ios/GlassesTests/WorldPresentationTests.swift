@@ -452,7 +452,7 @@ final class WorldStageTests: XCTestCase {
         }
     }
 
-    /// U0.8 F11: only the Tower's own report of a failed build is a stage.
+    /// Only the Tower's own report of a failed build is a stage.
     /// A channel or decoding failure says nothing about the walk.
     func testOnlyATowerReportedFailureIsAStage() {
         for kind in [CartridgeFailure.Kind.transport, .timedOut, .notSupported, .undecodableResponse] {
@@ -503,7 +503,7 @@ final class WorldRecoverabilityTests: XCTestCase {
         )
     }
 
-    /// U0.8 F12: a finalized world whose figures are all zero, with no
+    /// A finalized world whose figures are all zero, with no
     /// finalization record, is "Needs retry" -- and carries the sentence
     /// that says what makes another one.
     func testAFinalizedWorldWithNothingUsableCarriesItsSentence() {
@@ -610,7 +610,7 @@ final class WorldRenderViewAddressTests: XCTestCase {
         let url = WorldRenderClient.url(
             for: WorldRenderTarget(worldID: "w1", sessionID: "s1"), baseURL: Self.host
         )
-        // U1.1: the product page also asks for native chrome (WORLDS §4c).
+        // the product page also asks for native chrome (WORLDS §4c).
         XCTAssertEqual(url?.absoluteString,
                        "http://stub.invalid/worlds/w1/render?session_id=s1&viewer=appearance-1&wb-chrome=native")
 

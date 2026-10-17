@@ -11,7 +11,7 @@ import Foundation
 /// not *"where does this module sit on the Tower roadmap?"*. Answering the
 /// second in the first's place misleads: a roadmap word such as "Planned"
 /// sounds ready even on a cartridge with no Tower code at all. Roadmap position
-/// lives in `docs/03-ROADMAP.md` and each cartridge's spec, and is never
+/// lives in `ios/Glasses/Project_Overview_Steps/docs/03-ROADMAP.md` and each cartridge's spec, and is never
 /// rendered to a wearer as though it were a capability.
 ///
 /// ## What these values are NOT
@@ -79,7 +79,7 @@ struct Cartridge: Identifiable, Equatable {
 }
 
 extension Cartridge {
-    /// Names and ordering follow the module specs in docs/modules/.
+    /// Names and ordering follow the module specs in ios/Glasses/Project_Overview_Steps/docs/modules/.
     ///
     /// **`status` comes from evidence, not from the specs:** what the Tower
     /// serves and what this build implements. A spec's roadmap position never

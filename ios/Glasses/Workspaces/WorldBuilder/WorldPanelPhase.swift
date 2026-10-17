@@ -2,9 +2,9 @@
 //  WorldPanelPhase.swift
 //  Glasses
 //
-//  U-INLINE §2.1 and §4: the World Builder panel's one phase, and whether
+//  The World Builder panel's one phase, and whether
 //  its one web view may exist. Pure functions of what the screen already
-//  knows; table-tested (P1, P2, P6).
+//  knows; table-tested.
 //
 
 import CoreGraphics
@@ -17,7 +17,7 @@ enum WorldPanelPhase: Equatable {
     /// Capture health, under the fog-of-war map when there is one.
     case walking(hasMap: Bool)
     /// After Stop: the honest finishing progress. A target means a preview
-    /// exists (U0.6 `isPreview`).
+    /// exists (`isPreview`).
     case finishing(target: WorldRenderTarget?)
     /// The world, live, inline.
     case ready(WorldRenderTarget)
@@ -25,7 +25,7 @@ enum WorldPanelPhase: Equatable {
     case failed(sentence: String?)
     case offline
 
-    /// The rules of U-INLINE §2.1; the first match wins.
+    /// The first matching rule wins.
     static func phase(isCapturing: Bool, sessionActive: Bool, towerReachable: Bool, pageLoaded: Bool,
                       state: WorldModelState, stage: WorldStage?, target: WorldRenderTarget?,
                       needsRetrySentence: String?, hasMap: Bool) -> WorldPanelPhase {
@@ -82,7 +82,7 @@ enum WorldPanelPhase: Equatable {
 }
 
 /// What the ready panel's wait overlay may show of the finishing wait
-/// before it (U-INLINE §2.2; review HIGH 2): the finish block as it last
+/// before it: the finish block as it last
 /// stood, kept WITH the walk it was drawn for (`WalkScoped`). A ready world
 /// shows it only when it came straight from THAT walk's wait; a ready world
 /// replaced by another forgets it, so B's wait is never A's finish block.
@@ -200,7 +200,7 @@ struct WorldCoverBinding: Equatable {
     }
 }
 
-/// U-INLINE §4: the one `WKWebView` exists only while it is wanted.
+/// The one `WKWebView` exists only while it is wanted.
 enum WorldInlineWebPolicy {
     /// Expanded, or ready and on screen with nothing over it. Never in the
     /// background, expanded or not; `.inactive` (a notification shade, the
@@ -212,14 +212,14 @@ enum WorldInlineWebPolicy {
     }
 }
 
-/// VoiceOver's order inside the ready stage (U-INLINE §5; review 2, MED 2).
+/// VoiceOver's order inside the ready stage.
 enum WorldPanelOrder {
     /// The 3D world: read before the inline chrome drawn over it
     /// (`WorldChromeInlineOrder`).
     static let world: Double = 70
 }
 
-/// The panel's words that are not the stage's (U-INLINE §2.2, §5).
+/// The panel's words that are not the stage's.
 enum WorldPanelCopy {
     static let fullScreen = "Full screen"
     static let fullScreenHint = "Opens the 3D world full screen."
@@ -263,7 +263,7 @@ enum WorldPanelCopy {
 }
 
 /// The stage area's height: `min(round(W × 0.75), round(0.5 × B))`, where B
-/// is the visible scroll height (U-INLINE §1.1). With no B yet, 3:4 of W.
+/// is the visible scroll height. With no B yet, 3:4 of W.
 enum WorldPanelLayout {
     static func stageHeight(width: CGFloat, visibleHeight: CGFloat) -> CGFloat {
         let byWidth = (width * 0.75).rounded()

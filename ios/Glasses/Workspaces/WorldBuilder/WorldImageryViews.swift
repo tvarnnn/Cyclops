@@ -2,7 +2,7 @@
 //  WorldImageryViews.swift
 //  Glasses
 //
-//  FOW v1.1 B's two drawings (spec §5): B1's strip, its own card under the
+//  Two imagery drawings: the live strip, its own card under the
 //  current piece and never on the map; B2's thumbnails, layered over the v1
 //  grid's pieces, never replacing a fan and never on a grey cell. Every
 //  thumbnail is the Tower's tile (redacted, or honestly labelled unredacted); each one is labelled for
@@ -99,7 +99,7 @@ struct WorldImageryStripView: View {
 struct WorldLandedPieceOverlay: View {
     let thumbnails: [WorldLandedThumbnail]
     let receipt: WorldCoverageReceipt
-    /// FOW v1.2: the piece's photo, when it replaces the fog field: the
+    /// The piece's photo, when it replaces the fog field: the
     /// thumbnails then sit on the photo's fit of the same grid.
     var photo: WorldPhotoPiece? = nil
     let select: (WorldLandedThumbnail) -> Void

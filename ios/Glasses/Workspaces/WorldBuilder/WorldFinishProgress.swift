@@ -2,7 +2,7 @@
 //  WorldFinishProgress.swift
 //  Glasses
 //
-//  U0.6 + T-UX1 (WORLD-BUILDER-IOS.md §3c; WORLDS §2b, §4a rule 8): what the
+//  The finish block and stop clock (WORLD-BUILDER-IOS.md §3c; WORLDS §2b, §4a rule 8): what the
 //  phone says during the wait after Stop. One stage line under the stage
 //  word, one elapsed line on the phone's own clock, the PREVIEW label on
 //  every picture of an unsettled world, and the foreground banner. No
@@ -90,8 +90,7 @@ nonisolated enum WorldFinishLine: Equatable, Sendable {
     case processing(WorldProcessingStage, step: WorldProcessingStep?)
     case photographic(stage: String?)
     /// The fallback: the final pass is pending and a live process holds the
-    /// world (a Tower with the switch off, an older Tower, or a stage the
-    /// Tower could not prove).
+    /// world (an older saved report, or a stage the Tower could not prove).
     case finalPlacement
 
     var text: String {
@@ -144,7 +143,7 @@ nonisolated enum WorldFinishLine: Equatable, Sendable {
     }
 }
 
-/// The finish copy that is not a stage line (U0.6 §5.8; U-INLINE §2.3).
+/// The finish copy that is not a stage line.
 nonisolated enum WorldFinishCopy {
     /// Today's sentence beside the spinner, moved here so the panel and the
     /// canvas cannot word it differently.
@@ -259,7 +258,7 @@ nonisolated struct WorldViewerProgress: Equatable, Sendable {
     var noteSaysWalkTime: Bool
 }
 
-// MARK: - The elapsed time (U0.6 §2.5)
+// MARK: - The elapsed time
 
 /// "12 min since you stopped": whole minutes, floored, on the phone's
 /// monotonic clock. Never an estimate, never "of".
@@ -296,7 +295,7 @@ nonisolated struct WorldElapsedText: Equatable, Sendable {
     }
 }
 
-// MARK: - The stop clock and the banner (U0.6 §5.3)
+// MARK: - The stop clock and the banner
 
 nonisolated struct WorldFinishWalk: Equatable, Sendable, Hashable {
     let worldID: String

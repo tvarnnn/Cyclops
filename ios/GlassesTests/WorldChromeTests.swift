@@ -2,14 +2,14 @@
 //  WorldChromeTests.swift
 //  GlassesTests
 //
-//  U1.1 native chrome (WORLD-BUILDER-WORLDS.md §4c, protocol 1; IOS §10),
+//  native chrome (WORLD-BUILDER-WORLDS.md §4c, protocol 1; IOS §10),
 //  the phone's half without a web view: the request, the echo, the decoder
 //  and its bounds, the frame check, the reducer and its exactly-once replies,
 //  the research marker, the ring's drawing rule, the header capture, and the
 //  rule that the chrome's sources carry none of the page's words.
 //
 //  The message fixtures are shaped exactly as the page's bridge posts them
-//  (`appearance_chrome_bridge.js` on the U1.1 Tower branch @ cdc84db): every
+//  (`appearance_chrome_bridge.js` on the Tower branch @ cdc84db): every
 //  field at the top level, `seq` from 0 at `hello`, and passed through a JSON
 //  round trip so the values arrive as WebKit hands them over (NSNumber,
 //  NSString, NSNull, CFBoolean).
@@ -1373,7 +1373,7 @@ private struct CoverProbe: View {
     }
 }
 
-// MARK: - U-INLINE: the bridge and the chrome when the web view moves
+// MARK: - The bridge and the chrome when the web view moves
 
 extension WorldChromeTests {
 

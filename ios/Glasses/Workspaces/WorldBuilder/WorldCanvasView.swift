@@ -107,16 +107,16 @@ struct WorldCanvasView: View {
     var openReconstruction: ((WorldRenderTarget) -> Void)? = nil
 
     /// Asks the Tower again for a report, after the channel failed or the
-    /// first update is overdue (U0.8 F11, F13). `nil` draws no button.
+    /// first update is overdue. `nil` draws no button.
     var askAgain: (() -> Void)? = nil
 
     /// Back to the live screen, where Start capture is, for a world with
-    /// nothing usable in it (U0.8 F12). `nil` draws no button: when following
+    /// nothing usable in it. `nil` draws no button: when following
     /// live, Start capture is already on the screen.
     var goToCapture: (() -> Void)? = nil
 
     /// The first update has not come within `WorldBuilderViewModel
-    /// .awaitingBound` (U0.8 F13): the spinner gives way to a sentence.
+    /// `.awaitingBound`: the spinner gives way to a sentence.
     var awaitingIsOverdue = false
 
     /// The World Builder panel is narrating the finishing wait
@@ -207,7 +207,7 @@ struct WorldCanvasView: View {
 
         case .awaitingFirstUpdate:
             if awaitingIsOverdue {
-                // Every spinner ends in a sentence (U0.8 F13): past the bound
+                // Every spinner ends in a sentence: past the bound
                 // the wait is stated, with how long, and never guessed at.
                 Label(waitingHeadline, systemImage: "clock")
                     .font(.subheadline)
@@ -311,7 +311,7 @@ struct WorldCanvasView: View {
             worldName(snapshot)
             photographicFailureNote
             // A finished world with nothing usable says what happened and
-            // what makes another one, as the interrupted one does (U0.8 F12).
+            // what makes another one, as the interrupted one does.
             if presentation.stage == .needsRetry, let sentence = presentation.recoverability?.sentence {
                 detailText(sentence)
             }
@@ -356,7 +356,7 @@ struct WorldCanvasView: View {
             // Everything else is the Tower's own report of a failure.
             //
             // A report this build cannot read is neither: it is fixed by an
-            // update, and says so (U0.8 F11).
+            // update, and says so.
             switch failure.kind {
             case .transport, .timedOut:
                 headline("World Builder is not reporting", systemImage: "antenna.radiowaves.left.and.right.slash")
@@ -373,7 +373,7 @@ struct WorldCanvasView: View {
         }
     }
 
-    /// "Ask the Tower again" (U0.8 F11, F13), where the caller gave the way.
+    /// "Ask the Tower again", where the caller gave the way.
     @ViewBuilder
     private var askAgainButton: some View {
         if let askAgain {
@@ -383,7 +383,7 @@ struct WorldCanvasView: View {
         }
     }
 
-    /// "Go to capture" (U0.8 F12), for a world with nothing usable in it.
+    /// "Go to capture", for a world with nothing usable in it.
     @ViewBuilder
     private var goToCaptureButton: some View {
         if presentation.stage == .needsRetry, let goToCapture {
@@ -499,8 +499,8 @@ struct WorldCanvasView: View {
                 Button {
                     open(offer.target)
                 } label: {
-                    // *Open the preview* while the world is unsettled (U0.6,
-                    // WORLDS §4a rule 8): never presented as the final world.
+                    // *Open the preview* while the world is unsettled:
+                    // never presented as the final world (WORLDS §4a rule 8).
                     Label(offer.openTitle, systemImage: "cube.transparent")
                         .font(.headline)
                         .frame(maxWidth: .infinity)
@@ -663,7 +663,7 @@ struct WorldCanvasView: View {
         }
         .font(.subheadline)
         // The disclosure's label is text: the readable tint, not the system
-        // blue, which is about 4.0:1 on white (U0.5 review F2).
+        // blue, which is about 4.0:1 on white.
         .tint(Color.readableTint)
         .accessibilityIdentifier("world-diagnostics")
     }
@@ -811,7 +811,7 @@ struct WorldSummaryView: View {
             }
             if snapshot.scale != .unknown {
                 row("Scale", snapshot.scale.displayName)
-                // The monocular-depth rule from docs/modules/WORLD-BUILD.md,
+                // The monocular-depth rule from ios/Glasses/Project_Overview_Steps/docs/modules/WORLD-BUILD.md,
                 // enforced at the point of display: an inferred figure is never
                 // shown without saying it is an estimate.
                 if snapshot.scale.isEstimate {
@@ -976,16 +976,16 @@ struct WorldCanvasPictureOffer: Equatable {
     }
 }
 
-// MARK: - The canvas's words (U0.8 F11-F13)
+// MARK: - The canvas's words
 
-/// The canvas's new sentences and control words, in one place for U0.4.
+/// The canvas's sentences and control words, in one place.
 /// Each says what the phone knows and names the next step; none guesses why.
 enum WorldCanvasText {
     static let askAgain = "Ask the Tower again"
     static let goToCapture = "Go to capture"
     static let cannotReadHeadline = "This app cannot read the Tower's World Builder report"
     static let updateFixesIt = "Updating the app or the Tower fixes this."
-    /// The header's disabled Picture button, for VoiceOver (U0.8 F14).
+    /// The header's disabled Picture button, for VoiceOver.
     static let pictureOffValue = "Not available: the Tower has not named a world with a 3D picture yet."
 
     /// The sentence a wait ends in, once `seconds` have passed with no

@@ -1508,7 +1508,7 @@ final class TowerClientTests: XCTestCase {
     /// runtime references": a view model that opened its own socket, sent a
     /// module-selection message, or asked the Tower anything would show up here.
     ///
-    /// `docs/08-IOS-CARTRIDGE-SHELL.md` forbids inventing a module-selection
+    /// `ios/Glasses/Project_Overview_Steps/docs/08-IOS-CARTRIDGE-SHELL.md` forbids inventing a module-selection
     /// message. This is that prohibition as a test rather than as a promise.
     func testCartridgeViewModelsSendNothingToTheTower() async throws {
         let server = try MockTowerServer()

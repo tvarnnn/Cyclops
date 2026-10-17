@@ -991,7 +991,7 @@ struct CVTag: View {
 /// no baseline, no stated direction and no `comparison`, because the Tower's
 /// metrics carry `baseline: null` and `higher_is_better: null` on every metric,
 /// always, and a comparison against nothing is the *"declaring an approach
-/// 'better' without a measurement"* that `docs/modules/EXPERIMENTAL-CV.md`
+/// 'better' without a measurement"* that `ios/Glasses/Project_Overview_Steps/docs/modules/EXPERIMENTAL-CV.md`
 /// rules out. No verdict renderer is present.
 ///
 /// **A zero standing in for a null.** Every timing and every rate on this

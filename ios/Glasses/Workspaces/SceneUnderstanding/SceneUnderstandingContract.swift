@@ -60,7 +60,7 @@ nonisolated enum SceneUnderstandingContract {
     /// The Tower's `POST /scene/{start,pause,resume,stop}` routes are an
     /// operator surface and **this app calls none of them**. Nor does it call
     /// `GET /scene`, which carries the same payload the subscription does.
-    /// `docs/agent-handoffs/IOS-TO-TOWER.md` §6 (item 2) is explicit that
+    /// `ios/docs/agent-handoffs/IOS-TO-TOWER.md` §6 (item 2) is explicit that
     /// opening a cartridge on the phone sends nothing, and a Tower-side test
     /// asserts the wire stays silent. The session runs while somebody streams
     /// (`stream_start` until `stream_stop` or a disconnect) and somebody

@@ -2,11 +2,10 @@
 //  WorldImageryUITests.swift
 //  GlassesUITests
 //
-//  FOW v1.1 B (FOW-V11B-WIRE-AND-IOS-SPEC-20261007 §5), against the mock
-//  Tower serving the spec's §4 fixtures on the manifest and tile routes:
+//  Imagery against the mock Tower serving paired manifest and tile fixtures:
 //  B1's strip shows one thumbnail and clears at a segment bump, and goes at Stop for
-//  good (acceptance 3); B2's thumbnail sits inside its piece and a tap says
-//  where it looked and how old it is (acceptance 4).
+//  good; B2's thumbnail sits inside its piece and a tap says where it looked
+//  and how old it is.
 //
 
 import CryptoKit
@@ -26,7 +25,7 @@ final class WorldImageryUITests: XCTestCase {
     private static let landedDigest = "7cde" + String(repeating: "0", count: 56) + "1190"
     private static let liveFixture = #"{"version":1,"live":{"segment_index":812,"entries":[{"keyframe_id":"s9:4417","digest":"\#(liveDigest)","redaction":"redacted","pose_source":"segment_local","component_reference_segment":null,"segment_index":812}]}}"#
     private static let landedFixture = #"{"version":1,"landed":{"solved_at":1791240313.0,"geometry_revision":"g-stop-984","frame_revision":1,"entries":[{"keyframe_id":"s9:120","digest":"\#(landedDigest)","redaction":"redacted","pose_source":"landed_global_solve","component_reference_segment":0,"segment_index":null}]}}"#
-    /// §9's stop block, solved 12 s before this report was sent.
+    /// The stop block, solved 12 s before this report was sent.
     private static let sentAfterStopSolve = 1791240325.0
 
     override func setUpWithError() throws {
@@ -46,7 +45,7 @@ final class WorldImageryUITests: XCTestCase {
                                 (Self.landedDigest, .systemOrange)] {
             mock.setDataRoute("GET \(Self.imagery)/tile/\(digest)", data: Self.jpeg(color), contentType: "image/jpeg")
         }
-        // FOW v1.2: the photo floor plan's routes answer too, for §9's stop landing.
+        // The photo floor plan's routes answer too, for the stop landing.
         mock.setRoute("GET \(Self.photo)/manifest", status: 200, body: Self.photoManifest)
         mock.setDataRoute("GET \(Self.photo)/tile/\(Self.photoDigest)", data: Self.photoRaster, contentType: "image/png")
     }
@@ -73,12 +72,12 @@ final class WorldImageryUITests: XCTestCase {
         }
     }()
     private static let photoDigest = SHA256.hash(data: photoRaster).map { String(format: "%02x", $0) }.joined()
-    /// §9's stop landing and basis; the 16-unit square padded 15%.
+    /// The stop landing and basis; the 16-unit square padded 15%.
     private static let photoManifest = #"{"version":1,"landed":{"solved_at":1791240313.0,"geometry_revision":"g-stop-984","frame_revision":1,"horizon_keyframes":984,"components":[{"reference_segment":0,"origin_xyz":[0.0,0.0,0.0],"up_xyz":[0.0,0.0,1.0],"forward_xyz":[0.0,1.0,0.0],"raster_bounds_xy":[-9.2,-9.2,9.2,9.2],"width":512,"height":512,"digest":"\#(photoDigest)","bytes":\#(photoRaster.count),"projected_keyframes":2,"imagery_source":"redacted"}]}}"#
 
     // MARK: Acceptance 3: B1
 
-    /// B1 with §4's live fixture: one thumbnail, never on the map (the Map
+    /// B1 with the live fixture: one thumbnail, never on the map (the Map
     /// tab, `IOS_FOW_MAP_TAB=on`); a segment bump clears it; and after Stop
     /// it is gone, a late report of the walk never bringing it back, the
     /// loading view drawing none.
@@ -135,7 +134,7 @@ final class WorldImageryUITests: XCTestCase {
 
     // MARK: Acceptance 4: B2
 
-    /// B2 with §4's landed fixture beside §9's stop block: the thumbnail
+    /// B2 with the landed fixture beside the stop block: the thumbnail
     /// inside its piece, a tap saying where it looked and how old it is; a
     /// newer landing's grid drops it.
     func testTheLandedThumbnailSitsInItsPieceAndATapSaysDirectionAndAge() throws {
@@ -157,7 +156,7 @@ final class WorldImageryUITests: XCTestCase {
         print("IMAGERY-LANDED|thumb=\(thumb.frame)|piece=\(piece.frame)")
         XCTAssertTrue(piece.frame.insetBy(dx: -0.5, dy: -0.5).contains(thumb.frame),
                       "the thumbnail \(thumb.frame) outside its piece \(piece.frame)")
-        // The §9 fixture is at (3.5, 5.5) on an eight-cell piece. The fog
+        // The fixture is at (3.5, 5.5) on an eight-cell piece. The fog
         // field fits thirteen cells (2.5 padding on each side), but that fit
         // must move only the centre: it must not shrink the photo or its hit box.
         let side = piece.frame.width
@@ -204,10 +203,10 @@ final class WorldImageryUITests: XCTestCase {
         XCTAssertTrue(neverExists(thumb, for: 2), "the superseded thumbnail came back")
     }
 
-    // MARK: FOW-RING: the capture dial's photos
+    // MARK: The capture dial's photos
 
-    /// With §4's landed fixture, today's join places `s9:120` looking 90°, sector 3, a
-    /// captured direction of §9's stop piece, so it is the dial's photo at
+    /// With the landed fixture, the join places `s9:120` looking 90°, sector 3, a
+    /// captured direction of the stop piece, so it is the dial's photo at
     /// 3 o'clock (start on top). Round 3: the same photo leads the "Recently
     /// captured" strip; a tap on either opens it large, with Close; no
     /// sentence of guidance; IOS_FOW_MAP_TAB unset, so no Dial|Map control.
@@ -303,7 +302,7 @@ final class WorldImageryUITests: XCTestCase {
         shoot("dial-photo-s3")
     }
 
-    // MARK: FOW v1.2: the photo floor plan
+    // MARK: The photo floor plan
 
     /// ON, with a raster for the stop landing: the piece is the photo -- a
     /// gray plate, the raster's pixels over it, alpha 0 reading gray -- and
@@ -433,7 +432,7 @@ final class WorldImageryUITests: XCTestCase {
     }
 
     /// Placed in reference 0, frame 1, identity: `s9:120` at (3, -1, 0)
-    /// looking along +x -- in §9's stop grid, station (3, 5), 90 degrees.
+    /// looking along +x -- in the stop grid, station (3, 5), 90 degrees.
     private static let placedZero: Segment = (0, "h0", true, [pose("s9:120", [3, -1, 0], yaw: .pi / 2),
                                                               pose("s9:121", [3.2, -1, 0], yaw: .pi / 2)])
     private static let live812: Segment = (812, "h812", false, [pose("s9:4416", [0, 0, 0]),

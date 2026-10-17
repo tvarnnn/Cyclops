@@ -27,7 +27,7 @@ import Foundation
 /// It is not a registry, not a plugin host, and not a lookup by cartridge id.
 /// One `let` per cartridge that has a workspace, resolved at compile time.
 /// Adding a `client(for: CartridgeWorkspace)` accessor would be the first step
-/// toward the dynamic module discovery `docs/04-MODULE-SYSTEM.md` forbids
+/// toward the dynamic module discovery `ios/Glasses/Project_Overview_Steps/docs/04-MODULE-SYSTEM.md` forbids
 /// before V1.0.
 ///
 /// ## Runtime ownership

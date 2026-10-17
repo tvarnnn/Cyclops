@@ -14,7 +14,7 @@ import Foundation
 /// agreements they answer to.
 ///
 /// This file hard-codes no experiment, algorithm or metric name.
-/// `docs/modules/EXPERIMENTAL-CV.md` calls its candidate list "intentionally
+/// `ios/Glasses/Project_Overview_Steps/docs/modules/EXPERIMENTAL-CV.md` calls its candidate list "intentionally
 /// broad"; picking any subset here would make the iOS app the place the
 /// experiment list is decided, which is exactly backwards. The Tower names its
 /// experiments, names its metrics, and names their units; iOS displays those
@@ -194,7 +194,7 @@ nonisolated enum CVWireProvenance {
 ///
 /// ## Why `provenance` is not optional
 ///
-/// Because `docs/modules/EXPERIMENTAL-CV.md` requires results to distinguish
+/// Because `ios/Glasses/Project_Overview_Steps/docs/modules/EXPERIMENTAL-CV.md` requires results to distinguish
 /// model inference from measured fact, and an optional field with a `nil`
 /// default is a field that gets skipped at the call site. The Tower takes the
 /// same position from its side — *"required, never omitted"* — so requiring it
@@ -214,7 +214,7 @@ nonisolated enum CVWireProvenance {
 ///
 /// The `baseline`, `higherIsBetter` and `comparison` machinery is absent from
 /// the build, so a non-null payload cannot activate a verdict. A comparison
-/// without a measured reference is what `docs/modules/EXPERIMENTAL-CV.md` rules out;
+/// without a measured reference is what `ios/Glasses/Project_Overview_Steps/docs/modules/EXPERIMENTAL-CV.md` rules out;
 /// verdict code belongs with a future contract that carries such a reference.
 /// This contract carries no confidence, so `ObservationProvenance.inferred`
 /// receives `nil` confidence here.
@@ -547,7 +547,7 @@ nonisolated struct CVPreviewDiagnostics: Equatable, Sendable {
 
 /// Timings for one run, keeping the clocks the platform requires be kept apart.
 ///
-/// `docs/07-PLATFORM-CONSTRAINTS.md` Limitation 9: Tower receipt time must not
+/// `ios/Glasses/Project_Overview_Steps/docs/07-PLATFORM-CONSTRAINTS.md` Limitation 9: Tower receipt time must not
 /// be treated as camera capture time, and processing time is a third quantity
 /// again. `processingMs` is the Tower measuring itself — a genuine measurement,
 /// and the only one of the three iOS can trust unreservedly.

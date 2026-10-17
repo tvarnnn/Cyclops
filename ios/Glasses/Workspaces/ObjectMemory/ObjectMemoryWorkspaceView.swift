@@ -947,7 +947,7 @@ struct ObjectMemoryPictureView: View {
                     .buttonStyle(.bordered)
 
             case .loading:
-                // The wait, labelled (U0.8 F16).
+                // The wait, labelled.
                 HStack(spacing: 8) {
                     ProgressView()
                     Text(ObjectMemoryCopy.askingForThePicture)
@@ -967,8 +967,8 @@ struct ObjectMemoryPictureView: View {
 
             case .failed(let failure):
                 caption(failure.message)
-                // A picture that did not arrive can be asked for again (U0.8
-                // F16). A settled answer keeps its sentence and no button.
+                // A picture that did not arrive can be asked for again;
+                // a settled answer keeps its sentence and no button.
                 if failure.kind == .transport {
                     Button(ObjectMemoryCopy.tryThePictureAgainButton) { loader.load() }
                         .font(.caption)

@@ -228,7 +228,7 @@ extension SenderMetricsSnapshot {
     /// boolean would read "unbounded queue!" several times a second during
     /// perfectly healthy operation. The number cannot lie the same way: a
     /// small steady value is the hop plus the send window, and a value that
-    /// climbs is the queue growth docs/03-ROADMAP.md V0.7 forbids.
+    /// climbs is the queue growth ios/Glasses/Project_Overview_Steps/docs/03-ROADMAP.md V0.7 forbids.
     ///
     /// Expect roughly 0...(`maxFramesInFlight` + 1).
     var framesUnaccounted: Int {
@@ -252,7 +252,7 @@ extension SenderMetricsSnapshot {
 /// Shared by `GlassesConnection` (capture and sampling) and `TowerClient`
 /// (encode and transmission). Neither of those types learns about the other by
 /// holding this — it is a sink, not a channel — so the boundary in
-/// docs/02-DEVELOPMENT-RULES.md Rule 1 is preserved, with `ProjectManager`
+/// ios/Glasses/Project_Overview_Steps/docs/02-DEVELOPMENT-RULES.md Rule 1 is preserved, with `ProjectManager`
 /// still the only owner of both.
 ///
 /// Recording is a couple of integer increments plus one `Double` comparison.

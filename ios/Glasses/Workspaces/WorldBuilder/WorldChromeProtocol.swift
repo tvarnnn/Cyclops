@@ -2,7 +2,7 @@
 //  WorldChromeProtocol.swift
 //  Glasses
 //
-//  U1.1 native chrome (WORLD-BUILDER-WORLDS.md §4c, protocol 1; IOS §10):
+//  native chrome (WORLD-BUILDER-WORLDS.md §4c, protocol 1; IOS §10):
 //  the pure half. The message types, the decoder and its bounds, the frame
 //  check, the ring's drawing rule, and the reducer that decides every reply.
 //  No WebKit and no SwiftUI here, so all of it is driven by unit tests.

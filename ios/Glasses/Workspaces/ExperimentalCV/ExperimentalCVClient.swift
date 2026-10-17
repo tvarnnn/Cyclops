@@ -29,7 +29,7 @@ protocol ExperimentalCVClient: CartridgeClient {
     var state: ExperimentalCVState { get }
 
     /// Every state after the one `state` held when the view model was built.
-    /// See `WorldBuilderClient.stateUpdates` for why this is a concrete
+    /// See `WorldBuilderClient.walkReportUpdates` for why this is a concrete
     /// `AnyPublisher` rather than an `ObservableObject` conformance.
     var stateUpdates: AnyPublisher<ExperimentalCVState, Never> { get }
 
@@ -170,7 +170,7 @@ final class UnavailableExperimentalCVClient: ExperimentalCVClient {
 
     /// Always throws. A silent no-op would leave a button that appears to work,
     /// which is the failure mode this whole cartridge layer exists to prevent —
-    /// and `docs/04-MODULE-SYSTEM.md` requires an unsupported request to
+    /// and `ios/Glasses/Project_Overview_Steps/docs/04-MODULE-SYSTEM.md` requires an unsupported request to
     /// "produce a clear degraded/failed state rather than silently pretending"
     /// it was applied.
     func run(_ experiment: CVExperiment) throws {

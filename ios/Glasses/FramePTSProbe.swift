@@ -49,7 +49,7 @@ import Foundation
 /// difference, and it is the measurement this probe exists for.**
 ///
 /// The `[PTSProbe]` console lines are the probe's only output. Keep them
-/// `print`s (stdout), word for word: 07-PLATFORM-CONSTRAINTS.md §9 was
+/// `print`s (stdout), word for word: ios/Glasses/Project_Overview_Steps/docs/07-PLATFORM-CONSTRAINTS.md §9 was
 /// measured by reading them.
 nonisolated final class FramePTSProbe {
 
@@ -86,7 +86,7 @@ nonisolated final class FramePTSProbe {
     /// - **SUSPENDED-BUT-MONOTONIC** — `d_pts` is not negative and at least
     ///   0.5 s short of a positive `d_host`: the clock neither resets nor
     ///   measures the gap. This is what a stop measured
-    ///   (07-PLATFORM-CONSTRAINTS.md §9.1).
+    ///   (ios/Glasses/Project_Overview_Steps/docs/07-PLATFORM-CONSTRAINTS.md §9.1).
     /// - **UNEXPLAINED** — anything else: `d_pts` at least 0.5 s beyond
     ///   `d_host` (the clock advanced further than wall time), or a `d_host`
     ///   that is not positive.

@@ -2711,7 +2711,7 @@ final class ObjectMemoryPictureLoaderTests: XCTestCase {
         XCTAssertEqual(loader.phase, .noPicturesOffered)
     }
 
-    /// U0.8 F16: a picture that did not arrive can be asked for again, and
+    /// A picture that did not arrive can be asked for again, and
     /// the second ask is a real fetch.
     func testAPictureThatFailedCanBeAskedForAgain() async throws {
         let client = StubObjectMemoryClient()

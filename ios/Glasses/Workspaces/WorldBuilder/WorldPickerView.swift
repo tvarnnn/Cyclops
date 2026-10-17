@@ -37,19 +37,19 @@ struct WorldPickerView: View {
     @ObservedObject var world: WorldBuilderViewModel
     @Environment(\.dismiss) private var dismiss
 
-    /// Opens Connections, for a list the Tower could not be reached for
-    /// (U0.8 F09). The presenter dismisses this sheet first, because only one
+    /// Opens Connections when the saved-world list could not reach the Tower.
+    /// The presenter dismisses this sheet first, because only one
     /// sheet can be up. `nil` draws no button.
     var onOpenConnections: (() -> Void)? = nil
 
     /// Back to the live screen, where Start capture is, for a walk with
-    /// nothing to open (U0.8 F10). It does not start a capture. `nil` draws
+    /// nothing to open. It does not start a capture. `nil` draws
     /// no button.
     var onGoToCapture: (() -> Void)? = nil
 
     /// A room or session row was opened: the presenter dismisses this sheet,
     /// and the World Builder panel shows the pinned world live inline, a tap
-    /// from full screen (U-INLINE §2.4, manager 209). `nil` dismisses here.
+    /// from full screen. `nil` dismisses here.
     var onOpenRoom: (() -> Void)? = nil
 
     /// The AREA whose 3D reconstruction is pushed, or `nil`.
@@ -57,8 +57,8 @@ struct WorldPickerView: View {
     /// ## Rooms pin and dismiss; areas still push
     ///
     /// A room tap used to push the 3D world over this list, so a reader
-    /// comparing two walks did not have to reopen it. Since U-INLINE (manager
-    /// 209) the room is pinned and the sheet goes: the panel under the
+    /// comparing two walks did not have to reopen it. Now the room
+    /// is pinned and the sheet goes: the panel under the
     /// capture control shows that world, live, and Full screen is one tap.
     /// That deliberately gives up the comparison shortcut for one web view
     /// and one place to look. An area has no panel of its own, so it is
@@ -143,7 +143,7 @@ struct WorldPickerView: View {
                         openedArea = opening
                         opened = area
                     },
-                    // The room is the panel's now (U-INLINE §2.4): back to
+                    // The room is the panel's now: back to
                     // the room pins it and dismisses, as a room row does.
                     backToRoom: target.isArea ? {
                         openedArea = nil
@@ -302,8 +302,8 @@ struct WorldPickerView: View {
                     .foregroundStyle(.readableSecondary)
             }
         } else if let problem = world.worldListProblem {
-            // Each failure in its own words, with its own next step (U0.8
-            // F09). The last list stays below, and its rows stay tappable.
+            // Each failure in its own words, with its own next step.
+            // The last list stays below, and its rows stay tappable.
             VStack(alignment: .leading, spacing: 8) {
                 Text(world.worldListFailure ?? "")
                     .font(.footnote)
@@ -486,9 +486,9 @@ struct WorldPickerView: View {
                     .foregroundStyle(.readableSecondary)
                     .fixedSize(horizontal: false, vertical: true)
                 // The next step the caption names, where this build has it:
-                // back to the live screen, where Start capture is (U0.8 F10).
+                // back to the live screen, where Start capture is.
                 // Release has no capture, so no button. The badge keeps its
-                // word (manager 137 D2).
+                // word.
                 #if DEBUG
                 if WorldListingPresentation.offersGoToCapture(for: session), let onGoToCapture {
                     Button(WorldListText.goToCapture, action: onGoToCapture)
@@ -579,7 +579,7 @@ struct WorldPickerView: View {
 
     /// Pin the world for the workspace behind, and dismiss: the World
     /// Builder panel shows it, live inline, with Full screen one tap away
-    /// (U-INLINE §2.4). The pin is what makes the workspace describe this
+    /// The pin is what makes the workspace describe this
     /// world and what starts the geometry fetch that fills Diagnostics.
     private func open(worldID: String, sessionID: String?) {
         world.open(worldID: worldID, sessionID: sessionID)
@@ -663,7 +663,7 @@ struct WorldPickerView: View {
     }
 }
 
-// MARK: - The list's problems, in words (U0.8 F09, F10)
+// MARK: - The list's problems, in words
 
 /// What the saved-worlds sheet says when the Tower's list is not a fresh
 /// answer, and the words of its controls. Each failure is worded as what the

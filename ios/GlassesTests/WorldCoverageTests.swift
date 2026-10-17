@@ -2,9 +2,8 @@
 //  WorldCoverageTests.swift
 //  GlassesTests
 //
-//  Fog of war v1 (FOW-COVERAGE-V1-SPEC-20261006, frozen): §9's three Swift
-//  fixtures, §5's fail-closed decoding, and §8's honesty assertions as the
-//  phone states them. The client-side walk pairing is tested end to end in
+//  Coverage receipt fixtures, fail-closed decoding, and the claims the
+//  phone makes. Client-side walk pairing is tested end to end in
 //  `WorldBuilderIntegrationTests` (`TowerWorldBuilderClientTests`).
 //
 
@@ -12,7 +11,7 @@ import CoreGraphics
 import XCTest
 @testable import Glasses
 
-/// §9's fixtures, verbatim.
+/// Coverage fixtures, verbatim.
 enum FOWFixtures {
     static let early = #"{"guidance":{"coverage":null}}"#
     static let mid = #"{"guidance":{"coverage":{"version":1,"source":"landed_global_solve","solved_at":1791240000.0,"computed_at":1791240000.12,"horizon_keyframes":113,"keyframes_now":127,"keyframes_pending":14,"geometry_revision":"g-mid-113","frame_revision":1,"station_grid":"component_square_8x8_v1","sector_frame":"first_qualified_forward_cw_from_up_v1","components_total":2,"components_omitted":0,"stations_omitted":0,"components":[{"reference_segment":0,"posed_keyframes":82,"bounds_xy":[-4.0,-4.0,4.0,4.0],"origin_xyz":[0.0,0.0,0.0],"up_xyz":[0.0,0.0,1.0],"forward_xyz":[0.0,1.0,0.0],"cell_size":1.0,"stations":[{"x":3,"y":5,"keyframes":30,"weak_mask":1,"supported_mask":30}]},{"reference_segment":17,"posed_keyframes":19,"bounds_xy":[-2.0,-2.0,2.0,2.0],"origin_xyz":[10.0,0.0,0.0],"up_xyz":[0.0,0.0,1.0],"forward_xyz":[1.0,0.0,0.0],"cell_size":0.5,"stations":[{"x":1,"y":2,"keyframes":8,"weak_mask":2,"supported_mask":1}]}]}}}"#
@@ -50,7 +49,7 @@ final class WorldCoverageTests: XCTestCase {
                              clock: sentAfterSolve.map { WorldTowerClock(towerSentAt: coverage.solvedAt + $0, receivedAt: t0) })
     }
 
-    // MARK: §9: the three fixtures
+    // MARK: The three fixtures
 
     func testTheThreeContractFixturesDecode() throws {
         XCTAssertEqual(WorldCoverageStatus(payload: FOWFixtures.payload(FOWFixtures.early)), .notYet,
@@ -78,8 +77,8 @@ final class WorldCoverageTests: XCTestCase {
                        [Station(x: 3, y: 5, keyframes: 120, weakMask: 0, supportedMask: 30)])
     }
 
-    /// The live Tower today: its switch is off, so `guidance` is absent, and
-    /// the panel is exactly today's -- no map, no card.
+    /// An absent `guidance` field tests older or incomplete reports: the
+    /// panel draws no map or card without a receipt.
     func testNoGuidanceIsTodaysPanel() {
         XCTAssertEqual(WorldCoverageStatus(payload: [:]), .absent)
         XCTAssertEqual(WorldCoverageStatus(payload: ["guidance": [String: Any]()]), .absent)
@@ -103,7 +102,7 @@ final class WorldCoverageTests: XCTestCase {
         XCTAssertEqual(FOWFixtures.status(block).coverage, mid)
     }
 
-    // MARK: §5: fail closed
+    // MARK: Fail closed
 
     private func mutated(_ mutate: (inout [String: Any]) -> Void) -> [String: Any] {
         var block = FOWFixtures.block(FOWFixtures.mid)
@@ -175,7 +174,7 @@ final class WorldCoverageTests: XCTestCase {
         XCTAssertEqual(WorldCoverageStatus(payload: ["guidance": ["coverage": [1, 2]]]), .refused)
     }
 
-    /// §5's caps bound the block: more than 16 components or 16 stations is
+    /// Display caps bound the block: more than 16 components or 16 stations is
     /// oversized, and refused rather than drawn in part.
     func testAnOversizedBlockIsRefused() {
         func block(components: Int, stationsEach: Int) -> [String: Any] {
@@ -202,7 +201,7 @@ final class WorldCoverageTests: XCTestCase {
                        "18 stations over the whole block")
     }
 
-    /// §5: "A decoder drops any row that arrives with stations:[]" -- and
+    /// An empty `stations` row is dropped, never drawn as a room, and
     /// says it is not drawn, never a fake empty room.
     func testARowWithNoStationsIsDroppedAndCountedAsNotDrawn() throws {
         let block = mutated { block in Self.component(1, &block) { $0["stations"] = [Any]() } }
@@ -213,7 +212,7 @@ final class WorldCoverageTests: XCTestCase {
         XCTAssertNil(WorldCoverageCopy.pieces(coverage), "one piece drawn: no separate-pieces line")
     }
 
-    // MARK: §8.1: no pointing-only coverage; weak is not covered
+    // MARK: No pointing-only coverage; weak is not covered
 
     func testOneViewIsWeakTwoAreSupportedAndNoBitIsGrey() {
         let station = mid.components[0].stations[0]   // weak 0b1, supported 0b11110
@@ -229,7 +228,7 @@ final class WorldCoverageTests: XCTestCase {
         XCTAssertEqual(fan.sectors.filter { $0 == .unconfirmed }.count, 10)
     }
 
-    // MARK: §8.2: the age is always visible
+    // MARK: The age is always visible
 
     func testTheMapIsDatedAtThirtySecondsAndStaleAbove() {
         let r = receipt(mid, accepted: 127, sentAfterSolve: 12)
@@ -255,7 +254,7 @@ final class WorldCoverageTests: XCTestCase {
                        "Map through keyframe 113 · solved at 22:40:00 Tower time · age unavailable")
     }
 
-    /// §8.2 after Stop and §9's post-Stop fixture: "at Stop" only when the
+    /// After Stop, "at Stop" appears only when the
     /// solve held every accepted keyframe, and the live count -- not the
     /// block's snapshot zero -- says 106 are newer.
     func testAfterStopAtStopOnlyWhenTheReceiptHoldsEveryKeyframe() {
@@ -287,7 +286,7 @@ final class WorldCoverageTests: XCTestCase {
                        "14 keyframes not yet placed when this map was made")
     }
 
-    // MARK: §8.3: islands stay separate
+    // MARK: Islands stay separate
 
     func testTwoComponentsAreTwoPiecesEvenWhenTheirGridsCoincide() throws {
         // Component 17 made identical to component 0 but for its identity,
@@ -326,7 +325,7 @@ final class WorldCoverageTests: XCTestCase {
         XCTAssertNil(WorldCoverageCopy.notDrawn(mid))
     }
 
-    // MARK: §6.4 / §8.5: geometry, and no position
+    // MARK: Geometry, and no position
 
     /// The synthetic north/east fixture: sector zero is the component's
     /// forward axis, drawn to the right, and sectors run clockwise as seen
@@ -350,7 +349,7 @@ final class WorldCoverageTests: XCTestCase {
     }
 
     /// A piece draws one fan per station at its cell and nothing else: no
-    /// current-position dot, no path, no north arrow (§6, §8.5).
+    /// current-position dot, no path, no north arrow.
     func testAPieceDrawsOnlyItsStationsNeverAPosition() {
         let fans = WorldCoverageGeometry.fans(mid.components[0], side: 160)
         XCTAssertEqual(fans.count, 1, "one station, one fan, and nothing else")
@@ -359,7 +358,7 @@ final class WorldCoverageTests: XCTestCase {
         XCTAssertEqual(fans.first?.sectors, (0..<12).map(mid.components[0].stations[0].evidence(sector:)))
     }
 
-    /// §8.5's "never claim" list, over every word the map can say.
+    /// The map's forbidden claims, checked over every word it can say.
     func testTheMapsWordsNeverClaimWhatTheReceiptDoesNot() {
         let banned = ["hole", "room", "covered", "coverage", "complete", "surface", "texture", "wall", "floor",
                       "current", "you are", "live", "scan", "missing", "unseen", "nothing", "%", "everything",

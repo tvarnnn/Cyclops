@@ -2,7 +2,7 @@
 //  AccessibilityAuditUITests.swift
 //  GlassesUITests
 //
-//  U0.5: XCUITest's accessibility audit -- contrast, Dynamic Type, clipped
+//  XCUITest's accessibility audit -- contrast, Dynamic Type, clipped
 //  text and element descriptions -- on every screen the Simulator can reach,
 //  in light, dark and the largest accessibility text size, top to bottom.
 //
@@ -63,7 +63,7 @@ final class AccessibilityAuditUITests: XCTestCase {
         return all.filter { names.contains($0.name) }
     }
 
-    /// What this test audits for: exactly the four U0.5 names.
+    /// What this test audits for: exactly the four names.
     private let auditTypes: XCUIAccessibilityAuditType =
         [.contrast, .dynamicType, .textClipped, .sufficientElementDescription]
 
@@ -104,7 +104,7 @@ final class AccessibilityAuditUITests: XCTestCase {
     /// flagged by either there: text actually judged at the largest size, and
     /// clean.
     ///
-    /// The only evidence a prediction settles on (U0.5 review F4). Text that
+    /// The only evidence a prediction settles on. Text that
     /// was merely seen at the largest size, by the contrast pass, and never
     /// flagged by the sizing pass used to count too; but a sizing pass that
     /// never reached the screenful the text was on flags nothing, so that was
@@ -132,7 +132,7 @@ final class AccessibilityAuditUITests: XCTestCase {
         var stood: [String: Int] = [:]
         for prediction in predictions {
             // Clipping at a default size settles only for a world or session
-            // id (U0.8 H0; U0.5 review F4, owed). Those are the intentional
+            // id. Those are the intentional
             // truncations -- `WorldPickerView` cuts them to one line, in the
             // middle, below the accessibility sizes. Any other text passing
             // at Accessibility XXXL proves nothing about the default size:
@@ -169,8 +169,7 @@ final class AccessibilityAuditUITests: XCTestCase {
         predictions = []
     }
 
-    /// Whether a flagged label is a world or session id (U0.8 H0; the
-    /// recognition is OPEN-7's pick). The whole label must be one token of
+    /// Whether a flagged label is a world or session id. The whole label must be one token of
     /// id characters -- letters, digits, `.`, `_`, `:` and `-` -- with a digit,
     /// a `-` or a `_` in it, so no word ("Done", "Settings") passes. An id
     /// the audit reports on the row's combined button, with the row's other
@@ -202,8 +201,8 @@ final class AccessibilityAuditUITests: XCTestCase {
     private let waivers: [Waiver] = [
         // The Tower's page, inside the viewer's WKWebView: its own title,
         // caption, chips and the unlabelled "→" button are Tower HTML
-        // (appearance_viewer.html, fixed 14 px type). Rewriting them is U1.1
-        // (one visual system, the native-chrome flag); U0.5 is iOS-owned only.
+        // (appearance_viewer.html, fixed 14 px type). Rewriting them is
+        // a separate visual-system change; this audit covers iOS-owned views.
         Waiver(reason: "Tower HTML inside the viewer's web view (U1.1)") { issue, screen in
             guard screen.hasPrefix("world-opened") else { return false }
             return AccessibilityAuditUITests.isInsideWebView(issue.element)
@@ -233,10 +232,10 @@ final class AccessibilityAuditUITests: XCTestCase {
         // session" on Home; for "Start capture", in the viewfinder card at the
         // top of the World Builder workspace (DEBUG), which can be a screen
         // above it, and in the control's VoiceOver hint -- and, while it is
-        // off because the Tower is not connected (U0.8 D1), in the line
+        // off because the Tower is not connected, in the line
         // directly under it ("Start is off while the Tower is not
         // connected…") and the same hint; for "Picture", in the
-        // canvas under it ("No world yet"). (U0.5 review F10: the line that
+        // canvas under it ("No world yet"). The line that
         // stood beside "Start capture" was removed as a duplicate.)
         Waiver(reason: "a disabled control (WCAG 1.4.3: inactive components are exempt)") { issue, _ in
             guard issue.auditType == .contrast else { return false }
@@ -464,7 +463,7 @@ final class AccessibilityAuditUITests: XCTestCase {
 
     /// With an AREA open -- whose viewer always shows "Back to the room" --
     /// the picture still keeps most of the screen at the largest text size
-    /// (U0.8 R1): the controls between the words and the picture are capped
+    /// The controls between the words and the picture are capped
     /// at 10 %, beside the words' 18 % and the areas' and Details' 12 %.
     func testTheWorldKeepsMostOfTheScreenWithAnAreaOpenAtTheLargestTextSize() throws {
         let authority = try towerAuthority()
@@ -480,7 +479,7 @@ final class AccessibilityAuditUITests: XCTestCase {
         XCTAssertTrue(web.waitForExistence(timeout: 120), "the page was drawn")
 
         // An area that opens: the first enabled button in the areas row.
-        // Under native chrome (U1.1) the row is in a panel, opened by Areas.
+        // Under native chrome the row is in a panel, opened by Areas.
         let areasControl = element(app, "world-chrome-areas")
         let areas = element(app, "world-render-areas")
         _ = waitFor(timeout: 30) { areas.exists || areasControl.exists }
@@ -523,12 +522,12 @@ final class AccessibilityAuditUITests: XCTestCase {
     /// the walk's notice from the Tower (COMPONENTS §8: "show it verbatim
     /// below the room caption") is on the screen whole, above the 3D view,
     /// without scrolling -- on an iPhone SE too, where the caption's cap once
-    /// hid it (U0.5 review F1). The controls that act on the picture (the
+    /// hid it. The controls that act on the picture (the
     /// newer reconstruction's offer, its retry, Back to the room) are pinned
     /// between the words and the picture, and are checked the same way when
     /// the screen shows them. Then every native text and control on the
     /// screen is measured on the pixels, light mode, to 4.5:1 -- "Details"
-    /// included (U0.5 review F2).
+    /// included.
     ///
     /// Needs the appearance fixture's walk to carry a `finalization.notice`,
     /// and skips without one.
@@ -828,7 +827,7 @@ final class AccessibilityAuditUITests: XCTestCase {
         // in time". A try that completes is the one that counts.
         let checks: [XCUIAccessibilityAuditType] = [.contrast, .sufficientElementDescription, .dynamicType, .textClipped]
         // The two waivers below are for the world's WebGL page and a timeout
-        // only (U0.5 review F3); anywhere else, or any other error, fails.
+        // only; anywhere else, or any other error, fails.
         let overTheWebGLPage = screen.hasPrefix("world-opened")
         var sizingCompleted = true
         for check in checks where auditTypes.intersection(types).contains(check) {
@@ -858,7 +857,7 @@ final class AccessibilityAuditUITests: XCTestCase {
                 // never completed (four tries in each of three runs). What it
                 // would have judged that is this app's -- every native text
                 // and control on the screen, outside the page and the bars,
-                // buttons and disclosures included (U0.5 review F2) -- is
+                // buttons and disclosures included -- is
                 // measured on the rendered pixels instead, to the same 4.5:1.
                 let measured = measureNativeElements(app, in: shot, window: window)
                 let low = measured.filter { $0.ratio < 4.5 }
@@ -925,7 +924,7 @@ final class AccessibilityAuditUITests: XCTestCase {
 
     /// Every element on the screen that is this app's and has a label --
     /// texts, and the buttons, links and disclosures the contrast audit
-    /// judges too (U0.5 review F2: static texts alone missed the viewer's
+    /// judges too: static texts alone missed the viewer's
     /// system-blue "Details" at about 4.0:1) -- outside the web view and the
     /// navigation bars, wholly on the screen and enabled, with its measured
     /// contrast. A disabled control is exempt, as in `waivers`. From one
@@ -1196,7 +1195,7 @@ final class AccessibilityAuditUITests: XCTestCase {
         XCTAssertTrue(fixture.waitForExistence(timeout: 20), "\(mode.name): the Tower listed the fixture worlds")
     }
 
-    /// U-INLINE §2.4 / §6.3: a room row pins its world and the sheet goes;
+    /// A room row pins its world and the sheet goes;
     /// the World Builder panel shows it, and Full screen opens the viewer.
     private func openRoom(_ app: XCUIApplication, _ row: XCUIElement) {
         row.tap()

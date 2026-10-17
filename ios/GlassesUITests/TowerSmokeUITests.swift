@@ -218,10 +218,10 @@ final class TowerSmokeUITests: XCTestCase {
         let caption = app.staticTexts.containing(
             NSPredicate(format: "label CONTAINS[c] %@", "not to scale")
         ).firstMatch
-        // Or the web view itself: under native chrome (U1.1) the caption
+        // Or the web view itself: under native chrome the caption
         // line is the page's own head, drawn natively once the page speaks.
         //
-        // U-INLINE §2.4 (manager 209): the tap pins the session and the sheet
+        // the tap pins the session and the sheet
         // goes; the World Builder panel shows its 3D world live inline, and
         // Full screen opens the viewer this test reads (§6.3).
         XCTAssertTrue(tap(complete, until: !app.navigationBars["Saved worlds"].exists),
@@ -261,7 +261,7 @@ final class TowerSmokeUITests: XCTestCase {
             "The camera's own images", "Surfaces the Tower reconstructed",
             "Points the Tower measured densely", "Points the Tower measured from the walk"
         )).firstMatch
-        // U1.1: under native chrome (a Tower with TOWER_WORLD_NATIVE_CHROME
+        // under native chrome (a Tower with TOWER_WORLD_NATIVE_CHROME
         // on) the native caption line is replaced by the page's own head
         // line, drawn by the phone. Its words are the page's, so only its
         // presence is asserted, by the rule above.
@@ -309,7 +309,7 @@ final class TowerSmokeUITests: XCTestCase {
         }
 
         // Close the full screen: back on the workspace, which is pinned to
-        // the world that was opened (U-INLINE §3.2).
+        // the world that was opened.
         let close = app.descendants(matching: .any).matching(identifier: "wb-cover-close").firstMatch
         XCTAssertTrue(tap(close, until: !close.exists), "Close collapses the 3D world into the panel")
 

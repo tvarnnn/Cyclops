@@ -2,7 +2,7 @@
 //  AccessibilityContrastTests.swift
 //  GlassesTests
 //
-//  U0.5: the colours the accessibility pass chose, measured. WCAG 2 contrast
+//  the colours the accessibility pass chose, measured. WCAG 2 contrast
 //  ratios of the readable secondary text on every surface it sits on, of the
 //  viewer's dark loading panel, and of the look-back banner, which the
 //  Simulator cannot reach (it needs a live walk) and so the UI audit cannot
@@ -128,7 +128,7 @@ final class AccessibilityContrastTests: XCTestCase {
     #if DEBUG
     /// The IMU log's badge in the navigation bar, which the Simulator cannot
     /// reach (it needs glasses) and so the UI audit cannot see: its words on
-    /// its red or orange capsule, over the bar in either appearance (U0.5
+    /// its red or orange capsule, over the bar in either appearance.
     /// review F13).
     func testTheIMUBadgeTextIsAtLeast4Point5To1OnItsCapsule() {
         for traits in [light, dark] {

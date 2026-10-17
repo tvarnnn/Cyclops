@@ -2,7 +2,7 @@
 //  DeadEndsUITests.swift
 //  GlassesUITests
 //
-//  U0.8: the dead ends and contradictions, end to end in the Simulator.
+//  the dead ends and contradictions, end to end in the Simulator.
 //
 //  Runs by default, and never reaches a real Tower: every launch points the
 //  app at the closed loopback port or at `MockTowerHTTPServer`, served from
@@ -147,7 +147,7 @@ final class DeadEndsUITests: XCTestCase {
                       "Connect dialled the Tower: \(socketDials) dials, \(dials) before the tap")
     }
 
-    /// D1 (manager 137): with the Tower unreachable, Start capture is off,
+    /// With the Tower unreachable, Start capture is off,
     /// the reason is beside it, and Connect and Settings are offered.
     func testStartIsDisabledWithAReasonWhileTheTowerIsUnreachable() throws {
         launch(tower: closedAuthority, mockGlasses: true)
@@ -597,7 +597,7 @@ final class DeadEndsUITests: XCTestCase {
             }
         }
         // One key at a time, and checked: on a loaded Mac a whole string
-        // typed at once lost its keys after "127." (U0.8 Part B).
+        // typed at once lost its keys after "127.".
         for attempt in 1...2 {
             let current = (field.value as? String) ?? ""
             if !current.isEmpty {
@@ -664,7 +664,7 @@ final class DeadEndsUITests: XCTestCase {
         // the app and every wait below would time out on it.
         addUIInterruptionMonitor(withDescription: "system alert") { alert in
             // The app's own glasses alert is not a system interruption, and
-            // its "OK" must never be tapped away unexplained (U0.8 F15).
+            // its "OK" must never be tapped away unexplained.
             if alert.label == "Something went wrong" { return false }
             for title in ["Allow", "Don't Allow", "OK", "Not Now"] {
                 let button = alert.buttons[title]
@@ -696,7 +696,7 @@ final class DeadEndsUITests: XCTestCase {
     /// into this runner's temporary folder and named on every mock launch.
     /// DAT's mock streams H.265 frames from a video file; with none it fails
     /// every stream at once with "Critical error, the stream should end",
-    /// which the app shows as a glasses alert (U0.8 F15). Four minutes at
+    /// which the app shows as a glasses alert. Four minutes at
     /// 6 fps outlasts any capture here; each frame is a different grey.
     /// Internal so `CaptureHealthUITests` streams the same clip.
     static let cameraFeed: Result<URL, FeedProblem> = {

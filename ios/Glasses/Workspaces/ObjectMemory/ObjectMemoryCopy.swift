@@ -631,9 +631,9 @@ enum ObjectMemoryCopy {
     static let showTheWholeFrameButton = "Show the whole frame"
     static let showTheDetectionButton = "Show just the detection"
     static let showThePictureButton = "Show the picture"
-    /// Beside the spinner while a picture is asked for (U0.8 F16).
+    /// Beside the spinner while a picture is asked for.
     static let askingForThePicture = "Asking the Tower for the picture…"
-    /// Under a picture that did not arrive (U0.8 F16).
+    /// Under a picture that did not arrive.
     static let tryThePictureAgainButton = "Try the picture again"
 
     /// The headline when there are no bytes.

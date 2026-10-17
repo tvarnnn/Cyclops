@@ -81,7 +81,7 @@ final class ProjectManager: ObservableObject {
     /// over a long run can be attributed to the device throttling rather than
     /// only to the network. The glasses' own thermal level comes from
     /// `glassesConnection.glassesThermalLevel`, which keeps DAT behind its
-    /// boundary (docs/02-DEVELOPMENT-RULES.md Rule 1).
+    /// boundary (ios/Glasses/Project_Overview_Steps/docs/02-DEVELOPMENT-RULES.md Rule 1).
     let deviceHealth: DeviceHealth
 
     /// Guards `startAutomaticConnections()` against running twice.
@@ -191,7 +191,7 @@ final class ProjectManager: ObservableObject {
         // Bridges captured camera frames to the Tower. GlassesConnection and
         // TowerClient never reference each other directly — ProjectManager,
         // which already owns both, is the integration point. Preserves the
-        // boundary in docs/02-DEVELOPMENT-RULES.md Rule 1.
+        // boundary in ios/Glasses/Project_Overview_Steps/docs/02-DEVELOPMENT-RULES.md Rule 1.
         self.glassesConnection.$latestCapturedFrame
             .compactMap { $0 }
             .receive(on: DispatchQueue.main)
@@ -298,7 +298,7 @@ final class ProjectManager: ObservableObject {
     }
 }
 
-// MARK: - UI-test launch hooks (U0.8 H2)
+// MARK: - UI-test launch hooks
 
 /// What a UI test can ask of a DEBUG launch. Every hook does nothing unless
 /// its argument or variable is present, and none exists in Release.
@@ -360,7 +360,7 @@ private extension ProjectManager {
         // A paired, powered-on, donned Mock Device Kit device, streaming the
         // video file the test names. With no feed, DAT's mock fails every
         // stream at once ("Critical error, the stream should end") and the
-        // app shows that as a glasses alert (U0.8 F15).
+        // app shows that as a glasses alert.
         if arguments.contains(UITestHooks.mockGlassesArgument) {
             if !glassesConnection.mockDeviceKitEnabled { glassesConnection.toggleMockDeviceKit() }
             glassesConnection.pairMockGlasses()
@@ -369,7 +369,7 @@ private extension ProjectManager {
             }
         }
 
-        // World Builder's first-update wait, shortened (U0.8 F13).
+        // World Builder's first-update wait, shortened.
         if let value = environment[UITestHooks.awaitingBoundSecondsVariable],
            let seconds = Double(value), seconds > 0 {
             WorldBuilderViewModel.awaitingBound = .milliseconds(Int(seconds * 1000))

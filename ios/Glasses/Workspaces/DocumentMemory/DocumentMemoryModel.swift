@@ -15,12 +15,12 @@ import Foundation
 /// ## Three refusals, each load-bearing
 ///
 /// **No OCR on iOS.** Not a single character of text in this file is produced
-/// on the phone. `docs/02-DEVELOPMENT-RULES.md` Rule 5 keeps heavy CV on the
-/// Tower, and Rule 12 plus `docs/06-PRIVACY-DATA.md` make document contents
+/// on the phone. `ios/Glasses/Project_Overview_Steps/docs/02-DEVELOPMENT-RULES.md` Rule 5 keeps heavy CV on the
+/// Tower, and Rule 12 plus `ios/Glasses/Project_Overview_Steps/docs/06-PRIVACY-DATA.md` make document contents
 /// among the most sensitive data the platform touches. `DocumentTextAvailability`
 /// reports whether the *Tower* extracted text; iOS never extracts, and cannot.
 ///
-/// **No "viewing" anything.** `docs/07-PLATFORM-CONSTRAINTS.md` Limitation 8:
+/// **No "viewing" anything.** `ios/Glasses/Project_Overview_Steps/docs/07-PLATFORM-CONSTRAINTS.md` Limitation 8:
 /// appearing in the camera does not prove the wearer looked at it, and the
 /// mitigation is classified REQUIRES FUTURE HARDWARE/API. The Tower agrees in
 /// its own `claim`: `a-page-was-in-view-and-was-ocred`, **not** "was read". So
@@ -107,7 +107,7 @@ nonisolated enum DocumentTextAvailability: Equatable, Sendable {
 
 /// Where a document came from, when the Tower can say.
 ///
-/// `worldID` is present because `docs/modules/ENVIRONMENTAL-MEMORY.md` allows
+/// `worldID` is present because `ios/Glasses/Project_Overview_Steps/docs/modules/ENVIRONMENTAL-MEMORY.md` allows
 /// environmental observations to *optionally* reference spatial locations if
 /// World Build later exposes a shared spatial service — and is explicit that
 /// this "must be an explicit architecture evolution, not an assumed
@@ -186,8 +186,9 @@ struct RememberedDocument: Equatable, Identifiable, Sendable {
     /// `true` on every record. The title came from the document, not from a
     /// person and not from a model asked to name it.
     var titleIsDerived: Bool
-    /// 60 on this Tower. Read rather than assumed, for the same reason
-    /// `snippetMaxChars` is: both are configuration-dependent.
+    /// 60 on this Tower (`TITLE_MAX_CHARS_ON_WIRE`), while
+    /// `snippetMaxChars` is 48 (`SNIPPET_MAX_CHARS`). Read both from the
+    /// payload so the display follows the Tower that answered.
     var titleMaxChars: Int?
     /// Whether a summary exists. A listing says this and withholds the summary
     /// itself; `summaryWithheldReason` is the envelope's `record_notes` entry
@@ -409,12 +410,12 @@ enum DocumentQueryOrigin: String, Equatable, Sendable, CaseIterable {
 
 /// How strongly the Tower's answer is supported.
 ///
-/// `docs/modules/ENVIRONMENTAL-MEMORY.md`:
+/// `ios/Glasses/Project_Overview_Steps/docs/modules/ENVIRONMENTAL-MEMORY.md`:
 ///
 /// > If retrieval evidence is weak: return "not found" or uncertainty; never
 /// > create a memory event retroactively to satisfy a query.
 ///
-/// and `docs/07-PLATFORM-CONSTRAINTS.md` Core Principle 3: absence of
+/// and `ios/Glasses/Project_Overview_Steps/docs/07-PLATFORM-CONSTRAINTS.md` Core Principle 3: absence of
 /// observation is not observation of absence. `.noObservation` and `.notFound`
 /// are therefore different answers and are worded differently on screen — one
 /// means the memory has nothing that could have matched, the other means it

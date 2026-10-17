@@ -156,7 +156,7 @@ nonisolated enum WorldListingPresentation {
             return "No geometry yet. The Tower may still build it for this walk."
         }
         // A settled walk with nothing to open names the one thing that makes
-        // another (U0.8 F10): walking the space again.
+        // another: walking the space again.
         if session.state == .interrupted {
             return "This walk's geometry is no longer on the Tower, so there is nothing to open. Walking the space again makes a new one."
         }

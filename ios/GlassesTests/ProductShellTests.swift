@@ -4,8 +4,8 @@
 //
 //  Guards the truthfulness invariants of the product shell and of the cartridge
 //  integration layer built on it. Rule 3 (Truthful State Only) and Rule 16
-//  (Epistemic Honesty) in docs/02-DEVELOPMENT-RULES.md, plus the display rules
-//  in docs/06-PRIVACY-DATA.md and docs/07-PLATFORM-CONSTRAINTS.md.
+//  (Epistemic Honesty) in ios/Glasses/Project_Overview_Steps/docs/02-DEVELOPMENT-RULES.md, plus the display rules
+//  in ios/Glasses/Project_Overview_Steps/docs/06-PRIVACY-DATA.md and ios/Glasses/Project_Overview_Steps/docs/07-PLATFORM-CONSTRAINTS.md.
 //
 //  In rough order: the cartridge catalog and its roadmap statuses; workspace
 //  selection; the shared availability/phase layer; the four cartridge clients
@@ -198,7 +198,7 @@ final class CartridgeWorkspaceTests: XCTestCase {
         let withWorkspaces = Cartridge.catalog.filter { $0.workspace != nil }
         XCTAssertFalse(withWorkspaces.isEmpty, "this test is vacuous if nothing has a workspace")
 
-        // Every status in the catalog, pinned against docs/03-ROADMAP.md and
+        // Every status in the catalog, pinned against ios/Glasses/Project_Overview_Steps/docs/03-ROADMAP.md and
         // the module specs — not merely "not promoted to next".
         //
         // ## Why this replaced a narrower assertion
@@ -296,7 +296,7 @@ final class CartridgeWorkspaceTests: XCTestCase {
             // adding one, answer the question this vocabulary exists to answer:
             // what can a person DO with it in this build? If the answer is a
             // roadmap position, it does not belong here — roadmap position
-            // lives in docs/03-ROADMAP.md and each cartridge's specPath, and
+            // lives in ios/Glasses/Project_Overview_Steps/docs/03-ROADMAP.md and each cartridge's specPath, and
             // rendering it in the drawer is what produced a catalog where
             // Visual Q&A read "Planned" with no backend while World Builder
             // read "Future" with a device-validated walk behind it.
@@ -316,8 +316,8 @@ final class CartridgeWorkspaceTests: XCTestCase {
 
     /// Every cartridge cites a spec path this repository actually contains.
     ///
-    /// `testEveryCartridgeCitesASpec` asserts only the `docs/modules/` **prefix**,
-    /// so it passes for `docs/modules/DOES-NOT-EXIST.md`. A test bundle cannot
+    /// `testEveryCartridgeCitesASpec` asserts only the `ios/Glasses/Project_Overview_Steps/docs/modules/` **prefix**,
+    /// so it passes for `ios/Glasses/Project_Overview_Steps/docs/modules/DOES-NOT-EXIST.md`. A test bundle cannot
     /// stat the repository, so the honest substitute is to pin the exact set —
     /// which catches a typo in a new entry and forces a deliberate edit when a
     /// spec is genuinely added.
@@ -504,7 +504,7 @@ final class CartridgeWorkspaceTests: XCTestCase {
 // MARK: - World model boundary
 
 /// The Tower has no world builder. These tests pin what the app is allowed to
-/// say about that, and pin the display rule `docs/modules/WORLD-BUILD.md`
+/// say about that, and pin the display rule `ios/Glasses/Project_Overview_Steps/docs/modules/WORLD-BUILD.md`
 /// imposes on any spatial figure the Tower eventually sends.
 @MainActor
 final class WorldModelTests: XCTestCase {
@@ -1354,7 +1354,7 @@ final class CartridgeClientTests: XCTestCase {
     /// **No client may make a claim about what the Tower stores.**
     ///
     /// This app has no channel through which it could know that. It sends
-    /// frames over a transport `07-PLATFORM-CONSTRAINTS.md` Limitation 11
+    /// frames over a transport `ios/Glasses/Project_Overview_Steps/docs/07-PLATFORM-CONSTRAINTS.md` Limitation 11
     /// describes as unauthenticated and unencrypted, and the protocol says
     /// nothing about storage in either direction — so "the Tower keeps none of
     /// this" is not a conservative guess, it is a fabrication (Rule 3), and it
@@ -1426,7 +1426,7 @@ final class CartridgeClientTests: XCTestCase {
     // MARK: Requests are refused, not swallowed
 
     /// A silent no-op leaves a control that appears to work. Both cartridges
-    /// that accept a request must refuse it audibly — docs/04-MODULE-SYSTEM.md
+    /// that accept a request must refuse it audibly — ios/Glasses/Project_Overview_Steps/docs/04-MODULE-SYSTEM.md
     /// requires an unsupported request to "produce a clear degraded/failed
     /// state rather than silently pretending" it applied.
     func testRunningAnExperimentIsRefusedRatherThanIgnored() {
@@ -1730,7 +1730,7 @@ final class ArtifactRedactionTests: XCTestCase {
 
 // MARK: - Provenance and time
 
-/// Guards Core Principles 2, 4 and 5 from `07-PLATFORM-CONSTRAINTS.md` at the
+/// Guards Core Principles 2, 4 and 5 from `ios/Glasses/Project_Overview_Steps/docs/07-PLATFORM-CONSTRAINTS.md` at the
 /// point they are most easily lost: display.
 @MainActor
 final class ObservationProvenanceTests: XCTestCase {
@@ -2056,7 +2056,7 @@ final class WorldModelIntegrationTests: XCTestCase {
 
 // MARK: - Experimental CV Lab
 
-/// Guards the rule `docs/modules/EXPERIMENTAL-CV.md` puts on results:
+/// Guards the rule `ios/Glasses/Project_Overview_Steps/docs/modules/EXPERIMENTAL-CV.md` puts on results:
 /// inference must be distinguishable from measurement.
 ///
 /// The other rule it used to guard — nothing may be called "better" without a
@@ -2816,7 +2816,7 @@ final class ConnectionLifetimeTests: XCTestCase {
 #if DEBUG
 final class CaptureResolutionPreferenceTests: XCTestCase {
 
-    /// The rung every existing measurement was taken at, including the P3 clean
+    /// The rung every existing measurement was taken at, including the clean
     /// walk. If this moves, every prior figure silently stops being comparable
     /// and World Builder's proven path changes underneath it.
     func testTheDefaultIsLow() {
@@ -2866,7 +2866,7 @@ final class CaptureResolutionPreferenceTests: XCTestCase {
         }
     }
 
-    /// Ties the default rung to the physical evidence. The P3 clean walk
+    /// Ties the default rung to the physical evidence. The measured clean walk
     /// recorded 108 frames, every one 360x640
     /// (from that walk's console log). If DAT's `.low`
     /// ever stops meaning that, the corpus and every figure derived from it
@@ -2895,7 +2895,7 @@ final class CaptureResolutionPreferenceTests: XCTestCase {
 /// `isCaptureEngaged`, which answers *"should the button read Stop?"* and is
 /// deliberately **false** during `.paused` and `.stopping`. Both DAT enums have
 /// those cases and the original allow-lists covered neither, so a cap-touch
-/// pause — documented as device-initiated in `07-PLATFORM-CONSTRAINTS.md` §146
+/// pause — documented as device-initiated in `ios/Glasses/Project_Overview_Steps/docs/07-PLATFORM-CONSTRAINTS.md` §4
 /// — unlocked the picker while the session and camera were both still held. A
 /// change made there is accepted, displayed, and then silently discarded by
 /// `beginCameraStream`'s `guard camera == nil` on resume, leaving the panel
@@ -4905,9 +4905,9 @@ final class IMURecorderMockDeviceTests: XCTestCase {
 }
 #endif
 
-// MARK: - U0.8: dead ends and contradictions
+// MARK: - Dead ends and contradictions
 
-/// The pure rules behind U0.8's fixes. A class here rather than a new
+/// The pure rules behind fixes. A class here rather than a new
 /// `DeadEndsTests.swift`, for the reason at the top of this file:
 /// GlassesTests is not a synchronized group.
 #if DEBUG

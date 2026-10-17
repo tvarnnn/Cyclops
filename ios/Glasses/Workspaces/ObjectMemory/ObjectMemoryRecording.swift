@@ -58,7 +58,7 @@ import Foundation
 /// It is **not** a claim that DAT exposes no pause, which an earlier version of
 /// this comment made and could not support — the evidence offered was the list
 /// of calls this app happens to make. What is separately documented, in
-/// `docs/05-DAT-INTEGRATION.md` §104-107, is the pause that does exist: a
+/// `ios/Glasses/Project_Overview_Steps/docs/05-DAT-INTEGRATION.md` §104-107, is the pause that does exist: a
 /// *device-initiated* one, from a temple or cap-touch press or heat, which
 /// stops delivery, keeps the connection, and resumes on its own. That is
 /// `CaptureClaim.devicePaused`, it is something this app observes rather than

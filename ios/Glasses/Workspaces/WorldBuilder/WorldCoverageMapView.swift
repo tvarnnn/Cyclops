@@ -153,10 +153,10 @@ struct WorldCoverageField {
 struct WorldCoverageMapView: View {
     let coverage: WorldCoverage
     let isFrozen: Bool
-    /// FOW v1.1 B2: landed thumbnails over this receipt's pieces, or `nil`
+    /// Landed thumbnails over this receipt's pieces, or `nil`
     /// when there are none to draw: the map draws the pieces without photos.
     var landed: WorldLandedOverlay? = nil
-    /// FOW v1.2: the photo floor plan of this receipt, or `nil` when no raster
+    /// The photo floor plan of this receipt, or `nil` when no raster
     /// proved this receipt's plan. A piece with a photo replaces its fog
     /// field; the others keep it.
     var photo: WorldPhotoPlan? = nil
@@ -285,9 +285,9 @@ struct WorldCoverageCaption: View {
     let source: WorldPanelMapSource
     /// After Stop: the frozen map's wording, on the dark plate, no legend.
     let stopped: Bool
-    /// FOW v1.2: how many pieces show a photo instead of the fog field.
+    /// How many pieces show a photo instead of the fog field.
     var photoPieces: Int = 0
-    /// FOW v1.2: the photo is a held plan, drawn on its own receipt.
+    /// The photo is a held plan, drawn on its own receipt.
     var photoHeld: WorldPhotoDisplay.Held? = nil
 
     private var receipt: WorldCoverageReceipt { source.receipt }
