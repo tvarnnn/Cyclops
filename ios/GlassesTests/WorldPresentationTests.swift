@@ -568,6 +568,12 @@ final class WorldReconstructionLadderTests: XCTestCase {
             ("interrupted", .interrupted, interruptedNote),
             ("needs retry", .needsRetry, retryNote),
         ]
+        // Each stage carries a hand-written expected note, so the list cannot be
+        // derived; this fails if a new WorldStage is not given a row here.
+        XCTAssertEqual(
+            Set(stages.compactMap { $0.1 }.map { "\($0)" }), Set(WorldStage.allCases.map { "\($0)" }),
+            "Every WorldStage needs a row in the branch matrix."
+        )
         let photographs: [(String, WorldPhotographicReport?, String?, String?)] = [
             ("none", nil, nil, nil),
             ("owed", WorldPhotographicReport(state: .owed), owedNote, owedNote),
