@@ -103,12 +103,10 @@ final class WorldChromeModel: ObservableObject {
         return nil
     }
 
-    /// The research marker on today's screen (legacy geometry): after a
-    /// fallback from native chrome, and whenever the served header raised it.
-    /// The header is the source that still speaks when the page's own marker
-    /// does not -- a Tower serving no native chrome, a page that fell back
-    /// before its first state -- so it is shown there too (IOS §10, spec
-    /// C15r §3.7). The page's own marker may show beside it.
+    /// The research marker on the page-chrome layout. The served header can
+    /// raise it with or without a fallback, and its warning remains visible
+    /// if the page falls back before its first state. The page's own marker
+    /// can also show after a fallback (WORLD-BUILDER-WORLDS §4c).
     var legacyResearchMarker: String? {
         guard everNative || rawByHeader else { return nil }
         return researchMarker

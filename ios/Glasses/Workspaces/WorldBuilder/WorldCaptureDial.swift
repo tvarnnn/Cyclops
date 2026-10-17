@@ -53,8 +53,9 @@ nonisolated enum WorldPanelTab: String, CaseIterable, Sendable {
 
 /// What the panel needs for the dial beyond the map.
 nonisolated struct WorldPanelDial: Equatable, Sendable {
-    /// `guidance.coverage: null` for the walk being received: the Tower's
-    /// switch is on and no landing has merged yet.
+    /// `guidance.coverage: null` for the walk being received: no coverage
+    /// receipt is available, none yet or none that qualifies or fits
+    /// (WORLD-BUILDER-IOS, coverage section).
     var awaiting = false
     /// `IOS_FOW_MAP_TAB=on`: the Dial|Map control is shown. Off (the
     /// default), the dial is the only face.

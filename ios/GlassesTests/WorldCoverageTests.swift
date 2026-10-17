@@ -78,9 +78,9 @@ final class WorldCoverageTests: XCTestCase {
                        [Station(x: 3, y: 5, keyframes: 120, weakMask: 0, supportedMask: 30)])
     }
 
-    /// The live Tower today: its switch is off, so `guidance` is absent, and
-    /// the panel is exactly today's -- no map, no card.
-    func testNoGuidanceIsTodaysPanel() {
+    /// No selected session, or a malformed or incomplete payload, lacks
+    /// guidance; neither can claim a map. A real receipt still wins over the fixture.
+    func testMissingGuidanceMeansNoSessionAndNoMap() {
         XCTAssertEqual(WorldCoverageStatus(payload: [:]), .absent)
         XCTAssertEqual(WorldCoverageStatus(payload: ["guidance": [String: Any]()]), .absent)
         XCTAssertEqual(WorldCoverageStatus(payload: ["guidance": NSNull()]), .absent)
