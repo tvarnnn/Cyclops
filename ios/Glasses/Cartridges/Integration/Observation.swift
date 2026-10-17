@@ -8,8 +8,8 @@ import Foundation
 /// Provenance types shared by every cartridge that displays something the Tower
 /// inferred rather than measured.
 ///
-/// These are not a convenience layer. `docs/02-DEVELOPMENT-RULES.md` Rule 16
-/// and `docs/07-PLATFORM-CONSTRAINTS.md` make them obligations:
+/// These are not a convenience layer. `ios/Glasses/Project_Overview_Steps/docs/02-DEVELOPMENT-RULES.md` Rule 16
+/// and `ios/Glasses/Project_Overview_Steps/docs/07-PLATFORM-CONSTRAINTS.md` make them obligations:
 ///
 /// > **2. Inference ≠ Measurement.** ML-derived depth, object identity,
 /// > semantic interpretation, and similar outputs must not be represented as
@@ -36,7 +36,7 @@ import Foundation
 /// disagree. Spelled `World…` because that is the name every call site and
 /// test uses.
 ///
-/// This is not presentation garnish. `docs/modules/WORLD-BUILD.md` makes it a
+/// This is not presentation garnish. `ios/Glasses/Project_Overview_Steps/docs/modules/WORLD-BUILD.md` makes it a
 /// hard requirement: the target glasses are **monocular RGB only**, with no
 /// LiDAR and no stereo, so any distance the system produces is inferred rather
 /// than measured. That document's rule is absolute —
@@ -138,7 +138,7 @@ enum ReportedFigure {
 ///
 /// Core Principle 2 and 4 in one type. Used by Experimental CV Lab (every
 /// experiment output is model inference unless validated against ground truth —
-/// `docs/modules/EXPERIMENTAL-CV.md`, "Model Output vs. Measured Fact"),
+/// `ios/Glasses/Project_Overview_Steps/docs/modules/EXPERIMENTAL-CV.md`, "Model Output vs. Measured Fact"),
 /// Scene Understanding (detection and orientation), and Document Memory
 /// (OCR/summarisation confidence). Three cartridges, one rule.
 enum ObservationProvenance: Equatable, Sendable {
@@ -222,7 +222,7 @@ enum ObservationProvenance: Equatable, Sendable {
 /// When something happened, keeping the three clocks the platform requires be
 /// kept apart.
 ///
-/// `docs/07-PLATFORM-CONSTRAINTS.md` Core Principle 5 and Limitation 9:
+/// `ios/Glasses/Project_Overview_Steps/docs/07-PLATFORM-CONSTRAINTS.md` Core Principle 5 and Limitation 9:
 ///
 /// > **5. Timestamps Represent Observation Time.** Network arrival time,
 /// > processing time, and observation/capture time must remain conceptually
@@ -265,7 +265,7 @@ nonisolated struct ObservationTime: Equatable, Sendable {
 ///
 /// ## Why this is not called "viewing duration"
 ///
-/// `docs/07-PLATFORM-CONSTRAINTS.md` Limitation 8 is unambiguous:
+/// `ios/Glasses/Project_Overview_Steps/docs/07-PLATFORM-CONSTRAINTS.md` Limitation 8 is unambiguous:
 ///
 /// > Something appearing in the glasses camera does not prove the user looked
 /// > directly at it, noticed it, read it, understood it, or interacted with it.

@@ -7,8 +7,9 @@
 //  and the render revision, `photographic.scope`, the areas row, the area
 //  viewer's own whitelist and routes, and the four area 404 identifiers.
 //
-//  The Tower does not implement any of this yet (P3.2). Every fixture below is
-//  written from the contract text, section by section, and says which.
+//  Every fixture below is written from the contract text, section by
+//  section, and says which; the Tower now implements the producer
+//  (WORLD-BUILDER-COMPONENTS status, world_builder_render.py area routes).
 //
 
 import CryptoKit
@@ -447,13 +448,13 @@ final class WorldAreaWhitelistTests: XCTestCase {
 
     /// The page and the native revision poll: the area paths, with no
     /// `session_id` (it is in the path) and no `viewer` (C1 M12). The page
-    /// asks for native chrome (U1.1); the poll has no query at all.
+    /// asks for native chrome; the poll has no query at all.
     func testTheAreaPageAndRevisionAddresses() {
         let host = URL(string: "http://tower.invalid:8000")!
         let target = WorldRenderTarget(worldID: "w1", sessionID: "s1", areaID: V2.bathroomID)
         let page = WorldRenderClient.url(for: target, baseURL: host)
         XCTAssertEqual(page?.path, "/worlds/w1/areas/s1/\(V2.bathroomID)/render")
-        // U1.1: the page request asks for native chrome; the revision does not.
+        // The page request asks for native chrome; the revision does not.
         XCTAssertEqual(page?.query, "wb-chrome=native")
         let revision = WorldRenderClient.revisionURL(for: target, baseURL: host)
         XCTAssertEqual(revision?.path, "/worlds/w1/areas/s1/\(V2.bathroomID)/render/revision")

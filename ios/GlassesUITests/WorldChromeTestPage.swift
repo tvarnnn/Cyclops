@@ -2,7 +2,7 @@
 //  WorldChromeTestPage.swift
 //  GlassesUITests
 //
-//  U1.1: a text-only stand-in for the appearance page's native-chrome
+//  A text-only stand-in for the appearance page's native chrome
 //  variant, served by `MockTowerHTTPServer`. It carries the appearance
 //  page's exact CSP `<meta>`, the `wb-representation`, `wb-revision` and
 //  (unless told not to) `wb-chrome` echo metas, and an inline script that
@@ -102,7 +102,7 @@ enum WorldChromeTestPage {
     /// `fetchManifest` has the page ask for its appearance manifest
     /// (proxied by the scheme handler) as it loads, as the real page does,
     /// so the served `X-World-Imagery` headers reach the app.
-    /// `countsLoads` (U-INLINE): the status reads `loads N`, N counted in the
+    /// `countsLoads`: the status reads `loads N`, N counted in the
     /// page's own `sessionStorage` -- one per document load in this web view,
     /// so a reload shows 2 and a reparent leaves it at 1 -- and a horizontal
     /// drag on the canvas is echoed as `got drag`.

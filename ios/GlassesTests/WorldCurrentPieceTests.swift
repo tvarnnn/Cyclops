@@ -2,7 +2,7 @@
 //  WorldCurrentPieceTests.swift
 //  GlassesTests
 //
-//  Fog of war's current piece (FOW-CURRENT-PIECE-DATA-20261006 §4): the
+//  The current piece: the
 //  last segment only, reset at every tracking break, segment-local (no
 //  world transform), walk-scoped, live only while walking, and nothing at
 //  all without segment data.

@@ -45,7 +45,7 @@ import Foundation
 /// recorded; with no detection that is 52 seconds during which every slot is
 /// held, every frame is dropped, and the frames eventually written are 52
 /// seconds stale. Bounding that is the freshness invariant in
-/// docs/03-ROADMAP.md V0.7, stated in time rather than in frames.
+/// ios/Glasses/Project_Overview_Steps/docs/03-ROADMAP.md V0.7, stated in time rather than in frames.
 ///
 /// A pure value type taking the current time as a parameter, so slot lifetime,
 /// exhaustion and stall detection are all unit testable without a socket, a

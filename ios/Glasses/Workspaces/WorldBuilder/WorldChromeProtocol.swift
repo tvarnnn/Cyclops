@@ -2,7 +2,7 @@
 //  WorldChromeProtocol.swift
 //  Glasses
 //
-//  U1.1 native chrome (WORLD-BUILDER-WORLDS.md §4c, protocol 1; IOS §10):
+//  native chrome (WORLD-BUILDER-WORLDS.md §4c, protocol 1; IOS §10):
 //  the pure half. The message types, the decoder and its bounds, the frame
 //  check, the ring's drawing rule, and the reducer that decides every reply.
 //  No WebKit and no SwiftUI here, so all of it is driven by unit tests.
@@ -153,7 +153,7 @@ nonisolated enum WorldChromeCommand: Equatable, Sendable {
 
 /// Which screen the viewer shows.
 nonisolated enum WorldChromeMode: Equatable, Sendable {
-    /// No echo, a refusal, or a fallback: today's 0f1249e screen, unchanged.
+    /// No usable page echo or a refused handshake: the page keeps its own chrome.
     case legacy
     /// The echo is in the page and nothing valid has arrived yet: native
     /// geometry, nothing page-derived drawn.
@@ -840,7 +840,7 @@ nonisolated struct WorldChromeSession: Sendable {
         [.reply(id: id, isHello ? .decline : nil)] + fallBack()
     }
 
-    /// Back to today's screen for good. A welcomed page is told to put its
+    /// Back to the page's own chrome for good. A welcomed page is told to put its
     /// own chrome back and must confirm with `active:false` -- which the
     /// contract has it post on every `deactivate`, whether or not it was
     /// activated (WORLDS §4c) -- or it is reloaded once.

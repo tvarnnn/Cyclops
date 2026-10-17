@@ -12,7 +12,7 @@ import SwiftUI
 /// Choosing a cartridge here changes **which workspace this app shows**. The
 /// choice itself sends nothing to the Tower and selects no module there —
 /// there is no module-selection message in the protocol, and inventing one is
-/// forbidden (docs/08-IOS-CARTRIDGE-SHELL.md). What a workspace does once it
+/// forbidden (ios/Glasses/Project_Overview_Steps/docs/08-IOS-CARTRIDGE-SHELL.md). What a workspace does once it
 /// opens is its own; the footer below says it to the person choosing.
 ///
 /// The badge and being tappable are tied: a cartridge with nothing to open

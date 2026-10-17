@@ -2,13 +2,13 @@
 //  WorldCurrentPiece.swift
 //  Glasses
 //
-//  Fog of war's "current piece" (FOW-CURRENT-PIECE-DATA-20261006): the
+//  The current piece: the
 //  provisional splat that fills in, within seconds, as the wearer looks
 //  around. It is the LAST segment's posed keyframes -- the one segment still
 //  taking keyframes -- drawn from above in that segment's OWN frame, one
 //  camera footprint (a position and a heading wedge) per keyframe.
 //
-//  What it may honestly show (§4), and so all it does:
+//  What it may honestly show, and so all it does:
 //  - segment-local only: `transformToWorld` is never read, even for a
 //    registered segment, and the piece is never drawn on, aligned with or
 //    scaled against the room map -- it is its own card beside it;
@@ -20,7 +20,7 @@
 //    receiving that walk, so it goes at Stop;
 //  - no segment data draws nothing, and the panel is as it was.
 //
-//  Already fetched (spec §3): the view model's geometry pull on every
+//  Already fetched: the view model's geometry pull on every
 //  `geometry.revision`. Nothing here fetches.
 //
 
@@ -53,7 +53,7 @@ nonisolated struct WorldCurrentPiece: Equatable, Sendable {
     var latest: Footprint? { runs.last?.last }
 
     /// The current piece of the geometry `segments` names, from the chunks
-    /// in hand. Current is `segments.last` (append-only, ascending: spec §1).
+    /// in hand. Current is `segments.last` (append-only, ascending).
     ///
     /// `nil` -- nothing drawn -- with no segment, no chunk in hand for the
     /// last one, or no posed keyframe in it. Never an older segment's chunk
@@ -67,7 +67,7 @@ nonisolated struct WorldCurrentPiece: Equatable, Sendable {
 
     /// The chunk's poses as the Tower sent them: `translation` is in the
     /// segment's own frame and is used untouched. `transformToWorld` is
-    /// deliberately never read here (spec §4).
+    /// deliberately never read here.
     init?(chunk: WorldSegmentChunk) {
         var runs: [[Footprint]] = []
         var run: [Footprint] = []
@@ -109,7 +109,7 @@ nonisolated struct WorldCurrentPiece: Equatable, Sendable {
     /// finalizing report arrives (Codex review MED).
     ///
     /// Generic so that every value of the current segment -- the piece, and
-    /// FOW v1.1 B1's live strip -- goes by this one rule.
+    /// The live strip goes by this one rule.
     static func shown<Value>(_ piece: WalkScoped<Value>?, walk: WorldFinishWalk?,
                              stoppedHere: WorldFinishWalk? = nil,
                              phase: WorldPanelPhase, state: WorldModelState) -> Value? {
@@ -119,7 +119,7 @@ nonisolated struct WorldCurrentPiece: Equatable, Sendable {
     }
 }
 
-/// This phone's side of the piece's lifecycle (Codex review HOLD on ed3112b):
+/// This phone's side of the piece's lifecycle:
 /// the piece is shown ONLY while this phone's own capture runs, and never for
 /// a walk this phone is not capturing.
 ///
@@ -160,7 +160,7 @@ nonisolated struct WorldCurrentPieceGate: Equatable, Sendable {
         return WorldCurrentPiece.shown(piece, walk: walk, stoppedHere: refused, phase: phase, state: state)
     }
 
-    /// The same, beside the walk `report` describes (FOW v1.1 B1's strip).
+    /// The same, beside the walk `report` describes (the live strip).
     func shown<Value, Report>(_ value: WalkScoped<Value>?, beside report: WalkScoped<Report>, isCapturing: Bool,
                               phase: WorldPanelPhase, state: WorldModelState) -> Value? {
         shown(value, walk: report.walk, isCapturing: isCapturing, phase: phase, state: state)

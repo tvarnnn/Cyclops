@@ -744,7 +744,7 @@ final class TowerClient: NSObject, ObservableObject {
     /// socket: `type` `frame`, `seq`, `tx_seq`, `width`, `height`, `format`
     /// `jpeg`, and `data`, the base64 of a quality-0.5 JPEG. One frame at a
     /// time: no batching, no binary framing, no rate adaptation (see
-    /// docs/03-ROADMAP.md V0.7 for where those belong).
+    /// ios/Glasses/Project_Overview_Steps/docs/03-ROADMAP.md V0.7 for where those belong).
     ///
     /// Four steps. Each one that ends the frame records exactly one terminal
     /// outcome in `metrics`, so `framesUnaccounted` stays truthful:
@@ -1675,7 +1675,7 @@ final class TowerClient: NSObject, ObservableObject {
     // Internal so cadence tests can deliver decoded wire fields synchronously;
     // socket delivery is covered by the frame_error transport test.
     func handleFrameError(_ json: [String: Any]) {
-        // A paused Lab for five minutes has not failed hundreds of times.
+        // A Lab paused for five minutes has not failed hundreds of times.
         // Refusals leave the send window and reply counters intact; the Tower
         // counts each under frames_rejected, not frame_processing_errors.
         guard let refusal = TowerFrameRefusal(json: json) else {

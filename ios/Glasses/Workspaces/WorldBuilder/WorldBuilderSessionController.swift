@@ -62,7 +62,7 @@ final class WorldBuilderSessionController: ObservableObject {
         case waitingForTower
         /// The start was honoured and the socket then went away. The phone
         /// cannot tell what the Tower holds now; `start` goes out again when
-        /// the socket comes back (U0.8 F01).
+        /// the socket comes back.
         case towerLost
         /// A `start` is in flight.
         case starting
@@ -85,7 +85,7 @@ final class WorldBuilderSessionController: ObservableObject {
     /// the status. Cleared when a new start goes out.
     @Published private(set) var lastRefusalReason: CartridgeSessionRefusalReason?
 
-    /// The in-place retry's title (U0.8 F02; manager 137 D2).
+    /// The in-place retry's title.
     static let retryTitle = "Ask again"
 
     /// Whether asking again could change the answer. A refusal with reason

@@ -9,51 +9,27 @@ import Foundation
 
 /// The World Builder screen's state, separated from the views that draw it.
 ///
-/// ## The failure this was written after
+/// An empty fragment array can mean five different things: (1) no geometry
+/// revision (WorldBuilderResultDecoder.geometryCoordinates requires a complete
+/// address), (2) a session gate withholding an address, (3) a failed manifest
+/// fetch, (4) one unreadable row making WorldGeometryDecoder.manifest refuse
+/// the whole manifest, or (5) a pose convention this build cannot draw. The array is derived
+/// from `geometryStatus`; `geometryDidChange` assigns `.loaded` during the fetch.
+/// The Tower once reported 463 keyframes, 467 camera poses and 17,674 points
+/// while an empty array made it say "Nothing mapped yet." That headline now
+/// requires a Tower 404 or a loaded status with no drawable or unresolved
+/// fragments, without a positive Tower geometry claim. Geometry fetch failures
+/// had only DEBUG output, so a Release screen must represent the distinction
+/// in state.
 ///
-/// On the 2026-09-06 walk the phone showed a world with 463 keyframes, 467
-/// camera poses and 17,674 points, and under it the two sentences
-/// "Nothing mapped yet" and "The glasses have not mapped anything here yet."
-/// Both were drawn from **one** condition — `WorldFragmentsModel.fragments`
-/// being empty — and that array is assigned in exactly one place: the end of a
-/// successful manifest-plus-chunks fetch (`WorldBuilderViewModel`
-/// `geometryDidChange`). It is therefore empty, and those two sentences are
-/// therefore drawn, in at least five unrelated situations:
+/// WorldGeometryStatus carries the phone's fetch result, WorldEvidence the
+/// Tower's independent claim, and WorldGeometryAccount derives their wording.
+/// A snapshot reporting geometry can never produce the nothing-mapped account.
 ///
-/// 1. No fetch was ever attempted, because the status payload carried no
-///    `geometry.revision` (`WorldBuilderResultDecoder.geometryCoordinates`
-///    requires all three parts of the address).
-/// 2. The publish was suppressed by the session gate, so no address was ever
-///    emitted for a world that has one.
-/// 3. The manifest fetch failed — 404, transport, anything.
-/// 4. One manifest row failed to decode, which drops the **whole** manifest
-///    (`WorldGeometryDecoder.manifest`, deliberately).
-/// 5. The manifest arrived under a pose convention this build does not
-///    implement, and was refused.
-///
-/// None of the five is "the glasses have not mapped anything". Four of them are
-/// the phone's own ignorance, and the fifth is the Tower saying it built
-/// nothing, which is the only one that sentence describes. There was no state,
-/// no string and no Release-visible log distinguishing them — the geometry path
-/// logged under `#if DEBUG print` and the field phone was a Release build.
-///
-/// So the fetch gets a state of its own, `WorldGeometryStatus`, the Tower's own
-/// claims get one, `WorldEvidence`, and the sentence is a **pure function of
-/// both** (`WorldGeometryAccount`). The rule that failure made necessary is
-/// asserted in one place and tested there: a snapshot that carries geometry can
-/// never produce the "nothing mapped" account, whatever the fetch did.
-///
-/// ## Everything here is a pure value
-///
-/// No view, no client, no `URLSession`, no clock. That is what lets
-/// `WorldPresentationTests` drive the whole ladder — including the five
-/// situations above — without a Tower and without rendering.
-///
-/// None of these types is marked `nonisolated`, so under this target's
-/// `SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor` they are main-actor isolated —
-/// deliberately, and to match `WorldFragmentsModel`, `WorldSnapshot` and
-/// `WorldModelState`, which they read. `WorldRenderTarget` stays `nonisolated`
-/// because it addresses a URL and touches none of them.
+/// These are pure values: no view, client, URLSession or clock. Tests can
+/// exercise the whole ladder without a Tower or a rendered screen. They use
+/// the target's MainActor isolation to match the world model types they read;
+/// WorldRenderTarget stays nonisolated because it only addresses a URL.
 
 // MARK: - The fetch, as a state rather than as an empty array
 
@@ -90,9 +66,8 @@ enum WorldGeometryStatus: Equatable {
     /// The fetch happened and did not produce a manifest this build could use.
     case failed(WorldGeometryFailure)
 
-    /// The fragments to draw, or an empty model. Every caller that used to read
-    /// `viewModel.fragmentsModel` reads this, so the gallery is unchanged for
-    /// the case where geometry exists.
+    /// The fragments to draw, or an empty model. The gallery reads this for
+    /// drawable geometry and keeps an empty model for every other status.
     var fragments: WorldFragmentsModel {
         if case .loaded(let model, _) = self { return model }
         return WorldFragmentsModel(segments: [])
@@ -100,7 +75,7 @@ enum WorldGeometryStatus: Equatable {
 
     /// Whether the phone holds geometry it can draw. Distinct from
     /// `WorldEvidence.hasGeometry`, which is what the **Tower** says exists:
-    /// the whole 2026-09-06 defect is that those two can disagree.
+    /// those two can disagree, so neither can stand in for the other.
     var hasDrawableGeometry: Bool {
         if case .loaded(let model, _) = self { return !model.fragments.isEmpty }
         return false
@@ -156,7 +131,7 @@ struct WorldGeometryFailure: Equatable {
         switch kind {
         case .unreachable:
             if let detail, !detail.isEmpty {
-                // "The transport's or the Tower's own words": guarded (G1-F4).
+                // Keep Tower or transport prose only after the text guard.
                 return "The Tower's geometry could not be fetched: \(WorldTowerText.clause(detail))"
             }
             return "The Tower's geometry could not be fetched."
@@ -175,12 +150,10 @@ struct WorldGeometryFailure: Equatable {
 
 /// The Tower's own account of what it built, lifted off the snapshot.
 ///
-/// This is the half that makes the 2026-09-06 sentence impossible to draw
-/// again. The phone's fetch can fail in five ways; the **snapshot** said 463
-/// keyframes, 467 poses and 17,674 points, and that statement is independent of
-/// every one of them. Where the two disagree, the reader is told the Tower's
-/// figures and told that the phone could not fetch the points behind them —
-/// which is what was actually true on that walk.
+/// The Tower can report 463 keyframes, 467 poses and 17,674 points even
+/// when the phone cannot fetch their fragments. Keep this claim independent
+/// of the fetch so the screen states both facts instead of calling the room
+/// empty.
 struct WorldEvidence: Equatable {
     var keyframes: Int?
     /// `world_snapshot.geometry.element_count` — points, on today's Tower, in
@@ -222,8 +195,8 @@ struct WorldEvidence: Equatable {
     ///
     /// Either figure on its own is enough. A build can position cameras and
     /// recover few points, or recover points across segments whose cameras were
-    /// never placed; both are geometry, and requiring both would let the field
-    /// case slip back through.
+    /// never placed; both are geometry, and requiring both would
+    /// misreport a geometry-bearing world as empty.
     var hasGeometry: Bool { (elements ?? 0) > 0 || (poses ?? 0) > 0 }
 
     /// The Tower's figures on one line, in its own vocabulary, or `nil` when it
@@ -246,12 +219,10 @@ struct WorldEvidence: Equatable {
 
 /// What to say where the fragment gallery has nothing to draw.
 ///
-/// **This type is the fix for the 2026-09-06 defect.** The gallery no longer
-/// composes its own empty-state prose; it is handed one of these, and the one
-/// account that says the glasses mapped nothing is reachable only from a
-/// `.loaded` manifest with nothing in it *and* a Tower that reported no
-/// geometry. `WorldPresentationTests` asserts exactly that, over the field
-/// walk's own figures.
+/// The gallery receives one account instead of composing its own empty-state
+/// prose. "Nothing mapped" comes from a Tower 404 or a loaded manifest with
+/// no drawable or unresolved fragments, unless the Tower snapshot claims
+/// geometry; tests cover a geometry-bearing snapshot under every fetch state.
 struct WorldGeometryAccount: Equatable {
     /// One short line. The gallery's headline when there is nothing to draw.
     var headline: String
@@ -262,16 +233,10 @@ struct WorldGeometryAccount: Equatable {
     /// present so a caller never has to string-match to find out.
     var isPhoneSideUnknown: Bool
 
-    /// The one account that says nothing was mapped. Spelled once so no other
-    /// branch can produce these words by accident.
+    /// The one account that says nothing was mapped.
     ///
-    /// **Never a default.** It is produced by `account(for:evidence:)` and by
-    /// nothing else. It was briefly the default argument of both
-    /// `WorldPresentation.init` and `WorldFragmentsView.account`, which meant
-    /// the app's strongest negative claim about a world was what any caller
-    /// that forgot to supply an account would say — a preview, a new call
-    /// site, a future refactor. The forbidden sentence must not be anyone's
-    /// fallback; `undescribed` is.
+    /// Never use this as a default: a missing account is ignorance, not
+    /// evidence that the Tower built nothing. Defaults use undescribed.
     static let nothingMapped = WorldGeometryAccount(
         headline: "Nothing mapped yet",
         detail: "The Tower reports no geometry for this session.",
@@ -290,16 +255,13 @@ struct WorldGeometryAccount: Equatable {
         isPhoneSideUnknown: true
     )
 
-    /// The account for a (status, evidence) pair.
+    /// Derives the gallery account from fetch status and Tower evidence.
     ///
-    /// `evidence` is `nil` when no snapshot exists — there is no world, so
-    /// there is nothing for the Tower to have claimed.
-    ///
-    /// The ordering matters and is deliberate: **the Tower's claim is consulted
-    /// before the phone's fetch result in every branch where the fetch failed
-    /// or never happened.** That is the whole lesson of the field failure. A
-    /// phone that could not fetch says so; it does not get to report on the
-    /// world.
+    /// Check the Tower's independent geometry claim before describing a
+    /// missing or failed phone fetch. A failed fetch cannot prove an empty
+    /// world; a Tower 404 or a loaded status without drawable or unresolved
+    /// fragments can support the nothing-mapped account when the snapshot
+    /// does not claim geometry.
     static func account(
         for status: WorldGeometryStatus, evidence: WorldEvidence?
     ) -> WorldGeometryAccount {
@@ -314,8 +276,7 @@ struct WorldGeometryAccount: Equatable {
         case .notAddressed:
             // Situations 1 and 2. If the Tower's own snapshot says geometry
             // exists, this is the phone lacking an address for geometry that
-            // is genuinely there — which is precisely the field case, and it
-            // must not read as an empty room.
+            // is genuinely there and must not read as an empty room.
             if let evidence, evidence.hasGeometry {
                 return WorldGeometryAccount(
                     headline: "Built, not yet fetched",
@@ -432,7 +393,7 @@ struct WorldGeometryAccount: Equatable {
 ///
 /// Every case is earned from something the Tower said. None is a guess about
 /// the other machine, which is the rule the whole workspace is built on.
-enum WorldStage: Equatable {
+enum WorldStage: Equatable, CaseIterable {
     /// Frames are reaching the Tower and it has reported no geometry yet.
     case mapping
     /// The Tower is receiving and has built geometry.
@@ -492,6 +453,10 @@ enum WorldStage: Equatable {
 
     /// The stage for a state, the Tower's evidence and its finalization record.
     ///
+    /// Switches on lifecycle, then uses geometry and final-solve evidence;
+    /// photographic standing refines a finalizing room. A missing report is
+    /// never taken as proof that a build is finished.
+    ///
     /// `nil` for the states with no world in them — `.idle`,
     /// `.awaitingFirstUpdate`, `.unsupported`. Those have their own careful
     /// wording on the canvas and are deliberately not folded into this
@@ -509,29 +474,15 @@ enum WorldStage: Equatable {
         case .receiving:
             return evidence?.hasGeometry == true ? .building : .mapping
         case .finalizing(let snapshot, let buildInProgress):
-            // "Improving" is claimed only where there is something to improve,
-            // and either a live process working on it right now
-            // (`build_in_progress: true`) or the Tower's settled word that the
-            // photographic room is not finished yet (`running`, `owed`,
-            // `unobservable` -- `WORLD-BUILDER-IOS.md` §3a).
-            //
-            // The second half is the 2026-09-23 correction (Mac gate B0, F2).
-            // An `owed` world arrives as `finalizing` with `build_in_progress:
-            // false`, honestly: nothing is building it this millisecond. Read
-            // off the boolean alone it was "Finalizing" under "The Tower does
-            // not report whether a build is running" -- which the Tower had
-            // just reported -- and "The final pass has not landed", over a
-            // world whose final solve had landed. The world is not finished
-            // being made, which is what "Improving" says; the canvas and the
-            // ladder say WHY in words that are true of each case, and draw a
-            // spinner only for a live build.
+            // Improving requires geometry plus a live build or an unfinished
+            // photographic room (WORLD-BUILDER-IOS.md §3a). An owed room has
+            // no live builder, so the canvas explains the outstanding work
+            // without drawing a spinner or denying a finished final pass.
             guard evidence?.hasGeometry == true else { return .finalizing }
-            // The ROOM is finished and only one of the walk's areas is still
-            // being made (`scope: "area"`, COMPONENTS §3.4). The Tower keeps
-            // the whole walk `finalizing` until every area settles, and says
-            // `build_in_progress: true` while an area builds (C1 E13) -- but
-            // the room on screen will not change, so it is judged exactly as
-            // the finished world it is. The canvas adds the area's sentence.
+            // An area may still build while the room on screen is settled
+            // (WORLD-BUILDER-COMPONENTS.md §3.4).
+            // Judge that room by the finalized stage; the canvas adds the
+            // area's own sentence and does not show a room spinner.
             if photographic?.standing.isAreaStillFinishing == true {
                 return stage(for: .finalized(snapshot), evidence: evidence, finalization: finalization)
             }
@@ -562,28 +513,21 @@ enum WorldStage: Equatable {
         case .failed(let failure):
             // Only the Tower's own report of a failed build says anything
             // about the walk. A channel or decoding failure is about this
-            // screen's subscription, and is not a stage (U0.8 F11).
+            // screen's subscription, and is not a stage.
             return failure.kind == .towerReportedFailure ? .needsRetry : nil
         }
     }
 }
 
-// MARK: - The final solve, which nothing read until now
+// MARK: - The final solve
 
-/// `WorldFinalizationReport.finalSolve`, given meaning.
+/// The Tower's final-solve word, kept distinct from the world stage.
 ///
-/// The field is decoded (`WorldSelection.swift`), carried on both the status
-/// channel and the listing route, exposed on the client — and **read by no
-/// view**. On the 2026-09-06 world it is `null`: the final solve never ran, and
-/// nothing on screen said so. The world was presented as a finished one.
-///
-/// The words are the Tower's: `pending`, `solved`, `skipped`, `failed`,
-/// `unavailable`. An unrecognised one survives as itself, for the reason
-/// `WorldSelectionMode` gives.
-/// `nonisolated`, unlike the rest of this file: it reads a `String?` and
-/// nothing else, and `WorldListingPresentation` — which is itself
-/// `nonisolated`, because it is a pure function of a decoded listing — needs to
-/// ask it what a session's `final_solve` word means.
+/// A missing word can mean an older record or a final pass not yet reported;
+/// it cannot prove success or failure. Unrecognized words survive as in
+/// WorldSelectionMode so the Tower's vocabulary is not silently changed.
+/// The listing presentation also
+/// reads this value, so it remains nonisolated.
 nonisolated enum WorldFinalSolve: Equatable, Sendable {
     /// No finalization record reached this screen.
     ///
@@ -746,7 +690,7 @@ struct WorldPresentation: Equatable {
     var recovery: WorldRecoveryReport?
     /// The look-back banner, under the same rule as `recovery`.
     var lookBackBanner: WorldLookBackBanner?
-    /// `lifecycle.processing` (U0.6, T-UX1), or `nil`.
+    /// The Tower's processing report, or `nil` when it sent none.
     var processing: WorldProcessingReport?
     /// The stage line under a finalizing world (IOS §3c), built by the view
     /// model from `state`; `nil` otherwise.
@@ -803,7 +747,7 @@ struct WorldPresentation: Equatable {
     }
 
     /// The headline word: the stage's, except over a saved world whose
-    /// photographic build failed, where plain "Saved" is the T3 defect.
+    /// photographic build failed, where plain "Saved" hides the failure.
     var headline: String? {
         if isSavedWithoutItsPhotographicVersion { return WorldPhotographicCopy.failedHeadline }
         return stage?.label
@@ -854,9 +798,8 @@ struct WorldPresentation: Equatable {
     static func finalizingDetail(
         buildInProgress: Bool?, photographic: WorldPhotographicReport?
     ) -> String {
-        // First: with an area building, `build_in_progress` is `true` (C1
-        // E13), and "the final solve, the final build … these figures are not
-        // final" would be false of a room that is finished.
+        // An area build can make buildInProgress true while the room is
+        // finished, so do not call the room figures unfinished.
         if photographic?.standing.isAreaStillFinishing == true {
             return WorldPhotographicCopy.areaStillFinishing()
         }
@@ -944,6 +887,131 @@ enum WorldReconstruction: Equatable {
         }
     }
 
+    private struct AddressedLadderInput {
+        let target: WorldRenderTarget
+        let stage: WorldStage?
+        let photographic: WorldPhotographicReport?
+        let unfinishedNote: String?
+    }
+
+    // Each row returns nil when its condition does not apply; the first
+    // returned outcome wins. The order is the old ladder's branch order.
+    private typealias AddressedLadderRule = (AddressedLadderInput) -> WorldReconstruction?
+    private static let addressedLadderRules: [AddressedLadderRule] = [
+        // A pinned address can arrive before the first status report.
+        { input in
+            guard input.stage == nil else { return nil }
+            return .partial(input.target, note: "The Tower has not yet said what state this world is in.")
+        },
+        // Saved answers whether more will be built. The separate final-solve
+        // sentence answers whether the record mentions a final pass.
+        { input in
+            guard input.stage == .saved else { return nil }
+            return .final(input.target)
+        },
+        { input in
+            guard input.stage == .mapping || input.stage == .building else { return nil }
+            return .partial(input.target, note: WorldPreviewCopy.labelled(
+                "This world is still being built, so it will change."))
+        },
+        // Owed or unobservable photographic work cannot promise that waiting
+        // will finish the room. The final solve changed 16 disconnected
+        // components to 6 and joined 652 of 795 keyframes. Opening the
+        // earlier picture can mislead for about 170 seconds; the solve took
+        // 179 s after Stop on a four-minute walk, with byte-identical
+        // progress from second 3 to 179;
+        // later photographic work took 459 s for 385 keyframes and 756 s
+        // for 690 keyframes. A note explains the preview without claiming
+        // a duration or disabling the viewer.
+        { input in
+            guard input.stage == .improving, let note = input.unfinishedNote else { return nil }
+            return .partial(input.target, note: WorldPreviewCopy.labelled(note))
+        },
+        { input in
+            guard input.stage == .improving else { return nil }
+            return .partial(input.target, note: WorldPreviewCopy.building)
+        },
+        // Finalizing does not promise a live build. Photographic work may
+        // remain after the writer lock is released, including a 90-second
+        // post-Stop gap before a build still six minutes away. Name the
+        // photographic state before making any claim about the final pass.
+        { input in
+            guard input.stage == .finalizing, let note = input.unfinishedNote else { return nil }
+            return .partial(input.target, note: WorldPreviewCopy.labelled(note))
+        },
+        { input in
+            guard input.stage == .finalizing, input.photographic?.standing == .building else { return nil }
+            return .partial(input.target, note: WorldPreviewCopy.labelled(
+                WorldPhotographicCopy.buildingSentence + " "
+                    + WorldPhotographicCopy.finishedLooksDifferent))
+        },
+        // The canvas reports whether a process is running beside its spinner;
+        // this note only names what is missing, including a live build with
+        // no drawable geometry. It must not deny the spinner.
+        { input in
+            guard input.stage == .finalizing else { return nil }
+            return .partial(input.target, note: WorldPreviewCopy.labelled(
+                "The final pass has not landed for this world, and the "
+                    + "finished version is very different from this one."))
+        },
+        // The canvas draws the final-solve sentence separately. Repeating it
+        // here would print the same explanation twice.
+        { input in
+            guard input.stage == .partial else { return nil }
+            return .partial(input.target, note: "This world did not finish, so it is what the walk "
+                + "produced without a final pass.")
+        },
+        { input in
+            guard input.stage == .interrupted else { return nil }
+            return .partial(input.target, note: "This world was interrupted. What was built before it stopped is here.")
+        },
+        // A target is a real offer even if its route may answer 404 later.
+        { input in
+            guard input.stage == .needsRetry else { return nil }
+            return .partial(input.target, note: "Little or nothing was reconstructed for this session.")
+        },
+    ]
+
+    private struct UnavailableLadderInput {
+        let stage: WorldStage?
+        let evidence: WorldEvidence?
+    }
+
+    private struct UnavailableLadderRule {
+        let matches: (UnavailableLadderInput) -> Bool
+        let reason: (UnavailableLadderInput) -> String
+    }
+
+    private static let unavailableLadderRules: [UnavailableLadderRule] = [
+        // The Tower's geometry claim outranks the phone's missing address.
+        .init(matches: { $0.evidence?.hasGeometry == true }, reason: {
+            "The Tower reports \($0.evidence?.summary ?? "geometry") for this world "
+                + "but has not named where to fetch a picture of it."
+        }),
+        .init(matches: { $0.stage?.isStillChanging == true }, reason: { _ in
+            "Nothing has been built to look at yet. A 3D world appears once the "
+                + "Tower's first build produces one."
+        }),
+        .init(matches: { _ in true }, reason: { _ in
+            "The Tower has built no 3D world for this session."
+        }),
+    ]
+
+    /// Whether the world is still being worked on. The switch is deliberately
+    /// exhaustive (no `default`): a new `WorldStage` must fail the build here
+    /// until someone decides which ladder rules cover it.
+    private static func stageIsUnfinished(_ stage: WorldStage?) -> Bool {
+        switch stage {
+        case .improving, .finalizing: true
+        case .mapping, .building, .saved, .partial, .interrupted, .needsRetry, .none: false
+        }
+    }
+
+    /// Resolves the screen's 3D offer from the Tower's address, stage and
+    /// evidence. The ordered rules select the first truthful outcome; a
+    /// missing address consults the Tower's geometry claim before its stage.
+    /// The final-solve sentence is drawn separately, so it does not alter this
+    /// choice or duplicate the canvas's explanation.
     static func ladder(
         target: WorldRenderTarget?,
         stage: WorldStage?,
@@ -952,156 +1020,20 @@ enum WorldReconstruction: Equatable {
         photographic: WorldPhotographicReport? = nil
     ) -> WorldReconstruction {
         guard let target else {
-            // Said in terms of what the Tower reported, never in terms of a
-            // nil pointer.
-            if let evidence, evidence.hasGeometry {
-                return .unavailable(
-                    reason: "The Tower reports \(evidence.summary ?? "geometry") for this world "
-                        + "but has not named where to fetch a picture of it."
-                )
+            let input = UnavailableLadderInput(stage: stage, evidence: evidence)
+            for rule in unavailableLadderRules where rule.matches(input) {
+                return .unavailable(reason: rule.reason(input))
             }
-            if let stage, stage.isStillChanging {
-                return .unavailable(
-                    reason: "Nothing has been built to look at yet. A 3D world appears once the "
-                        + "Tower's first build produces one."
-                )
-            }
-            return .unavailable(
-                reason: "The Tower has built no 3D world for this session."
-            )
+            preconditionFailure("The unavailable ladder must have a fallback rule.")
         }
-        guard let stage else {
-            // A target with no stage: a world was pinned before its first
-            // status arrived. Real address, unknown standing.
-            return .partial(target, note: "The Tower has not yet said what state this world is in.")
+
+        let input = AddressedLadderInput(
+            target: target, stage: stage, photographic: photographic,
+            unfinishedNote: Self.stageIsUnfinished(stage)
+                ? Self.unfinishedPhotographicNote(photographic) : nil)
+        for rule in addressedLadderRules {
+            if let outcome = rule(input) { return outcome }
         }
-        switch stage {
-        case .saved:
-            // Nothing will add to this world, so it is the best that exists.
-            // Whether its *record* mentions a final pass is a separate
-            // statement, made by `WorldFinalSolve.sentence` beside this one —
-            // folding it in here would make the ladder answer two questions
-            // and be wrong about one of them.
-            return .final(target)
-        case .mapping, .building:
-            return .partial(target, note: WorldPreviewCopy.labelled("This world is still being built, so it will change."))
-        case .improving:
-            // NOT "it will change" — that reads as polish, and this is not
-            // polish. The final solve is what MAKES the world: on the
-            // 2026-09-09 capture it took the reconstruction from 16
-            // disconnected components to 6, and put 652 of 795 keyframes
-            // into one. Opening a world before it lands shows the
-            // shattered version, and a wearer who does that concludes the
-            // walk failed about 170 seconds before it succeeds — measured
-            // at 179 s post-Stop on a four-minute walk, with nothing on
-            // screen moving for any of it.
-            //
-            // A note is the only place this can be said: the Tower
-            // publishes no progress during finalization (the payload is
-            // byte-identical from second 3 to second 179), so the phone
-            // cannot show a bar, and the button is deliberately not
-            // disabled — a wearer who wants to look is entitled to.
-            //
-            // "A few minutes" was true of the final solve alone. Since
-            // 2026-09-22 this stage also covers the photographic surface and
-            // appearance stages, measured at 459 s for a 385-keyframe walk and
-            // 756 s for 690 keyframes, after the final solve -- and a wearer
-            // told "a few minutes" is the wearer who shut the Tower down in
-            // the middle of one. The sentence gives the long walk's figure.
-            //
-            // Since 2026-09-23 `.improving` is also reached with nothing
-            // running -- the Tower's `owed` and `unobservable` words (see
-            // `WorldStage.stage`) -- and "it is worth waiting for Saved" is
-            // not a promise the phone can make over either: owed work waits
-            // for an idle Tower with its photographic stages on, and an
-            // unobservable one may be waiting for nothing. They get the
-            // sentence that is true of them.
-            if let unfinished = Self.unfinishedPhotographicNote(photographic) {
-                return .partial(target, note: WorldPreviewCopy.labelled(unfinished))
-            }
-            // U0.6: a PREVIEW, and no duration: the elapsed line under the
-            // stage word replaces "twenty minutes or more", and nothing on
-            // the phone promises how long the rest takes.
-            return .partial(target, note: WorldPreviewCopy.building)
-        case .finalizing:
-            // SPLIT FROM `.improving`, AND THE DIFFERENCE IS WHETHER
-            // ANYTHING IS ACTUALLY RUNNING.
-            //
-            // `.improving` is reached only with `buildInProgress == true`,
-            // which the Tower sets from evidence it can see
-            // (`lifecycle: finalizing`). The measured 179 seconds above are
-            // that state, and "it is worth waiting for" is a true promise
-            // there.
-            //
-            // Revised 2026-09-22: that evidence used to be the writer lock
-            // and ONLY the writer lock, which is why a wearer was told
-            // "Saved" ninety seconds after Stop with the photographic build
-            // still six minutes away — the builder releases the lock BEFORE
-            // the surface and appearance stages, deliberately. The Tower now
-            // also reports a stage that is genuinely running, from its own
-            // `status.json` and a live pid. The promise is still true; there
-            // is simply more than one way to earn it.
-            //
-            // `.finalizing` is everything else: `stopped_unbuilt` with
-            // geometry, where `build_in_progress` is null because nothing
-            // holds the lock, and `finalized` with `final_solve: pending`.
-            // A reviewer pointed out that the promise had been attached to
-            // both -- so a session whose finalization died, or an offline
-            // rebuild nobody ever runs, told the wearer to keep waiting for
-            // something that was never coming. That is the permanent
-            // "Finalizing" shape with a stronger sentence bolted on.
-            //
-            // Same facts, no promise: what is missing is named. Whether
-            // anything is running is NOT said here — the canvas states that
-            // beside the spinner from `buildInProgress`, and this stage is
-            // also reached with a live builder holding the lock over a walk
-            // that has no drawable geometry yet, where "nothing here can see
-            // a build running" would sit directly under a spinner saying
-            // "The Tower is finishing this world."
-            //
-            // And never over a world whose final pass DID land and whose
-            // photographic room is what is outstanding (the Tower's
-            // `running`/`owed`/`unobservable`, reached here only without
-            // drawable geometry). "The final pass has not landed" was false
-            // there (Mac gate B0, F2); the photographic sentence is not.
-            if let unfinished = Self.unfinishedPhotographicNote(photographic) {
-                return .partial(target, note: WorldPreviewCopy.labelled(unfinished))
-            }
-            if photographic?.standing == .building {
-                return .partial(
-                    target,
-                    note: WorldPreviewCopy.labelled(WorldPhotographicCopy.buildingSentence + " "
-                        + WorldPhotographicCopy.finishedLooksDifferent)
-                )
-            }
-            return .partial(
-                target,
-                note: WorldPreviewCopy.labelled("The final pass has not landed for this world, and the "
-                    + "finished version is very different from this one.")
-            )
-        case .partial:
-            // NOT `finalSolve.sentence`. The canvas draws that sentence on
-            // its own line directly under this card (`finalSolveNote`), so
-            // putting it here as well printed "The final pass was skipped,
-            // so this world is what the walk produced without it." twice in
-            // a row on the Mac gate's own screenshot — the same "one
-            // question per statement" rule the `.saved` arm above states.
-            // This note says what the ladder knows: the world offered is not
-            // the last word. The record's own account sits beside it.
-            return .partial(
-                target,
-                note: "This world did not finish, so it is what the walk "
-                    + "produced without a final pass."
-            )
-        case .interrupted:
-            return .partial(
-                target, note: "This world was interrupted. What was built before it stopped is here."
-            )
-        case .needsRetry:
-            // A target exists but nothing survived; the route will very likely
-            // 404, and the viewer will say so in the Tower's own words. Offered
-            // rather than hidden, because "very likely" is not knowledge.
-            return .partial(target, note: "Little or nothing was reconstructed for this session.")
-        }
+        preconditionFailure("Every world stage must have an addressed ladder rule.")
     }
 }

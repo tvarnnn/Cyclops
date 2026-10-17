@@ -12,7 +12,7 @@
 //  `CVMetric` has no `baseline`, `higherIsBetter` or `comparison` machinery.
 //  Its absence is a property of the build, not of today's null payloads:
 //  a comparison without a measured reference violates
-//  `docs/modules/EXPERIMENTAL-CV.md`.
+//  `ios/Glasses/Project_Overview_Steps/docs/modules/EXPERIMENTAL-CV.md`.
 //
 
 import UIKit

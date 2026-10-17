@@ -14,7 +14,7 @@ import SwiftUI
 /// identity rotation, and per-segment scale disagrees by up to ~87x on a real
 /// walk. Drawing them in one space would superimpose independent
 /// reconstructions — geometry that looks like a room and means nothing.
-/// `docs/modules/WORLD-BUILD.md` forbids exactly that.
+/// `ios/Glasses/Project_Overview_Steps/docs/modules/WORLD-BUILD.md` forbids exactly that.
 ///
 /// So each fragment gets its own frame, its own scale, and its own box. When
 /// the Tower registers segments, `registered` flips and a `transform_to_world`
@@ -281,7 +281,7 @@ extension WorldFragmentsModel {
     ///
     /// The order is a pure function of one manifest. It is **not** stable
     /// across manifests, and during a live walk the manifest is refetched every
-    /// time the revision moves — 67 times in the two-minute P3 walk. The Tower
+    /// time the revision moves — 67 times in the two-minute walk. The Tower
     /// re-solves segments in place, so `point_count` for a segment that already
     /// existed can change between polls, and the primary sort key changes with
     /// it. A card can therefore move up the grid mid-walk.

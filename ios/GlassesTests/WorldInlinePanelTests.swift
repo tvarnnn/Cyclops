@@ -2,9 +2,8 @@
 //  WorldInlinePanelTests.swift
 //  GlassesTests
 //
-//  U-INLINE (managers 209, 210): the World Builder panel's phase, its one
-//  web view, the scroll gate and its words. P1-P3, P6 and P9 of the
-//  amendment (P4, P5, P7 and P8 are in WorldChromeTests).
+//  The World Builder panel's phase, its one web view, the scroll gate and
+//  its words. Chrome behavior is covered in WorldChromeTests.
 //
 
 import SwiftUI
@@ -31,7 +30,7 @@ final class WorldInlinePanelTests: XCTestCase {
         ]
     }
 
-    /// U-INLINE §2.1's eight rules, as a list read top to bottom.
+    /// The eight rules, read top to bottom.
     private func oracle(capturing: Bool, session: Bool, reachable: Bool, loaded: Bool, state: WorldModelState,
                         stage: WorldStage?, target: WorldRenderTarget?, sentence: String?) -> WorldPanelPhase {
         var isReceiving = false
@@ -126,7 +125,7 @@ final class WorldInlinePanelTests: XCTestCase {
         XCTAssertEqual(checked, 48)
     }
 
-    // MARK: P3: one model, one web view
+    // MARK: One model, one web view
 
     /// A host whose lifecycle counts loads and builds a real web view, as
     /// `load()` would, so `WorldWebViewOwner.liveCount` is the proof.
@@ -324,8 +323,8 @@ final class WorldInlinePanelTests: XCTestCase {
 
     // MARK: P9: the words
 
-    /// None of the panel's words, nor the U0.6 words it shows, makes a claim
-    /// about what was not captured (WORLDS §4's banned phrases, as U1.1 I15).
+    /// None of the panel's words, nor the stage words it shows, makes a claim
+    /// about what was not captured (WORLDS §4's banned phrases).
     func testTheNewWordsMakeNoCaptureAbsenceClaim() {
         let banned = ["nothing was captured", "not captured", "never captured", "nobody looked", "no one looked",
                       "was not seen", "were not seen", "unseen", "missing", "nothing is there", "is empty",

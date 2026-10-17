@@ -55,7 +55,7 @@ final class FrameRateGateTests: XCTestCase {
     }
 
     /// DAT's adaptive ladder can settle anywhere in 15...30 fps
-    /// (docs/07-PLATFORM-CONSTRAINTS.md). A fixed stride of 2 would deliver
+    /// (ios/Glasses/Project_Overview_Steps/docs/07-PLATFORM-CONSTRAINTS.md). A fixed stride of 2 would deliver
     /// 7.5 fps at the 15 fps floor — below the 10–15 fps target. A rate target
     /// must hold across the whole range.
     func testTargetRateIsHeldAcrossEverySourceRateTheLadderCanProduce() {

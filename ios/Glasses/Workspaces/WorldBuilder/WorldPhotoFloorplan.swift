@@ -2,8 +2,7 @@
 //  WorldPhotoFloorplan.swift
 //  Glasses
 //
-//  Fog of war v1.2 (FOW-V12-PHOTO-FLOORPLAN-DESIGN, "Wire, identity and
-//  iOS"): the photo floor plan. Per landed component, one RGBA raster of
+//  The photo floor plan. Per landed component, one RGBA raster of
 //  real camera pixels in that component's own basis, drawn over a neutral
 //  gray plate: alpha 0 is "No usable photo here yet".
 //
@@ -103,8 +102,7 @@ nonisolated struct WorldPhotoFloorplanManifest: Equatable, Sendable {
 }
 
 nonisolated enum WorldPhotoFloorplanError: Error, Equatable {
-    /// 404: the route is absent (the Tower's switch is off), or the digest is
-    /// unknown or superseded.
+    /// 404: the world or session is unknown or untrusted, or the digest is unknown or superseded.
     case notFound
     /// An answer the contract does not allow.
     case refused

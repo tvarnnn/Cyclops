@@ -698,7 +698,7 @@ nonisolated enum IMUProtectionVerdict: Equatable, Sendable {
 ///
 /// ## Private
 ///
-/// Motion is raw sensor data (docs/06-PRIVACY-DATA.md), so the file is
+/// Motion is raw sensor data (ios/Glasses/Project_Overview_Steps/docs/06-PRIVACY-DATA.md), so the file is
 /// encrypted at rest with `FileProtectionType.completeUnlessOpen` (Data
 /// Protection's "Protected Unless Open" class) and excluded from backup.
 ///

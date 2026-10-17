@@ -2,7 +2,7 @@
 //  WorldChromeOverlay.swift
 //  Glasses
 //
-//  U1.1 native chrome (WORLD-BUILDER-WORLDS.md §4c; IOS §10): what the phone
+//  native chrome (WORLD-BUILDER-WORLDS.md §4c; IOS §10): what the phone
 //  draws in place of the appearance page's own chrome. A top band, the web
 //  view as the canvas, and a bar; over the canvas, floating chrome that never
 //  resizes it.
@@ -166,7 +166,7 @@ struct WorldChromeTopBand: View {
     @ObservedObject var chrome: WorldChromeModel
     let isArea: Bool
     let note: String?
-    /// U0.6 (lead override 2026-10-05): the live stage line, the elapsed
+    /// The live stage line, the elapsed
     /// line and the settle line sit in this band, directly under the note.
     var progress: AnyView? = nil
     let notice: String?
@@ -467,7 +467,7 @@ struct WorldChromeBar: View {
 // MARK: - Over the canvas
 
 /// Where the canvas layer is drawn: the full-screen viewer, or the World
-/// Builder panel's small inline world (U-INLINE §3.4).
+/// Builder panel's small inline world.
 enum WorldChromePresentation: Equatable {
     case full, inline
 }
@@ -497,7 +497,7 @@ struct WorldChromeCanvasLayer<Banner: View, AreasPanel: View, Details: View>: Vi
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    /// What the inline canvas draws for `state` (U-INLINE §3.4). Pure; a
+    /// What the inline canvas draws for `state`. Pure; a
     /// subset of `WorldChromeInlineElement` for every state (P8). The status
     /// is listed because the panel shows it, in its footer.
     static func inlineElements(_ state: WorldChromeState) -> Set<WorldChromeInlineElement> {
@@ -702,7 +702,7 @@ struct WorldChromePosition: View {
 
 /// VoiceOver's order of the inline chrome drawn over the panel's world:
 /// after the world itself (`WorldPanelOrder.world`), the dark line, then
-/// the hint (U-INLINE §5).
+/// the hint.
 enum WorldChromeInlineOrder {
     static let dark: Double = 60
     static let hint: Double = 55

@@ -2,7 +2,7 @@
 //  WorldFinishViews.swift
 //  Glasses
 //
-//  U0.6: the finish block (spinner, stage line, elapsed line) and the
+//  The finish block (spinner, stage line, elapsed line) and the
 //  foreground banner. The words are `WorldFinishProgress.swift`'s.
 //
 
@@ -16,7 +16,7 @@ struct WorldFinishLineView: View {
         case panel
         /// The 3D viewer's caption.
         case viewer
-        /// The 3D viewer's native top band (U1.1): its own colours.
+        /// The 3D viewer's native top band: its own colours.
         case band
     }
 

@@ -2,10 +2,9 @@
 //  WorldImageryTests.swift
 //  GlassesTests
 //
-//  FOW v1.1 B (FOW-V11B-WIRE-AND-IOS-SPEC-20261007): the manifest read
-//  fail-closed (acceptance 1), the §4 fixtures paired with a §9 status
-//  (acceptance 5), placement on the v1 grid, and no walk's or landing's
-//  imagery reaches another.
+//  The imagery manifest reads fail-closed. Fixtures pair imagery with a
+//  coverage status, place thumbnails on the grid, and prove that imagery from
+//  one walk or landing never reaches another.
 //
 
 import SwiftUI
@@ -13,7 +12,7 @@ import UIKit
 import XCTest
 @testable import Glasses
 
-/// §4's fixtures. The spec prints each digest elided (`a3f1...e02c`), which
+/// The printed fixture has elided digests (`a3f1...e02c`), which
 /// is not `content_digest()`'s 32 hex: these keep its first and last four
 /// characters and fill the middle, so the fixture's one entry is a real one.
 enum FOWImageryFixtures {
@@ -22,7 +21,7 @@ enum FOWImageryFixtures {
 
     static let live = #"{"version":1,"live":{"segment_index":812,"entries":[{"keyframe_id":"s9:4417","digest":"\#(liveDigest)","redaction":"redacted","pose_source":"segment_local","component_reference_segment":null,"segment_index":812}]}}"#
     static let landed = #"{"version":1,"landed":{"solved_at":1791240313.0,"geometry_revision":"g-stop-984","frame_revision":1,"entries":[{"keyframe_id":"s9:120","digest":"\#(landedDigest)","redaction":"redacted","pose_source":"landed_global_solve","component_reference_segment":0,"segment_index":null}]}}"#
-    /// §4 verbatim, its digests elided.
+    /// The printed fixture has elided digests.
     static let liveAsPrinted = #"{"version":1,"live":{"segment_index":812,"entries":[{"keyframe_id":"s9:4417","digest":"a3f1...e02c","redaction":"redacted","pose_source":"segment_local","component_reference_segment":null,"segment_index":812}]}}"#
 
     static func json(_ text: String) -> Any {
@@ -45,7 +44,7 @@ enum FOWImageryFixtures {
     }
 
     /// Segment 0 placed in reference 0, frame 1, identity, with `s9:120` at
-    /// `(3, -1, 0)` looking along +x: in §9's stop grid (origin 0, forward
+    /// `(3, -1, 0)` looking along +x: in the stop grid (origin 0, forward
     /// +y, up +z, so right +x; cell 2) that is column 3.5, row 5.5 -- the
     /// supported station (3, 5) -- looking 90 degrees clockwise.
     static func chunk(keyframe: String = "s9:120", translation: [Double] = [3, -1, 0], reference: Int = 0,
@@ -98,7 +97,7 @@ final class WorldImageryTests: XCTestCase {
         XCTAssertEqual(manifest.live.value?.entries, [])
     }
 
-    /// Absent = switch off, distinct from "no data yet" (`entries: []`,
+    /// An omitted section decodes as `.off`, distinct from "no data yet" (`entries: []`,
     /// `landed: null`).
     func testOmittedEmptyAndNullAreThreeStates() throws {
         let none = try XCTUnwrap(F.manifest(#"{"version":1}"#))
@@ -207,12 +206,12 @@ final class WorldImageryTests: XCTestCase {
         XCTAssertEqual(landed.landed.value?.entries, [], "a landed entry with no component")
     }
 
-    // MARK: Acceptance 5: §4 beside an ordinary §9 status
+    // MARK: Landed imagery beside an ordinary status
 
-    /// §4's landed JSON beside an otherwise-ordinary
-    /// `world_builder.status/2026-09-10` payload carrying §9's stop block:
+    /// Landed JSON beside an otherwise-ordinary
+    /// `world_builder.status/2026-09-10` payload carrying the stop block:
     /// the same landing, the same component, and the thumbnail on its
-    /// supported station; beside §9's mid block, nothing.
+    /// supported station; beside the mid-walk block, nothing.
     func testTheLandedFixturePairsWithTheStopStatus() throws {
         let status = FOWFixtures.payload(Self.ordinaryStatus(guidance: FOWFixtures.stop))
         XCTAssertEqual(status["model_state"] as? String, "receiving", "an ordinary status payload")
@@ -397,7 +396,7 @@ final class WorldImageryModelTests: XCTestCase {
     }
 
     /// A failed fetch keeps what is shown and is asked again on the next
-    /// push; a 404 (the Tower's route is off) is an answer, not a retry.
+    /// push; a 404 (an unknown world, session or tile) is an answer, not a retry.
     func testAFailureRetriesOnTheNextPushAndA404DoesNot() async {
         let model = model()
         push(model, revision: "g1")
@@ -537,7 +536,7 @@ final class WorldImageryModelTests: XCTestCase {
         XCTAssertEqual(model.imagery.value, WorldImagery())
     }
 
-    /// Tiles only as the spec allows: JPEG, at most 16 KiB and 160 x 90.
+    /// Tiles only as the wire allows: JPEG, at most 16 KiB and 160 x 90.
     func testATileOutsideTheSpecIsRefused() async throws {
         let client = WorldImageryClient(baseURL: URL(string: "http://tower.test")!, session: Stub.makeSession(),
                                         timeout: 5)

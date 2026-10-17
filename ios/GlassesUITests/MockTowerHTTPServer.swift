@@ -14,7 +14,7 @@
 //  app sent exactly one `GET /cartridges` and nothing that could change a
 //  Tower.
 //
-//  U0.8 (H0, H1): a route table in front of the personality, and -- only when
+//  A route table in front of the personality, and -- only when
 //  `acceptsWebSocket` is set -- the Tower's socket on `/ws` of the same
 //  authority, since the app dials `ws://<authority>/ws` beside its HTTP. One
 //  listener serves both. The socket half is a hand-rolled RFC 6455 server

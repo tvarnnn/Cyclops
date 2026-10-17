@@ -2,8 +2,7 @@
 //  WorldImagery.swift
 //  Glasses
 //
-//  Fog of war v1.1, option B (FOW-V11B-WIRE-AND-IOS-SPEC-20261007, frozen):
-//  redacted keyframe thumbnails in two stages.
+//  Redacted keyframe thumbnails in two stages.
 //
 //  - B1, the live strip: the current segment's thumbnails, "Current piece ·
 //    unplaced", newest first. Never placed on the room map or its grid. It
@@ -29,11 +28,11 @@ import Combine
 import Foundation
 import UIKit
 
-// MARK: - The manifest, decoded (§1)
+// MARK: - The manifest, decoded
 
 /// One stage's section of the manifest.
 nonisolated enum WorldImagerySection<Value: Equatable & Sendable>: Equatable, Sendable {
-    /// The key is absent: the Tower's switch for this stage is off.
+    /// The key is absent, as with an older saved report.
     case off
     /// `null`: on, and nothing yet.
     case notYet
@@ -48,7 +47,7 @@ nonisolated enum WorldImagerySection<Value: Equatable & Sendable>: Equatable, Se
 /// One accepted thumbnail: complete, matching provenance only.
 nonisolated struct WorldImageryEntry: Equatable, Sendable {
     let keyframeID: String
-    /// SHA-256 of the tile bytes, 64 lowercase hex (FOW-V11B-AMEND-1); the tile's only cache key.
+    /// SHA-256 of the tile bytes, 64 lowercase hex; the tile's only cache key.
     let digest: String
     /// Landed only: the component the solve placed it in.
     let componentReferenceSegment: Int?
@@ -224,8 +223,7 @@ nonisolated struct WorldImageryManifest: Equatable, Sendable {
 // MARK: - The routes
 
 nonisolated enum WorldImageryFetchError: Error, Equatable {
-    /// 404: the route is not registered (the Tower's switch is off), or the
-    /// tile is unknown or superseded.
+    /// 404: the world or session is unknown or untrusted, or the tile is unknown or superseded.
     case notFound
     /// An answer the spec does not allow: a malformed manifest, or a tile
     /// that is not a JPEG of at most 16 KiB and 160 x 90.

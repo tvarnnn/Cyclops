@@ -16,7 +16,7 @@ import SwiftUI
 /// `TowerClient` publishes `frameResultCount` and `latestFrameResult` **once per
 /// reply**, at the ~15 Hz default target rate while a session is streaming. Any view
 /// observing it is invalidated at that rate. And leaving a workspace
-/// deliberately does not stop capture, so "start capture in World Builder,
+/// deliberately does not stop capture, so "start capture in Home,
 /// then look at Scene Understanding" is an ordinary path, not a corner case. A
 /// workspace that only needs reachability would re-evaluate at reply rate to
 /// read a value that changes almost never — and that cost lands on the main

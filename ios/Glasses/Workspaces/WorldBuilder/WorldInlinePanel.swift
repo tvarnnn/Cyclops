@@ -2,10 +2,10 @@
 //  WorldInlinePanel.swift
 //  Glasses
 //
-//  U-INLINE (manager rulings 209 and 210): one World Builder panel for the
+//  One World Builder panel for the
 //  whole walk, in Capture health's slot under the capture control. During
 //  the walk it is Capture health (and, later, the fog-of-war map); after
-//  Stop it shows the honest finishing progress (U0.6); when the world is
+//  Stop it shows the honest finishing progress; when the world is
 //  ready the same panel cross-fades into the live 3D world inline, and a tap
 //  expands that same web view to full screen.
 //
@@ -21,7 +21,7 @@ import UIKit
 // MARK: - The host: one model, one web view
 
 /// Owns the panel's viewer model -- and through it the one `WKWebView` --
-/// and the expanded cover's state (U-INLINE §3.1, §4).
+/// and the expanded cover's state.
 @MainActor
 final class WorldInlineHost: ObservableObject {
     enum Placement: Equatable { case inline, expanded }
@@ -84,7 +84,7 @@ final class WorldInlineHost: ObservableObject {
         await model.followRevisions()
     }
 
-    /// Whether the web view may exist now (U-INLINE §4).
+    /// Whether the web view may exist now.
     var wantsWebView: Bool {
         guard !showsArea else { return false }
         guard coverIsUp || inputs.isOnScreen else { return false }
@@ -206,7 +206,7 @@ final class WorldInlineHost: ObservableObject {
     }
 }
 
-// MARK: - The scroll gate (U-INLINE §3.3)
+// MARK: - The scroll gate
 
 /// Inline, the screen's `ScrollView` would steal every vertical drag from
 /// the page. This pan decides first: horizontal drags and any two-finger
@@ -249,7 +249,7 @@ final class WorldInlineScrollGate: UIPanGestureRecognizer, UIGestureRecognizerDe
 
 // MARK: - The screen's scroll view, as the panel needs it
 
-/// The visible height of the screen's scroll view (B, U-INLINE §1.1), and
+/// The visible height of the screen's scroll view (B), and
 /// how to bring the panel into view after a Saved worlds pin (§2.4).
 struct WorldPanelViewport {
     var visibleHeight: CGFloat = 0
@@ -262,7 +262,7 @@ extension EnvironmentValues {
 
 // MARK: - The fog-of-war slot
 
-/// S1's map slot: the walk's fog-of-war receipt (FOW v1). The fixture --
+/// S1's map slot: the walk's fog-of-war receipt. The fixture --
 /// the mid-walk receipt, labelled *Fixture map*, draws only behind
 /// `-WBPanelMapFixture` (a DEBUG launch argument), and never over a real one.
 enum WorldPanelMap {
@@ -286,7 +286,7 @@ enum WorldPanelMap {
 
 // MARK: - The panel
 
-/// U-INLINE §1.1: rows 0-5 under the capture control. Every row is present
+/// Rows 0-5 under the capture control. Every row is present
 /// only when the phase says so.
 struct WorldInlinePanel<Health: View>: View {
     let phase: WorldPanelPhase
@@ -307,12 +307,12 @@ struct WorldInlinePanel<Health: View>: View {
     /// The current piece, already walk-scoped and live-gated: its own card
     /// under the map, never in it (`WorldCurrentPiece`).
     var currentPiece: WorldCurrentPiece? = nil
-    /// FOW v1.1 B1: the current segment's strip, gated like the piece (this
+    /// The current segment's strip, gated like the piece (this
     /// phone capturing, the walk's own): its own card under the piece.
     var liveStrip: WorldImageryStrip? = nil
-    /// FOW v1.1 B2: landed thumbnails, the walk's own: over the map only.
+    /// Landed thumbnails, the walk's own: over the map only.
     var landed: WorldLandedOverlay? = nil
-    /// FOW v1.2: the photo floor plan, the walk's own: in the map only.
+    /// The photo floor plan, the walk's own: in the map only.
     var photo: WorldPhotoDisplay? = nil
     /// The capture dial's inputs for the walking stage.
     var dial: WorldPanelDial = WorldPanelDial()
@@ -340,7 +340,7 @@ struct WorldInlinePanel<Health: View>: View {
     @State private var finish = WorldPanelFinishMemory<FinishingBlock>()
     /// The walking stage's face; Dial first.
     @SceneStorage("wb-panel-tab") private var tab: WorldPanelTab = .dial
-    /// FOW-RING, kept photos: the photos the dial last showed, WITH their
+    /// Kept photos: the photos the dial last showed, WITH their
     /// walk -- read only beside a report of that walk, so another walk (or a
     /// reset, which names none) starts with none.
     @State private var keptDialPhotos: WalkScoped<WorldCaptureDialPhotos>?
@@ -508,7 +508,7 @@ struct WorldInlinePanel<Health: View>: View {
     private var card: some View {
         VStack(alignment: .leading, spacing: 0) {
             // Row 1: the research marker, read directly -- in every chrome
-            // mode, a fallback included (U-INLINE §2.2, the everNative MED).
+            // mode, a fallback included.
             if let marker = host.model(for: phase.target)?.chrome.researchMarker {
                 WorldChromeResearchBand(marker: marker)
                     .environment(\.colorScheme, .dark)
@@ -543,11 +543,11 @@ struct WorldInlinePanel<Health: View>: View {
         }
     }
 
-    /// The stage's own word, never one of the panel's (U-INLINE §2.2):
+    /// The stage's own word, never one of the panel's:
     /// *Interrupted* is never "Saved".
     private var heading: String? {
         switch phase {
-        // FOW-RING after Stop: the dial's fixed title stays; the headline
+        // After Stop, the dial's fixed title stays; the headline
         // moves to the footer's second line.
         case .finishing: return postStop == nil ? presentation.headline : nil
         case .ready, .failed, .offline: return presentation.headline
@@ -555,21 +555,21 @@ struct WorldInlinePanel<Health: View>: View {
         }
     }
 
-    /// FOW-RING: the title and the Dial|Map control above the walking stage.
+    /// The title and the Dial|Map control above the walking stage.
     private var showsDialHeader: Bool {
         if postStop != nil { return true }
         guard case .walking = phase else { return false }
         return Self.drawsDial(dial, map: map)
     }
 
-    /// FOW-RING after Stop: the walk's last dial and its photos, while
+    /// After Stop, the walk's last dial and its photos, while
     /// finishing, beside a report of that walk only.
     private var postStop: WorldPanelDialShown? {
         guard phase.isFinishing else { return nil }
         return Self.postStopDial(finalDial, beside: report)
     }
 
-    /// FOW-RING after Stop: the walk's last dial WITH the photos already
+    /// After Stop, the walk's last dial WITH the photos already
     /// shown on it live -- only those in hand (nothing is fetched after
     /// Stop), and only beside a report of the same walk. Photos of another
     /// hero piece are never drawn: every sector then stays colour.
@@ -583,7 +583,7 @@ struct WorldInlinePanel<Health: View>: View {
         return last
     }
 
-    /// FOW-RING: what the panel remembers of the dial drawn now. A report
+    /// What the panel remembers of the dial drawn now. A report
     /// naming no walk never overwrites a walk's record (read beside its own
     /// walk only, a reset already shows none of it), and a dial drawn while
     /// its landing's photos are not in yet never replaces a record of the
@@ -609,7 +609,7 @@ struct WorldInlinePanel<Health: View>: View {
         }
     }
 
-    /// FOW-RING: the Dial|Map control, only with `IOS_FOW_MAP_TAB=on` and a
+    /// The Dial|Map control, only with `IOS_FOW_MAP_TAB=on` and a
     /// map to switch to (or, disabled, after Stop). Off, the dial is the
     /// walking stage's only face.
     static func showsMapToggle(_ dial: WorldPanelDial, map: WorldPanelMapSource?, stopped: Bool) -> Bool {
@@ -720,7 +720,7 @@ struct WorldInlinePanel<Health: View>: View {
         case .loading:
             if let block = currentFinishing {
                 if let last = postStop {
-                    // FOW-RING: the walk's last dial with the photos it
+                    // The walk's last dial with the photos it
                     // showed, dimmed, with no words over it (they are in the
                     // footer); never touched, and read as its count alone.
                     WorldCaptureDialView(dial: last.dial, receipt: nil, photos: last.photos, guides: false)
@@ -755,8 +755,8 @@ struct WorldInlinePanel<Health: View>: View {
         }
     }
 
-    /// The walking map as FOW v1/v1.1/v1.2 draw it: the held photo plan's
-    /// receipt while one is held, B2's thumbnails and the photo plan over it.
+    /// The walking map draws a held coverage receipt, then the landed
+    /// thumbnails and photo floor plan over it.
     @ViewBuilder
     private func coverageMap(_ map: WorldPanelMapSource) -> some View {
         let shownMap = Self.map(map, holding: photo)
@@ -788,7 +788,7 @@ struct WorldInlinePanel<Health: View>: View {
                                 photos: WorldCaptureDial.photos(overlay?.dialEntries ?? []))
     }
 
-    /// FOW-RING, kept photos: the current receipt's dial and the photos it
+    /// Kept photos: the current receipt's dial and the photos it
     /// shows, WITH the report's walk. `kept` counts only beside a report of
     /// its own walk, and only for the same hero piece.
     static func shownDial<Report>(_ map: WorldPanelMapSource?, overlay: WorldLandedOverlay?,
@@ -878,9 +878,8 @@ struct WorldInlinePanel<Health: View>: View {
                     isActive: host.placement == .inline, hosted: true, inline: true,
                     onTap: native ? { expand(target) } : nil,
                     onEvent: model.pageEvent)
-                    // The world itself first, then the inline chrome over it
-                    // (its dark line 60, its hint 55): U-INLINE §5, UI10
-                    // (review 2, MED 2).
+                    // The world comes first in accessibility order; inline
+                    // chrome follows with dark line 60 and hint 55.
                     .accessibilitySortPriority(WorldPanelOrder.world)
                     .overlay {
                         if native {
@@ -957,7 +956,7 @@ struct WorldInlinePanel<Health: View>: View {
         switch phase {
         case .finishing(let target):
             if let block = currentFinishing, postStop != nil {
-                // FOW-RING after Stop: the live footer's two lines, the
+                // After Stop, the live footer's two lines, the
                 // legend and the button row, so the card keeps its height.
                 VStack(spacing: 0) {
                     WorldCaptureDialFinishCaption(
@@ -1011,7 +1010,7 @@ struct WorldInlinePanel<Health: View>: View {
         }
     }
 
-    /// FOW-RING after Stop, the status line: the stage line, else the
+    /// After Stop, the status line: the stage line, else the
     /// spinner's own short sentence (the canvas's longer one would break
     /// the footer's two lines); with the Tower gone, the offline notice.
     static func postStopStatus(_ block: FinishingBlock) -> String {
@@ -1042,7 +1041,7 @@ struct WorldInlinePanel<Health: View>: View {
     /// or the page's status (native chrome), else nothing.
     private var readyLine: (text: String, identifier: String)? {
         if !isTowerReachable { return (WorldPanelCopy.readyButOffline, "wb-panel-footer-line") }
-        // The inline subset's rule (U-INLINE §3.4): never under a message.
+        // The inline subset's rule: never under a message.
         guard let model = host.model(for: phase.target), model.chrome.isDrawingNative, let state = model.chrome.state,
               let status = state.status,
               WorldChromeCanvasLayer<EmptyView, EmptyView, EmptyView>.inlineElements(state).contains(.status)
@@ -1076,8 +1075,8 @@ struct WorldInlinePanel<Health: View>: View {
                 .font(.caption.monospacedDigit())
                 .foregroundStyle(.readableSecondary)
                 .fixedSize(horizontal: false, vertical: true)
-                // The page's status is the native chrome's pill, capped as
-                // the pill is (U1.1 168 #3); the Tower sentence is not.
+                // The page's status uses the native chrome pill cap; the
+                // Tower sentence can grow to a larger Dynamic Type size.
                 .dynamicTypeSize(line.identifier == "world-chrome-status"
                                  ? DynamicTypeSize.xSmall...DynamicTypeSize.accessibility2
                                  : DynamicTypeSize.xSmall...DynamicTypeSize.accessibility5)
@@ -1104,7 +1103,7 @@ struct WorldInlinePanel<Health: View>: View {
     }
 }
 
-// MARK: - Capture health, collapsed (FOW-RING)
+// MARK: - Capture health, collapsed
 
 /// One "Capture health" row, collapsed by default, that opens to the same
 /// block. Collapsed, the block stays mounted at no height and unread, so its
@@ -1151,8 +1150,8 @@ struct WorldCaptureHealthDisclosure<Content: View>: View {
 
 // MARK: - The cover
 
-/// The full-screen form of the panel's world: the SAME web view, moved here
-/// (U-INLINE §3.2). An area opened from the room's areas row REPLACES the
+/// The full-screen form of the panel's world: the SAME web view, moved here.
+/// An area opened from the room's areas row REPLACES the
 /// room here (C1 E5): the room's web view is held off until *Back to the
 /// room*, so one web view still holds.
 struct WorldInlineCover: View {

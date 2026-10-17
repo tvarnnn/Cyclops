@@ -213,7 +213,7 @@ struct CVPreviewFrame: Equatable, @unchecked Sendable {
     /// Tower's own measurement of its own work, and the second term is this
     /// device measuring its own wait. Adding them is legitimate where
     /// subtracting two absolute timestamps would not be — which is the
-    /// distinction `07-PLATFORM-CONSTRAINTS.md` Limitation 9 draws, and the
+    /// distinction `ios/Glasses/Project_Overview_Steps/docs/07-PLATFORM-CONSTRAINTS.md` Limitation 9 draws, and the
     /// reason there is still no end-to-end latency field anywhere here.
     var displayedAge: Double? {
         guard let ageSeconds else { return nil }

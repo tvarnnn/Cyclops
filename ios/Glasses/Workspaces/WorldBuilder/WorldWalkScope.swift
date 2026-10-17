@@ -2,12 +2,11 @@
 //  WorldWalkScope.swift
 //  Glasses
 //
-//  A walk's state and the walk it describes travel as ONE value (U-INLINE,
-//  review 4). Three review rounds each found another surface that paired
-//  one walk's picture with another walk's words or progress, and all of
-//  them had one cause: the walk's identity and its state were published
-//  separately -- the identity ahead of the state -- so any reader could see
-//  a new identity with old words, or old words under a new identity.
+//  A walk's state and the walk it describes travel as ONE value.
+//  Publishing a walk's identity separately from its state -- the identity
+//  ahead of the state -- lets any reader see a new identity with old words,
+//  or old words under a new identity, and pair one walk's picture with
+//  another walk's words or progress on more than one surface.
 //
 //  So nothing publishes a walk apart from what it says about that walk.
 //  The client publishes `WalkScoped<WorldWalkReport>` as one value; the view
@@ -54,7 +53,7 @@ nonisolated struct WalkScoped<Value> {
 
     /// The value, beside a report of its own walk; `nil` beside another
     /// walk's report or a report of no named walk. What the panel asks before
-    /// it draws a walk's imagery (FOW v1.1 B) beside a walk's words.
+    /// it draws a walk's imagery beside a walk's words.
     func value<Other>(beside report: WalkScoped<Other>) -> Value? {
         guard let walk, let other = report.walk, other == walk else { return nil }
         return value
@@ -85,15 +84,16 @@ nonisolated struct WorldWalkReport: Equatable, Sendable {
     var state: WorldModelState
     var finalization: WorldFinalizationReport?
     var photographic: WorldPhotographicReport?
-    /// `lifecycle.processing` (U0.6).
+    /// `lifecycle.processing`.
     var processing: WorldProcessingReport?
-    /// The followed walk's stop clock and away banner (U0.6 §5.3).
+    /// The followed walk's stop clock and away banner.
     var finishClock: WorldFinishClock
     /// `guidance.coverage` (fog of war v1): the map belongs to its walk, so
     /// it travels in the walk's report and only for a walk that is named.
     var coverage: WorldCoverageReceipt?
-    /// `guidance.coverage: null`: the Tower's switch is on and no landing
-    /// has merged yet (`.notYet`). Only the capture dial reads it.
+    /// `guidance.coverage: null` (`.notYet`): no coverage receipt available,
+    /// none yet or none that qualifies or fits (WORLD-BUILDER-IOS, coverage
+    /// section). Only the capture dial reads it.
     var coverageNotYet: Bool
 
     init(state: WorldModelState, finalization: WorldFinalizationReport? = nil,
