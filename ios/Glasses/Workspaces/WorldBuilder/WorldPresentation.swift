@@ -9,11 +9,11 @@ import Foundation
 
 /// The World Builder screen's state, separated from the views that draw it.
 ///
-/// An empty fragment array can mean five different things: no geometry
+/// An empty fragment array can mean five different things: (1) no geometry
 /// revision (WorldBuilderResultDecoder.geometryCoordinates requires a complete
-/// address), a session gate withholding an address, a failed manifest fetch,
-/// one unreadable row making WorldGeometryDecoder.manifest refuse the whole
-/// manifest, or a pose convention this build cannot draw. The array is derived
+/// address), (2) a session gate withholding an address, (3) a failed manifest
+/// fetch, (4) one unreadable row making WorldGeometryDecoder.manifest refuse
+/// the whole manifest, or (5) a pose convention this build cannot draw. The array is derived
 /// from `geometryStatus`; `geometryDidChange` assigns `.loaded` during the fetch.
 /// The Tower once reported 463 keyframes, 467 camera poses and 17,674 points
 /// while an empty array made it say "Nothing mapped yet." That headline now
@@ -393,7 +393,7 @@ struct WorldGeometryAccount: Equatable {
 ///
 /// Every case is earned from something the Tower said. None is a guess about
 /// the other machine, which is the rule the whole workspace is built on.
-enum WorldStage: Equatable {
+enum WorldStage: Equatable, CaseIterable {
     /// Frames are reaching the Tower and it has reported no geometry yet.
     case mapping
     /// The Tower is receiving and has built geometry.
@@ -997,6 +997,16 @@ enum WorldReconstruction: Equatable {
         }),
     ]
 
+    /// Whether the world is still being worked on. The switch is deliberately
+    /// exhaustive (no `default`): a new `WorldStage` must fail the build here
+    /// until someone decides which ladder rules cover it.
+    private static func stageIsUnfinished(_ stage: WorldStage?) -> Bool {
+        switch stage {
+        case .improving, .finalizing: true
+        case .mapping, .building, .saved, .partial, .interrupted, .needsRetry, .none: false
+        }
+    }
+
     /// Resolves the screen's 3D offer from the Tower's address, stage and
     /// evidence. The ordered rules select the first truthful outcome; a
     /// missing address consults the Tower's geometry claim before its stage.
@@ -1019,7 +1029,7 @@ enum WorldReconstruction: Equatable {
 
         let input = AddressedLadderInput(
             target: target, stage: stage, photographic: photographic,
-            unfinishedNote: (stage == .improving || stage == .finalizing)
+            unfinishedNote: Self.stageIsUnfinished(stage)
                 ? Self.unfinishedPhotographicNote(photographic) : nil)
         for rule in addressedLadderRules {
             if let outcome = rule(input) { return outcome }
