@@ -316,8 +316,8 @@ final class CartridgeWorkspaceTests: XCTestCase {
 
     /// Every cartridge cites a spec path this repository actually contains.
     ///
-    /// `testEveryCartridgeCitesASpec` asserts only the `ios/Glasses/Project_Overview_Steps/docs/modules/` **prefix**,
-    /// so it passes for `ios/Glasses/Project_Overview_Steps/docs/modules/DOES-NOT-EXIST.md`. A test bundle cannot
+    /// `testEveryCartridgeCitesASpec` asserts only the `docs/modules/` **prefix**,
+    /// so it passes for `docs/modules/DOES-NOT-EXIST.md`. A test bundle cannot
     /// stat the repository, so the honest substitute is to pin the exact set —
     /// which catches a typo in a new entry and forces a deliberate edit when a
     /// spec is genuinely added.

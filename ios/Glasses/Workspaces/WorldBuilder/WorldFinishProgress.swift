@@ -90,7 +90,8 @@ nonisolated enum WorldFinishLine: Equatable, Sendable {
     case processing(WorldProcessingStage, step: WorldProcessingStep?)
     case photographic(stage: String?)
     /// The fallback: the final pass is pending and a live process holds the
-    /// world (an older saved report, or a stage the Tower could not prove).
+    /// world (a Tower with `TOWER_WORLD_FINISH_STAGES` off, an older Tower, or a stage the
+    /// Tower could not prove).
     case finalPlacement
 
     var text: String {

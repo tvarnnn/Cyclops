@@ -5832,9 +5832,8 @@ final class WorldRenderRevisionTests: XCTestCase {
                        "the page recovered itself; the app must not download it again")
     }
 
-    /// A Tower that predates epochs, where the page revision AND the page bytes are
-    /// predates epochs, where the page revision AND the page bytes are
-    /// unchanged -- had no test at all: the one that named it replaced the page
+    /// The branch for a Tower that predates epochs, where the page revision AND
+    /// the page bytes are unchanged, had no test at all: the one that named it replaced the page
     /// body first, which takes the ordinary `html != current` path. This enters
     /// `refresh`'s `evenIfUnchanged, html == current` branch, and proves the
     /// hazard that lived there: a reload of the identical page that then fails
@@ -6448,7 +6447,7 @@ final class WorldAssetTransportTests: XCTestCase {
         XCTAssertNil(WorldAssetRequest.parse(nil, method: "GET", worldID: "w1", sessionID: "s1"))
     }
 
-    /// The other half of the name above, which the whitelist test only argues
+    /// The other half of the name above, which the whitelist test only argues.
     /// A refused request must make **no network request at
     /// all**, not merely fail to parse. Driven through the handler against the
     /// stubbed Tower, counting what arrived.

@@ -578,7 +578,7 @@ struct WorldPickerView: View {
     }
 
     /// Pin the world for the workspace behind, and dismiss: the World
-    /// Builder panel shows it, live inline, with Full screen one tap away
+    /// Builder panel shows it, live inline, with Full screen one tap away.
     /// The pin is what makes the workspace describe this
     /// world and what starts the geometry fetch that fills Diagnostics.
     private func open(worldID: String, sessionID: String?) {

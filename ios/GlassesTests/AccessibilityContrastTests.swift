@@ -129,7 +129,6 @@ final class AccessibilityContrastTests: XCTestCase {
     /// The IMU log's badge in the navigation bar, which the Simulator cannot
     /// reach (it needs glasses) and so the UI audit cannot see: its words on
     /// its red or orange capsule, over the bar in either appearance.
-    /// review F13).
     func testTheIMUBadgeTextIsAtLeast4Point5To1OnItsCapsule() {
         for traits in [light, dark] {
             for tint in [UIColor.systemRed, .systemOrange] {

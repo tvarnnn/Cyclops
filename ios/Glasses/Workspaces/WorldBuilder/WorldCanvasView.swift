@@ -116,7 +116,7 @@ struct WorldCanvasView: View {
     var goToCapture: (() -> Void)? = nil
 
     /// The first update has not come within `WorldBuilderViewModel
-    /// `.awaitingBound`: the spinner gives way to a sentence.
+    /// .awaitingBound`: the spinner gives way to a sentence.
     var awaitingIsOverdue = false
 
     /// The World Builder panel is narrating the finishing wait

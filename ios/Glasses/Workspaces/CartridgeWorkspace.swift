@@ -15,7 +15,7 @@ import Foundation
 /// - `CartridgeStatus` describes a **module's position on the Tower roadmap**
 ///   — `next`, `planned`, `future`. It is deliberately missing an `available`
 ///   case, because no module runtime exists on the Tower at all: the module
-/// container is V0.8 and the first module V0.9 (ios/Glasses/Project_Overview_Steps/docs/03-ROADMAP.md), and
+///   container is V0.8 and the first module V0.9 (ios/Glasses/Project_Overview_Steps/docs/03-ROADMAP.md), and
 ///   `ProductShellTests` fails loudly if that ever silently changes.
 ///
 /// - `CartridgeWorkspace` describes whether **this app has a screen** for the
@@ -39,7 +39,7 @@ import Foundation
 ///
 /// - the set is still **closed and compiled in**. A workspace is a SwiftUI view
 ///   in this binary; there is no dynamic module list to render
-/// (`ios/Glasses/Project_Overview_Steps/docs/04-MODULE-SYSTEM.md` forbids building one before V1.0), so nothing
+///   (`ios/Glasses/Project_Overview_Steps/docs/04-MODULE-SYSTEM.md` forbids building one before V1.0), so nothing
 ///   can appear here that was not compiled;
 /// - exhaustiveness is the feature. Adding a case makes the compiler demand the
 ///   arm in `ContentView`, where a registry would silently fall back to Home;

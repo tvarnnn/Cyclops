@@ -1150,7 +1150,7 @@ struct WorldCaptureHealthDisclosure<Content: View>: View {
 
 // MARK: - The cover
 
-/// The full-screen form of the panel's world: the SAME web view, moved here
+/// The full-screen form of the panel's world: the SAME web view, moved here.
 /// An area opened from the room's areas row REPLACES the
 /// room here (C1 E5): the room's web view is held off until *Back to the
 /// room*, so one web view still holds.

@@ -2,8 +2,8 @@
 //  WorldWalkScope.swift
 //  Glasses
 //
-//  A walk's state and the walk it describes travel as ONE value,
-//  review 4). Three review rounds each found another surface that paired
+//  A walk's state and the walk it describes travel as ONE value.
+//  Three review rounds each found another surface that paired
 //  one walk's picture with another walk's words or progress, and all of
 //  them had one cause: the walk's identity and its state were published
 //  separately -- the identity ahead of the state -- so any reader could see

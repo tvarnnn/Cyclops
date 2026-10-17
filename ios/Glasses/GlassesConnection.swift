@@ -131,7 +131,7 @@ enum CaptureResolutionPreference: String, CaseIterable, Identifiable, Sendable {
 /// `.devicePaused` is not a state **this app** can leave. That rests on two
 /// separate facts, kept separate on purpose:
 ///
-/// 1. **What is documented.** `ios/Glasses/Project_Overview_Steps/docs/05-DAT-INTEGRATION.md` §104-107 and
+/// 1. **What is documented.** `ios/Glasses/Project_Overview_Steps/docs/05-DAT-INTEGRATION.md` (Device Health Telemetry, the "Interruptions" paragraph) and
 ///    `ios/Glasses/Project_Overview_Steps/docs/07-PLATFORM-CONSTRAINTS.md` §4 record the pause as *device-initiated*
 ///    — a temple or cap-touch press, or a thermal pause — and as **keeping the
 ///    connection alive, stopping delivery, and resuming to `.started` on its

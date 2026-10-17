@@ -236,7 +236,7 @@ final class AccessibilityAuditUITests: XCTestCase {
         // directly under it ("Start is off while the Tower is not
         // connected…") and the same hint; for "Picture", in the
         // canvas under it ("No world yet"). The line that
-        // stood beside "Start capture" was removed as a duplicate.)
+        // stood beside "Start capture" was removed as a duplicate.
         Waiver(reason: "a disabled control (WCAG 1.4.3: inactive components are exempt)") { issue, _ in
             guard issue.auditType == .contrast else { return false }
             return AccessibilityAuditUITests.isDisabledControl(issue.element)
@@ -462,7 +462,7 @@ final class AccessibilityAuditUITests: XCTestCase {
     }
 
     /// With an AREA open -- whose viewer always shows "Back to the room" --
-    /// the picture still keeps most of the screen at the largest text size
+    /// the picture still keeps most of the screen at the largest text size.
     /// The controls between the words and the picture are capped
     /// at 10 %, beside the words' 18 % and the areas' and Details' 12 %.
     func testTheWorldKeepsMostOfTheScreenWithAnAreaOpenAtTheLargestTextSize() throws {
@@ -925,7 +925,7 @@ final class AccessibilityAuditUITests: XCTestCase {
     /// Every element on the screen that is this app's and has a label --
     /// texts, and the buttons, links and disclosures the contrast audit
     /// judges too: static texts alone missed the viewer's
-    /// system-blue "Details" at about 4.0:1) -- outside the web view and the
+    /// system-blue "Details" at about 4.0:1 -- outside the web view and the
     /// navigation bars, wholly on the screen and enabled, with its measured
     /// contrast. A disabled control is exempt, as in `waivers`. From one
     /// snapshot of the tree, and never inside the web view.

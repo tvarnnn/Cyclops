@@ -537,7 +537,7 @@ final class WorldPhotographicViewModelTests: XCTestCase {
 /// `never_recorded`), `w2` (surface ok, appearance `running` with no process:
 /// `owed`), `w3` (appearance `failed`) and the sparse historical fixture --
 /// served by the Tower at 17e6d3d on 127.0.0.1:8010, and captured verbatim:
-/// `GET /worlds` and each world's pinned `world_builder.status` payload
+/// `GET /worlds` and each world's pinned `world_builder.status` payload.
 /// Nothing below is hand-written.
 @MainActor
 final class WorldPhotographicTowerFixtureTests: XCTestCase {
