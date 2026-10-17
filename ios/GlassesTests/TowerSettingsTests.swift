@@ -2,7 +2,7 @@
 //  TowerSettingsTests.swift
 //  GlassesTests
 //
-//  U0.2: Settings' Tower address. What an address may be (per build), which
+//  Settings' Tower address. What an address may be (per build), which
 //  address wins (override > saved > built-in), that a saved one persists and
 //  takes effect only at the next launch, that "Test connection" sends one
 //  read-only request with a 5 s bound and says exactly one of three things,

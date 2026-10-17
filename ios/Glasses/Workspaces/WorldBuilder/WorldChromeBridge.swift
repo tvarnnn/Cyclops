@@ -2,7 +2,7 @@
 //  WorldChromeBridge.swift
 //  Glasses
 //
-//  U1.1 native chrome (WORLD-BUILDER-WORLDS.md §4c; IOS §10): the WebKit half.
+//  native chrome (WORLD-BUILDER-WORLDS.md §4c; IOS §10): the WebKit half.
 //  The page posts to `wbChromeV1`, a script message handler WITH REPLIES in
 //  the page's content world; the app evaluates no script in the page, and
 //  every command it has for the page is the reply to an `await` the page

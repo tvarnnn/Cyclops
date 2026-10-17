@@ -193,7 +193,7 @@ final class TowerSettingsUITests: XCTestCase {
         let end = field.coordinate(withNormalizedOffset: CGVector(dx: 0.97, dy: 0.9))
         end.tap()
         // On a loaded Mac the tap can land before the field takes focus, and
-        // the keys then go nowhere (U0.8 H0). Once more at the same point,
+        // the keys then go nowhere. Once more at the same point,
         // and never type into a field that has no focus.
         if !hasKeyboardFocus(app, field, timeout: 5) {
             end.tap()
@@ -223,7 +223,7 @@ final class TowerSettingsUITests: XCTestCase {
         // and until then the button reads "Testing…". The probe gives up by
         // itself after 5 s; the rest of the 30 is slack for a loaded Mac. A
         // second tap to recover is never made: each Test must send exactly
-        // one `GET /cartridges` (U0.8 H0).
+        // one `GET /cartridges`.
         let result = element(app, "tower-test-result")
         let titles = ["Connected to a Tower", "Reached something, but it isn't a Glasses Tower", "Not reachable"]
         let finished = waitFor(timeout: 30) {

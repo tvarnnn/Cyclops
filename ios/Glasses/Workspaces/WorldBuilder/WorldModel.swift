@@ -25,7 +25,7 @@ import Foundation
 /// needs the same rule, and one copy of it is the only safe number of copies.
 ///
 /// The full list of what the Tower must be able to report is in
-/// `docs/agent-handoffs/IOS-TO-TOWER.md`, which is the complete list.
+/// `ios/docs/agent-handoffs/IOS-TO-TOWER.md`, which is the complete list.
 
 // MARK: - Tracking
 
@@ -151,7 +151,7 @@ nonisolated struct WorldGeometryReport: Equatable, Sendable {
 /// What can be held without that schema is the Tower's own summary of the path:
 /// how many poses it kept, and how far it thinks the camera travelled. The
 /// distance carries `WorldScaleSemantics` because it is a spatial figure and
-/// `docs/modules/WORLD-BUILD.md` admits no unlabelled ones — on monocular RGB
+/// `ios/Glasses/Project_Overview_Steps/docs/modules/WORLD-BUILD.md` admits no unlabelled ones — on monocular RGB
 /// it will normally be `.relative`, in which case it is a shape statistic and
 /// not a number of metres. The production display uses the Tower's unit and
 /// scale explanation; `distanceDisplayable` separately tests physical-distance
@@ -314,7 +314,7 @@ nonisolated struct WorldTrajectoryReport: Equatable, Sendable {
 /// Whether the world survives the session, and whether this app is looking at a
 /// live one or a stored one.
 ///
-/// The Tower owns persistence entirely (`docs/04-MODULE-SYSTEM.md` — each module
+/// The Tower owns persistence entirely (`ios/Glasses/Project_Overview_Steps/docs/04-MODULE-SYSTEM.md` — each module
 /// owns its storage namespace); iOS stores no world data and must not imply it
 /// could. These cases describe only what the Tower reported about its own
 /// storage.
@@ -373,7 +373,7 @@ enum WorldInspectionMode: Equatable, Sendable {
 /// Every field is optional, and that is the point: a Tower that reports only a
 /// keyframe count must not force the UI to invent a world name, a tracking
 /// verdict, or a scale. Absent means absent, and the views render it as such
-/// (docs/02-DEVELOPMENT-RULES.md Rule 3).
+/// (ios/Glasses/Project_Overview_Steps/docs/02-DEVELOPMENT-RULES.md Rule 3).
 nonisolated struct WorldSnapshot: Equatable, Sendable {
     /// Human-readable name, if the Tower names worlds at all.
     var name: String?
@@ -453,7 +453,7 @@ nonisolated struct WorldSnapshot: Equatable, Sendable {
 /// What the world-visualization container should be showing.
 ///
 /// The case that matters today is `.unsupported`. The Tower cannot build a
-/// world at all yet — `docs/03-ROADMAP.md` puts the module container at V0.8
+/// world at all yet — `ios/Glasses/Project_Overview_Steps/docs/03-ROADMAP.md` puts the module container at V0.8
 /// and the first module at V0.9, and neither exists — so that is the only state
 /// the app can currently reach, and the only one it may claim.
 ///

@@ -2,7 +2,7 @@
 //  WorldFinishProgressTests.swift
 //  GlassesTests
 //
-//  U0.6 + T-UX1 (WORLD-BUILDER-IOS.md §3c; WORLDS §2b, §4a rule 8): the
+//  The finish progress contract (WORLD-BUILDER-IOS.md §3c; WORLDS §2b, §4a rule 8): the
 //  stage line, the preview label, the elapsed time, the stop clock and the
 //  banner, the picture basis, as pure functions. I1-I6 and I8-I10 of the
 //  spec (I7, the client end to end, is in WorldBuilderIntegrationTests).

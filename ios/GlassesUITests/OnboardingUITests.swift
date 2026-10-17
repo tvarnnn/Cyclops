@@ -2,7 +2,7 @@
 //  OnboardingUITests.swift
 //  GlassesUITests
 //
-//  U0.3: "How Glasses works", end to end in the Simulator. A first launch
+//  "How Glasses works", end to end in the Simulator. A first launch
 //  shows the cards; Skip and Get started both close them for good; Settings
 //  reopens them; the second card's links open Connections and Settings over
 //  them; VoiceOver reads a card before its controls; and every card passes

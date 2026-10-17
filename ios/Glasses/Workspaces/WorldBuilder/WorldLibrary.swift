@@ -197,7 +197,7 @@ nonisolated enum WorldListFetchError: Error, Equatable {
     /// configured.
     case notFound
     /// The Tower answered with another error status: it was reached, and
-    /// failed to list (U0.8 M-1).
+    /// failed to list.
     case towerError(Int)
     case undecodable
     case transport(String)
@@ -238,8 +238,8 @@ nonisolated struct WorldListClient {
             }
             // Any other error status is the Tower saying no, not a list in a
             // form this build cannot read: a 500's `{"detail": …}` body is
-            // JSON, and used to be called "undecodable" (U0.8 F09). Nor is it
-            // a Tower that could not be reached: it answered (U0.8 M-1).
+            // JSON, and used to be called "undecodable". Nor is it
+            // a Tower that could not be reached: it answered.
             if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
                 throw WorldListFetchError.towerError(http.statusCode)
             }

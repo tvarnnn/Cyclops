@@ -78,16 +78,16 @@ struct WorldBuilderWorkspaceView: View {
     @State private var isShowingWorlds = false
 
     /// Set by the saved-worlds sheet's Connections button: the sheet goes
-    /// first, and Connections opens once it has (U0.8 F09).
+    /// first, and Connections opens once it has.
     @State private var opensConnectionsAfterWorlds = false
 
     /// The panel's one viewer model and web view, and the full-screen cover
-    /// that same web view moves into (U-INLINE §3). Every room viewer this
+    /// that same web view moves into. Every room viewer this
     /// screen opens is the host's.
     @StateObject private var host = WorldInlineHost()
 
     /// A Saved worlds room row pinned a world: once the sheet has gone, the
-    /// panel is scrolled into view, once (U-INLINE §2.4).
+    /// panel is scrolled into view, once.
     @State private var scrollsToPanelAfterWorlds = false
 
     /// Whether this workspace is on screen (a cartridge switch takes it away).
@@ -120,7 +120,7 @@ struct WorldBuilderWorkspaceView: View {
 
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
-    /// Connect and Settings, from the root (U0.8 F03, D1). `nil` in previews.
+    /// Connect and Settings, from the root. `nil` in previews.
     @Environment(\.towerRecovery) private var recovery
 
     /// The client is injected rather than constructed here, and owned by
@@ -145,7 +145,7 @@ struct WorldBuilderWorkspaceView: View {
     /// Connectivity reaches the view model as a value, never as an object.
     ///
     /// This view genuinely needs `tower`: Start capture is off while the
-    /// Tower is not connected (manager 137 D1), and the capture control says
+    /// Tower is not connected, and the capture control says
     /// what happens to frames when it drops mid-capture. Frames are sent only
     /// while it is connected; frames taken while it is not are dropped
     /// (`TowerClient.sendFrame`) and never stored, and a reconnect re-opens
@@ -200,7 +200,7 @@ struct WorldBuilderWorkspaceView: View {
             HelperText("Capture is not available in this build.")
             #endif
 
-            // The one World Builder panel (U-INLINE §1.1), in Capture health's
+            // The one World Builder panel, in Capture health's
             // slot: below the capture control, so nothing it draws can move
             // Stop, and above the session line.
             panel
@@ -210,7 +210,7 @@ struct WorldBuilderWorkspaceView: View {
             // DEBUG phone's own capture. One line, worded as what was asked
             // for — `active` is intent, and whether a builder attached is the
             // canvas's report, not this line's. A failed or refused request
-            // can be asked again in place (U0.8 F02; manager 137 D2).
+            // can be asked again in place.
             VStack(spacing: 6) {
                 HelperText(session.footnote)
                     .accessibilityIdentifier("wb-session-footnote")
@@ -246,13 +246,13 @@ struct WorldBuilderWorkspaceView: View {
                     isShowingWorlds = false
                 },
                 // Back to the live screen, where Start capture is. It starts
-                // nothing: the Start button is the only way in (U0.8 F10).
+                // nothing: the Start button is the only way in.
                 onGoToCapture: {
                     world.returnToLive()
                     isShowingWorlds = false
                 },
                 // A room row pins its world and dismisses: the panel then
-                // shows it, live inline (U-INLINE §2.4, manager 209).
+                // shows it, live inline.
                 onOpenRoom: {
                     scrollsToPanelAfterWorlds = true
                     isShowingWorlds = false
@@ -260,7 +260,7 @@ struct WorldBuilderWorkspaceView: View {
             )
         }
         // The panel's web view, moved here: no reload, the pose kept, the
-        // bridge untouched (U-INLINE §3.2). The title, the note and the
+        // bridge untouched. The title, the note and the
         // notice come from the same `WorldPresentation` the canvas draws,
         // carried with the walk they describe (`world.coverWords`) -- and
         // shown only over that walk's picture (review 3, HIGH; review 4).
@@ -296,7 +296,7 @@ struct WorldBuilderWorkspaceView: View {
         }
         .onDisappear {
             // The world expanded over this screen is not a cartridge switch:
-            // a walk in progress keeps its session (U-INLINE §3.2).
+            // a walk in progress keeps its session.
             if host.coverIsUp {
                 coveredByOwnCover = true
                 return
@@ -310,7 +310,7 @@ struct WorldBuilderWorkspaceView: View {
     }
 
     /// "Go to capture" for a saved world with nothing usable in it: back to
-    /// the live screen, where Start capture is (U0.8 F12). Only while a saved
+    /// the live screen, where Start capture is. Only while a saved
     /// world is pinned -- following live, Start capture is already here --
     /// and never in Release, which has no capture.
     private var goToCapture: (() -> Void)? {
@@ -379,8 +379,8 @@ struct WorldBuilderWorkspaceView: View {
         .readableBorderedButton()
         .disabled(target == nil)
         .accessibilityLabel("Interactive picture of the world")
-        // Why it is off, for VoiceOver: the canvas says it on screen (U0.8
-        // F14). Once here, so both of the header's layouts carry it.
+        // Why it is off, for VoiceOver: the canvas says it on screen.
+        // Once here, so both of the header's layouts carry it.
         .accessibilityValue(target == nil ? WorldCanvasText.pictureOffValue : "")
         // Voice Control matches what is on screen: "Tap Picture" has to find
         // it, although VoiceOver reads the longer name.
@@ -445,7 +445,7 @@ struct WorldBuilderWorkspaceView: View {
         return "Looking at saved world."
     }
 
-    // MARK: The panel (U-INLINE)
+    // MARK: The panel
 
     static let panelID = "wb-panel"
 
@@ -555,8 +555,8 @@ struct WorldBuilderWorkspaceView: View {
         #endif
     }
 
-    /// Full screen: the panel's web view moves into the cover (U-INLINE
-    /// §3.2), with the report's words and the walk they are about; the
+    /// Full screen: the panel's web view moves into the cover
+    /// with the report's words and the walk they are about; the
     /// cover shows them only over that walk's picture. Every route into the
     /// cover -- the panel, the header's Picture, the canvas -- comes here.
     /// Reduce Motion: no slide.
@@ -572,7 +572,7 @@ struct WorldBuilderWorkspaceView: View {
 // MARK: - DEBUG-only capture surface
 
 #if DEBUG
-/// The capture control's Tower sentences (U0.8 F04; manager 137 D1).
+/// The capture control's Tower sentences.
 enum WorldBuilderCaptureText {
     static let framesRule = "Frames are sent only while it is connected; frames taken before then are not kept."
 
@@ -650,7 +650,7 @@ private extension WorldBuilderWorkspaceView {
         return ""
     }
 
-    /// Never "Start…" while the camera is on or coming up (U0.8 F05).
+    /// Never "Start…" while the camera is on or coming up.
     var placeholder: String {
         ViewfinderText.placeholder(
             isStreaming: isStreaming,
@@ -662,7 +662,7 @@ private extension WorldBuilderWorkspaceView {
         )
     }
 
-    /// Stop, Stop while the glasses hold it paused, or Start (U0.8 F06).
+    /// Stop, Stop while the glasses hold it paused, or Start.
     var controlMode: CaptureControlMode {
         CaptureControlMode.mode(isEngaged: glasses.isCaptureEngaged, claim: glasses.captureClaim)
     }
@@ -674,7 +674,7 @@ private extension WorldBuilderWorkspaceView {
         VStack(spacing: 8) {
             if controlMode != .start {
                 // A capture the glasses paused is still a capture: a Start
-                // then would be refused and do nothing observable (U0.8 F06).
+                // then would be refused and do nothing observable.
                 Button {
                     glasses.stopCameraSession()
                 } label: {
@@ -699,7 +699,7 @@ private extension WorldBuilderWorkspaceView {
                         .padding(.vertical, 6)
                 }
                 .buttonStyle(.borderedProminent)
-                // Off while the Tower is not connected, too (manager 137 D1):
+                // Off while the Tower is not connected, too:
                 // a capture started then streams frames nobody keeps. Start
                 // never does nothing; it is off, with the reason beside it.
                 .disabled(!glasses.hasActiveDevice || !isTowerReachable)

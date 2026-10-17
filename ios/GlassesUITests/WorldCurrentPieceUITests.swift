@@ -2,7 +2,7 @@
 //  WorldCurrentPieceUITests.swift
 //  GlassesUITests
 //
-//  Fog of war's current piece (FOW-CURRENT-PIECE-DATA-20261006) against the
+//  The current piece against the
 //  mock Tower, which serves segment geometry: the card appears with its
 //  label beside (never inside) the map, restarts at a new segment, is the
 //  walk's own, goes after Stop, and never moves Stop.

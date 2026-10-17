@@ -2,8 +2,7 @@
 //  WorldPhotoFloorplanTests.swift
 //  GlassesTests
 //
-//  FOW v1.2 photo floor plan (FOW-V12-PHOTO-FLOORPLAN-DESIGN, "Wire,
-//  identity and iOS"): the manifest and tile read fail-closed, the raster
+//  The photo floor plan: the manifest and tile read fail-closed, the raster
 //  verified against its SHA-256, drawn as a gray plate plus the raster
 //  (alpha 0 reads gray), and no walk's or landing's raster reaches
 //  another.
@@ -16,7 +15,7 @@ import XCTest
 @testable import Glasses
 
 /// A synthetic 512 x 512 RGBA raster -- orange, its bottom-right quadrant
-/// alpha 0 -- and a manifest naming it for §9's stop landing.
+/// alpha 0 -- and a manifest naming it for a stop landing.
 enum FOWPhotoFixtures {
     static let orange = (r: 224, g: 112, b: 32)
     static let gray = (r: 0x70, g: 0x75, b: 0x7B)
@@ -43,7 +42,7 @@ enum FOWPhotoFixtures {
         SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
     }
 
-    /// §9's stop landing; the stop block's basis; its 16-unit square padded
+    /// The stop landing and its basis: a 16-unit square padded
     /// 15% to 18.4.
     static func manifest(solvedAt: String = "1791240313.0", revision: String = "g-stop-984",
                          digest: String? = nil, bytes: Int? = nil, component: String? = nil,

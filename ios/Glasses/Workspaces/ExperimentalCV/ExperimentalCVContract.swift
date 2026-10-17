@@ -76,7 +76,7 @@ nonisolated enum ExperimentalCVContract {
     /// the status document meaning anything new, and the reverse.
     ///
     /// `artifact` was `null` on every earlier version of this contract, with a
-    /// stated reason — `docs/agent-handoffs/IOS-TO-TOWER.md` §5 withheld any image whose treatment
+    /// stated reason — `ios/docs/agent-handoffs/IOS-TO-TOWER.md` §5 withheld any image whose treatment
     /// was unstated, and said artifact fetching itself was UNKNOWN. This is
     /// that contract, landed on both sides at once with a document behind it,
     /// and the treatment is stated on every picture.
@@ -354,7 +354,7 @@ extension TowerFrameRefusal {
 /// empty catalog rather than to `nil` — a Tower that lists no experiments and a
 /// Tower whose list could not be read are both "there is nothing to offer you",
 /// and this app holds no list of its own to fall back on. It never invents one:
-/// `docs/modules/EXPERIMENTAL-CV.md` calls its candidate list "intentionally
+/// `ios/Glasses/Project_Overview_Steps/docs/modules/EXPERIMENTAL-CV.md` calls its candidate list "intentionally
 /// broad", so any subset hard-coded here would be the phone asserting that
 /// those experiments exist.
 struct CVLabStatus: Equatable, Sendable {

@@ -669,7 +669,7 @@ final class TowerWorldBuilderClient: WorldBuilderClient {
         }
     }
 
-    /// `lifecycle.processing` from the last report, or `nil` (U0.6, T-UX1).
+    /// `lifecycle.processing` from the last report, or `nil`.
     /// Stored and published for `finalization`'s reason: the stage moves
     /// while the snapshot stands still.
     private(set) var processing: WorldProcessingReport? {
@@ -701,7 +701,7 @@ final class TowerWorldBuilderClient: WorldBuilderClient {
     }
 
     /// When the walk this phone followed live stopped, and whether it
-    /// settled while the app was away (U0.6 §5.3). Memory only: a relaunch
+    /// settled while the app was away. Memory only: a relaunch
     /// forgets it, and the elapsed line is then hidden.
     private(set) var finishClock: WorldFinishClock = .unknown {
         didSet {
@@ -1085,7 +1085,7 @@ final class TowerWorldBuilderClient: WorldBuilderClient {
 
         lookBack.onChange = { [weak self] banner in self?.lookBackBanner = banner }
 
-        // The foreground banner (U0.6 §2.6): whether the followed walk was
+        // The foreground banner: whether the followed walk was
         // still unsettled when the app went away. No new permission, no
         // notification: only the app's own activity.
         (appActivity ?? Self.defaultAppActivity)
@@ -1271,7 +1271,7 @@ final class TowerWorldBuilderClient: WorldBuilderClient {
     }
 
     /// Ask again, in place, after the channel failed or while the first
-    /// update is overdue (U0.8 F11, F13). "Reconnecting is what resolves it"
+    /// update is overdue. "Reconnecting is what resolves it"
     /// used to be the only way back; a fresh subscription is the same cure
     /// without dropping the socket. Under the current pin, with a fresh
     /// budget, because this is a person's tap and not a loop. Any other state
@@ -1696,7 +1696,7 @@ final class TowerWorldBuilderClient: WorldBuilderClient {
             sessionID: lastReport?.sessionID
         )
 
-        // The stop clock and the away banner (U0.6 §5.3): only here, on a
+        // The stop clock and the away banner: only here, on a
         // report the Tower just sent, never on a bracket re-judge.
         finishWatch.report(walk: presentedWalk, following: pinned == nil, standing: finishStanding,
                            appActive: isAppActive, now: now())

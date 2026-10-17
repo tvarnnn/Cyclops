@@ -18,7 +18,7 @@ import UIKit
 ///
 /// Deliberately **only** the phone. The glasses have their own thermal
 /// telemetry, but it arrives through Meta DAT, which by
-/// docs/02-DEVELOPMENT-RULES.md Rule 1 stays behind `GlassesConnection`; it is
+/// ios/Glasses/Project_Overview_Steps/docs/02-DEVELOPMENT-RULES.md Rule 1 stays behind `GlassesConnection`; it is
 /// published there as `glassesThermalLevel`. Nothing here talks to DAT.
 ///
 /// Every value is read from the OS, never derived or estimated, and anything

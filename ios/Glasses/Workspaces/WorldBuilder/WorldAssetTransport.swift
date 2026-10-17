@@ -316,7 +316,7 @@ nonisolated struct WorldAssetResponse: Sendable, Equatable {
     let mimeType: String
     let data: Data
     /// `X-World-Imagery` (`WORLD-BUILDER-APPEARANCE.md` §9): which imagery an
-    /// appearance 200 carries, `redacted` for the product. Read for U1.1's
+    /// appearance 200 carries, `redacted` for the product. Read for the
     /// research marker (IOS §10); never handed to WebKit.
     var imagery: String? = nil
     /// `X-World-Imagery-Warning`: the Tower's sentence for a research build.
@@ -445,7 +445,7 @@ nonisolated struct WorldAssetMemory: Sendable {
     /// When the Tower last served this session's manifest.
     private(set) var authorizedAt: Date?
     /// What the last manifest handed to the PAGE says it was built from
-    /// (U0.6: `quality`, APPEARANCE §7). The label follows the manifest the
+    /// (`quality`, APPEARANCE §7). The label follows the manifest the
     /// page loaded, not the page revision, which does not move at Stop
     /// (WORLDS §4a rule 8). `nil` before one, and after `drop()`.
     private(set) var servedBasis: WorldPictureBasis?
@@ -580,8 +580,8 @@ final class WorldAssetSchemeHandler: NSObject, WKURLSchemeHandler {
     /// page's and nobody else's. Read by `WorldRenderViewerModel` (M-2).
     var servedAppearanceToPageAt: Date? { memory.authorizedAt }
 
-    /// What the last manifest the page was served says it was built from
-    /// (U0.6), or `nil`. Read by `WorldRenderViewerModel.basisOnScreen`.
+    /// The basis in the last manifest served to the page, or `nil`.
+    /// Read by `WorldRenderViewerModel.basisOnScreen`.
     var servedAppearanceBasis: WorldPictureBasis? { memory.servedBasis }
 
     /// Called after a manifest answer is handed to the page, so the label
@@ -595,7 +595,7 @@ final class WorldAssetSchemeHandler: NSObject, WKURLSchemeHandler {
 
     /// Called whenever a proxied response carries `X-World-Imagery` (with
     /// `X-World-Imagery-Warning`), `redacted` included: the second source of
-    /// the native chrome's research marker (U1.1, IOS §10), and what keeps
+    /// the native chrome's research marker (IOS §10), and what keeps
     /// the caption's redaction wording on the CURRENT build when a raw build
     /// is replaced by a redacted one. The headers themselves still never
     /// reach WebKit (`responseHeaders`).
@@ -691,7 +691,7 @@ final class WorldAssetSchemeHandler: NSObject, WKURLSchemeHandler {
     }
 
     /// The manifest fetch that re-earns the authorisation, **once for however
-    /// many bundles are waiting on it** (review 2, m-3).
+    /// many bundles are waiting on it**.
     ///
     /// A restored WebGL context re-uploads every layer at once. With no
     /// de-duplication, each of the eight bundle requests whose authorisation

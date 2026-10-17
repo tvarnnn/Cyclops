@@ -11,7 +11,7 @@ import UIKit
 
 /// The persistent sign that this phone is writing an IMU log.
 ///
-/// Motion is raw sensor data (docs/06-PRIVACY-DATA.md), so while the recorder
+/// Motion is raw sensor data (ios/Glasses/Project_Overview_Steps/docs/06-PRIVACY-DATA.md), so while the recorder
 /// holds a file this badge sits in the navigation bar above every workspace,
 /// where no cartridge can hide it and no scroll moves it. It observes only the
 /// recorder's readout, not `GlassesConnection`, so it redraws with the

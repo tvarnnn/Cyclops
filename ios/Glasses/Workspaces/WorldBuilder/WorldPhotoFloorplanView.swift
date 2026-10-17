@@ -2,7 +2,7 @@
 //  WorldPhotoFloorplanView.swift
 //  Glasses
 //
-//  FOW v1.2: one piece of the photo floor plan -- a neutral gray plate with
+//  One piece of the photo floor plan -- a neutral gray plate with
 //  the decoded RGBA raster over it, fitted by the manifest's padded bounds
 //  in the piece's own basis. Alpha 0 lets the gray show through: "No usable
 //  photo here yet". No fans, no station dots on the photo.

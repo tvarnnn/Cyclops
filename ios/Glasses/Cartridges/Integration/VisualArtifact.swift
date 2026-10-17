@@ -15,7 +15,7 @@ import Foundation
 ///                 → redaction → persistence / display
 /// ```
 ///
-/// `docs/06-PRIVACY-DATA.md` is explicit that the reduction step is not itself a
+/// `ios/Glasses/Project_Overview_Steps/docs/06-PRIVACY-DATA.md` is explicit that the reduction step is not itself a
 /// safety guarantee:
 ///
 /// > Selected crops or "reduced" imagery are not inherently safe: a cropped
@@ -34,7 +34,7 @@ import Foundation
 ///
 /// **It does not redact anything.** iOS applies no redaction and must not
 /// pretend to: doing so here would mean the raw pixels had already reached the
-/// phone, at which point the control is theatre. `docs/06-PRIVACY-DATA.md`
+/// phone, at which point the control is theatre. `ios/Glasses/Project_Overview_Steps/docs/06-PRIVACY-DATA.md`
 /// requires redaction to happen where the data is derived, and this app's job
 /// is to refuse to display what has not been treated and to say which is which.
 ///

@@ -2,7 +2,7 @@
 //  WorldPanelMockTower.swift
 //  GlassesUITests
 //
-//  U-INLINE / U0.6: the Tower's World Builder socket, scripted on
+//  The Tower's World Builder socket, scripted on
 //  `MockTowerHTTPServer` as `DeadEndsUITests` does, plus the status reports
 //  the panel follows -- live ones the test pushes, and the pinned world's
 //  report sent straight after a Saved worlds pin is acknowledged, as the
@@ -122,8 +122,8 @@ enum PanelReport {
         let reasonJSON = reason.map { "\"\($0)\"" } ?? "null"
         // A phone's live capture: the session the capture's bracket binds to.
         let captureJSON = liveCapture ? #","capture_id":"cap-1","frame_source":"live-capture""# : ""
-        // Fog of war v1: `guidance` only when given -- absent is the live
-        // Tower today, whose switch is off -- and the live accepted count.
+        // `guidance` is included only when supplied by the fixture.
+        // An omitted receipt tests the absence path; accepted count stays live.
         let guidanceJSON = guidance.map { #","guidance":\#($0)"# } ?? ""
         let progressJSON = accepted.map { #","progress":{"keyframes_accepted":\#($0)}"# } ?? ""
         return """
@@ -157,14 +157,14 @@ enum PanelReport {
     }
 }
 
-/// FOW-COVERAGE-V1 §9's two nonnull fixtures, as `guidance` values.
+/// Two nonnull coverage fixtures, as `guidance` values.
 enum FOWGuidance {
     static let midSolvedAt = 1791240000.0
     static let stopSolvedAt = 1791240313.0
     static let none = #"{"coverage":null}"#
     static let mid = #"{"coverage":{"version":1,"source":"landed_global_solve","solved_at":1791240000.0,"computed_at":1791240000.12,"horizon_keyframes":113,"keyframes_now":127,"keyframes_pending":14,"geometry_revision":"g-mid-113","frame_revision":1,"station_grid":"component_square_8x8_v1","sector_frame":"first_qualified_forward_cw_from_up_v1","components_total":2,"components_omitted":0,"stations_omitted":0,"components":[{"reference_segment":0,"posed_keyframes":82,"bounds_xy":[-4.0,-4.0,4.0,4.0],"origin_xyz":[0.0,0.0,0.0],"up_xyz":[0.0,0.0,1.0],"forward_xyz":[0.0,1.0,0.0],"cell_size":1.0,"stations":[{"x":3,"y":5,"keyframes":30,"weak_mask":1,"supported_mask":30}]},{"reference_segment":17,"posed_keyframes":19,"bounds_xy":[-2.0,-2.0,2.0,2.0],"origin_xyz":[10.0,0.0,0.0],"up_xyz":[0.0,0.0,1.0],"forward_xyz":[1.0,0.0,0.0],"cell_size":0.5,"stations":[{"x":1,"y":2,"keyframes":8,"weak_mask":2,"supported_mask":1}]}]}}"#
     /// The mid block at its longest caption: two drawn pieces, one more
-    /// piece and five more stations the caps left out (FOW review MED-1).
+    /// piece and five more stations the caps left out.
     static let maximal = mid
         .replacingOccurrences(of: #""components_total":2,"components_omitted":0,"stations_omitted":0"#,
                               with: #""components_total":3,"components_omitted":1,"stations_omitted":5"#)
