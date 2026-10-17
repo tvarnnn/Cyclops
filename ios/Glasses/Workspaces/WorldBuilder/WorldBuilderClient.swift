@@ -398,7 +398,7 @@ final class WorldBuilderViewModel: ObservableObject {
 
     /// The capture dial's awaiting flag: the walk's own report says
     /// `coverage: null`, meaning no coverage receipt is available (none yet,
-    /// or none that fits; WORLD-BUILDER-IOS, 2026-10-06).
+    /// or none that qualifies or fits; WORLD-BUILDER-IOS, coverage section).
     var coverageAwaited: Bool { walkReport.walk != nil && coverage == nil && walkReport.value.coverageNotYet }
 
     /// The live relocalizer's line, republished from the client.

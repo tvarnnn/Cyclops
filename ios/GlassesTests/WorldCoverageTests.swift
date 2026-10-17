@@ -78,9 +78,9 @@ final class WorldCoverageTests: XCTestCase {
                        [Station(x: 3, y: 5, keyframes: 120, weakMask: 0, supportedMask: 30)])
     }
 
-    /// An older saved world or no selected session lacks guidance; neither
-    /// can claim a map. A real receipt still wins over the fixture.
-    func testMissingGuidanceKeepsSavedWorldWithoutMap() {
+    /// No selected session, or a malformed or incomplete payload, lacks
+    /// guidance; neither can claim a map. A real receipt still wins over the fixture.
+    func testMissingGuidanceMeansNoSessionAndNoMap() {
         XCTAssertEqual(WorldCoverageStatus(payload: [:]), .absent)
         XCTAssertEqual(WorldCoverageStatus(payload: ["guidance": [String: Any]()]), .absent)
         XCTAssertEqual(WorldCoverageStatus(payload: ["guidance": NSNull()]), .absent)
