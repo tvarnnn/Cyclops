@@ -3,11 +3,10 @@
 //  Glasses
 //
 //  A walk's state and the walk it describes travel as ONE value.
-//  Three review rounds each found another surface that paired
-//  one walk's picture with another walk's words or progress, and all of
-//  them had one cause: the walk's identity and its state were published
-//  separately -- the identity ahead of the state -- so any reader could see
-//  a new identity with old words, or old words under a new identity.
+//  Publishing a walk's identity separately from its state -- the identity
+//  ahead of the state -- lets any reader see a new identity with old words,
+//  or old words under a new identity, and pair one walk's picture with
+//  another walk's words or progress on more than one surface.
 //
 //  So nothing publishes a walk apart from what it says about that walk.
 //  The client publishes `WalkScoped<WorldWalkReport>` as one value; the view
