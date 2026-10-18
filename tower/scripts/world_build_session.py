@@ -951,7 +951,7 @@ class BackgroundSolver:
         object and is recorded at the keyframe count it launched at.
 
         In `final_immediate` mode, once the capture has stopped or the background
-        is closed, it instead calls `stop_background` and leaves nothing running.
+        is closed, it instead calls `stop_background` and launches nothing.
         """
         if self._final_immediate and (self._background_closed or (
                 self._capture_stopped is not None and self._capture_stopped())):
