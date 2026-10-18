@@ -158,7 +158,8 @@ class GuardParams:
     smooth_half_window: int = 5
     # The EXCURSION screen: inside a kept plateau, this many consecutive measured cameras each
     # beyond the CLEAR boundary on the same side are a short, grossly wrong stretch the running median
-    # swallows. They are isolated `final-scale-uncertified` (too few ratios to certify either way). Three:
+    # swallows. Such a run stays attached to the room and is recorded `uncertified`
+    # (`UNCERTIFIED_EXCURSION`, too few ratios to certify either way), never certified. Three:
     # at the clear boundary a single camera's own ratio is out in a few per cent of cameras, three in a row
     # on one side in about one per 40 000 (independent cameras); a run of 6+ already moves the median.
     excursion_min_cameras: int = 3
@@ -295,8 +296,9 @@ def _excursions(cams: list, values: dict, ref: float, params: GuardParams) -> li
 
 
 def _split_excursions(row: dict, values: dict, ref: float, params: GuardParams) -> list[dict]:
-    """A kept or inherited plateau with its excursions taken out as isolated rows of their own (the rest
-    keeps the plateau's decision and certificate); any other row unchanged."""
+    """A kept or inherited plateau with its excursions split out as rows of their own (the rest keeps
+    the plateau's decision and certificate); any other row unchanged. The caller re-decides the
+    excursion rows: they stay attached and are recorded uncertified."""
     if row["decision"] not in ("kept", "inherited"):
         return [dict(row, kind="plateau")]
     cams = row["cameras"]
