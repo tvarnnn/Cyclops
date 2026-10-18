@@ -1,8 +1,7 @@
 """Durable storage for observed documents.
 
-Append-only JSONL plus atomic whole-file rewrite for prune and purge --
-the shape World Builder and Object Memory independently converged on, and
-the third consumer is where a pattern stops being a coincidence.
+Append-only JSONL plus atomic whole-file rewrite for prune, purge and
+update; the same shape as `object_memory/store.py`.
 
 Rewrites operate on **raw dicts**, not on parsed records. Round-tripping
 through the current dataclass would silently drop any key the schema does
@@ -23,8 +22,8 @@ from tower.storage import append_jsonl, read_raw_jsonl, replace_with_retry
 
 # A reader that meets a rewrite mid-flight on Windows gets PermissionError
 # on open. Retried briefly: the rewrite is atomic and finishes in
-# milliseconds, and a status producer that died on it reported the
-# library unavailable for one tick, which is a false claim.
+# milliseconds, and failing a read on it would report the library
+# unavailable for a tick, a false claim.
 READ_RETRIES = 5
 READ_RETRY_S = 0.02
 
@@ -49,7 +48,7 @@ TEMP_SUFFIX = ".tmp"
 
 
 class DocumentStoreError(Exception):
-    """Base for every refusal this store makes."""
+    """Base class for errors this store may raise (reserved; none yet)."""
 
 
 class UnsupportedSchemaError(DocumentStoreError):
@@ -209,26 +208,18 @@ class DocumentStore:
         warning**, not guessed at and not fatal: one unreadable record
         must not make the whole memory unreadable.
 
-        FILTERING IS THE DEFAULT, and it was not always.
-
-        Until 2026-08-27 this method ignored `retention_seconds`
-        entirely: the window was consumed only by `prune_expired` and
-        `purge`, both deletion paths. So a reader that constructed a
-        store with an 86-second window was served a 400-day-old document
-        in full -- while the response it fed asserted, in three separate
-        strings, that the window had been applied.
-
-        That is worse than a missing feature. A privacy control that
-        reports success is what `06-PRIVACY-DATA.md` calls a false
+        FILTERING IS THE DEFAULT. A store built with an 86-second window
+        once served a 400-day-old document in full, while the response it
+        fed asserted, in three separate strings, that the window had been
+        applied. A privacy control
+        that reports success is what `06-PRIVACY-DATA.md` calls a false
         assurance, and it is why iOS ships no privacy toggle backed by a
         Tower it cannot verify.
 
-        It is also a bug this repository had already fixed one cartridge
-        over. `tower/object_memory/store.py:44` records the identical
-        defect and the identical fix; `_is_within_retention` above is
-        that method, and it is a static method for the same reason:
-        reads and prune must use one definition of "expired" or the two
-        drift.
+        `_is_within_retention` is shared with `prune_expired`, and is a
+        static method for that reason: reads and prune must use one
+        definition of "expired" or the two drift (`object_memory/store.py`
+        has the same pair).
 
         `include_expired` is the opt-out and must be asked for by name.
         It exists for maintenance paths -- a purge counting what it
@@ -288,10 +279,9 @@ class DocumentStore:
         return documents[-limit:] if limit > 0 else []
 
     def count(self, *, include_expired: bool = False) -> int:
-        # The keyword was accepted and dropped for one commit. A privacy
-        # opt-out that reports the wrong answer without failing is the
-        # same class of defect as the one that made reads honour the
-        # window in the first place.
+        # Honours `include_expired`: a privacy opt-out that reports the
+        # wrong answer without failing is the same class of defect as
+        # reads that ignore the retention window.
         return len(self.read_all(include_expired=include_expired))
 
     def bytes_used(self) -> dict:
@@ -310,13 +300,12 @@ class DocumentStore:
     def prune_expired(self, now: float | None = None) -> dict:
         """Drop documents older than the retention window, PIXELS INCLUDED.
 
-        Returns the same report shape as `purge`, and for the same reason:
-        an earlier version returned a bare count and deleted only the
-        JOURNAL RECORDS, leaving each expired document's page images on
-        disk. Retention then said the document was gone while the picture
-        of it remained -- a retention window that does not remove the data
-        is not a retention window, and a caller receiving only a count had
-        no way to find out.
+        Returns the same report shape as `purge`, so a caller can see the
+        images that were retained. Deleting only the JOURNAL RECORDS would
+        leave each expired document's page images on disk: retention would
+        say the document was gone while the picture of it remained, and a
+        retention window that does not remove the data is not a retention
+        window.
 
         No retention window means no pruning. The window is a constructor
         argument precisely so that "forever" has to be chosen rather than
@@ -341,12 +330,11 @@ class DocumentStore:
         # Collect the doomed images BEFORE rewriting: once the records are
         # gone there is nothing left that names them.
         #
-        # `include_expired=True`, and it is load-bearing. Reads began
-        # filtering to the retention window on 2026-08-27, and a prune
-        # that used the filtered read could no longer SEE the records it
-        # exists to delete -- it would report `documents_removed: 0` and
-        # leave every expired page image on disk. This is the maintenance
-        # path the opt-out was added for.
+        # `include_expired=True` is load-bearing: reads filter to the
+        # retention window, so a prune that used the filtered read could
+        # not SEE the records it exists to delete -- it would report
+        # `documents_removed: 0` and leave every expired page image on
+        # disk. This is the maintenance path the opt-out exists for.
         doomed = [
             self._directory / page.image_relpath
             for document in self.read_all(include_expired=True)
@@ -368,12 +356,11 @@ class DocumentStore:
         """Really delete. Reports what it could NOT delete.
 
         Reads with `include_expired=True` throughout, and that is not an
-        optimisation. Once reads began honouring the retention window, a
-        purge that used the filtered read could no longer SEE an expired
-        record's page images -- so it deleted the journal row, reported
-        `images_removed: 0` and `complete: true`, and left an unredacted
-        photograph of what the wearer read on disk with nothing left
-        anywhere that named it. A deletion path must see everything.
+        optimisation: a purge that used the filtered read could not SEE an
+        expired record's page images, so it would delete the row, report
+        `images_removed: 0` and `complete: true`, and leave the photograph
+        on disk with nothing left that named it. A deletion path must see
+        everything.
 
         A purge that cannot remove everything must never be presented as
         success -- `06-PRIVACY-DATA.md` requires real deletion, and a
@@ -444,10 +431,10 @@ class DocumentStore:
             if not self._path.exists():
                 return 0
             if dropped == 0:
-                # Nothing to drop is nothing to rewrite. The session prunes
-                # after every document it records, and rewriting an
-                # unchanged journal on each one was a whole-file fsync per
-                # page and a rename a concurrent reader could refuse.
+                # Nothing to drop is nothing to rewrite: the session prunes
+                # after every document it records, and a no-op rewrite would
+                # cost a whole-file fsync and a rename that a concurrent
+                # reader can refuse.
                 return 0
             temp_path = self._path.with_name(self._path.name + TEMP_SUFFIX)
             try:

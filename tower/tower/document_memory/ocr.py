@@ -3,14 +3,12 @@
 A seam rather than a direct call for two reasons, both practical.
 
 **Cost.** EasyOCR takes ~5 s to construct a reader and ~1.2 s per page on
-this CPU. A default test suite that paid that per assertion would be
+the CPU (the `EasyOcrRecogniser` docstring has a per-page-size timing). A default test suite that paid that per assertion would be
 unusable, and one that downloaded a model would fail on a train. Tests
 use `FixedTextRecogniser`; the real engine is exercised by an opt-in
 integration test.
 
-**Substitutability.** The OCR field was surveyed and deliberately no
-engine was selected from the survey, because the choice should follow
-measurement. The seam is how a later measurement can change the answer
+**Substitutability.** The seam lets a later measurement change the engine
 without touching the pipeline.
 
 Everything here is **model inference, not measured fact**
@@ -97,7 +95,12 @@ class OcrResult:
 
 @runtime_checkable
 class TextRecogniser(Protocol):
-    """Anything that can read a corrected page image."""
+    """Anything that can read a corrected page image.
+
+    `load()` and `detect()` are optional extras, probed with `getattr` by
+    `DocumentLive._create` and `PageFinder._detect`; they are not part of
+    this protocol.
+    """
 
     name: str
 
@@ -247,7 +250,7 @@ class EasyOcrRecogniser:
     and two cv2 distributions in one environment is a known breakage.
     EasyOCR adds no cv2 and reuses the torch already in the `ml` extra.
 
-    Measured 2026-09-06 on an RTX 5070 against rendered pages with known
+    Measured on an RTX 5070 against rendered pages with known
     text: reader construction 1.3 s, 0.27 s per 800x1040 page on CUDA
     against 1.86 s on CPU, 0.98 word recall at 360x640 when the page
     fills the frame. The detector-only stage (`detect`) is 31-47 ms at
@@ -323,8 +326,8 @@ class EasyOcrRecogniser:
     def release(self) -> None:
         """Drop the models and hand the GPU memory back.
 
-        Dropping the reference alone left ~1.4 GB reserved on the device
-        after a session (measured); the cache release brings it to the
+        Dropping the reference alone leaves ~1.4 GB reserved on the device
+        after a session; the cache release brings it to the
         ~0.2 GB the CUDA context itself costs, which is what "a cartridge
         that is not running holds nothing worth mentioning" has to mean
         on a Tower that will run other cartridges next.

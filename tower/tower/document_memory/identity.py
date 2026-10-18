@@ -8,9 +8,8 @@ page, a false split costs a duplicate row. So the asymmetry below is
 deliberate: MERGE needs the text AND the picture to agree; anything
 weaker is kept separate.
 
-The two witnesses, measured 2026-09-06 on rendered pages under shift,
-scale, perspective, exposure, JPEG and blur
-(`Glasses-scratch/document-memory-v1/research/06-capture-dedup-research.md`):
+The two witnesses, measured on rendered pages under shift, scale,
+perspective, exposure, JPEG and blur:
 
 - **Token-set Jaccard of the OCR text**: 0.91-1.00 for readable
   re-views of one page, 0.40-0.45 for the hardest different pages (a
