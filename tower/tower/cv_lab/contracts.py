@@ -83,8 +83,7 @@ STATE_STOPPED = "stopped"
 # does not land here: `ModuleContainer` marks the MODULE failed, which is
 # terminal by design, and the Lab reports `unavailable` until the Tower
 # restarts. That is a limitation of the shared module lifecycle rather
-# than of the Lab, it is stated in the contract's Known Limitations, and
-# an earlier version of this comment claimed the opposite.
+# than of the Lab, and it is stated in the contract's Known Limitations.
 STATE_FAILED = "failed"
 
 LIFECYCLE_STATES = (
@@ -150,8 +149,7 @@ ERR_INTERNAL = "internal_error"
 # `accepted`, and a second reply to a reply is not a thing the wire has.
 # The outcome arrives as STATE: `lifecycle.state` goes `failed` with a
 # reason, pushed on the result channel or read with `cv_lab_status`. That
-# is the shape iOS's own `run(_:)` already has, and the constant that
-# used to sit here was declared, imported, and never emitted.
+# is the shape iOS's own `run(_:)` already has.
 
 REFUSAL_REASONS = (
     ERR_MALFORMED,
@@ -207,9 +205,11 @@ FRAME_REFUSAL_REASONS = {
 STREAM_IDLE_AFTER_S = 5.0
 
 # The most metrics one run reports. Every registered experiment emits far
-# fewer (the largest, `redaction_impact`, emits twelve), so this bounds a
-# future experiment rather than truncating a present one -- and when it
-# does truncate it says how many it dropped rather than quietly showing a
+# fewer (the largest, `optical_flow`, declares fourteen, its headline
+# among them: 14 of 16 rows in the worst case; the next, `redaction_impact`,
+# emits twelve), so this bounds a future
+# experiment rather than truncating a present one -- and when it does
+# truncate it says how many it dropped rather than quietly showing a
 # shorter list.
 MAX_REPORTED_METRICS = 16
 
@@ -217,8 +217,9 @@ MAX_REPORTED_METRICS = 16
 # accumulates, because one is unreachable and an unreachable guard reads
 # as care while providing none. A name enters the accumulator only if
 # `classify_metric` recognises it, and that means only if the experiment
-# DECLARED it in its own `METRIC_KINDS` -- a compile-time set, twelve
-# entries at its largest. A name the experiment never declared is
+# DECLARED it in its own `METRIC_KINDS` -- a compile-time set, fourteen
+# entries at its largest (`optical_flow`; `redaction_impact` declares
+# twelve). A name the experiment never declared is
 # excluded and counted below instead. The bound is the declaration, and
 # `test_the_accumulator_is_bounded_by_the_declared_metric_set` is what
 # says so.
@@ -230,7 +231,7 @@ MAX_REPORTED_METRICS = 16
 # experiment naming a stage per frame grew this to 926,280 entries over
 # 15,438 frames in a probe, which is exactly the unbounded store a run
 # open "for as long as the Tower is up" must not have. Sixteen, because
-# the most stages any registered experiment uses is four.
+# the most stages any registered experiment uses is six.
 MAX_TRACKED_STAGES = 16
 
 # The most unclassified metric names reported. An experiment emitting a
@@ -243,17 +244,12 @@ MAX_UNCLASSIFIED_REPORTED = 8
 
 # -- the live preview --------------------------------------------------
 #
-# What follows is the contract `_annotation`'s `artifact` field was
-# reserved for. `ios/docs/agent-handoffs/IOS-TO-TOWER.md` §5 said artifact
-# fetching was UNKNOWN because iOS "holds no URL, no id format, and no bytes,
-# because inventing a fetch scheme would be exactly the fabricated contract
-# this work refuses to produce" -- and the Tower agreed, because a scheme
-# invented on one side is the same fabrication seen from the other. This
-# lands on BOTH sides at once, in one change, with a document under
-# `docs/contracts/`, which is the only way that objection is answered
-# rather than ignored.
+# What follows is the contract `_annotation`'s `artifact` field is
+# reserved for, documented under `docs/contracts/EXPERIMENTAL-CV-LAB.md`.
+# A fetch scheme invented on one side only would be a fabricated contract,
+# so both sides carry it.
 #
-# What it does NOT do is relax anything. The image this serves is
+# Nothing here relaxes anything. The image this serves is
 # derived, never raw; it is held one at a time, never queued; it is
 # written to no file; and it arrives stating a treatment iOS already has
 # an enum value for, whose documented meaning is the strict one.
@@ -291,13 +287,10 @@ ARTIFACT_KIND_LIVE_PREVIEW = "live_preview"
 #                   re-served. TRUE HERE, in every clause.
 #   unknown         the producer did not say. Withheld by iOS, correctly.
 #
-# A fourth, gentler value was considered and rejected.
-# `ios/docs/agent-handoffs/IOS-TO-TOWER.md` §5 says "There is deliberately no
-# `.probablySafe` and no lenient default", and "this image is only a Canny edge
-# map" is precisely the argument a `.probablySafe` would encode. It is also
-# wrong: an edge map of a face keeps the jawline, the glasses and the hairline,
-# and a depth map keeps the silhouette. Derived is not the same as
-# unrecognisable.
+# There is deliberately no `.probablySafe` and no lenient default
+# (`ios/docs/agent-handoffs/IOS-TO-TOWER.md` §5). An edge map of a face
+# keeps the jawline, the glasses and the hairline, and a depth map keeps
+# the silhouette: derived is not the same as unrecognisable.
 TREATMENT_RAW_EPHEMERAL = "raw_ephemeral"
 
 # The process claim beside the treatment, in the naming discipline
