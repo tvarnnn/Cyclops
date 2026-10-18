@@ -537,7 +537,11 @@ class LiveSession:
         """Hand the session one frame. Never blocks, never raises.
 
         Called from the connection handler, on the event loop, once per
-        delivered frame.
+        delivered frame. Under the session's lock it counts the offer; when the
+        session is not running the frame is counted and dropped. Otherwise the
+        frame (raw bytes, receive time, `source_seq`) becomes the single pending
+        slot and the worker thread is woken. This base class is shared by the
+        Scene Understanding and Document Memory sessions.
 
         NEWEST WINS. When the worker is busy the frame already waiting is
         discarded, not this one.

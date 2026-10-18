@@ -301,38 +301,27 @@ def follow_capture(directory: Path, *, poll_seconds: float, max_idle_polls,
                    should_stop=None, handle: dict | None = None):
     """Yield frames from a capture directory as the Tower writes them.
 
-    THE SPLIT BELOW IS THE WHOLE POINT, AND IT IS NOT STYLE.
+    Builds a `CaptureFollower` on `directory` and wraps each frame it reads as
+    an `ObservedFrame` (payload, wire/source/tx sequence numbers, receive
+    times, size, and the frame file's path inside the capture it came from).
+    The stream ends when the capture closes (and no successor capture
+    follows), when `should_stop()` returns true (asked at every poll, so a stop
+    is noticed while the walk is quiet), or after `max_idle_polls` polls with
+    no new frame. `handle`, if given, receives the follower under
+    `"follower"` so the caller can ask afterwards how the capture ended.
 
-    This used to be one generator function with the check as its first
-    statement. A `def` containing `yield` is a generator function, so
-    calling it runs NONE of the body -- the check did not execute until
-    something advanced the generator for the first time. `main()` calls
-    this at the frame-source step and does not advance it until after
-
-        store  = WorldStore(args.root)
-        engine = WorldBuilderEngine(store, ...)
-        world_id = args.world or engine.create_world(args.name)
-
-    so a session pointed at a capture directory that does not exist
-    MINTED A WORLD and only then exited nonzero. The world stayed.
-
-    That is the mechanism behind the empty worlds that accumulate with
-    install age: 86 of the 123 worlds in the corpus on this host hold a
-    `world.json` and no sessions. Every failed follow left one, and
-    nothing ever collected them.
-
-    Creating the world before the first frame is DELIBERATE and is
-    preserved -- `main()` says why: "a Tower whose phone has connected
-    but not yet sent a frame reports a world that exists and is empty
-    rather than no world at all." That claim is about a session that can
-    start. This function now refuses before `main()` reaches the store,
-    so a session that cannot start leaves nothing behind.
-
-    Validating in a plain function that RETURNS the generator is the
-    standard way to make a generator's preconditions eager. The
-    alternative -- moving the check up into `main()` -- would put the
-    precondition somewhere other than the thing it is a precondition
-    for, and the next caller would not get it.
+    THE SPLIT BELOW IS THE WHOLE POINT, AND IT IS NOT STYLE. This plain
+    function checks that `directory` exists and RETURNS the generator
+    (`_follow_capture`). Were it one generator function, a `def` containing
+    `yield` would run none of its body until first advanced, and `main()`
+    creates the world before it advances the frame source: a session pointed
+    at a missing directory would mint an empty world and only then exit
+    nonzero, and every such failed follow left an empty world behind (86
+    of the 123 worlds in the corpus on this host held a `world.json` and
+    no sessions). Checking here makes the refusal (`SystemExit`) happen
+    before `main()` reaches the store. Creating the world before the first frame
+    stays deliberate, so a Tower whose phone has connected but not yet sent a
+    frame reports a world that exists and is empty.
     """
     if not directory.exists():
         raise SystemExit(f"no capture directory at {directory}")
@@ -952,6 +941,18 @@ class BackgroundSolver:
         return argv
 
     def maybe_launch(self, store: WorldStore, accepted: int, sources: dict) -> bool:
+        """Start a background global solve if one is due. Returns True if it launched.
+
+        Due means no solve child is running, at least `accepted >= 2` keyframes
+        exist, and `every` keyframes have been accepted since the last launch.
+        It then writes the frame-source ledger (`sources`) into the solve
+        workspace and spawns `scripts/world_solve.py` (non-final, loop detection
+        on) with its output appended to `solve.log`. The child is owned by this
+        object and is recorded at the keyframe count it launched at.
+
+        In `final_immediate` mode, once the capture has stopped or the background
+        is closed, it instead calls `stop_background` and leaves nothing running.
+        """
         if self._final_immediate and (self._background_closed or (
                 self._capture_stopped is not None and self._capture_stopped())):
             self.stop_background(store)
@@ -2020,6 +2021,33 @@ def published_consensus_solve(store, world_id: str, session_id: str, *,
 
 
 def main(argv=None) -> int:
+    """The World Builder driver: one process, one mapping session, from frames to a finished world.
+
+    Parses the flags, installs the stop request (stdin close or signal), picks
+    exactly one frame source (`--frames`, `--synthetic`, or `--follow-capture`
+    on the live capture the Tower is writing), creates or reuses the world,
+    and opens the session only once a frame has shown the real resolution so
+    the calibration lookup is correct.
+
+    The observe loop feeds each frame to `engine.observe` and, as keyframes
+    accumulate, runs interim builds and launches `BackgroundSolver` and the
+    live surface children. When the frames end (capture closed, hard stop,
+    idle bound) it finalizes: `engine.stop_session` holding the world lock, the
+    final solve through `BackgroundSolver.run_final`, then the final
+    `engine.build`. The outcome (`complete`, `interrupted`, ...) is recorded on
+    the session record before the lock is released. After the lock is released
+    it runs, as asked, registration (`--register`; skipped only when the global
+    solve already placed the segments, run even after a hard stop, and reported
+    only in the printed report), then `final_surface_stages` (`--surface`,
+    `--appearance`) and `densify` (`--densify`), each of those recorded and
+    skipped on a hard stop.
+
+    Prints a report (JSON or a table) and returns the exit code.
+
+    WHY the world is created before the first frame: a Tower whose phone has
+    connected but not yet sent a frame should report a world that exists and
+    is empty, not no world at all.
+    """
     parser = argparse.ArgumentParser(
         description="Run a World Builder mapping session over frames on disk."
     )

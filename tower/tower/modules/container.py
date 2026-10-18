@@ -134,6 +134,15 @@ class ModuleContainer:
                 self._module.mark_failed()
 
     def process(self, raw_bytes: bytes) -> Any:
+        """Run one raw frame through the single CV module, if it is ACTIVE.
+
+        A module in any other state raises `ModuleUnavailableError` naming that
+        state. A `FrameProcessingError` from the module is frame-level: the module
+        stays ACTIVE and the error becomes `FrameSkippedError`, carrying the
+        module's own `reason` and wording when it named one. Any other exception is
+        a crash: the module is marked FAILED and `ModuleUnavailableError` is raised.
+        Returns the module's result unchanged.
+        """
         if self._module.state != ModuleState.ACTIVE:
             # state.value, not the enum: this string reaches the WS client
             # in a frame_error message, so it should carry the protocol's

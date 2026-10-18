@@ -469,6 +469,13 @@ class WorldStore:
     # -- keyframes and edges -------------------------------------------
 
     def append_keyframe(self, world_id: str, keyframe: Keyframe) -> None:
+        """Append one keyframe record to the session's `keyframes.jsonl` journal.
+
+        Serialises the `Keyframe` and appends it as one JSON line (`append_jsonl`,
+        which heals a torn last line) under the store lock. The journal is the
+        authoritative input to every rebuild: derived output is recomputed from
+        these records and checked against them by `compute_input_digest`.
+        """
         with self._lock:
             append_jsonl(
                 self.keyframes_path(world_id, keyframe.session_id),
@@ -634,7 +641,13 @@ class WorldStore:
         manifest,
         support=None,
     ) -> None:
-        """Write the rebuildable reconstruction outputs.
+        """Write the rebuildable reconstruction outputs of one session.
+
+        Under the store lock, atomically writes `poses.json`, `points.json` and,
+        when given, `support.json` into the session's derived directory, plus the
+        `manifest` twice: beside those files and as the world's single
+        `derived/manifest.json`. The manifest is what lets a reader check these
+        files against the journal (its input digest).
 
         Poses and points are JSON rather than .npy: at V1 scale a session
         is hundreds of poses and low tens of thousands of points, JSON
@@ -966,6 +979,14 @@ class WorldStore:
 
     def acquire_writer_lock(self, world_id: str) -> None:
         """Take the single-writer lock, reclaiming it from a dead process.
+
+        Creates the world's lock file exclusively (`O_EXCL`), writing the holder's
+        pid and process start time, and returns once it reads back as its own.
+        When the file exists it reads the holder: a live other pid raises
+        `WorldLockedError`; a dead holder's lock is removed and creation retried;
+        a lock that stays unreadable for the grace period is treated as a writer
+        that died mid-write and removed. After a bounded number of attempts it
+        raises `WorldLockedError` for contention.
 
         Liveness by pid AND process start time rather than by timeout. A
         stale-lock timer has to guess how long a legitimate writer might
@@ -1557,7 +1578,9 @@ def validate_manifest(
 def compute_input_digest(keyframes: list[Keyframe]) -> str:
     """Digest the authoritative inputs a derived build consumed.
 
-    Lets a later read detect that derived output no longer matches the
+    SHA-256 over the keyframe ids, in order, each followed by a NUL byte;
+    only ids are hashed, so the digest tracks which keyframes the journal
+    holds. Lets a later read detect that derived output no longer matches the
     journal that produced it, instead of trusting whatever is on disk.
     """
     hasher = hashlib.sha256()

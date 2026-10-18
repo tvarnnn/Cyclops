@@ -219,7 +219,23 @@ def build_appearance(store, world_id: str, session_id: str, *,
                      should_stop=None, progress=None, force: bool = False,
                      redactor_factory=None, device=None,
                      transient_backend_factory=None) -> AppearanceResult:
-    """Build the appearance artifact of one solved, surfaced session."""
+    """Build the appearance artifact (the photographic imagery layer) of one solved, surfaced session.
+
+    Takes the per-session appearance lock; if another build holds it, returns
+    an `unavailable` result marked retryable. Otherwise `_build` runs, in
+    order: read the global solution, the surface's phone-level mesh as the
+    proxy, and the depth stage's alignment; detect transients; stop early if
+    the whole parameter digest matches an artifact already built (unless
+    `force`); then prepare each posed keyframe (provenance), find occluders,
+    solve per-frame exposure gains, mask transients, select keyframes by how
+    well they cover the proxy, encode them into chunks (WebP always, plus
+    ASTC for the phone tier when an ASTC encoder is available) and publish
+    the manifest. `should_stop` is polled between
+    stages and returns a stopped result; `progress` reports per-stage counts.
+    A missing prerequisite (no solution, no surface, purged imagery) is
+    recorded as `unavailable` and any other error as `failed`; neither
+    raises. The status is written to the appearance directory throughout.
+    """
     params = params or A.AppearanceParams()
     root = appearance_dir(store, world_id, session_id)
     root.mkdir(parents=True, exist_ok=True)

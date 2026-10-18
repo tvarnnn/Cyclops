@@ -529,6 +529,14 @@ class FaceRedactor:
     def redact(self, image_bytes: bytes) -> RedactionResult:
         """Fill every detected face. Returns the ORIGINAL bytes on failure.
 
+        Decodes the JPEG, detects face boxes, paints each box (clipped to the
+        image) with a constant fill and re-encodes. Returns a `RedactionResult`
+        with the new bytes, the redaction label and the number of regions. When no
+        face is found the original bytes are returned unchanged with `regions=0`
+        and the same label. When the redactor is unavailable or the work fails, the
+        result carries the original bytes, the `none` label and an
+        `unavailable_reason`.
+
         Never raises. A redactor that threw would stop a keyframe being
         persisted, which would trade a privacy improvement for data loss --
         and the caller must be able to record honestly that nothing was
