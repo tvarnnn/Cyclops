@@ -33,16 +33,16 @@ the lock):
       `solve/<session>` -- never moved back, so the set-aside copy stays byte for
       byte what the walk left, for rollback. The copy is what makes the masked
       solve filter THE WALK'S OWN DATABASE (`solve.masking:
-      "walk-database-filtered"`, the approved arm A1h). Without it the solve finds
-      no walk database, re-extracts under the masks (`"re-extracted"`, arm A1),
-      and on the target walk that splits the room (reviewer RV1, finding M1-1).
+      "walk-database-filtered"`). Without it the solve finds no walk database and
+      re-extracts under the masks (`"re-extracted"`), and on the target walk that
+      split the room.
       A solver image goes back ONLY when it is proven to be exactly what step 2
-      plans for its keyframe (review V9, M-7; `carry_back_decisions`); every other
+      plans for its keyframe (`carry_back_decisions`); every other
       one is withheld -- the solve writes it afresh from its planned frame -- and
       its features are cleared from the copied database. Each image's provenance
       is recorded in `images.provenance.json`, which `prepare_images` honours;
     - `surface/`, `appearance/` and `dense/<session>` (without its depth-prediction
-      cache, review V9 M-12), `derived/` and the session record are COPIED there,
+      cache), `derived/` and the session record are COPIED there,
       because the rebuild replaces them in place;
     - every `areas/<area>` of this session is MOVED there: a new solve names new areas;
     - `<world>/refinish/<stamp>/refinish.json` records what was set aside, from where,
@@ -78,18 +78,18 @@ published solve -- a session record that cannot be written, a child that cannot 
 started -- and the ledger then says `restored-after-an-error` and names the step and
 the error (`restore-incomplete`, with what could not be done, if it could not all go
 back). And so does the idle Tower's finisher, or the next run of this command, when a
-re-finish was KILLED before it published -- a console closed, a reboot (review V9,
-M-5; `recover_dead_refinish`): the ledger then says
+re-finish was KILLED before it published -- a console closed, a reboot
+(`recover_dead_refinish`): the ledger then says
 `restored-after-the-refinish-ended`. The finisher's attempt counters are restarted only
 once the new solve is published, so a put-back leaves them as they were.
 
-THE PUT-BACK READS THE DISK, NOT THE LEDGER, AND CAN BE RUN AGAIN (review V10, MED-2): a
+THE PUT-BACK READS THE DISK, NOT THE LEDGER, AND CAN BE RUN AGAIN: a
 put-back killed part-way is finished by the next one, and one an owner did by hand is
 recognised, never undone (`restore_after_failed_solve`). It puts back only THIS session's
 `derived/<session>` and the world's `derived/manifest.json` while that still names this
 session, and it parks rather than touching anything if another session's derived output
-changed since the set-aside (MED-3). The final solve's child is recorded in the ledger as
-soon as it exists, and nothing is put back while it runs (V10 Q3).
+changed since the set-aside. The final solve's child is recorded in the ledger as
+soon as it exists, and nothing is put back while it runs.
 
 Exit status: 0 done; 1 a step failed (the report says which); 2 refused (no such world
 or session, imagery purged, a live writer holds the world, a build is running, or the
@@ -129,34 +129,31 @@ FINALIZE_SCRIPT = Path(__file__).resolve().parent / "world_finalize.py"
 # solve its GPU minutes), and the record of the walk database's FROZEN matching
 # (`database.matching.json`, `global_solve.FROZEN_MATCHING_FILENAME`: the seeded
 # final solve that made it maps that database as it is instead of matching again,
-# which is not reproducible -- review V8 H2), and the anchor verification's masked pair
+# which is not reproducible), and the anchor verification's masked pair
 # sets (`verify_pairs/`, `anchor_verify.PAIRS_DIRNAME`: each under a key that is the SHA-1 of
 # every image's and mask's bytes, the pair parameters and the descriptor, so an entry is
 # read only for the exact images and masks it was built from -- it saves a re-finish with
-# `TOWER_WORLD_ANCHOR_VERIFY` on 40-160 s; review V15 MED-1). NOT `masks/` (the COLMAP masks are
-# rewritten from that cache on every masked solve), nor `database.masked.*` /
-# `reverify_pairs.txt` (made by a solve, for that solve). See `set_aside`.
+# `TOWER_WORLD_ANCHOR_VERIFY` on 40-160 s). NOT `masks/` (the COLMAP masks are
+# rewritten from that cache on every masked solve), nor `database.masked.*` (the masked
+# copies and their `<db>.reverify.txt` pair lists: made by a solve, for that solve).
+# See `set_aside`.
 #
-# `images/` GOES BACK ONLY IMAGE BY IMAGE, AND ONLY WHERE ITS PROVENANCE IS PROVEN
-# (review V9, M-7). A carried-back solver image used to outrank capture identity:
-# `prepare_images` never rewrites an image that exists, so a walk first solved from
-# its redacted keyframes stayed redacted after a re-finish that found every raw frame
-# (RV9-D D1), a frame another capture's by-name lookup had given it survived every
-# re-finish (D2), and duplicate-id keyframes were solved from a raw image instead of
-# their stored copy (D3). Now each image is carried back only when it is exactly what
-# this re-finish plans for it (`carry_back_decisions`), its provenance is recorded
-# (`SOLVER_IMAGES_PROVENANCE`), and every other image is WITHHELD -- rewritten by the
-# solve from the planned frame -- and its features are cleared from the copied
-# database (`global_solve.clear_image_features`, the one implementation; review V10,
-# L-16c), so the rewritten image is extracted and matched afresh instead of mapped with
-# the old image's keypoints. One exception (review V10, L-8): a walk image the
-# provenance RECORD proves was undistorted from the keyframe's own raw frame still goes
-# back when that frame is no longer on disk -- see `carry_back_decisions`.
+# `images/` GOES BACK ONLY IMAGE BY IMAGE, AND ONLY WHERE ITS PROVENANCE IS PROVEN.
+# `prepare_images` never rewrites an image that exists, so a carried-back image would
+# outrank the planned frame; hence the per-image proof. Each image is carried back only
+# when it is exactly what this re-finish plans for it (`carry_back_decisions`), its
+# provenance is recorded (`SOLVER_IMAGES_PROVENANCE`), and every other image is WITHHELD --
+# rewritten by the solve from the planned frame -- and its features are cleared from the
+# copied database (`global_solve.clear_image_features`, the one implementation), so the
+# rewritten image is extracted and matched afresh instead of mapped with the old image's
+# keypoints. One exception: a walk image the provenance RECORD proves was undistorted
+# from the keyframe's own raw frame still goes back when that frame is no longer on
+# disk -- see `carry_back_decisions`.
 SOLVE_COPY_BACK = ("database.db", "database.db-wal", "database.db-shm", "images",
                    "sources.json", "camera.json", "transients", "database.matching.json",
                    "verify_pairs")
 
-# THE SOLVER-IMAGE PROVENANCE RECORD (review V9, M-7; the format is agreed with
+# THE SOLVER-IMAGE PROVENANCE RECORD (the format is agreed with
 # `global_solve.prepare_images`, which honours it when the file exists):
 #
 #     {"record": "wb-solver-image-provenance/1",
@@ -178,14 +175,13 @@ IMAGE_SOURCE_RAW = "raw"
 IMAGE_SOURCE_REDACTED = "redacted"
 # `prepare_images` writes a solver image as `cv2.imwrite(..., [IMWRITE_JPEG_QUALITY, 95])`
 # of the undistorted, cropped frame; an image is VERIFIED BY REPRODUCTION when the same
-# steps on the planned frame give the same bytes (`_solver_image_sha1`). Measured on the
-# frozen walk 6839fb8f: 689 of its 690 solver images reproduce byte for byte from the raw
-# frame `sources.json` names; the 690th (keyframe 00000936) reproduces from its REDACTED
-# copy -- the walk solved it before its raw frame was recorded -- and is withheld.
+# steps on the planned frame give the same bytes (`_solver_image_sha1`). Measured on one
+# walk: 689 of its 690 solver images reproduce byte for byte from the raw frame
+# `sources.json` names; the 690th reproduces from its REDACTED copy and is withheld.
 SOLVER_JPEG_QUALITY = 95
 
 # The depth-prediction cache (`dense_pipeline.PREDICTIONS_DIRNAME`, the gate's depth
-# stage) is left out of the set-aside COPY of `dense/<session>` (review V9, M-12): it is
+# stage) is left out of the set-aside COPY of `dense/<session>`: it is
 # re-derivable from the redacted keyframes and the network, it is about twenty times
 # the size of the keyframe images (311 MB for 678 frames), and every re-finish would
 # keep another full copy of it, which policy forbids deleting. The live cache is not
@@ -245,14 +241,14 @@ def plan(store: WorldStore, world_id: str, session_id: str, stamp: str) -> dict:
 def _restart_attempts(store: WorldStore, world_id: str, session_id: str,
                       stamp: str) -> dict:
     """Restart `world_finish_pending`'s counters for this session (room and areas);
-    return what they were. Called once the new solve is published (review V9, M-6 and
-    LOW): the counters describe the build being REPLACED, and until the publish nothing
-    has replaced it -- a put-back leaves them as they were."""
+    return what they were. Called once the new solve is published: the counters
+    describe the build being REPLACED, and until the publish nothing has replaced it --
+    a put-back leaves them as they were."""
     from scripts import world_finish_pending as wfp  # noqa: PLC0415
 
-    # The room's, the areas' AND the re-gate's counters (FIN, review V8): a re-finished
+    # The room's, the areas' AND the re-gate's counters: a re-finished
     # world must not inherit an exhausted re-gate count from the build it replaces. And the
-    # put-back's (review V10, L-7b): an earlier dead re-finish's put-back attempts bound
+    # put-back's: an earlier dead re-finish's put-back attempts bound
     # nothing once a new solve is published.
     keys = (session_id, wfp.area_ledger_key(session_id), wfp.regate_ledger_key(session_id),
             wfp.refinish_ledger_key(session_id))
@@ -277,7 +273,7 @@ def _restart_attempts(store: WorldStore, world_id: str, session_id: str,
 # Windows refuses to rename a directory while any file under it is open (WinError 5),
 # and the Tower may be serving one of them -- an area chunk, a surface level. So every
 # move is retried over a few seconds, and a set-aside that still cannot complete is
-# ROLLED BACK rather than left half done (review V6, M1).
+# ROLLED BACK rather than left half done.
 MOVE_ATTEMPTS = 5
 MOVE_BACKOFF_S = 0.2
 FRESH_SOLVE_STAGING = "fresh-solve"
@@ -287,15 +283,13 @@ LEDGER_SET_ASIDE = "set-aside"
 LEDGER_ROLLED_BACK = "rolled-back"
 LEDGER_ROLLBACK_INCOMPLETE = "rollback-incomplete"
 LEDGER_RESTORED = "restored-after-a-failed-solve"
-# An exception between the set-aside and a published solve (review P3, PV attempt 1:
-# a read-only `session.json` made `mark_stage` raise WinError 5 after the solve was
-# set aside, and the world was left with its solve moved and a session saying
-# `complete`). The previous result is put back exactly as for a failed solve.
+# An exception between the set-aside and a published solve. The previous result is put
+# back exactly as for a failed solve.
 LEDGER_RESTORED_AFTER_ERROR = "restored-after-an-error"
 # The previous result could not be put back, or only part of it; `restore_report`
 # and `restore_errors` in the ledger say what is where.
 LEDGER_RESTORE_INCOMPLETE = "restore-incomplete"
-# After a published solve (FIN, review V8): the room and the areas are being rebuilt
+# After a published solve: the room and the areas are being rebuilt
 # (`published`), then the run's TERMINAL state -- `done`, or `stopped` when a stop was
 # asked for or the room could not be rebuilt (`detail` says which). A ledger left at a
 # non-terminal state by a process that is gone is a re-finish that died there; the
@@ -305,19 +299,19 @@ LEDGER_PUBLISHED = "published"
 LEDGER_DONE = "done"
 LEDGER_STOPPED = "stopped"
 # A re-finish whose process ended in step 1 or 2 -- before its new solve was published --
-# put back by the idle Tower's finisher (review V9, M-5; `recover_dead_refinish`).
+# put back by the idle Tower's finisher (`recover_dead_refinish`).
 LEDGER_RESTORED_AFTER_DEATH = "restored-after-the-refinish-ended"
 LEDGER_TERMINAL_STATES = (LEDGER_ROLLED_BACK, LEDGER_ROLLBACK_INCOMPLETE, LEDGER_RESTORED,
                           LEDGER_RESTORED_AFTER_ERROR, LEDGER_RESTORE_INCOMPLETE, LEDGER_DONE,
                           LEDGER_STOPPED, LEDGER_RESTORED_AFTER_DEATH)
 # The two states a re-finish is in before its new solve is published: the only ones in
-# which a re-finish that died leaves the world with its solve set aside (M-5).
+# which a re-finish that died leaves the world with its solve set aside.
 LEDGER_BEFORE_PUBLISH = (LEDGER_SETTING_ASIDE, LEDGER_SET_ASIDE)
 
 
 def refinish_process_alive(ledger: dict) -> bool | None:
     """Whether the re-finish that wrote this ledger is still running -- its own process, OR
-    the final solve's child it started (review V10, Q3): True, False, or None when it
+    the final solve's child it started: True, False, or None when it
     cannot be told. `refinish_liveness` says which."""
     return refinish_liveness(ledger)["alive"]
 
@@ -328,17 +322,17 @@ def refinish_liveness(ledger: dict) -> dict:
     THE PROCESS: pid AND start time, the writer lock's own test
     (`store._holder_is_running`), so a recycled pid is not taken for the re-finish that
     died. None for a ledger written before the pid was recorded, AND for one with a pid but
-    no start time (review V9, LOW): a bare pid cannot tell the re-finish from whatever
+    no start time: a bare pid cannot tell the re-finish from whatever
     process reuses its number, so it is UNKNOWN -- the finisher then decides by what the
     files show, which keeps it out of a marked room (`world_finish_pending`) -- never
     "alive" or "dead" on the pid alone. Logged, because a ledger should not lack it.
 
-    THE CHILD (review V10, Q3): `world_finalize.py`, recorded in the ledger (`child`) as
+    THE CHILD: `world_finalize.py`, recorded in the ledger (`child`) as
     soon as it exists (`run_final_solve`). A re-finish whose parent was killed while its
     child runs on is NOT dead: the child may still publish, and a put-back under it would
     hand it the ORIGINAL solve directory to overwrite. Dead once it ended (`exit_code`
     recorded) or is gone by pid and start time; a ledger without a child (none was started,
-    or it predates V10) is decided by the process alone.
+    or it predates the child record) is decided by the process alone.
 
     ALIVE if either runs; dead only when both are known to have ended."""
     process = _recorded_alive((ledger or {}).get("process"), ledger, "pid")
@@ -438,7 +432,7 @@ def set_aside(store: WorldStore, world_id: str, session_id: str, stamp: str, *,
               solver_images: dict | None = None) -> dict:
     """Step 1, under the caller's lock. Never deletes; returns the ledger it wrote.
 
-    IN AN ORDER THAT CANNOT STRAND THE WORLD (review V6, M1; review V9, M-6):
+    IN AN ORDER THAT CANNOT STRAND THE WORLD:
 
     1. the LEDGER first, naming everything that is about to move, so nothing can move
        without a record of where it went;
@@ -446,23 +440,20 @@ def set_aside(store: WorldStore, world_id: str, session_id: str, stamp: str, *,
        derived, the session record), and the COPY-BACK of the walk's solve inputs into
        a staging directory beside the ledger -- only the solver images whose provenance
        is proven, with the withheld images' features cleared from the COPIED database
-       (M-7) -- both copies, both before anything moves, so the copy-back does not
+       -- both copies, both before anything moves, so the copy-back does not
        depend on any move having happened;
     3. the MOVES, the session's areas before its solve, each retried against a file
        another process holds open;
     4. the staged copy put in place as the fresh `solve/<session>`, and the ledger's
        `set-aside`.
 
-    ONE ROLLBACK COVERS EVERYTHING FROM THE FIRST MOVE TO THE LAST LEDGER WRITE (M-6).
+    ONE ROLLBACK COVERS EVERYTHING FROM THE FIRST MOVE TO THE LAST LEDGER WRITE.
     Any exception there -- not only a move's `OSError` -- puts the staged copy back
     beside the ledger if it was placed, undoes every completed move, and raises
     `SetAsideFailed`, which `main` reports as a refusal (an interrupt is re-raised as
-    itself, after the same rollback). It used to cover the moves alone: the finisher's
-    counters were restarted after them, a read-only `finish_attempts.json` raised
-    `PermissionError`, and the solve and areas stayed moved with the ledger at
-    `setting-aside` and nothing reporting it (RV9-D probe A). The counters are now
-    restarted after the publish, and never fatally (`refinish`). A failure before the
-    first move moved nothing, and says so.
+    itself, after the same rollback). The finisher's counters are restarted after the
+    publish, and never fatally (`refinish`). A failure before the first move moved
+    nothing, and says so.
 
     `solver_images` is `plan_solver_frames`' answer, whose `carry_back` decides which
     solver images go back; None plans from the walk's own `sources.json`, searching no
@@ -483,7 +474,7 @@ def set_aside(store: WorldStore, world_id: str, session_id: str, stamp: str, *,
     for m in moves:
         if m["kind"] == "solve":
             # What the ORIGINAL is, so a put-back can tell it from anything else at its place
-            # once the set-aside copy is gone (review V10, MED-2; `_put_move_back`).
+            # once the set-aside copy is gone (`_put_move_back`).
             m["solution_sha1"] = _sha1_or_none(Path(m["from"]) / "solution.json")
     staging = aside / FRESH_SOLVE_STAGING
     from tower.world_builder.store import _lock_record  # noqa: PLC0415
@@ -493,8 +484,8 @@ def set_aside(store: WorldStore, world_id: str, session_id: str, stamp: str, *,
         "state": LEDGER_SETTING_ASIDE,
         "world_id": world_id, "session_id": session_id, "stamp": stamp,
         "set_aside_at": time.time(),
-        # Which process is doing this (FIN, review V8): pid and start time, as in the
-        # writer lock. See `refinish_process_alive`.
+        # Which process is doing this: pid and start time, as in the writer lock. See
+        # `refinish_process_alive`.
         "process": _lock_record(os.getpid()),
         "moved": moves, "copied": p["copies"], "copied_back": [],
         "previous": {"finalization": session.finalization, "stages": session.stages},
@@ -533,14 +524,14 @@ def set_aside(store: WorldStore, world_id: str, session_id: str, stamp: str, *,
                 shutil.copytree(src, dst, ignore=_skipping(src, c.get("skipped")))
             else:
                 shutil.copy2(src, dst)
-        # THE WALK'S OWN DATABASE GOES BACK, AS A COPY (RV1 M1-1). The masked final
-        # solve maps a filtered copy of the walk database when one is there
-        # (`global_solve`, `walk-database-filtered`, arm A1h) and re-extracts under
-        # the masks when it is not (`re-extracted`, arm A1) -- which splits the
-        # target room. So the fresh solve directory gets a COPY of the database and
-        # of the solver images its keypoints were extracted from (so the masks are
-        # computed on the same pixels) -- the ones whose provenance is this
-        # re-finish's plan (M-7) --, where the raw frames were (`sources.json`), the
+        # THE WALK'S OWN DATABASE GOES BACK, AS A COPY. The masked final solve maps a
+        # filtered copy of the walk database when one is there (`global_solve`,
+        # `walk-database-filtered`) and re-extracts under the masks when it is not
+        # (`re-extracted`) -- which, on the target walk, split the room. So the fresh
+        # solve directory gets
+        # a COPY of the database and of the solver images its keypoints were extracted
+        # from (so the masks are computed on the same pixels) -- the ones whose
+        # provenance is this re-finish's plan --, where the raw frames were (`sources.json`), the
         # camera the images were undistorted with (`camera.json`, without which
         # `prepare_images` would re-undistort them) and the content-keyed mask cache.
         # The set-aside originals are never touched again.
@@ -578,9 +569,7 @@ def set_aside(store: WorldStore, world_id: str, session_id: str, stamp: str, *,
                 "to": str(solve_live / SOLVER_IMAGES_PROVENANCE), "images": len(carried)})
             if database_entry is not None:
                 # Every image not carried back -- withheld when judged, AND one that changed
-                # between being judged and being copied (it was read from the IMAGES entry;
-                # it used to be read from the database's, which never has it, so such an
-                # image kept its old features).
+                # between being judged and being copied (read from the IMAGES entry).
                 clear = set(carry.get("clear_features") or ()) | set(changed_while_copying)
                 from tower.world_builder.global_solve import (  # noqa: PLC0415
                     clear_image_features,
@@ -591,7 +580,7 @@ def set_aside(store: WorldStore, world_id: str, session_id: str, stamp: str, *,
     except Exception as exc:  # noqa: BLE001 -- nothing has moved yet
         raise fail(LEDGER_ROLLED_BACK, "copying", exc) from exc
 
-    # 3 and 4, under ONE rollback (M-6).
+    # 3 and 4, under ONE rollback.
     done: list = []
     placed = False
     doing = "moving"
@@ -637,8 +626,8 @@ def set_aside(store: WorldStore, world_id: str, session_id: str, stamp: str, *,
     return ledger
 
 
-# What each put-back attempt moves out of the way is kept under its own name (review V10,
-# MED-2): the first attempt's are the names every earlier ledger used, and a later attempt --
+# What each put-back attempt moves out of the way is kept under its own name:
+# the first attempt's are the names every earlier ledger used, and a later attempt --
 # after one that was killed part-way -- gets `failed-solve-2`, `failed-derived-2`, ..., so it
 # never collides with what an earlier one kept. Nothing is ever moved or copied ONTO a path
 # that exists (`_unused`).
@@ -667,20 +656,19 @@ def _unused(path: Path) -> Path:
 
 def restore_after_failed_solve(store: WorldStore, world_id: str, session_id: str,
                                ledger: dict, *, state: str = LEDGER_RESTORED) -> dict:
-    """Put the set-aside result back after a final solve that did not publish (review
-    V6, L3), after any exception between the set-aside and a published solve, or after the
-    re-finish died (review V9, M-5) -- under the caller's lock. Nothing is deleted: what
+    """Put the set-aside result back after a final solve that did not publish, after any
+    exception between the set-aside and a published solve, or after the
+    re-finish died -- under the caller's lock. Nothing is deleted: what
     took the previous result's place is moved under `refinish/<stamp>/failed-*`. The
     session record is written back from its snapshot, so the session says what is on disk
     again.
 
-    THE DISK DECIDES, NOT THE LEDGER, SO IT CAN BE RUN AGAIN (review V10, MED-2). A put-back
-    can itself be killed part-way (the Tower closing: each retried move can take seconds),
-    and it used to write its ledger only at the end: the next one trusted the stale ledger,
-    took the ORIGINAL solve it had already moved back for the rebuild's, and filed it as
-    `failed-solve` (RV10 R1, RV10-C probe 1a); or collided with its own `failed-solve/` and
-    parked a world that was whole (R2, 1b); or undid an owner's own put-back done by the
-    ledger's `restore` text (probe 2). Now, for every move the set-aside recorded:
+    THE DISK DECIDES, NOT THE LEDGER, SO IT CAN BE RUN AGAIN. A put-back can itself be
+    killed part-way (the Tower closing: each retried move can take seconds), and the next
+    one must not trust a stale ledger: it would take the ORIGINAL solve already moved back
+    for the rebuild's, collide with its own `failed-solve/`, or undo an owner's own
+    put-back done by the ledger's `restore` text. So, for every move the set-aside
+    recorded:
     - the set-aside original (`to`) there and `from` free: moved back;
     - `from` there and `to` gone: it IS back -- never moved, or moved back by an earlier
       attempt or by hand -- and nothing is touched (`found_on_disk`);
@@ -691,11 +679,11 @@ def restore_after_failed_solve(store: WorldStore, world_id: str, session_id: str
     The ledger is written after every move, and every attempt is recorded in it
     (`restore_attempts`) BEFORE it moves anything, with its own `failed-*` names.
 
-    ONLY THIS SESSION'S DERIVED TREE (review V10, MED-3). `derived/` is the WORLD's:
+    ONLY THIS SESSION'S DERIVED TREE. `derived/` is the WORLD's:
     `derived/<session>/` per session, and `derived/manifest.json` naming whichever session
-    built last. A put-back that runs later than the re-finish (the finisher's) used to swap
-    the whole tree for the set-aside snapshot, and a walk of another session in between lost
-    its derived output from the live world (RV10-C probe 3). Now `derived/<session>` goes
+    built last. A put-back that runs later than the re-finish (the finisher's) must not swap
+    the whole tree for the set-aside snapshot: a walk of another session in between would
+    lose its derived output from the live world. So `derived/<session>` goes
     back, and the world manifest only while it still names this session -- each only where
     it differs from the snapshot. And when either must go back while anything else under
     `derived/` differs from the snapshot (another session was built since the set-aside,
@@ -705,7 +693,7 @@ def restore_after_failed_solve(store: WorldStore, world_id: str, session_id: str
 
     EVERY STEP IS ATTEMPTED, whatever an earlier one did: the moves that put the old
     solve and areas back must not be skipped because, say, the session record cannot
-    be written (the very file whose write failed in PV's attempt 1). What could not be
+    be written. What could not be
     done is listed in `errors`, and the ledger then says `restore-incomplete` rather
     than `state`. A session record that already equals its snapshot byte for byte is
     left alone -- nothing moved it, so there is nothing to write back.
@@ -768,8 +756,8 @@ def restore_after_failed_solve(store: WorldStore, world_id: str, session_id: str
         live_solve = world_dir / "solve" / session_id
         if live_solve.exists():
             # The session had no solve to set aside: what is there now is the rebuild's, and
-            # there is no original to make room for, so it stays (review V10, MED-2: never
-            # moved aside unless the original it makes room for exists).
+            # there is no original to make room for, so it stays (never moved aside
+            # unless the original it makes room for exists).
             out["solve_left_in_place"] = str(live_solve)
     if derived is not None and (derived["revert_session"] or derived["revert_manifest"]):
         attempt("restoring the derived tree",
@@ -789,7 +777,7 @@ def restore_after_failed_solve(store: WorldStore, world_id: str, session_id: str
             _write_ledger_quietly(aside, ledger)
 
         attempt("restoring the session record", restore_session)
-    # THE FINISHER'S COUNTERS (review V9, LOW). A re-finish now restarts them only after
+    # THE FINISHER'S COUNTERS. A re-finish restarts them only after
     # its solve is published (`refinish`), so a put-back never meets restarted counters.
     # A ledger from before that restarted them in step 1 and kept the old ones here: they
     # go back, each only while it still carries THIS stamp's restart -- a counter the
@@ -820,7 +808,7 @@ def _put_move_back(m: dict, aside: Path, number: int, ledger: dict, out: dict) -
             raise FileNotFoundError(f"neither the set-aside {away} nor {home} exists")
         # In place: never moved, or back already -- when it is the original. A solve whose
         # set-aside copy is gone is back only if `from` holds the solution the set-aside
-        # recorded (a ledger from before V10 recorded none, and is taken at the disk's word).
+        # recorded (a ledger that recorded none is taken at the disk's word).
         recorded = m.get("solution_sha1")
         if (m.get("kind") == "solve" and m.get("moved") and recorded is not None
                 and _sha1_or_none(home / "solution.json") != recorded):
@@ -905,7 +893,7 @@ def _manifest_session(path: Path):
 def derived_put_back_plan(store: WorldStore, world_id: str, session_id: str,
                           ledger: dict) -> dict:
     """What putting back this session's derived output means, read off the disk against the
-    set-aside snapshot (review V10, MED-3). Reads only. Returns
+    set-aside snapshot. Reads only. Returns
     `{"revert_session", "revert_manifest", "changed_elsewhere", "park"}`:
 
     - `revert_session`: `derived/<session>/` differs from the snapshot's (a file added,
@@ -1028,12 +1016,9 @@ def _restore_attempts(store: WorldStore, world_id: str, stamp: str, prior: dict,
     out["finish_attempts_restored"] = restored
 
 
-# A RE-FINISH THAT DIED BEFORE IT PUBLISHED (review V9, M-5). A hard kill in step 1 or 2 --
+# A RE-FINISH THAT DIED BEFORE IT PUBLISHED. A hard kill in step 1 or 2 --
 # a console closed, a reboot -- has no `finally`: the solve stays set aside, the room stays
-# marked `stopped`, and the ledger stays at `setting-aside` or `set-aside`. The finisher
-# used to read the dead process as "not holding the world", owe the stopped room, and run
-# the room's stages on a session with NO solution: `surface: unavailable` written into the
-# live status, the ledger never moving on, no notice (RV9-D probe C, RV9-E F4).
+# marked `stopped`, and the ledger stays at `setting-aside` or `set-aside`.
 #
 # WHY PUT IT BACK, AND NOT PARK THE WORLD. Everything the re-finish moved is intact under
 # `refinish/<stamp>/` and named by its ledger (renames, recorded move by move), so putting
@@ -1102,11 +1087,11 @@ def recover_dead_refinish(store: WorldStore, world_id: str, stamp: str) -> dict:
       ended (a solution in the fresh solve directory, and a completed, solved
       finalization written after the set-aside). Then the new solve stands: the ledger
       says `published`, the finisher's counters are restarted (as the re-finish itself
-      does after its publish; review V10, L-6), and the room the re-finish marked is owed
+      does after its publish), and the room the re-finish marked is owed
       to the finisher, as for any re-finish that died after its publish.
 
     Dead means the re-finish's process AND the final solve's child it started are both
-    known to have ended (`refinish_liveness`; review V10, Q3): nothing is put back while the
+    known to have ended (`refinish_liveness`): nothing is put back while the
     child may still publish into the directory being put back. A put-back that was itself
     interrupted is finished by the next call (`restore_after_failed_solve` reads the disk)."""
     from tower.storage import read_json_closed  # noqa: PLC0415
@@ -1172,8 +1157,8 @@ def recover_dead_refinish(store: WorldStore, world_id: str, stamp: str) -> dict:
 def _published_since_set_aside(store: WorldStore, world_id: str, session_id: str,
                                ledger: dict) -> bool:
     """Whether the re-finish's solve child published before the re-finish ended: the
-    previous solve moved out -- and still out, ON DISK (review V10, MED-2: a put-back that
-    was killed after moving it back left the ledger saying otherwise, and the solution
+    previous solve moved out -- and still out, checked ON DISK too (a put-back that was
+    killed after moving it back leaves the ledger saying otherwise, and the solution
     then at `solve/<session>` is the ORIGINAL's) --, a solution in its place (the fresh
     directory is copied WITHOUT one), and a complete, solved finalization written after the
     set-aside."""
@@ -1202,7 +1187,7 @@ def _published_since_set_aside(store: WorldStore, world_id: str, session_id: str
 
 
 def build_in_progress(store: WorldStore, world_id: str, session_id: str) -> str | None:
-    """Why this session is being built right now, or None (review V6, H1).
+    """Why this session is being built right now, or None.
 
     The writer lock is NOT enough: the builder releases it at the end of
     finalization and only then runs the room's final surface and appearance (six to
@@ -1234,10 +1219,10 @@ REFINISH_IN_PROGRESS = (
     "is set aside under refinish/{stamp}/, and the room is rebuilt after the new solve")
 
 
-# WHERE THE SOLVER'S FRAMES COME FROM (P3 finding 6: 991e5a15 and af47007c were
-# re-finished from the face-redacted session keyframes although their raw captures
-# were on disk). The builder records, per keyframe, the raw frame it observed
-# (`sources.json`); a world without that record fell back to the session copies.
+# WHERE THE SOLVER'S FRAMES COME FROM. The builder records, per keyframe, the raw frame
+# it observed (`sources.json`); a world without that record would otherwise be
+# re-finished from the face-redacted session keyframes even where its raw captures
+# are on disk.
 #
 # WHICH CAPTURES. `--capture-dir DIR` (repeatable) when the owner names them;
 # otherwise the capture this session RECORDS (`session.capture_id`, set only for a
@@ -1249,16 +1234,16 @@ REFINISH_IN_PROGRESS = (
 # `sources.json` paths are (`global_solve.resolve_source_path`), never the cwd.
 # `--no-capture`, or nothing resolvable: today's behaviour.
 #
-# WHICH FRAME, AND NEVER ANOTHER CAPTURE'S (review of 3abe763, ACC). A reconnect
+# WHICH FRAME, AND NEVER ANOTHER CAPTURE'S. A reconnect
 # restarts the phone's frame numbering, so the captures of one walk REUSE frame
-# names: on the live walk adc75972 (3 captures, 353 keyframes) 152 keyframes have a
-# same-named frame in another capture of the chain, and 20 keyframe ids occur twice
+# names: on a three-capture walk of 353 keyframes, 152 keyframes had a
+# same-named frame in another capture of the chain, and 20 keyframe ids occurred twice
 # in the session itself. Matching by name gave 67 keyframes another moment's image.
 # So a keyframe's raw frame is found by ITS OWN IDENTITY in the captures' journals
 # (`frames.jsonl`): the one journal record with the keyframe's `source_seq` AND its
 # `received_at` (the Tower's receipt time, which the follower copies from that very
 # record into the keyframe -- measured equal to the microsecond for 353 of 353 on
-# adc75972) and, where both carry one, its `wire_seq`. No record, or more than one:
+# that walk) and, where both carry one, its `wire_seq`. No record, or more than one:
 # that keyframe keeps its stored redacted copy. A keyframe id (or image name) that
 # occurs more than once in the session cannot be told apart by anything the solver
 # is given, so those keyframes keep the stored copy too. A capture directory with no
@@ -1289,12 +1274,12 @@ def resolve_capture_dirs(store: WorldStore, world_id: str, session_id: str,
     if not use_capture:
         return {"capture_dirs": [], "from": None, "why": "--no-capture"}
     if explicit:
-        # ABSOLUTE, from the owner's working directory, which is where they named it
-        # (review V9, LOW). The frames found in it are written into `sources.json`, whose
+        # ABSOLUTE, from the owner's working directory, which is where they named it.
+        # The frames found in it are written into `sources.json`, whose
         # relative paths every reader resolves against the Tower's `tower/`
-        # (`resolve_source_path`), never the cwd: a relative `--capture-dir` was counted
-        # raw here and then not found by the solve, which fell back to the redacted
-        # copies without a word (RV9-D probe G).
+        # (`resolve_source_path`), never the cwd: a relative `--capture-dir` would be
+        # counted raw here and then not found by the solve, which would fall back to the
+        # redacted copies without a word.
         return {"capture_dirs": [str(Path(d).resolve()) for d in explicit],
                 "from": CAPTURE_FROM_ARGUMENT}
     capture_id = getattr(store.read_session(world_id, session_id), "capture_id", None)
@@ -1325,8 +1310,8 @@ def _capture_chain(captures_root: Path, first: str) -> list[dict]:
     walk order. A walk whose link drops goes on in a successor capture whose manifest
     names its predecessor in `continues_capture`, and the builder follows it
     (`tower.capture.CaptureFollower`) -- but the session records only the capture it
-    started on. Measured on the run's frozen captures: 991e5a15's session spans 3
-    captures (132 of its 229 keyframes in the first), af47007c's 3 (164 of 218).
+    started on. Measured on two walks: one session spans 3
+    captures (132 of its 229 keyframes in the first), another's 3 (164 of 218).
     Every descendant is included, a fork's branches too: frames are matched by
     identity (`map_raw_frames`), so a capture that holds none of the session's frames
     contributes none. Reads only."""
@@ -1371,9 +1356,9 @@ def _frame_key(source_seq, received_at) -> tuple | None:
 
 
 def _wire_seq(value):
-    """A `wire_seq` as an int; None when absent; `False` when present but not an integer
-    (review V9, LOW: one malformed journal field used to raise out of the whole plan).
-    A record whose `wire_seq` cannot be read cannot be matched by it, so it is no match."""
+    """A `wire_seq` as an int; None when absent; `False` when present but not an integer.
+    A record whose `wire_seq` cannot be read cannot be matched by it, so it is no match
+    (one malformed journal field does not raise out of the whole plan)."""
     if value is None:
         return None
     if isinstance(value, bool):
@@ -1456,11 +1441,10 @@ def map_raw_frames(keyframes, capture_dirs) -> tuple[dict, dict]:
     return mapping, why
 
 
-# What `source` sums a plan up as. `walk-solver-images` was the answer when every
-# keyframe reused the walk's solver image, whatever it had been made from; since review
-# V9 (M-7) an image is reused only when its provenance is known, so a plan now always
-# says where the pixels come from, and this label appears only in older ledgers.
-SOURCE_WALK_IMAGES = "walk-solver-images"
+# What `source` sums a plan up as. An image is reused only when its provenance is known,
+# so a plan always says where the pixels come from. Older ledgers may carry
+# `walk-solver-images` (every keyframe reused the walk's solver image, whatever it had
+# been made from); nothing reads it.
 SOURCE_RAW = "raw-capture"
 SOURCE_REDACTED = "redacted-session-keyframes"
 SOURCE_MIXED = "mixed"
@@ -1481,7 +1465,7 @@ def plan_solver_frames(store: WorldStore, world_id: str, session_id: str,
     (`redacted_session_copies`, split by why). That is where its solver image's PIXELS
     come from, whether the image is written afresh or reused: `already_undistorted`
     counts the keyframes whose walk image is reused because it is proven to be exactly
-    that (`carry_back_decisions`; review V9, M-7), and `walk_images` says what became of
+    that (`carry_back_decisions`), and `walk_images` says what became of
     each of the walk's solver images."""
     from tower.world_builder.global_solve import (  # noqa: PLC0415
         keyframe_image_name,
@@ -1532,17 +1516,17 @@ def plan_solver_frames(store: WorldStore, world_id: str, session_id: str,
         "by_record": sum(1 for e in carried.values() if e.get("verified") == "record"),
         "by_reproduction": sum(1 for e in carried.values()
                                if e.get("verified") == "reproduced"),
-        # L-8: the keyframe's raw frame is gone, and its record proves the walk image is it.
+        # The keyframe's raw frame is gone, and its record proves the walk image is it.
         "by_record_frame_gone": frame_gone,
         "withheld": withheld,
         "withheld_images": dict(sorted(carry["withheld"].items())),
         "features_to_clear": len(carry["clear_features"]),
-        # L-9: reproduction's own account, and the differences nothing explains.
+        # Reproduction's own account, and the differences nothing explains.
         "reproduction": carry["reproduction"],
     }
     if carry["unexplained"]:
         counts["walk_images"]["unexplained_images"] = carry["unexplained"]
-    # Pixels from a raw frame: planned raw, or a raw walk image kept for a frame now gone (L-8).
+    # Pixels from a raw frame: planned raw, or a raw walk image kept for a frame now gone.
     counts["raw_walk_images_frame_gone"] = frame_gone
     raw = counts["raw_from_sources_json"] + counts["raw_from_capture_dir"] + frame_gone
     redacted = counts["redacted_session_copies"] - frame_gone
@@ -1573,10 +1557,10 @@ def plan_solver_images(store: WorldStore, world_id: str, session_id: str, keyfra
 
     Two more keys, for `carry_back_decisions`: `raw_frame_gone`, the planned `sources.json`
     frame of a keyframe that falls back to its stored copy ONLY because that frame is no
-    longer on disk (review V10, L-8); and `alternatives`, the other frames the walk's image
+    longer on disk; and `alternatives`, the other frames the walk's image
     could have been undistorted from -- the stored copy, and the frame the WALK's own
     `sources.json` (`walk_sources`) names -- which tell an image made from another source
-    apart from one nothing reproduces (L-9)."""
+    apart from one nothing reproduces."""
     from tower.world_builder.global_solve import (  # noqa: PLC0415
         keyframe_image_name,
         resolve_source_path,
@@ -1671,14 +1655,14 @@ def _solver_image_sha1(source: Path, undistortion) -> str | None:
     return hashlib.sha1(encoded.tobytes()).hexdigest() if ok else None
 
 
-# REPRODUCTION FAILURES THAT NOTHING EXPLAINS (review V10, L-9). A walk image that does not
+# REPRODUCTION FAILURES THAT NOTHING EXPLAINS. A walk image that does not
 # reproduce from its planned frame is withheld, which is safe -- but when the reason is that
 # THIS Tower's undistortion or JPEG encoder no longer gives the bytes the walk's gave (an
 # OpenCV or libjpeg upgrade), every image of every walk is withheld, re-extracted and loses
 # the frozen matching, and nothing said so. So a differing image is checked against the
 # other frames it could have been made from (`plan_solver_images`' `alternatives`); one no
-# frame reproduces is UNEXPLAINED, logged, and counted. Measured on the five frozen walks
-# (RUN/experiments/P3-REF/probe/carry_back_frozen.out.txt): 2,501 of 2,502 walk images
+# frame reproduces is UNEXPLAINED, logged, and counted. Measured on five frozen walks:
+# 2,501 of 2,502 walk images
 # reproduce from their planned frame, and the one that does not reproduces from its stored
 # copy -- no unexplained image at all. So when unexplained images outnumber reproduced ones,
 # the pipeline, not the walk, changed: `encoder_drift_suspected`, and a louder warning.
@@ -1686,8 +1670,8 @@ def _solver_image_sha1(source: Path, undistortion) -> str | None:
 
 def carry_back_decisions(store: WorldStore, world_id: str, session_id: str, keyframes,
                          image_plan: dict) -> dict:
-    """Which of the walk's solver images may go back into the fresh solve directory
-    (review V9, M-7). Reads only. Returns
+    """Which of the walk's solver images may go back into the fresh solve directory.
+    Reads only. Returns
     `{"carried": {name: provenance entry + "verified"}, "withheld": {name: why},
     "clear_features": [names], "reproduction": {...}, "unexplained": [names]}`.
 
@@ -1698,15 +1682,14 @@ def carry_back_decisions(store: WorldStore, world_id: str, session_id: str, keyf
       SHA-1 is the file's; or
     - `reproduced`: undistorting the planned frame as `prepare_images` does gives the
       very same bytes; or
-    - `record-frame-gone` (review V10, L-8): the plan falls back to the stored copy ONLY
+    - `record-frame-gone`: the plan falls back to the stored copy ONLY
       because the keyframe's `sources.json` frame is no longer on disk (a capture moved or
       purged), and the provenance record proves the image IS that frame -- `source` raw,
       that very frame, this keyframe, its SHA-1 the file's. It keeps its record entry
       (`source: raw`): the raw pixels are the better solver input, and nothing can
       re-derive them. A walk image with no record (a walk's own solves write none) is not
-      proven by `sources.json` alone -- the frozen walk 6839fb8f holds an image its
-      `sources.json` attributes to a raw frame that was undistorted from the stored copy --
-      and is withheld as before.
+      proven by `sources.json` alone -- it may have been undistorted from the stored copy
+      though `sources.json` attributes it to a raw frame -- and is withheld.
     Every other image is WITHHELD, and says why: `no-keyframe` (no keyframe of the session
     has that name), `planned-frame-unreadable`, `not-reproducible` (the session has no
     undistortion to reproduce it with), `differs-from-plan`. The solve then writes it
@@ -1781,7 +1764,7 @@ def carry_back_decisions(store: WorldStore, world_id: str, session_id: str, keyf
                 "[Tower][WorldBuilder] %s/%s: %d walk solver image(s) match neither the planned "
                 "frame nor any other frame they could have been made from, and are withheld "
                 "(e.g. %s)", world_id, session_id, len(unexplained), ", ".join(unexplained[:3]))
-    # CLEARS THE WALK STILL OWES (review V10, L-11; SOL's `features_clear_owed`): a solve that
+    # CLEARS THE WALK STILL OWES (`features_clear_owed`): a solve that
     # rewrote an image and could not clear its old features records it in the provenance
     # record. The image itself may be carried back -- it is what it says -- but the copied
     # database still holds the OLD image's features for it, and the fresh record written here
@@ -1796,7 +1779,7 @@ def carry_back_decisions(store: WorldStore, world_id: str, session_id: str, keyf
 
 
 def _record_is_the_gone_frame(entry: dict, planned: dict, sha1: str) -> bool:
-    """L-8: the provenance entry proves the image was undistorted from this keyframe's own
+    """The provenance entry proves the image was undistorted from this keyframe's own
     `sources.json` frame, which the plan skips only because it is no longer on disk --
     `global_solve.recorded_raw_frame_gone`, the rule `prepare_images` keeps such an image by
     (one statement of it), for THIS keyframe's entry."""
@@ -1865,7 +1848,7 @@ def run_final_solve(root: Path, world_id: str, session_id: str, *, seed: int,
     (the raw frames go in `sources.json`, `plan_solver_frames`).
 
     `on_start(process)` is called as soon as the child exists -- the re-finish records its
-    pid in the ledger there (review V10, Q3). `runner` (tests) replaces the child with a
+    pid in the ledger there. `runner` (tests) replaces the child with a
     `subprocess.run`-shaped callable, and then there is no process to record."""
     env = dict(os.environ)
     env.update(PRODUCT_SOLVE_ENV)
@@ -1891,7 +1874,7 @@ def _run_recorded(argv, env, on_start):
     the child as soon as it exists. ANY exception -- `on_start`'s (the ledger could not
     record the child) or an interrupt -- kills the child and waits for it before it
     propagates, as `subprocess.run` does: the put-back that follows is then never under a
-    live child (review V10, Q3)."""
+    live child."""
     with subprocess.Popen(argv, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                           text=True) as process:
         try:
@@ -1962,13 +1945,13 @@ def refinish(store: WorldStore, root: Path, world_id: str, session_id: str, *,
              capture_dirs=(), use_capture: bool = True) -> dict:
     """Steps 1-4. Raises `Refused` before anything is written when it must refuse:
     no such world or session, purged imagery, a session that never stopped, a live
-    writer, a build of this session running without the lock (V6 H1), or solver frames
+    writer, a build of this session running without the lock, or solver frames
     that cannot be planned. Raises `SetAsideFailed` (a `Refused`) when step 1 could not
-    complete; the world is then as it was (V9 M-6). A final solve that publishes nothing
-    puts the previous result back (L3), and so does ANY exception between the set-aside
+    complete; the world is then as it was. A final solve that publishes nothing
+    puts the previous result back, and so does ANY exception between the set-aside
     and a published solve (the ledger then says `restored-after-an-error` and names the
     error). After the publish the ledger always ends in a terminal state: `done`, or
-    `stopped` with why -- a stop, or a room or area stage that raised (V9 LOW).
+    `stopped` with why -- a stop, or a room or area stage that raised.
 
     `capture_dirs` / `use_capture`: where the solver's raw frames are
     (`resolve_capture_dirs`); the ledger's `solver_frames` records what was used."""
@@ -1992,7 +1975,7 @@ def refinish(store: WorldStore, root: Path, world_id: str, session_id: str, *,
     if session.ended_at is None:
         raise Refused("this session never stopped; scripts/world_finalize.py first")
 
-    # H1: a build of this session running without the lock (the builder's post-Stop
+    # A build of this session running without the lock (the builder's post-Stop
     # surface, an area build) is not something to move a solve out from under.
     busy = build_in_progress(store, world_id, session_id)
     if busy is not None:
@@ -2011,8 +1994,8 @@ def refinish(store: WorldStore, root: Path, world_id: str, session_id: str, *,
         busy = build_in_progress(store, world_id, session_id)
         if busy is not None:
             raise Refused(busy)
-        # An earlier re-finish of this session that died before it published (review V9,
-        # M-5) is put back first, exactly as the idle Tower's finisher would: what it set
+        # An earlier re-finish of this session that died before it published
+        # is put back first, exactly as the idle Tower's finisher would: what it set
         # aside IS the previous result, and setting aside its half-built replacement
         # instead would bury it one level deeper.
         dead = dead_before_publish(store, world_id, session_id)
@@ -2029,7 +2012,7 @@ def refinish(store: WorldStore, root: Path, world_id: str, session_id: str, *,
                               "before it published, and what it set aside could not all be "
                               f"put back; see {REFINISH_DIRNAME}/{dead['stamp']}/"
                               f"{LEDGER_FILENAME}")
-        # THE SOLVER'S FRAMES ARE PLANNED BEFORE ANYTHING IS SET ASIDE (review V9, M-7):
+        # THE SOLVER'S FRAMES ARE PLANNED BEFORE ANYTHING IS SET ASIDE:
         # which of the walk's solver images may be carried back depends on the plan.
         # Reads only, so a failure here is a refusal with nothing written.
         try:
@@ -2046,14 +2029,12 @@ def refinish(store: WorldStore, root: Path, world_id: str, session_id: str, *,
         engine.release_world(world_id)
         raise
 
-    # FROM HERE UNTIL A SOLVE IS PUBLISHED, ANY EXCEPTION PUTS THE PREVIOUS RESULT BACK
-    # (P3, PV attempt 1: `mark_stage` raised WinError 5 on a read-only session.json
-    # right after the set-aside, and the world was left with its solve moved aside and
-    # a session saying `complete`). `step` names where it happened, for the ledger.
+    # FROM HERE UNTIL A SOLVE IS PUBLISHED, ANY EXCEPTION PUTS THE PREVIOUS RESULT BACK.
+    # `step` names where it happened, for the ledger.
     step = "marking the room's stages"
     try:
         try:
-            # M3: the room's stages are now built from a solve that is set aside. Say
+            # The room's stages are now built from a solve that is set aside. Say
             # so, under the same lock, so a re-finish that stops before step 3 leaves
             # a room the finisher rebuilds (`stopped` is owed) rather than one that
             # claims `ok`.
@@ -2074,7 +2055,7 @@ def refinish(store: WorldStore, root: Path, world_id: str, session_id: str, *,
         _write_ledger(store.world_dir(world_id) / REFINISH_DIRNAME / stamp, ledger)
 
         # Step 2 takes the lock itself, in its own process. The child is in the ledger
-        # before it can take the lock (review V10, Q3): if THIS process is killed while the
+        # before it can take the lock: if THIS process is killed while the
         # child runs on, the finisher sees a live re-finish and puts nothing back under it.
         # A ledger that cannot record it stops the child before anything is put back.
         step = "running the final solve"
@@ -2107,7 +2088,7 @@ def refinish(store: WorldStore, root: Path, world_id: str, session_id: str, *,
             raise      # an interrupt or an exit, after the world was put back
         return report
     if not published:
-        # L3: no new solve was published. Put the old one back, so the session is
+        # No new solve was published. Put the old one back, so the session is
         # again what is on disk; nothing is deleted.
         report["done"] = False
         _put_back(store, engine, world_id, session_id, ledger, report, stamp=stamp,
@@ -2130,9 +2111,9 @@ def refinish(store: WorldStore, root: Path, world_id: str, session_id: str, *,
     # The finisher's counters for this session describe the build that was just
     # replaced: they are kept in the ledger and restarted, so a rebuild interrupted later
     # is not retired on the old build's account. NOW, after the publish, and never
-    # fatal (review V9, M-6): the build is not replaced until then -- a put-back leaves
-    # them as they were -- and a counter file that cannot be written (read-only, RV9-D
-    # probe A) costs the restart, not the re-finish.
+    # fatal: the build is not replaced until then -- a put-back leaves
+    # them as they were -- and a counter file that cannot be written (read-only, say)
+    # costs the restart, not the re-finish.
     try:
         ledger["previous"]["finish_attempts"] = _restart_attempts(store, world_id,
                                                                  session_id, stamp)
@@ -2164,10 +2145,10 @@ def refinish(store: WorldStore, root: Path, world_id: str, session_id: str, *,
         report.update({"done": False, "reason": f"{type(exc).__name__}: {exc}"})
         ledger_state(LEDGER_STOPPED, f"the room was not rebuilt: {report['reason']}")
         return report
-    # ANY EXCEPTION IN STEPS 3 AND 4 ENDS THE LEDGER TRUTHFULLY (review V9, LOW): it used
-    # to stay at `published` -- a state that says the rebuild is still going on -- over a
-    # room whose stage had raised. Now `stopped`, naming the error; the new solve stays
-    # published, and the room's own record says what became of it.
+    # ANY EXCEPTION IN STEPS 3 AND 4 ENDS THE LEDGER TRUTHFULLY: `stopped`, naming the
+    # error, not `published` (a state that says the rebuild is still going on) over a
+    # room whose stage had raised; the new solve stays published, and the room's own
+    # record says what became of it.
     try:
         try:
             step = "rebuilding the room"
