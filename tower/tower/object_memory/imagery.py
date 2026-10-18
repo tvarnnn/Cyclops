@@ -11,12 +11,8 @@ time -- and users still went from 0.81 to 0.95-0.97 retrieval accuracy,
 searching 1.1 rooms instead of 1.9. A wrong-but-plausible cue plus a
 human closes the gap. A confident sentence does not.
 
-This cartridge already had the pointer: every record carries a capture
-id, a frame number and a box. What it had was a DIAGNOSTIC -- the iOS
-surface renders it as "Frame reference: capture 22e9d428..., frame 3410"
-inside a disclosure -- which is a correct thing to show a developer and
-close to useless to a wearer. This module is what turns the pointer into
-the picture.
+Every record carries a capture id, a frame number and a box; this
+module turns that pointer into the picture.
 
 IT IS A DISPLAY FILTER, NOT A PRIVACY TRANSFORMATION, AND IT SAYS SO.
 
@@ -35,18 +31,18 @@ READ, the raw frame stays exactly where it was, and the label says
 `display-filter/...` rather than anything that could be read as "this
 image is safe".
 
-WHERE THAT IS NO LONGER THE WHOLE STORY.
+THE OWNED KEYFRAME.
 
-Since `keyframes.py`, this cartridge does own one small picture per
-record: a filtered crop written under the OBSERVATION root, so a 30-day
-memory stops depending on a capture directory nobody promised to keep.
-That store DOES have a choke point -- `KeyframeStore.write` is the only
+This cartridge also owns one small picture per record (`keyframes.py`):
+a filtered crop written under the OBSERVATION root, so a 30-day memory
+does not depend on a capture directory nobody promised to keep. That
+store DOES have a choke point -- `KeyframeStore.write` is the only
 way a pixel gets in, and it is arranged so that the bytes written are
 always the filter's output -- and it is still not called a privacy
 transformation, for the same reason as everything else here: YuNet's
 blind spots do not close because a file was written instead of served.
 
-The consequence for this module is one asymmetry, in `render`. A CROP
+The consequence here is one asymmetry, in `render`. A CROP
 prefers the owned keyframe and is served from it WITHOUT being filtered
 again, because it was filtered before it reached disk, which is the
 stronger of the two guarantees. A whole FRAME still comes from the
@@ -55,18 +51,15 @@ is nothing to build a context view out of.
 
 WHY THE CODE IS DUPLICATED RATHER THAN SHARED.
 
-`tower/detection.py` records the rule this follows: shared code was
-promoted when a THIRD consumer appeared, and until then "the duplication
-was the honest answer and two boundary tests said so in their own
-docstrings". There are two consumers of YuNet now. A cartridge may not
-import another cartridge (`test_a_cartridge_does_not_import_another_
-cartridge` is symmetric and exhaustive), and World Builder is frozen to
-another lane, so promoting its file is not this lane's to do.
+A cartridge may not import another cartridge
+(`test_a_cartridge_does_not_import_another_cartridge` is symmetric and
+exhaustive), so this module cannot reuse `world_builder/redaction.py`.
 
 The constants below are World Builder's, measured by it, and they are
 copied deliberately rather than tuned: two copies that disagree about a
-face-detection threshold would be worse than two copies that agree. The
-promotion trigger is a third consumer.
+face-detection threshold would be worse than two copies that agree.
+`scene/orientation.py` builds its own `cv2.FaceDetectorYN` with its own
+set of values.
 
 WHAT MAY BE CLAIMED.
 
@@ -113,8 +106,7 @@ UPSCALE = 2
 # that size the filter costs ~22 ms. Applied blindly to a larger frame it
 # is quadratic: a 4000x4000 image upscaled 2x holds the shared lock for
 # **2.18 seconds**, and every other request for a picture waits behind
-# it. That is not hypothetical -- raising capture resolution is the one
-# change this cartridge's own roadmap entry recommends.
+# it.
 #
 # So the upscale is a TARGET rather than a constant: whatever factor gets
 # the long side to 1280, capped at 2 and never below 1. At the corpus's
@@ -175,14 +167,13 @@ class Imagery:
     relpath: str | None = None
     # How much of the RECORD'S OWN BOX the filter covered, 0.0 to 1.0.
     #
-    # This exists because it happened. On frame 2708 of the validated
-    # capture -- a desk with a monitor, a lit keyboard and a red gaming
-    # mouse, and no person anywhere in it -- YuNet fired twice, and one
-    # of the filled regions landed squarely on the mouse. The record is
-    # correct, the verifier agreed with it, and the crop served for it is
-    # a black rectangle.
+    # A false-positive fill can land on the record's subject and turn its
+    # crop into a black rectangle (seen on frame 2708 of the validated
+    # capture, a desk with a monitor, a lit keyboard and a red gaming
+    # mouse and no person in it: YuNet fired twice, and one of the filled
+    # regions landed squarely on the mouse).
     #
-    # The response is NOT to weaken the filter. A face-detection
+    # The answer is NOT to weaken the filter. A face-detection
     # threshold is not a picture-quality knob, and trading detection
     # sensitivity for a nicer thumbnail is exactly the trade a privacy
     # filter must never make. So the fraction is measured and REPORTED,
@@ -214,8 +205,7 @@ def detector_scale(height: int, width: int) -> float:
     the target is scaled DOWN, and that is the only way the work under
     the shared lock is actually bounded -- merely refusing to upscale a
     4000x4000 frame still leaves a 4000x4000 detection holding it, which
-    a reviewer measured at 2.18 seconds while every other request for a
-    picture waited.
+    measures 2.18 seconds while every other request for a picture waits.
 
     It costs small faces in a very large frame. A very large frame is
     also not something this cartridge can receive: DAT caps capture at
@@ -266,10 +256,7 @@ class FaceFilter:
     unfiltered first-person frames with a label saying they had been
     filtered.
 
-    The constants in this file were copied from
-    `tower/world_builder/redaction.py`, which builds one redactor per
-    session on one thread. The code came across; the concurrency context
-    did not. A lock costs ~27 ms of serialisation on a request that is
+    A lock costs ~27 ms of serialisation on a request that is
     already doing a JPEG decode, a detection and a re-encode, and it is
     the only thing standing between a shared detector and a wearer's
     unfiltered frame.
@@ -277,15 +264,14 @@ class FaceFilter:
 
     def __init__(self, path=None) -> None:
         # An explicitly supplied path is checked too, not just the
-        # default. Trusting it produced a redactor that reported itself
-        # AVAILABLE and then failed on every frame, in the module this
-        # one is copied from.
+        # default: trusting it would give a filter that reports itself
+        # AVAILABLE and then fails on every frame.
         #
         # A BLANK path means "no model", explicitly. `Path("")` is
         # `Path(".")`, and `Path(".").exists()` is True -- so a filter
-        # constructed with `path=""` to be deliberately unavailable
-        # reported itself AVAILABLE, and only refused because
-        # `cv2.FaceDetectorYN.create(".")` happened to raise. A refusal
+        # constructed with `path=""` to be deliberately unavailable would
+        # report itself AVAILABLE, and only refuse because
+        # `cv2.FaceDetectorYN.create(".")` happens to raise. A refusal
         # that works by accident is a refusal that stops working when the
         # accident does.
         if path is not None and not str(path).strip():
@@ -393,39 +379,36 @@ class FaceFilter:
 # `stream_start`; `CaptureRecorder` mints a NEW capture directory and its
 # manifest names the old one in `continues_capture`; and
 # `CaptureFollower` walks the producer straight into it without missing a
-# frame. The producer's `session_id`, though, was fixed once at spawn --
+# frame. The producer's `session_id`, though, is fixed once at spawn --
 # it is `--follow-capture <dir>`'s basename and nothing updates it -- so a
 # sighting that opened before the hiccup and had its STRONGEST look after
 # it carries the OLD capture's id beside the NEW capture's frame.
 #
-# Measured against this host's own store on 2026-08-29, over 116 records
-# and 71 capture directories: 90 resolve inside their own capture and
+# Measured against this host's own store, over 116 records and 71
+# capture directories: 90 resolve inside their own capture and
 # **26 do not** -- 22.4% of every memory in the store. Every one of those
 # 26 frames is on disk, further along the same walk. Nothing had expired;
 # this repository has no capture pruner at all, so nothing CAN expire.
-# The route was answering 410 "the memory is kept, the picture is gone"
-# about pictures that were sitting right there.
+# Without the lineage the route answers 410 "the memory is kept, the
+# picture is gone" about pictures that are sitting right there.
 #
-# (An earlier note here said 74 records, 70 and 4. That was the store as
-# it stood a few hours before, and it was left stale for long enough for
-# a reviewer to catch it -- so the numbers above are the ones the shipped
-# code was re-run against, not the ones first written down.)
+# (The store a few hours earlier held 74 records, 70 and 4; the figures
+# above are the ones the shipped code was re-run against.)
 #
 # So resolution follows the lineage, not the single directory.
 #
-# HOW LONG A LINEAGE ACTUALLY IS, BECAUSE THE FIRST GUESS WAS WRONG.
+# HOW LONG A LINEAGE ACTUALLY IS.
 #
-# This started with a fixed `MAX_LINEAGE_STEPS = 8`, on the strength of
-# "reconnect chains of five are in this corpus". Then the constant was
-# checked against the corpus instead of remembered: of 32 lineage roots on
-# this host, one walk is **eighteen captures long** -- 05320786 -> 664f2867
-# -> ... -> 2fd9da90, covering source frames 1 to 8,690 with seventeen
-# reconnects in a single sitting. A bound of eight silently truncated it,
-# and four records in that walk were still answering 410 about frames that
-# were on disk, which is the exact defect this whole function exists to
-# remove.
+# The first guess was a fixed `MAX_LINEAGE_STEPS = 8`, on the belief that
+# reconnect chains of five were what this corpus held; that guess is
+# retracted. Of 32 lineage roots on this host, one walk is **eighteen captures
+# long** -- 05320786 -> 664f2867 -> ... -> 2fd9da90, covering source
+# frames 1 to 8,690 with seventeen reconnects in a single sitting. A
+# fixed step bound of eight would silently truncate it, and four records
+# in that walk would still answer 410 about frames that are on disk,
+# which is the exact defect this whole function exists to remove.
 #
-# A fixed constant was the wrong SHAPE, not merely the wrong number. What
+# A fixed constant is the wrong SHAPE, not merely the wrong number. What
 # actually terminates this walk is the `seen` set: `_successors` builds a
 # map over directories that exist, each step consumes one edge, and an
 # edge cannot be consumed twice. A manifest that names itself -- from a
@@ -434,8 +417,7 @@ class FaceFilter:
 # Cost is one dict lookup and at most two `exists()` calls per step, and
 # even the eighteen-long walk is under a millisecond.
 #
-# So there is no constant here any more, and the thing that used to need
-# one is asserted directly in `test_object_memory_imagery.py`.
+# That termination is asserted directly in `test_object_memory_imagery.py`.
 
 
 def _successors(root: Path) -> dict[str, str]:
@@ -582,8 +564,7 @@ def capture_lineage_present(capture_root, observation) -> bool:
     either way -- the memory is kept and the picture is gone -- because
     there is nothing a wearer can do differently about the two. It exists
     so the LOG can distinguish a recording that was deleted from a pointer
-    that does not resolve into a recording that is still there, which is
-    the defect this module shipped with and could not see.
+    that does not resolve into a recording that is still there.
     """
     if capture_root is None:
         return False
@@ -592,10 +573,8 @@ def capture_lineage_present(capture_root, observation) -> bool:
         return False
     root = Path(capture_root) / "captures"
     # Contained, like every other path this module builds out of a
-    # record. `session_id` comes off a JSONL file and is used to BUILD A
-    # PATH; `_frame_in` runs it through `_contained` and this did not,
-    # which is an inconsistency a reviewer was right to call out even
-    # though the value here only steers a log line.
+    # record: `session_id` comes off a JSONL file and is used to BUILD A
+    # PATH, even though the value here only steers a log line.
     own = _contained(root, root / session_id)
     if own is None:
         return False
@@ -768,12 +747,11 @@ def render(
         # told the one thing that is true either way: the memory is here
         # and the picture is not.
         #
-        # The LOG says which, because the two have opposite fixes and this
-        # module shipped unable to tell them apart. A walk whose
-        # directories are gone is retention (or a human with rm) doing its
-        # job. A walk that is STILL ON DISK and does not contain the frame
-        # a record names is a defect in whoever wrote the pointer, and it
-        # spent two days being reported as expiry.
+        # The LOG says which, because the two have opposite fixes. A walk
+        # whose directories are gone is retention (or a human with rm)
+        # doing its job. A walk that is STILL ON DISK and does not contain
+        # the frame a record names is a defect in whoever wrote the
+        # pointer.
         if capture_lineage_present(capture_root, observation):
             logger.warning(
                 "[Tower][ObjectMemory] a %s record points at %s in capture %s "
@@ -816,12 +794,11 @@ def render(
     # Measured on the FULL frame, before any crop, because the box and
     # the filled regions are both in full-frame coordinates and comparing
     # them after a crop would compare two different origins.
-    obscured = _obscured_fraction(
-        filtered.shape, _bounding_box(observation), filled
-    )
+    box = _bounding_box(observation)
+    obscured = _obscured_fraction(filtered.shape, box, filled)
 
     if crop:
-        filtered = _cropped(filtered, _bounding_box(observation))
+        filtered = _cropped(filtered, box)
         if filtered is None:
             return Imagery(None, NO_FRAME_REFERENCE)
 

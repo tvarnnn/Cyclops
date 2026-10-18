@@ -9,10 +9,9 @@ retention this cartridge neither sets nor enforces. Every record says so:
 `privacy_tags: ["derived-only", "frame-referenced"]`, and the imagery
 payload has always answered `imagery_retention: "capture-side"`.
 
-That arrangement was honest and it was also a defect waiting for its
-first caller. `CaptureRecorder.purge()` has no production caller today,
-so nothing prunes captures and every record still has its picture. The
-moment anything does -- a capture pruner, an operator reclaiming the
+`CaptureRecorder.purge()` has no production caller today, so nothing
+prunes captures and every record still has its picture. The moment
+anything does -- a capture pruner, an operator reclaiming the
 ~2.1 GB an hour of recording costs -- EVERY memory loses its picture at
 once, and a 30-day record whose whole product value is the picture
 becomes a label and a timestamp. A durable record pointing into an
@@ -138,8 +137,8 @@ JPEG_QUALITY = 80
 # narrow enough that no separator, no dot and no drive letter can appear
 # in it at all.
 #
-# The regex is the first guard and `_contained` is the second. Either
-# alone would do today. Two is what keeps this true after somebody
+# The regex is the first guard and `imagery._contained` is the second.
+# Either alone would do today. Two is what keeps this true after somebody
 # reasonably decides ids should be base32.
 _OBSERVATION_ID = re.compile(r"^[0-9a-f]{8,64}$")
 
@@ -324,15 +323,14 @@ class KeyframeStore:
         # can reach the file is derived from `filtered`.
         #
         # EVERYTHING that touches the filter's output is inside this
-        # `try`, and it did not used to be. `len(filled)`,
-        # `encoded.tobytes()` and `_obscured_fraction` sat outside it, so
-        # a filter returning an unexpected SHAPE -- a generator instead of
-        # a sequence, an int, a box of the wrong arity -- raised a
-        # `TypeError` straight out of `write()`. A reviewer reproduced all
-        # three. The caller is a producer mid-walk whose `_write_keyframe`
-        # promises never to raise, so the escape killed the process and
-        # took the whole `engine.release()` flush with it: a bad keyframe
-        # would have cost every sighting still open.
+        # `try` (`len(filled)`, `encoded.tobytes()`, `_obscured_fraction`),
+        # because a filter returning an unexpected SHAPE -- a generator
+        # instead of a sequence, an int, a box of the wrong arity -- would
+        # otherwise raise a `TypeError` straight out of `write()`. The
+        # caller is a producer mid-walk whose `_write_keyframe` promises
+        # never to raise, so the escape would kill the process and take
+        # the whole `engine.release()` flush with it: a bad keyframe would
+        # cost every sighting still open.
         try:
             bounded = self._bounded(filtered)
             ok, encoded = cv2.imencode(
@@ -385,14 +383,12 @@ class KeyframeStore:
         # whole of the "no partial pair" promise this module makes in
         # bold.
         #
-        # It used to be serialised inside the sidecar's own `try`, which
-        # caught `OSError` only -- so a `filter_label` that would not
-        # serialise raised `TypeError` AFTER the `.jpg` had already
-        # landed, escaped `write()`, and left an unattributable
-        # first-person crop on disk for the retention window. `read()`
-        # refuses it, so nothing was ever served; the file was there
-        # anyway, and the docstring said it could not be. A reviewer
-        # reproduced it.
+        # Serialising later, inside the sidecar's own `try` (which catches
+        # `OSError` only), would let a `filter_label` that will not
+        # serialise raise `TypeError` AFTER the `.jpg` had already landed,
+        # escape `write()`, and leave an unattributable first-person crop
+        # on disk for the retention window. `read()` refuses such a file,
+        # so nothing would be served, but the file would be there anyway.
         #
         # Doing the encoding first means the only thing left after the
         # image is written is one `write_text` of bytes that already
@@ -439,7 +435,7 @@ class KeyframeStore:
             path=path,
             bytes_written=len(image_bytes),
             filter_label=sidecar["filter_label"],
-            regions_filled=len(filled),
+            regions_filled=regions_filled,
             subject_obscured=obscured,
         )
 

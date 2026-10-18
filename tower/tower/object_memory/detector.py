@@ -1,17 +1,13 @@
 """This cartridge's detector: the shared one, configured for a memory.
 
-The seam and the fake used to live here in full. They now live in
-`tower/detection.py`, promoted once a third consumer of the same weights
-appeared -- the outcome
-`test_object_memory_does_not_import_the_experimental_cv_lab` named in its
-own docstring, and the same move `tower/confidence.py` made when a second
-module wanted the same four labels. What is left in this file is the part
-that is genuinely about Object Memory.
+The `Detector` protocol, `Detection` and `FixedDetector` are platform code
+in `tower/detection.py`; this file binds the SSDLite detector to Object
+Memory's choices.
 
-**The seam still exists, for the reasons it always did.** The real
-detector costs a model download that a default test suite must not pay
-for, and the fake lets the producer be tested against detections a test
-wrote down rather than against whatever torchvision happened to find.
+**The seam exists** because the real detector costs a model download that
+a default test suite must not pay for, and the fake lets the producer be
+tested against detections a test wrote down rather than against whatever
+torchvision happened to find.
 
 **Still not the Experimental CV Lab.** `experiments/object_detection.py`
 loads these exact weights and measured them (38.6 ms median on CUDA
@@ -41,10 +37,7 @@ from tower.detection import (
 )
 
 # Re-exported so this cartridge's callers keep importing from this
-# cartridge. The names are the platform's; which of them Object Memory
-# uses is Object Memory's business, and a script or test that imports
-# them from here does not have to be rewritten when the shared module
-# grows a name this producer does not want.
+# cartridge.
 __all__ = [
     "SCORE_THRESHOLD",
     "Detection",

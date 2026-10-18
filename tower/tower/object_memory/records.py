@@ -1,35 +1,26 @@
 import hashlib
 from dataclasses import dataclass
 
-# Confidence moved to tower/confidence.py when World Builder became a
-# second consumer. Re-exported here so this module's public surface is
-# unchanged and no caller has to care where it lives.
-from tower.confidence import (  # noqa: F401
-    LOW_CONFIDENCE_MAX,
-    MEDIUM_CONFIDENCE_MAX,
-    Confidence,
-)
+# `Confidence` lives in tower/confidence.py; re-exported here for callers
+# that import it from this module.
+from tower.confidence import Confidence
 
 
 # --- What the privacy tags on a record mean -------------------------------
 #
 # DERIVED_ONLY is a claim about the record's CONTENT: a class label, a
 # score and a box, with no pixels, no crop and no embedding of the frame.
-# That much was always true.
+# It says nothing about REACH: `session_id` + `frame_seq` is an exact
+# pointer into `data/captures/<session_id>/frames/`, where the JPEG this
+# record was derived from is still sitting. Object Memory's retention
+# governs THIS store and nothing else: purging every observation here
+# leaves the imagery untouched, and any record that survives resolves
+# straight back to a frame.
 #
-# It was read as a claim about REACH, and there it was false.
-# `session_id` + `frame_seq` is an exact pointer into
-# `data/captures/<session_id>/frames/`, where the JPEG this record was
-# derived from is still sitting. Object Memory's retention governs THIS
-# store and nothing else: purging every observation here leaves the
-# imagery untouched, and any record that survives resolves straight back
-# to a frame.
-#
-# The provenance is worth keeping -- it is what makes a record checkable
-# against the footage instead of merely believable. So the fix is to stop
-# the tag overclaiming rather than to drop the fields: a record that
-# carries a frame pointer says FRAME_REFERENCED as well, so a reader can
-# see that its privacy footprint is bounded by capture-side retention and
+# The provenance is kept because it makes a record checkable against the
+# footage instead of merely believable. A record that carries a frame
+# pointer therefore says FRAME_REFERENCED as well, so a reader can see
+# that its privacy footprint is bounded by capture-side retention and
 # not by ours.
 DERIVED_ONLY = "derived-only"
 FRAME_REFERENCED = "frame-referenced"
@@ -44,14 +35,14 @@ def observation_id_for(
     /object-memory/observations/{id}/frame` cannot exist without one, and
     "the laptop record whose observed_at is 1787806912.4471" is not a URL.
 
-    DERIVED, not a uuid4, and that is the whole design. Sixty-four
-    observations are already on disk, written before this field existed.
-    A random id would have to be minted at read time -- so it would
-    change on every read, and a link to a record would stop working the
-    moment the Tower restarted -- or written back, which means rewriting
-    a wearer's memory to add a field. Deriving it from the three values
-    that already identify a sighting gives every existing record a
-    permanent id it never had, with no migration and no write.
+    DERIVED, not a uuid4, and that is the whole design. Records written
+    before this field existed (64 when the id was introduced) have no
+    stored id. A random id would have to be minted at read time -- so it
+    would change on every read, and a link to a record would stop working
+    the moment the Tower restarted -- or written back, which means
+    rewriting a wearer's memory to add a field. Deriving it from the
+    three values that already identify a sighting gives every existing
+    record a permanent id, with no migration and no write.
 
     The inputs are exactly the ones `ObservationStore.update_sighting`
     matches on, so an id and an update can never disagree about which
