@@ -1,9 +1,11 @@
 """Start, Pause and Stop for a cartridge that produces out of process.
 
-**Why this is shared code rather than one cartridge's.** Every producer
-in this repository runs in its own process and tails a capture journal --
-World Builder, Scene, Document Memory and Object Memory all do. None of
-them had a way for a wearer to say "start remembering" or "stop", because
+**Why this is shared code rather than one cartridge's.** World Builder
+and Object Memory, the two cartridges built on it, each run their
+producer in a process of its own that tails a capture journal. (Scene
+Understanding and Document Memory run inside the Tower's process, built
+by `tower/cartridge_runtime.py`, and do not use this class.) Neither
+had a way for a wearer to say "start remembering" or "stop", because
 the only thing that ever started a producer was a human typing a command.
 The first cartridge to need the button would have built it privately, and
 the second would have built it again slightly differently. So the state
