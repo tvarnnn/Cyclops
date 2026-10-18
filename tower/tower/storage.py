@@ -1,14 +1,11 @@
 """Filesystem primitives shared by every module that persists to disk.
 
-Extracted once a second module needed them. Both object memory and World
-Builder had independently converged on the same three operations, and the
-capture recorder -- which is shared transport infrastructure -- was
-importing them from inside a cartridge.
+Object memory, World Builder and the capture recorder (shared transport
+infrastructure, so it must not import from a cartridge) all need the same
+operations, so they live in one place.
 
-The atomic-write pattern in particular is not incidental: the try/finally
-exists because a failure mid-write once left a temp file holding a live
-copy of data that nothing read, pruned, or deleted. That defect shipped
-before it was fixed, which is why it lives in one place now.
+The atomic-write pattern is deliberate: the try/finally makes a failed write
+leave no temp file behind.
 """
 
 import json
@@ -28,34 +25,29 @@ def staging_path(path: Path) -> Path:
     """A staging name no other writer can be using.
 
     Public, because two modules need the one convention: this file's two
-    atomic writers and `world_builder/store.py`'s keyframe images. A second
-    spelling of it is a second chance to get it wrong.
+    atomic writers and `world_builder/store.py`'s keyframe images.
 
-    `path.name + ".tmp"` was the convention here until an adversarial review
-    measured what it does with two writers of one destination: 656 torn reads
-    at the published path over 12 seconds, plus a writer killed by
+    A shared `path.name + ".tmp"` lets two writers of one destination publish
+    each other's half-written temp: with two writers it measured 656 torn
+    reads at the published path over 12 seconds, plus a writer killed by
     `FileNotFoundError` out of `replace` because its peer's `finally` had
-    already unlinked the shared temp. One writer can also `replace` the
-    half-written temp the OTHER is still filling straight onto the
-    destination -- which is precisely the `BadZipFile` the atomic write was
-    introduced to prevent, reintroduced by the staging name.
+    already unlinked the shared temp. The torn read is the `BadZipFile` the
+    atomic write exists to prevent.
 
     Nothing in this Tower serialises writers of `solution.npz`:
     `acquire_writer_lock` is per-world and taken only by the engine, and
-    `scripts/world_solve.py` takes no lock at all. A hand-run solve against a
-    world with a live builder is two writers, and that is an ordinary
-    operator action -- it is how the 2026-09-09 artifact was recovered.
+    `scripts/world_solve.py` takes no lock at all, so a hand-run solve
+    against a world with a live builder is two writers.
 
-    pid plus uuid4: the pid makes a stray temp attributable when someone
-    finds one, and the uuid makes it unique even within one process.
+    pid plus uuid4: the pid makes a stray temp attributable, and the uuid
+    makes it unique even within one process.
     """
-    # `p` before the pid, and it is not decoration. The sweeper has to find
-    # the pid again, and "the all-digit component" is not a safe rule:
-    # `uuid4().hex[:8]` is all decimal digits 2.33% of the time (measured
-    # over 200k samples), and the capture recorder names its own staging
-    # files `<source_seq>.jpg.tmp` -- so a frame NUMBER would be read as a
-    # pid. Both were demonstrated deleting files they should not have.
-    # A `p`-prefixed component cannot be produced by either.
+    # `p` before the pid. The sweeper has to find the pid again, and "the
+    # all-digit component" is not a safe rule: `uuid4().hex[:8]` is all
+    # decimal digits 2.33% of the time (measured over 200k samples), and the
+    # capture recorder names its own staging files `<source_seq>.jpg.tmp`, so
+    # a frame number would be read as a pid. A `p`-prefixed component cannot
+    # be produced by either.
     return path.with_name(
         f"{path.name}.p{os.getpid()}.{uuid.uuid4().hex[:8]}{TEMP_SUFFIX}"
     )
@@ -71,20 +63,17 @@ def new_id() -> str:
     return uuid.uuid4().hex
 
 
-# How long a writer will keep trying to replace a destination a reader
-# has open, and how it paces the attempts. Bounded: this exists to ride
-# out a reader, not to wait out a process that has parked on the file. A
-# writer that cannot win in this budget raises, exactly as it did before.
+# How long a writer keeps trying to replace a destination a reader has open,
+# and how it paces the attempts. Bounded: this rides out a reader, not a
+# process parked on the file, and a writer that cannot win in the budget
+# raises.
 #
-# Until 2026-09-06 the budget was 12 x 5 ms = 60 ms, sized for "a
-# reader's sub-millisecond handle". That is the handle's length on an
-# idle box. On a live walk with the global solver's background child
-# taking 18 of 20 cores, the Tower's web thread reading a 2.2 MB
-# points.json for the phone lost the CPU mid-read, held the file past
-# 60 ms, and the BUILDER -- the process the retry exists to protect --
-# died in `write_derived` with poses.json new and points.json old. Two
-# seconds is longer than any reader this Tower has that is still making
-# progress, and still short next to a rebuild cadence of one per second.
+# The budget is 2 s because a reader can lose the CPU mid-read under heavy
+# background load: with the global solver's background child taking 18 of 20
+# cores, the web thread reading a 2.2 MB points.json held the file past
+# 60 ms (the budget was 12 x 5 ms = 60 ms before it was raised). Two seconds
+# is longer than any reader this Tower has that is still making progress,
+# and short next to a rebuild cadence of one per second.
 REPLACE_BUDGET_S = 2.0
 REPLACE_BACKOFF_S = 0.005
 REPLACE_BACKOFF_MAX_S = 0.05
@@ -93,15 +82,10 @@ REPLACE_BACKOFF_MAX_S = 0.05
 def sweep_abandoned_staging(directory: Path) -> int:
     """Remove staging files whose writer is gone. Returns how many.
 
-    UNIQUE NAMES FIXED ONE PROBLEM AND CREATED ANOTHER. A shared
-    `<name>.tmp` meant a killed writer left one file that the next
-    successful write's `finally` cleaned up. Unique names mean a killed
-    writer leaves one file EVERY TIME, and nothing removes it: the
-    `finally` does not run under `TerminateProcess`, and `purge_world` --
-    which the docstrings call the sweeper -- has no production caller at
-    all. An adversarial review measured 21 strays and 11.4 MB after six
-    hard kills, and the builder kills a solve child on every stop that
-    outstays its budget.
+    Unique staging names (see `staging_path`) mean a killed writer leaves a
+    stray temp every time, because the `finally` does not run under
+    `TerminateProcess` (six hard kills measured 21 strays and 11.4 MB). The
+    builder kills a solve child on every stop that outstays its budget.
 
     The pid in the name is what makes this safe: a staging file belonging
     to a LIVE process is someone's write in flight and is left alone. Only
@@ -112,23 +96,18 @@ def sweep_abandoned_staging(directory: Path) -> int:
         if not candidate.is_file():
             continue
         parts = candidate.name.split(".")
-        # `.tmp` as a COMPONENT, not as a suffix. `staging_path` puts it
+        # `.tmp` as a component, not as a suffix. `staging_path` puts it
         # last for a JSON or npz write, but `prepare_images` stages an
-        # undistorted frame as `<stem>.<pid>.<uuid>.tmp.jpg` -- so a
-        # suffix match swept the writers that rarely die and missed the
-        # one the builder terminates on every over-long stop, in the very
-        # directory this claims to sweep. Caught by testing the sweeper
-        # against every staging shape rather than the one it was written
-        # against.
+        # undistorted frame as `<stem>.<pid>.<uuid>.tmp.jpg`, which a suffix
+        # match would miss.
         if TEMP_SUFFIX.lstrip(".") not in parts:
             continue
-        # EXACTLY the `p<digits>` component `staging_path` writes, and
-        # nothing else. Reading "the last all-digit component" as a pid was
-        # demonstrated deleting a LIVE writer's file whenever its uuid
-        # happened to be all digits, and deleting a user's `2024.tmp`, and
-        # deleting the capture recorder's `<source_seq>.jpg.tmp` by reading
-        # the frame number as a process. A deletion primitive does not get
-        # to guess.
+        # Exactly the `p<digits>` component `staging_path` writes, and nothing
+        # else. Reading "the last all-digit component" as a pid deletes a
+        # live writer's file whenever its uuid is all digits, a user's
+        # `2024.tmp`, and the capture recorder's `<source_seq>.jpg.tmp` (the
+        # frame number read as a process). A deletion primitive does not
+        # guess.
         pid = None
         for part in parts:
             if len(part) > 1 and part[0] == "p" and part[1:].isdigit():
@@ -158,43 +137,40 @@ def sweep_abandoned_staging(directory: Path) -> int:
 
 
 def write_json_atomic(path: Path, payload: dict) -> None:
-    """Replace `path` atomically, leaving no temp file behind either way."""
+    """Replace `path` atomically, leaving no temp file behind either way.
+
+    Inputs: the destination and a JSON-serialisable `payload`. Steps: create
+    the parent directory, write `json.dumps(payload)` to a unique staging
+    file beside the destination, flush and fsync it, then `replace_with_retry`
+    onto `path`; the `finally` unlinks the staging file whether or not the
+    replace happened. Output: none.
+
+    Why: a reader sees the previous file or the next one, never a torn one,
+    and the staging name is unique per writer (see `staging_path`). The
+    retry rides out a reader that holds the destination open on Windows.
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
     temp_path = staging_path(path)
     try:
         with temp_path.open("w", encoding="utf-8") as handle:
-            # `json.dumps(...)` then one write, NOT `json.dump(payload,
-            # handle)`. The streaming form calls handle.write() once per
-            # token, and every one of those crosses TextIOWrapper's
-            # encode-and-buffer path; building the string once and writing
-            # it once measured **3.9x faster** (23.97 ms -> 6.18 ms on a
-            # representative payload) for **byte-identical** output. Same
-            # encoder, same defaults, so the file on disk does not change.
+            # `json.dumps(...)` then one write, not `json.dump(payload,
+            # handle)`: the streaming form calls handle.write() once per
+            # token, and building the string once and writing it once
+            # measured 3.9x faster (23.97 ms -> 6.18 ms on a representative
+            # payload) for byte-identical output (same encoder, same
+            # defaults).
             #
-            # The cost is that the whole document is materialised first,
-            # and the peak is worse than "one extra copy": MEASURED at
-            # 750k points, peak went 71.5 MB -> 167 MB, roughly 1.4x the
-            # document on top of it, because the string and its UTF-8
-            # encoding coexist.
+            # The cost is that the whole document is materialised first:
+            # measured at 750k points, peak went 71.5 MB -> 167 MB, roughly
+            # 1.4x the document on top of it, because the string and its
+            # UTF-8 encoding coexist. That is negligible at the sizes this
+            # Tower writes (the largest JSON it has persisted is a 1.71 MB
+            # points.json against ~184 MB RSS), but it scales with payload,
+            # so a caller writing something an order of magnitude larger
+            # should revisit it.
             #
-            # Negligible at the sizes this Tower writes -- the largest JSON
-            # it has ever persisted is a 1.71 MB points.json against
-            # ~184 MB RSS. But it scales with payload, so a caller writing
-            # something an order of magnitude larger should revisit this
-            # rather than inherit it.
-            #
-            # Deliberately NOT orjson, which was measured and refused
-            # because ITS BYTES DIFFER -- separators, and `1e-07` against
-            # `1e-7`. That alone disqualifies it here.
-            #
-            # An earlier version of this comment also claimed orjson would
-            # "defeat the allow_nan=False guard". CORRECTED: exactly one
-            # caller has that guard (`world_builder/store.py:463`,
-            # placements) and it runs `json.dumps(payload,
-            # allow_nan=False)` as a SEPARATE validation before calling
-            # this function -- so changing the encoder in here could not
-            # have defeated it. The byte difference is the real reason and
-            # it stands on its own.
+            # Not orjson, which was measured and refused because its bytes
+            # differ: separators, and `1e-07` against `1e-7`.
             handle.write(json.dumps(payload))
             handle.flush()
             os.fsync(handle.fileno())
@@ -207,24 +183,16 @@ def replace_with_retry(temp_path: Path, path: Path) -> None:
     """os.replace, retried while a concurrent READER holds the destination.
 
     Public, because every writer of a file a reader can hold needs it, not
-    only the JSON ones. `prepare_images` undistorts keyframes with a bare
-    `os.replace` and raised `PermissionError` the first time a test held one
-    of its outputs open -- which is the same WinError 5 this function was
-    written for, in a path that had never been tested.
+    only the JSON ones (`prepare_images` uses it for its undistorted
+    keyframes).
 
     Windows refuses `replace()` onto a destination any handle has open,
-    and -- measured, not assumed -- `FILE_SHARE_DELETE` does NOT lift
-    that: `MOVEFILE_REPLACE_EXISTING` fails with WinError 5 even against
-    a share-delete handle. So a reader cannot make itself harmless, and
-    the tolerance has to live here.
-
-    Until 2026-08-23 this store's docstring could say "V1 also has no
-    concurrent reader -- capture, build and inspect are separate
-    processes". The Tower->iOS result channel is that reader: the web
-    process now polls world state while a build session writes it. That
-    assumption is void, and without this retry the consequence lands on
-    the WRITER -- a status channel would crash the mapping session it
-    exists to report on.
+    and `FILE_SHARE_DELETE` does not lift that: `MOVEFILE_REPLACE_EXISTING`
+    fails with WinError 5 even against a share-delete handle. So a reader
+    cannot make itself harmless, and the tolerance has to live here. The
+    Tower->iOS result channel is such a reader: the web process polls world
+    state while a build session writes it, and without this retry the
+    failure lands on the writer.
 
     Measured on this host, 400 atomic writes against a reader looping as
     fast as it can (a far harsher case than the channel's 2 Hz poll):
@@ -258,32 +226,25 @@ def write_bytes_atomic(path: Path, write: "Callable[[BinaryIO], None]") -> None:
     """Publish a binary artifact atomically: `write` fills a temp file, and
     the destination is replaced only once the bytes are whole and on disk.
 
-    The binary twin of `write_json_atomic`, and it exists for a measured
-    failure rather than for symmetry. `world_builder/global_solve.py` wrote
-    `solution.npz` by handing the FINAL path straight to
-    `np.savez_compressed`, while `solution.json` beside it went through the
-    atomic helper. A `.npz` is a zip, a zip is only a zip once its central
-    directory is written last, and the reader lives in a DIFFERENT PROCESS
-    -- the builder rebuilding the derived tree while the solver child it
-    launched is still writing.
+    The binary twin of `write_json_atomic`. `world_builder/global_solve.py`
+    writes `solution.npz` through it: a `.npz` is a zip, a zip is only a zip
+    once its central directory is written last, and the reader lives in a
+    different process (the builder rebuilding the derived tree while the
+    solver child it launched is still writing). A reader that opened the
+    file mid-write got `BadZipFile: File is not a zip file` on a session
+    holding 795 keyframes and 26,634 points. The same window is worse when
+    the writer is terminated rather than merely slow (`BackgroundSolver.wait`
+    kills a child that outstays a stop): a torn file would then persist and
+    every later read of that world would fail the same way.
 
-    On the 2026-09-09 walk that reader opened the file mid-write and got
-    `BadZipFile: File is not a zip file`, which ended a session holding 795
-    keyframes and 26,634 points. The same window is worse when the writer
-    is TERMINATED rather than merely slow (`BackgroundSolver.wait` kills a
-    child that outstays a stop): the torn file then persists, and every
-    later read of that world fails the same way.
+    Replacing a whole temp file closes both cases: a reader sees the
+    previous solution or the next one, never half of either.
 
-    Replacing a whole temp file closes both cases at once: a reader sees
-    the previous solution or the next one, never half of either.
-
-    IT DOES NOT CLEAN UP AFTER A KILL, and an earlier version of this
-    docstring claimed it did. The `finally` below runs on an exception; it
-    does not run on `TerminateProcess`, which is exactly how
-    `BackgroundSolver` ends a solve child that outstays a stop. Measured:
-    a real kill mid-write leaves the published archive VALID -- which is
-    the guarantee that matters -- and a stray `.tmp` beside it that
-    nothing prunes. `purge_world` is still the only sweeper.
+    It does not clean up after a kill. The `finally` below runs on an
+    exception; it does not run on `TerminateProcess`, which is how
+    `BackgroundSolver` ends a solve child that outstays a stop. A real kill
+    mid-write leaves the published archive valid and a stray temp beside it,
+    which `sweep_abandoned_staging` removes.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     temp_path = staging_path(path)
@@ -295,7 +256,7 @@ def write_bytes_atomic(path: Path, write: "Callable[[BinaryIO], None]") -> None:
             # publishes; bytes still sitting in the OS cache at that
             # moment are bytes a crash can take with the rename already
             # visible, which is the one ordering that produces a file
-            # that IS published and IS torn.
+            # that is published and torn.
             os.fsync(handle.fileno())
         replace_with_retry(temp_path, path)
     finally:
@@ -306,24 +267,19 @@ def read_bytes_closed(path: Path) -> bytes:
     """Read a binary artifact whole, with the handle closed before use.
 
     The binary twin of `read_json_closed`, and for the same Windows
-    reason: a handle held across parsing is a handle that blocks a
-    writer's `os.replace` (WinError 5), so a reader that parses lazily
-    turns itself into the thing the write path has to retry around.
+    reason: a handle held across parsing blocks a writer's `os.replace`
+    (WinError 5).
 
-    `np.load` on a path is exactly that lazy reader -- `NpzFile` keeps the
-    zip open until it is closed -- so callers hand these bytes to
-    `np.load(io.BytesIO(...))` instead. The arrays this Tower persists are
-    single-digit MB; the field session's `solution.npz` is 1.7 MB, and the
-    extra peak is one copy of the compressed file.
+    `np.load` on a path is a lazy reader (`NpzFile` keeps the zip open until
+    it is closed), so callers hand these bytes to `np.load(io.BytesIO(...))`
+    instead. The arrays this Tower persists are single-digit MB; the field
+    session's `solution.npz` is 1.7 MB, and the extra peak is one copy of
+    the compressed file.
 
-    HOW MUCH THIS BUYS, HONESTLY: measured on that artifact, the lazy form
+    This is a margin, not a rescue: measured on that artifact, the lazy form
     holds the handle 23.6-31.7 ms and the eager form 0.9-1.2 ms, against a
-    `REPLACE_BUDGET_S` of 2000 ms. So the retry already absorbed the lazy
-    reader comfortably and this is a margin, not a rescue. It is still the
-    right shape -- the budget is finite and a reader under solver load is
-    exactly what descheduled long enough to matter on 2026-09-06 -- but it
-    was oversold as closing a hazard, and it is not what fixed the field
-    failure. The atomic write is.
+    `REPLACE_BUDGET_S` of 2000 ms, so the retry already absorbs the lazy
+    reader.
     """
     with path.open("rb") as handle:
         return handle.read()

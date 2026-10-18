@@ -7,7 +7,7 @@ reflection, or a poster on a wall the wearer walked past.
 
 **Both a frame count and a wall-clock duration are required.** Frame rate
 is not fixed here -- at ~3.3 fps, "six frames" is nearly two seconds; at
-the 12 fps now delivered it is half of one. A policy expressed only in
+the 12 fps the current transport delivers it is half of one. A policy expressed only in
 frames would silently mean something different every time the transport
 changed, which is why the loss tolerance below is in SECONDS.
 
@@ -41,9 +41,8 @@ from tower.document_memory.records import (
 class DwellPolicy:
     """Every threshold, in one place, each with a reason.
 
-    Deliberately a value object rather than module constants: the
-    benchmark sweeps these, and a threshold that cannot be swept cannot be
-    chosen from data.
+    Deliberately a value object rather than module constants, so a
+    caller or test can vary any threshold.
     """
 
     # A glance is not a reading event. Both must be satisfied.
@@ -55,14 +54,14 @@ class DwellPolicy:
     # and a page turn takes a full one. The frame bound is a backstop.
     max_missing_seconds: float = 1.5
     max_missing_frames: int = 60
-    # Rule 15: nothing unbounded. A page left on a desk in view all
-    # afternoon becomes one bounded observation, not an ever-growing one.
+    # Bounded: a page left on a desk in view all afternoon becomes one
+    # bounded observation (180 s), not an ever-growing one.
     max_seconds: float = 180.0
     # A gap this large between two detections is not one continuous
     # reading. Timestamps come from the capture journal and are WALL
-    # CLOCK, so this also contains the damage when a clock jumps: an
-    # adversarial review produced a document claiming 92 days of reading
-    # from a single bad timestamp.
+    # CLOCK, so this also contains the damage when a clock jumps: a
+    # single bad timestamp once produced a document claiming 92 days of
+    # reading.
     max_frame_gap_s: float = 5.0
     # How much the region may move between frames and still be "the same
     # page", as a fraction of the frame diagonal. A person holding a page
@@ -137,12 +136,11 @@ class Dwell:
     # capture. Set once, in `_start`, and never touched by `_extend`.
     #
     # Set once is the entire point. Document Memory stamps a capture id
-    # onto the record a dwell produces, and it used to read that id at
-    # RECORD time -- so a `stream_start` arriving mid-dwell (a phone
-    # reconnect re-arms the recorder) moved every frame of that reading
-    # onto a capture it did not come from, and a `stream_stop` erased it
-    # entirely. Both were measured. A pointer that resolves to the wrong
-    # frame is worse than no pointer at all.
+    # onto the record a dwell produces: a `stream_start` arriving mid-dwell
+    # (a phone reconnect re-arms the recorder) must not move a reading onto
+    # a capture it did not come from, nor a `stream_stop` erase it. A
+    # pointer that resolves to the wrong frame is worse than no pointer at
+    # all.
     lineage: object | None = None
     # Accumulated FORWARD-ONLY, one inter-frame delta at a time.
     elapsed_seconds: float = 0.0
@@ -152,12 +150,11 @@ class Dwell:
     content_reference: np.ndarray | None = None
     content_disagreements: int = 0
     # Frames that disagreed with the reference but have not yet opened a
-    # segment. Held HERE, not in `best`: an independent review showed a
-    # sharp new page scoring into the OLD segment's slots during the
-    # frames before the split, so both of that page's OCR slots held the
-    # new page and the old page's text was gone. On a split these seed
-    # the new segment; when the disagreement turns out to be noise they
-    # are dropped.
+    # segment. Held HERE, not in `best`, so a sharp new page cannot score
+    # into the OLD segment's slots before the split (both OCR slots would
+    # hold the new page and the old page's text would be gone). On a split
+    # these seed the new segment; when the disagreement turns out to be
+    # noise they are dropped.
     pending: list = field(default_factory=list)
 
     @property
@@ -167,7 +164,7 @@ class Dwell:
         Accumulated from positive inter-frame deltas rather than computed
         as `last_seen_at - started_at`. The difference is not academic:
         timestamps are wall-clock from the capture journal, so an NTP
-        correction on the LAST frame of an otherwise perfect dwell used to
+        correction on the LAST frame of an otherwise perfect dwell would
         clamp this to zero, fail `qualifies()`, and discard the whole
         document with no error and no trace.
         """
@@ -253,8 +250,7 @@ class DwellTracker:
             # started in. A reconnect re-arms the recorder, mints a new
             # capture id, and `source_seq` restarts with it.
             #
-            # Ending the dwell is the only honest answer. Keeping it open
-            # froze `capture_id` at the old capture while letting frames
+            # Keeping it open froze `capture_id` at the old capture while letting frames
             # from the new one win the OCR slots -- so the published
             # `page_source_seqs` resolved into the OLD journal and named
             # completely different frames. Silent, plausible and wrong,
@@ -392,7 +388,7 @@ class DwellTracker:
         # The INNER part of the crop. The region is padded by design and
         # its border is whatever surrounds the page; a page held steady
         # against a moving background (a wearer walking with a sheet in
-        # hand) turned that border into four spurious page turns in one
+        # hand) turned that border into four spurious page turns in a
         # 48-frame replay. The words are in the middle.
         height, width_px = crop.shape[:2]
         inset_y, inset_x = int(height * 0.1), int(width_px * 0.1)
@@ -404,7 +400,7 @@ class DwellTracker:
         # different shape after a page turn, still compares against its
         # own reference. An aspect-preserving probe changed shape on a
         # page turn and was silently adopted as the new reference, so no
-        # turn was ever detected -- found by the test written for it.
+        # turn was ever detected.
         small = cv2.resize(crop, (width, width), interpolation=cv2.INTER_AREA)
         return np.float32(small)
 

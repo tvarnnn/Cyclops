@@ -73,19 +73,13 @@ from tower.results.contracts import (
 # does not know what document_memory is" and "Tower knows and is not
 # serving it yet". iOS keys on `cartridges`; this list is for humans.
 #
-# Document Memory and Scene Understanding left this list on 2026-08-27.
-# They did not leave it because they got better -- Document Memory's
-# detector still fires on essentially nothing at the geometry the glasses
-# deliver. They left it because their limits became things the PAYLOAD
-# STATES, which is what an offer is for. `not_offered` is for a cartridge
-# that can say nothing at all; a cartridge that can say "I have observed
-# nothing, and here is precisely why" belongs in `cartridges`, available
-# or not.
-# As of this integration the tuple is EMPTY, and that is a claim, not
-# an oversight: every cartridge with a wire contract in this build now
-# has an OFFER, available or not. Document Memory and Scene
-# Understanding left on 2026-08-27 and the Experimental CV Lab left with
-# `experimental_cv.status/2026-08-27`.
+# `not_offered` is for a cartridge that can say nothing at all; a
+# cartridge that can say "I have observed nothing, and here is precisely
+# why" belongs in `cartridges`, available or not, because its limits are
+# things the PAYLOAD STATES, which is what an offer is for.
+# The tuple is EMPTY, and that is a claim, not an oversight: every
+# cartridge with a wire contract in this build has an OFFER, available or
+# not.
 #
 # OBJECT MEMORY IS IN NEITHER LIST, deliberately. Its identifier exists
 # in `contracts.py` and its control surface is live at
@@ -107,11 +101,10 @@ SCENE_DISABLED_REASON = (
     "there is no live scene to read. This build implements the contract"
 )
 
-# Names TOWER_DOCUMENT_ROOT even though the root has had a managed
-# default since 2026-09-07: iOS string-matches that variable name in a
-# 404 body to tell "the cartridge is switched off" from "the route is
-# gone", and the words that still explain the state are the ones that
-# say which switch was thrown.
+# Names TOWER_DOCUMENT_ROOT even though the root has a managed default:
+# iOS string-matches that variable name in a 404 body to tell "the
+# cartridge is switched off" from "the route is gone", and the words that
+# still explain the state are the ones that say which switch was thrown.
 DOCUMENT_DISABLED_REASON = (
     "Document Memory is switched off on this Tower (TOWER_DOCUMENT_ENABLED "
     "is off), so no document root is configured (TOWER_DOCUMENT_ROOT is "
@@ -162,8 +155,7 @@ def declare(
     Takes its inputs rather than reading configuration itself so the
     declaration is a pure function of them -- which is what lets one test
     assert that the HTTP route and the WebSocket message produce
-    byte-identical output. Passing the app instead would have made the
-    function impure again, which is why three cartridges' worth of state
+    byte-identical output. That is why three cartridges' worth of state
     arrives as three arguments and not as one `app`.
 
     Every argument past `world_root` is keyword-only WITH A DEFAULT, and
@@ -190,20 +182,18 @@ def declare(
     fact nobody has pressed Start, and those two call for opposite
     responses.
 
-    That used to read "about CONFIGURATION", which was the intent but not
-    the whole truth, and the gap was reachable. Scene Understanding needs
-    torch, which ships in the optional `[ml]` extra; on a host without it
-    the session constructed anyway (the default device is `cpu`, and only
-    a non-cpu device imported torch), so this function was handed
-    `scene_enabled=True` and promised a cartridge that failed ~50 ms into
-    Start. The caller now imports the dependency while constructing, so
-    what arrives here is the same answer it always claimed to be.
+    Scene Understanding needs torch, which ships in the optional `[ml]`
+    extra. A session that constructs without it (the default device is
+    `cpu`, and only a non-cpu device imports torch) would be declared
+    available and then fail ~50 ms into Start, so the caller imports the
+    dependency while constructing and `scene_enabled` already reflects a
+    missing one.
 
-    `scene_unavailable_reason` exists because the fix made a second defect
-    common. `SCENE_DISABLED_REASON` names the environment variable, which
-    is right when nobody switched the cartridge on and WRONG when they
-    did and construction failed -- it sends an operator to check the one
-    thing that is already correct. It is `or`-ed, so an omitted reason
+    `scene_unavailable_reason` replaces `SCENE_DISABLED_REASON` when the
+    cartridge was switched on but construction failed: that constant names
+    the environment variable, which is right when nobody switched the
+    cartridge on and WRONG otherwise -- it sends an operator to check the
+    one thing that is already correct. It is `or`-ed, so an omitted reason
     keeps the pinned configured-off wording exactly.
     """
     if world_root is None:
@@ -231,11 +221,9 @@ def declare(
             result_type=RESULT_TYPE_LIVE,
             contract=SCENE_LIVE_CONTRACT,
             available=bool(scene_enabled),
-            # `or`, so an omitted reason keeps the configured-off wording
-            # that `test_the_declaration_names_the_variable` pins. The
-            # specific reason only ever REPLACES it, never appends, and a
-            # caller that has not been taught to thread it through gets
-            # exactly the previous behaviour.
+            # `or`: an omitted reason keeps the configured-off wording
+            # pinned by `test_the_declaration_names_the_variable`. A
+            # specific reason only ever REPLACES it, never appends.
             unavailable_reason=(
                 None
                 if scene_enabled
@@ -329,13 +317,12 @@ def find_offer(
     cartridge that exists". The caller distinguishes them for the error
     message; this returns one thing so there is one lookup path.
 
-    `scene_unavailable_reason` is threaded through for the same reason it
-    exists at all: the offer this returns carries `unavailable_reason`,
-    and `result_subscribe` puts it on the wire. Without it that ONE
-    surface went on saying "TOWER_SCENE_UNDERSTANDING is unset or off"
-    while `/cartridges` over HTTP, the socket declaration and `/scene`
-    had all been taught the truth -- which is exactly the four-surfaces-
-    disagreeing drift the shared constant was introduced to prevent.
+    `scene_unavailable_reason` must be threaded through: the offer this
+    returns carries `unavailable_reason`, and `result_subscribe` puts it
+    on the wire. Omitting it would make the subscribe refusal say
+    "TOWER_SCENE_UNDERSTANDING is unset or off" while `/cartridges` over
+    HTTP, the socket declaration and `/scene` give the specific reason --
+    the four-surfaces-disagreeing drift the shared constants prevent.
     """
     declaration = declare(
         world_root,

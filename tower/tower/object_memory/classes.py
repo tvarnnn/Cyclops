@@ -2,13 +2,9 @@
 
 THE MEASUREMENT THAT DECIDED THIS FILE.
 
-The previous policy was a two-name tuple, `("laptop", "cell phone")`,
-chosen from a score histogram over the real corpus. A score histogram
-describes the DETECTOR'S OPINION OF ITSELF. It cannot say whether a
-label is correct, because `data/captures/` carries no annotation and
-nothing in this repository had ever looked at a crop.
-
-So on 2026-08-27 the crops were looked at. Every detection
+A score histogram describes the DETECTOR'S OPINION OF ITSELF. It cannot
+say whether a label is correct, because `data/captures/` carries no
+annotation. So the crops were looked at. Every detection
 `ssdlite320_mobilenet_v3_large` makes over all 18,821 real frames was
 dumped (`scripts/research/object_memory_corpus_dump.py`), grouped into
 temporally contiguous SIGHTINGS, and the strongest frame of each sighting
@@ -23,8 +19,8 @@ this home is detected as `airplane` at 0.99 and as `scissors` at 0.93 --
 seven and four sightings respectively, none of them an aeroplane or a
 pair of scissors. A white door is `refrigerator` at 0.95. A phone held in
 a hand is `chair` at 0.94. A laptop keyboard is `remote` at 0.87. Every
-one of those is above the 0.5 the old policy used as its bar, and above
-the 0.813 median that justified admitting `laptop`.
+one of those is above the 0.5 bar this cartridge uses, and above the
+0.813 median score of `laptop`.
 
 **2. The classes a person actually loses are the ones COCO cannot
 name.** Keys, a wallet and a pair of glasses have no COCO class at all.
@@ -51,9 +47,8 @@ corpus reframes it without answering it: `person` boxes on this footage
 have a median area of 38.7% of the frame at the 0.5 threshold this file
 uses (35.4% if every detection down to 0.15 is counted) and are usually
 the wearer's own torso seen while looking down, so a `person` record
-here would mostly be
-the wearer -- simultaneously less sensitive than feared and far less
-useful than hoped. Real bystanders will appear eventually and the ruling
+here would mostly be the wearer -- simultaneously less sensitive than
+feared and far less useful than hoped. Real bystanders will appear eventually and the ruling
 will still be needed. Leaving `person` out is what lets this cartridge
 ship without it, and adding it back is not a tuning change.
 
@@ -72,10 +67,9 @@ from dataclasses import dataclass
 # -- the tiers ---------------------------------------------------------
 #
 # A tier is a decision about EVIDENCE, not about importance. What a class
-# is worth remembering is a separate axis and lives in `WORTH_FINDING`
-# below, because the two questions come apart: `bed` is detected
-# reliably and is not a thing anybody looks for, and `remote` is the
-# opposite.
+# is worth remembering is a separate question, and the two come apart:
+# `bed` is detected reliably and is not a thing anybody looks for, and
+# `remote` is the opposite.
 
 # Remembered on the detector's word alone. Reserved for classes whose
 # labels were checked by eye and found right, in this corpus.
@@ -84,9 +78,8 @@ REMEMBERED = "remembered"
 # Remembered ONLY if a second opinion agrees. These are classes worth
 # finding whose labels this detector gets wrong often enough that the
 # memory would be worse than empty. With no verifier configured, nothing
-# in this tier is ever written -- which is exactly the behaviour that
-# shipped, and is why turning a verifier off is safe rather than
-# silently lossy.
+# in this tier is ever written, so turning a verifier off is safe rather
+# than silently lossy.
 VERIFY = "verify"
 
 # Detected, often correctly, and not a memory. Furniture and fittings
@@ -396,10 +389,14 @@ CLASS_EVIDENCE: dict[str, ClassEvidence] = {
 # bottle in?") and from the assistive-memory literature, which converges
 # on the same handful: keys, wallet, phone, glasses, remote, medication.
 #
-# THREE OF THOSE SIX HAVE NO COCO CLASS. Keys, a wallet and glasses
-# cannot be named by this detector at any threshold, which is a ceiling
-# on what a COCO-only cartridge can ever be for. Recorded here rather
-# than in a document so the gap is visible from the code that has it.
+# Keys, a wallet, glasses, a charger and medication have no COCO class
+# (the literature's six are keys, wallet, phone, glasses, remote,
+# medication; `phone` and `remote` do have COCO classes, `charger` is
+# from the module brief; counting only the literature's six, three of
+# them -- keys, wallet, glasses -- were the ones first recorded as having
+# no COCO class). This detector cannot name them at any
+# threshold, which is a ceiling on what a COCO-only cartridge can ever
+# be for. Recorded here so the gap is visible from the code that has it.
 WORTH_FINDING_WITHOUT_A_COCO_CLASS = ("keys", "wallet", "glasses", "charger", "medication")
 
 
@@ -464,23 +461,20 @@ VERIFIER_DISTRACTORS = (
 # Measured rather than assumed: `keyboard` produced 24 sightings across
 # 12 captures over the real corpus, and every one of those captures also
 # had a laptop in view. A replay of the validated capture with the
-# verifier on -- run BEFORE this table existed -- wrote two `keyboard`
-# records, and inspection showed one of them to be the keyboard of a
-# laptop that already had its own record: the same object, remembered
-# twice under two names. With the rule, the same replay writes neither,
-# because in that capture the keyboard is never in view without the
-# laptop.
+# verifier on and no such rule wrote two `keyboard` records, and
+# inspection showed one of them to be the keyboard of a laptop that
+# already had its own record: the same object, remembered twice under
+# two names. With the rule, the laptop's own keyboard is not written;
+# the standalone keyboard is.
 #
 # Suppression is CONCURRENT, not blanket, and the distinction is the
-# whole reason this is a table rather than a tier change. It is also the
-# reason a later attempt to LATCH the suppression onto the sighting was
-# reverted: latching made one frame of a laptop silence a keyboard for
-# the rest of an unbounded sighting, which is a blanket rule wearing a
-# concurrent rule's comment. The other
-# `keyboard` record in that replay is a lit mechanical keyboard at a desk
-# with no laptop anywhere near it, which is a real object somebody could
-# genuinely go looking for. A blanket rule would lose it; a rule that
-# only fires while the whole is ALSO in view keeps it.
+# whole reason this is a table rather than a tier change. Latching it
+# onto the sighting would let one frame of a laptop silence a keyboard
+# for the rest of an unbounded sighting. The other `keyboard` record in
+# that replay is a lit mechanical keyboard at a desk with no laptop
+# anywhere near it, which is a real object somebody could genuinely go
+# looking for. A blanket rule would lose it; a rule that only fires
+# while the whole is ALSO in view keeps it.
 PART_OF = {
     "keyboard": ("laptop",),
 }
@@ -554,7 +548,6 @@ def classes_in(tier: str) -> tuple[str, ...]:
 # the inner one.
 PERSISTABLE_CLASSES = classes_in(REMEMBERED) + classes_in(VERIFY)
 
-# The name the rest of the repository already imports. Kept pointing at
-# the outer bound so `ObservationStore`'s default stays closed and every
-# existing caller keeps working.
+# Alias of `PERSISTABLE_CLASSES`: the store's default allowlist and
+# `object_query`'s validation list.
 PERSISTED_CLASSES = PERSISTABLE_CLASSES

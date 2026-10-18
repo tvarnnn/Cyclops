@@ -11,11 +11,10 @@ So:
 1. **There is no queue.** Each subscription owns exactly ONE slot holding
    the most recent snapshot it has not yet been sent. A new snapshot
    REPLACES whatever is in that slot. Memory per subscription is therefore
-   one payload, not N -- and the "unbounded event queue" the brief warns
-   about is not bounded here, it is absent by construction. A bounded
-   queue of N would have been worse than either: it drops the NEWEST
-   updates once full, which is precisely backwards for a freshness-first
-   channel.
+   one payload, not N -- an event queue is not bounded here, it is absent
+   by construction. A bounded queue of N would be worse than either: it
+   drops the NEWEST updates once full, which is precisely backwards for a
+   freshness-first channel.
 
 2. **One poller serves everyone.** The reader is per-app, not per
    connection, so ten subscribers watching one world cost one disk read
@@ -40,7 +39,6 @@ import threading
 import time
 import weakref
 
-from tower.results.contracts import RESULT_TYPE_STATUS
 from tower.results.envelope import ResultEnvelope
 
 logger = logging.getLogger(__name__)
@@ -64,19 +62,18 @@ DEFAULT_HEARTBEAT_SECONDS = 2.0
 # setting. Blocking the socket for >2 s makes iOS treat the connection as
 # wedged and replace it (`docs/contracts/CARTRIDGE-RESULTS.md` §19.3), so
 # this stays comfortably under that with the lock wait added on top. The
-# result sender holds the connection's send lock for
-# the duration of a send, so a stuck result is also the longest a
-# `frame_result` can queue behind one. Both are blocked anyway when the
-# client has stopped reading -- one socket is one TCP stream -- but this
-# is the bound on how long a merely SLOW consumer can delay the path that
-# is measured.
+# result sender holds the connection's send lock for the duration of a
+# send, so a stuck result is also the longest a `frame_result` can queue
+# behind one. Both are blocked anyway when the client has stopped reading
+# -- one socket is one TCP stream -- but this is the bound on how long a
+# merely SLOW consumer can delay the path that is measured.
 SEND_TIMEOUT_S = 1.0
 
 # How long to wait for the send lock itself, measured separately. Lumping
-# the two together let a slow FRAME send consume a result's whole budget
+# the two together lets a slow FRAME send consume a result's whole budget
 # and trigger a spurious "consumer did not accept" drop -- the result had
 # not been offered to the socket at all, it was queued behind the frame
-# path. Raised by an adversarial review.
+# path.
 LOCK_TIMEOUT_S = 1.0
 
 # The backstop the sender task applies around the whole operation. The
@@ -84,15 +81,6 @@ LOCK_TIMEOUT_S = 1.0
 # cannot sit in a send forever if a transport ever fails to honour them.
 TOTAL_SEND_TIMEOUT_S = LOCK_TIMEOUT_S + SEND_TIMEOUT_S
 
-# Consecutive failed snapshot attempts for one target before its
-# subscribers are told and dropped.
-#
-# One failure is transient -- a file being replaced underneath us is
-# routine and the next poll succeeds. Failing every time is not transient,
-# and swallowing it forever leaves the client waiting on a channel that is
-# never coming back. An earlier version logged each failure and continued
-# indefinitely, which is the silence this module's header calls the worst
-# outcome. Three, so a burst of contention cannot trip it.
 # How long one cartridge's snapshot may take before the pass moves on
 # without it. Generous by design: the slowest measured real snapshot is
 # World Builder's at ~40 ms on a 163-world root, and `GET /worlds` under a
@@ -101,6 +89,13 @@ TOTAL_SEND_TIMEOUT_S = LOCK_TIMEOUT_S + SEND_TIMEOUT_S
 # only the second is worth telling a subscriber about.
 SNAPSHOT_TIMEOUT_SECONDS = 10.0
 
+# Consecutive failed snapshot attempts for one target before its
+# subscribers are told and dropped.
+#
+# One failure is transient -- a file being replaced underneath us is
+# routine and the next poll succeeds. Failing every time is not transient,
+# and swallowing it forever leaves the client waiting on a channel that is
+# never coming back. Three, so a burst of contention cannot trip it.
 MAX_CONSECUTIVE_TARGET_FAILURES = 3
 # A snapshot still running this many deadlines after it was dispatched is
 # ABANDONED: forgotten by the hub, so the next pass dispatches the target
@@ -109,24 +104,23 @@ MAX_CONSECUTIVE_TARGET_FAILURES = 3
 SNAPSHOT_ABANDON_MULTIPLIER = 3
 # The cap doubles per consecutive abandonment of one target, up to this.
 # 120 s, not 600: this is also the longest a target stays refused after a
-# fault CLEARS, because recovery needs an abandonment (a reviewer measured
-# 592 s of silent refusal at 600).
+# fault CLEARS, because recovery needs an abandonment (a cap of 600 s was
+# measured to leave 592 s of silent refusal).
 SNAPSHOT_ABANDON_MAX_SECONDS = 120.0
 # The most distinct targets that may have a snapshot running at once. A
 # target is `(cartridge, result_type, world_id, session_id)` and the last
-# two are the client's to choose: a reviewer subscribed 400 distinct
-# world_ids against a wedged read and got 400 live threads in 0.3 s, none
-# of them ever swept because a failed subscribe registers nothing and so
-# starts no poll loop. Eight subscriptions per connection, a handful of
-# connections: 64 is generous for a phone and a wall for anything else.
+# two are the client's to choose, so distinct targets are unbounded unless
+# capped: 400 distinct world_ids subscribed against a wedged read gave 400
+# live threads in 0.3 s, none of them ever swept because a failed
+# subscribe registers nothing and so starts no poll loop. 256 is 32 phones
+# at 8 subscriptions each, a last wall no legitimate fleet reaches.
 MAX_IN_FLIGHT_TARGETS = 256
-# ...and per CONNECTION, which is the bound that matters: the global one
-# above was 64, and a reviewer showed that ~21 hostile connections holding
-# 64 wedged targets refused every legitimate phone's subscribe, on every
-# target, with a reason the phone treats as terminal. A connection may
-# hold `MAX_SUBSCRIPTIONS_PER_CONNECTION` subscriptions; it may have that
-# many snapshots computing at once, and not more. The global cap is a
-# last wall no legitimate fleet reaches (32 phones at 8 each).
+# ...and per CONNECTION, which is the bound that matters: a global cap
+# alone (it was 64) let ~21 hostile connections holding 64 wedged targets
+# refuse every legitimate phone's subscribe, on every target, with a
+# reason the phone treats as terminal. A connection may hold
+# `MAX_SUBSCRIPTIONS_PER_CONNECTION` subscriptions; it may have that many
+# snapshots computing at once, and not more.
 MAX_IN_FLIGHT_PER_CONNECTION = 8
 
 # Per connection. A client with more than this many open subscriptions is
@@ -134,13 +128,7 @@ MAX_IN_FLIGHT_PER_CONNECTION = 8
 # unbounded growth in a dict a remote party controls.
 MAX_SUBSCRIPTIONS_PER_CONNECTION = 8
 
-# How a reader failure reaches a client: as a VALUE in the subscription's
-# slot, never as an exception. The sender already swallows ordinary send
-# failures (a closing socket is routine), so an exception carrying "the
-# reader is dead" would be eaten by that same clause and the client would
-# wait forever for a channel that is never coming back. Silence is the
-# worst of the three outcomes -- worse than a crash, because nothing
-# anywhere reports it.
+# The results of `classify_cursor`; wire strings.
 CURSOR_MATCHED = "matched"
 CURSOR_STALE = "stale"
 CURSOR_UNRECOGNISED = "unrecognised"
@@ -153,10 +141,10 @@ class SnapshotTimeout(TimeoutError):
     just abandoned. Its text is written for the wire.
 
     A distinct type, because a PRODUCER may raise a `TimeoutError` of its
-    own (a socket, a lock, a filesystem call), and a reviewer showed that
-    matching on `TimeoutError` alone put 534 bytes of that producer's
-    internals -- a path, an errno, a pid -- on the wire and lost its
-    traceback to the one-line log. The route matches on this type.
+    own (a socket, a lock, a filesystem call), and matching on
+    `TimeoutError` alone put 534 bytes of that producer's internals -- a
+    path, an errno, a pid -- on the wire and lost its traceback to the
+    one-line log. The route matches on this type.
     """
 
 
@@ -246,6 +234,13 @@ class Subscription:
         return snapshot
 
     def fail(self, reason: str) -> None:
+        # A reader failure reaches a client as a VALUE in the subscription's
+        # slot, never as an exception. The sender already swallows ordinary
+        # send failures (a closing socket is routine), so an exception
+        # carrying "the reader is dead" would be eaten by that same clause
+        # and the client would wait forever for a channel that is never
+        # coming back. Silence is the worst of the three outcomes -- worse
+        # than a crash, because nothing anywhere reports it.
         self._failure = reason
 
     def take_failure(self):
@@ -438,15 +433,11 @@ class ConnectionChannel:
                     subscription.subscription_id,
                     SEND_TIMEOUT_S,
                 )
-                # TELL the client before dropping it. An earlier version
-                # closed the subscription with no message at all, and the
-                # contract says `channel_failed` is the only unsolicited
-                # error -- so a conforming client had no way to learn its
-                # subscription was gone and would wait forever. This
-                # module's own header argues silence is the worst
-                # outcome; it was doing exactly that. Best-effort and
-                # short: the consumer is already not reading, so this
-                # very likely fails too, and that is fine.
+                # Tell the client (`consumer_too_slow`) before dropping it,
+                # so it can subscribe again rather than wait forever on a
+                # subscription that is gone. Best-effort and short: the
+                # consumer is already not reading, so this very likely
+                # fails too, and that is fine.
                 try:
                     await asyncio.wait_for(
                         self._send(
@@ -528,10 +519,10 @@ class ResultHub:
         # Every DURATION here -- how long a snapshot has been running, the
         # subscribe's remaining wait, the abandonment cap -- is measured on
         # this clock, never on `clock`. `build_hub` hands in `time.time`,
-        # which a reviewer stepped: 600 s backwards left a wedged target
-        # unreachable by the cap for the length of the step, with the
-        # full inline wait restored on every subscribe; 10 s forwards aged
-        # every in-flight snapshot past its deadline at once and dropped
+        # which can step: a 600 s step backwards leaves a wedged target
+        # unreachable by the cap for the length of the step, with the full
+        # inline wait restored on every subscribe; a 10 s step forwards
+        # ages every in-flight snapshot past its deadline at once and drops
         # every subscriber three passes later. `clock` is for the
         # heartbeat and for what the client is told; this is for ages.
         self._age_clock = age_clock
@@ -561,19 +552,19 @@ class ResultHub:
         self._owner_of: dict = {}
         # Futures already collected, so the young handover and a parked
         # pass cannot both count one. WEAK: the record dies with the
-        # future. The first version was a plain set cleared at the start
-        # of each pass -- and a pass runs only while a channel is
-        # attached, so with nobody attached (the cached-exception
-        # handover ends in `snapshot_failed`, which attaches nothing) it
-        # grew for the life of the process: a reviewer measured 35,000
-        # retained futures an hour, each holding its exception, its
-        # traceback and through it the hub.
+        # future. A plain set cleared at the start of each pass would grow
+        # for the life of the process, because a pass runs only while a
+        # channel is attached and the cached-exception handover ends in
+        # `snapshot_failed`, which attaches nothing: 35,000 retained
+        # futures an hour, each holding its exception, its traceback and
+        # through it the hub.
         self._collected = weakref.WeakSet()
         # The subscription ids watching each target when its in-flight
         # snapshot was dispatched. A result whose watchers have ALL gone
         # was computed for nobody who is still here. See the discard rule
         # in `_poll_once_locked`.
         self._watchers_at_dispatch: dict = {}
+
     async def attach(self, channel) -> None:
         self._channels.add(channel)
         if self._task is None:
@@ -589,9 +580,9 @@ class ResultHub:
             # runs from whichever task called remove(), and that is often
             # the per-connection SENDER task: awaiting the reader from
             # inside the sender couples two cancellations together, and a
-            # test that drove a persistently-failing reader deadlocked the
-            # event loop exactly there (the loop went idle in select with
-            # nothing scheduled and the main coroutine waiting forever).
+            # persistently-failing reader deadlocks the event loop exactly
+            # there (the loop goes idle in select with nothing scheduled
+            # and the main coroutine waiting forever).
             #
             # Nothing needs the task's result. It is cancelled, it will
             # unwind on its own, and `shutdown()` -- which runs from the
@@ -601,13 +592,13 @@ class ResultHub:
             task.cancel()
             # And forget what the cancelled pass would have collected. A
             # snapshot that finishes now finishes for nobody: a done
-            # future left here was handed to the NEXT subscription as its
-            # first snapshot, computed before that phone connected -- a
-            # reviewer measured 4.0 s old, against a newer revision on
-            # disk, on a real socket. A still-running one stays, so the
-            # target is never computed twice at once; its watchers are
-            # cleared, so the pass that finds it done discards it unless
-            # a subscribe has joined it since.
+            # future left here would be handed to the NEXT subscription as
+            # its first snapshot, computed before that phone connected
+            # (measured 4.0 s old, against a newer revision on disk, on a
+            # real socket). A still-running one stays, so the target is
+            # never computed twice at once; its watchers are cleared, so
+            # the pass that finds it done discards it unless a subscribe
+            # has joined it since.
             for target in list(self._in_flight):
                 if self._in_flight[target].done():
                     self._forget(target)
@@ -615,9 +606,9 @@ class ResultHub:
                     self._watchers_at_dispatch[target] = set()
         # Whatever this channel dispatched is nobody's now: the owner
         # reference would otherwise keep a closed channel -- and its
-        # socket -- alive for as long as the future lived (a reviewer
-        # counted 256 closed channels retained), and count against a
-        # connection that no longer exists.
+        # socket -- alive for as long as the future lived (256 closed
+        # channels retained), and count against a connection that no
+        # longer exists.
         for target, holder in list(self._owner_of.items()):
             if holder is channel:
                 self._owner_of[target] = None
@@ -666,24 +657,16 @@ class ResultHub:
                 # The pass may have waited up to `poll_seconds` for its
                 # own fresh futures; that wait counts toward the interval,
                 # so the cadence is the interval and not "pass + poll".
-                # A refinement, not the fix: the fix for the 20%-cadence
-                # measurement is the pass's budget (see `_poll_once_locked`),
-                # and a mutation that restores the full sleep here is NOT
-                # caught by the cadence test, because a slow future is
-                # fresh -- and waited on -- only on the pass that
-                # dispatched it.
                 elapsed = time.monotonic() - started
                 # Never less than 20 ms: a pass that takes longer than
-                # the poll must not turn the loop into a spin. The first
-                # floor was a quarter of the interval, which at a 1 ms
-                # test poll is a quarter of a millisecond -- 6,000 passes
-                # a second, measured. An absolute floor, not a fraction
-                # of the thing being floored -- and ABOVE THE EVENT LOOP'S
-                # CLOCK RESOLUTION, which on Windows is 15.6 ms: a timer
-                # due inside that resolution is treated as already due
-                # whenever the loop has anything else ready, and the
-                # snapshot threads' deliveries keep it ready, so a 10 ms
-                # floor measured 0.17 ms.
+                # the poll must not turn the loop into a spin. An absolute
+                # floor, not a fraction of the interval (a quarter of a 1 ms
+                # test poll measured 6,000 passes a second) -- and ABOVE
+                # THE EVENT LOOP'S CLOCK RESOLUTION, which on Windows is
+                # 15.6 ms: a timer due inside that resolution is treated as
+                # already due whenever the loop has anything else ready,
+                # and the snapshot threads' deliveries keep it ready, so a
+                # 10 ms floor measured 0.17 ms.
                 await asyncio.sleep(max(0.02, self._poll_seconds - elapsed))
         except asyncio.CancelledError:
             raise
@@ -714,16 +697,14 @@ class ResultHub:
         """The snapshot a new subscription is answered with, WITHOUT a new thread
         if one is already computing it.
 
-        `results_ws` used to run its own `asyncio.to_thread` here under a
-        `wait_for`. The deadline stopped the socket hanging, and left the
-        thread running -- "bounded at one per subscribe attempt, which is
-        client-driven". It is client-driven at the fastest rate the client
-        has: iOS's `sendStallTimeout` is 2 s, so while the first snapshot
-        stalls the phone replaces the socket and re-subscribes every ~2.5 s,
-        and each attempt minted a thread. A reviewer drove that against a
-        wedged read: **24 executor threads in 60 s, then `stream_start`
-        never answered for any phone** -- the exact exhaustion the poll
-        loop had just been cured of, one route over.
+        A subscribe must not run its own thread per attempt (an
+        `asyncio.to_thread` under a `wait_for` stops the socket hanging
+        but leaves the thread running). That is client-driven at the
+        fastest rate the client has: iOS's `sendStallTimeout` is 2 s, so
+        while the first snapshot stalls the phone replaces the socket and
+        re-subscribes every ~2.5 s, and each attempt would mint a thread:
+        **24 executor threads in 60 s against a wedged read, then
+        `stream_start` never answered for any phone**.
 
         Sharing `_in_flight` bounds it at one thread per target across
         BOTH paths. A subscribe that finds a snapshot already running waits
@@ -732,27 +713,27 @@ class ResultHub:
         it is for the next pass to collect. Nothing is cancelled and
         nothing is duplicated.
 
-        Two things it must NOT do, both measured by the next reviewer:
+        Two things it must NOT do:
 
         * Wait on a future that is already past its deadline. This runs
           inline in the connection's message loop, and every subscribe to
-          a wedged target was sitting here for the full 10 s -- six
-          consecutive subscribes, all timing out, three of them after the
-          fault had cleared -- while the frames behind it went
-          unanswered. A future older than the deadline is a known wedge;
-          the answer is immediate.
-        * Hand over a future that is already DONE. Nobody collected it,
-          so it was computed for a subscription that has gone -- a phone
-          that dropped mid-pass -- and it is stale by construction: a
-          reconnected phone was given a revision 4.0 s old while disk
-          held a newer one, and told its own current cursor was "stale".
-          It is discarded and the target dispatched afresh.
+          a wedged target would sit here for the full 10 s (six
+          consecutive subscribes all timed out, three of them after the
+          fault had cleared) while the frames behind it went unanswered.
+          A future older than the deadline is a known wedge; the answer
+          is immediate.
+        * Hand over a future that is already DONE and OLD. Nobody
+          collected it, so it was computed for a subscription that has
+          gone -- a phone that dropped mid-pass -- and it is stale by
+          construction: a reconnected phone was given a revision 4.0 s old
+          while disk held a newer one, and told its own current cursor
+          was "stale". It is discarded and the target dispatched afresh.
         """
         target = subscription.target
         # The same sweep the pass runs, because a target nobody has
         # managed to subscribe to has no channel, no poll loop and so no
         # pass: without this, wedged futures minted by failed subscribes
-        # were never abandoned at all.
+        # would never be abandoned at all.
         abandoned_here = False
         for other in list(self._in_flight):
             other_future = self._in_flight[other]
@@ -760,10 +741,10 @@ class ResultHub:
                 # DONE, AND NOBODY IS WAITING FOR IT: freed. The pass
                 # frees these, but the pass runs only while a channel is
                 # attached, and a channel attaches only after a
-                # SUCCESSFUL subscribe. A reviewer drove 300 sockets that
-                # each subscribed to a distinct world_id and dropped 20 ms
-                # later, against a healthy 0.2 s read: 256 done futures
-                # nobody watched, the global cap reached, every subscribe
+                # SUCCESSFUL subscribe. Without this, 300 sockets that each
+                # subscribed to a distinct world_id and dropped 20 ms later,
+                # against a healthy 0.2 s read, left 256 done futures
+                # nobody watched: the global cap reached, every subscribe
                 # refused, no channel ever attached, no pass ever ran --
                 # the whole result channel disabled by bookkeeping alone,
                 # still refused 130 s later. The subscriber's own target
@@ -776,34 +757,31 @@ class ResultHub:
                     abandoned_here = True
         future = self._in_flight.get(target)
         if future is not None and future.done():
-            # DONE AND UNCOLLECTED. Stale if it is OLD -- a reviewer
-            # measured 4.0 s, behind the revision on disk, computed for a
-            # phone that had dropped mid-pass -- and the freshest state
-            # there is if it is YOUNG: a 2.1 s read that finished 0.4 s
-            # ago, for a phone whose socket stalled at 2 s and came back
-            # to re-subscribe. Discarding that one meant dispatching
-            # afresh, stalling again, and never subscribing: 0 of 8 on a
-            # real socket at a healthy 2.1 s read. The line is the
-            # heartbeat, which is how old a snapshot the channel itself
-            # is content to send.
+            # DONE AND UNCOLLECTED. Stale if it is OLD (measured 4.0 s,
+            # behind the revision on disk, computed for a phone that had
+            # dropped mid-pass) and the freshest state there is if it is
+            # YOUNG: a 2.1 s read that finished 0.4 s ago, for a phone
+            # whose socket stalled at 2 s and came back to re-subscribe.
+            # Discarding that one means dispatching afresh, stalling
+            # again, and never subscribing (0 of 8 on a real socket at a
+            # healthy 2.1 s read). The line is the heartbeat, which is how
+            # old a snapshot the channel itself is content to send.
             #
-            # AGE SINCE IT COMPLETED, NOT SINCE IT WAS DISPATCHED. The
-            # first version measured from dispatch, so a 2.1 s read that
-            # finished 0.4 s ago was 2.5 s "old" -- over the line -- and
-            # the handover written for exactly that phone could never
-            # fire: 0 of 10 sockets at any read between 2.0 and 2.4 s,
-            # measured, with the phone's screen on a spinner that never
-            # ends. A snapshot's staleness is how long it has sat, not
-            # how long it took.
+            # AGE SINCE IT COMPLETED, NOT SINCE IT WAS DISPATCHED. Measured
+            # from dispatch, a 2.1 s read that finished 0.4 s ago is 2.5 s
+            # "old" -- over the line -- and the handover written for
+            # exactly that phone could never fire (0 of 10 sockets at any
+            # read between 2.0 and 2.4 s, with the phone's screen on a
+            # spinner that never ends). A snapshot's staleness is how long
+            # it has sat, not how long it took.
             #
             # And handed over THROUGH THE CHANNELS, not around them: the
             # registered watchers of this target were waiting for this
             # very result, and returning it to the subscriber alone cost
-            # each of them a poll interval (a reviewer watched `r2` go to
-            # the newcomer and never to the watcher). A cached exception
-            # is counted like any other failure and falls through to a
-            # fresh dispatch rather than being re-raised for the length
-            # of the heartbeat.
+            # each of them a poll interval (`r2` went to the newcomer and
+            # never to the watcher). A cached exception is counted like
+            # any other failure and falls through to a fresh dispatch
+            # rather than being re-raised for the length of the heartbeat.
             sat_for = self._age_clock() - self._completed_at.get(
                 target, self._dispatched_at.get(target, self._age_clock())
             )
@@ -818,14 +796,13 @@ class ResultHub:
                 self._forget(target)
                 future = None
         if future is not None and self._past_abandonment(target):
-            # A subscribe is a chance to try the target afresh, and it
-            # was the only chance: once the escalation has failed every
-            # watcher off a wedged target, no pass looks at it again, so
-            # the abandon sweep in the pass cannot reach it. The first
-            # version of the cap sat only in the pass -- a reviewer
-            # counted 33 re-subscribes over 100 s against a future 95 s
-            # old, every one refused in 0.00 s. Poisoned for the life of
-            # the process, with the fix for that present and unreachable.
+            # A subscribe is a chance to try the target afresh, and the
+            # only one: once the escalation has failed every watcher off a
+            # wedged target, no pass looks at it again, so the abandon
+            # sweep in the pass cannot reach it. A cap that sat only in the
+            # pass refused 33 re-subscribes over 100 s against a future
+            # 95 s old, every one in 0.00 s -- poisoned for the life of
+            # the process.
             self._abandon(target)
             future = None
             abandoned_here = True
@@ -853,25 +830,23 @@ class ResultHub:
         else:
             self._watchers_at_dispatch.setdefault(target, set()).add(subscription)
         age = self._age_clock() - self._dispatched_at.get(target, self._age_clock())
-        # THE INLINE WAIT IS THE SNAPSHOT DEADLINE, and a round of this
-        # campaign that capped it lower is why this comment exists. This
-        # runs in the connection's message loop; while it waits, no frame
-        # on that socket is answered, and iOS replaces a socket that has
-        # stalled 2 s. That looks like a reason to answer within 2 s --
-        # and a 1.5 s cap was shipped, measured, and reverted: on the
-        # phone, `snapshot_failed` is TERMINAL (`.failed`, no retry; only
-        # `channel_failed` is retried), so every healthy read slower than
-        # the cap left the World Builder screen dead for the life of the
-        # connection -- 0 of 8 subscribes at a 2.1 s read, which is this
-        # file's own number for a manifest read under a disk fault. The
-        # stall, by contrast, self-heals: the phone replaces the socket,
-        # the re-subscribe joins the same future, and is answered when it
-        # lands. So the wait is the deadline; what must not happen is
-        # waiting it MORE than once per fault, and that is the rule
+        # THE INLINE WAIT IS THE SNAPSHOT DEADLINE. This runs in the
+        # connection's message loop; while it waits, no frame on that
+        # socket is answered, and iOS replaces a socket that has stalled
+        # 2 s. That looks like a reason to answer within 2 s, but a 1.5 s
+        # cap fails worse: on the phone, `snapshot_failed` is TERMINAL
+        # (`.failed`, no retry; only `channel_failed` is retried), so
+        # every healthy read slower than the cap leaves the World Builder
+        # screen dead for the life of the connection (0 of 8 subscribes at
+        # a 2.1 s read, which is the manifest read under a disk fault).
+        # The stall, by contrast, self-heals: the phone replaces the
+        # socket, the re-subscribe joins the same future, and is answered
+        # when it lands. So the wait is the deadline; what must not happen
+        # is waiting it MORE than once per fault, and that is the rule
         # below: a subscribe that itself abandoned a wedge does not wait
-        # on its own replacement at all (the abandon reset the age, and
-        # the first version then waited the full deadline again at every
-        # cap interval -- 25 s of every 30 blocked, measured).
+        # on its own replacement at all (the abandon resets the age, and
+        # waiting the full deadline again at every cap interval blocked
+        # 25 s of every 30).
         waited = 0.0
         remaining = min(timeout, SNAPSHOT_TIMEOUT_SECONDS - age)
         if abandoned_here:
@@ -884,9 +859,9 @@ class ResultHub:
                 # The phone replaced its socket mid-wait -- the ordinary
                 # case for a read slower than its 2 s stall bound -- and
                 # this subscription will never be registered. Take it
-                # back out of the watcher set here too; the first version
-                # did so only on the timeout path, and a reviewer counted
-                # four dead subscriptions retained per wedge.
+                # back out of the watcher set here too, not only on the
+                # timeout path, or four dead subscriptions are retained
+                # per wedge.
                 watchers = self._watchers_at_dispatch.get(target)
                 if watchers is not None:
                     watchers.discard(subscription)
@@ -896,12 +871,10 @@ class ResultHub:
             # This subscription will not be registered: take it back out
             # of the watcher set, or every failed subscribe to a wedged
             # target leaves a dead `Subscription` there for as long as
-            # the future lives (a reviewer counted 34 in 100 s). Only
-            # THIS one: the set was seeded with the target's live
-            # watchers, and the first version clobbered it with just this
-            # subscription and then emptied it here, so the snapshot a
-            # registered watcher was waiting for was discarded as
-            # "computed for nobody".
+            # the future lives (34 in 100 s). Only THIS one: the set was
+            # seeded with the target's live watchers, and clearing it
+            # would discard, as "computed for nobody", the snapshot a
+            # registered watcher was waiting for.
             watchers = self._watchers_at_dispatch.get(target)
             if watchers is not None:
                 watchers.discard(subscription)
@@ -932,9 +905,9 @@ class ResultHub:
         Doubles with every consecutive abandonment, up to
         `SNAPSHOT_ABANDON_MAX_SECONDS`: a read that stays wedged is
         retried at 30 s, 60 s, 120 s ... rather than minting a new daemon
-        thread every 30 s for as long as the fault lasts (a reviewer
-        counted one per 30 s, 120 an hour, each holding the wedged
-        handle). A delivery clears the streak.
+        thread every 30 s for as long as the fault lasts (one per 30 s is
+        120 an hour, each holding the wedged handle). A delivery clears
+        the streak.
         """
         streak = self._abandon_streak.get(target, 0)
         cap = SNAPSHOT_ABANDON_MULTIPLIER * SNAPSHOT_TIMEOUT_SECONDS * (2 ** streak)
@@ -967,18 +940,18 @@ class ResultHub:
     def _dispatch(self, target, sample, watchers, owner=None):
         """Start ONE snapshot for `target` on a thread of its own, and record it.
 
-        A plain daemon thread, not `asyncio.to_thread`, for two reasons a
-        reviewer measured. The default executor is shared with the capture
-        path -- `stream_start`, the disconnect teardown, `supervisor.shutdown`
-        -- and a snapshot thread that never returns must not be able to
-        take a worker from it (this is what turned one wedged read into a
-        Tower that answered nobody, twice). And `asyncio.run` joins the
-        default executor's threads on the way out: a Tower shut down with
-        one wedged snapshot thread sat at "Application shutdown complete"
-        for **300 s** before the interpreter gave up on the join. A daemon
-        thread is joined by nobody. The result crosses back to the loop
-        with `call_soon_threadsafe`, and is dropped on the floor if the
-        loop has closed or the hub has since abandoned the future.
+        A plain daemon thread, not `asyncio.to_thread`, for two reasons.
+        The default executor is shared with the capture path --
+        `stream_start`, the disconnect teardown, `supervisor.shutdown` --
+        and a snapshot thread that never returns must not be able to take
+        a worker from it (one wedged read otherwise leaves a Tower that
+        answers nobody). And `asyncio.run` joins the default executor's
+        threads on the way out: a Tower shut down with one wedged snapshot
+        thread sat at "Application shutdown complete" for **300 s** before
+        the interpreter gave up on the join. A daemon thread is joined by
+        nobody. The result crosses back to the loop with
+        `call_soon_threadsafe`, and is dropped on the floor if the loop
+        has closed or the hub has since abandoned the future.
         """
         loop = asyncio.get_running_loop()
         future = loop.create_future()
@@ -1004,9 +977,9 @@ class ResultHub:
             except BaseException as exc:  # noqa: BLE001
                 # A `SystemExit` or `KeyboardInterrupt` raised by a
                 # producer must not cross the thread as itself: the
-                # collector catches `Exception`, and a reviewer measured
-                # the Tower process exiting with code 3 / 130 when it
-                # did. It is a failure of that target, reported as one.
+                # collector catches `Exception`, and the Tower process
+                # exited with code 3 / 130 when it did. It is a failure of
+                # that target, reported as one.
                 result = None
                 error = RuntimeError(
                     f"the producer raised {type(exc).__name__}"
@@ -1021,7 +994,7 @@ class ResultHub:
                 pass
 
         threading.Thread(
-            target=run, name=f"tower-result-snapshot", daemon=True
+            target=run, name="tower-result-snapshot", daemon=True
         ).start()
         self._in_flight[target] = future
         self._dispatched_at[target] = self._age_clock()
@@ -1047,15 +1020,15 @@ class ResultHub:
         target now. `first_snapshot` takes no pass lock, so a subscribe
         that ran while a pass was parked in its wait may have discarded
         this future's table entry and dispatched a replacement;
-        forgetting by target popped the replacement, and the next pass
-        dispatched a third -- two live threads for one target, measured
-        by a reviewer, which is the one bound this table exists to hold.
+        forgetting by target would pop the replacement, and the next pass
+        would dispatch a third -- two live threads for one target, which
+        is the one bound this table exists to hold.
 
         And ONCE per future: the young handover in `first_snapshot` may
         collect a future a parked pass is about to collect too, and a
-        second collection of a failure counted it twice -- two genuine
-        failures then tripped the three-strike escalation. A future
-        already collected is remembered until the next pass begins.
+        second collection of a failure would count it twice -- two genuine
+        failures would then trip the three-strike escalation. A future
+        already collected is remembered, weakly, for as long as it lives.
         """
         if future in self._collected:
             return
@@ -1117,22 +1090,32 @@ class ResultHub:
     async def poll_once(self) -> None:
         """One pass over every watched target. Passes never interleave.
 
-        **A RACE THAT WITHHELD DELIVERIES, found by the suite.** The
-        background loop and a forced pass (`pump()` in the tests, with
-        the heartbeat set to zero so it MUST deliver) ran concurrently on
-        one loop. The background pass dispatched a target's snapshot; the
-        forced pass, arriving a moment later, found that future "already
-        in flight", counted it a failure and returned without offering
-        anything; the background pass then completed it and offered under
-        the ordinary heartbeat rule, which sends nothing for an unchanged
-        world. Net: a pass that had to deliver delivered nothing, and the
-        waiting test hung the whole run for 33 minutes at
-        `test_a_partially_deleted_world_reports_honestly_and_does_not_crash`.
-        Before the in-flight table every pass owned its own thread, so the
-        race could not exist; it is the table's cost, paid here with a
-        lock. A pass waiting for the previous one to finish is cheap --
-        passes are ~40 ms on the real root -- and correct: the second pass
-        then finds the target free, or done, and does its own work.
+        WHAT: one pass over every watched target. It builds snapshots off
+        the event loop (at most one in flight per target) and offers
+        changed ones, or heartbeats, to the subscribers.
+
+        HOW: take the pass lock, then `_poll_once_locked` collects the
+        distinct targets of all attached channels, prunes bookkeeping for
+        targets nobody watches, abandons wedged snapshots, dispatches a
+        thread for every free target, waits on this pass's own futures for
+        up to one poll interval, offering each result as it lands, and
+        counts a failure for any target that has aged past the snapshot
+        deadline.
+
+        WHY the lock: the background loop and a forced pass (`pump()` in
+        the tests, with the heartbeat set to zero so it MUST deliver) must
+        not run concurrently. A forced pass arriving just after the
+        background pass dispatched a target's snapshot would find that
+        future "already in flight", count it a failure and return without
+        offering anything; the background pass would then complete it and
+        offer under the ordinary heartbeat rule, which sends nothing for
+        an unchanged world. Net: a pass that had to deliver delivers
+        nothing (it once hung a waiting test, and the whole run, for 33
+        minutes). That race is the cost of the in-flight table, paid here
+        with a lock. A pass waiting for the previous one to finish is
+        cheap -- passes are ~40 ms on the real root -- and correct: the
+        second pass then finds the target free, or done, and does its own
+        work.
         """
         async with self._pass_lock:
             await self._poll_once_locked()
@@ -1151,19 +1134,18 @@ class ResultHub:
                 targets[subscription.target] = subscription
 
         # Forget the failure counts of targets nobody is watching any
-        # more. `_failures` was pruned on success and on escalation, but
-        # not when a subscription simply went away, so a target that
-        # failed once and was then unsubscribed left an entry forever --
-        # and, when the target came back, escalated it after ONE failure
-        # instead of three (the first version pruned only when the dict
-        # had outgrown the target set, which let a count survive a
-        # reconnect). Every pass, unconditionally: it is a dict the size
-        # of the live targets.
+        # more. `_failures` is pruned on success and on escalation, but
+        # not when a subscription simply goes away, so a target that
+        # failed once and was then unsubscribed would leave an entry
+        # forever -- and, when the target came back, escalate after ONE
+        # failure instead of three. Every pass, unconditionally: it is a
+        # dict the size of the live targets.
         #
-        # It is small and it is genuinely unbounded: `Subscription.target`
-        # includes the client-chosen `world_id` and `session_id`, so a
-        # connection can mint distinct targets at will. Bounded now by the
-        # live subscriptions rather than by the client's imagination.
+        # It is small but genuinely unbounded unless pruned:
+        # `Subscription.target` includes the client-chosen `world_id` and
+        # `session_id`, so a connection can mint distinct targets at will.
+        # Pruned, it is bounded by the live subscriptions rather than by
+        # the client's imagination.
         if self._failures:
             self._failures = {
                 target: count
@@ -1180,55 +1162,40 @@ class ResultHub:
         # ONE SNAPSHOT IN FLIGHT PER TARGET, ALL TARGETS AT ONCE, EACH
         # OFFERED THE MOMENT IT LANDS, ONE DEADLINE FOR THE PASS.
         #
-        # Three defects lived in the loop this replaces, and the second
-        # was introduced by the fix for the first.
-        #
-        # First, targets were polled SEQUENTIALLY with no deadline, so a
-        # wedged World Builder read delivered nothing, for any cartridge,
-        # across 12 poll windows with no error and no `fail_target`; and a
-        # merely slow (2 s) producer made Document Memory and Scene
-        # Understanding 5x slower, because the pass length was the SUM of
-        # the targets.
-        #
-        # Second, the fix wrapped each call in `asyncio.wait_for`, which
-        # cancels the await and NOT the thread -- and then re-dispatched
-        # the same target on the very next pass while the previous thread
-        # was still running. A reviewer measured one leaked thread per
-        # poll per wedged target into the default executor, which the
+        # A target that already has a snapshot running is NOT dispatched
+        # again -- its future is kept in `_in_flight` and simply checked --
+        # which bounds the threads at one per target by construction,
+        # however long a read wedges. (`asyncio.wait_for` cancels the
+        # await and NOT the thread; re-dispatching a wedged target every
+        # pass leaked one thread per poll into the default executor the
         # capture path shares: at the default 0.5 s poll and 10 s deadline
         # a single wedged target exhausted a 24-worker pool in ~252 s,
         # after which EVERY `asyncio.to_thread` in the process queued
         # forever -- `stream_start`'s `capture_opened`, the disconnect
-        # cleanup, the subscribe-time snapshot, `supervisor.shutdown`.
-        # Before that fix the wedge silenced the result channel and
-        # nothing else. That is a fix worse than its defect, and it is
-        # this campaign's own.
+        # cleanup, the subscribe-time snapshot, `supervisor.shutdown`.)
         #
-        # Third, the sequential shape meant the 10 s deadline only turned
-        # ">10 s" into a failure; a 2 s producer still cost everyone 2 s.
-        # The version after it waited for ALL of the pass's futures before
-        # offering any, which turned sum into max and was not a fix: a
-        # reviewer measured CV Lab, Object Memory and Document Memory at
-        # 7 deliveries in 20 s beside a 2.1 s World Builder read -- 17.5%
-        # of their cadence -- and a full 10 s blackout for every cartridge
-        # on the pass that first meets a wedge. Each future is now offered
-        # as it completes; the slow one costs only its own subscribers.
+        # Every target that is free is dispatched at once, and each result
+        # is offered as it lands, so a slow target costs only its own
+        # subscribers. Polling targets sequentially made the pass length
+        # the SUM of the targets (a wedged World Builder read delivered
+        # nothing, for any cartridge, across 12 poll windows; a 2 s
+        # producer made Document Memory and Scene Understanding 5x
+        # slower), and waiting for ALL of the pass's futures before
+        # offering any only turned sum into max: CV Lab, Object Memory and
+        # Document Memory managed 7 deliveries in 20 s beside a 2.1 s
+        # World Builder read (17.5% of their cadence), and a full 10 s
+        # blackout for every cartridge on the pass that first meets a
+        # wedge.
         #
-        # So: a target that already has a snapshot running is NOT
-        # dispatched again -- its future is kept in `_in_flight` and
-        # simply checked -- which bounds the threads at one per target by
-        # construction, however long a read wedges. Every target that is
-        # free is dispatched, and the pass waits on this pass's own
-        # futures with a bounded wait that does not cancel: a slow
-        # snapshot survives into the next pass and is delivered when it
-        # lands, as the freshest state there is. A target still pending
-        # at the deadline counts one failure, and the existing escalation
-        # tells its subscribers after three. A target still pending
-        # `SNAPSHOT_ABANDON_MULTIPLIER` deadlines later is forgotten and
-        # dispatched afresh next pass -- the version before this never
-        # re-dispatched, so a thread that never returned poisoned its
-        # target for the life of the process, and a fault that cleared
-        # was never noticed.
+        # The pass waits on its own futures with a bounded wait that does
+        # not cancel: a slow snapshot survives into the next pass and is
+        # delivered when it lands, as the freshest state there is. A target
+        # still pending at the deadline counts one failure, and the
+        # escalation tells its subscribers after three. A target still
+        # pending `SNAPSHOT_ABANDON_MULTIPLIER` deadlines later is
+        # forgotten and dispatched afresh next pass, so a thread that never
+        # returns does not poison its target for the life of the process
+        # and a fault that cleared is noticed.
         watchers_now: dict = {}
         for channel in self._channels:
             for subscription in channel._subscriptions.values():
@@ -1246,13 +1213,11 @@ class ResultHub:
                 not self._in_flight[target].done()
                 and self._past_abandonment(target)
             ):
-                # ABANDONED -- watched or not. The first version swept
-                # only the watched targets, and a wedged target has no
+                # ABANDONED -- watched or not. A wedged target has no
                 # watchers by the time the cap is reached: the escalation
                 # fails them off after three deadlines (~11 s), the cap is
                 # three deadlines PLUS (30 s), and nothing in between
-                # looks at an unwatched pending future. Dead code, and
-                # the target stayed poisoned.
+                # looks at an unwatched pending future.
                 self._abandon(target)
 
         now = self._clock()
@@ -1271,11 +1236,10 @@ class ResultHub:
                 # CARRIED OVER, DONE, STILL WATCHED: collected now AND
                 # replaced now. Finished after its own pass's budget,
                 # for a subscriber who is still here -- the freshest
-                # state there is. The version before this collected it
-                # and did not dispatch its replacement until the NEXT
-                # pass, so a healthy-but-slow target lost a whole poll
-                # interval per delivery: a reviewer measured a 0.55 s
-                # read and a 0.80 s read both delivering every 1.52 s.
+                # state there is. Dispatching the replacement only on the
+                # NEXT pass would cost a healthy-but-slow target a whole
+                # poll interval per delivery (a 0.55 s read and a 0.80 s
+                # read both delivered every 1.52 s).
                 self._collect(target, future, now)
                 future = None
             elif (
@@ -1286,31 +1250,28 @@ class ResultHub:
                 #
                 # The test is the WATCHERS, not "did a pass run while nobody
                 # watched" -- no pass may run in that gap at all (the phone
-                # drops and returns between two polls), and the first
-                # version of this rule missed exactly that and handed a
-                # reconnected phone the stale result. And not merely
-                # `done()` either: a target watched by the same subscriber
-                # throughout, whose snapshot simply finished after its
-                # pass's deadline, is the freshest state there is; the
-                # version before that discarded it and re-dispatched -- one
-                # extra producer entry, caught by the leak test's count.
+                # drops and returns between two polls), and a pass-based
+                # test would hand a reconnected phone the stale result. And
+                # not merely `done()` either: a target watched by the same
+                # subscriber throughout, whose snapshot simply finished
+                # after its pass's deadline, is the freshest state there
+                # is; discarding it and re-dispatching costs one extra
+                # producer entry.
                 #
                 # The watchers are the `Subscription` OBJECTS, not their
                 # ids: ids are minted per connection, so every phone's
                 # first subscription is "sub-1", and a reconnected phone's
-                # "sub-1" matched the dead socket's "sub-1" -- a false
+                # "sub-1" would match the dead socket's "sub-1" -- a false
                 # "still watching" for exactly the case this rule exists
-                # for. A reviewer parametrised the shipped test with the
-                # reused id and it failed.
+                # for.
                 #
                 # This is a snapshot computed for a subscription that has
                 # since gone -- the target left `targets` for a pass while
                 # its thread was still running, and came back. Delivering
-                # it sent a stale revision to a NEW subscription: a
-                # reviewer measured `rev 1` then **`rev 0`**, 7.5 s old,
-                # on a reconnected phone's default target, which is the
-                # one every phone subscribes to. Age was unbounded, not
-                # "at most one poll" as the previous comment claimed.
+                # it sent a stale revision to a NEW subscription (`rev 1`
+                # then **`rev 0`**, 7.5 s old, on a reconnected phone's
+                # default target, which is the one every phone subscribes
+                # to). Its age is unbounded, not "at most one poll".
                 self._forget(target)
                 future = None
             if future is None:
@@ -1330,12 +1291,11 @@ class ResultHub:
 
         # ONLY THE FUTURES DISPATCHED THIS PASS are waited on. A
         # carried-over future that is already past the deadline is not
-        # waited on again: the previous version put it back into the wait
-        # every pass, so one wedged target held EVERY pass at the full
-        # deadline until its subscribers were told -- a reviewer measured
-        # the healthy cartridges dropping from ~160 deliveries to 38 in
-        # 16 s. A wedge now costs the others nothing after its first
-        # pass; it is checked with `done()` and counted below.
+        # waited on again: putting it back into the wait every pass would
+        # hold EVERY pass at the full deadline until its subscribers were
+        # told (the healthy cartridges dropped from ~160 deliveries to 38
+        # in 16 s). A wedge costs the others nothing after its first pass;
+        # it is checked with `done()` and counted below.
         #
         # And each is offered AS IT LANDS: `FIRST_COMPLETED`, in a loop,
         # against a wall-clock budget (the hub's own clock may be a test's
@@ -1344,9 +1304,9 @@ class ResultHub:
         # The budget is the POLL INTERVAL, not the snapshot deadline: a
         # pass that waits for its slowest future waits for the slowest
         # target, and with the loop's sleep on top of it every cartridge
-        # ran at "slowest + poll" -- 20% of cadence beside a 2.1 s read,
+        # runs at "slowest + poll" -- 20% of cadence beside a 2.1 s read,
         # and a 10 s blackout for everyone on the first pass to meet a
-        # wedge, both measured twice. A future that outlives the budget
+        # wedge (both measured twice). A future that outlives the budget
         # is simply carried into the next pass, where it is collected
         # done or counted against the deadline by its age.
         pending = set(fresh)
@@ -1368,11 +1328,10 @@ class ResultHub:
                 continue
             # ONLY ONCE IT HAS ACTUALLY AGED PAST THE DEADLINE. A future
             # dispatched moments ago by a subscribe (`first_snapshot`)
-            # or by the previous pass is not a wedge, and the first
-            # version counted it as one -- logging "has exceeded
-            # 10.0s" six milliseconds after the connection opened.
-            # Three subscribes during three passes would have told a
-            # healthy target's subscribers it had failed.
+            # or by the previous pass is not a wedge; counting it as one
+            # logged "has exceeded 10.0s" six milliseconds after the
+            # connection opened, and three subscribes during three passes
+            # would tell a healthy target's subscribers it had failed.
             age = now - self._dispatched_at.get(target, now)
             if age < SNAPSHOT_TIMEOUT_SECONDS:
                 continue
@@ -1410,7 +1369,3 @@ def classify_cursor(since_revision, current_revision) -> str:
     if since_revision == current_revision:
         return CURSOR_MATCHED
     return CURSOR_STALE
-
-
-def world_builder_result_type(result_type: str) -> bool:
-    return result_type == RESULT_TYPE_STATUS

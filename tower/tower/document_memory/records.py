@@ -11,7 +11,7 @@ never a **reading**. `observed_at`, `observed_seconds`, `pages_observed`.
 Nothing here is named `read` or `viewed`, and nothing may be.
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 from tower.confidence import Confidence
 
@@ -138,8 +138,8 @@ def page_observation_from_json_dict(data: dict) -> PageObservation:
         image_relpath=data.get("image_relpath"),
         visual_hash=data.get("visual_hash"),
         box_count=data.get("box_count", 0),
-        # A record written before this field existed is readable exactly
-        # when it carries text: that is what "readable" meant then.
+        # A stored page without `readable` (an older store) counts as
+        # readable exactly when it has text.
         readable=data.get("readable", bool(text.strip())),
     )
 
@@ -233,7 +233,7 @@ class DocumentObservation:
 
     @property
     def text(self) -> str:
-        """Every page's text, in page order. The retrieval corpus."""
+        """Every page's text, in page order."""
         return "\n".join(page.text for page in self.pages if page.text)
 
     @property

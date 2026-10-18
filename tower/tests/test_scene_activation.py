@@ -30,6 +30,7 @@ import time
 import pytest
 
 from tower.live_session import (
+    LiveSession,
     STATE_FAILED,
     STATE_PAUSED,
     STATE_RUNNING,
@@ -243,6 +244,68 @@ class TestTheOperatorPath:
         session.watcher_joined("phone:sub-1", owner="phone")
         session.watcher_left("phone:sub-1")
         assert session.state == STATE_RUNNING
+
+    def test_stream_closure_releases_hold_for_a_later_watched_session(self):
+        session = _session()
+        session.start()
+        assert _await_state(session, STATE_RUNNING)
+        session.stream_opened(owner="operator-phone")
+        session.stream_closed(owner="operator-phone")
+        assert _await_state(session, STATE_STOPPED)
+
+        session.stream_opened(owner="watcher-phone")
+        session.watcher_joined("watcher-phone:sub-1", owner="watcher-phone")
+        assert _await_state(session, STATE_RUNNING)
+        session.watcher_left("watcher-phone:sub-1")
+
+        assert _await_state(session, STATE_STOPPED, timeout=0.5)
+        assert session.status()["demand"]["operator_hold"] is False
+
+    @staticmethod
+    def _watched_then_unwatched_session():
+        session = _session()
+        session.stream_opened(owner="phone")
+        session.watcher_joined("phone:sub-1", owner="phone")
+        assert _await_state(session, STATE_RUNNING)
+        assert session.status()["demand"]["operator_hold"] is False
+        return session
+
+    def test_an_operator_start_after_a_demand_stop_decision_wins(self, monkeypatch):
+        # The order R2 found, forced: the watcher path decides to stop
+        # under `_demand`, the operator starts, THEN the stop runs.
+        session = self._watched_then_unwatched_session()
+        decided = session._stop_then_reconcile
+
+        def operator_starts_between(*args, **kwargs):
+            session.start()
+            return decided(*args, **kwargs)
+
+        monkeypatch.setattr(session, "_stop_then_reconcile", operator_starts_between)
+        session.watcher_left("phone:sub-1")
+
+        assert session.status()["demand"]["operator_hold"] is True
+        assert not _await_state(session, STATE_STOPPED, timeout=0.3)
+        assert session.state == STATE_RUNNING
+
+    def test_an_operator_start_during_a_demand_stop_is_restarted(self, monkeypatch):
+        # The narrower window: the operator starts after the stop path
+        # re-checked the hold but before the base stop closed the door.
+        session = self._watched_then_unwatched_session()
+        base_stop = LiveSession.stop
+        fired = []
+
+        def operator_starts_first(self_):
+            if self_ is session and not fired:
+                fired.append(True)
+                session.start()
+            return base_stop(self_)
+
+        monkeypatch.setattr(LiveSession, "stop", operator_starts_first)
+        session.watcher_left("phone:sub-1")
+
+        assert fired
+        assert session.status()["demand"]["operator_hold"] is True
+        assert _await_state(session, STATE_RUNNING)
 
     def test_a_stream_alone_does_not_start_it_after_an_http_stop(self):
         session = _session()

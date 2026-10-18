@@ -64,11 +64,11 @@ required fields rather than documentation.
 
 EVERY BOOLEAN IS WRAPPED IN `bool()`
 
-`bool` subclasses `int` in Python. A `registered: 1` already shipped once
-in this repository and would fail every Swift `as? Bool` decode.
+`bool` subclasses `int` in Python, and a `1` where a boolean belongs (for
+example `registered: 1`) fails every Swift `as? Bool` decode.
 """
 
-from tower.results.contracts import SCENE_LIVE_CONTRACT, TIME_BASIS
+from tower.results.contracts import TIME_BASIS
 from tower.scene.detect import CLASSES_OF_INTEREST
 from tower.scene.live import (
     STATE_FAILED,
@@ -91,7 +91,7 @@ from tower.scene.state import (
     describe_position,
 )
 
-# The three sentences above, as values a decoder can switch on.
+# The claims in the module docstring, as values a decoder can switch on.
 SCENE_CLAIM = "visible-now-not-a-record"
 IDENTITY_SCOPE = "anonymous-and-unpublished"
 ABSENCE_MEANING = "not-visible-to-this-cartridge"
@@ -106,12 +106,12 @@ COUNT_BASIS = "confirmed-tracks"
 # move because a set iterated differently.
 REPORTED_CLASSES = tuple(sorted(CLASSES_OF_INTEREST))
 
-# Since 2026-09-07 nothing is excluded from `where`: "is there a person
-# on my left" is one of the questions this cartridge exists to answer,
-# and a side count for people is a count, not a track. The earlier
-# refusal reasoned that a per-person position sampled repeatedly is a
-# movement trace; three buckets of counts, with no handle to join two
-# payloads by, carry no more of a trace than the counts already do.
+# Nothing is excluded from `where`: "is there a person on my left" is one
+# of the questions this cartridge exists to answer, and a side count for
+# people is a count, not a track. A per-person position sampled
+# repeatedly would be a movement trace; three buckets of counts, with no
+# handle to join two payloads by, carry no more of a trace than the
+# counts already do.
 POSITION_EXCLUDED_LABELS = ()
 
 # When these were measured, and on what. Carried on every payload,
@@ -273,12 +273,11 @@ SINGLE_PERSON_NOTE = (
 # person on the right within one session and label rows positionally. Its types
 # exist for it.
 #
-# This cartridge refuses, and the refusal was delivered as SILENCE until
-# an adversarial review pointed out that this file's own rule forbids
-# that: "a refusal that depends on remembering not to fill a field is not
-# a refusal". A client finding nothing to decode cannot tell "refused"
-# from "not implemented yet", and those call for opposite responses --
-# build a different screen, or wait for the next Tower.
+# This cartridge refuses, and the refusal is delivered as a value, not as
+# silence: "a refusal that depends on remembering not to fill a field is
+# not a refusal". A client finding nothing to decode cannot tell
+# "refused" from "not implemented yet", and those call for opposite
+# responses -- build a different screen, or wait for the next Tower.
 TRACKS_ABSENT_REASON = (
     "this cartridge publishes no per-entity list and no track handle, not "
     "even a session-scoped one. A handle plus a timestamp lets a "
@@ -354,7 +353,7 @@ _CURRENT_STATES = (STATE_RUNNING,)
 # Where the full reasoning lives. The refusals in `tower/scene/state.py`
 # are research abstracts -- the `in_front_of` entry alone runs to 1,500
 # characters of flip rates and sample sizes -- and every one of them is
-# CONSTANT. Publishing them whole put 4 KB of unchanging prose into a
+# CONSTANT. Published whole they would put 4 KB of unchanging prose into a
 # payload the heartbeat re-sends every 2 s, per subscriber, on the socket
 # that shares its send lock with the frame path.
 #
@@ -452,9 +451,8 @@ def _people_block(state) -> dict:
         # Zero is an answer. "Nothing is established" is not, and this is
         # the one field on this payload where the difference is most
         # likely to be mistaken for data. The reason says WHICH kind of
-        # not-established it is -- a reviewer found the first version
-        # asserting an expiry that had not happened for a person whose
-        # face was simply not found.
+        # not-established it is: an expiry that has not happened must not
+        # be asserted for a person whose face was simply not found.
         facing = None
         reason = _not_established_reason(people)
         oldest = max(
@@ -494,7 +492,7 @@ def _people_block(state) -> dict:
         "facing_unknown": unknown,
         # Two states are produced and the other two of the enum
         # `ios/docs/agent-handoffs/IOS-TO-TOWER.md` §4.2 asks for are not, and
-        # the reason is now measurement rather than privacy: nothing evaluated
+        # the reason is measurement rather than privacy: nothing evaluated
         # on this platform can say "away" or "side-on" with usable precision
         # (0.02-0.34 on 966 labelled persons), so `unknown` means "not
         # established" and covers both.
@@ -682,9 +680,8 @@ def live_payload(status: dict, state) -> dict:
         # Null and unexpressible. There is no key below this one that
         # could hold a relation, which is what makes the refusal a
         # refusal rather than an omission somebody has to keep making.
-        # Null and unexpressible, and the same treatment for the entity
-        # list: a refusal a client can act on, rather than an absence it
-        # has to interpret.
+        # The entity list gets the same treatment: a refusal a client can
+        # act on, rather than an absence it has to interpret.
         "tracks": None,
         "tracks_absent_reason": TRACKS_ABSENT_REASON,
         "single_person_note": SINGLE_PERSON_NOTE,

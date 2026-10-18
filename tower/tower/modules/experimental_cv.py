@@ -19,16 +19,15 @@ DESCRIPTOR = ModuleDescriptor(
 class ExperimentalCVModule(Module):
     """The one Lab slot in the container. What is IN it is `CVLab`'s job.
 
-    This class used to hold the experiment itself. It no longer does, and
-    the reason is not tidiness: an experiment chosen at runtime has a
-    lifecycle of its own -- armed, paused, swapped, failed and retried --
-    and none of those are module transitions. Folding them into
-    `ModuleState` would have meant either a module that goes READY and
-    ACTIVE several times a minute, or `mark_failed()` (which is TERMINAL)
-    firing because a weight download timed out.
+    This class does not hold the experiment itself. An experiment chosen
+    at runtime has a lifecycle of its own -- armed, paused, swapped,
+    failed and retried -- and none of those are module transitions.
+    Folding them into `ModuleState` would mean either a module that goes
+    READY and ACTIVE several times a minute, or `mark_failed()` (which is
+    TERMINAL) firing because a weight download timed out.
 
-    So the split is: the container drives this module exactly as it always
-    did, once, at startup; and `CVLab` drives what the module is holding.
+    So the split is: the container drives this module once, at startup;
+    and `CVLab` drives what the module is holding.
     A failed experiment leaves the Lab recoverable and the module ACTIVE,
     which is what makes "try the next experiment" a request rather than a
     restart.
@@ -38,16 +37,14 @@ class ExperimentalCVModule(Module):
     make this descriptor a lie, and the descriptor is what the privacy
     policy is enforced against.
 
-    **The live preview does not make it a lie, and the reasoning is worth
-    writing down rather than assuming.** `persists_data` is unchanged
+    **The live preview does not make it a lie.** `persists_data` holds
     because nothing reaches a disk: one image lives in memory, is replaced
     by the next, and is gone when the run stops.
-    `retains_raw_imagery` is unchanged because nothing retained is raw --
-    an experiment holds a Canny edge map, a depth array or a set of
-    boxes, never the frame, and `experiments.scene_structure` is where
-    that guarantee is actually implemented. Neither field would survive a
-    design that served a filtered photograph, which is one of the reasons
-    this one does not.
+    `retains_raw_imagery` holds because nothing retained is raw -- an
+    experiment holds a Canny edge map, a depth array or a set of boxes,
+    never the frame, and `experiments.scene_structure` is where that
+    guarantee is actually implemented. Neither field would survive a
+    design that served a filtered photograph.
     """
 
     descriptor = DESCRIPTOR
@@ -62,35 +59,33 @@ class ExperimentalCVModule(Module):
         preview=None,
     ) -> None:
         super().__init__()
-        # Constructed here rather than injected so that every caller which
-        # built a module before this change still builds a working one,
-        # and so there is exactly one Lab per module -- a second Lab
-        # sharing a slot is the "two experiments at once" failure the
-        # whole design exists to make impossible.
+        # Constructed here rather than injected so that there is exactly
+        # one Lab per module -- a second Lab sharing a slot is the "two
+        # experiments at once" failure the whole design exists to make
+        # impossible.
         self.lab = CVLab(
             experiment_name,
             settings or ExperimentSettings(),
             experiment=experiment,
             connection_count=connection_count,
             # Passed straight through. This class holds the Lab and does
-            # not hold policy: `main.py` reads `Settings`, and every
-            # existing caller that built a module without one still gets a
-            # working Lab with previews on.
+            # not hold policy: `main.py` reads `Settings`, and a module
+            # built without a preview setting still gets a working Lab
+            # with previews on.
             preview=preview,
         )
 
     async def _do_load(self) -> None:
-        # Propagates, deliberately. An unknown name or a failed load of
-        # the STARTUP DEFAULT reaches ModuleContainer, which marks the
-        # module FAILED -- a typo in TOWER_CV_EXPERIMENT must still be
-        # loud, and every existing lifecycle and load-timeout test encodes
-        # that. The recoverable path is the interactive one; see
-        # `CVLab.start`.
+        # An unknown name or a failed load of the STARTUP DEFAULT is
+        # caught in `CVLab.load_initial`: it is logged at ERROR naming
+        # TOWER_CV_EXPERIMENT, the Lab reports `failed`, and the module
+        # still reaches ACTIVE so a client can start another experiment
+        # (`CVLab.start`). Only `CancelledError` -- the container's load
+        # timeout -- propagates, and marks the module FAILED.
         #
-        # The off-thread load, and the reason it must be off-thread, now
-        # live in `CVLab.load_initial`. What matters here is only that
-        # this still awaits, so the container's load timeout still bounds
-        # it.
+        # The off-thread load, and the reason it must be off-thread, live
+        # in `CVLab.load_initial`. What matters here is only that this
+        # awaits, so the container's load timeout bounds it.
         await self.lab.load_initial()
 
     async def _do_start(self) -> None:
