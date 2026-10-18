@@ -319,8 +319,7 @@ def follow_capture(directory: Path, *, poll_seconds: float, max_idle_polls,
     nonzero, and every such failed follow left an empty world behind (86
     of the 123 worlds in the corpus on this host held a `world.json` and
     no sessions). Checking here makes the refusal (`SystemExit`) happen
-    before
-    `main()` reaches the store. Creating the world before the first frame
+    before `main()` reaches the store. Creating the world before the first frame
     stays deliberate, so a Tower whose phone has connected but not yet sent a
     frame reports a world that exists and is empty.
     """
@@ -952,7 +951,7 @@ class BackgroundSolver:
         object and is recorded at the keyframe count it launched at.
 
         In `final_immediate` mode, once the capture has stopped or the background
-        is closed, it instead calls `stop_background` and launches nothing.
+        is closed, it instead calls `stop_background` and leaves nothing running.
         """
         if self._final_immediate and (self._background_closed or (
                 self._capture_stopped is not None and self._capture_stopped())):
@@ -2037,9 +2036,11 @@ def main(argv=None) -> int:
     final solve through `BackgroundSolver.run_final`, then the final
     `engine.build`. The outcome (`complete`, `interrupted`, ...) is recorded on
     the session record before the lock is released. After the lock is released
-    it runs, as asked, registration (`--register`), `final_surface_stages`
-    (`--surface`, `--appearance`) and `densify` (`--densify`), each stage
-    recorded and skipped on a hard stop.
+    it runs, as asked, registration (`--register`; skipped only when the global
+    solve already placed the segments, run even after a hard stop, and reported
+    only in the printed report), then `final_surface_stages` (`--surface`,
+    `--appearance`) and `densify` (`--densify`), each of those recorded and
+    skipped on a hard stop.
 
     Prints a report (JSON or a table) and returns the exit code.
 

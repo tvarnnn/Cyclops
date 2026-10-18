@@ -93,7 +93,8 @@ async def _handle_frame_message(
     result is sent as `frame_result`, with the optional `mean_intensity`,
     `metrics` and `cv_lab` provenance fields.
 
-    Every path that decoded a frame ends in `_fan_out_frame`, after the reply,
+    Every path that decoded a frame and still has a client ends in
+    `_fan_out_frame`, after the reply,
     so the CV module's verdict never decides whether the recorder and the live
     cartridges see the frame. A client that disconnects before the reply
     raises `WebSocketDisconnect` to the caller.
