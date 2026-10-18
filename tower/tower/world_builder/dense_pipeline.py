@@ -1827,8 +1827,9 @@ def densify(
     depth (per-keyframe depth fitted to the solve), fuse (merge the aligned
     depth into points) and pack (write the point levels and manifest). Unless
     `keep_intermediates`, the work files are pruned afterwards. `should_stop`
-    ends it as `stopped`, during depth or fuse or between stages. A missing prerequisite is returned as
-    `unavailable`; any other error is returned as `failed` and never raised
+    is polled per frame inside depth and fuse and ends the run as `stopped`
+    there; pack, once reached, always runs. A missing prerequisite is returned
+    as `unavailable`; any other error is returned as `failed` and never raised
     into finalization. Status is written to `status.json` throughout.
     """
     from tower.world_builder.global_solve import load_solution
