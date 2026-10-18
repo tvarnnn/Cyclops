@@ -1,5 +1,5 @@
-"""FOW v1.2 photo floor plan transport (wire: mail 303, tower/docs/contracts/
-WORLD-BUILDER-GUIDANCE-IMAGERY.md "Photo floor plan v1.2").
+"""Photo floor plan transport (tower/docs/contracts/WORLD-BUILDER-GUIDANCE-IMAGERY.md
+"Photo floor plan v1.2").
 
 Always registered by `main.py`; a photo plan exists only for a coverage landing. Both
 URL identifiers are untrusted and must name one contained world and one of its
@@ -25,7 +25,7 @@ router = APIRouter()
 _HEX = frozenset("0123456789abcdef")
 # A manifest request (never a status poll) arriving while its landing's job is in
 # flight waits for it at most 1.6 s, its own constant: decoupled from the job's wall
-# cap (manager 323), so the shared threadpool is never held longer. A landing that
+# cap, so the shared threadpool is never held longer. A landing that
 # publishes later is picked up by the phone's bounded re-fetch.
 _MANIFEST_WAIT_S = 1.6
 

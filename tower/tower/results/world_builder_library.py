@@ -74,14 +74,14 @@ def lock_speaks_for(session) -> bool:
     only while its record is open or its finalization is still pending.
     Outside that window the lock belongs to somebody else's work -- a walk
     into a new session of the same world, or the recovery finisher on a
-    sibling session -- and reading it as this session's "finalizing" told the
-    wearer a finished, or historical, walk was being improved (review,
-    2026-09-23: with the finisher now running at every idle moment, that was
-    six to sixteen minutes of false "Improving" on each sibling). The same
-    rule `world_builder_render.session_build_running` already applies.
+    sibling session -- and reading it as this session's "finalizing" would tell
+    the wearer a finished, or historical, walk was being improved (the
+    finisher runs at every idle moment, so that is six to sixteen minutes of
+    false "Improving" on each sibling). The same rule
+    `world_builder_render.session_build_running` already applies.
 
     A session with NO finalization record keeps the lock as its evidence: a
-    builder that writes none (the pre-2026-09-06 builder, a replay) holds the
+    builder or replay that writes none holds the
     lock through its finalization and has nothing else to show it. The lock
     is set aside only where the session's own record says its finalization
     SETTLED -- `complete` or `interrupted` -- because then the lock is
@@ -100,9 +100,8 @@ def _has_geometry(store: WorldStore, world_id: str, session_id: str, manifest) -
 
     The rule itself lives in the store because the render page needs the
     same answer and the two modules must not import each other -- see
-    `test_the_three_surfaces_ask_the_same_question_of_the_same_files`,
-    which was written after a reviewer counted three copies of an earlier
-    version of this and found them free to drift.
+    `test_the_three_surfaces_ask_the_same_question_of_the_same_files`, which
+    pins that this module, the render page and the status producer agree.
     """
     return session_has_drawable_geometry(store, world_id, session_id, manifest)
 
@@ -161,7 +160,7 @@ APPEARANCE_RETENTION_NOTE = (
 
 def _appearance_summary(store: WorldStore, world_id: str, session_id: str, world) -> dict | None:
     """The appearance artifact as IMAGERY (WORLD-BUILDER-WORLDS.md §2, privacy
-    lane §3.4; review 1, m6), or None when the session has none.
+    lane §3.4), or None when the session has none.
 
     Reported whether or not it is served now, because it is on disk either
     way: `state` says whether the routes serve it (`served`), would once the
@@ -241,13 +240,10 @@ def _photographic_build_running(store: WorldStore, world_id: str,
     """Whether a photographic stage is working on this session right now.
 
     THE STATUS PRODUCER'S OWN PROBE, imported rather than re-derived, because
-    a second copy of this predicate is how the two surfaces drift -- and the
-    drift is not cosmetic here. Measured after the status producer learned
-    this and the listing had not: the panel said `finalizing` / "Improving"
-    while the Saved Worlds row for the SAME session said `complete`. A wearer
-    who opens the picker reads "Complete" and shuts the Tower down, which is
-    the precise failure the whole change exists to prevent, told on the
-    surface a person actually chooses a walk from.
+    a second copy of this predicate is how the two surfaces drift -- the panel
+    says `finalizing` / "Improving" while the Saved Worlds row for the SAME
+    session says `complete`, and a wearer who reads "Complete" in the picker
+    shuts the Tower down mid-build.
 
     Imported at call time. `results/world_builder` imports `_sortable` from
     THIS module at module scope, so the reverse cannot be a module-scope
@@ -270,14 +266,11 @@ def _photographic_build_running(store: WorldStore, world_id: str,
                          unobservable)
         return evidence is not None
     except Exception:  # noqa: BLE001 -- a liveness probe must not 500 a listing
-        # FAILING OPEN IS SAFE HERE NOW, AND IT WAS NOT BEFORE. This used to
-        # be the row's only source of "something is still working on it", so
-        # `False` was a row saying `complete` over a world mid-build -- the
-        # warning that stood here said exactly that about itself. The row's
-        # authority is now `_photographic_state_for_row`, which answers from
-        # the RECORD and turns its own probe failures into the
-        # `unobservable` WORD rather than into silence. So a raise here only
-        # loses the sharper present-tense sentence, never the correction.
+        # Failing open is safe here: the row's authority is
+        # `_photographic_state_for_row`, which answers from the RECORD and
+        # turns its own probe failures into the `unobservable` WORD rather
+        # than into silence. So a raise here only loses the sharper
+        # present-tense sentence, never the correction.
         logger.debug(
             "[Tower][Worlds] photographic build probe raised for %s/%s; the "
             "row's word comes from the settled photographic state instead",
@@ -295,17 +288,14 @@ def _photographic_state_for_row(store: WorldStore, world_id: str,
     the same reason: one module answers the question, two surfaces ask it,
     and neither may be taken down by it.
 
-    WHY THIS REPLACED THE PRESENT-TENSE PROBE AS THE AUTHORITY. The row used
-    to be decided by `_photographic_build_running` alone -- "is a stage
-    running this millisecond" -- and the Mac/iOS validation of 2026-09-22
-    (§7, T3) caught all three ways that is the wrong question, on THIS
-    surface: a stage that FAILED is not running, a stage that is OWED is not
-    running, and a probe that BROKE reported not running. All three read
-    `complete` in the picker, which is the surface a person chooses a walk
-    from and then shuts the Tower down. `photographic_state` answers the
-    settled question instead, from the session's own stage record first, so
-    it is true across the gaps between stages and it cannot be flipped by a
-    broken probe.
+    WHY THIS, AND NOT THE PRESENT-TENSE PROBE, IS THE AUTHORITY.
+    `_photographic_build_running` alone ("is a stage running this
+    millisecond") is the wrong question in three ways: a stage that FAILED is
+    not running, a stage that is OWED is not running, and a probe that BROKE
+    reports not running. All three would read `complete` in the picker.
+    `photographic_state` answers the settled question instead, from the
+    session's own stage record first, so it is true across the gaps between
+    stages and it cannot be flipped by a broken probe.
 
     Never raises, and never returns None: a row with no answer is a row that
     keeps saying `complete`, which is the failure being fixed.
@@ -330,14 +320,18 @@ def _photographic_state_for_row(store: WorldStore, world_id: str,
 
 
 def _client_safe_finalization(finalization):
-    """The row's `finalization` (review V11, MED-B): `coherence_publish.client_safe_finalization`
+    """The row's `finalization`: `coherence_publish.client_safe_finalization`
     of the session's record -- `detail` and `notice` one line, with no path, traceback frame or
     user name, and at most 700 characters, the phone's own bound. The same transform `/ws`
     applies to `lifecycle.finalization.detail`. A clean record is returned as it is, so every
     row without raw text is byte for byte what it was; the record on disk is never touched.
 
     Never raises: this row is outside any handler, and one raise empties Saved Worlds. A
-    record the transform cannot take is sent with neither text rather than raw."""
+    record the transform cannot take is sent with neither text rather than raw.
+
+    `results/world_builder._client_safe_finalization` wraps the same transform
+    without the try/except (its failure raises into the `/ws` producer), so the
+    two are not interchangeable."""
     try:
         from tower.world_builder.coherence_publish import (  # noqa: PLC0415
             client_safe_finalization,
@@ -430,15 +424,12 @@ def session_state(session, *, live: bool, has_geometry: bool, manifest=None,
     the direct callers in `test_world_builder_finalize_cli` do, and is NOT
     the same as `never_recorded`.
 
-    `manifest` is the fact that made the sentence above true. Without it
-    the last line read `complete if has_geometry else unbuilt`, and
-    `unbuilt` is defined as "an older record that stopped and never
-    built" -- so a session whose manifest PROVES a build ran, and whose
-    derived tree was then deleted, was described to the wearer as one that
-    never built. `_lifecycle` grew a whole `interrupted` branch to stop
-    saying exactly that; this surface, which the docstring claims to
-    mirror and which is the one a person chooses a walk from, kept saying
-    it. Found by a reviewer building the state and reading both.
+    `manifest` is what keeps the last line from reading `complete if
+    has_geometry else unbuilt`: `unbuilt` is defined as "an older record that
+    stopped and never built", so a session whose manifest PROVES a build ran,
+    and whose derived tree was then deleted, must not be described as one
+    that never built. `_lifecycle` has a whole `interrupted` branch for the
+    same case, and this surface mirrors it.
 
     It carries the FIGURES, not just presence, because presence alone
     cannot tell "a build lost its output" from "a build found nothing" --
@@ -457,9 +448,8 @@ def session_state(session, *, live: bool, has_geometry: bool, manifest=None,
     # the status producer gives at length: those arms all answer "what
     # happened to this session", and none of them can be right while a
     # process is still working on it. `finalizing` is this listing's word for
-    # "stopped, and something is still finishing it", which is exactly true
-    # here -- the lock arm above says the same thing about the same session a
-    # few minutes earlier, when the lock was still held.
+    # "stopped, and something is still finishing it"; the lock arm above says
+    # the same thing about the same session while the lock is still held.
     photo_state = (photographic or {}).get("state")
     if still_building or is_unsettled(photo_state):
         # `is_unsettled` BESIDE the present-tense probe, and above every
@@ -468,10 +458,9 @@ def session_state(session, *, live: bool, has_geometry: bool, manifest=None,
         # three words in it and none of them is a world a wearer can be told
         # is finished: one has a process on it now, one is waiting for the
         # Tower's next idle moment to finish it, and one is a question nobody
-        # could answer. Before this, all three read `complete` here.
+        # could answer.
         return SESSION_FINALIZING
-    # `failed` DELIBERATELY FALLS THROUGH TO THE SETTLED ARMS, and this is
-    # the one judgement call in the change, so it is written down.
+    # `failed` DELIBERATELY FALLS THROUGH TO THE SETTLED ARMS.
     #
     # It is NOT `finalizing`. `finalizing` tells the wearer to wait, and a
     # stage that ran and raised is not going to be fixed by waiting --
@@ -479,7 +468,7 @@ def session_state(session, *, live: bool, has_geometry: bool, manifest=None,
     # Tower start, not the failed ones. Parking a failed build on "Improving"
     # forever is the same lie as "Saved", told in the other direction.
     #
-    # It is NOT `interrupted` either, although that was the tempting answer.
+    # It is NOT `interrupted` either.
     # `interrupted` is contract-defined (WORLD-BUILDER-WORLDS.md §2) as
     # "killed mid-walk, killed mid-finalization, stopped by a request or an
     # error, or a session whose manifest records real figures and whose
@@ -491,13 +480,13 @@ def session_state(session, *, live: bool, has_geometry: bool, manifest=None,
     # walk was lost, which is false and is the more alarming of the two
     # wrong answers.
     #
-    # AND IT WOULD BREAK THE AGREEMENT THIS MODULE EXISTS TO KEEP. The
+    # It would also break the agreement this module exists to keep. The
     # status producer's `_still_building` tests `is_unsettled(photo_state)`
     # and `failed` is not in `UNSETTLED_STATES`, so the panel keeps its
     # settled word (`ready`) for a failed photographic build. A row reading
     # `interrupted` over a panel reading `ready` is the picker/panel
     # disagreement that `test_the_picker_and_the_panel_agree_about_every_
-    # session` was written to stop.
+    # session` pins against.
     #
     # So the row keeps `complete` -- which is a claim about the SESSION --
     # and the failure is told where it is true and where nothing else can
@@ -513,33 +502,26 @@ def session_state(session, *, live: bool, has_geometry: bool, manifest=None,
         and has_geometry
     ):
         # `final_solve == solved` AS WELL, because that is the panel's
-        # rule and the first version of this branch omitted it: a Tower
-        # shut down mid-walk writes `complete` with `final_solve:
-        # skipped`, and the picker said "Complete" over a crashed walk the
-        # panel called "Interrupted". Five record shapes, all built by a
-        # reviewer, all disagreeing.
+        # rule: a Tower shut down mid-walk writes `complete` with
+        # `final_solve: skipped`, which the panel calls
+        # "Interrupted" (five record shapes built to test this all
+        # disagreed with the picker).
         # BEFORE the end-reason check, because a completed finalization
         # outranks how the capture ended -- the status producer's own rule
         # (`world_builder.py`, "a completed finalization outranks how the
-        # capture ended"), which this function claims to mirror. Leaving
+        # capture ended"), which this function mirrors. Leaving
         # the World Builder screen sends `session/stop` while the capture
         # is open, so the record reads `end_reason: interrupted` and then
-        # finalises `complete`, solved, with geometry: the picker said
-        # "Interrupted" over a session the panel called "Saved". Built by
-        # a dress-rehearsal reviewer.
+        # finalises `complete`, solved, with geometry: the panel calls that
+        # "Saved".
         return SESSION_COMPLETE
     if session.end_reason in ("error", "interrupted"):
         return SESSION_INTERRUPTED
     if finalization is not None:
-        # `has_geometry` HERE TOO, not only on the line below.
-        #
-        # This is the surface a person chooses a walk FROM, and it said
-        # "Complete" over a session whose derived tree was gone -- the
-        # same hole the status producer's READY branch had, found by a
-        # reviewer in the same pass, on the more damaging of the two
-        # surfaces. The docstring above says this "mirrors `_lifecycle`";
-        # it did not, and a claim like that is only worth what the code
-        # behind it does.
+        # `has_geometry` HERE TOO, not only on the line below: a completed
+        # finalization over a session whose derived tree is gone must not
+        # read "Complete", the same rule the status producer's READY branch
+        # applies. The docstring above says this "mirrors `_lifecycle`".
         if finalization.get("state") == FINALIZATION_COMPLETE and has_geometry:
             return SESSION_COMPLETE
         if finalization.get("state") != FINALIZATION_COMPLETE:
@@ -561,16 +543,15 @@ def _nothing_to_open(manifest) -> str:
     **A build recorded real figures and they are not on disk now.** Poses
     and points were deleted, or a write was lost. Something happened to
     this session, and `interrupted` says so. Reporting it as `unbuilt` --
-    documented as "stopped and never built" -- describes a session whose
-    own manifest proves the opposite, which is what a reviewer caught
-    `session_state` doing while its docstring claimed to mirror
-    `_lifecycle`.
+    documented as "stopped and never built" -- would describe a session whose
+    own manifest proves the opposite, and `_lifecycle` does not do that
+    either.
 
     **A build ran and found nothing.** `engine.build` writes a derived
     tree unconditionally, so this is a real and ordinary shape: a dark
     corridor, a blank wall, a lens cap, a calibration that never arrived.
-    `points.json` holds `{"points": []}`, 14 bytes, and eleven sessions on
-    the real 163-world root are exactly this. NOTHING WAS INTERRUPTED
+    `points.json` holds `{"points": []}`, 14 bytes (eleven sessions on
+    the real 163-world root were exactly this). NOTHING WAS INTERRUPTED
     here, and saying so tells a wearer the walk failed when it merely
     found nothing to reconstruct. `unbuilt` is the word, and iOS renders
     it **"No geometry"** -- which is the true sentence, and the one the
@@ -600,20 +581,18 @@ def _sortable(value):
 
     **RANK 1 FOR A REAL TIMESTAMP, RANK 0 FOR EVERYTHING ELSE, and that
     ordering is the point.** The sort is `reverse=True` over
-    `updated_at`, whose contract is "newest first". A first version of
-    this ranked by TYPE NAME -- `("str", ...)` sorts above `("num", ...)`
-    -- so a world carrying `updated_at: "2020-01-01T00:00:00Z"` was
-    placed **ahead of every real world in the picker**. A reviewer built
-    it against a copy of the real 163-world root and watched it take the
-    top row. A malformed value is not evidence of recency and must sort
-    last; under `reverse=True` that means lowest.
+    `updated_at`, whose contract is "newest first". Ranking by TYPE NAME
+    instead -- `("str", ...)` sorts above `("num", ...)` -- would place a
+    world carrying `updated_at: "2020-01-01T00:00:00Z"` **ahead of every
+    real world in the picker** (checked against a copy of the real 163-world
+    root, where it took the top row). A malformed value is not evidence of
+    recency and must sort last; under `reverse=True` that means lowest.
 
-    `float()` IS NOT CALLED, and calling it was the other half of the
-    same bug: `float(10**400)` raises `OverflowError`, out of a function
-    whose docstring said it never raises and into `GET /worlds`, which
-    has no handler -- a 500 losing all 163 worlds, on the same trigger
-    (a tie sending Python to the second key) as the case this was written
-    to fix. Python compares `int` and `float` without converting either.
+    `float()` IS NOT CALLED: `float(10**400)` raises `OverflowError`, out
+    of a function that promises never to raise and into `GET /worlds`,
+    which has no handler -- a 500 losing all 163 worlds, triggered by a tie
+    sending Python to the second key. Python compares `int` and `float`
+    without converting either.
     """
     if isinstance(value, bool):
         # Before the int check: `bool` IS an int, and `True` sorting among
@@ -624,19 +603,16 @@ def _sortable(value):
     ):
         # `int` FIRST AND WITHOUT `isfinite`. An int is finite by
         # construction, and `math.isfinite` converts to float first --
-        # `math.isfinite(10**400)` raises `OverflowError`, which is the
-        # very escape this function exists to prevent, reintroduced by
-        # the fix for the infinities. Caught by the test written for the
-        # first version of it. Python compares a big int against a float
-        # exactly, without converting either.
+        # `math.isfinite(10**400)` raises `OverflowError`, the very escape
+        # this function exists to prevent. Python compares a big int
+        # against a float exactly, without converting either.
         #
         # `math.isfinite` for the float, not `value == value`. The latter excludes NaN
         # -- which is not orderable, and which silently makes `sort`
         # return an arbitrary permutation rather than raise -- and ADMITS
-        # the infinities, so `float("inf")` sorted ahead of every real
-        # world under `reverse=True`: the exact outcome this function was
-        # written to stop a string producing. Reachable from the Tower's
-        # own writer: `json.dumps` emits the bare `Infinity` token by
+        # the infinities, so `float("inf")` would sort ahead of every real
+        # world under `reverse=True`, the outcome the ranking exists to
+        # prevent. Reachable from the Tower's own writer: `json.dumps` emits the bare `Infinity` token by
         # default and `json.loads` accepts it back.
         return (1, value)
     if value is None:
@@ -680,7 +656,7 @@ def build_world_listing(store: WorldStore) -> dict:
     counts as unreadable (see `_is_timestamp`): it is omitted, with a
     warning naming it, rather than served raw for the phone to choke on."""
     worlds = []
-    # T-UX1 (WORLDS §2b): read once per listing. Off, no row reads a phase or probes a process.
+    # (WORLDS §2b): read once per listing. Off, no row reads a phase or probes a process.
     finish_on = world_finish_stages_setting()
     for world_id in store.list_world_ids():
         try:
@@ -725,8 +701,7 @@ def build_world_listing(store: WorldStore) -> dict:
             # The SAME manifest rule the status producer and the geometry
             # route use -- the session's own copy, then the world's but
             # only if it names this session. Four readers, one rule; a
-            # fifth reader with its own idea is how this campaign's
-            # defects kept coming back.
+            # fifth reader with its own idea would let them drift.
             # `purpose="figures"`, NOT the identity rule the geometry
             # module uses. Everything this listing does with a manifest
             # reads COUNTS out of it -- `has_geometry` and
@@ -767,9 +742,8 @@ def build_world_listing(store: WorldStore) -> dict:
                 # would otherwise say exactly that. Counts on such a record
                 # are the start-of-session values, not the journal length.
                 "abandoned": session.ended_at is None and not live,
-                # One word, the status channel's vocabulary (additive,
-                # 2026-09-06): receiving | finalizing | complete |
-                # interrupted | unbuilt.
+                # One word, the status channel's vocabulary (additive):
+                # receiving | finalizing | complete | interrupted | unbuilt.
                 "state": session_state(
                     session,
                     # The world's lock, only where it speaks for THIS session.
@@ -803,12 +777,11 @@ def build_world_listing(store: WorldStore) -> dict:
                 # word above cannot hold this: `failed` and `complete`
                 # both render as a saved world, and the difference between
                 # "the photographic room is ready" and "the photographic
-                # build failed" is the whole of T3. Nothing but this block
-                # is sending it.
+                # build failed" is told only by this block.
                 "photographic": photographic,
                 # The builder's own account of how finalization went, or
-                # null on a record written before it existed -- CLIENT-SAFE
-                # (review V11, MED-B): this listing is unauthenticated, and
+                # null on a record written before it existed -- CLIENT-SAFE:
+                # this listing is unauthenticated, and
                 # a writer may have put raw exception text in `detail` (a
                 # `C:\Users\<user>\...` path, a traceback), or an old one in
                 # `notice`. See `_client_safe_finalization`.
@@ -816,7 +789,7 @@ def build_world_listing(store: WorldStore) -> dict:
                 # Additive, and null on every world built before the dense
                 # stage existed: what dense reconstruction this session holds.
                 "dense": _dense_summary(store, world_id, session_id),
-                # Additive (review 1, m6): the appearance artifact, reported as
+                # Additive: the appearance artifact, reported as
                 # the imagery it is. Null when the session has none.
                 "appearance": appearance,
                 # Additive (WORLD-BUILDER-COMPONENTS.md §3.1): the pieces of this
@@ -839,21 +812,17 @@ def build_world_listing(store: WorldStore) -> dict:
                     holder=holder if lock_speaks_for(session) else None)
                 if processing is not None:
                     sessions[-1]["processing"] = processing
-        # `_sortable` HERE TOO, and its absence here was the whole
-        # argument for it thirty lines below.
+        # `_sortable` HERE TOO.
         #
         # `session_from_json_dict` does not coerce -- `started_at =
         # data["started_at"]`, raw -- so a `session.json` carrying a
-        # string or a null reaches this comparison. This sort is at the
-        # top of the per-world loop, OUTSIDE the inner try that skips an
-        # unreadable session, outside `build_world_listing`'s only
-        # handler, on a route with none: the raise escapes before any
-        # world is returned, so **one bad session record empties Saved
-        # Worlds entirely** -- all 163 worlds, not a shortened list.
-        #
-        # A reviewer reproduced it by writing an ISO timestamp string into
-        # one `started_at`, immediately after the round that hardened the
-        # world sort against the identical shape and did not look up.
+        # string or a null would reach this comparison. This sort is
+        # OUTSIDE the inner try that skips an unreadable session, outside
+        # `build_world_listing`'s only handler, on a route with none: a
+        # raise escapes before any world is returned, so **one bad session
+        # record would empty Saved Worlds entirely** (all 163 worlds on the
+        # real root, not a shortened list). An ISO timestamp string in one
+        # `started_at` reproduces it.
         #
         # Since the `_is_timestamp` check above, no such row reaches this
         # sort from this function. `_sortable` stays because its promise
@@ -878,8 +847,6 @@ def build_world_listing(store: WorldStore) -> dict:
     # The phone redraws this list every time it arrives, so a tie makes
     # rows swap places under the wearer's finger.
     #
-    # Found as a suite flake (`assert 1 < 0` on two worlds created
-    # back-to-back) under a loaded machine, which is the same tie.
     # `created_at` breaks most of them and the id breaks the rest; the id
     # is arbitrary but it is STABLE, which is the property that matters.
     #
@@ -891,18 +858,10 @@ def build_world_listing(store: WorldStore) -> dict:
     # This sort is outside `build_world_listing`'s try/except and
     # `routes/geometry.py` has no handler, so the raise is a 500 on
     # `GET /worlds`: one malformed row and the picker loses every world.
-    #
-    # CORRECTION. An earlier version of this comment called that a
-    # regression introduced by the tiebreak, "which is why the single-key
-    # sort this replaced could not reach it". The sort this replaced was
-    # not single-key -- `git show e60d753` has the same three -- and a
-    # reviewer ran the old key against the same input and got the same
-    # `TypeError`. It is an old wart, and the fix is the same fix; only
-    # the story about where it came from was wrong.
-    # A reviewer produced both shapes. `_sortable` keeps every
-    # comparison within one type, and puts anything that is not a real
-    # timestamp LAST rather than merely somewhere -- see there for why
-    # "arbitrary but total" was not enough for the primary key.
+    # `_sortable` keeps every comparison within one type, and puts
+    # anything that is not a real timestamp LAST rather than merely
+    # somewhere -- see there for why "arbitrary but total" was not enough
+    # for the primary key.
     worlds.sort(
         key=lambda w: (
             _sortable(w["updated_at"]),

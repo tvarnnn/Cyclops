@@ -1057,12 +1057,13 @@ def test_geometry_and_trajectory_tell_the_same_story_about_one_session():
 def test_an_earlier_walk_can_actually_be_opened(tmp_path):
     """The status channel saying `ready` is worth nothing if the route 404s.
 
-    `read_derived` gates on `derived_is_current`, which read the WORLD's
-    manifest -- the one naming whichever session built last. So on a world
-    walked twice it judged the older session's keyframes against the newer
-    session's digest, found a mismatch, logged "stale; treating as absent"
-    and refused to serve it. "Open an earlier walk from Saved Worlds"
-    returned a 404 for a reconstruction sitting on disk.
+    `read_derived` gates on `derived_currency`, which must be asked with
+    the session id: without it the store consults the WORLD's manifest --
+    the one naming whichever session built last. On a world walked twice
+    that would judge the older session's keyframes against the newer
+    session's digest, find a mismatch, log "stale; treating as absent" and
+    refuse to serve it. "Open an earlier walk from Saved Worlds" would
+    return a 404 for a reconstruction sitting on disk.
 
     Four review rounds fixed that bug on the REPORTING path, one branch at
     a time. Nobody asked what the phone does after the status channel says
@@ -1125,15 +1126,14 @@ def _session_digest(store, world_id, session_id):
 def test_currency_has_three_answers_not_two(tmp_path):
     """"Unknown" is not "no", and folding it into one boolean broke both.
 
-    Two questions were being asked of `derived_is_current`: *is this
-    geometry current* (the wire contract's `current` flag, "reflects every
+    Two questions are asked of `derived_currency`: *is this geometry
+    current* (the wire contract's `current` flag, "reflects every
     keyframe accepted so far") and *may this be served at all*
     (`read_derived`'s verify gate). For a legacy world walked twice the
     honest answers differ -- unknown, and yes-with-the-flag-off.
 
     Returning True from one boolean made the ROUTE assert `current: true`
-    over geometry a reviewer then made genuinely stale by appending a
-    keyframe. Returning False refuses a good reconstruction outright.
+    over geometry that one appended keyframe makes genuinely stale. Returning False refuses a good reconstruction outright.
     """
     from tower.results.world_builder_geometry import _is_current
     from tower.world_builder.engine import WorldBuilderEngine
@@ -1201,10 +1201,10 @@ def test_an_older_walks_placements_are_not_judged_by_another_walks_build(tmp_pat
     composited at all -- and its segments were served the OTHER session's
     coverage classes.
 
-    `usable_placements` and the `global_solve.segments` lookup still read
-    the WORLD's manifest after `derived_is_current` had been given a
-    session id. Found by a reviewer asking what else read the world-level
-    copy.
+    `usable_placements` and the `global_solve.segments` lookup must read
+    the SESSION's own manifest, as `derived_currency` does when it is
+    given a session id, not the world-level copy that names whichever
+    session built last.
     """
     from tower.results.world_builder_geometry import (
         _session_manifest,
