@@ -1,23 +1,16 @@
 """Run worker processes for the lifetime of a capture, and reap them.
 
-This is the piece whose absence made the first physical World Builder
-test (2026-08-24) require a second terminal, a directory listing, and a
-copied UUID. The Tower recorded ten captures that evening and a human
-attached a follower to one of them by hand. The other nine were never
-read by anything, so the wearer walked for five minutes with the camera
-reporting LIVE and the world frozen at the figures from the first two.
+Without it a capture needs a human to attach a follower by hand. The first
+physical World Builder test recorded ten captures and only the one a human
+attached a follower to was ever read, so the wearer walked for five minutes
+with the camera reporting LIVE and the world frozen at the figures from the
+first two. Object Memory had the same shape: a real Ray-Ban walk of 2,203
+frames and 64 remembered observations existed only because a human found the
+capture directory and started a producer against it in another terminal.
 
-It happened a second time, to a different cartridge, on 2026-08-26: a
-real Ray-Ban walk produced 2,203 frames and 64 remembered observations,
-and every one of them existed because a human found the capture
-directory and started a producer against it in another terminal. The
-supervisor could not have done it, because it ran exactly ONE spec and
-that slot was taken.
-
-**One spec was never the design; it was the number of specs that
-existed.** A supervisor is now given a LIST, each entry named, each
-optionally GATED by a predicate the wiring point supplies. The list is
-still argv and strings.
+A supervisor is given a LIST of specs (it used to run exactly ONE, and that
+slot was taken), each entry named and optionally GATED by a predicate the
+wiring point supplies. The list is still argv and strings.
 
 **This module is deliberately cartridge-blind.** It knows how to run an
 argv when a capture opens, how to stop one on request, and how to reap.
@@ -89,7 +82,7 @@ ATTACH_MODE_FROM_NOW = "from-now"
 def _ask_to_stop(process, *, send_signal: bool = True) -> bool:
     """Ask a worker to stop, without killing it. Returns whether it was asked.
 
-    TWO HALVES, SEPARABLE SINCE 2026-09-06. `send_signal=False` closes
+    TWO HALVES, SEPARABLE. `send_signal=False` closes
     stdin and does nothing else: that is the SOFT request `request_stop`
     makes on behalf of a cartridge's Stop button, meaning "you are no
     longer wanted for new frames", which a builder answers by ending its
@@ -99,15 +92,13 @@ def _ask_to_stop(process, *, send_signal: bool = True) -> bool:
     `SIGBREAK`); the object memory producer treats both as stop. Neither
     half is a kill.
 
-    THE GRACE WINDOW WAS WAITING ON A REQUEST NOBODY HAD MADE.
-
-    `_stop_worker` used to `wait(grace)` first and terminate second. That
-    is the right shape, but nothing in between ever told the worker
-    anything, so the wait measured the full grace every single time and
-    the process was shot at the end of it regardless. The Object Memory
+    THE GRACE WINDOW WAITS ON A REQUEST. `_stop_worker` waits for `grace`
+    first and terminates second, and without something in between telling the
+    worker to stop, the wait would run the full grace every time and the
+    process would be shot at the end of it regardless. The Object Memory
     producer's `finally: engine.release()` -- the only code that closes
-    open sightings and writes the ones that matured -- therefore never
-    ran when a wearer pressed Stop. The fix is not a longer wait. It is
+    open sightings and writes the ones that matured -- would then never
+    run when a wearer pressed Stop. The fix is not a longer wait. It is
     to ask.
 
     TWO CHANNELS, BECAUSE ONE OF THEM DOES NOT WORK WHERE THIS RUNS.
@@ -120,17 +111,11 @@ def _ask_to_stop(process, *, send_signal: bool = True) -> bool:
     `CTRL_BREAK_EVENT` rather than `CTRL_C_EVENT` because a new process
     group starts with Ctrl-C disabled.
 
-    A SIGNAL IS NOT ENOUGH, AND THE REASON IS NOT THE ONE FIRST WRITTEN
-    HERE.
-
-    This docstring used to claim that a console control event is never
-    delivered under a pseudoconsole and that the child hears nothing. **A
-    reviewer measured the opposite and was right.** Under
-    `GetConsoleWindow() == 0` the event IS delivered, and a child that
+    A SIGNAL IS NOT ENOUGH. Under `GetConsoleWindow() == 0` (a
+    pseudoconsole) the console control event IS delivered, and a child that
     installed no handler dies of it with `STATUS_CONTROL_C_EXIT` and no
-    unwinding at all -- which is the more dangerous half of the truth,
-    because it means a signal sent to the wrong worker destroys exactly
-    the grace it was meant to protect. That is what
+    unwinding at all -- so a signal sent to the wrong worker destroys
+    exactly the grace it was meant to protect. That is what
     `_Worker.handles_stop_request` gates, and it is why the gate is not
     optional.
 
@@ -250,14 +235,13 @@ class WorkerSpec:
     # object memory producer flushes a queue in well under 3 -- while the
     # caller (`lifespan`, a `CartridgeSession`) only knows a default that
     # has to suit every worker at once. A 10 s default against a 30 s
-    # build is exactly how the builder came to be shot mid-finalization
-    # and its world reported `failed` (2026-09-06). The grace is the
+    # build is exactly how a builder gets shot mid-finalization
+    # and its world reported `failed`. The grace is the
     # BOUND, not the wait: a worker that finishes sooner is reaped sooner.
     stop_grace_seconds: float | None = None
     # Asked at every capture open: may this spec run right now?
     #
-    # None means "always", which is what every spec meant before gates
-    # existed. A predicate rather than a flag because the answer CHANGES
+    # None means "always". A predicate rather than a flag because the answer CHANGES
     # while the Tower is up -- a wearer starting or pausing a cartridge
     # between two captures must not need a restart to be obeyed -- and a
     # predicate rather than a state machine in here because whose
@@ -285,9 +269,7 @@ class _Worker:
     # builder, which installs none, would have converted its ten-second
     # grace into an instant kill and made the result channel report a
     # world `failed` for a build that was seconds from finishing. That is
-    # exactly what the grace exists to prevent, and it was nearly
-    # destroyed by a change meant to make a DIFFERENT worker's grace
-    # useful.
+    # exactly what the grace exists to prevent.
     handles_stop_request: bool = False
     # Set by `request_stop`. An asked-to-stop worker is still ALIVE -- it
     # is finishing its final build -- but it will not follow a successor,
@@ -401,8 +383,8 @@ class CaptureWorkerSupervisor:
     registry, so the orphan was invisible to `reap`, `detach`,
     `shutdown` and `/health` -- and two producers appending to one JSONL
     store lose each other's writes, because `update_sighting` rewrites
-    the whole file. A reviewer reproduced both the lost write and a
-    duplicate record with a colliding `observation_id`.
+    the whole file. Both the lost write and a duplicate record with a
+    colliding `observation_id` were reproduced.
 
     Re-entrant, because `capture_opened` and `attach` both call `reap`.
     """
@@ -472,7 +454,29 @@ class CaptureWorkerSupervisor:
     # -- lifecycle ----------------------------------------------------
 
     def capture_opened(self, capture_id: str, capture_dir, *, continues=None) -> None:
-        """A recording has started. Attach every gated-open spec to it."""
+        """A recording has started: attach every spec whose gate is open to it.
+
+        What: when the Tower opens a capture, attaches each worker spec whose
+        gate is open to it: an existing worker that follows the capture's
+        lineage continues, otherwise a child process is spawned, pointed at
+        the capture directory.
+
+        How: returns at once when no specs are registered. Otherwise, holding
+        the supervisor lock, it reaps exited workers, then for each spec
+        asks `_gate_open` (a gate that raises counts as closed) and calls
+        `_attach_to_registry`. If `continues` names a lineage that a live
+        worker is following, that worker chains into the new capture instead
+        of being restarted, unless it has been asked to stop, in which case a
+        fresh worker is started; otherwise `_start` spawns a child from the
+        spec's argv with `{capture_dir}`, `{capture_id}` and the attach mode
+        filled in.
+
+        Why: the web process only supervises; the children build and
+        remember. The gates are asked at every open so a wearer starting or
+        pausing a cartridge between two captures is obeyed without a
+        restart, and one lock covers the reap and the attach so two
+        concurrent starts cannot spawn two producers on one capture.
+        """
         if not self._registries:
             return
 
@@ -595,8 +599,7 @@ class CaptureWorkerSupervisor:
         workspace; the walk's geometry is still worth finishing, and a
         builder that is mid-finalization must be allowed to. A Stop that
         terminated would turn every "I looked at another tab" into an
-        interrupted world -- which is the state the 2026-09-06 walk
-        ended in for a different reason, and it was bad enough once.
+        interrupted world.
         `shutdown()` remains the hard path.
 
         A worker that never opted in is not asked and not counted: it has
@@ -708,8 +711,8 @@ class CaptureWorkerSupervisor:
         this changes the cost and nothing else -- no grace is shortened,
         no worker is signalled earlier than it was.
 
-        Serially this was `N * (grace + TERMINATE_TIMEOUT_SECONDS)`, and
-        the whole of it ran holding `self._lock`. MEASURED with two
+        Run serially this is `N * (grace + TERMINATE_TIMEOUT_SECONDS)`, and
+        the whole of it holds `self._lock`. MEASURED with two
         stubborn workers: shutdown took 24.00 s, a concurrent `status()`
         -- which is what `/health` calls -- blocked for 23.95 s of it, and
         two workers were still alive at the end. The lock is still held
@@ -910,11 +913,11 @@ class CaptureWorkerSupervisor:
                 # stop -- `session/stop`, which is what leaving the World
                 # Builder screen sends -- and is spending its last seconds
                 # on a final build. It will never walk into this capture.
-                # Chaining the successor into it recorded a lineage nobody
-                # served: a dress-rehearsal reviewer cut the link, left the
-                # screen during the outage, came back, and watched 1,200
-                # frames get recorded and built by NOBODY while the phone
-                # showed the "success" sentence. So: fall through and start
+                # Chaining the successor into it would record a lineage
+                # nobody serves: in a dress rehearsal that cut the link and
+                # left the screen during the outage and came back, 1,200 frames were
+                # recorded and built by NOBODY while the phone showed the
+                # "success" sentence. So: fall through and start
                 # a builder on this capture. It builds the second half as
                 # its own world, which is a loss the wearer can see rather
                 # than one they cannot.
@@ -948,9 +951,9 @@ class CaptureWorkerSupervisor:
                 # mid-walk), or this spec's worker has died. Both mean
                 # nothing is reading this capture FOR THIS SPEC, so
                 # follow it. (An `else`, not a fall-through: the
-                # asked-to-stop branch above used to fall into this line
+                # asked-to-stop branch above must not fall into this line
                 # and log "no live worker owns that lineage" about a
-                # worker it had just named as alive.)
+                # worker it just named as alive.)
                 logger.info(
                     "[Tower][Worker] capture %s continues %s but no live %s "
                     "worker owns that lineage; starting one",
@@ -1012,8 +1015,8 @@ class CaptureWorkerSupervisor:
         # and the pid held here, logged below and reported by `/health`
         # would be the launcher's. Terminating it kills the interpreter
         # (the launcher's own job does that) but every grandchild
-        # survives, which is how a solve child outlived its builder on
-        # 2026-09-06. The rewrite lives here rather than at the wiring
+        # survives, which is how a solve child outlives its builder.
+        # The rewrite lives here rather than at the wiring
         # point so `main.py` stays a plain argv and no future spec has to
         # know why it needs this.
         env = None
@@ -1076,11 +1079,11 @@ class CaptureWorkerSupervisor:
         """Stop one worker. Returns whether it is actually gone.
 
         The return value is what stops an orphan. A `terminate()` that
-        raises used to be logged and then forgotten anyway, which removed
-        the worker from the registry while leaving the process running --
-        invisible to `status`, to `/health` and to the next `shutdown`.
-        Three Stop/Start cycles left four producers alive with the
-        supervisor aware of one.
+        raises must not be forgotten: forgetting the worker removes it
+        from the registry while leaving the process running -- invisible
+        to `status`, to `/health` and to the next `shutdown`. Three
+        Stop/Start cycles left four producers alive with the supervisor
+        aware of one.
         """
         process = worker.process
         # ASK FIRST, IF THIS CHILD UNDERSTANDS BEING ASKED. A grace
@@ -1123,8 +1126,8 @@ class CaptureWorkerSupervisor:
                 )
         # THE TREE, NOT THE PID. Through the worker's job on Windows, so
         # a builder's solve child dies with it; by walking descendants
-        # elsewhere. A plain `terminate()` here is what left a solver
-        # running for 32 s after its builder was gone on 2026-09-06.
+        # elsewhere. A plain `terminate()` here left a solver
+        # running for 32 s after its builder was gone.
         #
         # `terminate()` is asynchronous. On Windows it is
         # `TerminateProcess`, and a `poll()` immediately afterwards
