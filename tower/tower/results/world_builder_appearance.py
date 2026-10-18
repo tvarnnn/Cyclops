@@ -260,8 +260,9 @@ def appearance_revision(store: WorldStore, world_id: str, session_id: str) -> di
       serve it. Keep drawing, keep asking; the next build is expected. The
       ordinary Stop (`none` -> the real label, over a walk-time build that
       re-redacted every frame) is SERVED (`appearance_pipeline.may_serve`), so
-      a viewer opened after Stop gets the walk's photos too; `rebuilding` is
-      still emitted for an older client.
+      a viewer opened after Stop gets the walk's photos too. `rebuilding` is
+      now answered only where a carry-over is not served (the gate fails
+      closed), and an older Tower still sends it for the ordinary Stop.
     - `withdrawn`: the label changed any other way, or the imagery was purged.
       Drop the textures now; keep asking.
     - `absent`: there is no appearance (never built, or the world is gone).
