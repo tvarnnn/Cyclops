@@ -10,8 +10,8 @@ Three stages, each checkpointed under `<world>/dense/<session>/`:
 
 A stage whose output is already present and matches the current input digest is
 skipped, so an interrupted run resumes. `should_stop` is polled between frames
-and between stages; a stop is recorded as `stopped`, never as a failure and
-never as a half-written artifact.
+inside depth and fuse (pack, once reached, always runs); a stop is recorded
+as `stopped`, never as a failure and never as a half-written artifact.
 
 Nothing here writes into `derived/`. The dense subtree is additive and optional:
 `require_schema` refuses any version but 1 and there is no migration machinery,
@@ -1813,7 +1813,25 @@ def densify(
     progress: Callable[[str, int, int], None] | None = None,
     force: bool = False,
 ) -> DenseResult:
-    """Densify one solved session. Idempotent, resumable, stop-aware."""
+    """Densify one solved session into a point cloud anchored to the global solve.
+
+    Idempotent, resumable, stop-aware. Takes the dense lock and the surface
+    lock (dense output lives under the surface build's lock); if either is
+    held it returns `unavailable`. It needs a global solution and session
+    intrinsics, and inherits the world's scale unchanged. If a manifest
+    already exists from this solve (same input digest, parameters and keyframe
+    image set) with all its level files, that result is returned and nothing
+    is rebuilt, unless `force`. Otherwise three stages run; depth and fuse each
+    keep a cache (`align.json`, `fuse.json`), reused when its key still
+    matches, and pack always runs:
+    depth (per-keyframe depth fitted to the solve), fuse (merge the aligned
+    depth into points) and pack (write the point levels and manifest). Unless
+    `keep_intermediates`, the work files are pruned afterwards. `should_stop`
+    is polled per frame inside depth and fuse and ends the run as `stopped`
+    there; pack, once reached, always runs. A missing prerequisite is returned
+    as `unavailable`; any other error is returned as `failed` and never raised
+    into finalization. Status is written to `status.json` throughout.
+    """
     from tower.world_builder.global_solve import load_solution
 
     params = params or DenseParams()

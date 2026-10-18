@@ -199,6 +199,13 @@ class Tracker:
     def update(self, detections: list[Detection], *, at: float) -> list[Track]:
         """Associate this frame's detections and return the live tracks.
 
+        Matches detections to existing tracks by IoU (`_match`). A matched track
+        takes the detection's box and score, counts a hit, and is confirmed after
+        `min_hits` consecutive hits; a track found again after misses loses its
+        facing estimate. An unmatched track counts a miss and resets its streak;
+        an unmatched detection starts a new track; tracks past `max_misses` are
+        dropped.
+
         Association is **within a class**: a chair box overlapping a
         person box is not evidence that the chair became a person, and
         cross-class association would let one label flip rewrite a

@@ -151,7 +151,8 @@ class SceneLive(LiveSession):
         # connection, so a connection closing can drop every watcher it
         # held without knowing their tokens.
         self._watchers: dict = {}
-        # Whether an operator started this by hand. Cleared by `stop()`.
+        # Whether an operator started this by hand. Cleared by `stop()` and
+        # by a demand stop (`_stop_then_reconcile`).
         self._operator_hold = False
         # Bumped by every operator `start()`. A demand stop records it
         # when it decides, so a start that lands after the decision is
@@ -195,7 +196,9 @@ class SceneLive(LiveSession):
         return super().start(resume_paused=resume_paused)
 
     def stop(self) -> dict:
-        """The operator's Stop, and every other stop. Releases the hold."""
+        """The operator's Stop, and any stop but a demand stop. Releases the
+        hold. A demand stop goes through `_stop_then_reconcile`, which
+        releases the hold itself and calls the base `stop()`."""
         with self._demand:
             self._operator_hold = False
         return super().stop()

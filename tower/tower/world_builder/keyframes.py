@@ -377,6 +377,25 @@ class KeyframeSelector:
     def evaluate(
         self, quality: FrameQuality, motion: MotionSummary | None
     ) -> KeyframeDecision:
+        """Decide what to do with one frame: accept, skip, reject or tracking lost.
+
+        Inputs are the frame's `FrameQuality` and its `MotionSummary` against the
+        last keyframe (None at session start or after a loss). Checks run in order:
+        a blurred frame is rejected (unless the turn bridge takes it); the first
+        frame of a segment is accepted as the session seed; a feature survival
+        ratio below the loss threshold for `loss_grace_frames` frames in a row
+        returns `tracking_lost`, a shorter dip is rejected as held; a weak
+        survival is rejected as degraded; no motion evidence or a too-recent last
+        keyframe is skipped; overlap falling below the floor is accepted; too
+        little displacement is then skipped; and displacement reaching the
+        target is accepted (anything in between is skipped). Returns a
+        `KeyframeDecision` (decision, reason) and keeps the blur-run and
+        loss-run counters for the next call.
+
+        Blur is checked first, even before the seed, because anchoring a session
+        on a smeared frame poisons every later measurement. Loss needs sustained
+        evidence because a break is permanent.
+        """
         policy = self._policy
 
         # Blur is checked before anything else, including the session

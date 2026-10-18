@@ -1268,7 +1268,19 @@ class LookBackRelocalizer:
         self._refs.append((keyframe_id, gray))
 
     def note_lost(self, at: float) -> list:
-        """`at` is the builder's MONOTONIC time of the journaled loss."""
+        """Open a look-back recovery episode for a journaled tracking loss.
+
+        Returns the journal events to write. Asks the state machine to open an
+        episode at `at`; a loss while one is already open joins it and returns no
+        events. When a new episode opens, it takes a snapshot of the recent
+        keyframe references followed by the older history members, closes any
+        previous episode, and clears the pending job. Later `note_frame` calls
+        scan new frames against those references on the worker thread. If there is
+        no reference frame, or the frames changed size, the episode cannot be
+        accepted and the reason is logged.
+
+        `at` is the builder's MONOTONIC time of the journaled loss.
+        """
         self._raise_if_worker_failed()
         can_accept = bool(self._refs) and not self._size_mismatch
         opened, events = self.machine.lost(at, can_accept=can_accept)

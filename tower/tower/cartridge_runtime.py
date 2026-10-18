@@ -401,7 +401,17 @@ def _scene_construction_failed(mode: str, reason: str) -> str:
 
 
 def build_live_cartridges(settings) -> LiveCartridges:
-    """Everything this configuration turns on. Often nothing.
+    """Build the in-process Scene Understanding and Document Memory sessions.
+
+    Scene Understanding is constructed when `settings.scene_understanding` is
+    set; Document Memory when `settings.document_capture` is set AND a
+    `document_root` is configured (without a root it only logs a warning). Each
+    constructed session is added to `frame_consumers`, the list that receives
+    frames directly. Returns a `LiveCartridges` holding the sessions and, for a
+    cartridge that was asked for but is not running (a construction failure,
+    or Scene Understanding in `auto` without its ML extra), the specific reason
+    it will report; a cartridge that is simply off carries None. Often it
+    builds nothing.
 
     A failure to construct one cartridge must not cost the other, and
     must not stop the Tower: a missing weight file or a `cuda` that

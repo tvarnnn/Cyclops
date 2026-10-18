@@ -2,13 +2,12 @@
 
 Contract: `docs/contracts/WORLD-BUILDER-WORLDS.md` §4 (`GET /worlds/{id}/render`).
 
-The fourth adapter named after this cartridge, and for the same reason
-the other three are: it reads World Builder's record shapes, so it is the
-one file outside the package that may. It answers a different question
-from the geometry producer -- "let a person LOOK at the room" rather than
-"give a client the points" -- and answers it with a self-contained HTML
-page rather than JSON, which is why it is a separate file and a separate
-route rather than a query flag on the manifest.
+An adapter named after this cartridge: it reads World Builder's record
+shapes, which code outside the package otherwise may not. It answers a
+different question from the geometry producer -- "let a person LOOK at the
+room" rather than "give a client the points" -- and answers it with a
+self-contained HTML page rather than JSON, which is why it is a separate
+file and a separate route rather than a query flag on the manifest.
 
 The page is composed on request from the derived tree, by the same code
 `scripts/world_render.py` uses for its `world.html`, so what the phone
@@ -50,31 +49,28 @@ logger = logging.getLogger(__name__)
 # sampling spans the whole cloud (contract §3), so the picture is the same
 # room, thinner. A client may ask for more, up to the operator's default.
 #
-# 80,000 WAS THE NUMBER UNTIL IT WAS MEASURED. The reasoning above was
-# right and the value was a guess. Timing the page's own `draw()` -- the
-# function an orbit drag calls once per frame -- on the recovered field
-# world in desktop Chrome, 1920x819, by cloning its segments to reach each
-# count:
+# 40,000 comes from timing the page's own `draw()` -- the function an orbit
+# drag calls once per frame -- on the recovered field world in desktop
+# Chrome, 1920x819, by cloning its segments to reach each count (80,000
+# was the first guess, before it was measured):
 #
 #      19,329 pts    6.2 ms   161 fps
 #      38,658 pts   13.6 ms    74 fps
-#      77,316 pts   35.3 ms    28 fps      <- roughly the old budget
+#      77,316 pts   35.3 ms    28 fps
 #     115,974 pts   65.0 ms    15 fps
 #
-# Superlinear, and 28 fps is what a FAST DESKTOP manages at the budget the
-# phone was being handed. A phone is slower than that at canvas fill by
-# some factor this host cannot measure -- so the old value was not a
-# margin, it was the cliff.
+# Superlinear, and 28 fps at 77,316 points is what a FAST DESKTOP manages; a
+# budget of about 80,000 would sit on that cliff, not behind a margin. A
+# phone is slower than a desktop at canvas fill by some factor that was not
+# measured.
 #
 # 40,000 sits at 13.6 ms / 74 fps here, which is a 2.6x margin on the
-# measured cliff and still twice the 19,866 points the 2026-09-09 walk
+# measured cliff and still twice the 19,866 points a recorded field walk
 # produced in total. A 20-30 minute walk is the case this protects: at
 # ~3.2 keyframes/sec it reaches several times this and would otherwise be
-# handed the whole cloud up to the old ceiling.
+# handed the whole cloud up to the ceiling.
 #
-# UNVERIFIED: the desktop-to-phone factor. The next physical test is the
-# first chance to measure it, and this number should be revisited with
-# that measurement rather than argued about.
+# UNVERIFIED: the desktop-to-phone factor.
 MOBILE_MAX_POINTS = 40_000
 MAX_POINTS_CEILING = DEFAULT_MAX_POINTS
 
@@ -91,14 +87,13 @@ class WorldRenderUnavailable(Exception):
 def _has_geometry(store: WorldStore, world_id: str, session_id: str) -> bool:
     """Whether drawing this session would put anything on the page.
 
-    **Existence of the files was the wrong question here specifically.**
-    `resolve_session` uses this to CHOOSE which session to draw, newest
-    first -- so on a world walked twice where the second walk solved
-    nothing, an empty `points.json` (14 bytes, and `engine.build` writes
-    one unconditionally) outranked the older walk that has geometry, and
-    the wearer got a blank page for a world with a reconstruction in it.
-    Found by `test_the_three_surfaces_ask_the_same_question_of_the_same_files`
-    the moment the listing's copy was corrected.
+    Delegates to `store.session_has_drawable_geometry`, the one rule the
+    listing and the other surfaces share. File EXISTENCE is the wrong
+    question: `resolve_session` uses this to CHOOSE which session to draw,
+    newest first, and `engine.build` writes an empty `points.json` (14 bytes)
+    unconditionally, so on a world walked twice where the second walk solved
+    nothing, existence would let that empty file outrank the older walk that
+    has geometry and the wearer would get a blank page.
     """
     return session_has_drawable_geometry(store, world_id, session_id)
 
@@ -130,13 +125,8 @@ def resolve_session(store: WorldStore, world_id: str, session_id: str | None) ->
     # hashes it and (below) sorts it. A `world.json` carrying
     # `session_ids: [{"a": 1}]` raises `TypeError: unhashable` right here;
     # one carrying `[123, "s0"]` hashes fine and then raises in the sort
-    # three lines down. Either is an HTTP **500 on the route the phone
-    # opens a saved world with**.
-    #
-    # A reviewer found both immediately after the round that hardened
-    # `candidates.sort` on line 141 and walked past line 127 -- in a round
-    # whose own title was about fixing things one line above the line it
-    # fixed.
+    # below. Either is an HTTP **500 on the route the phone opens a saved
+    # world with**.
     #
     # Ids are strings by contract; anything else is a corrupt record and
     # is dropped rather than allowed to take the whole render with it. The
@@ -178,14 +168,11 @@ class _ViewerModuleMissing(Exception):
     """Stands in for a viewer's own "unavailable" type when its module did
     not import at all.
 
-    The rungs below deliberately put the import OUTSIDE the `try` that
-    catches its exception, because binding the exception name inside that
-    `try` meant a broken viewer module left the name unbound and the
-    `except` clause raised `NameError` instead of falling back. Binding it
-    to `None` instead trades that for `TypeError: catching classes that do
-    not inherit from BaseException` -- the same failure with a different
-    word. It has to be bound to a real exception class, and one nothing
-    raises, so the clause is legal and never matches.
+    The name an `except` clause catches must be bound to a real exception
+    class: left unbound it raises `NameError`, and bound to `None` it raises
+    `TypeError: catching classes that do not inherit from BaseException`,
+    either way skipping the fallback. This class is real and nothing raises
+    it, so the clause is legal and never matches.
     """
 
 
@@ -201,14 +188,14 @@ REPRESENTATION_SURFACE = "surface"
 # without saying so. The rung that is reached is reported in the page and in
 # the worlds listing, so "what am I looking at" is never a guess.
 #
-# `appearance` (2026-09-17) sits above the surface: the wearer's own redacted
-# keyframes blended over the surface they were prepared against. It is served
-# whenever the appearance routes would serve (the label still matches, the
-# world is not purged, the manifest reads) -- NOT only when the artifact is
-# `current`. During a walk every new surface makes the appearance "built on an
-# earlier surface" for the minute its rebuild takes; demoting the rung for that
-# minute would swap the page down and back up on every solve, resetting the
-# wearer's camera twice. The page says it is behind instead
+# `appearance` sits above the surface: the wearer's own redacted keyframes
+# blended over the surface they were prepared against. It is served whenever
+# the appearance routes would serve (the label still matches, the world is not
+# purged, the manifest reads) -- NOT only when the artifact is `current`.
+# During a walk every new surface makes the appearance "built on an earlier
+# surface" for the minute its rebuild takes; demoting the rung for that minute
+# would swap the page down and back up on every solve, resetting the wearer's
+# camera twice. The page says it is behind instead
 # (WORLD-BUILDER-APPEARANCE.md §8: currency is reported, never enforced).
 REPRESENTATION_LADDER = (REPRESENTATION_APPEARANCE, REPRESENTATION_SURFACE,
                          REPRESENTATION_DENSE, REPRESENTATION_SPARSE)
@@ -218,11 +205,10 @@ REPRESENTATION_LADDER = (REPRESENTATION_APPEARANCE, REPRESENTATION_SURFACE,
 # `auto` offers the appearance rung ONLY to a client that declares it. The
 # appearance page is not self-contained: it fetches its imagery through the
 # app's `glasses-world:` scheme handler, which an iOS build older than the rung
-# does not have. Such a build loads every page with `loadHTMLString`, sends no
-# `viewer`, and before this gate was served an appearance page that could fetch
-# nothing -- a broken picture where the surface used to be. Without the
-# declaration `auto` starts at the surface, exactly the page that build got
-# before the rung existed.
+# does not have. Such a build loads every page with `loadHTMLString` and sends
+# no `viewer`; served an appearance page it could fetch nothing, a broken
+# picture where the surface should be. Without the declaration `auto` starts at
+# the surface, the page such a build can draw.
 #
 # A query parameter rather than a header: the page is fetched natively, but the
 # page's own revision poll goes through the scheme handler, and a parameter in
@@ -245,7 +231,7 @@ def viewer_draws_appearance(viewer: str | None) -> bool:
     return VIEWER_APPEARANCE in viewer_capabilities(viewer)
 
 
-# U1.1 native chrome (WORLD-BUILDER-WORLDS.md §4c). The phone asks with
+# Native chrome (WORLD-BUILDER-WORLDS.md §4c). The phone asks with
 # `wb-chrome=native` on the PAGE request; the route passes the value through
 # untouched, and the adapter decides here, because the route may not import the
 # cartridge. Exactly `native`; `NATIVE`, `web`, `""` and anything else mean
@@ -274,10 +260,8 @@ def _compose_native_chrome(page: str) -> str:
     return page if composed is None else composed
 
 
-# Transports of the appearance page (`appearance_render.TRANSPORTS`), named
-# here so the route has a default without importing the cartridge.
+# The default transport of the appearance page (`appearance_render.TRANSPORTS`).
 TRANSPORT_APP = "app"
-TRANSPORT_TOWER = "tower"
 
 
 _REPRESENTATION_META = re.compile(
@@ -301,21 +285,20 @@ def render_revision(store: WorldStore, world_id: str, session_id: str,
 
     `None` for a surface whose manifest cannot be read now, never
     `"surface:None"`. A bare read racing the `os.replace` of a landing build
-    fails on Windows, and the phone took that string for a new same-rung
+    fails on Windows, and the phone would take that string for a new same-rung
     revision: one needless page download, and when the page's own stamp hit
-    the same race, a swap onto an identical mesh and a second swap back
-    (review 2, iOS m5). The read now survives a replace; what still fails is
-    reported as no surface revision, and the caller answers the next rung.
+    the same race, a swap onto an identical mesh and a second swap back. The
+    read survives a replace; what still fails is reported as no surface
+    revision, and the caller answers the next rung.
     """
     if rung == REPRESENTATION_APPEARANCE:
         # The page PROGRAM's revision, and the appearance EPOCH. Appearance
         # builds are followed by the page itself and are deliberately not in
         # it (§4a `appearance`) -- but a build that an open page must not
         # overwrite in place (a relabel, a purge and rebuild, a re-redaction
-        # switch) starts a new epoch, and that does move the page revision. The
-        # page revision used to be a constant, so a page that had dropped its
-        # textures was stamped exactly like the rebuilt one and the app never
-        # replaced it (review 1, B1).
+        # switch) starts a new epoch, and that does move the page revision.
+        # Otherwise a page that had dropped its textures would carry the same
+        # stamp as the rebuilt one and the app would never replace it.
         appearance = _appearance_revision(store, world_id, session_id)
         if appearance.get("revision") is None:
             return None
@@ -455,7 +438,7 @@ def served_basis(store: WorldStore, world_id: str, session_id: str, rung: str) -
     - dense, sparse (and `view=diagnostics`): the session record -- `"final"` only for a
       finalization `complete` with `final_solve: "solved"`; `"walk"` for an open record, a
       finalization `pending` or `interrupted`, or a final solve that did not succeed; None for
-      a closed record with no finalization (before 2026-09-06).
+      a closed record that predates finalization records.
     """
     try:
         if rung == REPRESENTATION_APPEARANCE:
@@ -471,7 +454,8 @@ def served_basis(store: WorldStore, world_id: str, session_id: str, rung: str) -
             manifest = _read_json_past_a_replace(path) if path.is_file() else None
             params = manifest.get("params") if isinstance(manifest, dict) else None
             quality = params.get("quality") if isinstance(params, dict) else None
-            return {"final": BASIS_FINAL, "live": BASIS_WALK}.get(quality)                 if isinstance(quality, str) else None
+            return {"final": BASIS_FINAL, "live": BASIS_WALK}.get(quality) \
+                if isinstance(quality, str) else None
         from tower.world_builder.records import (  # noqa: PLC0415
             FINAL_SOLVE_SOLVED,
             FINALIZATION_COMPLETE,
@@ -494,11 +478,11 @@ def served_basis(store: WorldStore, world_id: str, session_id: str, rung: str) -
 def _room_captions(store: WorldStore, world_id: str, session_id: str) -> dict | None:
     """`{"more_areas": N}` when this session has at least one area that is, or will
     be, SHOWN separately, else None. An area whose build failed or was declined with
-    nothing drawable is not shown anywhere, so it is not counted (review V6, L6): a
-    room whose every area was declined says nothing about areas. But an area whose word
-    is settled while its surface IS drawable -- its appearance failed or was not asked
-    for -- is shown (`has_geometry`, the areas row opens it), so it is counted (review
-    V8, LOW-b). Never raises: a caption must not cost the room its page."""
+    nothing drawable is not shown anywhere, so it is not counted: a room whose every
+    area was declined says nothing about areas. But an area whose word is settled
+    while its surface IS drawable -- its appearance failed or was not asked for -- is
+    shown (`has_geometry`, the areas row opens it), so it is counted. Never raises: a
+    caption must not cost the room its page."""
     try:
         from tower.world_builder.components import (  # noqa: PLC0415
             area_has_geometry,
@@ -627,19 +611,17 @@ def _appearance_revision(store: WorldStore, world_id: str, session_id: str) -> d
     """The appearance half of the revision, or `unavailable`.
 
     Surviving an appearance bug is right: the page revision must still answer.
-    Spelling the survival `withdrawn` was not (review 2, m-15). `withdrawn` is
-    the word the Tower uses for a RELABEL or a PURGE, and both consumers act on
-    it as such: the page tells the wearer *"its redaction record changed, or its
-    imagery was removed"*, and the app records a privacy withdrawal. So a
-    traceback in `world_builder_appearance.py` told a wearer their redaction
-    record had changed.
+    The survival is not spelled `withdrawn`, the word the Tower uses for a
+    RELABEL or a PURGE, because both consumers act on it as such: the page
+    tells the wearer *"its redaction record changed, or its imagery was
+    removed"*, and the app records a privacy withdrawal.
 
     `unavailable` is the fifth state (`WORLD-BUILDER-APPEARANCE.md` §9). It does
     everything `withdrawn` does -- the textures go, because nothing re-checked
     the label and a copy must not outlive that check, and the page keeps polling
     -- and it says the true thing while doing it. Logged at `exception` rather
-    than `debug`: a bug that reaches here is a bug, and the Tower's own log was
-    the only place it could be seen.
+    than `debug`: a bug that reaches here is a bug, and the Tower's own log is
+    the only place it can be seen.
     """
     try:
         from tower.results.world_builder_appearance import (  # noqa: PLC0415
@@ -658,14 +640,13 @@ def _stage_running(status_path, is_stale) -> bool:
 
     **A manifest written after the `running` status means the build has
     published**, and is not live any more even though `ok` has not landed yet.
-    Both stages write the manifest, then prune, then `ok` -- and a revision
-    poll in that gap saw the NEW revision with `live: true`. The phone offered
-    it instead of swapping it in, recorded it as handled, and the `live: false`
-    poll that followed was not new: no auto-swap after Stop (review 3, R5).
-    Every `running` write precedes the manifest of the same build, so "manifest
-    newer than status" can only mean "this build already published". Writing
-    `ok` first instead would claim a result that is not on disk yet if the
-    process dies between the two.
+    Both stages write the manifest, then prune, then `ok`; a revision poll in
+    that gap would otherwise see the NEW revision with `live: true`, and the
+    phone would offer it instead of swapping it in, so there would be no
+    auto-swap after Stop. Every `running` write precedes the manifest of the
+    same build, so "manifest newer than status" can only mean "this build
+    already published". Writing `ok` first instead would claim a result that is
+    not on disk yet if the process dies between the two.
     """
     try:
         status_stat = status_path.stat()
@@ -762,19 +743,53 @@ def build_world_render(store: WorldStore, world_id: str, session_id: str | None,
     """The viewer page for one session of one world, or
     `WorldRenderUnavailable` naming what is missing.
 
-    `world_id` goes through the geometry adapter's containment guard
-    first, for the reason its docstring gives: on Windows a backslash is
-    a separator Starlette's route pattern does not exclude, and every
-    store path below is joined from this id. An id that escapes the root
-    is "no world", and the id is answered under its canonical spelling.
+    This serves the best picture the session has, at the best rung the
+    client can draw: appearance (the wearer's redacted keyframes over the
+    surface), then surface, then dense points, then sparse points.
 
-    `viewer` is what the client declared it can draw (`viewer_draws_appearance`).
-    `auto` starts at the appearance rung only for a client that declared it,
-    and at the surface otherwise; a PINNED `representation=appearance` is served
-    regardless, because a caller that names the rung is asking for that page.
+    How it runs:
 
-    `chrome` is the page request's `wb-chrome` (WORLDS §4c). It reaches the
-    appearance page only; every lower rung is served exactly as without it.
+    1. `world_id` goes through the geometry adapter's containment guard
+       first, for the reason its docstring gives: on Windows a backslash is
+       a separator Starlette's route pattern does not exclude, and every
+       store path below is joined from this id. An id that escapes the root
+       is "no world", and the id is answered under its canonical spelling.
+    2. `resolve_session` picks the session: the explicit `session_id`, else
+       the newest one with drawable geometry.
+    3. The revision of every rung is read BEFORE any page is composed, and
+       the page is stamped with it (`_stamp_revision`).
+    4. The starting rung is chosen. A named `representation` starts the walk
+       at its own rung. `auto` starts at appearance only for a client whose
+       `viewer` declared it (`viewer_draws_appearance`), at the surface
+       otherwise; `view=diagnostics` with `auto` starts at sparse, the only
+       rung with the diagnostic rendering.
+    5. From the starting rung down, each rung is tried and the first page
+       that composes is returned. A rung that is absent or cannot be built
+       is stepped past; a surface or dense artifact built from a keyframe
+       set the session no longer reads is stepped past too until rebuilt,
+       except that PINNING that stale rung raises `WorldRenderUnavailable`.
+       A PINNED `representation` whose viewer reports it cannot be served
+       raises `WorldRenderUnavailable` instead of answering another rung,
+       because a caller that names the rung is asking for that page. The
+       sparse page is the last rung and is always tried.
+    6. `max_points` bounds the sparse page (`MOBILE_MAX_POINTS` by default,
+       at most `MAX_POINTS_CEILING`) and the surface page, and bounds the
+       dense page by a byte budget that it can only lower.
+       `room_captions` (" · N more areas shown separately") reach the
+       appearance and surface pages only. `chrome` (`wb-chrome`, WORLDS §4c)
+       reaches the appearance page only; every lower rung is served exactly
+       as without it.
+
+    Why it is shaped this way: the revisions are read before composing
+    because a build that lands between the two would otherwise stamp an old
+    page with the new revision and the phone would never fetch the final
+    surface; read first, the same race costs one extra fetch. Each viewer
+    module is imported outside the `try` that catches its exception, so a
+    module that will not import degrades to the next rung rather than
+    raising `NameError` out of the `except` clause. An unexpected exception
+    in a viewer (not its own "unavailable" type) is logged and the ladder
+    falls to the next rung -- for the appearance rung only when it is not
+    pinned -- because the world must not be lost to a viewer bug.
     """
     native = wants_native_chrome(chrome)
     contained = contained_world_id(store, world_id)
@@ -796,9 +811,7 @@ def build_world_render(store: WorldStore, world_id: str, session_id: str | None,
               else REPRESENTATION_SURFACE)
     # The solver's diagnostic view IS the sparse page -- only it has the
     # diagnostic rendering -- so asking for it with no representation pinned
-    # starts the ladder at sparse. Starting at the surface served the surface
-    # for "open the solver's view", and the app's text describing a
-    # diagnostics rendering was false.
+    # starts the ladder at sparse.
     if view == VIEW_DIAGNOSTICS and representation == REPRESENTATION_AUTO:
         wanted = REPRESENTATION_SPARSE
     start = REPRESENTATION_LADDER.index(wanted)
@@ -817,7 +830,7 @@ def build_world_render(store: WorldStore, world_id: str, session_id: str | None,
     # A surface or dense artifact whose colours came from a re-redacted keyframe
     # set the session no longer reads (a `--revert`) is not served until it is
     # rebuilt; the ladder steps past it, as the revision route does
-    # (`store.built_from_an_inactive_keyframe_set`, review 1 m4).
+    # (`store.built_from_an_inactive_keyframe_set`).
     stale = {rung: built_from_an_inactive_keyframe_set(store, world_id, chosen, rung)
              for rung in (REPRESENTATION_SURFACE, REPRESENTATION_DENSE)}
     if representation in stale and stale[representation]:
@@ -871,19 +884,20 @@ def build_world_render(store: WorldStore, world_id: str, session_id: str | None,
             )
 
     # Gated on where the walk STARTED, not on the representation asked for:
-    # `view=diagnostics` arrives as `auto` and starts at sparse, and gating on
-    # `representation != sparse` served it the dense page whenever a dense
-    # artifact existed -- while the revision route said sparse (review 3, R3).
+    # `view=diagnostics` arrives as `auto` and starts at sparse, so gating on
+    # `representation != sparse` would serve it the dense page whenever a dense
+    # artifact existed, while the revision route says sparse.
     if start <= REPRESENTATION_LADDER.index(REPRESENTATION_DENSE) and not stale[REPRESENTATION_DENSE]:
         # THE IMPORT IS OUTSIDE THE try THAT CATCHES ITS EXCEPTION.
         #
-        # `DenseViewerUnavailable` used to be bound by an import inside the
-        # same `try` whose first `except` names it. If that import raised --
-        # the one class of bug the fallback below exists for, a broken dense
-        # module -- Python evaluated the first except clause, hit a NameError
-        # on the unbound name, and propagated THAT. Later clauses of the same
-        # try are not tried, so the "never lose the sparse page to a dense bug"
-        # fallback never ran and the route returned 500.
+        # Bound by an import inside the same `try` whose first `except` names
+        # `DenseViewerUnavailable`, a broken dense module -- the one class of
+        # bug the fallback below exists for -- would leave the name unbound:
+        # Python evaluates the first except clause, hits a NameError, and
+        # propagates THAT. Later clauses of the same try are not tried, so the
+        # "never lose the sparse page to a dense bug" fallback would never run
+        # and the route would return 500. Here a failed import is handled on
+        # its own.
         try:
             from tower.world_builder.dense import (  # noqa: PLC0415
                 POINT_STRIDE_BYTES,
@@ -907,9 +921,9 @@ def build_world_render(store: WorldStore, world_id: str, session_id: str | None,
 
             # `max_points` is validated by the route and must not then be
             # ignored: the worlds contract calls it "point budget", and a
-            # client that asks for fewer points has to get fewer. It was
-            # dropped on this path, so `max_points=1` returned 295,000 points
-            # and a 6 MB page. Converted to the byte budget this viewer speaks,
+            # client that asks for fewer points has to get fewer. Ignoring it
+            # on this path returned 295,000 points and a 6 MB page for
+            # `max_points=1`. Converted to the byte budget this viewer speaks,
             # and only ever downwards -- the phone default stays the default.
             budget = MOBILE_BYTE_BUDGET
             if max_points is not None:
@@ -967,7 +981,7 @@ def build_world_render(store: WorldStore, world_id: str, session_id: str | None,
 
 class AreaUnavailable(Exception):
     """An area route's 404. `reason` is the `detail` the phone shows; four of them are
-    stable identifiers (`components.NO_SUCH_AREA` and its siblings, C1 E4)."""
+    stable identifiers (`components.NO_SUCH_AREA` and its siblings)."""
 
     def __init__(self, reason: str) -> None:
         super().__init__(reason)
@@ -1032,7 +1046,7 @@ def _area_word(store: WorldStore, area: _Area) -> dict:
 
 def _area_not_drawable(store: WorldStore, area: _Area) -> AreaUnavailable:
     """Nothing is drawable: TRANSIENT while its build is owed, running or
-    unobservable, and also when its build is recorded COMPLETE (review V6, L4) -- a
+    unobservable, and also when its build is recorded COMPLETE -- a
     finished build that cannot be composed right now (a read racing a publish, a
     relabel the next build answers) is not a build that failed, and the terminal
     sentence would make the phone stop asking. TERMINAL only once the build itself
@@ -1233,7 +1247,7 @@ def build_area_render(store: WorldStore, world_id: str, session_id: str, area_id
     The ladder is the room's, shortened to the two rungs an area is built as:
     appearance, then surface. `viewer` is accepted and ignored -- `auto` offers the
     appearance rung unconditionally, because every client that can name this route
-    postdates the scheme handler (§5.1, OPEN M12). `chrome` as in
+    postdates the scheme handler (§5.1). `chrome` as in
     `build_world_render`: the appearance rung only.
     """
     del viewer  # accepted, ignored (§5.1)
@@ -1359,7 +1373,8 @@ def area_appearance_file(store: WorldStore, world_id: str, session_id: str, area
                                    manifest)
     if data is None:
         raise AppearanceNotServed("no such appearance file")
-    # The gate again, after the read (fix round 2, Codex LOW-3), as the room's.
+    # The gate again, after the read, as the room's
+    # (`world_builder_appearance.appearance_file`) is.
     now, reason = C.area_appearance_servable(store, area.world_id, area.session_id,
                                              area.area_id)
     if now is None:

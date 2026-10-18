@@ -366,7 +366,17 @@ class DocumentMemory:
     def search_text(
         self, query: str, limit: int = 5, min_score: float = MIN_SCORE
     ) -> QueryResult:
-        """Lexical BM25 over stored OCR text, page by page. Refuses rather than guesses."""
+        """Lexical BM25 over stored OCR text, page by page. Refuses rather than guesses.
+
+        Tokenises `query`, expands each term against the cached corpus (so close
+        spellings also count), and scores every stored page with BM25. Pages
+        below `min_score` are dropped. Per document the best page wins (more exact
+        terms first, then score) and becomes a `Match` with a snippet and the
+        matched terms. Matches are ordered by exact terms, then score, and cut to
+        `limit`. Returns a `QueryResult`; it is `sufficient_evidence` only when
+        there is at least one match. With no documents, no searchable terms, or no
+        page scoring, there are no matches and `reason` says which.
+        """
         corpus = _CACHE.get(self._store)
         documents = corpus.documents
         query_terms = tokenise(query)
