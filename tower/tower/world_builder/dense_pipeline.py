@@ -10,8 +10,8 @@ Three stages, each checkpointed under `<world>/dense/<session>/`:
 
 A stage whose output is already present and matches the current input digest is
 skipped, so an interrupted run resumes. `should_stop` is polled between frames
-and between stages; a stop is recorded as `stopped`, never as a failure and
-never as a half-written artifact.
+inside depth and fuse (pack, once reached, always runs); a stop is recorded
+as `stopped`, never as a failure and never as a half-written artifact.
 
 Nothing here writes into `derived/`. The dense subtree is additive and optional:
 `require_schema` refuses any version but 1 and there is no migration machinery,
