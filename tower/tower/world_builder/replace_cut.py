@@ -49,7 +49,8 @@ positioning lacked -- and refuses an image it cannot pose instead of collapsing 
           the frame brings no scale of its own (every 3-D point it keeps is the room's), so there is none to
           screen, and it is recorded `re-placed` uncertified;
        d. downstream, unchanged: the depth stage's per-frame fit (held-out <= 8 %) decides what is fused.
-     Without metric evidence there is no scale screen, so nothing is re-placed.
+     Without metric evidence (the assessment's reference and metres per unit) the pose screen has no
+     walking allowance in metres, so nothing is re-placed.
   5. MERGE (`merge`): a re-placed keyframe joins component 0 with its registered pose; its old observations
      are dropped; its observations of room points and the points newly triangulated with it are added. The
      room's own points and poses are never moved.
@@ -764,7 +765,7 @@ def replace_cut(store, world_id, session_id, solution, assessment: dict, *, cams
 
     try:
         if not assessment.get("reference") or not (assessment.get("pose") or {}).get("metres_per_unit"):
-            return solution, assessment, done("skipped", why="no metric evidence, so no scale screen")
+            return solution, assessment, done("skipped", why="no metric evidence: the pose screen needs metres per unit")
         mpu = float(assessment["pose"]["metres_per_unit"])
         room_cams = [c for c in cams if c.kid not in pieces_kids and FSG._finite_pose(c)]
         room = {c.kid for c in room_cams}

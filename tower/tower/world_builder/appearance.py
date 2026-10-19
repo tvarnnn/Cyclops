@@ -1511,10 +1511,10 @@ def solve_gains(rgbs, opaque, zps, Rs, ts, K, params: AppearanceParams, device=N
 
 
 def display_gauge(rgbs, opaque, gains, slopes, vignette, rows, stride: int = 4):
-    """The display gauge of §5.4: the one factor every observed gain is
-    multiplied by so that the median luminance the page draws over the opaque
-    texels of keyframes `rows` (the phone set) is their median CAPTURED
-    luminance.
+    """The display gauge of §5.4: the one factor every gain is multiplied
+    by (`apply_display_gauge`) so that the median luminance the page draws
+    over the opaque texels of keyframes `rows` (the phone set) is their
+    median CAPTURED luminance.
 
     The page draws a texel as `captured / (gain x field)`, field =
     `exp_field(gain_slope, vignette)`, so multiplying every gain by `m`
