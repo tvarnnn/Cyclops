@@ -279,7 +279,10 @@ class AppearanceParams:
     selection_vis_tol: float = 0.03
     selection_second_weight: float = 0.5
     selection_min_gain_frac: float = 1e-4
-    phone_budget: int = 128
+    # 192 = the page's ASTC_LAYER_CAP (appearance_render.py). Was 128; raised for the patchy-run candidate
+    # (lane A option 5): with borrowed depth fits and re-placed frames the proxy gains surface the 128 phone
+    # layers did not cover (walk-view haze 5.30 -> 4.03 % on walk 10.1), for +6.6 MB of ASTC.
+    phone_budget: int = 192
     quality_floor: float = 0.15
     seed: int = 0
     # encoding (§5.6)

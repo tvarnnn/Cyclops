@@ -396,9 +396,10 @@ enforced).
   and its sliver triangles with three rim vertices went fully transparent,
   shredding walls into dark triangles.)
 - **Formats and memory.** ASTC 6×6 (`WEBGL_compressed_texture_astc`) into one
-  `TEXTURE_2D_ARRAY` allocated once at the phone budget (128 layers, capped at
-  192): 13.1 MB colour + 3.7 MB depth + 3.7 MB proxy buffers = 20.5 MB on the
-  canonical world, reported in `window.__wbAppearance.gpu` / `gpuBytes`. Beside
+  `TEXTURE_2D_ARRAY` allocated once at the phone budget (192 layers since
+  2026-10-19, the ASTC cap; it was 128, measured then at 13.1 MB colour + 3.7 MB
+  depth + 3.7 MB proxy buffers = 20.5 MB on the canonical world, and 192 layers
+  add about 6.6 MB of ASTC colour), reported in `window.__wbAppearance.gpu` / `gpuBytes`. Beside
   it, not in it, both scaling with the canvas: the drawing buffer (about 7 bytes
   a pixel) and the surface layer with its mip levels, its depth texture and the
   blurred coverage (`gpu.layers`, about 10.3 bytes a pixel: 6.5 MB at 900×700,
@@ -1238,7 +1239,7 @@ enforced).
   N in *The walk* is `NAV.MAX_SKIP`. *So fewer images fit* is true whenever
   either line shows at the default phone budget: without the compact format
   the page holds at most 48 layers (`RGBA8_LAYER_CAP`), against the phone
-  budget of 128 (`phone_budget`) that ASTC's 192 (`ASTC_LAYER_CAP`) admits.
+  budget of 192 (`phone_budget`), which is ASTC's cap (`ASTC_LAYER_CAP`).
   Every other word of the caption line and the panel is unchanged, and so
   are: the head line, both *These are the camera's own
   frames …* sentences, *Loading the room's surface…*, the *Face the room*

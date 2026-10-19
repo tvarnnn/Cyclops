@@ -593,7 +593,7 @@ Greedy set cover over proxy visibility, with a quality weight.
   lowered further for a misregistered keyframe (§5.3).
 - Objective `Σ best + 0.5 × Σ second-best`, so most surface keeps two views to
   blend. Keyframes are added in order of marginal gain until the phone budget
-  (`phone_budget`, 128) is reached or the gain falls below `1e-4` of the
+  (`phone_budget`, 192 -- the page's `ASTC_LAYER_CAP`; 128 before 2026-10-19) is reached or the gain falls below `1e-4` of the
   objective so far.
 - `tier: "phone"` for the chosen keyframes (with `rank`), `tier: "tower"` for
   every other usable keyframe. `selection.coverage` reports the fraction of
