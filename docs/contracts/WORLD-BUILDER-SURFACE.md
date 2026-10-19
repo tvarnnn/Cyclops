@@ -65,8 +65,10 @@ all of these hold:
    (`anchors="room"`), so it brings no gauge of its own. Measured when lanes
    X and G were integrated (cand-v2, 2026-10-19): every re-placed keyframe of
    live 10.1 (90) lay inside a kept plateau, no `uncertified` row of the
-   guard's own did on any DEV draw, and on lane G's live run 16 % of the
-   borrowed anchors came from re-placed frames;
+   guard's own did on any DEV draw, and on live 10.1 17 of 92 adopted frames
+   took anchors from a re-placed frame (5.8 % of the borrowed anchors; 16 %
+   on cand-v1's publication, which re-placed 132); no adopted frame
+   supported surface farther than 2 m from every camera;
 3. optionally, **the anchored footprint** (`SurfaceParams.neighbour_fit_footprint`,
    off by default): it is fused only on the anchor grid's cells (4 px) whose
    anchors its fitted depth agrees with within the fusion's truncation band,
