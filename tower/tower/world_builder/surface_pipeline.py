@@ -257,9 +257,10 @@ def ensure_depth_stage(store, world_id: str, session_id: str, solution,
     and `run_depth_stage` runs with `prior=None` and `gate_rel`, `backend` and
     `imagery_source` carried in its `DenseParams`; `should_stop` and
     `progress` go to the stage. When the stage completes, the record is
-    stamped with `input_digest`, `digest`, `cache_key` and, for a gated solve,
-    `solve_identity`; a stopped stage (`stopped_after` set) is written
-    unstamped. Returns `(align, <dense>/work)`.
+    stamped with `input_digest`, `digest`, `cache_key`, for a gated solve
+    `solve_identity`, and for a re-placed publication `publication_identity`
+    (`replace_cut.publication_identity`); a stopped stage (`stopped_after`
+    set) is written unstamped. Returns `(align, <dense>/work)`.
 
     Deliberately shares `dense/<session>/` rather than keeping a private copy.
     The depth maps are a property of the keyframes and the solve, not of what
@@ -334,6 +335,13 @@ def ensure_depth_stage(store, world_id: str, session_id: str, solution,
             from tower.world_builder.global_solve import solve_identity  # noqa: PLC0415
 
             align["solve_identity"] = solve_identity(solution)
+        # A RE-PLACED publication is named too (`_depth_cache_usable`); any
+        # other carries no `publication_identity`.
+        from tower.world_builder.replace_cut import publication_identity  # noqa: PLC0415
+
+        publication = publication_identity(solution)
+        if publication:
+            align["publication_identity"] = publication
     write_json_atomic(align_path, align)
     return align, root / "work"
 
@@ -344,7 +352,9 @@ def _depth_cache_usable(cached: dict, root: Path, solution, dparams, *,
     network, and still has its per-frame maps on disk.
 
     All of these must hold: the cache names this solve (`input_digest` or
-    `digest`) and, for a gated solve, its `solve_identity`; the stage was not
+    `digest`) and, for a gated solve, its `solve_identity`; it names the same
+    publication (`publication_identity`: both absent, or both this re-placed
+    publication's); the stage was not
     stopped; `backend`, `fill_rule` (`FILL_RULE`), the keyframe image set, the
     imagery source and whether the network was told the camera's FoV
     (`known_fov`) match; when `trust` is given, the recorded trust decision
@@ -380,6 +390,17 @@ def _depth_cache_usable(cached: dict, root: Path, solution, dparams, *,
 
         if cached.get("solve_identity") != solve_identity(solution):
             return False
+    # THE SAME SOLVE IS NOT THE SAME PUBLICATION. Re-placement (`replace_cut`)
+    # moves poses and observations of one solve without changing its digest,
+    # and the fits are made against them: a stage fitted to the guard's cut is
+    # not the re-placed publication's, nor the reverse. Neither side named (no
+    # re-placement on either): nothing changes.
+    from tower.world_builder.replace_cut import publication_identity  # noqa: PLC0415
+
+    publication = publication_identity(solution)
+    if (publication is not None or cached.get("publication_identity") is not None) \
+            and cached.get("publication_identity") != publication:
+        return False
     # AN INTERRUPTED STAGE IS NOT A COMPLETE ONE. A stop mid-depth leaves an
     # `align.json` holding only the frames reached; trusting it would build a
     # surface from 3 of 8 frames (as measured) under the full solve's digest.
@@ -971,6 +992,16 @@ def surfacify(store, world_id: str, session_id: str, *,
         # under another gate; the product's builds pass `force` and rebuild
         # anyway.
         pdigest += "|" + FIT_GATE_ID
+        # WHICH PUBLICATION of this solve (`replace_cut.publication_identity`):
+        # re-placement moves poses and observations without changing
+        # `input_digest`, so a surface of the guard's cut must not answer for
+        # the re-placed publication, nor the reverse. Appended only to a
+        # re-placed solve, so every digest written before is unchanged.
+        from tower.world_builder.replace_cut import publication_identity  # noqa: PLC0415
+
+        publication = publication_identity(solution)
+        if publication:
+            pdigest += "|publication:" + publication
         if is_raw(params.imagery_source):
             # §6.6. `_params_digest` already carries it through
             # `digest_fields`; this is the spelling a human reads in

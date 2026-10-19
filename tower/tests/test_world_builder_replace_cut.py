@@ -18,6 +18,7 @@ Pinned:
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import math
 import types
@@ -525,6 +526,68 @@ def test_a_re_placed_record_that_cannot_be_written_publishes_the_cut(monkeypatch
     off, on, piece = _replaced_seam(monkeypatch, register_record={"not json": {1, 2}})
     rec = _is_the_cut(off, on, piece)
     assert rec["error"].startswith("publication: TypeError")
+
+
+# ---------------------------------------------------------------------------
+# cache identity: a re-placed publication is not the cut of the same solve
+# ---------------------------------------------------------------------------
+
+
+def test_a_publication_identity_names_a_re_placed_solve_and_nothing_else():
+    sol, truth, pts = _scene(30, collapsed=(10,))
+    assert RC.publication_identity(sol) is None                     # untouched: no identity, nothing changes
+    k10 = _kid(10)
+    a = RC.merge(sol, _registration(sol, truth, pts, [k10]), {k10}, room_kids=set(sol.keyframe_ids) - {k10})
+    ida = RC.publication_identity(a)
+    assert a.input_digest == sol.input_digest and isinstance(ida, str) and len(ida) == 16
+    assert RC.publication_identity(a) == ida                         # deterministic
+    # the same poses with other observations (another `anchors`, another merge) is another publication
+    b = dataclasses.replace(a, observations=a.observations[:-1], observation_xy=a.observation_xy[:-1])
+    assert RC.publication_identity(b) != ida
+
+
+def test_a_surface_or_a_depth_stage_of_one_publication_is_never_reused_for_another(tmp_path, monkeypatch):
+    """R2: the guard's cut and the re-placed publication of one solve share `input_digest`. The surface's
+    reuse key (`_already_built`'s params digest) and the shared depth stage (`_depth_cache_usable`) now
+    tell them apart; an untouched solve's key is exactly what it was."""
+    from tests.test_world_builder_surface_pipeline import SESSION, WORLD, _params, _synthetic_world
+    from tower.world_builder import surface_pipeline as SP
+    from tower.world_builder.dense import DenseParams
+    from tower.world_builder.surface import SurfaceResult
+
+    store = _synthetic_world(tmp_path)
+    ws = GS.workspace_for(store, WORLD, SESSION)
+    cut = GS.load_solution(store, WORLD, SESSION)
+    k = cut.keyframe_ids[3]
+    moved = dict(cut.poses[k], registration=RC.STEP_ID,
+                 translation=[float(v) + 0.01 for v in cut.poses[k]["translation"]])
+    replaced = dataclasses.replace(cut, poses={**cut.poses, k: moved})
+    pub = RC.publication_identity(replaced)
+    assert pub is not None
+
+    # the depth stage: an unnamed stage is the cut's, as before; a named one is its publication's only
+    dense = store.world_dir(WORLD) / "dense" / SESSION
+    align = json.loads((dense / "align.json").read_text())
+    dp = DenseParams(known_fov=True)
+    assert SP._depth_cache_usable(align, dense, cut, dp), "untouched: as before"
+    assert not SP._depth_cache_usable(align, dense, replaced, dp)
+    named = dict(align, publication_identity=pub)
+    assert SP._depth_cache_usable(named, dense, replaced, dp)
+    assert not SP._depth_cache_usable(named, dense, cut, dp)
+
+    # the surface's reuse key
+    keys = []
+
+    def already(root, digest, pdigest, force):
+        keys.append(pdigest)
+        return SurfaceResult(state=SP.STATE_OK, detail=SP.ALREADY_BUILT)
+
+    monkeypatch.setattr(SP, "_already_built", already)
+    for sol in (cut, replaced, cut):
+        GS.write_solution(ws, sol)
+        assert SP.surfacify(store, WORLD, SESSION, params=_params()).detail == SP.ALREADY_BUILT
+    assert "publication" not in keys[0] and keys[2] == keys[0]
+    assert keys[1] == keys[0] + "|publication:" + pub
 
 
 # ---------------------------------------------------------------------------

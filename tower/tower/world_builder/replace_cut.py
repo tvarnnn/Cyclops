@@ -768,6 +768,26 @@ def _counts_of(refused: dict) -> dict:
     return dict(sorted(out.items()))
 
 
+def publication_identity(solution) -> str | None:
+    """Which publication of a solve this is, when re-placement changed it; None when it did not (no pose
+    row carries `registration`), so every cache identity of an untouched solve stays as it was.
+
+    WHY. `input_digest` names the keyframes only, and the step changes poses and observations without
+    changing it: the guard's cut and the re-placed publication of ONE solve (the switch off or on, a
+    re-gate) share it, so a surface or a depth stage keyed by it would be reused across them. This hashes
+    the solve's identity (`global_solve.solve_identity`: `solved_at`, every pose and its component) with
+    the observation rows and the points, which the step also changes. 16 hex."""
+    poses = getattr(solution, "poses", None) or {}
+    if not any((p or {}).get("registration") for p in poses.values()):
+        return None
+    from tower.world_builder.global_solve import solve_identity  # noqa: PLC0415
+
+    h = hashlib.sha1(solve_identity(solution).encode())
+    h.update(np.ascontiguousarray(np.asarray(solution.observations, np.int32)).tobytes())
+    h.update(np.ascontiguousarray(np.asarray(solution.xyz, np.float32)).tobytes())
+    return h.hexdigest()[:16]
+
+
 def withdrawn(record: dict, why: str) -> dict:
     """The record of a re-placement that was not published (its candidate failed after the step, in the
     guard's publication): state `error`, nothing re-placed, and the keyframes it had re-placed."""
