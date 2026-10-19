@@ -148,8 +148,8 @@ def test_the_setting_is_exact(monkeypatch, value, expected):
 
 
 @pytest.mark.parametrize("value,expected", [
-    (None, 240.0), ("", 240.0), ("90", 90.0), ("0.5", 0.5), ("3600", 3600.0),
-    ("0", 240.0), ("-5", 240.0), ("nan", 240.0), ("inf", 240.0), ("3601", 240.0), ("soon", 240.0),
+    (None, 360.0), ("", 360.0), ("90", 90.0), ("0.5", 0.5), ("3600", 3600.0),
+    ("0", 360.0), ("-5", 360.0), ("nan", 360.0), ("inf", 360.0), ("3601", 360.0), ("soon", 360.0),
 ])
 def test_the_budget_setting(monkeypatch, value, expected):
     if value is None:

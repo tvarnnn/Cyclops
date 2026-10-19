@@ -34,7 +34,7 @@ WHAT HAPPENS, in `global_solve.solve` (ungated, single-draw final solve, guard `
      published, through the existing publish step (`coherence_publish.gate_and_publish`), as if
      it were the single draw: its `sparse/` replaces draw 1's, its guard outcome is the one
      published, and every later stage sees one solution.
-  5. A HARD WALL BUDGET (`TOWER_WORLD_SOLVE_SELECT_BUDGET_S`, 240 s) covers the extra draws: past
+  5. A HARD WALL BUDGET (`TOWER_WORLD_SOLVE_SELECT_BUDGET_S`, 360 s) covers the extra draws: past
      it the draws still running are killed -- the whole process tree, through a Job Object
      (`tower.process_ownership`) -- and the best finished draw so far wins. A caller's stop does
      the same (a stop never loses the finish: what is published is what a budget cut would

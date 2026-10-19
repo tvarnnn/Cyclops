@@ -1017,7 +1017,10 @@ WORLD_SOLVE_SELECT_OFF = "off"
 WORLD_SOLVE_SELECT_ADAPTIVE = "adaptive"
 WORLD_SOLVE_SELECT_MAX_DRAWS = 6
 WORLD_SOLVE_SELECT_DEFAULT_DRAWS = 3
-WORLD_SOLVE_SELECT_BUDGET_DEFAULT_S = 240.0
+# 360 s: one wave of the 3 parallel draws on the 1419-keyframe walk 10.1 took 248 s (CPU-only workers), so the
+# walk-8 default of 240 s would have killed every extra draw; 360 leaves that wave ~45 % headroom for a longer
+# walk or a busier Tower. Past it the best finished draw is published, as before.
+WORLD_SOLVE_SELECT_BUDGET_DEFAULT_S = 360.0
 WORLD_SOLVE_SELECT_BUDGET_MAX_S = 3600.0
 # The trigger (`solve_select.trigger_threshold`): draw 1 triggers when it isolates
 # >= max(TRIGGER_MIN_KF, ceil(TRIGGER_FRAC x the room's supported keyframes)).
