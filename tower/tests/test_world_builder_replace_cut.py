@@ -210,6 +210,15 @@ def test_the_motion_screen_refuses_a_camera_beyond_the_walking_allowance_and_kee
     assert _kid(20) in got and _kid(21) not in got
 
 
+def test_an_island_the_screen_cannot_test_against_the_room_is_refused():
+    # room cameras 0-19 and 40-59; re-placed 20-22 (joined to 19 by testable steps) and 30-33, an island:
+    # its nearest room cameras are 10 journal indices (2.5 s) away, beyond the screen's step bounds
+    room = [_cam(i, [STEP * i, 0, 0]) for i in list(range(20)) + list(range(40, 60))]
+    new = [_cam(i, [STEP * i, 0, 0]) for i in (20, 21, 22, 30, 31, 32, 33)]
+    got = RC.motion_refusals(room, new, 1.0, P)
+    assert got == {_kid(i): "unanchored" for i in (30, 31, 32, 33)}
+
+
 # ---------------------------------------------------------------------------
 # the step
 # ---------------------------------------------------------------------------
