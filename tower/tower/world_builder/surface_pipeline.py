@@ -525,6 +525,12 @@ class _Frames:
         self.consistency = None
         # What `adopt_neighbour_fits` did, when it ran.
         self.neighbour_fit = None
+        # The frames fused with a borrowed fit, and, with
+        # `SurfaceParams.neighbour_fit_footprint`, {ki: (H, W) bool} their anchored
+        # footprints, the only pixels of their prediction any consumer then sees
+        # (`neighbour_fit.anchored_footprint`).
+        self.adopted: set[int] = set()
+        self.footprint: dict[int, np.ndarray] = {}
         held = []
         # Keyframe indices refused because their depth fit is not physical:
         # inverted (`fit_is_physical`), or unscorable because the held-out
@@ -657,16 +663,25 @@ class _Frames:
         for ki, _a, _b, R, t, _ho, _zmax in self.items:
             yield self.kids[ki], R, t
 
-    def load(self, ki, *, image: bool = True):
+    def load(self, ki, *, image: bool = True, borrowed: bool = False):
+        """(prediction, RGB image or None, redaction fill or None) of one frame.
+
+        A frame adopted with a borrowed fit (`adopt_neighbour_fits`), or a
+        candidate for one (`borrowed`), reads the raw prediction THIS depth
+        stage made (`{ki}_pred.npy`, the one its borrowed fit was made on;
+        `{ki}.npy` is written only for a frame whose own fit was admitted, and
+        may be left from an earlier solve of the session). With the footprint
+        option an adopted frame's prediction is unknown (NaN) off its anchored
+        footprint, for every consumer."""
         import cv2
 
+        footprint = self.footprint.get(int(ki))
         path = self.work / "depth" / f"{ki:05d}.npy"
-        if not path.exists():
-            # A frame adopted with a borrowed fit (`adopt_neighbour_fits`): the
-            # depth stage keeps its raw prediction under this name and writes
-            # the name above only for a frame its own fit admitted.
+        if borrowed or int(ki) in self.adopted or not path.exists():
             path = self.work / "depth" / f"{ki:05d}_pred.npy"
         pred = np.load(path).astype(np.float32)
+        if footprint is not None and footprint.shape == pred.shape:
+            pred = np.where(footprint, pred, np.float32(np.nan))
         img = None
         if image:
             img = cv2.imread(str(self.work / "undist" / f"{ki:05d}.jpg"),
@@ -707,7 +722,8 @@ class _Frames:
 
     def adopt_neighbour_fits(self, align: dict, solution, params: SurfaceParams,
                              median_depth: float, voxel: float, device=None,
-                             extra: list | None = None) -> dict:
+                             extra: list | None = None,
+                             certified: set | None = None) -> dict:
         """Fuse the posed frames of the placed component whose own depth fit
         is missing or refused, when a fit to the depth their fused neighbours
         measured passes the gate (`SurfaceParams.neighbour_fit`,
@@ -717,6 +733,10 @@ class _Frames:
         `extra`: further candidates `(ki, kid, pose, prior, record)` outside the
         depth stage's records -- the `solver-frame` scope's isolated pieces
         (`isolated_candidates`), whose predictions are already staged in `work`.
+
+        `certified`: the keyframe indices the final scale guard certified
+        (`neighbour_fit.certified_keyframes`, `guard_certified`); only those of
+        the fused frames lend anchors. None or empty: nothing is borrowed.
 
         Called once the frames, their transient masks, the scene scale and the
         fusion bound exist, and before the consistency field, so an adopted
@@ -772,6 +792,19 @@ class _Frames:
         if not candidates:
             return record
 
+        # CERTIFIED DONORS (`neighbour_fit.py`): only the fused frames the final
+        # scale guard kept in the room lend anchors.
+        certified = set(certified or ())
+        donors = [item for item in primary if int(item[0]) in certified]
+        record["donors"] = {"rule": "final-scale-guard kept plateaus",
+                            "fused": len(primary), "certified": len(donors)}
+        if not donors:
+            refused["no-certified-donor"] = len(candidates)
+            record["seconds"] = round(time.time() - t0, 2)
+            logger.warning("[Tower][WorldBuilder][surface] neighbour fits: none borrowed "
+                           "(no fused frame the final scale guard certified)")
+            return record
+
         trel = truncation_rel(params, self.median_held_out)
         floor = params.trunc_voxels * voxel
         cap = max(params.trunc_max_voxels * voxel, floor)
@@ -779,13 +812,13 @@ class _Frames:
         def band(z):
             return np.clip(z * trel, floor, cap) if trel > 0 else np.full_like(z, floor)
 
-        centres = np.array([-R.T @ t for _ki, _a, _b, R, t, _ho, _z in primary])
-        axes = np.array([R[2] for _ki, _a, _b, R, _t, _ho, _z in primary])
+        centres = np.array([-R.T @ t for _ki, _a, _b, R, t, _ho, _z in donors])
+        axes = np.array([R[2] for _ki, _a, _b, R, _t, _ho, _z in donors])
         cache: dict = {}
 
         def points(i):
             if i not in cache:
-                ki, a, b, R, t, _ho, zmax = primary[i]
+                ki, a, b, R, t, _ho, zmax = donors[i]
                 pred, _img, fill = self.load(ki, image=False)
                 z = np.asarray(_depth_from_prediction(pred, a, b, self.kind), np.float32)
                 zt = torch.as_tensor(np.where(np.isfinite(z), z, np.nan), device=dev)
@@ -808,7 +841,7 @@ class _Frames:
                     > self.pose_gate_threshold):
                 refused["pose"] = refused.get("pose", 0) + 1
                 continue
-            pred, _img, fill = self.load(ki, image=False)
+            pred, _img, fill = self.load(ki, image=False, borrowed=True)
             blocked = None
             if fill is not None:
                 blocked = _dilate_fill(torch.as_tensor(fill, device=dev),
@@ -826,6 +859,13 @@ class _Frames:
                 continue
             by["adopted"] += 1
             record["adopted"] += 1
+            zf = _depth_from_prediction(np.asarray(pred, np.float64)[v, u], fit["a"], fit["b"],
+                                        self.kind)
+            agree = np.isfinite(zf) & (np.abs(zf - z) <= band(z))
+            fp = NF.anchored_footprint(u, v, pred.shape, agree=agree)
+            self.adopted.add(int(ki))
+            if params.neighbour_fit_footprint:
+                self.footprint[int(ki)] = fp
             self.kids[ki] = kid
             self.image_sha1[ki] = _r.get("image_sha1")
             self.items.append((ki, fit["a"], fit["b"], R, t, fit["held_out_rel"],
@@ -836,6 +876,8 @@ class _Frames:
             record["adopted_frames"].append({
                 "ki": ki, "kid": kid, "prior": prior, "a": fit["a"], "b": fit["b"],
                 "held_out_rel": round(fit["held_out_rel"], 5),
+                "footprint_share": round(float(fp.mean()), 4),
+                "anchors_disagreeing": round(float(1.0 - agree.mean()), 4),
                 "z_sparse_max": fit["z_anchor_max"], "anchors": fit["anchors"],
                 "anchor_frames": fit["anchor_frames"],
                 "image_sha1": _r.get("image_sha1"), "fill_rule": _r.get("fill_rule")})
@@ -1081,7 +1123,8 @@ def surfacify(store, world_id: str, session_id: str, *,
             nf = frames.adopt_neighbour_fits(
                 align, solution, params, median_depth, voxel,
                 device=torch.device("cuda" if torch.cuda.is_available() else "cpu"),
-                extra=extra)
+                extra=extra, certified=guard_certified(
+                    store, world_id, session_id, getattr(solution, "keyframe_ids", None)))
             if iso is not None:
                 nf["isolated"] = iso
             if nf.get("adopted"):
@@ -1175,6 +1218,23 @@ def surfacify(store, world_id: str, session_id: str, *,
 
 STAGE_CONSISTENCY = "consistency"
 STAGE_NEIGHBOUR_FIT = "neighbour-fit"
+
+
+def guard_certified(store, world_id: str, session_id: str, keyframe_ids) -> set[int]:
+    """The keyframe indices the final scale guard certified for this session's
+    published solve (`neighbour_fit.certified_keyframes` over its audit,
+    `solve/<session>/final_scale_guard.json`); empty when there is no readable
+    audit, so nothing is borrowed."""
+    from tower.world_builder import final_scale_guard as FSG  # noqa: PLC0415
+    from tower.world_builder import neighbour_fit as NF  # noqa: PLC0415
+    from tower.world_builder.global_solve import workspace_for  # noqa: PLC0415
+
+    try:
+        path = workspace_for(store, world_id, session_id).root / FSG.AUDIT_FILENAME
+        audit = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError, AttributeError):
+        return set()
+    return NF.certified_keyframes(audit, keyframe_ids)
 
 
 def adopted_fits(manifest: dict | None) -> dict:

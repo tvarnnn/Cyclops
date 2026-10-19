@@ -2,7 +2,7 @@
 
 Contract identifier: `wb-appearance-keyframes/1`.
 
-Document version: **v5** (2026-10-05): §6.6: `TOWER_WORLD_RAW_IMAGERY_WORLDS`, an exact-id allowlist on the read path only, lets a Tower serve a listed world's raw research artifact with its marker; builds are unchanged (manager 201, option C). v4 (2026-10-05): a walk build stays **served** across Stop, so a viewer opened after Stop gets the walk's photos (manager 185 A; §9). v3 (2026-10-05): §6.6 and §9: under native chrome (WORLDS §4c) the phone draws the research marker and keeps it, manager 167. v2 (2026-09-27): §4.2b's wording about the capture, manager 106. See the change log at the end. The identifier above does **not** move: the artifact, the manifest and every route are unchanged.
+Document version: **v6** (2026-10-19): §5.1: a frame the surface fused with a borrowed depth fit is a candidate under that fit (patchy run lane G; reviews R1/R2 of cand-v1). v5 (2026-10-05): §6.6: `TOWER_WORLD_RAW_IMAGERY_WORLDS`, an exact-id allowlist on the read path only, lets a Tower serve a listed world's raw research artifact with its marker; builds are unchanged (manager 201, option C). v4 (2026-10-05): a walk build stays **served** across Stop, so a viewer opened after Stop gets the walk's photos (manager 185 A; §9). v3 (2026-10-05): §6.6 and §9: under native chrome (WORLDS §4c) the phone draws the research marker and keeps it, manager 167. v2 (2026-09-27): §4.2b's wording about the capture, manager 106. See the change log at the end. The identifier above does **not** move: the artifact, the manifest and every route are unchanged.
 
 **Living document.** Added 2026-09-17 (fix-it campaign, appearance stage). §6.5 (re-redaction) added 2026-09-17. §5.3b (the cross-frame redaction consensus) added 2026-09-21.
 
@@ -290,9 +290,14 @@ Stage order, all over the gated, posed keyframes of one session:
 
 ### 5.1 Which keyframes are usable
 
-A keyframe is a candidate when it is posed in the solve and has a depth-stage
-record in `dense/<sid>/align.json` whose fit is `ok` (the occluder test needs
-its depth). Every other keyframe is listed in `excluded` with its reason:
+A keyframe is a candidate when it is posed in the solve and has a depth fit
+(the occluder test needs its depth): a depth-stage record in
+`dense/<sid>/align.json` whose fit is `ok`, or, for a frame the surface fused
+with a fit borrowed from the room, that fit, read from the surface manifest's
+`detail.neighbour_fit.adopted_frames` (`WORLD-BUILDER-SURFACE.md` §1, §6). A
+borrowed fit's occluder test reads the frame's prediction under that fit over
+the whole frame; the surface fused it only on its anchored footprint. Every
+other keyframe is listed in `excluded` with its reason:
 `no-pose`, `no-depth-fit`, `refused-*` (§6, including
 `refused-camera-mismatch`), `no-proxy-in-view`, `no-depth-prediction`.
 
@@ -1337,3 +1342,4 @@ versions from v2 on. **v1** is everything up to 2026-09-26.
 | **v3** | 2026-10-05 | **Manager 167** (U1.1) | §6.6, §9 | Under native chrome the phone draws the research marker, headline and About panel from the page's words, keeps the marker for the life of the viewer, and raises it from `X-World-Imagery` too. §4.2b (the haze) is unchanged: its explanation stays in the page's *The flat grey patches* section, which the phone shows verbatim | **Nothing.** `wb-appearance-keyframes/1`, the manifest and the routes are unchanged |
 | **v4** | 2026-10-05 | **Manager 185 A** (owner-declared bug: walk photos unavailable to a viewer opened after Stop) | §6.6 (*How a reader refuses*: the gate is `may_serve`), §9 (*Served only while*, the `rebuilding` row, *The walk's photos stay served across Stop*) | A build whose label no longer matches but whose textures carry over to the keyframe set now (same set, same imagery, every frame re-redacted by an allowlisted redactor; the ordinary Stop) is **served**, not `rebuilding`: a viewer opened after Stop gets the walk's photos. Fix round 1 (review rv-pas): the carry-over fails closed on an unreadable or wrong-schema world/session record, an unreadable re-redaction pointer, a partial provenance, and a session label off the allowlist; it lends no superseded file. Nothing else is widened; the redaction, `label_matches`, the imagery checks and `textures_carry_over` are unchanged (byte-identity golden over every other payload, `tests/test_world_builder_photos_after_stop_identity.py`) | **Additive in effect, no new field.** `wb-appearance-keyframes/1`, the manifest and the routes' shapes are unchanged. In the Stop gap `appearance.state` reads `served` (was `rebuilding`) with the walk build's `revision` (was `null`), and the render ladder picks the appearance rung (was the surface); every client already handles `served` |
 | **v5** | 2026-10-05 | **Manager 201** (option C; owner decision 194/195: home worlds raw, live venue walks redacted) | §6.6 | **Read-path allowlist.** `TOWER_WORLD_RAW_IMAGERY_WORLDS=<world_id,...>` (exact ids; a malformed list is refused whole, fail closed): a reader serves a listed world's raw research artifact, with its marker; every other world is unchanged. Builds never read the list and stay governed by `TOWER_WORLD_RAW_IMAGERY`. Unset or empty = byte-identical. Known gap (pre-existing): surface and dense pages carry no imagery gate. | **None** with the list unset.
+| **v6** | 2026-10-19 | **Patchy run, lane G** (reviews R1 and R2 of cand-v1) | §5.1 | Candidates include the frames the surface fused with a borrowed depth fit (`WORLD-BUILDER-SURFACE.md` §1), under that fit, from the surface manifest's `detail.neighbour_fit.adopted_frames`; they were `no-depth-fit` exclusions. Describes code already on the branch (cand-v1 `3bd6277b`) | **Nothing.** `wb-appearance-keyframes/1`, the manifest and the routes are unchanged; fewer keyframes are `excluded` as `no-depth-fit` |

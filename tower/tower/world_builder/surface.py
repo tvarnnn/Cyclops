@@ -570,6 +570,21 @@ class SurfaceParams:
     (`DenseParams.neighbours`), measured there: a wider search recruits more
     distant, weaker witnesses."""
 
+    neighbour_fit_footprint: bool = False
+    """Fuse an adopted frame only on its agreeing anchored footprint
+    (`neighbour_fit.py`, THE ANCHORED FOOTPRINT): the cells of the anchor grid
+    whose anchors its fitted depth agrees with, dilated by one cell. Off (the
+    default): the whole frame under its borrowed fit, out to its far bound.
+
+    WHY OFF. Measured on four DEV draws of walk 10.1 (patchy run lane G,
+    2026-10-19), with certified donors the footprint removed no phantom the
+    donor rule had not already removed, and it took the borrowed frames' new
+    surface beyond their donors': walk-view void +0.9 pt on the live draw and
+    +4.7 pt on pre1-u2 (its whole gain). What it would close is a pose error
+    parallel to a plain wall moving that new surface (review R1's probe): that
+    surface was 0.4-1.2 % of the area, p50 6-19 cm from a good draw's
+    surface, 0-22 % of it beyond 30 cm."""
+
     neighbour_fit_scope: str = "placed"
     """Which frames may borrow a fit. `placed` (the default): only the placed
     component's own frames. `solver-frame` (an experiment, off by default):
@@ -1096,6 +1111,8 @@ class SurfaceParams:
             from tower.world_builder.neighbour_fit import NEIGHBOUR_FIT_ID  # noqa: PLC0415
 
             base = base + (("neighbour-fit", NEIGHBOUR_FIT_ID, self.neighbour_fit_frames),)
+            if self.neighbour_fit_footprint:
+                base = base + (("neighbour-fit-footprint", True),)
             if self.neighbour_fit_scope != "placed":
                 base = base + (("neighbour-fit-scope", self.neighbour_fit_scope),)
         if self.fill_gap_frac > 0:
