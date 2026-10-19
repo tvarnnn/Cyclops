@@ -570,6 +570,13 @@ class SurfaceParams:
     (`DenseParams.neighbours`), measured there: a wider search recruits more
     distant, weaker witnesses."""
 
+    neighbour_fit_footprint: bool = True
+    """Fuse an adopted frame only on its agreeing anchored footprint
+    (`neighbour_fit.py`, THE ANCHORED FOOTPRINT): the cells of the anchor grid
+    whose anchors its fitted depth agrees with, dilated by one cell. Off: the
+    whole frame under its borrowed fit, out to its far bound, as
+    neighbour-fit/1 fused it (the second setting measured by lane G)."""
+
     neighbour_fit_scope: str = "placed"
     """Which frames may borrow a fit. `placed` (the default): only the placed
     component's own frames. `solver-frame` (an experiment, off by default):
@@ -1096,6 +1103,8 @@ class SurfaceParams:
             from tower.world_builder.neighbour_fit import NEIGHBOUR_FIT_ID  # noqa: PLC0415
 
             base = base + (("neighbour-fit", NEIGHBOUR_FIT_ID, self.neighbour_fit_frames),)
+            if not self.neighbour_fit_footprint:
+                base = base + (("neighbour-fit-footprint", False),)
             if self.neighbour_fit_scope != "placed":
                 base = base + (("neighbour-fit-scope", self.neighbour_fit_scope),)
         if self.fill_gap_frac > 0:

@@ -838,7 +838,8 @@ class _Frames:
                                         self.kind)
             agree = np.isfinite(zf) & (np.abs(zf - z) <= band(z))
             fp = NF.anchored_footprint(u, v, pred.shape, agree=agree)
-            self.footprint[int(ki)] = fp
+            if params.neighbour_fit_footprint:
+                self.footprint[int(ki)] = fp
             self.kids[ki] = kid
             self.image_sha1[ki] = _r.get("image_sha1")
             self.items.append((ki, fit["a"], fit["b"], R, t, fit["held_out_rel"],

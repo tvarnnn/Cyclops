@@ -501,6 +501,23 @@ class TestTheAnchoredFootprint:
         assert np.isfinite(own).all()
 
 
+class TestTheFootprintSwitch:
+    def test_off_fuses_the_whole_frame_and_is_named_in_the_digest(self, tmp_path):
+        wall = (ROOM, 0.0, 1.0)
+        donors = [(i, (1.4, dy, 1.0 + dz), wall, "ok", 0)
+                  for i, (dy, dz) in enumerate([(0.0, -0.3), (0.2, 0.0), (-0.2, 0.2), (0.0, 0.4)])]
+        frames, align, solution, _p = _world(
+            tmp_path, donors + [(10, (0.0, 0.0, -0.55), CORNER, "no-fit", 0)])
+        params = S.SurfaceParams(neighbour_fit_footprint=False)
+        rec = _adopt(frames, align, solution, params)
+        assert rec["adopted"] == 1 and frames.footprint == {}
+        pred, _img, _fill = frames.load(10, image=False)
+        assert np.isfinite(pred).all()
+        assert ("neighbour-fit-footprint", False) in params.digest_fields()
+        assert not any(isinstance(f, tuple) and f and f[0] == "neighbour-fit-footprint"
+                       for f in S.SurfaceParams().digest_fields())
+
+
 class TestTheParameter:
     def test_on_by_default_and_named_in_the_digest(self):
         p = S.SurfaceParams()
