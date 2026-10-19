@@ -374,31 +374,38 @@ class TestCertifiedDonors:
         assert rec["adopted"] == 0 and rec["refused"] == {"no-certified-donor": 1}
         assert sorted(it[0] for it in frames.items) == [0, 1, 2, 3]
 
-    def test_the_certified_keyframes_are_the_guards_kept_plateaus(self):
-        audit = {"assessment": {"plateaus": [
-            {"first_index": 0, "last_index": 74, "decision": "kept", "class": "in"},
-            {"first_index": 75, "last_index": 81, "decision": "attached", "class": "high"},
-            {"first_index": 82, "last_index": 84, "decision": "kept", "class": "in"},
-            {"first_index": 347, "last_index": 358, "decision": "attached", "class": "high",
-             "kind": "excursion"},
-            {"first_index": 830, "last_index": 830, "decision": "attached", "class": None,
-             "kind": "unmeasured"}]}}
-        assert NF.certified_keyframes(audit) == set(range(0, 75)) | {82, 83, 84}
-        assert NF.certified_keyframes(None) == set()
-        assert NF.certified_keyframes({"assessment": None, "error": "x"}) == set()
+    def test_the_certified_keyframes_are_the_guards_judged_kept_cameras(self):
+        kids = [f"s:{i}" for i in range(400)]
+        audit = {"assessment": {
+            "room_keyframes": [k for i, k in enumerate(kids) if i not in (5, 83)],
+            "plateaus": [
+                {"first_index": 0, "last_index": 74, "decision": "kept", "class": "in"},
+                {"first_index": 75, "last_index": 81, "decision": "attached", "class": "high"},
+                {"first_index": 82, "last_index": 120, "decision": "kept", "class": "in"},
+                {"first_index": 347, "last_index": 358, "decision": "attached", "class": "high",
+                 "kind": "excursion"}],
+            "pieces": [{"first_index": 100, "last_index": 110, "decision": "isolated",
+                        "keyframe_ids": kids[100:111]}]}}
+        want = (set(range(0, 75)) | set(range(82, 121))) - {5, 83} - set(range(100, 111))
+        assert NF.certified_keyframes(audit, kids) == want
+        assert NF.certified_keyframes(None, kids) == set()
+        assert NF.certified_keyframes({"assessment": None, "error": "x"}, kids) == set()
+        assert NF.certified_keyframes(audit, []) == set()
 
     def test_the_surface_stage_reads_the_guards_audit(self, tmp_path):
         from tower.world_builder import final_scale_guard as FSG
 
         root = tmp_path / "worlds" / "w"
         store = SimpleNamespace(world_dir=lambda wid: tmp_path / "worlds" / wid)
-        assert SP.guard_certified(store, "w", "s") == set()
+        kids = ["a", "b", "c", "d", "e", "f"]
+        assert SP.guard_certified(store, "w", "s", kids) == set()
         (root / "solve" / "s").mkdir(parents=True)
         (root / "solve" / "s" / FSG.AUDIT_FILENAME).write_text(json.dumps({"assessment": {
-            "plateaus": [{"first_index": 3, "last_index": 5, "decision": "kept"}]}}))
-        assert SP.guard_certified(store, "w", "s") == {3, 4, 5}
+            "room_keyframes": ["c", "d", "f"],
+            "plateaus": [{"first_index": 2, "last_index": 4, "decision": "kept"}]}}))
+        assert SP.guard_certified(store, "w", "s", kids) == {2, 3}
         (root / "solve" / "s" / FSG.AUDIT_FILENAME).write_text("{not json")
-        assert SP.guard_certified(store, "w", "s") == set()
+        assert SP.guard_certified(store, "w", "s", kids) == set()
 
 
 class TestTheAnchoredFootprint:

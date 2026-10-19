@@ -65,10 +65,14 @@ surface seven more supporters and grew it from 4.5 to 26 m^2, a sheet 2-7 m from
 The pipeline's authority on whether a camera is placed in the room's gauge is the final scale
 guard (`final_scale_guard.py`): it splits the room's cameras into plateaus of their metric scale
 and KEEPS the ones inside its screen band (`decision: "kept"`), certified; excursions, off-band
-plateaus and unmeasured stretches stay attached, uncertified. So only a fused frame inside a
-plateau the guard kept may lend anchors (`certified_keyframes`); a frame the guard did not
-certify may still be fused with its own fit, as before, but it may not vouch for another frame.
-Without the guard's audit nothing is borrowed. No constant: the guard's own decision.
+plateaus and unmeasured stretches stay attached, uncertified, and pieces it isolates leave the
+room. So only a camera the guard judged (a supported room camera, `room_keyframes`) inside a
+plateau it kept, and not in a piece it isolated, may lend anchors (`certified_keyframes`). A
+camera with fewer than the solve's 30 observations is never judged and never certified: on a
+second broken draw (cand1-w101a) the frames that vouched for a x1.8 stretch were own-fit frames
+with 26-27 observations inside a kept plateau's span. A frame the guard did not certify may still
+be fused with its own fit, as before, but it may not vouch for another frame. Without the
+guard's audit nothing is borrowed. No constant: the guard's own decisions.
 
 Tried first and replaced (patchy run lane G, 2026-10-19): testing each candidate's anchors
 against its OWN metric prediction (median z_anchor / pred against the room's, inside the guard's
@@ -227,20 +231,25 @@ def anchored_footprint(u, v, shape, *, agree=None, cell: int = ANCHOR_STRIDE) ->
     return np.repeat(np.repeat(d, cell, 0), cell, 1)[:H, :W]
 
 
-def certified_keyframes(audit: dict | None) -> set[int]:
-    """The keyframe indices inside a plateau the final scale guard KEPT (its certified room
-    stretches; module docstring, CERTIFIED DONORS), from its audit document
-    (`final_scale_guard.json`). Empty without an assessment."""
-    plateaus = ((audit or {}).get("assessment") or {}).get("plateaus") or []
-    out: set[int] = set()
-    for p in plateaus:
+def certified_keyframes(audit: dict | None, keyframe_ids) -> set[int]:
+    """The keyframe indices (positions in `keyframe_ids`, the solution's) the final scale guard
+    certified, from its audit document (`final_scale_guard.json`; module docstring, CERTIFIED
+    DONORS): a camera of its room (`assessment.room_keyframes`: the supported cameras it judged)
+    inside a plateau it KEPT, and not in a piece it isolated. Empty without an assessment."""
+    a = (audit or {}).get("assessment") or {}
+    index = {k: i for i, k in enumerate(keyframe_ids or [])}
+    kept: set[int] = set()
+    for p in a.get("plateaus") or []:
         if p.get("decision") != "kept":
             continue
         try:
-            out.update(range(int(p["first_index"]), int(p["last_index"]) + 1))
+            kept.update(range(int(p["first_index"]), int(p["last_index"]) + 1))
         except (KeyError, TypeError, ValueError):
             continue
-    return out
+    room = {index[k] for k in a.get("room_keyframes") or [] if k in index}
+    cut = {index[k] for p in a.get("pieces") or [] for k in p.get("keyframe_ids") or []
+           if k in index}
+    return (kept & room) - cut
 
 
 def fit_from_neighbours(pred, kind: str, u, v, z, src, *, gate_rel: float, min_anchors: int,

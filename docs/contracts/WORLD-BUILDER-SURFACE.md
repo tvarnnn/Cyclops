@@ -44,11 +44,14 @@ all of these hold:
 1. the fit passes the dense stage's gate: `a > 0`, held-out error within
    `gate_rel`, at least `min_sparse_points` anchors from at least
    `min_support_frames` distinct fused frames;
-2. **certified donors**: only fused frames inside a plateau the final scale
-   guard KEPT (`decision: "kept"` in `solve/<session>/final_scale_guard.json`,
-   its certified room stretches) lend anchors. A frame the guard left attached
-   but uncertified (an excursion, an off-band plateau, an unmeasured stretch)
-   is still fused with its own fit, but vouches for no other frame: on a broken
+2. **certified donors**: only fused frames the final scale guard certified
+   lend anchors: a camera of its room (`room_keyframes`, the supported cameras
+   it judged) inside a plateau it KEPT (`decision: "kept"` in
+   `solve/<session>/final_scale_guard.json`), not in a piece it isolated. A
+   frame the guard left attached but uncertified (an excursion, an off-band
+   plateau, an unmeasured stretch) or never judged (fewer than 30
+   observations) is still fused with its own fit, but vouches for no other
+   frame: on a broken
    solve draw a stretch drawn ×4.16 the room's scale vouched for its own
    unfitted frames, which the held-out error cannot see, and grew a sheet 2-7 m
    from every camera. Without the guard's audit nothing is borrowed;

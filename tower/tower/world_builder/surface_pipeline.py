@@ -1086,7 +1086,8 @@ def surfacify(store, world_id: str, session_id: str, *,
             nf = frames.adopt_neighbour_fits(
                 align, solution, params, median_depth, voxel,
                 device=torch.device("cuda" if torch.cuda.is_available() else "cpu"),
-                extra=extra, certified=guard_certified(store, world_id, session_id))
+                extra=extra, certified=guard_certified(
+                    store, world_id, session_id, getattr(solution, "keyframe_ids", None)))
             if iso is not None:
                 nf["isolated"] = iso
             if nf.get("adopted"):
@@ -1182,7 +1183,7 @@ STAGE_CONSISTENCY = "consistency"
 STAGE_NEIGHBOUR_FIT = "neighbour-fit"
 
 
-def guard_certified(store, world_id: str, session_id: str) -> set[int]:
+def guard_certified(store, world_id: str, session_id: str, keyframe_ids) -> set[int]:
     """The keyframe indices the final scale guard certified for this session's
     published solve (`neighbour_fit.certified_keyframes` over its audit,
     `solve/<session>/final_scale_guard.json`); empty when there is no readable
@@ -1196,7 +1197,7 @@ def guard_certified(store, world_id: str, session_id: str) -> set[int]:
         audit = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError, TypeError, AttributeError):
         return set()
-    return NF.certified_keyframes(audit)
+    return NF.certified_keyframes(audit, keyframe_ids)
 
 
 def adopted_fits(manifest: dict | None) -> dict:
