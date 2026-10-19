@@ -333,7 +333,11 @@ class AppearanceParams:
     #            one is drawn no more magnified than a typical keyframe would
     #            be, a farther one is magnified in proportion. A point seen
     #            only from beyond z_ref scores exactly as under `scene`.
-    selection_distance: str = SELECTION_DISTANCE_POINT
+    # DEFAULT `scene`: measured on walk 10.1 (patchy run, fast loop A03),
+    # `point` moved the share of surface where the phone set is >2x coarser
+    # than the best keyframe from 6.86% to 6.75%, and every on-screen measure
+    # by under 0.2 points -- no win to pay its (N, M) table for.
+    selection_distance: str = SELECTION_DISTANCE_SCENE
     phone_budget: int = 128
     quality_floor: float = 0.15
     seed: int = 0

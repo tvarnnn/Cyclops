@@ -1322,10 +1322,11 @@ def test_selection_scores_texel_density_against_the_walks_own_distance(z_ref):
     pts, nrm, zps, opaque, Rs, ts, K, nc = _near_and_far_views()
     q = np.ones(len(zps))
     point = A.score_points(pts, nrm, zps, opaque, Rs, ts, K, q, z_ref,
-                           A.AppearanceParams(), device="cpu")
-    scene = A.score_points(pts, nrm, zps, opaque, Rs, ts, K, q, z_ref,
-                           A.AppearanceParams(selection_distance=A.SELECTION_DISTANCE_SCENE),
+                           A.AppearanceParams(selection_distance=A.SELECTION_DISTANCE_POINT),
                            device="cpu")
+    scene = A.score_points(pts, nrm, zps, opaque, Rs, ts, K, q, z_ref,
+                           A.AppearanceParams(), device="cpu")
+    assert A.AppearanceParams().selection_distance == A.SELECTION_DISTANCE_SCENE
     near, far = point[:4, :nc], point[4:, :nc]
     assert (near > 0.95).all() and (far > 0).all()
     assert far.max() < 0.35 * near.min()

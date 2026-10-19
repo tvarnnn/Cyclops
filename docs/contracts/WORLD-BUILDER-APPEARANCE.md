@@ -618,15 +618,18 @@ Greedy set cover over proxy visibility, with a quality weight.
 - A keyframe scores a point `|cos(normal, ray)| × min(1, z_p / z) × q` when the
   point is in frame, within 3% of that keyframe's proxy depth, and on an opaque
   texel; otherwise 0. `z_ref` is the median proxy depth over usable keyframes.
-  `params.selection_distance`: `point` (default) takes `z_p = min(z_ref, the
+  `params.selection_distance`: `point` takes `z_p = min(z_ref, the
   median depth of the point over the keyframes that score it)` -- the page puts
   its camera where the walk went, so a source at or nearer than the walk's
   median distance to the point is drawn no more magnified than a typical
   keyframe would be, and a farther one is magnified, and scored down, in
   proportion; a point seen only from beyond `z_ref` scores exactly as before.
-  `scene` takes `z_p = z_ref` everywhere (the first builds): every view nearer
-  than the room's median depth scored alike, so close passes earned nothing for
-  their resolution. Recorded as `selection.distance`.
+  `scene` (default) takes `z_p = z_ref` everywhere: every view nearer than the
+  room's median depth scores alike, so close passes earn nothing for their
+  resolution. `point` was measured on walk 10.1 (patchy run, 2026-10-19): the
+  share of surface where the phone set is >2x coarser than the best keyframe
+  went from 6.86% to 6.75% and every on-screen measure moved by under 0.2
+  points, so it is not the default. Recorded as `selection.distance`.
 - `q = clamp(sharpness / median sharpness, 0.15, 1) × (1 − 0.5 × transparent
   fraction)`, sharpness the variance of the Laplacian over opaque pixels, and
   lowered further for a misregistered keyframe (§5.3).
