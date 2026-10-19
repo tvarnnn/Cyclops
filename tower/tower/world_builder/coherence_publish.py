@@ -1513,8 +1513,9 @@ def _records_before_publish(workspace_root, guard):
     """A publication the guard CHANGED writes its audit and its components record BEFORE the solution: the
     reader takes a components record only beside the solution whose `solve_identity` it names, so
     until the solution lands the new record reads as absent, and once it lands both agree. If either write
-    fails, nothing is published: the outcome becomes a withhold (the guard is fail-closed). A withhold is
-    returned unchanged."""
+    fails, nothing is published: the outcome becomes a withhold (the guard is fail-closed) -- except for a
+    re-placed publication (`GuardOutcome.cut`), which falls back to the guard's own cut and writes its
+    records instead. A withhold is returned unchanged."""
     from tower.world_builder import final_scale_guard as FSG  # noqa: PLC0415
 
     if guard.solution is None:
@@ -1524,6 +1525,19 @@ def _records_before_publish(workspace_root, guard):
         if guard.result is not None and guard.result.components is not None:
             write_components(workspace_root, guard.result.components)
     except Exception as exc:  # noqa: BLE001 -- fail-closed: a half-recorded publication is not published
+        cut = getattr(guard, "cut", None)
+        if cut is not None:
+            # A RE-PLACED publication (`replace_cut`) whose records cannot be written publishes the guard's
+            # own cut instead, its records written in their place: the step never costs a finish. The cut
+            # carries no `cut`, so a cut that cannot be written either is withheld, as before.
+            logger.exception("[Tower][WorldBuilder] the re-placed publication's records could not be written "
+                             "in %s; the guard's cut is published", workspace_root)
+            try:
+                fallback = cut(f"records: {type(exc).__name__}: {exc}")
+            except Exception:  # noqa: BLE001 -- then the fail-closed rule below
+                logger.exception("[Tower][WorldBuilder] the guard's cut could not be built in %s", workspace_root)
+            else:
+                return _records_before_publish(workspace_root, fallback)
         logger.exception("[Tower][WorldBuilder] the final scale guard could not write its records in %s; "
                          "nothing is published", workspace_root)
         return FSG.withhold(guard, f"its records could not be written ({type(exc).__name__})")

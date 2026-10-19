@@ -545,12 +545,45 @@ def test_a_failure_publishing_the_re_placed_candidate_publishes_the_cut(monkeypa
     assert rec["error"] == "publication: ValueError: the relabel failed"
 
 
-def test_a_re_placed_record_that_cannot_be_written_publishes_the_cut(monkeypatch):
-    # `_records_before_publish` writes the audit as JSON: a record it could not serialise would withhold
-    # the finish; the guard publishes the cut instead
+def test_a_re_placed_publication_whose_records_cannot_be_written_publishes_the_cut(monkeypatch, tmp_path):
+    """The records are written later, by `coherence_publish._records_before_publish`, before the
+    solution: a write failure there would withhold the finish. A re-placed outcome carries the guard's
+    cut, which is published (and its records written) instead. The guard alone, and a cut whose records
+    cannot be written either, still withhold: fail-closed as before."""
+    off, on, piece = _replaced_seam(monkeypatch)
+    assert on.cut is not None and off.cut is None
+    assert on.audit["assessment"]["replace_cut"]["state"] == "replaced"
+    write0 = FSG.write_audit
+
+    def write(root, doc):
+        if ((doc.get("assessment") or {}).get("replace_cut") or {}).get("state") == "replaced":
+            raise OSError("the disk is full")
+        return write0(root, doc)
+
+    monkeypatch.setattr(FSG, "write_audit", write)
+    got = CP._records_before_publish(tmp_path, on)
+    rec = _is_the_cut(off, got, piece)
+    assert rec["error"] == "records: OSError: the disk is full"
+    on_disk = json.loads((tmp_path / FSG.AUDIT_FILENAME).read_text(encoding="utf-8"))
+    assert on_disk["assessment"]["replace_cut"]["state"] == "error"
+    assert json.loads(CP.components_path(tmp_path).read_text(encoding="utf-8")) == got.result.components
+
+    def broken(root, doc):
+        raise OSError("the disk is full")
+
+    monkeypatch.setattr(FSG, "write_audit", broken)
+    assert CP._records_before_publish(tmp_path, off).decision == FSG.DECISION_WITHHELD
+    assert CP._records_before_publish(tmp_path, on).decision == FSG.DECISION_WITHHELD
+
+
+def test_a_re_placed_record_that_cannot_be_serialised_publishes_the_cut(monkeypatch, tmp_path):
+    # `_records_before_publish` writes the audit as JSON: a record it cannot serialise would withhold the
+    # finish; the guard's cut is published instead, carrying the record as text
     off, on, piece = _replaced_seam(monkeypatch, register_record={"not json": {1, 2}})
-    rec = _is_the_cut(off, on, piece)
-    assert rec["error"].startswith("publication: TypeError")
+    got = CP._records_before_publish(tmp_path, on)
+    rec = _is_the_cut(off, got, piece)
+    assert rec["error"].startswith("records: TypeError")
+    assert json.loads((tmp_path / FSG.AUDIT_FILENAME).read_text(encoding="utf-8"))["decision"] == "published"
 
 
 # ---------------------------------------------------------------------------

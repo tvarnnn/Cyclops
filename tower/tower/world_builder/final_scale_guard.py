@@ -84,7 +84,7 @@ import json
 import logging
 import math
 import time
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 import numpy as np
@@ -854,6 +854,10 @@ class GuardOutcome:
     result: object                 # the GateResult to hand `after_publish` (None when withheld)
     summary: dict
     audit: dict
+    # A RE-PLACED publication only: `cut(why)` builds the guard's own publication (the cut) with the
+    # step's record withdrawn for `why`, for `coherence_publish._records_before_publish` to publish when
+    # this one's records cannot be written. None for every other outcome.
+    cut: object = field(default=None, repr=False, compare=False)
 
 
 def read_evidence(store, world_id, session_id, solution, result, *, database_path, name_of,
@@ -1018,21 +1022,24 @@ def guard_publication(store, world_id: str, session_id: str, solution, result, *
         if solution is cut[0]:
             return publication(solution, dict(assessment, replace_cut=replaced), replaced)
         # ANY FAILURE PUBLISHING THE RE-PLACED CANDIDATE FALLS BACK TO THE CUT. `replace_cut` never raises,
-        # but its candidate must still be relabelled, recorded and written (`_records_before_publish`
-        # serialises the audit and the components record). If any of that fails here, the guard's own
-        # decision is published, as with the switch off, and the audit and the summary say why.
+        # but its candidate must still be relabelled and summarised here, and its records written before
+        # the solution (`coherence_publish._records_before_publish`). A failure here publishes the guard's
+        # own decision, as with the switch off; a failure writing the records publishes it there
+        # (`GuardOutcome.cut`). The audit and the summary say why.
+        def cut_publication(why: str) -> GuardOutcome:
+            # the record itself may be what could not be serialised: the cut's audit carries it as text
+            safe = json.loads(json.dumps(_jsonable(replaced), default=str))
+            withdrawn = RC.withdrawn(safe, why)
+            return publication(cut[0], dict(cut[1], replace_cut=withdrawn), withdrawn)
+
         try:
             out = publication(solution, dict(assessment, replace_cut=replaced), replaced)
-            json.dumps(out.audit)
-            json.dumps(out.result.components)
-            return out
         except Exception as exc:  # noqa: BLE001 -- an optional improvement: failing it is today's outcome
             logger.exception("[Tower][WorldBuilder] publishing the re-placed candidate of %s/%s failed; the "
                              "guard's cut is published", world_id, session_id)
-            # the record itself may be what could not be serialised: the cut's audit carries it as text
-            safe = json.loads(json.dumps(_jsonable(replaced), default=str))
-            withdrawn = RC.withdrawn(safe, f"publication: {type(exc).__name__}: {exc}")
-            return publication(cut[0], dict(cut[1], replace_cut=withdrawn), withdrawn)
+            return cut_publication(f"publication: {type(exc).__name__}: {exc}")
+        out.cut = cut_publication
+        return out
     except Exception as exc:  # noqa: BLE001 -- fail-closed
         secs = time.perf_counter() - started
         why = str(exc) if isinstance(exc, _Withhold) else f"{type(exc).__name__}: {exc}"
