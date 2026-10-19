@@ -4,11 +4,11 @@ Contract identifier: `wb-surface-mesh/1`.
 
 Document version: **v4** (2026-10-19): borrowed depth fits (§1), their
 manifest record and stage (§6), patchy run lane G after reviews R1/R2 of
-cand-v1. v3 (2026-09-28): what a hole and a gap can be, the area page's
+cand-v1; `params_digest` names a re-placed publication (§6, lane X). v3 (2026-09-28): what a hole and a gap can be, the area page's
 revision, and a fixed template allowance in the page estimate, manager 130
 from the C9 cross-check (§2 claim 2, §8). See the change log at the end. The
 artifact identifier and routes do **not** move; the manifest gains one
-`detail` key.
+`detail` key, and `params_digest` one token for a re-placed solve only.
 
 This describes what `<world>/surface/<session>/` contains, what it claims, and
 what it promises never to claim. It is additive: a reader that does not know
@@ -54,7 +54,19 @@ all of these hold:
    frame: on a broken
    solve draw a stretch drawn ×4.16 the room's scale vouched for its own
    unfitted frames, which the held-out error cannot see, and grew a sheet 2-7 m
-   from every camera. Without the guard's audit nothing is borrowed;
+   from every camera. Without the guard's audit nothing is borrowed.
+   A keyframe the re-place step put back into the room
+   (`WORLD-BUILDER-COMPONENTS.md` §2.6 rule 3a) is read as the audit leaves
+   it: the step adds it to `room_keyframes` and takes it out of its isolated
+   piece, so it lends when its index lies inside a kept plateau's span
+   (`first_index`..`last_index`), although the audit also lists it in
+   `assessment.uncertified` (kind `re-placed`) because no scale screen judged
+   it. It is posed on the room's own points and keeps only their observations
+   (`anchors="room"`), so it brings no gauge of its own. Measured when lanes
+   X and G were integrated (cand-v2, 2026-10-19): every re-placed keyframe of
+   live 10.1 (90) lay inside a kept plateau, no `uncertified` row of the
+   guard's own did on any DEV draw, and on lane G's live run 16 % of the
+   borrowed anchors came from re-placed frames;
 3. optionally, **the anchored footprint** (`SurfaceParams.neighbour_fit_footprint`,
    off by default): it is fused only on the anchor grid's cells (4 px) whose
    anchors its fitted depth agrees with within the fusion's truncation band,
@@ -788,4 +800,4 @@ Document versions start at v2. **v1** is everything up to 2026-09-27.
 |---|---|---|---|---|---|
 | **v2** | 2026-09-28 | **Manager 109** (CX-C6, O3; after walk 4 `c81766a3`) | §2 claim 2; §2 claim 8; §8 surface page caption and implementation spec | Scopes the hole claim to frames fused into this surface and replaces the gap caption's claim about where nothing looked with a statement about the page's reconstructed surface. The two evidence-filter branches, keyframe count, scale note and area-specific prefix stay unchanged. The later copy-only page edit moves no revision (the surface page has no page version; its revision follows the surface build). | **Nothing.** `wb-surface-mesh/1`, its manifest and all routes are unchanged. The page strings are Tower-served, and no iOS source reads any of them (checked 2026-09-28 against `codex/surfcap` @ `9bb9727`). Among the patterns checked, `frames_offered` has 20 hits, all in other cartridges' decoders and tests, and *nothing looked* has 2, `WorldPresentationTests.swift:1198` and `:1202`: a negative assertion on the native caption, which agrees with this change. |
 | **v3** | 2026-09-28 | **Manager 130** (from the C9 cross-check; C6f LOW-1, LOW-2 and NIT-1) | §2 claim 2; §8 page budget, surface page caption and implementation spec | Claim 2's "A hole is …" also names measured samples that were never integrated and the cracks decimation opens on a served level (C9 MED; C6f NIT-1). §8's "A gap can be …" adds frames published without a usable depth fit and space this page's own fused frames measured but did not agree on enough to keep (C6f LOW-2). The revision sentence gives an area page's revision, `<session>/area:<area>/surface:<built_at>`, beside a room page's (C9 LOW; C6f LOW-1). The page estimate's template share becomes a fixed `PAGE_TEMPLATE_ALLOWANCE` of 32,576 bytes instead of the template's size on disk, held by a guard test, so a copy edit never moves geometry and a CRLF and an LF checkout give the same estimate (C9 item 3; its review's §3.4 item 4). | **Nothing.** `wb-surface-mesh/1`, its manifest keys and all routes are unchanged. What moves is a diagnostic record: on the Tower's CRLF checkout, the `detail.mobile_page_fit.mesh_budget_bytes` a later surface build records returns to its pre-`0636fce` value, 4,645,008 bytes (`0636fce`'s 28-byte-shorter template made it 4,645,029; `0636fce` is not in `world-builder/int-walk5-candidate`), and `page_bytes_estimate` for the same mesh is 28 bytes higher; on an LF checkout the budget moves from 4,645,530 to the same 4,645,008. No product code and no iOS source reads either key. `params_digest` does not include the estimate (it never has), so no served artifact is rebuilt. |
-| **v4** | 2026-10-19 | **Patchy run, lane G** (reviews R1 and R2 of cand-v1: the borrowed fits were not in the contract, and their gate let a broken draw's phantom through) | §1 borrowed fits; §6 `detail.neighbour_fit`, `seconds.neighbour-fit` | §1 states the borrowed fits as a source of fused depth and the three rules that bound them: the dense stage's gate, certified donors (the final scale guard's kept plateaus) and the optional anchored footprint. §6 documents their manifest record and stage time | **Additive.** `wb-surface-mesh/1` and every route are unchanged; the manifest gains `detail.neighbour_fit` (absent when off). `params_digest` names `neighbour-fit/3`, so a surface built with `neighbour-fit/1` rebuilds. No iOS source reads `detail` |
+| **v4** | 2026-10-19 | **Patchy run, lane G** (reviews R1 and R2 of cand-v1: the borrowed fits were not in the contract, and their gate let a broken draw's phantom through) | §1 borrowed fits; §6 `detail.neighbour_fit`, `seconds.neighbour-fit`, `params_digest` | §1 states the borrowed fits as a source of fused depth and the three rules that bound them: the dense stage's gate, certified donors (the final scale guard's kept plateaus) and the optional anchored footprint; how a re-placed keyframe reads as a donor (cand-v2 integration). §6 documents their manifest record and stage time, and (lane X, `c30f776d`/`8de94812`) the `|publication:<id>` token and the depth stage's `publication_identity` for a re-placed solve | **Additive.** `wb-surface-mesh/1` and every route are unchanged; the manifest gains `detail.neighbour_fit` (absent when off). `params_digest` names `neighbour-fit/3`, so a surface built with `neighbour-fit/1` rebuilds; it gains `|publication:<id>` only for a re-placed solve, so every other digest is unchanged. No iOS source reads `detail` |
