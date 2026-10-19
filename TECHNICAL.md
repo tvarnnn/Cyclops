@@ -4,7 +4,7 @@ Ray-Ban Meta glasses stream camera frames through an iPhone app to a Windows PC,
 photographic 3D world that the phone then shows. This document explains how, function by function.
 
 **Provenance.** Branch `cleanup/campaign-v1` at `66414dc1`, the final campaign tree.
-Every `file:line` was re-checked against that tree on 2026-10-18. The iOS tree and `docs/` are unchanged since `af805b36` (`README.md` was brought up to date in the commit that added this file);
+Every `file:line` was re-checked against that tree on 2026-10-18. The iOS tree and `docs/` are unchanged since `af805b36` (`README.md`, and the header comment of `tower/.env.example`, were brought up to date in the commit that added this file);
 the Tower tree and every contract are byte-identical to `cleanup/tower-v1@e20b3b2`. `main` stays pre-cleanup (§9).
 The campaign's run records cited by name (`LEDGER.md`, `LEDGER-tower.md`, `PLAN.md`, `OWNER-NOTES.md`, `IOS-INVENTORY.md`,
 `KEY-FUNCTIONS.md`, `IOS-KEY-FUNCTIONS.md`, `GATE2-VERDICT.md`, `CROSSOVER-REPORT.md`, `REPLAY-PROCEDURE.md`, `NOISE-BAND.md`) and the
@@ -1183,8 +1183,8 @@ Finalizing give partial with the most specific note (owed or unobservable photog
 landed"); Partial, Interrupted, Needs retry give partial, each with its own sentence.
 **WHY:** The product rule: final 3D world, then the best partial, then a truthful degraded state. Converted from a 160-line nested `if` and
 proven output-identical on a 3,528-case characterization matrix. `stageIsUnfinished` is an exhaustive switch, so a new stage
-breaks the build until its rules are decided. Numbers behind the Improving note: the final solve took 179 s after Stop on a 4-minute walk
-(16 components became 6; 652 of 795 keyframes joined); photographic work took 459 s for 385 keyframes and 756 s for 690.
+breaks the build until its rules are decided. Numbers behind the Improving note: the final solve took 179 s after Stop on an earlier 4-minute walk
+of 795 keyframes (16 components became 6; 652 of them joined); photographic work took 459 s for 385 keyframes and 756 s for 690.
 **Called by:** `WorldBuilderViewModel.reconstruction` (WorldBuilderClient.swift:1567), WorldPickerView.swift:257.
 **Calls:** `unfinishedPhotographicNote`, `stageIsUnfinished`.
 
@@ -1479,7 +1479,7 @@ The point (§9.3): a default Tower equals the demo Tower, and a plain Xcode Run 
 ### 7.3 The one Tower demo switch left: `TOWER_WORLD_GUIDANCE_IMAGERY_UNREDACTED`
 
 - **Reading.** `world_guidance_imagery_unredacted_setting()` (`config.py:989`) is true only for exactly `on`. `1` and `true` mean off. **When on.** The guidance imagery routes may serve a
-  session whose keyframe-set label is exactly `none`: no redactor ran, because the demo deploy bypasses redaction. Each entry it serves is marked `"redaction": "unredacted"`. **When off.**
+  session whose keyframe-set label is exactly `none`: no redactor ran, because the Tower's redactor was bypassed or unavailable when the walk was recorded, as in the privacy-deferred period around 2026-10-12 (`tower/docs/contracts/WORLD-BUILDER-GUIDANCE-IMAGERY.md`). The demo walks 9.3 and 10 themselves are redacted (`README.md`, Privacy and safety). Each entry it serves is marked `"redaction": "unredacted"`. **When off.**
   Such a session is a 404. **Either way.** Other untrusted labels are refused, and appearance, depth and world-build trust are untouched. **Why it stays a switch.** It is a privacy decision,
   not a quality one, and must be an explicit opt-in per deploy. The live `.env` sets it; `.env.example` lists it commented out, so off (§11.B, item 3).
 
@@ -1805,7 +1805,7 @@ Marked **pre** if it existed before the campaign, **new** if the campaign introd
 **Unused and stale code (cleanup follow-ups)**
 - `WorldReconstruction.ladder` takes a `finalSolve:` parameter it never reads. Remove it with its call sites.
 - `surface_pipeline` accepts `known_fov` and `depth_known_fov` and ignores them. `ImageryState.tile`'s `live`/`landed` are always True in production. `guidance_coverage`'s `include_pending` is the off arm of a switch that no longer exists. Some DA3 backends are registered but unrunnable through `dense_pipeline`.
-- Stale comments still open: `WorldBuilderWorkspaceView.swift:54` says segments are drawn "each in its own frame because the Tower has not registered them", likely false now; `SceneUnderstandingContract.phoneSendsNothingNote` (`SceneUnderstandingContract.swift:79`, test-only) says the session "follows the camera stream", but it now needs the stream and a watcher; `coherence_publish.py:570-571`, a failed-gate log line saying the final solve is published "with no components record" (the final scale guard still builds one). The root `README.md`'s stale frame rate and removed switch names are fixed (§11.B, item 2). Already fixed by the ci-21 comment sweep: `DocumentMemoryModel.swift:189-190` (the caps are fixed Tower constants), `ExperimentalCVClient.swift:32` (now cites `walkReportUpdates`) and `TowerReachabilityReader.swift:18-20` (15 Hz, "start capture in Home").
+- Stale comments still open: `WorldBuilderWorkspaceView.swift:54` says segments are drawn "each in its own frame because the Tower has not registered them", likely false now; `SceneUnderstandingContract.phoneSendsNothingNote` (`SceneUnderstandingContract.swift:79`, test-only) says the session "follows the camera stream", but it now needs the stream and a watcher; `coherence_publish.py:570-571`, a failed-gate log line saying the final solve is published "with no components record" (the final scale guard still builds one). The root `README.md`'s stale frame rate and removed switch names are fixed (§11.B, item 2). Already fixed by the ci-21 comment sweep: `DocumentMemoryModel.swift:189-190` (the caps are fixed Tower constants), `ExperimentalCVClient.swift:32` (now cites `walkReportUpdates`) and `TowerReachabilityReader.swift:17-20` (15 Hz, "start capture in Home").
 - `TowerConnectionRow` and similar spots mirror `CVTowerConnectionLabel.actionTitle(for:)` by design. `swift-structure-check.py` misreads raw strings.
 - The Tower never tells the phone the capture id directly (the premise of `WorldSessionGate`); it does indirectly, in three places (§11.B, item 1).
 
@@ -1813,7 +1813,7 @@ Marked **pre** if it existed before the campaign, **new** if the campaign introd
 - Persisted strings that embed review ids (`REVISIT_IMPORT_*`, `FROZEN_REFUSAL_LEGACY_IMPORT`) and stale log texts: changing them changes output.
 - Multi-scene: an iPad multi-window would create a second `GlassesConnection` (fix = a build setting plus a device check). Note only.
 
-**Process incident (not a product bug).** On 2026-10-16 about 08:20, a cleanup sub-agent killed the live Tower's uvicorn on :8000 (PID 30704) with an unchecked `taskkill` while stopping its own pytest. Nothing was reconfigured or written. Tristan restarted it. Every later brief carries the rule: kill only a PID your own command launched, never by name, never :8000.
+**Process incident (not a product bug).** On 2026-10-16 about 08:20, a cleanup sub-agent killed the live Tower's uvicorn on :8000 with an unchecked `taskkill` while stopping its own pytest. Nothing was reconfigured or written. The owner restarted it. Every later brief carries the rule: kill only a PID your own command launched, never by name, never :8000.
 
 ---
 
@@ -1962,8 +1962,8 @@ Content corrections (batch 21 recorded the first seven in `KEY-FUNCTIONS.md` v2.
    (`results/world_builder_library.py:731`). (3) `GET /health`, field `capture.capture_id`: the latest recorder's id
    (`routes/health.py:141`). **So** an id-equality gate would have to wait for the first status snapshot. It could never have the
    id at `stream_start`.
-2. **Resolved (root docs): the root `README.md` matches the promoted defaults.** Its switch table lists only
-   `…_GUIDANCE_IMAGERY_UNREDACTED`, it gives the 15 fps default, and it no longer names `IOS_FOW_DIAL` or the 13 promoted Tower switches.
+2. **Resolved (root docs): the root `README.md` matches the promoted defaults.** Its switch table has three rows, the demo configuration's switches left:
+   `…_GUIDANCE_IMAGERY_UNREDACTED`, `IOS_FOW_MAP_TAB` and `IOS_TOWER_TARGET_FPS`, with their defaults; it gives the 15 fps default, and it no longer names `IOS_FOW_DIAL` or the 13 promoted Tower switches.
 3. **Resolved (p3-28): `TOWER_WORLD_GUIDANCE_IMAGERY_UNREDACTED` is now in `tower/.env.example`,** commented out (off), with its
    privacy note. It is the one switch the demo still needs (§7.3), so the live `.env` must still set it to exactly `on`.
 4. **Resolved: `TOWER_WORLD_FINAL_IMMEDIATE` stays.** It is read straight from `os.environ` by the builder

@@ -344,7 +344,8 @@ Per-stage timing can be recorded with `TOWER_WORLD_STAGE_TIMING`
   loads only through a private `glasses-world:` URL scheme; a native handler
   proxies a short whitelist of that world's Tower routes and nothing else, and
   the page's Content-Security-Policy says the same from its side. The controls
-  around the 3D view are drawn in SwiftUI rather than HTML. The coverage map
+  around the photographic view are drawn in SwiftUI rather than HTML; the
+  surface and point-cloud pages keep their own. The coverage map
   and the fragment view are drawn natively with SwiftUI `Canvas` (the fragment
   view pans, pinches and rotates).
 
@@ -364,12 +365,18 @@ Per-stage timing can be recorded with `TOWER_WORLD_STAGE_TIMING`
 - **The demo walks are redacted.** Walk 9.3 (the demo's backup world) and
   walk 10 (the dress rehearsal) both record
   `faces-detected-and-filled/yunet-2023mar@0.30+plausibility3`.
-  - For a period around 2026-09-21 the owner temporarily bypassed the
-    redactor, so reconstruction quality could be judged on its own
-    ([`WORLD-BUILDER-APPEARANCE.md`](docs/contracts/WORLD-BUILDER-APPEARANCE.md) §6.6).
-    Walks from that period are labelled `redaction: "none"`. The phone only
-    shows their photos when `TOWER_WORLD_GUIDANCE_IMAGERY_UNREDACTED` is on,
-    and then marks them `"unredacted"`.
+  - Around 2026-09-21 the owner had the photographic stages read the
+    original, unredacted frames, so reconstruction quality could be judged on
+    its own ([`WORLD-BUILDER-APPEARANCE.md`](docs/contracts/WORLD-BUILDER-APPEARANCE.md) §6.6).
+    Those builds are labelled `raw-local-research` / `privacy_safe: false`,
+    and a Tower serving the product refuses them unless that world is on its
+    allowlist.
+  - Around 2026-10-12, with privacy deferred for the demo, the redactor
+    itself was bypassed. Walks recorded then are labelled `redaction: "none"`
+    ([`WORLD-BUILDER-GUIDANCE-IMAGERY.md`](tower/docs/contracts/WORLD-BUILDER-GUIDANCE-IMAGERY.md),
+    Unredacted sessions). The phone only shows their photos when
+    `TOWER_WORLD_GUIDANCE_IMAGERY_UNREDACTED` is on, and then marks them
+    `"unredacted"`.
   - There is a known limit: a face redacted in one frame can still appear in
     another frame that saw the same surface. A cross-frame redaction consensus
     is the designed fix. Worlds should be reviewed before being shared outside
@@ -381,7 +388,9 @@ Per-stage timing can be recorded with `TOWER_WORLD_STAGE_TIMING`
 
 ## Engineering practices
 
-- **Tests.** The Tower suite has **7,119 passing tests** (Windows, 2026-10-13).
+- **Tests.** The Tower suite has **7,119 passing tests** (Windows, 2026-10-13);
+  6,797 after the 2026-10 cleanup, whose deleted off paths took their tests
+  ([`TECHNICAL.md`](TECHNICAL.md) §8.1).
   Golden-file tests pin "switch off" behaviour byte for byte against a named
   commit (for example `test_world_builder_finish_stages_identity.py`).
 - **Contracts first.** Phone and Tower agree through written contracts in
@@ -457,9 +466,13 @@ Per-stage timing can be recorded with `TOWER_WORLD_STAGE_TIMING`
   is on `main`. The demo baseline is the tag `demo-walk10-20261013`, the code
   walk 10 was built with; the commits after it, up to the tag
   `pre-cleanup-20261015`, change documentation only. The cleanup campaign that
-  followed made the demo's switches the defaults and removed dead code, and a
-  replay of walk 10 on its tree matched the demo within noise
-  ([`TECHNICAL.md`](TECHNICAL.md) §8.3, §9). New work happens in worktrees
+  followed made all but one of the demo's switches the defaults (the privacy
+  switch stays opt-in) and removed dead code, and a replay of walk 10 on its
+  tree matched the demo within noise ([`TECHNICAL.md`](TECHNICAL.md) §8.3, §9).
+  Until it is merged, the cleanup is on branch `cleanup/campaign-v1` and
+  `main` is the pre-cleanup code: its Tower still needs the demo's switch
+  lines in `tower/.env`, and a plain Xcode Run there sends 12 fps. This README
+  and `TECHNICAL.md` describe the cleanup tree. New work happens in worktrees
   under `Projects/Glasses-worktrees/`, never in the shared checkout.
 - **Tower (Windows):** see [`tower/README.md`](tower/README.md). In short, from
   `tower/`: `powershell -NoProfile -File scripts\setup_tower.ps1` once, then
@@ -471,17 +484,19 @@ Per-stage timing can be recorded with `TOWER_WORLD_STAGE_TIMING`
   `.venv\Scripts\python.exe -m pytest`.
 - **The demo configuration.** There is no single "demo mode". New behaviour
   ships behind its own default-off switch, and all but one of the demo's
-  switches have since been promoted
-  ([Engineering practices](#engineering-practices)), so `start_tower.ps1` with
-  a basic `.env` (just the capture and world roots) runs the demo pipeline, and
-  a plain Xcode Run builds the demo app. The switches left are below. The one
-  not promoted is the Tower one, a line in the Tower's `tower/.env`
-  (gitignored, so it lives on that machine, not in the repository), documented
-  in [`tower/tower/config.py`](tower/tower/config.py); it stays a switch because
-  it serves photos no redactor touched, so a Tower must opt in. The iOS ones
+  switches have since been promoted (listed in [`TECHNICAL.md`](TECHNICAL.md)
+  §7.2; see [Engineering practices](#engineering-practices)), so
+  `start_tower.ps1` with a basic `.env` (just the capture and world roots) runs
+  the demo pipeline, and a plain Xcode Run builds the demo app. The table below
+  has the one Tower switch that stays opt-in and two iOS knobs whose defaults
+  are the demo values (the demo ran with the Map tab off, at 15 fps). The
+  Tower switch is a line in the Tower's `tower/.env` (gitignored, so it lives
+  on that machine, not in the repository), documented in
+  [`tower/tower/config.py`](tower/tower/config.py); it stays a switch because
+  it serves photos no redactor touched, so a Tower must opt in. The iOS knobs
   are `xcodebuild` build settings or launch-environment values.
 
-  | Switch | Default | What it turns on |
+  | Switch | Default | What it does |
   |---|---|---|
   | `TOWER_WORLD_GUIDANCE_IMAGERY_UNREDACTED=on` | off | The dial's photos for walks recorded with redaction bypassed, marked `"unredacted"` ([Privacy and safety](#privacy-and-safety)); the demo `.env` sets it |
   | `IOS_FOW_MAP_TAB=on` | off | A Dial \| Map control on the walking stage (the Map face is the coverage map with the photo floor plan); off, as in the demo, the dial is the only face |
