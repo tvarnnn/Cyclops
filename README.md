@@ -365,16 +365,16 @@ Per-stage timing can be recorded with `TOWER_WORLD_STAGE_TIMING`
 - **The demo walks are redacted.** Walk 9.3 (the demo's backup world) and
   walk 10 (the dress rehearsal) both record
   `faces-detected-and-filled/yunet-2023mar@0.30+plausibility3`.
-  - Around 2026-09-21 the owner had the photographic stages read the
-    original, unredacted frames, so reconstruction quality could be judged on
+  - Around 2026-09-21 the owner had the depth, surface and photo stages read
+    the original, unredacted frames, so reconstruction quality could be judged on
     its own ([`WORLD-BUILDER-APPEARANCE.md`](docs/contracts/WORLD-BUILDER-APPEARANCE.md) §6.6).
     Those builds are labelled `raw-local-research` / `privacy_safe: false`,
-    and a Tower serving the product refuses them unless that world is on its
-    allowlist.
+    and a Tower serving the product refuses their photos unless that world is
+    on its allowlist.
   - Around 2026-10-12, with privacy deferred for the demo, the redactor
     itself was bypassed. Walks recorded then are labelled `redaction: "none"`
     ([`WORLD-BUILDER-GUIDANCE-IMAGERY.md`](tower/docs/contracts/WORLD-BUILDER-GUIDANCE-IMAGERY.md),
-    Unredacted sessions). The phone only shows their photos when
+    Unredacted sessions). The phone only shows their dial photos when
     `TOWER_WORLD_GUIDANCE_IMAGERY_UNREDACTED` is on, and then marks them
     `"unredacted"`.
   - There is a known limit: a face redacted in one frame can still appear in
@@ -471,7 +471,10 @@ Per-stage timing can be recorded with `TOWER_WORLD_STAGE_TIMING`
   tree matched the demo within noise ([`TECHNICAL.md`](TECHNICAL.md) §8.3, §9).
   Until it is merged, the cleanup is on branch `cleanup/campaign-v1` and
   `main` is the pre-cleanup code: its Tower still needs the demo's switch
-  lines in `tower/.env`, and a plain Xcode Run there sends 12 fps. This README
+  lines in `tower/.env`, and a plain Xcode Run there sends 12 fps with the
+  capture dial off (the demo build set `IOS_FOW_DIAL`,
+  `IOS_FOW_ROOM_IMAGERY_LIVE`, `IOS_FOW_ROOM_IMAGERY_LANDED` and
+  `IOS_FOW_PHOTO_FLOORPLAN` to `on`). This README
   and `TECHNICAL.md` describe the cleanup tree. New work happens in worktrees
   under `Projects/Glasses-worktrees/`, never in the shared checkout.
 - **Tower (Windows):** see [`tower/README.md`](tower/README.md). In short, from
