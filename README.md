@@ -8,6 +8,8 @@ This README has two halves. The first half explains the project in plain
 language. The second half, from [World Builder in depth](#world-builder-in-depth)
 on, is the technical account. Every claim in it is taken from the code and
 contracts in this repository, or from dated measurements of real walks.
+For the code-level tour, key functions and how to verify a change, see
+[`TECHNICAL.md`](TECHNICAL.md).
 
 ---
 
@@ -68,7 +70,7 @@ links to its technical detail in [World Builder in depth](#world-builder-in-dept
 
 1. **The glasses see.** The glasses' one camera streams to the iPhone app
    through Meta's toolkit. The app sends the frames on to the Tower as JPEG
-   pictures, about 12 a second, over one WebSocket.
+   pictures, about 15 a second, over one WebSocket.
 2. **The Tower keeps the useful pictures.** Every frame is tracked cheaply: how
    sharp it is, and how far things moved since the last one. Only a frame that
    is sharp and shows enough new view becomes a **keyframe**. Keyframes are the
@@ -92,8 +94,7 @@ links to its technical detail in [World Builder in depth](#world-builder-in-dept
 6. **One final solve over every keyframe** (about 5 minutes on a 4-minute
    walk). Then the **scale guard** checks the result: a piece of the walk that
    came out at the wrong size (a mirror can cause this) is kept as a separate
-   piece instead of being drawn into the room at the wrong size. This is a
-   Tower switch (`TOWER_WORLD_FINAL_SCALE_GUARD`), on in the demo.
+   piece instead of being drawn into the room at the wrong size.
 7. **Depth for every keyframe.** A neural network (**MoGe-2**) predicts how far
    away every pixel is, from the single picture. Each frame's depth is then
    stretched and shifted to agree with the 3D points from step 4, so all the
@@ -145,8 +146,7 @@ links to its technical detail in [World Builder in depth](#world-builder-in-dept
     out "up" from the cameras. A head barely tilts sideways, so each camera's
     left-right axis is close to level, and up is the direction most nearly at
     right angles to all of them, then nudged at most 4 degrees to fit level
-    surfaces such as the floor. This is the `TOWER_WORLD_UP_ESTIMATE` switch, on
-    in the demo.
+    surfaces such as the floor.
 
 If the photos are not ready yet (or never built), the phone shows the next best
 thing the world has: the bare surface, then a dense point cloud, then the
@@ -190,9 +190,9 @@ meshes, photos and the viewer page go over HTTP.
 | Path | What lives there |
 |---|---|
 | [`ios/`](ios/) | The iPhone app (Swift/SwiftUI, Xcode project [`ios/Glasses.xcodeproj`](ios/Glasses.xcodeproj)). World Builder's phone side is [`ios/Glasses/Workspaces/WorldBuilder/`](ios/Glasses/Workspaces/WorldBuilder/). |
-| [`tower/`](tower/) | The Tower server (Python 3.12, FastAPI/uvicorn). World Builder is [`tower/tower/world_builder/`](tower/tower/world_builder/); the per-walk follower is [`tower/scripts/world_build_session.py`](tower/scripts/world_build_session.py); every switch is documented in [`tower/tower/config.py`](tower/tower/config.py). Setup and run guide: [`tower/README.md`](tower/README.md). |
+| [`tower/`](tower/) | The Tower server (Python 3.12, FastAPI/uvicorn). World Builder is [`tower/tower/world_builder/`](tower/tower/world_builder/); the per-walk follower is [`tower/scripts/world_build_session.py`](tower/scripts/world_build_session.py); most switches are documented in [`tower/tower/config.py`](tower/tower/config.py). Setup and run guide: [`tower/README.md`](tower/README.md). |
 | [`docs/contracts/`](docs/contracts/) | The shared protocol truth between phone and Tower: one contract per artifact (geometry, surface, appearance, saved worlds, iOS behaviour, Object Memory, the unified cartridge summary). Tower-owned contracts are in [`tower/docs/contracts/`](tower/docs/contracts/). |
-| [`docs/agent-handoffs/`](docs/agent-handoffs/) | Current-state handoff notes between development lanes: status, validation runs, root-cause write-ups. |
+| [`docs/agent-handoffs/`](docs/agent-handoffs/) | Where current-state handoff notes between development lanes go. Since the cleanup it holds only its README; the older handoffs are kept in the tag `pre-cleanup-20261015`. |
 | [`CLAUDE.md`](CLAUDE.md) | The rules every AI agent works under: subsystem ownership, lane isolation, filesystem policy. |
 | [`.githooks/pre-commit`](.githooks/pre-commit) | The guard that refuses agent commits in the shared checkout. |
 
@@ -206,7 +206,7 @@ meshes, photos and the viewer page go over HTTP.
 |---|---|---|---|
 | **Per-frame front end** ([`frontend.py`](tower/tower/world_builder/frontend.py)) | Decodes each frame, scores sharpness, tracks features, summarises motion | Shi-Tomasi corners + Lucas-Kanade optical flow; about 5 ms a frame at 360x640 | Cheap enough for every frame. It reads no clock (frame spacing varies) and needs no camera calibration |
 | **Keyframe selection** ([`keyframes.py`](tower/tower/world_builder/keyframes.py)) | Decides which frames become permanent observations | Sharpness (variance of the Laplacian), track survival, overlap and displacement against the last keyframe | Most frames carry no new information; the system, not the wearer, decides which earn the expensive path |
-| **Turn bridge** (same file, `TOWER_WORLD_KEYFRAME_TURN_BRIDGE`) | During a fast head turn, accepts a slightly blurred frame once the view has turned far enough that waiting for a sharp one would lose the link | Uses the tracker's own overlap (< 0.5, about 20 to 25 degrees of yaw) and displacement numbers; pure smear is still refused | On walk 9 the blur gate rejected every frame inside a turn, so consecutive keyframes ended up 52 to 391 degrees apart with a ~45 degree field of view. All 9 of that walk's breaks sat on such a gap |
+| **Turn bridge** (same file) | During a fast head turn, accepts a slightly blurred frame once the view has turned far enough that waiting for a sharp one would lose the link | Uses the tracker's own overlap (< 0.5, about 20 to 25 degrees of yaw) and displacement numbers; pure smear is still refused | On walk 9 the blur gate rejected every frame inside a turn, so consecutive keyframes ended up 52 to 391 degrees apart with a ~45 degree field of view. All 9 of that walk's breaks sat on such a gap |
 | **Incremental SfM rebuild** ([`engine.py`](tower/tower/world_builder/engine.py), [`backends/classical.py`](tower/tower/world_builder/backends/classical.py)) | Grows the map every 4 keyframes by default (`TOWER_WORLD_REBUILD_EVERY`) | Calibrated incremental structure-from-motion: ORB features, essential matrix for the first pair, then PnP against the accumulated 3D points. It extends one live solve instead of re-solving: 6.83 s down to 0.92 s over 64 keyframes | Gives the phone geometry during the walk. A degenerate frame is refused rather than guessed, because a wrong focal length or pose gives confidently wrong geometry |
 | **Background global solve** ([`global_solve.py`](tower/tower/world_builder/global_solve.py)) | Every 50 or more new keyframes (when none is running), a child process solves the *whole* walk at once; its result **lands** into the world | SIFT, sequential matching, then GLOMAP (rotation averaging, global positioning, bundle adjustment) as shipped in pycolmap 4.2. The feature database persists per walk, so a re-solve only pays for new keyframes (12 s to match 138 new against 300 old) | The per-segment chain drifts and breaks. On one 438-keyframe walk the chain put 58 keyframes in one frame; the global solve placed 428 of 438 at 0.84 px mean reprojection error. It runs on the CPU (pycolmap has no CUDA build on Windows) |
 | **Live depth** ([`live_depth.py`](tower/tower/world_builder/live_depth.py)) | Predicts depth for keyframes as they arrive | MoGe-2 (ViT-L) monocular depth | Saves time after Stop, and is the metric evidence the scale guard reads later |
@@ -218,9 +218,9 @@ meshes, photos and the viewer page go over HTTP.
 1. **Final global solve** (~5 min). The same GLOMAP recipe over every keyframe of
    the walk. With `TOWER_WORLD_FINISH_STAGES` on, the phone names the stage it
    is in (`waiting`, `preparing`, `matching`, `placing`, `checking`, `assembling`).
-2. **Final scale guard** ([`final_scale_guard.py`](tower/tower/world_builder/final_scale_guard.py),
-   `TOWER_WORLD_FINAL_SCALE_GUARD`). For every camera it compares the solve's
-   depth with the depth network's metric depth (`log(z_sfm / z_metric)`). A run
+2. **Final scale guard** ([`final_scale_guard.py`](tower/tower/world_builder/final_scale_guard.py)).
+   For every camera it compares the solve's depth with the depth network's
+   metric depth (`log(z_sfm / z_metric)`). A run
    of cameras is set aside only when it has at least 10 measurements, its median
    ratio is outside [0.8, 1.25], and its 95% bootstrap interval (400 draws,
    fixed seed) excludes 1. Set-aside pieces are kept as separate pieces, never
@@ -307,7 +307,7 @@ Per-stage timing can be recorded with `TOWER_WORLD_STAGE_TIMING`
 
 - **Capture.** The app receives camera frames from the glasses through Meta's
   Wearables Device Access Toolkit (the `MWDATCore` / `MWDATCamera` frameworks)
-  and forwards them as JPEG frames over one WebSocket, at a 12 fps target
+  and forwards them as JPEG frames over one WebSocket, at a 15 fps target
   (`IOS_TOWER_TARGET_FPS`, allowed 6 to 24). A bounded send window admits a
   frame only while a send slot is free, so a slow link drops frames instead of
   building a backlog. The Tower address is configurable in Settings, with a
@@ -315,8 +315,8 @@ Per-stage timing can be recorded with `TOWER_WORLD_STAGE_TIMING`
 - **One cartridge at a time.** Opening the World Builder workspace tells the
   Tower to start a World Builder session; leaving it stops the session. A
   builder attaches to a capture only while that session is active.
-- **The capture dial** ([`WorldCaptureDial.swift`](ios/Glasses/Workspaces/WorldBuilder/WorldCaptureDial.swift),
-  `IOS_FOW_DIAL`). A ring of twelve directions for the current room piece,
+- **The capture dial** ([`WorldCaptureDial.swift`](ios/Glasses/Workspaces/WorldBuilder/WorldCaptureDial.swift)).
+  A ring of twelve directions for the current room piece,
   like a clock face. The top is fixed: it is the way the wearer faced when the
   walk started, captioned "start", and the ring never rotates. A segment fills
   when the Tower's landed solves have confirmed that direction with two or more
@@ -343,11 +343,10 @@ Per-stage timing can be recorded with `TOWER_WORLD_STAGE_TIMING`
   photographic page (WebGL, served by the Tower) runs in a `WKWebView` that
   loads only through a private `glasses-world:` URL scheme; a native handler
   proxies a short whitelist of that world's Tower routes and nothing else, and
-  the page's Content-Security-Policy says the same from its side. With native
-  chrome on (`TOWER_WORLD_NATIVE_CHROME`), the controls around the 3D view are
-  drawn in SwiftUI rather than HTML. The coverage map and the fragment view
-  are drawn natively with SwiftUI `Canvas` (the fragment view pans, pinches
-  and rotates).
+  the page's Content-Security-Policy says the same from its side. The controls
+  around the 3D view are drawn in SwiftUI rather than HTML. The coverage map
+  and the fragment view are drawn natively with SwiftUI `Canvas` (the fragment
+  view pans, pinches and rotates).
 
 ## Privacy and safety
 
@@ -367,7 +366,7 @@ Per-stage timing can be recorded with `TOWER_WORLD_STAGE_TIMING`
   `faces-detected-and-filled/yunet-2023mar@0.30+plausibility3`.
   - For a period around 2026-09-21 the owner temporarily bypassed the
     redactor, so reconstruction quality could be judged on its own
-    ([`WORLD-BUILDER-PHOTOGRAPHIC-FIXIT.md`](docs/agent-handoffs/WORLD-BUILDER-PHOTOGRAPHIC-FIXIT.md) §7).
+    ([`WORLD-BUILDER-APPEARANCE.md`](docs/contracts/WORLD-BUILDER-APPEARANCE.md) §6.6).
     Walks from that period are labelled `redaction: "none"`. The phone only
     shows their photos when `TOWER_WORLD_GUIDANCE_IMAGERY_UNREDACTED` is on,
     and then marks them `"unredacted"`.
@@ -384,7 +383,7 @@ Per-stage timing can be recorded with `TOWER_WORLD_STAGE_TIMING`
 
 - **Tests.** The Tower suite has **7,119 passing tests** (Windows, 2026-10-13).
   Golden-file tests pin "switch off" behaviour byte for byte against a named
-  commit (for example `test_world_builder_solve_select_off_identity.py`).
+  commit (for example `test_world_builder_finish_stages_identity.py`).
 - **Contracts first.** Phone and Tower agree through written contracts in
   [`docs/contracts/`](docs/contracts/), each with an opaque identifier a client
   compares for equality. The artifact contracts (surface, appearance) state
@@ -393,7 +392,9 @@ Per-stage timing can be recorded with `TOWER_WORLD_STAGE_TIMING`
   gets its own environment switch, off by default; most accept only the exact
   value `on`, and off means the previous behaviour byte for byte. Changes are
   A/B-tested by replaying recorded walks on a separate test Tower before they
-  reach the demo Tower.
+  reach the demo Tower. A proven switch is then promoted: its behaviour becomes
+  the only code path and the switch is deleted. The 2026-10 cleanup promoted
+  13 Tower and 4 iOS switches this way.
 - **Automated visual QA.** Every built world gets a **RENDER-PACK**: turnaround
   renders from 4 stations by 8 directions, which a vision-capable AI reviewer
   grades for orientation, placement, missing areas and regressions before a
@@ -454,9 +455,12 @@ Per-stage timing can be recorded with `TOWER_WORLD_STAGE_TIMING`
 
 - **Which code.** On the Mac and the Tower the shared checkout (`Projects/Glasses`)
   is on `main`. The demo baseline is the tag `demo-walk10-20261013`, the code
-  walk 10 was built with; later commits on `main` change documentation only.
-  New work happens in worktrees under `Projects/Glasses-worktrees/`, never in
-  the shared checkout.
+  walk 10 was built with; the commits after it, up to the tag
+  `pre-cleanup-20261015`, change documentation only. The cleanup campaign that
+  followed made the demo's switches the defaults and removed dead code, and a
+  replay of walk 10 on its tree matched the demo within noise
+  ([`TECHNICAL.md`](TECHNICAL.md) §8.3, §9). New work happens in worktrees
+  under `Projects/Glasses-worktrees/`, never in the shared checkout.
 - **Tower (Windows):** see [`tower/README.md`](tower/README.md). In short, from
   `tower/`: `powershell -NoProfile -File scripts\setup_tower.ps1` once, then
   `powershell -NoProfile -File scripts\start_tower.ps1` each time. Setup
@@ -465,25 +469,23 @@ Per-stage timing can be recorded with `TOWER_WORLD_STAGE_TIMING`
   Builder is reported as unsupported). The Tower is up when
   `http://<tower>:8000/health` answers `"status": "ok"`. Tests:
   `.venv\Scripts\python.exe -m pytest`.
-- **The demo configuration.** There is no single "demo mode". Every new
-  behaviour ships behind its own default-off switch, so `start_tower.ps1` with a
-  basic `.env` (just the capture and world roots) runs with all of them off.
-  The demo is these switches, written as lines in the Tower's `tower/.env`
-  (gitignored, so they live on that machine, not in the repository). With them
-  there, a plain `start_tower.ps1` starts the demo; delete them to go back.
-  Each is documented in [`tower/tower/config.py`](tower/tower/config.py):
+- **The demo configuration.** There is no single "demo mode". New behaviour
+  ships behind its own default-off switch, and all but one of the demo's
+  switches have since been promoted
+  ([Engineering practices](#engineering-practices)), so `start_tower.ps1` with
+  a basic `.env` (just the capture and world roots) runs the demo pipeline, and
+  a plain Xcode Run builds the demo app. The switches left are below. The one
+  not promoted is the Tower one, a line in the Tower's `tower/.env`
+  (gitignored, so it lives on that machine, not in the repository), documented
+  in [`tower/tower/config.py`](tower/tower/config.py); it stays a switch because
+  it serves photos no redactor touched, so a Tower must opt in. The iOS ones
+  are `xcodebuild` build settings or launch-environment values.
 
-  | Switch | What it turns on |
-  |---|---|
-  | `TOWER_WORLD_KEYFRAME_TURN_BRIDGE=on` | Keyframes through fast head turns (the turn bridge) |
-  | `TOWER_WORLD_UP_ESTIMATE=camera_right_all` | How "up" is estimated for the room |
-  | `TOWER_WORLD_LIVE_DEPTH=on` | Depth predicted during the walk |
-  | `TOWER_WORLD_FINAL_SCALE_GUARD=on` | The final scale guard |
-  | `TOWER_WORLD_TRANSIENTS_FP16=on` | Half-precision transient masking (faster) |
-  | `TOWER_WORLD_GUIDANCE_COVERAGE=on`, `..._COVERAGE_PENDING=on` | The capture dial's coverage |
-  | `TOWER_WORLD_GUIDANCE_IMAGERY_LIVE=on`, `..._IMAGERY_LANDED=on`, `..._IMAGERY_UNREDACTED=on` | The dial's photos |
-  | `TOWER_WORLD_PHOTO_FLOORPLAN=on` (`..._METHOD=homography`, `..._DIAGNOSTICS=on`) | The photo floor plan (hidden on the phone in the demo build) |
-  | `TOWER_WORLD_NATIVE_CHROME=1` | Viewer controls drawn in SwiftUI |
+  | Switch | Default | What it turns on |
+  |---|---|---|
+  | `TOWER_WORLD_GUIDANCE_IMAGERY_UNREDACTED=on` | off | The dial's photos for walks recorded with redaction bypassed, marked `"unredacted"` ([Privacy and safety](#privacy-and-safety)); the demo `.env` sets it |
+  | `IOS_FOW_MAP_TAB=on` | off | A Dial \| Map control on the walking stage (the Map face is the coverage map with the photo floor plan); off, as in the demo, the dial is the only face |
+  | `IOS_TOWER_TARGET_FPS=<n>` | 15 | The phone's send rate to the Tower, a whole number from 6 to 24 |
 
   Before a demo, start the Tower **fresh**. A long-running process was measured
   ~1.5× slower after Stop.
