@@ -65,6 +65,15 @@ def _no_transient_detector_models(monkeypatch):
     monkeypatch.setenv("TOWER_WORLD_TRANSIENTS", "off")
 
 
+@pytest.fixture(autouse=True)
+def _one_final_solve_draw(monkeypatch):
+    """The best-of-N final solve (`world_builder/solve_select.py`) is on by default: a final solve
+    whose guard cut >= 60 keyframes maps three more draws in worker processes, each importing the
+    real pycolmap. No test may do that by accident. Off by environment, so a CLI subprocess inherits
+    it too; `tests/test_world_builder_solve_select.py` sets or clears it explicitly."""
+    monkeypatch.setenv("TOWER_WORLD_SOLVE_SELECT", "off")
+
+
 @pytest.fixture(autouse=True, scope="session")
 def _live_depth_never_loads_a_model():
     """Every builder session starts a `LiveDepthWorker`, and its first trusted,
