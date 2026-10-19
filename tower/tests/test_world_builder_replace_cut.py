@@ -602,6 +602,10 @@ def test_a_publication_identity_names_a_re_placed_solve_and_nothing_else():
     # the same poses with other observations (another `anchors`, another merge) is another publication
     b = dataclasses.replace(a, observations=a.observations[:-1], observation_xy=a.observation_xy[:-1])
     assert RC.publication_identity(b) != ida
+    # ... and so is the same rows at other image coordinates (the depth fits read them, R2)
+    xy = a.observation_xy.copy()
+    xy[-1] += 1.0
+    assert RC.publication_identity(dataclasses.replace(a, observation_xy=xy)) != ida
 
 
 def test_a_surface_or_a_depth_stage_of_one_publication_is_never_reused_for_another(tmp_path, monkeypatch):

@@ -893,17 +893,28 @@ def publication_identity(solution) -> str | None:
     WHY. `input_digest` names the keyframes only, and the step changes poses and observations without
     changing it: the guard's cut and the re-placed publication of ONE solve (the switch off or on, a
     re-gate) share it, so a surface or a depth stage keyed by it would be reused across them. This hashes
-    the solve's identity (`global_solve.solve_identity`: `solved_at`, every pose and its component) with
-    the observation rows and the points, which the step also changes. 16 hex."""
+    everything the step writes (`merge`), which includes all a depth fit reads (`dense_pipeline._fit_record`:
+    poses, observation rows, their image coordinates, points): the solve's identity
+    (`global_solve.solve_identity`: `solved_at`, every pose and its component), each pose's observation
+    count, and every point and observation array. 16 hex."""
     poses = getattr(solution, "poses", None) or {}
     if not any((p or {}).get("registration") for p in poses.values()):
         return None
     from tower.world_builder.global_solve import solve_identity  # noqa: PLC0415
 
     h = hashlib.sha1(solve_identity(solution).encode())
-    h.update(np.ascontiguousarray(np.asarray(solution.observations, np.int32)).tobytes())
-    h.update(np.ascontiguousarray(np.asarray(solution.xyz, np.float32)).tobytes())
+    h.update(json.dumps({k: int((p or {}).get("observations", 0)) for k, p in poses.items()},
+                        sort_keys=True).encode())
+    for name, dtype in _PUBLISHED_ARRAYS:
+        h.update(name.encode())
+        h.update(np.ascontiguousarray(np.asarray(getattr(solution, name), dtype)).tobytes())
     return h.hexdigest()[:16]
+
+
+# Every array of the solution `merge` writes, with the dtype it writes it in (`publication_identity`).
+_PUBLISHED_ARRAYS = (("xyz", np.float32), ("rgb", np.uint8), ("component", np.int32),
+                     ("first_keyframe", np.int32), ("track_length", np.int32), ("error", np.float32),
+                     ("observations", np.int32), ("observation_xy", np.float32))
 
 
 def withdrawn(record: dict, why: str) -> dict:
