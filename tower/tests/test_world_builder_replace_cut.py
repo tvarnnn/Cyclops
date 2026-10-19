@@ -9,7 +9,7 @@ Pinned:
   * the guard's pose screen refuses a re-placed camera beyond the walking allowance and keeps one within it;
   * the step: nothing to offer changes nothing; no metric evidence re-places nothing; a camera that passes
     every gate leaves its piece; one the scale screen would isolate stays cut; a failure leaves the guard's
-    decision as it was; the switch reads on by default;
+    decision as it was; the switch reads off by default;
   * at the publish seam (`guard_publication`): off is the guard alone; on, a re-placed keyframe is in the
     published room and out of the isolated piece, and the summary and the audit say so;
   * with real pycolmap (skipped without it): COLMAP's registration puts collapsed cameras of a synthetic
@@ -398,13 +398,13 @@ def test_a_failure_leaves_the_guards_decision_as_it_was():
     assert record["state"] == "error" and "no database" in record["error"]
 
 
-def test_the_switch_is_on_by_default_and_reads_off(monkeypatch):
+def test_the_switch_is_off_by_default_and_reads_on(monkeypatch):
     from tower.config import world_replace_cut_setting
 
     monkeypatch.delenv("TOWER_WORLD_REPLACE_CUT", raising=False)
-    assert world_replace_cut_setting() is True
-    monkeypatch.setenv("TOWER_WORLD_REPLACE_CUT", "off")
     assert world_replace_cut_setting() is False
+    monkeypatch.setenv("TOWER_WORLD_REPLACE_CUT", "on")
+    assert world_replace_cut_setting() is True
 
 
 # ---------------------------------------------------------------------------

@@ -945,7 +945,7 @@ def guard_publication(store, world_id: str, session_id: str, solution, result, *
     and predicts no depth. It never withholds on scale: without evidence the room is published
     `uncertified`.
 
-    RE-PLACE, DON'T CUT (`replace_cut`; `replace`, None = `TOWER_WORLD_REPLACE_CUT`, on): between the
+    RE-PLACE, DON'T CUT (`replace_cut`; `replace`, None = `TOWER_WORLD_REPLACE_CUT`, off): between the
     assessment and `apply`, the keyframes the room would not hold are offered to COLMAP's incremental
     registration against the room, and those that pass the support floor and this guard's own pose and
     scale screens join the room (their keyframe ids leave the isolated pieces). It never raises; a failure

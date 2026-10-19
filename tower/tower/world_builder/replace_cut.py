@@ -47,8 +47,15 @@ positioning lacked -- and refuses an image it cannot pose instead of collapsing 
      are dropped; its observations of room points and the points newly triangulated with it are added. The
      room's own points and poses are never moved.
 
-It never raises: any failure leaves the guard's decision as it was, with the error in the record. With
-`TOWER_WORLD_REPLACE_CUT=off` it does not run and the publication is today's, byte for byte.
+It never raises: any failure leaves the guard's decision as it was, with the error in the record.
+`TOWER_WORLD_REPLACE_CUT` is OFF by default: it does not run and the publication is today's, byte for byte.
+
+STATUS (patchy run 2026-10-19, lane R). The POSES it re-places are right where a room camera vouches for
+them (cm level against a good draw of the same frames). But a re-placed stretch frame's observations are
+90-100 % points triangulated during registration from the stretch's own low-parallax pairs; on walk 10.1's
+live draw their depth scale read x1.6-1.8, the depth stage anchored on them, and the surface grew a phantom
+(12 % of it 2-4 m from every camera) while void rose 10.1 -> 10.8 %. On pre1's bad draw it cut void
+15.1 -> 11.0 % with no phantom. `anchors="room"` drops those points (exploratory).
 """
 
 from __future__ import annotations

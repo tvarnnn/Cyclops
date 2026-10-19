@@ -904,9 +904,11 @@ WORLD_REPLACE_CUT_ENV = "TOWER_WORLD_REPLACE_CUT"
 
 
 def world_replace_cut_setting() -> bool:
-    """`TOWER_WORLD_REPLACE_CUT`: re-place the keyframes the final solve could not place. On.
-    Off: the guard's decision is published as it is, byte for byte what the guard alone publishes."""
-    return _flag(WORLD_REPLACE_CUT_ENV, default=True)
+    """`TOWER_WORLD_REPLACE_CUT`: re-place the keyframes the final solve could not place. OFF: on walk 10.1's
+    live draw the re-placed stretches' own triangulated points carry a wrong depth scale and the surface
+    grew a phantom (patchy run 2026-10-19, lane R). Off: the guard's decision is published as it is, byte
+    for byte what the guard alone publishes."""
+    return _flag(WORLD_REPLACE_CUT_ENV, default=False)
 
 
 # The evidence gate's CONSENSUS (`world_builder/coherence_publish.gate_by_consensus`):
