@@ -282,9 +282,14 @@ class TestAdoption:
             # float16 storage of the prediction is the only error.
             assert a == pytest.approx(A0, rel=5e-3) and b == pytest.approx(B0, abs=5e-3)
             assert ho < 0.01 and zmax > 0
-        # The adopted frame's depth is read from the raw prediction.
+        # The adopted frame's depth is read from the raw prediction its borrowed fit was made
+        # on, never from a `{ki}.npy` (a refused frame has one; it may be an earlier solve's).
         pred, img, fill = frames.load(10)
         assert pred.shape == (H, W) and img is not None and fill is not None
+        assert frames.adopted == {10, 11}
+        np.save(frames.work / "depth" / "00011.npy", np.zeros((H, W), np.float16))
+        assert np.array_equal(frames.load(11, image=False)[0],
+                              np.load(frames.work / "depth" / "00011_pred.npy").astype(np.float32))
         # ... and the manifest hands the appearance stage records shaped like the depth
         # stage's own `ok` records, with the fit the surface fused.
         recs = SP.adopted_fits({"detail": {"neighbour_fit": rec}})

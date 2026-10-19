@@ -504,8 +504,11 @@ class _Frames:
         self.consistency = None
         # What `adopt_neighbour_fits` did, when it ran.
         self.neighbour_fit = None
-        # {ki: (H, W) bool}: an adopted frame's anchored footprint, the only pixels
-        # of its prediction any consumer sees (`neighbour_fit.anchored_footprint`).
+        # The frames fused with a borrowed fit, and, with
+        # `SurfaceParams.neighbour_fit_footprint`, {ki: (H, W) bool} their anchored
+        # footprints, the only pixels of their prediction any consumer then sees
+        # (`neighbour_fit.anchored_footprint`).
+        self.adopted: set[int] = set()
         self.footprint: dict[int, np.ndarray] = {}
         held = []
         # Keyframe indices refused because their depth fit is not physical:
@@ -644,15 +647,16 @@ class _Frames:
 
         A frame adopted with a borrowed fit (`adopt_neighbour_fits`), or a
         candidate for one (`borrowed`), reads the raw prediction THIS depth
-        stage made (`{ki}_pred.npy`; `{ki}.npy` is written only for a frame
-        whose own fit was admitted, and may be left from an earlier solve of
-        the session), and an adopted frame's prediction is unknown (NaN) off
-        its anchored footprint, for every consumer."""
+        stage made (`{ki}_pred.npy`, the one its borrowed fit was made on;
+        `{ki}.npy` is written only for a frame whose own fit was admitted, and
+        may be left from an earlier solve of the session). With the footprint
+        option an adopted frame's prediction is unknown (NaN) off its anchored
+        footprint, for every consumer."""
         import cv2
 
         footprint = self.footprint.get(int(ki))
         path = self.work / "depth" / f"{ki:05d}.npy"
-        if borrowed or footprint is not None or not path.exists():
+        if borrowed or int(ki) in self.adopted or not path.exists():
             path = self.work / "depth" / f"{ki:05d}_pred.npy"
         pred = np.load(path).astype(np.float32)
         if footprint is not None and footprint.shape == pred.shape:
@@ -838,6 +842,7 @@ class _Frames:
                                         self.kind)
             agree = np.isfinite(zf) & (np.abs(zf - z) <= band(z))
             fp = NF.anchored_footprint(u, v, pred.shape, agree=agree)
+            self.adopted.add(int(ki))
             if params.neighbour_fit_footprint:
                 self.footprint[int(ki)] = fp
             self.kids[ki] = kid
