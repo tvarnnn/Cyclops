@@ -96,6 +96,14 @@ class ReplaceParams:
     loop: str = "pnp"
     # Whether the guard's per-camera scale screen also judges a re-placed camera (gate c).
     scale_screen: bool = True
+    # What a re-placed keyframe brings into the solution as its 3-D observations (its depth stage anchors).
+    # "own": its observations of room points AND the points triangulated with it during registration.
+    # "room": its observations of room points only; the points triangulated during registration (from the
+    # stretch's own low-parallax pairs) are used to chain the registration and then dropped, so the room's
+    # geometry is unchanged and the depth stage scales a re-placed frame only on room points (or, with too
+    # few, borrows a fit from its fused neighbours where the surface does that). No support floor, no scale
+    # screen then: the registration's own >= 30 inliers are the measurement, and the frame brings no scale.
+    anchors: str = "own"
 
     def digest(self) -> str:
         return hashlib.sha1(json.dumps({"step": STEP_ID, **asdict(self)}, sort_keys=True).encode()
@@ -371,7 +379,7 @@ def register(solution, *, room_kids, target_kids, database_path, name_of: dict,
 # ---------------------------------------------------------------------------
 
 
-def merge(solution, reg: Registration, accepted, *, room_kids):
+def merge(solution, reg: Registration, accepted, *, room_kids, new_points: bool = True):
     """The solution with every `accepted` keyframe re-placed: in component 0 at its registered pose, its old
     observation rows dropped (a point left with none is dropped too), its rows to room points and the points
     triangulated with it added. A new point keeps only observations of room or accepted keyframes that no
@@ -413,7 +421,7 @@ def merge(solution, reg: Registration, accepted, *, room_kids):
             taken.add((ki, f))
             tlen[int(new_index[ref])] += 1
     new_xyz, new_err = [], []
-    for pid in sorted(reg.points):
+    for pid in sorted(reg.points if new_points else ()):
         pt = reg.points[pid]
         elems = []
         for k, f in pt["track"]:
@@ -596,16 +604,22 @@ def replace_cut(store, world_id, session_id, solution, assessment: dict, *, cams
         accepted = set(reg.poses)
         refused: dict[str, str] = {k: NOT_REGISTERED for k in targets if k not in accepted}
 
+        own = params.anchors == "own"
+        kidx0 = {kid: i for i, kid in enumerate(solution.keyframe_ids)}
+        t_of = {k.keyframe_id: float(k.received_at) for k in keyframes}
+
         def screen_floor_and_motion(acc):
             while True:
-                cand = merge(solution, reg, acc, room_kids=room)
-                floor = {k for k in acc if int(cand.poses[k]["observations"]) < params.min_obs}
+                cand = merge(solution, reg, acc, room_kids=room, new_points=own)
+                floor = {k for k in acc if int(cand.poses[k]["observations"]) < params.min_obs} if own else set()
                 for k in floor:
                     refused[k] = BELOW_FLOOR
                 acc = acc - floor
-                cand = merge(solution, reg, acc, room_kids=room) if floor else cand
-                new_cams = [c for c in FSG.room_cameras(cand, keyframes, name_of, groups_of=groups_of,
-                                                        min_obs=params.min_obs) if c.kid in acc]
+                cand = merge(solution, reg, acc, room_kids=room, new_points=own) if floor else cand
+                new_cams = [FSG.RoomCamera(kid=k, name=name_of.get(k, k), index=kidx0[k], t=t_of.get(k),
+                                           R=reg.poses[k][0], tvec=reg.poses[k][1],
+                                           group=(groups_of or {}).get(name_of.get(k), "room"))
+                            for k in sorted(acc, key=kidx0.get)]
                 motion = motion_refusals(room_cams, new_cams, mpu, gparams)
                 for k, why in motion.items():
                     refused[k] = f"{MOTION}:{why}"
@@ -615,7 +629,7 @@ def replace_cut(store, world_id, session_id, solution, assessment: dict, *, cams
 
         cand, accepted = screen_floor_and_motion(accepted)
         scale_record = None
-        if accepted and params.scale_screen:
+        if accepted and params.scale_screen and own:
             metric_log, inputs = FSG.read_evidence(store, world_id, session_id, cand, None,
                                                    database_path=database_path, name_of=name_of,
                                                    live_metric_fn=live_metric_fn)
@@ -665,7 +679,7 @@ def replace_cut(store, world_id, session_id, solution, assessment: dict, *, cams
         out["room_keyframes"] = sorted(list(assessment.get("room_keyframes") or []) + list(accepted),
                                        key=kidx.get)
         extra = (scale_record or {}).get("uncertified") or []
-        if not params.scale_screen:
+        if not (params.scale_screen and own):
             extra = _replaced_spans(sorted(accepted, key=kidx.get), kidx)
         if extra:
             out["uncertified"] = list(assessment.get("uncertified") or []) + extra

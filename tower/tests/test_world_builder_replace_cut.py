@@ -365,6 +365,28 @@ def test_without_the_scale_screen_the_re_placed_cameras_are_recorded_uncertified
                                                                                         RC.UNCERTIFIED_REPLACED)]
 
 
+def test_room_anchors_drop_the_registrations_own_points_and_judge_no_floor(monkeypatch):
+    sol, truth, pts, kfs, cams, a, name_of = _isolated_world()
+    monkeypatch.setattr(FSG, "read_evidence", lambda *a_, **k: pytest.fail("the scale screen ran"))
+    piece = [_kid(i) for i in range(20, 35)]
+
+    def register(s, **k):
+        reg = _registration(s, truth, pts, piece)
+        for j, kk in enumerate(piece):
+            reg.obs[kk] = reg.obs[kk][:5] + [(9000 + j, ("n", 77))]   # 5 room points, one new point
+            reg.xy[(kk, 9000 + j)] = (1.0, 1.0)
+        reg.points[77] = {"xyz": np.array([0.0, 0.0, 4.0]), "error": 0.5,
+                          "track": [(kk, 9000 + j) for j, kk in enumerate(piece)]}
+        return reg
+
+    out_sol, out_a, record = _step(sol, a, cams, kfs, name_of, register_fn=register,
+                                   params=RC.ReplaceParams(anchors="room"))
+    assert record["replaced"] == 15 and out_a["pieces"] == []
+    assert len(out_sol.xyz) == len(sol.xyz)          # no new point
+    assert all(out_sol.poses[k]["observations"] == 5 for k in piece)
+    assert [u["uncertified"] for u in out_a["uncertified"] if u.get("replaced")] == [RC.UNCERTIFIED_REPLACED]
+
+
 def test_a_failure_leaves_the_guards_decision_as_it_was():
     sol, _, _, kfs, cams, a, name_of = _isolated_world()
 
