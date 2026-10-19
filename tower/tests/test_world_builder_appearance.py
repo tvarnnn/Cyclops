@@ -1028,6 +1028,7 @@ REVISIT = [0.0, 0.3, 90.0, 90.3] + [2.0 + i for i in range(14)] + [90.6, 90.9]
 def _votes_with_times(times, painted=(0, 1, 18, 19), **kw):
     rgbs, opaque, zps, Rs, ts, K = _wall_walk(20)
     rgbs = _paint_wall_square(rgbs, zps, Rs, ts, K, painted, (40, 210, 60))
+    kw.setdefault("transient_static_gap_s", 30.0)     # the gate is off by default
     params = A.AppearanceParams(**kw)
     return A.transient_votes(rgbs, opaque, zps, np.ones((20, 3), np.float32), Rs, ts, K, params,
                              device="cpu", times=times)
@@ -1097,7 +1098,9 @@ def test_a_build_records_the_time_gate_and_still_masks_a_one_frame_hand(world):
     img[40:80, 60:110] = (40, 210, 60)
     world.set_image(3, img)
     world.write_align()
-    world.build(redactor_factory=_never_redact)
+    assert A.AppearanceParams().transient_static_gap_s == 0.0      # off by default
+    world.build(redactor_factory=_never_redact,
+                params=A.AppearanceParams(selection_samples=4000, transient_static_gap_s=30.0))
     man = world.manifest()
     gate = man["occluders"]["transient_time_gate"]
     assert gate["frames_with_time"] == N_FRAMES and gate["gap_s"] == 30.0 and gate["views"] == 2

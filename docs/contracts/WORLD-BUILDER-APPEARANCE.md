@@ -365,7 +365,8 @@ phone and part of a hand in 330 and 351, little in 308), and residual hand
 pixels remain possible in any keyframe.
 
 **A disagreement seen again on another visit is static, not transient**
-(`transient_static_gap_s` 30, `transient_static_views` 2). The vote cannot tell
+(`transient_static_gap_s` 30 when on -- **default 0, off**, see the end of
+this paragraph -- `transient_static_views` 2). The vote cannot tell
 a hand on the desk from a static object the proxy lacks -- skateboards against
 a wall, things on a shelf: both project onto the surface behind them and the
 other views saw that surface. Time can: a hand, a phone or a passer-by holds
@@ -373,7 +374,8 @@ one place in the world for one dwell; a static object is still there when the
 walk comes back. A hit is dropped (kept opaque) when at least 2 other
 keyframes received at least 30 s away (the Tower's receipt clock,
 `keyframes.jsonl` `received_at`) themselves disagree with the reference at
-that point AND agree with this keyframe's colour, within the same tolerance.
+that point AND agree with this keyframe's colour (within half that
+tolerance, below).
 30 s: the one measured hand-and-phone dwell (the canonical capture's desk,
 ki 308-366) spans 20 s. 2: a revisit at 2-5 keyframes a second yields
 several, and one alone can be a coincidence. **And from elsewhere in the
@@ -386,7 +388,15 @@ time alone the wearer's knee was kept in ki 189, 190 and 1378. The proxy
 has a surface there (at about 0.6 of the floor depth behind the knee), so a
 parallax test on the point is no guard: a separation of 0.5 × the point's
 depth, tried first, still kept much of the knee. Half the room's median depth
-away, the wearer -- and what moves with them -- was somewhere else. An unknown
+away, the wearer -- and what moves with them -- was somewhere else. **And saw
+the same thing** (`transient_static_match` 0.5): a corroborator must match
+this keyframe's colour within half the vote's tolerance -- that tolerance is
+built to call colours different with room for misregistration, while one
+object seen twice differs only by the exposure residual (median |log
+residual| 0.09 on 10.1); at the full tolerance, light surfaces seen through a
+stray proxy surface matched the knee. **Off by default**: with every rule
+above, 10.1 still kept parts of the wearer's knee in ki 190 (slivers in 189
+and 1378) that the vote had masked; the detector does not ask for legs. An unknown
 time never corroborates; without the journal, or with either value 0, the
 vote is as before. Its cost: something the wearer set down and left while
 they walked to the other side of the room (a phone on a shelf) survives, as a

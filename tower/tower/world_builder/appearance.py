@@ -216,7 +216,12 @@ class AppearanceParams:
     # desk, ki 308-366) spans 20 s. 2 views: a revisit at 2-5 keyframes a
     # second yields several; one alone can be a coincidence. Either at 0, or
     # a build without keyframe times, is the vote as it was.
-    transient_static_gap_s: float = 30.0
+    # DEFAULT 0 (OFF), set it to 30 to turn the gate on: on walk 10.1, which
+    # begins and ends seated at one desk, the gate with every rule below still
+    # kept parts of the wearer's own knee in ki 190 (and slivers in 189 and
+    # 1378) that the vote had masked; the detector does not ask for legs.
+    # The gate is safe once something else masks what moves with the wearer.
+    transient_static_gap_s: float = 0.0
     transient_static_views: int = 2
     # ...AND FROM ELSEWHERE IN THE ROOM. What moves with the wearer -- their
     # legs while seated, a hand, the phone -- comes back to the same proxy
