@@ -947,8 +947,13 @@ def guard_publication(store, world_id: str, session_id: str, solution, result, *
 
     RE-PLACE, DON'T CUT (`replace_cut`; `replace`, None = `TOWER_WORLD_REPLACE_CUT`, on): between the
     assessment and `apply`, the keyframes the room would not hold are offered to COLMAP's incremental
-    registration against the room, and those that pass the support floor and this guard's own pose and
-    scale screens join the room (their keyframe ids leave the isolated pieces). It never raises; a failure
+    registration against the room (one thread, at most `ReplaceParams.max_seconds`), and those with >= 30
+    observations of the ROOM's points that pass this guard's own pose screen and are anchored to the room
+    by steps it can test join the room at their registered poses (their keyframe ids leave the isolated
+    pieces). With the default `anchors="room"` a re-placed keyframe keeps only those room-point
+    observations and brings no scale of its own, so no scale screen judges it: it is recorded uncertified,
+    kind `re-placed` (a room certified before becomes `uncertified`); `anchors="own"` keeps the points its
+    registration triangulated and re-runs the scale screen instead. It never raises; a failure
     there leaves the assessment as it was, and a failure publishing its candidate (`apply`, the summary,
     the audit, or a record `_records_before_publish` could not serialise) publishes the guard's own cut
     instead, the record then `error` with what it had re-placed (`replace_cut.withdrawn`): the step can

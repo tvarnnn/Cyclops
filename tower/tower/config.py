@@ -898,8 +898,11 @@ def world_solve_gate_setting() -> bool:
 
 # Re-place, don't cut (`world_builder/replace_cut.py`): at the final scale guard's publication, the
 # keyframes the room would not hold (isolated by the guard, below the support floor, not posed) are
-# registered into the finished room by COLMAP's incremental registration, and kept only if they pass the
-# support floor and the guard's own pose and scale screens. Read by the guard at every final publication.
+# registered into the finished room by COLMAP's incremental registration, and kept only with >= 30
+# observations of the ROOM's points (`anchors="room"`: the only points they keep) and when they pass the
+# guard's own pose screen and anchoring. No scale screen judges them (they bring no scale of their own):
+# they are published uncertified, kind `re-placed`. Any failure publishes the guard's cut. Read by the
+# guard at every final publication.
 WORLD_REPLACE_CUT_ENV = "TOWER_WORLD_REPLACE_CUT"
 
 
