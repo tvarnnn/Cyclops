@@ -1,4 +1,5 @@
 import logging
+import math
 import os
 from dataclasses import dataclass
 from pathlib import Path
@@ -989,6 +990,92 @@ WORLD_GUIDANCE_IMAGERY_UNREDACTED_ENV = "TOWER_WORLD_GUIDANCE_IMAGERY_UNREDACTED
 def world_guidance_imagery_unredacted_setting() -> bool:
     """True only when TOWER_WORLD_GUIDANCE_IMAGERY_UNREDACTED is exactly `on`."""
     return os.environ.get(WORLD_GUIDANCE_IMAGERY_UNREDACTED_ENV) == "on"
+
+
+# BEST-OF-N FINAL SOLVE (`world_builder/solve_select.py`): the final solve's mapper draw, chosen by
+# the final scale guard. Read by the final solve itself, and only for an UNGATED, single-draw final
+# solve. WHY: GLOMAP's global positioning starts from random camera and point positions, and a walk's
+# low-texture stretches (plain walls, wall tops, corners: a few dozen observations per keyframe
+# against hundreds elsewhere) come out at the room's scale in some draws and collapsed or blown up
+# in others. The guard cuts a broken stretch out of the room, so its frames are never fused and what
+# only they saw stays a hole. The database is the same for every draw; only the mapping differs, so
+# more draws of the SAME matched database are the cheap supply, and the guard's own count of
+# keyframes it had to cut ranks them (lane P, patchy run 2026-10-19).
+#   off         -- `0`, `false`, `no`, `off`, and anything unrecognised (logged): one draw.
+#   adaptive:N  -- N in 1..6, exactly. Draw 1 is the final solve and its guard. When the guard
+#                  isolates fewer keyframes than the trigger (below) nothing else happens. At or
+#                  above it, N further mapper draws run on copies of the already-matched database,
+#                  at most `WORLD_SOLVE_SELECT_PARALLEL` at a time, each guarded; the best by the
+#                  pre-fixed score (`solve_select.score`) is published, ties to draw 1.
+# Unset or blank is the DEFAULT, `adaptive:3`: one wave of `WORLD_SOLVE_SELECT_PARALLEL` draws.
+# The extra draws have a hard wall budget, `TOWER_WORLD_SOLVE_SELECT_BUDGET_S` (a positive number
+# of seconds up to 3600, anything else is the default, logged): past it, the draws still running
+# are killed and the best finished draw so far is published.
+WORLD_SOLVE_SELECT_ENV = "TOWER_WORLD_SOLVE_SELECT"
+WORLD_SOLVE_SELECT_BUDGET_ENV = "TOWER_WORLD_SOLVE_SELECT_BUDGET_S"
+WORLD_SOLVE_SELECT_OFF = "off"
+WORLD_SOLVE_SELECT_ADAPTIVE = "adaptive"
+WORLD_SOLVE_SELECT_MAX_DRAWS = 6
+WORLD_SOLVE_SELECT_DEFAULT_DRAWS = 3
+WORLD_SOLVE_SELECT_BUDGET_DEFAULT_S = 240.0
+WORLD_SOLVE_SELECT_BUDGET_MAX_S = 3600.0
+# The trigger (`solve_select.trigger_threshold`): draw 1 triggers when it isolates
+# >= max(TRIGGER_MIN_KF, ceil(TRIGGER_FRAC x the room's supported keyframes)).
+# TRIGGER_FRAC is 0: a stretch the guard cuts out is a hole whatever share of the room it is, and
+# a broken low-texture stretch is 8-21 % of a room, under the 18 % the weld rule used. The floor
+# (60 keyframes, about 15 s of walk) keeps draw 1 when the guard cut only a few seconds of it.
+WORLD_SOLVE_SELECT_TRIGGER_FRAC = 0.0
+WORLD_SOLVE_SELECT_TRIGGER_MIN_KF = 60
+# The absolute rule, used only when the guard's assessment records no room size.
+WORLD_SOLVE_SELECT_TRIGGER_KF = 150
+# Extra draws mapped at once, each on every core (3 in parallel cost ~1.4-1.5x one).
+WORLD_SOLVE_SELECT_PARALLEL = 3
+
+
+def world_solve_select_setting() -> tuple[str, int]:
+    """`TOWER_WORLD_SOLVE_SELECT`: `("adaptive", 3)` (the default) or `("off", 0)` or `("adaptive", N)`.
+
+    Exactly `adaptive:<N>` with N one of 1..6 (case and surrounding blanks aside). Unset or blank is
+    the default, silently; a spelling of false is off, silently; anything else -- `adaptive:0`,
+    `adaptive:7`, `adaptive:01`, `on`, garbage -- is off and logged: a typo never multiplies a finish."""
+    value = os.environ.get(WORLD_SOLVE_SELECT_ENV)
+    if value is None or not value.strip():
+        return WORLD_SOLVE_SELECT_ADAPTIVE, WORLD_SOLVE_SELECT_DEFAULT_DRAWS
+    word = value.strip().lower()
+    if word in ("0", "false", "no", "off"):
+        return WORLD_SOLVE_SELECT_OFF, 0
+    prefix = WORLD_SOLVE_SELECT_ADAPTIVE + ":"
+    allowed = tuple(str(n) for n in range(1, WORLD_SOLVE_SELECT_MAX_DRAWS + 1))
+    if word.startswith(prefix) and word[len(prefix):] in allowed:
+        return WORLD_SOLVE_SELECT_ADAPTIVE, int(word[len(prefix):])
+    logger.warning(
+        "[Tower][Config] %s=%r is not off or adaptive:N (N 1..%d); treating it as off",
+        WORLD_SOLVE_SELECT_ENV, value, WORLD_SOLVE_SELECT_MAX_DRAWS,
+    )
+    return WORLD_SOLVE_SELECT_OFF, 0
+
+
+def world_solve_select_budget_setting() -> float:
+    """`TOWER_WORLD_SOLVE_SELECT_BUDGET_S`: the extra draws' wall budget in seconds
+    (`WORLD_SOLVE_SELECT_BUDGET_DEFAULT_S`).
+
+    A finite number in (0, 3600]. Unset or blank is the default, silently; anything else is the
+    default and logged."""
+    value = os.environ.get(WORLD_SOLVE_SELECT_BUDGET_ENV)
+    if value is None or not value.strip():
+        return WORLD_SOLVE_SELECT_BUDGET_DEFAULT_S
+    try:
+        seconds = float(value.strip())
+    except ValueError:
+        seconds = math.nan
+    if math.isfinite(seconds) and 0 < seconds <= WORLD_SOLVE_SELECT_BUDGET_MAX_S:
+        return seconds
+    logger.warning(
+        "[Tower][Config] %s=%r is not a number of seconds in (0, %g]; treating it as %g",
+        WORLD_SOLVE_SELECT_BUDGET_ENV, value, WORLD_SOLVE_SELECT_BUDGET_MAX_S,
+        WORLD_SOLVE_SELECT_BUDGET_DEFAULT_S,
+    )
+    return WORLD_SOLVE_SELECT_BUDGET_DEFAULT_S
 
 
 # The AREA builds (`world_builder/area_build.py`, WORLD-BUILDER-COMPONENTS.md

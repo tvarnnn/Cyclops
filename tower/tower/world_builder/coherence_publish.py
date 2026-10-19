@@ -1404,7 +1404,7 @@ def gate_and_publish(store, world_id: str, session_id: str, workspace, solution,
                      should_stop=None, consensus: ConsensusPlan | None = None,
                      stopped: bool = False, why_deferred: str | None = None,
                      keep_on_stop: bool = False, draw_0: GateResult | None = None,
-                     gate_results: list | None = None) -> tuple[object, dict | None]:
+                     gate_results: list | None = None, scale_guard=None) -> tuple[object, dict | None]:
     """The final solve's publish step, in one call: gate the candidate, check it with the final scale guard,
     write it, then write its records (`global_solve.solve` makes this call in place of `write_solution`).
 
@@ -1445,7 +1445,11 @@ def gate_and_publish(store, world_id: str, session_id: str, workspace, solution,
     `draw_0` and `gate_results` (the solve's two passes, `_publish_draw_0_first`):
     `draw_0` is `gate_by_consensus`'s -- draw 0's gate result from the earlier pass, so draw 0 is gated once
     -- and ignored without a consensus plan. `gate_results`, a list the caller owns, is given the gate
-    result (its `draw_0` is what the second pass hands back). Neither changes what is published."""
+    result (its `draw_0` is what the second pass hands back). Neither changes what is published.
+    `scale_guard` (the best-of-N selection, `solve_select.py`; ungated final solves only): the final scale
+    guard's outcome, already computed by the selection for the draw to publish -- exactly what
+    `_final_scale_guard` would return for it -- so the candidate is not guarded twice. None, the default,
+    runs the guard here."""
     result = None
     if gate_setting_for(final, gate):
         if consensus is not None and int(consensus.draws) >= 2:
@@ -1469,8 +1473,9 @@ def gate_and_publish(store, world_id: str, session_id: str, workspace, solution,
         if hasattr(solution, "gate"):
             solution.gate = result.record
         solution.timing = dict(getattr(solution, "timing", None) or {}, gate_s=result.record.get("seconds"))
-    guard = _final_scale_guard(store, world_id, session_id, solution, result, final=final,
-                               database_path=database_path, keyframes=keyframes)
+    guard = (scale_guard if scale_guard is not None else
+             _final_scale_guard(store, world_id, session_id, solution, result, final=final,
+                                database_path=database_path, keyframes=keyframes))
     if guard is not None:
         from tower.world_builder import final_scale_guard as FSG  # noqa: PLC0415
 

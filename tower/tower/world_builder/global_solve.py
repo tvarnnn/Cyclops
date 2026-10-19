@@ -1680,6 +1680,19 @@ def solve(
             stop_kw["should_stop"] = should_stop
             if should_stop():
                 stop_kw["stopped"] = True
+        # BEST-OF-N (`solve_select.py`, `TOWER_WORLD_SOLVE_SELECT`): on an ungated single-draw final
+        # solve, the final scale guard's outcome for the draw to publish -- draw 1's own when it isolated
+        # fewer keyframes than the trigger (exactly what the publish step would compute), else the best
+        # of the extra mapper draws -- which the publish step then uses instead of guarding again.
+        # None (switch off, a gated or consensus solve, a background solve) is the plain publish.
+        selected = _adaptive_select(
+            store, world_id, session_id, workspace, database_path, solution, keyframes, final=final,
+            gated=gated, plan=plan, seed=seed, map_threads=map_threads,
+            min_image_observations=min_image_observations, should_stop=should_stop)
+        if selected is not None:
+            stop_kw["scale_guard"] = selected
+            if selected.solution is not None:
+                solver = selected.solution.solver
         solution, _gate_record = coherence_publish.gate_and_publish(
             store, world_id, session_id, workspace, solution, final=final, gate=gate,
             database_path=database_path, keyframes=keyframes, write=write_solution,
@@ -1701,6 +1714,42 @@ def solve(
         "solve": solution.solve,
         "gate": solution.gate,
     }
+
+
+def _adaptive_select(store, world_id: str, session_id: str, workspace: SolveWorkspace, database_path,
+                     solution: Solution, keyframes, *, final: bool, gated: bool, plan, seed,
+                     map_threads: int, min_image_observations: int, should_stop=None):
+    """The final scale guard's outcome to publish when the best-of-N selection runs, else None.
+
+    None -- and nothing imported, read or written beyond one environment read -- unless this is a
+    final, ungated, single-draw solve (no consensus plan) and `TOWER_WORLD_SOLVE_SELECT` is
+    `adaptive:N` (`config.world_solve_select_setting`): the selection is decided by the guard's
+    reading of the live depth evidence, so a gated solve (whose guard reads the gate's evidence) is
+    left exactly as it is, with a warning. A selection that fails outright is logged and returns
+    None, and the publish step then guards draw 1 itself."""
+    from tower.config import WORLD_SOLVE_SELECT_ADAPTIVE, world_solve_select_setting  # noqa: PLC0415
+
+    if not final:
+        return None
+    mode, extra = world_solve_select_setting()
+    if mode != WORLD_SOLVE_SELECT_ADAPTIVE:
+        return None
+    if gated or plan is not None:
+        logger.warning("global solve: the best-of-N selection is for an ungated single-draw final solve; "
+                       "this one is gated or a consensus, and is published as one draw")
+        return None
+    from tower.config import world_solve_select_budget_setting  # noqa: PLC0415
+    from tower.world_builder import solve_select  # noqa: PLC0415
+
+    try:
+        outcome, _record = solve_select.select(
+            store, world_id, session_id, workspace, database_path, solution, keyframes, n=extra,
+            budget_s=world_solve_select_budget_setting(), threads=map_threads, seed=seed,
+            min_image_observations=min_image_observations, should_stop=should_stop)
+    except Exception:  # noqa: BLE001 -- the selection never costs the finish
+        logger.exception("global solve: the best-of-N selection failed; draw 1 is published")
+        return None
+    return outcome
 
 
 def _loop_detection_wanted(loop_detection) -> bool:
